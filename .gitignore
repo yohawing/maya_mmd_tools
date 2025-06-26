@@ -1,0 +1,29 @@
+# Maya specific files
+*.ma
+*.mb
+*.mel
+*.log
+
+# Python specific files
+__pycache__/
+*.pyc
+*.pyd
+.Python/
+venv/
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+build/
+dist/
+
+# IDE specific files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# Other temporary files
+*.tmp
