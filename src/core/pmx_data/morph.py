@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class PmxMorph:
     """PMXファイルのモーフデータを保持するクラス。"""
     def __init__(self):
@@ -23,8 +25,7 @@ class PmxMorph:
         # Panel Type (1 byte), Morph Type (1 byte)
         # Number of Offsets (int)
         # For each offset, parse based on Morph Type:
-        #   Vertex Morph: Vertex Index (variable size), Position Offset (3 floats)
-        #   UV Morph: Vertex Index (variable size), UV Offset (4 floats)
+        #   Vertex Morph: Vertex Index (variable size), UV Offset (4 floats)
         #   Bone Morph: Bone Index (variable size), Position (3 floats), Rotation (4 floats)
         #   Material Morph: Material Index (variable size), Offset Data (variable)
         #   Group Morph: Morph Index (variable size), Ratio (1 float)

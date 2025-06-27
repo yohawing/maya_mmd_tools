@@ -1,7 +1,7 @@
 import os
 
-from tests.common.test_base import TestBase
-from src.converters import bone_converter
+from ..common.test_base import TestBase
+from ...src.converters import bone_converter
 
 class TestBoneConverter(TestBase):
 

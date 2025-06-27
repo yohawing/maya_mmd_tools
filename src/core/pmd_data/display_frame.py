@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class PmdDisplayFrame:
     """PMDファイルの表示枠データを保持するクラス。"""
     def __init__(self):

@@ -5,9 +5,9 @@ class MMDParseException(Exception):
     pass
 
 # Import specific parsers
-from src.core.pmd_parser import PmdParser
-from src.core.pmx_parser import PmxParser
-from src.core.vmd_parser import VmdParser
+from .pmd_parser import PmdParser
+from .pmx_parser import PmxParser
+from .vmd_parser import VmdParser
 
 def parse_mmd_file(file_path):
     """

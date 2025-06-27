@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class VmdLightFrame:
     """VMDファイルの照明フレームデータを保持するクラス。"""
     def __init__(self):

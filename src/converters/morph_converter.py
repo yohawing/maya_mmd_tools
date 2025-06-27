@@ -1,3 +1,6 @@
+from ..core.pmd_parser import PmdParser
+from ..core.pmx_parser import PmxParser
+
 class MorphConverter:
     """
     MMDのモーフデータをMayaのブレンドシェイプに変換するクラス。
@@ -26,7 +29,6 @@ class MorphConverter:
 
         Args:
             pmx_data (PmxParser): 解析されたPMXデータオブジェクト。
-            mesh_node (str): ブレンドシェイプを適用するMayaのメッシュノードの名前。
 
         Returns:
             str: 作成されたMayaブレンドシェイプノードの名前。

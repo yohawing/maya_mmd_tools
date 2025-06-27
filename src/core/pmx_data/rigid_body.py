@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class PmxRigidBody:
     """PMXファイルの剛体データを保持するクラス。"""
     def __init__(self):

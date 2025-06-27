@@ -1,17 +1,17 @@
 import os
 
-from src.core.mmd_parser import MMDParseException
-from src.core.pmx_data.header import PmxHeader
-from src.core.pmx_data.vertex import PmxVertex
-from src.core.pmx_data.face import PmxFace
-from src.core.pmx_data.material import PmxMaterial
-from src.core.pmx_data.bone import PmxBone
-from src.core.pmx_data.ik import PmxIK
-from src.core.pmx_data.ik_link import PmxIKLink
-from src.core.pmx_data.morph import PmxMorph
-from src.core.pmx_data.display_frame import PmxDisplayFrame
-from src.core.pmx_data.rigid_body import PmxRigidBody
-from src.core.pmx_data.joint import PmxJoint
+from ..mmd_parser import MMDParseException
+from .pmx_data.header import PmxHeader
+from .pmx_data.vertex import PmxVertex
+from .pmx_data.face import PmxFace
+from .pmx_data.material import PmxMaterial
+from .pmx_data.bone import PmxBone
+from .pmx_data.ik import PmxIK
+from .pmx_data.ik_link import PmxIKLink
+from .pmx_data.morph import PmxMorph
+from .pmx_data.display_frame import PmxDisplayFrame
+from .pmx_data.rigid_body import PmxRigidBody
+from .pmx_data.joint import PmxJoint
 
 class PmxParser:
     """

@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class PmxMaterial:
     """PMXファイルの材質データを保持するクラス。"""
     def __init__(self):

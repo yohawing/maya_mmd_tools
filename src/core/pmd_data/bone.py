@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class PmdBone:
     """PMDファイルのボーンデータを保持するクラス。"""
     def __init__(self):

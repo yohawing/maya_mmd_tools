@@ -1,7 +1,7 @@
 import os
 
-from tests.common.test_base import TestBase
-from src.converters import morph_converter
+from ..common.test_base import TestBase
+from ...src.converters import morph_converter
 
 class TestMorphConverter(TestBase):
 

@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class PmdHeader:
     """PMDファイルのヘッダ情報を保持するクラス。"""
     def __init__(self):

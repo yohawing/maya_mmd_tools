@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class VmdIKShowHideFrame:
     """VMDファイルのIK/表示フレームデータを保持するクラス。"""
     def __init__(self):

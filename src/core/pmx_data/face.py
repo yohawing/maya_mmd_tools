@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class PmxFace:
     """PMXファイルの面データを保持するクラス。"""
     def __init__(self):

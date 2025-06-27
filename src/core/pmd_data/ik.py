@@ -1,3 +1,5 @@
+from ..mmd_parser import MMDParseException
+
 class PmdIK:
     """PMDファイルのIKデータを保持するクラス。"""
     def __init__(self):

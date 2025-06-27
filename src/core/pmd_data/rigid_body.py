@@ -1,5 +1,7 @@
+from ..mmd_parser import MMDParseException
+
 class PmdRigidBody:
-    """PMDファイルの剛体データを保持するクラス。"""
+    """PMDファイルの剛体データを保持するクラス。""" 
     def __init__(self):
         self.name = ''
         self.bone_index = -1

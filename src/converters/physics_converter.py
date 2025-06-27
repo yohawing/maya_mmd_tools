@@ -1,3 +1,6 @@
+from ..core.pmd_parser import PmdParser
+from ..core.pmx_parser import PmxParser
+
 class PhysicsConverter:
     """
     MMDの物理演算データをMayaのリジッドボディとコンストレインに変換するクラス。

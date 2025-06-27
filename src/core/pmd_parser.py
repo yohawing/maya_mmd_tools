@@ -1,15 +1,15 @@
 import os
 
-from src.core.mmd_parser import MMDParseException
-from src.core.pmd_data.header import PmdHeader
-from src.core.pmd_data.vertex import PmdVertex
-from src.core.pmd_data.material import PmdMaterial
-from src.core.pmd_data.bone import PmdBone
-from src.core.pmd_data.ik import PmdIK
-from src.core.pmd_data.morph import PmdMorph
-from src.core.pmd_data.display_frame import PmdDisplayFrame
-from src.core.pmd_data.rigid_body import PmdRigidBody
-from src.core.pmd_data.joint import PmdJoint
+from ..mmd_parser import MMDParseException
+from .pmd_data.header import PmdHeader
+from .pmd_data.vertex import PmdVertex
+from .pmd_data.material import PmdMaterial
+from .pmd_data.bone import PmdBone
+from .pmd_data.ik import PmdIK
+from .pmd_data.morph import PmdMorph
+from .pmd_data.display_frame import PmdDisplayFrame
+from .pmd_data.rigid_body import PmdRigidBody
+from .pmd_data.joint import PmdJoint
 
 class PmdParser:
     """

@@ -1,13 +1,13 @@
 import os
 
-from src.core.mmd_parser import MMDParseException
-from src.core.vmd_data.header import VmdHeader
-from src.core.vmd_data.bone_frame import VmdBoneFrame
-from src.core.vmd_data.morph_frame import VmdMorphFrame
-from src.core.vmd_data.camera_frame import VmdCameraFrame
-from src.core.vmd_data.light_frame import VmdLightFrame
-from src.core.vmd_data.shadow_frame import VmdShadowFrame
-from src.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
+from ..mmd_parser import MMDParseException
+from .vmd_data.header import VmdHeader
+from .vmd_data.bone_frame import VmdBoneFrame
+from .vmd_data.morph_frame import VmdMorphFrame
+from .vmd_data.camera_frame import VmdCameraFrame
+from .vmd_data.light_frame import VmdLightFrame
+from .vmd_data.shadow_frame import VmdShadowFrame
+from .vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 
 class VmdParser:
     """

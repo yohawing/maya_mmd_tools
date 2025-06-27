@@ -1,7 +1,7 @@
 import os
 
-from tests.common.test_base import TestBase
-from src.core import mmd_parser
+from ..common.test_base import TestBase
+from ...src.core import mmd_parser
 
 class TestMmdParser(TestBase):
 

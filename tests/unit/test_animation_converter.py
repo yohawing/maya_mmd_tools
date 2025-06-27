@@ -1,7 +1,7 @@
 import os
 
-from tests.common.test_base import TestBase
-from src.converters import animation_converter
+from ..common.test_base import TestBase
+from ...src.converters import animation_converter
 
 class TestAnimationConverter(TestBase):
 

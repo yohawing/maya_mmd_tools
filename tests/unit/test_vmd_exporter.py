@@ -1,7 +1,7 @@
 import os
 
-from tests.common.test_base import TestBase
-from src.io import vmd_exporter
+from ..common.test_base import TestBase
+from ...src.io import vmd_exporter
 
 class TestVmdExporter(TestBase):
 

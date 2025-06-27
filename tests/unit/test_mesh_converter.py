@@ -1,7 +1,7 @@
 import os
 
-from tests.common.test_base import TestBase
-from src.converters import mesh_converter
+from ..common.test_base import TestBase
+from ...src.converters import mesh_converter
 
 class TestMeshConverter(TestBase):
 

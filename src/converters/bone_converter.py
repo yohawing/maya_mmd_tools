@@ -1,3 +1,6 @@
+from ..core.pmd_parser import PmdParser
+from ..core.pmx_parser import PmxParser
+
 class BoneConverter:
     """
     MMDのボーンデータをMayaのジョイントに変換し、スキニングを設定するクラス。

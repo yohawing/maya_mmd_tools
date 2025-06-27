@@ -1,3 +1,5 @@
+from ..core.vmd_parser import VmdParser
+
 class AnimationConverter:
     """
     MMDのアニメーションデータをMayaのキーフレームアニメーションに変換するクラス。
