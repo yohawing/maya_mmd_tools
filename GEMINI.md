@@ -97,7 +97,7 @@ F:/Develop/maya_mmd_tools/
 │       ├── test_pmd_exporter.py
 │       ├── test_pmx_exporter.py
 │       └── test_vmd_exporter.py
-└── doc/
+└── docs/
     ├── design.md
     ├── testing.md
     └── project_management.md
@@ -118,12 +118,12 @@ F:/Develop/maya_mmd_tools/
 
 ## ドキュメンティング
 
-作成した機能は`doc`ディレクトリにドキュメントとして、内容をMarkdownとして保存してください。
+作成した機能は`docs`ディレクトリにドキュメントとして、内容をMarkdownとして保存してください。
 機能に変更があった場合も、該当のファイルを編集してください。
 
 ## プロジェクトマネージメント
 
-プロジェクトの進行管理、スプリント計画、タスク管理については、`doc/project_management.md`を参照してください。
+プロジェクトの進行管理、スプリント計画、タスク管理については、`docs/project_management.md`を参照してください。
 
 ## テスト
 
@@ -132,7 +132,7 @@ F:/Develop/maya_mmd_tools/
 - 共通のテストロジックは、`tests/common`ディレクトリに配置
 - テストの実行は、`tests/run_tests.py`を使用
 - テストは、Mayaの環境で実行する必要があるため、`mayapy.exe`を使用して実行します。
-- テストの実行方法は、`doc/testing.md`に記載されています。
+- テストの実行方法は、`docs/testing.md`に記載されています。
 
 ## コーディング
 
