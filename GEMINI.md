@@ -20,6 +20,7 @@
 ```
 F:/Develop/maya_mmd_tools/
 ├── maya_mmd_tools.mod
+├── userSetup.py
 ├── src/
 │   ├── __init__.py
 │   ├── plugin_main.py
@@ -27,7 +28,43 @@ F:/Develop/maya_mmd_tools/
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── mmd_parser.py
-│   │   └── maya_utils.py
+│   │   ├── pmd_parser.py
+│   │   ├── pmx_parser.py
+│   │   ├── vmd_parser.py
+│   │   ├── maya_utils.py
+│   │   ├── pmd_data/
+│   │   │   ├── __init__.py
+│   │   │   ├── header.py
+│   │   │   ├── vertex.py
+│   │   │   ├── material.py
+│   │   │   ├── bone.py
+│   │   │   ├── ik.py
+│   │   │   ├── morph.py
+│   │   │   ├── display_frame.py
+│   │   │   ├── rigid_body.py
+│   │   │   └── joint.py
+│   │   ├── pmx_data/
+│   │   │   ├── __init__.py
+│   │   │   ├── header.py
+│   │   │   ├── vertex.py
+│   │   │   ├── face.py
+│   │   │   ├── material.py
+│   │   │   ├── bone.py
+│   │   │   ├── ik.py
+│   │   │   ├── ik_link.py
+│   │   │   ├── morph.py
+│   │   │   ├── display_frame.py
+│   │   │   ├── rigid_body.py
+│   │   │   └── joint.py
+│   │   └── vmd_data/
+│   │       ├── __init__.py
+│   │       ├── header.py
+│   │       ├── bone_frame.py
+│   │       ├── morph_frame.py
+│   │       ├── camera_frame.py
+│   │       ├── light_frame.py
+│   │       ├── shadow_frame.py
+│   │       └── ik_show_hide_frame.py
 │   ├── converters/
 │   │   ├── __init__.py
 │   │   ├── mesh_converter.py
@@ -45,7 +82,11 @@ F:/Develop/maya_mmd_tools/
 │   ├── icons/
 │   └── ui/
 ├── tests/
-│   └── (テストファイルはここに入ります)
+│   ├── run_tests.py
+│   ├── test_mmd_parser.py
+│   └── common/
+│       ├── __init__.py
+│       └── test_base.py
 └── doc/
     ├── design.md
     ├── testing.md
@@ -55,6 +96,10 @@ F:/Develop/maya_mmd_tools/
 ## Maya モジュールファイル (.mod) について
 
 `maya_mmd_tools.mod` ファイルは、Maya がこのプラグインを認識し、必要なパスを設定するために使用されます。このファイルを Maya の `modules` ディレクトリに配置することで、プラグインのロードが容易になります。
+
+## userSetup.py について
+
+`userSetup.py` ファイルは、Maya の起動時に自動的に実行され、カスタムメニューの追加やプラグインの初期設定を行うために使用されます。このファイルを Maya の `scripts` ディレクトリに配置することで、Maya 起動時に「MMD Tools」メニューが自動的に追加されます。
 
 ## README.mdについて
 
@@ -74,16 +119,17 @@ F:/Develop/maya_mmd_tools/
 
 現在、自動テストのセットアップはありません。テストはMayaのGUI上で手動で行うか、`mayapy.exe` を使用してスクリプト経由で実行する必要があります。
 
-## リンティングとフォーマット
+## コーディング
 
-コードの品質を保つため、`ruff` を使用します。
-
-コードの静的解析とフォーマットを行うには、以下のコマンドを実行します。
-
-```shell
-# ruff check .
-# black .
-```
+- Python 3.7以降を使用してください。
+- PEP 8に準拠したコードスタイルを使用してください。
+- コメントとドキュメンテーションは、コードの可読性を高めるために重要です。関数やクラスの説明を適切に記述してください。
+- 可能な限り、コードの再利用性を考慮してください。共通の機能は`core`ディレクトリに配置し、他のモジュールからインポートして使用します。
+- docstringを使用して、関数やクラスの目的、引数、戻り値を明確に記述してください。
+- 例外処理を適切に行い、エラーが発生した場合はユーザーにわかりやすいメッセージを表示してください。
+- 外部モジュールを追加したくないので、ライブラリは標準のものをなるべく使用してください。
+- 1つのファイルが長すぎる場合は、機能ごとに分割してください。
+- 基本的に１つのファイルに複数のクラスを作るのは避けてください。
 
 ## 参考サイト
 

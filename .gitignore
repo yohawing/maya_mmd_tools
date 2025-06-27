@@ -27,3 +27,6 @@ dist/
 
 # Other temporary files
 *.tmp
+
+/doc/pmx_spec.md
+/tests/data/*
