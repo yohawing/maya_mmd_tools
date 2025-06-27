@@ -83,10 +83,20 @@ F:/Develop/maya_mmd_tools/
 │   └── ui/
 ├── tests/
 │   ├── run_tests.py
-│   ├── test_mmd_parser.py
-│   └── common/
+│   ├── common/
+│   │   ├── __init__.py
+│   │   └── test_base.py
+│   └── unit/
 │       ├── __init__.py
-│       └── test_base.py
+│       ├── test_mmd_parser.py
+│       ├── test_mesh_converter.py
+│       ├── test_bone_converter.py
+│       ├── test_morph_converter.py
+│       ├── test_physics_converter.py
+│       ├── test_animation_converter.py
+│       ├── test_pmd_exporter.py
+│       ├── test_pmx_exporter.py
+│       └── test_vmd_exporter.py
 └── doc/
     ├── design.md
     ├── testing.md
@@ -117,7 +127,12 @@ F:/Develop/maya_mmd_tools/
 
 ## テスト
 
-現在、自動テストのセットアップはありません。テストはMayaのGUI上で手動で行うか、`mayapy.exe` を使用してスクリプト経由で実行する必要があります。
+- テストは、`tests`ディレクトリに配置されます。
+- ユニットテストは、`tests/unit`ディレクトリに配置
+- 共通のテストロジックは、`tests/common`ディレクトリに配置
+- テストの実行は、`tests/run_tests.py`を使用
+- テストは、Mayaの環境で実行する必要があるため、`mayapy.exe`を使用して実行します。
+- テストの実行方法は、`doc/testing.md`に記載されています。
 
 ## コーディング
 

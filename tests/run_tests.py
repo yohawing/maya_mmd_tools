@@ -11,7 +11,7 @@ def run_all_tests():
     loader = unittest.TestLoader()
     # Discover tests in the 'tests' directory
     # start_dir can be 'tests' or the project root if you want to discover all tests
-    suite = loader.discover(start_dir='tests', pattern='test_*.py')
+    suite = loader.discover(start_dir='tests/unit', pattern='test_*.py')
 
     runner = unittest.TextTestRunner(verbosity=2)
     runner.run(suite)
