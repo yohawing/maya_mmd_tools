@@ -30,3 +30,4 @@ dist/
 
 /doc/pmx_spec.md
 /tests/data/*
+!/tests/data/place_test_data_here
