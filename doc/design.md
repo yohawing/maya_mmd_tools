@@ -54,42 +54,63 @@ PMD の拡張フォーマット。より多くの機能と複雑な構造を持�
 *   バイナリデータを読み込み、Python のデータ構造（辞書やカスタムクラスのインスタンス）に変換する。
 *   エラーハンドリング（ファイルが見つからない、フォーマットエラーなど）を適切に行う。
 
-## 3. Maya へのデータ変換
+## 3. Maya へのデータ変換 (インポート)
 
 解析された MMD データを Maya のシーン要素に変換するモジュールを設計します。
 
-### 3.1. メッシュ (`maya_mesh_converter.py`)
+### 3.1. メッシュ (`converters/mesh_converter.py`)
 
 *   MMD の頂点データ、面データ、UV、法線を Maya の `mesh` ノードに変換。
 *   材質データに基づいて Maya の `lambert`, `blinn`, `phong` などのシェーダーを作成し、テクスチャを適用。
 *   頂点カラーが存在する場合は、Maya の `colorSet` に変換。
 
-### 3.2. ボーンとスキニング (`maya_bone_converter.py`)
+### 3.2. ボーンとスキニング (`converters/bone_converter.py`)
 
 *   MMD のボーン階層を Maya の `joint` ノードに変換。
 *   ボーンの親子関係、ローカル軸を正確に再現。
 *   頂点ウェイト情報に基づいて、Maya の `skinCluster` を作成し、メッシュにバインド。
 *   IK ボーンが存在する場合は、Maya の `ikHandle` を作成し、適切な設定を行う。
 
-### 3.3. モーフ（ブレンドシェイプ） (`maya_morph_converter.py`)
+### 3.3. モーフ（ブレンドシェイプ） (`converters/morph_converter.py`)
 
 *   MMD のモーフデータを Maya の `blendShape` ノードに変換。
 *   各モーフターゲットを `blendShape` のターゲットとして追加し、適切なウェイトを設定。
 *   グループモーフや材質モーフなど、PMX の複雑なモーフタイプへの対応を検討。
 
-### 3.4. 物理演算 (`maya_physics_converter.py`)
+### 3.4. 物理演算 (`converters/physics_converter.py`)
 
 *   MMD の剛体データを Maya の `rigidBody` ノードに変換。
 *   MMD のジョイントデータを Maya の `constraint` ノード（`pointConstraint`, `orientConstraint`, `parentConstraint` など）に変換。
 *   物理演算のシミュレーション設定（質量、摩擦、反発など）を Maya にマッピング。
 
-### 3.5. アニメーション (`maya_animation_converter.py`)
+### 3.5. アニメーション (`converters/animation_converter.py`)
 
 *   VMD のボーンフレームデータを Maya の `joint` ノードの `translate`, `rotate` アトリビュートにキーフレームとして設定。
 *   VMD のモーフフレームデータを Maya の `blendShape` ノードのターゲットウェイトにキーフレームとして設定。
 *   VMD のカメラフレームデータを Maya の `camera` ノードにキーフレームとして設定。
 *   VMD の照明フレームデータを Maya の `light` ノードにキーフレームとして設定。
 *   補間曲線を Maya のグラフエディタのカーブに変換。
+
+## 4. Maya から MMD ファイルへのデータ変換 (エクスポート)
+
+Maya のシーン要素を MMD ファイルフォーマットに変換するモジュールを設計します。
+
+### 4.1. PMD エクスポート (`exporters/pmd_exporter.py`)
+
+*   Maya のメッシュ、ボーン、スキニング、材質データを PMD フォーマットに変換して書き出す。
+*   PMD の制約（頂点数、材質数など）を考慮する。
+
+### 4.2. PMX エクスポート (`exporters/pmx_exporter.py`)
+
+*   Maya のメッシュ、ボーン、スキニング、モーフ、物理演算、材質データを PMX フォーマットに変換して書き出す。
+*   PMX の詳細な設定（追加UV、複数親ボーン、グループモーフなど）に対応する。
+
+### 4.3. VMD エクスポート (`exporters/vmd_exporter.py`)
+
+*   Maya のボーンアニメーション、ブレンドシェイプアニメーション、カメラ、照明データを VMD フォーマットに変換して書き出す。
+*   補間曲線の変換を考慮する。
+
+## 5. プラグインのアーキテクチャ
 
 ## 4. プラグインのアーキテクチャ
 
@@ -99,15 +120,28 @@ PMD の拡張フォーマット。より多くの機能と複雑な構造を持�
 src/
 ├── __init__.py
 ├── plugin_main.py          # Maya プラグインのエントリポイント
-├── mmd_importer.py         # メインインポートロジックの呼び出し
-├── mmd_parser.py           # MMD ファイルの解析
-├── maya_converter.py       # Maya データへの変換（各コンバータのラッパー）
-│   ├── maya_mesh_converter.py
-│   ├── maya_bone_converter.py
-│   ├── maya_morph_converter.py
-│   ├── maya_physics_converter.py
-│   └── maya_animation_converter.py
-└── ui.py                   # ユーザーインターフェース
+├── ui.py                   # ユーザーインターフェース
+├── core/
+│   ├── __init__.py
+│   ├── mmd_parser.py       # MMD ファイルの解析 (PMD/PMX/VMD の共通解析ロジック)
+│   └── maya_utils.py       # Maya 関連の汎用ユーティリティ関数
+├── converters/
+│   ├── __init__.py
+│   ├── mesh_converter.py   # メッシュ変換
+│   ├── bone_converter.py   # ボーンとスキニング変換
+│   ├── morph_converter.py  # モーフ（ブレンドシェイプ）変換
+│   ├── physics_converter.py# 物理演算変換
+│   └── animation_converter.py # アニメーション変換
+└── io/
+    ├── __init__.py
+    ├── mmd_importer.py     # メインインポートロジック (ファイルタイプに応じたパーサーとコンバーターの呼び出し)
+    ├── pmd_exporter.py     # PMD エクスポート
+    ├── pmx_exporter.py     # PMX エクスポート
+    └── vmd_exporter.py     # VMD エクスポート
+    # 必要に応じて、より具体的なインポーター/エクスポーターをここに配置
+    # ├── pmd_importer_logic.py
+    # └── pmx_importer_logic.py
+    # └── vmd_importer_logic.py
 ```
 
 ### 4.2. ワークフロー

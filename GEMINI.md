@@ -2,7 +2,11 @@
 
 ## プロジェクト概要
 
-このプロジェクトは、Autodesk Maya用のPythonプラグインです。MikuMikuDance (MMD) のファイルフォーマット (.pmd, .pmx, .vmd) をMayaシーンにインポートする機能を提供します。
+このプロジェクトは、Autodesk Maya用のPythonプラグインです。
+以下の機能を提供します
+- MikuMikuDance (MMD) のファイルフォーマット (.pmd, .pmx, .vmd) をMayaシーンにインポート
+- PMD/PMXファイルのエクスポート
+
 
 ### 対応プラットフォーム
 *   Autodesk Maya 2024でテストします。
@@ -15,10 +19,28 @@
 
 ```
 F:/Develop/maya_mmd_tools/
+├── maya_mmd_tools.mod
 ├── src/
 │   ├── __init__.py
 │   ├── plugin_main.py
-│   └── mmd_importer.py
+│   ├── ui.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── mmd_parser.py
+│   │   └── maya_utils.py
+│   ├── converters/
+│   │   ├── __init__.py
+│   │   ├── mesh_converter.py
+│   │   ├── bone_converter.py
+│   │   ├── morph_converter.py
+│   │   ├── physics_converter.py
+│   │   └── animation_converter.py
+│   └── io/
+│       ├── __init__.py
+│       ├── mmd_importer.py
+│       ├── pmd_exporter.py
+│       ├── pmx_exporter.py
+│       └── vmd_exporter.py
 ├── resources/
 │   ├── icons/
 │   └── ui/
@@ -29,6 +51,10 @@ F:/Develop/maya_mmd_tools/
     ├── testing.md
     └── project_management.md
 ```
+
+## Maya モジュールファイル (.mod) について
+
+`maya_mmd_tools.mod` ファイルは、Maya がこのプラグインを認識し、必要なパスを設定するために使用されます。このファイルを Maya の `modules` ディレクトリに配置することで、プラグインのロードが容易になります。
 
 ## README.mdについて
 

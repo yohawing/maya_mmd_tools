@@ -4,14 +4,14 @@ def initializePlugin(mobject):
     '''
     Plugin entry point.
     '''
-    vendor = "Your Name/Company"
+    vendor = "yohawing"
     version = "1.0.0"
-    cmds.registerPlugin("mmd_importer", vendor, version, initializePlugin, uninitializePlugin)
-    print("mmd_importer plugin loaded!")
+    cmds.registerPlugin("maya_mmd_tools", vendor, version, initializePlugin, uninitializePlugin)
+    print("maya_mmd_tools plugin loaded!")
 
 def uninitializePlugin(mobject):
     '''
     Plugin exit point.
     '''
-    cmds.deregisterPlugin("mmd_importer")
-    print("mmd_importer plugin unloaded!")
+    cmds.deregisterPlugin("maya_mmd_tools")
+    print("maya_mmd_tools plugin unloaded!")
