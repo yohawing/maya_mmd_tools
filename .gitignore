@@ -28,5 +28,5 @@ dist/
 # Other temporary files
 *.tmp
 
-/doc/pmx_spec.md
+/docs/pmx_spec.md
 !/tests/data/miku_v2.pmd
