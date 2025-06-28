@@ -29,4 +29,6 @@ dist/
 *.tmp
 
 /docs/pmx_spec.md
+/tests/data/*
+!/tests/data/place_test_data_here
 !/tests/data/miku_v2.pmd

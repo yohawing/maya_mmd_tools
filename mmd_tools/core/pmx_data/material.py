@@ -1,42 +1,64 @@
-from ..exceptions import MMDParseException
+import struct
+from mmd_tools.core import utils
 
 class PmxMaterial:
-    """PMXファイルの材質データを保持するクラス。"""
-    def __init__(self):
-        self.name_jp = ''
-        self.name_en = ''
+    """
+    PMXファイルの材質データを保持するクラス。
+    """
+    def __init__(self, texture_index_size, encoding):
+        self.texture_index_size = texture_index_size
+        self.encoding = encoding
+        self.name = ''
+        self.name_english = ''
         self.diffuse = (0.0, 0.0, 0.0, 0.0)
         self.specular = (0.0, 0.0, 0.0)
-        self.specular_power = 0.0
+        self.specular_coefficient = 0.0
         self.ambient = (0.0, 0.0, 0.0)
-        self.draw_flags = 0
+        self.draw_flag = 0
         self.edge_color = (0.0, 0.0, 0.0, 0.0)
         self.edge_size = 0.0
         self.texture_index = -1
         self.sphere_texture_index = -1
         self.sphere_mode = 0
-        self.toon_tag = 0 # 0: toon_texture_index, 1: toon_color
+        self.shared_toon_flag = 0
         self.toon_texture_index = -1
-        self.comment = ''
+        self.memo = ''
         self.face_count = 0
 
-    def parse(self, file_handle, header):
+    def parse(self, f):
         """
         ファイルハンドルからPMX材質データを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-            header (PmxHeader): PMXヘッダ情報（テクスチャインデックスサイズなどに使用）。
-
-        Raises:
-            MMDParseException: 材質データの解析に失敗した場合。
+            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        # TODO: PMX材質データのバイナリ解析ロジックを実装する。
-        # Name JP (variable length string), Name EN (variable length string)
-        # Diffuse (4 floats), Specular (3 floats), Specular Power (1 float), Ambient (3 floats)
-        # Draw Flags (1 byte), Edge Color (4 floats), Edge Size (1 float)
-        # Texture Index (variable size), Sphere Texture Index (variable size), Sphere Mode (1 byte)
-        # Toon Tag (1 byte), Toon Texture Index (variable size)
-        # Comment (variable length string)
-        # Face Count (int)
-        pass
+        name_length = struct.unpack('<I', f.read(4))[0]
+        self.name = f.read(name_length).decode(self.encoding)
+
+        name_english_length = struct.unpack('<I', f.read(4))[0]
+        self.name_english = f.read(name_english_length).decode(self.encoding)
+
+        self.diffuse = struct.unpack('<ffff', f.read(16))
+        self.specular = struct.unpack('<fff', f.read(12))
+        self.specular_coefficient = struct.unpack('<f', f.read(4))[0]
+        self.ambient = struct.unpack('<fff', f.read(12))
+        self.draw_flag = struct.unpack('<B', f.read(1))[0]
+        self.edge_color = struct.unpack('<ffff', f.read(16))
+        self.edge_size = struct.unpack('<f', f.read(4))[0]
+
+        texture_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.texture_index_size]
+        self.texture_index = struct.unpack(texture_index_format, f.read(self.texture_index_size))[0]
+        self.sphere_texture_index = struct.unpack(texture_index_format, f.read(self.texture_index_size))[0]
+
+        self.sphere_mode = struct.unpack('<B', f.read(1))[0]
+        self.shared_toon_flag = struct.unpack('<B', f.read(1))[0]
+
+        if self.shared_toon_flag == 0:
+            self.toon_texture_index = struct.unpack(texture_index_format, f.read(self.texture_index_size))[0]
+        else:
+            self.toon_texture_index = struct.unpack('<B', f.read(1))[0]
+
+        memo_length = struct.unpack('<I', f.read(4))[0]
+        self.memo = f.read(memo_length).decode(self.encoding)
+
+        self.face_count = struct.unpack('<I', f.read(4))[0]

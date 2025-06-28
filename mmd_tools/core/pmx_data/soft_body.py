@@ -1,0 +1,35 @@
+import struct
+
+class PmxSoftBody:
+    """
+    PMXファイルのSoftBodyデータを保持するクラス (PMX 2.1以降)。
+    現在、このクラスはプレースホルダーであり、詳細な解析は実装されていません。
+    """
+    def __init__(self, encoding):
+        self.name = ''
+        self.name_english = ''
+        self.encoding = encoding
+        # TODO: Implement detailed SoftBody parsing based on PMX 2.1 specification
+
+    def parse(self, f):
+        """
+        ファイルハンドルからPMX SoftBodyデータを解析し、自身の属性に格納する。
+
+        Args:
+            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
+        """
+        # Placeholder for SoftBody parsing
+        # This section needs to be implemented according to the full PMX 2.1 specification.
+        # For now, it just reads the name lengths and skips the data.
+        name_length = struct.unpack('<I', f.read(4))[0]
+        self.name = f.read(name_length).decode(self.encoding)
+
+        name_english_length = struct.unpack('<I', f.read(4))[0]
+        self.name_english = f.read(name_english_length).decode(self.encoding)
+
+        # Skip the rest of the SoftBody data for now
+        # This needs to be replaced with actual parsing logic
+        # based on the PMX 2.1 specification for SoftBody.
+        # For example, reading shape type, material index, group, collision flags, etc.
+        # For demonstration, let's assume a fixed size for now, but this is incorrect.
+        # f.read(some_fixed_size_for_softbody_data)

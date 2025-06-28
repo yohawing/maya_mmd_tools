@@ -1,27 +1,46 @@
-from ..exceptions import MMDParseException
+import struct
+from mmd_tools.core import utils
 
 class PmxDisplayFrame:
-    """PMXファイルの表示枠データを保持するクラス。"""
-    def __init__(self):
-        self.name_jp = ''
-        self.name_en = ''
+    """
+    PMXファイルの表示枠データを保持するクラス。
+    """
+    def __init__(self, bone_index_size, morph_index_size, encoding):
+        self.bone_index_size = bone_index_size
+        self.morph_index_size = morph_index_size
+        self.encoding = encoding
+        self.name = ''
+        self.name_english = ''
         self.special_flag = 0
-        self.elements = [] # List of (index, type_flag)
+        self.elements = []
 
-    def parse(self, file_handle, header):
+    def parse(self, f):
         """
         ファイルハンドルからPMX表示枠データを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-            header (PmxHeader): PMXヘッダ情報（ボーン/モーフインデックスサイズなどに使用）。
-
-        Raises:
-            MMDParseException: 表示枠データの解析に失敗した場合。
+            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        # TODO: PMX表示枠データのバイナリ解析ロジックを実装する。
-        # Name JP (variable length string), Name EN (variable length string)
-        # Special Flag (1 byte)
-        # Number of Elements (int)
-        # For each element: Index (variable size), Type Flag (1 byte)
-        pass
+        name_length = struct.unpack('<I', f.read(4))[0]
+        self.name = f.read(name_length).decode(self.encoding)
+
+        name_english_length = struct.unpack('<I', f.read(4))[0]
+        self.name_english = f.read(name_english_length).decode(self.encoding)
+
+        self.special_flag = struct.unpack('<B', f.read(1))[0]
+
+        element_count = struct.unpack('<I', f.read(4))[0]
+
+        bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
+        morph_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.morph_index_size]
+
+        for _ in range(element_count):
+            element_type = struct.unpack('<B', f.read(1))[0]
+            index = -1
+            if element_type == 0: # Bone
+                index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
+            elif element_type == 1: # Morph
+                index = struct.unpack(morph_index_format, f.read(self.morph_index_size))[0]
+            else:
+                raise ValueError(f"Unknown display frame element type: {element_type}")
+            self.elements.append({'type': element_type, 'index': index})

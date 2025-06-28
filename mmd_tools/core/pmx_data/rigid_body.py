@@ -1,37 +1,54 @@
-from ..exceptions import MMDParseException
+import struct
+from mmd_tools.core import utils
 
 class PmxRigidBody:
-    """PMXファイルの剛体データを保持するクラス。"""
-    def __init__(self):
-        self.name_jp = ''
-        self.name_en = ''
-        self.bone_index = -1
-        self.collision_group = 0
+    """
+    PMXファイルの剛体データを保持するクラス。
+    """
+    def __init__(self, bone_index_size, encoding):
+        self.bone_index_size = bone_index_size
+        self.encoding = encoding
+        self.name = ''
+        self.name_english = ''
+        self.related_bone_index = -1
+        self.group = 0
         self.collision_mask = 0
-        self.shape_type = 0
+        self.shape_type = 0 # 0: Sphere, 1: Box, 2: Capsule
         self.size = (0.0, 0.0, 0.0)
         self.position = (0.0, 0.0, 0.0)
-        self.rotation = (0.0, 0.0, 0.0)
+        self.rotation = (0.0, 0.0, 0.0) # Euler angles
         self.mass = 0.0
-        self.friction = 0.0
-        self.elasticity = 0.0
-        self.physics_mode = 0
+        self.velocity_attenuation = 0.0 # 移動減衰
+        self.rotation_attenuation = 0.0 # 回転減衰
+        self.elasticity = 0.0 # 反発力
+        self.friction = 0.0 # 摩擦力
+        self.physics_mode = 0 # 0: ボーン追従, 1: 物理演算, 2: 物理+位置合わせ
 
-    def parse(self, file_handle, header):
+    def parse(self, f):
         """
         ファイルハンドルからPMX剛体データを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-            header (PmxHeader): PMXヘッダ情報（ボーンインデックスサイズなどに使用）。
-
-        Raises:
-            MMDParseException: 剛体データの解析に失敗した場合。
+            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        # TODO: PMX剛体データのバイナリ解析ロジックを実装する。
-        # Name JP (variable length string), Name EN (variable length string)
-        # Bone Index (variable size)
-        # Collision Group (1 byte), Collision Mask (2 bytes)
-        # Shape Type (1 byte), Size (3 floats), Position (3 floats), Rotation (3 floats)
-        # Mass (1 float), Friction (1 float), Elasticity (1 float), Physics Mode (1 byte)
-        pass
+        name_length = struct.unpack('<I', f.read(4))[0]
+        self.name = f.read(name_length).decode(self.encoding)
+
+        name_english_length = struct.unpack('<I', f.read(4))[0]
+        self.name_english = f.read(name_english_length).decode(self.encoding)
+
+        bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
+        self.related_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
+
+        self.group = struct.unpack('<B', f.read(1))[0]
+        self.collision_mask = struct.unpack('<H', f.read(2))[0]
+        self.shape_type = struct.unpack('<B', f.read(1))[0]
+        self.size = struct.unpack('<fff', f.read(12))
+        self.position = struct.unpack('<fff', f.read(12))
+        self.rotation = struct.unpack('<fff', f.read(12))
+        self.mass = struct.unpack('<f', f.read(4))[0]
+        self.velocity_attenuation = struct.unpack('<f', f.read(4))[0]
+        self.rotation_attenuation = struct.unpack('<f', f.read(4))[0]
+        self.elasticity = struct.unpack('<f', f.read(4))[0]
+        self.friction = struct.unpack('<f', f.read(4))[0]
+        self.physics_mode = struct.unpack('<B', f.read(1))[0]
