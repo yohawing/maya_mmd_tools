@@ -95,7 +95,7 @@
 - **ボーン:** Mayaの`joint`にマッピング。親子関係、IK設定を再現。
 - **メッシュ:** Mayaの`mesh`にマッピング。`skinCluster`でスキニング。
 - **モーフ:** Mayaの`blendShape`にマッピング。
-- **物理演算:** Mayaの`rigidBody`と`constraint`にマッピング（将来的にはBullet Physics等を利用）。
+- **物理演算:** Mayaの`rigidBody`と`constraint`にマッピング。
 
 ## テスト計画
 
@@ -144,4 +144,4 @@
 
 - [mmdpaimaya](https://github.com/phyblas/mmdpaimaya/tree/master)
 - [blender_mmd_tools](https://github.com/MMD-Blender/blender_mmd_tools)
-- PMXフォーマット仕様書など
+- [PMXフォーマット仕様書](https://gist.github.com/felixjones/f8a06bd48f9da9a4539f)
