@@ -19,8 +19,8 @@ def mmd_tools_setup():
     if not cmds.menu('MMDToolsMenu', exists=True):
         gMainWindow = mel.eval('$temp1 = $gMainWindow')
         cmds.menu('MMDToolsMenu', parent=gMainWindow, tearOff=True, label='MMD Tools')
-        cmds.menuItem('MMDTools_Import', parent='MMDToolsMenu', label='Import MMD Model', command='import maya_mmd_tools.src.io.mmd_importer as mmd_importer; mmd_importer.import_mmd_file("dummy_path.pmx")') # Placeholder command
-        cmds.menuItem('MMDTools_Export', parent='MMDToolsMenu', label='Export MMD Model', command='import maya_mmd_tools.src.io.pmx_exporter as pmx_exporter; pmx_exporter.export_pmx_file("dummy_path.pmx", None)') # Placeholder command
+        cmds.menuItem('MMDTools_Import', parent='MMDToolsMenu', label='Import MMD Model', command='import maya_mmd_tools.mmd_tools.io.mmd_importer as mmd_importer; mmd_importer.import_mmd_file("dummy_path.pmx")') # Placeholder command
+        cmds.menuItem('MMDTools_Export', parent='MMDToolsMenu', label='Export MMD Model', command='import maya_mmd_tools.mmd_tools.io.pmx_exporter as pmx_exporter; pmx_exporter.export_pmx_file("dummy_path.pmx", None)') # Placeholder command
 
     print("MMD Tools: userSetup initialized.")
 

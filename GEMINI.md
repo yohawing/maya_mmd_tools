@@ -21,7 +21,7 @@
 F:/Develop/maya_mmd_tools/
 ├── maya_mmd_tools.mod
 ├── userSetup.py
-├── src/
+├── mmd_tools/
 │   ├── __init__.py
 │   ├── plugin_main.py
 │   ├── ui.py
@@ -86,9 +86,15 @@ F:/Develop/maya_mmd_tools/
 │   ├── common/
 │   │   ├── __init__.py
 │   │   └── test_base.py
-│   └── unit/
+│   ├── unit/
+│   │   ├── __init__.py
+│   │   ├── test_mmd_parser.py
+│   │   ├── test_pmd_parser.py
+│   │   ├── test_pmx_parser.py
+│   │   ├── test_vmd_parser.py
+│   └── integration/
 │       ├── __init__.py
-│       ├── test_mmd_parser.py
+│       ├── test_ui.py
 │       ├── test_mesh_converter.py
 │       ├── test_bone_converter.py
 │       ├── test_morph_converter.py
@@ -96,30 +102,28 @@ F:/Develop/maya_mmd_tools/
 │       ├── test_animation_converter.py
 │       ├── test_pmd_exporter.py
 │       ├── test_pmx_exporter.py
-│       └── test_vmd_exporter.py
+│       ├── test_vmd_exporter.py
 └── docs/
     ├── design.md
     ├── testing.md
     └── project_management.md
 ```
 
-## Maya モジュールファイル (.mod) について
+## ファイルの補足説明
 
 `maya_mmd_tools.mod` ファイルは、Maya がこのプラグインを認識し、必要なパスを設定するために使用されます。このファイルを Maya の `modules` ディレクトリに配置することで、プラグインのロードが容易になります。
 
-## userSetup.py について
-
 `userSetup.py` ファイルは、Maya の起動時に自動的に実行され、カスタムメニューの追加やプラグインの初期設定を行うために使用されます。このファイルを Maya の `scripts` ディレクトリに配置することで、Maya 起動時に「MMD Tools」メニューが自動的に追加されます。
-
-## README.mdについて
 
 プロジェクトの概要、セットアップ、使用方法、開発に関する情報などをまとめた`README.md`ファイルがプロジェクトルートにあります。このファイルは、プロジェクトの全体像を把握するために重要です。
 
 
 ## ドキュメンティング
 
-作成した機能は`docs`ディレクトリにドキュメントとして、内容をMarkdownとして保存してください。
+`docs`ディレクトリ内にドキュメントをMarkdownで残してください。
+また、各スクリプトファイルの冒頭に、ファイルの目的や使用方法を簡潔に記述してください。
 機能に変更があった場合も、該当のファイルを編集してください。
+** ドキュメントの見出しに数字をつけないでください。** セクションを入れ替えやすくするためです。
 
 ## プロジェクトマネージメント
 
@@ -127,12 +131,25 @@ F:/Develop/maya_mmd_tools/
 
 ## テスト
 
-- テストは、`tests`ディレクトリに配置されます。
-- ユニットテストは、`tests/unit`ディレクトリに配置
-- 共通のテストロジックは、`tests/common`ディレクトリに配置
-- テストの実行は、`tests/run_tests.py`を使用
-- テストは、Mayaの環境で実行する必要があるため、`mayapy.exe`を使用して実行します。
-- テストの実行方法は、`docs/testing.md`に記載されています。
+テストについて詳しくは、`docs/testing.md`に記載されています。
+テスト関連のコードや処理をする場合は必ず参照してください。
+
+テストは、ユニットテストと統合テストの2つのレベルで実施します。
+
+実行方法は以下です。
+```
+// run all unit test
+python tests/run_tests.py --type unit
+// unit test for specific test case
+python tests/run_tests.py --test test_pmd_parser.TestPmdParser
+
+// integration test
+"c:\Program Files\Autodesk\Maya2024\bin\mayapy.exe" tests/run_tests.py --type integration
+// integration test for specific test case
+"c:\Program Files\Autodesk\Maya2024\bin\mayapy.exe" tests/run_tests.py --test test_mmd_parser.TestMmdParser
+```
+
+
 
 ## コーディング
 
@@ -143,10 +160,10 @@ F:/Develop/maya_mmd_tools/
 - docstringを使用して、関数やクラスの目的、引数、戻り値を明確に記述してください。
 - 例外処理を適切に行い、エラーが発生した場合はユーザーにわかりやすいメッセージを表示してください。
 - 外部モジュールを追加したくないので、ライブラリは標準のものをなるべく使用してください。
-- 1つのファイルが長すぎる場合は、機能ごとに分割してください。
+- 1つのファイルが長すぎる場合は、機能ごとにファイルを分割してください。
 - 基本的に１つのファイルに複数のクラスを作るのは避けてください。
 
 ## 参考サイト
 
-[mmdpaimaya](https://github.com/phyblas/mmdpaimaya/tree/master)
-[blender_mmd_tools](https://github.com/MMD-Blender/blender_mmd_tools)
+- [mmdpaimaya](https://github.com/phyblas/mmdpaimaya/tree/master)
+- [blender_mmd_tools](https://github.com/MMD-Blender/blender_mmd_tools)

@@ -4,7 +4,7 @@ import sys
 import tempfile
 import shutil
 
-# Add the project root to sys.path to allow importing src modules
+# Add the project root to sys.path to allow importing mmd_tools modules
 # This assumes tests are run from the project root or a level below
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if project_root not in sys.path:

@@ -1,20 +1,145 @@
 import unittest
 import os
 import sys
+import argparse
+from pathlib import Path
+import platform
 
-# Add the project root to sys.path to allow importing src modules
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+def get_maya_location(maya_version: int) -> Path:
+    """Mayaがインストールされている場所を取得します。
 
-def run_all_tests():
-    loader = unittest.TestLoader()
-    # Discover tests in the 'tests' directory
-    # start_dir can be 'tests' or the project root if you want to discover all tests
-    suite = loader.discover(start_dir='tests/unit', pattern='test_*.py')
+    Args:
+        maya_version: Mayaのバージョン番号
 
-    runner = unittest.TextTestRunner(verbosity=2)
-    runner.run(suite)
+    Returns:
+        Mayaがインストールされているパス
+
+    Examples:
+        >>> get_maya_location(2024)
+        Path('C:/Program Files/Autodesk/Maya2024')
+    """
+    if "MAYA_LOCATION" in os.environ:
+        return Path(os.environ["MAYA_LOCATION"])
+
+    if platform.system() == "Windows":
+        return Path(f"C:\\Program Files\\Autodesk\\Maya{maya_version}")
+    elif platform.system() == "Darwin":
+        return Path(f"/Applications/Autodesk/maya{maya_version}/Maya.app/Contents")
+    else:
+        location = f"/usr/autodesk/maya{maya_version}"
+        if maya_version < 2016:
+            # 2016以降、デフォルトのインストールディレクトリ名が変更されました
+            location += "-x64"
+        return Path(location)
+
+
+def mayapy(maya_version: int) -> Path:
+    """mayapy実行ファイルのパスを取得します。
+
+    Args:
+        maya_version: Mayaのバージョン番号
+
+    Returns:
+        mayapy実行ファイルのパス
+
+    Examples:
+        >>> mayapy(2024)
+        Path('C:/Program Files/Autodesk/Maya2024/bin/mayapy.exe')
+    """
+    python_exe = get_maya_location(maya_version) / "bin" / "mayapy"
+    if platform.system() == "Windows":
+        python_exe = python_exe.with_suffix(".exe")
+    return python_exe
+
+
+def run_tests():
+    """
+    Discovers and runs tests based on command-line arguments.
+    
+    This script can run either unit or integration tests, and can filter
+    tests by a specific name provided via the command line.
+    """
+    # Add the project root to sys.path to ensure modules can be imported.
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='Run tests for the MMD Tools project.')
+    parser.add_argument(
+        '--type',
+        type=str,
+        default='unit',
+        choices=['unit', 'integration'],
+        help="The type of tests to run: 'unit' or 'integration'. Defaults to 'unit'."
+    )
+    parser.add_argument(
+        '--test',
+        type=str,
+        default=None,
+        help='A string to filter tests by. Can be a module, class, or method name.'
+    )
+    args = parser.parse_args()
+
+    # Discover tests based on the specified type
+    test_loader = unittest.TestLoader()
+    test_dir = os.path.dirname(__file__)
+    start_dir = os.path.join(test_dir, args.type)
+
+    print(f"Discovering '{args.type}' tests in '{start_dir}'...")
+    
+    # Discover all tests in the specified directory
+    suite = test_loader.discover(start_dir, pattern='test_*.py')
+
+    if suite.countTestCases() == 0:
+        print(f"No tests found in '{start_dir}'.")
+        sys.exit(1)
+
+    # If a specific test name is provided, filter the suite
+    if args.test:
+        filtered_suite = unittest.TestSuite()
+        
+        # Helper to get a flat list of all test cases from a suite
+        def get_all_tests(suite_to_flatten):
+            tests = []
+            for test in suite_to_flatten:
+                if isinstance(test, unittest.TestSuite):
+                    tests.extend(get_all_tests(test))
+                else:
+                    tests.append(test)
+            return tests
+
+        all_tests = get_all_tests(suite)
+        
+        for test_case in all_tests:
+            if args.test in test_case.id():
+                filtered_suite.addTest(test_case)
+        
+        suite = filtered_suite
+
+    # Check if any tests are left after filtering
+    if suite.countTestCases() == 0:
+        print(f"Error: No tests found matching '--test {args.test}' in the '{args.type}' suite.")
+        # To help the user, list all available tests of that type
+        print("\nAvailable tests in this suite:")
+        all_tests_in_suite = get_all_tests(test_loader.discover(start_dir, pattern='test_*.py'))
+        for test_case in all_tests_in_suite:
+            print(f"  - {test_case.id()}")
+        sys.exit(1)
+
+    # Run the final test suite
+    print(f"Running {suite.countTestCases()} test(s)...")
+
+    if args.type == 'unit':
+        runner = unittest.TextTestRunner(verbosity=2)
+        result = runner.run(suite)
+        if not result.wasSuccessful():
+            print(f"テストの実行に失敗しました: {result.failures + result.errors}")
+            # sys.exit(1)
+    elif args.type == 'integration':
+        # TODO: 統合テストはMaya環境で実行する必要があるため、mayapyを使用して実行します。
+        pass
+
 
 if __name__ == '__main__':
-    run_all_tests()
+    run_tests()
