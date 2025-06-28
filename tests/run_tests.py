@@ -134,7 +134,12 @@ def run_tests():
         runner = unittest.TextTestRunner(verbosity=2)
         result = runner.run(suite)
         if not result.wasSuccessful():
-            print(f"テストの実行に失敗しました: {result.failures + result.errors}")
+            print(f"テストの実行に失敗しました。")
+            print("失敗したテスト:")
+            for test, reason in result.failures + result.errors:
+                print(f"  {test.id()}: {reason}")
+            print("テストの失敗数:", len(result.failures))
+            print("テストのエラー数:", len(result.errors))
             # sys.exit(1)
     elif args.type == 'integration':
         # TODO: 統合テストはMaya環境で実行する必要があるため、mayapyを使用して実行します。

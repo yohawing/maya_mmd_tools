@@ -1,4 +1,5 @@
 import struct
+from mmd_tools.core import utils
 
 class PmdHeader:
     """PMDファイルのヘッダ情報を保持するクラス。"""
@@ -21,8 +22,8 @@ class PmdHeader:
         if self.magic != b'Pmd':
             raise ValueError("Not a valid PMD file.")
         self.version = struct.unpack('<f', f.read(4))[0]
-        self.model_name = f.read(20).decode('cp932').strip('\x00')
-        self.comment = f.read(256).decode('cp932').strip('\x00')
+        self.model_name = utils.decodePMDString(f.read(20))
+        self.comment = utils.decodePMDString(f.read(256))
 
     def parse_english(self, f):
         """
@@ -31,5 +32,5 @@ class PmdHeader:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        self.english_model_name = f.read(20).decode('shift_jis').strip('\x00')
-        self.english_comment = f.read(256).decode('cp932').strip('\x00')
+        self.english_model_name = utils.decodePMDString(f.read(20))
+        self.english_comment = utils.decodePMDString(f.read(256))

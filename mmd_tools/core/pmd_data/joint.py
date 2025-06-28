@@ -1,4 +1,5 @@
 import struct
+from mmd_tools.core import utils
 
 class PmdJoint:
     """PMDファイルのジョイントデータを保持するクラス。"""
@@ -22,7 +23,7 @@ class PmdJoint:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        self.name = f.read(20).decode('cp932').strip('\x00')
+        self.name = utils.decodePMDString(f.read(20))
         self.rigid_body_index_a = struct.unpack('<I', f.read(4))[0]
         self.rigid_body_index_b = struct.unpack('<I', f.read(4))[0]
         self.position = struct.unpack('<fff', f.read(12))

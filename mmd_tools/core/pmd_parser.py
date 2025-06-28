@@ -1,6 +1,8 @@
 import os
 import struct
 
+from mmd_tools.core import utils
+
 from .exceptions import MMDParseException
 from .pmd_data.header import PmdHeader
 from .pmd_data.vertex import PmdVertex
@@ -24,7 +26,7 @@ class PmdParser:
         self.bones = []
         self.ik_data = []
         self.morphs = []
-        self.display_frames = []
+        self.display_frames = None
         self.rigid_bodies = []
         self.joints = []
 
@@ -88,52 +90,64 @@ class PmdParser:
                     self.morphs.append(morph)
 
                 # Display Frame
-                display_frame_count = struct.unpack('<B', f.read(1))[0]
-                for _ in range(display_frame_count):
-                    frame = PmdDisplayFrame()
-                    frame.parse(f)
-                    self.display_frames.append(frame)
+                self.display_frame = PmdDisplayFrame()
+                self.display_frame.parse(f)
+                # display_frame_count = struct.unpack('<B', f.read(1))[0]
+                # for _ in range(display_frame_count):
+                #     frame = PmdDisplayFrame()
+                #     frame.parse(f)
+                #     self.display_frames.append(frame)
 
-                # English Header
-                has_english_header = struct.unpack('<B', f.read(1))[0]
-                if has_english_header:
-                    self.header.parse_english(f)
 
-                # English Bone Names
-                if has_english_header:
-                    for bone in self.bones:
-                        bone.parse_english(f)
+                # この先はPMDファイルの拡張データを解析する部分です。
+                # 拡張データがない場合はここで処理を終了します。
 
-                # English Morph Names
-                if has_english_header:
-                    for morph in self.morphs:
-                        morph.parse_english(f)
+                try:
 
-                # English Display Frame Names
-                if has_english_header:
-                    for frame in self.display_frames:
-                        frame.parse_english(f)
+                    # English Header
+                    has_english_header = struct.unpack('<B', f.read(1))[0]
+                    if has_english_header:
+                        self.header.parse_english(f)
 
-                # Toon Textures
-                toon_texture_count = 10
-                toon_textures = []
-                for _ in range(toon_texture_count):
-                    toon_textures.append(f.read(100).decode('shift_jis').strip('\x00'))
-                # This part of the data is not stored in a specific class yet.
-                # It might be better to store it in the material data.
+                    # English Bone Names
+                    if has_english_header:
+                        for bone in self.bones:
+                            bone.parse_english(f)
 
-                # Physics
-                rigid_body_count = struct.unpack('<I', f.read(4))[0]
-                for _ in range(rigid_body_count):
-                    rigid_body = PmdRigidBody()
-                    rigid_body.parse(f)
-                    self.rigid_bodies.append(rigid_body)
+                    # English Morph Names
+                    if has_english_header:
+                        for morph in self.morphs:
+                            morph.parse_english(f)
 
-                joint_count = struct.unpack('<I', f.read(4))[0]
-                for _ in range(joint_count):
-                    joint = PmdJoint()
-                    joint.parse(f)
-                    self.joints.append(joint)
+                    # English Display Frame Names
+                    if has_english_header:
+                        self.display_frame.parse_english(f)
+
+                    # Toon Textures
+                    toon_texture_count = 10
+                    toon_textures = []
+                    for _ in range(toon_texture_count):
+                        toon_texture_name = utils.decodePMDString(f.read(100))
+                        toon_texture_name = toon_texture_name.replace("\\", os.path.sep)
+                        toon_textures.append(toon_texture_name)
+                    # This part of the data is not stored in a specific class yet.
+                    # It might be better to store it in the material data.
+
+                    # Physics
+                    rigid_body_count = struct.unpack('<I', f.read(4))[0]
+                    for _ in range(rigid_body_count):
+                        rigid_body = PmdRigidBody()
+                        rigid_body.parse(f)
+                        self.rigid_bodies.append(rigid_body)
+
+                    joint_count = struct.unpack('<I', f.read(4))[0]
+                    for _ in range(joint_count):
+                        joint = PmdJoint()
+                        joint.parse(f)
+                        self.joints.append(joint)
+
+                except Exception:
+                    return
 
             except struct.error as e:
                 raise MMDParseException(f"Failed to parse PMD file: {file_path}") from e

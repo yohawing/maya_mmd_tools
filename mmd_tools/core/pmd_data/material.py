@@ -1,4 +1,5 @@
 import struct
+from mmd_tools.core import utils
 
 class PmdMaterial:
     """PMDファイルの材質データを保持するクラス。"""
@@ -26,4 +27,4 @@ class PmdMaterial:
         self.toon_index = struct.unpack('<B', f.read(1))[0]
         self.edge_flag = struct.unpack('<B', f.read(1))[0]
         self.face_count = struct.unpack('<I', f.read(4))[0]
-        self.texture_file_name = f.read(20).decode('cp932').strip('\x00')
+        self.texture_file_name = utils.decodePMDString(f.read(20))

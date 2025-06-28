@@ -1,4 +1,5 @@
 import struct
+import mmd_tools.core.utils as utils
 
 class PmdMorph:
     """PMDファイルのモーフデータを保持するクラス。"""
@@ -16,13 +17,18 @@ class PmdMorph:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        self.name = f.read(20).decode('cp932').strip('\x00')
+        self.name = utils.decodePMDString(f.read(20))
         self.num_vertices = struct.unpack('<I', f.read(4))[0]
         self.morph_type = struct.unpack('<B', f.read(1))[0]
 
-        for _ in range(self.num_vertices):
+        for i in range(self.num_vertices):
             vertex_index = struct.unpack('<I', f.read(4))[0]
-            position_offset = struct.unpack('<fff', f.read(12))
+
+            # ファイルの末尾に到達して12バイト読み取れない
+            position_offset_data = f.read(12)
+            if len(position_offset_data) < 12:
+                raise ValueError(f"Invalid morph vertex data length on index {i}/{self.num_vertices}")
+            position_offset = struct.unpack('<fff', position_offset_data)
             self.vertices.append((vertex_index, position_offset))
 
     def parse_english(self, f):
@@ -32,4 +38,4 @@ class PmdMorph:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        self.english_name = f.read(20).decode('cp932').strip('\x00')
+        self.english_name = utils.decodeCp932String(f.read(20))
