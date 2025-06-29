@@ -1,5 +1,17 @@
 # Utility関数
 
+import struct
+
+
+def parsePMXString(f, encoding = "utf-16-le"):
+    """PMX形式の文字列をファイルから読み込み、通常の文字列に変換します。"""
+    length, = struct.unpack("<i", f.read(4))
+    if length == 0:
+        return ""
+    buf, = struct.unpack("<%ds" % length, f.read(length))
+    # return buf.decode(encoding)
+    return str(buf, encoding, errors="replace")
+
 def decodePMDString(byteString):
     """PMD形式のバイト文字列を通常の文字列に変換します。
     文字列は最初のヌル文字で終了します。"""

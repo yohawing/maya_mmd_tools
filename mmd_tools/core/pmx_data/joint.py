@@ -1,13 +1,18 @@
-from ..exceptions import MMDParseException
+import struct
+from mmd_tools.core import utils
 
 class PmxJoint:
-    """PMXファイルのジョイントデータを保持するクラス。"""
-    def __init__(self):
-        self.name_jp = ''
-        self.name_en = ''
+    """
+    PMXファイルのJointデータを保持するクラス。
+    """
+    def __init__(self, rigid_body_index_size, encoding):
+        self.rigid_body_index_size = rigid_body_index_size
+        self.encoding = encoding
+        self.name = ''
+        self.name_english = ''
         self.joint_type = 0
-        self.rigid_body_index_a = -1
-        self.rigid_body_index_b = -1
+        self.rigid_body_a_index = -1
+        self.rigid_body_b_index = -1
         self.position = (0.0, 0.0, 0.0)
         self.rotation = (0.0, 0.0, 0.0)
         self.translation_limit_min = (0.0, 0.0, 0.0)
@@ -17,23 +22,30 @@ class PmxJoint:
         self.spring_translation = (0.0, 0.0, 0.0)
         self.spring_rotation = (0.0, 0.0, 0.0)
 
-    def parse(self, file_handle, header):
+    def parse(self, f):
         """
-        ファイルハンドルからPMXジョイントデータを解析し、自身の属性に格納する。
+        ファイルハンドルからPMX Jointデータを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-            header (PmxHeader): PMXヘッダ情報（剛体インデックスサイズなどに使用）。
-
-        Raises:
-            MMDParseException: ジョイントデータの解析に失敗した場合。
+            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        # TODO: PMXジョイントデータのバイナリ解析ロジックを実装する。
-        # Name JP (variable length string), Name EN (variable length string)
-        # Joint Type (1 byte)
-        # Rigid Body Index A (variable size), Rigid Body Index B (variable size)
-        # Position (3 floats), Rotation (3 floats)
-        # Translation Limit Min (3 floats), Translation Limit Max (3 floats)
-        # Rotation Limit Min (3 floats), Rotation Limit Max (3 floats)
-        # Spring Translation (3 floats), Spring Rotation (3 floats)
-        pass
+        name_length = struct.unpack('<I', f.read(4))[0]
+        self.name = f.read(name_length).decode(self.encoding)
+
+        name_english_length = struct.unpack('<I', f.read(4))[0]
+        self.name_english = f.read(name_english_length).decode(self.encoding)
+
+        self.joint_type = struct.unpack('<B', f.read(1))[0]
+
+        rigid_body_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.rigid_body_index_size]
+        self.rigid_body_a_index = struct.unpack(rigid_body_index_format, f.read(self.rigid_body_index_size))[0]
+        self.rigid_body_b_index = struct.unpack(rigid_body_index_format, f.read(self.rigid_body_index_size))[0]
+
+        self.position = struct.unpack('<fff', f.read(12))
+        self.rotation = struct.unpack('<fff', f.read(12))
+        self.translation_limit_min = struct.unpack('<fff', f.read(12))
+        self.translation_limit_max = struct.unpack('<fff', f.read(12))
+        self.rotation_limit_min = struct.unpack('<fff', f.read(12))
+        self.rotation_limit_max = struct.unpack('<fff', f.read(12))
+        self.spring_translation = struct.unpack('<fff', f.read(12))
+        self.spring_rotation = struct.unpack('<fff', f.read(12))

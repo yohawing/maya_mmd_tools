@@ -1,31 +1,75 @@
-from ..exceptions import MMDParseException
+import struct
+from mmd_tools.core.exceptions import MMDParseException
 
 class PmxVertex:
-    """PMXファイルの頂点データを保持するクラス。"""
-    def __init__(self):
+    """
+    PMXファイルの頂点データを保持するクラス。
+    """
+    def __init__(self, header):
+        self.header = header
         self.position = (0.0, 0.0, 0.0)
         self.normal = (0.0, 0.0, 0.0)
         self.uv = (0.0, 0.0)
-        self.additional_uvs = [] # List of (u, v, w, x) tuples
+        self.additional_uvs = []
+        self.weight_transform_type = 0
         self.bone_indices = []
         self.bone_weights = []
-        self.edge_scale = 0.0
+        self.sdef_c = (0.0, 0.0, 0.0)
+        self.sdef_r0 = (0.0, 0.0, 0.0)
+        self.sdef_r1 = (0.0, 0.0, 0.0)
+        self.edge_magnification = 0.0
 
-    def parse(self, file_handle, header):
+    def parse(self, f):
         """
         ファイルハンドルからPMX頂点データを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-            header (PmxHeader): PMXヘッダ情報（インデックスサイズなどに使用）。
+            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
 
         Raises:
             MMDParseException: 頂点データの解析に失敗した場合。
         """
-        # TODO: PMX頂点データのバイナリ解析ロジックを実装する。
-        # Position (3 floats), Normal (3 floats), UV (2 floats)
-        # Additional UVs (num_uv_sets * 4 floats)
-        # Bone indices (variable size, based on header.bone_index_size)
-        # Bone weights (variable size, based on vertex type)
-        # Edge Scale (1 float)
-        pass
+        try:
+            self.position = struct.unpack('<fff', f.read(12))
+            self.normal = struct.unpack('<fff', f.read(12))
+            self.uv = struct.unpack('<ff', f.read(8))
+
+            # Additional UVs
+            for _ in range(self.header.additional_uv):
+                self.additional_uvs.append(struct.unpack('<ffff', f.read(16)))
+
+            self.weight_transform_type = struct.unpack('<B', f.read(1))[0]
+
+            bone_index_format = {1: '<B', 2: '<H', 4: '<I'}[self.header.bone_index_size]
+
+            if self.weight_transform_type == 0:  # BDEF1
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+            elif self.weight_transform_type == 1:  # BDEF2
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                self.bone_weights.append(struct.unpack('<f', f.read(4))[0])
+            elif self.weight_transform_type == 2:  # BDEF4
+                for _ in range(4):
+                    self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                for _ in range(4):
+                    self.bone_weights.append(struct.unpack('<f', f.read(4))[0])
+            elif self.weight_transform_type == 3:  # SDEF
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                self.bone_weights.append(struct.unpack('<f', f.read(4))[0])
+                self.sdef_c = struct.unpack('<fff', f.read(12))
+                self.sdef_r0 = struct.unpack('<fff', f.read(12))
+                self.sdef_r1 = struct.unpack('<fff', f.read(12))
+            elif self.weight_transform_type == 4:  # QDEF (PMX 2.1 only)
+                if self.header.version < 2.1:
+                    raise ValueError("QDEF weight transform type is only supported in PMX 2.1 and later.")
+                for _ in range(4):
+                    self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                for _ in range(4):
+                    self.bone_weights.append(struct.unpack('<f', f.read(4))[0])
+            else:
+                raise ValueError(f"Unknown weight transform type: {self.weight_transform_type}")
+
+            self.edge_magnification = struct.unpack('<f', f.read(4))[0]
+        except struct.error as e:
+            raise MMDParseException(f"Failed to parse PMX vertex data: {e}") from e

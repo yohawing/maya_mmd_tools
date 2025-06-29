@@ -1,41 +1,85 @@
-from ..exceptions import MMDParseException
+import struct
+from mmd_tools.core import utils
+from mmd_tools.core.pmx_data.ik_link import PmxIKLink
 
 class PmxBone:
-    """PMXファイルのボーンデータを保持するクラス。"""
-    def __init__(self):
-        self.name_jp = ''
-        self.name_en = ''
+    """
+    PMXファイルのボーンデータを保持するクラス。
+    """
+    def __init__(self, bone_index_size, encoding):
+        self.bone_index_size = bone_index_size
+        self.encoding = encoding
+        self.name = ''
+        self.name_english = ''
         self.position = (0.0, 0.0, 0.0)
         self.parent_bone_index = -1
-        self.deform_level = 0
-        self.bone_flags = 0
-        self.tail_position_offset = (0.0, 0.0, 0.0)
-        self.fixed_axis = (0.0, 0.0, 0.0)
-        self.local_axis_x = (0.0, 0.0, 0.0)
-        self.local_axis_z = (0.0, 0.0, 0.0)
-        self.external_parent_bone_index = -1
-        self.ik_data = None # PmxIK object
+        self.transform_layer = 0
+        self.bone_flag = 0
 
-    def parse(self, file_handle, header):
+        # Flag-dependent data
+        self.connect_bone_index = -1
+        self.connect_position_offset = (0.0, 0.0, 0.0)
+        self.given_parent_bone_index = -1
+        self.given_rate = 0.0
+        self.axis_direction = (0.0, 0.0, 0.0)
+        self.x_axis_direction = (0.0, 0.0, 0.0)
+        self.z_axis_direction = (0.0, 0.0, 0.0)
+        self.key_value = 0
+        self.ik_target_bone_index = -1
+        self.ik_loop_count = 0
+        self.ik_limit_angle = 0.0
+        self.ik_links = []
+
+    def parse(self, f):
         """
         ファイルハンドルからPMXボーンデータを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-            header (PmxHeader): PMXヘッダ情報（ボーンインデックスサイズなどに使用）。
-
-        Raises:
-            MMDParseException: ボーンデータの解析に失敗した場合。
+            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        # TODO: PMXボーンデータのバイナリ解析ロジックを実装する。
-        # Name JP (variable length string), Name EN (variable length string)
-        # Position (3 floats)
-        # Parent Bone Index (variable size), Deform Level (int)
-        # Bone Flags (2 bytes)
-        # Depending on Bone Flags, read additional data:
-        #   Tail Position Offset (3 floats) or Tail Bone Index (variable size)
-        #   Fixed Axis (3 floats)
-        #   Local Axis X (3 floats), Local Axis Z (3 floats)
-        #   External Parent Bone Index (variable size)
-        #   IK Data (PmxIK object)
-        pass
+        self.name = utils.parsePMXString(f, self.encoding)
+        self.name_english = utils.parsePMXString(f, self.encoding)
+
+        self.position = struct.unpack('<fff', f.read(12))
+
+        bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
+        self.parent_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
+
+        self.transform_layer = struct.unpack('<i', f.read(4))[0]
+        self.bone_flag = struct.unpack('<H', f.read(2))[0]
+
+        # Flag-dependent data parsing
+        # 0x0001: 接続先表示方法 (0:座標オフセット, 1:ボーン指定)
+        if self.bone_flag & 0x0001:
+            self.connect_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
+        else:
+            self.connect_position_offset = struct.unpack('<fff', f.read(12))
+
+        # 0x0100: 回転付与, 0x0200: 移動付与
+        if self.bone_flag & 0x0100 or self.bone_flag & 0x0200:
+            self.given_parent_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
+            self.given_rate = struct.unpack('<f', f.read(4))[0]
+
+        # 0x0400: 軸固定
+        if self.bone_flag & 0x0400:
+            self.axis_direction = struct.unpack('<fff', f.read(12))
+
+        # 0x0800: ローカル軸
+        if self.bone_flag & 0x0800:
+            self.x_axis_direction = struct.unpack('<fff', f.read(12))
+            self.z_axis_direction = struct.unpack('<fff', f.read(12))
+
+        # 0x2000: 外部親変形
+        if self.bone_flag & 0x2000:
+            self.key_value = struct.unpack('<i', f.read(4))[0]
+
+        # 0x0020: IK
+        if self.bone_flag & 0x0020:
+            self.ik_target_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
+            self.ik_loop_count = struct.unpack('<i', f.read(4))[0]
+            self.ik_limit_angle = struct.unpack('<f', f.read(4))[0]
+            ik_link_count = struct.unpack('<i', f.read(4))[0]
+            for _ in range(ik_link_count):
+                ik_link = PmxIKLink(self.bone_index_size, self.encoding)
+                ik_link.parse(f)
+                self.ik_links.append(ik_link)

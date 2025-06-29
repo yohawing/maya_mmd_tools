@@ -38,7 +38,7 @@ def parse_mmd_file(file_path):
         elif magic_bytes.startswith(b'PMX '):
             parser = PmxParser()
             # PMX parser's parse_file is not yet implemented.
-            # parser.parse_file(file_path)
+            parser.parse_file(file_path)
             return parser
         elif f.read(30).startswith(b'Vocaloid Motion Data file'): # VMD magic is longer
             f.seek(0) # Reset file pointer again
