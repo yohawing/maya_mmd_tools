@@ -1,32 +1,48 @@
-from ..exceptions import MMDParseException
+import struct
 
 class VmdCameraFrame:
     """VMDファイルのカメラフレームデータを保持するクラス。"""
     def __init__(self):
-        self.frame_number = 0
-        self.distance = 0.0
+        self.frame_number = 0  # フレーム番号
+        self.distance = 0.0  # 目標点とカメラの距離
         self.position = (0.0, 0.0, 0.0)
-        self.rotation = (0.0, 0.0, 0.0) # Euler angles
+        self.rotation = (0.0, 0.0, 0.0) # Euler angles (X, Y, Z)
+        # 補間パラメータは4点のベジェ曲線(0,0),(x1,y1),(x2,y2),(127,127)で
+        # 表している.各軸のパラメータを
+        # X軸の補間パラメータ　 (X_x1,X_y1),(X_x2,X_y2)
+        # Y軸の補間パラメータ　 (Y_x1,Y_y1),(Y_x2,Y_y2)
+        # Z軸の補間パラメータ　 (Z_x1,Z_y1),(Z_x2,Z_y2)
+        # 回転の補間パラメータ　(R_x1,R_y1),(R_x2,R_y2)
+        # 距離の補間パラメータ　(L_x1,L_y1),(L_x2,L_y2)
+        # 視野角の補間パラメータ(V_x1,V_y1),(V_x2,V_y2)
+        # とした時、補間パラメータは以下の通り.
+        # X_x1 X_x2 X_y1 X_y2
+        # Y_x1 Y_x2 Y_y1 Y_y2
+        # Z_x1 Z_x2 Z_y1 Z_y2
+        # R_x1 R_x2 R_y1 R_y2
+        # L_x1 L_x2 L_y1 L_y2
+        # V_x1 V_x2 V_y1 V_y2
         self.interpolation = b'' # 24 bytes
-        self.viewing_angle = 0
-        self.perspective = 0 # 0: Orthographic, 1: Perspective
+        self.viewing_angle = 0 # 視野角degrees
+        self.perspective = 0 # 0: On, 1: Off
 
-    def parse(self, file_handle):
+        
+    @classmethod
+    def size(cls):
+        # フレーム番号(4) + 長さ(4) + 位置(12) + 回転(12) + 補間データ(24) + 視野角(4) + パースペクティブ(1)
+        return 4 + 4 + 12 + 12 + 24 + 4 + 1
+
+    def parse(self, data):
         """
-        ファイルハンドルからVMDカメラフレームデータを解析し、自身の属性に格納する。
+        バイトデータからVMDカメラフレームデータを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-
-        Raises:
-            MMDParseException: カメラフレームデータの解析に失敗した場合。
+            data (bytes): カメラフレームデータ。
         """
-        # TODO: VMDカメラフレームデータのバイナリ解析ロジックを実装する。
-        # Frame Number (int)
-        # Distance (float)
-        # Position (3 floats)
-        # Rotation (3 floats)
-        # Interpolation (24 bytes)
-        # Viewing Angle (int)
-        # Perspective (1 byte)
-        pass
+        self.frame_number = struct.unpack_from('<I', data, 0)[0]
+        self.distance = struct.unpack_from('<f', data, 4)[0]
+        self.position = struct.unpack_from('<fff', data, 8)
+        self.rotation = struct.unpack_from('<fff', data, 20)
+        self.interpolation = data[32:56]
+        self.viewing_angle = struct.unpack_from('<I', data, 56)[0]
+        self.perspective = struct.unpack_from('<B', data, 60)[0]

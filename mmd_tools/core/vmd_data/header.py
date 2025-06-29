@@ -1,23 +1,25 @@
-from ..exceptions import MMDParseException
+import struct
+
+from mmd_tools.core import utils
 
 class VmdHeader:
     """VMDファイルのヘッダ情報を保持するクラス。"""
+
+    SIGNATURE = b"Vocaloid Motion Data 0002"
+
     def __init__(self):
         self.magic = b''
-        self.version = 0.0
         self.model_name = ''
 
-    def parse(self, file_handle):
+    def parse(self, f):
         """
-        ファイルハンドルからVMDヘッダを解析し、自身の属性に格納する。
+        VMDファイルのヘッダを解析し、属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-
-        Raises:
-            MMDParseException: ヘッダの解析に失敗した場合。
+            f (file-like object): VMDファイルのバイナリデータを読み込むためのファイルオブジェクト。
         """
-        # TODO: VMDヘッダのバイナリ解析ロジックを実装する。
-        # magic (30 bytes), version (4 bytes float)
-        # model_name (20 bytes, Shift-JIS)
-        pass
+        self.magic = struct.unpack("<30s", f.read(30))[0]
+        if not self.magic.startswith(self.SIGNATURE):
+            raise ValueError("Unsupported MMD file format: Invalid magic number")
+        self.model_name = utils.decodePMDString(struct.unpack("<20s", f.read(20))[0])
+

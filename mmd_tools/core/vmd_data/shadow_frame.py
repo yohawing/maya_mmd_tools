@@ -1,24 +1,24 @@
-from ..exceptions import MMDParseException
+import struct
 
 class VmdShadowFrame:
     """VMDファイルのセルフシャドウフレームデータを保持するクラス。"""
     def __init__(self):
-        self.frame_number = 0
-        self.mode = 0
-        self.distance = 0.0
+        self.frame_number = 0 # フレーム番号
+        self.mode = 0  # セルフシャドウ種類, 0:OFF, 1:mode1, 2:mode2
+        self.distance = 0.0 # シャドウ距離
 
-    def parse(self, file_handle):
+    @classmethod
+    def size(cls):
+        # フレーム番号(4) + モード(1) + 距離(4) 合計 9
+        return 4 + 1 + 4
+
+    def parse(self, data):
         """
-        ファイルハンドルからVMDセルフシャドウフレームデータを解析し、自身の属性に格納する。
+        バイトデータからVMDシャドウフレームデータを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-
-        Raises:
-            MMDParseException: セルフシャドウフレームデータの解析に失敗した場合。
+            data (bytes): シャドウフレームデータ。
         """
-        # TODO: VMDセルフシャドウフレームデータのバイナリ解析ロジックを実装する。
-        # Frame Number (int)
-        # Mode (1 byte)
-        # Distance (float)
-        pass
+        self.frame_number = struct.unpack_from('<I', data, 0)[0]
+        self.mode = struct.unpack_from('<B', data, 4)[0]
+        self.distance = struct.unpack_from('<f', data, 5)[0]

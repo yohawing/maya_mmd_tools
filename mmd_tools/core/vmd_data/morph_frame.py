@@ -1,24 +1,26 @@
-from ..exceptions import MMDParseException
+import struct
+
+from mmd_tools.core import utils
 
 class VmdMorphFrame:
     """VMDファイルのモーフフレームデータを保持するクラス。"""
     def __init__(self):
         self.morph_name = ''
         self.frame_number = 0
-        self.morph_value = 0.0
+        self.value = 0.0
 
-    def parse(self, file_handle):
+    @classmethod
+    def size(cls):
+        # モーフ名(15) + フレーム番号(4) + モーフ値(4)　合計 23
+        return 15 + 4 + 4
+
+    def parse(self, data):
         """
-        ファイルハンドルからVMDモーフフレームデータを解析し、自身の属性に格納する。
+        バイトデータからVMDモーフフレームデータを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-
-        Raises:
-            MMDParseException: モーフフレームデータの解析に失敗した場合。
+            data (bytes): モーフフレームデータ。
         """
-        # TODO: VMDモーフフレームデータのバイナリ解析ロジックを実装する。
-        # Morph Name (15 bytes, Shift-JIS)
-        # Frame Number (int)
-        # Morph Value (float)
-        pass
+        self.morph_name = utils.decodePMDString(data[:15])
+        self.frame_number = struct.unpack_from('<I', data, 15)[0]
+        self.value = struct.unpack_from('<f', data, 19)[0]

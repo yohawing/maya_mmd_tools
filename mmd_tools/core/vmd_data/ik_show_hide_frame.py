@@ -1,25 +1,36 @@
-from ..exceptions import MMDParseException
+import struct
+
+from mmd_tools.core import utils
 
 class VmdIKShowHideFrame:
-    """VMDファイルのIK/表示フレームデータを保持するクラス。"""
+    """VMDファイルのIK表示/非表示フレームデータを保持するクラス。"""
     def __init__(self):
         self.frame_number = 0
-        self.show_ik = 0 # 0: Hide, 1: Show
-        self.ik_bones = [] # List of (bone_name, show_flag)
+        self.visible = 0 # モデル表示 0: Off, 1: On
+        self.ik_count = 0 # 記録するIKの数
+        self.ik_states = [] # List of (ik_name, show_flag)
 
-    def parse(self, file_handle):
+    @classmethod
+    def size(cls):
+        # This size is variable due to ik_states. 
+        # We need to read ik_count first to determine the full size.
+        # For now, return a base size, and handle variable part in parse.
+        return 4 + 1 + 4 # frame_number + visible + ik_count
+
+    def parse(self, data):
         """
-        ファイルハンドルからVMD IK/表示フレームデータを解析し、自身の属性に格納する。
+        バイトデータからVMD IK表示/非表示フレームデータを解析し、自身の属性に格納する。
 
         Args:
-            file_handle (file): バイナリ読み込みモードで開かれたファイルハンドル。
-
-        Raises:
-            MMDParseException: IK/表示フレームデータの解析に失敗した場合。
+            data (bytes): IK表示/非表示フレームデータ。
         """
-        # TODO: VMD IK/表示フレームデータのバイナリ解析ロジックを実装する。
-        # Frame Number (int)
-        # Show IK (1 byte)
-        # Number of IK Bones (int)
-        # For each IK Bone: Bone Name (15 bytes, Shift-JIS), Show Flag (1 byte)
-        pass
+        self.frame_number = struct.unpack_from('<I', data, 0)[0]
+        self.visible = struct.unpack_from('<B', data, 4)[0]
+        self.ik_count = struct.unpack_from('<I', data, 5)[0]
+        
+        offset = 9
+        for _ in range(self.ik_count):
+            ik_name = utils.decodePMDString(data[offset:offset+20])
+            show_flag = struct.unpack_from('<B', data, offset+20)[0]
+            self.ik_states.append((ik_name, show_flag))
+            offset += 21
