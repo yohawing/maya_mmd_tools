@@ -32,11 +32,8 @@ class PmxMaterial:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        name_length = struct.unpack('<I', f.read(4))[0]
-        self.name = f.read(name_length).decode(self.encoding)
-
-        name_english_length = struct.unpack('<I', f.read(4))[0]
-        self.name_english = f.read(name_english_length).decode(self.encoding)
+        self.name = utils.parsePMXString(f, self.encoding)
+        self.name_english = utils.parsePMXString(f, self.encoding)
 
         self.diffuse = struct.unpack('<ffff', f.read(16))
         self.specular = struct.unpack('<fff', f.read(12))
@@ -58,7 +55,6 @@ class PmxMaterial:
         else:
             self.toon_texture_index = struct.unpack('<B', f.read(1))[0]
 
-        memo_length = struct.unpack('<I', f.read(4))[0]
-        self.memo = f.read(memo_length).decode(self.encoding)
+        self.memo = utils.parsePMXString(f, self.encoding)
 
         self.face_count = struct.unpack('<I', f.read(4))[0]

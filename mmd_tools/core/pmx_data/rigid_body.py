@@ -31,11 +31,8 @@ class PmxRigidBody:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        name_length = struct.unpack('<I', f.read(4))[0]
-        self.name = f.read(name_length).decode(self.encoding)
-
-        name_english_length = struct.unpack('<I', f.read(4))[0]
-        self.name_english = f.read(name_english_length).decode(self.encoding)
+        self.name = utils.parsePMXString(f, self.encoding)
+        self.name_english = utils.parsePMXString(f, self.encoding)
 
         bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
         self.related_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]

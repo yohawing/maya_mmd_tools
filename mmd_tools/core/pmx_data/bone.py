@@ -37,11 +37,8 @@ class PmxBone:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        name_length = struct.unpack('<I', f.read(4))[0]
-        self.name = f.read(name_length).decode(self.encoding)
-
-        name_english_length = struct.unpack('<I', f.read(4))[0]
-        self.name_english = f.read(name_english_length).decode(self.encoding)
+        self.name = utils.parsePMXString(f, self.encoding)
+        self.name_english = utils.parsePMXString(f, self.encoding)
 
         self.position = struct.unpack('<fff', f.read(12))
 

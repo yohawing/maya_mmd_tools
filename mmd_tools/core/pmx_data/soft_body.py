@@ -1,4 +1,5 @@
 import struct
+from mmd_tools.core import utils
 
 class PmxSoftBody:
     """
@@ -21,11 +22,8 @@ class PmxSoftBody:
         # Placeholder for SoftBody parsing
         # This section needs to be implemented according to the full PMX 2.1 specification.
         # For now, it just reads the name lengths and skips the data.
-        name_length = struct.unpack('<I', f.read(4))[0]
-        self.name = f.read(name_length).decode(self.encoding)
-
-        name_english_length = struct.unpack('<I', f.read(4))[0]
-        self.name_english = f.read(name_english_length).decode(self.encoding)
+        self.name = utils.parsePMXString(f, self.encoding)
+        self.name_english = utils.parsePMXString(f, self.encoding)
 
         # Skip the rest of the SoftBody data for now
         # This needs to be replaced with actual parsing logic

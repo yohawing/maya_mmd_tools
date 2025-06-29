@@ -50,14 +50,7 @@ class PmxHeader:
         self.encoding = 'utf-16-le' if text_encoding == 0 else 'utf-8'
 
         # Model Info
-        model_name_length = struct.unpack('<I', f.read(4))[0]
-        self.model_name = f.read(model_name_length).decode(self.encoding)
-
-        model_name_english_length = struct.unpack('<I', f.read(4))[0]
-        self.model_name_english = f.read(model_name_english_length).decode(self.encoding)
-
-        comment_length = struct.unpack('<I', f.read(4))[0]
-        self.comment = f.read(comment_length).decode(self.encoding)
-
-        comment_english_length = struct.unpack('<I', f.read(4))[0]
-        self.comment_english = f.read(comment_english_length).decode(self.encoding)
+        self.model_name = utils.parsePMXString(f, self.encoding)
+        self.model_name_english = utils.parsePMXString(f, self.encoding)
+        self.comment = utils.parsePMXString(f, self.encoding)
+        self.comment_english = utils.parsePMXString(f, self.encoding)

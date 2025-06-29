@@ -1,5 +1,19 @@
 import struct
+import enum
 from mmd_tools.core import utils
+
+class PmxMorphType(enum.IntEnum):
+    GroupMorph = 0
+    VertexMorph = 1
+    BoneMorph = 2
+    UVMorph = 3
+    AdditionalUVMorph1 = 4
+    AdditionalUVMorph2 = 5
+    AdditionalUVMorph3 = 6
+    AdditionalUVMorph4 = 7
+    MaterialMorph = 8
+    FlipMorph = 9 # PMX 2.1以降
+    ImpulseMorph = 10 # PMX 2.1以降
 
 class PmxMorph:
     """
@@ -11,12 +25,21 @@ class PmxMorph:
         self.bone_index_size = bone_index_size
         self.morph_index_size = morph_index_size
         self.rigid_body_index_size = rigid_body_index_size
+
+        self.type_formats = {
+            "vertex": {1: '<B', 2: '<H', 4: '<I'}[vertex_index_size],
+            "material": {1: '<b', 2: '<h', 4: '<i'}[material_index_size],
+            "bone": {1: '<b', 2: '<h', 4: '<i'}[bone_index_size],
+            "morph": {1: '<b', 2: '<h', 4: '<i'}[morph_index_size],
+            "rigid_body": {1: '<b', 2: '<h', 4: '<i'}[rigid_body_index_size]
+        }
+
         self.encoding = encoding
 
         self.name = ''
         self.name_english = ''
-        self.panel = 0
-        self.morph_type = 0
+        self.panel = 0 # 操作パネル (1:眉, 2:目, 3:口, 4:その他, 0:システム予約)
+        self.morph_type = PmxMorphType.GroupMorph # モーフ種類
         self.offset_count = 0
         self.offsets = []
 
@@ -27,39 +50,31 @@ class PmxMorph:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        name_length = struct.unpack('<I', f.read(4))[0]
-        self.name = f.read(name_length).decode(self.encoding)
-
-        name_english_length = struct.unpack('<I', f.read(4))[0]
-        self.name_english = f.read(name_english_length).decode(self.encoding)
+        self.name = utils.parsePMXString(f, self.encoding)  # Use utility function for PMX string parsing
+        self.name_english = utils.parsePMXString(f, self.encoding)
 
         self.panel = struct.unpack('<B', f.read(1))[0]
-        self.morph_type = struct.unpack('<B', f.read(1))[0]
+        self.morph_type = PmxMorphType(struct.unpack('<B', f.read(1))[0]) # Convert to Enum
         self.offset_count = struct.unpack('<I', f.read(4))[0]
-
-        vertex_index_format = {1: '<B', 2: '<H', 4: '<I'}[self.vertex_index_size]
-        material_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.material_index_size]
-        bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
-        morph_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.morph_index_size]
-        rigid_body_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.rigid_body_index_size]
 
         for _ in range(self.offset_count):
             offset_data = {}
-            if self.morph_type == 0: # Group Morph
-                offset_data['morph_index'] = struct.unpack(morph_index_format, f.read(self.morph_index_size))[0]
+
+            if self.morph_type == PmxMorphType.GroupMorph:
+                offset_data['morph_index'] = struct.unpack(self.type_formats["morph"], f.read(self.morph_index_size))[0]
                 offset_data['morph_rate'] = struct.unpack('<f', f.read(4))[0]
-            elif self.morph_type == 1: # Vertex Morph
-                offset_data['vertex_index'] = struct.unpack(vertex_index_format, f.read(self.vertex_index_size))[0]
+            elif self.morph_type == PmxMorphType.VertexMorph:
+                offset_data['vertex_index'] = struct.unpack(self.type_formats["vertex"], f.read(self.vertex_index_size))[0]
                 offset_data['position_offset'] = struct.unpack('<fff', f.read(12))
-            elif self.morph_type == 2: # Bone Morph
-                offset_data['bone_index'] = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
+            elif self.morph_type == PmxMorphType.BoneMorph:
+                offset_data['bone_index'] = struct.unpack(self.type_formats["bone"], f.read(self.bone_index_size))[0]
                 offset_data['translation'] = struct.unpack('<fff', f.read(12))
                 offset_data['rotation'] = struct.unpack('<ffff', f.read(16))
-            elif self.morph_type >= 3 and self.morph_type <= 7: # UV Morph (UV, Additional UV1-4)
-                offset_data['vertex_index'] = struct.unpack(vertex_index_format, f.read(self.vertex_index_size))[0]
+            elif PmxMorphType.UVMorph <= self.morph_type <= PmxMorphType.AdditionalUVMorph4:
+                offset_data['vertex_index'] = struct.unpack(self.type_formats["vertex"], f.read(self.vertex_index_size))[0]
                 offset_data['uv_offset'] = struct.unpack('<ffff', f.read(16))
-            elif self.morph_type == 8: # Material Morph
-                offset_data['material_index'] = struct.unpack(material_index_format, f.read(self.material_index_size))[0]
+            elif self.morph_type == PmxMorphType.MaterialMorph:
+                offset_data['material_index'] = struct.unpack(self.type_formats["material"], f.read(self.material_index_size))[0]
                 offset_data['operation_type'] = struct.unpack('<B', f.read(1))[0]
                 offset_data['diffuse'] = struct.unpack('<ffff', f.read(16))
                 offset_data['specular'] = struct.unpack('<fff', f.read(12))
@@ -67,18 +82,16 @@ class PmxMorph:
                 offset_data['ambient'] = struct.unpack('<fff', f.read(12))
                 offset_data['edge_color'] = struct.unpack('<ffff', f.read(16))
                 offset_data['edge_size'] = struct.unpack('<f', f.read(4))[0]
-                offset_data['texture_index'] = struct.unpack(material_index_format, f.read(self.material_index_size))[0]
-                offset_data['sphere_texture_index'] = struct.unpack(material_index_format, f.read(self.material_index_size))[0]
-                offset_data['sphere_mode'] = struct.unpack('<B', f.read(1))[0]
-                offset_data['toon_texture_index'] = struct.unpack(material_index_format, f.read(self.material_index_size))[0]
-            elif self.morph_type == 9: # Flip Morph (PMX 2.1)
-                offset_data['morph_index'] = struct.unpack(morph_index_format, f.read(self.morph_index_size))[0]
-                offset_data['morph_rate'] = struct.unpack('<f', f.read(4))[0]
-            elif self.morph_type == 10: # Impulse Morph (PMX 2.1)
-                offset_data['rigid_body_index'] = struct.unpack(rigid_body_index_format, f.read(self.rigid_body_index_size))[0]
-                offset_data['is_local'] = struct.unpack('<B', f.read(1))[0]
-                offset_data['velocity'] = struct.unpack('<fff', f.read(12))
-                offset_data['rotation_torque'] = struct.unpack('<fff', f.read(12))
+                offset_data['texture_factor'] = struct.unpack('<ffff', f.read(16))
+                offset_data['sphere_texture_factor'] = struct.unpack('<ffff', f.read(16))
+                offset_data['toon_texture_factor'] = struct.unpack('<ffff', f.read(16))
+            elif self.morph_type == PmxMorphType.FlipMorph:
+                offset_data['morph_index'] = struct.unpack(self.type_formats["morph"], f.read(self.morph_index_size))[0]
+                offset_data['flip_rate'] = struct.unpack('<f', f.read(4))[0]
+            elif self.morph_type == PmxMorphType.ImpulseMorph:
+                offset_data['rigid_body_index'] = struct.unpack(self.type_formats["rigid_body"], f.read(self.rigid_body_index_size))[0]
+                offset_data['impulse'] = struct.unpack('<fff', f.read(12))
+                offset_data['torque'] = struct.unpack('<fff', f.read(12))
             else:
                 raise ValueError(f"Unknown morph type: {self.morph_type}")
             self.offsets.append(offset_data)

@@ -100,10 +100,8 @@ class PmxParser:
                 # Morph
                 morph_count = struct.unpack('<I', f.read(4))[0]
                 for i in range(morph_count):
-                    print(f"Parsing morph {i + 1}/{morph_count}")
                     morph = PmxMorph(vertex_size, material_size, bone_size, morph_size, rigid_body_size, encoding)
                     morph.parse(f)
-                    print(f"Parsed morph name: {morph.name}")
                     self.morphs.append(morph)
 
                 # Display Frame
