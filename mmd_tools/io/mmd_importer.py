@@ -1,25 +1,60 @@
+import os
+import maya.cmds as cmds
 from ..core.mmd_parser import parse_mmd_file
+from ..core import pmx_parser, pmd_parser, vmd_parser
+from ..converters import mesh_converter
 
-class MmdImporter:
+def import_mmd_file(filepath, scale=1.0):
     """
-    MMDファイルをMayaにインポートするクラス。
+    MMDファイルを解析し、Mayaシーンにインポートします。
+
+    Args:
+        filepath (str): インポートするMMDファイルのパス。
+        scale (float, optional): インポート時のスケール。デフォルトは 1.0。
+
+    Returns:
+        bool: インポートが成功したかどうか。
     """
-    def __init__(self):
-        pass
+    try:
+        # 汎用パーサーでファイルを解析
+        parsed_data = parse_mmd_file(filepath)
 
-    def import_mmd_file(self, file_path):
-        """
-        指定されたMMDファイルを解析し、Mayaシーンにインポートする。
+        # 解析されたデータのタイプに応じて処理を分岐
+        if isinstance(parsed_data, pmx_parser.PmxParser):
+            print("Importing PMX file...")
+            # メッシュを変換
+            converter = mesh_converter.MeshConverter(filepath)
+            mesh_group = converter.convert_pmx_mesh(parsed_data)
 
-        Args:
-            file_path (str): インポートするMMDファイルのパス。
+            # TODO: ボーン、モーフ、物理などの変換処理をここに追加
 
-        Raises:
-            FileNotFoundError: ファイルが見つからない場合。
-            MMDParseException: ファイルの解析に失敗した場合。
-            Exception: Mayaへのインポート中にエラーが発生した場合。
-        """
-        # TODO: parse_mmd_fileを呼び出してMMDデータを解析する。
-        # TODO: 解析されたデータタイプ（PMD, PMX, VMD）に応じて、適切なコンバーターを呼び出す。
-        # TODO: Mayaシーンへのインポートロジックを実装する。
-        pass
+            # スケールを適用
+            if mesh_group and scale != 1.0:
+                cmds.setAttr(mesh_group + ".scaleX", scale)
+                cmds.setAttr(mesh_group + ".scaleY", scale)
+                cmds.setAttr(mesh_group + ".scaleZ", scale)
+                cmds.makeIdentity(mesh_group, apply=True, scale=True)
+
+            cmds.select(mesh_group)
+            print(f"Successfully imported {os.path.basename(filepath)}")
+            return True
+
+        elif isinstance(parsed_data, pmd_parser.PmdParser):
+            cmds.warning("PMD import is not yet fully implemented.")
+            # TODO: PMDコンバーターを呼び出す
+            return False
+
+        elif isinstance(parsed_data, vmd_parser.VmdParser):
+            cmds.warning("VMD import is not yet implemented.")
+            # TODO: VMDコンバーターを呼び出す
+            return False
+            
+        else:
+            cmds.warning(f"Unsupported data type returned from parser: {type(parsed_data)}")
+            return False
+
+    except Exception as e:
+        cmds.error(f"Failed to import {filepath}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False

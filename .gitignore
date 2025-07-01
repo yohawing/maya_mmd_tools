@@ -28,6 +28,10 @@ dist/
 # Other temporary files
 *.tmp
 
+# ai agent files
+.gemini/
+
+# TestData
 /docs/pmx_spec.md
 /tests/data/*
 !/tests/data/place_test_data_here
