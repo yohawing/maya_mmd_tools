@@ -88,7 +88,7 @@ class TestVmdParser(TestBase):
         # カメラ位置が正しく設定されていることを確認
         self.assertEqual(len(camera_frame.position), 3)
         # カメラ回転が正しく設定されていることを確認
-        self.assertEqual(len(camera_frame.rotation), 4)
+        self.assertEqual(len(camera_frame.rotation), 3)
         # カメラ距離が正しく設定されていることを確認
         self.assertIsInstance(camera_frame.distance, float)
         self.assertGreater(camera_frame.distance, 0.0)
@@ -135,12 +135,10 @@ class TestVmdParser(TestBase):
         shadow_frame = self.parsed_data.shadow_frames[0]
         # シャドウフレームの属性が正しく設定されていることを確認
         self.assertIsInstance(shadow_frame.frame_number, int)
-        # シャドウ位置が正しく設定されていることを確認
-        self.assertEqual(len(shadow_frame.position), 3)
-        # シャドウ色が正しく設定されていることを確認
-        self.assertEqual(len(shadow_frame.color), 3)
-        # シャドウ強度が正しく設定されていることを確認
-        self.assertGreater(shadow_frame.intensity, 0.0)
+        # シャドウモードが正しく設定されていることを確認
+        self.assertIn(shadow_frame.mode, (0, 1, 2))
+        # シャドウ距離が正しく設定されていることを確認
+        self.assertGreaterEqual(shadow_frame.distance, 0.0)
         
     def test_parse_vmd_ik_show_hide_frames(self):
         """VMD IK表示/非表示フレームが正しく解析されることをテストする。"""

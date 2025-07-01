@@ -5,7 +5,7 @@ from mmd_tools.core import utils
 class VmdHeader:
     """VMDファイルのヘッダ情報を保持するクラス。"""
 
-    SIGNATURE = b"Vocaloid Motion Data 0002"
+    SIGNATURE = b"Vocaloid Motion Data"
 
     def __init__(self):
         self.magic = b''
