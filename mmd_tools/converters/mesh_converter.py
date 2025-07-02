@@ -28,7 +28,7 @@ class MeshConverter:
         Returns:
             str: 作成されたMayaメッシュをまとめるグループノードの名前。
         """
-        model_name = maya_utils.get_unique_maya_name(pmx_data.header.model_name)
+        model_name = pmx_data.header.model_name
         all_vertices = pmx_data.vertices
         all_faces = pmx_data.faces
         all_materials = pmx_data.materials
@@ -41,8 +41,8 @@ class MeshConverter:
         for i, material in enumerate(all_materials):
             # 材質名をサニタイズして一意な名前を生成
             raw_material_name = material.name or f"material_{i}"
-            material_name = maya_utils.get_unique_maya_name(raw_material_name)
-            mesh_name = maya_utils.get_unique_maya_name(f"{model_name}_{material_name}")
+            material_name = maya_utils.sanitize_text(raw_material_name)
+            mesh_name = maya_utils.sanitize_text(f"{model_name}_{material_name}")
             
             # この材質が使用する面の数を計算
             num_material_faces = material.face_count // 3

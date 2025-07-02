@@ -188,11 +188,3 @@ def reload_dictionary(dictionary_path: str = None):
     converter = get_converter()
     converter._load_dictionary(dictionary_path)
     converter.clear_cache()
-
-
-# 下位互換性のため、既存のAPI名も維持
-convert_japanese_to_maya_safe = convert_unicode_to_maya_safe
-restore_maya_safe_to_japanese = restore_maya_safe_to_unicode
-batch_convert_japanese_names = batch_convert_unicode_names
-batch_restore_japanese_names = batch_restore_unicode_names
-is_japanese_converted_name = is_unicode_converted_name

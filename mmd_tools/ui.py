@@ -255,6 +255,7 @@ def create_mmd_tools_menu():
     MayaのメインメニューバーにMMD Toolsメニューを作成する。
     この関数はuserSetup.pyから呼び出されることを想定している。
     """
+
     global _mmd_tools_ui_instance
 
     # 既存のメニューがあれば削除
