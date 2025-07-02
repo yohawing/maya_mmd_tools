@@ -65,7 +65,8 @@
 *   **スプリントバックログ:**
     *   [ ] PMX の残りのセクション（テクスチャ、ソフトボディ等）の解析とユニットテスト
     *   [x] VMD パーサー（ヘッダ、ボーンフレーム、モーフフレーム）の実装とユニットテスト
-    *   [ ] `converters/mesh_converter.py` のPMD/PMXメッシュ変換ロジックの実装
+    *   [x] マルチバイト文字をASCII文字へ変換、復元するのPMD/PMXメッシュ変換ロジックの実装
+    *   [x] `converters/mesh_converter.py` のPMD/PMXメッシュ変換ロジックの実装
     *   [ ] `converters/bone_converter.py` のPMD/PMXボーン変換ロジックの実装
     *   [ ] 上記コンバーターのユニットテストの作成と実行
 
