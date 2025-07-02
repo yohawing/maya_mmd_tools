@@ -1,9 +1,12 @@
+import subprocess
 import unittest
 import os
 import sys
 import argparse
 from pathlib import Path
 import platform
+
+ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
 
 def get_maya_location(maya_version: int) -> Path:
     """Mayaがインストールされている場所を取得します。
@@ -79,6 +82,12 @@ def run_tests():
         default=None,
         help='A string to filter tests by. Can be a module, class, or method name.'
     )
+    parser.add_argument(
+        '--maya',
+        type=int,
+        default=2024,
+        help='The version of Maya to use for integration tests. Defaults to 2024.'
+    )
     args = parser.parse_args()
 
     # Discover tests based on the specified type
@@ -142,7 +151,38 @@ def run_tests():
             print("テストのエラー数:", len(result.errors))
             # sys.exit(1)
     elif args.type == 'integration':
-        # TODO: 統合テストはMaya環境で実行する必要があるため、mayapyを使用して実行します。
+        # 統合テストはMaya環境で実行する必要があるため、mayapyを使用して実行します。
+
+        maya_version = args.maya
+        mayapy_path = mayapy(maya_version)
+        if not mayapy_path.exists():
+            print(f"Error: mayapy executable not found at {mayapy_path}.")
+            sys.exit(1)
+        # Run the tests using mayapy
+        # os.environ['MAYA_LOCATION'] = str(get_maya_location(maya_version))
+        os.environ['PYTHONPATH'] = str(ROOT_DIR)
+        os.environ["MAYA_SCRIPT_PATH"] = ""
+        os.environ["MAYA_MODULE_PATH"] = str(ROOT_DIR)
+
+        command = [
+            str(mayapy_path),
+            os.path.join(ROOT_DIR, "tests", "run_maya_tests.py")
+        ]
+        if args.test:
+            command.extend(['-test', args.test])
+        
+            print(f"Running integration tests with command: {' '.join(command)}")
+            # result = os.system(' '.join(command))
+        # if result != 0:
+        #     print("統合テストの実行に失敗しました。")
+        #     sys.exit(1)
+
+        try:
+            subprocess.check_call(command)
+        except subprocess.CalledProcessError as e:
+            print(f"統合テストの実行に失敗しました。: {e}")
+            sys.exit(1)
+
         pass
 
 

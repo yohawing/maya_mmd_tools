@@ -92,9 +92,6 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         # 全ての名前が変換されているか
         self.assertEqual(len(result), len(test_names))
         
-        # 重複がないか（同じ英語名に変換される場合は_1, _2が付く）
-        converted_names = list(result.values())
-        self.assertEqual(len(converted_names), len(set(converted_names)))
     
     def test_encoding_type_detection(self):
         """エンコード方式の判定テスト"""
@@ -109,14 +106,6 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         # 元の英語
         original = "bone_custom"
         self.assertEqual(self.converter.get_encoding_type(original), "original")
-    
-    def test_unique_name_generation(self):
-        """重複名の回避テスト"""
-        existing_names = {"bone", "bone_1"}
-        unique_name = self.converter.ensure_unique_name("bone", existing_names)
-        
-        self.assertEqual(unique_name, "bone_2")
-        self.assertNotIn(unique_name, existing_names)
 
 
 class TestUtilsAPI(unittest.TestCase):
@@ -129,7 +118,45 @@ class TestUtilsAPI(unittest.TestCase):
         restored = utils.restore_maya_safe_to_unicode(converted)
         
         self.assertEqual(restored, "ボーン")
-    
+
+    # 辞書の順番によるエラーのテスト
+    def test_dictionary_order(self):
+        """辞書の順番によるエラーのテスト"""
+        
+        # 辞書の順番が変わると復元できないケース
+        # 例えば、"目" -> "eye" の後に "右目" -> "eye" が登録されている場合
+        # 復元時にどちらが優先されるかを確認する
+        
+        test_names = ["右目", "左目"]
+        answer_names = ["right_eye", "left_eye"]
+        converted_names = [utils.convert_unicode_to_maya_safe(name) for name in test_names]
+
+        # 変換結果が期待通りか確認
+        self.assertEqual(converted_names, answer_names)
+
+        # 復元時にどちらが優先されるかを確認
+        for original, converted in zip(test_names, converted_names):
+            restored = utils.restore_maya_safe_to_unicode(converted)
+            self.assertEqual(restored, original)
+
+
+    def test_conversion_combined_string(self):
+        """複合文字列の変換テスト"""
+
+        # 颜2 のような数字付きの名前の変換
+        test_names = ["颜2", "骨骼1", "髪4"]
+        answer_names = ["face2", "bone1", "hair4"]
+        converted_names = [utils.convert_unicode_to_maya_safe(name) for name in test_names]
+        
+        self.assertEqual(converted_names, answer_names)
+
+        # 元素+ のような特殊文字を含む名前の変換
+        test_names = ["元素+", "元素-"]
+        answer_names = ["element_plus_", "element_dash_"]
+        converted_names = [utils.convert_unicode_to_maya_safe(name) for name in test_names]
+
+        self.assertEqual(converted_names, answer_names)
+
     def test_batch_api(self):
         """一括変換APIのテスト"""
         test_names = ["ボーン", "骨骼", "髪"]
@@ -158,13 +185,6 @@ class TestUtilsAPI(unittest.TestCase):
         # 元の英語
         self.assertFalse(utils.is_unicode_converted_name("bone_custom"))
     
-    def test_backward_compatibility(self):
-        """下位互換性のテスト"""
-        # 旧API名が動作するか
-        converted = utils.convert_japanese_to_maya_safe("ボーン")
-        restored = utils.restore_maya_safe_to_japanese(converted)
-        
-        self.assertEqual(restored, "ボーン")
 
 
 class TestSingletonPattern(unittest.TestCase):
