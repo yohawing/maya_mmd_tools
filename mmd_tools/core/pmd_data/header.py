@@ -8,8 +8,8 @@ class PmdHeader:
         self.version = 0.0
         self.model_name = ''
         self.comment = ''
-        self.english_model_name = ''
-        self.english_comment = ''
+        self.model_name_english = ''
+        self.comment_english = ''
 
     def parse(self, f):
         """
@@ -32,5 +32,5 @@ class PmdHeader:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        self.english_model_name = utils.decodePMDString(f.read(20))
-        self.english_comment = utils.decodePMDString(f.read(256))
+        self.model_name_english = utils.decodePMDString(f.read(20))
+        self.comment_english = utils.decodePMDString(f.read(256))

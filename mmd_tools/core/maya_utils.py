@@ -127,6 +127,21 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
     
     return transform_name
 
+def split_mesh_by_material(mesh_name, materials):
+    """
+    メッシュをマテリアルごとに分割します。
+
+    Args:
+        mesh_name (str): 分割するメッシュの名前。
+        materials (list): マテリアルのリスト。
+    """
+    for material in materials:
+        # マテリアルごとに新しいメッシュを作成
+        new_mesh = cmds.duplicate(mesh_name, name=f"{mesh_name}_{material.name}")[0]
+        # マテリアルを割り当て
+        cmds.select(new_mesh)
+        cmds.hyperShade(assign=material.name)
+
 def create_material(name, color, texture_path=None, texture_dir=""):
     """
     Mayaシーンにマテリアルを作成します。
@@ -140,18 +155,23 @@ def create_material(name, color, texture_path=None, texture_dir=""):
     Returns:
         str: 作成されたシェーダーノード名。
     """
-    shader = cmds.shadingNode('lambert', asShader=True, name=name)
+    sanitized_name = sanitize_text(name)
+    shader = cmds.shadingNode('lambert', asShader=True, name=sanitized_name)
     cmds.setAttr(shader + ".color", color[0], color[1], color[2], type='double3')
     # AlphaをTransparencyに変換
     cmds.setAttr(shader + ".transparency", 1.0 - color[3], 1.0 - color[3], 1.0 - color[3], type='double3')
+
+    # 元の名前を保持
+    set_custom_attributes(shader, {
+        "mmd_material_name": name
+    })
 
     if texture_path:
         # テクスチャパスを解決
         full_texture_path = os.path.join(texture_dir, texture_path)
         if os.path.exists(full_texture_path):
-            file_node = cmds.shadingNode('file', asTexture=True, name=name + "_file")
-            place_uv_node = cmds.shadingNode('place2dTexture', asUtility=True, name=name + "_place2dTexture")
-
+            file_node = cmds.shadingNode('file', asTexture=True, name=sanitized_name + "_file")
+            place_uv_node = cmds.shadingNode('place2dTexture', asUtility=True, name=sanitized_name + "_place2dTexture")
             # 標準的なUV接続
             cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
             cmds.connectAttr(file_node + ".outColor", shader + ".color")
@@ -194,3 +214,28 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
     cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)
+
+def set_custom_attributes(object_name, attributes):
+    """
+    Mayaオブジェクトにカスタムアトリビュートを設定します。
+
+    Args:
+        object_name (str): カスタムアトリビュートを設定するオブジェクトの名前。
+        attributes (dict): 属性名と値の辞書。
+    """
+    for attr_name, attr_value in attributes.items():
+
+        # https://help.autodesk.com/cloudhelp/2023/JPN/Maya-Tech-Docs/CommandsPython/addAttr.html
+        # データ型を自動判別
+        dataType = 'string'
+        if isinstance(attr_value, (int, float)):
+            dataType = 'double' if isinstance(attr_value, float) else 'long'
+            attr_value = str(attr_value)
+        elif isinstance(attr_value, bool):
+            dataType = 'bool'
+            attr_value = 'true' if attr_value else 'false'
+
+        if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
+            cmds.addAttr(object_name, longName=attr_name, dataType=dataType, category='mmd')
+        cmds.setAttr(f"{object_name}.{attr_name}", attr_value, type=dataType)
+

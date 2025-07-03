@@ -39,17 +39,24 @@ class MeshConverter:
         # モデル名のグループを作成
         model_group = cmds.group(empty=True, name=model_name)
         
+        # カスタムアトリビュートの追加
+        maya_utils.set_custom_attributes(model_group, {
+            "mmd_file_type": pmx_data.header.magic,
+            "mmd_model_name": pmx_data.header.model_name,
+            "mmd_model_name_en": pmx_data.header.model_name_english,
+            "mmd_comment": pmx_data.header.comment,
+            "mmd_comment_en": pmx_data.header.comment_english
+        })
+
+        # メッシュのマテリアル分割は、まずは統合メッシュを作った後にSplitする処理をすればいいの
+        
+        created_mesh = self._create_unified_mesh(model_name, all_vertices, all_faces, 
+                                     all_materials, all_textures, model_group)
+        
         # 設定からマテリアルごとのメッシュ分割設定を取得
         separate_by_material = settings.get("import.model.separate_meshes_by_material", False)
-        
         if separate_by_material:
-            # マテリアルごとにメッシュを分割する場合
-            self._create_separated_meshes(model_name, all_vertices, all_faces, 
-                                         all_materials, all_textures, model_group)
-        else:
-            # 全てのメッシュを統合する場合
-            self._create_unified_mesh(model_name, all_vertices, all_faces, 
-                                     all_materials, all_textures, model_group)
+            maya_utils.split_mesh_by_material(model_group, all_materials)
 
         cmds.select(model_group)
         return model_group
@@ -72,108 +79,27 @@ class MeshConverter:
 
         # モデル名のグループを作成
         model_group = cmds.group(empty=True, name=model_name)
+        # カスタムアトリビュートの追加
+        maya_utils.set_custom_attributes(model_group, {
+            "mmd_file_type": pmd_data.header.magic,
+            "mmd_file_version": pmd_data.header.version,
+            "mmd_model_name": pmd_data.header.model_name,
+            "mmd_model_name_en": pmd_data.header.model_name_english,
+            "mmd_comment": pmd_data.header.comment,
+            "mmd_comment_en": pmd_data.header.comment_english
+        })
         
         # 設定からマテリアルごとのメッシュ分割設定を取得
         separate_by_material = settings.get("import.model.separate_meshes_by_material", False)
         
-        if separate_by_material:
-            # マテリアルごとにメッシュを分割する場合
-            self._create_separated_meshes(model_name, all_vertices, all_faces, 
-                                         all_materials, None, model_group)
-        else:
-            # 全てのメッシュを統合する場合
-            self._create_unified_mesh(model_name, all_vertices, all_faces, 
+        created_mesh = self._create_unified_mesh(model_name, all_vertices, all_faces, 
                                      all_materials, None, model_group)
+
+        if separate_by_material:
+            maya_utils.split_mesh_by_material(model_group, all_materials)
 
         cmds.select(model_group)
         return model_group
-
-    def _create_separated_meshes(self, model_name, all_vertices, all_faces, all_materials, all_textures, model_group):
-        """
-        マテリアルごとに分割されたメッシュを作成する。
-
-        Args:
-            model_name (str): モデル名
-            all_vertices (list): 全ての頂点データ
-            all_faces (list): 全ての面データ
-            all_materials (list): 全てのマテリアルデータ
-            all_textures (list): 全てのテクスチャデータ
-            model_group (str): 親グループの名前
-        """
-        face_offset = 0
-        for i, material in enumerate(all_materials):
-            # 材質名をサニタイズして一意な名前を生成
-            raw_material_name = material.name or f"material_{i}"
-            material_name = maya_utils.sanitize_text(raw_material_name)
-            mesh_name = maya_utils.sanitize_text(f"{model_name}_{material_name}")
-            
-            # この材質が使用する面の数を計算
-            num_material_faces = material.face_count // 3
-            if num_material_faces == 0:
-                face_offset += num_material_faces
-                continue
-
-            # この材質が使用する面と頂点を抽出
-            material_faces = all_faces[face_offset : face_offset + num_material_faces]
-            face_offset += num_material_faces
-
-            # この材質が使用する頂点のインデックスセットを取得
-            vert_indices_set = set()
-            for face in material_faces:
-                vert_indices_set.update(face.indices)
-            
-            # 頂点インデックスをソートして、新しいインデックスマッピングを作成
-            sorted_vert_indices = sorted(list(vert_indices_set))
-            vert_map = {old_idx: new_idx for new_idx, old_idx in enumerate(sorted_vert_indices)}
-
-            # 新しい頂点リストとUVリストを作成
-            vertices = []
-            uvs = []
-            for old_idx in sorted_vert_indices:
-                vertex = all_vertices[old_idx]
-                vertices.append(vertex.position)
-                uvs.extend(vertex.uv) # extendで (u,v) をフラットリストに追加
-
-            # 新しい面リストを作成
-            face_connects = []
-            face_counts = []
-            face_uv_connects = []
-            for face in material_faces:
-                new_face = [vert_map[v_idx] for v_idx in face.indices]
-                face_connects.extend(new_face)
-                face_counts.append(len(new_face))
-                # UVインデックスは頂点インデックスと1対1対応
-                face_uv_connects.extend(new_face)
-
-            # メッシュを作成
-            created_mesh = maya_utils.create_mesh_with_uvs(
-                name=mesh_name,
-                vertices=vertices,
-                face_counts=face_counts,
-                face_connects=face_connects,
-                uvs=uvs,
-                face_uv_connects=face_uv_connects
-            )
-
-            # マテリアルを作成して割り当て
-            if all_textures is None:
-                texture_path = None
-            else:
-                texture_path = None
-                if material.texture_index != -1:
-                    raw_texture_path = all_textures[material.texture_index]
-                    texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
-            
-            shader = maya_utils.create_material(
-                name=material_name,
-                color=material.diffuse,
-                texture_path=texture_path,
-                texture_dir=self.texture_dir
-            )
-            maya_utils.assign_material(created_mesh, shader)
-
-            # 作成したメッシュをグループに追加
-            cmds.parent(created_mesh, model_group)
 
     def _create_unified_mesh(self, model_name, all_vertices, all_faces, all_materials, all_textures, model_group):
         """
@@ -186,6 +112,8 @@ class MeshConverter:
             all_materials (list): 全てのマテリアルデータ
             all_textures (list): 全てのテクスチャデータ
             model_group (str): 親グループの名前
+        Returns:
+            str: 作成されたメッシュノードの名前
         """
         # 統合メッシュの名前を設定
         mesh_name = maya_utils.sanitize_text(model_name)
@@ -237,7 +165,7 @@ class MeshConverter:
                 continue
                 
             # マテリアル名をサニタイズ
-            material_name = maya_utils.sanitize_text(material.name)
+            # material_name = maya_utils.sanitize_text(material.name)
             
             # テクスチャパスを取得
             texture_path = None
@@ -248,7 +176,7 @@ class MeshConverter:
             
             # マテリアルを作成
             shader = maya_utils.create_material(
-                name=material_name,
+                name=material.name,
                 color=material.diffuse,
                 texture_path=texture_path,
                 texture_dir=self.texture_dir
@@ -260,3 +188,5 @@ class MeshConverter:
         
         # 作成したメッシュをグループに追加
         cmds.parent(created_mesh, model_group)
+
+        return created_mesh

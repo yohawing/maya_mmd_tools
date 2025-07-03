@@ -1,6 +1,7 @@
 import os
 import struct
 
+from mmd_tools.core.pmd_data.face import PmdFace
 from tests.common.test_base import TestBase
 from mmd_tools.core import mmd_parser
 
@@ -42,8 +43,8 @@ class TestPmdParser(TestBase):
         # 面リストが空でないことを確認
         self.assertGreater(len(self.parsed_data.faces), 0)
         face = self.parsed_data.faces[0]
-        self.assertIsInstance(face, tuple)
-        self.assertEqual(len(face), 3)
+        self.assertIsInstance(face, PmdFace)
+        self.assertEqual(len(face.indices), 3)
 
     def test_parse_pmd_materials(self):
         """PMD材質データが正しく解析されることをテストする。"""
