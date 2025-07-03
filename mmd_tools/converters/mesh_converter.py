@@ -1,5 +1,7 @@
 import os
 import maya.cmds as cmds
+from mmd_tools.core.pmd_parser import PmdParser
+from mmd_tools.core.pmx_parser import PmxParser
 from ..core import maya_utils
 from .. import settings
 
@@ -18,7 +20,7 @@ class MeshConverter:
         self.pmx_filepath = pmx_filepath
         self.texture_dir = os.path.dirname(pmx_filepath)
 
-    def convert_pmx_mesh(self, pmx_data):
+    def convert_pmx_mesh(self, pmx_data: PmxParser):
         """
         PMXのメッシュデータをMayaのメッシュノードに変換する。
 
@@ -52,7 +54,7 @@ class MeshConverter:
         cmds.select(model_group)
         return model_group
 
-    def convert_pmd_mesh(self, pmd_data):
+    def convert_pmd_mesh(self, pmd_data: PmdParser):
         """
         PMDのメッシュデータをMayaのメッシュノードに変換する。
 
@@ -85,8 +87,6 @@ class MeshConverter:
 
         cmds.select(model_group)
         return model_group
-
-        return None
 
     def _create_separated_meshes(self, model_name, all_vertices, all_faces, all_materials, all_textures, model_group):
         """

@@ -1,9 +1,9 @@
 import os
 
-from tests.common.test_base import TestBase
-from mmd_tools.io import pmx_exporter
+from tests.common.maya_test_base import MayaTestBase
+# from mmd_tools.io import export_pmx_file
 
-class TestPmxExporter(TestBase):
+class TestPmxExporter(MayaTestBase):
 
     def setUp(self):
         super().setUp()
@@ -21,5 +21,5 @@ class TestPmxExporter(TestBase):
         # TODO: Mayaシーンにダミーのメッシュ、ボーン、モーフ、物理演算、材質などを設定する。
         # TODO: pmx_exporter.export_pmx_modelを呼び出す。
         # TODO: エクスポートされたPMXファイルが存在し、その内容が期待通りであることをアサートする。
-        self.assertTrue(True)  # Placeholder assertion, replace with actual test logic
+        # self.assertTrue(True)  # Placeholder assertion, replace with actual test logic
         pass

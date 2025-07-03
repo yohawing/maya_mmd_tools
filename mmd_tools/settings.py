@@ -149,6 +149,24 @@ class Settings(UserDict):
                 
         return value
 
+    def set(self, key_path, value):
+        """
+        ドット記法を使用して設定値を設定します。
+
+        Args:
+            key_path (str): ドットで区切られたキーパス (例: 'import.physics.import_physics')
+            value: 設定する値
+        """
+        keys = key_path.split('.')
+        d = self.data
+        
+        for key in keys[:-1]:
+            if key not in d:
+                d[key] = {}
+            d = d[key]
+        
+        d[keys[-1]] = value
+        self.save()
 
 # Singleton instance for global access
 settings = Settings()

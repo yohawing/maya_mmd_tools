@@ -8,7 +8,7 @@ class TestPmxParser(TestBase):
     def setUp(self):
         super().setUp()
         self.dummy_pmx_path = os.path.join(self.temp_dir, "test_model.pmx")
-        self.pmx_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "Lumine.pmx")
+        self.pmx_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "Lumine", "荧.pmx")
         self.parsed_data = mmd_parser.parse_mmd_file(self.pmx_file_path)
 
     def tearDown(self):

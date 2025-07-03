@@ -31,12 +31,15 @@ class PmdParser:
         self.rigid_bodies = []
         self.joints = []
 
-    def parse_file(self, file_path):
+    def parse_file(self, file_path) -> 'PmdParser':
         """
         指定されたPMDファイルを読み込み、各セクションを解析してデータを格納する。
 
         Args:
             file_path (str): 解析するPMDファイルのパス。
+
+        Returns:
+            PmdParser: メソッドチェーニングをサポートするための自身のインスタンス。
 
         Raises:
             FileNotFoundError: ファイルが見つからない場合。
@@ -150,7 +153,9 @@ class PmdParser:
                         self.joints.append(joint)
 
                 except Exception:
-                    return
+                    return self
 
             except struct.error as e:
                 raise MMDParseException(f"Failed to parse PMD file: {file_path}") from e
+        
+        return self

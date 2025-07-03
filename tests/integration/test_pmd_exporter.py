@@ -1,9 +1,9 @@
 import os
 
-from tests.common.test_base import TestBase
-from mmd_tools.io import pmd_exporter
+from tests.common.maya_test_base import MayaTestBase
+# from mmd_tools.io import export_pmd_file
 
-class TestPmdExporter(TestBase):
+class TestPmdExporter(MayaTestBase):
 
     def setUp(self):
         super().setUp()

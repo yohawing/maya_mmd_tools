@@ -14,6 +14,7 @@ class TestMayaUtils(MayaTestBase):
         self.assertEqual(maya_utils.sanitize_text("name "), "name_space_")
 
     def test_create_mesh_with_uvs(self):
+        """UV付きのメッシュを作成できるか"""
         name = "test_mesh"
         vertices = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
         face_counts = [4]
@@ -35,6 +36,7 @@ class TestMayaUtils(MayaTestBase):
         self.assertEqual(len(uv_coords), 8)
 
     def test_create_material(self):
+        """マテリアルを作成できるか"""
         material_name = "test_material"
         color = (0.5, 0.6, 0.7, 0.8)
         
@@ -57,6 +59,7 @@ class TestMayaUtils(MayaTestBase):
         self.assertAlmostEqual(transparency[2], expected_transparency, places=5)
 
     def test_assign_material(self):
+        """メッシュにマテリアルを割り当てられるか"""
         mesh_name = "test_mesh_for_material"
         material_name = "test_material_to_assign"
         
