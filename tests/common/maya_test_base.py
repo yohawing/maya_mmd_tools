@@ -33,6 +33,9 @@ class MayaTestBase(TestBase):
     Base class for Maya integration tests.
     Handles setting up and tearing down the Maya scene.
     """
+    plugins_loaded = []  # List to keep track of loaded plugins
+    files_created = []  # List to keep track of created files
+    
 
     @classmethod
     def setUpClass(cls):

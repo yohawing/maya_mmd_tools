@@ -6,7 +6,15 @@ import argparse
 from pathlib import Path
 import platform
 
+# プロジェクトルートをsys.pathに追加して、testsモジュールをインポートできるようにする
 ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+# これで、testsモジュールを安全にインポートできる
+from tests.common.custom_test_runner import CustomTestRunner, enable_windows_ansi_support
+
+# enable_windows_ansi_supportは既にimportしているので不要
 
 def get_maya_location(maya_version: int) -> Path:
     """Mayaがインストールされている場所を取得します。
@@ -62,10 +70,7 @@ def run_tests():
     This script can run either unit or integration tests, and can filter
     tests by a specific name provided via the command line.
     """
-    # Add the project root to sys.path to ensure modules can be imported.
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+    # プロジェクトルートはすでにスクリプトの開始時にsys.pathに追加されています。
 
     # Set up argument parser
     parser = argparse.ArgumentParser(description='Run tests for the MMD Tools project.')
@@ -140,16 +145,13 @@ def run_tests():
     print(f"Running {suite.countTestCases()} test(s)...")
 
     if args.type == 'unit':
-        runner = unittest.TextTestRunner(verbosity=2)
+        # カラー対応のテストランナーを使用
+        runner = CustomTestRunner(verbosity=2)
         result = runner.run(suite)
+        # 失敗時のみ追加情報を表示（カラーテストランナーでは既に詳細を表示済み）
         if not result.wasSuccessful():
-            print(f"テストの実行に失敗しました。")
-            print("失敗したテスト:")
-            for test, reason in result.failures + result.errors:
-                print(f"  {test.id()}: {reason}")
-            print("テストの失敗数:", len(result.failures))
-            print("テストのエラー数:", len(result.errors))
             # sys.exit(1)
+            pass
     elif args.type == 'integration':
         # 統合テストはMaya環境で実行する必要があるため、mayapyを使用して実行します。
 
@@ -187,4 +189,6 @@ def run_tests():
 
 
 if __name__ == '__main__':
+    # Windows環境でもANSIカラーコードを有効化
+    enable_windows_ansi_support()
     run_tests()

@@ -2,7 +2,7 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 import os
 
-from mmd_tools.config import settings
+from mmd_tools.config.settings import settings
 
 from . import utils
 
@@ -92,7 +92,8 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
     
     # UVセットを作成
     if uvs and face_uv_connects:
-        uv_set_name = settings.get('import.model.uv_set_name')
+        # TODO: UVセットが複数ある場合に対応する。
+        uv_set_name = settings.get("import.model.uv_set_name").replace("#", "1")
         mesh_fn.createUVSet(uv_set_name)
         
         # UV座標をMFloatArrayに変換

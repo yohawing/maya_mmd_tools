@@ -9,6 +9,7 @@ import sys
 import unittest
 import maya.cmds as cmds
 from tests.common.maya_test_base import Settings
+from tests.common.custom_test_runner import CustomTestRunner, enable_windows_ansi_support
 
 # The environment variable that signifies tests are being run with the custom TestResult class.
 TESTING_VAR = "MMD_TOOLS_TEST"
@@ -23,7 +24,11 @@ def run_tests(test=None, test_suite=None):
     if test_suite is None:
         test_suite = get_tests(test)
 
-    runner = unittest.TextTestRunner(verbosity=2, )
+    # Windows環境でもANSIカラーコードを有効化
+    enable_windows_ansi_support()
+    
+    # カラー対応のテストランナーを使用
+    runner = CustomTestRunner(verbosity=2)
     runner.failfast = False
     runner.buffer = True
     runner.run(test_suite)
@@ -84,13 +89,13 @@ def run_tests_from_commandline():
         if p not in realsyspath:
             sys.path.insert(0, p)
 
-    # run_tests()
+    run_tests()
 
     # Starting Maya 2016, we have to call uninitialize
     if float(cmds.about(v=True)) >= 2016.0:
         maya.standalone.uninitialize()
 
-def add_to_path(path):
+def add_to_path(path) -> bool:
     """指定されたパスをシステムパスに追加します。
 
     @param path: 追加するパス。
@@ -99,55 +104,7 @@ def add_to_path(path):
     if os.path.exists(path) and path not in sys.path:
         sys.path.insert(0, path)
         return True
-#     return False
-
-# class TestResult(unittest.TextTestResult):
-#     """各テスト間での新規ファイル作成やスクリプトエディタの出力抑制などを行うためにテスト結果をカスタマイズします。"""
-
-#     def __init__(self, stream, descriptions, verbosity):
-#         super(TestResult, self).__init__(stream, descriptions, verbosity)
-#         self.successes = []
-
-#     def startTestRun(self):
-#         """テスト実行前に呼び出されます。"""
-#         super(TestResult, self).startTestRun()
-#         # カスタムランナーを通じてテストが実行されていることを指定する環境変数を作成します。
-#         os.environ[TESTING_VAR] = "1"
-
-#         ScriptEditorState.suppress_output()
-#         if Settings.buffer_output:
-#             # テスト実行中のログを無効にします。criticalを無効にすることで、
-#             # critical以下のすべてのレベルのログも無効になります
-#             logging.disable(logging.CRITICAL)
-
-#     def stopTestRun(self):
-#         """すべてのテスト実行後に呼び出されます。"""
-#         if Settings.buffer_output:
-#             # ログ状態を復元
-#             logging.disable(logging.NOTSET)
-#         ScriptEditorState.restore_output()
-#         if Settings.delete_files and os.path.exists(Settings.temp_dir):
-#             shutil.rmtree(Settings.temp_dir)
-
-#         del os.environ[TESTING_VAR]
-
-#         super(TestResult, self).stopTestRun()
-
-#     def stopTest(self, test):
-#         """個々のテスト実行後に呼び出されます。
-
-#         @param test: 実行されたばかりのTestCase。"""
-#         super(TestResult, self).stopTest(test)
-#         if Settings.file_new:
-#             cmds.file(f=True, new=True)
-
-#     def addSuccess(self, test):
-#         """成功したテストのリストを保存できるように、基本のaddSuccessメソッドをオーバーライドします。
-
-#         @param test: 正常に実行されたTestCase。"""
-#         super(TestResult, self).addSuccess(test)
-#         self.successes.append(test)
-
+    return False
 
 if __name__ == "__main__":
     print("Running tests from command line...")

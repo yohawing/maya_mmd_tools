@@ -149,12 +149,6 @@ class Settings(UserDict):
                 
         return value
 
-    def __getattr__(self, name):
-        """
-        属性アクセスをサポートします。
-        例: settings.import_physics_import_physics
-        """
-        return self.get(name.replace('_', '.'))
 
 # Singleton instance for global access
 settings = Settings()

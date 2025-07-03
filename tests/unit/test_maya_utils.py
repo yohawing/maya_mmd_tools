@@ -6,14 +6,12 @@ from tests.common.maya_test_base import MayaTestBase
 class TestMayaUtils(MayaTestBase):
 
     def test_sanitize_maya_name(self):
-        self.assertEqual(maya_utils.sanitize_maya_name("valid_name"), "valid_name")
-        self.assertEqual(maya_utils.sanitize_maya_name("1name"), "m_1name")
-        self.assertEqual(maya_utils.sanitize_maya_name("invalid-name!"), "invalid_name_")
-        self.assertEqual(maya_utils.sanitize_maya_name(""), "default_material")
-        self.assertEqual(maya_utils.sanitize_maya_name(None), "default_material")
-        self.assertEqual(maya_utils.sanitize_maya_name(" "), "_")
-        self.assertEqual(maya_utils.sanitize_maya_name(" name"), "_name")
-        self.assertEqual(maya_utils.sanitize_maya_name("name "), "name_")
+        """ASCII変換でうまくサニタイズされるか"""
+        self.assertEqual(maya_utils.sanitize_text("髪"), "hair")
+        self.assertEqual(maya_utils.sanitize_text("invalid-name!"), "invalid_dash_name!")
+        self.assertEqual(maya_utils.sanitize_text(" "), "_space_")
+        self.assertEqual(maya_utils.sanitize_text(" name"), "_space_name")
+        self.assertEqual(maya_utils.sanitize_text("name "), "name_space_")
 
     def test_create_mesh_with_uvs(self):
         name = "test_mesh"
