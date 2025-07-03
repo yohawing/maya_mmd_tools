@@ -76,5 +76,28 @@ class TestMayaUtils(MayaTestBase):
         shading_groups = cmds.listConnections(cmds.listRelatives(mesh_name, shapes=True)[0], type='shadingEngine')
         self.assertIn(shader_node + "SG", shading_groups)
 
+
+    def test_set_custom_attributes(self):
+        """カスタムアトリビュートを設定できるか"""
+        mesh_name = "test_mesh_for_custom_attr"
+        cmds.polyCube(name=mesh_name)
+        
+        attr_name = "customAttr"
+        data = {
+            "mmd_bytes": b'PMX',
+            "mmd_file_version": 2.0,
+            "mmd_utf8": "裙花蕊颜顔",
+            "mmd_string": "Test Model EN",
+            "mmd_bool": True,
+            "mmd_int": 42
+        }
+        maya_utils.set_custom_attributes(mesh_name, data)
+
+        # Verify the attribute exists and has the correct value
+        for key, value in data.items():
+            self.assertTrue(cmds.attributeQuery(key, node=mesh_name, exists=True))
+            attr_value = cmds.getAttr(mesh_name + "." + key)
+            self.assertEqual(attr_value, value.decode('utf-8') if isinstance(value, bytes) else value)
+
 if __name__ == '__main__':
     unittest.main()

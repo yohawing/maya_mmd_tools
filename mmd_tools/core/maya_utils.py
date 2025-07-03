@@ -227,15 +227,40 @@ def set_custom_attributes(object_name, attributes):
 
         # https://help.autodesk.com/cloudhelp/2023/JPN/Maya-Tech-Docs/CommandsPython/addAttr.html
         # データ型を自動判別
-        dataType = 'string'
-        if isinstance(attr_value, (int, float)):
-            dataType = 'double' if isinstance(attr_value, float) else 'long'
-            attr_value = str(attr_value)
+        which = None
+        attr_type = None
+        if isinstance(attr_value, int):
+            attr_type = "long"
+            which = "attributeType"
+        elif isinstance(attr_value, float):
+            attr_type = "float"
+            which = "attributeType"
         elif isinstance(attr_value, bool):
-            dataType = 'bool'
-            attr_value = 'true' if attr_value else 'false'
+            attr_type = "bool"
+            which = "attributeType"
+        elif isinstance(attr_value, bytes):
+            attr_type = "string"
+            attr_value = attr_value.decode('utf-8')
+            which = "dataType"
+        elif isinstance(attr_value, str):
+            attr_type = "string"
+            which = "dataType"
+        elif isinstance(attr_value, list):
+            if all(isinstance(i, float) for i in attr_value):
+                attr_type = "doubleArray"
+                which = "dataType"
+            elif all(isinstance(i, int) for i in attr_value):
+                attr_type = "longArray"
+                which = "dataType"
+            else:
+                print(f"Unsupported list type for attribute '{attr_name}' on '{object_name}': {attr_value}")
+                continue
 
         if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
-            cmds.addAttr(object_name, longName=attr_name, dataType=dataType, category='mmd')
-        cmds.setAttr(f"{object_name}.{attr_name}", attr_value, type=dataType)
+            if which == "attributeType":
+                cmds.addAttr(object_name, longName=attr_name, attributeType=attr_type)
+                cmds.setAttr(f"{object_name}.{attr_name}", attr_value)
+            if which == "dataType":
+                cmds.addAttr(object_name, longName=attr_name, dataType=attr_type)
+                cmds.setAttr(f"{object_name}.{attr_name}", attr_value, type=attr_type)
 
