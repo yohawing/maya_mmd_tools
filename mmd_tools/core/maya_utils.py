@@ -2,7 +2,7 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 import os
 
-from mmd_tools.config.settings import settings
+from mmd_tools.settings import settings
 
 from . import utils
 
@@ -177,3 +177,20 @@ def assign_material(mesh_name, shader_node):
     cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
     # メッシュをシェーディンググループに割り当て
     cmds.sets(mesh_name, edit=True, forceElement=sg_name)
+
+def assign_material_to_faces(mesh_name, shader_node, face_selection):
+    """
+    メッシュの特定の面にマテリアルを割り当てます。
+
+    Args:
+        mesh_name (str): マテリアルを割り当てるメッシュの名前。
+        shader_node (str): 割り当てるシェーダーノード名。
+        face_selection (str): 選択する面の指定。例: "mesh_name.f[1:10]"
+    """
+    # マテリアル専用のシェーディンググループを作成
+    sanitized_shader_name = shader_node + "SG"
+    sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
+    # シェーダーをシェーディンググループに接続
+    cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
+    # 指定した面をシェーディンググループに割り当て
+    cmds.sets(face_selection, edit=True, forceElement=sg_name)

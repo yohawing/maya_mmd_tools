@@ -13,6 +13,7 @@ from .pmd_data.morph import PmdMorph
 from .pmd_data.display_frame import PmdDisplayFrame
 from .pmd_data.rigid_body import PmdRigidBody
 from .pmd_data.joint import PmdJoint
+from .pmd_data.face import PmdFace
 
 class PmdParser:
     """
@@ -59,7 +60,9 @@ class PmdParser:
                 # Face
                 face_count = struct.unpack('<I', f.read(4))[0]
                 for _ in range(face_count // 3):
-                    self.faces.append(struct.unpack('<HHH', f.read(6)))
+                    face = PmdFace()
+                    face.parse(f)
+                    self.faces.append(face)
 
                 # Material
                 material_count = struct.unpack('<I', f.read(4))[0]

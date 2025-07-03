@@ -45,7 +45,7 @@ class Settings(UserDict):
     def _load_defaults_from_json(self):
         """デフォルトの設定をJSONファイルから読み込みます。"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        json_path = os.path.join(current_dir, "default_settings.json")
+        json_path = os.path.join(current_dir, "config", "default_settings.json")
 
         if not os.path.exists(json_path):
             return {}

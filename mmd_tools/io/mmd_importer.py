@@ -1,10 +1,11 @@
 import os
 import maya.cmds as cmds
+from .. import settings
 from ..core.mmd_parser import parse_mmd_file
 from ..core import pmx_parser, pmd_parser, vmd_parser
 from ..converters import mesh_converter
 
-def import_mmd_file(filepath, scale=1.0):
+def import_mmd_file(filepath):
     """
     MMDファイルを解析し、Mayaシーンにインポートします。
 
@@ -15,6 +16,9 @@ def import_mmd_file(filepath, scale=1.0):
     Returns:
         bool: インポートが成功したかどうか。
     """
+
+    scale = settings.get("import.general.scale_factor", 1.0)
+
     try:
         # 汎用パーサーでファイルを解析
         parsed_data = parse_mmd_file(filepath)
@@ -42,7 +46,20 @@ def import_mmd_file(filepath, scale=1.0):
         elif isinstance(parsed_data, pmd_parser.PmdParser):
             cmds.warning("PMD import is not yet fully implemented.")
             # TODO: PMDコンバーターを呼び出す
-            return False
+
+            converter = mesh_converter.MeshConverter(filepath)
+            mesh_group = converter.convert_pmd_mesh(parsed_data)
+
+            print(f"Successfully imported {os.path.basename(filepath)}")
+
+            # スケールを適用
+            if mesh_group and scale != 1.0:
+                cmds.setAttr(mesh_group + ".scaleX", scale)
+                cmds.setAttr(mesh_group + ".scaleY", scale)
+                cmds.setAttr(mesh_group + ".scaleZ", scale)
+                cmds.makeIdentity(mesh_group, apply=True, scale=True)
+
+            return True
 
         elif isinstance(parsed_data, vmd_parser.VmdParser):
             cmds.warning("VMD import is not yet implemented.")
