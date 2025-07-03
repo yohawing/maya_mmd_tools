@@ -2,6 +2,8 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 import os
 
+from mmd_tools.config import settings
+
 from . import utils
 
 
@@ -20,7 +22,6 @@ def sanitize_text(name):
         return "unnamed"
     
     converted_name = utils.convert_unicode_to_maya_safe(name)
-    print(f"Sanitized name: {name} to {converted_name}")  # デバッグ用ログ
     return converted_name or "default_name"
 
 def sanitize_texture_path(texture_path, texture_dir):
@@ -91,7 +92,7 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
     
     # UVセットを作成
     if uvs and face_uv_connects:
-        uv_set_name = "map1"
+        uv_set_name = settings.get('import.model.uv_set_name')
         mesh_fn.createUVSet(uv_set_name)
         
         # UV座標をMFloatArrayに変換
