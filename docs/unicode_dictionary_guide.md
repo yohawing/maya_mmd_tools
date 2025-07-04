@@ -39,6 +39,31 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 - **デフォルト辞書**: `mmd_tools/config/unicode_dictionary.json`
 - **カスタム辞書**: `UnicodeToAsciiConverter(dictionary_path="path/to/your/dict.json")`でカスタム辞書を使用可能
 
+## 辞書ファイルのパースの方針
+
+### パースの流れ
+1. 単語リストの処理：完全一致を探す
+2. 数字の処理：全角数字を半角に変換
+3. Prefix、Suffixの処理：
+4. 辞書に無い文字列の処理：ハッシュ化して一意名を生成
+
+### Prefix、Suffixについて
+
+- 辞書にPrefixとSuffixを追加できる。
+- 設定したものは、メインの辞書の処理
+- 先頭の”左””右”は自動的に`left_`や`right_`に変換
+- 最後の数字（全角数字含む）は自動的に`_{数字}`に変換。例: `左腕１` → `left_arm_1`
+
+### パース例
+
+- `左腕1` → `left_arm_1`
+- `右腕2` → `right_arm_2`
+- `上半身3` → `spine3`
+- `左腕捩1` → `left_arm_twist_1`
+- `右つまさきＩＫ先` → `right_toe_ik_end`
+- `肩` → `shoulder`
+- `肩P` → `shoulder_p`
+
 ## 辞書ファイルの構造
 
 ```json
@@ -80,22 +105,17 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 from mmd_tools.core import utils
 
 # Unicode文字列をMaya安全名に変換
-converted = utils.convert_japanese_to_maya_safe("ボーン")
+converted = utils.convert_utf8_to_ascii("ボーン")
 print(converted)  # "bone"
 
-converted = utils.convert_japanese_to_maya_safe("头部")
+converted = utils.convert_utf8_to_ascii("头部")
 print(converted)  # "head_cn"
 
 # 辞書にない文字列は自動的にハッシュ化
-converted = utils.convert_japanese_to_maya_safe("未知の文字列")
+converted = utils.convert_utf8_to_ascii("未知の文字列")
 print(converted)  # "#5L2g5a6a"
 
-# Maya安全名を元の文字列に復元
-restored = utils.restore_maya_safe_to_japanese("bone")
-print(restored)  # "ボーン"
 
-restored = utils.restore_maya_safe_to_japanese("utfb64_...")
-print(restored)  # "未知の文字列"
 ```
 
 ### 2. 辞書エントリの追加
@@ -121,18 +141,17 @@ converter = UnicodeToAsciiConverter(dictionary_path="path/to/custom_dict.json")
 
 # 変換実行
 converted = converter.convert("ボーン")
-restored = converter.restore("bone")
 ```
 ### 4. バッチ変換
 
 ```python
 # 複数の文字列を一度に変換
 names = ["ボーン", "头部", "未知の名前"]
-converted_batch = utils.convert_japanese_to_maya_safe_batch(names)
+converted_batch = utils.convert_utf8_to_ascii_batch(names)
 print(converted_batch)  # ["bone", "head_cn", "utfb64_..."]
 
 # 復元もバッチで実行可能
-restored_batch = utils.restore_maya_safe_to_japanese_batch(converted_batch)
+restored_batch = utils.restore_ascii_to_utf8_batch(converted_batch)
 print(restored_batch)  # ["ボーン", "头部", "未知の名前"]
 ```
 
@@ -159,39 +178,8 @@ utils.export_dictionary("exported_dictionary.json")
 
 - 英語名は **ASCII文字のみ** を使用してください
 - Mayaで無効な文字（`:`, ` `, `-`, `.`, `|`）は自動的に置換されます
-- 一意性を保つため、必要に応じて言語識別子を付加してください（例: `_cn`, `_kr`）
 - 英語名はMayaのノード名として使用されるため、わかりやすい名前にしてください
 
-## よく使われるMMD用語集
-
-### 日本語用語
-| 日本語 | 推奨英語名 | 分類 |
-|--------|------------|------|
-| ボーン | bone | 基本 |
-| 全ての親 | master | ボーン |
-| センター | center | ボーン |
-| 上半身 | upper_body | ボーン |
-| 下半身 | lower_body | ボーン |
-| 左腕 | left_arm | ボーン |
-| 右腕 | right_arm | ボーン |
-| 頭 | head | ボーン |
-| 髪 | hair | ボーン/材質 |
-| あ | a_sound | モーフ |
-| い | i_sound | モーフ |
-| 笑い | smile | モーフ |
-| ウィンク | wink | モーフ |
-| 肌 | skin | 材質 |
-| 服 | clothes | 材質 |
-| 目 | eye | 材質 |
-
-### 中国語用語
-| 中国語 | 推奨英語名 | 分類 |
-|--------|------------|------|
-| 头部 | head_cn | ボーン |
-| 手臂 | arm_cn | ボーン |
-| 腿部 | leg_cn | ボーン |
-| 身体 | body_cn | ボーン |
-| 材质 | material_cn | 材質 |
 
 ## カスタム辞書ファイルの編集例
 
@@ -202,7 +190,7 @@ utils.export_dictionary("exported_dictionary.json")
   "dictionary": {
     "カスタムボーン": "custom_bone",
     "特殊IK": "special_ik",
-    "補助ボーン01": "helper_bone_01"
+    "補助ボーン": "helper_bone"
   }
 }
 ```
@@ -230,6 +218,20 @@ utils.export_dictionary("exported_dictionary.json")
     "%": "_percent_", 
     "&": "_and_",
     "@": "_at_"
+  }
+}
+```
+
+### 間違った例
+```json
+{
+  "dictionary": {
+    "ボーン１": "bone",
+    "左腕": "left arm",  // スペースはMaya無効文字
+    "右腕": "right-arm", // ハイフンはMaya無効文字
+    "左親指１": "left_thumb_1", // 数字は自動的に_#に変換される
+    "左髪ＩＫ先": "left_hair_ik_end", // 先頭の
+    "手臂": "arm_cn"
   }
 }
 ```
