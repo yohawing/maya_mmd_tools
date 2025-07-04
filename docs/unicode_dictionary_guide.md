@@ -6,7 +6,7 @@ maya_mmd_toolsでは、MMDの多言語名（日本語・中国語・韓国語等
 
 このシステムは以下の特徴があります：
 - **言語に依存しないフラット構造**: どの言語も同じ辞書で管理
-- **Base64フォールバック**: 辞書にない文字列は自動的にBase64エンコード
+- **ハッシュフォールバック**: 辞書にない文字列は自動的にハッシュ化
 - **Maya安全名保証**: 変換結果は必ずMayaで使用可能な文字のみ
 - **双方向変換**: 変換した名前を元の文字列に復元可能
 
@@ -23,10 +23,12 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 
 これらを解決するために、
 - パース時点では、CP932をUTF-8かUTF-16LEにしてメモリに保持
+- ExtraAttributeにはUTF-8が使えるので変換前の文字列の保持をする
+- パスの解決はWindowsではShift-JIS を使用するため、範囲外の文字によるパスのエラーはユーザーに解決して貰う必要がある。
 - UTFをASCIIに変換するためのロジックを、
 - - 辞書マップによる固定変換（MMDでよく使われる文字の指定）
-- - それ以外はprefix+Base64による機械的な相互変換
-- エクスポート時に、Base64エンコードされた言語を多言語に更に変換できるようにする。（例：中→B64→英）
+- - それ以外はprefix+ハッシュによる機械的な変換によって一意性と作業性の担保
+- エクスポート時に、ExtraAttributeの値を参照する。
 
 この手順によって対応する。
 
@@ -84,9 +86,9 @@ print(converted)  # "bone"
 converted = utils.convert_japanese_to_maya_safe("头部")
 print(converted)  # "head_cn"
 
-# 辞書にない文字列は自動的にBase64エンコード
+# 辞書にない文字列は自動的にハッシュ化
 converted = utils.convert_japanese_to_maya_safe("未知の文字列")
-print(converted)  # "utfb64_..."
+print(converted)  # "#5L2g5a6a"
 
 # Maya安全名を元の文字列に復元
 restored = utils.restore_maya_safe_to_japanese("bone")
@@ -273,23 +275,23 @@ print(unique_name)  # "bone_2"
 ### 変換プロセス
 
 1. **辞書検索**: まず登録済み辞書で完全一致を検索
-2. **Base64フォールバック**: 辞書にない場合は`utfb64_`プレフィックス付きでBase64エンコード
+2. **ハッシュフォールバック**: 辞書にない場合は`#`プレフィックス付きでハッシュ化し8文字に切り詰める
 3. **Maya安全化**: 結果をMayaで使用可能な文字のみに変換
 
-### Base64エンコードの例
+### ハッシュ化について
 
 ```python
 # 辞書にない文字列
 unknown = "未知の名前"
 converted = converter.convert(unknown)
-# 結果: "utfb64_5pyq55ql44Gu5ZCN5YmN"
-
-# 復元
-restored = converter.restore(converted)
-# 結果: "未知の名前"
+# 結果: "#5L2g5a6a"
 ```
 
-このシステムにより、どのような文字列でも安全にMayaで使用でき、必要に応じて元の文字列を復元できます。
+切り詰める文字数によって、一意性を担保できる確率が変わります。
+8文字で 16^8 = 4,294,967,296 通りの組み合わせが可能です。
+4文字で、 16^4 = 65,536 通りの組み合わせが可能です。
+
+### 変換の確認
 
 ```python
 # 辞書情報の確認
@@ -300,7 +302,7 @@ print(info)
 from mmd_tools.core.name_converter import get_converter
 converter = get_converter()
 encoding_type = converter.get_encoding_type("変換済み名前")
-print(encoding_type)  # "dictionary", "base64", "original"
+print(encoding_type)  # "dictionary", "hash", "original"
 
 # 変換統計の確認
 stats = converter.get_conversion_stats(["name1", "name2", "name3"])
@@ -311,29 +313,5 @@ print(stats)
 
 - 辞書ファイルの変更後は、Mayaプラグインの再読み込みが必要な場合があります
 - 大量の辞書エントリを追加すると、変換処理が遅くなる可能性があります
-- 辞書にない日本語名は自動的にBase64エンコードされます
+- 辞書にない日本語名は自動的にハッシュ化されます
 - カスタム辞書ファイルはバックアップを取ることを推奨します
-
-
-## Maya環境での文字エンコーディング問題
-
-### Shift-JIS (CP932) の制限
-
-Windows版のMayaは内部処理でShift-JIS (CP932) エンコーディングを使用しています。これにより、以下の問題が発生します：
-
-- Shift-JISに含まれない文字（特定の中国語漢字など）が「?」や文字化けとして表示される
-- UTF-8でエンコードされたファイルから読み込んだテキストが正しく処理されない場合がある
-- パスの解決時に、Shift-JISでエンコードできない文字が含まれているとエラーが発生するみたい。テクスチャ名で起きました。
-
-### 対応方法
-
-1. **文字マッピングの利用**：
-   - 中国語の漢字を対応する日本語漢字に変換
-   - 例：'颜' (顔、中国語簡体字) → '顔' (日本語)
-
-2. **文字のサニタイズ**：
-   - Shift-JISでエンコード不可能な文字を検出し、安全な代替文字に置き換える
-   - `mmd_tools.core.maya_utils.sanitize_text_for_maya()` 関数を使用
-
-3. **ファイル読み込み時の注意点**：
-   - テキストファイルを読み込む際は、明示的にUTF-8として開き、処理前に適切な変換を行う
