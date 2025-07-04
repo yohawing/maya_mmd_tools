@@ -1,202 +1,229 @@
 """
 Unicode文字列変換機能のテスト
+(unicode_dictionary_guide.mdの内容に基づき生成)
 """
 
 import os
 import sys
 import unittest
+import sys
+import os
+import json
+
+import test
 
 # テスト対象モジュールのパスを追加
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from mmd_tools.core import utils
 from mmd_tools.core.unicode_converter import UnicodeToAsciiConverter, get_converter
-
+from mmd_tools.core import utils
 
 class TestUnicodeToAsciiConverter(unittest.TestCase):
-    """UnicodeToAsciiConverterのテストクラス"""
-
+    """
+    UnicodeToAsciiConverterのテストクラス
+    unicode_dictionary_guide.md の仕様に基づきテストを行う
+    """
+    
     def setUp(self):
         """各テスト前の初期化"""
-        self.converter = UnicodeToAsciiConverter()
+        # テスト用に一時的なカスタム辞書ファイルを作成
+        self.custom_dict_path = "test_custom_dict.json"
+        custom_dict_data = {
+            "_meta": {
+                "version": "1.0",
+                "description": "Test Dictionary for Unicode Converter",
+                "last_updated": "2025-01-01",
+                "languages": ["jp", "en", "zh-cn", "zh-tw"]
+            },
+            "dictionary": [
+                ["ボーン", "bone", "骨骼", "骨骼"],
+                ["腕", "arm", "手臂", "手臂"],
+                ["上半身", "spine", "上半身", "上半身"],
+                ["つまさき", "toe", "脚趾", "腳趾"],
+                ["肩", "shoulder", "肩", "肩"],
+                ["头部", "head", "头部", "頭部"],
+                ["手臂", "arm", "手臂", "手臂"],
+                ["元素", "element", "元素", "元素"],
+                ["顔", "face", "颜", "顏"],
+                ["人差指", "finger_index", "食指", "食指"],
+                ["つま先", "toe", "脚趾", "腳趾"],
+                ["つま先ＩＫ", "toe_ik", "脚尖IK", "左腳尖IK"]
+            ],
+            "prefix": [
+                ["左", "left_", "左", "左"],
+                ["右", "right_", "右", "右"]
+            ],
+            "suffix": [
+                ["先", "_end", "末端", "末端"],
+                ["ＩＫ", "_ik", "IK", "IK"],
+                ["捩", "_twist", "扭", "扭"],
+            ],
+            "maya_invalid_chars": {
+                "+": "_plus_",
+                "|": "_pipe_"
+            }
+        }
+        with open(self.custom_dict_path, "w", encoding="utf-8") as f:
+            json.dump(custom_dict_data, f, ensure_ascii=False, indent=2)
+        
+        # カスタム辞書を使用してコンバータを初期化
+        self.converter = UnicodeToAsciiConverter(dictionary_path=self.custom_dict_path)
+
+    def tearDown(self):
+        """各テスト後のクリーンアップ"""
+        if os.path.exists(self.custom_dict_path):
+            os.remove(self.custom_dict_path)
 
     def test_dictionary_conversion(self):
-        """辞書変換のテスト"""
-        # 日本語 -> 英語
+        """辞書ベースの変換をテスト"""
+        # 日本語 -> ASCII
         self.assertEqual(self.converter.convert("ボーン"), "bone")
-        self.assertEqual(self.converter.convert("左腕"), "left_arm")
-        self.assertEqual(self.converter.convert("頭"), "head")
-
-        # 中国語 -> 英語
-        self.assertEqual(self.converter.convert("骨骼"), "bone")
-        self.assertEqual(self.converter.convert("左臂"), "left_arm")
+        self.assertEqual(self.converter.convert("顔"), "face")
+        # 中国語 -> ASCII
         self.assertEqual(self.converter.convert("头部"), "head")
+        self.assertEqual(self.converter.convert("颜"), "face")
 
-        # 英語 -> 日本語（最初に登録されたもの）
-        self.assertEqual(self.converter.restore("bone"), "ボーン")
-        self.assertEqual(self.converter.restore("left_arm"), "左腕")
-        self.assertEqual(self.converter.restore("head"), "頭")
 
-    def test_base64_conversion(self):
-        """Base64変換のテスト"""
-        # 辞書にない文字列
-        test_text = "未知の名前"
+    def test_hash_conversion(self):
+        """辞書にない文字列のハッシュ変換をテスト"""
+        test_text = "未知の文字列"
         converted = self.converter.convert(test_text)
 
-        # Base64プレフィックスが付いているか
-        self.assertTrue(converted.startswith("utfb64_"))
+        # ドキュメント仕様: 'HASH'で始まり、8文字のハッシュが続く
+        self.assertTrue(converted.startswith("HASH"))
+        self.assertEqual(len(converted), 12) # 'HASH' + 8文字
+        self.assertEqual(converted, "HASH66d0744d")
 
-        # 復元できるか
-        restored = self.converter.restore(converted)
-        self.assertEqual(restored, test_text)
+        test_texts = [
+            "未知の文字列", # 辞書にない文字列
+            "右未知の文字列1先", # 接頭語と接尾語を含む文字列
+            "左未知の文字列捩1" # 接頭語と接尾語+数字を含む文字列
+        ]
+        results = ["HASH66d0744d", "right_HASH66d0744d_end_1", "left_HASH66d0744d_twist_1"]
+        for i, test_text in enumerate(test_texts):
+            converted = self.converter.convert(test_text)
+            self.assertEqual(converted, results[i])
 
-    def test_ascii_passthrough(self):
-        """ASCII文字列のパススルーテスト"""
-        test_text = "bone_custom"
-        converted = self.converter.convert(test_text)
-        restored = self.converter.restore(converted)
-
-        # ASCII文字列はそのまま通る
-        self.assertEqual(converted, test_text)
-        self.assertEqual(restored, test_text)
+    def test_prefix_suffix_number_conversion(self):
+        """接頭辞・接尾辞・数字の自動変換をテスト"""
+        # パース例に基づいたテスト
+        self.assertEqual(self.converter.convert("左腕1"), "left_arm_1")
+        self.assertEqual(self.converter.convert("右腕2"), "right_arm_2")
+        self.assertEqual(self.converter.convert("上半身3"), "spine_3")
+        self.assertEqual(self.converter.convert("左腕捩1"), "left_arm_twist_1")
+        self.assertEqual(self.converter.convert("右つまさきＩＫ先"), "right_toe_ik_end")
+        self.assertEqual(self.converter.convert("肩P"), "shoulder_p")
+        self.assertEqual(self.converter.convert("元素+"), "element__plus_")
 
     def test_maya_invalid_chars(self):
-        """Maya無効文字の処理テスト"""
-        test_text = "test:name with.spaces"
+        """Maya無効文字の置換をテスト"""
+        test_cases = {
+            "test:name": "test_name",  # ":"は"_"に変換
+            "test name": "test_name",  # " "は"_"に変換
+            "test-name": "test_name",  # "-"は"_"に変換
+            "test.name": "test_name",  # "."は"_"に変換
+            "test+name": "test_plus_name",  # "+"は"_plus_"に変換
+            "test|name": "test_pipe_name"  # "|"は"_pipe_"に変換
+        }
+        for original, expected in test_cases.items():
+            with self.subTest(original=original):
+                converted = self.converter.convert(original)
+                self.assertEqual(converted, expected)
+
+    def test_ascii_passthrough(self):
+        """ASCII文字列が変更されないことをテスト"""
+        test_text = "ascii_only_name_123"
         converted = self.converter.convert(test_text)
-
-        # 無効文字が置換されているか
-        self.assertNotIn(":", converted)
-        self.assertNotIn(" ", converted)
-        self.assertNotIn(".", converted)
-
-        # 復元時に元に戻るか
+        self.assertEqual(converted, test_text)
         restored = self.converter.restore(converted)
-        self.assertEqual(restored, test_text)
-
-    def test_mixed_content(self):
-        """日本語と英語の混在テスト"""
-        test_text = "左足IK"
-        converted = self.converter.convert(test_text)
-        restored = self.converter.restore(converted)
-
-        # 正しく往復変換できるか
         self.assertEqual(restored, test_text)
 
     def test_batch_conversion(self):
-        """一括変換のテスト"""
-        test_names = ["ボーン", "骨骼", "unknown_name", "髪"]
-        result = self.converter.batch_convert(test_names)
-
-        # 全ての名前が変換されているか
-        self.assertEqual(len(result), len(test_names))
-
+        """一括変換をテスト"""
+        names = ["ボーン", "头部", "未知の名前"]
+        converted_batch = self.converter.batch_convert(names)
+        # batch_convertはリスト形式を返す
+        self.assertIn("bone", converted_batch)
+        self.assertIn("head", converted_batch)
+        self.assertIn("HASH5565828f", converted_batch)
 
     def test_encoding_type_detection(self):
-        """エンコード方式の判定テスト"""
-        # 辞書変換
-        dict_converted = self.converter.convert("ボーン")
-        self.assertEqual(self.converter.get_encoding_type(dict_converted), "dictionary")
+        """エンコード方式の判定をテスト"""
+        # 辞書
+        self.assertEqual(self.converter.get_encoding_type("bone"), "dictionary")
+        # ハッシュ
+        self.assertEqual(self.converter.get_encoding_type(self.converter.convert("未知")), "hash")
+        # オリジナル
+        self.assertEqual(self.converter.get_encoding_type("original_ascii"), "original")
 
-        # Base64変換
-        base64_converted = self.converter.convert("未知の名前")
-        self.assertEqual(self.converter.get_encoding_type(base64_converted), "base64")
+    def test_edge_cases(self):
+        """エッジケースのテスト"""
+        # 空文字列
+        self.assertEqual(self.converter.convert(""), "")
+        # None
+        self.assertEqual(self.converter.convert(None), None)
+        # 数字のみ
+        self.assertEqual(self.converter.convert("12345"), "12345")
+        # 特殊文字のみ
+        self.assertEqual(self.converter.convert("!@#$%^&*()"), "__________")
 
-        # 元の英語
-        original = "bone_custom"
-        self.assertEqual(self.converter.get_encoding_type(original), "original")
+        
+        self.assertEqual(self.converter.convert("左人差指先"), "left_finger_index_end")
+
+        self.assertEqual(self.converter.convert("右腕捩先IK"), "right_arm_twist_end_ik")
+
+
+
+        self.assertEqual(self.converter.convert("左肩P"), "left_shoulder_p")
+
+        self.assertEqual(self.converter.convert("右つま先ＩＫ"), "right_toe_ik")
 
 
 class TestUtilsAPI(unittest.TestCase):
-    """utils.pyのAPIテストクラス"""
+    """utils.pyのAPIが正しく動作するかをテスト"""
 
-    def test_simple_api(self):
-        """シンプルAPIのテスト"""
-        # 基本変換
-        converted = utils.convert_unicode_to_maya_safe("ボーン")
-        restored = utils.restore_maya_safe_to_unicode(converted)
+    def setUp(self):
+        """utils APIテストの初期化"""
+        # utilsはシングルトンのコンバータインスタンスを内部で使用するため、
+        # テスト実行前にリロードして状態をリセットすることが望ましい
+        # ここでは簡単のため、デフォルト辞書での動作を主眼に置く
+        pass
 
-        self.assertEqual(restored, "ボーン")
+    def test_simple_api_conversion(self):
+        """基本的なutils APIの変換"""
+        original = "ボーン"
+        converted = utils.convert_utf8_to_ascii(original)
+        self.assertEqual(converted, "bone")
 
-    # 辞書の順番によるエラーのテスト
-    def test_dictionary_order(self):
-        """辞書の順番によるエラーのテスト"""
-
-        # 辞書の順番が変わると復元できないケース
-        # 例えば、"目" -> "eye" の後に "右目" -> "eye" が登録されている場合
-        # 復元時にどちらが優先されるかを確認する
-
-        test_names = ["右目", "左目"]
-        answer_names = ["right_eye", "left_eye"]
-        converted_names = [utils.convert_unicode_to_maya_safe(name) for name in test_names]
-
-        # 変換結果が期待通りか確認
-        self.assertEqual(converted_names, answer_names)
-
-        # 復元時にどちらが優先されるかを確認
-        for original, converted in zip(test_names, converted_names):
-            restored = utils.restore_maya_safe_to_unicode(converted)
-            self.assertEqual(restored, original)
-
-
-    def test_conversion_combined_string(self):
-        """複合文字列の変換テスト"""
-
-        # 颜2 のような数字付きの名前の変換
-        test_names = ["颜2", "骨骼1", "髪4"]
-        answer_names = ["face2", "bone1", "hair4"]
-        converted_names = [utils.convert_unicode_to_maya_safe(name) for name in test_names]
-
-        self.assertEqual(converted_names, answer_names)
-
-        # 元素+ のような特殊文字を含む名前の変換
-        test_names = ["元素+", "元素-"]
-        answer_names = ["element_plus_", "element_dash_"]
-        converted_names = [utils.convert_unicode_to_maya_safe(name) for name in test_names]
-
-        self.assertEqual(converted_names, answer_names)
+    def test_api_with_prefix_suffix(self):
+        """utils APIでの接頭辞・接尾辞変換をテスト"""
+        original = "左腕1"
+        converted = utils.convert_utf8_to_ascii(original)
+        self.assertEqual(converted, "left_arm_1")
 
     def test_batch_api(self):
-        """一括変換APIのテスト"""
-        test_names = ["ボーン", "骨骼", "髪"]
-
-        # 一括変換
-        convert_result = utils.batch_convert_unicode_names(test_names)
-        self.assertEqual(len(convert_result), 3)
-
-        # 一括復元
-        converted_names = list(convert_result.values())
-        restore_result = utils.batch_restore_unicode_names(converted_names)
-
-        # 元の名前に戻るか確認
-        for original in test_names:
-            converted = convert_result[original]
-            restored = restore_result[converted]
-            # 注意: 同じ英語名の場合、最初に辞書に登録されたものが復元される
-            self.assertIn(restored, test_names)  # いずれかの元の名前に戻る
-
-    def test_detection_api(self):
-        """判定APIのテスト"""
-        # Unicode変換済み
-        converted = utils.convert_unicode_to_maya_safe("ボーン")
-        self.assertTrue(utils.is_unicode_converted_name(converted))
-
-        # 元の英語
-        self.assertFalse(utils.is_unicode_converted_name("bone_custom"))
-
+        """一括変換APIをテスト"""
+        names = ["ボーン", "头部", "未知の名前"]
+        converted = utils.convert_utf8_to_ascii_batch(names)
+        # utils.convert_utf8_to_ascii_batchはリストを返す
+        self.assertIn("bone", converted)
+        self.assertIn("head", converted)
 
 
 class TestSingletonPattern(unittest.TestCase):
     """シングルトンパターンのテスト"""
 
     def test_singleton_instance(self):
-        """グローバルインスタンスが同一かテスト"""
+        """get_converter()が常に同じインスタンスを返すことをテスト"""
         converter1 = get_converter()
         converter2 = get_converter()
-
         self.assertIs(converter1, converter2)
+
+        # 辞書エントリを追加して、シングルトンであることを確認
+        converter1.add_dictionary_entry("シングルトンテスト", "singleton_test")
+        self.assertEqual(converter2.convert("シングルトンテスト"), "singleton_test")
 
 
 if __name__ == '__main__':
-    # テスト実行
     unittest.main()
