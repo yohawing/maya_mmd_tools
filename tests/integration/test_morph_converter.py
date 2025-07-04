@@ -1,9 +1,9 @@
 import os
 
-from tests.common.test_base import TestBase
 from mmd_tools.converters import morph_converter
+from tests.common.maya_test_base import MayaTestBase
 
-class TestMorphConverter(TestBase):
+class TestMorphConverter(MayaTestBase):
 
     def setUp(self):
         super().setUp()

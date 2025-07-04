@@ -8,7 +8,10 @@ def mmd_tools_setup():
 
     # Create a custom menu for MMD Tools
     import mmd_tools.ui as mmd_ui
-    mmd_ui.create_mmd_tools_menu()
+
+    # バッチモード（GUIなし）の場合はメニューを作成しない
+    if not cmds.about(batch=True):
+        mmd_ui.create_mmd_tools_menu()
 
     print("MMD Tools: userSetup initialized.")
 

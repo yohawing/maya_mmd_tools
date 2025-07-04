@@ -39,3 +39,152 @@ def encodeCp932String(string):
         return string.encode("cp932")
     except UnicodeEncodeError:
         return b"\x00" + string.encode("cp932", errors="replace")[1:]
+
+
+# Unicode文字列変換API（シンプルインターフェース）
+def convert_unicode_to_maya_safe(text):
+    """
+    Unicode文字列（日本語・中国語等）をMaya互換ASCII文字列に変換
+    
+    Args:
+        text (str): 変換対象の文字列
+        
+    Returns:
+        str: Maya互換ASCII文字列
+        
+    Examples:
+        >>> convert_unicode_to_maya_safe("ボーン")
+        'bone'
+        >>> convert_unicode_to_maya_safe("骨骼")
+        'bone'
+        >>> convert_unicode_to_maya_safe("左足IK")
+        'utfb64_5bem6Laz...'
+    """
+    from .unicode_converter import get_converter
+    return get_converter().convert(text)
+
+
+def restore_maya_safe_to_unicode(text):
+    """
+    Maya互換ASCII文字列をUnicode文字列に復元
+    
+    Args:
+        text (str): 復元対象の文字列
+        
+    Returns:
+        str: 復元された文字列（Unicode または元の英語）
+        
+    Examples:
+        >>> restore_maya_safe_to_unicode("bone")
+        'ボーン' # 複数候補がある場合は最初に登録されたもの
+        >>> restore_maya_safe_to_unicode("utfb64_...")
+        '左足IK'
+    """
+    from .unicode_converter import get_converter
+    return get_converter().restore(text)
+
+
+def batch_convert_unicode_names(names):
+    """
+    複数のUnicode文字列を一括でMaya互換文字列に変換
+    重複しない名前を保証します
+    
+    Args:
+        names (list): 変換対象文字列のリスト
+        
+    Returns:
+        dict: 元の文字列 -> 変換後文字列のマッピング
+        
+    Examples:
+        >>> batch_convert_unicode_names(["ボーン", "骨骼", "材質01"])
+        {'ボーン': 'bone', '骨骼': 'bone_1', '材質01': 'utfb64_...'}
+    """
+    from .unicode_converter import get_converter
+    return get_converter().batch_convert(names)
+
+
+def batch_restore_unicode_names(names):
+    """
+    複数のMaya互換文字列を一括でUnicode文字列に復元
+    
+    Args:
+        names (list): 復元対象文字列のリスト
+        
+    Returns:
+        dict: 変換後文字列 -> 元の文字列のマッピング
+    """
+    from .unicode_converter import get_converter
+    return get_converter().batch_restore(names)
+
+
+def get_encoding_type(text):
+    """
+    文字列のエンコード方式を判定
+    
+    Args:
+        text (str): 判定対象文字列
+        
+    Returns:
+        str: エンコード方式 ('base64', 'dictionary', 'original')
+        
+    Examples:
+        >>> get_encoding_type("bone")
+        'dictionary'
+        >>> get_encoding_type("utfb64_...")
+        'base64'
+    """
+    from .unicode_converter import get_converter
+    return get_converter().get_encoding_type(text)
+
+
+def is_unicode_converted_name(text):
+    """
+    文字列がUnicodeから変換されたものかチェック
+    
+    Args:
+        text (str): チェック対象文字列
+        
+    Returns:
+        bool: Unicodeから変換された場合True
+    """
+    from .unicode_converter import get_converter
+    converter = get_converter()
+    return converter.is_converted_base64(text) or converter.is_dictionary_converted(text)
+
+
+def add_dictionary_entry(unicode_text: str, ascii_text: str):
+    """
+    辞書エントリを追加します（メモリ内のみ）
+    
+    Args:
+        unicode_text: Unicode文字列  
+        ascii_text: ASCII対訳
+    """
+    from .unicode_converter import get_converter
+    converter = get_converter()
+    converter.add_dictionary_entry(unicode_text, ascii_text)
+
+
+def get_dictionary_info():
+    """
+    辞書情報を取得します
+    
+    Returns:
+        Dict: 辞書情報
+    """
+    from .unicode_converter import get_converter
+    converter = get_converter()
+    return converter.get_dictionary_info()
+
+
+def reload_dictionary(dictionary_path: str = None):
+    """
+    辞書ファイルを再読み込みします
+    
+    Args:
+        dictionary_path: 辞書ファイルのパス
+    """
+    from .unicode_converter import get_converter
+    converter = get_converter()
+    converter._load_dictionary(dictionary_path)
+    converter.clear_cache()

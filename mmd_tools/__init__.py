@@ -13,6 +13,8 @@ from .core.exceptions import MMDParseException
 from .core.pmd_parser import PmdParser
 from .core.pmx_parser import PmxParser
 from .core.vmd_parser import VmdParser
+# settingsモジュールをインポート
+from .settings import settings
 
 # 公開API
 __all__ = [
@@ -20,5 +22,6 @@ __all__ = [
     'MMDParseException',
     'PmdParser',
     'PmxParser',
-    'VmdParser'
+    'VmdParser',
+    'settings'
 ]

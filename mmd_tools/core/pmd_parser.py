@@ -13,6 +13,7 @@ from .pmd_data.morph import PmdMorph
 from .pmd_data.display_frame import PmdDisplayFrame
 from .pmd_data.rigid_body import PmdRigidBody
 from .pmd_data.joint import PmdJoint
+from .pmd_data.face import PmdFace
 
 class PmdParser:
     """
@@ -30,12 +31,15 @@ class PmdParser:
         self.rigid_bodies = []
         self.joints = []
 
-    def parse_file(self, file_path):
+    def parse_file(self, file_path) -> 'PmdParser':
         """
         指定されたPMDファイルを読み込み、各セクションを解析してデータを格納する。
 
         Args:
             file_path (str): 解析するPMDファイルのパス。
+
+        Returns:
+            PmdParser: メソッドチェーニングをサポートするための自身のインスタンス。
 
         Raises:
             FileNotFoundError: ファイルが見つからない場合。
@@ -59,7 +63,9 @@ class PmdParser:
                 # Face
                 face_count = struct.unpack('<I', f.read(4))[0]
                 for _ in range(face_count // 3):
-                    self.faces.append(struct.unpack('<HHH', f.read(6)))
+                    face = PmdFace()
+                    face.parse(f)
+                    self.faces.append(face)
 
                 # Material
                 material_count = struct.unpack('<I', f.read(4))[0]
@@ -147,7 +153,9 @@ class PmdParser:
                         self.joints.append(joint)
 
                 except Exception:
-                    return
+                    return self
 
             except struct.error as e:
                 raise MMDParseException(f"Failed to parse PMD file: {file_path}") from e
+        
+        return self

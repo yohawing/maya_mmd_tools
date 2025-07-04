@@ -25,12 +25,15 @@ class VmdParser:
         self.shadow_frames = []
         self.ik_show_hide_frames = []
 
-    def parse_file(self, file_path):
+    def parse_file(self, file_path) -> 'VmdParser':
         """
         指定されたVMDファイルを読み込み、各セクションを解析してデータを格納する。
 
         Args:
             file_path (str): 解析するVMDファイルのパス。
+
+        Returns:
+            VmdParser: メソッドチェーニングをサポートするための自身のインスタンス。
 
         Raises:
             FileNotFoundError: ファイルが見つからない場合。
@@ -101,3 +104,5 @@ class VmdParser:
 
             except struct.error as e:
                 raise MMDParseException(f"Failed to parse VMD file: {file_path}") from e
+            
+        return self

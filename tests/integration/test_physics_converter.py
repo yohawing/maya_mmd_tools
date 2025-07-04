@@ -1,9 +1,9 @@
 import os
 
-from tests.common.test_base import TestBase
+from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.converters import physics_converter
 
-class TestPhysicsConverter(TestBase):
+class TestPhysicsConverter(MayaTestBase):
 
     def setUp(self):
         super().setUp()

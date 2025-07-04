@@ -1,9 +1,9 @@
 import os
 
-from tests.common.test_base import TestBase
-from mmd_tools.io import vmd_exporter
+from tests.common.maya_test_base import MayaTestBase
+# from mmd_tools.io import export_vmd_file
 
-class TestVmdExporter(TestBase):
+class TestVmdExporter(MayaTestBase):
 
     def setUp(self):
         super().setUp()
@@ -19,6 +19,6 @@ class TestVmdExporter(TestBase):
     def test_export_vmd_animation(self):
         """MayaシーンからVMDアニメーションが正しくエクスポートされることをテストする。"""
         # TODO: Mayaシーンにダミーのボーンアニメーション、ブレンドシェイプアニメーション、カメラ、照明などを設定する。
-        # TODO: vmd_exporter.export_vmd_animationを呼び出す。
+        # TODO: export_vmd_fileを呼び出す。
         # TODO: エクスポートされたVMDファイルが存在し、その内容が期待通りであることをアサートする。
         pass

@@ -4,6 +4,7 @@ from mmd_tools.core import utils
 class PmdMaterial:
     """PMDファイルの材質データを保持するクラス。"""
     def __init__(self):
+        self.name = "PmdDefaultMaterial"
         self.diffuse = (0.0, 0.0, 0.0, 0.0) # RGBA
         self.specular_power = 0.0
         self.specular = (0.0, 0.0, 0.0) # RGB
@@ -28,3 +29,6 @@ class PmdMaterial:
         self.edge_flag = struct.unpack('<B', f.read(1))[0]
         self.face_count = struct.unpack('<I', f.read(4))[0]
         self.texture_file_name = utils.decodePMDString(f.read(20))
+
+        # テクスチャファイル名から名前を生成
+        self.name = self.texture_file_name

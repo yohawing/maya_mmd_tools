@@ -34,13 +34,15 @@ class PmxParser:
         self.textures = []
         self.toon_textures = []
 
-    def parse_file(self, file_path):
+    def parse_file(self, file_path) -> 'PmxParser':
         """
         指定されたPMXファイルを読み込み、各セクションを解析してデータを格納する。
 
         Args:
             file_path (str): 解析するPMXファイルのパス。
 
+        Returns:
+            PmxParser: メソッドチェーニングをサポートするための自身のインスタンス。
         Raises:
             FileNotFoundError: ファイルが見つからない場合。
             MMDParseException: ファイルの解析に失敗した場合。
@@ -135,3 +137,5 @@ class PmxParser:
 
             except struct.error as e:
                 raise MMDParseException(f"Failed to parse PMX file: {file_path}") from e
+            
+        return self

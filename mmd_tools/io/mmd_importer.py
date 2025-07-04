@@ -1,25 +1,42 @@
+"""
+MMDファイル（PMX、PMD、VMD）を解析し、Mayaシーンにインポートするためのメインモジュール。
+"""
+import maya.cmds as cmds
 from ..core.mmd_parser import parse_mmd_file
+from ..core import pmx_parser, pmd_parser, vmd_parser
+from . import pmx_importer, pmd_importer, vmd_importer
 
-class MmdImporter:
+def import_mmd_file(filepath):
     """
-    MMDファイルをMayaにインポートするクラス。
+    MMDファイルを解析し、Mayaシーンにインポートします。
+    ファイルタイプに応じて適切なインポーターを呼び出します。
+
+    Args:
+        filepath (str): インポートするMMDファイルのパス。
+
+    Returns:
+        bool: インポートが成功したかどうか。
     """
-    def __init__(self):
-        pass
+    try:
+        # 汎用パーサーでファイルを解析
+        parsed_data = parse_mmd_file(filepath)
 
-    def import_mmd_file(self, file_path):
-        """
-        指定されたMMDファイルを解析し、Mayaシーンにインポートする。
+        # 解析されたデータのタイプに応じてインポーターを呼び出す
+        if isinstance(parsed_data, pmx_parser.PmxParser):
+            return pmx_importer.import_pmx_file(parsed_data, filepath)
 
-        Args:
-            file_path (str): インポートするMMDファイルのパス。
+        elif isinstance(parsed_data, pmd_parser.PmdParser):
+            return pmd_importer.import_pmd_file(parsed_data, filepath)
 
-        Raises:
-            FileNotFoundError: ファイルが見つからない場合。
-            MMDParseException: ファイルの解析に失敗した場合。
-            Exception: Mayaへのインポート中にエラーが発生した場合。
-        """
-        # TODO: parse_mmd_fileを呼び出してMMDデータを解析する。
-        # TODO: 解析されたデータタイプ（PMD, PMX, VMD）に応じて、適切なコンバーターを呼び出す。
-        # TODO: Mayaシーンへのインポートロジックを実装する。
-        pass
+        elif isinstance(parsed_data, vmd_parser.VmdParser):
+            return vmd_importer.import_vmd_file(parsed_data, filepath)
+            
+        else:
+            cmds.warning(f"Unsupported data type returned from parser: {type(parsed_data)}")
+            return False
+
+    except Exception as e:
+        cmds.error(f"Failed to import {filepath}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
