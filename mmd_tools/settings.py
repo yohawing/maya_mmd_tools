@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
 """
 maya_mmd_toolsの設定を管理するモジュールです
 
 MayaのoptionVarを使用して、セッション間で設定を永続化します。
 Settingsクラスのシングルトンインスタンスが作成され、プラグインのすべての部分が同じ設定にアクセスできるようになります。
 """
-import os
 import json
+import os
 from collections import UserDict
 
 try:
@@ -41,7 +40,7 @@ class Settings(UserDict):
         self._defaults = self._load_defaults_from_json()
         self.data = self._defaults.copy()
         self.load()
-    
+
     def _load_defaults_from_json(self):
         """デフォルトの設定をJSONファイルから読み込みます。"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -51,9 +50,9 @@ class Settings(UserDict):
             return {}
 
         try:
-            with open(json_path, 'r', encoding='utf-8') as f:
+            with open(json_path, encoding='utf-8') as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             return {}
 
     def __setitem__(self, key, value):
@@ -96,7 +95,7 @@ class Settings(UserDict):
                         value = type(default_value)(loaded_value)
                 except (ValueError, TypeError):
                     value = default_value # Fallback to default if conversion fails
-            
+
             # Set the loaded value in the nested dictionary
             keys = key.split('_')
             d = self.data
@@ -140,13 +139,13 @@ class Settings(UserDict):
         """
         keys = key_path.split('.')
         value = self.data
-        
+
         for key in keys:
             try:
                 value = value[key]
             except (KeyError, TypeError):
                 return default
-                
+
         return value
 
     def set(self, key_path, value):
@@ -159,12 +158,12 @@ class Settings(UserDict):
         """
         keys = key_path.split('.')
         d = self.data
-        
+
         for key in keys[:-1]:
             if key not in d:
                 d[key] = {}
             d = d[key]
-        
+
         d[keys[-1]] = value
         self.save()
 

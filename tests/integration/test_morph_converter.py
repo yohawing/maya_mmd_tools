@@ -1,7 +1,6 @@
-import os
 
-from mmd_tools.converters import morph_converter
 from tests.common.maya_test_base import MayaTestBase
+
 
 class TestMorphConverter(MayaTestBase):
 

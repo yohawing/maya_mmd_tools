@@ -2,6 +2,7 @@ import struct
 
 from mmd_tools.core import utils
 
+
 class VmdHeader:
     """VMDファイルのヘッダ情報を保持するクラス。"""
 

@@ -1,8 +1,10 @@
 import struct
+
 from mmd_tools.core import utils
 
+
 class PmdRigidBody:
-    """PMDファイルの剛体データを保持するクラス。""" 
+    """PMDファイルの剛体データを保持するクラス。"""
     def __init__(self):
         self.name = ''
         self.bone_index = -1

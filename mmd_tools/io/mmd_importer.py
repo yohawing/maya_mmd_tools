@@ -1,10 +1,12 @@
 """
 MMDファイル（PMX、PMD、VMD）を解析し、Mayaシーンにインポートするためのメインモジュール。
 """
-import maya.cmds as cmds
+from maya import cmds
+
+from ..core import pmd_parser, pmx_parser, vmd_parser
 from ..core.mmd_parser import parse_mmd_file
-from ..core import pmx_parser, pmd_parser, vmd_parser
-from . import pmx_importer, pmd_importer, vmd_importer
+from . import pmd_importer, pmx_importer, vmd_importer
+
 
 def import_mmd_file(filepath):
     """
@@ -30,7 +32,7 @@ def import_mmd_file(filepath):
 
         elif isinstance(parsed_data, vmd_parser.VmdParser):
             return vmd_importer.import_vmd_file(parsed_data, filepath)
-            
+
         else:
             cmds.warning(f"Unsupported data type returned from parser: {type(parsed_data)}")
             return False

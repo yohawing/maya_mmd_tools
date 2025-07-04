@@ -2,6 +2,7 @@ import struct
 
 from mmd_tools.core import utils
 
+
 class VmdIKShowHideFrame:
     """VMDファイルのIK表示/非表示フレームデータを保持するクラス。"""
     def __init__(self):
@@ -12,7 +13,7 @@ class VmdIKShowHideFrame:
 
     @classmethod
     def size(cls):
-        # This size is variable due to ik_states. 
+        # This size is variable due to ik_states.
         # We need to read ik_count first to determine the full size.
         # For now, return a base size, and handle variable part in parse.
         return 4 + 1 + 4 # frame_number + visible + ik_count
@@ -27,7 +28,7 @@ class VmdIKShowHideFrame:
         self.frame_number = struct.unpack_from('<I', data, 0)[0]
         self.visible = struct.unpack_from('<B', data, 4)[0]
         self.ik_count = struct.unpack_from('<I', data, 5)[0]
-        
+
         offset = 9
         for _ in range(self.ik_count):
             ik_name = utils.decodePMDString(data[offset:offset+20])

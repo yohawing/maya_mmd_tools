@@ -1,5 +1,6 @@
 import struct
 
+
 class PmdVertex:
     """PMDファイルの頂点データを保持するクラス。"""
     def __init__(self):

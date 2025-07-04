@@ -2,7 +2,9 @@ import os
 import shutil
 import tempfile
 import uuid
-import maya.cmds as cmds
+
+from maya import cmds
+
 from .test_base import TestBase
 
 try:
@@ -11,8 +13,7 @@ try:
     # Mayaのスタンドアロンモードを初期化
     # maya.standalone.initialize(name="python")
     # MayaのコマンドとMELをインポート
-    import maya.cmds as cmds
-    import maya.mel as mel
+    from maya import cmds, mel
 
     MAYA_AVAILABLE = True
 except ImportError:
@@ -35,7 +36,7 @@ class MayaTestBase(TestBase):
     """
     plugins_loaded = []  # List to keep track of loaded plugins
     files_created = []  # List to keep track of created files
-    
+
 
     @classmethod
     def setUpClass(cls):
@@ -45,7 +46,7 @@ class MayaTestBase(TestBase):
         super(MayaTestBase, cls).setUpClass()
         if not MAYA_AVAILABLE:
             raise RuntimeError("Maya is not available. Tests cannot run without Maya.")
-        
+
     @classmethod
     def tearDownClass(cls):
         """テストケースクラスの終了処理"""
@@ -68,7 +69,7 @@ class MayaTestBase(TestBase):
         Clean up after each test.
         """
         super(MayaTestBase, self).tearDown()
-        # The scene is cleared in setUp of the next test, 
+        # The scene is cleared in setUp of the next test,
         # so no specific teardown is needed here for now.
 
         cmds.file(f=True, new=True)
@@ -115,12 +116,12 @@ class MayaTestBase(TestBase):
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
         base_name, ext = os.path.splitext(file_name)
-        path = "{0}/{1}{2}".format(temp_dir, base_name, ext)
+        path = f"{temp_dir}/{base_name}{ext}"
         count = 0
         while os.path.exists(path):
             # If the file already exists, add an incrememted number
             count += 1
-            path = "{0}/{1}{2}{3}".format(temp_dir, base_name, count, ext)
+            path = f"{temp_dir}/{base_name}{count}{ext}"
         cls.files_created.append(path)
         return path
 

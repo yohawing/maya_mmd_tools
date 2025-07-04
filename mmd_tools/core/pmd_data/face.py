@@ -1,5 +1,6 @@
 import struct
 
+
 class PmdFace:
     """
     PMDファイルの面データを保持するクラス。

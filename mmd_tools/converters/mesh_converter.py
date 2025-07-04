@@ -1,9 +1,13 @@
 import os
-import maya.cmds as cmds
+
+from maya import cmds
+
 from mmd_tools.core.pmd_parser import PmdParser
 from mmd_tools.core.pmx_parser import PmxParser
-from ..core import maya_utils
+
 from .. import settings
+from ..core import maya_utils
+
 
 class MeshConverter:
     """
@@ -38,7 +42,7 @@ class MeshConverter:
 
         # モデル名のグループを作成
         model_group = cmds.group(empty=True, name=model_name)
-        
+
         # カスタムアトリビュートの追加
         maya_utils.set_custom_attributes(model_group, {
             "mmd_file_type": pmx_data.header.magic,
@@ -49,10 +53,10 @@ class MeshConverter:
         })
 
         # メッシュのマテリアル分割は、まずは統合メッシュを作った後にSplitする処理をすればいいの
-        
-        created_mesh = self._create_unified_mesh(model_name, all_vertices, all_faces, 
+
+        created_mesh = self._create_unified_mesh(model_name, all_vertices, all_faces,
                                      all_materials, all_textures, model_group)
-        
+
         # 設定からマテリアルごとのメッシュ分割設定を取得
         separate_by_material = settings.get("import.model.separate_meshes_by_material", False)
         if separate_by_material:
@@ -88,11 +92,11 @@ class MeshConverter:
             "mmd_comment": pmd_data.header.comment,
             "mmd_comment_en": pmd_data.header.comment_english
         })
-        
+
         # 設定からマテリアルごとのメッシュ分割設定を取得
         separate_by_material = settings.get("import.model.separate_meshes_by_material", False)
-        
-        created_mesh = self._create_unified_mesh(model_name, all_vertices, all_faces, 
+
+        created_mesh = self._create_unified_mesh(model_name, all_vertices, all_faces,
                                      all_materials, None, model_group)
 
         if separate_by_material:
@@ -117,26 +121,26 @@ class MeshConverter:
         """
         # 統合メッシュの名前を設定
         mesh_name = maya_utils.sanitize_text(model_name)
-        
+
         # 全ての頂点と面を直接使用
         vertices = [v.position for v in all_vertices]
         uvs = []
         for vertex in all_vertices:
             uvs.extend(vertex.uv)  # UVデータをフラットなリストとして追加
-        
+
         # 面データを作成
         face_connects = []
         face_counts = []
         face_uv_connects = []
         material_face_ranges = []
-        
+
         # 全ての面を収集
         face_offset = 0
         for i, material in enumerate(all_materials):
             num_material_faces = material.face_count // 3
             if num_material_faces == 0:
                 continue
-            
+
             start_face = len(face_counts)
             for j in range(face_offset, face_offset + num_material_faces):
                 face = all_faces[j]
@@ -144,7 +148,7 @@ class MeshConverter:
                 face_counts.append(len(face.indices))
                 # UVインデックスは頂点インデックスと同じ
                 face_uv_connects.extend(face.indices)
-            
+
             end_face = len(face_counts)
             material_face_ranges.append((material, start_face, end_face))
             face_offset += num_material_faces
@@ -158,22 +162,22 @@ class MeshConverter:
             uvs=uvs,
             face_uv_connects=face_uv_connects
         )
-        
+
         # マテリアルを作成して、適切な面に割り当てる
         for material, start_face, end_face in material_face_ranges:
             if start_face == end_face:
                 continue
-                
+
             # マテリアル名をサニタイズ
             # material_name = maya_utils.sanitize_text(material.name)
-            
+
             # テクスチャパスを取得
             texture_path = None
             if all_textures:
                 if material.texture_index != -1:
                     raw_texture_path = all_textures[material.texture_index]
                     texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
-            
+
             # マテリアルを作成
             shader = maya_utils.create_material(
                 name=material.name,
@@ -181,11 +185,11 @@ class MeshConverter:
                 texture_path=texture_path,
                 texture_dir=self.texture_dir
             )
-            
+
             # 面の範囲を選択してマテリアルを割り当て
             face_selection = f"{created_mesh}.f[{start_face}:{end_face-1}]"
             maya_utils.assign_material_to_faces(created_mesh, shader, face_selection)
-        
+
         # 作成したメッシュをグループに追加
         cmds.parent(created_mesh, model_group)
 

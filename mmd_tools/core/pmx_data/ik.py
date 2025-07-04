@@ -1,4 +1,3 @@
-from ..exceptions import MMDParseException
 
 class PmxIK:
     """PMXファイルのIKデータを保持するクラス。"""

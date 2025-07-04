@@ -1,8 +1,8 @@
 import os
-import struct
 
-from tests.common.test_base import TestBase
 from mmd_tools.core import mmd_parser
+from tests.common.test_base import TestBase
+
 
 class TestVmdParser(TestBase):
 
@@ -40,10 +40,10 @@ class TestVmdParser(TestBase):
 
     def test_parse_vmd_bone_frames(self):
         """VMDボーンフレームが正しく解析されることをテストする。"""
-        
+
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data.bone_frames)
-        
+
         bone_frame = self.parsed_data.bone_frames[0]
         # ボーンフレームの属性が正しく設定されていることを確認
         self.assertEqual(bone_frame.bone_name, 'センター')
@@ -121,7 +121,7 @@ class TestVmdParser(TestBase):
         self.assertEqual(len(light_frame.color), 3)
         # ライト強度が正しく設定されていることを確認
         self.assertGreater(light_frame.intensity, 0.0)
-       
+
     def test_parse_vmd_shadow_frames(self):
         """VMDシャドウフレームが正しく解析されることをテストする。"""
         # Noneでないことを確認
@@ -139,7 +139,7 @@ class TestVmdParser(TestBase):
         self.assertIn(shadow_frame.mode, (0, 1, 2))
         # シャドウ距離が正しく設定されていることを確認
         self.assertGreaterEqual(shadow_frame.distance, 0.0)
-        
+
     def test_parse_vmd_ik_show_hide_frames(self):
         """VMD IK表示/非表示フレームが正しく解析されることをテストする。"""
         # Noneでないことを確認
@@ -159,4 +159,3 @@ class TestVmdParser(TestBase):
         self.assertGreater(ik_frame.ik_count, 0)
         # IK状態のリストが正しく設定されていることを確認
         self.assertIsInstance(ik_frame.ik_states, list)
-        

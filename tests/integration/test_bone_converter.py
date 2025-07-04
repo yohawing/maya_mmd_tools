@@ -1,9 +1,12 @@
 import os
-import maya.cmds as cmds
+
+from maya import cmds
+
 from mmd_tools import settings
-from tests.common.maya_test_base import MayaTestBase
-from mmd_tools.core import PmdParser, PmxParser
 from mmd_tools.converters import BoneConverter
+from mmd_tools.core import PmdParser, PmxParser
+from tests.common.maya_test_base import MayaTestBase
+
 
 class TestBoneConverter(MayaTestBase):
     """

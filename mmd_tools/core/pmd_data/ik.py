@@ -1,5 +1,6 @@
 import struct
 
+
 class PmdIK:
     """PMDファイルのIKデータを保持するクラス。"""
     def __init__(self):

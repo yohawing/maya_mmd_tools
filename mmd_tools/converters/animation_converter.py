@@ -1,4 +1,3 @@
-from ..core.vmd_parser import VmdParser
 
 class AnimationConverter:
     """

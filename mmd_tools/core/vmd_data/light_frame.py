@@ -1,5 +1,6 @@
 import struct
 
+
 class VmdLightFrame:
     """VMDファイルのライトフレームデータを保持するクラス。"""
     def __init__(self):

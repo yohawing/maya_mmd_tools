@@ -1,6 +1,8 @@
-import struct
 import enum
+import struct
+
 from mmd_tools.core import utils
+
 
 class PmxMorphType(enum.IntEnum):
     GroupMorph = 0

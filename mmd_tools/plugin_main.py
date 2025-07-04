@@ -1,4 +1,5 @@
-import maya.cmds as cmds
+from maya import cmds
+
 
 def initializePlugin(mobject):
     '''

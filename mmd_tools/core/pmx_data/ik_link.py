@@ -1,5 +1,6 @@
 import struct
 
+
 class PmxIKLink:
     """
     PMXファイルのIKリンクデータを保持するクラス。

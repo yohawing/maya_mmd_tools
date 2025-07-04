@@ -2,7 +2,9 @@
 PMXファイルをMayaシーンにインポートするためのモジュール。
 """
 import os
-import maya.cmds as cmds
+
+from maya import cmds
+
 from .. import settings
 from ..converters import MeshConverter, BoneConverter, MorphConverter, PhysicsConverter
 
@@ -19,7 +21,7 @@ def import_pmx_file(parser, filepath):
     """
     print("Importing PMX file...")
     scale = settings.get("import.general.scale_factor", 1.0)
-    
+
     try:
         # メッシュを変換
         mesh_group = MeshConverter.convert_pmx_mesh(parser)
@@ -37,11 +39,11 @@ def import_pmx_file(parser, filepath):
             cmds.setAttr(mesh_group + ".scaleY", scale)
             cmds.setAttr(mesh_group + ".scaleZ", scale)
             cmds.makeIdentity(mesh_group, apply=True, scale=True)
-        
+
         cmds.select(mesh_group)
         print(f"Successfully imported {os.path.basename(filepath)}")
         return True
-        
+
     except Exception as e:
         cmds.error(f"Failed to import PMX file {filepath}: {e}")
         import traceback

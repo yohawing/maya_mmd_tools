@@ -4,16 +4,17 @@ import struct
 from mmd_tools.core import utils
 
 from .exceptions import MMDParseException
-from .pmd_data.header import PmdHeader
-from .pmd_data.vertex import PmdVertex
-from .pmd_data.material import PmdMaterial
 from .pmd_data.bone import PmdBone
-from .pmd_data.ik import PmdIK
-from .pmd_data.morph import PmdMorph
 from .pmd_data.display_frame import PmdDisplayFrame
-from .pmd_data.rigid_body import PmdRigidBody
-from .pmd_data.joint import PmdJoint
 from .pmd_data.face import PmdFace
+from .pmd_data.header import PmdHeader
+from .pmd_data.ik import PmdIK
+from .pmd_data.joint import PmdJoint
+from .pmd_data.material import PmdMaterial
+from .pmd_data.morph import PmdMorph
+from .pmd_data.rigid_body import PmdRigidBody
+from .pmd_data.vertex import PmdVertex
+
 
 class PmdParser:
     """
@@ -157,5 +158,5 @@ class PmdParser:
 
             except struct.error as e:
                 raise MMDParseException(f"Failed to parse PMD file: {file_path}") from e
-        
+
         return self

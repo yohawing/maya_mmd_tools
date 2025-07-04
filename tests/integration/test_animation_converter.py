@@ -1,7 +1,6 @@
-import os
 
 from tests.common.test_base import TestBase
-from mmd_tools.converters import animation_converter
+
 
 class TestAnimationConverter(TestBase):
 

@@ -1,8 +1,9 @@
-import subprocess
-import unittest
-import os
-import sys
 import argparse
+import os
+import platform
+import subprocess
+import sys
+import unittest
 from pathlib import Path
 import platform
 
@@ -110,7 +111,7 @@ def run_tests():
     start_dir = os.path.join(test_dir, args.type)
 
     print(f"Discovering '{args.type}' tests in '{start_dir}'...")
-    
+
     # Discover all tests in the specified directory
     suite = test_loader.discover(start_dir, pattern='test_*.py')
 
@@ -121,7 +122,7 @@ def run_tests():
     # If a specific test name is provided, filter the suite
     if args.test:
         filtered_suite = unittest.TestSuite()
-        
+
         # Helper to get a flat list of all test cases from a suite
         def get_all_tests(suite_to_flatten):
             tests = []
@@ -133,11 +134,11 @@ def run_tests():
             return tests
 
         all_tests = get_all_tests(suite)
-        
+
         for test_case in all_tests:
             if args.test in test_case.id():
                 filtered_suite.addTest(test_case)
-        
+
         suite = filtered_suite
 
     # Check if any tests are left after filtering
@@ -187,7 +188,7 @@ def run_tests():
         ]
         if args.test:
             command.extend(['-test', args.test])
-        
+
             print(f"Running integration tests with command: {' '.join(command)}")
             # result = os.system(' '.join(command))
         # if result != 0:

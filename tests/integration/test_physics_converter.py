@@ -1,7 +1,6 @@
-import os
 
 from tests.common.maya_test_base import MayaTestBase
-from mmd_tools.converters import physics_converter
+
 
 class TestPhysicsConverter(MayaTestBase):
 
