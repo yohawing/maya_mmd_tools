@@ -17,7 +17,6 @@ import json
 import logging
 import os
 import re
-from sys import prefix
 from typing import Dict, List, Optional
 
 
@@ -146,13 +145,9 @@ class UnicodeToAsciiConverter:
             ["後髪", "back_hair", "后发", "後髮"],
             ["髪", "hair", "头发", "頭髮"],
             ["つまさき", "toe", "脚趾", "腳趾"],
-            ["ＩＫ", "ik", "IK", "IK"],
-            ["先", "end", "末端", "末端"],
-            ["捩", "twist", "扭", "扭"],
             ["肩", "shoulder", "肩", "肩"],
             ["上半身", "spine", "上半身", "上半身"],
-            ["元素", "element", "元素", "元素"],
-            ["P", "p", "P", "P"],
+            ["元素", "element", "元素", "元素"]
         ]
         
         # リスト形式の辞書データを処理
@@ -170,6 +165,7 @@ class UnicodeToAsciiConverter:
         self.suffix_map = [
             ["先", "_end", "末端", "末端"],
             ["ＩＫ", "_ik", "IK", "IK"],
+            ["捩", "_twist", "扭", "扭"]
         ]
         self.languages = ['jp', 'en', 'zh-cn', 'zh-tw']
         self._build_reverse_map()
@@ -203,27 +199,41 @@ class UnicodeToAsciiConverter:
         if self.is_ascii_only(text):
             return self.maya_safe_name(text)
 
-        # 1. 単語リストの処理：完全一致を探す
+        # 完全一致の辞書変換
         if text in self.unicode_to_ascii:
             return self.maya_safe_name(self.unicode_to_ascii[text])
 
-        # 2. 数字の処理：全角数字を半角に変換
+        # 複合的な変換処理
+        return self._convert_complex_text(text)
+
+    def _convert_complex_text(self, text: str) -> str:
+        """複合的な変換処理（prefix/suffix/hash化を含む）"""
+        # 1. 全角数字を半角に変換
         processed_text = self._convert_fullwidth_numbers(text)
         
-        # 3. Prefix、Suffixの処理 [prefix, text, suffix]のリストを返す
-        prefix, processed_text, suffix = self._process_prefix_suffix(processed_text)
+        # 2. Prefix、Suffixの処理
+        prefix, main_part, suffix = self._process_prefix_suffix(processed_text)
 
-        # # 4. 処理結果がハッシュでない場合は、そのまま返す
-        if processed_text.startswith(self.HASH_PREFIX):
-            result = "".join([prefix, processed_text, suffix])
-            return self.maya_safe_name(result)
+        # 3. 主要部分の最終処理
+        final_main = self._finalize_main_part(main_part)
 
-        # 5. 辞書に無い文字列の処理：ハッシュ化して一意名を生成
-        hash_value = self._generate_hash(processed_text)
-        result = f"{self.HASH_PREFIX}{hash_value}"
-
-        result = "".join([prefix, result, suffix])
+        # 4. 結果の組み立てとMaya安全化
+        result = self._assemble_result(prefix, final_main, suffix)
         return self.maya_safe_name(result)
+
+    def _finalize_main_part(self, main_part: str) -> str:
+        """主要部分の最終処理（ハッシュ化を含む）"""
+        # 既にハッシュ化されている場合
+        if main_part.startswith(self.HASH_PREFIX):
+            return main_part
+
+        # ASCII文字列の場合
+        if self.is_ascii_only(main_part):
+            return main_part
+        
+        # 辞書に無い文字列はハッシュ化
+        hash_value = self._generate_hash(main_part)
+        return f"{self.HASH_PREFIX}{hash_value}"
 
     def _convert_fullwidth_numbers(self, text: str) -> str:
         """全角数字を半角数字に変換"""
@@ -240,57 +250,105 @@ class UnicodeToAsciiConverter:
 
     def _process_prefix_suffix(self, text: str) -> tuple:
         """Prefix、Suffixを処理して英語に変換"""
-        converted_parts = []
-        result = text
-        prefix_text = ''
-        suffix_text = ''
+        # 1. Prefixの処理
+        prefix, text = self._extract_prefix(text)
+        
+        # 2. 末尾の特殊文字を分離
+        text, trailing_chars = self._extract_trailing_chars(text)
+        
+        # 3. Suffixの処理
+        text, suffix_parts = self._extract_suffix(text)
+        
+        # 4. 基本部分の変換
+        converted_main = self._convert_main_part(text)
+        
+        # 5. 結果の組み立て
+        suffix = self._build_suffix(suffix_parts, trailing_chars)
+        
+        return prefix, converted_main, suffix
 
-        # prefix_map
+    def _extract_prefix(self, text: str) -> tuple:
+        """接頭辞を抽出"""
         for prefix_pair in self.prefix_map:
             if text.startswith(prefix_pair[0]):
-                prefix_text = prefix_pair[1]
-                result = text[len(prefix_pair[0]):]
-                break
-        # suffix_map
+                return prefix_pair[1], text[len(prefix_pair[0]):]
+        return '', text
+
+    def _extract_trailing_chars(self, text: str) -> tuple:
+        """末尾の数字・英文字・Maya無効文字を分離"""
+        # 日本語の接尾辞がある場合は、その前の数字・英文字を分離
         for suffix_pair in self.suffix_map:
-            # 最後の数字の分離
-            last_number_letter = re.search(r'(\d+)$', result)
-            if last_number_letter:
-                # 数字がある場合はその前までを処理
-                base_text = result[:last_number_letter.start()]
-                if base_text.endswith(suffix_pair[0]):
-                    suffix_text = suffix_pair[1] + "_" + last_number_letter.group(0)
-                    result = base_text[:-len(suffix_pair[0])]
+            if text.endswith(suffix_pair[0]):
+                # 接尾辞を一時的に除去
+                text_without_suffix = text[:-len(suffix_pair[0])]
+                # 数字・英文字を探す
+                end_match = re.search(r'([A-Za-z0-9+|]+)$', text_without_suffix)
+                if end_match:
+                    trailing_chars = end_match.group(1)
+                    remaining_text = text_without_suffix[:-len(trailing_chars)] + suffix_pair[0]
+                    return remaining_text, trailing_chars
+        
+        # 通常の処理
+        end_match = re.search(r'([A-Za-z0-9+|]+)$', text)
+        if end_match:
+            trailing_chars = end_match.group(1)
+            text = text[:-len(trailing_chars)]
+            return text, trailing_chars
+        return text, ''
+
+    def _extract_suffix(self, text: str) -> tuple:
+        """接尾辞を抽出（複合suffixに対応）"""
+        suffix_parts = []
+        remaining_text = text
+        
+        while remaining_text:
+            found_suffix = False
+            # 最長一致でsuffixを探す
+            for suffix_pair in self.suffix_map:
+                if remaining_text.endswith(suffix_pair[0]):
+                    suffix_parts.insert(0, suffix_pair[1])  # 前に挿入（逆順なので）
+                    remaining_text = remaining_text[:-len(suffix_pair[0])]
+                    found_suffix = True
                     break
-            else:
-                if text.endswith(suffix_pair[0]):
-                    suffix_text = suffix_pair[1]
-                    result = result[:-len(suffix_pair[0])]
-                    break
+            
+            if not found_suffix:
+                break
+        
+        return remaining_text, suffix_parts
 
-        # PrefixとSuffixを省いたテキストの末尾の数字を処理
-        match = re.search(r'(\d+)$', result)
-        if match:
-            number = match.group(1)
-            base = result[:-len(number)]
-
-            # 基本部分を辞書で変換
-            if base in self.unicode_to_ascii:
-                converted_parts.append(self.unicode_to_ascii[base])
-            else:
-                # 複合語の場合、個別に変換を試みる
-                converted_base = self._convert_compound_word(base)
-                converted_parts.append(converted_base)
-
-            converted_parts.append(number)
-
-            result = '_'.join(converted_parts)
+    def _convert_main_part(self, text: str) -> str:
+        """基本部分の変換"""
+        if not text:
+            return text
+            
+        if text in self.unicode_to_ascii:
+            return self.unicode_to_ascii[text]
         else:
-            # 数字がない場合は基本部分のみを変換
-            if result in self.unicode_to_ascii:
-                result = self.unicode_to_ascii[result]
+            # 複合語の場合は個別に変換を試みる
+            return self._convert_compound_word(text)
 
-        return prefix_text, result, suffix_text
+    def _build_suffix(self, suffix_parts: List[str], trailing_chars: str) -> str:
+        """suffix部分を組み立て"""
+        result_parts = []
+        
+        # suffixパーツがある場合（接尾辞）
+        if suffix_parts:
+            result_parts.extend(suffix_parts)
+        
+        # 末尾文字がある場合（数字・英文字）
+        if trailing_chars:
+            # Maya無効文字の変換を直接行う
+            converted_trailing = trailing_chars
+            for invalid, replacement in self.maya_invalid_chars.items():
+                converted_trailing = converted_trailing.replace(invalid, replacement)
+            
+            result_parts.append('_' + converted_trailing.lower())
+        
+        return ''.join(result_parts)
+
+    def _assemble_result(self, prefix: str, main: str, suffix: str) -> str:
+        """結果を組み立て"""
+        return "".join([prefix, main, suffix])
 
     def _convert_compound_word(self, text: str) -> str:
         """複合語を個別に変換"""

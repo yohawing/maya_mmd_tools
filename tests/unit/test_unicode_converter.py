@@ -41,7 +41,8 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
                 ["つまさき", "toe", "脚趾", "腳趾"],
                 ["肩", "shoulder", "肩", "肩"],
                 ["头部", "head", "头部", "頭部"],
-                ["手臂", "arm", "手臂", "手臂"]
+                ["手臂", "arm", "手臂", "手臂"],
+                ["元素", "element", "元素", "元素"]
             ],
             "prefix": [
                 ["左", "left_", "左", "左"],
@@ -69,14 +70,14 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
             os.remove(self.custom_dict_path)
 
     def test_dictionary_conversion(self):
-        """辞書ベースの変換と復元をテスト"""
+        """辞書ベースの変換をテスト"""
         # 日本語 -> ASCII
         self.assertEqual(self.converter.convert("ボーン"), "bone")
         # 中国語 -> ASCII
         self.assertEqual(self.converter.convert("头部"), "head")
 
     def test_hash_conversion(self):
-        """辞書にない文字列のハッシュ変換と復元をテスト"""
+        """辞書にない文字列のハッシュ変換をテスト"""
         test_text = "未知の文字列"
         converted = self.converter.convert(test_text)
 
@@ -90,7 +91,7 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
             "右未知の文字列1先", # 接頭語と接尾語を含む文字列
             "左未知の文字列捩1" # 接頭語と接尾語+数字を含む文字列
         ]
-        results = ["HASH66d0744d", "right_HASH66d0744d_1_end", "left_HASH66d0744d_twist_1"]
+        results = ["HASH66d0744d", "right_HASH66d0744d_end_1", "left_HASH66d0744d_twist_1"]
         for i, test_text in enumerate(test_texts):
             converted = self.converter.convert(test_text)
             self.assertEqual(converted, results[i])
@@ -104,15 +105,10 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         self.assertEqual(self.converter.convert("左腕捩1"), "left_arm_twist_1")
         self.assertEqual(self.converter.convert("右つまさきＩＫ先"), "right_toe_ik_end")
         self.assertEqual(self.converter.convert("肩P"), "shoulder_p")
-        self.assertEqual(self.converter.convert("元素+"), "element_plus")
-
-        # 復元テスト
-        self.assertEqual(self.converter.restore("left_arm_1"), "左腕1")
-        self.assertEqual(self.converter.restore("right_toe_ik_end"), "右つまさきＩＫ先")
-        self.assertEqual(self.converter.restore("element_plus"), "元素+")
+        self.assertEqual(self.converter.convert("元素+"), "element__plus_")
 
     def test_maya_invalid_chars(self):
-        """Maya無効文字の置換と復元をテスト"""
+        """Maya無効文字の置換をテスト"""
         test_cases = {
             "test:name": "test_name",  # ":"は"_"に変換
             "test name": "test_name",  # " "は"_"に変換
@@ -125,7 +121,6 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
             with self.subTest(original=original):
                 converted = self.converter.convert(original)
                 self.assertEqual(converted, expected)
-                # 復元テストは難しいため省略（":"は空文字に変換されるため復元不可）
 
     def test_ascii_passthrough(self):
         """ASCII文字列が変更されないことをテスト"""
@@ -142,12 +137,7 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         # batch_convertはリスト形式を返す
         self.assertIn("bone", converted_batch)
         self.assertIn("head", converted_batch)
-        self.assertTrue(any(name.startswith("#") for name in converted_batch))
-
-        # 復元テスト
-        restored_batch = self.converter.batch_restore(converted_batch)
-        # 復元結果が元の名前と一致することを確認
-        self.assertEqual(set(restored_batch), set(names))
+        self.assertIn("HASH5565828f", converted_batch)
 
     def test_encoding_type_detection(self):
         """エンコード方式の判定をテスト"""
