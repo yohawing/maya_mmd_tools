@@ -10,6 +10,7 @@ __pycache__/
 *.pyd
 .Python/
 venv/
+.ruff_cache/
 
 # Operating System files
 .DS_Store
