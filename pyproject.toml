@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maya_mmd_tools"
+version = "0.1.0"
+description = "A set of tools for working with MMD data in Autodesk Maya."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yohawing/maya_mmd_tools"
+"Bug Tracker" = "https://github.com/yohawing/maya_mmd_tools/issues"
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+fix = true
+
+[tool.ruff.lint]
+select = [
+    "E",  # pycodestyle errors
+    "F",  # Pyflakes
+    "W",  # pycodestyle warnings
+    "I",  # isort
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "I",      # isort
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "RUF",    # Ruff-specific rules
+    "TCH",    # flake8-type-checking
+    "PTH",    # flake8-use-pathlib
+    "PL",     # Pylint
+]
+
+ignore = [
+    "G004",
+    "F821",
+    "C401",
+    "C408",
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    "ANN101",
+    "ANN102",
+    "PERF203",
+    "PERF401",
+    "PLR2004",
+    "PLC2401",
+]
