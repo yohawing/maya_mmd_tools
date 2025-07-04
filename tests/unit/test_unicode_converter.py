@@ -42,7 +42,11 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
                 ["肩", "shoulder", "肩", "肩"],
                 ["头部", "head", "头部", "頭部"],
                 ["手臂", "arm", "手臂", "手臂"],
-                ["元素", "element", "元素", "元素"]
+                ["元素", "element", "元素", "元素"],
+                ["顔", "face", "颜", "顏"],
+                ["人差指", "finger_index", "食指", "食指"],
+                ["つま先", "toe", "脚趾", "腳趾"],
+                ["つま先ＩＫ", "toe_ik", "脚尖IK", "左腳尖IK"]
             ],
             "prefix": [
                 ["左", "left_", "左", "左"],
@@ -73,8 +77,11 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         """辞書ベースの変換をテスト"""
         # 日本語 -> ASCII
         self.assertEqual(self.converter.convert("ボーン"), "bone")
+        self.assertEqual(self.converter.convert("顔"), "face")
         # 中国語 -> ASCII
         self.assertEqual(self.converter.convert("头部"), "head")
+        self.assertEqual(self.converter.convert("颜"), "face")
+
 
     def test_hash_conversion(self):
         """辞書にない文字列のハッシュ変換をテスト"""
@@ -147,6 +154,28 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         self.assertEqual(self.converter.get_encoding_type(self.converter.convert("未知")), "hash")
         # オリジナル
         self.assertEqual(self.converter.get_encoding_type("original_ascii"), "original")
+
+    def test_edge_cases(self):
+        """エッジケースのテスト"""
+        # 空文字列
+        self.assertEqual(self.converter.convert(""), "")
+        # None
+        self.assertEqual(self.converter.convert(None), None)
+        # 数字のみ
+        self.assertEqual(self.converter.convert("12345"), "12345")
+        # 特殊文字のみ
+        self.assertEqual(self.converter.convert("!@#$%^&*()"), "__________")
+
+        
+        self.assertEqual(self.converter.convert("左人差指先"), "left_finger_index_end")
+
+        self.assertEqual(self.converter.convert("右腕捩先IK"), "right_arm_twist_end_ik")
+
+
+
+        self.assertEqual(self.converter.convert("左肩P"), "left_shoulder_p")
+
+        self.assertEqual(self.converter.convert("右つま先ＩＫ"), "right_toe_ik")
 
 
 class TestUtilsAPI(unittest.TestCase):
