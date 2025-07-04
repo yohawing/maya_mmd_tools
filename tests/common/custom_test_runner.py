@@ -1,15 +1,13 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 カラーサポート付きのテストランナーを提供するモジュール。
 
 テスト結果を見やすく色分けして表示します。
 """
-import sys
 import platform
+import sys
 import unittest
-from unittest.runner import TextTestRunner, TextTestResult
-from unittest.result import failfast
+from unittest.runner import TextTestResult, TextTestRunner
 
 # ANSIカラーコード
 COLOR = {
@@ -116,7 +114,7 @@ class CustomTestResult(TextTestResult):
         """エラーの詳細を出力"""
         if self.dots or self.showAll:
             self.stream.writeln()
-        
+
         # エラーがあれば表示
         if self.errors and self.use_colors:
             self.stream.writeln(f"{COLOR['BOLD']}{COLOR['MAGENTA']}エラー詳細:{COLOR['RESET']}")
@@ -163,10 +161,10 @@ class CustomTestRunner(TextTestRunner):
     def run(self, test):
         """テストを実行し、結果を表示"""
         result = super(CustomTestRunner, self).run(test)
-        
+
         # 結果のサマリーを表示
         use_colors = sys.stdout.isatty()
-        
+
         if result.wasSuccessful():
             if use_colors:
                 self.stream.write(f"{COLOR['GREEN']}")
@@ -183,7 +181,7 @@ class CustomTestRunner(TextTestRunner):
             self.stream.writeln("======================================================================")
             if use_colors:
                 self.stream.write(f"{COLOR['RESET']}")
-        
+
         return result
 
 
@@ -192,13 +190,13 @@ if __name__ == '__main__':
     class ExampleTest(unittest.TestCase):
         def test_success(self):
             self.assertTrue(True)
-        
+
         def test_failure(self):
             self.assertTrue(False)
-        
+
         def test_error(self):
             raise RuntimeError("エラーが発生しました")
-        
+
         @unittest.skip("スキップの理由")
         def test_skip(self):
             pass

@@ -1,5 +1,7 @@
 import struct
+
 from mmd_tools.core import utils
+
 
 class PmdMaterial:
     """PMDファイルの材質データを保持するクラス。"""

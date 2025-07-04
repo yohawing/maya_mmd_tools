@@ -1,8 +1,8 @@
-import unittest
 import os
+import shutil
 import sys
 import tempfile
-import shutil
+import unittest
 
 # Add the project root to sys.path to allow importing mmd_tools modules
 # This assumes tests are run from the project root or a level below
@@ -49,6 +49,6 @@ class TestBase(unittest.TestCase):
         self.assertTrue(os.path.exists(file_path), f"File does not exist: {file_path}")
 
     def assertFileContent(self, file_path, expected_content):
-        with open(file_path, 'r') as f:
+        with open(file_path) as f:
             content = f.read()
         self.assertEqual(content, expected_content, f"File content mismatch for {file_path}")

@@ -1,16 +1,17 @@
-# -*- coding: utf-8 -*-
 
 import os
 import struct
 
-from .exceptions import MMDParseException
-from mmd_tools.core.vmd_data.header import VmdHeader
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
-from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
 from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
-from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
-from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
+from mmd_tools.core.vmd_data.header import VmdHeader
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
+from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
+from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
+
+from .exceptions import MMDParseException
+
 
 class VmdParser:
     """
@@ -104,5 +105,5 @@ class VmdParser:
 
             except struct.error as e:
                 raise MMDParseException(f"Failed to parse VMD file: {file_path}") from e
-            
+
         return self

@@ -1,5 +1,7 @@
 import struct
+
 from mmd_tools.core.exceptions import MMDParseException
+
 
 class PmxVertex:
     """

@@ -1,7 +1,8 @@
 import collections
 import struct
-import os
+
 from mmd_tools.core import utils
+
 
 class PmdDisplayFrame:
     """PMDファイルの表示枠データを保持するクラス。"""

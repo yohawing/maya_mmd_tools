@@ -1,5 +1,6 @@
 import struct
 
+
 class VmdShadowFrame:
     """VMDファイルのセルフシャドウフレームデータを保持するクラス。"""
     def __init__(self):

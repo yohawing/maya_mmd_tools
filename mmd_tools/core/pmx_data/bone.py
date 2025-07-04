@@ -1,6 +1,8 @@
 import struct
+
 from mmd_tools.core import utils
 from mmd_tools.core.pmx_data.ik_link import PmxIKLink
+
 
 class PmxBone:
     """

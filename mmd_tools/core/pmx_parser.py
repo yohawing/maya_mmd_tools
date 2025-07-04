@@ -1,19 +1,17 @@
 import os
 import struct
 
-from mmd_tools.core import utils
-
 from .exceptions import MMDParseException
-from .pmx_data.header import PmxHeader
-from .pmx_data.vertex import PmxVertex
-from .pmx_data.face import PmxFace
-from .pmx_data.material import PmxMaterial
 from .pmx_data.bone import PmxBone
-from .pmx_data.morph import PmxMorph
 from .pmx_data.display_frame import PmxDisplayFrame
-from .pmx_data.rigid_body import PmxRigidBody
+from .pmx_data.face import PmxFace
+from .pmx_data.header import PmxHeader
 from .pmx_data.joint import PmxJoint
+from .pmx_data.material import PmxMaterial
+from .pmx_data.morph import PmxMorph
+from .pmx_data.rigid_body import PmxRigidBody
 from .pmx_data.soft_body import PmxSoftBody
+from .pmx_data.vertex import PmxVertex
 
 
 class PmxParser:
@@ -137,5 +135,5 @@ class PmxParser:
 
             except struct.error as e:
                 raise MMDParseException(f"Failed to parse PMX file: {file_path}") from e
-            
+
         return self

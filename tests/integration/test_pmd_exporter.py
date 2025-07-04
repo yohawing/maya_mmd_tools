@@ -1,6 +1,7 @@
 import os
 
 from tests.common.maya_test_base import MayaTestBase
+
 # from mmd_tools.io import export_pmd_file
 
 class TestPmdExporter(MayaTestBase):

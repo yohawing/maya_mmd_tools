@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 UTF-8/UTF-16文字列をMaya安全なASCII文字列に変換する機能
 
@@ -10,7 +9,7 @@ import base64
 import json
 import logging
 import os
-from typing import Dict, Set, List
+from typing import Dict, List
 
 
 class UnicodeToAsciiConverter:
@@ -47,7 +46,7 @@ class UnicodeToAsciiConverter:
 
         try:
             if os.path.exists(dictionary_path):
-                with open(dictionary_path, 'r', encoding='utf-8') as f:
+                with open(dictionary_path, encoding='utf-8') as f:
                     data = json.load(f)
 
                 self.languages = data.get('languages', [])

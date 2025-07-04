@@ -1,10 +1,12 @@
 import os
+
 from .exceptions import MMDParseException
 
 # Import specific parsers
 from .pmd_parser import PmdParser
 from .pmx_parser import PmxParser
 from .vmd_parser import VmdParser
+
 
 def parse_mmd_file(file_path):
     """

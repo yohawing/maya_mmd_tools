@@ -1,5 +1,5 @@
 import struct
-from mmd_tools.core import utils
+
 
 class PmxJoint:
     """

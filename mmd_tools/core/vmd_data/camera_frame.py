@@ -1,5 +1,6 @@
 import struct
 
+
 class VmdCameraFrame:
     """VMDファイルのカメラフレームデータを保持するクラス。"""
     def __init__(self):
@@ -26,7 +27,7 @@ class VmdCameraFrame:
         self.viewing_angle = 0 # 視野角degrees
         self.perspective = 0 # 0: On, 1: Off
 
-        
+
     @classmethod
     def size(cls):
         # フレーム番号(4) + 長さ(4) + 位置(12) + 回転(12) + 補間データ(24) + 視野角(4) + パースペクティブ(1)

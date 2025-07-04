@@ -1,4 +1,5 @@
-import maya.cmds as cmds
+from maya import cmds
+
 
 def mmd_tools_setup():
     print("Maya MMD Tools: Initializing...")

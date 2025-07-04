@@ -1,6 +1,7 @@
-import maya.cmds as cmds
-import maya.api.OpenMaya as om
 import os
+
+import maya.api.OpenMaya as om
+from maya import cmds
 
 from mmd_tools.settings import settings
 
@@ -20,7 +21,7 @@ def sanitize_text(name):
     """
     if not name:
         return "unnamed"
-    
+
     converted_name = utils.convert_unicode_to_maya_safe(name)
     return converted_name or "default_name"
 
@@ -37,21 +38,21 @@ def sanitize_texture_path(texture_path, texture_dir):
     """
     if not texture_path:
         return None
-        
+
     # 絶対パスを構築
     if not os.path.isabs(texture_path):
         full_texture_path = os.path.join(texture_dir, texture_path)
     else:
         full_texture_path = texture_path
-    
+
     # パスの正規化
     full_texture_path = os.path.normpath(full_texture_path)
-    
+
     # ファイルの存在確認
     if not os.path.exists(full_texture_path):
         print(f"Warning: Texture file not found: {full_texture_path}")
         return None
-        
+
     return full_texture_path
 
 def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects):
@@ -72,50 +73,50 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
     """
     # OpenMaya APIを使用してメッシュを作成
     mesh_fn = om.MFnMesh()
-    
+
     # 頂点データをOpenMayaのMPointArrayに変換
     points = om.MPointArray()
     for vertex in vertices:
         points.append(om.MPoint(vertex[0], vertex[1], vertex[2]))
-    
+
     # 面データをOpenMayaのMIntArrayに変換
     face_counts_array = om.MIntArray()
     for count in face_counts:
         face_counts_array.append(count)
-    
+
     face_connects_array = om.MIntArray()
     for connect in face_connects:
         face_connects_array.append(connect)
-    
+
     # メッシュを作成
     mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
-    
+
     # UVセットを作成
     if uvs and face_uv_connects:
         # TODO: UVセットが複数ある場合に対応する。
         uv_set_name = settings.get("import.model.uv_set_name").replace("#", "1")
         mesh_fn.createUVSet(uv_set_name)
-        
+
         # UV座標をMFloatArrayに変換
         u_array = om.MFloatArray()
         v_array = om.MFloatArray()
         for i in range(0, len(uvs), 2):
             u_array.append(uvs[i])
             v_array.append(uvs[i + 1])
-        
+
         # UV接続をMIntArrayに変換
         uv_counts_array = om.MIntArray()
         for count in face_counts:
             uv_counts_array.append(count)
-        
+
         uv_connects_array = om.MIntArray()
         for connect in face_uv_connects:
             uv_connects_array.append(connect)
-        
+
         # UVを設定
         mesh_fn.setUVs(u_array, v_array, uv_set_name)
         mesh_fn.assignUVs(uv_counts_array, uv_connects_array, uv_set_name)
-    
+
     # トランスフォームノードを作成
     dag_path = om.MDagPath.getAPathTo(mesh_obj)
     transform_fn = om.MFnTransform(dag_path.transform())
@@ -124,7 +125,7 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
     # デフォルトのシェーディンググループに割り当て
     cmds.sets(transform_name, edit=True, forceElement='initialShadingGroup')
     cmds.select(clear=True)
-    
+
     return transform_name
 
 def split_mesh_by_material(mesh_name, materials):
@@ -175,7 +176,7 @@ def create_material(name, color, texture_path=None, texture_dir=""):
             # 標準的なUV接続
             cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
             cmds.connectAttr(file_node + ".outColor", shader + ".color")
-            
+
             cmds.setAttr(file_node + ".fileTextureName", full_texture_path, type="string")
         else:
             cmds.warning(f"Texture file not found: {full_texture_path}")

@@ -1,7 +1,10 @@
 import unittest
-import maya.cmds as cmds
+
+from maya import cmds
+
 from mmd_tools.core import maya_utils
 from tests.common.maya_test_base import MayaTestBase
+
 
 class TestMayaUtils(MayaTestBase):
 
@@ -26,7 +29,7 @@ class TestMayaUtils(MayaTestBase):
 
         self.assertTrue(cmds.objExists(mesh_transform))
         self.assertEqual(cmds.objectType(mesh_transform), "transform")
-        
+
         shape = cmds.listRelatives(mesh_transform, shapes=True)[0]
         self.assertEqual(cmds.objectType(shape), "mesh")
 
@@ -39,18 +42,18 @@ class TestMayaUtils(MayaTestBase):
         """マテリアルを作成できるか"""
         material_name = "test_material"
         color = (0.5, 0.6, 0.7, 0.8)
-        
+
         shader_node = maya_utils.create_material(material_name, color)
-        
+
         self.assertTrue(cmds.objExists(shader_node))
         self.assertEqual(cmds.objectType(shader_node), "lambert")
-        
+
         # Verify color
         rgb = cmds.getAttr(shader_node + ".color")[0]
         self.assertAlmostEqual(rgb[0], color[0], places=5)
         self.assertAlmostEqual(rgb[1], color[1], places=5)
         self.assertAlmostEqual(rgb[2], color[2], places=5)
-        
+
         # Verify transparency (alpha)
         transparency = cmds.getAttr(shader_node + ".transparency")[0]
         expected_transparency = 1.0 - color[3]
@@ -62,16 +65,16 @@ class TestMayaUtils(MayaTestBase):
         """メッシュにマテリアルを割り当てられるか"""
         mesh_name = "test_mesh_for_material"
         material_name = "test_material_to_assign"
-        
+
         # Create a mesh
         cmds.polyCube(name=mesh_name)
-        
+
         # Create a material
         shader_node = maya_utils.create_material(material_name, (1, 0, 0, 1))
-        
+
         # Assign the material
         maya_utils.assign_material(mesh_name, shader_node)
-        
+
         # Verify assignment
         shading_groups = cmds.listConnections(cmds.listRelatives(mesh_name, shapes=True)[0], type='shadingEngine')
         self.assertIn(shader_node + "SG", shading_groups)
@@ -81,7 +84,7 @@ class TestMayaUtils(MayaTestBase):
         """カスタムアトリビュートを設定できるか"""
         mesh_name = "test_mesh_for_custom_attr"
         cmds.polyCube(name=mesh_name)
-        
+
         attr_name = "customAttr"
         data = {
             "mmd_bytes": b'PMX',

@@ -7,9 +7,13 @@ Maya内から実行するか、mayapy.exeを使用して実行します。
 import os
 import sys
 import unittest
-import maya.cmds as cmds
-from tests.common.maya_test_base import Settings
-from tests.common.custom_test_runner import CustomTestRunner, enable_windows_ansi_support
+
+from maya import cmds
+
+from tests.common.custom_test_runner import (
+    CustomTestRunner,
+    enable_windows_ansi_support,
+)
 
 # The environment variable that signifies tests are being run with the custom TestResult class.
 TESTING_VAR = "MMD_TOOLS_TEST"
@@ -26,7 +30,7 @@ def run_tests(test=None, test_suite=None):
 
     # Windows環境でもANSIカラーコードを有効化
     enable_windows_ansi_support()
-    
+
     # カラー対応のテストランナーを使用
     runner = CustomTestRunner(verbosity=2)
     runner.failfast = False

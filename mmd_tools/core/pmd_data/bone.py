@@ -1,5 +1,7 @@
 import struct
+
 from mmd_tools.core import utils
+
 
 class PmdBone:
     """PMDファイルのボーンデータを保持するクラス。"""
@@ -11,7 +13,7 @@ class PmdBone:
         self.bone_type = 0
         self.ik_parent_bone_index = -1
         self.head_position = (0.0, 0.0, 0.0)
-  
+
 
     def parse(self, f):
         """

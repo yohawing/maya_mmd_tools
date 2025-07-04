@@ -1,20 +1,20 @@
-import maya.cmds as cmds
-import maya.mel as mel
 import os
+
+from maya import cmds, mel
 
 # PySide6をデフォルトとし、PySide2にフォールバック
 try:
-    from PySide6 import QtWidgets, QtCore, QtGui
+    from PySide6 import QtCore, QtGui, QtWidgets
     from shiboken6 import wrapInstance
 except ImportError:
-    from PySide2 import QtWidgets, QtCore, QtGui
+    from PySide2 import QtCore, QtWidgets
     from shiboken2 import wrapInstance
 
 import maya.OpenMayaUI as mui
 
 # Import MMD Importer and Exporter modules
-from mmd_tools.io import mmd_importer
-from mmd_tools.io import pmx_exporter
+from mmd_tools.io import mmd_importer, pmx_exporter
+
 
 class MMDToolsUI(QtWidgets.QDialog):
     """
@@ -102,7 +102,7 @@ class MMDToolsUI(QtWidgets.QDialog):
         # これにより、PySideのウィンドウがMayaのウィンドウにペアレントされ、Mayaの終了時に適切にクリーンアップされる
         maya_main_window_ptr = mui.MQtUtil.mainWindow()
         maya_main_window = wrapInstance(int(maya_main_window_ptr), QtWidgets.QWidget)
-        
+
         # 既存のウィンドウがあれば閉じる
         # MayaのUIコマンドではなく、PySideのインスタンスを直接操作
         for widget in QtWidgets.QApplication.topLevelWidgets():

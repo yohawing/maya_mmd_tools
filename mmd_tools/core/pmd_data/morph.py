@@ -1,5 +1,7 @@
 import struct
-import mmd_tools.core.utils as utils
+
+from mmd_tools.core import utils
+
 
 class PmdMorph:
     """PMDファイルのモーフデータを保持するクラス。"""

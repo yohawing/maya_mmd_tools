@@ -1,9 +1,9 @@
 import os
-import struct
 
+from mmd_tools.core import mmd_parser
 from mmd_tools.core.pmd_data.face import PmdFace
 from tests.common.test_base import TestBase
-from mmd_tools.core import mmd_parser
+
 
 class TestPmdParser(TestBase):
 

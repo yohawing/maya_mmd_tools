@@ -1,5 +1,6 @@
 import struct
 
+
 class PmxFace:
     """
     PMXファイルの面データを保持するクラス。

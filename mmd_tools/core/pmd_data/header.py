@@ -1,5 +1,7 @@
 import struct
+
 from mmd_tools.core import utils
+
 
 class PmdHeader:
     """PMDファイルのヘッダ情報を保持するクラス。"""

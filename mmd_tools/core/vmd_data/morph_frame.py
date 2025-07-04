@@ -2,6 +2,7 @@ import struct
 
 from mmd_tools.core import utils
 
+
 class VmdMorphFrame:
     """VMDファイルのモーフフレームデータを保持するクラス。"""
     def __init__(self):
