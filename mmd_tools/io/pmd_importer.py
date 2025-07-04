@@ -4,7 +4,7 @@ PMDファイルをMayaシーンにインポートするためのモジュール�
 import os
 import maya.cmds as cmds
 from .. import settings
-from ..converters import mesh_converter
+from ..converters import MeshConverter, BoneConverter, MorphConverter, PhysicsConverter
 
 def import_pmd_file(parser, filepath):
     """
@@ -22,10 +22,14 @@ def import_pmd_file(parser, filepath):
     
     try:
         # メッシュを変換
-        mesh_converter_instance = mesh_converter.MeshConverter(filepath)
-        mesh_group = mesh_converter_instance.convert_pmd_mesh(parser)
+        mesh_group = MeshConverter.convert_pmd_mesh(parser)
         
-        # TODO: ボーン、モーフ、物理などの変換処理をここに追加
+        # ボーンを変換
+        joints = BoneConverter.convert_pmd_bones(parser, mesh_group)
+
+        # TODO: モーフ、物理などの変換処理をここに追加
+        # MorphConverter.convert_pmd_morphs(parser, mesh_group)
+        # PhysicsConverter.convert_pmd_physics(parser, mesh_group)
         
         # スケールを適用
         if mesh_group and scale != 1.0:

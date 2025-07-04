@@ -20,16 +20,16 @@ class PmdParser:
     PMDファイルを解析し、そのデータをPythonオブジェクトとして保持するクラス。
     """
     def __init__(self):
-        self.header = PmdHeader()
-        self.vertices = []
-        self.faces = []
-        self.materials = []
-        self.bones = []
-        self.ik_data = []
-        self.morphs = []
-        self.display_frames = None
-        self.rigid_bodies = []
-        self.joints = []
+        self.header: PmdHeader = PmdHeader()
+        self.vertices: list[PmdVertex] = []
+        self.faces: list[PmdFace] = []
+        self.materials: list[PmdMaterial] = []
+        self.bones: list[PmdBone] = []
+        self.ik_data: list[PmdIK] = []
+        self.morphs: list[PmdMorph] = []
+        self.display_frames: list[PmdDisplayFrame] = []
+        self.rigid_bodies: list[PmdRigidBody] = []
+        self.joints: list[PmdJoint] = []
 
     def parse_file(self, file_path) -> 'PmdParser':
         """

@@ -45,6 +45,9 @@ class PmxBone:
         bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
         self.parent_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
 
+        if self.parent_bone_index == 0xFFFFFFFF:
+            self.parent_bone_index = -1
+
         self.transform_layer = struct.unpack('<i', f.read(4))[0]
         self.bone_flag = struct.unpack('<H', f.read(2))[0]
 
