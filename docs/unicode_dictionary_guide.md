@@ -2,20 +2,18 @@
 
 ## 概要
 
-maya_mmd_toolsでは、MMDの多言語名（日本語・中国語・韓国語等）をMaya互換のASCII名に変換するための辞書をJSONファイルで設定できます。
+maya_mmd_toolsでは、MMDの多言語名（日本語・中国語等）をMaya互換のASCII名に変換するための辞書をJSONファイルで設定できます。
 
 このシステムは以下の特徴があります：
-- **言語に依存しないフラット構造**: どの言語も同じ辞書で管理
 - **ハッシュフォールバック**: 辞書にない文字列は自動的にハッシュ化
 - **Maya安全名保証**: 変換結果は必ずMayaで使用可能な文字のみ
-- **双方向変換**: 変換した名前を元の文字列に復元可能
 
 ## 要件
 MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト文字が多用されていて、中国語や日本語にも対応しているが、MayaではASCII文字しか使用できないため、多くの文字がエンコードエラーになってしまいます。
 
 要件としては、
 
-- 日本語、中国語、特殊文字のASCII変換・復元
+- 日本語、中国語（簡体字）、中国語（繁体字）、特殊文字のASCII変換・復元
 - エクスポート時に日本語、簡体字、繁体字、英語と選べる
 - 追加の変換マップをユーザーが設定可能
 
@@ -39,6 +37,44 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 - **デフォルト辞書**: `mmd_tools/config/unicode_dictionary.json`
 - **カスタム辞書**: `UnicodeToAsciiConverter(dictionary_path="path/to/your/dict.json")`でカスタム辞書を使用可能
 
+## 辞書ファイルの構造
+
+```json
+{
+  "_meta": {
+    "version": "1.0",
+    "description": "Multi-language name conversion dictionary for MMD tools in Maya",
+    "last_updated": "2025-01-01",
+    "languages": ["jp", "en", "zh-cn", "zh-tw"]
+  },
+  "dictionary": [
+    ["全て", "all", "全部", "全部"],
+    ["全ての親", "master", "主骨骼", "主骨骼"],
+    ["ボーン", "bone", "骨骼", "骨骼"],
+    ["腕", "arm", "臂", "臂"],
+    ["上半身", "spine", "上半身", "上半身"],
+    ["下半身", "lower_body", "下半身", "下半身"],
+  ],
+  "prefix": [
+    ["左", "左", "左"],
+    ["右", "right_", "右", "右"],
+    ["上", "up_", "上", "上"],
+  ],
+  "suffix": [
+    ["先", "_end", "末端", "末端"],
+    ["ＩＫ先", "_IK_end", "IK末端", "IK末端"],
+    ["捩", "_twist", "扭", "扭"],
+  ],
+  "maya_invalid_chars": {
+    ":": "",
+    " ": "_",
+    "-": "_",
+    ".": "_",
+    "=": ""
+  }
+}
+```
+
 ## 辞書ファイルのパースの方針
 
 ### パースの流れ
@@ -46,6 +82,7 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 2. 数字の処理：全角数字を半角に変換
 3. Prefix、Suffixの処理：
 4. 辞書に無い文字列の処理：ハッシュ化して一意名を生成
+5. Maya無効文字の処理：自動的に置換
 
 ### Prefix、Suffixについて
 
@@ -63,39 +100,8 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 - `右つまさきＩＫ先` → `right_toe_ik_end`
 - `肩` → `shoulder`
 - `肩P` → `shoulder_p`
-
-## 辞書ファイルの構造
-
-```json
-{
-  "_meta": {
-    "version": "1.0",
-    "description": "多言語対応Unicode→ASCII変換辞書",
-    "last_updated": "2025-01-01"
-  },
-  "dictionary": {
-    "ボーン": "bone",
-    "左腕": "left_arm",
-    "右腕": "right_arm",
-    "头部": "head_cn",
-    "手臂": "arm_cn",
-    "다리": "leg_kr"
-  },
-  "maya_invalid_chars": {
-    ":": "_colon_",
-    " ": "_space_",
-    "-": "_dash_",
-    ".": "_dot_",
-    "|": "_pipe_"
-  }
-}
-```
-
-### 各フィールドの説明
-
-- **`_meta`**: 辞書のメタデータ（任意、管理用）
-- **`dictionary`**: Unicode文字列→ASCII文字列の変換辞書（すべての言語を同一階層で管理）
-- **`maya_invalid_chars`**: Mayaで無効な文字の置換ルール（オプション）
+- `元素+` → `element_plus_`
+- `未知の文字列` → `HASH5L2g5a6a`
 
 ## 使用方法
 
@@ -113,8 +119,7 @@ print(converted)  # "head_cn"
 
 # 辞書にない文字列は自動的にハッシュ化
 converted = utils.convert_utf8_to_ascii("未知の文字列")
-print(converted)  # "#5L2g5a6a"
-
+print(converted)  # "HASH5L2g5a6a"
 
 ```
 
@@ -148,7 +153,7 @@ converted = converter.convert("ボーン")
 # 複数の文字列を一度に変換
 names = ["ボーン", "头部", "未知の名前"]
 converted_batch = utils.convert_utf8_to_ascii_batch(names)
-print(converted_batch)  # ["bone", "head_cn", "utfb64_..."]
+print(converted_batch)  # ["bone", "head", "utfb64_..."]
 
 # 復元もバッチで実行可能
 restored_batch = utils.restore_ascii_to_utf8_batch(converted_batch)
@@ -169,7 +174,7 @@ utils.export_dictionary("exported_dictionary.json")
 
 ### 推奨する命名パターン
 
-- **一般的な規則**: 分かりやすい英語名を使用（日本語: `bone`, 中国語: `head_cn`, 韓国語: `leg_kr` など）
+- **一般的な規則**: 分かりやすい英語名を使用（日本語: `bone`, 中国語: `head` など）
 - **ボーン系**: `bone_name` (例: `left_arm`, `head`, `center`)
 - **モーフ系**: `morph_name` (例: `smile`, `blink`, `a_sound`)
 - **材質系**: `material_name` (例: `skin`, `hair`, `eye`)
@@ -231,7 +236,6 @@ utils.export_dictionary("exported_dictionary.json")
     "右腕": "right-arm", // ハイフンはMaya無効文字
     "左親指１": "left_thumb_1", // 数字は自動的に_#に変換される
     "左髪ＩＫ先": "left_hair_ik_end", // 先頭の
-    "手臂": "arm_cn"
   }
 }
 ```
@@ -286,7 +290,7 @@ print(unique_name)  # "bone_2"
 # 辞書にない文字列
 unknown = "未知の名前"
 converted = converter.convert(unknown)
-# 結果: "#5L2g5a6a"
+# 結果: "HASH5L2g5a6a"
 ```
 
 切り詰める文字数によって、一意性を担保できる確率が変わります。
@@ -317,3 +321,11 @@ print(stats)
 - 大量の辞書エントリを追加すると、変換処理が遅くなる可能性があります
 - 辞書にない日本語名は自動的にハッシュ化されます
 - カスタム辞書ファイルはバックアップを取ることを推奨します
+
+
+## mayaのUIの挙動
+
+使用可能な文字
+0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_
+
+!"#$%&'()*+,-./:;<=>?@[\]^_`{|}~などのMayaで無効な文字は、以下のように自動的に `_` に変換されます。

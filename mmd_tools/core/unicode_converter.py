@@ -3,22 +3,41 @@
 UTF-8/UTF-16文字列をMaya安全なASCII文字列に変換する機能
 
 MayaのASCII環境では日本語・中国語などの文字列の取り扱いに制限があるため、
-辞書変換とBase64エンコードを組み合わせて安全に変換する。
+辞書変換とハッシュフォールバックを組み合わせて安全に変換する。
+
+設計方針：
+- 辞書による固定変換（MMDでよく使われる文字）
+- ハッシュによる機械的変換（一意性と作業性の担保）
+- Prefix/Suffix処理（左右、数字の自動変換）
+- Maya安全名保証（変換結果は必ずMayaで使用可能）
 """
 
-import base64
+import hashlib
 import json
 import logging
 import os
-from typing import Dict, Set, List
+import re
+from sys import prefix
+from typing import Dict, List, Optional
 
 
 class UnicodeToAsciiConverter:
     """
     Unicode文字列とMaya互換ASCII文字列の相互変換を行うクラス
+    
+    設計ガイドに基づいた実装：
+    - 辞書による固定変換（MMDでよく使われる文字）
+    - ハッシュによる機械的変換（一意性と作業性の担保）
+    - Prefix/Suffix処理（左右、数字の自動変換）
     """
 
-    def __init__(self, dictionary_path: str = None):
+    unicode_to_ascii: Dict[str, str] = {}
+    ascii_to_unicode: Dict[str, str] = {}
+    maya_invalid_chars: Dict[str, str] = {}
+    prefix_map: List[List[str]] = []
+    suffix_map: List[List[str]] = []
+
+    def __init__(self, dictionary_path: Optional[str] = None):
         """
         コンバーターを初期化
         
@@ -26,13 +45,14 @@ class UnicodeToAsciiConverter:
             dictionary_path: 辞書ファイルのパス（指定しない場合はデフォルト辞書を使用）
         """
         self.logger = logging.getLogger(__name__)
-        self.B64_PREFIX = "utfb64_"
+        self.HASH_PREFIX = "HASH"
+        self.HASH_LENGTH = 8  # ハッシュの長さ（16^8 = 4,294,967,296通り）
         self._conversion_cache = {}
         self._restoration_cache = {}
 
         self._load_dictionary(dictionary_path)
 
-    def _load_dictionary(self, dictionary_path: str = None):
+    def _load_dictionary(self, dictionary_path: Optional[str] = None):
         """
         辞書ファイルを読み込む
         
@@ -50,15 +70,25 @@ class UnicodeToAsciiConverter:
                 with open(dictionary_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
 
-                self.languages = data.get('languages', [])
-                self.dictionary = data.get('dictionary', [])
-                self.MAYA_INVALID_CHARS = data.get('maya_invalid_chars', {})
-
-                self._build_translation_maps()
+                # 新しい辞書フォーマットに対応
+                if 'dictionary' in data and isinstance(data['dictionary'], dict):
+                    # 新しいフラット辞書フォーマット
+                    self.unicode_to_ascii = data['dictionary']
+                    self.maya_invalid_chars = data.get('maya_invalid_chars', {})
+                    self.prefix_map = data.get('prefix', [])
+                    self.suffix_map = data.get('suffix', [])
+                    self.languages = data.get('_meta', {}).get('languages', ['jp', 'en', 'zh-cn', 'zh-tw'])
+                elif 'dictionary' in data and isinstance(data['dictionary'], list):
+                    # 旧フォーマット（リスト形式）対応
+                    self._process_list_dictionary(data['dictionary'])
+                    self.maya_invalid_chars = data.get('maya_invalid_chars', {})
+                    self.prefix_map = data.get('prefix', [])
+                    self.suffix_map = data.get('suffix', [])
+                    self.languages = data.get('_meta', {}).get('languages', ['jp', 'en', 'zh-cn', 'zh-tw'])
+                self._build_reverse_map()
 
                 self.logger.info(f"辞書ファイルを読み込みました: {dictionary_path}")
-                self.logger.info(f"対応言語: {self.languages}")
-                self.logger.info(f"辞書エントリ数: {len(self.dictionary)}")
+                self.logger.info(f"辞書エントリ数: {len(self.unicode_to_ascii)}")
             else:
                 self._load_default_dictionary()
                 self.logger.warning(f"辞書ファイルが見つかりません: {dictionary_path}")
@@ -69,68 +99,87 @@ class UnicodeToAsciiConverter:
             self.logger.error(f"辞書ファイルの読み込みに失敗しました: {e}")
             self.logger.info("デフォルト辞書を使用します")
 
-    def _build_translation_maps(self):
-        """翻訳・逆引きマップを構築する"""
-        self.translation_maps = {lang: {} for lang in self.languages}
-        self.reverse_maps = {lang: {} for lang in self.languages}
+    def _process_list_dictionary(self, dictionary_list: List[List[str]]):
+        """
+        リスト形式の辞書データを処理してunicode_to_asciiに変換
+        
+        Args:
+            dictionary_list: [日本語, 英語, 中国語(簡体), 中国語(繁体)]のリスト
+        """
+        self.unicode_to_ascii = {}
+        for entry in dictionary_list:
+            if len(entry) >= 2:
+                # 日本語（インデックス0）を英語（インデックス1）に変換
+                japanese = entry[0]
+                english = entry[1]
+                self.unicode_to_ascii[japanese] = english
+                
+                # 中国語も対応
+                if len(entry) >= 3:
+                    chinese_simplified = entry[2]
+                    self.unicode_to_ascii[chinese_simplified] = english
+                if len(entry) >= 4:
+                    chinese_traditional = entry[3]
+                    self.unicode_to_ascii[chinese_traditional] = english
 
-        if not self.languages:
-            return
-
-        # For each language, create a map from all other languages to it.
-        for target_lang_index, target_lang in enumerate(self.languages):
-            for entry in self.dictionary:
-                if len(entry) <= target_lang_index:
-                    continue
-                target_word = entry[target_lang_index]
-                if not target_word:
-                    continue
-
-                # Map all other words in the row to the target word
-                for source_lang_index, source_word in enumerate(entry):
-                    if source_lang_index == target_lang_index or not source_word:
-                        continue
-                    self.translation_maps[target_lang][source_word] = target_word
-
-        # For reverse mapping, we need a primary language. Let's use Japanese.
-        try:
-            jp_index = self.languages.index('jp')
-            for target_lang_index, target_lang in enumerate(self.languages):
-                if target_lang == 'jp':
-                    continue
-                for entry in self.dictionary:
-                    if len(entry) > jp_index and len(entry) > target_lang_index:
-                        jp_word = entry[jp_index]
-                        target_word = entry[target_lang_index]
-                        if jp_word and target_word:
-                            self.reverse_maps[target_lang][target_word] = jp_word
-        except ValueError:
-            self.logger.warning("'jp' が言語リストにないため、復元機能は辞書を使用しません。")
+    def _build_reverse_map(self):
+        """逆引きマップを構築する"""
+        self.ascii_to_unicode = {}
+        for unicode_text, ascii_text in self.unicode_to_ascii.items():
+            # 日本語のみを逆引きマップに追加（最初に出現したものを優先）
+            if ascii_text not in self.ascii_to_unicode:
+                self.ascii_to_unicode[ascii_text] = unicode_text
 
     def _load_default_dictionary(self):
         """
         デフォルト辞書を読み込む（フォールバック用）
         """
-        self.languages = ["jp", "en"]
-        self.dictionary = [
-            ["全ての親", "master"],
-            ["センター", "center"],
-            ["左腕", "left_arm"],
-            ["右腕", "right_arm"],
-            ["頭", "head"],
-            ["髪", "hair"],
-            ["表情", "expression"]
+        dictionary_list = [
+            ["なし", "none", "无", "無"],
+            ["全て", "all", "全部", "全部"],
+            ["全ての親", "master", "主骨骼", "主骨骼"],
+            ["ボーン", "bone", "骨骼", "骨骼"],
+            ["腕", "arm", "臂", "臂"],
+            ["頭", "head", "头部", "頭部"],
+            ["前髪", "bangs", "刘海", "瀏海"],
+            ["横髪", "side_hair", "侧发", "側髮"],
+            ["後髪", "back_hair", "后发", "後髮"],
+            ["髪", "hair", "头发", "頭髮"],
+            ["つまさき", "toe", "脚趾", "腳趾"],
+            ["ＩＫ", "ik", "IK", "IK"],
+            ["先", "end", "末端", "末端"],
+            ["捩", "twist", "扭", "扭"],
+            ["肩", "shoulder", "肩", "肩"],
+            ["上半身", "spine", "上半身", "上半身"],
+            ["元素", "element", "元素", "元素"],
+            ["P", "p", "P", "P"],
         ]
-        self.MAYA_INVALID_CHARS = {':': '_colon_', ' ': '_space_', '-': '_dash_', '.': '_dot_', '|': '_pipe_'}
-        self._build_translation_maps()
+        
+        # リスト形式の辞書データを処理
+        self._process_list_dictionary(dictionary_list)
+        
+        self.maya_invalid_chars = {
+            '+': '_plus_',
+            '|': '_pipe_'
+        }
 
-    def convert(self, text: str, language: str = 'en') -> str:
+        self.prefix_map = [
+            ["左", "left_", "左", "左"],
+            ["右", "right_", "右", "右"],
+        ]
+        self.suffix_map = [
+            ["先", "_end", "末端", "末端"],
+            ["ＩＫ", "_ik", "IK", "IK"],
+        ]
+        self.languages = ['jp', 'en', 'zh-cn', 'zh-tw']
+        self._build_reverse_map()
+
+    def convert(self, text: str) -> str:
         """
         Unicode文字列をMaya互換ASCII文字列に変換
         
         Args:
             text (str): 変換対象の文字列
-            language (str): 変換先の言語
             
         Returns:
             str: Maya互換ASCII文字列
@@ -138,46 +187,161 @@ class UnicodeToAsciiConverter:
         if not text:
             return text
 
-        if language not in self.languages:
-            self.logger.warning(f"言語 '{language}' は辞書にありません。Base64変換フォールバックを使用します。")
-            return self._convert_internal(text, None)
-
         # キャッシュから確認
-        if language in self._conversion_cache and text in self._conversion_cache[language]:
-            return self._conversion_cache[language][text]
+        if text in self._conversion_cache:
+            return self._conversion_cache[text]
 
-        result = self._convert_internal(text, language)
+        result = self._convert_internal(text)
 
         # キャッシュに保存
-        self._conversion_cache.setdefault(language, {})[text] = result
+        self._conversion_cache[text] = result
         return result
 
-    def _convert_internal(self, text: str, language: str) -> str:
+    def _convert_internal(self, text: str) -> str:
         """内部変換処理"""
         # ASCII専用文字列はそのまま
         if self.is_ascii_only(text):
             return self.maya_safe_name(text)
 
-        # 辞書変換を優先
-        if language and text in self.translation_maps.get(language, {}):
-            return self.maya_safe_name(self.translation_maps[language][text])
+        # 1. 単語リストの処理：完全一致を探す
+        if text in self.unicode_to_ascii:
+            return self.maya_safe_name(self.unicode_to_ascii[text])
 
-        # Base64変換
-        try:
-            encoded = base64.b64encode(text.encode('utf-8')).decode('ascii')
-            result = f"{self.B64_PREFIX}{encoded}"
+        # 2. 数字の処理：全角数字を半角に変換
+        processed_text = self._convert_fullwidth_numbers(text)
+        
+        # 3. Prefix、Suffixの処理 [prefix, text, suffix]のリストを返す
+        prefix, processed_text, suffix = self._process_prefix_suffix(processed_text)
+
+        # # 4. 処理結果がハッシュでない場合は、そのまま返す
+        if processed_text.startswith(self.HASH_PREFIX):
+            result = "".join([prefix, processed_text, suffix])
             return self.maya_safe_name(result)
-        except Exception as e:
-            self.logger.error(f"Base64エンコードエラー: {text}, エラー: {e}")
-            return f"ENCODE_ERROR_{hash(text) % 100000}"
 
-    def restore(self, text: str, language: str = 'en') -> str:
+        # 5. 辞書に無い文字列の処理：ハッシュ化して一意名を生成
+        hash_value = self._generate_hash(processed_text)
+        result = f"{self.HASH_PREFIX}{hash_value}"
+
+        result = "".join([prefix, result, suffix])
+        return self.maya_safe_name(result)
+
+    def _convert_fullwidth_numbers(self, text: str) -> str:
+        """全角数字を半角数字に変換"""
+        fullwidth_to_halfwidth = {
+            '０': '0', '１': '1', '２': '2', '３': '3', '４': '4',
+            '５': '5', '６': '6', '７': '7', '８': '8', '９': '9'
+        }
+        
+        result = text
+        for fw, hw in fullwidth_to_halfwidth.items():
+            result = result.replace(fw, hw)
+        
+        return result
+
+    def _process_prefix_suffix(self, text: str) -> tuple:
+        """Prefix、Suffixを処理して英語に変換"""
+        converted_parts = []
+        result = text
+        prefix_text = ''
+        suffix_text = ''
+
+        # prefix_map
+        for prefix_pair in self.prefix_map:
+            if text.startswith(prefix_pair[0]):
+                prefix_text = prefix_pair[1]
+                result = text[len(prefix_pair[0]):]
+                break
+        # suffix_map
+        for suffix_pair in self.suffix_map:
+            # 最後の数字の分離
+            last_number_letter = re.search(r'(\d+)$', result)
+            if last_number_letter:
+                # 数字がある場合はその前までを処理
+                base_text = result[:last_number_letter.start()]
+                if base_text.endswith(suffix_pair[0]):
+                    suffix_text = suffix_pair[1] + "_" + last_number_letter.group(0)
+                    result = base_text[:-len(suffix_pair[0])]
+                    break
+            else:
+                if text.endswith(suffix_pair[0]):
+                    suffix_text = suffix_pair[1]
+                    result = result[:-len(suffix_pair[0])]
+                    break
+
+        # PrefixとSuffixを省いたテキストの末尾の数字を処理
+        match = re.search(r'(\d+)$', result)
+        if match:
+            number = match.group(1)
+            base = result[:-len(number)]
+
+            # 基本部分を辞書で変換
+            if base in self.unicode_to_ascii:
+                converted_parts.append(self.unicode_to_ascii[base])
+            else:
+                # 複合語の場合、個別に変換を試みる
+                converted_base = self._convert_compound_word(base)
+                converted_parts.append(converted_base)
+
+            converted_parts.append(number)
+
+            result = '_'.join(converted_parts)
+        else:
+            # 数字がない場合は基本部分のみを変換
+            if result in self.unicode_to_ascii:
+                result = self.unicode_to_ascii[result]
+
+        return prefix_text, result, suffix_text
+
+    def _convert_compound_word(self, text: str) -> str:
+        """複合語を個別に変換"""
+        # 複合語の分解を試みる
+        # 例：「つまさき」→「つまさき」（辞書にある）
+        # 例：「腕捩」→「腕」+「捩」→「arm」+「twist」
+        
+        if text in self.unicode_to_ascii:
+            return self.unicode_to_ascii[text]
+        
+        # 単語の分解を試みる（greedy matching）
+        parts = []
+        remaining = text
+        
+        while remaining:
+            found = False
+            # 最長一致を探す
+            for length in range(len(remaining), 0, -1):
+                substring = remaining[:length]
+                if substring in self.unicode_to_ascii:
+                    parts.append(self.unicode_to_ascii[substring])
+                    remaining = remaining[length:]
+                    found = True
+                    break
+            
+            if not found:
+                # 1文字も見つからない場合、その文字を飛ばす
+                remaining = remaining[1:]
+        
+        # 結果を返す
+        if parts:
+            return '_'.join(parts)
+        else:
+            # 何も変換できなかった場合はHASH化して返す
+            return self.HASH_PREFIX + self._generate_hash(text)
+
+    def _generate_hash(self, text: str) -> str:
+        """文字列のハッシュを生成"""
+        # UTF-8エンコードしてからハッシュ化
+        hash_obj = hashlib.md5(text.encode('utf-8'))
+        hash_hex = hash_obj.hexdigest()
+        
+        # 指定された長さに切り詰める
+        return hash_hex[:self.HASH_LENGTH]
+
+    def restore(self, text: str) -> str:
         """
         Maya互換ASCII文字列をUnicode文字列に復元
         
         Args:
             text (str): 復元対象の文字列
-            language (str): 変換元の言語
             
         Returns:
             str: 復元された文字列
@@ -185,50 +349,118 @@ class UnicodeToAsciiConverter:
         if not text:
             return text
 
-        if language not in self.languages:
-            self.logger.warning(f"言語 '{language}' は辞書にありません。")
-            return self._restore_internal(text, None)
-
         # キャッシュから確認
-        if language in self._restoration_cache and text in self._restoration_cache[language]:
-            return self._restoration_cache[language][text]
+        if text in self._restoration_cache:
+            return self._restoration_cache[text]
 
-        result = self._restore_internal(text, language)
+        result = self._restore_internal(text)
 
         # キャッシュに保存
-        self._restoration_cache.setdefault(language, {})[text] = result
+        self._restoration_cache[text] = result
         return result
 
-    def _restore_internal(self, text: str, language: str) -> str:
+    def _restore_internal(self, text: str) -> str:
         """内部復元処理"""
+        # Maya無効文字の置換を元に戻す
         restored_text = self.restore_maya_chars(text)
 
-        if restored_text.startswith(self.B64_PREFIX):
-            encoded_part = restored_text[len(self.B64_PREFIX):]
-            try:
-                decoded_bytes = base64.b64decode(encoded_part)
-                return decoded_bytes.decode('utf-8')
-            except (base64.binascii.Error, UnicodeDecodeError) as e:
-                self.logger.error(f"Base64復元エラー: {text}, エラー: {e}")
-                return f"DECODE_ERROR_{text}"
+        # ハッシュ化された文字列は復元できない
+        if restored_text.startswith(self.HASH_PREFIX):
+            self.logger.debug(f"ハッシュ化された文字列は復元できません: {text}")
+            return text
 
-        # 辞書復元
-        if language and restored_text in self.reverse_maps.get(language, {}):
-            return self.reverse_maps[language][restored_text]
+        # 辞書復元（完全一致）
+        if restored_text in self.ascii_to_unicode:
+            return self.ascii_to_unicode[restored_text]
 
-        return restored_text
+        # prefix/suffix処理された文字列の復元を試みる
+        restored_result = self._restore_prefix_suffix(restored_text)
+        if restored_result != restored_text:
+            return restored_result
+
+        # 復元できない場合は元の文字列を返す
+        return text
+
+    def _restore_prefix_suffix(self, text: str) -> str:
+        """prefix/suffix処理された文字列を復元"""
+        parts = text.split('_')
+        if len(parts) < 2:
+            return text
+        
+        restored_parts = []
+        
+        # 先頭の prefix を復元
+        if parts[0] == 'left':
+            restored_parts.append('左')
+            parts = parts[1:]
+        elif parts[0] == 'right':
+            restored_parts.append('右')
+            parts = parts[1:]
+        
+        # 末尾の数字を処理
+        if parts and parts[-1].isdigit():
+            number = parts[-1]
+            base_parts = parts[:-1]
+            
+            # 基本部分を復元
+            base_text = '_'.join(base_parts)
+            restored_base = self._restore_compound_word(base_text)
+            if restored_base and restored_base != base_text:
+                restored_parts.append(restored_base)
+                restored_parts.append(number)
+            else:
+                return text
+        else:
+            # 数字がない場合
+            base_text = '_'.join(parts)
+            restored_base = self._restore_compound_word(base_text)
+            if restored_base and restored_base != base_text:
+                restored_parts.append(restored_base)
+            else:
+                return text
+        
+        return ''.join(restored_parts)
+
+    def _restore_compound_word(self, text: str) -> str:
+        """複合語を復元"""
+        # 単純な辞書ルックアップ
+        if text in self.ascii_to_unicode:
+            return self.ascii_to_unicode[text]
+        
+        # アンダースコアで分割して個別に復元
+        parts = text.split('_')
+        restored_parts = []
+        
+        for part in parts:
+            if part in self.ascii_to_unicode:
+                restored_parts.append(self.ascii_to_unicode[part])
+            else:
+                # 復元できない部分があった場合は元のテキストを返す
+                return text
+        
+        return ''.join(restored_parts)
 
     def maya_safe_name(self, text: str) -> str:
         """Maya用に無効文字を置換"""
         result = text
-        for invalid, replacement in self.MAYA_INVALID_CHARS.items():
+        # 先に個別の置換を実行
+        for invalid, replacement in self.maya_invalid_chars.items():
             result = result.replace(invalid, replacement)
-        return result
+        
+        # Maya有効文字以外を_に変換
+        # 使用可能な文字: 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_
+        valid_chars = set('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_')
+        
+        # 無効文字を_に変換
+        safe_result = ''.join(c if c in valid_chars else '_' for c in result)
+        
+        return safe_result
 
     def restore_maya_chars(self, text: str) -> str:
         """Maya無効文字の置換を元に戻す"""
         result = text
-        maya_replacement_to_char = {v: k for k, v in self.MAYA_INVALID_CHARS.items()}
+        # 個別の置換のみを元に戻す（一般的な_は元に戻さない）
+        maya_replacement_to_char = {v: k for k, v in self.maya_invalid_chars.items() if v != '_'}
         for replacement, original in maya_replacement_to_char.items():
             result = result.replace(replacement, original)
         return result
@@ -241,47 +473,78 @@ class UnicodeToAsciiConverter:
         except UnicodeEncodeError:
             return False
 
-    def is_converted_base64(self, text: str) -> bool:
-        """Base64変換された文字列かチェック"""
+    def is_hash_converted(self, text: str) -> bool:
+        """ハッシュ変換された文字列かチェック"""
         restored_text = self.restore_maya_chars(text)
-        return restored_text.startswith(self.B64_PREFIX)
+        return restored_text.startswith(self.HASH_PREFIX)
 
-    def is_dictionary_converted(self, text: str, language: str = 'en') -> bool:
+    def is_dictionary_converted(self, text: str) -> bool:
         """辞書変換された文字列かチェック"""
+        # 直接チェック
+        if text in self.ascii_to_unicode:
+            return True
+        
+        # Maya無効文字の処理を元に戻してからチェック
         restored_text = self.restore_maya_chars(text)
-        return language in self.reverse_maps and restored_text in self.reverse_maps[language]
+        return restored_text in self.ascii_to_unicode
 
-    def get_encoding_type(self, text: str, language: str = 'en') -> str:
+    def get_encoding_type(self, text: str) -> str:
         """文字列のエンコード方式を判定"""
-        if self.is_converted_base64(text):
-            return 'base64'
-        elif self.is_dictionary_converted(text, language):
+        if self.is_hash_converted(text):
+            return 'hash'
+        elif self.is_dictionary_converted(text):
             return 'dictionary'
         else:
             return 'original'
 
+    def get_unique_name(self, base_name: str, existing_names: Optional[set] = None) -> str:
+        """
+        一意な名前を生成
+        
+        Args:
+            base_name: ベース名
+            existing_names: 既存の名前のセット
+            
+        Returns:
+            str: 一意な名前
+        """
+        if existing_names is None:
+            existing_names = set()
+        
+        if base_name not in existing_names:
+            return base_name
+        
+        # 数字サフィックスで一意性を確保
+        counter = 1
+        while True:
+            candidate = f"{base_name}_{counter}"
+            if candidate not in existing_names:
+                return candidate
+            counter += 1
 
-    def batch_convert(self, texts: list, language: str = 'en') -> Dict[str, str]:
+    def batch_convert(self, texts: List[str]) -> List[str]:
         """複数の文字列を一括変換"""
-        result = {}
+        result = []
         existing_names = set()
 
         for text in texts:
-            converted = self.convert(text, language)
-            result[text] = converted
-            existing_names.add(converted)
+            converted = self.convert(text)
+            # 一意名を生成
+            unique_converted = self.get_unique_name(converted, existing_names)
+            result.append(unique_converted)
+            existing_names.add(unique_converted)
 
         return result
 
-    def batch_restore(self, texts: list, language: str = 'en') -> Dict[str, str]:
+    def batch_restore(self, texts: List[str]) -> List[str]:
         """複数の文字列を一括復元"""
-        return {text: self.restore(text, language) for text in texts}
+        return [self.restore(text) for text in texts]
 
-    def get_conversion_stats(self, converted_names: list, language: str = 'en') -> Dict[str, int]:
+    def get_conversion_stats(self, converted_names: List[str]) -> Dict[str, int]:
         """変換統計の取得"""
-        stats = {'dictionary': 0, 'base64': 0, 'original': 0, 'total': len(converted_names)}
+        stats = {'dictionary': 0, 'hash': 0, 'original': 0, 'total': len(converted_names)}
         for name in converted_names:
-            encoding_type = self.get_encoding_type(name, language)
+            encoding_type = self.get_encoding_type(name)
             if encoding_type in stats:
                 stats[encoding_type] += 1
         return stats
@@ -291,44 +554,98 @@ class UnicodeToAsciiConverter:
         self._conversion_cache.clear()
         self._restoration_cache.clear()
 
-    def add_dictionary_entry(self, entry: List[str]):
+    def add_dictionary_entry(self, unicode_text: str, ascii_text: str):
         """
         辞書エントリを追加
         
         Args:
-            entry (List[str]): 全言語分の翻訳リスト
+            unicode_text: Unicode文字列
+            ascii_text: ASCII文字列
         """
-        if len(entry) != len(self.languages):
-            self.logger.error("追加するエントリの言語数が一致しません。")
-            return
-
-        self.dictionary.append(entry)
-        self._build_translation_maps()  # マップを再構築
+        self.unicode_to_ascii[unicode_text] = ascii_text
+        self.ascii_to_unicode[ascii_text] = unicode_text
         self.clear_cache()
+
+    def remove_dictionary_entry(self, unicode_text: str):
+        """
+        辞書エントリを削除
+        
+        Args:
+            unicode_text: 削除するUnicode文字列
+        """
+        if unicode_text in self.unicode_to_ascii:
+            ascii_text = self.unicode_to_ascii[unicode_text]
+            del self.unicode_to_ascii[unicode_text]
+            if ascii_text in self.ascii_to_unicode:
+                del self.ascii_to_unicode[ascii_text]
+            self.clear_cache()
 
     def get_dictionary_info(self) -> Dict:
         """現在の辞書情報を取得"""
         return {
-            'languages': self.languages,
-            'total_entries': len(self.dictionary),
-            'cache_size': sum(len(cache) for cache in self._conversion_cache.values()),
-            'maya_invalid_chars': len(self.MAYA_INVALID_CHARS),
-            'sample_entries': self.dictionary[:5]
+            'total_entries': len(self.unicode_to_ascii),
+            'conversion_cache_size': len(self._conversion_cache),
+            'restoration_cache_size': len(self._restoration_cache),
+            'maya_invalid_chars': len(self.maya_invalid_chars),
+            'hash_prefix': self.HASH_PREFIX,
+            'hash_length': self.HASH_LENGTH,
+            'sample_entries': dict(list(self.unicode_to_ascii.items())[:5])
         }
+
+    def export_dictionary(self, file_path: str):
+        """
+        辞書をファイルに出力
+        
+        Args:
+            file_path: 出力ファイルのパス
+        """
+        data = {
+            "_meta": {
+                "version": "1.0",
+                "description": "多言語対応Unicode→ASCII変換辞書",
+                "last_updated": "2025-07-04"
+            },
+            "dictionary": self.unicode_to_ascii,
+            "maya_invalid_chars": self.maya_invalid_chars
+        }
+        
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        self.logger.info(f"辞書を出力しました: {file_path}")
+
+    def reload_dictionary(self, dictionary_path: Optional[str] = None):
+        """
+        辞書を再読み込み
+        
+        Args:
+            dictionary_path: 辞書ファイルのパス
+        """
+        self.clear_cache()
+        self._load_dictionary(dictionary_path)
 
 
 # グローバルインスタンス（シングルトンパターン）
 _converter_instance = None
 
 
-def get_converter() -> UnicodeToAsciiConverter:
+def get_converter(dictionary_path: Optional[str] = None) -> UnicodeToAsciiConverter:
     """
     コンバーターのグローバルインスタンスを取得
     
+    Args:
+        dictionary_path: 辞書ファイルのパス（初回のみ有効）
+        
     Returns:
         UnicodeToAsciiConverter: コンバーターインスタンス
     """
     global _converter_instance
     if _converter_instance is None:
-        _converter_instance = UnicodeToAsciiConverter()
+        _converter_instance = UnicodeToAsciiConverter(dictionary_path)
     return _converter_instance
+
+
+def reset_converter():
+    """コンバーターインスタンスをリセット"""
+    global _converter_instance
+    _converter_instance = None
