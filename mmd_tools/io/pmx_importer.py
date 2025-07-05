@@ -5,8 +5,11 @@ import os
 
 from maya import cmds
 
+from mmd_tools.converters import bone_converter
+
 from .. import settings
-from ..converters import MeshConverter, BoneConverter, MorphConverter, PhysicsConverter
+from ..converters import BoneConverter, MeshConverter, MorphConverter, PhysicsConverter
+
 
 def import_pmx_file(parser, filepath):
     """
@@ -24,11 +27,14 @@ def import_pmx_file(parser, filepath):
 
     try:
         # メッシュを変換
-        mesh_group = MeshConverter.convert_pmx_mesh(parser)
-        
+        mesh_converter = MeshConverter(filepath)
+
+        mesh_group = mesh_converter.convert_pmx_mesh(parser)
+
         # ボーンを変換
-        joints = BoneConverter.convert_pmx_bones(parser, mesh_group)
-        
+        bone_converter = BoneConverter()
+        joints = bone_converter.convert_pmx_bones(parser, mesh_group)
+
         # TODO: モーフ、物理などの変換処理をここに追加
         # MorphConverter.convert_pmx_morphs(parser, mesh_group)
         # PhysicsConverter.convert_pmx_physics(parser, mesh_group)
