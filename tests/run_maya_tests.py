@@ -8,7 +8,7 @@ import os
 import sys
 import unittest
 
-from maya import cmds
+import maya.cmds as cmds
 
 from tests.common.custom_test_runner import (
     CustomTestRunner,

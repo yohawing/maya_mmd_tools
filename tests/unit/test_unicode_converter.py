@@ -170,14 +170,15 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
 
         
         self.assertEqual(self.converter.convert("左人差指先"), "left_finger_index_end")
-
         self.assertEqual(self.converter.convert("右腕捩先IK"), "right_arm_twist_end_ik")
-
-
-
         self.assertEqual(self.converter.convert("左肩P"), "left_shoulder_p")
-
+        self.assertEqual(self.converter.convert("右つま先"), "right_toe")
         self.assertEqual(self.converter.convert("右つま先ＩＫ"), "right_toe_ik")
+        self.assertEqual(self.converter.convert("上半身3"), "upper_body_3")
+        self.assertEqual(self.converter.convert("左顔_0_1"), "left_face_0_1")
+        self.assertEqual(self.converter.convert("左顔_18_1"), "left_face_18_1")
+        self.assertEqual(self.converter.convert("右顔1_0_1"), "right_face_1_0_1")
+        self.assertEqual(self.converter.convert("左足IK親"), "left_foot_ik_parent")
 
 
 class TestUtilsAPI(unittest.TestCase):

@@ -11,10 +11,10 @@ class TestMayaUtils(MayaTestBase):
     def test_sanitize_maya_name(self):
         """ASCII変換でうまくサニタイズされるか"""
         self.assertEqual(maya_utils.sanitize_text("髪"), "hair")
-        self.assertEqual(maya_utils.sanitize_text("invalid-name!"), "invalid_dash_name!")
-        self.assertEqual(maya_utils.sanitize_text(" "), "_space_")
-        self.assertEqual(maya_utils.sanitize_text(" name"), "_space_name")
-        self.assertEqual(maya_utils.sanitize_text("name "), "name_space_")
+        self.assertEqual(maya_utils.sanitize_text("invalid-name!"), "invalid_name_")
+        self.assertEqual(maya_utils.sanitize_text(" "), "_")
+        self.assertEqual(maya_utils.sanitize_text(" name"), "_name")
+        self.assertEqual(maya_utils.sanitize_text("name "), "name_")
 
     def test_create_mesh_with_uvs(self):
         """UV付きのメッシュを作成できるか"""

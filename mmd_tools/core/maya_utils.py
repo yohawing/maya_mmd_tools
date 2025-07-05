@@ -22,7 +22,7 @@ def sanitize_text(name):
     if not name:
         return "unnamed"
 
-    converted_name = utils.convert_unicode_to_maya_safe(name)
+    converted_name = utils.convert_utf8_to_ascii(name)
     return converted_name or "default_name"
 
 def sanitize_texture_path(texture_path, texture_dir):
