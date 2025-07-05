@@ -11,7 +11,7 @@ import unittest
 import test
 
 # テスト対象モジュールのパスを追加
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from mmd_tools.core import utils
 from mmd_tools.core.unicode_converter import UnicodeToAsciiConverter, get_converter
@@ -22,7 +22,7 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
     UnicodeToAsciiConverterのテストクラス
     unicode_dictionary_guide.md の仕様に基づきテストを行う
     """
-    
+
     def setUp(self):
         """各テスト前の初期化"""
         # テスト用に一時的なカスタム辞書ファイルを作成
@@ -32,7 +32,7 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
                 "version": "1.0",
                 "description": "Test Dictionary for Unicode Converter",
                 "last_updated": "2025-01-01",
-                "languages": ["jp", "en", "zh-cn", "zh-tw"]
+                "languages": ["jp", "en", "zh-cn", "zh-tw"],
             },
             "dictionary": [
                 ["ボーン", "bone", "骨骼", "骨骼"],
@@ -49,25 +49,19 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
                 ["つま先ＩＫ", "toe_ik", "脚尖IK", "左腳尖IK"],
                 ["足", "foot", "足", "足"],
                 ["IK", "ik", "IK", "IK"],
-                ["親", "parent", "父", "父"]
+                ["親", "parent", "父", "父"],
             ],
-            "prefix": [
-                ["左", "left_", "左", "左"],
-                ["右", "right_", "右", "右"]
-            ],
+            "prefix": [["左", "left_", "左", "左"], ["右", "right_", "右", "右"]],
             "suffix": [
                 ["先", "_end", "末端", "末端"],
                 ["ＩＫ", "_ik", "IK", "IK"],
                 ["捩", "_twist", "扭", "扭"],
             ],
-            "maya_invalid_chars": {
-                "+": "_plus_",
-                "|": "_pipe_"
-            }
+            "maya_invalid_chars": {"+": "_plus_", "|": "_pipe_"},
         }
         with open(self.custom_dict_path, "w", encoding="utf-8") as f:
             json.dump(custom_dict_data, f, ensure_ascii=False, indent=2)
-        
+
         # カスタム辞書を使用してコンバータを初期化
         self.converter = UnicodeToAsciiConverter(dictionary_path=self.custom_dict_path)
 
@@ -85,7 +79,6 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         self.assertEqual(self.converter.convert("头部"), "head")
         self.assertEqual(self.converter.convert("颜"), "face")
 
-
     def test_hash_conversion(self):
         """辞書にない文字列のハッシュ変換をテスト"""
         test_text = "未知の文字列"
@@ -93,15 +86,19 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
 
         # ドキュメント仕様: 'HASH'で始まり、8文字のハッシュが続く
         self.assertTrue(converted.startswith("HASH"))
-        self.assertEqual(len(converted), 12) # 'HASH' + 8文字
+        self.assertEqual(len(converted), 12)  # 'HASH' + 8文字
         self.assertEqual(converted, "HASH66d0744d")
 
         test_texts = [
-            "未知の文字列", # 辞書にない文字列
-            "右未知の文字列1先", # 接頭語と接尾語を含む文字列
-            "左未知の文字列捩1" # 接頭語と接尾語+数字を含む文字列
+            "未知の文字列",  # 辞書にない文字列
+            "右未知の文字列1先",  # 接頭語と接尾語を含む文字列
+            "左未知の文字列捩1",  # 接頭語と接尾語+数字を含む文字列
         ]
-        results = ["HASH66d0744d", "right_HASH66d0744d_end_1", "left_HASH66d0744d_twist_1"]
+        results = [
+            "HASH66d0744d",
+            "right_HASH66d0744d_end_1",
+            "left_HASH66d0744d_twist_1",
+        ]
         for i, test_text in enumerate(test_texts):
             converted = self.converter.convert(test_text)
             self.assertEqual(converted, results[i])
@@ -125,7 +122,7 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
             "test-name": "test_name",  # "-"は"_"に変換
             "test.name": "test_name",  # "."は"_"に変換
             "test+name": "test_plus_name",  # "+"は"_plus_"に変換
-            "test|name": "test_pipe_name"  # "|"は"_pipe_"に変換
+            "test|name": "test_pipe_name",  # "|"は"_pipe_"に変換
         }
         for original, expected in test_cases.items():
             with self.subTest(original=original):
@@ -152,7 +149,9 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         # 辞書
         self.assertEqual(self.converter.get_encoding_type("bone"), "dictionary")
         # ハッシュ
-        self.assertEqual(self.converter.get_encoding_type(self.converter.convert("未知")), "hash")
+        self.assertEqual(
+            self.converter.get_encoding_type(self.converter.convert("未知")), "hash"
+        )
         # オリジナル
         self.assertEqual(self.converter.get_encoding_type("original_ascii"), "original")
 
@@ -163,11 +162,10 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         # None
         self.assertEqual(self.converter.convert(None), None)
         # 数字のみ
-        self.assertEqual(self.converter.convert("12345"), "12345")
+        self.assertEqual(self.converter.convert("12345"), "_12345")
         # 特殊文字のみ
         self.assertEqual(self.converter.convert("!@#$%^&*()"), "__________")
 
-        # 以下が通らない
         self.assertEqual(self.converter.convert("左人差指先"), "left_finger_index_end")
         self.assertEqual(self.converter.convert("右腕捩先IK"), "right_arm_twist_end_ik")
         self.assertEqual(self.converter.convert("左肩P"), "left_shoulder_p")
@@ -179,6 +177,10 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         self.assertEqual(self.converter.convert("右顔1_0_1"), "right_face_1_0_1")
         self.assertEqual(self.converter.convert("左足IK親"), "left_foot_ik_parent")
         self.assertEqual(self.converter.convert("上半身3"), "spine_3")
+
+        # 先頭に数字がある場合のテスト
+        self.assertEqual(self.converter.convert("001左腕"), "left_arm_001")
+        self.assertEqual(self.converter.convert("001 Footsteps"), "Footsteps_001")
 
 
 class TestUtilsAPI(unittest.TestCase):
@@ -226,5 +228,5 @@ class TestSingletonPattern(unittest.TestCase):
         self.assertEqual(converter2.convert("シングルトンテスト"), "singleton_test")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -60,29 +60,33 @@ class UnicodeToAsciiConverter:
         if dictionary_path is None:
             current_dir = os.path.dirname(os.path.abspath(__file__))
             dictionary_path = os.path.join(
-                os.path.dirname(current_dir), 'config', 'unicode_dictionary.json'
+                os.path.dirname(current_dir), "config", "unicode_dictionary.json"
             )
 
         try:
             if os.path.exists(dictionary_path):
-                with open(dictionary_path, encoding='utf-8') as f:
+                with open(dictionary_path, encoding="utf-8") as f:
                     data = json.load(f)
 
                 # 新しい辞書フォーマットに対応
-                if 'dictionary' in data and isinstance(data['dictionary'], dict):
+                if "dictionary" in data and isinstance(data["dictionary"], dict):
                     # 新しいフラット辞書フォーマット
-                    self.unicode_to_ascii = data['dictionary']
-                    self.maya_invalid_chars = data.get('maya_invalid_chars', {})
-                    self.prefix_map = data.get('prefix', [])
-                    self.suffix_map = data.get('suffix', [])
-                    self.languages = data.get('_meta', {}).get('languages', ['jp', 'en', 'zh-cn', 'zh-tw'])
-                elif 'dictionary' in data and isinstance(data['dictionary'], list):
+                    self.unicode_to_ascii = data["dictionary"]
+                    self.maya_invalid_chars = data.get("maya_invalid_chars", {})
+                    self.prefix_map = data.get("prefix", [])
+                    self.suffix_map = data.get("suffix", [])
+                    self.languages = data.get("_meta", {}).get(
+                        "languages", ["jp", "en", "zh-cn", "zh-tw"]
+                    )
+                elif "dictionary" in data and isinstance(data["dictionary"], list):
                     # 旧フォーマット（リスト形式）対応
-                    self._process_list_dictionary(data['dictionary'])
-                    self.maya_invalid_chars = data.get('maya_invalid_chars', {})
-                    self.prefix_map = data.get('prefix', [])
-                    self.suffix_map = data.get('suffix', [])
-                    self.languages = data.get('_meta', {}).get('languages', ['jp', 'en', 'zh-cn', 'zh-tw'])
+                    self._process_list_dictionary(data["dictionary"])
+                    self.maya_invalid_chars = data.get("maya_invalid_chars", {})
+                    self.prefix_map = data.get("prefix", [])
+                    self.suffix_map = data.get("suffix", [])
+                    self.languages = data.get("_meta", {}).get(
+                        "languages", ["jp", "en", "zh-cn", "zh-tw"]
+                    )
                 self._build_reverse_map()
 
                 self.logger.info(f"辞書ファイルを読み込みました: {dictionary_path}")
@@ -146,16 +150,13 @@ class UnicodeToAsciiConverter:
             ["つまさき", "toe", "脚趾", "腳趾"],
             ["肩", "shoulder", "肩", "肩"],
             ["上半身", "spine", "上半身", "上半身"],
-            ["元素", "element", "元素", "元素"]
+            ["元素", "element", "元素", "元素"],
         ]
 
         # リスト形式の辞書データを処理
         self._process_list_dictionary(dictionary_list)
 
-        self.maya_invalid_chars = {
-            '+': '_plus_',
-            '|': '_pipe_'
-        }
+        self.maya_invalid_chars = {"+": "_plus_", "|": "_pipe_"}
 
         self.prefix_map = [
             ["左", "left_", "左", "左"],
@@ -164,9 +165,9 @@ class UnicodeToAsciiConverter:
         self.suffix_map = [
             ["先", "_end", "末端", "末端"],
             ["ＩＫ", "_ik", "IK", "IK"],
-            ["捩", "_twist", "扭", "扭"]
+            ["捩", "_twist", "扭", "扭"],
         ]
-        self.languages = ['jp', 'en', 'zh-cn', 'zh-tw']
+        self.languages = ["jp", "en", "zh-cn", "zh-tw"]
         self._build_reverse_map()
 
     def convert(self, text: str) -> str:
@@ -197,6 +198,10 @@ class UnicodeToAsciiConverter:
 
     def _convert_internal(self, text: str) -> str:
         """内部変換処理"""
+        # 先頭に数字がある場合は、ASCII専用文字列でも複合処理を行う
+        if re.match(r"^\d+", text):
+            return self._convert_complex_text(text)
+
         # ASCII専用文字列はそのまま
         if self.is_ascii_only(text):
             return self.maya_safe_name(text)
@@ -240,8 +245,16 @@ class UnicodeToAsciiConverter:
     def _convert_fullwidth_numbers(self, text: str) -> str:
         """全角数字を半角数字に変換"""
         fullwidth_to_halfwidth = {
-            '０': '0', '１': '1', '２': '2', '３': '3', '４': '4',
-            '５': '5', '６': '6', '７': '7', '８': '8', '９': '9'
+            "０": "0",
+            "１": "1",
+            "２": "2",
+            "３": "3",
+            "４": "4",
+            "５": "5",
+            "６": "6",
+            "７": "7",
+            "８": "8",
+            "９": "9",
         }
 
         result = text
@@ -252,29 +265,46 @@ class UnicodeToAsciiConverter:
 
     def _process_prefix_suffix(self, text: str) -> tuple:
         """Prefix、Suffixを処理して英語に変換"""
-        # 1. Prefixの処理
+        # 1. 先頭の数字を分離
+        leading_numbers, text = self._extract_leading_numbers(text)
+
+        # 2. スペースを除去
+        text = text.strip()
+
+        # 3. Prefixの処理
         prefix, text = self._extract_prefix(text)
 
-        # 2. 末尾の特殊文字を分離
+        # 4. 末尾の特殊文字を分離
         text, trailing_chars = self._extract_trailing_chars(text)
 
-        # 3. Suffixの処理
+        # 5. Suffixの処理
         text, suffix_parts = self._extract_suffix(text)
 
-        # 4. 基本部分の変換
+        # 6. 基本部分の変換
         converted_main = self._convert_main_part(text)
 
-        # 5. 結果の組み立て
-        suffix = self._build_suffix(suffix_parts, trailing_chars)
+        # 7. 結果の組み立て
+        suffix = self._build_suffix(suffix_parts, trailing_chars, leading_numbers)
 
         return prefix, converted_main, suffix
+
+    def _extract_leading_numbers(self, text: str) -> tuple:
+        """先頭の数字を抽出"""
+        match = re.match(r"^(\d+)\s*", text)
+        if match:
+            leading_numbers = match.group(1)
+            remaining_text = text[len(match.group(0)) :]
+
+            return leading_numbers, remaining_text
+
+        return "", text
 
     def _extract_prefix(self, text: str) -> tuple:
         """接頭辞を抽出"""
         for prefix_pair in self.prefix_map:
             if text.startswith(prefix_pair[0]):
-                return prefix_pair[1], text[len(prefix_pair[0]):]
-        return '', text
+                return prefix_pair[1], text[len(prefix_pair[0]) :]
+        return "", text
 
     def _extract_trailing_chars(self, text: str) -> tuple:
         """末尾の数字・英文字・Maya無効文字を分離"""
@@ -282,21 +312,26 @@ class UnicodeToAsciiConverter:
         for suffix_pair in self.suffix_map:
             if text.endswith(suffix_pair[0]):
                 # 接尾辞を一時的に除去
-                text_without_suffix = text[:-len(suffix_pair[0])]
-                # 数字・英文字・アンダースコアを探す
-                end_match = re.search(r'([A-Za-z0-9+|_]+)$', text_without_suffix)
+                text_without_suffix = text[: -len(suffix_pair[0])]
+                # 数字・英文字・アンダースコアを探す（単語境界を考慮）
+                end_match = re.search(r"([A-Za-z0-9+|_]+)$", text_without_suffix)
                 if end_match:
                     trailing_chars = end_match.group(1)
-                    remaining_text = text_without_suffix[:-len(trailing_chars)] + suffix_pair[0]
+                    remaining_text = (
+                        text_without_suffix[: -len(trailing_chars)] + suffix_pair[0]
+                    )
                     return remaining_text, trailing_chars
 
-        # 通常の処理
-        end_match = re.search(r'([A-Za-z0-9+|_]+)$', text)
-        if end_match:
-            trailing_chars = end_match.group(1)
-            text = text[:-len(trailing_chars)]
-            return text, trailing_chars
-        return text, ''
+        # 通常の処理: 末尾の数字・記号のみを抽出（英単語全体は抽出しない）
+        # 非ASCII文字が含まれる場合のみ、末尾の数字・記号を分離
+        if not self.is_ascii_only(text):
+            end_match = re.search(r"([A-Za-z0-9+|_]+)$", text)
+            if end_match:
+                trailing_chars = end_match.group(1)
+                text = text[: -len(trailing_chars)]
+                return text, trailing_chars
+
+        return text, ""
 
     def _extract_suffix(self, text: str) -> tuple:
         """接尾辞を抽出（複合suffixに対応）"""
@@ -313,7 +348,7 @@ class UnicodeToAsciiConverter:
             for suffix_pair in self.suffix_map:
                 if remaining_text.endswith(suffix_pair[0]):
                     # 接尾辞を除いた部分が辞書にある場合、接尾辞を抽出
-                    potential_main = remaining_text[:-len(suffix_pair[0])]
+                    potential_main = remaining_text[: -len(suffix_pair[0])]
                     if potential_main in self.unicode_to_ascii:
                         suffix_parts.insert(0, suffix_pair[1])  # 前に挿入（逆順なので）
                         remaining_text = potential_main
@@ -337,13 +372,20 @@ class UnicodeToAsciiConverter:
         if not text:
             return text
 
+        # 辞書に存在する場合は辞書変換を優先
         if text in self.unicode_to_ascii:
             return self.unicode_to_ascii[text]
-        else:
-            # 複合語の場合は個別に変換を試みる
-            return self._convert_compound_word(text)
 
-    def _build_suffix(self, suffix_parts: List[str], trailing_chars: str) -> str:
+        # ASCII専用文字列の場合はそのまま返す
+        if self.is_ascii_only(text):
+            return text
+
+        # 複合語の場合は個別に変換を試みる
+        return self._convert_compound_word(text)
+
+    def _build_suffix(
+        self, suffix_parts: List[str], trailing_chars: str, leading_numbers: str = ""
+    ) -> str:
         """suffix部分を組み立て"""
         result_parts = []
 
@@ -359,12 +401,16 @@ class UnicodeToAsciiConverter:
                 converted_trailing = converted_trailing.replace(invalid, replacement)
 
             # 既に_で始まる場合は、追加の_を付けない
-            if converted_trailing.startswith('_'):
+            if converted_trailing.startswith("_"):
                 result_parts.append(converted_trailing.lower())
             else:
-                result_parts.append('_' + converted_trailing.lower())
+                result_parts.append("_" + converted_trailing.lower())
 
-        return ''.join(result_parts)
+        # 先頭の数字がある場合は末尾に追加
+        if leading_numbers:
+            result_parts.append("_" + leading_numbers)
+
+        return "".join(result_parts)
 
     def _assemble_result(self, prefix: str, main: str, suffix: str) -> str:
         """結果を組み立て"""
@@ -400,7 +446,7 @@ class UnicodeToAsciiConverter:
 
         # 結果を返す
         if parts:
-            return '_'.join(parts)
+            return "_".join(parts)
         else:
             # 何も変換できなかった場合はHASH化して返す
             return self.HASH_PREFIX + self._generate_hash(text)
@@ -408,11 +454,11 @@ class UnicodeToAsciiConverter:
     def _generate_hash(self, text: str) -> str:
         """文字列のハッシュを生成"""
         # UTF-8エンコードしてからハッシュ化
-        hash_obj = hashlib.md5(text.encode('utf-8'))
+        hash_obj = hashlib.md5(text.encode("utf-8"))
         hash_hex = hash_obj.hexdigest()
 
         # 指定された長さに切り詰める
-        return hash_hex[:self.HASH_LENGTH]
+        return hash_hex[: self.HASH_LENGTH]
 
     def _restore_compound_word(self, text: str) -> str:
         """複合語を復元"""
@@ -421,7 +467,7 @@ class UnicodeToAsciiConverter:
             return self.ascii_to_unicode[text]
 
         # アンダースコアで分割して個別に復元
-        parts = text.split('_')
+        parts = text.split("_")
         restored_parts = []
 
         for part in parts:
@@ -431,7 +477,7 @@ class UnicodeToAsciiConverter:
                 # 復元できない部分があった場合は元のテキストを返す
                 return text
 
-        return ''.join(restored_parts)
+        return "".join(restored_parts)
 
     def maya_safe_name(self, text: str) -> str:
         """Maya用に無効文字を置換"""
@@ -442,10 +488,12 @@ class UnicodeToAsciiConverter:
 
         # Maya有効文字以外を_に変換
         # 使用可能な文字: 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_
-        valid_chars = set('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_')
+        valid_chars = set(
+            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
+        )
 
         # 無効文字を_に変換
-        safe_result = ''.join(c if c in valid_chars else '_' for c in result)
+        safe_result = "".join(c if c in valid_chars else "_" for c in result)
 
         return safe_result
 
@@ -453,7 +501,9 @@ class UnicodeToAsciiConverter:
         """Maya無効文字の置換を元に戻す"""
         result = text
         # 個別の置換のみを元に戻す（一般的な_は元に戻さない）
-        maya_replacement_to_char = {v: k for k, v in self.maya_invalid_chars.items() if v != '_'}
+        maya_replacement_to_char = {
+            v: k for k, v in self.maya_invalid_chars.items() if v != "_"
+        }
         for replacement, original in maya_replacement_to_char.items():
             result = result.replace(replacement, original)
         return result
@@ -461,7 +511,7 @@ class UnicodeToAsciiConverter:
     def is_ascii_only(self, text: str) -> bool:
         """ASCII専用文字列かチェック"""
         try:
-            text.encode('ascii')
+            text.encode("ascii")
             return True
         except UnicodeEncodeError:
             return False
@@ -484,13 +534,15 @@ class UnicodeToAsciiConverter:
     def get_encoding_type(self, text: str) -> str:
         """文字列のエンコード方式を判定"""
         if self.is_hash_converted(text):
-            return 'hash'
+            return "hash"
         elif self.is_dictionary_converted(text):
-            return 'dictionary'
+            return "dictionary"
         else:
-            return 'original'
+            return "original"
 
-    def get_unique_name(self, base_name: str, existing_names: Optional[set] = None) -> str:
+    def get_unique_name(
+        self, base_name: str, existing_names: Optional[set] = None
+    ) -> str:
         """
         一意な名前を生成
 
@@ -531,7 +583,12 @@ class UnicodeToAsciiConverter:
 
     def get_conversion_stats(self, converted_names: List[str]) -> Dict[str, int]:
         """変換統計の取得"""
-        stats = {'dictionary': 0, 'hash': 0, 'original': 0, 'total': len(converted_names)}
+        stats = {
+            "dictionary": 0,
+            "hash": 0,
+            "original": 0,
+            "total": len(converted_names),
+        }
         for name in converted_names:
             encoding_type = self.get_encoding_type(name)
             if encoding_type in stats:
@@ -572,13 +629,13 @@ class UnicodeToAsciiConverter:
     def get_dictionary_info(self) -> Dict:
         """現在の辞書情報を取得"""
         return {
-            'total_entries': len(self.unicode_to_ascii),
-            'conversion_cache_size': len(self._conversion_cache),
-            'restoration_cache_size': len(self._restoration_cache),
-            'maya_invalid_chars': len(self.maya_invalid_chars),
-            'hash_prefix': self.HASH_PREFIX,
-            'hash_length': self.HASH_LENGTH,
-            'sample_entries': dict(list(self.unicode_to_ascii.items())[:5])
+            "total_entries": len(self.unicode_to_ascii),
+            "conversion_cache_size": len(self._conversion_cache),
+            "restoration_cache_size": len(self._restoration_cache),
+            "maya_invalid_chars": len(self.maya_invalid_chars),
+            "hash_prefix": self.HASH_PREFIX,
+            "hash_length": self.HASH_LENGTH,
+            "sample_entries": dict(list(self.unicode_to_ascii.items())[:5]),
         }
 
     def export_dictionary(self, file_path: str):
@@ -592,13 +649,13 @@ class UnicodeToAsciiConverter:
             "_meta": {
                 "version": "1.0",
                 "description": "多言語対応Unicode→ASCII変換辞書",
-                "last_updated": "2025-07-04"
+                "last_updated": "2025-07-04",
             },
             "dictionary": self.unicode_to_ascii,
-            "maya_invalid_chars": self.maya_invalid_chars
+            "maya_invalid_chars": self.maya_invalid_chars,
         }
 
-        with open(file_path, 'w', encoding='utf-8') as f:
+        with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
         self.logger.info(f"辞書を出力しました: {file_path}")
