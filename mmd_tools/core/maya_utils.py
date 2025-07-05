@@ -1,6 +1,7 @@
 import os
 
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 from maya import cmds
 
 from mmd_tools.settings import settings
@@ -12,10 +13,10 @@ def sanitize_text(name):
     """
     Maya用に名前をサニタイズする。
     日本語などのマルチバイト文字をASCII文字に変換し、Maya互換の名前にする。
-    
+
     Args:
         name (str): 元の名前
-        
+
     Returns:
         str: Maya互換の名前
     """
@@ -25,14 +26,15 @@ def sanitize_text(name):
     converted_name = utils.convert_utf8_to_ascii(name)
     return converted_name or "default_name"
 
+
 def sanitize_texture_path(texture_path, texture_dir):
     """
     テクスチャパスをMaya用にサニタイズする。
-    
+
     Args:
         texture_path (str): 元のテクスチャパス
         texture_dir (str): テクスチャディレクトリ
-        
+
     Returns:
         str: Maya互換のテクスチャパス、またはNone
     """
@@ -55,7 +57,10 @@ def sanitize_texture_path(texture_path, texture_dir):
 
     return full_texture_path
 
-def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects):
+
+def create_mesh_with_uvs(
+    name, vertices, face_counts, face_connects, uvs, face_uv_connects
+):
     """
     MayaシーンにUV付きのメッシュオブジェクトを作成します。
     OpenMaya APIを使用して高速化。
@@ -123,10 +128,11 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
     transform_name = transform_fn.setName(name)
 
     # デフォルトのシェーディンググループに割り当て
-    cmds.sets(transform_name, edit=True, forceElement='initialShadingGroup')
+    cmds.sets(transform_name, edit=True, forceElement="initialShadingGroup")
     cmds.select(clear=True)
 
     return transform_name
+
 
 def split_mesh_by_material(mesh_name, materials):
     """
@@ -143,6 +149,7 @@ def split_mesh_by_material(mesh_name, materials):
         cmds.select(new_mesh)
         cmds.hyperShade(assign=material.name)
 
+
 def create_material(name, color, texture_path=None, texture_dir=""):
     """
     Mayaシーンにマテリアルを作成します。
@@ -157,31 +164,44 @@ def create_material(name, color, texture_path=None, texture_dir=""):
         str: 作成されたシェーダーノード名。
     """
     sanitized_name = sanitize_text(name)
-    shader = cmds.shadingNode('lambert', asShader=True, name=sanitized_name)
-    cmds.setAttr(shader + ".color", color[0], color[1], color[2], type='double3')
+    shader = cmds.shadingNode("lambert", asShader=True, name=sanitized_name)
+    cmds.setAttr(shader + ".color", color[0], color[1], color[2], type="double3")
     # AlphaをTransparencyに変換
-    cmds.setAttr(shader + ".transparency", 1.0 - color[3], 1.0 - color[3], 1.0 - color[3], type='double3')
+    cmds.setAttr(
+        shader + ".transparency",
+        1.0 - color[3],
+        1.0 - color[3],
+        1.0 - color[3],
+        type="double3",
+    )
 
     # 元の名前を保持
-    set_custom_attributes(shader, {
-        "mmd_material_name": name
-    })
+    set_custom_attributes(shader, {"mmd_material_name": name})
 
     if texture_path:
         # テクスチャパスを解決
         full_texture_path = os.path.join(texture_dir, texture_path)
         if os.path.exists(full_texture_path):
-            file_node = cmds.shadingNode('file', asTexture=True, name=sanitized_name + "_file")
-            place_uv_node = cmds.shadingNode('place2dTexture', asUtility=True, name=sanitized_name + "_place2dTexture")
+            file_node = cmds.shadingNode(
+                "file", asTexture=True, name=sanitized_name + "_file"
+            )
+            place_uv_node = cmds.shadingNode(
+                "place2dTexture",
+                asUtility=True,
+                name=sanitized_name + "_place2dTexture",
+            )
             # 標準的なUV接続
             cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
             cmds.connectAttr(file_node + ".outColor", shader + ".color")
 
-            cmds.setAttr(file_node + ".fileTextureName", full_texture_path, type="string")
+            cmds.setAttr(
+                file_node + ".fileTextureName", full_texture_path, type="string"
+            )
         else:
             cmds.warning(f"Texture file not found: {full_texture_path}")
 
     return shader
+
 
 def assign_material(mesh_name, shader_node):
     """
@@ -193,11 +213,14 @@ def assign_material(mesh_name, shader_node):
     """
     # マテリアル専用のシェーディンググループを作成
     sanitized_shader_name = shader_node + "SG"
-    sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
+    sg_name = cmds.sets(
+        renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name
+    )
     # シェーダーをシェーディンググループに接続
     cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
     # メッシュをシェーディンググループに割り当て
     cmds.sets(mesh_name, edit=True, forceElement=sg_name)
+
 
 def assign_material_to_faces(mesh_name, shader_node, face_selection):
     """
@@ -210,11 +233,14 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
     """
     # マテリアル専用のシェーディンググループを作成
     sanitized_shader_name = shader_node + "SG"
-    sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
+    sg_name = cmds.sets(
+        renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name
+    )
     # シェーダーをシェーディンググループに接続
     cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)
+
 
 def set_custom_attributes(object_name, attributes):
     """
@@ -225,7 +251,6 @@ def set_custom_attributes(object_name, attributes):
         attributes (dict): 属性名と値の辞書。
     """
     for attr_name, attr_value in attributes.items():
-
         # https://help.autodesk.com/cloudhelp/2023/JPN/Maya-Tech-Docs/CommandsPython/addAttr.html
         # データ型を自動判別
         which = None
@@ -241,7 +266,7 @@ def set_custom_attributes(object_name, attributes):
             which = "attributeType"
         elif isinstance(attr_value, bytes):
             attr_type = "string"
-            attr_value = attr_value.decode('utf-8')
+            attr_value = attr_value.decode("utf-8")
             which = "dataType"
         elif isinstance(attr_value, str):
             attr_type = "string"
@@ -254,7 +279,9 @@ def set_custom_attributes(object_name, attributes):
                 attr_type = "longArray"
                 which = "dataType"
             else:
-                print(f"Unsupported list type for attribute '{attr_name}' on '{object_name}': {attr_value}")
+                print(
+                    f"Unsupported list type for attribute '{attr_name}' on '{object_name}': {attr_value}"
+                )
                 continue
 
         if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
@@ -265,3 +292,52 @@ def set_custom_attributes(object_name, attributes):
                 cmds.addAttr(object_name, longName=attr_name, dataType=attr_type)
                 cmds.setAttr(f"{object_name}.{attr_name}", attr_value, type=attr_type)
 
+
+def apply_vertex_weights(
+    vertices: list[float],
+    maya_joints,
+    skin_cluster,
+    mesh_node,
+    weights,
+    influences,
+    max_influences: int = 4,
+):
+    """
+    Mayaのメッシュに頂点ウェイトを適用します。
+
+    Args:
+        vertices (list): PMXの頂点データ。
+        maya_joints (list): Mayaのジョイント名のリスト。
+        skin_cluster (str): スキンクラスターの名前。
+        mesh_node (str): メッシュノードの名前。
+        weights (list[list[float]]): 頂点ごとのウェイトリスト。
+        influences (list[list[int]]): 頂点ごとの影響ジョイントインデックスリスト。
+    """
+
+    # SkinClusterのMFnSkinClusterを取得
+    skin_fn = oma.MFnSkinCluster(skin_cluster)
+
+    # メッシュの頂点数を取得
+    mesh_dag_path = om.MDagPath.getAPathTo(mesh_obj)
+    mesh_fn = om.MFnMesh(mesh_dag_path)
+    vertex_count = mesh_fn.numVertices
+
+    influence_paths = om.MDagPathArray()
+    influence_count = skin_fn.influenceObjects(influence_paths)
+
+    elements = om.MIntArray()
+
+    for vertex_index in range(vertex_count):
+        # コンポーネントの作成
+        vertex_component = om.MFnSingleIndexedComponent()
+        vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
+        vertex_component.addElement(vertex_index)
+
+        # MDoubleArrayとMIntArrayを作成
+        weight_array = om.MDoubleArray(weights[vertex_index])
+        influences = om.MIntArray(influences[vertex_index])
+
+        # ウェイトを設定
+        skin_fn.setWeights(
+            mesh_dag_path, vertex_component_obj, influences, weight_array
+        )
