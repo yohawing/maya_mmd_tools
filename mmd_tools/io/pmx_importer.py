@@ -1,11 +1,10 @@
 """
 PMXファイルをMayaシーンにインポートするためのモジュール。
 """
+
 import os
 
 from maya import cmds
-
-from mmd_tools.converters import bone_converter
 
 from .. import settings
 from ..converters import BoneConverter, MeshConverter, MorphConverter, PhysicsConverter
@@ -28,12 +27,11 @@ def import_pmx_file(parser, filepath):
     try:
         # メッシュを変換
         mesh_converter = MeshConverter(filepath)
-
-        mesh_group = mesh_converter.convert_pmx_mesh(parser)
+        mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser)
 
         # ボーンを変換
         bone_converter = BoneConverter()
-        joints = bone_converter.convert_pmx_bones(parser, mesh_group)
+        joints = bone_converter.convert_pmx_bones(parser, mesh_name)
 
         # TODO: モーフ、物理などの変換処理をここに追加
         # MorphConverter.convert_pmx_morphs(parser, mesh_group)
@@ -53,5 +51,6 @@ def import_pmx_file(parser, filepath):
     except Exception as e:
         cmds.error(f"Failed to import PMX file {filepath}: {e}")
         import traceback
+
         traceback.print_exc()
         return False

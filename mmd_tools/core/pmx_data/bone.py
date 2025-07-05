@@ -3,6 +3,9 @@ import struct
 
 from mmd_tools.core import utils
 from mmd_tools.core.pmx_data.ik_link import PmxIKLink
+from mmd_tools.settings import get_settings
+
+settings = get_settings()
 
 
 class PmxBoneFlag(enum.IntFlag):
@@ -121,7 +124,11 @@ class PmxBone:
         Returns:
             str: ボーンの名前。
         """
-        if self.name_english and self.name_english != "":
-            return self.name_english
+        if settings.get("import.model.joint_name_conversion_with_english", True):
+            # 英語名があればそれを使用
+            if self.name_english and self.name_english != "":
+                return self.name_english
 
-        return self.name
+            return self.name
+        else:
+            return self.name

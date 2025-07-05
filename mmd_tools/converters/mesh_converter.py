@@ -2,11 +2,10 @@ import os
 
 from maya import cmds
 
+from mmd_tools import settings
+from mmd_tools.core import maya_utils
 from mmd_tools.core.pmd_parser import PmdParser
 from mmd_tools.core.pmx_parser import PmxParser
-
-from .. import settings
-from ..core import maya_utils
 
 
 class MeshConverter:
@@ -33,6 +32,7 @@ class MeshConverter:
 
         Returns:
             str: 作成されたMayaメッシュをまとめるグループノードの名前。
+            str: 作成されたMayaメッシュノードの名前。
         """
         model_name = pmx_data.header.model_name
         all_vertices = pmx_data.vertices
@@ -44,26 +44,37 @@ class MeshConverter:
         model_group = cmds.group(empty=True, name=model_name)
 
         # カスタムアトリビュートの追加
-        maya_utils.set_custom_attributes(model_group, {
-            "mmd_file_type": pmx_data.header.magic,
-            "mmd_model_name": pmx_data.header.model_name,
-            "mmd_model_name_en": pmx_data.header.model_name_english,
-            "mmd_comment": pmx_data.header.comment,
-            "mmd_comment_en": pmx_data.header.comment_english
-        })
+        maya_utils.set_custom_attributes(
+            model_group,
+            {
+                "mmd_file_type": pmx_data.header.magic,
+                "mmd_model_name": pmx_data.header.model_name,
+                "mmd_model_name_en": pmx_data.header.model_name_english,
+                "mmd_comment": pmx_data.header.comment,
+                "mmd_comment_en": pmx_data.header.comment_english,
+            },
+        )
 
         # メッシュのマテリアル分割は、まずは統合メッシュを作った後にSplitする処理をすればいいの
 
-        created_mesh = self._create_unified_mesh(model_name, all_vertices, all_faces,
-                                     all_materials, all_textures, model_group)
+        created_mesh = self._create_unified_mesh(
+            model_name,
+            all_vertices,
+            all_faces,
+            all_materials,
+            all_textures,
+            model_group,
+        )
 
         # 設定からマテリアルごとのメッシュ分割設定を取得
-        separate_by_material = settings.get("import.model.separate_meshes_by_material", False)
-        if separate_by_material:
-            maya_utils.split_mesh_by_material(model_group, all_materials)
+        # separate_by_material = settings.get(
+        #     "import.model.separate_meshes_by_material", False
+        # )
+        # if separate_by_material:
+        #     maya_utils.split_mesh_by_material(model_group, all_materials)
 
         cmds.select(model_group)
-        return model_group
+        return model_group, created_mesh
 
     def convert_pmd_mesh(self, pmd_data: PmdParser):
         """
@@ -74,38 +85,53 @@ class MeshConverter:
 
         Returns:
             str: 作成されたMayaメッシュノードの名前。
+            str: 作成されたMayaメッシュをまとめるグループノードの名前。
         """
 
-        model_name = pmd_data.header.model_name
+        model_name = pmd_data.header.get_name()
         all_vertices = pmd_data.vertices
         all_faces = pmd_data.faces
         all_materials = pmd_data.materials
 
         # モデル名のグループを作成
-        model_group = cmds.group(empty=True, name=model_name)
+        group_node = cmds.group(empty=True, name="Geo")
         # カスタムアトリビュートの追加
-        maya_utils.set_custom_attributes(model_group, {
-            "mmd_file_type": pmd_data.header.magic,
-            "mmd_file_version": pmd_data.header.version,
-            "mmd_model_name": pmd_data.header.model_name,
-            "mmd_model_name_en": pmd_data.header.model_name_english,
-            "mmd_comment": pmd_data.header.comment,
-            "mmd_comment_en": pmd_data.header.comment_english
-        })
+        maya_utils.set_custom_attributes(
+            group_node,
+            {
+                "mmd_file_type": pmd_data.header.magic,
+                "mmd_file_version": pmd_data.header.version,
+                "mmd_model_name": pmd_data.header.model_name,
+                "mmd_model_name_en": pmd_data.header.model_name_english,
+                "mmd_comment": pmd_data.header.comment,
+                "mmd_comment_en": pmd_data.header.comment_english,
+            },
+        )
 
         # 設定からマテリアルごとのメッシュ分割設定を取得
-        separate_by_material = settings.get("import.model.separate_meshes_by_material", False)
+        separate_by_material = settings.get(
+            "import.model.separate_meshes_by_material", False
+        )
 
-        created_mesh = self._create_unified_mesh(model_name, all_vertices, all_faces,
-                                     all_materials, None, model_group)
+        created_mesh = self._create_unified_mesh(
+            model_name, all_vertices, all_faces, all_materials, None, group_node
+        )
 
         if separate_by_material:
-            maya_utils.split_mesh_by_material(model_group, all_materials)
+            maya_utils.split_mesh_by_material(group_node, all_materials)
 
-        cmds.select(model_group)
-        return model_group
+        cmds.select(group_node)
+        return group_node, created_mesh
 
-    def _create_unified_mesh(self, model_name, all_vertices, all_faces, all_materials, all_textures, model_group):
+    def _create_unified_mesh(
+        self,
+        model_name,
+        all_vertices,
+        all_faces,
+        all_materials,
+        all_textures,
+        model_group,
+    ):
         """
         全てのメッシュを統合した単一のメッシュを作成する。
 
@@ -120,10 +146,12 @@ class MeshConverter:
             str: 作成されたメッシュノードの名前
         """
         # 統合メッシュの名前を設定
-        mesh_name = maya_utils.sanitize_text(model_name)
+        mesh_name = maya_utils.sanitize_text(model_name) + "_mesh"
 
-        # 全ての頂点と面を直接使用
+        # 全ての頂点と面を直接使用 z*= -1
         vertices = [v.position for v in all_vertices]
+        vertices = [(v[0], v[1], -v[2]) for v in vertices]
+
         uvs = []
         for vertex in all_vertices:
             uvs.extend(vertex.uv)  # UVデータをフラットなリストとして追加
@@ -144,10 +172,11 @@ class MeshConverter:
             start_face = len(face_counts)
             for j in range(face_offset, face_offset + num_material_faces):
                 face = all_faces[j]
-                face_connects.extend(face.indices)
-                face_counts.append(len(face.indices))
+                reverced_indices = face.indices[::-1]  # PMXの面は逆順なので反転
+                face_connects.extend(reverced_indices)
+                face_counts.append(len(reverced_indices))
                 # UVインデックスは頂点インデックスと同じ
-                face_uv_connects.extend(face.indices)
+                face_uv_connects.extend(reverced_indices)
 
             end_face = len(face_counts)
             material_face_ranges.append((material, start_face, end_face))
@@ -160,7 +189,7 @@ class MeshConverter:
             face_counts=face_counts,
             face_connects=face_connects,
             uvs=uvs,
-            face_uv_connects=face_uv_connects
+            face_uv_connects=face_uv_connects,
         )
 
         # マテリアルを作成して、適切な面に割り当てる
@@ -176,18 +205,20 @@ class MeshConverter:
             if all_textures:
                 if material.texture_index != -1:
                     raw_texture_path = all_textures[material.texture_index]
-                    texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
+                    texture_path = maya_utils.sanitize_texture_path(
+                        raw_texture_path, self.texture_dir
+                    )
 
             # マテリアルを作成
             shader = maya_utils.create_material(
                 name=material.name,
                 color=material.diffuse,
                 texture_path=texture_path,
-                texture_dir=self.texture_dir
+                texture_dir=self.texture_dir,
             )
 
             # 面の範囲を選択してマテリアルを割り当て
-            face_selection = f"{created_mesh}.f[{start_face}:{end_face-1}]"
+            face_selection = f"{created_mesh}.f[{start_face}:{end_face - 1}]"
             maya_utils.assign_material_to_faces(created_mesh, shader, face_selection)
 
         # 作成したメッシュをグループに追加

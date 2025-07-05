@@ -20,19 +20,31 @@ class PmdParser:
     """
     PMDファイルを解析し、そのデータをPythonオブジェクトとして保持するクラス。
     """
-    def __init__(self):
-        self.header: PmdHeader = PmdHeader()
-        self.vertices: list[PmdVertex] = []
-        self.faces: list[PmdFace] = []
-        self.materials: list[PmdMaterial] = []
-        self.bones: list[PmdBone] = []
-        self.ik_data: list[PmdIK] = []
-        self.morphs: list[PmdMorph] = []
-        self.display_frames: list[PmdDisplayFrame] = []
-        self.rigid_bodies: list[PmdRigidBody] = []
-        self.joints: list[PmdJoint] = []
 
-    def parse_file(self, file_path) -> 'PmdParser':
+    header: PmdHeader
+    vertices: list[PmdVertex]
+    faces: list[PmdFace]
+    materials: list[PmdMaterial]
+    bones: list[PmdBone]
+    ik_data: list[PmdIK]
+    morphs: list[PmdMorph]
+    display_frames: list[PmdDisplayFrame]
+    rigid_bodies: list[PmdRigidBody]
+    joints: list[PmdJoint]
+
+    def __init__(self):
+        self.header = PmdHeader()
+        self.vertices = []
+        self.faces = []
+        self.materials = []
+        self.bones = []
+        self.ik_data = []
+        self.morphs = []
+        self.display_frames = []
+        self.rigid_bodies = []
+        self.joints = []
+
+    def parse_file(self, file_path) -> "PmdParser":
         """
         指定されたPMDファイルを読み込み、各セクションを解析してデータを格納する。
 
@@ -49,48 +61,48 @@ class PmdParser:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"PMD file not found: {file_path}")
 
-        with open(file_path, 'rb') as f:
+        with open(file_path, "rb") as f:
             try:
                 # Header
                 self.header.parse(f)
 
                 # Vertex
-                vertex_count = struct.unpack('<I', f.read(4))[0]
+                vertex_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(vertex_count):
                     vertex = PmdVertex()
                     vertex.parse(f)
                     self.vertices.append(vertex)
 
                 # Face
-                face_count = struct.unpack('<I', f.read(4))[0]
+                face_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(face_count // 3):
                     face = PmdFace()
                     face.parse(f)
                     self.faces.append(face)
 
                 # Material
-                material_count = struct.unpack('<I', f.read(4))[0]
+                material_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(material_count):
                     material = PmdMaterial()
                     material.parse(f)
                     self.materials.append(material)
 
                 # Bone
-                bone_count = struct.unpack('<H', f.read(2))[0]
+                bone_count = struct.unpack("<H", f.read(2))[0]
                 for _ in range(bone_count):
                     bone = PmdBone()
                     bone.parse(f)
                     self.bones.append(bone)
 
                 # IK
-                ik_count = struct.unpack('<H', f.read(2))[0]
+                ik_count = struct.unpack("<H", f.read(2))[0]
                 for _ in range(ik_count):
                     ik = PmdIK()
                     ik.parse(f)
                     self.ik_data.append(ik)
 
                 # Morph
-                morph_count = struct.unpack('<H', f.read(2))[0]
+                morph_count = struct.unpack("<H", f.read(2))[0]
                 for _ in range(morph_count):
                     morph = PmdMorph()
                     morph.parse(f)
@@ -105,14 +117,12 @@ class PmdParser:
                 #     frame.parse(f)
                 #     self.display_frames.append(frame)
 
-
                 # この先はPMDファイルの拡張データを解析する部分です。
                 # 拡張データがない場合はここで処理を終了します。
 
                 try:
-
                     # English Header
-                    has_english_header = struct.unpack('<B', f.read(1))[0]
+                    has_english_header = struct.unpack("<B", f.read(1))[0]
                     if has_english_header:
                         self.header.parse_english(f)
 
@@ -141,13 +151,13 @@ class PmdParser:
                     # It might be better to store it in the material data.
 
                     # Physics
-                    rigid_body_count = struct.unpack('<I', f.read(4))[0]
+                    rigid_body_count = struct.unpack("<I", f.read(4))[0]
                     for _ in range(rigid_body_count):
                         rigid_body = PmdRigidBody()
                         rigid_body.parse(f)
                         self.rigid_bodies.append(rigid_body)
 
-                    joint_count = struct.unpack('<I', f.read(4))[0]
+                    joint_count = struct.unpack("<I", f.read(4))[0]
                     for _ in range(joint_count):
                         joint = PmdJoint()
                         joint.parse(f)

@@ -3,7 +3,7 @@ import os
 from maya import cmds
 
 from mmd_tools import settings
-from mmd_tools.converters import BoneConverter
+from mmd_tools.converters import BoneConverter, MeshConverter
 from mmd_tools.core import PmdParser, PmxParser, maya_utils
 from tests.common.maya_test_base import MayaTestBase
 
@@ -44,10 +44,8 @@ class TestBoneConverter(MayaTestBase):
         pmd_data = parser.parse_file(self.pmd_file_path)
 
         # テスト用のメッシュを作成
-        mesh_name = "test_mesh"
-        cmds.polyPlane(
-            name=mesh_name, width=10, height=10, subdivisionsX=1, subdivisionsY=1
-        )
+        pmd_mesh_converter = MeshConverter(self.pmd_file_path)
+        group_name, mesh_name = pmd_mesh_converter.convert_pmd_mesh(pmd_data)
 
         # ボーンを変換
         converter = BoneConverter()
@@ -74,8 +72,8 @@ class TestBoneConverter(MayaTestBase):
             )
 
             # 親子関係の確認
-            if bone.parent_index != -1:
-                parent_name = pmd_data.bones[bone.parent_index].get_name()
+            if bone.parent_bone_index != -1:
+                parent_name = pmd_data.bones[bone.parent_bone_index].get_name()
                 parent_name = maya_utils.sanitize_text(parent_name)
                 parent_joint = cmds.listRelatives(bone_name, parent=True, type="joint")
                 self.assertIsNotNone(
@@ -91,10 +89,10 @@ class TestBoneConverter(MayaTestBase):
             joint_pos = cmds.xform(
                 bone_name, query=True, translation=True, worldSpace=True
             )
-            self.assertAlmostEqual(joint_pos[0], bone.head_pos[0], delta=1e-5)
-            self.assertAlmostEqual(joint_pos[1], bone.head_pos[1], delta=1e-5)
+            self.assertAlmostEqual(joint_pos[0], bone.position[0], delta=1e-5)
+            self.assertAlmostEqual(joint_pos[1], bone.position[1], delta=1e-5)
             self.assertAlmostEqual(
-                joint_pos[2], -bone.head_pos[2], delta=1e-5
+                joint_pos[2], -bone.position[2], delta=1e-5
             )  # Mayaは左手系
 
     def test_convert_pmx_bones(self):
@@ -109,11 +107,9 @@ class TestBoneConverter(MayaTestBase):
         parser = PmxParser()
         pmx_data = parser.parse_file(self.pmx_file_path)
 
-        # テスト用のメッシュを作成
-        mesh_name = "test_mesh_pmx"
-        cmds.polyPlane(
-            name=mesh_name, width=10, height=10, subdivisionsX=1, subdivisionsY=1
-        )
+        # メッシュを作成
+        mesh_converter = MeshConverter(self.pmx_file_path)
+        group_name, mesh_name = mesh_converter.convert_pmx_mesh(pmx_data)
 
         # ボーンを変換
         converter = BoneConverter()
@@ -139,8 +135,8 @@ class TestBoneConverter(MayaTestBase):
             )
 
             # 親子関係の確認
-            if bone.parent_index != -1:
-                parent_name = pmx_data.bones[bone.parent_index].get_name()
+            if bone.parent_bone_index != -1:
+                parent_name = pmx_data.bones[bone.parent_bone_index].get_name()
                 parent_name = maya_utils.sanitize_text(parent_name)
                 parent_joint = cmds.listRelatives(bone_name, parent=True, type="joint")
                 self.assertIsNotNone(

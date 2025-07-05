@@ -3,6 +3,9 @@ import struct
 from enum import Enum
 
 from mmd_tools.core import utils
+from mmd_tools.settings import get_settings
+
+settings = get_settings()
 
 
 class PmdBoneType(Enum):
@@ -77,7 +80,10 @@ class PmdBone:
         Returns:
             str: ボーンの名前。
         """
-        if self.name_english and self.name_english != "":
+        if (
+            settings.get("import.model.joint_name_conversion_with_english", True)
+            and self.name_english != ""
+        ):
             return self.name_english
 
         return self.name

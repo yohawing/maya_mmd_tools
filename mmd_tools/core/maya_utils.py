@@ -314,30 +314,80 @@ def apply_vertex_weights(
         influences (list[list[int]]): 頂点ごとの影響ジョイントインデックスリスト。
     """
 
-    # SkinClusterのMFnSkinClusterを取得
-    skin_fn = oma.MFnSkinCluster(skin_cluster)
+    # スキンクラスターのMObjectを取得
+    selection_list = om.MSelectionList()
+    selection_list.add(skin_cluster)
+    skin_cluster_obj = selection_list.getDependNode(0)
+    # https://help.autodesk.com/view/MAYAUL/2022/ENU/?guid=Maya_SDK_py_ref_class_open_maya_anim_1_1_m_fn_skin_cluster_html
+    skin_fn = oma.MFnSkinCluster(skin_cluster_obj)
 
-    # メッシュの頂点数を取得
-    mesh_dag_path = om.MDagPath.getAPathTo(mesh_obj)
-    mesh_fn = om.MFnMesh(mesh_dag_path)
+    influence_paths = skin_fn.influenceObjects()
+    influence_count = len(influence_paths)
+
+    # check influences and joints
+    for i, influence_path in enumerate(influence_paths):
+        partial_name = influence_paths[i].partialPathName()
+        if maya_joints[i] != partial_name:
+            raise ValueError(f"Joint name mismatch: {maya_joints[i]} != {partial_name}")
+        # print(f"Influence {i}: {partial_name}")
+
+    # メッシュのDagPathを取得
+    mesh_selection_list = om.MSelectionList()
+    mesh_selection_list.add(mesh_node)
+    shape_dag_path = mesh_selection_list.getDagPath(0)
+    mesh_fn = om.MFnMesh(shape_dag_path)
     vertex_count = mesh_fn.numVertices
 
-    influence_paths = om.MDagPathArray()
-    influence_count = skin_fn.influenceObjects(influence_paths)
+    print(f"Applying vertex weights to {vertex_count} vertices...")
 
-    elements = om.MIntArray()
+    # 全頂点のコンポーネントを作成
+    vertex_component = om.MFnSingleIndexedComponent()
+    vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
+    vertex_indices = list(range(vertex_count))
+    vertex_component.addElements(vertex_indices)
 
+    # infarray = list(range(influence_count))
+    influence_indices = om.MIntArray(influence_count, 0)
+    for ii in range(influence_count):
+        influence_indices[ii] = ii
+
+    # ウェイト配列を作成（頂点数 × 影響数）
+    weight_array = om.MDoubleArray(vertex_count * influence_count, 0.0)
+    # 各頂点のウェイトを設定
     for vertex_index in range(vertex_count):
-        # コンポーネントの作成
-        vertex_component = om.MFnSingleIndexedComponent()
-        vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
-        vertex_component.addElement(vertex_index)
+        for influence_index in range(influence_count):
+            array_index = vertex_index * influence_count + influence_index
 
-        # MDoubleArrayとMIntArrayを作成
-        weight_array = om.MDoubleArray(weights[vertex_index])
-        influences = om.MIntArray(influences[vertex_index])
+            # このVertex-Influenceペアのウェイトを取得
+            weight_value = (
+                weights[vertex_index][influence_index]
+                if vertex_index < len(weights)
+                and influence_index < len(weights[vertex_index])
+                else 0.0
+            )
 
-        # ウェイトを設定
-        skin_fn.setWeights(
-            mesh_dag_path, vertex_component_obj, influences, weight_array
-        )
+            weight_array[array_index] = weight_value
+
+    # 一括で設定
+    skin_fn.setWeights(
+        shape_dag_path, vertex_component_obj, influence_indices, weight_array, False
+    )
+
+    # for vertex_index in range(vertex_count):
+    #     # コンポーネントの取得
+    #     vertex_component = om.MFnSingleIndexedComponent()
+    #     vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
+    #     vertex_component.addElement(vertex_index)
+    #     # コンポーネントの作成
+
+    #     # MDoubleArrayとMIntArrayを作成
+    #     # weight_array = om.MDoubleArray(weight[vertex_index])
+    #     # influence_array = om.MIntArray(influence[vertex_index])
+    #     # デバッグ用に空のウェイトを適応
+    #     weight_array = om.MDoubleArray([0.0, 0.0, 0.0, 0.0])
+    #     influence_array = om.MIntArray([1, 2, 3, 4])
+
+    #     # ウェイトを設定
+    #     skin_fn.setWeights(
+    #         shape_dag_path, vertex_component_obj, influence_array, weight_array
+    #     )

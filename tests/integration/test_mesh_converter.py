@@ -3,12 +3,9 @@ import os
 from maya import cmds
 
 from mmd_tools import settings
-from mmd_tools.converters import mesh_converter
+from mmd_tools.converters import MeshConverter, mesh_converter
 from mmd_tools.core import maya_utils, pmd_parser, pmx_parser
 from tests.common.maya_test_base import MayaTestBase
-from mmd_tools.converters import MeshConverter
-from mmd_tools.core import pmd_parser, pmx_parser
-from mmd_tools.core import maya_utils
 
 
 class TestMeshConverter(MayaTestBase):
@@ -63,7 +60,9 @@ class TestMeshConverter(MayaTestBase):
 
         # MeshConverterを作成して変換を実行
         converter = MeshConverter(self.pmd_file_path)
-        mesh_group = converter.convert_pmd_mesh(pmd_data)
+        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data)
+
+        settings.get("import.model.separate_meshes_by_material")
 
         # 結果の検証
         # 1. グループが作成されているか
@@ -115,7 +114,7 @@ class TestMeshConverter(MayaTestBase):
 
         # MeshConverterを作成して変換を実行
         converter = MeshConverter(self.pmx_file_path)
-        mesh_group = converter.convert_pmx_mesh(pmx_data)
+        mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data)
 
         # 結果の検証
         # 1. グループが作成されているか
