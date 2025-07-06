@@ -14,13 +14,19 @@ class PmxBoneFlag(enum.IntFlag):
     各フラグはビットマスクで定義されており、ボーンの特性を示す。
     """
 
-    CONNECT_BONE = 0x0001  # 接続先表示方法 (0:座標オフセット, 1:ボーン指定)
+    CONNECT_BONE = 0x0001  # 接続先表示方法 (0:相対座標オフセット, 1:ボーン指定)
+    ROTATABLE = 0x0002  # 回転可能
+    MOVABLE = 0x0004  # 移動可能
+    DISPLAY = 0x0008  # 表示
+    OPERATABLE = 0x0010  # 操作可能
+    IK = 0x0020  # IK
+    LOCAL = 0x0080  # ローカル付与 (付与対象 0:ユーザー変形値／IKリンク／多重付与 1:親のローカル変形量)
     GIVEN_PARENT_ROTATE = 0x0100  # 回転付与
     GIVEN_PARENT_MOVE = 0x0200  # 移動付与
     AXIS_FIXED = 0x0400  # 軸固定
     LOCAL_AXIS = 0x0800  # ローカル軸
+    DEFORM_AFTER_PHYSICS = 0x1000  # 物理演算後変形
     EXTERNAL_PARENT_DEFORM = 0x2000  # 外部親変形
-    IK = 0x0020  # IK
 
 
 class PmxBone:
@@ -77,7 +83,7 @@ class PmxBone:
 
         # Flag-dependent data parsing
         # 0x0001: 接続先表示方法 (0:座標オフセット, 1:ボーン指定)
-        if self.bone_flag & 0x0001:
+        if self.get_flag(PmxBoneFlag.CONNECT_BONE):
             self.connect_bone_index = struct.unpack(
                 bone_index_format, f.read(self.bone_index_size)
             )[0]
@@ -85,27 +91,29 @@ class PmxBone:
             self.connect_position_offset = struct.unpack("<fff", f.read(12))
 
         # 0x0100: 回転付与, 0x0200: 移動付与
-        if self.bone_flag & 0x0100 or self.bone_flag & 0x0200:
+        if self.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or self.get_flag(
+            PmxBoneFlag.GIVEN_PARENT_MOVE
+        ):
             self.given_parent_bone_index = struct.unpack(
                 bone_index_format, f.read(self.bone_index_size)
             )[0]
             self.given_rate = struct.unpack("<f", f.read(4))[0]
 
         # 0x0400: 軸固定
-        if self.bone_flag & 0x0400:
+        if self.get_flag(PmxBoneFlag.AXIS_FIXED):
             self.axis_direction = struct.unpack("<fff", f.read(12))
 
         # 0x0800: ローカル軸
-        if self.bone_flag & 0x0800:
+        if self.get_flag(PmxBoneFlag.LOCAL_AXIS):
             self.x_axis_direction = struct.unpack("<fff", f.read(12))
             self.z_axis_direction = struct.unpack("<fff", f.read(12))
 
         # 0x2000: 外部親変形
-        if self.bone_flag & 0x2000:
+        if self.get_flag(PmxBoneFlag.EXTERNAL_PARENT_DEFORM):
             self.key_value = struct.unpack("<i", f.read(4))[0]
 
         # 0x0020: IK
-        if self.bone_flag & 0x0020:
+        if self.get_flag(PmxBoneFlag.IK):
             self.ik_target_bone_index = struct.unpack(
                 bone_index_format, f.read(self.bone_index_size)
             )[0]
@@ -132,3 +140,12 @@ class PmxBone:
             return self.name
         else:
             return self.name
+
+    def get_flag(self, PmxBoneFlag) -> int:
+        """
+        ボーンのフラグを取得する。
+
+        Returns:
+            int: ボーンのフラグ。
+        """
+        return int(self.bone_flag & PmxBoneFlag)
