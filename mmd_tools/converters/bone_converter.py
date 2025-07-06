@@ -330,15 +330,24 @@ class BoneConverter:
         weights = []
         for vertex in pmd_data.vertices:
             # PMD頂点の重み情報を取得
-            bone1_index = vertex.bone_indices[0]
-            bone2_index = vertex.bone_indices[1]
-            weight1 = vertex.bone_weight / 100.0
-            weight2 = 1.0 - weight1
-            # ボーンの数でリストを初期化
-            vertex_weights = [0.0] * len(maya_joints)
-            vertex_weights[bone1_index] = weight1
-            vertex_weights[bone2_index] = weight2
-            weights.append(vertex_weights)
+            if vertex.bone_indices[0] == vertex.bone_indices[1]:
+                bone_index = vertex.bone_indices[0]
+                weight = vertex.bone_weight / 100.0
+                # ボーンの数でリストを初期化
+                vertex_weights = [0.0] * len(maya_joints)
+                vertex_weights[bone_index] = weight
+                weights.append(vertex_weights)
+
+            else:
+                bone1_index = vertex.bone_indices[0]
+                bone2_index = vertex.bone_indices[1]
+                weight1 = vertex.bone_weight / 100.0
+                weight2 = 1.0 - weight1
+                # ボーンの数でリストを初期化
+                vertex_weights = [0.0] * len(maya_joints)
+                vertex_weights[bone1_index] = weight1
+                vertex_weights[bone2_index] = weight2
+                weights.append(vertex_weights)
 
         maya_utils.apply_vertex_weights(
             skin_cluster,

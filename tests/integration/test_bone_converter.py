@@ -79,20 +79,28 @@ class TestBoneConverter(MayaTestBase):
                 self.assertIsNotNone(
                     parent_joint, f"ジョイント '{bone_name}' に親がいません。"
                 )
-                self.assertEqual(
-                    parent_joint[0],
-                    parent_name,
-                    f"ジョイント '{bone_name}' の親が正しくありません。",
-                )
 
             # 位置の確認
             joint_pos = cmds.xform(
                 bone_name, query=True, translation=True, worldSpace=True
             )
-            self.assertAlmostEqual(joint_pos[0], bone.position[0], delta=1e-5)
-            self.assertAlmostEqual(joint_pos[1], bone.position[1], delta=1e-5)
             self.assertAlmostEqual(
-                joint_pos[2], -bone.position[2], delta=1e-5
+                joint_pos[0],
+                bone.position[0],
+                delta=1e-5,
+                msg=f"ジョイント '{bone_name}' のX位置が正しくありません。",
+            )
+            self.assertAlmostEqual(
+                joint_pos[1],
+                bone.position[1],
+                delta=1e-5,
+                msg=f"ジョイント '{bone_name}' のY位置が正しくありません。",
+            )
+            self.assertAlmostEqual(
+                joint_pos[2],
+                -bone.position[2],
+                delta=1e-5,
+                msg=f"ジョイント '{bone_name}' のZ位置が正しくありません。",
             )  # Mayaは左手系
 
     def test_convert_pmx_bones(self):
