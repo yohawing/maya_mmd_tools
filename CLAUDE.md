@@ -1,4 +1,4 @@
-# maya_mmd_tools
+# maya_mmd_tools test
 
 ## プロジェクト概要
 
@@ -23,21 +23,31 @@ https://github.com/yohawing/maya_mmd_tools
 F:/Develop/maya_mmd_tools/
 ├── maya_mmd_tools.mod
 ├── userSetup.py
+├── pyproject.toml
 ├── mmd_tools/
 │   ├── __init__.py
 │   ├── plugin_main.py
+│   ├── settings.py
 │   ├── ui.py
+│   ├── config/
+│   │   ├── __init__.py
+│   │   ├── default_settings.json
+│   │   └── unicode_dictionary.json
 │   ├── core/
 │   │   ├── __init__.py
+│   │   ├── exceptions.py
+│   │   ├── maya_utils.py
 │   │   ├── mmd_parser.py
 │   │   ├── pmd_parser.py
 │   │   ├── pmx_parser.py
+│   │   ├── unicode_converter.py
+│   │   ├── utils.py
 │   │   ├── vmd_parser.py
-│   │   ├── maya_utils.py
 │   │   ├── pmd_data/
 │   │   │   ├── __init__.py
 │   │   │   ├── header.py
 │   │   │   ├── vertex.py
+│   │   │   ├── face.py
 │   │   │   ├── material.py
 │   │   │   ├── bone.py
 │   │   │   ├── ik.py
@@ -57,7 +67,8 @@ F:/Develop/maya_mmd_tools/
 │   │   │   ├── morph.py
 │   │   │   ├── display_frame.py
 │   │   │   ├── rigid_body.py
-│   │   │   └── joint.py
+│   │   │   ├── joint.py
+│   │   │   └── soft_body.py
 │   │   └── vmd_data/
 │   │       ├── __init__.py
 │   │       ├── header.py
@@ -77,26 +88,35 @@ F:/Develop/maya_mmd_tools/
 │   └── io/
 │       ├── __init__.py
 │       ├── mmd_importer.py
+│       ├── pmd_importer.py
 │       ├── pmd_exporter.py
+│       ├── pmx_importer.py
 │       ├── pmx_exporter.py
+│       ├── vmd_importer.py
 │       └── vmd_exporter.py
 ├── resources/
 │   ├── icons/
 │   └── ui/
 ├── tests/
+│   ├── __init__.py
 │   ├── run_tests.py
+│   ├── run_maya_tests.py
 │   ├── common/
 │   │   ├── __init__.py
-│   │   └── test_base.py
+│   │   ├── test_base.py
+│   │   ├── custom_test_runner.py
+│   │   └── maya_test_base.py
+│   ├── data/
 │   ├── unit/
 │   │   ├── __init__.py
 │   │   ├── test_mmd_parser.py
 │   │   ├── test_pmd_parser.py
 │   │   ├── test_pmx_parser.py
-│   │   ├── test_vmd_parser.py
+│   │   ├── test_unicode_converter.py
+│   │   └── test_vmd_parser.py
 │   └── integration/
 │       ├── __init__.py
-│       ├── test_ui.py
+│       ├── test_maya_utils.py
 │       ├── test_mesh_converter.py
 │       ├── test_bone_converter.py
 │       ├── test_morph_converter.py
@@ -104,14 +124,14 @@ F:/Develop/maya_mmd_tools/
 │       ├── test_animation_converter.py
 │       ├── test_pmd_exporter.py
 │       ├── test_pmx_exporter.py
-│       ├── test_vmd_exporter.py
+│       └── test_vmd_exporter.py
 └── docs/
     ├── design.md
     ├── testing.md
     ├── project_management.md
     ├── settings.md
     ├── unicode_dictionary_guide.md
-    ├── pmx_spec.md
+    └── pmx_spec.md
 ```
 
 ## ファイルの補足説明
@@ -139,6 +159,12 @@ docsディレクトリには、以下のファイルがあります。
 ## プロジェクトマネージメント
 
 プロジェクトの進行管理、スプリント計画、タスク管理については、`docs/project_management.md`を参照してください。
+タスク進行管理には、[Linear](https://linear.app/)を使用しています。
+タスクの編集があった場合は、Linear上で行ってください。
+
+**プロジェクト名:** Maya MMD Tools
+*   **プロジェクトID:** e4b4bd61-ad6c-4da1-a08a-013c3e1416e5
+*   **プロジェクトURL:** https://linear.app/yohawing/project/maya-mmd-tools-00a307d6ad9d
 
 ## テスト
 
@@ -179,3 +205,5 @@ python tests/run_tests.py --type integration --test test_mmd_parser.TestMmdParse
 
 - [mmdpaimaya](https://github.com/phyblas/mmdpaimaya/tree/master)
 - [blender_mmd_tools](https://github.com/MMD-Blender/blender_mmd_tools)
+- [Maya Python API 2.0 Documentation](https://help.autodesk.com/view/MAYAUL/2024/ENU/?guid=MAYA_API_REF_py_ref_index_html)
+- [Maya Commands Python Index](https://help.autodesk.com/view/MAYAUL/2024/ENU/index.html?contextId=COMMANDSPYTHON-INDEX)
