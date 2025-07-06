@@ -13,16 +13,15 @@ from .core.mmd_parser import parse_mmd_file
 from .core.pmd_parser import PmdParser
 from .core.pmx_parser import PmxParser
 from .core.vmd_parser import VmdParser
-
-# settingsモジュールをインポート
-from .settings import settings
+from .settings import get_settings, settings
 
 # 公開API
 __all__ = [
-    'MMDParseException',
-    'PmdParser',
-    'PmxParser',
-    'VmdParser',
-    'parse_mmd_file',
-    'settings'
+    "MMDParseException",
+    "PmdParser",
+    "PmxParser",
+    "VmdParser",
+    "get_settings",
+    "parse_mmd_file",
+    "settings",
 ]

@@ -4,15 +4,18 @@ maya_mmd_toolsの設定を管理するモジュールです
 MayaのoptionVarを使用して、セッション間で設定を永続化します。
 Settingsクラスのシングルトンインスタンスが作成され、プラグインのすべての部分が同じ設定にアクセスできるようになります。
 """
+
 import json
 import os
 from collections import UserDict
 
 try:
     from maya import cmds
+
     MAYA_AVAILABLE = True
 except ImportError:
     MAYA_AVAILABLE = False
+
 
 class Settings(UserDict):
     """
@@ -33,7 +36,7 @@ class Settings(UserDict):
 
     def __init__(self, *args, **kwargs):
         # This check prevents re-initialization for the singleton
-        if hasattr(self, '_initialized'):
+        if hasattr(self, "_initialized"):
             return
         super().__init__(*args, **kwargs)
         self._initialized = True
@@ -50,7 +53,7 @@ class Settings(UserDict):
             return {}
 
         try:
-            with open(json_path, encoding='utf-8') as f:
+            with open(json_path, encoding="utf-8") as f:
                 return json.load(f)
         except (OSError, json.JSONDecodeError):
             return {}
@@ -60,11 +63,12 @@ class Settings(UserDict):
         super().__setitem__(key, value)
         self.save()
 
-    def _flatten_dict(self, d, parent_key='', sep='_'):
+    def _flatten_dict(self, d, parent_key="", sep="_"):
         """Flatten a nested dictionary."""
         items = []
         for k, v in d.items():
-            if k.startswith('_'): continue # Ignore comments
+            if k.startswith("_"):
+                continue  # Ignore comments
             new_key = parent_key + sep + k if parent_key else k
             if isinstance(v, dict):
                 items.extend(self._flatten_dict(v, new_key, sep=sep).items())
@@ -94,10 +98,10 @@ class Settings(UserDict):
                     else:
                         value = type(default_value)(loaded_value)
                 except (ValueError, TypeError):
-                    value = default_value # Fallback to default if conversion fails
+                    value = default_value  # Fallback to default if conversion fails
 
             # Set the loaded value in the nested dictionary
-            keys = key.split('_')
+            keys = key.split("_")
             d = self.data
             for k in keys[:-1]:
                 d = d.setdefault(k, {})
@@ -137,7 +141,7 @@ class Settings(UserDict):
         Returns:
             設定値、またはキーが見つからない場合はデフォルト値
         """
-        keys = key_path.split('.')
+        keys = key_path.split(".")
         value = self.data
 
         for key in keys:
@@ -156,7 +160,7 @@ class Settings(UserDict):
             key_path (str): ドットで区切られたキーパス (例: 'import.physics.import_physics')
             value: 設定する値
         """
-        keys = key_path.split('.')
+        keys = key_path.split(".")
         d = self.data
 
         for key in keys[:-1]:
@@ -167,5 +171,12 @@ class Settings(UserDict):
         d[keys[-1]] = value
         self.save()
 
+
+# 改善されたシングルトンインスタンス作成
+def get_settings():
+    """設定インスタンスを取得する関数"""
+    return Settings()
+
+
 # Singleton instance for global access
-settings = Settings()
+settings = get_settings()

@@ -5,6 +5,15 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+import platform
+
+try:
+    import maya.standalone
+    import maya.cmds as cmds
+    USING_MAYAPY = True
+except ImportError:
+    USING_MAYAPY = False
+
 
 # プロジェクトルートをsys.pathに追加して、testsモジュールをインポートできるようにする
 ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
@@ -12,10 +21,8 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # これで、testsモジュールを安全にインポートできる
-from tests.common.custom_test_runner import (
-    CustomTestRunner,
-    enable_windows_ansi_support,
-)
+from tests.common.custom_test_runner import CustomTestRunner, enable_windows_ansi_support
+from tests.run_maya_tests import run_tests_from_commandline
 
 # enable_windows_ansi_supportは既にimportしているので不要
 
@@ -157,17 +164,23 @@ def run_tests():
             pass
     elif args.type == 'integration':
         # 統合テストはMaya環境で実行する必要があるため、mayapyを使用して実行します。
+        
+        os.environ['PYTHONPATH'] = str(ROOT_DIR)
+        os.environ["MAYA_SCRIPT_PATH"] = ""
+        os.environ["MAYA_MODULE_PATH"] = str(ROOT_DIR)
+        # Run the tests using mayapy
+        # os.environ['MAYA_LOCATION'] = str(get_maya_location(maya_version))
+
+        # すでにmayapyで実行している場合は、直接スクリプトを実行します。
+        if USING_MAYAPY:
+            run_tests_from_commandline()
+            return
 
         maya_version = args.maya
         mayapy_path = mayapy(maya_version)
         if not mayapy_path.exists():
             print(f"Error: mayapy executable not found at {mayapy_path}.")
             sys.exit(1)
-        # Run the tests using mayapy
-        # os.environ['MAYA_LOCATION'] = str(get_maya_location(maya_version))
-        os.environ['PYTHONPATH'] = str(ROOT_DIR)
-        os.environ["MAYA_SCRIPT_PATH"] = ""
-        os.environ["MAYA_MODULE_PATH"] = str(ROOT_DIR)
 
         command = [
             str(mayapy_path),
