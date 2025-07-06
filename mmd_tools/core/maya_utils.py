@@ -294,13 +294,9 @@ def set_custom_attributes(object_name, attributes):
 
 
 def apply_vertex_weights(
-    vertices: list[float],
-    maya_joints,
     skin_cluster,
     mesh_node,
     weights,
-    influences,
-    max_influences: int = 4,
 ):
     """
     Mayaのメッシュに頂点ウェイトを適用します。
@@ -323,13 +319,6 @@ def apply_vertex_weights(
 
     influence_paths = skin_fn.influenceObjects()
     influence_count = len(influence_paths)
-
-    # check influences and joints
-    for i, influence_path in enumerate(influence_paths):
-        partial_name = influence_paths[i].partialPathName()
-        if maya_joints[i] != partial_name:
-            raise ValueError(f"Joint name mismatch: {maya_joints[i]} != {partial_name}")
-        # print(f"Influence {i}: {partial_name}")
 
     # メッシュのDagPathを取得
     mesh_selection_list = om.MSelectionList()
@@ -358,36 +347,14 @@ def apply_vertex_weights(
         for influence_index in range(influence_count):
             array_index = vertex_index * influence_count + influence_index
 
-            # このVertex-Influenceペアのウェイトを取得
-            weight_value = (
-                weights[vertex_index][influence_index]
-                if vertex_index < len(weights)
-                and influence_index < len(weights[vertex_index])
-                else 0.0
+            # influence_indexがweightsの範囲外の場合は0.0を設定
+            in_range = vertex_index < len(weights) and influence_index < len(
+                weights[vertex_index]
             )
-
+            weight_value = weights[vertex_index][influence_index] if in_range else 0.0
             weight_array[array_index] = weight_value
 
     # 一括で設定
     skin_fn.setWeights(
         shape_dag_path, vertex_component_obj, influence_indices, weight_array, False
     )
-
-    # for vertex_index in range(vertex_count):
-    #     # コンポーネントの取得
-    #     vertex_component = om.MFnSingleIndexedComponent()
-    #     vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
-    #     vertex_component.addElement(vertex_index)
-    #     # コンポーネントの作成
-
-    #     # MDoubleArrayとMIntArrayを作成
-    #     # weight_array = om.MDoubleArray(weight[vertex_index])
-    #     # influence_array = om.MIntArray(influence[vertex_index])
-    #     # デバッグ用に空のウェイトを適応
-    #     weight_array = om.MDoubleArray([0.0, 0.0, 0.0, 0.0])
-    #     influence_array = om.MIntArray([1, 2, 3, 4])
-
-    #     # ウェイトを設定
-    #     skin_fn.setWeights(
-    #         shape_dag_path, vertex_component_obj, influence_array, weight_array
-    #     )

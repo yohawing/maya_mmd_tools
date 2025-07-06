@@ -299,7 +299,6 @@ class BoneConverter:
         """
 
         weights = []
-        influences = []
         for vertex in pmx_data.vertices:
             # PMX頂点の重み情報を取得
             weight_maps = self._get_pmx_vertex_weights(vertex)
@@ -310,16 +309,11 @@ class BoneConverter:
                 vertex_weights[joint_index] = weight
 
             weights.append(vertex_weights)
-            influences.append([joint for joint, _ in weight_maps])
 
         maya_utils.apply_vertex_weights(
-            pmx_data.vertices,
-            maya_joints,
             skin_cluster,
             mesh_node,
             weights,
-            influences,
-            max_influences=4,  # PMXは最大4つのボーンに制限されているため
         )
 
     def _apply_pmd_vertex_weights(self, pmd_data, maya_joints, skin_cluster, mesh_node):
@@ -334,22 +328,20 @@ class BoneConverter:
         """
 
         weights = []
-        influences = []
         for vertex in pmd_data.vertices:
+            # PMD頂点の重み情報を取得
             bone1_index = vertex.bone_indices[0]
             bone2_index = vertex.bone_indices[1]
             weight1 = vertex.bone_weight / 100.0
             weight2 = 1.0 - weight1
-
-            weights.append([weight1, weight2])
-            influences.append([bone1_index, bone2_index])
+            # ボーンの数でリストを初期化
+            vertex_weights = [0.0] * len(maya_joints)
+            vertex_weights[bone1_index] = weight1
+            vertex_weights[bone2_index] = weight2
+            weights.append(vertex_weights)
 
         maya_utils.apply_vertex_weights(
-            pmd_data.vertices,
-            maya_joints,
             skin_cluster,
             mesh_node,
             weights,
-            influences,
-            max_influences=2,  # PMDは最大2つのボーンに制限されているため
         )
