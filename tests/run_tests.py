@@ -5,15 +5,6 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
-import platform
-
-try:
-    import maya.standalone
-    import maya.cmds as cmds
-    USING_MAYAPY = True
-except ImportError:
-    USING_MAYAPY = False
-
 
 # プロジェクトルートをsys.pathに追加して、testsモジュールをインポートできるようにする
 ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
@@ -21,10 +12,24 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 # これで、testsモジュールを安全にインポートできる
-from tests.common.custom_test_runner import CustomTestRunner, enable_windows_ansi_support
-from tests.run_maya_tests import run_tests_from_commandline
+from tests.common.custom_test_runner import (
+    CustomTestRunner,
+    enable_windows_ansi_support,
+)
+
+try:
+    import maya.cmds as cmds
+    import maya.standalone
+
+    from tests.run_maya_tests import run_tests_from_commandline
+
+    USING_MAYAPY = True
+except ImportError:
+    USING_MAYAPY = False
+
 
 # enable_windows_ansi_supportは既にimportしているので不要
+
 
 def get_maya_location(maya_version: int) -> Path:
     """Mayaがインストールされている場所を取得します。
@@ -76,32 +81,32 @@ def mayapy(maya_version: int) -> Path:
 def run_tests():
     """
     Discovers and runs tests based on command-line arguments.
-    
+
     This script can run either unit or integration tests, and can filter
     tests by a specific name provided via the command line.
     """
     # プロジェクトルートはすでにスクリプトの開始時にsys.pathに追加されています。
 
     # Set up argument parser
-    parser = argparse.ArgumentParser(description='Run tests for the MMD Tools project.')
+    parser = argparse.ArgumentParser(description="Run tests for the MMD Tools project.")
     parser.add_argument(
-        '--type',
+        "--type",
         type=str,
-        default='unit',
-        choices=['unit', 'integration'],
-        help="The type of tests to run: 'unit' or 'integration'. Defaults to 'unit'."
+        default="unit",
+        choices=["unit", "integration"],
+        help="The type of tests to run: 'unit' or 'integration'. Defaults to 'unit'.",
     )
     parser.add_argument(
-        '--test',
+        "--test",
         type=str,
         default=None,
-        help='A string to filter tests by. Can be a module, class, or method name.'
+        help="A string to filter tests by. Can be a module, class, or method name.",
     )
     parser.add_argument(
-        '--maya',
+        "--maya",
         type=int,
         default=2024,
-        help='The version of Maya to use for integration tests. Defaults to 2024.'
+        help="The version of Maya to use for integration tests. Defaults to 2024.",
     )
     args = parser.parse_args()
 
@@ -113,7 +118,7 @@ def run_tests():
     print(f"Discovering '{args.type}' tests in '{start_dir}'...")
 
     # Discover all tests in the specified directory
-    suite = test_loader.discover(start_dir, pattern='test_*.py')
+    suite = test_loader.discover(start_dir, pattern="test_*.py")
 
     if suite.countTestCases() == 0:
         print(f"No tests found in '{start_dir}'.")
@@ -143,10 +148,14 @@ def run_tests():
 
     # Check if any tests are left after filtering
     if suite.countTestCases() == 0:
-        print(f"Error: No tests found matching '--test {args.test}' in the '{args.type}' suite.")
+        print(
+            f"Error: No tests found matching '--test {args.test}' in the '{args.type}' suite."
+        )
         # To help the user, list all available tests of that type
         print("\nAvailable tests in this suite:")
-        all_tests_in_suite = get_all_tests(test_loader.discover(start_dir, pattern='test_*.py'))
+        all_tests_in_suite = get_all_tests(
+            test_loader.discover(start_dir, pattern="test_*.py")
+        )
         for test_case in all_tests_in_suite:
             print(f"  - {test_case.id()}")
         sys.exit(1)
@@ -154,18 +163,18 @@ def run_tests():
     # Run the final test suite
     print(f"Running {suite.countTestCases()} test(s)...")
 
-    if args.type == 'unit':
+    if args.type == "unit":
         # カラー対応のテストランナーを使用
         runner = CustomTestRunner(verbosity=2)
         result = runner.run(suite)
         # 失敗時のみ追加情報を表示（カラーテストランナーでは既に詳細を表示済み）
         if not result.wasSuccessful():
-            # sys.exit(1)
+            sys.exit(1)
             pass
-    elif args.type == 'integration':
+    elif args.type == "integration":
         # 統合テストはMaya環境で実行する必要があるため、mayapyを使用して実行します。
-        
-        os.environ['PYTHONPATH'] = str(ROOT_DIR)
+
+        os.environ["PYTHONPATH"] = str(ROOT_DIR)
         os.environ["MAYA_SCRIPT_PATH"] = ""
         os.environ["MAYA_MODULE_PATH"] = str(ROOT_DIR)
         # Run the tests using mayapy
@@ -184,10 +193,10 @@ def run_tests():
 
         command = [
             str(mayapy_path),
-            os.path.join(ROOT_DIR, "tests", "run_maya_tests.py")
+            os.path.join(ROOT_DIR, "tests", "run_maya_tests.py"),
         ]
         if args.test:
-            command.extend(['-test', args.test])
+            command.extend(["-test", args.test])
 
             print(f"Running integration tests with command: {' '.join(command)}")
             # result = os.system(' '.join(command))
@@ -204,7 +213,7 @@ def run_tests():
         pass
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Windows環境でもANSIカラーコードを有効化
     enable_windows_ansi_support()
     run_tests()

@@ -181,9 +181,9 @@ python tests/run_tests.py --type unit
 python tests/run_tests.py --test test_pmd_parser.TestPmdParser
 
 // integration test
-python tests/run_tests.py --type integration
+'C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe' tests\run_tests.py --type integration
 // integration test for specific test case
-python tests/run_tests.py --type integration --test test_mmd_parser.TestMmdParser
+'C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe' tests\run_tests.py --type integration --test test_maya_utils
 ```
 
 ## コーディング
