@@ -64,15 +64,17 @@ class TestMorphConverter(MayaTestBase):
         # 結果の検証
         self.assertIsNotNone(result, "モーフ変換の結果がNoneです")
         self.assertTrue(result.get("success", False), "モーフ変換が失敗しました")
-        
+
         # 変換されたモーフ数をチェック
         morphs_converted = result.get("morphs_converted", 0)
         self.assertGreaterEqual(morphs_converted, 0, "変換されたモーフ数が負の値です")
-        
+
         if morphs_converted > 0:
             # blendShapeノードが作成されているかチェック
             blend_shape_nodes = result.get("blend_shape_nodes", [])
-            self.assertGreater(len(blend_shape_nodes), 0, "blendShapeノードが作成されていません")
+            self.assertGreater(
+                len(blend_shape_nodes), 0, "blendShapeノードが作成されていません"
+            )
 
     def test_convert_pmx_morphs(self):
         """PMXモーフがMayaに正しく変換されることをテストする。"""
@@ -102,15 +104,17 @@ class TestMorphConverter(MayaTestBase):
         # 結果の検証
         self.assertIsNotNone(result, "モーフ変換の結果がNoneです")
         self.assertTrue(result.get("success", False), "モーフ変換が失敗しました")
-        
+
         # 変換されたモーフ数をチェック
         morphs_converted = result.get("morphs_converted", 0)
         self.assertGreaterEqual(morphs_converted, 0, "変換されたモーフ数が負の値です")
-        
+
         if morphs_converted > 0:
             # blendShapeノードが作成されているかチェック
             blend_shape_nodes = result.get("blend_shape_nodes", [])
-            self.assertGreater(len(blend_shape_nodes), 0, "blendShapeノードが作成されていません")
+            self.assertGreater(
+                len(blend_shape_nodes), 0, "blendShapeノードが作成されていません"
+            )
 
     def test_simple_blendshape_creation(self):
         """シンプルなblendShape作成のテスト（Mayaの基本機能確認）"""

@@ -1,4 +1,3 @@
-
 """
 MMDのモーフデータをMayaのblendShapeに変換するモジュール。
 
@@ -368,7 +367,9 @@ class MorphConverter:
 
                     # 入力検証
                     if not self.validator.validate_pmd_morph(morph, mesh_node):
-                        self.logger.warning(f"Validation failed for morph: {morph.name}")
+                        self.logger.warning(
+                            f"Validation failed for morph: {morph.name}"
+                        )
                         continue
 
                     # 適切なハンドラーを取得
@@ -435,7 +436,9 @@ class MorphConverter:
 
                     # 入力検証
                     if not self.validator.validate_pmx_morph(morph, mesh_node):
-                        self.logger.warning(f"Validation failed for morph: {morph.name}")
+                        self.logger.warning(
+                            f"Validation failed for morph: {morph.name}"
+                        )
                         continue
 
                     # 適切なハンドラーを取得
