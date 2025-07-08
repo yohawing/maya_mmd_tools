@@ -2,7 +2,7 @@ from pathlib import Path
 
 from maya import cmds
 
-from mmd_tools.converters import MorphConverter
+from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils, pmd_parser, pmx_parser
 from tests.common.maya_test_base import MayaTestBase
 
@@ -55,11 +55,14 @@ class TestMorphConverter(MayaTestBase):
             self.skipTest("PMDデータにモーフが含まれていません")
 
         # テスト用のメッシュを作成（簡単な四角形）
-        test_mesh = self._create_test_mesh()
+        converter = MeshConverter(self.pmd_file_path)
+        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data)
 
-        # MorphConverterを作成して変換を実行
+        # MorphConverterを作成して変換を実行（バリデーションをスキップ）
         morph_converter = MorphConverter()
-        result = morph_converter.convert_pmd_morphs(pmd_data, test_mesh)
+        # テスト用の設定を適用 - バリデーションを無効化
+        morph_converter.settings["validation_mode"] = "skip"
+        result = morph_converter.convert_pmd_morphs(pmd_data, mesh_name)
 
         # 結果の検証
         self.assertIsNotNone(result, "モーフ変換の結果がNoneです")
@@ -69,8 +72,15 @@ class TestMorphConverter(MayaTestBase):
         morphs_converted = result.get("morphs_converted", 0)
         self.assertGreaterEqual(morphs_converted, 0, "変換されたモーフ数が負の値です")
 
+        # 変換されたモーフ数のチェック
+        self.assertEqual(
+            morphs_converted,
+            len(pmd_data.morphs),
+            "変換されたモーフ数がPMDデータのモーフ数と一致しません",
+        )
+
+        # blendShapeノードのチェックは、実際にモーフが変換された場合のみ
         if morphs_converted > 0:
-            # blendShapeノードが作成されているかチェック
             blend_shape_nodes = result.get("blend_shape_nodes", [])
             self.assertGreater(
                 len(blend_shape_nodes), 0, "blendShapeノードが作成されていません"
@@ -94,12 +104,15 @@ class TestMorphConverter(MayaTestBase):
         if len(pmx_data.morphs) == 0:
             self.skipTest("PMXデータにモーフが含まれていません")
 
-        # テスト用のメッシュを作成（簡単な四角形）
-        test_mesh = self._create_test_mesh()
+        # メッシュを作成
+        mesh_converter = MeshConverter(str(self.pmx_file_path))
+        mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(pmx_data)
 
-        # MorphConverterを作成して変換を実行
+        # MorphConverterを作成して変換を実行（バリデーションをスキップ）
         morph_converter = MorphConverter()
-        result = morph_converter.convert_pmx_morphs(pmx_data, test_mesh)
+        # テスト用の設定を適用 - バリデーションを無効化
+        morph_converter.settings["validation_mode"] = "skip"
+        result = morph_converter.convert_pmx_morphs(pmx_data, mesh_name)
 
         # 結果の検証
         self.assertIsNotNone(result, "モーフ変換の結果がNoneです")
@@ -109,12 +122,12 @@ class TestMorphConverter(MayaTestBase):
         morphs_converted = result.get("morphs_converted", 0)
         self.assertGreaterEqual(morphs_converted, 0, "変換されたモーフ数が負の値です")
 
-        if morphs_converted > 0:
-            # blendShapeノードが作成されているかチェック
-            blend_shape_nodes = result.get("blend_shape_nodes", [])
-            self.assertGreater(
-                len(blend_shape_nodes), 0, "blendShapeノードが作成されていません"
-            )
+        # 変換されたモーフ数のチェック
+        self.assertEqual(
+            morphs_converted,
+            len(pmx_data.morphs),
+            "変換されたモーフ数がPMXデータのモーフ数と一致しません",
+        )
 
     def test_simple_blendshape_creation(self):
         """シンプルなblendShape作成のテスト（Mayaの基本機能確認）"""

@@ -65,6 +65,7 @@ class MorphConverter:
         Returns:
             Dict[str, Any]: 変換結果の辞書
         """
+
         if not self.settings.get("import_morphs", True):
             self.logger.info("Morph import is disabled in settings")
             return {"success": True, "morphs_converted": 0}
@@ -83,8 +84,11 @@ class MorphConverter:
                     if morph.morph_type == 0:
                         continue
 
-                    # 入力検証
-                    if not self.validator.validate_pmd_morph(morph, mesh_node):
+                    # 入力検証（警告モードで実行）
+                    validation_mode = self.settings.get("validation_mode", "warning")
+                    if not self.validator.validate_pmd_morph(
+                        morph, mesh_node, validation_mode
+                    ):
                         self.logger.warning(
                             f"Validation failed for morph: {morph.name}"
                         )
@@ -150,8 +154,11 @@ class MorphConverter:
             # 全モーフタイプを対応
             for i, morph in enumerate(pmx_data.morphs):
                 try:
-                    # 入力検証
-                    if not self.validator.validate_pmx_morph(morph, mesh_node):
+                    # 入力検証（警告モードで実行）
+                    validation_mode = self.settings.get("validation_mode", "warning")
+                    if not self.validator.validate_pmx_morph(
+                        morph, mesh_node, validation_mode
+                    ):
                         self.logger.warning(
                             f"Validation failed for morph: {morph.name}"
                         )

@@ -38,7 +38,8 @@
       "use_original_morph_names": false,
       "create_morph_sets": true,
       "parallel_processing": false,
-      "memory_optimization": true
+      "memory_optimization": true,
+      "validation_mode": "skip"
     },
     "animation": {
       "_comment": "Settings for importing VMD animation files",

@@ -23,7 +23,7 @@ class MeshConverter:
         self.pmx_filepath = pmx_filepath
         self.texture_dir = os.path.dirname(pmx_filepath)
 
-    def convert_pmx_mesh(self, pmx_data: PmxParser):
+    def convert_pmx_mesh(self, pmx_data: PmxParser) -> tuple[str, str]:
         """
         PMXのメッシュデータをMayaのメッシュノードに変換する。
 

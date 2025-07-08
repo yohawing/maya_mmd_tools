@@ -27,10 +27,17 @@ class BoneMorphHandler(BaseMorphHandler):
             if not self.validate_input(morph_data, mesh_node):
                 return {"success": False, "error": "Input validation failed"}
 
+            # PMDとPMXでデータ構造が異なるため分岐
+            offsets = self._get_morph_offsets(morph_data)
+            if not offsets:
+                morph_name = getattr(morph_data, "name", "unknown")
+                self.logger.warning(f"No valid offsets found for morph {morph_name}")
+                return {"success": False, "error": "No valid offsets found"}
+
             # ボーンアニメーション用のセットアップ
             bone_animations: List[Dict[str, Any]] = []
 
-            for offset in morph_data.offsets:
+            for offset in offsets:
                 bone_animation = self._setup_bone_animation(offset, mesh_node)
                 if bone_animation:
                     bone_animations.append(bone_animation)
@@ -38,21 +45,21 @@ class BoneMorphHandler(BaseMorphHandler):
             return {
                 "success": True,
                 "bone_animations": bone_animations,
-                "morph_name": morph_data.name,
+                "morph_name": getattr(morph_data, "name", "unknown"),
             }
 
         except Exception as e:
-            self.logger.error(f"Failed to convert bone morph {morph_data.name}: {e}")
+            morph_name = getattr(morph_data, "name", "unknown")
+            self.logger.error(f"Failed to convert bone morph {morph_name}: {e}")
             return {"success": False, "error": str(e)}
 
-    def _setup_bone_animation(
-        self, offset: Dict[str, Any], mesh_node: str
-    ) -> Dict[str, Any]:
+    def _setup_bone_animation(self, offset: Any, mesh_node: str) -> Dict[str, Any]:
         """ボーンアニメーションをセットアップ"""
         try:
-            bone_index = offset.get("bone_index", -1)
-            translation = offset.get("translation", [0.0, 0.0, 0.0])
-            rotation = offset.get("rotation", [0.0, 0.0, 0.0, 1.0])
+            # オフセットデータから必要な情報を取得
+            bone_index = self._get_offset_value(offset, "bone_index", -1)
+            translation = self._get_offset_value(offset, "translation", [0.0, 0.0, 0.0])
+            rotation = self._get_offset_value(offset, "rotation", [0.0, 0.0, 0.0, 1.0])
 
             # ボーンインデックスからボーンノードを取得
             # 注意: 実際の実装では、ボーンインデックスからMayaのjointノードを
@@ -175,3 +182,31 @@ class BoneMorphHandler(BaseMorphHandler):
             self.logger.warning(f"Failed to create bone morph attributes: {e}")
 
         return morph_attrs
+
+    def _get_morph_offsets(self, morph_data: Any) -> List[Any]:
+        """モーフデータからオフセットを取得（PMD/PMX対応）"""
+        # PMXの場合
+        if hasattr(morph_data, "offsets"):
+            return morph_data.offsets
+
+        # PMDの場合
+        if hasattr(morph_data, "morph_offset"):
+            return morph_data.morph_offset if morph_data.morph_offset else []
+
+        # その他の可能性のある属性名
+        for attr_name in ["data", "offset_data", "morph_data"]:
+            if hasattr(morph_data, attr_name):
+                attr_value = getattr(morph_data, attr_name)
+                if isinstance(attr_value, list):
+                    return attr_value
+
+        return []
+
+    def _get_offset_value(self, offset: Any, key: str, default: Any) -> Any:
+        """オフセットから値を取得（辞書とオブジェクト両方に対応）"""
+        if isinstance(offset, dict):
+            return offset.get(key, default)
+        elif hasattr(offset, key):
+            return getattr(offset, key, default)
+        else:
+            return default

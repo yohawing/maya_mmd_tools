@@ -377,21 +377,31 @@ def setup_logger(logger_name):
 
 def find_or_create_blendshape_node(mesh_node):
     """既存のblendShapeノードを検索または新規作成"""
-    # メッシュに接続されているblendShapeノードを検索
-    blend_shapes = cmds.listHistory(mesh_node, type="blendShape")
-    if blend_shapes:
-        return blend_shapes[0]
+    try:
+        # メッシュノードが存在するかチェック
+        if not cmds.objExists(mesh_node):
+            raise ValueError(f"Mesh node {mesh_node} does not exist")
 
-    # 新しいblendShapeノードを作成
-    blend_shape_node = cmds.blendShape(mesh_node)[0]
-    return blend_shape_node
+        # シェイプノードを取得
+        shape_nodes = cmds.listRelatives(mesh_node, shapes=True, type="mesh")
+        if not shape_nodes:
+            raise ValueError(f"No mesh shape found for {mesh_node}")
 
+        shape_node = shape_nodes[0]
 
-def cleanup_temp_objects(temp_objects):
-    """一時オブジェクトをクリーンアップ"""
-    if isinstance(temp_objects, str):
-        temp_objects = [temp_objects]
+        history = cmds.listHistory(shape_node, il=2, pdo=False) or []
+        blendshapes = [
+            x
+            for x in history
+            if cmds.nodeType(x) == "blendShape"
+            and cmds.blendShape(x, q=True, g=True)[0] == shape_node
+        ]
+        if blendshapes:
+            return blendshapes[0]
+        else:
+            return cmds.blendShape(mesh_node)[0]
 
-    for temp_obj in temp_objects:
-        if cmds.objExists(temp_obj):
-            cmds.delete(temp_obj)
+    except Exception as e:
+        logger = setup_logger("maya_utils")
+        logger.error(f"Error in find_or_create_blendshape_node: {e}")
+        raise

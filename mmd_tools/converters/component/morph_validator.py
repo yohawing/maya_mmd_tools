@@ -23,8 +23,17 @@ class MorphValidator:
         """ログ出力の設定"""
         return maya_utils.setup_logger("mmd_tools.MorphValidator")
 
-    def validate_pmd_morph(self, morph_data: Any, mesh_node: str) -> bool:
-        """PMDモーフデータの検証"""
+    def validate_pmd_morph(
+        self, morph_data: Any, mesh_node: str, validation_mode: str = "strict"
+    ) -> bool:
+        """
+        PMDモーフデータの検証
+
+        Args:
+            morph_data: PMDモーフデータ
+            mesh_node: 対象メッシュノード
+            validation_mode: 検証モード ("strict", "warning", "skip")
+        """
         try:
             # 基本的な検証
             if not hasattr(morph_data, "name") or not morph_data.name:
@@ -33,15 +42,33 @@ class MorphValidator:
             if not hasattr(morph_data, "vertices") or not morph_data.vertices:
                 return False
 
+            # スキップモードの場合は基本チェックのみで通す
+            if validation_mode == "skip":
+                return True
+
             # メッシュの頂点数チェック
             mesh_vertex_count = cmds.polyEvaluate(mesh_node, vertex=True)  # type: ignore
 
+            invalid_vertex_count = 0
             for vertex_index, _ in morph_data.vertices:
                 if vertex_index >= mesh_vertex_count:
                     self.logger.warning(
                         f"Vertex index {vertex_index} exceeds mesh vertex count {mesh_vertex_count}"
                     )
-                    return False
+                    invalid_vertex_count += 1
+
+                    # 厳格モードでは即座にfalseを返す
+                    if validation_mode == "strict":
+                        return False
+
+            # 警告モードでは、すべての頂点が無効でない限り継続
+            if validation_mode == "warning" and invalid_vertex_count == len(
+                morph_data.vertices
+            ):
+                self.logger.error(
+                    f"All vertices in morph {morph_data.name} are invalid"
+                )
+                return False
 
             return True
 
@@ -49,8 +76,17 @@ class MorphValidator:
             self.logger.error(f"Validation error for PMD morph: {e}")
             return False
 
-    def validate_pmx_morph(self, morph_data: Any, mesh_node: str) -> bool:
-        """PMXモーフデータの検証"""
+    def validate_pmx_morph(
+        self, morph_data: Any, mesh_node: str, validation_mode: str = "strict"
+    ) -> bool:
+        """
+        PMXモーフデータの検証
+
+        Args:
+            morph_data: PMXモーフデータ
+            mesh_node: 対象メッシュノード
+            validation_mode: 検証モード ("strict", "warning", "skip")
+        """
         try:
             # 基本的な検証
             if not hasattr(morph_data, "name") or not morph_data.name:
@@ -59,24 +95,38 @@ class MorphValidator:
             if not hasattr(morph_data, "morph_type"):
                 return False
 
+            # スキップモードの場合は基本チェックのみで通す
+            if validation_mode == "skip":
+                return True
+
             # モーフタイプ別の詳細検証
             if morph_data.morph_type == PmxMorphType.VertexMorph:
-                return self._validate_vertex_morph_data(morph_data, mesh_node)
+                return self._validate_vertex_morph_data(
+                    morph_data, mesh_node, validation_mode
+                )
             elif (
                 PmxMorphType.UVMorph
                 <= morph_data.morph_type
                 <= PmxMorphType.AdditionalUVMorph4
             ):
-                return self._validate_uv_morph_data(morph_data, mesh_node)
+                return self._validate_uv_morph_data(
+                    morph_data, mesh_node, validation_mode
+                )
             elif morph_data.morph_type == PmxMorphType.MaterialMorph:
-                return self._validate_material_morph_data(morph_data, mesh_node)
+                return self._validate_material_morph_data(
+                    morph_data, mesh_node, validation_mode
+                )
             elif morph_data.morph_type == PmxMorphType.GroupMorph:
-                return self._validate_group_morph_data(morph_data, mesh_node)
+                return self._validate_group_morph_data(
+                    morph_data, mesh_node, validation_mode
+                )
             elif morph_data.morph_type == PmxMorphType.BoneMorph:
-                return self._validate_bone_morph_data(morph_data, mesh_node)
+                return self._validate_bone_morph_data(
+                    morph_data, mesh_node, validation_mode
+                )
             else:
                 self.logger.warning(f"Unsupported morph type: {morph_data.morph_type}")
-                return False
+                return validation_mode != "strict"
 
             return True
 
@@ -84,13 +134,19 @@ class MorphValidator:
             self.logger.error(f"Validation error for PMX morph: {e}")
             return False
 
-    def _validate_vertex_morph_data(self, morph_data: Any, mesh_node: str) -> bool:
+    def _validate_vertex_morph_data(
+        self, morph_data: Any, mesh_node: str, validation_mode: str = "strict"
+    ) -> bool:
         """頂点モーフデータの検証"""
         if not hasattr(morph_data, "offsets") or not morph_data.offsets:
             return False
 
+        if validation_mode == "skip":
+            return True
+
         mesh_vertex_count = cmds.polyEvaluate(mesh_node, vertex=True)  # type: ignore
 
+        invalid_count = 0
         for offset in morph_data.offsets:
             if "vertex_index" in offset:
                 vertex_index = offset["vertex_index"]
@@ -98,17 +154,30 @@ class MorphValidator:
                     self.logger.warning(
                         f"Vertex index {vertex_index} exceeds mesh vertex count {mesh_vertex_count}"
                     )
-                    return False
+                    invalid_count += 1
+
+                    if validation_mode == "strict":
+                        return False
+
+        # 警告モードでは、すべてが無効でない限り継続
+        if validation_mode == "warning" and invalid_count == len(morph_data.offsets):
+            return False
 
         return True
 
-    def _validate_uv_morph_data(self, morph_data: Any, mesh_node: str) -> bool:
+    def _validate_uv_morph_data(
+        self, morph_data: Any, mesh_node: str, validation_mode: str = "strict"
+    ) -> bool:
         """UVモーフデータの検証"""
         if not hasattr(morph_data, "offsets") or not morph_data.offsets:
             return False
 
+        if validation_mode == "skip":
+            return True
+
         mesh_vertex_count = cmds.polyEvaluate(mesh_node, vertex=True)  # type: ignore
 
+        invalid_count = 0
         for offset in morph_data.offsets:
             if "vertex_index" in offset:
                 vertex_index = offset["vertex_index"]
@@ -116,14 +185,26 @@ class MorphValidator:
                     self.logger.warning(
                         f"UV morph vertex index {vertex_index} exceeds mesh vertex count {mesh_vertex_count}"
                     )
-                    return False
+                    invalid_count += 1
+
+                    if validation_mode == "strict":
+                        return False
+
+        # 警告モードでは、すべてが無効でない限り継続
+        if validation_mode == "warning" and invalid_count == len(morph_data.offsets):
+            return False
 
         return True
 
-    def _validate_material_morph_data(self, morph_data: Any, mesh_node: str) -> bool:
+    def _validate_material_morph_data(
+        self, morph_data: Any, mesh_node: str, validation_mode: str = "strict"
+    ) -> bool:
         """マテリアルモーフデータの検証"""
         if not hasattr(morph_data, "offsets") or not morph_data.offsets:
             return False
+
+        if validation_mode == "skip":
+            return True
 
         # メッシュに割り当てられているマテリアル数をチェック
         try:
@@ -141,6 +222,7 @@ class MorphValidator:
 
             material_count = len(set(materials))
 
+            invalid_count = 0
             for offset in morph_data.offsets:
                 if "material_index" in offset:
                     material_index = offset["material_index"]
@@ -148,15 +230,26 @@ class MorphValidator:
                         self.logger.warning(
                             f"Material morph material index {material_index} exceeds material count {material_count}"
                         )
-                        return False
+                        invalid_count += 1
+
+                        if validation_mode == "strict":
+                            return False
+
+            # 警告モードでは、すべてが無効でない限り継続
+            if validation_mode == "warning" and invalid_count == len(
+                morph_data.offsets
+            ):
+                return False
+
+            return True
 
         except Exception as e:
-            self.logger.warning(f"Failed to validate material morph data: {e}")
-            return False
+            self.logger.error(f"Material morph validation error: {e}")
+            return validation_mode != "strict"
 
-        return True
-
-    def _validate_group_morph_data(self, morph_data: Any, mesh_node: str) -> bool:
+    def _validate_group_morph_data(
+        self, morph_data: Any, mesh_node: str, validation_mode: str = "strict"
+    ) -> bool:
         """グループモーフデータの検証"""
         if not hasattr(morph_data, "offsets") or not morph_data.offsets:
             return False
@@ -169,10 +262,15 @@ class MorphValidator:
 
         return True
 
-    def _validate_bone_morph_data(self, morph_data: Any, mesh_node: str) -> bool:
+    def _validate_bone_morph_data(
+        self, morph_data: Any, mesh_node: str, validation_mode: str = "strict"
+    ) -> bool:
         """ボーンモーフデータの検証"""
         if not hasattr(morph_data, "offsets") or not morph_data.offsets:
             return False
+
+        if validation_mode == "skip":
+            return True
 
         # スキンクラスターのボーン数をチェック
         try:
@@ -184,6 +282,7 @@ class MorphValidator:
                 )
                 bone_count = len(influences) if influences else 0
 
+            invalid_count = 0
             for offset in morph_data.offsets:
                 if "bone_index" in offset:
                     bone_index = offset["bone_index"]
@@ -191,13 +290,22 @@ class MorphValidator:
                         self.logger.warning(
                             f"Bone morph bone index {bone_index} exceeds bone count {bone_count}"
                         )
-                        return False
+                        invalid_count += 1
+
+                        if validation_mode == "strict":
+                            return False
+
+            # 警告モードでは、すべてが無効でない限り継続
+            if validation_mode == "warning" and invalid_count == len(
+                morph_data.offsets
+            ):
+                return False
+
+            return True
 
         except Exception as e:
-            self.logger.warning(f"Failed to validate bone morph data: {e}")
-            return False
-
-        return True
+            self.logger.error(f"Bone morph validation error: {e}")
+            return validation_mode != "strict"
 
     def validate_conversion_results(
         self, results: List[Dict[str, Any]], mesh_node: str

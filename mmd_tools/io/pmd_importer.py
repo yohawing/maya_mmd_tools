@@ -34,8 +34,10 @@ def import_pmd_file(parser, filepath):
         bone_converter = BoneConverter()
         joints = bone_converter.convert_pmd_bones(parser, mesh_name)
 
+        morph_converter = MorphConverter()
+        morph_converter.convert_pmd_morphs(parser, mesh_name)
+
         # TODO: モーフ、物理などの変換処理をここに追加
-        # MorphConverter.convert_pmd_morphs(parser, mesh_group)
         # PhysicsConverter.convert_pmd_physics(parser, mesh_group)
 
         # スケールを適用

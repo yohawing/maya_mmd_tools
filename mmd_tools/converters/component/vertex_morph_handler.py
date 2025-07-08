@@ -40,9 +40,6 @@ class VertexMorphHandler(BaseMorphHandler):
                 target_mesh, mesh_node, morph_data
             )
 
-            # クリーンアップ
-            self._cleanup_temp_objects(target_mesh)
-
             return {
                 "success": True,
                 "blend_shape_node": blend_shape_result["blend_shape_node"],
@@ -56,9 +53,13 @@ class VertexMorphHandler(BaseMorphHandler):
 
     def _create_morph_target(self, morph_data: Any, base_mesh: str) -> str:
         """モーフターゲットメッシュを作成"""
+        morph_name = maya_utils.sanitize_text(morph_data.name)
         # メッシュを複製
         target_mesh = cmds.duplicate(base_mesh)[0]  # type: ignore
-        target_mesh = cmds.rename(target_mesh, f"{base_mesh}_morph_temp")
+        target_mesh = cmds.rename(target_mesh, f"{morph_name}")
+
+        # meshを非表示にする
+        cmds.setAttr(f"{target_mesh}.visibility", 0)
 
         # 頂点位置を変更（OpenMaya API 2.0使用）
         self._apply_vertex_offsets(target_mesh, morph_data)
@@ -105,31 +106,25 @@ class VertexMorphHandler(BaseMorphHandler):
         morph_name = maya_utils.sanitize_text(morph_data.name)
 
         # 既存のblendShapeノードを検索
-        blend_shape_node = self._find_or_create_blendshape_node(base_mesh)
-
-        # ターゲットを追加
-        cmds.blendShape(  # type: ignore
-            blend_shape_node, edit=True, target=(base_mesh, -1, target_mesh, 1.0)
-        )
+        blend_shape_node = maya_utils.find_or_create_blendshape_node(base_mesh)
 
         # 現在のターゲット数を取得
-        target_indices = cmds.getAttr(f"{blend_shape_node}.weight", size=True)  # type: ignore
-        target_index = target_indices - 1
+        target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
+        target_index = len(target_count) if target_count else 0
+
+        # 新しいターゲットを追加
+        cmds.blendShape(
+            blend_shape_node,
+            edit=True,
+            target=(base_mesh, target_index, target_mesh, 1.0),
+        )
 
         # ターゲットの名前を設定
         cmds.aliasAttr(  # type: ignore
-            morph_name, f"{blend_shape_node}.weight[{target_index}]"
+            morph_name, f"{blend_shape_node}.w[{target_index}]"
         )
 
         return {
             "blend_shape_node": blend_shape_node,
             "target_index": target_index,
         }
-
-    def _find_or_create_blendshape_node(self, mesh_node: str) -> str:
-        """既存のblendShapeノードを検索または新規作成"""
-        return maya_utils.find_or_create_blendshape_node(mesh_node)
-
-    def _cleanup_temp_objects(self, temp_mesh: str):
-        """一時オブジェクトをクリーンアップ"""
-        maya_utils.cleanup_temp_objects(temp_mesh)
