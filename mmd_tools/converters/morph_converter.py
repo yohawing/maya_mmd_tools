@@ -26,15 +26,7 @@ class BaseMorphHandler(ABC):
 
     def _setup_logger(self) -> logging.Logger:
         """ログ出力の設定"""
-        logger = logging.getLogger(f"mmd_tools.{self.__class__.__name__}")
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        return logger
+        return maya_utils.setup_logger(f"mmd_tools.{self.__class__.__name__}")
 
     @abstractmethod
     def can_handle(self, morph_data: Any) -> bool:
@@ -59,9 +51,7 @@ class BaseMorphHandler(ABC):
 
         return True
 
-    def _sanitize_name(self, name: str) -> str:
-        """Maya互換の名前に変換"""
-        return maya_utils.sanitize_text(name)
+
 
 
 class VertexMorphHandler(BaseMorphHandler):
@@ -152,7 +142,7 @@ class VertexMorphHandler(BaseMorphHandler):
         self, target_mesh: str, base_mesh: str, morph_data: Any
     ) -> Dict[str, Any]:
         """blendShapeノードにターゲットを追加"""
-        morph_name = self._sanitize_name(morph_data.name)
+        morph_name = maya_utils.sanitize_text(morph_data.name)
 
         # 既存のblendShapeノードを検索
         blend_shape_node = self._find_or_create_blendshape_node(base_mesh)
@@ -178,19 +168,11 @@ class VertexMorphHandler(BaseMorphHandler):
 
     def _find_or_create_blendshape_node(self, mesh_node: str) -> str:
         """既存のblendShapeノードを検索または新規作成"""
-        # メッシュに接続されているblendShapeノードを検索
-        blend_shapes = cmds.listHistory(mesh_node, type="blendShape")  # type: ignore
-        if blend_shapes:
-            return blend_shapes[0]
-
-        # 新しいblendShapeノードを作成
-        blend_shape_node = cmds.blendShape(mesh_node)[0]  # type: ignore
-        return blend_shape_node
+        return maya_utils.find_or_create_blendshape_node(mesh_node)
 
     def _cleanup_temp_objects(self, temp_mesh: str):
         """一時オブジェクトをクリーンアップ"""
-        if cmds.objExists(temp_mesh):  # type: ignore
-            cmds.delete(temp_mesh)  # type: ignore
+        maya_utils.cleanup_temp_objects(temp_mesh)
 
 
 class MorphConverterFactory:
@@ -225,15 +207,7 @@ class MorphValidator:
 
     def _setup_logger(self) -> logging.Logger:
         """ログ出力の設定"""
-        logger = logging.getLogger("mmd_tools.MorphValidator")
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        return logger
+        return maya_utils.setup_logger("mmd_tools.MorphValidator")
 
     def validate_pmd_morph(self, morph_data: Any, mesh_node: str) -> bool:
         """PMDモーフデータの検証"""
@@ -326,15 +300,7 @@ class MorphConverter:
 
     def _setup_logger(self) -> logging.Logger:
         """ログ出力の設定"""
-        logger = logging.getLogger("mmd_tools.MorphConverter")
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            formatter = logging.Formatter(
-                "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-            )
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-        return logger
+        return maya_utils.setup_logger("mmd_tools.MorphConverter")
 
     def convert_pmd_morphs(self, pmd_data, mesh_node: str) -> Dict[str, Any]:
         """

@@ -358,3 +358,40 @@ def apply_vertex_weights(
     skin_fn.setWeights(
         shape_dag_path, vertex_component_obj, influence_indices, weight_array, False
     )
+
+
+def setup_logger(logger_name):
+    """ログ出力の設定用ユーティリティ関数"""
+    import logging
+
+    logger = logging.getLogger(logger_name)
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+    return logger
+
+
+def find_or_create_blendshape_node(mesh_node):
+    """既存のblendShapeノードを検索または新規作成"""
+    # メッシュに接続されているblendShapeノードを検索
+    blend_shapes = cmds.listHistory(mesh_node, type="blendShape")
+    if blend_shapes:
+        return blend_shapes[0]
+
+    # 新しいblendShapeノードを作成
+    blend_shape_node = cmds.blendShape(mesh_node)[0]
+    return blend_shape_node
+
+
+def cleanup_temp_objects(temp_objects):
+    """一時オブジェクトをクリーンアップ"""
+    if isinstance(temp_objects, str):
+        temp_objects = [temp_objects]
+
+    for temp_obj in temp_objects:
+        if cmds.objExists(temp_obj):
+            cmds.delete(temp_obj)
