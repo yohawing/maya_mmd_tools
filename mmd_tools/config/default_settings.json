@@ -24,11 +24,21 @@
       "create_physics_joints": true,
       "group_physics_objects": true
     },
-    "morphs": {
+    "morph": {
       "_comment": "Settings for importing morphs (blend shapes)",
       "import_morphs": true,
       "create_blendshape_node": true,
-      "group_morphs_by_panel": true
+      "group_morphs_by_panel": true,
+      "max_morph_targets_per_blendshape": 100,
+      "enable_uv_morphs": true,
+      "enable_material_morphs": true,
+      "enable_bone_morphs": true,
+      "enable_group_morphs": true,
+      "morph_weight_range": [0.0, 1.0],
+      "use_original_morph_names": false,
+      "create_morph_sets": true,
+      "parallel_processing": false,
+      "memory_optimization": true
     },
     "animation": {
       "_comment": "Settings for importing VMD animation files",

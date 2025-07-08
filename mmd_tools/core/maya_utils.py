@@ -1,8 +1,8 @@
 import os
 
-import maya.api.OpenMaya as om
-import maya.api.OpenMayaAnim as oma
 from maya import cmds
+from maya.api import OpenMaya as om
+from maya.api import OpenMayaAnim as oma
 
 from mmd_tools.settings import settings
 
