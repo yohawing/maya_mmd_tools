@@ -7,6 +7,9 @@ from maya.api import OpenMayaAnim as oma
 from mmd_tools.settings import settings
 
 from . import utils
+from .logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def sanitize_text(name):
@@ -360,40 +363,160 @@ def apply_vertex_weights(
     )
 
 
-def setup_logger(logger_name):
-    """ログ出力の設定用ユーティリティ関数（新しいロガーシステム使用）"""
-    from .logger import get_logger
-
-    return get_logger(logger_name)
-
-
 def find_or_create_blendshape_node(mesh_node):
     """既存のblendShapeノードを検索または新規作成"""
-    try:
-        # メッシュノードが存在するかチェック
-        if not cmds.objExists(mesh_node):
-            raise ValueError(f"Mesh node {mesh_node} does not exist")
+    # メッシュノードが存在するかチェック
+    if not cmds.objExists(mesh_node):
+        raise ValueError(f"Mesh node {mesh_node} does not exist")
 
-        # シェイプノードを取得
-        shape_nodes = cmds.listRelatives(mesh_node, shapes=True, type="mesh")
-        if not shape_nodes:
-            raise ValueError(f"No mesh shape found for {mesh_node}")
+    # シェイプノードを取得
+    shape_nodes = cmds.listRelatives(mesh_node, shapes=True, type="mesh")
+    if not shape_nodes:
+        raise ValueError(f"No mesh shape found for {mesh_node}")
 
-        shape_node = shape_nodes[0]
+    shape_node = shape_nodes[0]
 
-        history = cmds.listHistory(shape_node, il=2, pdo=False) or []
-        blendshapes = [
-            x
-            for x in history
-            if cmds.nodeType(x) == "blendShape"
-            and cmds.blendShape(x, q=True, g=True)[0] == shape_node
-        ]
-        if blendshapes:
-            return blendshapes[0]
-        else:
-            return cmds.blendShape(mesh_node)[0]
+    history = cmds.listHistory(shape_node, il=2, pdo=False) or []
+    blendshapes = [
+        x
+        for x in history
+        if cmds.nodeType(x) == "blendShape"
+        and cmds.blendShape(x, q=True, g=True)[0] == shape_node
+    ]
+    if blendshapes:
+        return blendshapes[0]
+    else:
+        return cmds.blendShape(mesh_node)[0]
 
-    except Exception as e:
-        logger = setup_logger("maya_utils")
-        logger.error(f"Error in find_or_create_blendshape_node: {e}")
-        raise
+
+def find_or_create_nucleus_solver(name="mmd_nucleus"):
+    """既存のNucleusソルバーを検索または新規作成"""
+    nucleus_nodes = cmds.ls(type="nucleus")
+    if nucleus_nodes:
+        return nucleus_nodes[0]
+    return cmds.createNode("nucleus", name=name)
+
+
+def create_collision_primitive(shape_type, size, name="collision"):
+    """
+    形状タイプに応じたコリジョン用プリミティブを作成
+
+    Args:
+        shape_type (int): 0=箱, 1=球, 2=カプセル
+        size (tuple): (x, y, z) サイズ
+        name (str): オブジェクト名
+
+    Returns:
+        str: 作成されたオブジェクト名
+    """
+    if shape_type == 0:  # 箱
+        obj = cmds.polyCube(
+            name=name, width=size[0] * 2, height=size[1] * 2, depth=size[2] * 2
+        )[0]
+    elif shape_type == 1:  # 球
+        obj = cmds.polySphere(name=name, radius=size[0])[0]
+    elif shape_type == 2:  # カプセル（円柱で近似）
+        obj = cmds.polyCylinder(name=name, radius=size[0], height=size[1] * 2)[0]
+    else:
+        raise ValueError(f"Unknown shape type: {shape_type}")
+
+    return obj
+
+
+def apply_ncloth_to_mesh(mesh, nucleus_solver=None):
+    """
+    メッシュにnClothを適用
+
+    Args:
+        mesh (str): メッシュ名
+        nucleus_solver (str): Nucleusソルバー名（Noneの場合は新規作成）
+
+    Returns:
+        str: 作成されたnClothシェイプノード名
+    """
+    from maya import mel
+
+    cmds.select(mesh)
+    ncloth_shape = mel.eval("createNCloth 0;")
+
+    if nucleus_solver and ncloth_shape:
+        # Nucleusソルバーへの接続
+        ncloth_nodes = cmds.ls(type="nCloth")
+        if ncloth_nodes:
+            index = len(
+                [
+                    i
+                    for i in cmds.listConnections(nucleus_solver + ".inputActive") or []
+                    if i
+                ]
+            )
+            cmds.connectAttr(
+                f"{ncloth_shape[0]}.currentState",
+                f"{nucleus_solver}.inputActive[{index}]",
+            )
+            cmds.connectAttr(
+                f"{ncloth_shape[0]}.startState",
+                f"{nucleus_solver}.inputActiveStart[{index}]",
+            )
+
+    return ncloth_shape[0] if ncloth_shape else None
+
+
+def apply_nrigid_to_mesh(obj, is_dynamic=True):
+    """
+    オブジェクトにnRigidを適用
+
+    Args:
+        obj (str): オブジェクト名
+        is_dynamic (bool): 動的かどうか
+
+    Returns:
+        str: 作成されたnRigidノード名
+    """
+    from maya import mel
+
+    cmds.select(obj)
+    nrigid = mel.eval("makeCollideNCloth;")
+
+    if nrigid:
+        cmds.setAttr(f"{nrigid[0]}.isDynamic", 1 if is_dynamic else 0)
+        return nrigid[0]
+
+    return None
+
+
+def create_dynamic_curve(points, name="dynamic_curve"):
+    """
+    ダイナミックカーブを作成
+
+    Args:
+        points (list): カーブのポイントリスト
+        name (str): カーブ名
+
+    Returns:
+        str: 作成されたカーブ名
+    """
+    curve = cmds.curve(d=1, p=points, name=name)
+    return curve
+
+
+def apply_nhair_to_curve(curve):
+    """
+    カーブにnHairシステムを適用
+
+    Args:
+        curve (str): カーブ名
+
+    Returns:
+        str: 作成されたhairSystemノード名
+    """
+    from maya import mel
+
+    cmds.select(curve)
+    mel.eval('makeCurvesDynamic 2 { "1", "0", "1", "1", "0"};')
+
+    hair_systems = cmds.ls(type="hairSystem")
+    if hair_systems:
+        return hair_systems[-1]
+
+    return None

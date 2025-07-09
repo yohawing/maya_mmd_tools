@@ -165,3 +165,29 @@ def reload_dictionary(dictionary_path: str = None):
     converter = get_converter()
     converter._load_dictionary(dictionary_path)
     converter.clear_cache()
+
+
+def create_bone_joint_mapping(bones, maya_joints, format_type):
+    """
+    ボーン名とMayaジョイント名のマッピングを作成する。
+
+    Args:
+        bones: MMDボーンデータのリスト
+        maya_joints: Mayaジョイント名のリスト
+        format_type: "pmx" または "pmd"
+
+    Returns:
+        dict: ボーン名からMayaジョイント名へのマッピング
+    """
+    mapping = {}
+
+    for i, (bone, joint_name) in enumerate(zip(bones, maya_joints)):
+        # インデックスベースのボーン名を作成（PhysicsConverterで使用される形式）
+        bone_key = f"bone_{i}"
+        mapping[bone_key] = joint_name
+
+        # 追加でボーンの実際の名前でもマッピング（将来の拡張用）
+        if hasattr(bone, "name") and bone.name:
+            mapping[bone.name] = joint_name
+
+    return mapping
