@@ -30,12 +30,12 @@ def import_pmx_file(parser, filepath):
         mesh_converter = MeshConverter(filepath)
         mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser)
 
+        morph_converter = MorphConverter()
+        morph_converter.convert_pmx_morphs(parser, mesh_name)
+
         # ボーンを変換
         bone_converter = BoneConverter()
         joints = bone_converter.convert_pmx_bones(parser, mesh_name)
-
-        morph_converter = MorphConverter()
-        morph_converter.convert_pmx_morphs(parser, mesh_name)
 
         # TODO: 物理などの変換処理をここに追加
         # PhysicsConverter.convert_pmx_physics(parser, mesh_group)

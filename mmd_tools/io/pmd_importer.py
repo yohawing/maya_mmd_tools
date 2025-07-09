@@ -30,12 +30,13 @@ def import_pmd_file(parser, filepath):
         mesh_converter = MeshConverter(filepath)
         mesh_group, mesh_name = mesh_converter.convert_pmd_mesh(parser)
 
+        # モーフを変換
+        morph_converter = MorphConverter()
+        morph_converter.convert_pmd_morphs(parser, mesh_name)
+
         # ボーンを変換
         bone_converter = BoneConverter()
         joints = bone_converter.convert_pmd_bones(parser, mesh_name)
-
-        morph_converter = MorphConverter()
-        morph_converter.convert_pmd_morphs(parser, mesh_name)
 
         # TODO: モーフ、物理などの変換処理をここに追加
         # PhysicsConverter.convert_pmd_physics(parser, mesh_group)
