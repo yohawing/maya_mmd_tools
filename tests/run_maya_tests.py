@@ -4,6 +4,8 @@ YWTA Tools Maya テスト実行スクリプト
 このスクリプトは、Maya環境でテストを実行するためのエントリーポイントを提供します。
 Maya内から実行するか、mayapy.exeを使用して実行します。
 """
+
+import argparse
 import os
 import sys
 import unittest
@@ -56,28 +58,63 @@ def get_tests(test=None, test_suite=None):
 
     if test:
         # Find the specified test to run
-        directories_added_to_path = [p for p in directories if add_to_path(p)]
-        discovered_suite = unittest.TestLoader().loadTestsFromName(test)
-        if discovered_suite.countTestCases():
-            test_suite.addTests(discovered_suite)
+
+        # testが特定のテストクラスやメソッドを指している場合
+        if "." in test:
+            try:
+                discovered_suite = unittest.TestLoader().loadTestsFromName(test)
+                if discovered_suite.countTestCases():
+                    test_suite.addTests(discovered_suite)
+            except (ImportError, AttributeError):
+                # モジュール名やクラス名が見つからない場合は、パターンマッチングにフォールバック
+                pass
+
+        # パターンマッチングでテストを検索
+        if test_suite.countTestCases() == 0:
+            for directory in directories:
+                discovered_suite = unittest.TestLoader().discover(
+                    directory, pattern="test_*.py"
+                )
+
+                # フィルタリング
+                filtered_suite = unittest.TestSuite()
+                all_tests = get_all_tests(discovered_suite)
+
+                for test_case in all_tests:
+                    if test in test_case.id():
+                        filtered_suite.addTest(test_case)
+
+                if filtered_suite.countTestCases():
+                    test_suite.addTests(filtered_suite)
     else:
         # Find all tests to run
-        directories_added_to_path = []
-        for p in directories:
-            discovered_suite = unittest.TestLoader().discover(p)
+        for directory in directories:
+            discovered_suite = unittest.TestLoader().discover(
+                directory, pattern="test_*.py"
+            )
             if discovered_suite.countTestCases():
                 test_suite.addTests(discovered_suite)
-
-    # Remove the added paths.
-    for path in directories_added_to_path:
-        sys.path.remove(path)
 
     return test_suite
 
 
-def run_tests_from_commandline():
-    """Mayaスタンドアロンモードでテストを実行します。
+def get_all_tests(suite_to_flatten):
+    """TestSuiteから全てのテストケースを取得します。
+
+    @param suite_to_flatten: フラット化するTestSuite
+    @return: テストケースのリスト
     """
+    tests = []
+    for test in suite_to_flatten:
+        if isinstance(test, unittest.TestSuite):
+            tests.extend(get_all_tests(test))
+        else:
+            tests.append(test)
+    return tests
+
+
+def run_tests_from_commandline():
+    """Mayaスタンドアロンモードでテストを実行します。"""
     import maya.standalone
 
     maya.standalone.initialize()
@@ -93,11 +130,27 @@ def run_tests_from_commandline():
         if p not in realsyspath:
             sys.path.insert(0, p)
 
-    run_tests()
+    # コマンドライン引数を解析
+    parser = argparse.ArgumentParser(description="Run Maya integration tests.")
+    parser.add_argument(
+        "--test",
+        type=str,
+        default=None,
+        help="A string to filter tests by. Can be a module, class, or method name.",
+    )
+    args = parser.parse_args()
+
+    run_tests(test=args.test)
 
     # Starting Maya 2016, we have to call uninitialize
-    if float(cmds.about(v=True)) >= 2016.0:
-        maya.standalone.uninitialize()
+    maya_version = cmds.about(v=True)
+    if maya_version and float(maya_version) >= 2016.0:
+        try:
+            maya.standalone.uninitialize()
+        except AttributeError:
+            # Maya バージョンによってはuninitializeが存在しない場合がある
+            pass
+
 
 def add_to_path(path) -> bool:
     """指定されたパスをシステムパスに追加します。
@@ -109,6 +162,7 @@ def add_to_path(path) -> bool:
         sys.path.insert(0, path)
         return True
     return False
+
 
 if __name__ == "__main__":
     print("Running tests from command line...")

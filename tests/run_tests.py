@@ -26,6 +26,7 @@ try:
     USING_MAYAPY = True
 except ImportError:
     USING_MAYAPY = False
+    run_tests_from_commandline = None
 
 
 # enable_windows_ansi_supportは既にimportしているので不要
@@ -85,6 +86,17 @@ def run_tests():
     This script can run either unit or integration tests, and can filter
     tests by a specific name provided via the command line.
     """
+
+    # Helper to get a flat list of all test cases from a suite
+    def get_all_tests(suite_to_flatten):
+        tests = []
+        for test in suite_to_flatten:
+            if isinstance(test, unittest.TestSuite):
+                tests.extend(get_all_tests(test))
+            else:
+                tests.append(test)
+        return tests
+
     # プロジェクトルートはすでにスクリプトの開始時にsys.pathに追加されています。
 
     # Set up argument parser
@@ -127,16 +139,6 @@ def run_tests():
     # If a specific test name is provided, filter the suite
     if args.test:
         filtered_suite = unittest.TestSuite()
-
-        # Helper to get a flat list of all test cases from a suite
-        def get_all_tests(suite_to_flatten):
-            tests = []
-            for test in suite_to_flatten:
-                if isinstance(test, unittest.TestSuite):
-                    tests.extend(get_all_tests(test))
-                else:
-                    tests.append(test)
-            return tests
 
         all_tests = get_all_tests(suite)
 
@@ -181,8 +183,18 @@ def run_tests():
         # os.environ['MAYA_LOCATION'] = str(get_maya_location(maya_version))
 
         # すでにmayapyで実行している場合は、直接スクリプトを実行します。
-        if USING_MAYAPY:
-            run_tests_from_commandline()
+        if USING_MAYAPY and run_tests_from_commandline:
+            # sys.argvを適切に設定して、run_maya_tests.pyで引数を取得できるようにする
+            original_argv = sys.argv[:]
+            if args.test:
+                sys.argv = [sys.argv[0], "--test", args.test]
+            else:
+                sys.argv = [sys.argv[0]]
+
+            try:
+                run_tests_from_commandline()
+            finally:
+                sys.argv = original_argv
             return
 
         maya_version = args.maya
@@ -196,13 +208,9 @@ def run_tests():
             os.path.join(ROOT_DIR, "tests", "run_maya_tests.py"),
         ]
         if args.test:
-            command.extend(["-test", args.test])
+            command.extend(["--test", args.test])
 
-            print(f"Running integration tests with command: {' '.join(command)}")
-            # result = os.system(' '.join(command))
-        # if result != 0:
-        #     print("統合テストの実行に失敗しました。")
-        #     sys.exit(1)
+        print(f"Running integration tests with command: {' '.join(command)}")
 
         try:
             subprocess.check_call(command)
