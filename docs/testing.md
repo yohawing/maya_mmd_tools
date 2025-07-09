@@ -6,7 +6,54 @@
 
 ## 2. テスト戦略
 
-run_tests.pyでは、すべてのテストを実行できる他、特定のテストケースを指定して実行することも可能です。
+## テスト戦略
+
+### テスト実行システム
+
+プロジェクトでは、`tests/run_tests.py`を使用してテストを実行します。このスクリプトは以下の機能を提供します：
+
+- **テストタイプの指定**: ユニットテスト（`--type unit`）と統合テスト（`--type integration`）を選択可能
+- **テストフィルタリング**: 特定のテストモジュール、クラス、メソッドを指定して実行可能
+- **Maya環境の自動処理**: 統合テストでは自動的にmayapyを使用してMaya環境で実行
+- **柔軟なマッチング**: 完全なテスト名と部分的なパターンマッチングの両方に対応
+
+### 基本的なテスト実行方法
+
+#### 全てのテストを実行
+
+```bash
+# 全てのユニットテストを実行
+python tests/run_tests.py --type unit
+
+# 全ての統合テストを実行
+python tests/run_tests.py --type integration
+```
+
+#### 特定のテストを実行
+
+```bash
+# 特定のテストモジュールを実行
+python tests/run_tests.py --type unit --test test_pmd_parser
+python tests/run_tests.py --type integration --test test_maya_utils
+
+# 特定のテストクラスを実行
+python tests/run_tests.py --type unit --test test_pmd_parser.TestPmdParser
+python tests/run_tests.py --type integration --test test_maya_utils.TestMayaUtils
+
+# 特定のテストメソッドを実行
+python tests/run_tests.py --type unit --test test_pmd_parser.TestPmdParser.test_parse_header
+python tests/run_tests.py --type integration --test test_maya_utils.TestMayaUtils.test_create_material
+```
+
+#### パターンマッチングを使用
+
+```bash
+# 部分的なマッチングで複数のテストを実行
+python tests/run_tests.py --type integration --test TestMayaUtils
+python tests/run_tests.py --type unit --test test_pmd
+python tests/run_tests.py --type integration --test converter
+```
+
 run_tests.pyは以下の機能を持ちます
 
 - すべてのテストの実行
@@ -18,6 +65,112 @@ run_tests.pyは以下の機能を持ちます
   - mayaが必要なため、通常のインストールディレクトリから自動的に `mayapy.exe` へのパスを解決して、
 - 特定のテストケースの実行：
   - `--test <test_case_name>` オプションを指定して実行
+
+### 高度なオプション
+
+#### Maya バージョンの指定
+
+```bash
+# 特定のMayaバージョンを指定（デフォルトは2024）
+python tests/run_tests.py --type integration --maya 2023 --test test_maya_utils
+python tests/run_tests.py --type integration --maya 2025
+```
+
+#### 直接mayapyを使用
+
+```bash
+# mayapyを直接使用して統合テストを実行
+'C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe' tests\run_tests.py --type integration
+
+# 特定のテストを実行
+'C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe' tests\run_tests.py --type integration --test test_maya_utils
+```
+
+### テストの発見とデバッグ
+
+#### 利用可能なテストの確認
+
+存在しないテスト名を指定すると、利用可能なテストの一覧が表示されます：
+
+```bash
+python tests/run_tests.py --type integration --test nonexistent_test
+```
+
+出力例：
+```
+Error: No tests found matching '--test nonexistent_test' in the 'integration' suite.
+
+Available tests in this suite:
+  - test_animation_converter.TestAnimationConverter.test_convert_vmd_animation
+  - test_maya_utils.TestMayaUtils.test_assign_material
+  - test_maya_utils.TestMayaUtils.test_create_material
+  - test_maya_utils.TestMayaUtils.test_create_mesh_with_uvs
+  - test_maya_utils.TestMayaUtils.test_sanitize_maya_name
+  - test_maya_utils.TestMayaUtils.test_set_custom_attributes
+  - test_mesh_converter.TestMeshConverter.test_convert_pmd_mesh
+  - test_mesh_converter.TestMeshConverter.test_convert_pmx_mesh
+  ...
+```
+
+### テスト実行の仕組み
+
+#### ユニットテスト（`--type unit`）
+
+- **実行環境**: 通常のPython環境
+- **対象ディレクトリ**: `tests/unit/`
+- **実行方法**: `unittest.TestLoader().discover()`でテストを発見し、`CustomTestRunner`で実行
+- **Maya依存性**: なし
+
+#### 統合テスト（`--type integration`）
+
+- **実行環境**: Maya Python環境（mayapy.exe）
+- **対象ディレクトリ**: `tests/integration/`
+- **実行方法**: 
+  1. 通常のPython環境で実行された場合は、自動的にmayapyを起動
+  2. mayapy環境で実行された場合は、直接テストを実行
+- **Maya依存性**: あり（Maya APIやcmdsを使用）
+
+### エラーハンドリング
+
+#### テストの発見に失敗した場合
+
+```bash
+# 指定したテストが見つからない場合
+python tests/run_tests.py --type integration --test invalid_test
+
+# 出力: エラーメッセージと利用可能なテストの一覧
+```
+
+#### Maya環境の問題
+
+```bash
+# mayapyが見つからない場合
+Error: mayapy executable not found at C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe.
+
+# 別のMayaバージョンを試す
+python tests/run_tests.py --type integration --maya 2023
+```
+
+### 実行例
+
+```bash
+# 開発中によく使用されるコマンド例
+
+# メッシュ変換関連のテストのみ実行
+python tests/run_tests.py --type integration --test mesh_converter
+
+# Maya ユーティリティ関連のテストのみ実行
+python tests/run_tests.py --type integration --test maya_utils
+
+# 特定のテストメソッドのデバッグ
+python tests/run_tests.py --type integration --test test_maya_utils.TestMayaUtils.test_create_material
+
+# PMDパーサーのユニットテスト
+python tests/run_tests.py --type unit --test test_pmd_parser
+
+# 全てのコンバーター関連のテスト
+python tests/run_tests.py --type integration --test converter
+```
 
 ### 2.1. ユニットテスト
 

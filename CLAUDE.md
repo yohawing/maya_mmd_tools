@@ -174,16 +174,56 @@ docsディレクトリには、以下のファイルがあります。
 テストは、ユニットテストと統合テストの2つのレベルで実施します。
 
 実行方法は以下です。
-```
-// run all unit test
-python tests/run_tests.py --type unit
-// unit test for specific test case
-python tests/run_tests.py --test test_pmd_parser.TestPmdParser
 
-// integration test
+### ユニットテスト
+```bash
+# 全てのユニットテストを実行
+python tests/run_tests.py --type unit
+
+# 特定のテストモジュールを実行
+python tests/run_tests.py --type unit --test test_pmd_parser
+
+# 特定のテストクラスを実行
+python tests/run_tests.py --type unit --test test_pmd_parser.TestPmdParser
+
+# 特定のテストメソッドを実行
+python tests/run_tests.py --type unit --test test_pmd_parser.TestPmdParser.test_parse_header
+```
+
+### 統合テスト
+```bash
+# 全ての統合テストを実行
+python tests/run_tests.py --type integration
+
+# 特定のテストモジュールを実行
+python tests/run_tests.py --type integration --test test_maya_utils
+
+# 特定のテストクラスを実行
+python tests/run_tests.py --type integration --test test_maya_utils.TestMayaUtils
+
+# 特定のテストメソッドを実行
+python tests/run_tests.py --type integration --test test_maya_utils.TestMayaUtils.test_create_material
+
+# 複数のテストを部分的にマッチング
+python tests/run_tests.py --type integration --test TestMayaUtils
+```
+
+### 直接mayapyを使用する場合
+```bash
+# 全ての統合テストを実行
 'C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe' tests\run_tests.py --type integration
-// integration test for specific test case
+
+# 特定のテストを実行
 'C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe' tests\run_tests.py --type integration --test test_maya_utils
+```
+
+### 追加オプション
+```bash
+# 特定のMayaバージョンを指定（デフォルトは2024）
+python tests/run_tests.py --type integration --maya 2023 --test test_maya_utils
+
+# テストが見つからない場合、利用可能なテストの一覧が表示されます
+python tests/run_tests.py --type integration --test nonexistent_test
 ```
 
 ## コーディング

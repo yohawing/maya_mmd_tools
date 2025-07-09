@@ -214,7 +214,12 @@ class PhysicsConverter:
         )
 
         # 重力設定（MMDは下向きをY軸負方向とする）
-        cmds.setAttr(f"{self.nucleus_solver}.gravityY", -9.8)
+        # gravity: 重力の大きさ（スカラー）
+        # gravityDirection: 重力の方向（ベクトル）
+        cmds.setAttr(f"{self.nucleus_solver}.gravity", 9.8)
+        cmds.setAttr(
+            f"{self.nucleus_solver}.gravityDirection", 0, 1, 0
+        )  # Y軸正方向（下向き）
 
         self.logger.debug(f"Nucleusソルバー設定完了: quality={quality}")
 
