@@ -23,7 +23,7 @@ mmd_tools/
 │   ├── log_handlers.py    # 各種ログハンドラー
 │   └── log_formatters.py  # ログフォーマッター
 └── config/
-    └── logging_config.json # ロガー設定ファイル
+    └── default_setting.json # ロガーの設定を含める
 ```
 
 ### クラス設計
@@ -86,7 +86,6 @@ class CompactFormatter(logging.Formatter):
 ### 2. 出力先対応
 
 #### Maya環境
-- **Maya Script Editor**: `cmds.scriptEditor` APIを使用
 - **Maya Output Window**: `sys.stdout`, `sys.stderr`への出力
 - **Maya Dialog**: `cmds.confirmDialog` APIを使用（ERROR/CRITICALレベル用）
 

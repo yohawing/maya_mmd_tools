@@ -361,18 +361,10 @@ def apply_vertex_weights(
 
 
 def setup_logger(logger_name):
-    """ログ出力の設定用ユーティリティ関数"""
-    import logging
+    """ログ出力の設定用ユーティリティ関数（新しいロガーシステム使用）"""
+    from .logger import get_logger
 
-    logger = logging.getLogger(logger_name)
-    if not logger.handlers:
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-    return logger
+    return get_logger(logger_name)
 
 
 def find_or_create_blendshape_node(mesh_node):
