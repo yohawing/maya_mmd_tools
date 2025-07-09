@@ -60,7 +60,7 @@
   "logging": {
     "_comment": "Settings for the logging system",
     "enabled": true,
-    "level": "INFO",
+    "level": "DEBUG",
     "log_file_path": "logs/mmd_tools.log"
   }
 }

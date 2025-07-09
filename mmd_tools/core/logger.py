@@ -40,8 +40,8 @@ class MayaLogger:
             "backup_count": 5,
         },
         "formatters": {
-            "standard": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            "compact": "%(levelname)s: %(message)s",
+            "standard": "[MMD] %(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            "compact": "[MMD] %(levelname)s: %(message)s",
         },
         "handlers": {
             "console": {"enabled": True},
@@ -82,13 +82,13 @@ class MayaLogger:
         )
 
         # コンソールハンドラー
-        if self.LOGGING_CONFIG["handlers"]["console"]["enabled"]:
-            if is_maya_environment():
-                console_handler = MayaOutputWindowHandler()
-            else:
-                console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setFormatter(compact_formatter)
-            self._logger.addHandler(console_handler)
+        # if self.LOGGING_CONFIG["handlers"]["console"]["enabled"]:
+        #     if is_maya_environment():
+        #         console_handler = MayaOutputWindowHandler()
+        #     else:
+        #         console_handler = logging.StreamHandler(sys.stdout)
+        #     console_handler.setFormatter(compact_formatter)
+        #     self._logger.addHandler(console_handler)
 
         # ファイルハンドラー
         if self.LOGGING_CONFIG["handlers"]["file"]["enabled"]:
@@ -98,31 +98,30 @@ class MayaLogger:
             if not isinstance(log_file_path, str):
                 log_file_path = "logs/mmd_tools.log"
 
-            # ログディレクトリを作成
-            log_dir = os.path.dirname(log_file_path)
-            if log_dir and not os.path.exists(log_dir):
-                os.makedirs(log_dir, exist_ok=True)
+            # 書き込み可能なログファイルパスを取得
+            log_file_path = self._get_writable_log_path(log_file_path)
 
-            try:
-                file_handler = UTF8FileHandler(
-                    log_file_path,
-                    max_bytes=self.LOGGING_CONFIG["file"]["max_size"],
-                    backup_count=self.LOGGING_CONFIG["file"]["backup_count"],
-                )
-                file_handler.setFormatter(standard_formatter)
-                self._logger.addHandler(file_handler)
-            except (OSError, IOError) as e:
-                # ファイルハンドラーの作成に失敗した場合は警告を出力
-                print(f"ログファイルの作成に失敗しました: {e}")
+            if log_file_path:
+                try:
+                    file_handler = UTF8FileHandler(
+                        log_file_path,
+                        max_bytes=self.LOGGING_CONFIG["file"]["max_size"],
+                        backup_count=self.LOGGING_CONFIG["file"]["backup_count"],
+                    )
+                    file_handler.setFormatter(standard_formatter)
+                    self._logger.addHandler(file_handler)
+                except (OSError, IOError) as e:
+                    # ファイルハンドラーの作成に失敗した場合は警告を出力
+                    print(f"ログファイルの作成に失敗しました: {e}")
 
         # Maya Script Editorハンドラー
-        if (
-            is_maya_environment()
-            and self.LOGGING_CONFIG["handlers"]["maya_script_editor"]["enabled"]
-        ):
-            maya_handler = MayaScriptEditorHandler()
-            maya_handler.setFormatter(compact_formatter)
-            self._logger.addHandler(maya_handler)
+        # if (
+        #     is_maya_environment()
+        #     and self.LOGGING_CONFIG["handlers"]["maya_script_editor"]["enabled"]
+        # ):
+        #     maya_handler = MayaScriptEditorHandler()
+        #     maya_handler.setFormatter(compact_formatter)
+        #     self._logger.addHandler(maya_handler)
 
         # Maya Dialogハンドラー（ERROR/CRITICALレベル用）
         if is_maya_environment():
@@ -137,6 +136,61 @@ class MayaLogger:
         else:
             level = logging.INFO
         self._logger.setLevel(level)
+
+    def _get_writable_log_path(self, preferred_path: str) -> Optional[str]:
+        """
+        書き込み可能なログファイルパスを取得します
+
+        Args:
+            preferred_path: 希望するログファイルパス
+
+        Returns:
+            書き込み可能なログファイルパス、失敗した場合はNone
+        """
+        import tempfile
+
+        # まず希望するパスでディレクトリ作成を試行
+        log_dir = os.path.dirname(preferred_path)
+        if log_dir:
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+                # ディレクトリが作成できた場合、ファイルの書き込みテスト
+                test_file = preferred_path + ".test"
+                try:
+                    with open(test_file, "w") as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    return preferred_path
+                except (OSError, IOError):
+                    pass
+            except (OSError, IOError, PermissionError):
+                pass
+
+        # 希望するパスでディレクトリ作成に失敗した場合、一時ディレクトリを使用
+        try:
+            temp_dir = tempfile.gettempdir()
+            temp_log_dir = os.path.join(temp_dir, "maya_mmd_tools")
+            os.makedirs(temp_log_dir, exist_ok=True)
+
+            log_filename = os.path.basename(preferred_path)
+            if not log_filename:
+                log_filename = "mmd_tools.log"
+
+            fallback_path = os.path.join(temp_log_dir, log_filename)
+
+            # 一時ディレクトリでの書き込みテスト
+            test_file = fallback_path + ".test"
+            with open(test_file, "w") as f:
+                f.write("test")
+            os.remove(test_file)
+
+            print(f"警告: ログファイルを一時ディレクトリに作成します: {fallback_path}")
+            return fallback_path
+
+        except (OSError, IOError, PermissionError):
+            # 一時ディレクトリでも失敗した場合、ファイルハンドラーを無効化
+            print(f"警告: ログファイルの作成に失敗しました。ファイルログは無効です。")
+            return None
 
     def debug(self, message: str, *args, **kwargs):
         """デバッグメッセージを出力"""
