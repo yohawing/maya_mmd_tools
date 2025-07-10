@@ -9,6 +9,13 @@ import argparse
 import os
 import sys
 import unittest
+from pathlib import Path
+
+# プロジェクトルートをsys.pathに追加
+SCRIPT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = SCRIPT_DIR.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 import maya.cmds as cmds
 

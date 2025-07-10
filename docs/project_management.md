@@ -29,30 +29,48 @@
 
 ## Linear プロジェクト管理
 
-### プロジェクト情報
-*   **プロジェクト名:** Maya MMD Tools
-*   **プロジェクトID:** e4b4bd61-ad6c-4da1-a08a-013c3e1416e5
-*   **プロジェクトURL:** https://linear.app/yohawing/project/maya-mmd-tools-00a307d6ad9d
-*   **開始日:** 2025-07-01
-*   **目標完了日:** 2025-08-04
+### チーム情報
+*   **チーム名:** maya_mmd_tools
+*   **チームID:** c6d80b79-74c6-4670-81c1-09fe505f6473
+*   **チームアイコン:** Database 🗃️
+*   **作成日:** 2025-07-10
 
 ### 課題管理
+*   **チーム:** maya_mmd_tools (ID: c6d80b79-74c6-4670-81c1-09fe505f6473)
 *   **課題ラベル:**
-    *   Feature: 新機能の実装
-    *   Improvement: 既存機能の改善
-    *   Bug: バグ修正
+    *   🔵 Feature: 新機能の実装 (#BB87FC)
+    *   🔴 Bug: バグ修正 (#EB5757)
+    *   🟢 Improvement: 既存機能の改善 (#4EA7FC)
 *   **課題ステータス:**
+    *   Backlog: バックログ
     *   Todo: 未着手
     *   In Progress: 作業中
     *   In Review: レビュー中
     *   Done: 完了
+    *   Canceled: キャンセル
+    *   Duplicate: 重複
 
 ### 来週のタスク（スプリント2）
-*   **YOHA-363:** converters/morph_converter.py のPMD/PMXモーフ変換ロジックの実装
-*   **YOHA-364:** converters/physics_converter.py のPMD/PMX物理演算変換ロジックの実装
-*   **YOHA-365:** converters/animation_converter.py のVMDアニメーション変換ロジックの実装
-*   **YOHA-366:** コンバーターのユニットテスト・統合テスト実装
-*   **YOHA-367:** bone_converter.py にJointOrientの適応機能を追加
+*   **MMD-1:** converters/morph_converter.py のPMD/PMXモーフ変換ロジックの実装
+    *   **優先度:** High
+    *   **ラベル:** Feature
+    *   **URL:** https://linear.app/yohawing/issue/MMD-1/
+*   **MMD-2:** converters/physics_converter.py のPMD/PMX物理演算変換ロジックの実装
+    *   **優先度:** High
+    *   **ラベル:** Feature
+    *   **URL:** https://linear.app/yohawing/issue/MMD-2/
+*   **MMD-3:** converters/animation_converter.py のVMDアニメーション変換ロジックの実装
+    *   **優先度:** High
+    *   **ラベル:** Feature
+    *   **URL:** https://linear.app/yohawing/issue/MMD-3/
+*   **MMD-4:** コンバーターのユニットテスト・統合テスト実装
+    *   **優先度:** High
+    *   **ラベル:** Improvement
+    *   **URL:** https://linear.app/yohawing/issue/MMD-4/
+*   **MMD-5:** bone_converter.py にJointOrientの適応機能を追加
+    *   **優先度:** Medium
+    *   **ラベル:** Improvement
+    *   **URL:** https://linear.app/yohawing/issue/MMD-5/
 
 ### Linear連携のメリット
 *   **タスクの可視化:** プロジェクトの進捗状況を一目で確認可能
@@ -106,17 +124,18 @@
 ### スプリント 2 (日付: 2025/07/08 - 2025/07/14) - 進行中
 
 *   **目標:** 変換機能の実装を完了させ、エクスポート機能の開発を開始する。
-*   **Linear課題:** YOHA-363, YOHA-364, YOHA-365, YOHA-366
+*   **Linear課題:** MMD-1, MMD-2, MMD-3, MMD-4, MMD-5
 *   **進捗状況:** 
     *   [x] `converters/bone_converter.py` のPMD/PMXボーン変換ロジックの実装（完了）
     *   [x] `converters/mesh_converter.py` のPMD/PMXメッシュ変換ロジックの実装（完了）
     *   [x] テストフレームワークの整備（`run_maya_tests.py`、Maya統合テスト環境の構築）
     *   [x] 実際のテストデータ（`miku_v2.pmd`, `Lumine/荧.pmx`, `Lat式用.vmd`）の準備
-    *   [ ] `converters/morph_converter.py` のPMD/PMXモーフ変換ロジックの実装（YOHA-363）
-    *   [ ] `converters/physics_converter.py` のPMD/PMX物理演算変換ロジックの実装（YOHA-364）
-    *   [ ] `converters/animation_converter.py` のVMDアニメーション変換ロジックの実装（YOHA-365）
-    *   [ ] 上記コンバーターのユニットテスト・統合テストの実装（YOHA-366）
-    *   [ ] `converters/bone_converter.py` にJointOrientの適応機能を追加（YOHA-367）
+    *   [x] 新しいLinearチーム「maya_mmd_tools」の作成と課題管理システムの整備
+    *   [ ] `converters/morph_converter.py` のPMD/PMXモーフ変換ロジックの実装（MMD-1）
+    *   [ ] `converters/physics_converter.py` のPMD/PMX物理演算変換ロジックの実装（MMD-2）
+    *   [ ] `converters/animation_converter.py` のVMDアニメーション変換ロジックの実装（MMD-3）
+    *   [ ] 上記コンバーターのユニットテスト・統合テストの実装（MMD-4）
+    *   [ ] `converters/bone_converter.py` にJointOrientの適応機能を追加（MMD-5）
 
 ### スプリント 3 (日付: 2025/07/15 - 2025/07/21) - 計画
 
@@ -178,7 +197,9 @@
     *   スプリント2の目標を変更し、コンバーターとインポーターの実装に焦点を当てる
     *   実際のテストデータを使用した統合テスト環境を構築
     *   Linear プロジェクト管理システムを導入し、来週のタスクを作成（YOHA-363〜366）
-*   **2025/07/06:** 現在の進捗状況を反映し、完了済み機能、進行中・未完了機能、技術的な成果、次のマイルストーンを追記。
+*   **2025/07/10:** 専用Linearチーム「maya_mmd_tools」を作成 (ID: c6d80b79-74c6-4670-81c1-09fe505f6473)
+    *   チーム専用のラベル体系とステータス管理を導入
+    *   課題管理の効率化とプロジェクト可視性の向上を実現
 
 ## 現在の進捗状況（2025/07/06時点）
 

@@ -53,6 +53,12 @@ def get_maya_location(maya_version: int) -> Path:
     elif platform.system() == "Darwin":
         return Path(f"/Applications/Autodesk/maya{maya_version}/Maya.app/Contents")
     else:
+        # WSL環境からWindows側のMayaを使用する場合
+        wsl_maya_path = Path(f"/mnt/c/Program Files/Autodesk/Maya{maya_version}")
+        if wsl_maya_path.exists():
+            return wsl_maya_path
+        
+        # 通常のLinux環境
         location = f"/usr/autodesk/maya{maya_version}"
         if maya_version < 2016:
             # 2016以降、デフォルトのインストールディレクトリ名が変更されました
@@ -73,9 +79,13 @@ def mayapy(maya_version: int) -> Path:
         >>> mayapy(2024)
         Path('C:/Program Files/Autodesk/Maya2024/bin/mayapy.exe')
     """
-    python_exe = get_maya_location(maya_version) / "bin" / "mayapy"
-    if platform.system() == "Windows":
+    maya_location = get_maya_location(maya_version)
+    python_exe = maya_location / "bin" / "mayapy"
+    
+    # Windowsまたは WSL環境でWindows版Mayaを使用する場合は.exeを追加
+    if platform.system() == "Windows" or str(maya_location).startswith("/mnt/"):
         python_exe = python_exe.with_suffix(".exe")
+    
     return python_exe
 
 
@@ -203,17 +213,41 @@ def run_tests():
             print(f"Error: mayapy executable not found at {mayapy_path}.")
             sys.exit(1)
 
+        # WSL環境でWindows版Mayaを使用する場合はパスを変換
+        test_script_path = os.path.join(ROOT_DIR, "tests", "run_maya_tests.py")
+        env = os.environ.copy()
+        
+        if str(mayapy_path).startswith("/mnt/"):
+            # WSLパスをWindowsパスに変換する関数
+            def wsl_to_windows_path(wsl_path):
+                path_str = str(wsl_path)
+                # /mnt/c/ -> C:/, /mnt/d/ -> D:/, etc.
+                import re
+                match = re.match(r"/mnt/([a-z])/", path_str)
+                if match:
+                    drive_letter = match.group(1).upper()
+                    return path_str.replace(f"/mnt/{match.group(1)}/", f"{drive_letter}:/").replace("/", "\\")
+                return path_str
+            
+            test_script_path = wsl_to_windows_path(test_script_path)
+            # PYTHONPATHもWindowsパスに変換
+            env["PYTHONPATH"] = wsl_to_windows_path(ROOT_DIR)
+        else:
+            env["PYTHONPATH"] = str(ROOT_DIR)
+        
         command = [
             str(mayapy_path),
-            os.path.join(ROOT_DIR, "tests", "run_maya_tests.py"),
+            test_script_path,
         ]
         if args.test:
             command.extend(["--test", args.test])
 
         print(f"Running integration tests with command: {' '.join(command)}")
+        if "PYTHONPATH" in env:
+            print(f"PYTHONPATH: {env['PYTHONPATH']}")
 
         try:
-            subprocess.check_call(command)
+            subprocess.check_call(command, env=env)
         except subprocess.CalledProcessError as e:
             print(f"統合テストの実行に失敗しました。: {e}")
             sys.exit(1)
