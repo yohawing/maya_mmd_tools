@@ -23,7 +23,21 @@ This repository contains a Python plugin for Autodesk Maya to import MikuMikuDan
 
 ## Usage
 
-(Coming soon: Instructions on how to use the plugin within Maya)
+### Importing MMD Files
+
+1. **PMX/PMD Model Import**:
+   - Go to `File > Import...` in Maya
+   - Select the file type filter for "MMD Files (*.pmx, *.pmd, *.vmd)"
+   - Browse and select your PMX or PMD file
+   - Click "Import"
+
+2. **VMD Animation Import**:
+   - First, import a PMX/PMD model
+   - Select any part of the imported model (or its namespace)
+   - Go to `File > Import...`
+   - Select a VMD file
+   - Click "Import"
+   - The animation will be applied to the selected model
 
 
 ### Running Tests

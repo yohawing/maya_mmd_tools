@@ -101,7 +101,7 @@ class VmdConverter:
 
         # フレーム番号順にソート
         for bone_name in organized:
-            organized[bone_name].sort(key=lambda f: f.frame_no)
+            organized[bone_name].sort(key=lambda f: f.frame_number)
 
         return dict(organized)
 
@@ -116,11 +116,11 @@ class VmdConverter:
         max_frame = 0
         if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
             for frame in vmd_data.bone_frames:
-                max_frame = max(max_frame, frame.frame_no)
+                max_frame = max(max_frame, frame.frame_number)
 
         if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
             for frame in vmd_data.morph_frames:
-                max_frame = max(max_frame, frame.frame_no)
+                max_frame = max(max_frame, frame.frame_number)
 
         # タイムラインの範囲を設定
         if max_frame > 0:
@@ -212,7 +212,7 @@ class VmdConverter:
         #                                   'rotateX', 'rotateY', 'rotateZ'])
 
         for frame in frames:
-            frame_time = float(frame.frame_no)
+            frame_time = float(frame.frame_number)
 
             # 位置の設定（座標系変換を適用）
             tx = frame.position[0]

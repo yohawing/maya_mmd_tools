@@ -52,11 +52,12 @@ class TestPhysicsConverter(MayaTestBase):
     def test_convert_pmd_physics_empty_data(self):
         """空のPMDデータでconvert_pmd_physicsが動作することをテストする。"""
 
-        # 空のPMDデータを作成（rigid_bodiesとjointsを持つオブジェクト）
+        # 空のPMDデータを作成（rigid_bodies、joints、bonesを持つオブジェクト）
         class MockPmdData:
             def __init__(self):
                 self.rigid_bodies = []
                 self.joints = []
+                self.bones = []
 
         pmd_data = MockPmdData()
         bone_joints = {}
@@ -96,7 +97,7 @@ class TestPhysicsConverter(MayaTestBase):
         # 重力方向の属性をチェック
         gravity_direction = cmds.getAttr(f"{solver_name}.gravityDirection")
         self.assertEqual(gravity_direction[0][0], 0)
-        self.assertEqual(gravity_direction[0][1], 1)  # Y方向（下向き）
+        self.assertEqual(gravity_direction[0][1], -1)  # Y軸負方向（下向き）
         self.assertEqual(gravity_direction[0][2], 0)
 
         # 重力の大きさをチェック
