@@ -1,35 +1,15 @@
+#!/usr/bin/env python
+"""テスト実行のメインエントリーポイント。
+
+このスクリプトは引数解析を行い、mayapyを起動してmaya_test_runner.pyに処理を委譲します。
+すべてのテスト（ユニット/統合）はMaya環境内で実行されます。
+"""
 import argparse
 import os
 import platform
 import subprocess
 import sys
-import unittest
 from pathlib import Path
-
-# プロジェクトルートをsys.pathに追加して、testsモジュールをインポートできるようにする
-ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
-# これで、testsモジュールを安全にインポートできる
-from tests.common.custom_test_runner import (
-    CustomTestRunner,
-    enable_windows_ansi_support,
-)
-
-try:
-    import maya.cmds as cmds
-    import maya.standalone
-
-    from tests.run_maya_tests import run_tests_from_commandline
-
-    USING_MAYAPY = True
-except ImportError:
-    USING_MAYAPY = False
-    run_tests_from_commandline = None
-
-
-# enable_windows_ansi_supportは既にimportしているので不要
 
 
 def get_maya_location(maya_version: int) -> Path:
@@ -89,27 +69,35 @@ def mayapy(maya_version: int) -> Path:
     return python_exe
 
 
-def run_tests():
+def wsl_to_windows_path(wsl_path: Path) -> str:
+    """WSLパスをWindowsパスに変換します。
+    
+    Args:
+        wsl_path: 変換するWSLパス
+        
+    Returns:
+        Windows形式のパス文字列
+        
+    Examples:
+        >>> wsl_to_windows_path(Path("/mnt/c/folder"))
+        'C:\\folder'
     """
-    Discovers and runs tests based on command-line arguments.
+    path_str = str(wsl_path)
+    # /mnt/c/ -> C:/, /mnt/d/ -> D:/, etc.
+    import re
+    match = re.match(r"/mnt/([a-z])/", path_str)
+    if match:
+        drive_letter = match.group(1).upper()
+        return path_str.replace(f"/mnt/{match.group(1)}/", f"{drive_letter}:/").replace("/", "\\")
+    return path_str
 
-    This script can run either unit or integration tests, and can filter
-    tests by a specific name provided via the command line.
-    """
 
-    # Helper to get a flat list of all test cases from a suite
-    def get_all_tests(suite_to_flatten):
-        tests = []
-        for test in suite_to_flatten:
-            if isinstance(test, unittest.TestSuite):
-                tests.extend(get_all_tests(test))
-            else:
-                tests.append(test)
-        return tests
-
-    # プロジェクトルートはすでにスクリプトの開始時にsys.pathに追加されています。
-
-    # Set up argument parser
+def main():
+    """メイン関数。引数を解析してmayapyを起動します。"""
+    # プロジェクトルートを取得
+    ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
+    
+    # 引数解析
     parser = argparse.ArgumentParser(description="Run tests for the MMD Tools project.")
     parser.add_argument(
         "--type",
@@ -128,134 +116,50 @@ def run_tests():
         "--maya",
         type=int,
         default=2024,
-        help="The version of Maya to use for integration tests. Defaults to 2024.",
+        help="The version of Maya to use. Defaults to 2024.",
     )
     args = parser.parse_args()
 
-    # Discover tests based on the specified type
-    test_loader = unittest.TestLoader()
-    test_dir = os.path.dirname(__file__)
-    start_dir = os.path.join(test_dir, args.type)
-
-    print(f"Discovering '{args.type}' tests in '{start_dir}'...")
-
-    # Discover all tests in the specified directory
-    suite = test_loader.discover(start_dir, pattern="test_*.py")
-
-    if suite.countTestCases() == 0:
-        print(f"No tests found in '{start_dir}'.")
+    # mayapyのパスを取得
+    mayapy_path = mayapy(args.maya)
+    if not mayapy_path.exists():
+        print(f"Error: mayapy executable not found at {mayapy_path}.")
         sys.exit(1)
 
-    # If a specific test name is provided, filter the suite
+    # 環境変数を設定
+    env = os.environ.copy()
+    env["MAYA_SCRIPT_PATH"] = ""
+    env["MAYA_MODULE_PATH"] = str(ROOT_DIR)
+    
+    # テストランナースクリプトのパス
+    test_runner_path = ROOT_DIR / "tests" / "maya_test_runner.py"
+    
+    # WSL環境でWindows版Mayaを使用する場合はパスを変換
+    if str(mayapy_path).startswith("/mnt/"):
+        test_runner_path = wsl_to_windows_path(test_runner_path)
+        env["PYTHONPATH"] = wsl_to_windows_path(ROOT_DIR)
+    else:
+        env["PYTHONPATH"] = str(ROOT_DIR)
+    
+    # コマンドを構築
+    command = [
+        str(mayapy_path),
+        str(test_runner_path),
+        "--type", args.type,
+    ]
     if args.test:
-        filtered_suite = unittest.TestSuite()
+        command.extend(["--test", args.test])
 
-        all_tests = get_all_tests(suite)
-
-        for test_case in all_tests:
-            if args.test in test_case.id():
-                filtered_suite.addTest(test_case)
-
-        suite = filtered_suite
-
-    # Check if any tests are left after filtering
-    if suite.countTestCases() == 0:
-        print(
-            f"Error: No tests found matching '--test {args.test}' in the '{args.type}' suite."
-        )
-        # To help the user, list all available tests of that type
-        print("\nAvailable tests in this suite:")
-        all_tests_in_suite = get_all_tests(
-            test_loader.discover(start_dir, pattern="test_*.py")
-        )
-        for test_case in all_tests_in_suite:
-            print(f"  - {test_case.id()}")
+    print(f"Running {args.type} tests with Maya {args.maya}...")
+    print(f"Command: {' '.join(command)}")
+    
+    # mayapyでテストランナーを実行
+    try:
+        subprocess.check_call(command, env=env)
+    except subprocess.CalledProcessError as e:
+        print(f"テストの実行に失敗しました: {e}")
         sys.exit(1)
-
-    # Run the final test suite
-    print(f"Running {suite.countTestCases()} test(s)...")
-
-    if args.type == "unit":
-        # カラー対応のテストランナーを使用
-        runner = CustomTestRunner(verbosity=2)
-        result = runner.run(suite)
-        # 失敗時のみ追加情報を表示（カラーテストランナーでは既に詳細を表示済み）
-        if not result.wasSuccessful():
-            sys.exit(1)
-            pass
-    elif args.type == "integration":
-        # 統合テストはMaya環境で実行する必要があるため、mayapyを使用して実行します。
-
-        os.environ["PYTHONPATH"] = str(ROOT_DIR)
-        os.environ["MAYA_SCRIPT_PATH"] = ""
-        os.environ["MAYA_MODULE_PATH"] = str(ROOT_DIR)
-        # Run the tests using mayapy
-        # os.environ['MAYA_LOCATION'] = str(get_maya_location(maya_version))
-
-        # すでにmayapyで実行している場合は、直接スクリプトを実行します。
-        if USING_MAYAPY and run_tests_from_commandline:
-            # sys.argvを適切に設定して、run_maya_tests.pyで引数を取得できるようにする
-            original_argv = sys.argv[:]
-            if args.test:
-                sys.argv = [sys.argv[0], "--test", args.test]
-            else:
-                sys.argv = [sys.argv[0]]
-
-            try:
-                run_tests_from_commandline()
-            finally:
-                sys.argv = original_argv
-            return
-
-        maya_version = args.maya
-        mayapy_path = mayapy(maya_version)
-        if not mayapy_path.exists():
-            print(f"Error: mayapy executable not found at {mayapy_path}.")
-            sys.exit(1)
-
-        # WSL環境でWindows版Mayaを使用する場合はパスを変換
-        test_script_path = os.path.join(ROOT_DIR, "tests", "run_maya_tests.py")
-        env = os.environ.copy()
-        
-        if str(mayapy_path).startswith("/mnt/"):
-            # WSLパスをWindowsパスに変換する関数
-            def wsl_to_windows_path(wsl_path):
-                path_str = str(wsl_path)
-                # /mnt/c/ -> C:/, /mnt/d/ -> D:/, etc.
-                import re
-                match = re.match(r"/mnt/([a-z])/", path_str)
-                if match:
-                    drive_letter = match.group(1).upper()
-                    return path_str.replace(f"/mnt/{match.group(1)}/", f"{drive_letter}:/").replace("/", "\\")
-                return path_str
-            
-            test_script_path = wsl_to_windows_path(test_script_path)
-            # PYTHONPATHもWindowsパスに変換
-            env["PYTHONPATH"] = wsl_to_windows_path(ROOT_DIR)
-        else:
-            env["PYTHONPATH"] = str(ROOT_DIR)
-        
-        command = [
-            str(mayapy_path),
-            test_script_path,
-        ]
-        if args.test:
-            command.extend(["--test", args.test])
-
-        print(f"Running integration tests with command: {' '.join(command)}")
-        if "PYTHONPATH" in env:
-            print(f"PYTHONPATH: {env['PYTHONPATH']}")
-
-        try:
-            subprocess.check_call(command, env=env)
-        except subprocess.CalledProcessError as e:
-            print(f"統合テストの実行に失敗しました。: {e}")
-            sys.exit(1)
-
-        pass
 
 
 if __name__ == "__main__":
-    # Windows環境でもANSIカラーコードを有効化
-    enable_windows_ansi_support()
-    run_tests()
+    main()

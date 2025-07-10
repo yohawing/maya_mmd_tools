@@ -1,21 +1,33 @@
 # テストドキュメント
 
-## 1. 概要
+## 概要
 
 本ドキュメントは、Autodesk Maya 用 MikuMikuDance (MMD) ファイルインポートプラグインのテスト戦略について記述します。プラグインの各コンポーネント（MMD ファイルパーサー、Maya データコンバーター、UI）の品質と正確性を保証することを目的とします。
 
-## 2. テスト戦略
+## テスト実行システム
 
-## テスト戦略
+### アーキテクチャ
 
-### テスト実行システム
+プロジェクトでは、すべてのテスト（ユニット/統合）をMaya環境内で実行する統一されたテストシステムを採用しています：
 
-プロジェクトでは、`tests/run_tests.py`を使用してテストを実行します。このスクリプトは以下の機能を提供します：
+```
+tests/
+├── common/                  # テスト共通ユーティリティ
+│   ├── test_base.py        # 基本テストクラス
+│   ├── maya_test_base.py   # Maya統合テスト基本クラス
+│   └── custom_test_runner.py # カスタムテストランナー
+├── unit/                    # ユニットテスト
+├── integration/             # 統合テスト
+├── run_tests.py            # メインエントリーポイント
+└── maya_test_runner.py     # Maya環境内でのテスト実行
+```
 
-- **テストタイプの指定**: ユニットテスト（`--type unit`）と統合テスト（`--type integration`）を選択可能
-- **テストフィルタリング**: 特定のテストモジュール、クラス、メソッドを指定して実行可能
-- **Maya環境の自動処理**: 統合テストでは自動的にmayapyを使用してMaya環境で実行
-- **柔軟なマッチング**: 完全なテスト名と部分的なパターンマッチングの両方に対応
+### 特徴
+
+- **統一された実行環境**: すべてのテストがmayapy経由で実行されるため、環境差異による問題を排除
+- **シンプルな構造**: run_tests.pyが引数解析とmayapy起動のみを担当し、実際のテスト実行はmaya_test_runner.pyが処理
+- **柔軟なテストフィルタリング**: 特定のテストモジュール、クラス、メソッドを指定して実行可能
+- **カラー対応出力**: テスト結果が色分けされて表示され、視認性が向上
 
 ### 基本的なテスト実行方法
 
@@ -35,19 +47,13 @@ python tests/run_tests.py --type integration
 # 特定のテストモジュールを実行
 python tests/run_tests.py --type unit --test test_pmd_parser
 python tests/run_tests.py --type integration --test test_maya_utils
+
+# 特定のテストクラスを実行
+python tests/run_tests.py --type unit --test TestPmdParser
+
+# 特定のテストメソッドを実行
+python tests/run_tests.py --type unit --test test_parse_pmd_header_success
 ```
-
-
-run_tests.pyは以下の機能を持ちます
-
-- すべてのテストの実行
-  - `--type all` オプションを指定して実行
-- ユニットテストの実行：
-  - `--type unit` オプションを指定して実行
-- 統合テストの実行：
-  - `--type integration` オプションを指定して実行
-- 特定のテストケースの実行：
-  - `--test <test_case_name>` オプションを指定して実行
 
 ### 高度なオプション
 
@@ -107,12 +113,28 @@ Error: mayapy executable not found at C:\Program Files\Autodesk\Maya2024\bin\may
 python tests/run_tests.py --type integration --maya 2023
 ```
 
-## 4. テストの実行環境
+## テストの実行環境
+
+### 必要な環境
 
 *   **Maya:** テストは特定の Maya バージョン（例: Maya 2023, 2024）で実行されることを想定します。
 *   **Python:** Maya にバンドルされている Python 環境 (`mayapy.exe`) を使用します。
+*   **OS:** Windows、macOS、Linux（WSL環境でのWindows版Mayaの実行もサポート）
 
-## 5. テストの自動化 (今後の検討事項)
+### WSL環境での実行
 
-*   Maya のバッチモードや `mayapy.exe` を利用した自動テストフレームワークの導入。
-*   CI/CD パイプラインへのテスト組み込み。
+WSL環境でWindows版のMayaを使用する場合、run_tests.pyが自動的にパスを変換します：
+
+```bash
+# WSL環境から実行
+python tests/run_tests.py --type unit
+
+# 自動的にWindowsパスに変換されて実行される
+# /mnt/c/Program Files/Autodesk/Maya2024/bin/mayapy.exe
+```
+
+## テストの自動化 (今後の検討事項)
+
+*   CI/CD パイプラインへのテスト組み込み
+*   テストカバレッジの測定と可視化
+*   パフォーマンステストの追加

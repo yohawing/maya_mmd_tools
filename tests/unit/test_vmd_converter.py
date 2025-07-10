@@ -34,15 +34,15 @@ class TestVmdConverter(unittest.TestCase):
         # モックフレームを作成
         mock_frame1 = Mock()
         mock_frame1.bone_name = "bone1"
-        mock_frame1.frame_no = 10
+        mock_frame1.frame_number = 10
 
         mock_frame2 = Mock()
         mock_frame2.bone_name = "bone1"
-        mock_frame2.frame_no = 5
+        mock_frame2.frame_number = 5
 
         mock_frame3 = Mock()
         mock_frame3.bone_name = "bone2"
-        mock_frame3.frame_no = 0
+        mock_frame3.frame_number = 0
 
         frames_list = [mock_frame1, mock_frame2, mock_frame3]
 
@@ -56,8 +56,8 @@ class TestVmdConverter(unittest.TestCase):
         self.assertEqual(len(result["bone2"]), 1)
 
         # ソート順を確認
-        self.assertEqual(result["bone1"][0].frame_no, 5)
-        self.assertEqual(result["bone1"][1].frame_no, 10)
+        self.assertEqual(result["bone1"][0].frame_number, 5)
+        self.assertEqual(result["bone1"][1].frame_number, 10)
 
     def test_sanitize_name(self):
         """名前のサニタイズテスト"""
