@@ -192,3 +192,71 @@ class TestVmdImporter(MayaTestBase):
             (hasattr(parser, 'morph_frames') and parser.morph_frames)
         )
         self.assertTrue(has_animation, "アニメーションデータが読み込まれていません")
+        
+    def test_pmx_model_with_vmd_animation(self):
+        """実際のPMXモデルにVMDアニメーションを適用する統合テスト"""
+        # PMXファイルをインポート
+        pmx_path = os.path.join(self.test_data_dir, "Lumine", "Lumine.pmx")
+        
+        if not os.path.exists(pmx_path):
+            self.skipTest("テスト用PMXファイルが見つかりません")
+            
+        # PMXモデルをインポート
+        pmx_result = import_mmd_file(pmx_path)
+        self.assertTrue(pmx_result, "PMXファイルのインポートに失敗しました")
+        
+        # インポートされたジョイントを確認
+        joints = cmds.ls(type="joint")
+        self.assertGreater(len(joints), 0, "ジョイントがインポートされていません")
+        
+        # pmx_bone_name属性を持つジョイントを探す
+        joints_with_bone_name = []
+        for joint in joints:
+            if cmds.attributeQuery("pmx_bone_name", node=joint, exists=True):
+                bone_name = cmds.getAttr(f"{joint}.pmx_bone_name")
+                joints_with_bone_name.append((joint, bone_name))
+                
+        self.assertGreater(len(joints_with_bone_name), 0, 
+                          "pmx_bone_name属性を持つジョイントが見つかりません")
+        
+        # VMDファイルのパスを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        
+        if not vmd_files:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        
+        # 現在のフレーム数を記録
+        initial_min = cmds.playbackOptions(query=True, minTime=True)
+        initial_max = cmds.playbackOptions(query=True, maxTime=True)
+        
+        # VMDアニメーションをインポート
+        vmd_result = import_mmd_file(vmd_path)
+        self.assertTrue(vmd_result, "VMDファイルのインポートに失敗しました")
+        
+        # タイムラインが更新されたか確認
+        new_max = cmds.playbackOptions(query=True, maxTime=True)
+        self.assertGreater(new_max, initial_max, 
+                          "タイムラインが更新されていません")
+        
+        # アニメーションが適用されたジョイントを確認
+        animated_joints = []
+        for joint, bone_name in joints_with_bone_name:
+            # translateとrotateの各軸でキーフレームがあるか確認
+            for attr in ["translateX", "translateY", "translateZ", 
+                        "rotateX", "rotateY", "rotateZ"]:
+                keyframes = cmds.keyframe(joint, attribute=attr, query=True)
+                if keyframes:
+                    animated_joints.append((joint, bone_name))
+                    break
+                    
+        # 少なくとも1つのジョイントにアニメーションが適用されていることを確認
+        self.assertGreater(len(animated_joints), 0, 
+                          "どのジョイントにもアニメーションが適用されていません")
+        
+        # アニメーションが適用されたジョイントの情報を出力（デバッグ用）
+        print(f"\nアニメーションが適用されたジョイント数: {len(animated_joints)}/{len(joints_with_bone_name)}")
+        if len(animated_joints) < 10:  # 少数の場合は詳細を表示
+            for joint, bone_name in animated_joints[:5]:
+                print(f"  - {joint} (ボーン名: {bone_name})")
