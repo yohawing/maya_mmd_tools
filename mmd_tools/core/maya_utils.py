@@ -254,46 +254,173 @@ def set_custom_attributes(object_name, attributes):
         attributes (dict): 属性名と値の辞書。
     """
     for attr_name, attr_value in attributes.items():
-        # https://help.autodesk.com/cloudhelp/2023/JPN/Maya-Tech-Docs/CommandsPython/addAttr.html
-        # データ型を自動判別
-        which = None
-        attr_type = None
-        if isinstance(attr_value, int):
-            attr_type = "long"
-            which = "attributeType"
-        elif isinstance(attr_value, float):
-            attr_type = "float"
-            which = "attributeType"
-        elif isinstance(attr_value, bool):
-            attr_type = "bool"
-            which = "attributeType"
-        elif isinstance(attr_value, bytes):
-            attr_type = "string"
-            attr_value = attr_value.decode("utf-8")
-            which = "dataType"
-        elif isinstance(attr_value, str):
-            attr_type = "string"
-            which = "dataType"
-        elif isinstance(attr_value, list):
-            if all(isinstance(i, float) for i in attr_value):
-                attr_type = "doubleArray"
-                which = "dataType"
-            elif all(isinstance(i, int) for i in attr_value):
-                attr_type = "longArray"
-                which = "dataType"
-            else:
-                print(
-                    f"Unsupported list type for attribute '{attr_name}' on '{object_name}': {attr_value}"
-                )
-                continue
-
+        attr_type = type(attr_value).__name__
         if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
-            if which == "attributeType":
-                cmds.addAttr(object_name, longName=attr_name, attributeType=attr_type)
-                cmds.setAttr(f"{object_name}.{attr_name}", attr_value)
-            if which == "dataType":
-                cmds.addAttr(object_name, longName=attr_name, dataType=attr_type)
-                cmds.setAttr(f"{object_name}.{attr_name}", attr_value, type=attr_type)
+            if attr_type in ["int", "float", "bool"]:
+                add_numeric_attribute(object_name, attr_name, attr_type)
+                set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
+            if attr_type in ["str", "bytes"]:
+                add_typed_attribute(object_name, attr_name, attr_type)
+                set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
+            if attr_type in ["list", "tuple"]:
+                # リストやタプルの場合は型を指定
+                if len(attr_value) == 3 and all(
+                    isinstance(x, float) for x in attr_value
+                ):
+                    attr_type = "double3"
+                elif len(attr_value) == 3 and all(
+                    isinstance(x, int) for x in attr_value
+                ):
+                    attr_type = "long3"
+                elif all(isinstance(x, float) for x in attr_value):
+                    attr_type = "doubleArray"
+                elif all(isinstance(x, int) for x in attr_value):
+                    attr_type = "longArray"
+                    
+                add_typed_attribute(object_name, attr_name, attr_type)
+                set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
+
+
+def add_numeric_attribute(object_name, attr_name, attr_type):
+    """
+    OpenMaya API 2.0を使用して数値型のアトリビュートを追加します。
+
+    Args:
+        object_name (str): オブジェクト名
+        attr_name (str): アトリビュート名
+        attr_type (str): アトリビュートタイプ (long, float, bool)
+    """
+    try:
+        # オブジェクトのMObjectを取得
+        selection_list = om.MSelectionList()
+        selection_list.add(object_name)
+        node_obj = selection_list.getDependNode(0)
+        depend_fn = om.MFnDependencyNode(node_obj)
+
+        # 数値アトリビュートを作成
+        attr = om.MFnNumericAttribute()
+
+        if attr_type == "int":
+            attr_obj = attr.create(attr_name, attr_name, om.MFnNumericData.kInt)
+        elif attr_type == "float":
+            attr_obj = attr.create(attr_name, attr_name, om.MFnNumericData.kFloat)
+        elif attr_type == "bool":
+            attr_obj = attr.create(attr_name, attr_name, om.MFnNumericData.kBoolean)
+        else:
+            raise ValueError(f"Unsupported numeric attribute type: {attr_type}")
+
+        # アトリビュートを追加
+        depend_fn.addAttribute(attr_obj)
+
+    except Exception as e:
+        logger.error(
+            f"Failed to add numeric attribute '{attr_name}' to '{object_name}': {e}"
+        )
+
+
+def add_typed_attribute(object_name, attr_name, attr_type):
+    """
+    OpenMaya API 2.0を使用して型付きアトリビュートを追加します。
+
+    Args:
+        object_name (str): オブジェクト名
+        attr_name (str): アトリビュート名
+        attr_type (str): アトリビュートタイプ (string, double3, long3, doubleArray, longArray)
+    """
+    try:
+        # オブジェクトのMObjectを取得
+        selection_list = om.MSelectionList()
+        selection_list.add(object_name)
+        node_obj = selection_list.getDependNode(0)
+        depend_fn = om.MFnDependencyNode(node_obj)
+
+        if attr_type == "str":
+            # 文字列アトリビュート
+            attr = om.MFnTypedAttribute()
+            attr_obj = attr.create(attr_name, attr_name, om.MFnData.kString)
+        elif attr_type == "double3":
+            # 3つのdouble値を持つアトリビュート
+            attr = om.MFnNumericAttribute()
+            attr_obj = attr.create(attr_name, attr_name, om.MFnNumericData.k3Double)
+        elif attr_type == "long3":
+            # 3つのint値を持つアトリビュート
+            attr = om.MFnNumericAttribute()
+            attr_obj = attr.create(attr_name, attr_name, om.MFnNumericData.k3Int)
+        elif attr_type == "doubleArray":
+            # double配列アトリビュート
+            attr = om.MFnTypedAttribute()
+            attr_obj = attr.create(attr_name, attr_name, om.MFnData.kDoubleArray)
+        elif attr_type == "longArray":
+            # long配列アトリビュート
+            attr = om.MFnTypedAttribute()
+            attr_obj = attr.create(attr_name, attr_name, om.MFnData.kIntArray)
+        else:
+            raise ValueError(f"Unsupported typed attribute type: {attr_type}")
+
+        # アトリビュートを追加
+        depend_fn.addAttribute(attr_obj)
+
+    except Exception as e:
+        logger.error(
+            f"Failed to add typed attribute '{attr_name}' to '{object_name}': {e}"
+        )
+
+def set_attribute_value_api(object_name, attr_name, attr_value, attr_type):
+    """
+    OpenMaya API 2.0を使用してアトリビュート値を設定します。
+    
+    Args:
+        object_name (str): オブジェクト名
+        attr_name (str): アトリビュート名
+        attr_value: 設定する値
+        attr_type (str, optional): アトリビュートタイプ（配列の場合に必要）
+    """
+    try:
+        # オブジェクトのMObjectを取得
+        selection_list = om.MSelectionList()
+        selection_list.add(object_name)
+        node_obj = selection_list.getDependNode(0)
+        depend_fn = om.MFnDependencyNode(node_obj)
+        
+        # プラグを取得
+        plug = depend_fn.findPlug(attr_name, False)
+        
+        # 値の型に応じて設定
+        if attr_type == "bool":
+            plug.setBool(attr_value)
+        elif attr_type == "int":
+            plug.setInt(attr_value)
+        elif attr_type == "float":
+            plug.setFloat(attr_value)
+        elif attr_type == "str":
+            plug.setString(attr_value)
+        elif attr_type == "double3" and len(attr_value) == 3:
+            # 3要素のベクトル値
+            for i, value in enumerate(attr_value):
+                child_plug = plug.child(i)
+                child_plug.setDouble(value)
+        elif attr_type == "long3" and len(attr_value) == 3:
+            # 3要素の整数値
+            for i, value in enumerate(attr_value):
+                child_plug = plug.child(i)
+                child_plug.setInt(value)
+        elif attr_type == "doubleArray":
+            double_array_data = om.MFnDoubleArrayData()
+            double_array_obj = double_array_data.create()
+            double_array = om.MDoubleArray(attr_value)
+            double_array_data.set(double_array)
+            plug.setMObject(double_array_obj)
+        elif attr_type == "longArray":
+            int_array_data = om.MFnIntArrayData()
+            int_array_obj = int_array_data.create()
+            int_array = om.MIntArray(attr_value)
+            int_array_data.set(int_array)
+            plug.setMObject(int_array_obj)
+        else:
+            logger.warning(f"Unsupported attribute value type: {type(attr_value)}")
+            
+    except Exception as e:
+        logger.error(f"Failed to set attribute value '{attr_name}' on '{object_name}': {e}")
 
 
 def apply_vertex_weights(
@@ -329,8 +456,6 @@ def apply_vertex_weights(
     shape_dag_path = mesh_selection_list.getDagPath(0)
     mesh_fn = om.MFnMesh(shape_dag_path)
     vertex_count = mesh_fn.numVertices
-
-    print(f"Applying vertex weights to {vertex_count} vertices...")
 
     # 全頂点のコンポーネントを作成
     vertex_component = om.MFnSingleIndexedComponent()

@@ -4,15 +4,13 @@ from maya import cmds
 def mmd_tools_setup():
     print("Maya MMD Tools: Initializing...")
 
-    # Load the plugin
-    # cmds.loadPlugin("plugin_main.py") # This will be handled by .mod file
-
-    # Create a custom menu for MMD Tools
-    import mmd_tools.ui as mmd_ui
-
-    # バッチモード（GUIなし）の場合はメニューを作成しない
-    if not cmds.about(batch=True):
-        mmd_ui.create_mmd_tools_menu()
+    # プラグインを自動読み込み（.modファイルで管理）
+    try:
+        if not cmds.pluginInfo("plugin_main.py", query=True, loaded=True):
+            cmds.loadPlugin("plugin_main.py")
+            print("MMD Tools: Plugin loaded successfully.")
+    except Exception as e:
+        print(f"MMD Tools: Failed to load plugin: {e}")
 
     print("MMD Tools: userSetup initialized.")
 

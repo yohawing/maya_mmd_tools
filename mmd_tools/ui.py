@@ -278,3 +278,18 @@ def create_mmd_tools_menu():
     # インポートメニューアイテム
     # コマンドはUIのcreate_main_windowメソッドを呼び出す
     cmds.menuItem('MMDTools_IO', parent='MMDToolsMenu', label='Import/Export', command=lambda *args: _mmd_tools_ui_instance.create_main_window())
+
+def install_mmd_menu():
+    """プラグイン読み込み時にMMDメニューをインストール"""
+    create_mmd_tools_menu()
+
+
+def uninstall_mmd_menu():
+    """プラグイン終了時にMMDメニューをアンインストール"""
+    if cmds.menu('MMDToolsMenu', exists=True):
+        cmds.deleteUI('MMDToolsMenu')
+    
+    global _mmd_tools_ui_instance
+    if _mmd_tools_ui_instance is not None:
+        _mmd_tools_ui_instance.close()
+        _mmd_tools_ui_instance = None

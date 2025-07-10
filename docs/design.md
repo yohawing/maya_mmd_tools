@@ -108,6 +108,29 @@
 - **モーフ:** Mayaの`blendShape`にマッピング。
 - **物理演算:** Mayaの`rigidBody`と`constraint`にマッピング。
 
+### Mayaシーンの構成
+
+以下の構成に従って、Mayaシーンを整理します。
+
+```
+CharacterName_Grp
+├── Geometry_Grp (またはModel_Grp)
+│   ├── CharacterName_Mesh
+├── Skeleton_Grp (またはJoints_Grp)
+│   ├── master
+│   ├── manipulation_center
+├── Controls_Grp (またはRig_Grp)
+├── Simulation_Grp
+│   ├── CharacterName_nucleus
+│   ├── Clothing_Grp
+│   ├── Hair_Grp
+│   └── Collision_Grp
+└── Extra_Grp (補助オブジェクト)
+    ├── Locators_Grp
+    ├── Constraints_Grp
+    └── Utility_Nodes_Grp
+```
+
 ## 日本語文字列変換設計
 
 ### 課題
@@ -163,48 +186,6 @@ class MayaJapaneseConverter:
 - VMDインポート時のターゲット名照合
 - エクスポート時の日本語名復元
 
-## テスト計画
-
-### 7.1. ユニットテスト
-- `tests/unit`ディレクトリに各モジュールの単体テストを配置。
-- ファイルパーサー、データコンバーターのロジックを重点的にテストする。
-
-### 7.2. 結合テスト
-- 実際にMMDモデル/モーションをインポート/エクスポートし、データが破損しないかを確認。
-- Mayaでの見た目や動作が、MMD上でのそれと一致することを検証。
-
-### 7.3. テスト実行
-- `mayapy.exe`を使用してMaya環境内でテストを実行する。
-- 詳細は `docs/testing.md` を参照。
-
-## 8. インストールと配布
-
-### 8.1. インストール手順
-1.  `maya_mmd_tools.mod` ファイルをMayaの `modules` ディレクトリにコピー。
-2.  `userSetup.py` をMayaの `scripts` ディレクトリにコピー。
-3.  Mayaを再起動すると、「MMD Tools」メニューが表示される。
-
-### 8.2. 配布
-- GitHubリリースページにて、zipファイル形式で配布。
-
-## 9. 機能実装の優先順位（ロードマップ）
-
-1.  **フェーズ1 (MVP):**
-    - PMXモデルのインポート（メッシュ、材質、ボーン、スキニング）
-    - VMDモーションのインポート（ボーン、モーフ）
-    - 基本的なUI（ファイル選択、インポート実行）
-2.  **フェーズ2:**
-    - PMXエクスポート機能
-    - PMDフォーマットのインポート/エクスポート対応
-    - モーフ機能の強化（グループモーフ等）
-3.  **フェーズ3:**
-    - 物理演算（剛体、ジョイント）のインポート/エクスポート
-    - カメラ、照明アニメーションの対応
-    - VPDポーズのインポート/エクスポート
-4.  **フェーズ4:**
-    - モデル編集ユーティリティ機能
-    - UI/UXの改善と安定化
-    - パフォーマンス最適化
 
 ## 参考資料
 

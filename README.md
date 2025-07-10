@@ -25,19 +25,50 @@ This repository contains a Python plugin for Autodesk Maya to import MikuMikuDan
 
 ### Importing MMD Files
 
+Maya MMD Toolsプラグインは、MayaのネイティブなFile > Import機能と統合されています。
+
 1. **PMX/PMD Model Import**:
-   - Go to `File > Import...` in Maya
-   - Select the file type filter for "MMD Files (*.pmx, *.pmd, *.vmd)"
-   - Browse and select your PMX or PMD file
-   - Click "Import"
+   - Mayaで `File > Import...` を選択
+   - ファイルタイプフィルターで "MMD Model (*.pmx;*.pmd)" を選択
+   - PMXまたはPMDファイルを選択
+   - "Import" をクリック
+   - モデルがMayaシーンにインポートされます
 
 2. **VMD Animation Import**:
-   - First, import a PMX/PMD model
-   - Select any part of the imported model (or its namespace)
-   - Go to `File > Import...`
-   - Select a VMD file
-   - Click "Import"
-   - The animation will be applied to the selected model
+   - Mayaで `File > Import...` を選択
+   - ファイルタイプフィルターで "MMD Motion (*.vmd)" を選択
+   - VMDファイルを選択
+   - "Import" をクリック
+   - アニメーションがシーン内の対応するモデルに適用されます
+
+3. **MMD Tools UI**:
+   - メニューバーの `MMD Tools > Import/Export` からも利用可能
+   - より詳細なインポート/エクスポートオプションを提供
+
+### Exporting MMD Files
+
+1. **PMX/PMD Model Export**:
+   - Mayaでエクスポートしたいモデルを選択
+   - `File > Export Selection...` または `File > Export All...` を選択
+   - ファイルタイプで "MMD Model" を選択
+   - ファイル名に .pmx または .pmd 拡張子を指定
+   - "Export" をクリック
+
+2. **VMD Animation Export**:
+   - アニメーションが適用されたモデルを選択
+   - `File > Export Selection...` を選択
+   - ファイルタイプで "MMD Motion" を選択
+   - ファイル名に .vmd 拡張子を指定
+   - "Export" をクリック
+
+### Testing the Plugin
+
+プラグインが正しく動作しているかテストするには：
+
+```python
+# Maya Script Editor で実行
+exec(open("/path/to/maya_mmd_tools/test_plugin.py").read())
+```
 
 
 ### Running Tests

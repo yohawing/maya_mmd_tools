@@ -19,7 +19,7 @@
     },
     "physics": {
       "_comment": "Settings for importing physics elements like rigid bodies and joints",
-      "import_physics": true,
+      "import_physics": false,
       "create_rigid_bodies": true,
       "create_physics_joints": true,
       "group_physics_objects": true

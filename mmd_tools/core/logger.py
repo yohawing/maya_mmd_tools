@@ -124,10 +124,10 @@ class MayaLogger:
         #     self._logger.addHandler(maya_handler)
 
         # Maya Dialogハンドラー（ERROR/CRITICALレベル用）
-        if is_maya_environment():
-            dialog_handler = MayaDialogHandler(level=logging.ERROR)
-            dialog_handler.setFormatter(standard_formatter)
-            self._logger.addHandler(dialog_handler)
+        # if is_maya_environment():
+        #     dialog_handler = MayaDialogHandler(level=logging.ERROR)
+        #     dialog_handler.setFormatter(standard_formatter)
+        #     self._logger.addHandler(dialog_handler)
 
         # ログレベルを設定から更新
         level_str = settings.get("logging.level", "INFO")

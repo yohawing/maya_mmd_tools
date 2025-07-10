@@ -148,4 +148,4 @@ class PmxBone:
         Returns:
             int: ボーンのフラグ。
         """
-        return int(self.bone_flag & PmxBoneFlag)
+        return self.bone_flag & PmxBoneFlag
