@@ -15,125 +15,6 @@ https://github.com/yohawing/maya_mmd_tools
 *   Python 3.7以降
 *   Windows 11
 
-### ディレクトリ構成
-
-ディレクトリに変更があった場合は、以下を編集してください。
-
-```
-F:/Develop/maya_mmd_tools/
-├── maya_mmd_tools.mod
-├── userSetup.py
-├── pyproject.toml
-├── mmd_tools/
-│   ├── __init__.py
-│   ├── plugin_main.py
-│   ├── settings.py
-│   ├── ui.py
-│   ├── config/
-│   │   ├── __init__.py
-│   │   ├── default_settings.json
-│   │   └── unicode_dictionary.json
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── exceptions.py
-│   │   ├── maya_utils.py
-│   │   ├── mmd_parser.py
-│   │   ├── pmd_parser.py
-│   │   ├── pmx_parser.py
-│   │   ├── unicode_converter.py
-│   │   ├── utils.py
-│   │   ├── vmd_parser.py
-│   │   ├── pmd_data/
-│   │   │   ├── __init__.py
-│   │   │   ├── header.py
-│   │   │   ├── vertex.py
-│   │   │   ├── face.py
-│   │   │   ├── material.py
-│   │   │   ├── bone.py
-│   │   │   ├── ik.py
-│   │   │   ├── morph.py
-│   │   │   ├── display_frame.py
-│   │   │   ├── rigid_body.py
-│   │   │   └── joint.py
-│   │   ├── pmx_data/
-│   │   │   ├── __init__.py
-│   │   │   ├── header.py
-│   │   │   ├── vertex.py
-│   │   │   ├── face.py
-│   │   │   ├── material.py
-│   │   │   ├── bone.py
-│   │   │   ├── ik.py
-│   │   │   ├── ik_link.py
-│   │   │   ├── morph.py
-│   │   │   ├── display_frame.py
-│   │   │   ├── rigid_body.py
-│   │   │   ├── joint.py
-│   │   │   └── soft_body.py
-│   │   └── vmd_data/
-│   │       ├── __init__.py
-│   │       ├── header.py
-│   │       ├── bone_frame.py
-│   │       ├── morph_frame.py
-│   │       ├── camera_frame.py
-│   │       ├── light_frame.py
-│   │       ├── shadow_frame.py
-│   │       └── ik_show_hide_frame.py
-│   ├── converters/
-│   │   ├── __init__.py
-│   │   ├── mesh_converter.py
-│   │   ├── bone_converter.py
-│   │   ├── morph_converter.py
-│   │   ├── physics_converter.py
-│   │   └── animation_converter.py
-│   └── io/
-│       ├── __init__.py
-│       ├── mmd_importer.py
-│       ├── pmd_importer.py
-│       ├── pmd_exporter.py
-│       ├── pmx_importer.py
-│       ├── pmx_exporter.py
-│       ├── vmd_importer.py
-│       └── vmd_exporter.py
-├── resources/
-│   ├── icons/
-│   └── ui/
-├── tests/
-│   ├── __init__.py
-│   ├── run_tests.py
-│   ├── run_maya_tests.py
-│   ├── common/
-│   │   ├── __init__.py
-│   │   ├── test_base.py
-│   │   ├── custom_test_runner.py
-│   │   └── maya_test_base.py
-│   ├── data/
-│   ├── unit/
-│   │   ├── __init__.py
-│   │   ├── test_mmd_parser.py
-│   │   ├── test_pmd_parser.py
-│   │   ├── test_pmx_parser.py
-│   │   ├── test_unicode_converter.py
-│   │   └── test_vmd_parser.py
-│   └── integration/
-│       ├── __init__.py
-│       ├── test_maya_utils.py
-│       ├── test_mesh_converter.py
-│       ├── test_bone_converter.py
-│       ├── test_morph_converter.py
-│       ├── test_physics_converter.py
-│       ├── test_animation_converter.py
-│       ├── test_pmd_exporter.py
-│       ├── test_pmx_exporter.py
-│       └── test_vmd_exporter.py
-└── docs/
-    ├── design.md
-    ├── testing.md
-    ├── project_management.md
-    ├── settings.md
-    ├── unicode_dictionary_guide.md
-    └── pmx_spec.md
-```
-
 ## ファイルの補足説明
 
 
@@ -155,6 +36,7 @@ docsディレクトリには、以下のファイルがあります。
 - `settings.md`: プロジェクトの設定方法や利用可能な設定項目
 - `unicode_dictionary_guide.md`: 日本語から英語への翻訳辞書の構造と使用方法
 - `pmx_spec.md`: PMXファイルフォーマットの仕様
+- `pmd_spec.md`: PMDファイルフォーマットの仕様
 
 ## プロジェクトマネージメント
 
@@ -183,11 +65,6 @@ python tests/run_tests.py --type unit
 # 特定のテストモジュールを実行
 python tests/run_tests.py --type unit --test test_pmd_parser
 
-# 特定のテストクラスを実行
-python tests/run_tests.py --type unit --test test_pmd_parser.TestPmdParser
-
-# 特定のテストメソッドを実行
-python tests/run_tests.py --type unit --test test_pmd_parser.TestPmdParser.test_parse_header
 ```
 
 ### 統合テスト
@@ -197,33 +74,12 @@ python tests/run_tests.py --type integration
 
 # 特定のテストモジュールを実行
 python tests/run_tests.py --type integration --test test_maya_utils
-
-# 特定のテストクラスを実行
-python tests/run_tests.py --type integration --test test_maya_utils.TestMayaUtils
-
-# 特定のテストメソッドを実行
-python tests/run_tests.py --type integration --test test_maya_utils.TestMayaUtils.test_create_material
-
-# 複数のテストを部分的にマッチング
-python tests/run_tests.py --type integration --test TestMayaUtils
-```
-
-### 直接mayapyを使用する場合
-```bash
-# 全ての統合テストを実行
-'C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe' tests\run_tests.py --type integration
-
-# 特定のテストを実行
-'C:\Program Files\Autodesk\Maya2024\bin\mayapy.exe' tests\run_tests.py --type integration --test test_maya_utils
 ```
 
 ### 追加オプション
 ```bash
 # 特定のMayaバージョンを指定（デフォルトは2024）
 python tests/run_tests.py --type integration --maya 2023 --test test_maya_utils
-
-# テストが見つからない場合、利用可能なテストの一覧が表示されます
-python tests/run_tests.py --type integration --test nonexistent_test
 ```
 
 ## コーディング
