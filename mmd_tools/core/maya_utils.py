@@ -338,6 +338,10 @@ def add_typed_attribute(object_name, attr_name, attr_type):
             # 文字列アトリビュート
             attr = om.MFnTypedAttribute()
             attr_obj = attr.create(attr_name, attr_name, om.MFnData.kString)
+        elif attr_type == "bytes":
+            # バイトアトリビュート
+            attr = om.MFnTypedAttribute()
+            attr_obj = attr.create(attr_name, attr_name, om.MFnData.kString)
         elif attr_type == "double3":
             # 3つのdouble値を持つアトリビュート
             attr = om.MFnNumericAttribute()
@@ -394,6 +398,9 @@ def set_attribute_value_api(object_name, attr_name, attr_value, attr_type):
             plug.setFloat(attr_value)
         elif attr_type == "str":
             plug.setString(attr_value)
+        elif attr_type == "bytes":
+            # バイトデータは文字列として設定
+            plug.setString(attr_value.decode("utf-8"))
         elif attr_type == "double3" and len(attr_value) == 3:
             # 3要素のベクトル値
             for i, value in enumerate(attr_value):

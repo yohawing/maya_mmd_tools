@@ -45,11 +45,11 @@ class TestBoneConverter(MayaTestBase):
 
         # テスト用のメッシュを作成
         pmd_mesh_converter = MeshConverter(self.pmd_file_path)
-        group_name, mesh_name = pmd_mesh_converter.convert_pmd_mesh(pmd_data)
+        pmd_group_name, pmd_mesh_name = pmd_mesh_converter.convert_pmd_mesh(pmd_data)
 
         # ボーンを変換
         converter = BoneConverter()
-        root_joint, skin_cluster = converter.convert_pmd_bones(pmd_data, mesh_name)
+        root_joint, skin_cluster = converter.convert_pmd_bones(pmd_data, pmd_mesh_name)
 
         # 結果を検証
         self.assertIsNotNone(root_joint, "ルートジョイントが作成されていません。")
@@ -165,3 +165,11 @@ class TestBoneConverter(MayaTestBase):
             self.assertAlmostEqual(
                 joint_pos[2], -bone.position[2], delta=1e-5
             )  # Mayaは左手系
+
+
+        # jointOrinentの確認
+
+        # 各種位置決めボーンはJointOrientが(0, 0, 0)であることを確認
+        for static_bone in ["master", "center", "center_2", "group"]:
+            joint_orient = cmds.getAttr(f"{static_bone}.jointOrient")[0]
+            self.assertEqual(joint_orient, (0, 0, 0), f"{static_bone}のJointOrientが正しくありません。")

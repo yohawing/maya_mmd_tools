@@ -140,7 +140,7 @@ class BoneConverter:
         maya_joints = []
         
         # 子ボーンのマッピングを事前に作成（向き計算で必要）
-        children_map = self._create_children_map(bones)
+        # children_map = self._create_children_map(bones)
         
         for i, bone in enumerate(bones):
             # bone_mapから既にユニークな名前を取得
@@ -168,10 +168,17 @@ class BoneConverter:
             )
 
             # ジョイント作成直後にJointOrientを設定
-            orient = self._calculate_joint_orient(bone, i, bones, children_map, format_type)
-            self._set_joint_orient(joint, orient)
+            # orient = self._calculate_joint_orient(bone, i, bones, children_map, format_type)
+            # self._set_joint_orient(joint, orient)
 
-            # フォーマットに応じたカスタム属性を設定
+            self._set_extra_attributes(i, joint, bone, format_type)
+            
+            maya_joints.append(joint)
+
+        return maya_joints
+    
+    def _set_extra_attributes(self, i, joint, bone, format_type):
+        # フォーマットに応じたカスタム属性を設定
             if format_type == "pmx":
                 attrs = {
                     "pmx_index": i,
@@ -219,7 +226,7 @@ class BoneConverter:
                     attrs["pmx_ik_target_bone_index"] = bone.ik_target_bone_index
                     attrs["pmx_ik_loop_count"] = bone.ik_loop_count
                     attrs["pmx_ik_limit_angle"] = bone.ik_limit_angle
-                    attrs["pmx_ik_links"] = bone.ik_links
+                    # attrs["pmx_ik_links"] = bone.ik_links
 
                 if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
                     attrs["pmx_connect_bone_index"] = bone.connect_bone_index
@@ -241,10 +248,6 @@ class BoneConverter:
                     joint,
                     attrs
                 )
-
-            maya_joints.append(joint)
-
-        return maya_joints
 
     def _create_skin_cluster(self, maya_joints, mesh_node, max_influence=4):
         """
@@ -385,25 +388,28 @@ class BoneConverter:
             # 子ボーンが存在する場合のみ簡単な計算を行う
             if bone_index in children_map:
                 child_index = children_map[bone_index][0]
-                return self._calculate_simple_aim_orient(bone, bones[child_index])
+                # return self._calculate_simple_aim_orient(bone, bones[child_index])
             
             # PMX特有の計算
             if format_type == 'pmx':
                 # ローカル軸フラグがある場合のみ処理
                 if hasattr(bone, 'bone_flag') and bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-                    return self._calculate_simple_local_axis_orient(bone)
+                    # return self._calculate_simple_local_axis_orient(bone)
+                    pass
                 
                 # 接続先ボーンが指定されている場合
                 if hasattr(bone, 'connect_bone_index') and bone.connect_bone_index != -1:
                     if bone.connect_bone_index < len(bones):
-                        return self._calculate_simple_aim_orient(bone, bones[bone.connect_bone_index])
+                        # return self._calculate_simple_aim_orient(bone, bones[bone.connect_bone_index])
+                        pass
             
             # PMD特有の計算
             if format_type == 'pmd':
                 # tail_pos_bone_indexが有効な場合
                 if hasattr(bone, 'tail_pos_bone_index') and bone.tail_pos_bone_index != -1:
                     if bone.tail_pos_bone_index < len(bones):
-                        return self._calculate_simple_aim_orient(bone, bones[bone.tail_pos_bone_index])
+                        # return self._calculate_simple_aim_orient(bone, bones[bone.tail_pos_bone_index])
+                        pass
             
             # デフォルトは回転なし
             return [0.0, 0.0, 0.0]
@@ -414,152 +420,13 @@ class BoneConverter:
 
     def _calculate_pmx_joint_orient(self, bone, bone_index, bones, children_map):
         """PMXボーンのJointOrientを計算"""
-        # ローカル軸フラグがある場合
-        if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-            return self._calculate_local_axis_orient(bone)
-        
-        # 軸固定フラグがある場合
-        if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
-            return self._calculate_axis_fixed_orient(bone)
-        
-        # 子ボーンが存在する場合
-        if bone_index in children_map:
-            child_index = children_map[bone_index][0]  # 最初の子ボーンを使用
-            return self._calculate_aim_orient(bone, bones[child_index])
-        
-        # 接続先ボーンが指定されている場合
-        if bone.get_flag(PmxBoneFlag.CONNECT_BONE) and bone.connect_bone_index != -1:
-            if bone.connect_bone_index < len(bones):
-                target_bone = bones[bone.connect_bone_index]
-                return self._calculate_aim_orient(bone, target_bone)
-        
-        # デフォルトの向き（親ボーンと同じまたはワールド座標系）
-        return self._calculate_default_orient(bone, bone_index, bones)
+        return
 
     def _calculate_pmd_joint_orient(self, bone, bone_index, bones, children_map):
         """PMDボーンのJointOrientを計算"""
-        # tail_pos_bone_indexが有効な場合
-        if bone.tail_pos_bone_index != -1 and bone.tail_pos_bone_index < len(bones):
-            target_bone = bones[bone.tail_pos_bone_index]
-            return self._calculate_aim_orient(bone, target_bone)
-        
-        # 子ボーンが存在する場合
-        if bone_index in children_map:
-            child_index = children_map[bone_index][0]  # 最初の子ボーンを使用
-            return self._calculate_aim_orient(bone, bones[child_index])
-        
-        # デフォルトの向き
-        return self._calculate_default_orient(bone, bone_index, bones)
+        return
 
-    def _calculate_local_axis_orient(self, bone):
-        """ローカル軸からJointOrientを計算"""
-        try:
-            # PMXのローカル軸からMayaの座標系に変換
-            x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], -bone.x_axis_direction[2])
-            z_axis = om.MVector(bone.z_axis_direction[0], bone.z_axis_direction[1], -bone.z_axis_direction[2])
-            
-            # 正規化（外積計算前に）
-            x_axis.normalize()
-            z_axis.normalize()
-            
-            # Y軸を外積で計算（Maya左手座標系に合わせて順序を調整）
-            y_axis = x_axis ^ z_axis
-            y_axis.normalize()
-            
-            # 正確な直交座標系を確保するためにZ軸を再計算
-            z_axis = x_axis ^ y_axis
-            z_axis.normalize()
-            
-            # 回転行列を作成
-            matrix = self._create_rotation_matrix(x_axis, y_axis, z_axis)
-            return self._matrix_to_euler(matrix)
-            
-        except Exception as e:
-            print(f"ローカル軸の計算でエラー: {e}")
-            return [0.0, 0.0, 0.0]
 
-    def _calculate_axis_fixed_orient(self, bone):
-        """軸固定からJointOrientを計算"""
-        try:
-            # 軸固定方向をX軸とする
-            aim_vector = om.MVector(bone.axis_direction[0], bone.axis_direction[1], -bone.axis_direction[2])
-            aim_vector.normalize()
-            
-            # Y軸を上方向に近づける
-            up_vector = om.MVector(0.0, 1.0, 0.0)
-            
-            matrix = self._calculate_aim_matrix(aim_vector, up_vector)
-            return self._matrix_to_euler(matrix)
-            
-        except Exception as e:
-            print(f"軸固定の計算でエラー: {e}")
-            return [0.0, 0.0, 0.0]
-
-    def _calculate_simple_aim_orient(self, bone, target_bone):
-        """簡素化された子ボーンへの方向計算"""
-        try:
-            # 座標系変換：MMD（右手系）→ Maya（左手系）
-            bone_pos = [bone.position[0], bone.position[1], -bone.position[2]]
-            target_pos = [target_bone.position[0], target_bone.position[1], -target_bone.position[2]]
-            
-            # 方向ベクトルを計算
-            dx = target_pos[0] - bone_pos[0]
-            dy = target_pos[1] - bone_pos[1]
-            dz = target_pos[2] - bone_pos[2]
-            
-            # 距離が小さい場合は回転なし
-            distance = math.sqrt(dx*dx + dy*dy + dz*dz)
-            if distance < 1e-6:
-                return [0.0, 0.0, 0.0]
-            
-            # 正規化
-            dx /= distance
-            dy /= distance
-            dz /= distance
-            
-            # 簡単なオイラー角計算（XZY順）
-            # Y回転：XZ平面での角度
-            y_rot = math.atan2(dx, dz)
-            
-            # X回転：Y方向の角度
-            x_rot = -math.asin(dy)
-            
-            # Z回転は一旦0とする（単純化のため）
-            z_rot = 0.0
-            
-            # ラジアンから度に変換
-            return [math.degrees(x_rot), math.degrees(y_rot), math.degrees(z_rot)]
-            
-        except Exception as e:
-            print(f"簡素化エイム計算でエラー: {e}")
-            return [0.0, 0.0, 0.0]
-
-    def _calculate_simple_local_axis_orient(self, bone):
-        """簡素化されたローカル軸計算"""
-        try:
-            if not hasattr(bone, 'x_axis_direction') or not hasattr(bone, 'z_axis_direction'):
-                return [0.0, 0.0, 0.0]
-            
-            # 座標系変換：MMD → Maya
-            x_dir = [bone.x_axis_direction[0], bone.x_axis_direction[1], -bone.x_axis_direction[2]]
-            z_dir = [bone.z_axis_direction[0], bone.z_axis_direction[1], -bone.z_axis_direction[2]]
-            
-            # X軸からY回転を計算
-            y_rot = math.atan2(x_dir[0], x_dir[2])
-            
-            # Z軸の情報から追加の回転を計算（簡素化）
-            x_rot = math.atan2(-x_dir[1], math.sqrt(x_dir[0]*x_dir[0] + x_dir[2]*x_dir[2]))
-            
-            # Z回転は一旦0とする
-            z_rot = 0.0
-            
-            return [math.degrees(x_rot), math.degrees(y_rot), math.degrees(z_rot)]
-            
-        except Exception as e:
-            print(f"簡素化ローカル軸計算でエラー: {e}")
-            return [0.0, 0.0, 0.0]
-
-    def _calculate_default_orient(self, bone, bone_index, bones):
         """デフォルトの向きを計算"""
         # 親ボーンがある場合は親と同じ向きを継承
         if bone.parent_bone_index != -1 and bone.parent_bone_index < len(bones):
@@ -569,84 +436,16 @@ class BoneConverter:
         # ルートボーンの場合はワールド座標系
         return [0.0, 0.0, 0.0]
 
-    def _create_children_map(self, bones):
-        """親子関係のマッピングを作成"""
-        children = {}
-        for i, bone in enumerate(bones):
-            if bone.parent_bone_index != -1:
-                if bone.parent_bone_index not in children:
-                    children[bone.parent_bone_index] = []
-                children[bone.parent_bone_index].append(i)
-        return children
-
     def _set_joint_orient(self, joint, orient):
         """ジョイントの向きを設定"""
         try:
             cmds.setAttr(f"{joint}.jointOrientX", orient[0])
             cmds.setAttr(f"{joint}.jointOrientY", orient[1])
             cmds.setAttr(f"{joint}.jointOrientZ", orient[2])
+            # maya_utils.set_attribute_value_api(joint, "jointOrient", orient, "double3")
         except Exception as e:
             print(f"ジョイントの向き設定でエラー {joint}: {e}")
 
-    def _matrix_to_euler(self, matrix):
-        """3x3回転行列をオイラー角（度）に変換"""
-        try:
-            # Maya Python API2.0を使用してMEulerRotationオブジェクトを取得
-            transform_matrix = om.MTransformationMatrix(matrix)
-            euler_rotation = transform_matrix.rotation()  # MEulerRotationオブジェクト
-            
-            # ラジアンから度に変換（XYZ順）
-            return [math.degrees(euler_rotation.x), 
-                    math.degrees(euler_rotation.y), 
-                    math.degrees(euler_rotation.z)]
-            
-        except Exception as e:
-            print(f"行列からオイラー角の変換でエラー: {e}")
-            return [0.0, 0.0, 0.0]
-
-    def _create_rotation_matrix(self, x_axis, y_axis, z_axis):
-        """3つの軸ベクトルから回転行列を作成"""
-        try:
-            # OpenMayaのMMatrixを使用
-            matrix_list = [
-                x_axis.x, x_axis.y, x_axis.z, 0.0,
-                y_axis.x, y_axis.y, y_axis.z, 0.0,
-                z_axis.x, z_axis.y, z_axis.z, 0.0,
-                0.0, 0.0, 0.0, 1.0
-            ]
-            return om.MMatrix(matrix_list)
-            
-        except Exception as e:
-            print(f"回転行列の作成でエラー: {e}")
-            return om.MMatrix()
-
-    def _calculate_aim_matrix(self, aim_vector, up_vector):
-        """エイムベクトルとアップベクトルから回転行列を計算"""
-        try:
-            # Mayaの標準：X軸を子ボーンへの方向に設定
-            x_axis = aim_vector
-            x_axis.normalize()
-            
-            # Z軸を外積で計算（右手系→左手系変換考慮）
-            z_axis = up_vector ^ x_axis  # Maya左手座標系に合わせて順序変更
-            if z_axis.length() < 1e-6:
-                # エイムベクトルとアップベクトルが平行な場合の対処
-                if abs(aim_vector.y) < 0.9:
-                    up_vector = om.MVector(0.0, 1.0, 0.0)
-                else:
-                    up_vector = om.MVector(1.0, 0.0, 0.0)
-                z_axis = up_vector ^ x_axis
-            z_axis.normalize()
-            
-            # Y軸を外積で計算（正確な直交座標系のため）
-            y_axis = z_axis ^ x_axis
-            y_axis.normalize()
-            
-            return self._create_rotation_matrix(x_axis, y_axis, z_axis)
-            
-        except Exception as e:
-            print(f"エイム行列の計算でエラー: {e}")
-            return om.MMatrix()
 
     def _apply_pmd_vertex_weights(self, pmd_data, maya_joints, skin_cluster, mesh_node):
         """
