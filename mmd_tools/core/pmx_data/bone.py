@@ -50,8 +50,8 @@ class PmxBone:
         self.given_parent_bone_index = -1
         self.given_rate = 0.0
         self.axis_direction = (0.0, 0.0, 0.0)
-        self.x_axis_direction = (0.0, 0.0, 0.0)
-        self.z_axis_direction = (0.0, 0.0, 0.0)
+        self.x_axis_direction = (1.0, 0.0, 0.0)
+        self.z_axis_direction = (0.0, 0.0, 1.0)
         self.key_value = 0
         self.ik_target_bone_index = -1
         self.ik_loop_count = 0

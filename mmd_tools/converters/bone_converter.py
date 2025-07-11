@@ -14,6 +14,8 @@ from ..core.pmd_parser import PmdParser
 from ..core.pmx_parser import PmxParser
 
 
+
+
 class BoneConverter:
     """
     MMDのボーンデータをMayaのジョイントに変換するクラス。
@@ -25,9 +27,7 @@ class BoneConverter:
     def __init__(self):
         """
         コンストラクタ。
-        特に初期化は必要ないが、将来の拡張のために残しておく。
         """
-        pass
 
     def convert_pmx_bones(self, pmx_data: PmxParser, mesh_node):
         """
@@ -139,9 +139,6 @@ class BoneConverter:
         """
         maya_joints = []
         
-        # 子ボーンのマッピングを事前に作成（向き計算で必要）
-        # children_map = self._create_children_map(bones)
-        
         for i, bone in enumerate(bones):
             # bone_mapから既にユニークな名前を取得
             joint_name = bone_map[i]
@@ -165,11 +162,9 @@ class BoneConverter:
             joint = cmds.joint(
                 name=joint_name,
                 position=[position[0], position[1], -position[2]],  # Mayaは左手系
+                # Maya 2024以降では軸指定オプションは deprecated
+                # 代わりにjointOrientで後から設定する
             )
-
-            # ジョイント作成直後にJointOrientを設定
-            # orient = self._calculate_joint_orient(bone, i, bones, children_map, format_type)
-            # self._set_joint_orient(joint, orient)
 
             self._set_extra_attributes(i, joint, bone, format_type)
             
@@ -181,13 +176,13 @@ class BoneConverter:
         # フォーマットに応じたカスタム属性を設定
             if format_type == "pmx":
                 attrs = {
-                    "pmx_index": i,
-                    "pmx_flag": bone.bone_flag,
-                    "pmx_name": bone.name,
-                    "pmx_name_english": bone.name_english,
-                    "pmx_parent_bone_index": bone.parent_bone_index,
-                    "pmx_rotatable": bool(bone.get_flag(PmxBoneFlag.ROTATABLE)),
-                    "pmx_movable": bool(bone.get_flag(PmxBoneFlag.MOVABLE)),
+                    "pmx_bone_index": i,
+                    "pmx_bone_flag": bone.bone_flag,
+                    "pmx_bone_name": bone.name,
+                    "pmx_bone_name_english": bone.name_english,
+                    "pmx_bone_parent_bone_index": bone.parent_bone_index,
+                    "pmx_bone_rotatable": bool(bone.get_flag(PmxBoneFlag.ROTATABLE)),
+                    "pmx_bone_movable": bool(bone.get_flag(PmxBoneFlag.MOVABLE)),
                 }
 
                 # 接続先ボーンの属性を設定
@@ -368,84 +363,6 @@ class BoneConverter:
             mesh_node,
             weights,
         )
-
-    def _calculate_joint_orient(self, bone, bone_index, bones, children_map, format_type):
-        """
-        フォーマットに応じてJointOrientを計算する。
-        
-        Args:
-            bone: ボーンデータ
-            bone_index: ボーンインデックス
-            bones: 全ボーンデータのリスト
-            children_map: 子ボーンマッピング
-            format_type: 'pmx' または 'pmd'
-        
-        Returns:
-            list: [x, y, z] オイラー角（度）
-        """
-        # 一時的に簡素化：基本的な子ボーン方向のみ計算
-        try:
-            # 子ボーンが存在する場合のみ簡単な計算を行う
-            if bone_index in children_map:
-                child_index = children_map[bone_index][0]
-                # return self._calculate_simple_aim_orient(bone, bones[child_index])
-            
-            # PMX特有の計算
-            if format_type == 'pmx':
-                # ローカル軸フラグがある場合のみ処理
-                if hasattr(bone, 'bone_flag') and bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-                    # return self._calculate_simple_local_axis_orient(bone)
-                    pass
-                
-                # 接続先ボーンが指定されている場合
-                if hasattr(bone, 'connect_bone_index') and bone.connect_bone_index != -1:
-                    if bone.connect_bone_index < len(bones):
-                        # return self._calculate_simple_aim_orient(bone, bones[bone.connect_bone_index])
-                        pass
-            
-            # PMD特有の計算
-            if format_type == 'pmd':
-                # tail_pos_bone_indexが有効な場合
-                if hasattr(bone, 'tail_pos_bone_index') and bone.tail_pos_bone_index != -1:
-                    if bone.tail_pos_bone_index < len(bones):
-                        # return self._calculate_simple_aim_orient(bone, bones[bone.tail_pos_bone_index])
-                        pass
-            
-            # デフォルトは回転なし
-            return [0.0, 0.0, 0.0]
-            
-        except Exception as e:
-            print(f"JointOrient計算でエラー: {e}")
-            return [0.0, 0.0, 0.0]
-
-    def _calculate_pmx_joint_orient(self, bone, bone_index, bones, children_map):
-        """PMXボーンのJointOrientを計算"""
-        return
-
-    def _calculate_pmd_joint_orient(self, bone, bone_index, bones, children_map):
-        """PMDボーンのJointOrientを計算"""
-        return
-
-
-        """デフォルトの向きを計算"""
-        # 親ボーンがある場合は親と同じ向きを継承
-        if bone.parent_bone_index != -1 and bone.parent_bone_index < len(bones):
-            # 親ボーンの向きを参考にするが、今回は簡単にワールド座標系を使用
-            return [0.0, 0.0, 0.0]
-        
-        # ルートボーンの場合はワールド座標系
-        return [0.0, 0.0, 0.0]
-
-    def _set_joint_orient(self, joint, orient):
-        """ジョイントの向きを設定"""
-        try:
-            cmds.setAttr(f"{joint}.jointOrientX", orient[0])
-            cmds.setAttr(f"{joint}.jointOrientY", orient[1])
-            cmds.setAttr(f"{joint}.jointOrientZ", orient[2])
-            # maya_utils.set_attribute_value_api(joint, "jointOrient", orient, "double3")
-        except Exception as e:
-            print(f"ジョイントの向き設定でエラー {joint}: {e}")
-
 
     def _apply_pmd_vertex_weights(self, pmd_data, maya_joints, skin_cluster, mesh_node):
         """
