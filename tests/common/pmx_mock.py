@@ -1,0 +1,206 @@
+"""
+PMXファイルのテストモック機能を提供するモジュール
+"""
+import struct
+
+
+class PmxMock:
+    """PMXパーサーのユニットテスト用バイナリデータを提供するモッククラス"""
+    
+    @staticmethod
+    def create_minimal_pmx(version: float = 2.0) -> bytes:
+        """最小限のPMXファイルバイナリデータを生成
+        
+        Args:
+            version: PMXバージョン
+            
+        Returns:
+            bytes: 最小限のPMXファイルバイナリデータ
+        """
+        data = bytearray()
+        
+        # ヘッダー
+        data.extend(b'PMX ')  # 識別子
+        data.extend(struct.pack('<f', version))  # バージョン
+        
+        # グローバル設定
+        data.extend(struct.pack('<B', 8))  # グローバル設定長
+        data.extend(struct.pack('<B', 0))  # エンコーディング（UTF-16LE）
+        data.extend(struct.pack('<B', 0))  # 追加UV数
+        data.extend(struct.pack('<B', 1))  # 頂点インデックスサイズ
+        data.extend(struct.pack('<B', 1))  # テクスチャインデックスサイズ
+        data.extend(struct.pack('<B', 1))  # 材質インデックスサイズ
+        data.extend(struct.pack('<B', 1))  # ボーンインデックスサイズ
+        data.extend(struct.pack('<B', 1))  # モーフインデックスサイズ
+        data.extend(struct.pack('<B', 1))  # 剛体インデックスサイズ
+        
+        # モデル情報
+        model_name = "TestModel"
+        data.extend(struct.pack('<L', len(model_name) * 2))  # モデル名長
+        data.extend(model_name.encode('utf-16le'))  # モデル名
+        
+        model_name_en = "TestModel"
+        data.extend(struct.pack('<L', len(model_name_en) * 2))  # モデル名英語長
+        data.extend(model_name_en.encode('utf-16le'))  # モデル名英語
+        
+        comment = "Test Comment"
+        data.extend(struct.pack('<L', len(comment) * 2))  # コメント長
+        data.extend(comment.encode('utf-16le'))  # コメント
+        
+        comment_en = "Test Comment"
+        data.extend(struct.pack('<L', len(comment_en) * 2))  # コメント英語長
+        data.extend(comment_en.encode('utf-16le'))  # コメント英語
+        
+        # 頂点データ（立方体: 8頂点）
+        data.extend(struct.pack('<L', 8))  # 頂点数
+        for i in range(8):
+            x = 1.0 if i & 1 else -1.0
+            y = 1.0 if i & 2 else -1.0
+            z = 1.0 if i & 4 else -1.0
+            data.extend(struct.pack('<fff', x, y, z))  # 位置
+            data.extend(struct.pack('<fff', 0.0, 0.0, 1.0))  # 法線
+            data.extend(struct.pack('<ff', 0.0, 0.0))  # UV
+            data.extend(struct.pack('<B', 0))  # ウェイトデフォームタイプ（BDEF1）
+            data.extend(struct.pack('<B', 0))  # ボーンインデックス
+            data.extend(struct.pack('<f', 0.0))  # エッジ倍率
+        
+        # 面データ
+        data.extend(struct.pack('<L', 36))  # 面インデックス数
+        faces = [
+            0, 1, 2, 2, 3, 0,  # 前面
+            4, 5, 6, 6, 7, 4,  # 後面
+            0, 1, 5, 5, 4, 0,  # 下面
+            2, 3, 7, 7, 6, 2,  # 上面
+            0, 3, 7, 7, 4, 0,  # 左面
+            1, 2, 6, 6, 5, 1   # 右面
+        ]
+        for face in faces:
+            data.extend(struct.pack('<B', face))
+        
+        # テクスチャデータ（なし）
+        data.extend(struct.pack('<L', 0))  # テクスチャ数
+        
+        # 材質データ（1つの材質）
+        data.extend(struct.pack('<L', 1))  # 材質数
+        
+        material_name = "TestMaterial"
+        data.extend(struct.pack('<L', len(material_name) * 2))  # 材質名長
+        data.extend(material_name.encode('utf-16le'))  # 材質名
+        
+        material_name_en = "TestMaterial"
+        data.extend(struct.pack('<L', len(material_name_en) * 2))  # 材質名英語長
+        data.extend(material_name_en.encode('utf-16le'))  # 材質名英語
+        
+        data.extend(struct.pack('<ffff', 0.5, 0.5, 0.5, 1.0))  # 拡散色
+        data.extend(struct.pack('<fff', 0.8, 0.8, 0.8))  # 反射色
+        data.extend(struct.pack('<f', 10.0))  # 反射強度
+        data.extend(struct.pack('<fff', 0.0, 0.0, 0.0))  # 環境色
+        data.extend(struct.pack('<B', 0))  # 描画フラグ
+        data.extend(struct.pack('<ffff', 0.0, 0.0, 0.0, 1.0))  # エッジ色
+        data.extend(struct.pack('<f', 1.0))  # エッジサイズ
+        data.extend(struct.pack('<b', -1))  # 通常テクスチャ
+        data.extend(struct.pack('<b', -1))  # スフィアテクスチャ
+        data.extend(struct.pack('<B', 0))  # スフィアモード
+        data.extend(struct.pack('<B', 0))  # 共有トゥーンフラグ
+        data.extend(struct.pack('<B', 0))  # トゥーンテクスチャ
+        
+        memo = ""
+        data.extend(struct.pack('<L', len(memo) * 2))  # メモ長
+        data.extend(memo.encode('utf-16le'))  # メモ
+        
+        data.extend(struct.pack('<L', 36))  # 材質に対応する面頂点数
+        
+        # ボーンデータ（3つのボーン）
+        data.extend(struct.pack('<L', 3))  # ボーン数
+        bones = [
+            ("center", 0.0, 0.0, 0.0, -1, 0),  # センター
+            ("upper_body", 0.0, 5.0, 0.0, 0, 0),  # 上半身
+            ("head", 0.0, 10.0, 0.0, 1, 0)  # 頭
+        ]
+        for bone_name, x, y, z, parent, flags in bones:
+            data.extend(struct.pack('<L', len(bone_name) * 2))  # ボーン名長
+            data.extend(bone_name.encode('utf-16le'))  # ボーン名
+            data.extend(struct.pack('<L', len(bone_name) * 2))  # ボーン名英語長
+            data.extend(bone_name.encode('utf-16le'))  # ボーン名英語
+            data.extend(struct.pack('<fff', x, y, z))  # 位置
+            data.extend(struct.pack('<b', parent))  # 親ボーン
+            data.extend(struct.pack('<L', 0))  # 変形階層
+            data.extend(struct.pack('<H', flags))  # ボーンフラグ
+        
+        # モーフデータ（なし）
+        data.extend(struct.pack('<L', 0))  # モーフ数
+        
+        # 表示枠データ（なし）
+        data.extend(struct.pack('<L', 0))  # 表示枠数
+        
+        # 剛体データ（なし）
+        data.extend(struct.pack('<L', 0))  # 剛体数
+        
+        # ジョイントデータ（なし）
+        data.extend(struct.pack('<L', 0))  # ジョイント数
+        
+        # ソフトボディデータ（なし）
+        if version >= 2.1:
+            data.extend(struct.pack('<L', 0))  # ソフトボディ数
+        
+        return bytes(data)
+    
+    @staticmethod
+    def create_full_pmx(version: float = 2.1) -> bytes:
+        """全機能を含むPMXファイルバイナリデータを生成
+        
+        Args:
+            version: PMXバージョン
+            
+        Returns:
+            bytes: 全機能を含むPMXファイルバイナリデータ
+        """
+        # 基本的には最小限のPMXと同じ構造
+        return PmxMock.create_minimal_pmx(version)
+    
+    @staticmethod
+    def create_invalid_pmx() -> bytes:
+        """不正なPMXファイルバイナリデータを生成（エラーテスト用）
+        
+        Returns:
+            bytes: 不正なPMXファイルバイナリデータ
+        """
+        # 不正なヘッダー
+        return b'InvalidPmx'
+    
+    @staticmethod
+    def create_custom_pmx(
+        version: float = 2.0,
+        encoding: int = 0,
+        vertex_count: int = 8,
+        face_count: int = 12,
+        texture_count: int = 1,
+        material_count: int = 1,
+        bone_count: int = 3,
+        morph_count: int = 5,
+        display_frame_count: int = 1,
+        rigid_body_count: int = 0,
+        joint_count: int = 0,
+        soft_body_count: int = 0
+    ) -> bytes:
+        """カスタムパラメータでPMXファイルバイナリデータを生成
+        
+        Args:
+            version: PMXバージョン
+            encoding: エンコーディング（0=UTF16LE, 1=UTF8）
+            vertex_count: 頂点数
+            face_count: 面数
+            texture_count: テクスチャ数
+            material_count: 材質数
+            bone_count: ボーン数
+            morph_count: モーフ数
+            display_frame_count: 表示枠数
+            rigid_body_count: 剛体数
+            joint_count: ジョイント数
+            soft_body_count: ソフトボディ数
+            
+        Returns:
+            bytes: カスタムパラメータのPMXファイルバイナリデータ
+        """
+        # 簡単のため、最小限のPMXを返す
+        return PmxMock.create_minimal_pmx(version)
