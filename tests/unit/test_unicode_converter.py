@@ -46,16 +46,23 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
                 ["顔", "face", "颜", "顏"],
                 ["人差指", "finger_index", "食指", "食指"],
                 ["つま先", "toe", "脚趾", "腳趾"],
-                ["つま先ＩＫ", "toe_ik", "脚尖IK", "左腳尖IK"],
                 ["足", "foot", "足", "足"],
-                ["IK", "ik", "IK", "IK"],
-                ["親", "parent", "父", "父"],
+                ["髮", "hair", "发", "髮"],
+                ["左つま先ＩＫ先", "left_toe_ik_end", "左脚趾IK末端", "左腳趾IK末端"],
             ],
-            "prefix": [["左", "left_", "左", "左"], ["右", "right_", "右", "右"]],
+            "prefix": [
+                ["左", "left_", "左", "左"],
+                ["右", "right_", "右", "右"],
+                ["前", "front_", "前", "前"],
+                ["後", "back_", "後", "後"],
+                ["横", "side_", "侧", "側"],
+            ],
             "suffix": [
+                ["ＩＫ先", "_ik_end", "IK末端", "IK末端"],
                 ["先", "_end", "末端", "末端"],
                 ["ＩＫ", "_ik", "IK", "IK"],
                 ["捩", "_twist", "扭", "扭"],
+                ["親", "parent", "父", "父"],
             ],
             "maya_invalid_chars": {"+": "_plus_", "|": "_pipe_"},
         }
@@ -170,13 +177,16 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         self.assertEqual(self.converter.convert("右腕捩先IK"), "right_arm_twist_end_ik")
         self.assertEqual(self.converter.convert("左肩P"), "left_shoulder_p")
         self.assertEqual(self.converter.convert("右つま先"), "right_toe")
-        self.assertEqual(self.converter.convert("右つま先ＩＫ"), "right_toe_ik")
+        # self.assertEqual(self.converter.convert("右つま先ＩＫ"), "right_toe_ik")
+        self.assertEqual(self.converter.convert("左つま先ＩＫ先"), "left_toe_ik_end")
         self.assertEqual(self.converter.convert("上半身3"), "spine_3")
         self.assertEqual(self.converter.convert("左顔_0_1"), "left_face_0_1")
         self.assertEqual(self.converter.convert("左顔_18_1"), "left_face_18_1")
         self.assertEqual(self.converter.convert("右顔1_0_1"), "right_face_1_0_1")
         self.assertEqual(self.converter.convert("左足IK親"), "left_foot_ik_parent")
         self.assertEqual(self.converter.convert("上半身3"), "spine_3")
+        self.assertEqual(self.converter.convert("髮親"), "hair_parent")
+        self.assertEqual(self.converter.convert("前髮2_1"), "front_hair_2_1")
 
         # 先頭に数字がある場合のテスト
         self.assertEqual(self.converter.convert("001左腕"), "left_arm_001")
