@@ -4,6 +4,7 @@ import struct
 from mmd_tools.core import utils
 
 from .exceptions import MMDParseException
+from .logger import get_logger
 from .pmd_data.bone import PmdBone
 from .pmd_data.display_frame import PmdDisplayFrame
 from .pmd_data.face import PmdFace
@@ -14,6 +15,9 @@ from .pmd_data.material import PmdMaterial
 from .pmd_data.morph import PmdMorph
 from .pmd_data.rigid_body import PmdRigidBody
 from .pmd_data.vertex import PmdVertex
+
+# ロガー取得
+logger = get_logger("mmd_tools.core.pmd_parser")
 
 
 class PmdParser:
@@ -58,16 +62,21 @@ class PmdParser:
             FileNotFoundError: ファイルが見つからない場合。
             MMDParseException: ファイルの解析に失敗した場合。
         """
+        logger.info(f"PMDファイルの解析を開始: {file_path}")
+
         if not os.path.exists(file_path):
+            logger.error(f"PMDファイルが見つかりません: {file_path}")
             raise FileNotFoundError(f"PMD file not found: {file_path}")
 
         with open(file_path, "rb") as f:
             try:
                 # Header
+                logger.debug("ヘッダー情報を解析中")
                 self.header.parse(f)
 
                 # Vertex
                 vertex_count = struct.unpack("<I", f.read(4))[0]
+                logger.debug(f"頂点数: {vertex_count}")
                 for _ in range(vertex_count):
                     vertex = PmdVertex()
                     vertex.parse(f)
@@ -75,6 +84,7 @@ class PmdParser:
 
                 # Face
                 face_count = struct.unpack("<I", f.read(4))[0]
+                logger.debug(f"面数: {face_count // 3}")
                 for _ in range(face_count // 3):
                     face = PmdFace()
                     face.parse(f)
@@ -82,6 +92,7 @@ class PmdParser:
 
                 # Material
                 material_count = struct.unpack("<I", f.read(4))[0]
+                logger.debug(f"マテリアル数: {material_count}")
                 for _ in range(material_count):
                     material = PmdMaterial()
                     material.parse(f)
@@ -89,6 +100,7 @@ class PmdParser:
 
                 # Bone
                 bone_count = struct.unpack("<H", f.read(2))[0]
+                logger.debug(f"ボーン数: {bone_count}")
                 for _ in range(bone_count):
                     bone = PmdBone()
                     bone.parse(f)
@@ -96,6 +108,7 @@ class PmdParser:
 
                 # IK
                 ik_count = struct.unpack("<H", f.read(2))[0]
+                logger.debug(f"IK数: {ik_count}")
                 for _ in range(ik_count):
                     ik = PmdIK()
                     ik.parse(f)
@@ -103,12 +116,14 @@ class PmdParser:
 
                 # Morph
                 morph_count = struct.unpack("<H", f.read(2))[0]
+                logger.debug(f"モーフ数: {morph_count}")
                 for _ in range(morph_count):
                     morph = PmdMorph()
                     morph.parse(f)
                     self.morphs.append(morph)
 
                 # Display Frame
+                logger.debug("表示枠を解析中")
                 self.display_frame = PmdDisplayFrame()
                 self.display_frame.parse(f)
                 # display_frame_count = struct.unpack('<B', f.read(1))[0]
@@ -122,8 +137,10 @@ class PmdParser:
 
                 try:
                     # English Header
+                    logger.debug("拡張データを解析中")
                     has_english_header = struct.unpack("<B", f.read(1))[0]
                     if has_english_header:
+                        logger.debug("英語ヘッダーを解析中")
                         self.header.parse_english(f)
 
                     # English Bone Names
@@ -152,21 +169,26 @@ class PmdParser:
 
                     # Physics
                     rigid_body_count = struct.unpack("<I", f.read(4))[0]
+                    logger.debug(f"剛体数: {rigid_body_count}")
                     for _ in range(rigid_body_count):
                         rigid_body = PmdRigidBody()
                         rigid_body.parse(f)
                         self.rigid_bodies.append(rigid_body)
 
                     joint_count = struct.unpack("<I", f.read(4))[0]
+                    logger.debug(f"ジョイント数: {joint_count}")
                     for _ in range(joint_count):
                         joint = PmdJoint()
                         joint.parse(f)
                         self.joints.append(joint)
 
                 except Exception:
+                    logger.info("拡張データなし、または拡張データの解析を終了")
                     return self
 
             except struct.error as e:
+                logger.error(f"PMDファイルの解析に失敗しました: {file_path}")
                 raise MMDParseException(f"Failed to parse PMD file: {file_path}") from e
 
+        logger.info("PMDファイルの解析が完了しました")
         return self
