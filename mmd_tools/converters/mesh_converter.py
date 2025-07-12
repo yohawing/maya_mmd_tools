@@ -154,6 +154,8 @@ class MeshConverter:
 
         uvs = []
         for vertex in all_vertices:
+            # flip V
+            vertex.uv = (vertex.uv[0], 1.0 - vertex.uv[1])
             uvs.extend(vertex.uv)  # UVデータをフラットなリストとして追加
 
         # 面データを作成
@@ -223,5 +225,12 @@ class MeshConverter:
 
         # 作成したメッシュをグループに追加
         cmds.parent(created_mesh, model_group)
+
+        # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
+        disable_backface_culling = settings.get(
+            "import.model.disable_backface_culling", True
+        )
+        if disable_backface_culling:
+            maya_utils.set_viewport_backface_culling(False)
 
         return created_mesh

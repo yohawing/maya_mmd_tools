@@ -276,7 +276,7 @@ def set_custom_attributes(object_name, attributes):
                     attr_type = "doubleArray"
                 elif all(isinstance(x, int) for x in attr_value):
                     attr_type = "longArray"
-                    
+
                 add_typed_attribute(object_name, attr_name, attr_type)
                 set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
 
@@ -369,10 +369,11 @@ def add_typed_attribute(object_name, attr_name, attr_type):
             f"Failed to add typed attribute '{attr_name}' to '{object_name}': {e}"
         )
 
+
 def set_attribute_value_api(object_name, attr_name, attr_value, attr_type):
     """
     OpenMaya API 2.0を使用してアトリビュート値を設定します。
-    
+
     Args:
         object_name (str): オブジェクト名
         attr_name (str): アトリビュート名
@@ -385,10 +386,10 @@ def set_attribute_value_api(object_name, attr_name, attr_value, attr_type):
         selection_list.add(object_name)
         node_obj = selection_list.getDependNode(0)
         depend_fn = om.MFnDependencyNode(node_obj)
-        
+
         # プラグを取得
         plug = depend_fn.findPlug(attr_name, False)
-        
+
         # 値の型に応じて設定
         if attr_type == "bool":
             plug.setBool(attr_value)
@@ -425,9 +426,11 @@ def set_attribute_value_api(object_name, attr_name, attr_value, attr_type):
             plug.setMObject(int_array_obj)
         else:
             logger.warning(f"Unsupported attribute value type: {type(attr_value)}")
-            
+
     except Exception as e:
-        logger.error(f"Failed to set attribute value '{attr_name}' on '{object_name}': {e}")
+        logger.error(
+            f"Failed to set attribute value '{attr_name}' on '{object_name}': {e}"
+        )
 
 
 def apply_vertex_weights(
@@ -652,3 +655,41 @@ def apply_nhair_to_curve(curve):
         return hair_systems[-1]
 
     return None
+
+
+def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
+    """
+    ビューポートのバックフェイスカリングを設定する。
+
+    Args:
+        enabled (bool): バックフェイスカリングを有効にするかどうか
+        panel_name (str): 対象のパネル名。Noneの場合はアクティブなパネルを使用
+
+    Returns:
+        bool: 設定が成功したかどうか
+    """
+    try:
+        # パネル名が指定されていない場合、アクティブなパネルを取得
+        if panel_name is None:
+            panel_name = cmds.getPanel(withFocus=True)
+
+            # アクティブパネルがモデルパネルでない場合、デフォルトのパネルを使用
+            if not cmds.getPanel(typeOf=panel_name) == "modelPanel":
+                panels = cmds.getPanel(type="modelPanel")
+                if panels:
+                    panel_name = panels[0]
+                else:
+                    logger.warning("No model panels found")
+                    return False
+
+        # バックフェイスカリングを設定
+        cmds.modelEditor(panel_name, edit=True, backfaceCulling=enabled)
+
+        logger.info(
+            f"Backface culling {'enabled' if enabled else 'disabled'} for panel: {panel_name}"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to set backface culling: {e}")
+        return False
