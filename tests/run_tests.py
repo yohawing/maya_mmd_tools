@@ -2,14 +2,29 @@
 """テスト実行のメインエントリーポイント。
 
 このスクリプトは引数解析を行い、mayapyを起動してmaya_test_runner.pyに処理を委譲します。
+ただし、すでにmayapy環境内で実行されている場合は、maya_test_runnerを直接実行します。
 すべてのテスト（ユニット/統合）はMaya環境内で実行されます。
 """
+
 import argparse
+import importlib.util
 import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
+
+
+def is_running_in_mayapy() -> bool:
+    """現在mayapy環境内で実行されているかどうかを判定します。
+
+    Returns:
+        mayapy環境内で実行されている場合True、そうでなければFalse
+    """
+    try:
+        return importlib.util.find_spec("maya.cmds") is not None
+    except (ImportError, ModuleNotFoundError):
+        return False
 
 
 def get_maya_location(maya_version: int) -> Path:
@@ -37,7 +52,7 @@ def get_maya_location(maya_version: int) -> Path:
         wsl_maya_path = Path(f"/mnt/c/Program Files/Autodesk/Maya{maya_version}")
         if wsl_maya_path.exists():
             return wsl_maya_path
-        
+
         # 通常のLinux環境
         location = f"/usr/autodesk/maya{maya_version}"
         if maya_version < 2016:
@@ -61,23 +76,23 @@ def mayapy(maya_version: int) -> Path:
     """
     maya_location = get_maya_location(maya_version)
     python_exe = maya_location / "bin" / "mayapy"
-    
+
     # Windowsまたは WSL環境でWindows版Mayaを使用する場合は.exeを追加
     if platform.system() == "Windows" or str(maya_location).startswith("/mnt/"):
         python_exe = python_exe.with_suffix(".exe")
-    
+
     return python_exe
 
 
 def wsl_to_windows_path(wsl_path: Path) -> str:
     """WSLパスをWindowsパスに変換します。
-    
+
     Args:
         wsl_path: 変換するWSLパス
-        
+
     Returns:
         Windows形式のパス文字列
-        
+
     Examples:
         >>> wsl_to_windows_path(Path("/mnt/c/folder"))
         'C:\\folder'
@@ -85,10 +100,13 @@ def wsl_to_windows_path(wsl_path: Path) -> str:
     path_str = str(wsl_path)
     # /mnt/c/ -> C:/, /mnt/d/ -> D:/, etc.
     import re
+
     match = re.match(r"/mnt/([a-z])/", path_str)
     if match:
         drive_letter = match.group(1).upper()
-        return path_str.replace(f"/mnt/{match.group(1)}/", f"{drive_letter}:/").replace("/", "\\")
+        return path_str.replace(f"/mnt/{match.group(1)}/", f"{drive_letter}:/").replace(
+            "/", "\\"
+        )
     return path_str
 
 
@@ -96,7 +114,7 @@ def main():
     """メイン関数。引数を解析してmayapyを起動します。"""
     # プロジェクトルートを取得
     ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
-    
+
     # 引数解析
     parser = argparse.ArgumentParser(description="Run tests for the MMD Tools project.")
     parser.add_argument(
@@ -120,7 +138,30 @@ def main():
     )
     args = parser.parse_args()
 
-    # mayapyのパスを取得
+    # mayapy環境内で実行されている場合は、maya_test_runnerを直接実行
+    if is_running_in_mayapy():
+        print(f"Running {args.type} tests directly in Maya environment...")
+
+        # プロジェクトルートをsys.pathに追加
+        if str(ROOT_DIR) not in sys.path:
+            sys.path.insert(0, str(ROOT_DIR))
+
+        # maya_test_runnerを直接インポートして実行
+        from tests.maya_test_runner import run_tests, initialize_maya, uninitialize_maya
+
+        # Maya環境を初期化
+        initialize_maya()
+
+        try:
+            # テストを実行
+            run_tests(args.type, args.test)
+        finally:
+            # Maya環境を終了
+            uninitialize_maya()
+
+        return
+
+    # 通常の処理：mayapyを起動してmaya_test_runnerに処理を委譲
     mayapy_path = mayapy(args.maya)
     if not mayapy_path.exists():
         print(f"Error: mayapy executable not found at {mayapy_path}.")
@@ -130,29 +171,30 @@ def main():
     env = os.environ.copy()
     env["MAYA_SCRIPT_PATH"] = ""
     env["MAYA_MODULE_PATH"] = str(ROOT_DIR)
-    
+
     # テストランナースクリプトのパス
     test_runner_path = ROOT_DIR / "tests" / "maya_test_runner.py"
-    
+
     # WSL環境でWindows版Mayaを使用する場合はパスを変換
     if str(mayapy_path).startswith("/mnt/"):
         test_runner_path = wsl_to_windows_path(test_runner_path)
         env["PYTHONPATH"] = wsl_to_windows_path(ROOT_DIR)
     else:
         env["PYTHONPATH"] = str(ROOT_DIR)
-    
+
     # コマンドを構築
     command = [
         str(mayapy_path),
         str(test_runner_path),
-        "--type", args.type,
+        "--type",
+        args.type,
     ]
     if args.test:
         command.extend(["--test", args.test])
 
     print(f"Running {args.type} tests with Maya {args.maya}...")
     print(f"Command: {' '.join(command)}")
-    
+
     # mayapyでテストランナーを実行
     try:
         subprocess.check_call(command, env=env)

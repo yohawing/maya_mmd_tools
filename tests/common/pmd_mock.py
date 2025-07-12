@@ -18,7 +18,7 @@ class PmdMock:
         data = bytearray()
 
         # ヘッダー
-        data.extend(b"Pmd\x00")  # 識別子
+        data.extend(b"Pmd")  # 識別子（3バイト）
         data.extend(struct.pack("<f", 1.0))  # バージョン
         data.extend(b"TestModel" + b"\x00" * (20 - len(b"TestModel")))  # モデル名
         data.extend(
@@ -91,7 +91,7 @@ class PmdMock:
         data.extend(struct.pack("<B", 0))  # トゥーン番号
         data.extend(struct.pack("<B", 0))  # エッジフラグ
         data.extend(struct.pack("<L", 36))  # 面頂点数
-        data.extend(b"\x00" * 20)  # テクスチャファイル名
+        data.extend(b"\x00" * 20)  # テクスチャファイル名（20バイト固定）
 
         # ボーンデータ（3つのボーン）
         data.extend(struct.pack("<H", 3))  # ボーン数
@@ -139,7 +139,7 @@ class PmdMock:
         data = bytearray()
 
         # ヘッダー
-        data.extend(b"Pmd\x00")  # 識別子
+        data.extend(b"Pmd")  # 識別子（3バイト）
         data.extend(struct.pack("<f", 1.0))  # バージョン
         model_name = (
             b"\x83e\x83X\x83g\x83\x82\x83f\x83\x8b"  # "テストモデル" in Shift-JIS
@@ -216,7 +216,7 @@ class PmdMock:
         data.extend(struct.pack("<B", 1))  # トゥーン番号
         data.extend(struct.pack("<B", 1))  # エッジフラグ
         data.extend(struct.pack("<L", 18))  # 面頂点数
-        data.extend(b"texture1.png" + b"\x00" * 8)  # テクスチャファイル名
+        data.extend(b"texture1.png" + b"\x00" * (20 - len(b"texture1.png")))  # テクスチャファイル名（20バイト固定）
 
         # 材質2
         data.extend(struct.pack("<fff", 0.0, 0.0, 1.0))  # 拡散色（青）
@@ -227,7 +227,7 @@ class PmdMock:
         data.extend(struct.pack("<B", 2))  # トゥーン番号
         data.extend(struct.pack("<B", 0))  # エッジフラグ
         data.extend(struct.pack("<L", 18))  # 面頂点数
-        data.extend(b"texture2.png" + b"\x00" * 8)  # テクスチャファイル名
+        data.extend(b"texture2.png" + b"\x00" * (20 - len(b"texture2.png")))  # テクスチャファイル名（20バイト固定）
 
         # ボーンデータ（MMD標準骨格の一部）
         bones = [
@@ -390,7 +390,7 @@ class PmdMock:
 
         # トゥーンテクスチャ
         for i in range(10):
-            data.extend(b"toon%02d.bmp" % (i + 1) + b"\x00" * 88)
+            data.extend(("toon%02d.bmp" % (i + 1)).encode() + b"\x00" * (100 - len(("toon%02d.bmp" % (i + 1)).encode())))
 
         # 剛体データ（2つの剛体）
         data.extend(struct.pack("<L", 2))  # 剛体数

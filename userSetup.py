@@ -1,4 +1,5 @@
 from maya import cmds
+from mmd_tools.ui import install_mmd_menu, uninstall_mmd_menu
 
 
 def mmd_tools_setup():
@@ -12,7 +13,10 @@ def mmd_tools_setup():
     except Exception as e:
         print(f"MMD Tools: Failed to load plugin: {e}")
 
+    install_mmd_menu()
+
     print("MMD Tools: userSetup initialized.")
+
 
 # Defer execution until Maya is fully initialized
 cmds.evalDeferred(mmd_tools_setup)

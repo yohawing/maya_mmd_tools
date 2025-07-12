@@ -48,8 +48,11 @@ class TestPmxParser(TestBase):
 
         # マジックナンバーが'PMX 'であることを確認
         self.assertEqual(header.magic, b'PMX ', msg=f"マジックナンバーが不正です: {header.magic}")
-        # バージョンが2.0または2.1であることを確認
-        self.assertIn(header.version, [2.0, 2.1], msg=f"サポート外のバージョンです: {header.version}")
+        # バージョンが2.0または2.1であることを確認（浮動小数点数の誤差を考慮）
+        self.assertTrue(
+            abs(header.version - 2.0) < 0.01 or abs(header.version - 2.1) < 0.01,
+            msg=f"サポート外のバージョンです: {header.version}"
+        )
         # ヘッダサイズが8バイトであることを確認
         self.assertEqual(header.header_size, 8, msg=f"ヘッダサイズが不正です: {header.header_size}")
         # テキストエンコーディングがUTF-16LEまたはUTF-8であることを確認

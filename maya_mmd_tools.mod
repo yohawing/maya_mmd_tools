@@ -1,3 +1,5 @@
-+ MAYAVERSION:2022 maya_mmd_tools 1.0 .
-PYTHONPATH: mmd_tools
++ MAYAVERSION:2024 maya_mmd_tools 1.0 .
+scripts:= .
+MMD_TOOLS_ROOT:= .
 icons: resources/icons
+PYTHONPATH +:= .
