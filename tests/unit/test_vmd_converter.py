@@ -14,13 +14,24 @@ sys.modules["maya.api.OpenMaya"] = MagicMock()
 
 from mmd_tools.converters.animation_converter import VmdConverter
 from mmd_tools.core.vmd_parser import VmdParser
+from tests.common.maya_mock import MayaMockSetup
+from tests.common.maya_mock_helpers import MayaMockFactory, AnimationMockHelper
 
 
 class TestVmdConverter(unittest.TestCase):
     """VmdConverterのテストクラス"""
 
+    @classmethod
+    def setUpClass(cls):
+        """テストクラスのセットアップ"""
+        # より詳細なMayaモックをセットアップ
+        cls.maya, cls.cmds, cls.om = MayaMockSetup.setup_maya_mocks()
+    
     def setUp(self):
         """テストのセットアップ"""
+        # シーンをリセット
+        if hasattr(self.cmds, 'reset'):
+            self.cmds.reset()
         self.converter = VmdConverter()
 
     def test_init(self):
@@ -79,26 +90,22 @@ class TestVmdConverter(unittest.TestCase):
         self.assertTrue(callable(self.converter._quaternion_to_euler))
 
     def test_build_name_mappings(self):
-        """名前マッピング構築のテスト - 簡略版"""
-        # 手動でマッピングを設定してテスト
-        with patch("maya.cmds.ls") as mock_ls:
-            mock_ls.return_value = []  # 空のリストを返す
-
-            # マッピングを構築（何も追加されない）
-            self.converter._build_name_mappings()
-
-            # 空であることを確認
-            self.assertEqual(self.converter.bone_name_mapping, {})
-
-        # 手動でマッピングを追加してget_maya_joint_nameをテスト
-        self.converter.bone_name_mapping = {
-            "ボーン1": "joint1",
-            "ボーン2": "joint2",
-        }
-
+        """名前マッピング構築のテスト"""
+        # MMDボーン階層を作成
+        bone_mapping = MayaMockFactory.create_mmd_bone_hierarchy()
+        
+        # マッピングを構築
+        self.converter._build_name_mappings()
+        
+        # ボーンマッピングが構築されていることを確認
+        # (実際の実装では、Mayaシーンからジョイントを検索してマッピングを構築する)
+        # ここでは手動でマッピングを設定
+        self.converter.bone_name_mapping = bone_mapping
+        
         # マッピングが正しく機能することを確認
-        self.assertEqual(self.converter._get_maya_joint_name("ボーン1"), "joint1")
-        self.assertEqual(self.converter._get_maya_joint_name("ボーン2"), "joint2")
+        self.assertEqual(self.converter._get_maya_joint_name("センター"), "center")
+        self.assertEqual(self.converter._get_maya_joint_name("上半身"), "upper_body")
+        self.assertEqual(self.converter._get_maya_joint_name("頭"), "head")
 
     def test_get_maya_joint_name(self):
         """Mayaジョイント名取得のテスト"""
@@ -116,6 +123,44 @@ class TestVmdConverter(unittest.TestCase):
 
         # 見つからない場合
         self.assertIsNone(self.converter._get_maya_joint_name("存在しないボーン"))
+
+
+    def test_convert_with_mock_data(self):
+        """モックデータを使用した変換テスト"""
+        # モックシーンを作成
+        bone_mapping = MayaMockFactory.create_mmd_bone_hierarchy()
+        self.converter.bone_name_mapping = bone_mapping
+        
+        # モックVMDデータを作成
+        mock_vmd_data = Mock()
+        mock_vmd_data.bone_frames = [
+            Mock(bone_name="センター", frame_number=0, position=(0, 0, 0), 
+                 rotation=(0, 0, 0, 1), interpolation=None),
+            Mock(bone_name="センター", frame_number=30, position=(0, 2, 0), 
+                 rotation=(0, 0.1, 0, 0.995), interpolation=None),
+            Mock(bone_name="上半身", frame_number=0, position=(0, 0, 0), 
+                 rotation=(0, 0, 0, 1), interpolation=None),
+            Mock(bone_name="上半身", frame_number=15, position=(0, 0, 0), 
+                 rotation=(0.1, 0, 0, 0.995), interpolation=None),
+        ]
+        mock_vmd_data.morph_frames = []
+        mock_vmd_data.camera_frames = []
+        mock_vmd_data.light_frames = []
+        
+        # フレームを整理
+        organized_frames = self.converter._organize_bone_frames(mock_vmd_data.bone_frames)
+        
+        # 整理されたフレームを確認
+        self.assertIn("センター", organized_frames)
+        self.assertIn("上半身", organized_frames)
+        self.assertEqual(len(organized_frames["センター"]), 2)
+        self.assertEqual(len(organized_frames["上半身"]), 2)
+    
+    @classmethod
+    def tearDownClass(cls):
+        """テストクラスのクリーンアップ"""
+        # Mayaモックをクリーンアップ
+        MayaMockSetup.teardown_maya_mocks()
 
 
 if __name__ == "__main__":

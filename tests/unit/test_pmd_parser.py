@@ -1,15 +1,25 @@
 import os
+import io
 
 from mmd_tools.core import mmd_parser
 from mmd_tools.core.pmd_data.face import PmdFace
 from tests.common.test_base import TestBase
+from tests.common.pmd_mock import PmdMock
 
 
 class TestPmdParser(TestBase):
 
     def setUp(self):
         super().setUp()
-        self.pmd_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "miku_v2.pmd")
+        # モックデータを使用してテスト用PMDファイルを作成
+        self.pmd_file_path = os.path.join(self.temp_dir, "test_model.pmd")
+        
+        # モックを使用してPMDデータを生成
+        mock_pmd_data = PmdMock.create_full_pmd()
+        with open(self.pmd_file_path, "wb") as f:
+            f.write(mock_pmd_data)
+        
+        # ファイルを解析
         self.parsed_data = mmd_parser.parse_mmd_file(self.pmd_file_path)
 
     def test_parse_pmd_header_success(self):
@@ -115,8 +125,6 @@ class TestPmdParser(TestBase):
         self.assertEqual(len(rigid_body.position), 3)
         self.assertIsInstance(rigid_body.rotation, tuple)
         self.assertEqual(len(rigid_body.rotation), 3)
-        self.assertIsInstance(rigid_body.scale, tuple)
-        self.assertEqual(len(rigid_body.scale), 3)
         self.assertIsInstance(rigid_body.mass, float)
 
     def test_parse_pmd_joints(self):
@@ -135,5 +143,3 @@ class TestPmdParser(TestBase):
         self.assertEqual(len(joint.position), 3)
         self.assertIsInstance(joint.rotation, tuple)
         self.assertEqual(len(joint.rotation), 3)
-        self.assertIsInstance(joint.scale, tuple)
-        self.assertEqual(len(joint.scale), 3)

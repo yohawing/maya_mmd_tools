@@ -113,6 +113,34 @@ Error: mayapy executable not found at C:\Program Files\Autodesk\Maya2024\bin\may
 python tests/run_tests.py --type integration --maya 2023
 ```
 
+## モック機能
+
+### 概要
+
+プロジェクトには、Maya環境なしでユニットテストを実行できる包括的なモックシステムが実装されています。これにより、ビジネスロジックのテストがより高速かつ独立して実行できます。
+
+### モックシステムの構成
+
+```
+tests/common/
+├── maya_mock.py           # Maya APIの基本モック実装
+├── maya_mock_helpers.py   # MMD関連オブジェクトのファクトリ
+├── pmd_mock.py           # PMDファイルフォーマットのモック
+├── pmx_mock.py           # PMXファイルフォーマットのモック
+└── vmd_mock.py           # VMDファイルフォーマットのモック
+```
+
+### 主な機能
+
+- **maya.cmds モック**: ジョイント、メッシュ、アニメーション操作
+- **maya.api.OpenMaya モック**: ベクトル、クォータニオン、行列操作
+- **MMDオブジェクトファクトリ**: 標準ボーン階層、IKセットアップ、メッシュ作成
+- **ファイルフォーマットモック**: テスト用のバイナリデータ生成
+
+### 使用方法
+
+詳細な使用方法については、[モック使用ガイド](mock_usage.md)を参照してください。
+
 ## テストの実行環境
 
 ### 必要な環境

@@ -1,21 +1,29 @@
 import os
+import io
 
 from mmd_tools.core import mmd_parser
 from tests.common.test_base import TestBase
+from tests.common.pmx_mock import PmxMock
 
 
 class TestPmxParser(TestBase):
 
     def setUp(self):
         super().setUp()
-        self.dummy_pmx_path = os.path.join(self.temp_dir, "test_model.pmx")
-        self.pmx_file_path = os.path.join(os.path.dirname(__file__), "..", "data", "Lumine", "荧.pmx")
+        # モックデータを使用してテスト用PMXファイルを作成
+        self.pmx_file_path = os.path.join(self.temp_dir, "test_model.pmx")
+        
+        # モックを使用してPMXデータを生成
+        mock_pmx_data = PmxMock.create_full_pmx()
+        with open(self.pmx_file_path, "wb") as f:
+            f.write(mock_pmx_data)
+        
+        # ファイルを解析
         self.parsed_data = mmd_parser.parse_mmd_file(self.pmx_file_path)
 
     def tearDown(self):
         super().tearDown()
-        if os.path.exists(self.dummy_pmx_path):
-            os.remove(self.dummy_pmx_path)
+        # temp_dirはベースクラスで自動的に削除される
 
     def _create_dummy_pmx_file(self, magic=b'PMX ', version=2.0, global_flags=0, model_name_jp='TestModelJP', model_name_en='TestModelEN', comment_jp='TestCommentJP', comment_en='TestCommentEN', vertices=None):
         """
