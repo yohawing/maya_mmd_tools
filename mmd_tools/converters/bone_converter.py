@@ -12,6 +12,7 @@ from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from ..core import maya_utils
 from ..core.pmd_parser import PmdParser
 from ..core.pmx_parser import PmxParser
+from ..core.constants import SKELETON_GROUP
 
 
 
@@ -29,13 +30,14 @@ class BoneConverter:
         コンストラクタ。
         """
 
-    def convert_pmx_bones(self, pmx_data: PmxParser, mesh_node):
+    def convert_pmx_bones(self, pmx_data: PmxParser, mesh_node, root_group):
         """
         PMXのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
 
         Args:
             pmx_data (PmxParser): 解析されたPMXデータオブジェクト。
             mesh_node (str): スキニングを適用するMayaのメッシュノードの名前。
+            root_group (str): ルートグループの名前。
 
         Returns:
             tuple: (作成されたMayaジョイントノードの名前のリスト,
@@ -43,12 +45,15 @@ class BoneConverter:
         """
         # PMXのボーン階層をMayaのjointノードに変換する
         cmds.select(cl=True)
+        
+        # スケルトングループを作成
+        skeleton_group = cmds.group(empty=True, name=SKELETON_GROUP, parent=root_group)
 
         # ボーン名とインデックスのマッピングを作成
         bone_map = self._create_bone_mapping(pmx_data.bones)
 
         # Mayaジョイントを作成
-        maya_joints = self._create_maya_joints(pmx_data.bones, bone_map, "pmx")
+        maya_joints = self._create_maya_joints(pmx_data.bones, bone_map, "pmx", skeleton_group)
 
         # スキンクラスターを作成
         skin_cluster = self._create_skin_cluster(
@@ -63,13 +68,14 @@ class BoneConverter:
 
         return maya_joints, skin_cluster
 
-    def convert_pmd_bones(self, pmd_data: PmdParser, mesh_node):
+    def convert_pmd_bones(self, pmd_data: PmdParser, mesh_node, root_group):
         """
         PMDのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
 
         Args:
             pmd_data (PmdParser): 解析されたPMDデータオブジェクト。
             mesh_node (str): スキニングを適用するMayaのメッシュノードの名前。
+            root_group (str): ルートグループの名前。
 
         Returns:
             tuple: (作成されたMayaジョイントノードの名前のリスト,
@@ -77,12 +83,15 @@ class BoneConverter:
         """
         # PMDのボーン階層をMayaのjointノードに変換する
         cmds.select(cl=True)
+        
+        # スケルトングループを作成
+        skeleton_group = cmds.group(empty=True, name=SKELETON_GROUP, parent=root_group)
 
         # ボーン名とインデックスのマッピングを作成
         bone_map = self._create_bone_mapping(pmd_data.bones)
 
         # Mayaジョイントを作成
-        maya_joints = self._create_maya_joints(pmd_data.bones, bone_map, "pmd")
+        maya_joints = self._create_maya_joints(pmd_data.bones, bone_map, "pmd", skeleton_group)
 
         # スキンクラスターを作成
         skin_cluster = self._create_skin_cluster(
@@ -125,7 +134,7 @@ class BoneConverter:
 
         return bone_map
 
-    def _create_maya_joints(self, bones, bone_map, format_type):
+    def _create_maya_joints(self, bones, bone_map, format_type, skeleton_group):
         """
         Mayaジョイントを作成する。
 
@@ -133,6 +142,7 @@ class BoneConverter:
             bones: ボーンデータのリスト。
             bone_map (dict): ボーン名のマッピング。
             format_type (str): フォーマットタイプ（'pmx' または 'pmd'）。
+            skeleton_group (str): スケルトングループの名前。
 
         Returns:
             list: 作成されたMayaジョイントノードの名前のリスト。
@@ -169,6 +179,17 @@ class BoneConverter:
             self._set_extra_attributes(i, joint, bone, format_type)
             
             maya_joints.append(joint)
+        
+        # ルートジョイントをスケルトングループにペアレント
+        # 親を持たないジョイントを探す
+        root_joints = []
+        for i, bone in enumerate(bones):
+            if bone.parent_bone_index == -1:
+                root_joints.append(bone_map[i])
+        
+        # ルートジョイントをスケルトングループにペアレント
+        for root_joint in root_joints:
+            cmds.parent(root_joint, skeleton_group)
 
         return maya_joints
     

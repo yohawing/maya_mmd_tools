@@ -6,6 +6,7 @@ from mmd_tools import settings
 from mmd_tools.core import maya_utils
 from mmd_tools.core.pmd_parser import PmdParser
 from mmd_tools.core.pmx_parser import PmxParser
+from mmd_tools.core.constants import GEOMETRY_GROUP, ATTR_MMD_FILE_TYPE, ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN, ATTR_MMD_COMMENT, ATTR_MMD_COMMENT_EN, ATTR_MMD_FILE_VERSION
 
 
 class MeshConverter:
@@ -23,12 +24,13 @@ class MeshConverter:
         self.pmx_filepath = pmx_filepath
         self.texture_dir = os.path.dirname(pmx_filepath)
 
-    def convert_pmx_mesh(self, pmx_data: PmxParser) -> tuple[str, str]:
+    def convert_pmx_mesh(self, pmx_data: PmxParser, root_group: str) -> tuple[str, str]:
         """
         PMXのメッシュデータをMayaのメッシュノードに変換する。
 
         Args:
             pmx_data (pmx_parser.PmxParser): 解析されたPMXデータオブジェクト。
+            root_group (str): ルートグループの名前。
 
         Returns:
             str: 作成されたMayaメッシュをまとめるグループノードの名前。
@@ -40,18 +42,18 @@ class MeshConverter:
         all_materials = pmx_data.materials
         all_textures = pmx_data.textures
 
-        # モデル名のグループを作成
-        model_group = cmds.group(empty=True, name=model_name)
-
-        # カスタムアトリビュートの追加
+        # ジオメトリグループを作成
+        geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
+        
+        # カスタムアトリビュートをルートグループに追加
         maya_utils.set_custom_attributes(
-            model_group,
+            root_group,
             {
-                "mmd_file_type": pmx_data.header.magic,
-                "mmd_model_name": pmx_data.header.model_name,
-                "mmd_model_name_en": pmx_data.header.model_name_english,
-                "mmd_comment": pmx_data.header.comment,
-                "mmd_comment_en": pmx_data.header.comment_english,
+                ATTR_MMD_FILE_TYPE: pmx_data.header.magic,
+                ATTR_MMD_MODEL_NAME: pmx_data.header.model_name,
+                ATTR_MMD_MODEL_NAME_EN: pmx_data.header.model_name_english,
+                ATTR_MMD_COMMENT: pmx_data.header.comment,
+                ATTR_MMD_COMMENT_EN: pmx_data.header.comment_english,
             },
         )
 
@@ -63,7 +65,7 @@ class MeshConverter:
             all_faces,
             all_materials,
             all_textures,
-            model_group,
+            geo_group,
         )
 
         # 設定からマテリアルごとのメッシュ分割設定を取得
@@ -73,15 +75,16 @@ class MeshConverter:
         # if separate_by_material:
         #     maya_utils.split_mesh_by_material(model_group, all_materials)
 
-        cmds.select(model_group)
-        return model_group, created_mesh
+        cmds.select(geo_group)
+        return geo_group, created_mesh
 
-    def convert_pmd_mesh(self, pmd_data: PmdParser):
+    def convert_pmd_mesh(self, pmd_data: PmdParser, root_group: str):
         """
         PMDのメッシュデータをMayaのメッシュノードに変換する。
 
         Args:
             pmd_data (PmdParser): 解析されたPMDデータオブジェクト。
+            root_group (str): ルートグループの名前。
 
         Returns:
             str: 作成されたMayaメッシュノードの名前。
@@ -93,18 +96,19 @@ class MeshConverter:
         all_faces = pmd_data.faces
         all_materials = pmd_data.materials
 
-        # モデル名のグループを作成
-        group_node = cmds.group(empty=True, name="Geo")
-        # カスタムアトリビュートの追加
+        # ジオメトリグループを作成
+        geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
+        
+        # カスタムアトリビュートをルートグループに追加
         maya_utils.set_custom_attributes(
-            group_node,
+            root_group,
             {
-                "mmd_file_type": pmd_data.header.magic,
-                "mmd_file_version": pmd_data.header.version,
-                "mmd_model_name": pmd_data.header.model_name,
-                "mmd_model_name_en": pmd_data.header.model_name_english,
-                "mmd_comment": pmd_data.header.comment,
-                "mmd_comment_en": pmd_data.header.comment_english,
+                ATTR_MMD_FILE_TYPE: pmd_data.header.magic,
+                ATTR_MMD_FILE_VERSION: pmd_data.header.version,
+                ATTR_MMD_MODEL_NAME: pmd_data.header.model_name,
+                ATTR_MMD_MODEL_NAME_EN: pmd_data.header.model_name_english,
+                ATTR_MMD_COMMENT: pmd_data.header.comment,
+                ATTR_MMD_COMMENT_EN: pmd_data.header.comment_english,
             },
         )
 
@@ -114,14 +118,14 @@ class MeshConverter:
         )
 
         created_mesh = self._create_unified_mesh(
-            model_name, all_vertices, all_faces, all_materials, None, group_node
+            model_name, all_vertices, all_faces, all_materials, None, geo_group
         )
 
         if separate_by_material:
-            maya_utils.split_mesh_by_material(group_node, all_materials)
+            maya_utils.split_mesh_by_material(geo_group, all_materials)
 
-        cmds.select(group_node)
-        return group_node, created_mesh
+        cmds.select(geo_group)
+        return geo_group, created_mesh
 
     def _create_unified_mesh(
         self,

@@ -7,6 +7,7 @@ from ..core.pmd_data.rigid_body import PmdRigidBody
 from ..core.pmd_data.joint import PmdJoint
 from ..core.pmx_data.rigid_body import PmxRigidBody
 from ..core.pmx_data.joint import PmxJoint
+from ..core.constants import PHYSICS_GROUP, RIGID_BODIES_GROUP, CONSTRAINTS_GROUP, PHYSICS_TYPE_HAIR, PHYSICS_TYPE_CLOTH, PHYSICS_TYPE_RIGID, PHYSICS_TYPE_SOFT
 
 
 class PhysicsConverter:
@@ -16,11 +17,7 @@ class PhysicsConverter:
     主に髪の毛やスカートなどの布物理シミュレーションを実現します。
     """
 
-    # 物理タイプの定義
-    PHYSICS_TYPE_HAIR = "hair"
-    PHYSICS_TYPE_CLOTH = "cloth"
-    PHYSICS_TYPE_RIGID = "rigid"
-    PHYSICS_TYPE_SOFT = "soft"
+    # 物理タイプは constants.py からインポートして使用
 
     def __init__(self, settings: Optional[Dict] = None):
         """
@@ -59,7 +56,7 @@ class PhysicsConverter:
         self.logger.info("PhysicsConverterを初期化しました")
 
     def convert_pmd_physics(
-        self, pmd_data, bone_joints: Dict[str, str]
+        self, pmd_data, bone_joints: Dict[str, str], root_group: str
     ) -> Tuple[List[str], List[str]]:
         """
         PMDの物理演算データをMayaのnClothシステムに変換する。
@@ -67,6 +64,7 @@ class PhysicsConverter:
         Args:
             pmd_data: 解析されたPMDデータオブジェクト。
             bone_joints (Dict[str, str]): ボーン名とMayaジョイント名のマッピング辞書。
+            root_group (str): ルートグループの名前。
 
         Returns:
             tuple: (作成されたnClothノードのリスト, 作成されたコンストレインノードのリスト)。
@@ -74,6 +72,11 @@ class PhysicsConverter:
         self.logger.info("PMD物理データの変換を開始します")
 
         try:
+            # 物理グループを作成
+            physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
+            rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
+            constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
+            
             # Nucleusソルバーを作成または取得
             self._ensure_nucleus_solver()
 
@@ -88,27 +91,27 @@ class PhysicsConverter:
             # 各グループに対して適切な物理システムを作成
             for group_type, rigid_bodies in rigid_body_groups.items():
                 if (
-                    group_type == self.PHYSICS_TYPE_HAIR
+                    group_type == PHYSICS_TYPE_HAIR
                     and self.settings["enable_hair_physics"]
                 ):
-                    self._create_hair_physics(rigid_bodies, bone_joints, bone_index_map)
+                    self._create_hair_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
                 elif (
-                    group_type == self.PHYSICS_TYPE_CLOTH
+                    group_type == PHYSICS_TYPE_CLOTH
                     and self.settings["enable_cloth_physics"]
                 ):
                     self._create_cloth_physics(
-                        rigid_bodies, bone_joints, bone_index_map
+                        rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group
                     )
-                elif group_type == self.PHYSICS_TYPE_RIGID:
+                elif group_type == PHYSICS_TYPE_RIGID:
                     self._create_rigid_physics(
-                        rigid_bodies, bone_joints, bone_index_map
+                        rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group
                     )
                 else:
                     self.logger.debug(f"物理タイプ '{group_type}' はスキップされました")
 
             # ジョイント（コンストレイン）を作成
             if hasattr(pmd_data, "joints") and pmd_data.joints:
-                self._create_constraints(pmd_data.joints, pmd_data.rigid_bodies)
+                self._create_constraints(pmd_data.joints, pmd_data.rigid_bodies, constraints_group)
 
             self.logger.info(
                 f"PMD物理変換完了: nCloth={len(self.created_ncloth_nodes)}, "
@@ -123,7 +126,7 @@ class PhysicsConverter:
             raise
 
     def convert_pmx_physics(
-        self, pmx_data, bone_joints: Dict[str, str]
+        self, pmx_data, bone_joints: Dict[str, str], root_group: str
     ) -> Tuple[List[str], List[str]]:
         """
         PMXの物理演算データをMayaのnClothシステムに変換する。
@@ -131,6 +134,7 @@ class PhysicsConverter:
         Args:
             pmx_data: 解析されたPMXデータオブジェクト。
             bone_joints (Dict[str, str]): ボーン名とMayaジョイント名のマッピング辞書。
+            root_group (str): ルートグループの名前。
 
         Returns:
             tuple: (作成されたnClothノードのリスト, 作成されたコンストレインノードのリスト)。
@@ -138,6 +142,11 @@ class PhysicsConverter:
         self.logger.info("PMX物理データの変換を開始します")
 
         try:
+            # 物理グループを作成
+            physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
+            rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
+            constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
+            
             # Nucleusソルバーを作成または取得
             self._ensure_nucleus_solver()
 
@@ -152,27 +161,27 @@ class PhysicsConverter:
             # 各グループに対して適切な物理システムを作成
             for group_type, rigid_bodies in rigid_body_groups.items():
                 if (
-                    group_type == self.PHYSICS_TYPE_HAIR
+                    group_type == PHYSICS_TYPE_HAIR
                     and self.settings["enable_hair_physics"]
                 ):
-                    self._create_hair_physics(rigid_bodies, bone_joints, bone_index_map)
+                    self._create_hair_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
                 elif (
-                    group_type == self.PHYSICS_TYPE_CLOTH
+                    group_type == PHYSICS_TYPE_CLOTH
                     and self.settings["enable_cloth_physics"]
                 ):
                     self._create_cloth_physics(
-                        rigid_bodies, bone_joints, bone_index_map
+                        rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group
                     )
-                elif group_type == self.PHYSICS_TYPE_RIGID:
+                elif group_type == PHYSICS_TYPE_RIGID:
                     self._create_rigid_physics(
-                        rigid_bodies, bone_joints, bone_index_map
+                        rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group
                     )
                 else:
                     self.logger.debug(f"物理タイプ '{group_type}' はスキップされました")
 
             # ジョイント（コンストレイン）を作成
             if hasattr(pmx_data, "joints") and pmx_data.joints:
-                self._create_constraints(pmx_data.joints, pmx_data.rigid_bodies)
+                self._create_constraints(pmx_data.joints, pmx_data.rigid_bodies, constraints_group)
 
             self.logger.info(
                 f"PMX物理変換完了: nCloth={len(self.created_ncloth_nodes)}, "
@@ -255,15 +264,15 @@ class PhysicsConverter:
             Dict[str, List]: 物理タイプをキーとした剛体のグループ辞書。
         """
         groups = {
-            self.PHYSICS_TYPE_HAIR: [],
-            self.PHYSICS_TYPE_CLOTH: [],
-            self.PHYSICS_TYPE_RIGID: [],
-            self.PHYSICS_TYPE_SOFT: [],
+            PHYSICS_TYPE_HAIR: [],
+            PHYSICS_TYPE_CLOTH: [],
+            PHYSICS_TYPE_RIGID: [],
+            PHYSICS_TYPE_SOFT: [],
         }
 
         if not self.settings.get("auto_detect_type", True):
             # 自動検出が無効の場合、すべてを剛体として扱う
-            groups[self.PHYSICS_TYPE_RIGID] = rigid_bodies
+            groups[PHYSICS_TYPE_RIGID] = rigid_bodies
             return groups
 
         for rb in rigid_bodies:
@@ -298,34 +307,35 @@ class PhysicsConverter:
 
         for keyword in hair_keywords:
             if keyword in name_lower:
-                return self.PHYSICS_TYPE_HAIR
+                return PHYSICS_TYPE_HAIR
 
         for keyword in cloth_keywords:
             if keyword in name_lower:
-                return self.PHYSICS_TYPE_CLOTH
+                return PHYSICS_TYPE_CLOTH
 
         for keyword in soft_keywords:
             if keyword in name_lower:
-                return self.PHYSICS_TYPE_SOFT
+                return PHYSICS_TYPE_SOFT
 
         # 形状ベースの判定
         # カプセル形状は髪の可能性が高い
         if rigid_body.shape_type == 1:  # カプセル
-            return self.PHYSICS_TYPE_HAIR
+            return PHYSICS_TYPE_HAIR
         # 大きな箱形状は布の可能性
         elif rigid_body.shape_type == 0:  # 箱
             # サイズが大きい場合は布と判定
             if (rigid_body.size[0] * rigid_body.size[1] * rigid_body.size[2]) > 10.0:
-                return self.PHYSICS_TYPE_CLOTH
+                return PHYSICS_TYPE_CLOTH
 
         # デフォルトは剛体
-        return self.PHYSICS_TYPE_RIGID
+        return PHYSICS_TYPE_RIGID
 
     def _create_hair_physics(
         self,
         rigid_bodies: List,
         bone_joints: Dict[str, str],
         bone_index_map: Dict[int, str],
+        rigid_bodies_group: str,
     ):
         """
         髪用の物理シミュレーションを作成する。
@@ -334,6 +344,7 @@ class PhysicsConverter:
             rigid_bodies: 髪として判定された剛体のリスト。
             bone_joints: ボーン名とMayaジョイント名のマッピング。
             bone_index_map: ボーンインデックスからMayaジョイント名へのマッピング。
+            rigid_bodies_group: 剛体グループの名前。
         """
         self.logger.debug(f"髪物理の作成を開始: {len(rigid_bodies)}個の剛体")
 
@@ -356,6 +367,8 @@ class PhysicsConverter:
                     hair_system = self._create_nhair_system(curve, rb)
                     if hair_system:
                         self.created_ncloth_nodes.append(hair_system)
+                        # ノードを剛体グループに配置
+                        cmds.parent(hair_system, rigid_bodies_group)
 
             except Exception as e:
                 self.logger.error(f"髪物理作成中にエラー: {rb.name} - {str(e)}")
@@ -365,6 +378,7 @@ class PhysicsConverter:
         rigid_bodies: List,
         bone_joints: Dict[str, str],
         bone_index_map: Dict[int, str],
+        rigid_bodies_group: str,
     ):
         """
         布用の物理シミュレーションを作成する。
@@ -373,6 +387,7 @@ class PhysicsConverter:
             rigid_bodies: 布として判定された剛体のリスト。
             bone_joints: ボーン名とMayaジョイント名のマッピング。
             bone_index_map: ボーンインデックスからMayaジョイント名へのマッピング。
+            rigid_bodies_group: 剛体グループの名前。
         """
         self.logger.debug(f"布物理の作成を開始: {len(rigid_bodies)}個の剛体")
 
@@ -385,6 +400,8 @@ class PhysicsConverter:
                     ncloth = self._create_ncloth(proxy_mesh, rb)
                     if ncloth:
                         self.created_ncloth_nodes.append(ncloth)
+                        # ノードを剛体グループに配置
+                        cmds.parent(ncloth, rigid_bodies_group)
 
             except Exception as e:
                 self.logger.error(f"布物理作成中にエラー: {rb.name} - {str(e)}")
@@ -394,6 +411,7 @@ class PhysicsConverter:
         rigid_bodies: List,
         bone_joints: Dict[str, str],
         bone_index_map: Dict[int, str],
+        rigid_bodies_group: str,
     ):
         """
         剛体物理を作成する。
@@ -402,6 +420,7 @@ class PhysicsConverter:
             rigid_bodies: 剛体として判定された剛体のリスト。
             bone_joints: ボーン名とMayaジョイント名のマッピング。
             bone_index_map: ボーンインデックスからMayaジョイント名へのマッピング。
+            rigid_bodies_group: 剛体グループの名前。
         """
         self.logger.debug(f"剛体物理の作成を開始: {len(rigid_bodies)}個の剛体")
 
@@ -413,17 +432,20 @@ class PhysicsConverter:
                     nrigid = self._create_nrigid(collision_obj, rb)
                     if nrigid:
                         self.created_nrigid_nodes.append(nrigid)
+                        # ノードを剛体グループに配置
+                        cmds.parent(nrigid, rigid_bodies_group)
 
             except Exception as e:
                 self.logger.error(f"剛体物理作成中にエラー: {rb.name} - {str(e)}")
 
-    def _create_constraints(self, joints: List, rigid_bodies: List):
+    def _create_constraints(self, joints: List, rigid_bodies: List, constraints_group: str):
         """
         MMDのジョイントデータからMayaのコンストレインを作成する。
 
         Args:
             joints: ジョイントデータのリスト。
             rigid_bodies: 剛体データのリスト。
+            constraints_group: コンストレイントグループの名前。
         """
         self.logger.debug(f"コンストレインの作成を開始: {len(joints)}個のジョイント")
 

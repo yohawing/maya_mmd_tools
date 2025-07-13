@@ -110,26 +110,32 @@
 
 ### Mayaシーンの構成
 
-以下の構成に従って、Mayaシーンを整理します。
+MMDモデルをインポートする際、以下の階層構造でシーンを整理します。
 
 ```
-CharacterName_Grp
-├── Geometry_Grp (またはModel_Grp)
-│   ├── CharacterName_Mesh
-├── Skeleton_Grp (またはJoints_Grp)
-│   ├── master
-│   ├── manipulation_center
-├── Controls_Grp (またはRig_Grp)
-├── Simulation_Grp
-│   ├── CharacterName_nucleus
-│   ├── Clothing_Grp
-│   ├── Hair_Grp
-│   └── Collision_Grp
-└── Extra_Grp (補助オブジェクト)
-    ├── Locators_Grp
-    ├── Constraints_Grp
-    └── Utility_Nodes_Grp
+[モデル名]_root              # ルートグループ
+├── Geometry                 # ジオメトリグループ
+│   └── [モデル名]_mesh     # メッシュ
+├── Skeleton                 # スケルトングループ
+│   └── [ボーン階層]        # ジョイント階層
+├── Morphs                   # モーフグループ（必要に応じて）
+│   └── [モーフターゲット]  # ブレンドシェイプターゲット
+└── Physics                  # 物理グループ
+    ├── RigidBodies         # 剛体グループ
+    │   └── [各剛体]       # nCloth、nRigidノード
+    └── Constraints         # コンストレイントグループ
+        └── [各コンストレイント]  # 物理コンストレイント
 ```
+
+- **[モデル名]_root**: モデル全体を含む最上位グループ。モデル情報のカスタムアトリビュートを保持
+- **Geometry**: メッシュオブジェクトを格納。マテリアルはメッシュに直接割り当てられる
+- **Skeleton**: ボーン（ジョイント）階層を格納。元のMMDボーン階層を保持
+- **Morphs**: モーフ関連のノードを格納（現在は使用されない場合が多い）
+- **Physics**: 物理演算関連のノードを格納
+  - **RigidBodies**: 剛体（nCloth、nHair、nRigid）
+  - **Constraints**: 物理コンストレイント
+
+この構成により、複雑なMMDモデルでも整理された状態で管理でき、作業効率が向上します。
 
 ## 日本語文字列変換設計
 
