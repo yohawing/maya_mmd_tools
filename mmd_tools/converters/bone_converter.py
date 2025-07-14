@@ -69,8 +69,21 @@ class BoneConverter:
             print(f"\n{len(ik_chains)}個のIKチェーンを検出しました")
             ik_handles = self._create_maya_ik_handles(ik_chains)
             print(f"{len(ik_handles)}個のIKハンドルを作成しました")
+        
+        # ボーンのローカル軸を設定
+        self._apply_bone_local_axes(pmx_data.bones, maya_joints)
+        
+        # 準標準ボーンを追加
+        semi_standard_bones = self._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
+        if semi_standard_bones:
+            print(f"\n{len(semi_standard_bones)}個の準標準ボーンを追加しました")
+        
+        # 付与ボーンの設定
+        given_constraints = self._setup_given_parent_bones(pmx_data.bones, maya_joints)
+        if given_constraints:
+            print(f"\n{len(given_constraints)}個の付与関係を設定しました")
 
-        # TODO: ボーンのローカル軸、変形階層、表示操作などを正確に再現する。
+        # TODO: 変形階層、表示操作などを正確に再現する。
 
         return maya_joints, skin_cluster
 
@@ -116,6 +129,11 @@ class BoneConverter:
             print(f"\n{len(ik_chains)}個のIKチェーンを検出しました")
             ik_handles = self._create_maya_ik_handles(ik_chains)
             print(f"{len(ik_handles)}個のIKハンドルを作成しました")
+        
+        # 準標準ボーンを追加（PMDではローカル軸情報がないためスキップ）
+        semi_standard_bones = self._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
+        if semi_standard_bones:
+            print(f"\n{len(semi_standard_bones)}個の準標準ボーンを追加しました")
 
         # TODO: ボーンのローカル軸を正確に再現する。
 
@@ -599,7 +617,7 @@ class BoneConverter:
             
             try:
                 # ikHandleを作成
-                ik_handle, effector = maya_utils.create_ik_handle(
+                ik_handle, _ = maya_utils.create_ik_handle(
                     start_joint=start_joint,
                     end_joint=end_joint,
                     solver='ikRPsolver',  # MMDは通常RPソルバーを使用
@@ -623,7 +641,6 @@ class BoneConverter:
                 
                 ik_handle_info = {
                     'ik_handle': ik_handle,
-                    'effector': effector,
                     'ik_bone': chain['ik_bone'],
                     'start_joint': start_joint,
                     'end_joint': end_joint,
@@ -674,3 +691,294 @@ class BoneConverter:
         # 警告が必要な場合はMayaの警告として表示
         if validation_result["missing_bones"]:
             cmds.warning(f"標準ボーンが{len(validation_result['missing_bones'])}個不足しています。詳細はスクリプトエディタを確認してください。")
+    
+    def _set_bone_local_axis(self, joint, bone):
+        """
+        PMXボーンのローカル軸情報をMayaジョイントに適用する。
+        
+        Args:
+            joint (str): Mayaジョイント名
+            bone: PMXボーンオブジェクト
+        """
+        if hasattr(bone, 'get_flag') and bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
+            x_axis = bone.x_axis_direction
+            z_axis = bone.z_axis_direction
+            
+            # Y軸を外積で計算
+            y_axis = maya_utils.cross_product(z_axis, x_axis)
+            
+            # ジョイントオリエンテーションの設定
+            matrix = maya_utils.create_matrix_from_axes(x_axis, y_axis, z_axis)
+            rotation = maya_utils.matrix_to_euler(matrix)
+            
+            cmds.setAttr(f"{joint}.jointOrientX", rotation[0])
+            cmds.setAttr(f"{joint}.jointOrientY", rotation[1])
+            cmds.setAttr(f"{joint}.jointOrientZ", rotation[2])
+            
+            print(f"ローカル軸を設定: {joint}")
+    
+    def _apply_bone_local_axes(self, bones, maya_joints):
+        """
+        全てのボーンにローカル軸を適用する。
+        
+        Args:
+            bones: ボーンデータのリスト
+            maya_joints (list): Mayaジョイント名のリスト
+        """
+        for i, bone in enumerate(bones):
+            if i < len(maya_joints):
+                self._set_bone_local_axis(maya_joints[i], bone)
+    
+    def _find_joint_by_name(self, maya_joints, search_names):
+        """
+        ボーン名のリストから対応するMayaジョイントを検索する。
+        
+        Args:
+            maya_joints (list): Mayaジョイント名のリスト
+            search_names (list): 検索するボーン名のリスト（日本語、英語）
+            
+        Returns:
+            str: 見つかったジョイント名、見つからない場合はNone
+        """
+        for joint in maya_joints:
+            # ジョイント名を正規化して比較
+            joint_lower = joint.lower()
+            for search_name in search_names:
+                if search_name.lower() in joint_lower:
+                    return joint
+        
+        return None
+    
+    def _add_semi_standard_bones(self, maya_joints, bone_map, skeleton_group):
+        """
+        準標準ボーンを追加する。
+        
+        Args:
+            maya_joints (list): 作成されたMayaジョイントのリスト
+            bone_map (dict): ボーンインデックスからジョイント名へのマッピング
+            skeleton_group (str): スケルトングループ名
+            
+        Returns:
+            dict: 追加された準標準ボーンの辞書
+        """
+        semi_standard_bones = {}
+        
+        # 全ての親
+        parent_of_all = cmds.group(empty=True, name="parent_of_all", parent=skeleton_group)
+        semi_standard_bones["parent_of_all"] = parent_of_all
+        
+        # スケルトングループ直下のルートジョイントを全ての親の子にする
+        for child in cmds.listRelatives(skeleton_group, children=True, type="joint") or []:
+            # 親を持たないルートジョイントのみを移動
+            parent = cmds.listRelatives(child, parent=True)
+            if parent and parent[0] == skeleton_group:
+                cmds.parent(child, parent_of_all)
+        
+        # グルーブ
+        center_joint = self._find_joint_by_name(
+            maya_joints, ["center", "センター", "centre"]
+        )
+        if center_joint:
+            # センターの位置を取得
+            center_pos = cmds.xform(center_joint, query=True, worldSpace=True, translation=True)
+            
+            # グルーブを作成
+            groove = cmds.group(empty=True, name="groove", parent=parent_of_all)
+            cmds.xform(groove, worldSpace=True, translation=center_pos)
+            semi_standard_bones["groove"] = groove
+            
+            # センターをグルーブの子にする
+            cmds.parent(center_joint, groove)
+            print(f"グルーブボーンを追加: {groove}")
+        
+        # 腰ボーン（下半身と足の間）
+        lower_body_joint = self._find_joint_by_name(
+            maya_joints, ["lower_body", "下半身", "lowerbody"]
+        )
+        left_leg_joint = self._find_joint_by_name(
+            maya_joints, ["left_leg", "左足", "leftleg", "left_thigh", "左もも"]
+        )
+        
+        if lower_body_joint and left_leg_joint:
+            # 下半身と左足の中間位置を計算
+            lower_body_pos = cmds.xform(lower_body_joint, query=True, worldSpace=True, translation=True)
+            left_leg_pos = cmds.xform(left_leg_joint, query=True, worldSpace=True, translation=True)
+            
+            waist_pos = [
+                (lower_body_pos[0] + left_leg_pos[0]) / 2,
+                (lower_body_pos[1] + left_leg_pos[1]) / 2,
+                (lower_body_pos[2] + left_leg_pos[2]) / 2
+            ]
+            
+            # 腰ボーンを作成
+            cmds.select(clear=True)
+            waist = cmds.joint(name="waist", position=waist_pos)
+            semi_standard_bones["waist"] = waist
+            
+            # 階層を設定（下半身の子、足の親）
+            cmds.parent(waist, lower_body_joint)
+            
+            # 左右の足を腰の子にする
+            right_leg_joint = self._find_joint_by_name(
+                maya_joints, ["right_leg", "右足", "rightleg", "right_thigh", "右もも"]
+            )
+            
+            # 左足を腰の子にする（既に存在確認済み）
+            cmds.parent(left_leg_joint, waist)
+            if right_leg_joint:
+                cmds.parent(right_leg_joint, waist)
+            
+            print(f"腰ボーンを追加: {waist}")
+        
+        return semi_standard_bones
+    
+    def _setup_given_parent_bones(self, bones, maya_joints):
+        """
+        付与ボーンの設定を行う。
+        
+        Args:
+            bones: ボーンデータのリスト
+            maya_joints (list): Mayaジョイント名のリスト
+            
+        Returns:
+            list: 作成されたコンストレイントのリスト
+        """
+        constraints = []
+        
+        for i, bone in enumerate(bones):
+            if i >= len(maya_joints):
+                continue
+                
+            joint = maya_joints[i]
+            
+            # PMXボーンの場合のみ付与設定をチェック
+            if not hasattr(bone, 'get_flag'):
+                continue
+            
+            # 回転付与
+            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE):
+                parent_index = bone.given_parent_bone_index
+                if 0 <= parent_index < len(maya_joints):
+                    parent_joint = maya_joints[parent_index]
+                    given_rate = bone.given_rate
+                    
+                    # 付与率が1.0の場合は通常のorientConstraint
+                    if abs(given_rate - 1.0) < 0.001:
+                        constraint = cmds.orientConstraint(
+                            parent_joint, joint,
+                            maintainOffset=True,
+                            weight=1.0
+                        )[0]
+                    else:
+                        # 付与率が1.0でない場合は、エクスプレッションで制御
+                        constraint = self._create_partial_rotation_constraint(
+                            parent_joint, joint, given_rate
+                        )
+                    
+                    constraints.append(constraint)
+                    print(f"回転付与を設定: {joint} <- {parent_joint} (rate={given_rate})")
+            
+            # 移動付与
+            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_MOVE):
+                parent_index = bone.given_parent_bone_index
+                if 0 <= parent_index < len(maya_joints):
+                    parent_joint = maya_joints[parent_index]
+                    given_rate = bone.given_rate
+                    
+                    # 付与率が1.0の場合は通常のpointConstraint
+                    if abs(given_rate - 1.0) < 0.001:
+                        constraint = cmds.pointConstraint(
+                            parent_joint, joint,
+                            maintainOffset=True,
+                            weight=1.0
+                        )[0]
+                    else:
+                        # 付与率が1.0でない場合は、エクスプレッションで制御
+                        constraint = self._create_partial_position_constraint(
+                            parent_joint, joint, given_rate
+                        )
+                    
+                    constraints.append(constraint)
+                    print(f"移動付与を設定: {joint} <- {parent_joint} (rate={given_rate})")
+        
+        return constraints
+    
+    def _create_partial_rotation_constraint(self, parent_joint, child_joint, rate):
+        """
+        部分的な回転付与を作成する（エクスプレッション使用）。
+        
+        Args:
+            parent_joint (str): 親ジョイント名
+            child_joint (str): 子ジョイント名
+            rate (float): 付与率
+            
+        Returns:
+            str: エクスプレッション名
+        """
+        # ベース回転を保存するためのロケータを作成
+        base_locator = cmds.spaceLocator(name=f"{child_joint}_base_rotation")[0]
+        cmds.parent(base_locator, child_joint)
+        cmds.setAttr(f"{base_locator}.v", 0)  # 非表示
+        
+        # エクスプレッションを作成
+        expr_name = f"{child_joint}_given_rotation_expr"
+        expression = f"""
+// 親の回転を取得
+float $parentRotX = `getAttr {parent_joint}.rotateX`;
+float $parentRotY = `getAttr {parent_joint}.rotateY`;
+float $parentRotZ = `getAttr {parent_joint}.rotateZ`;
+
+// ベース回転を取得
+float $baseRotX = `getAttr {base_locator}.rotateX`;
+float $baseRotY = `getAttr {base_locator}.rotateY`;
+float $baseRotZ = `getAttr {base_locator}.rotateZ`;
+
+// 付与率を適用
+{child_joint}.rotateX = $baseRotX + ($parentRotX * {rate});
+{child_joint}.rotateY = $baseRotY + ($parentRotY * {rate});
+{child_joint}.rotateZ = $baseRotZ + ($parentRotZ * {rate});
+"""
+        
+        cmds.expression(name=expr_name, string=expression)
+        
+        return expr_name
+    
+    def _create_partial_position_constraint(self, parent_joint, child_joint, rate):
+        """
+        部分的な位置付与を作成する（エクスプレッション使用）。
+        
+        Args:
+            parent_joint (str): 親ジョイント名
+            child_joint (str): 子ジョイント名
+            rate (float): 付与率
+            
+        Returns:
+            str: エクスプレッション名
+        """
+        # ベース位置を保存するためのロケータを作成
+        base_locator = cmds.spaceLocator(name=f"{child_joint}_base_position")[0]
+        cmds.parent(base_locator, child_joint)
+        cmds.setAttr(f"{base_locator}.v", 0)  # 非表示
+        
+        # エクスプレッションを作成
+        expr_name = f"{child_joint}_given_position_expr"
+        expression = f"""
+// 親の移動を取得
+float $parentTX = `getAttr {parent_joint}.translateX`;
+float $parentTY = `getAttr {parent_joint}.translateY`;
+float $parentTZ = `getAttr {parent_joint}.translateZ`;
+
+// ベース位置を取得
+float $baseTX = `getAttr {base_locator}.translateX`;
+float $baseTY = `getAttr {base_locator}.translateY`;
+float $baseTZ = `getAttr {base_locator}.translateZ`;
+
+// 付与率を適用
+{child_joint}.translateX = $baseTX + ($parentTX * {rate});
+{child_joint}.translateY = $baseTY + ($parentTY * {rate});
+{child_joint}.translateZ = $baseTZ + ($parentTZ * {rate});
+"""
+        
+        cmds.expression(name=expr_name, string=expression)
+        
+        return expr_name
