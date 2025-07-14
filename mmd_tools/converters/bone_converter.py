@@ -1,12 +1,7 @@
-from typing import Type, List, Tuple, Dict, Optional
-import math
+from typing import List, Tuple, Dict
 
-import maya
 import maya.cmds as cmds
-import maya.api.OpenMaya as om
 
-from mmd_tools.core import utils
-from mmd_tools.core.pmd_data import bone
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 from ..core import maya_utils
@@ -67,9 +62,15 @@ class BoneConverter:
         
         # ボーン構造の検証を実行
         self.print_validation_report(pmx_data.bones)
+        
+        # IKチェーンを抽出してMayaのIKハンドルを作成
+        ik_chains = self._extract_ik_chains(pmx_data.bones, bone_map)
+        if ik_chains:
+            print(f"\n{len(ik_chains)}個のIKチェーンを検出しました")
+            ik_handles = self._create_maya_ik_handles(ik_chains)
+            print(f"{len(ik_handles)}個のIKハンドルを作成しました")
 
         # TODO: ボーンのローカル軸、変形階層、表示操作などを正確に再現する。
-        # TODO: IKボーンが存在する場合は、MayaのikHandleを作成し、適切な設定を行う。
 
         return maya_joints, skin_cluster
 
@@ -108,9 +109,15 @@ class BoneConverter:
         
         # ボーン構造の検証を実行
         self.print_validation_report(pmd_data.bones)
+        
+        # IKチェーンを抽出してMayaのIKハンドルを作成
+        ik_chains = self._extract_ik_chains(pmd_data.bones, bone_map, pmd_data.ik_data)
+        if ik_chains:
+            print(f"\n{len(ik_chains)}個のIKチェーンを検出しました")
+            ik_handles = self._create_maya_ik_handles(ik_chains)
+            print(f"{len(ik_handles)}個のIKハンドルを作成しました")
 
         # TODO: ボーンのローカル軸を正確に再現する。
-        # TODO: IKボーンが存在する場合は、MayaのikHandleを作成し、適切な設定を行う。
 
         return maya_joints, skin_cluster
 
@@ -486,6 +493,173 @@ class BoneConverter:
             "total_bones": len(bones),
             "standard_bones_found": len(bone_mapping)
         }
+    
+    def _extract_ik_chains(self, bones, bone_map, ik_data=None):
+        """
+        PMX/PMDボーンからIKチェーン情報を抽出する。
+        
+        Args:
+            bones: ボーンデータのリスト
+            bone_map (dict): ボーンインデックスからMayaジョイント名へのマッピング
+            ik_data: PMDの場合のIKデータリスト（オプション）
+            
+        Returns:
+            list: IKチェーン情報のリスト
+        """
+        ik_chains = []
+        
+        for i, bone in enumerate(bones):
+            # PMXボーンの場合
+            if hasattr(bone, 'bone_flag') and hasattr(bone, 'get_flag'):
+                if bone.get_flag(PmxBoneFlag.IK):
+                    ik_chain = {
+                        'ik_bone': bone_map[i],
+                        'ik_bone_index': i,
+                        'target_bone': bone_map.get(bone.ik_target_bone_index),
+                        'target_bone_index': bone.ik_target_bone_index,
+                        'loop_count': bone.ik_loop_count,
+                        'unit_angle': bone.ik_limit_angle,  # ラジアン単位
+                        'ik_links': []
+                    }
+                    
+                    # IKリンクの処理
+                    if hasattr(bone, 'ik_links'):
+                        for link in bone.ik_links:
+                            link_info = {
+                                'bone': bone_map.get(link.ik_bone_index),
+                                'bone_index': link.ik_bone_index,
+                                'angle_limit': link.angle_limit if hasattr(link, 'angle_limit') else False,
+                                'limit_min': link.limit_min if hasattr(link, 'limit_min') else None,
+                                'limit_max': link.limit_max if hasattr(link, 'limit_max') else None
+                            }
+                            ik_chain['ik_links'].append(link_info)
+                    
+                    ik_chains.append(ik_chain)
+            
+            # PMDボーンの場合（IKボーンはbone_typeで判定）
+            elif hasattr(bone, 'bone_type'):
+                # PMDではIKボーンの判定方法が異なるため、後で実装を追加
+                pass
+        
+        # PMDの場合、別途IKデータを処理
+        if ik_data:
+            for ik in ik_data:
+                if ik.ik_bone_index < len(bone_map) and ik.target_bone_index < len(bone_map):
+                    ik_chain = {
+                        'ik_bone': bone_map.get(ik.ik_bone_index),
+                        'ik_bone_index': ik.ik_bone_index,
+                        'target_bone': bone_map.get(ik.target_bone_index),
+                        'target_bone_index': ik.target_bone_index,
+                        'loop_count': ik.iterations,
+                        'unit_angle': ik.control_weight,  # PMDではcontrol_weightを使用
+                        'ik_links': []
+                    }
+                    
+                    # IKリンクの処理
+                    for link_bone_index in ik.link_bones:
+                        if link_bone_index < len(bone_map):
+                            link_info = {
+                                'bone': bone_map.get(link_bone_index),
+                                'bone_index': link_bone_index,
+                                'angle_limit': False,  # PMDは角度制限情報を持たない
+                                'limit_min': None,
+                                'limit_max': None
+                            }
+                            ik_chain['ik_links'].append(link_info)
+                    
+                    ik_chains.append(ik_chain)
+        
+        return ik_chains
+    
+    def _create_maya_ik_handles(self, ik_chains):
+        """
+        IKチェーン情報からMayaのikHandleを作成する。
+        
+        Args:
+            ik_chains (list): IKチェーン情報のリスト
+            
+        Returns:
+            list: 作成されたIKハンドル情報のリスト
+        """
+        ik_handles = []
+        
+        for chain in ik_chains:
+            # IKチェーンの最初と最後のジョイントを特定
+            if not chain['ik_links'] or not chain['target_bone']:
+                print(f"警告: IKチェーン '{chain['ik_bone']}' にリンクまたはターゲットがありません")
+                continue
+            
+            # IKリンクの最後（開始ジョイント）から最初（終了ジョイント）の順序
+            start_joint = chain['ik_links'][-1]['bone'] if chain['ik_links'] else chain['target_bone']
+            end_joint = chain['target_bone']
+            
+            if not start_joint or not end_joint:
+                print(f"警告: IKチェーン '{chain['ik_bone']}' の開始または終了ジョイントが見つかりません")
+                continue
+            
+            try:
+                # ikHandleを作成
+                ik_handle, effector = maya_utils.create_ik_handle(
+                    start_joint=start_joint,
+                    end_joint=end_joint,
+                    solver='ikRPsolver',  # MMDは通常RPソルバーを使用
+                    name=f"{chain['ik_bone']}_ikHandle"
+                )
+                
+                # IKハンドルをIKボーンにペアレント
+                cmds.parent(ik_handle, chain['ik_bone'])
+                
+                # IKハンドルのアトリビュートを設定
+                cmds.setAttr(f"{ik_handle}.v", 0)  # 非表示
+                
+                # カスタムアトリビュートでMMDのIK情報を保存
+                maya_utils.set_custom_attributes(ik_handle, {
+                    "mmd_ik_loop_count": chain['loop_count'],
+                    "mmd_ik_unit_angle": chain['unit_angle']
+                })
+                
+                # 角度制限の設定
+                self._set_joint_limits(chain['ik_links'])
+                
+                ik_handle_info = {
+                    'ik_handle': ik_handle,
+                    'effector': effector,
+                    'ik_bone': chain['ik_bone'],
+                    'start_joint': start_joint,
+                    'end_joint': end_joint,
+                    'ik_links': chain['ik_links']
+                }
+                
+                ik_handles.append(ik_handle_info)
+                print(f"IKハンドル '{ik_handle}' を作成しました（{start_joint} → {end_joint}）")
+                
+            except Exception as e:
+                print(f"エラー: IKハンドルの作成に失敗しました '{chain['ik_bone']}': {e}")
+        
+        return ik_handles
+    
+    def _set_joint_limits(self, ik_links):
+        """
+        IKリンクのジョイントに角度制限を設定する。
+        
+        Args:
+            ik_links (list): IKリンク情報のリスト
+        """
+        for link in ik_links:
+            if not link['bone']:
+                continue
+                
+            if link['angle_limit'] and link['limit_min'] and link['limit_max']:
+                joint = link['bone']
+                
+                # MMDの角度制限は度数法、Mayaはラジアン
+                # limit_min/maxは既にラジアンで保存されている
+                maya_utils.set_joint_limits(
+                    joint=joint,
+                    limit_min=link['limit_min'],
+                    limit_max=link['limit_max'],
+                    enable_limits=True
+                )
     
     def print_validation_report(self, bones):
         """
