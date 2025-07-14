@@ -13,7 +13,7 @@ https://github.com/yohawing/maya_mmd_tools
 ### 対応プラットフォーム
 *   Autodesk Maya 2024でテストします。
 *   Python 3.7以降
-*   Windows 11
+*   Windows 11 / MacOS 15.6
 
 ## ファイルの補足説明
 
@@ -105,6 +105,36 @@ Docstring: Googleスタイルのdocstringを使用して、関数やクラスの
 - UIの作成は、pyside2にフォールバック可能なpyside6のコードで記述してください。
 - 高速化が期待できる箇所は、Maya Python API2.0を使用してください。
 
+
+## ロガーの使用方法
+
+このプロジェクトでは、Maya環境に最適化された統一的なロガーシステムを使用します。
+`mmd_tools.core.logger`モジュールの`get_logger`関数を使用してロガーインスタンスを取得してください。
+
+### 基本的な使用方法
+
+```python
+from mmd_tools.core.logger import get_logger
+
+# ロガーインスタンスを取得（モジュール名を使用）
+logger = get_logger(__name__)
+
+# ログメッセージの出力
+logger.debug("デバッグメッセージ")
+logger.info("情報メッセージ")
+logger.warning("警告メッセージ")
+logger.error("エラーメッセージ")
+logger.critical("重大なエラーメッセージ")
+```
+
+### 注意事項
+
+- ロガー名には通常`__name__`を使用してください。これによりモジュール階層に基づいたログ出力が可能になります
+- パフォーマンスを考慮し、頻繁に呼ばれる処理では`logger.debug()`の使用を控えめにしてください
+- エラーハンドリング時は、例外情報も含めてログに記録することを推奨します：
+  ```python
+  logger.error("エラーが発生しました", exc_info=True)
+  ```
 
 ## 参考サイト
 
