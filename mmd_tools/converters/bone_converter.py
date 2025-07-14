@@ -1,4 +1,4 @@
-from typing import Type, List, Tuple
+from typing import Type, List, Tuple, Dict, Optional
 import math
 
 import maya
@@ -13,6 +13,7 @@ from ..core import maya_utils
 from ..core.pmd_parser import PmdParser
 from ..core.pmx_parser import PmxParser
 from ..core.constants import SKELETON_GROUP
+from validation.bone_validator import BoneValidator
 
 
 
@@ -29,6 +30,7 @@ class BoneConverter:
         """
         コンストラクタ。
         """
+        self.bone_validator = BoneValidator()
 
     def convert_pmx_bones(self, pmx_data: PmxParser, mesh_node, root_group):
         """
@@ -62,6 +64,9 @@ class BoneConverter:
 
         # 頂点ウェイトを設定
         self._apply_pmx_vertex_weights(pmx_data, maya_joints, skin_cluster, mesh_node)
+        
+        # ボーン構造の検証を実行
+        self.print_validation_report(pmx_data.bones)
 
         # TODO: ボーンのローカル軸、変形階層、表示操作などを正確に再現する。
         # TODO: IKボーンが存在する場合は、MayaのikHandleを作成し、適切な設定を行う。
@@ -100,6 +105,9 @@ class BoneConverter:
 
         # 頂点ウェイトを設定
         self._apply_pmd_vertex_weights(pmd_data, maya_joints, skin_cluster, mesh_node)
+        
+        # ボーン構造の検証を実行
+        self.print_validation_report(pmd_data.bones)
 
         # TODO: ボーンのローカル軸を正確に再現する。
         # TODO: IKボーンが存在する場合は、MayaのikHandleを作成し、適切な設定を行う。
@@ -428,3 +436,67 @@ class BoneConverter:
             mesh_node,
             weights,
         )
+    
+    def validate_bones(self, bones) -> Dict[str, any]:
+        """
+        ボーン構造の検証を実行する。
+        
+        Args:
+            bones: 検証対象のボーンデータリスト（PMDまたはPMXのボーンオブジェクト）
+            
+        Returns:
+            dict: 検証結果を含む辞書
+                - missing_bones: 不足している標準ボーンのリスト
+                - naming_issues: 命名規則の問題リスト
+                - bone_mapping: ボーン名の標準名へのマッピング
+                - hierarchy_issues: 階層構造の問題
+                - report: 検証レポートの文字列
+        """
+        # ボーン名のリストを抽出
+        bone_names = [bone.get_name() for bone in bones]
+        
+        # ボーン名の検証を実行
+        missing_bones, naming_issues, bone_mapping = self.bone_validator.validate_bones(bone_names)
+        
+        # 階層構造の検証を実行
+        hierarchy_issues = self.bone_validator.validate_bone_hierarchy(bones)
+        
+        # レポートを生成
+        report = self.bone_validator.generate_report(bone_names)
+        
+        # 階層構造の問題をレポートに追加
+        if any(hierarchy_issues.values()):
+            report += "\n\n【階層構造の問題】"
+            if hierarchy_issues["invalid_references"]:
+                report += "\n無効な親参照:"
+                for issue in hierarchy_issues["invalid_references"]:
+                    report += f"\n  - {issue['bone']} (index={issue['index']}): parent_index={issue['parent_index']} (max={issue['max_index']})"
+            if hierarchy_issues["circular_references"]:
+                report += "\n循環参照:"
+                for issue in hierarchy_issues["circular_references"]:
+                    report += f"\n  - {issue['bone']} (index={issue['index']})"
+        
+        # 結果を返す
+        return {
+            "missing_bones": missing_bones,
+            "naming_issues": naming_issues,
+            "bone_mapping": bone_mapping,
+            "hierarchy_issues": hierarchy_issues,
+            "report": report,
+            "total_bones": len(bones),
+            "standard_bones_found": len(bone_mapping)
+        }
+    
+    def print_validation_report(self, bones):
+        """
+        ボーン検証レポートをコンソールに出力する。
+        
+        Args:
+            bones: 検証対象のボーンデータリスト
+        """
+        validation_result = self.validate_bones(bones)
+        print(validation_result["report"])
+        
+        # 警告が必要な場合はMayaの警告として表示
+        if validation_result["missing_bones"]:
+            cmds.warning(f"標準ボーンが{len(validation_result['missing_bones'])}個不足しています。詳細はスクリプトエディタを確認してください。")
