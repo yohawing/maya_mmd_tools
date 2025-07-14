@@ -1,4 +1,4 @@
-from typing import Type
+from typing import Type, List, Tuple
 import math
 
 import maya
@@ -289,7 +289,7 @@ class BoneConverter:
 
         return skin_cluster
 
-    def _get_pmx_vertex_weights(self, vertex) -> list[tuple[int, float]]:
+    def _get_pmx_vertex_weights(self, vertex) -> List[Tuple[int, float]]:
         """
         PMX頂点の重み情報をtransform_listに変換する。
 
@@ -315,12 +315,12 @@ class BoneConverter:
 
         return weights
 
-    def _get_bdef1_weights(self, vertex) -> list[tuple[int, float]]:
+    def _get_bdef1_weights(self, vertex) -> List[Tuple[int, float]]:
         """BDEF1の重み情報を取得する。"""
         bone_index = vertex.bone_indices[0]
         return [(bone_index, 1.0)]
 
-    def _get_bdef2_weights(self, vertex) -> list[tuple[int, float]]:
+    def _get_bdef2_weights(self, vertex) -> List[Tuple[int, float]]:
         """BDEF2の重み情報を取得する。"""
         bone1_index = vertex.bone_indices[0]
         bone2_index = vertex.bone_indices[1]
@@ -334,7 +334,7 @@ class BoneConverter:
             transform_list.append((bone2_index, weight2))
         return transform_list
 
-    def _get_bdef4_weights(self, vertex) -> list[tuple[int, float]]:
+    def _get_bdef4_weights(self, vertex) -> List[Tuple[int, float]]:
         """BDEF4の重み情報を取得する。"""
         transform_list = []
         for j in range(4):
@@ -344,11 +344,11 @@ class BoneConverter:
                 transform_list.append((bone_index, weight))
         return transform_list
 
-    def _get_sdef_weights(self, vertex) -> list[tuple[int, float]]:
+    def _get_sdef_weights(self, vertex) -> List[Tuple[int, float]]:
         """SDEFの重み情報を取得する。"""
         return self._get_bdef2_weights(vertex)
 
-    def _get_qdef_weights(self, vertex) -> list[tuple[int, float]]:
+    def _get_qdef_weights(self, vertex) -> List[Tuple[int, float]]:
         """QDEFの重み情報を取得する。"""
         return self._get_bdef4_weights(vertex)
 

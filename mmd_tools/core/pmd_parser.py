@@ -1,5 +1,6 @@
 import os
 import struct
+from typing import List
 
 from mmd_tools.core import utils
 
@@ -26,15 +27,15 @@ class PmdParser:
     """
 
     header: PmdHeader
-    vertices: list[PmdVertex]
-    faces: list[PmdFace]
-    materials: list[PmdMaterial]
-    bones: list[PmdBone]
-    ik_data: list[PmdIK]
-    morphs: list[PmdMorph]
-    display_frames: list[PmdDisplayFrame]
-    rigid_bodies: list[PmdRigidBody]
-    joints: list[PmdJoint]
+    vertices: List[PmdVertex]
+    faces: List[PmdFace]
+    materials: List[PmdMaterial]
+    bones: List[PmdBone]
+    ik_data: List[PmdIK]
+    morphs: List[PmdMorph]
+    display_frames: List[PmdDisplayFrame]
+    rigid_bodies: List[PmdRigidBody]
+    joints: List[PmdJoint]
 
     def __init__(self):
         self.header = PmdHeader()

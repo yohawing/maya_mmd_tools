@@ -5,6 +5,7 @@ Maya環境に特化したログフォーマッターを提供します。
 """
 
 import logging
+import sys
 import time
 from datetime import datetime
 
@@ -27,7 +28,11 @@ class MayaFormatter(logging.Formatter):
         if datefmt is None:
             datefmt = "%Y-%m-%d %H:%M:%S"
 
-        super().__init__(fmt, datefmt, style, validate)
+        # Python 3.7 compatibility: validate parameter was added in Python 3.8
+        if sys.version_info >= (3, 8):
+            super().__init__(fmt, datefmt, style, validate)
+        else:
+            super().__init__(fmt, datefmt, style)
 
     def format(self, record):
         """ログレコードをフォーマット"""
@@ -85,7 +90,11 @@ class CompactFormatter(logging.Formatter):
         if fmt is None:
             fmt = "%(levelname)s: %(message)s"
 
-        super().__init__(fmt, datefmt, style, validate)
+        # Python 3.7 compatibility: validate parameter was added in Python 3.8
+        if sys.version_info >= (3, 8):
+            super().__init__(fmt, datefmt, style, validate)
+        else:
+            super().__init__(fmt, datefmt, style)
 
     def format(self, record):
         """ログレコードをコンパクトにフォーマット"""
@@ -135,7 +144,11 @@ class ColoredFormatter(logging.Formatter):
         if fmt is None:
             fmt = "%(levelname)s: %(message)s"
 
-        super().__init__(fmt, datefmt, style, validate)
+        # Python 3.7 compatibility: validate parameter was added in Python 3.8
+        if sys.version_info >= (3, 8):
+            super().__init__(fmt, datefmt, style, validate)
+        else:
+            super().__init__(fmt, datefmt, style)
 
     def format(self, record):
         """ログレコードを色付きでフォーマット"""
@@ -174,7 +187,11 @@ class TimestampFormatter(logging.Formatter):
         if datefmt is None:
             datefmt = "%H:%M:%S"
 
-        super().__init__(fmt, datefmt, style, validate)
+        # Python 3.7 compatibility: validate parameter was added in Python 3.8
+        if sys.version_info >= (3, 8):
+            super().__init__(fmt, datefmt, style, validate)
+        else:
+            super().__init__(fmt, datefmt, style)
 
     def format(self, record):
         """ログレコードにタイムスタンプを付けてフォーマット"""

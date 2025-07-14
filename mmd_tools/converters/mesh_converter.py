@@ -1,6 +1,7 @@
 import os
 
 from maya import cmds
+from typing import Tuple
 
 from mmd_tools import settings
 from mmd_tools.core import maya_utils
@@ -24,7 +25,7 @@ class MeshConverter:
         self.pmx_filepath = pmx_filepath
         self.texture_dir = os.path.dirname(pmx_filepath)
 
-    def convert_pmx_mesh(self, pmx_data: PmxParser, root_group: str) -> tuple[str, str]:
+    def convert_pmx_mesh(self, pmx_data: PmxParser, root_group: str) -> Tuple[str, str]:
         """
         PMXのメッシュデータをMayaのメッシュノードに変換する。
 

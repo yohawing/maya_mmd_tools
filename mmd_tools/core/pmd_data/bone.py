@@ -1,6 +1,7 @@
 import enum
 import struct
 from enum import Enum
+from typing import Tuple
 
 from mmd_tools.core import utils
 from mmd_tools.settings import get_settings
@@ -32,7 +33,7 @@ class PmdBone:
     tail_pos_bone_index: int  # tail位置のボーン番号(チェーン末端の場合は0xFFFF 0 →補足2) // 親：子は1：多なので、主に位置決め用
     bone_type: PmdBoneType
     ik_parent_bone_index: int  # IK親ボーン番号
-    position: tuple[float, float, float]
+    position: Tuple[float, float, float]
 
     def __init__(self):
         self.name = ""
