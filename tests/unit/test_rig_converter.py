@@ -4,6 +4,7 @@ import maya.cmds as cmds
 
 from mmd_tools.converters.rig_converter import RigConverter
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.settings import settings
 
 
 class TestRigConverterMaya(unittest.TestCase):
@@ -14,11 +15,17 @@ class TestRigConverterMaya(unittest.TestCase):
         # 新しいシーンを作成
         cmds.file(new=True, force=True)
         self.converter = RigConverter()
+        # 設定を保存しておく
+        self.original_settings = settings.get(
+            "import.rig.add_semi_standard_bones", False
+        )
 
     def tearDown(self):
         """テストごとのクリーンアップ"""
         # シーンをクリア
         cmds.file(new=True, force=True)
+        # 設定を元に戻す
+        settings.set("import.rig.add_semi_standard_bones", self.original_settings)
 
     def _create_mock_pmx_bone(
         self, index, name="TestBone", parent_index=-1, position=(0, 0, 0), bone_flag=0
@@ -228,11 +235,11 @@ class TestRigConverterMaya(unittest.TestCase):
         )
 
         # 追加されたボーンの確認
-        self.assertIn("parent_of_all", result)
+        self.assertIn("master", result)
         self.assertIn("groove", result)
 
-        # parent_of_allが存在するか
-        self.assertTrue(cmds.objExists(result["parent_of_all"]))
+        # masterが存在するか
+        self.assertTrue(cmds.objExists(result["master"]))
 
         # grooveが存在し、centerの親になっているか
         self.assertTrue(cmds.objExists(result["groove"]))
@@ -301,6 +308,174 @@ class TestRigConverterMaya(unittest.TestCase):
         # ロケータが非表示か確認
         visibility = cmds.getAttr(f"{locators[0]}.visibility")
         self.assertEqual(visibility, 0)
+
+    def test_find_joint_by_japanese_name(self):
+        """日本語名でのジョイント検索テスト"""
+        # テスト用のジョイントを作成
+        cmds.select(clear=True)
+        center_joint = cmds.joint(name="center", position=[0, 0, 0])
+
+        # カスタムアトリビュートを追加
+        cmds.addAttr(
+            center_joint,
+            longName="mmd_bone_index",
+            attributeType="long",
+            defaultValue=0,
+        )
+
+        # コンバーターに元のボーン名を設定
+        self.converter.original_bone_names = {0: "センター", 1: "上半身", 2: "腰"}
+
+        # 日本語名で検索
+        result = self.converter._find_joint_by_japanese_name(["センター"])
+        self.assertEqual(result, center_joint)
+
+        # 見つからない場合
+        result = self.converter._find_joint_by_japanese_name(["グルーブ"])
+        self.assertIsNone(result)
+
+    def test_setup_pmx_rig_with_semi_standard_bones_enabled(self):
+        """準標準ボーン有効時のPMXリグセットアップテスト"""
+        # 設定を有効化
+        settings.set("import.rig.add_semi_standard_bones", True)
+
+        # テストデータ
+        pmx_data = Mock()
+        bone1 = self._create_mock_pmx_bone(0, "センター")
+        bone2 = self._create_mock_pmx_bone(1, "下半身", parent_index=0)
+        pmx_data.bones = [bone1, bone2]
+
+        # テスト用のジョイントを作成
+        cmds.select(clear=True)
+        center = cmds.joint(name="center", position=[0, 10, 0])
+        lower_body = cmds.joint(name="lower_body", position=[0, 8, 0])
+        maya_joints = [center, lower_body]
+
+        bone_map = {0: center, 1: lower_body}
+        skeleton_group = cmds.group(empty=True, name="skeleton_grp")
+        cmds.parent(center, skeleton_group)
+
+        result = self.converter.setup_pmx_rig(
+            pmx_data, maya_joints, bone_map, skeleton_group
+        )
+
+        # 準標準ボーンが追加されたか確認
+        self.assertIn("semi_standard_bones", result)
+        self.assertIsNotNone(result["semi_standard_bones"])
+
+    def test_setup_pmx_rig_with_semi_standard_bones_disabled(self):
+        """準標準ボーン無効時のPMXリグセットアップテスト"""
+        # 設定を無効化
+        settings.set("import.rig.add_semi_standard_bones", False)
+
+        # テストデータ
+        pmx_data = Mock()
+        bone1 = self._create_mock_pmx_bone(0, "センター")
+        pmx_data.bones = [bone1]
+
+        # テスト用のジョイントを作成
+        cmds.select(clear=True)
+        center = cmds.joint(name="center", position=[0, 10, 0])
+        maya_joints = [center]
+
+        bone_map = {0: center}
+        skeleton_group = cmds.group(empty=True, name="skeleton_grp")
+
+        result = self.converter.setup_pmx_rig(
+            pmx_data, maya_joints, bone_map, skeleton_group
+        )
+
+        # 準標準ボーンが追加されていないか確認
+        self.assertIn("semi_standard_bones", result)
+        self.assertEqual(result["semi_standard_bones"], {})
+
+    def test_add_semi_standard_bones_with_existing_japanese_bones(self):
+        """既存の日本語名ボーンがある場合の準標準ボーン追加テスト"""
+        # テスト用のジョイントを作成（日本語名のボーンが既に存在）
+        cmds.select(clear=True)
+        master_existing = cmds.joint(name="master", position=[0, 0, 0])
+        center = cmds.joint(name="center", position=[0, 10, 0])
+
+        # カスタムアトリビュートを追加（日本語名検索用）
+        cmds.addAttr(
+            master_existing,
+            longName="mmd_bone_index",
+            attributeType="long",
+            defaultValue=99,
+        )
+
+        # コンバーターに元のボーン名を設定
+        self.converter.original_bone_names = {0: "センター", 99: "全ての親"}
+
+        maya_joints = [master_existing, center]
+        bone_map = {0: center, 99: master_existing}
+        skeleton_group = cmds.group(empty=True, name="skeleton_grp")
+        cmds.parent(master_existing, skeleton_group)
+
+        result = self.converter._add_semi_standard_bones(
+            maya_joints, bone_map, skeleton_group
+        )
+
+        # 既存のボーンが使用され、新しく作成されていないことを確認
+        # master は作成されない（既存のものを使用）
+        self.assertNotIn("master", result)
+
+    def test_add_semi_standard_bones_with_existing_standard_bones(self):
+        """既存の準標準ボーン（英語名）がある場合の準標準ボーン追加テスト"""
+        # テスト用のジョイントを作成（準標準ボーンが既に英語名で存在）
+        cmds.select(clear=True)
+        # masterグループを先に作成
+        master_existing = cmds.group(empty=True, name="master")
+        groove_existing = cmds.group(empty=True, name="groove", parent=master_existing)
+
+        # センターとその他のジョイントを作成
+        cmds.select(clear=True)
+        center = cmds.joint(name="center", position=[0, 10, 0])
+        cmds.parent(center, groove_existing)
+
+        cmds.select(clear=True)
+        lower_body = cmds.joint(name="lower_body", position=[0, 8, 0])
+        cmds.parent(lower_body, groove_existing)
+
+        cmds.select(clear=True)
+        left_leg = cmds.joint(name="left_leg", position=[-2, 6, 0])
+        cmds.parent(left_leg, lower_body)
+
+        cmds.select(clear=True)
+        waist_existing = cmds.joint(name="waist", position=[0, 7, 0])
+        cmds.parent(waist_existing, lower_body)
+        cmds.parent(left_leg, waist_existing)
+
+        maya_joints = [center, lower_body, left_leg, waist_existing]
+        bone_map = {0: center, 1: lower_body, 2: left_leg, 3: waist_existing}
+        skeleton_group = cmds.group(empty=True, name="skeleton_grp")
+        cmds.parent(master_existing, skeleton_group)
+
+        # 元の日本語名を設定（英語名のボーンには日本語名がない）
+        self.converter.original_bone_names = {
+            0: "センター",
+            1: "下半身",
+            2: "左足",
+            3: "waist",
+        }
+
+        result = self.converter._add_semi_standard_bones(
+            maya_joints, bone_map, skeleton_group
+        )
+
+        # 既存のボーンは新しく作成されない
+        self.assertNotIn("master", result)
+        self.assertNotIn("groove", result)
+        self.assertNotIn("waist", result)
+
+        # 既存のボーンの数を確認（新しく作成されていない）
+        all_masters = cmds.ls("master", type="transform")
+        all_grooves = cmds.ls("groove", type="transform")
+        all_waists = cmds.ls("waist", type="joint")
+
+        self.assertEqual(len(all_masters), 1)  # 1つのみ（既存のもの）
+        self.assertEqual(len(all_grooves), 1)  # 1つのみ（既存のもの）
+        self.assertEqual(len(all_waists), 1)  # 1つのみ（既存のもの）
 
     @patch.object(RigConverter, "_extract_ik_chains")
     @patch.object(RigConverter, "_create_maya_ik_handles")

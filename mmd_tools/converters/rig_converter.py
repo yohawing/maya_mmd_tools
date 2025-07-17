@@ -6,6 +6,7 @@ from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.validation.bone_validator import BoneValidator
+from mmd_tools.settings import settings
 
 
 class RigConverter:
@@ -21,8 +22,15 @@ class RigConverter:
         """
         self.logger = get_logger(__name__)
         self.bone_validator = BoneValidator()
+        self.original_bone_names = {}  # ボーンインデックスから元の日本語名へのマッピング
 
-    def setup_pmx_rig(self, pmx_data, maya_joints: List[str], bone_map: Dict[int, str], skeleton_group: str) -> Dict:
+    def setup_pmx_rig(
+        self,
+        pmx_data,
+        maya_joints: List[str],
+        bone_map: Dict[int, str],
+        skeleton_group: str,
+    ) -> Dict:
         """
         PMXボーンデータを元にMayaのリグシステムをセットアップする。
 
@@ -39,7 +47,7 @@ class RigConverter:
             "ik_handles": [],
             "semi_standard_bones": {},
             "constraints": [],
-            "validation_report": None
+            "validation_report": None,
         }
 
         # ボーン構造の検証を実行
@@ -54,26 +62,39 @@ class RigConverter:
             result["ik_handles"] = self._create_maya_ik_handles(ik_chains)
             self.logger.info(f"{len(result['ik_handles'])}個のIKハンドルを作成しました")
 
+        # 元のボーン名を保存（日本語名での重複チェック用）
+        for i, bone in enumerate(pmx_data.bones):
+            self.original_bone_names[i] = bone.get_name()
+
         # ボーンのローカル軸を設定
         self._apply_bone_local_axes(pmx_data.bones, maya_joints)
 
-        # 準標準ボーンを追加
-        result["semi_standard_bones"] = self._add_semi_standard_bones(
-            maya_joints, bone_map, skeleton_group
-        )
-        if result["semi_standard_bones"]:
-            self.logger.info(
-                f"{len(result['semi_standard_bones'])}個の準標準ボーンを追加しました"
+        # 準標準ボーンを追加（設定による）
+        if settings.get("import.rig.add_semi_standard_bones", False):
+            result["semi_standard_bones"] = self._add_semi_standard_bones(
+                maya_joints, bone_map, skeleton_group
             )
+            if result["semi_standard_bones"]:
+                self.logger.info(
+                    f"{len(result['semi_standard_bones'])}個の準標準ボーンを追加しました"
+                )
 
         # 付与ボーンの設定
-        result["constraints"] = self._setup_given_parent_bones(pmx_data.bones, maya_joints)
+        result["constraints"] = self._setup_given_parent_bones(
+            pmx_data.bones, maya_joints
+        )
         if result["constraints"]:
             self.logger.info(f"{len(result['constraints'])}個の付与関係を設定しました")
 
         return result
 
-    def setup_pmd_rig(self, pmd_data, maya_joints: List[str], bone_map: Dict[int, str], skeleton_group: str) -> Dict:
+    def setup_pmd_rig(
+        self,
+        pmd_data,
+        maya_joints: List[str],
+        bone_map: Dict[int, str],
+        skeleton_group: str,
+    ) -> Dict:
         """
         PMDボーンデータを元にMayaのリグシステムをセットアップする。
 
@@ -90,7 +111,7 @@ class RigConverter:
             "ik_handles": [],
             "semi_standard_bones": {},
             "constraints": [],
-            "validation_report": None
+            "validation_report": None,
         }
 
         # ボーン構造の検証を実行
@@ -105,14 +126,19 @@ class RigConverter:
             result["ik_handles"] = self._create_maya_ik_handles(ik_chains)
             self.logger.info(f"{len(result['ik_handles'])}個のIKハンドルを作成しました")
 
-        # 準標準ボーンを追加（PMDではローカル軸情報がないためスキップ）
-        result["semi_standard_bones"] = self._add_semi_standard_bones(
-            maya_joints, bone_map, skeleton_group
-        )
-        if result["semi_standard_bones"]:
-            self.logger.info(
-                f"{len(result['semi_standard_bones'])}個の準標準ボーンを追加しました"
+        # 元のボーン名を保存（日本語名での重複チェック用）
+        for i, bone in enumerate(pmd_data.bones):
+            self.original_bone_names[i] = bone.get_name()
+
+        # 準標準ボーンを追加（設定による）
+        if settings.get("import.rig.add_semi_standard_bones", False):
+            result["semi_standard_bones"] = self._add_semi_standard_bones(
+                maya_joints, bone_map, skeleton_group
             )
+            if result["semi_standard_bones"]:
+                self.logger.info(
+                    f"{len(result['semi_standard_bones'])}個の準標準ボーンを追加しました"
+                )
 
         return result
 
@@ -420,45 +446,71 @@ class RigConverter:
         semi_standard_bones = {}
 
         # 全ての親
-        parent_of_all = cmds.group(
-            empty=True, name="parent_of_all", parent=skeleton_group
-        )
-        semi_standard_bones["parent_of_all"] = parent_of_all
+        # 既存の「全ての親」ボーンを日本語名でチェック
+        existing_master = self._find_joint_by_japanese_name(["全ての親", "マスター"])
+        # 英語名でもチェック
+        if not existing_master and cmds.objExists("master"):
+            existing_master = "master"
+        
+        if not existing_master:
+            master = cmds.group(empty=True, name="master", parent=skeleton_group)
+            semi_standard_bones["master"] = master
+            self.logger.info(f"全ての親ボーンを追加: {master}")
+        else:
+            master = existing_master
+            self.logger.info(f"既存の全ての親ボーンを使用: {existing_master}")
 
         # スケルトングループ直下のルートジョイントを全ての親の子にする
-        for child in (
-            cmds.listRelatives(skeleton_group, children=True, type="joint") or []
-        ):
-            # 親を持たないルートジョイントのみを移動
-            parent = cmds.listRelatives(child, parent=True)
-            if parent and parent[0] == skeleton_group:
-                cmds.parent(child, parent_of_all)
+        if 'master' in semi_standard_bones or existing_master:
+            # スケルトングループの子を取得（ジョイントとトランスフォームノード両方）
+            children = cmds.listRelatives(skeleton_group, children=True) or []
+            for child in children:
+                # masterノード自体はスキップ
+                if child == master:
+                    continue
+                # ジョイントまたはトランスフォームノードをmasterの子にする
+                if cmds.nodeType(child) in ['joint', 'transform']:
+                    cmds.parent(child, master)
 
         # グルーブ
+        # 既存のグルーブボーンを日本語名でチェック
+        existing_groove = self._find_joint_by_japanese_name(["グルーブ"])
+        # 英語名でもチェック
+        if not existing_groove and cmds.objExists("groove"):
+            existing_groove = "groove"
+            
         center_joint = self._find_joint_by_name(
             maya_joints, ["center", "センター", "centre"]
         )
-        if center_joint:
+
+        if not existing_groove and center_joint:
             # センターの位置を取得
             center_pos = cmds.xform(
                 center_joint, query=True, worldSpace=True, translation=True
             )
 
             # グルーブを作成
-            groove = cmds.group(empty=True, name="groove", parent=parent_of_all)
+            groove = cmds.group(
+                empty=True,
+                name="groove",
+                parent=master,
+            )
             cmds.xform(groove, worldSpace=True, translation=center_pos)
             semi_standard_bones["groove"] = groove
 
             # センターをグルーブの子にする
             cmds.parent(center_joint, groove)
             self.logger.info(f"グルーブボーンを追加: {groove}")
+        elif existing_groove:
+            self.logger.info(f"既存のグルーブボーンを使用: {existing_groove}")
 
         # 腰ボーン（下半身と足の間）
-        # まず既存の腰ボーンがあるか確認
-        existing_waist = self._find_joint_by_name(
-            maya_joints, ["waist", "腰", "koshi"]
-        )
-        
+        # 既存の腰ボーンを日本語名でチェック
+        existing_waist = self._find_joint_by_japanese_name(["腰"])
+        # 英語名でもチェック
+        if not existing_waist:
+            existing_waist = self._find_joint_by_name(maya_joints, ["waist", "腰", "koshi"])
+
         lower_body_joint = self._find_joint_by_name(
             maya_joints, ["lower_body", "下半身", "lowerbody"]
         )
@@ -501,8 +553,7 @@ class RigConverter:
 
             self.logger.info(f"腰ボーンを追加: {waist}")
         elif existing_waist:
-            # 既存の腰ボーンを使用
-            semi_standard_bones["waist"] = existing_waist
+            # 既存の腰ボーンを使用（新規作成しないので辞書には追加しない）
             self.logger.info(f"既存の腰ボーンを使用: {existing_waist}")
 
         return semi_standard_bones
@@ -524,6 +575,34 @@ class RigConverter:
             for search_name in search_names:
                 if search_name.lower() in joint_lower:
                     return joint
+
+        return None
+
+    def _find_joint_by_japanese_name(self, japanese_names):
+        """
+        日本語名で既存のボーンを検索する。
+        元のPMX/PMDボーン名を使用して正確な一致を確認する。
+
+        Args:
+            japanese_names (list): 検索する日本語ボーン名のリスト
+
+        Returns:
+            str: 見つかったMayaジョイント名、見つからない場合はNone
+        """
+        # self.original_bone_namesから日本語名を検索
+        for bone_index, original_name in self.original_bone_names.items():
+            for jp_name in japanese_names:
+                if original_name == jp_name:
+                    # 対応するMayaジョイントを探す
+                    all_joints = cmds.ls(type="joint")
+                    for joint in all_joints:
+                        # カスタムアトリビュートでボーンインデックスを確認
+                        if cmds.attributeQuery(
+                            "mmd_bone_index", node=joint, exists=True
+                        ):
+                            stored_index = cmds.getAttr(f"{joint}.mmd_bone_index")
+                            if stored_index == bone_index:
+                                return joint
 
         return None
 
