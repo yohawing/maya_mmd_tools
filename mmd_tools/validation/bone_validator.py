@@ -149,7 +149,7 @@ class BoneValidator:
         "腰": ["waist", "腰"],
         "足IK親": ["leg_ik_parent", "足IK親", "足ＩＫ親"],
         "足先EX": ["toe_ex", "足先EX", "足先ＥＸ"],
-        "全ての親": ["parent_of_all", "全ての親"],
+        "全ての親": ["master", "全ての親"],
         "操作中心": ["operation_center", "操作中心"],
         "左手捻": ["left_hand_twist", "左手捻", "左手捩"],
         "左腕捻": ["left_arm_twist", "左腕捻", "左腕捩"],
