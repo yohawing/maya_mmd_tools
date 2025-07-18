@@ -80,11 +80,11 @@ class RigConverter:
                 )
 
         # 付与ボーンの設定
-        result["constraints"] = self._setup_given_parent_bones(
-            pmx_data.bones, maya_joints
-        )
-        if result["constraints"]:
-            self.logger.info(f"{len(result['constraints'])}個の付与関係を設定しました")
+        # result["constraints"] = self._setup_given_parent_bones(
+        #     pmx_data.bones, maya_joints
+        # )
+        # if result["constraints"]:
+        #     self.logger.info(f"{len(result['constraints'])}個の付与関係を設定しました")
 
         return result
 
@@ -409,27 +409,94 @@ class RigConverter:
     def _set_bone_local_axis(self, joint, bone):
         """
         PMXボーンのローカル軸情報をMayaジョイントに適用する。
+        子ボーンへの影響を防ぐため、子を一時的に切り離して処理する。
 
         Args:
             joint (str): Mayaジョイント名
             bone: PMXボーンオブジェクト
         """
         if hasattr(bone, "get_flag") and bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-            x_axis = bone.x_axis_direction
-            z_axis = bone.z_axis_direction
+            # PMX座標系からMaya座標系に変換
+            x_axis_pmx = bone.x_axis_direction
+            z_axis_pmx = bone.z_axis_direction
 
-            # Y軸を外積で計算
-            y_axis = maya_utils.cross_product(z_axis, x_axis)
+            # 座標系変換（Z軸反転）
+            x_axis_maya = maya_utils.pmx_to_maya_vector(x_axis_pmx)
+            z_axis_maya = maya_utils.pmx_to_maya_vector(z_axis_pmx)
+
+            # ベクトルを正規化
+            x_axis_maya = maya_utils.normalize_vector(x_axis_maya)
+            z_axis_maya = maya_utils.normalize_vector(z_axis_maya)
+
+            # グラムシュミットの正規直交化
+            # Y = Z × X (外積の順序に注意)
+            y_axis_maya = maya_utils.cross_product(z_axis_maya, x_axis_maya)
+            y_axis_maya = maya_utils.normalize_vector(y_axis_maya)
+
+            # Z軸を再計算して完全に直交化
+            z_axis_maya = maya_utils.cross_product(x_axis_maya, y_axis_maya)
+            z_axis_maya = maya_utils.normalize_vector(z_axis_maya)
 
             # ジョイントオリエンテーションの設定
-            matrix = maya_utils.create_matrix_from_axes(x_axis, y_axis, z_axis)
+            matrix = maya_utils.create_matrix_from_axes(
+                x_axis_maya, y_axis_maya, z_axis_maya
+            )
             rotation = maya_utils.matrix_to_euler(matrix)
 
-            cmds.setAttr(f"{joint}.jointOrientX", rotation[0])
-            cmds.setAttr(f"{joint}.jointOrientY", rotation[1])
-            cmds.setAttr(f"{joint}.jointOrientZ", rotation[2])
+            self.logger.debug(f"ローカル軸設定 {joint}:")
+            self.logger.debug(f"  PMX X軸: {x_axis_pmx} → Maya: {x_axis_maya}")
+            self.logger.debug(f"  PMX Z軸: {z_axis_pmx} → Maya: {z_axis_maya}")
+            self.logger.debug(f"  計算Y軸: {y_axis_maya}")
+            self.logger.debug(f"  回転: {rotation}")
 
-            self.logger.debug(f"ローカル軸を設定: {joint}")
+            # 子ジョイントを取得（直接の子のみ）
+            children = (
+                cmds.listRelatives(joint, children=True, type=["joint", "transform"])
+                or []
+            )
+            child_transforms = []
+
+            # 子のワールド変換を保存して一時的に切り離す
+            for child in children:
+                world_pos = cmds.xform(
+                    child, query=True, worldSpace=True, translation=True
+                )
+                world_rot = cmds.xform(
+                    child, query=True, worldSpace=True, rotation=True
+                )
+                child_transforms.append(
+                    {"joint": child, "position": world_pos, "rotation": world_rot}
+                )
+                # ワールドにペアレント（一時的に切り離す）
+                cmds.parent(child, world=True)
+
+            try:
+                # jointOrientを設定
+                cmds.setAttr(f"{joint}.jointOrientX", rotation[0])
+                cmds.setAttr(f"{joint}.jointOrientY", rotation[1])
+                cmds.setAttr(f"{joint}.jointOrientZ", rotation[2])
+
+                # rotateを0にリセット（オプション：必要に応じて）
+                cmds.setAttr(f"{joint}.rotateX", 0)
+                cmds.setAttr(f"{joint}.rotateY", 0)
+                cmds.setAttr(f"{joint}.rotateZ", 0)
+
+                self.logger.debug(f"ローカル軸を設定: {joint}")
+
+            except Exception as e:
+                self.logger.error(f"ローカル軸の設定に失敗しました {joint}: {e}")
+
+            finally:
+                # 子を再接続して位置を復元
+                for transform_data in child_transforms:
+                    child = transform_data["joint"]
+                    cmds.parent(child, joint)
+                    cmds.xform(
+                        child, worldSpace=True, translation=transform_data["position"]
+                    )
+                    cmds.xform(
+                        child, worldSpace=True, rotation=transform_data["rotation"]
+                    )
 
     def _add_semi_standard_bones(self, maya_joints, bone_map, skeleton_group):
         """
@@ -451,7 +518,7 @@ class RigConverter:
         # 英語名でもチェック
         if not existing_master and cmds.objExists("master"):
             existing_master = "master"
-        
+
         if not existing_master:
             master = cmds.group(empty=True, name="master", parent=skeleton_group)
             semi_standard_bones["master"] = master
@@ -461,7 +528,7 @@ class RigConverter:
             self.logger.info(f"既存の全ての親ボーンを使用: {existing_master}")
 
         # スケルトングループ直下のルートジョイントを全ての親の子にする
-        if 'master' in semi_standard_bones or existing_master:
+        if "master" in semi_standard_bones or existing_master:
             # スケルトングループの子を取得（ジョイントとトランスフォームノード両方）
             children = cmds.listRelatives(skeleton_group, children=True) or []
             for child in children:
@@ -469,7 +536,7 @@ class RigConverter:
                 if child == master:
                     continue
                 # ジョイントまたはトランスフォームノードをmasterの子にする
-                if cmds.nodeType(child) in ['joint', 'transform']:
+                if cmds.nodeType(child) in ["joint", "transform"]:
                     cmds.parent(child, master)
 
         # グルーブ
@@ -478,7 +545,7 @@ class RigConverter:
         # 英語名でもチェック
         if not existing_groove and cmds.objExists("groove"):
             existing_groove = "groove"
-            
+
         center_joint = self._find_joint_by_name(
             maya_joints, ["center", "センター", "centre"]
         )
@@ -509,7 +576,9 @@ class RigConverter:
         existing_waist = self._find_joint_by_japanese_name(["腰"])
         # 英語名でもチェック
         if not existing_waist:
-            existing_waist = self._find_joint_by_name(maya_joints, ["waist", "腰", "koshi"])
+            existing_waist = self._find_joint_by_name(
+                maya_joints, ["waist", "腰", "koshi"]
+            )
 
         lower_body_joint = self._find_joint_by_name(
             maya_joints, ["lower_body", "下半身", "lowerbody"]

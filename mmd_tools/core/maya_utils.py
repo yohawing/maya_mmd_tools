@@ -888,3 +888,35 @@ def matrix_to_euler(matrix):
         math.degrees(euler.y),
         math.degrees(euler.z)
     ]
+
+
+def pmx_to_maya_vector(pmx_vector):
+    """
+    PMXの右手座標系ベクトルをMayaの左手座標系に変換する。
+    PMX: X(右), Y(上), Z(手前)
+    Maya: X(右), Y(上), Z(奥) 
+    
+    Args:
+        pmx_vector (list): PMXベクトル [x, y, z]
+        
+    Returns:
+        list: Mayaベクトル [x, y, -z]
+    """
+    return [pmx_vector[0], pmx_vector[1], -pmx_vector[2]]
+
+
+def normalize_vector(vector):
+    """
+    ベクトルを正規化する。
+    
+    Args:
+        vector (list): ベクトル [x, y, z]
+        
+    Returns:
+        list: 正規化されたベクトル [x, y, z]
+    """
+    import math
+    length = math.sqrt(vector[0]**2 + vector[1]**2 + vector[2]**2)
+    if length < 1e-6:  # ゼロベクトルのチェック
+        return [0.0, 0.0, 0.0]
+    return [vector[0]/length, vector[1]/length, vector[2]/length]

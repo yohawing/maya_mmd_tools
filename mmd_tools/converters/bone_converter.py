@@ -56,6 +56,11 @@ class BoneConverter:
             pmx_data.bones, bone_map, "pmx", skeleton_group
         )
 
+        # リグのセットアップはRigConverterに委譲
+        rig_result = self.rig_converter.setup_pmx_rig(
+            pmx_data, maya_joints, bone_map, skeleton_group
+        )
+
         # スキンクラスターを作成
         skin_cluster = self._create_skin_cluster(
             maya_joints, mesh_node, max_influence=4
@@ -63,11 +68,6 @@ class BoneConverter:
 
         # 頂点ウェイトを設定
         self._apply_pmx_vertex_weights(pmx_data, maya_joints, skin_cluster, mesh_node)
-
-        # リグのセットアップはRigConverterに委譲
-        rig_result = self.rig_converter.setup_pmx_rig(
-            pmx_data, maya_joints, bone_map, skeleton_group
-        )
 
         # TODO: 変形階層、表示操作などを正確に再現する。
 
