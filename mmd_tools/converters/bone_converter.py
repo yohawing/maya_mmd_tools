@@ -18,7 +18,7 @@ class BoneConverter:
     PMDとPMXの両方のフォーマットに対応。
     ボーンの階層構造、位置、スキニング情報をMayaのジョイントに変換し、
     メッシュにスキニングを適用する。
-    
+
     リグのセットアップ（IK、付与ボーンなど）はRigConverterが担当する。
     """
 
@@ -65,7 +65,9 @@ class BoneConverter:
         self._apply_pmx_vertex_weights(pmx_data, maya_joints, skin_cluster, mesh_node)
 
         # リグのセットアップはRigConverterに委譲
-        rig_result = self.rig_converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
+        rig_result = self.rig_converter.setup_pmx_rig(
+            pmx_data, maya_joints, bone_map, skeleton_group
+        )
 
         # TODO: 変形階層、表示操作などを正確に再現する。
 
@@ -107,7 +109,9 @@ class BoneConverter:
         self._apply_pmd_vertex_weights(pmd_data, maya_joints, skin_cluster, mesh_node)
 
         # リグのセットアップはRigConverterに委譲
-        rig_result = self.rig_converter.setup_pmd_rig(pmd_data, maya_joints, bone_map, skeleton_group)
+        rig_result = self.rig_converter.setup_pmd_rig(
+            pmd_data, maya_joints, bone_map, skeleton_group
+        )
 
         # TODO: ボーンのローカル軸を正確に再現する。
 
@@ -211,6 +215,7 @@ class BoneConverter:
                 "pmx_bone_parent_bone_index": bone.parent_bone_index,
                 "pmx_bone_rotatable": bool(bone.get_flag(PmxBoneFlag.ROTATABLE)),
                 "pmx_bone_movable": bool(bone.get_flag(PmxBoneFlag.MOVABLE)),
+                "pmx_bone_display": bool(bone.get_flag(PmxBoneFlag.DISPLAY)),
             }
 
             # 接続先ボーンの属性を設定
@@ -443,4 +448,3 @@ class BoneConverter:
             mesh_node,
             weights,
         )
-
