@@ -49,6 +49,7 @@ class TestRigConverterMaya(unittest.TestCase):
         bone.ik_loop_count = 10
         bone.ik_limit_angle = 1.0
         bone.ik_links = []
+        bone.transform_layer = 0  # デフォルトの変形階層
 
         return bone
 
@@ -278,12 +279,131 @@ class TestRigConverterMaya(unittest.TestCase):
 
         self.assertEqual(len(constraints), 1)
 
-        # エクスプレッションが作成されたか確認
-        expressions = cmds.ls(type="expression")
-        self.assertTrue(any("given_rotation_expr" in expr for expr in expressions))
+        # ネイティブノードが作成されたか確認（付与率が1.0でない場合）
+        # decomposeMatrixノードが作成されたか確認
+        decompose_nodes = cmds.ls("parent_joint_decompose", type="decomposeMatrix")
+        self.assertTrue(len(decompose_nodes) > 0)
+        
+        # multiplyDivideノードが作成されたか確認
+        mult_nodes = cmds.ls("child_joint_given_mult", type="multiplyDivide")
+        self.assertTrue(len(mult_nodes) > 0)
 
-    def test_create_partial_rotation_constraint(self):
-        """部分的な回転付与の作成テスト（実際のMaya環境）"""
+    def test_setup_given_parent_bones_local_given(self):
+        """ローカル付与ボーンの設定テスト（実際のMaya環境）"""
+        # テスト用のジョイントを作成
+        cmds.select(clear=True)
+        parent_joint = cmds.joint(name="parent_joint", position=[0, 0, 0])
+        cmds.select(clear=True)
+        child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
+
+        # ローカル付与フラグを含むボーンを作成
+        bone = self._create_mock_pmx_bone(
+            0, "TestBone", 
+            bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE | PmxBoneFlag.LOCAL
+        )
+        bone.given_parent_bone_index = 1
+        bone.given_rate = 0.5
+
+        parent_bone = Mock()
+        parent_bone.get_flag = Mock(return_value=False)
+
+        bones = [bone, parent_bone]
+        maya_joints = [child_joint, parent_joint]
+
+        constraints = self.converter._setup_given_parent_bones(bones, maya_joints)
+
+        self.assertEqual(len(constraints), 1)
+
+        # ローカル付与の場合はネイティブノードが作成される
+        # plusMinusAverageノードが作成されたか確認
+        diff_nodes = cmds.ls("parent_joint_local_diff", type="plusMinusAverage")
+        self.assertEqual(len(diff_nodes), 1)
+        
+        # multiplyDivideノードが作成されたか確認
+        mult_nodes = cmds.ls("child_joint_local_mult", type="multiplyDivide")
+        self.assertEqual(len(mult_nodes), 1)
+
+    def test_setup_given_parent_bones_with_transform_layer(self):
+        """変形階層を考慮した付与ボーンのテスト"""
+        # 複数のジョイントを作成
+        cmds.select(clear=True)
+        joints = []
+        for i in range(4):
+            if i > 0:
+                cmds.select(clear=True)
+            joint = cmds.joint(name=f"joint{i}", position=[i * 5, 0, 0])
+            joints.append(joint)
+
+        # 異なる変形階層を持つ付与ボーンを作成
+        bones = []
+        for i in range(4):
+            if i < 2:
+                # 付与ボーンとして設定（異なる変形階層）
+                bone = self._create_mock_pmx_bone(
+                    i, f"Bone{i}", 
+                    bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                )
+                bone.given_parent_bone_index = 3  # joint3を親にする
+                bone.given_rate = 0.5
+                bone.transform_layer = 1 if i == 0 else 0  # 異なる階層
+            else:
+                # 通常のボーン
+                bone = Mock()
+                bone.get_flag = Mock(return_value=False)
+                bone.transform_layer = 0  # Mockオブジェクトに属性を追加
+            bones.append(bone)
+
+        constraints = self.converter._setup_given_parent_bones(bones, joints)
+
+        # 2つの付与関係が設定される
+        self.assertEqual(len(constraints), 2)
+
+    def test_multiple_given_dependencies(self):
+        """多重付与（付与ボーンが他の付与ボーンを参照）のテスト"""
+        # ジョイントチェーンを作成
+        cmds.select(clear=True)
+        joints = []
+        for i in range(4):
+            if i > 0:
+                cmds.select(clear=True)
+            joint = cmds.joint(name=f"joint{i}", position=[i * 5, 0, 0])
+            joints.append(joint)
+
+        # 多重付与の構造を作成
+        # joint0 -> joint1 (付与)
+        # joint1 -> joint2 (付与)
+        bones = []
+        for i in range(4):
+            if i == 0:
+                # joint0: joint1から付与を受ける
+                bone = self._create_mock_pmx_bone(
+                    i, f"Bone{i}", 
+                    bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                )
+                bone.given_parent_bone_index = 1
+                bone.given_rate = 0.5
+            elif i == 1:
+                # joint1: joint2から付与を受ける（多重付与）
+                bone = self._create_mock_pmx_bone(
+                    i, f"Bone{i}", 
+                    bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                )
+                bone.given_parent_bone_index = 2
+                bone.given_rate = 0.7
+            else:
+                # 通常のボーン
+                bone = Mock()
+                bone.get_flag = Mock(return_value=False)
+                bone.transform_layer = 0  # Mockオブジェクトに属性を追加
+            bones.append(bone)
+
+        constraints = self.converter._setup_given_parent_bones(bones, joints)
+
+        # 2つの付与関係が設定される
+        self.assertEqual(len(constraints), 2)
+
+    def test_create_weighted_rotation_constraint(self):
+        """重み付き回転コンストレイントの作成テスト"""
         # テスト用のジョイントを作成
         cmds.select(clear=True)
         parent_joint = cmds.joint(name="parent_joint", position=[0, 0, 0])
@@ -292,22 +412,51 @@ class TestRigConverterMaya(unittest.TestCase):
 
         rate = 0.5
 
-        expr_name = self.converter._create_partial_rotation_constraint(
+        created_nodes = self.converter._create_weighted_rotation_constraint(
             parent_joint, child_joint, rate
         )
 
-        self.assertEqual(expr_name, "child_joint_given_rotation_expr")
+        # ノードが作成されたか確認
+        self.assertIsInstance(created_nodes, list)
+        self.assertTrue(len(created_nodes) > 0)
+        
+        # 初期ロケータが作成されたか確認
+        init_locator = cmds.ls("child_joint_init_rot", type="transform")
+        self.assertEqual(len(init_locator), 1)
 
-        # エクスプレッションが作成されたか確認
-        self.assertTrue(cmds.objExists(expr_name))
+        # decomposeMatrixノードが作成されたか確認
+        decompose_nodes = cmds.ls("parent_joint_decompose", type="decomposeMatrix")
+        self.assertEqual(len(decompose_nodes), 1)
+        
+        # multiplyDivideノードが作成されたか確認
+        mult_nodes = cmds.ls("child_joint_given_mult", type="multiplyDivide")
+        self.assertEqual(len(mult_nodes), 1)
 
-        # ロケータが作成されたか確認
-        locators = cmds.ls("*_base_rotation*", type="transform")
-        self.assertEqual(len(locators), 1)
+    def test_create_negative_rate_rotation_constraint(self):
+        """負の付与率の回転コンストレイントの作成テスト"""
+        # テスト用のジョイントを作成
+        cmds.select(clear=True)
+        parent_joint = cmds.joint(name="parent_joint", position=[0, 0, 0])
+        cmds.select(clear=True)
+        child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
 
-        # ロケータが非表示か確認
-        visibility = cmds.getAttr(f"{locators[0]}.visibility")
-        self.assertEqual(visibility, 0)
+        rate = -0.5  # 負の付与率
+
+        created_nodes = self.converter._create_weighted_rotation_constraint(
+            parent_joint, child_joint, rate
+        )
+
+        # ノードが作成されたか確認
+        self.assertIsInstance(created_nodes, list)
+        self.assertTrue(len(created_nodes) > 0)
+        
+        # 負の付与率の場合、反転用のmultiplyDivideノードが作成される
+        invert_nodes = cmds.ls("child_joint_invert_rot", type="multiplyDivide")
+        self.assertEqual(len(invert_nodes), 1)
+
+        # 初期ロケータが作成されたか確認
+        init_locator = cmds.ls("child_joint_init_rot", type="transform")
+        self.assertEqual(len(init_locator), 1)
 
     def test_find_joint_by_japanese_name(self):
         """日本語名でのジョイント検索テスト"""
