@@ -136,6 +136,13 @@ logger.critical("重大なエラーメッセージ")
   logger.error("エラーが発生しました", exc_info=True)
   ```
 
+## ユーティリティークラスの使用方法
+
+`mmd_tools.core.utils`モジュールには、Maya環境に依存しないユーティリティ関数が含まれています。
+`mmd_tools.core.maya_utils`モジュールには、Maya環境に特化したユーティリティ関数が含まれています。
+
+新しい汎用的な関数などを実装する時は、Utilityモジュールに追加できないか検討してください。
+
 ## 参考サイト
 
 - [mmdpaimaya](https://github.com/phyblas/mmdpaimaya/tree/master)

@@ -4,6 +4,7 @@ import maya.cmds as cmds
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core import maya_utils
+from mmd_tools.core import utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.validation.bone_validator import BoneValidator
 from mmd_tools.settings import settings
@@ -416,38 +417,29 @@ class RigConverter:
             bone: PMXボーンオブジェクト
         """
         if hasattr(bone, "get_flag") and bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-            # PMX座標系からMaya座標系に変換
+            # PMX仕様書に従った実装
             x_axis_pmx = bone.x_axis_direction
             z_axis_pmx = bone.z_axis_direction
 
-            # 座標系変換（Z軸反転）
-            x_axis_maya = maya_utils.pmx_to_maya_vector(x_axis_pmx)
-            z_axis_maya = maya_utils.pmx_to_maya_vector(z_axis_pmx)
+            # PMX座標系でY軸を計算（PMX仕様書準拠）
+            # Y = Z × X
+            y_axis_pmx = utils.cross_product(z_axis_pmx, x_axis_pmx)
+            y_axis_pmx = utils.normalize_vector(y_axis_pmx)
 
-            # ベクトルを正規化
-            x_axis_maya = maya_utils.normalize_vector(x_axis_maya)
-            z_axis_maya = maya_utils.normalize_vector(z_axis_maya)
+            # Z' = X × Y （Z軸を再計算して直交化）
+            z_axis_pmx = utils.cross_product(x_axis_pmx, y_axis_pmx)
+            z_axis_pmx = utils.normalize_vector(z_axis_pmx)
 
-            # グラムシュミットの正規直交化
-            # Y = Z × X (外積の順序に注意)
-            y_axis_maya = maya_utils.cross_product(z_axis_maya, x_axis_maya)
-            y_axis_maya = maya_utils.normalize_vector(y_axis_maya)
-
-            # Z軸を再計算して完全に直交化
-            z_axis_maya = maya_utils.cross_product(x_axis_maya, y_axis_maya)
-            z_axis_maya = maya_utils.normalize_vector(z_axis_maya)
+            # PMX座標系からMaya座標系に変換
+            x_axis_maya = utils.pmx_to_maya_vector(x_axis_pmx)
+            y_axis_maya = utils.pmx_to_maya_vector(y_axis_pmx)
+            z_axis_maya = utils.pmx_to_maya_vector(z_axis_pmx)
 
             # ジョイントオリエンテーションの設定
             matrix = maya_utils.create_matrix_from_axes(
                 x_axis_maya, y_axis_maya, z_axis_maya
             )
             rotation = maya_utils.matrix_to_euler(matrix)
-
-            self.logger.debug(f"ローカル軸設定 {joint}:")
-            self.logger.debug(f"  PMX X軸: {x_axis_pmx} → Maya: {x_axis_maya}")
-            self.logger.debug(f"  PMX Z軸: {z_axis_pmx} → Maya: {z_axis_maya}")
-            self.logger.debug(f"  計算Y軸: {y_axis_maya}")
-            self.logger.debug(f"  回転: {rotation}")
 
             # 子ジョイントを取得（直接の子のみ）
             children = (
