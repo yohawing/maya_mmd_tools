@@ -113,6 +113,108 @@ Error: mayapy executable not found at C:\Program Files\Autodesk\Maya2024\bin\may
 python tests/run_tests.py --type integration --maya 2023
 ```
 
+## テストフィクスチャ
+
+### TestFixtureProviderの使用
+
+`TestFixtureProvider`は、テストで使用するMMDファイル（PMD、PMX、VMD）やテクスチャファイルへのアクセスを提供するクラスです。`tests/data`ディレクトリに配置されたテストファイルを自動的に探索し、キャッシュして高速にアクセスできるようにします。
+
+#### 基本的な使用方法
+
+```python
+from tests.common.test_fixture_provider import TestFixtureProvider
+
+class TestPmdParser(unittest.TestCase):
+    def setUp(self):
+        self.fixture_provider = TestFixtureProvider()
+        
+    def test_parse_pmd_file(self):
+        """PMDファイルのパーステスト"""
+        # デフォルトのPMDファイルを取得
+        pmd_path = self.fixture_provider.get_pmd_file()
+        
+        # 特定のPMDファイルを取得（拡張子なしで指定）
+        specific_pmd = self.fixture_provider.get_pmd_file('miku_v2')
+        
+        # パーサーでファイルを読み込む
+        parser = PmdParser()
+        result = parser.parse(pmd_path)
+        self.assertIsNotNone(result)
+```
+
+#### 主要メソッド
+
+##### ファイルパス取得メソッド
+
+- `get_pmd_file(name=None)`: PMDファイルのパスを取得
+- `get_pmx_file(name=None)`: PMXファイルのパスを取得
+- `get_vmd_file(name=None)`: VMDファイルのパスを取得
+- `get_texture_file(model_name, texture_name)`: テクスチャファイルのパスを取得
+
+##### 利用可能なファイル一覧取得メソッド
+
+- `get_available_pmd_files()`: 利用可能なPMDファイル名のリスト
+- `get_available_pmx_files()`: 利用可能なPMXファイル名のリスト
+- `get_available_vmd_files()`: 利用可能なVMDファイル名のリスト
+
+##### データロードメソッド（キャッシュ機能付き）
+
+- `load_pmd_data(name=None)`: PMDファイルをパースして辞書形式で返す
+- `load_pmx_data(name=None)`: PMXファイルをパースして辞書形式で返す
+- `load_vmd_data(name=None)`: VMDファイルをパースして辞書形式で返す
+
+##### 一時ファイル作成メソッド
+
+- `create_temp_file(content, extension)`: 一時ファイルを作成してパスを返す
+- `cleanup_temp_files()`: 作成した一時ファイルをすべて削除
+
+#### 高度な使用例
+
+```python
+class TestTextureHandling(unittest.TestCase):
+    def setUp(self):
+        self.fixture_provider = TestFixtureProvider()
+        
+    def tearDown(self):
+        # 一時ファイルのクリーンアップ
+        self.fixture_provider.cleanup_temp_files()
+        
+    def test_texture_conversion(self):
+        """テクスチャ変換のテスト"""
+        # 利用可能なPMXファイルを確認
+        available_files = self.fixture_provider.get_available_pmx_files()
+        print(f"Available PMX files: {available_files}")
+        
+        # PMXデータをロード（キャッシュされる）
+        pmx_data = self.fixture_provider.load_pmx_data('model_with_textures')
+        
+        # 一時的なテクスチャファイルを作成
+        test_texture = b'\x89PNG\r\n\x1a\n...'  # PNGバイナリデータ
+        temp_texture_path = self.fixture_provider.create_temp_file(test_texture, '.png')
+        
+        # テクスチャ変換処理
+        converter = TextureConverter()
+        result = converter.convert(temp_texture_path)
+        self.assertTrue(result)
+```
+
+#### カスタムデータディレクトリの指定
+
+```python
+# デフォルトは tests/data ディレクトリ
+default_provider = TestFixtureProvider()
+
+# カスタムディレクトリを指定
+custom_provider = TestFixtureProvider(data_dir='/path/to/custom/test/data')
+```
+
+### 注意事項
+
+- TestFixtureProviderは初期化時にディレクトリを探索してファイルをキャッシュするため、大量のテストファイルがある場合でも高速に動作します
+- ファイル名は拡張子なしで指定します（例: 'miku_v2.pmd' → 'miku_v2'）
+- テストファイルが見つからない場合は`FileNotFoundError`が発生します
+- 一時ファイルは`tearDown`で必ず`cleanup_temp_files()`を呼び出してクリーンアップしてください
+
 ## モックシステムの詳細
 
 ### PMD/PMX/VMDファイルフォーマットのモック

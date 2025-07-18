@@ -44,9 +44,9 @@ class MayaLogger:
             "compact": "[MMD] %(levelname)s: %(message)s",
         },
         "handlers": {
-            "console": {"enabled": True},
+            "console": {"enabled": False},
             "file": {"enabled": True},
-            "maya_script_editor": {"enabled": True},
+            "maya_script_editor": {"enabled": False},
         },
     }
 
