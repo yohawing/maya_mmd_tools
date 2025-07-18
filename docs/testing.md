@@ -113,33 +113,42 @@ Error: mayapy executable not found at C:\Program Files\Autodesk\Maya2024\bin\may
 python tests/run_tests.py --type integration --maya 2023
 ```
 
-## モック機能
+## モックシステムの詳細
 
-### 概要
+### PMD/PMX/VMDファイルフォーマットのモック
 
-プロジェクトには、Maya環境なしでユニットテストを実行できる包括的なモックシステムが実装されています。これにより、ビジネスロジックのテストがより高速かつ独立して実行できます。
-
-### モックシステムの構成
+プロジェクトには、テスト用のMMDファイルフォーマットモックが実装されています：
 
 ```
 tests/common/
-├── maya_mock.py           # Maya APIの基本モック実装
-├── maya_mock_helpers.py   # MMD関連オブジェクトのファクトリ
 ├── pmd_mock.py           # PMDファイルフォーマットのモック
 ├── pmx_mock.py           # PMXファイルフォーマットのモック
 └── vmd_mock.py           # VMDファイルフォーマットのモック
 ```
 
-### 主な機能
+これらのモックは、実際のバイナリファイルを作成せずにMMDデータ構造をテストできるようにします。
 
-- **maya.cmds モック**: ジョイント、メッシュ、アニメーション操作
-- **maya.api.OpenMaya モック**: ベクトル、クォータニオン、行列操作
-- **MMDオブジェクトファクトリ**: 標準ボーン階層、IKセットアップ、メッシュ作成
-- **ファイルフォーマットモック**: テスト用のバイナリデータ生成
+### 使用例
 
-### 使用方法
+```python
+# PMDモックの使用
+from tests.common.pmd_mock import create_test_pmd_data
 
-詳細な使用方法については、[モック使用ガイド](mock_usage.md)を参照してください。
+pmd_data = create_test_pmd_data()
+# pmd_dataを使用してパーサーやコンバーターをテスト
+
+# PMXモックの使用
+from tests.common.pmx_mock import create_test_pmx_data
+
+pmx_data = create_test_pmx_data()
+# pmx_dataを使用してテスト
+
+# VMDモックの使用
+from tests.common.vmd_mock import create_test_vmd_data
+
+vmd_data = create_test_vmd_data()
+# vmd_dataを使用してアニメーションテスト
+```
 
 ## テストの実行環境
 
