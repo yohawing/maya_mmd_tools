@@ -29,6 +29,10 @@
       "_comment": "Settings for importing morphs (blend shapes)",
       "import_morphs": true
     },
+    "rig": {
+      "_comment": "Settings for rigging system setup",
+      "add_semi_standard_bones": false
+    },
     "animation": {
       "_comment": "Settings for importing VMD animation files",
       "import_animations": true,

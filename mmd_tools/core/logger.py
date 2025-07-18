@@ -82,13 +82,13 @@ class MayaLogger:
         )
 
         # コンソールハンドラー
-        # if self.LOGGING_CONFIG["handlers"]["console"]["enabled"]:
-        #     if is_maya_environment():
-        #         console_handler = MayaOutputWindowHandler()
-        #     else:
-        #         console_handler = logging.StreamHandler(sys.stdout)
-        #     console_handler.setFormatter(compact_formatter)
-        #     self._logger.addHandler(console_handler)
+        if self.LOGGING_CONFIG["handlers"]["console"]["enabled"]:
+            if is_maya_environment():
+                console_handler = MayaOutputWindowHandler()
+            else:
+                console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setFormatter(compact_formatter)
+            self._logger.addHandler(console_handler)
 
         # ファイルハンドラー
         if self.LOGGING_CONFIG["handlers"]["file"]["enabled"]:
@@ -115,13 +115,13 @@ class MayaLogger:
                     print(f"ログファイルの作成に失敗しました: {e}")
 
         # Maya Script Editorハンドラー
-        # if (
-        #     is_maya_environment()
-        #     and self.LOGGING_CONFIG["handlers"]["maya_script_editor"]["enabled"]
-        # ):
-        #     maya_handler = MayaScriptEditorHandler()
-        #     maya_handler.setFormatter(compact_formatter)
-        #     self._logger.addHandler(maya_handler)
+        if (
+            is_maya_environment()
+            and self.LOGGING_CONFIG["handlers"]["maya_script_editor"]["enabled"]
+        ):
+            maya_handler = MayaScriptEditorHandler()
+            maya_handler.setFormatter(compact_formatter)
+            self._logger.addHandler(maya_handler)
 
         # Maya Dialogハンドラー（ERROR/CRITICALレベル用）
         # if is_maya_environment():

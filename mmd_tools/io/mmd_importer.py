@@ -1,11 +1,15 @@
 """
 MMDファイル（PMX、PMD、VMD）を解析し、Mayaシーンにインポートするためのメインモジュール。
 """
+
 from maya import cmds
 
-from ..core import pmd_parser, pmx_parser, vmd_parser
-from ..core.mmd_parser import parse_mmd_file
-from . import pmd_importer, pmx_importer, vmd_importer
+from mmd_tools.core import PmdParser, PmxParser, VmdParser
+from mmd_tools.core.mmd_parser import parse_mmd_file
+from mmd_tools.io import pmd_importer, pmx_importer, vmd_importer
+from mmd_tools.core.logger import get_logger
+
+logger = get_logger("mmd_tools.io.mmd_importer")
 
 
 def import_mmd_file(filepath):
@@ -24,21 +28,25 @@ def import_mmd_file(filepath):
         parsed_data = parse_mmd_file(filepath)
 
         # 解析されたデータのタイプに応じてインポーターを呼び出す
-        if isinstance(parsed_data, pmx_parser.PmxParser):
+        # print(isinstance(parsed_data, pmx_parser.PmxParser))
+        if isinstance(parsed_data, PmxParser):
             return pmx_importer.import_pmx_file(parsed_data, filepath)
 
-        elif isinstance(parsed_data, pmd_parser.PmdParser):
+        elif isinstance(parsed_data, PmdParser):
             return pmd_importer.import_pmd_file(parsed_data, filepath)
 
-        elif isinstance(parsed_data, vmd_parser.VmdParser):
+        elif isinstance(parsed_data, VmdParser):
             return vmd_importer.import_vmd_file(parsed_data, filepath)
 
         else:
-            cmds.warning(f"Unsupported data type returned from parser: {type(parsed_data)}")
+            logger.warning(
+                f"Unsupported data type returned from parser: {type(parsed_data)}"
+            )
             return False
 
     except Exception as e:
-        cmds.error(f"Failed to import {filepath}: {e}")
+        logger.error(f"Failed to import {filepath}: {e}")
         import traceback
+
         traceback.print_exc()
         return False

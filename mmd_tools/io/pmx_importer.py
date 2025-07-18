@@ -37,7 +37,7 @@ def import_pmx_file(parser, filepath):
         model_name = parser.header.model_name
         root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
         logger.debug("ルートグループ作成: %s", root_group)
-        
+
         # メッシュを変換
         logger.info("メッシュを変換中...")
         mesh_converter = MeshConverter(filepath)
@@ -51,7 +51,9 @@ def import_pmx_file(parser, filepath):
         # ボーンを変換
         logger.info("ボーンを変換中...")
         bone_converter = BoneConverter()
-        maya_joints, skin_cluster = bone_converter.convert_pmx_bones(parser, mesh_name, root_group)
+        maya_joints, skin_cluster = bone_converter.convert_pmx_bones(
+            parser, mesh_name, root_group
+        )
         logger.debug(
             "ボーン変換完了: %d個のジョイント", len(maya_joints) if maya_joints else 0
         )

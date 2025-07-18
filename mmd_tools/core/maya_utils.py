@@ -693,3 +693,186 @@ def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
     except Exception as e:
         logger.error(f"Failed to set backface culling: {e}")
         return False
+
+
+def create_ik_handle(start_joint, end_joint, solver="ikRPsolver", name=None):
+    """
+    IKハンドルを作成する。
+    
+    Args:
+        start_joint (str): IKチェーンの開始ジョイント名
+        end_joint (str): IKチェーンの終了ジョイント名
+        solver (str): 使用するIKソルバー ("ikRPsolver", "ikSCsolver", "ikSplineSolver")
+        name (str): IKハンドルの名前（Noneの場合は自動生成）
+        
+    Returns:
+        tuple: (ik_handle, effector) IKハンドル名とエフェクター名のタプル
+        
+    Raises:
+        ValueError: ジョイントが存在しない場合やソルバーが無効な場合
+    """
+    # ジョイントの存在確認
+    if not cmds.objExists(start_joint):
+        raise ValueError(f"Start joint '{start_joint}' does not exist")
+    if not cmds.objExists(end_joint):
+        raise ValueError(f"End joint '{end_joint}' does not exist")
+    
+    # ソルバーの妥当性確認
+    valid_solvers = ["ikRPsolver", "ikSCsolver", "ikSplineSolver"]
+    if solver not in valid_solvers:
+        raise ValueError(f"Invalid solver '{solver}'. Must be one of: {valid_solvers}")
+    
+    try:
+        # IKハンドルの作成
+        ik_handle_result = cmds.ikHandle(
+            startJoint=start_joint,
+            endEffector=end_joint,
+            solver=solver,
+            name=name if name else f"{end_joint}_ikHandle"
+        )
+        
+        ik_handle = ik_handle_result[0]
+        effector = ik_handle_result[1]
+        
+        logger.info(f"Created IK handle '{ik_handle}' from '{start_joint}' to '{end_joint}'")
+        return ik_handle, effector
+        
+    except Exception as e:
+        logger.error(f"Failed to create IK handle: {e}")
+        raise
+
+
+def set_joint_limits(joint, limit_min=None, limit_max=None, enable_limits=True):
+    """
+    ジョイントの回転制限を設定する。
+    
+    Args:
+        joint (str): ジョイント名
+        limit_min (list): 最小回転制限 [x, y, z] ラジアン単位
+        limit_max (list): 最大回転制限 [x, y, z] ラジアン単位
+        enable_limits (bool): 制限を有効にするかどうか
+        
+    Returns:
+        bool: 設定が成功したかどうか
+    """
+    if not cmds.objExists(joint):
+        logger.error(f"Joint '{joint}' does not exist")
+        return False
+        
+    if cmds.nodeType(joint) != "joint":
+        logger.error(f"'{joint}' is not a joint node")
+        return False
+    
+    try:
+        # 回転制限の設定
+        if limit_min:
+            cmds.setAttr(f"{joint}.rotateMinX", limit_min[0])
+            cmds.setAttr(f"{joint}.rotateMinY", limit_min[1])
+            cmds.setAttr(f"{joint}.rotateMinZ", limit_min[2])
+            
+        if limit_max:
+            cmds.setAttr(f"{joint}.rotateMaxX", limit_max[0])
+            cmds.setAttr(f"{joint}.rotateMaxY", limit_max[1])
+            cmds.setAttr(f"{joint}.rotateMaxZ", limit_max[2])
+        
+        # 制限の有効化/無効化
+        if limit_min:
+            cmds.setAttr(f"{joint}.minRotXLimitEnable", enable_limits)
+            cmds.setAttr(f"{joint}.minRotYLimitEnable", enable_limits)
+            cmds.setAttr(f"{joint}.minRotZLimitEnable", enable_limits)
+            
+        if limit_max:
+            cmds.setAttr(f"{joint}.maxRotXLimitEnable", enable_limits)
+            cmds.setAttr(f"{joint}.maxRotYLimitEnable", enable_limits)
+            cmds.setAttr(f"{joint}.maxRotZLimitEnable", enable_limits)
+        
+        logger.info(f"Set joint limits for '{joint}'")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to set joint limits for '{joint}': {e}")
+        return False
+
+
+def create_pole_vector_constraint(ik_handle, pole_vector_object, maintain_offset=True):
+    """
+    IKハンドルにポールベクターコンストレイントを作成する。
+    
+    Args:
+        ik_handle (str): IKハンドル名
+        pole_vector_object (str): ポールベクターコントロールオブジェクト名
+        maintain_offset (bool): オフセットを維持するかどうか
+        
+    Returns:
+        str: 作成されたコンストレイントノード名
+    """
+    if not cmds.objExists(ik_handle):
+        raise ValueError(f"IK handle '{ik_handle}' does not exist")
+    if not cmds.objExists(pole_vector_object):
+        raise ValueError(f"Pole vector object '{pole_vector_object}' does not exist")
+    
+    try:
+        constraint = cmds.poleVectorConstraint(
+            pole_vector_object, 
+            ik_handle, 
+            maintainOffset=maintain_offset
+        )[0]
+        
+        logger.info(f"Created pole vector constraint from '{pole_vector_object}' to '{ik_handle}'")
+        return constraint
+        
+    except Exception as e:
+        logger.error(f"Failed to create pole vector constraint: {e}")
+        raise
+
+
+
+
+def create_matrix_from_axes(x_axis, y_axis, z_axis):
+    """
+    3つの軸ベクトルから回転行列を作成する。
+    
+    Args:
+        x_axis (list): X軸ベクトル [x, y, z]
+        y_axis (list): Y軸ベクトル [x, y, z]
+        z_axis (list): Z軸ベクトル [x, y, z]
+        
+    Returns:
+        om.MMatrix: 回転行列
+    """
+    matrix = om.MMatrix()
+    matrix.setElement(0, 0, x_axis[0])
+    matrix.setElement(0, 1, x_axis[1])
+    matrix.setElement(0, 2, x_axis[2])
+    matrix.setElement(1, 0, y_axis[0])
+    matrix.setElement(1, 1, y_axis[1])
+    matrix.setElement(1, 2, y_axis[2])
+    matrix.setElement(2, 0, z_axis[0])
+    matrix.setElement(2, 1, z_axis[1])
+    matrix.setElement(2, 2, z_axis[2])
+    return matrix
+
+
+def matrix_to_euler(matrix):
+    """
+    回転行列をオイラー角に変換する。
+    
+    Args:
+        matrix (om.MMatrix): 回転行列
+        
+    Returns:
+        list: オイラー角 [x, y, z] 度数法
+    """
+    transform_matrix = om.MTransformationMatrix(matrix)
+    euler = transform_matrix.rotation(asQuaternion=False)
+    # ラジアンから度に変換
+    import math
+    return [
+        math.degrees(euler.x),
+        math.degrees(euler.y),
+        math.degrees(euler.z)
+    ]
+
+
+
+

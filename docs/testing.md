@@ -14,7 +14,7 @@
 tests/
 ├── common/                  # テスト共通ユーティリティ
 │   ├── test_base.py        # 基本テストクラス
-│   ├── maya_test_base.py   # Maya統合テスト基本クラス
+│   ├── maya_test_base.py   # Mayaテスト基本クラス
 │   └── custom_test_runner.py # カスタムテストランナー
 ├── unit/                    # ユニットテスト
 ├── integration/             # 統合テスト

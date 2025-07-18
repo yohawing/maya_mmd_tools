@@ -191,3 +191,54 @@ def create_bone_joint_mapping(bones, maya_joints, format_type):
             mapping[bone.name] = joint_name
 
     return mapping
+
+
+# ベクトル演算関数（Maya非依存）
+def cross_product(vec1, vec2):
+    """
+    2つのベクトルの外積を計算する。
+    
+    Args:
+        vec1 (list): ベクトル1 [x, y, z]
+        vec2 (list): ベクトル2 [x, y, z]
+        
+    Returns:
+        list: 外積ベクトル [x, y, z]
+    """
+    return [
+        vec1[1] * vec2[2] - vec1[2] * vec2[1],
+        vec1[2] * vec2[0] - vec1[0] * vec2[2],
+        vec1[0] * vec2[1] - vec1[1] * vec2[0]
+    ]
+
+
+def normalize_vector(vector):
+    """
+    ベクトルを正規化する。
+    
+    Args:
+        vector (list): ベクトル [x, y, z]
+        
+    Returns:
+        list: 正規化されたベクトル [x, y, z]
+    """
+    import math
+    length = math.sqrt(vector[0]**2 + vector[1]**2 + vector[2]**2)
+    if length < 1e-6:  # ゼロベクトルのチェック
+        return [0.0, 0.0, 0.0]
+    return [vector[0]/length, vector[1]/length, vector[2]/length]
+
+
+def pmx_to_maya_vector(pmx_vector):
+    """
+    PMXの右手座標系ベクトルをMayaの左手座標系に変換する。
+    PMX: X(右), Y(上), Z(手前)
+    Maya: X(右), Y(上), Z(奥) 
+    
+    Args:
+        pmx_vector (list): PMXベクトル [x, y, z]
+        
+    Returns:
+        list: Mayaベクトル [x, y, -z]
+    """
+    return [pmx_vector[0], pmx_vector[1], -pmx_vector[2]]
