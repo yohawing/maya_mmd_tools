@@ -221,3 +221,8 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual(pos[0], 0.5, places=5)
         self.assertAlmostEqual(pos[1], 0.5, places=5)
         self.assertAlmostEqual(pos[2], -0.5, places=5)  # Z軸反転
+
+    def test_pole_vector_generation_for_leg_ik(self):
+        """足IKのPoleVector自動生成テスト"""
+
+        # TODO: アニメーションがインポートされた後、PoleVectorが正しく、アニメーションしているかを検証する。

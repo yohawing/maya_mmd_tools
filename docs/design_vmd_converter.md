@@ -284,7 +284,106 @@ converter = VmdConverter(use_quaternion_interpolation=False)
 - 球面線形補間（SLERP）により、最短経路での回転を実現
 - 180度を超える回転でも自然な動きを維持
 
+### IKのPoleVector自動生成（2025/07/19追加）
+
+VMDファイルには足IKのPoleVectorデータが含まれていないため、太ももの回転データから膝の向きを計算し、動的にPoleVectorの位置を生成する機能を実装しました。
+
+#### 機能概要
+- 足IKハンドル作成時にPoleTargetロケータを自動生成
+- VMDの太もも回転データから膝の向きを推定
+- 各キーフレームでPoleTargetの位置を更新
+
+#### 実装詳細
+
+##### 1. PoleTargetの作成
+```python
+# IKハンドル作成時にPoleTargetも作成
+pole_target = cmds.spaceLocator(name=f"{ik_bone}_poleTarget")[0]
+# 足IKの親（通常は足IKコントローラーの親）の子として配置
+cmds.parent(pole_target, leg_ik_parent)
+# PoleVectorConstraintでIKハンドルに接続
+cmds.poleVectorConstraint(pole_target, ik_handle)
+```
+
+##### 2. PoleVector位置の計算
+```python
+def calculate_pole_vector_position(hip_pos, ankle_pos, thigh_rotation, offset_distance=10.0):
+    """
+    太ももの回転から膝の向きを計算し、PoleVectorの位置を決定
+    
+    Args:
+        hip_pos: 股関節の位置
+        ankle_pos: 足首の位置
+        thigh_rotation: 太ももの回転（VMDデータ）
+        offset_distance: PoleVectorのオフセット距離
+    
+    Returns:
+        PoleVectorの位置
+    """
+    # IKチェーンの中点を計算
+    mid_point = [(hip_pos[i] + ankle_pos[i]) / 2 for i in range(3)]
+    
+    # 太ももの回転からY軸回転を抽出（膝の向き）
+    knee_direction = extract_knee_direction_from_rotation(thigh_rotation)
+    
+    # IKチェーンの平面に対して垂直方向にオフセット
+    pole_position = calculate_offset_position(mid_point, knee_direction, offset_distance)
+    
+    return pole_position
+```
+
+##### 3. キーフレーム処理
+```python
+# VMDの太ももキーフレームと同期してPoleTargetにもキーフレームを設定
+for frame in thigh_frames:
+    # 太ももの回転からPoleVector位置を計算
+    pole_pos = calculate_pole_vector_position(
+        hip_pos=hip_position,
+        ankle_pos=ankle_position,
+        thigh_rotation=frame.rotation,
+        offset_distance=pole_distance
+    )
+    
+    # PoleTargetの位置にキーフレームを設定
+    cmds.setKeyframe(pole_target, attribute='translateX', time=frame.frame_number, value=pole_pos[0])
+    cmds.setKeyframe(pole_target, attribute='translateY', time=frame.frame_number, value=pole_pos[1])
+    cmds.setKeyframe(pole_target, attribute='translateZ', time=frame.frame_number, value=pole_pos[2])
+```
+
+#### 技術的な考慮事項
+
+##### 座標系変換
+- VMDの太もも回転データをMayaの座標系に変換
+- Z軸の反転を考慮（maya_z = -mmd_z）
+
+##### 初期ポーズの重要性
+- MMDモデルの初期ポーズでの膝の向きを基準として使用
+- バインドポーズでのPoleVectorのデフォルト位置を適切に設定
+
+##### スムージング処理
+- フレーム間でPoleVector位置が急激に変化しないよう補間
+- ベジェ補間やスプライン補間を適用可能
+
+##### IKチェーンの識別
+- 足IKチェーンを自動識別（「左足IK」「右足IK」などの名前パターン）
+- 対応する太ももボーン（「左足」「右足」）とのマッピング
+
+#### 使用方法
+```python
+# PoleVector自動生成を有効にして変換（デフォルト）
+converter = VmdConverter(generate_pole_vectors=True)
+
+# PoleVector自動生成を無効にして変換
+converter = VmdConverter(generate_pole_vectors=False)
+```
+
+#### 制限事項
+- 腕のIKには対応していない（通常MMDでは腕IKを使用しないため）
+- 物理演算の影響は考慮されない
+- 極端なポーズでは手動調整が必要な場合がある
+
 ### トラブルシューティング
 - ボーンが見つからない場合: ボーン名マッピングの確認
 - アニメーションがずれる場合: FPS設定の確認
 - 回転が反転する場合: 座標系変換の確認
+- PoleVectorが不自然な場合: 初期ポーズの膝の向きを確認

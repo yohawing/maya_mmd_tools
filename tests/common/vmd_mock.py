@@ -2,6 +2,8 @@
 VMDファイルのテストモック機能を提供するモジュール
 """
 import struct
+from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+from mmd_tools.core.vmd_parser import VmdParser
 
 
 class VmdMock:
@@ -137,3 +139,30 @@ class VmdMock:
         """
         # 簡単のため、最小限のVMDを返す
         return VmdMock.create_minimal_vmd()
+
+
+def create_test_vmd_data():
+    """テスト用のVmdParserオブジェクトを作成する
+    
+    Returns:
+        VmdParser: テスト用のVMDデータ
+    """
+    vmd_data = VmdParser()
+    vmd_data.header.model_name = "TestModel"
+    
+    # センターボーンのテストデータを追加
+    center_frame = VmdBoneFrame()
+    center_frame.bone_name = "センター"
+    center_frame.frame_number = 30
+    center_frame.position = [0.5, 0.5, 0.5]
+    center_frame.rotation = [0.0, 0.0, 0.0, 1.0]
+    center_frame.interpolation = b'\x00' * 64
+    
+    vmd_data.bone_frames = [center_frame]
+    vmd_data.morph_frames = []
+    vmd_data.camera_frames = []
+    vmd_data.light_frames = []
+    vmd_data.shadow_frames = []
+    vmd_data.ik_show_hide_frames = []
+    
+    return vmd_data

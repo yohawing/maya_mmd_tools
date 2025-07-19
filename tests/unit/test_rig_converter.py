@@ -288,6 +288,66 @@ class TestRigConverterMaya(unittest.TestCase):
         mult_nodes = cmds.ls("child_joint_given_mult", type="multiplyDivide")
         self.assertTrue(len(mult_nodes) > 0)
 
+    def test_pole_target_position_for_leg_ik(self):
+        """足IKのPoleTarget位置が膝の前方に配置されるかテスト"""
+        # 足のジョイントチェーンを作成
+        cmds.select(clear=True)
+        hip = cmds.joint(name="left_leg", position=[2, 10, 0])
+        knee = cmds.joint(name="left_knee", position=[2, 5, 0.5])  # 膝は少し前に出ている
+        ankle = cmds.joint(name="left_ankle", position=[2, 0, 0])
+        
+        # IKボーンを作成
+        cmds.select(clear=True)
+        ik_bone = cmds.joint(name="left_leg_ik", position=[2, 0, 0])
+        
+        # IKチェーン情報を作成
+        chain = {
+            "ik_bone": "left_leg_ik",
+            "ik_bone_index": 0,
+            "target_bone": "left_ankle",
+            "target_bone_index": 2,
+            "loop_count": 40,
+            "unit_angle": 114.5916,
+            "ik_links": [
+                {"bone": "left_knee", "bone_index": 1, "angle_limit": False},
+                {"bone": "left_leg", "bone_index": 0, "angle_limit": False}
+            ]
+        }
+        
+        # IKハンドルを作成
+        ik_handle, _ = cmds.ikHandle(
+            startJoint=hip,
+            endEffector=ankle,
+            solver="ikRPsolver",
+            name="left_leg_ik_ikHandle"
+        )
+        
+        # PoleTargetを作成
+        pole_target = self.converter._create_pole_target_for_leg_ik(
+            chain, ik_handle, hip, ankle
+        )
+        
+        # PoleTargetが作成されたか確認
+        self.assertIsNotNone(pole_target)
+        self.assertTrue(cmds.objExists(pole_target))
+        
+        # PoleTargetの位置を取得
+        pole_pos = cmds.xform(pole_target, query=True, worldSpace=True, translation=True)
+        knee_pos = cmds.xform(knee, query=True, worldSpace=True, translation=True)
+        
+        # PoleTargetが膝の近くに配置されているか確認（Y座標が近い）
+        self.assertAlmostEqual(pole_pos[1], knee_pos[1], delta=1.0)
+        
+        # PoleTargetが膝の前方（Z軸正方向）に配置されているか確認
+        self.assertGreater(pole_pos[2], knee_pos[2], 
+                          "PoleTargetが膝の前方に配置されていません")
+        
+        # PoleTargetが適切な距離に配置されているか確認（デフォルト10ユニット）
+        distance = ((pole_pos[0] - knee_pos[0])**2 + 
+                   (pole_pos[1] - knee_pos[1])**2 + 
+                   (pole_pos[2] - knee_pos[2])**2)**0.5
+        self.assertAlmostEqual(distance, 10.0, delta=1.0)
+
     def test_setup_given_parent_bones_local_given(self):
         """ローカル付与ボーンの設定テスト（実際のMaya環境）"""
         # テスト用のジョイントを作成

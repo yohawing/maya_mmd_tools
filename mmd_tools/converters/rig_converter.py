@@ -346,11 +346,19 @@ class RigConverter:
                     {
                         "mmd_ik_loop_count": chain["loop_count"],
                         "mmd_ik_unit_angle": chain["unit_angle"],
+                        "mmd_ik_bone": chain["ik_bone"],  # IKボーン名を追加
                     },
                 )
 
                 # 角度制限の設定
                 self._set_joint_limits(chain["ik_links"])
+
+                # 足IKの場合、PoleTargetを作成
+                pole_target = None
+                if self._is_leg_ik(chain["ik_bone"]):
+                    pole_target = self._create_pole_target_for_leg_ik(
+                        chain, ik_handle, start_joint, end_joint
+                    )
 
                 ik_handle_info = {
                     "ik_handle": ik_handle,
@@ -358,6 +366,7 @@ class RigConverter:
                     "start_joint": start_joint,
                     "end_joint": end_joint,
                     "ik_links": chain["ik_links"],
+                    "pole_target": pole_target,  # PoleTarget情報を追加
                 }
 
                 ik_handles.append(ik_handle_info)
@@ -371,6 +380,145 @@ class RigConverter:
                 )
 
         return ik_handles
+
+    def _is_leg_ik(self, ik_bone_name):
+        """
+        IKボーンが足IKかどうかを判定する。
+
+        Args:
+            ik_bone_name (str): IKボーン名
+
+        Returns:
+            bool: 足IKの場合True
+        """
+        leg_patterns = ["足IK", "leg_ik", "LegIK", "foot_ik", "FootIK"]
+        for pattern in leg_patterns:
+            if pattern.lower() in ik_bone_name.lower():
+                return True
+        return False
+
+    def _create_pole_target_for_leg_ik(self, chain, ik_handle, start_joint, end_joint):
+        """
+        足IK用のPoleTargetロケータを作成する。
+
+        Args:
+            chain (dict): IKチェーン情報
+            ik_handle (str): IKハンドル名
+            start_joint (str): 開始ジョイント（太もも）
+            end_joint (str): 終了ジョイント（足首）
+
+        Returns:
+            str: 作成されたPoleTarget名、失敗した場合はNone
+        """
+        try:
+            # PoleTargetロケータを作成
+            pole_target = cmds.spaceLocator(name=f"{chain['ik_bone']}_poleTarget")[0]
+
+            # IKボーンの親を取得（足IKの親）
+            ik_parent = cmds.listRelatives(chain["ik_bone"], parent=True)
+            if ik_parent:
+                # PoleTargetを足IKの親の子として配置
+                cmds.parent(pole_target, ik_parent[0])
+            else:
+                # 親がない場合はワールド直下に配置
+                self.logger.warning(
+                    f"{chain['ik_bone']}の親が見つかりません。PoleTargetをワールド直下に配置します。"
+                )
+
+            # PoleTargetの初期位置を計算
+            # 太ももと足首の位置を取得
+            start_pos = cmds.xform(
+                start_joint, query=True, worldSpace=True, translation=True
+            )
+            end_pos = cmds.xform(
+                end_joint, query=True, worldSpace=True, translation=True
+            )
+
+            # 中間のジョイント（膝）を取得
+            # IKリンクの最初のジョイントが膝（IKチェーンでは逆順になっている）
+            knee_joint = None
+            if chain["ik_links"]:
+                # IKリンクの最初が膝（MMDのIKチェーンは足首→膝→太ももの順）
+                knee_joint = chain["ik_links"][0]["bone"]
+
+            if knee_joint:
+                knee_pos = cmds.xform(
+                    knee_joint, query=True, worldSpace=True, translation=True
+                )
+
+                # 膝の曲がり方向を計算
+                # 股関節から膝へのベクトル
+                hip_to_knee = [knee_pos[i] - start_pos[i] for i in range(3)]
+                hip_to_knee = utils.normalize_vector(hip_to_knee)
+
+                # 股関節から足首への直線ベクトル
+                hip_to_ankle = [end_pos[i] - start_pos[i] for i in range(3)]
+                hip_to_ankle = utils.normalize_vector(hip_to_ankle)
+
+                # 膝の曲がり方向 = 膝の位置 - 股関節から足首への直線上の最近点
+                # 直線上の最近点を計算
+                t = sum(
+                    [(knee_pos[i] - start_pos[i]) * hip_to_ankle[i] for i in range(3)]
+                )
+                closest_point = [start_pos[i] + t * hip_to_ankle[i] for i in range(3)]
+
+                # 膝の曲がり方向
+                knee_bend_direction = [knee_pos[i] - closest_point[i] for i in range(3)]
+
+                # ベクトルの長さが0に近い場合（直線的な脚）は、デフォルト方向を使用
+                length = (
+                    knee_bend_direction[0] ** 2
+                    + knee_bend_direction[1] ** 2
+                    + knee_bend_direction[2] ** 2
+                ) ** 0.5
+                if length < 0.001:
+                    # デフォルトで前方（Z軸負方向）に配置
+                    knee_bend_direction = [0, 0, -1]
+                else:
+                    knee_bend_direction = utils.normalize_vector(knee_bend_direction)
+
+                # PoleTargetの位置を膝の曲がり方向に配置
+                offset_distance = 2.0  # デフォルトのオフセット距離
+                pole_pos = [
+                    knee_pos[0] + knee_bend_direction[0] * offset_distance,
+                    knee_pos[1] + knee_bend_direction[1] * offset_distance,
+                    knee_pos[2] + knee_bend_direction[2] * offset_distance,
+                ]
+            else:
+                # 膝が見つからない場合は、チェーンの中点の前方に配置
+                mid_pos = [(start_pos[i] + end_pos[i]) / 2 for i in range(3)]
+                # デフォルトで前方（Z軸方向）に配置
+                pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] + 2.0]
+
+            # PoleTargetの位置を設定
+            cmds.xform(pole_target, worldSpace=True, translation=pole_pos)
+
+            # PoleVectorConstraintを作成
+            pole_constraint = cmds.poleVectorConstraint(pole_target, ik_handle)[0]
+
+            # PoleTargetを非表示にする
+            cmds.setAttr(f"{pole_target}.v", 0)
+
+            # カスタムアトリビュートを追加（後でVMD変換時に使用）
+            maya_utils.set_custom_attributes(
+                pole_target,
+                {
+                    "mmd_pole_target": True,
+                    "mmd_ik_handle": ik_handle,
+                    "mmd_ik_bone": chain["ik_bone"],
+                },
+            )
+
+            self.logger.info(
+                f"PoleTarget '{pole_target}' を作成しました（{chain['ik_bone']}用）"
+            )
+            return pole_target
+
+        except Exception as e:
+            self.logger.error(
+                f"PoleTargetの作成に失敗しました '{chain['ik_bone']}': {e}"
+            )
+            return None
 
     def _set_joint_limits(self, ik_links):
         """
@@ -680,38 +828,46 @@ class RigConverter:
             list: 作成されたコンストレイントのリスト
         """
         constraints = []
-        
+
         # 付与ボーンの情報を収集し、変形階層でソート
         given_bones = []
         for i, bone in enumerate(bones):
             if i >= len(maya_joints):
                 continue
-                
+
             # PMXボーンの場合のみ付与設定をチェック
             if not hasattr(bone, "get_flag"):
                 continue
-                
+
             # 付与フラグをチェック
-            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or bone.get_flag(PmxBoneFlag.GIVEN_PARENT_MOVE):
-                given_bones.append({
-                    'index': i,
-                    'bone': bone,
-                    'joint': maya_joints[i],
-                    'transform_layer': getattr(bone, 'transform_layer', 0),
-                    'is_physics_after': bone.get_flag(PmxBoneFlag.DEFORM_AFTER_PHYSICS)
-                })
-        
+            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or bone.get_flag(
+                PmxBoneFlag.GIVEN_PARENT_MOVE
+            ):
+                given_bones.append(
+                    {
+                        "index": i,
+                        "bone": bone,
+                        "joint": maya_joints[i],
+                        "transform_layer": getattr(bone, "transform_layer", 0),
+                        "is_physics_after": bone.get_flag(
+                            PmxBoneFlag.DEFORM_AFTER_PHYSICS
+                        ),
+                    }
+                )
+
         # 変形順序でソート（物理前後 → 変形階層 → インデックス）
-        given_bones.sort(key=lambda x: (x['is_physics_after'], x['transform_layer'], x['index']))
-        
+        given_bones.sort(
+            key=lambda x: (x["is_physics_after"], x["transform_layer"], x["index"])
+        )
+
         # 多重付与の依存関係を解決
         given_bones = self._resolve_given_dependencies(given_bones, bones)
-        
+
         # ソートされた順序で付与を設定
         for given_info in given_bones:
-            bone = given_info['bone']
-            joint = given_info['joint']
-            i = given_info['index']
+            bone = given_info["bone"]
+            joint = given_info["joint"]
+            i = given_info["index"]
 
             # ローカル付与フラグをチェック
             is_local_given = bone.get_flag(PmxBoneFlag.LOCAL)
@@ -765,59 +921,59 @@ class RigConverter:
                     )
 
         return constraints
-    
+
     def _resolve_given_dependencies(self, given_bones, all_bones):
         """
         多重付与の依存関係を解決し、適切な順序で処理できるようにソートする。
-        
+
         Args:
             given_bones (list): 付与ボーン情報のリスト
             all_bones: 全てのボーンデータのリスト
-            
+
         Returns:
             list: 依存関係を考慮してソートされた付与ボーン情報のリスト
         """
         # 付与ボーンのインデックスセットを作成
-        given_indices = {info['index'] for info in given_bones}
-        
+        given_indices = {info["index"] for info in given_bones}
+
         # 依存関係グラフを作成
         dependencies = {}
         for info in given_bones:
-            bone = info['bone']
-            dependencies[info['index']] = []
-            
+            bone = info["bone"]
+            dependencies[info["index"]] = []
+
             # 付与親が他の付与ボーンかチェック
-            if hasattr(bone, 'given_parent_bone_index'):
+            if hasattr(bone, "given_parent_bone_index"):
                 parent_index = bone.given_parent_bone_index
                 if parent_index in given_indices:
                     # 多重付与：この付与ボーンは親付与ボーンに依存
-                    dependencies[info['index']].append(parent_index)
-        
+                    dependencies[info["index"]].append(parent_index)
+
         # トポロジカルソートで依存関係を解決
         sorted_indices = self._topological_sort(dependencies)
-        
+
         # ソート結果に基づいて付与ボーンリストを再構築
-        index_to_info = {info['index']: info for info in given_bones}
+        index_to_info = {info["index"]: info for info in given_bones}
         sorted_given_bones = []
-        
+
         for index in sorted_indices:
             if index in index_to_info:
                 sorted_given_bones.append(index_to_info[index])
-        
+
         # 残りの付与ボーン（依存関係に含まれない）を追加
         for info in given_bones:
-            if info['index'] not in sorted_indices:
+            if info["index"] not in sorted_indices:
                 sorted_given_bones.append(info)
-        
+
         return sorted_given_bones
-    
+
     def _topological_sort(self, dependencies):
         """
         トポロジカルソートを実行して依存関係を解決する。
-        
+
         Args:
             dependencies (dict): ノード -> 依存先ノードリストの辞書
-            
+
         Returns:
             list: トポロジカルソートされたノードのリスト
         """
@@ -827,22 +983,22 @@ class RigConverter:
             for dep in deps:
                 if dep in in_degree:
                     in_degree[dep] += 1
-        
+
         # 入次数0のノードをキューに追加
         queue = [node for node, degree in in_degree.items() if degree == 0]
         sorted_nodes = []
-        
+
         while queue:
             node = queue.pop(0)
             sorted_nodes.append(node)
-            
+
             # このノードに依存するノードの入次数を減らす
             for other, deps in dependencies.items():
                 if node in deps:
                     in_degree[other] -= 1
                     if in_degree[other] == 0:
                         queue.append(other)
-        
+
         # 循環依存がある場合は警告
         if len(sorted_nodes) < len(dependencies):
             remaining = set(dependencies.keys()) - set(sorted_nodes)
@@ -851,10 +1007,12 @@ class RigConverter:
             for node in dependencies:
                 if node not in sorted_nodes:
                     sorted_nodes.append(node)
-        
+
         return sorted_nodes
 
-    def _create_given_rotation_constraint(self, parent_joint, child_joint, rate, is_local=False):
+    def _create_given_rotation_constraint(
+        self, parent_joint, child_joint, rate, is_local=False
+    ):
         """
         回転付与を作成する。
 
@@ -869,7 +1027,9 @@ class RigConverter:
         """
         if is_local:
             # ローカル付与の場合：親のローカル変形量を参照
-            return self._create_local_rotation_constraint(parent_joint, child_joint, rate)
+            return self._create_local_rotation_constraint(
+                parent_joint, child_joint, rate
+            )
         else:
             # グローバル付与の場合：親のユーザー変形量を参照
             if abs(rate - 1.0) < 0.001:
@@ -880,7 +1040,9 @@ class RigConverter:
                 return constraint
             else:
                 # 付与率が1.0でない場合は、重み付きコンストレイントを使用
-                return self._create_weighted_rotation_constraint(parent_joint, child_joint, rate)
+                return self._create_weighted_rotation_constraint(
+                    parent_joint, child_joint, rate
+                )
 
     def _create_weighted_rotation_constraint(self, parent_joint, child_joint, rate):
         """
@@ -896,30 +1058,38 @@ class RigConverter:
             list: 作成されたノードのリスト
         """
         created_nodes = []
-        
+
         # 子の初期回転を保存
         init_locator = cmds.spaceLocator(name=f"{child_joint}_init_rot")[0]
         cmds.parent(init_locator, child_joint)
         cmds.setAttr(f"{init_locator}.v", 0)
         created_nodes.append(init_locator)
-        
+
         # 親の回転を取得するためのdecomposeMatrixノード
-        parent_decompose = cmds.createNode("decomposeMatrix", name=f"{parent_joint}_decompose")
+        parent_decompose = cmds.createNode(
+            "decomposeMatrix", name=f"{parent_joint}_decompose"
+        )
         cmds.connectAttr(f"{parent_joint}.matrix", f"{parent_decompose}.inputMatrix")
         created_nodes.append(parent_decompose)
-        
+
         # 負の付与率の場合、回転を反転する必要がある
         if rate < 0:
             # 反転用のmultiplyDivideノード（-1を掛ける）
-            invert_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_invert_rot")
-            cmds.connectAttr(f"{parent_decompose}.outputRotate", f"{invert_node}.input1")
+            invert_node = cmds.createNode(
+                "multiplyDivide", name=f"{child_joint}_invert_rot"
+            )
+            cmds.connectAttr(
+                f"{parent_decompose}.outputRotate", f"{invert_node}.input1"
+            )
             cmds.setAttr(f"{invert_node}.input2X", -1)
             cmds.setAttr(f"{invert_node}.input2Y", -1)
             cmds.setAttr(f"{invert_node}.input2Z", -1)
             created_nodes.append(invert_node)
-            
+
             # 付与率を適用するmultiplyDivideノード（絶対値を使用）
-            mult_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_given_mult")
+            mult_node = cmds.createNode(
+                "multiplyDivide", name=f"{child_joint}_given_mult"
+            )
             cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1")
             cmds.setAttr(f"{mult_node}.input2X", abs(rate))
             cmds.setAttr(f"{mult_node}.input2Y", abs(rate))
@@ -927,24 +1097,25 @@ class RigConverter:
             created_nodes.append(mult_node)
         else:
             # 正の付与率の場合、直接適用
-            mult_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_given_mult")
+            mult_node = cmds.createNode(
+                "multiplyDivide", name=f"{child_joint}_given_mult"
+            )
             cmds.connectAttr(f"{parent_decompose}.outputRotate", f"{mult_node}.input1")
             cmds.setAttr(f"{mult_node}.input2X", rate)
             cmds.setAttr(f"{mult_node}.input2Y", rate)
             cmds.setAttr(f"{mult_node}.input2Z", rate)
             created_nodes.append(mult_node)
-        
+
         # 初期回転と付与回転を加算するplusMinusAverageノード
         add_node = cmds.createNode("plusMinusAverage", name=f"{child_joint}_given_add")
         cmds.connectAttr(f"{init_locator}.rotate", f"{add_node}.input3D[0]")
         cmds.connectAttr(f"{mult_node}.output", f"{add_node}.input3D[1]")
         created_nodes.append(add_node)
-        
+
         # 結果を子ジョイントに接続
         cmds.connectAttr(f"{add_node}.output3D", f"{child_joint}.rotate", force=True)
-        
+
         return created_nodes
-    
 
     def _create_local_rotation_constraint(self, parent_joint, child_joint, rate):
         """
@@ -960,40 +1131,48 @@ class RigConverter:
             list: 作成されたノードのリスト
         """
         created_nodes = []
-        
+
         # 親の初期回転を保存するロケータを作成
-        parent_init_locator = cmds.spaceLocator(name=f"{parent_joint}_init_local_rot")[0]
+        parent_init_locator = cmds.spaceLocator(name=f"{parent_joint}_init_local_rot")[
+            0
+        ]
         cmds.parent(parent_init_locator, parent_joint)
         cmds.setAttr(f"{parent_init_locator}.v", 0)  # 非表示
         created_nodes.append(parent_init_locator)
-        
+
         # 子の初期回転を保存するロケータを作成
         child_init_locator = cmds.spaceLocator(name=f"{child_joint}_init_local_rot")[0]
         cmds.parent(child_init_locator, child_joint)
         cmds.setAttr(f"{child_init_locator}.v", 0)  # 非表示
         created_nodes.append(child_init_locator)
-        
+
         # 親の現在の回転から初期回転を引くためのplusMinusAverageノード
-        parent_diff_node = cmds.createNode("plusMinusAverage", name=f"{parent_joint}_local_diff")
+        parent_diff_node = cmds.createNode(
+            "plusMinusAverage", name=f"{parent_joint}_local_diff"
+        )
         cmds.setAttr(f"{parent_diff_node}.operation", 2)  # subtract
         cmds.connectAttr(f"{parent_joint}.rotate", f"{parent_diff_node}.input3D[0]")
-        cmds.connectAttr(f"{parent_init_locator}.rotate", f"{parent_diff_node}.input3D[1]")
+        cmds.connectAttr(
+            f"{parent_init_locator}.rotate", f"{parent_diff_node}.input3D[1]"
+        )
         created_nodes.append(parent_diff_node)
-        
+
         # 付与率を適用するmultiplyDivideノード
         mult_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_local_mult")
         cmds.connectAttr(f"{parent_diff_node}.output3D", f"{mult_node}.input1")
-        
+
         # 負の付与率の場合の処理
         if rate < 0:
             # 反転用のmultiplyDivideノード
-            invert_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_local_invert")
+            invert_node = cmds.createNode(
+                "multiplyDivide", name=f"{child_joint}_local_invert"
+            )
             cmds.setAttr(f"{invert_node}.input2X", -abs(rate))
             cmds.setAttr(f"{invert_node}.input2Y", -abs(rate))
             cmds.setAttr(f"{invert_node}.input2Z", -abs(rate))
             cmds.connectAttr(f"{parent_diff_node}.output3D", f"{invert_node}.input1")
             created_nodes.append(invert_node)
-            
+
             # 反転した値を使用
             cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1", force=True)
             cmds.setAttr(f"{mult_node}.input2X", 1)
@@ -1003,21 +1182,23 @@ class RigConverter:
             cmds.setAttr(f"{mult_node}.input2X", rate)
             cmds.setAttr(f"{mult_node}.input2Y", rate)
             cmds.setAttr(f"{mult_node}.input2Z", rate)
-        
+
         created_nodes.append(mult_node)
-        
+
         # 子の初期回転と加算するplusMinusAverageノード
         add_node = cmds.createNode("plusMinusAverage", name=f"{child_joint}_local_add")
         cmds.connectAttr(f"{child_init_locator}.rotate", f"{add_node}.input3D[0]")
         cmds.connectAttr(f"{mult_node}.output", f"{add_node}.input3D[1]")
         created_nodes.append(add_node)
-        
+
         # 結果を子ジョイントに接続
         cmds.connectAttr(f"{add_node}.output3D", f"{child_joint}.rotate", force=True)
-        
+
         return created_nodes
 
-    def _create_given_position_constraint(self, parent_joint, child_joint, rate, is_local=False):
+    def _create_given_position_constraint(
+        self, parent_joint, child_joint, rate, is_local=False
+    ):
         """
         位置付与を作成する。
 
@@ -1032,7 +1213,9 @@ class RigConverter:
         """
         if is_local:
             # ローカル付与の場合：親のローカル変形量を参照
-            return self._create_local_position_constraint(parent_joint, child_joint, rate)
+            return self._create_local_position_constraint(
+                parent_joint, child_joint, rate
+            )
         else:
             # グローバル付与の場合：親のユーザー変形量を参照
             if abs(rate - 1.0) < 0.001:
@@ -1043,7 +1226,9 @@ class RigConverter:
                 return constraint
             else:
                 # 付与率が1.0でない場合は、重み付きコンストレイントを使用
-                return self._create_weighted_position_constraint(parent_joint, child_joint, rate)
+                return self._create_weighted_position_constraint(
+                    parent_joint, child_joint, rate
+                )
 
     def _create_weighted_position_constraint(self, parent_joint, child_joint, rate):
         """
@@ -1059,30 +1244,38 @@ class RigConverter:
             list: 作成されたノードのリスト
         """
         created_nodes = []
-        
+
         # 子の初期位置を保存
         init_locator = cmds.spaceLocator(name=f"{child_joint}_init_pos")[0]
         cmds.parent(init_locator, child_joint)
         cmds.setAttr(f"{init_locator}.v", 0)
         created_nodes.append(init_locator)
-        
+
         # 親の位置を取得するためのdecomposeMatrixノード
-        parent_decompose = cmds.createNode("decomposeMatrix", name=f"{parent_joint}_pos_decompose")
+        parent_decompose = cmds.createNode(
+            "decomposeMatrix", name=f"{parent_joint}_pos_decompose"
+        )
         cmds.connectAttr(f"{parent_joint}.matrix", f"{parent_decompose}.inputMatrix")
         created_nodes.append(parent_decompose)
-        
+
         # 負の付与率の場合、位置を反転する必要がある
         if rate < 0:
             # 反転用のmultiplyDivideノード（-1を掛ける）
-            invert_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_invert_pos")
-            cmds.connectAttr(f"{parent_decompose}.outputTranslate", f"{invert_node}.input1")
+            invert_node = cmds.createNode(
+                "multiplyDivide", name=f"{child_joint}_invert_pos"
+            )
+            cmds.connectAttr(
+                f"{parent_decompose}.outputTranslate", f"{invert_node}.input1"
+            )
             cmds.setAttr(f"{invert_node}.input2X", -1)
             cmds.setAttr(f"{invert_node}.input2Y", -1)
             cmds.setAttr(f"{invert_node}.input2Z", -1)
             created_nodes.append(invert_node)
-            
+
             # 付与率を適用するmultiplyDivideノード（絶対値を使用）
-            mult_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_pos_mult")
+            mult_node = cmds.createNode(
+                "multiplyDivide", name=f"{child_joint}_pos_mult"
+            )
             cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1")
             cmds.setAttr(f"{mult_node}.input2X", abs(rate))
             cmds.setAttr(f"{mult_node}.input2Y", abs(rate))
@@ -1090,24 +1283,27 @@ class RigConverter:
             created_nodes.append(mult_node)
         else:
             # 正の付与率の場合、直接適用
-            mult_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_pos_mult")
-            cmds.connectAttr(f"{parent_decompose}.outputTranslate", f"{mult_node}.input1")
+            mult_node = cmds.createNode(
+                "multiplyDivide", name=f"{child_joint}_pos_mult"
+            )
+            cmds.connectAttr(
+                f"{parent_decompose}.outputTranslate", f"{mult_node}.input1"
+            )
             cmds.setAttr(f"{mult_node}.input2X", rate)
             cmds.setAttr(f"{mult_node}.input2Y", rate)
             cmds.setAttr(f"{mult_node}.input2Z", rate)
             created_nodes.append(mult_node)
-        
+
         # 初期位置と付与位置を加算するplusMinusAverageノード
         add_node = cmds.createNode("plusMinusAverage", name=f"{child_joint}_pos_add")
         cmds.connectAttr(f"{init_locator}.translate", f"{add_node}.input3D[0]")
         cmds.connectAttr(f"{mult_node}.output", f"{add_node}.input3D[1]")
         created_nodes.append(add_node)
-        
+
         # 結果を子ジョイントに接続
         cmds.connectAttr(f"{add_node}.output3D", f"{child_joint}.translate", force=True)
-        
+
         return created_nodes
-    
 
     def _create_local_position_constraint(self, parent_joint, child_joint, rate):
         """
@@ -1123,40 +1319,50 @@ class RigConverter:
             list: 作成されたノードのリスト
         """
         created_nodes = []
-        
+
         # 親の初期位置を保存するロケータを作成
-        parent_init_locator = cmds.spaceLocator(name=f"{parent_joint}_init_local_pos")[0]
+        parent_init_locator = cmds.spaceLocator(name=f"{parent_joint}_init_local_pos")[
+            0
+        ]
         cmds.parent(parent_init_locator, parent_joint)
         cmds.setAttr(f"{parent_init_locator}.v", 0)  # 非表示
         created_nodes.append(parent_init_locator)
-        
+
         # 子の初期位置を保存するロケータを作成
         child_init_locator = cmds.spaceLocator(name=f"{child_joint}_init_local_pos")[0]
         cmds.parent(child_init_locator, child_joint)
         cmds.setAttr(f"{child_init_locator}.v", 0)  # 非表示
         created_nodes.append(child_init_locator)
-        
+
         # 親の現在の位置から初期位置を引くためのplusMinusAverageノード
-        parent_diff_node = cmds.createNode("plusMinusAverage", name=f"{parent_joint}_local_pos_diff")
+        parent_diff_node = cmds.createNode(
+            "plusMinusAverage", name=f"{parent_joint}_local_pos_diff"
+        )
         cmds.setAttr(f"{parent_diff_node}.operation", 2)  # subtract
         cmds.connectAttr(f"{parent_joint}.translate", f"{parent_diff_node}.input3D[0]")
-        cmds.connectAttr(f"{parent_init_locator}.translate", f"{parent_diff_node}.input3D[1]")
+        cmds.connectAttr(
+            f"{parent_init_locator}.translate", f"{parent_diff_node}.input3D[1]"
+        )
         created_nodes.append(parent_diff_node)
-        
+
         # 付与率を適用するmultiplyDivideノード
-        mult_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_local_pos_mult")
+        mult_node = cmds.createNode(
+            "multiplyDivide", name=f"{child_joint}_local_pos_mult"
+        )
         cmds.connectAttr(f"{parent_diff_node}.output3D", f"{mult_node}.input1")
-        
+
         # 負の付与率の場合の処理
         if rate < 0:
             # 反転用のmultiplyDivideノード
-            invert_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_local_pos_invert")
+            invert_node = cmds.createNode(
+                "multiplyDivide", name=f"{child_joint}_local_pos_invert"
+            )
             cmds.setAttr(f"{invert_node}.input2X", -abs(rate))
             cmds.setAttr(f"{invert_node}.input2Y", -abs(rate))
             cmds.setAttr(f"{invert_node}.input2Z", -abs(rate))
             cmds.connectAttr(f"{parent_diff_node}.output3D", f"{invert_node}.input1")
             created_nodes.append(invert_node)
-            
+
             # 反転した値を使用
             cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1", force=True)
             cmds.setAttr(f"{mult_node}.input2X", 1)
@@ -1166,16 +1372,18 @@ class RigConverter:
             cmds.setAttr(f"{mult_node}.input2X", rate)
             cmds.setAttr(f"{mult_node}.input2Y", rate)
             cmds.setAttr(f"{mult_node}.input2Z", rate)
-        
+
         created_nodes.append(mult_node)
-        
+
         # 子の初期位置と加算するplusMinusAverageノード
-        add_node = cmds.createNode("plusMinusAverage", name=f"{child_joint}_local_pos_add")
+        add_node = cmds.createNode(
+            "plusMinusAverage", name=f"{child_joint}_local_pos_add"
+        )
         cmds.connectAttr(f"{child_init_locator}.translate", f"{add_node}.input3D[0]")
         cmds.connectAttr(f"{mult_node}.output", f"{add_node}.input3D[1]")
         created_nodes.append(add_node)
-        
+
         # 結果を子ジョイントに接続
         cmds.connectAttr(f"{add_node}.output3D", f"{child_joint}.translate", force=True)
-        
+
         return created_nodes
