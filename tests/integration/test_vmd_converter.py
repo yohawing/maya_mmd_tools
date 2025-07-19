@@ -35,18 +35,77 @@ class TestVmdConverter(MayaTestBase):
         # 一時ファイルのクリーンアップ
         self.fixture_provider.cleanup_temp_files()
 
-    def test_convert_with_real_vmd_data(self):
-        """実際のVMDファイルを使用した変換テスト"""
-        try:
-            # テストファイルを取得
-            vmd_file_path = self.fixture_provider.get_vmd_file()
-            pmd_file_path = self.fixture_provider.get_pmd_file()
-        except FileNotFoundError as e:
-            self.skipTest(f"テストファイルが見つかりません: {e}")
+    def test_convert_with_pmx_file(self):
+        """PMXファイルを使用したVMD変換テスト"""
+        # try:
+        #     # PMXファイルを取得
+        #     pmx_file_path = self.fixture_provider.get_pmx_file("Lumine.pmx")
+        # except FileNotFoundError as e:
+        #     self.skipTest(f"PMXファイルが見つかりません: {e}")
+
+        pmx_data = self.fixture_provider.load_pmx_data("Lumine")
+        pmx_file_path = pmx_data["file_path"]
+        pmx_data = pmx_data["data"]
+
+        # PMXモデルを読み込んでボーンを作成
+        # pmx_parser = PmxParser()
+        # pmx_data = pmx_parser.parse_file(pmx_file_path)
+
+        # ルートグループを作成
+        root_group = cmds.group(name="test_model_root", empty=True)
+
+        # メッシュを作成（スキニングのため）
+        mesh_converter = MeshConverter(pmx_file_path)
+        group_name, mesh_name = mesh_converter.convert_pmx_mesh(pmx_data, root_group)
+
+        # ボーンを作成
+        bone_converter = BoneConverter()
+        root_joint, skin_cluster = bone_converter.convert_pmx_bones(
+            pmx_data, mesh_name, root_group
+        )
+
+        # VMDファイルを読み込み
+        vmd_parser = VmdParser()
+        vmd_data = vmd_parser.parse_file(self.fixture_provider.get_vmd_file("Lat式用"))
+
+        # アニメーション変換
+        result = self.converter.convert(vmd_data)
+
+        # 検証
+        self.assertTrue(result)
+
+        # アニメーションが設定されたか確認
+        all_joints = cmds.ls(type="joint")
+        animated_joints = []
+        for joint in all_joints:
+            # 各属性にアニメーションカーブが接続されているか確認
+            for attr in [
+                "translateX",
+                "translateY",
+                "translateZ",
+                "rotateX",
+                "rotateY",
+                "rotateZ",
+            ]:
+                connections = cmds.listConnections(
+                    f"{joint}.{attr}", source=True, destination=False
+                )
+                if connections:
+                    animated_joints.append(joint)
+                    break
+
+        # 少なくとも1つのジョイントがアニメーションされていることを確認
+        self.assertGreater(
+            len(animated_joints), 0, "アニメーションが設定されたジョイントがありません"
+        )
+
+    def test_convert_with_pmd_file(self):
+        """実際のPMDファイルを使用した変換テスト"""
 
         # PMDモデルを読み込んでボーンを作成
-        pmd_parser = PmdParser()
-        pmd_data = pmd_parser.parse_file(pmd_file_path)
+        pmd_data = self.fixture_provider.load_pmd_data("Lat式ミクVer2.31_Normal")
+        pmd_file_path = pmd_data["file_path"]
+        pmd_data = pmd_data["data"]
 
         # ルートグループを作成
         root_group = cmds.group(name="test_model_root", empty=True)
@@ -63,7 +122,7 @@ class TestVmdConverter(MayaTestBase):
 
         # VMDファイルを読み込み
         vmd_parser = VmdParser()
-        vmd_data = vmd_parser.parse_file(vmd_file_path)
+        vmd_data = vmd_parser.parse_file(self.fixture_provider.get_vmd_file("Lat式用"))
 
         # アニメーション変換
         result = self.converter.convert(vmd_data)

@@ -10,6 +10,7 @@ Mayaのアニメーションデータに変換する機能を提供します。
 """
 
 import struct
+import math
 from typing import Dict, List, Tuple, Optional, Set
 import maya.cmds as cmds
 import maya.api.OpenMaya as om2
@@ -17,6 +18,7 @@ import maya.api.OpenMayaAnim as oma2
 
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.vmd_parser import VmdParser
+from mmd_tools.core import maya_utils
 
 
 class VmdConverter:
@@ -28,10 +30,34 @@ class VmdConverter:
 
     # 相対位置として扱うボーン（MMDの仕様）
     RELATIVE_POSITION_BONES: Set[str] = {
-        "センター", "グルーブ", "腰", "上半身", "上半身2", "上半身3",
-        "首", "頭", "左肩", "右肩", "左腕", "右腕", "左ひじ", "右ひじ",
-        "左手首", "右手首", "左足", "右足", "左ひざ", "右ひざ",
-        "左足首", "右足首", "左つま先", "右つま先"
+        "センター",
+        "グルーブ",
+        "腰",
+        "上半身",
+        "上半身2",
+        "上半身3",
+        "首",
+        "頭",
+        "左肩",
+        "右肩",
+        "左腕",
+        "右腕",
+        "左ひじ",
+        "右ひじ",
+        "左手首",
+        "右手首",
+        "左足",
+        "右足",
+        "左ひざ",
+        "右ひざ",
+        "左足首",
+        "右足首",
+        "左つま先",
+        "右つま先",
+        "左足ＩＫ",
+        "右足ＩＫ",
+        "左つま先ＩＫ",
+        "右つま先ＩＫ",
     }
 
     def __init__(self):
@@ -43,7 +69,9 @@ class VmdConverter:
         self.fps = 30.0  # デフォルトのFPS
         self.logger = get_logger(self.__class__.__name__)
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
-        self._bone_bind_poses: Dict[str, Tuple[float, float, float]] = {}  # ボーンの初期位置
+        self._bone_bind_poses: Dict[
+            str, Tuple[float, float, float]
+        ] = {}  # ボーンの初期位置
 
     def convert(self, vmd_data: VmdParser, target_namespace: str = None) -> bool:
         """VMDデータをMayaアニメーションに変換
@@ -110,14 +138,12 @@ class VmdConverter:
                 original_name = cmds.getAttr(f"{joint}.pmx_bone_name")
                 if original_name:
                     self.bone_name_mapping[original_name] = joint
-                    self.logger.debug(f"ボーンマッピング: {original_name} -> {joint}")
 
             # PMDボーン名属性もチェック（後方互換性）
             elif cmds.attributeQuery("pmd_bone_name", node=joint, exists=True):
                 original_name = cmds.getAttr(f"{joint}.pmd_bone_name")
                 if original_name:
                     self.bone_name_mapping[original_name] = joint
-                    self.logger.debug(f"ボーンマッピング: {original_name} -> {joint}")
 
         self.logger.info(
             f"{len(self.bone_name_mapping)}個のボーンマッピングを構築しました"
@@ -126,15 +152,16 @@ class VmdConverter:
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
         self.logger.info("ボーンの初期位置を記録しています")
-        
+
         for vmd_bone_name, maya_joint in self.bone_name_mapping.items():
             try:
                 # 現在のtranslate値を取得（これがバインドポーズ）
                 translate = cmds.getAttr(f"{maya_joint}.translate")[0]
                 self._bone_bind_poses[vmd_bone_name] = translate
-                self.logger.debug(f"{vmd_bone_name}: バインドポーズ {translate}")
             except Exception as e:
-                self.logger.warning(f"{vmd_bone_name}のバインドポーズ取得エラー: {str(e)}")
+                self.logger.warning(
+                    f"{vmd_bone_name}のバインドポーズ取得エラー: {str(e)}"
+                )
 
     def _setup_timeline(self, vmd_data: VmdParser):
         """タイムラインの設定
@@ -147,7 +174,7 @@ class VmdConverter:
         if hasattr(vmd_data, "bone_frames"):
             for frame_data in vmd_data.bone_frames:
                 # VmdBoneFrameオブジェクトの場合は属性アクセス、辞書の場合はget
-                if hasattr(frame_data, 'frame_number'):
+                if hasattr(frame_data, "frame_number"):
                     max_frame = max(max_frame, frame_data.frame_number)
                 else:
                     max_frame = max(max_frame, frame_data.get("frame_number", 0))
@@ -173,7 +200,7 @@ class VmdConverter:
 
         for frame in bone_frames:
             # VmdBoneFrameオブジェクトの場合は属性アクセス、辞書の場合はget
-            if hasattr(frame, 'bone_name'):
+            if hasattr(frame, "bone_name"):
                 bone_name = frame.bone_name
             else:
                 bone_name = frame.get("bone_name", "")
@@ -191,7 +218,11 @@ class VmdConverter:
 
                 try:
                     # フレームをフレーム番号でソート
-                    frames.sort(key=lambda x: x.frame_number if hasattr(x, 'frame_number') else x.get("frame_number", 0))
+                    frames.sort(
+                        key=lambda x: x.frame_number
+                        if hasattr(x, "frame_number")
+                        else x.get("frame_number", 0)
+                    )
 
                     # 位置と回転のキーフレームを設定
                     self._set_bone_keyframes(maya_joint, frames, vmd_bone_name)
@@ -204,7 +235,7 @@ class VmdConverter:
                     self._failed_bones.add(vmd_bone_name)
             else:
                 if vmd_bone_name not in self._failed_bones:
-                    self.logger.warning(f"ボーン '{vmd_bone_name}' が見つかりません")
+                    self.logger.info(f"ボーン '{vmd_bone_name}' が見つかりません")
                     self._failed_bones.add(vmd_bone_name)
 
         self.logger.info(
@@ -220,7 +251,7 @@ class VmdConverter:
             frames: フレームデータのリスト
             vmd_bone_name: VMDボーン名
         """
-        # 既存のアニメーションカーブをクリア
+        # アニメーションカーブを作成
         attrs = [
             "translateX",
             "translateY",
@@ -229,25 +260,18 @@ class VmdConverter:
             "rotateY",
             "rotateZ",
         ]
-        for attr in attrs:
-            connections = cmds.listConnections(
-                f"{joint}.{attr}", source=True, destination=False
-            )
-            if connections:
-                cmds.delete(connections)
+        curves = maya_utils.create_animation_curves(joint, attrs)
 
         # バインドポーズを取得
         bind_pose = self._bone_bind_poses.get(vmd_bone_name, (0, 0, 0))
 
-        # 各フレームでキーを設定
-        for frame_data in frames:
+        # 値生成関数を定義
+        def generate_values(frame_data):
             # VmdBoneFrameオブジェクトか辞書かで処理を分岐
-            if hasattr(frame_data, 'frame_number'):
-                frame_num = frame_data.frame_number
+            if hasattr(frame_data, "frame_number"):
                 position = frame_data.position
                 rotation_quat = frame_data.rotation
             else:
-                frame_num = frame_data.get("frame_number", 0)
                 position = frame_data.get("position", [0, 0, 0])
                 rotation_quat = frame_data.get("rotation", [0, 0, 0, 1])
 
@@ -257,7 +281,7 @@ class VmdConverter:
                 maya_position = [
                     bind_pose[0] + position[0],
                     bind_pose[1] + position[1],
-                    bind_pose[2] - position[2]  # Z軸反転
+                    bind_pose[2] - position[2],  # Z軸反転
                 ]
             else:
                 # 絶対位置として処理（従来の処理）
@@ -266,40 +290,17 @@ class VmdConverter:
             # クォータニオンをオイラー角に変換
             euler_rotation = self._quaternion_to_euler(rotation_quat)
 
-            # キーフレーム設定
-            cmds.setKeyframe(
-                joint, attribute="translateX", time=frame_num, value=maya_position[0]
-            )
-            cmds.setKeyframe(
-                joint, attribute="translateY", time=frame_num, value=maya_position[1]
-            )
-            cmds.setKeyframe(
-                joint, attribute="translateZ", time=frame_num, value=maya_position[2]
-            )
+            return {
+                "translateX": maya_position[0],
+                "translateY": maya_position[1],
+                "translateZ": maya_position[2],
+                "rotateX": euler_rotation[0],
+                "rotateY": euler_rotation[1],
+                "rotateZ": euler_rotation[2],
+            }
 
-            cmds.setKeyframe(
-                joint, attribute="rotateX", time=frame_num, value=euler_rotation[0]
-            )
-            cmds.setKeyframe(
-                joint, attribute="rotateY", time=frame_num, value=euler_rotation[1]
-            )
-            cmds.setKeyframe(
-                joint, attribute="rotateZ", time=frame_num, value=euler_rotation[2]
-            )
-
-        # フェーズ1では線形補間のみ
-        # タンジェントタイプを線形に設定
-        for attr in attrs:
-            anim_curve = cmds.listConnections(
-                f"{joint}.{attr}", source=True, destination=False
-            )
-            if anim_curve:
-                cmds.keyTangent(
-                    anim_curve[0],
-                    edit=True,
-                    inTangentType="linear",
-                    outTangentType="linear",
-                )
+        # キーフレームを一括設定
+        maya_utils.set_keyframes_batch(curves, frames, generate_values)
 
     def _quaternion_to_euler(self, quat: List[float]) -> Tuple[float, float, float]:
         """クォータニオンをオイラー角（度）に変換
@@ -322,10 +323,9 @@ class VmdConverter:
         euler = maya_quat.asEulerRotation()
 
         # ラジアンから度に変換
-        import math
 
         rx = math.degrees(euler.x)
-        ry = math.degrees(euler.y)
+        ry = math.degrees(euler.y) * -1  # Y軸は反転
         rz = math.degrees(euler.z)
 
         return (rx, ry, rz)

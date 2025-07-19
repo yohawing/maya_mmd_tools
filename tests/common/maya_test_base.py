@@ -2,8 +2,10 @@ import os
 import shutil
 import tempfile
 import uuid
+import logging
 
 from maya import cmds
+from mmd_tools import settings
 
 from .test_base import TestBase
 
@@ -24,19 +26,21 @@ class Settings:
     """
     Settings for the Maya test environment.
     """
+
     temp_dir = os.path.join(tempfile.gettempdir(), "maya_mmd_tools", str(uuid.uuid4()))
     delete_files = True  # Set to False to keep temporary files after tests
     buffer_output = True
     file_new = True  # Whether to create a new file before each test
+
 
 class MayaTestBase(TestBase):
     """
     Base class for Maya integration tests.
     Handles setting up and tearing down the Maya scene.
     """
+
     plugins_loaded = []  # List to keep track of loaded plugins
     files_created = []  # List to keep track of created files
-
 
     @classmethod
     def setUpClass(cls):
@@ -46,6 +50,8 @@ class MayaTestBase(TestBase):
         super(MayaTestBase, cls).setUpClass()
         if not MAYA_AVAILABLE:
             raise RuntimeError("Maya is not available. Tests cannot run without Maya.")
+
+        settings.set("logging.level", "WARNING")
 
     @classmethod
     def tearDownClass(cls):
@@ -89,7 +95,6 @@ class MayaTestBase(TestBase):
         for plugin in cls.plugins_loaded:
             cmds.unloadPlugin(plugin)
         cls.plugins_loaded = []
-
 
     @classmethod
     def delete_temp_files(cls):
