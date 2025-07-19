@@ -263,6 +263,27 @@ success = converter.convert(vmd_parser, target_namespace="character1")
 - 物理演算の影響は考慮されない
 - 補間曲線は完全な再現ではなく近似値
 
+### Quaternion補間サポート（2025/07/19追加）
+VMDファイルのQuaternion回転データをより正確に再現するため、MayaのQuaternion補間モードをサポートしました。
+
+#### 機能概要
+- キーフレーム設定後、`rotationInterpolation`コマンドでQuaternion補間に変換
+- ジンバルロック問題を回避し、より自然な回転を実現
+
+#### 使用方法
+```python
+# Quaternion補間を有効にして変換（デフォルト）
+converter = VmdConverter(use_quaternion_interpolation=True)
+
+# Quaternion補間を無効にして変換（従来のEuler補間）
+converter = VmdConverter(use_quaternion_interpolation=False)
+```
+
+#### 技術的詳細
+- MayaはEuler角でキーフレームを保存しますが、補間計算時にQuaternionを使用
+- 球面線形補間（SLERP）により、最短経路での回転を実現
+- 180度を超える回転でも自然な動きを維持
+
 ### トラブルシューティング
 - ボーンが見つからない場合: ボーン名マッピングの確認
 - アニメーションがずれる場合: FPS設定の確認

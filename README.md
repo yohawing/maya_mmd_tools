@@ -40,6 +40,7 @@ Maya MMD Toolsプラグインは、MayaのネイティブなFile > Import機能�
    - VMDファイルを選択
    - "Import" をクリック
    - アニメーションがシーン内の対応するモデルに適用されます
+   - **注意**: デフォルトでQuaternion補間が有効になっており、より自然な回転アニメーションを実現します
 
 3. **MMD Tools UI**:
    - メニューバーの `MMD Tools > Import/Export` からも利用可能

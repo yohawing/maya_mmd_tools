@@ -72,6 +72,7 @@ class VmdConverter:
         self._bone_bind_poses: Dict[
             str, Tuple[float, float, float]
         ] = {}  # ボーンの初期位置
+        self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
 
     def convert(self, vmd_data: VmdParser, target_namespace: str = None) -> bool:
         """VMDデータをMayaアニメーションに変換
@@ -301,6 +302,19 @@ class VmdConverter:
 
         # キーフレームを一括設定
         maya_utils.set_keyframes_batch(curves, frames, generate_values)
+
+        # Quaternion補間を適用
+        if self.use_quaternion_interpolation:
+            try:
+                # rotationInterpolationコマンドでQuaternion補間に変換
+                cmds.rotationInterpolation(
+                    f"{joint}.rotateX",
+                    f"{joint}.rotateY",
+                    f"{joint}.rotateZ",
+                    convert="quaternion",  # "quaternionSquad"も選択可能（より滑らか）
+                )
+            except Exception as e:
+                self.logger.warning(f"{joint}へのQuaternion補間適用に失敗: {str(e)}")
 
     def _quaternion_to_euler(self, quat: List[float]) -> Tuple[float, float, float]:
         """クォータニオンをオイラー角（度）に変換
