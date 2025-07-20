@@ -497,7 +497,7 @@ class RigConverter:
             pole_constraint = cmds.poleVectorConstraint(pole_target, ik_handle)[0]
 
             # PoleTargetを非表示にする
-            cmds.setAttr(f"{pole_target}.v", 0)
+            # cmds.setAttr(f"{pole_target}.v", 0)
 
             # カスタムアトリビュートを追加（後でVMD変換時に使用）
             maya_utils.set_custom_attributes(

@@ -1,6 +1,7 @@
 # Utility関数
 
 import struct
+from typing import List
 
 
 def parsePMXString(f, encoding="utf-16-le"):
@@ -165,6 +166,35 @@ def reload_dictionary(dictionary_path: str = None):
     converter = get_converter()
     converter._load_dictionary(dictionary_path)
     converter.clear_cache()
+
+
+# ベクトル演算関数
+def subtract_vectors(v1: List[float], v2: List[float]) -> List[float]:
+    """
+    ベクトルの減算を行います（v1 - v2）
+
+    Args:
+        v1: ベクトル1 [x, y, z]
+        v2: ベクトル2 [x, y, z]
+
+    Returns:
+        結果ベクトル [x, y, z]
+    """
+    return [v1[0] - v2[0], v1[1] - v2[1], v1[2] - v2[2]]
+
+
+def vector_length(v: List[float]) -> float:
+    """
+    ベクトルの長さを計算します
+
+    Args:
+        v: ベクトル [x, y, z]
+
+    Returns:
+        ベクトルの長さ
+    """
+    import math
+    return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
 
 
 def create_bone_joint_mapping(bones, maya_joints, format_type):

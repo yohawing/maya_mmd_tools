@@ -74,9 +74,6 @@ class VmdConverter:
             str, Tuple[float, float, float]
         ] = {}  # ボーンの初期位置
         self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
-        self.generate_pole_vectors = True  # PoleVector自動生成フラグ
-        self._pole_targets: Dict[str, str] = {}  # IKボーン名 -> PoleTarget名のマッピング
-        self._ik_info: Dict[str, Dict] = {}  # IK情報の保存
 
     def convert(self, vmd_data: VmdParser, target_namespace: str = None) -> bool:
         """VMDデータをMayaアニメーションに変換
@@ -96,10 +93,6 @@ class VmdConverter:
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
-
-            # IK情報を収集（PoleVector生成用）
-            if self.generate_pole_vectors:
-                self._collect_ik_info()
 
             # タイムライン設定
             self._setup_timeline(vmd_data)
@@ -178,6 +171,9 @@ class VmdConverter:
         Args:
             vmd_data: パース済みのVMDデータ
         """
+        # FPSを設定
+        self._set_scene_fps(self.fps)
+
         # 最大フレーム番号を取得
         max_frame = 0
         if hasattr(vmd_data, "bone_frames"):
@@ -246,10 +242,6 @@ class VmdConverter:
                 if vmd_bone_name not in self._failed_bones:
                     self.logger.info(f"ボーン '{vmd_bone_name}' が見つかりません")
                     self._failed_bones.add(vmd_bone_name)
-
-        # PoleVectorキーフレームを生成
-        if self.generate_pole_vectors:
-            self._create_pole_vectors_for_ik(bone_frame_map)
 
         self.logger.info(
             f"{success_count}/{total_count}個のボーンアニメーションを変換しました"
@@ -372,186 +364,29 @@ class VmdConverter:
         """
         self.bone_name_mapping = mapping.copy()
 
-    def _collect_ik_info(self):
-        """シーン内のIK情報を収集する"""
-        self.logger.info("IK情報を収集しています")
-        
-        # シーン内のすべてのikHandleを検索
-        ik_handles = cmds.ls(type="ikHandle")
-        
-        for ik_handle in ik_handles:
-            # カスタムアトリビュートからMMDのIK情報を取得
-            if cmds.attributeQuery("mmd_ik_bone", node=ik_handle, exists=True):
-                ik_bone = cmds.getAttr(f"{ik_handle}.mmd_ik_bone")
-                
-                # PoleTargetを検索
-                pole_targets = cmds.ls("*poleTarget*", type="transform")
-                for pole_target in pole_targets:
-                    if cmds.attributeQuery("mmd_ik_handle", node=pole_target, exists=True):
-                        if cmds.getAttr(f"{pole_target}.mmd_ik_handle") == ik_handle:
-                            self._pole_targets[ik_bone] = pole_target
-                            
-                            # IK情報を保存
-                            self._ik_info[ik_bone] = {
-                                "ik_handle": ik_handle,
-                                "pole_target": pole_target,
-                                "start_joint": cmds.ikHandle(ik_handle, query=True, startJoint=True),
-                                "end_joint": cmds.ikHandle(ik_handle, query=True, endEffector=True)
-                            }
-                            
-                            self.logger.info(f"IK情報を収集: {ik_bone} -> {pole_target}")
-                            break
+    def _set_scene_fps(self, fps: float):
+        """シーンのFPSを設定
 
-    def _create_pole_vectors_for_ik(self, bone_frame_map: Dict[str, List]):
-        """足IKのPoleVectorキーフレームを生成する
-        
         Args:
-            bone_frame_map: ボーン名ごとのフレームデータ
+            fps: 設定するFPS値
         """
-        if not self.generate_pole_vectors:
-            return
-            
-        self.logger.info("PoleVectorキーフレームの生成を開始します")
-        
-        # 足IKと対応する太ももボーンのマッピング
-        leg_ik_mapping = {
-            "左足ＩＫ": "左足",
-            "右足ＩＫ": "右足",
-            "left_leg_ik": "left_leg",
-            "right_leg_ik": "right_leg",
+        # FPSとタイムユニットのマッピング
+        fps_mapping = {
+            15.0: "game",
+            24.0: "film",
+            25.0: "pal",
+            30.0: "ntsc",
+            48.0: "show",
+            50.0: "palf",
+            60.0: "ntscf",
         }
-        
-        for ik_bone_vmd, thigh_bone_vmd in leg_ik_mapping.items():
-            # VMD名からMayaジョイント名を取得
-            if ik_bone_vmd not in self.bone_name_mapping:
-                continue
-                
-            ik_bone_maya = self.bone_name_mapping[ik_bone_vmd]
-            
-            # 対応するPoleTargetが存在するか確認
-            if ik_bone_maya not in self._pole_targets:
-                continue
-                
-            pole_target = self._pole_targets[ik_bone_maya]
-            
-            # 太ももボーンのフレームデータを取得
-            if thigh_bone_vmd not in bone_frame_map:
-                self.logger.warning(f"{thigh_bone_vmd}のフレームデータが見つかりません")
-                continue
-                
-            thigh_frames = bone_frame_map[thigh_bone_vmd]
-            
-            # IK情報を取得
-            if ik_bone_maya not in self._ik_info:
-                continue
-                
-            ik_info = self._ik_info[ik_bone_maya]
-            
-            # PoleVectorキーフレームを設定
-            self._set_pole_vector_keyframes(
-                pole_target, thigh_frames, ik_info, thigh_bone_vmd
-            )
 
-    def _set_pole_vector_keyframes(self, pole_target: str, thigh_frames: List, 
-                                   ik_info: Dict, thigh_bone_vmd: str):
-        """PoleVectorのキーフレームを設定する
-        
-        Args:
-            pole_target: PoleTargetノード名
-            thigh_frames: 太ももボーンのフレームデータ
-            ik_info: IK情報
-            thigh_bone_vmd: VMDの太ももボーン名
-        """
-        # アニメーションカーブを作成
-        attrs = ["translateX", "translateY", "translateZ"]
-        curves = maya_utils.create_animation_curves(pole_target, attrs)
-        
-        # 太ももジョイントを取得
-        thigh_joint = self.bone_name_mapping.get(thigh_bone_vmd)
-        if not thigh_joint:
-            return
-            
-        # 値生成関数を定義
-        def generate_values(frame_data):
-            # VmdBoneFrameオブジェクトか辞書かで処理を分岐
-            if hasattr(frame_data, "rotation"):
-                rotation_quat = frame_data.rotation
-            else:
-                rotation_quat = frame_data.get("rotation", [0, 0, 0, 1])
-            
-            # PoleVector位置を計算
-            pole_pos = self._calculate_pole_vector_position(
-                ik_info["start_joint"],
-                ik_info["end_joint"],
-                rotation_quat,
-                thigh_joint
-            )
-            
-            return {
-                "translateX": pole_pos[0],
-                "translateY": pole_pos[1],
-                "translateZ": pole_pos[2],
-            }
-        
-        # キーフレームを一括設定
-        maya_utils.set_keyframes_batch(curves, thigh_frames, generate_values)
-        
-        self.logger.info(f"{pole_target}のPoleVectorキーフレームを設定しました")
-
-    def _calculate_pole_vector_position(self, start_joint: str, end_joint: str,
-                                       thigh_rotation: List[float], thigh_joint: str) -> List[float]:
-        """太ももの回転からPoleVectorの位置を計算する
-        
-        Args:
-            start_joint: IKチェーンの開始ジョイント（太もも）
-            end_joint: IKチェーンの終了ジョイント（足首）
-            thigh_rotation: 太ももの回転（クォータニオン）
-            thigh_joint: 太ももジョイント名
-            
-        Returns:
-            PoleVectorの位置 [x, y, z]
-        """
-        # 太ももと足首の位置を取得
-        hip_pos = cmds.xform(start_joint, query=True, worldSpace=True, translation=True)
-        ankle_pos = cmds.xform(end_joint, query=True, worldSpace=True, translation=True)
-        
-        # 膝の位置を取得（太ももの子ジョイント）
-        children = cmds.listRelatives(thigh_joint, children=True, type="joint")
-        if children:
-            knee_joint = children[0]
-            knee_pos = cmds.xform(knee_joint, query=True, worldSpace=True, translation=True)
+        if fps in fps_mapping:
+            # 定義済みのタイムユニットを使用
+            cmds.currentUnit(time=fps_mapping[fps])
+            self.logger.info(f"シーンFPSを{fps} ({fps_mapping[fps]})に設定しました")
         else:
-            # 膝が見つからない場合は中点を使用
-            knee_pos = [(hip_pos[i] + ankle_pos[i]) / 2 for i in range(3)]
-        
-        # クォータニオンからオイラー角に変換
-        euler_rotation = self._quaternion_to_euler(thigh_rotation)
-        
-        # Y軸回転（膝の向き）を抽出
-        knee_angle_y = math.radians(euler_rotation[1])
-        
-        # IKチェーンの平面に対して垂直方向を計算
-        hip_to_knee = [knee_pos[i] - hip_pos[i] for i in range(3)]
-        knee_to_ankle = [ankle_pos[i] - knee_pos[i] for i in range(3)]
-        
-        # 外積で初期の垂直方向を計算
-        normal = utils.cross_product(hip_to_knee, knee_to_ankle)
-        normal = utils.normalize_vector(normal)
-        
-        # Y軸回転を適用して方向を調整
-        # 簡易的な実装：XZ平面での回転
-        rotated_normal = [
-            normal[0] * math.cos(knee_angle_y) - normal[2] * math.sin(knee_angle_y),
-            normal[1],
-            normal[0] * math.sin(knee_angle_y) + normal[2] * math.cos(knee_angle_y)
-        ]
-        
-        # PoleVectorの位置を計算（膝から一定距離）
-        offset_distance = 10.0
-        pole_pos = [
-            knee_pos[0] + rotated_normal[0] * offset_distance,
-            knee_pos[1] + rotated_normal[1] * offset_distance,
-            knee_pos[2] + rotated_normal[2] * offset_distance
-        ]
-        
-        return pole_pos
+            self.logger.warning(
+                f"指定されたFPS {fps} はサポートされていません。デフォルトの30.0 FPSを使用します"
+            )
+            cmds.currentUnit(time="ntsc")  # デフォルトは30fpsのNTSC

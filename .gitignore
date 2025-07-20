@@ -34,6 +34,8 @@ logs/
 .gemini/
 .clinerules/
 .claude/
+.kiro/
+KIRO.md
 
 # TestData
 /tests/data/*
