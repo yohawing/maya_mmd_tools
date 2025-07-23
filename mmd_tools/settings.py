@@ -42,7 +42,13 @@ class Settings(UserDict):
         self._initialized = True
         self._defaults = self._load_defaults_from_json()
         self.data = self._defaults.copy()
-        self.load()
+        # Maya環境が利用可能な場合のみ設定を読み込む
+        if MAYA_AVAILABLE:
+            try:
+                self.load()
+            except AttributeError:
+                # Maya APIが完全に初期化されていない場合はスキップ
+                pass
 
     def _load_defaults_from_json(self):
         """デフォルトの設定をJSONファイルから読み込みます。"""
@@ -85,6 +91,13 @@ class Settings(UserDict):
         if not MAYA_AVAILABLE:
             return
 
+        # cmds.optionVarが利用可能かチェック
+        try:
+            if not hasattr(cmds, 'optionVar'):
+                return
+        except:
+            return
+
         flat_defaults = self._flatten_dict(self._defaults)
         for key, default_value in flat_defaults.items():
             option_var_key = self.get_option_var_key(key)
@@ -110,6 +123,13 @@ class Settings(UserDict):
     def save(self):
         """Save all current settings to Maya's optionVars."""
         if not MAYA_AVAILABLE:
+            return
+
+        # cmds.optionVarが利用可能かチェック
+        try:
+            if not hasattr(cmds, 'optionVar'):
+                return
+        except:
             return
 
         flat_data = self._flatten_dict(self.data)
@@ -172,11 +192,27 @@ class Settings(UserDict):
         self.save()
 
 
-# 改善されたシングルトンインスタンス作成
+# シングルトンインスタンスを保持する変数
+_settings_instance = None
+
+
 def get_settings():
-    """設定インスタンスを取得する関数"""
-    return Settings()
+    """設定インスタンスを取得する関数（遅延初期化）"""
+    global _settings_instance
+    if _settings_instance is None:
+        _settings_instance = Settings()
+    return _settings_instance
+
+
+# 遅延初期化のためのプロパティ風アクセス
+class SettingsProxy:
+    """設定へのプロキシクラス（遅延初期化を実現）"""
+    def __getattr__(self, name):
+        return getattr(get_settings(), name)
+    
+    def __setattr__(self, name, value):
+        return setattr(get_settings(), name, value)
 
 
 # Singleton instance for global access
-settings = get_settings()
+settings = SettingsProxy()
