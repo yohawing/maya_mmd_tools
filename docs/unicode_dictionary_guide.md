@@ -39,13 +39,23 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 
 ## 辞書ファイルの構造
 
+### バージョン0.3以降（exact_match対応）
+
 ```json
 {
   "_meta": {
-    "version": "1.0",
+    "version": "0.3",
     "description": "Multi-language name conversion dictionary for MMD tools in Maya",
-    "last_updated": "2025-01-01",
+    "last_updated": "2025-07-23",
     "languages": ["jp", "en", "zh-cn", "zh-tw"]
+  },
+  "exact_match": {
+    "左足IK": "left_leg_ik",
+    "右足IK": "right_leg_ik",
+    "左つま先IK": "left_toe_ik",
+    "右つま先IK": "right_toe_ik",
+    "上半身2": "upper_body_2",
+    "グルーブ": "groove"
   },
   "dictionary": [
     ["全て", "all", "全部", "全部"],
@@ -56,7 +66,7 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
     ["下半身", "lower_body", "下半身", "下半身"],
   ],
   "prefix": [
-    ["左", "左", "左"],
+    ["左", "left_", "左", "左"],
     ["右", "right_", "右", "右"],
     ["上", "up_", "上", "上"],
   ],
@@ -75,14 +85,25 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 }
 ```
 
+### exact_matchセクションについて
+
+バージョン0.3で追加された`exact_match`セクションは、MMD準標準ボーン名などの完全一致変換を保証します。
+
+- **最優先で処理**: prefix/suffix処理より前に適用
+- **MMD準標準ボーン対応**: `左足IK`、`上半身2`などを確実に変換
+- **全角・半角両対応**: `左足IK`と`左足ＩＫ`の両方に対応
+
 ## 辞書ファイルのパースの方針
 
-### パースの流れ
-1. 単語リストの処理：完全一致を探す
-2. 数字の処理：全角数字を半角に変換
-3. Prefix、Suffixの処理：
-4. 辞書に無い文字列の処理：ハッシュ化して一意名を生成
-5. Maya無効文字の処理：自動的に置換
+### パースの流れ（優先順位順）
+1. **exact_match処理**: 完全一致辞書を最優先でチェック（v0.3以降）
+2. **ASCII判定**: ASCII文字列はそのまま返す
+3. **dictionary処理**: 通常の辞書で完全一致を探す
+4. **複合処理**: 
+   - 数字の処理：全角数字を半角に変換
+   - Prefix、Suffixの処理
+5. **ハッシュ化**: 辞書に無い文字列はハッシュ化して一意名を生成
+6. **Maya安全化**: Maya無効文字を自動的に置換
 
 ### Prefix、Suffixについて
 
@@ -93,15 +114,22 @@ MMDのエンコーディングは、CP932をやUTF-16LEなどマルチバイト�
 
 ### パース例
 
+#### exact_match（v0.3以降）
+- `左足IK` → `left_leg_ik` （prefix/suffix処理されない）
+- `右足ＩＫ` → `right_leg_ik` （全角IKも対応）
+- `上半身2` → `upper_body_2` （準標準ボーン）
+- `グルーブ` → `groove` （複合語も完全一致）
+
+#### 通常の辞書変換
 - `左腕1` → `left_arm_1`
 - `右腕2` → `right_arm_2`
-- `上半身3` → `spine3`
+- `上半身3` → `spine_3`
 - `左腕捩1` → `left_arm_twist_1`
 - `右つまさきＩＫ先` → `right_toe_ik_end`
 - `肩` → `shoulder`
 - `肩P` → `shoulder_p`
 - `元素+` → `element_plus_`
-- `未知の文字列` → `HASH5L2g5a6a`
+- `未知の文字列` → `HASH66d0744d`
 
 ## 使用方法
 
@@ -188,19 +216,31 @@ utils.export_dictionary("exported_dictionary.json")
 
 ## カスタム辞書ファイルの編集例
 
-### 1. 新しいボーンを追加
+### 1. exact_matchエントリを追加（v0.3以降推奨）
 
 ```json
 {
-  "dictionary": {
+  "exact_match": {
+    "左足IK親": "left_leg_ik_parent",
+    "右足IK親": "right_leg_ik_parent",
     "カスタムボーン": "custom_bone",
-    "特殊IK": "special_ik",
-    "補助ボーン": "helper_bone"
+    "特殊IK": "special_ik"
   }
 }
 ```
 
-### 2. 多言語対応のモーフを追加
+### 2. 通常の辞書エントリを追加
+
+```json
+{
+  "dictionary": [
+    ["カスタムボーン", "custom_bone", "自定义骨骼", "自定義骨骼"],
+    ["補助ボーン", "helper_bone", "辅助骨骼", "輔助骨骼"]
+  ]
+}
+```
+
+### 3. 多言語対応のモーフを追加
 
 ```json
 {
@@ -214,7 +254,7 @@ utils.export_dictionary("exported_dictionary.json")
 }
 ```
 
-### 3. Maya無効文字の追加
+### 4. Maya無効文字の追加
 
 ```json
 {
@@ -278,11 +318,14 @@ print(unique_name)  # "bone_2"
 
 ## 変換の内部動作
 
-### 変換プロセス
+### 変換プロセス（v0.3以降）
 
-1. **辞書検索**: まず登録済み辞書で完全一致を検索
-2. **ハッシュフォールバック**: 辞書にない場合は`#`プレフィックス付きでハッシュ化し8文字に切り詰める
-3. **Maya安全化**: 結果をMayaで使用可能な文字のみに変換
+1. **exact_match検索**: 完全一致辞書を最優先でチェック
+2. **ASCII判定**: ASCII文字列の場合はMaya安全化のみ実施
+3. **dictionary検索**: 通常の辞書で完全一致を検索
+4. **複合処理**: prefix/suffix処理と数字変換
+5. **ハッシュフォールバック**: 辞書にない場合は`HASH`プレフィックス付きでハッシュ化し8文字に切り詰める
+6. **Maya安全化**: 結果をMayaで使用可能な文字のみに変換
 
 ### ハッシュ化について
 

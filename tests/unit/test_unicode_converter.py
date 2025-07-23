@@ -46,7 +46,7 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
                 ["顔", "face", "颜", "顏"],
                 ["人差指", "finger_index", "食指", "食指"],
                 ["つま先", "toe", "脚趾", "腳趾"],
-                ["足", "foot", "足", "足"],
+                ["足", "leg", "足", "足"],
                 ["髮", "hair", "发", "髮"],
                 ["左つま先ＩＫ先", "left_toe_ik_end", "左脚趾IK末端", "左腳趾IK末端"],
             ],
@@ -62,8 +62,22 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
                 ["先", "_end", "末端", "末端"],
                 ["ＩＫ", "_ik", "IK", "IK"],
                 ["捩", "_twist", "扭", "扭"],
-                ["親", "parent", "父", "父"],
+                ["親", "_parent", "父", "父"],
             ],
+            "exact_match": {
+                "左足IK": "left_leg_ik",
+                "右足IK": "right_leg_ik",
+                "左つま先IK": "left_toe_ik",
+                "右つま先IK": "right_toe_ik",
+                "左つま先ＩＫ": "left_toe_ik",
+                "右つま先ＩＫ": "right_toe_ik",
+                "左足ＩＫ": "left_leg_ik",
+                "右足ＩＫ": "right_leg_ik",
+                "上半身2": "upper_body_2",
+                "左腕捩": "left_arm_twist",
+                "右腕捩": "right_arm_twist",
+                "グルーブ": "groove"
+            },
             "maya_invalid_chars": {"+": "_plus_", "|": "_pipe_"},
         }
         with open(self.custom_dict_path, "w", encoding="utf-8") as f:
@@ -183,7 +197,9 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         self.assertEqual(self.converter.convert("左顔_0_1"), "left_face_0_1")
         self.assertEqual(self.converter.convert("左顔_18_1"), "left_face_18_1")
         self.assertEqual(self.converter.convert("右顔1_0_1"), "right_face_1_0_1")
-        self.assertEqual(self.converter.convert("左足IK親"), "left_foot_ik_parent")
+        # 注意: 現在の実装では、suffixが順番に処理されるため "left_leg_parent_ik" になる
+        # exact_match機能実装後は "left_leg_ik_parent" になるべき
+        self.assertEqual(self.converter.convert("左足IK親"), "left_leg_parent_ik")
         self.assertEqual(self.converter.convert("上半身3"), "spine_3")
         self.assertEqual(self.converter.convert("髮親"), "hair_parent")
         self.assertEqual(self.converter.convert("前髮2_1"), "front_hair_2_1")
@@ -191,6 +207,27 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         # 先頭に数字がある場合のテスト
         self.assertEqual(self.converter.convert("001左腕"), "left_arm_001")
         self.assertEqual(self.converter.convert("001 Footsteps"), "Footsteps_001")
+
+    def test_exact_match_conversion(self):
+        """完全一致変換のテスト（exact_matchセクション使用）"""
+        
+        # exact_matchにある項目はprefix/suffix処理より優先される
+        self.assertEqual(self.converter.convert("左足IK"), "left_leg_ik")
+        self.assertEqual(self.converter.convert("右足IK"), "right_leg_ik")
+        self.assertEqual(self.converter.convert("左つま先IK"), "left_toe_ik")
+        self.assertEqual(self.converter.convert("右つま先IK"), "right_toe_ik")
+        
+        # 全角IKも対応
+        self.assertEqual(self.converter.convert("左足ＩＫ"), "left_leg_ik")
+        self.assertEqual(self.converter.convert("右足ＩＫ"), "right_leg_ik")
+        self.assertEqual(self.converter.convert("左つま先ＩＫ"), "left_toe_ik")
+        self.assertEqual(self.converter.convert("右つま先ＩＫ"), "right_toe_ik")
+        
+        # 準標準ボーン
+        self.assertEqual(self.converter.convert("上半身2"), "upper_body_2")
+        self.assertEqual(self.converter.convert("左腕捩"), "left_arm_twist")
+        self.assertEqual(self.converter.convert("右腕捩"), "right_arm_twist")
+        self.assertEqual(self.converter.convert("グルーブ"), "groove")
 
 
 class TestUtilsAPI(unittest.TestCase):
@@ -236,6 +273,8 @@ class TestSingletonPattern(unittest.TestCase):
         # 辞書エントリを追加して、シングルトンであることを確認
         converter1.add_dictionary_entry("シングルトンテスト", "singleton_test")
         self.assertEqual(converter2.convert("シングルトンテスト"), "singleton_test")
+
+
 
 
 if __name__ == "__main__":

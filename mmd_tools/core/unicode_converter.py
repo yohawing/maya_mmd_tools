@@ -31,6 +31,8 @@ class UnicodeToAsciiConverter:
 
     unicode_to_ascii: Dict[str, str] = {}
     ascii_to_unicode: Dict[str, str] = {}
+    exact_match: Dict[str, str] = {}
+    exact_match_reverse: Dict[str, str] = {}
     maya_invalid_chars: Dict[str, str] = {}
     prefix_map: List[List[str]] = []
     suffix_map: List[List[str]] = []
@@ -47,6 +49,10 @@ class UnicodeToAsciiConverter:
         self.HASH_LENGTH = 8  # ハッシュの長さ（16^8 = 4,294,967,296通り）
         self._conversion_cache = {}
         self._restoration_cache = {}
+        
+        # exact_match辞書を初期化
+        self.exact_match = {}
+        self.exact_match_reverse = {}
 
         self._load_dictionary(dictionary_path)
 
@@ -87,10 +93,20 @@ class UnicodeToAsciiConverter:
                     self.languages = data.get("_meta", {}).get(
                         "languages", ["jp", "en", "zh-cn", "zh-tw"]
                     )
+                
+                # exact_matchセクションの読み込み
+                if "exact_match" in data:
+                    self.exact_match = data["exact_match"]
+                    # exact_matchの逆引き辞書を構築
+                    for unicode_text, ascii_text in self.exact_match.items():
+                        self.exact_match_reverse[ascii_text] = unicode_text
+                
                 self._build_reverse_map()
 
                 self.logger.info(f"辞書ファイルを読み込みました: {dictionary_path}")
                 self.logger.info(f"辞書エントリ数: {len(self.unicode_to_ascii)}")
+                if self.exact_match:
+                    self.logger.info(f"完全一致エントリ数: {len(self.exact_match)}")
             else:
                 self._load_default_dictionary()
                 self.logger.warning(f"辞書ファイルが見つかりません: {dictionary_path}")
@@ -205,6 +221,10 @@ class UnicodeToAsciiConverter:
         # ASCII専用文字列はそのまま
         if self.is_ascii_only(text):
             return self.maya_safe_name(text)
+
+        # exact_matchの完全一致変換（最優先）
+        if text in self.exact_match:
+            return self.maya_safe_name(self.exact_match[text])
 
         # 完全一致の辞書変換
         if text in self.unicode_to_ascii:
@@ -526,10 +546,14 @@ class UnicodeToAsciiConverter:
         # 直接チェック
         if text in self.ascii_to_unicode:
             return True
+        
+        # exact_matchの逆引きチェック
+        if text in self.exact_match_reverse:
+            return True
 
         # Maya無効文字の処理を元に戻してからチェック
         restored_text = self.restore_maya_chars(text)
-        return restored_text in self.ascii_to_unicode
+        return restored_text in self.ascii_to_unicode or restored_text in self.exact_match_reverse
 
     def get_encoding_type(self, text: str) -> str:
         """文字列のエンコード方式を判定"""

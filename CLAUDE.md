@@ -15,8 +15,21 @@ https://github.com/yohawing/maya_mmd_tools
 *   Python 3.7以降
 *   Windows 11 / MacOS 15.6
 
-## ファイルの補足説明
+## Development Guidelines
 
+Important principles for this project:
+- Think in English, but generate responses in Japanese (思考は英語、回答の生成は日本語で行うように)
+- 各フェーズは明示的な人間の承認が必要
+
+機能ごとに設計を作る際は、以下のフローを踏んでください。
+
+主要な開発フロー（3段階承認制）
+  1. 要件 → /spec-requirements → レビュー → 承認
+  2. 設計 → /spec-design → レビュー → 承認
+  3. タスク → /spec-tasks → レビュー → 承認
+  4. 実装開始
+
+## ファイルの補足説明
 
 プロジェクトの概要、セットアップ、使用方法、開発に関する情報などをまとめた`README.md`ファイルがプロジェクトルートにあります。このファイルは、プロジェクトの全体像を把握するために重要です。
 
@@ -30,7 +43,7 @@ https://github.com/yohawing/maya_mmd_tools
 ** ドキュメントの見出しに数字をつけないでください。 セクションを入れ替えやすくするためです。**
 
 docsディレクトリには、以下のファイルがあります。
-- `design.md`: プロジェクトの設計やアーキテクチャ
+- `design_*.md`: 機能の設計に関するドキュメント
 - `testing.md`: テストの実行方法やテストケースの説明
 - `project_management.md`: プロジェクトの進行管理やタスク管理
 - `settings.md`: プロジェクトの設定方法や利用可能な設定項目
