@@ -764,16 +764,18 @@ def set_joint_limits(joint, limit_min=None, limit_max=None, enable_limits=True):
         return False
     
     try:
-        # 回転制限の設定
+        import math
+        
+        # 回転制限の設定（ラジアンから度数に変換）
         if limit_min:
-            cmds.setAttr(f"{joint}.rotateMinX", limit_min[0])
-            cmds.setAttr(f"{joint}.rotateMinY", limit_min[1])
-            cmds.setAttr(f"{joint}.rotateMinZ", limit_min[2])
+            cmds.setAttr(f"{joint}.minRotXLimit", math.degrees(limit_min[0]))
+            cmds.setAttr(f"{joint}.minRotYLimit", math.degrees(limit_min[1]))
+            cmds.setAttr(f"{joint}.minRotZLimit", math.degrees(limit_min[2]))
             
         if limit_max:
-            cmds.setAttr(f"{joint}.rotateMaxX", limit_max[0])
-            cmds.setAttr(f"{joint}.rotateMaxY", limit_max[1])
-            cmds.setAttr(f"{joint}.rotateMaxZ", limit_max[2])
+            cmds.setAttr(f"{joint}.maxRotXLimit", math.degrees(limit_max[0]))
+            cmds.setAttr(f"{joint}.maxRotYLimit", math.degrees(limit_max[1]))
+            cmds.setAttr(f"{joint}.maxRotZLimit", math.degrees(limit_max[2]))
         
         # 制限の有効化/無効化
         if limit_min:

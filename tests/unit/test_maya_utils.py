@@ -146,24 +146,25 @@ class TestMayaUtils(MayaTestBase):
 
         self.assertTrue(result)
 
-        # 制限が設定されているか確認
+        # 制限が設定されているか確認（度数単位で比較）
+        import math
         self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.rotateMinX"), limit_min[0], places=5
+            cmds.getAttr(f"{joint}.minRotXLimit"), math.degrees(limit_min[0]), places=5
         )
         self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.rotateMinY"), limit_min[1], places=5
+            cmds.getAttr(f"{joint}.minRotYLimit"), math.degrees(limit_min[1]), places=5
         )
         self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.rotateMinZ"), limit_min[2], places=5
+            cmds.getAttr(f"{joint}.minRotZLimit"), math.degrees(limit_min[2]), places=5
         )
         self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.rotateMaxX"), limit_max[0], places=5
+            cmds.getAttr(f"{joint}.maxRotXLimit"), math.degrees(limit_max[0]), places=5
         )
         self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.rotateMaxY"), limit_max[1], places=5
+            cmds.getAttr(f"{joint}.maxRotYLimit"), math.degrees(limit_max[1]), places=5
         )
         self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.rotateMaxZ"), limit_max[2], places=5
+            cmds.getAttr(f"{joint}.maxRotZLimit"), math.degrees(limit_max[2]), places=5
         )
 
         # 制限が有効になっているか確認
