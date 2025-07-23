@@ -1,10 +1,10 @@
 from maya import cmds
 
-import maya.api.OpenMaya as om
+import maya.OpenMaya as om
 
 import maya.OpenMayaMPx as ommpx
-from .mmd_file_translator import register_file_translators, unregister_file_translators
-from .ui.main_window import MainWindow
+from mmd_tools.mmd_file_translator import register_file_translators, unregister_file_translators
+from mmd_tools.ui.main_window import MainWindow
 
 # Store the window instance to avoid it being garbage collected
 main_window_instance = None
@@ -28,9 +28,7 @@ def uninstall_mmd_menu():
         cmds.deleteUI("MMD", menu=True)
 
 
-def maya_useNewAPI():
-    """Maya API 2.0を使用することを宣言"""
-    pass
+
 
 
 def initializePlugin(mobject):

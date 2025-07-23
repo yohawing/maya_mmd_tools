@@ -72,7 +72,7 @@ class MainWindow(QMainWindow):
         handler = QtLogHandler()
         handler.message_written.connect(self.log_viewer.append)
         logger.add_handler(handler)
-        logger.setLevel(logging.INFO)
+        logger.set_level(logging.INFO)
         logger.info("MMD Tools UI initialized.")
 
     def setup_tabs(self):
