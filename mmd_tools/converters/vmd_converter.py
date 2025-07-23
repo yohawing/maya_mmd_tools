@@ -330,8 +330,8 @@ class VmdConverter:
             オイラー角（度）のタプル (rx, ry, rz)
         """
         # Maya API 2.0のMQuaternionを使用
-        # VMDのクォータニオンは左手系、Z軸の向きが逆
-        # Z成分を反転してMayaの座標系に合わせる
+        # MMDもMayaも右手座標系だが、Z軸の向きが逆（MMD: +Z手前, Maya: +Z奥）
+        # この違いにより、回転の向きも影響を受ける
         maya_quat = om2.MQuaternion(quat[0], quat[1], -quat[2], quat[3])
 
         # 正規化（念のため）
@@ -341,10 +341,10 @@ class VmdConverter:
         euler = maya_quat.asEulerRotation()
 
         # ラジアンから度に変換
-
-        rx = math.degrees(euler.x)
-        ry = math.degrees(euler.y) * -1  # Y軸は反転
-        rz = math.degrees(euler.z)
+        # Z軸の向きが逆のため、X軸とY軸の回転方向が反転する
+        rx = math.degrees(euler.x) * -1  # X軸回転を反転
+        ry = math.degrees(euler.y) * -1  # Y軸回転を反転
+        rz = math.degrees(euler.z) * -1  # Z軸回転も反転
 
         return (rx, ry, rz)
 

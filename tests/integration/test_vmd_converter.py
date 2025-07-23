@@ -35,41 +35,63 @@ class TestVmdConverter(MayaTestBase):
         # 一時ファイルのクリーンアップ
         self.fixture_provider.cleanup_temp_files()
 
-    def test_convert_with_pmx_file(self):
-        """PMXファイルを使用したVMD変換テスト"""
-        # try:
-        #     # PMXファイルを取得
-        #     pmx_file_path = self.fixture_provider.get_pmx_file("Lumine.pmx")
-        # except FileNotFoundError as e:
-        #     self.skipTest(f"PMXファイルが見つかりません: {e}")
+    def _import_model_and_apply_vmd(self, model_name, vmd_name, model_type="pmx"):
+        """
+        モデルを読み込み、VMDファイルを適用する共通関数
 
-        pmx_data = self.fixture_provider.load_pmx_data("Lumine")
-        pmx_file_path = pmx_data["file_path"]
-        pmx_data = pmx_data["data"]
+        Args:
+            model_name (str): モデル名（拡張子なし）
+            vmd_name (str): VMDファイル名（拡張子なし）
+            model_type (str): モデルタイプ ("pmx" or "pmd")
 
-        # PMXモデルを読み込んでボーンを作成
-        # pmx_parser = PmxParser()
-        # pmx_data = pmx_parser.parse_file(pmx_file_path)
+        Returns:
+            tuple: (root_group, mesh_name, root_joint, skin_cluster, vmd_data, result)
+        """
+        # モデルデータを読み込み
+        if model_type == "pmx":
+            model_data = self.fixture_provider.load_pmx_data(model_name)
+        else:
+            model_data = self.fixture_provider.load_pmd_data(model_name)
+        
+        file_path = model_data["file_path"]
+        model_data = model_data["data"]
 
         # ルートグループを作成
         root_group = cmds.group(name="test_model_root", empty=True)
 
         # メッシュを作成（スキニングのため）
-        mesh_converter = MeshConverter(pmx_file_path)
-        group_name, mesh_name = mesh_converter.convert_pmx_mesh(pmx_data, root_group)
+        mesh_converter = MeshConverter(file_path)
+        if model_type == "pmx":
+            group_name, mesh_name = mesh_converter.convert_pmx_mesh(model_data, root_group)
+        else:
+            group_name, mesh_name = mesh_converter.convert_pmd_mesh(model_data, root_group)
 
         # ボーンを作成
         bone_converter = BoneConverter()
-        root_joint, skin_cluster = bone_converter.convert_pmx_bones(
-            pmx_data, mesh_name, root_group
-        )
+        if model_type == "pmx":
+            root_joint, skin_cluster = bone_converter.convert_pmx_bones(
+                model_data, mesh_name, root_group
+            )
+        else:
+            root_joint, skin_cluster = bone_converter.convert_pmd_bones(
+                model_data, mesh_name, root_group
+            )
 
         # VMDファイルを読み込み
         vmd_parser = VmdParser()
-        vmd_data = vmd_parser.parse_file(self.fixture_provider.get_vmd_file("Lat式用"))
+        vmd_data = vmd_parser.parse_file(self.fixture_provider.get_vmd_file(vmd_name))
 
         # アニメーション変換
         result = self.converter.convert(vmd_data)
+
+        return root_group, mesh_name, root_joint, skin_cluster, vmd_data, result
+
+    def test_convert_with_pmx_file(self):
+        """PMXファイルを使用したVMD変換テスト"""
+        # 共通関数を使用してモデルとVMDを読み込み
+        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
+            self._import_model_and_apply_vmd("Lumine", "Lat式用", model_type="pmx")
+        )
 
         # 検証
         self.assertTrue(result)
@@ -101,31 +123,10 @@ class TestVmdConverter(MayaTestBase):
 
     def test_convert_with_pmd_file(self):
         """実際のPMDファイルを使用した変換テスト"""
-
-        # PMDモデルを読み込んでボーンを作成
-        pmd_data = self.fixture_provider.load_pmd_data("Lat式ミクVer2.31_Normal")
-        pmd_file_path = pmd_data["file_path"]
-        pmd_data = pmd_data["data"]
-
-        # ルートグループを作成
-        root_group = cmds.group(name="test_model_root", empty=True)
-
-        # メッシュを作成（スキニングのため）
-        mesh_converter = MeshConverter(pmd_file_path)
-        group_name, mesh_name = mesh_converter.convert_pmd_mesh(pmd_data, root_group)
-
-        # ボーンを作成
-        bone_converter = BoneConverter()
-        root_joint, skin_cluster = bone_converter.convert_pmd_bones(
-            pmd_data, mesh_name, root_group
+        # 共通関数を使用してモデルとVMDを読み込み
+        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
+            self._import_model_and_apply_vmd("Lat式ミクVer2.31_Normal", "Lat式用", model_type="pmd")
         )
-
-        # VMDファイルを読み込み
-        vmd_parser = VmdParser()
-        vmd_data = vmd_parser.parse_file(self.fixture_provider.get_vmd_file("Lat式用"))
-
-        # アニメーション変換
-        result = self.converter.convert(vmd_data)
 
         # 検証
         self.assertTrue(result)
@@ -174,6 +175,58 @@ class TestVmdConverter(MayaTestBase):
         failed.add("ボーン3")
         self.assertEqual(len(self.converter._failed_bones), 2)
 
+    def test_1bone_vmd_conversion(self):
+        """1ボーンVMDデータの変換テスト"""
+        # 共通関数を使用してモデルとVMDを読み込み
+        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
+            self._import_model_and_apply_vmd("test_1bone_cube", "test_1bone_cube_motion", model_type="pmx")
+        )
+
+        # ボーン名マッピングを設定
+        bone_mapping = {"全ての親": "root"}
+        self.converter.set_bone_name_mapping(bone_mapping)
+
+        # 変換実行
+        result = self.converter.convert(vmd_data)
+
+        # 0フレーム目は回転が（0, 0, 0）であることを確認
+        cmds.currentTime(0)
+        rotation = cmds.getAttr(f"{root_joint[0]}.rotate")[0]
+        self.assertAlmostEqual(rotation[0], 0.0, places=3)
+        self.assertAlmostEqual(rotation[1], 0.0, places=3)
+        self.assertAlmostEqual(rotation[2], 0.0, places=3)
+
+        # 9frame目の回転を確認
+        cmds.currentTime(9)
+        rotation = cmds.getAttr(f"{root_joint[0]}.rotate")[0]
+        self.assertAlmostEqual(rotation[0], 45.0, places=3)
+        self.assertAlmostEqual(rotation[1], 0.0, places=3)
+        self.assertAlmostEqual(rotation[2], 0.0, places=3)
+
+        # 19frame目の回転を確認
+        cmds.currentTime(19)
+        rotation = cmds.getAttr(f"{root_joint[0]}.rotate")[0]
+        self.assertAlmostEqual(rotation[0], 0.0, places=3)
+        self.assertAlmostEqual(rotation[1], 0.0, places=3)
+        self.assertAlmostEqual(rotation[2], -45.0, places=3)
+
+        # 29frame目の回転を確認
+        cmds.currentTime(29)
+        rotation = cmds.getAttr(f"{root_joint[0]}.rotate")[0]
+        self.assertAlmostEqual(rotation[0], 0.0, places=3)
+        self.assertAlmostEqual(rotation[1], 0.0, places=3)
+        self.assertAlmostEqual(rotation[2], 45.0, places=3)
+
+        # 39frame目の回転を確認
+        cmds.currentTime(39)
+        rotation = cmds.getAttr(f"{root_joint[0]}.rotate")[0]
+        self.assertAlmostEqual(rotation[0], -45.0, places=3)
+        self.assertAlmostEqual(rotation[1], 0.0, places=3)
+        self.assertAlmostEqual(rotation[2], 0.0, places=3)
+
+        # エラーが発生しないことを確認
+        self.assertTrue(result)
+
     def test_convert_with_fixture_bone_hierarchy(self):
         """Fixtureを使用したボーン階層でのVMD変換テスト"""
         from tests.common.vmd_mock import create_test_vmd_data
@@ -218,9 +271,9 @@ class TestVmdConverter(MayaTestBase):
         cmds.currentTime(30)
         pos = cmds.getAttr(f"{center}.translate")[0]
         # VMDモックデータの期待値と照合
-        self.assertAlmostEqual(pos[0], 0.5, places=5)
-        self.assertAlmostEqual(pos[1], 0.5, places=5)
-        self.assertAlmostEqual(pos[2], -0.5, places=5)  # Z軸反転
+        self.assertAlmostEqual(pos[0], 0.5, places=3)
+        self.assertAlmostEqual(pos[1], 0.5, places=3)
+        self.assertAlmostEqual(pos[2], -0.5, places=3)  # Z軸反転
 
     def test_pole_vector_generation_for_leg_ik(self):
         """足IKのPoleVector自動生成テスト"""

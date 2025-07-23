@@ -10,6 +10,7 @@ import sys
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
 from mmd_tools.converters.vmd_converter import VmdConverter
+from tests.common.test_fixture_provider import TestFixtureProvider
 
 
 class TestVmdConverter(MayaTestBase):
@@ -20,6 +21,15 @@ class TestVmdConverter(MayaTestBase):
         super().setUp()
         # VmdConverterのインスタンスを作成
         self.converter = VmdConverter()
+
+        # テストフィクスチャプロバイダーを作成
+        self.fixture_provider = TestFixtureProvider()
+
+    def tearDown(self):
+        """テスト後のクリーンアップ"""
+        super().tearDown()
+        # 一時ファイルのクリーンアップ
+        self.fixture_provider.cleanup_temp_files()
 
     def test_init(self):
         """初期化のテスト"""

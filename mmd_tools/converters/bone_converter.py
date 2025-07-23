@@ -182,7 +182,7 @@ class BoneConverter:
             position = bone.position
             joint = cmds.joint(
                 name=joint_name,
-                position=[position[0], position[1], -position[2]],  # Mayaは左手系
+                position=[position[0], position[1], -position[2]],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
                 # Maya 2024以降では軸指定オプションは deprecated
                 # 代わりにjointOrientで後から設定する
             )
