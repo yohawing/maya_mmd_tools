@@ -1,12 +1,4 @@
-from PySide6.QtWidgets import (
-    QVBoxLayout,
-    QGroupBox,
-    QListWidget,
-    QFormLayout,
-    QLineEdit,
-    QPushButton,
-    QHBoxLayout
-)
+from ..qt_compat import QWidget, QVBoxLayout, QListWidget
 from ..base_tab import BaseTab
 
 class MaterialTab(BaseTab):

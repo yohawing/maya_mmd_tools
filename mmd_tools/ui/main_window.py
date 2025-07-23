@@ -1,7 +1,6 @@
 import logging
 import os
-from PySide6.QtWidgets import QMainWindow, QTabWidget, QDockWidget
-from PySide6.QtCore import Qt, QSettings
+from .qt_compat import QMainWindow, QTabWidget, QDockWidget, Qt, QSettings
 from ..core.log_handlers import QtLogHandler
 from .components.log_viewer import LogViewer
 from ..core.logger import get_logger
@@ -26,12 +25,15 @@ class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("MMD Tools")
+
         self.tab_widget = QTabWidget()
+        self.tab_widget.setObjectName("mainTabWidget") # Add objectName
         self.setCentralWidget(self.tab_widget)
 
         self.log_viewer = LogViewer()
+        self.log_viewer.setObjectName("logViewer") # Add objectName
         log_dock_widget = QDockWidget("Log", self)
-        log_dock_widget.setWidget(self.log_viewer)
+        log_dock_widget.setObjectName("logDockWidget") # Add objectName
         self.addDockWidget(Qt.BottomDockWidgetArea, log_dock_widget)
 
         self.load_stylesheet()

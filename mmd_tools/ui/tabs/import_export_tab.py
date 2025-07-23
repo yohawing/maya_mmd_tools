@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import (
+from ..qt_compat import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,

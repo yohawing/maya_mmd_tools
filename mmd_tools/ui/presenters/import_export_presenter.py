@@ -1,5 +1,4 @@
-from PySide6.QtCore import QObject, Signal
-from PySide6.QtWidgets import QFileDialog
+from ..qt_compat import QObject, Signal, QFileDialog
 from ...core.logger import get_logger
 from ...io.mmd_importer import import_mmd_file
 from ...io.pmx_exporter import PmxExporter

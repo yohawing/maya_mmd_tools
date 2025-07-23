@@ -1,13 +1,4 @@
-from PySide6.QtWidgets import (
-    QVBoxLayout,
-    QGroupBox,
-    QListWidget,
-    QFormLayout,
-    QLineEdit,
-    QSlider,
-    QHBoxLayout
-)
-from PySide6.QtCore import Qt
+from ..qt_compat import QWidget, QVBoxLayout, QListWidget, QSlider, Qt, QHBoxLayout, QGroupBox, QFormLayout, QLineEdit
 from ..base_tab import BaseTab
 
 class MorphTab(BaseTab):

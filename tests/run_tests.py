@@ -172,6 +172,14 @@ def main():
     env["MAYA_SCRIPT_PATH"] = ""
     env["MAYA_MODULE_PATH"] = str(ROOT_DIR)
 
+    # Explicitly add to MAYA_PLUG_IN_PATH as a workaround for test environment
+    plugin_path = str(ROOT_DIR / "mmd_tools")
+    existing_plugin_path = env.get("MAYA_PLUG_IN_PATH", "")
+    if existing_plugin_path:
+        env["MAYA_PLUG_IN_PATH"] = f"{plugin_path}{os.pathsep}{existing_plugin_path}"
+    else:
+        env["MAYA_PLUG_IN_PATH"] = plugin_path
+
     # テストランナースクリプトのパス
     test_runner_path = ROOT_DIR / "tests" / "maya_test_runner.py"
 

@@ -1,7 +1,9 @@
-from PySide6.QtWidgets import (
+from ..qt_compat import (
+    QWidget,
     QVBoxLayout,
-    QGroupBox,
     QListWidget,
+    QPushButton,
+    QGroupBox,
     QHBoxLayout
 )
 from ..base_tab import BaseTab

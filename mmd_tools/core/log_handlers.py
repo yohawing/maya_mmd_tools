@@ -1,5 +1,5 @@
 import logging
-from PySide6.QtCore import QObject, Signal
+from mmd_tools.ui.qt_compat import QObject, Signal
 
 class QtLogHandler(logging.Handler, QObject):
     message_written = Signal(str)

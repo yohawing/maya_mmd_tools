@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QTextEdit
+from ..qt_compat import QTextEdit
 
 class LogViewer(QTextEdit):
     def __init__(self, parent=None):

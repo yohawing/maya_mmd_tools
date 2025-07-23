@@ -3,8 +3,8 @@ Maya File Translator for MMD formats
 Mayaの標準Import/Exportダイアログに MMD形式を追加する
 """
 
-import maya.api.OpenMaya as om
-import maya.api.OpenMayaMPx as ommpx
+import maya.OpenMaya as om
+import maya.OpenMayaMPx as ommpx
 import maya.cmds as cmds
 import sys
 import os

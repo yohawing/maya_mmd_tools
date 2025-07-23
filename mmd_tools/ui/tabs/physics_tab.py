@@ -1,10 +1,4 @@
-from PySide6.QtWidgets import (
-    QVBoxLayout,
-    QGroupBox,
-    QListWidget,
-    QHBoxLayout,
-    QTabWidget
-)
+from ..qt_compat import QWidget, QVBoxLayout, QTabWidget
 from ..base_tab import BaseTab
 
 class PhysicsTab(BaseTab):

@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget
+from .qt_compat import QWidget
 
 class BaseTab(QWidget):
     def __init__(self, parent=None):

@@ -1,9 +1,4 @@
-from PySide6.QtWidgets import (
-    QVBoxLayout,
-    QGroupBox,
-    QFormLayout,
-    QLineEdit
-)
+from ..qt_compat import QWidget, QVBoxLayout, QFormLayout, QLineEdit
 from ..base_tab import BaseTab
 
 class InfoTab(BaseTab):

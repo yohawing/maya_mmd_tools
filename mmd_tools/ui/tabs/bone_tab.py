@@ -1,5 +1,7 @@
-from PySide6.QtWidgets import (
+from ..qt_compat import (
+    QWidget,
     QVBoxLayout,
+    QTreeView,
     QGroupBox,
     QTreeWidget,
     QTreeWidgetItem,
