@@ -215,6 +215,16 @@ custom_provider = TestFixtureProvider(data_dir='/path/to/custom/test/data')
 - テストファイルが見つからない場合は`FileNotFoundError`が発生します
 - 一時ファイルは`tearDown`で必ず`cleanup_temp_files()`を呼び出してクリーンアップしてください
 
+### テストデータの配置
+
+テストで使用するデータファイルは以下のディレクトリに配置されています：
+
+- `tests/data/`: 統合テスト用のMMDファイル（PMD、PMX、VMD）とテクスチャファイル
+- `tests/data/for_unit_test/`: 単体テスト用の軽量なテストデータ
+  - `test_1bone_cube.pmx`: 1ボーンのみを持つシンプルなキューブモデル
+  - `test_basic_bone.pmx`: 基本的なボーン構造を持つモデル
+  - `test_semi_basic_bone.pmx`: やや複雑なボーン構造を持つモデル
+
 ## モックシステムの詳細
 
 ### PMD/PMX/VMDファイルフォーマットのモック

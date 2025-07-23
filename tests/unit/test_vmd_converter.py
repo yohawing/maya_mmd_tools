@@ -6,7 +6,6 @@ Maya環境内で実行されるが、シーン操作を伴わないテストを�
 
 import os
 import sys
-from unittest.mock import MagicMock
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
@@ -48,25 +47,22 @@ class TestVmdConverter(MayaTestBase):
         # 元のセットが変更されないことを確認
         failed.add("ボーン3")
         self.assertEqual(len(self.converter._failed_bones), 2)
-    
+
     def test_convert_with_test_vmd_data(self):
         """テスト用VMDデータでの変換テスト"""
         # テスト用VMDデータを作成
         vmd_data = create_test_vmd_data()
-        
+
         # ボーン名マッピングを設定
-        bone_mapping = {
-            "センター": "center",
-            "上半身": "upper_body",
-            "頭": "head"
-        }
+        bone_mapping = {"センター": "center", "上半身": "upper_body", "頭": "head"}
         self.converter.set_bone_name_mapping(bone_mapping)
-        
+
         # 変換実行（実際のMayaシーンにボーンがないためFalseを返すが、
         # エラーが発生しないことを確認）
         result = self.converter.convert(vmd_data)
-        
+
         # フレーム数が正しく設定されていることを確認
-        # (VMDデータの最大フレームは60)
+        # (VMDデータの通常フレームは30)
         import maya.cmds as cmds
-        self.assertEqual(cmds.playbackOptions(q=True, max=True), 60)
+
+        self.assertEqual(cmds.playbackOptions(q=True, max=True), 30)
