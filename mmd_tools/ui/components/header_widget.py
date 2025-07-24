@@ -124,7 +124,8 @@ class HeaderWidget(QWidget):
             self.set_action_buttons_enabled(False)
         else:
             for model in models:
-                display_name = self.app_state.get_model_info(model)['display_name']
+                info = self.app_state.get_model_info(model)
+                display_name = info['display_name'] if info else model
                 self.model_combo.addItem(f"{display_name} ({model})", userData=model)
             
             # 現在のモデルを選択

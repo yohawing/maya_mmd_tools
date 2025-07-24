@@ -6,7 +6,7 @@ PySide6とPySide2の差異を吸収し、透過的に扱えるようにします
 QT_BINDING = ""
 
 try:
-    from PySide6.QtCore import QObject, Signal, Qt, QSettings
+    from PySide6.QtCore import QObject, Signal, Qt, QSettings, QTimer
     from PySide6.QtGui import QDoubleValidator, QColor
     from PySide6.QtWidgets import (
         QApplication,
@@ -38,13 +38,17 @@ try:
         QListWidgetItem,
         QStatusBar,
         QProgressBar,
+        QSplitter,
+        QTableWidget,
+        QTableWidgetItem,
+        QHeaderView,
     )
     from shiboken6 import wrapInstance
 
     QT_BINDING = "PySide6"
 
 except ImportError:
-    from PySide2.QtCore import QObject, Signal, Qt, QSettings
+    from PySide2.QtCore import QObject, Signal, Qt, QSettings, QTimer
     from PySide2.QtGui import QDoubleValidator, QColor
     from PySide2.QtWidgets import (
         QApplication,
@@ -76,6 +80,10 @@ except ImportError:
         QListWidgetItem,
         QStatusBar,
         QProgressBar,
+        QSplitter,
+        QTableWidget,
+        QTableWidgetItem,
+        QHeaderView,
     )
     from shiboken2 import wrapInstance
 
