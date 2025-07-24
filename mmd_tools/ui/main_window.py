@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
         # ApplicationStateのシグナルを接続
         self.app_state.status_message.connect(self.show_status_message)
         self.app_state.progress_updated.connect(self.update_progress)
+        self.app_state.current_model_changed.connect(self.update_window_title)
         
         # 最小サイズを設定
         self.setMinimumWidth(800)
@@ -188,6 +189,22 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(False)
             if value >= 100:
                 self.progress_bar.setValue(100)
+    
+    def update_window_title(self, model_root=None):
+        """ウィンドウタイトルを更新（現在のモデル名を含める）"""
+        base_title = "MMD Tools"
+        
+        if model_root:
+            # モデル情報を取得
+            info = self.app_state.get_model_info(model_root)
+            if info:
+                # 表示名を優先、なければモデルルート名を使用
+                model_name = info.get('display_name', model_root)
+                self.setWindowTitle(f"{base_title} - {model_name}")
+            else:
+                self.setWindowTitle(f"{base_title} - {model_root}")
+        else:
+            self.setWindowTitle(base_title)
     
     def load_stylesheet(self):
         style_path = os.path.join(os.path.dirname(__file__), "stylesheet.qss")

@@ -8,7 +8,7 @@ from mmd_tools.mmd_file_translator import (
     unregister_file_translators,
 )
 from mmd_tools.ui.main_window import MainWindow
-
+from mmd_tools.view import shader_override as mmd_shader
 
 def open_main_window(dockable=False):
     """Open the main MMD Tools window."""
@@ -58,6 +58,7 @@ def initializePlugin(mobject):
     try:
         register_file_translators(plugin)
         install_mmd_menu()
+        mmd_shader.initializePlugin(plugin)  # Register shader
         om.MGlobal.displayInfo("maya_mmd_tools plugin loaded!")
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
@@ -74,6 +75,7 @@ def uninitializePlugin(mobject):
     try:
         unregister_file_translators(plugin)
         uninstall_mmd_menu()
+        mmd_shader.uninitializePlugin(plugin)  # Deregister shader
         om.MGlobal.displayInfo("maya_mmd_tools plugin unloaded!")
     except Exception as e:
         om.MGlobal.displayError(f"Plugin uninitialization failed: {str(e)}")

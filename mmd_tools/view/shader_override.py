@@ -1,0 +1,257 @@
+# -*- coding: utf-8 -*-
+
+import os
+import maya.api.OpenMaya as om
+import maya.api.OpenMayaUI as omui
+import maya.api.OpenMayaRender as omr
+
+# Shader node name
+SHADER_NODE_NAME = "MMDShader"
+# Shader file path (relative to the plugin root)
+SHADER_FX_FILE = "shaders/MMDShader.fx"
+
+def maya_useNewAPI():
+    """The presence of this function tells Maya that the plugin produces, and
+    expects to be passed, objects created using the Maya Python API 2.0.
+    """
+    pass
+
+# ----------------------------------------------------------------------
+# Shader Node Implementation
+# ----------------------------------------------------------------------
+class MMDShaderNode(omui.MPxLocatorNode):
+    """Custom shader node definition."""
+    kNodeName = SHADER_NODE_NAME
+    kNodeId = om.MTypeId(0x0007F7F7) # Unique ID, must be registered
+    drawDbClassification = f"drawdb/shader/surface/{kNodeName}"
+
+    def __init__(self):
+        super(MMDShaderNode, self).__init__()
+
+    @classmethod
+    def creator(cls):
+        return cls()
+
+    @classmethod
+    def initialize(cls):
+        """Initialize node attributes."""
+        n_attr = om.MFnNumericAttribute()
+
+        # Diffuse Color
+        cls.a_diffuse_color = n_attr.create("diffuseColor", "dc", om.MFnNumericData.kFloat3)
+        n_attr.usedAsColor = True
+        n_attr.default = (0.8, 0.8, 0.8)
+        n_attr.keyable = True
+        cls.addAttribute(cls.a_diffuse_color)
+
+        # Shininess
+        cls.a_shininess = n_attr.create("shininess", "sh", om.MFnNumericData.kFloat, 1.0)
+        n_attr.min = 0.0
+        n_attr.keyable = True
+        cls.addAttribute(cls.a_shininess)
+
+        # Specular Color
+        cls.a_specular_color = n_attr.create("specularColor", "sc", om.MFnNumericData.kFloat3)
+        n_attr.usedAsColor = True
+        n_attr.default = (0.5, 0.5, 0.5)
+        n_attr.keyable = True
+        cls.addAttribute(cls.a_specular_color)
+
+        # Ambient Color
+        cls.a_ambient_color = n_attr.create("ambientColor", "ac", om.MFnNumericData.kFloat3)
+        n_attr.usedAsColor = True
+        n_attr.default = (0.3, 0.3, 0.3)
+        n_attr.keyable = True
+        cls.addAttribute(cls.a_ambient_color)
+
+        # Edge Color
+        cls.a_edge_color = n_attr.create("edgeColor", "ec", om.MFnNumericData.kFloat3)
+        n_attr.usedAsColor = True
+        n_attr.default = (0.0, 0.0, 0.0)
+        n_attr.keyable = True
+        cls.addAttribute(cls.a_edge_color)
+
+        # Edge Size
+        cls.a_edge_size = n_attr.create("edgeSize", "es", om.MFnNumericData.kFloat, 0.01)
+        n_attr.min = 0.0
+        n_attr.keyable = True
+        cls.addAttribute(cls.a_edge_size)
+
+        # Sphere Mode
+        e_attr = om.MFnEnumAttribute()
+        cls.a_sphere_mode = e_attr.create("sphereMode", "sm", 0)
+        e_attr.addField("None", 0)
+        e_attr.addField("Multiply", 1)
+        e_attr.addField("Add", 2)
+        e_attr.keyable = True
+        cls.addAttribute(cls.a_sphere_mode)
+
+        # Texture Attributes (message attributes for connections)
+        t_attr = om.MFnTypedAttribute()
+        cls.a_main_texture = t_attr.create("mainTexture", "mt", om.MFnData.kString)
+        cls.addAttribute(cls.a_main_texture)
+
+        cls.a_sphere_texture = t_attr.create("sphereTexture", "st", om.MFnData.kString)
+        cls.addAttribute(cls.a_sphere_texture)
+
+        cls.a_toon_texture = t_attr.create("toonTexture", "tt", om.MFnData.kString)
+        cls.addAttribute(cls.a_toon_texture)
+
+# ----------------------------------------------------------------------
+# Shader Override Implementation
+# ----------------------------------------------------------------------
+class MMDShaderOverride(omr.MPxShaderOverride):
+    """The shader override responsible for drawing the MMD shader."""
+
+    def __init__(self, obj):
+        """Initialize the shader override."""
+        super(MMDShaderOverride, self).__init__(obj)
+
+        self.shader = None
+        self.shader_path = os.path.join(os.path.dirname(__file__), "..", SHADER_FX_FILE)
+
+        # Cached values for material properties
+        self.diffuse_color = om.MColor((0.8, 0.8, 0.8))
+        self.shininess = 1.0
+        self.specular_color = om.MColor((0.5, 0.5, 0.5))
+        self.ambient_color = om.MColor((0.3, 0.3, 0.3))
+        self.edge_color = om.MColor((0.0, 0.0, 0.0))
+        self.edge_size = 0.01
+        self.sphere_mode = 0
+
+    @classmethod
+    def creator(cls, obj):
+        """Plugin creation entry point."""
+        return cls(obj)
+
+    def supportedDrawAPIs(self):
+        """Declare support for DirectX 11."""
+        return omr.MRenderer.kDirectX11
+
+    def initialize(self, shader):
+        """Called once to initialize the shader instance."""
+        shader_mgr = omr.MRenderer.getShaderManager()
+        if not shader_mgr:
+            return
+
+        # Load the .fx shader file
+        self.shader = shader_mgr.getEffectsFileShader(self.shader_path, "MMDTechnique")
+        if not self.shader:
+            om.MGlobal.displayError(f"Failed to load shader file: {self.shader_path}")
+            return
+
+        # Create rasterizer states for fill and outline
+        raster_state_desc = omr.MRasterizerStateDesc()
+        raster_state_desc.cullMode = omr.MRasterizerState.kCullFront
+        self.outline_raster_state = omr.MStateManager.acquireRasterizerState(raster_state_desc)
+
+        raster_state_desc.cullMode = omr.MRasterizerState.kCullBack
+        self.fill_raster_state = omr.MStateManager.acquireRasterizerState(raster_state_desc)
+
+    def updateDG(self, obj):
+        """Called when node attributes change."""
+        if not obj or obj.isNull():
+            return
+
+        node = om.MFnDependencyNode(obj)
+
+        # Get MColor objects directly from the plugs
+        self.diffuse_color = om.MColor(node.findPlug("diffuseColor", False).asMDataHandle().asFloat3())
+        self.specular_color = om.MColor(node.findPlug("specularColor", False).asMDataHandle().asFloat3())
+        self.ambient_color = om.MColor(node.findPlug("ambientColor", False).asMDataHandle().asFloat3())
+        self.edge_color = om.MColor(node.findPlug("edgeColor", False).asMDataHandle().asFloat3())
+
+        # Get other numeric values
+        self.shininess = node.findPlug("shininess", False).asFloat()
+        self.edge_size = node.findPlug("edgeSize", False).asFloat()
+        self.sphere_mode = node.findPlug("sphereMode", False).asInt()
+
+    def updateDevice(self):
+        """Called when the render device changes."""
+        # ... (device-specific update logic will go here)
+        pass
+
+    def activate(self, context):
+        """Called to activate the shader for drawing."""
+        # ... (shader activation logic will go here)
+        pass
+
+    def terminate(self):
+        """Called to terminate the shader."""
+        if self.shader:
+            shader_mgr = omr.MRenderer.getShaderManager()
+            if shader_mgr:
+                shader_mgr.releaseShader(self.shader)
+            self.shader = None
+
+    def draw(self, context, renderables):
+        """The main drawing callback."""
+        if not self.shader:
+            return
+
+        # --- Draw each renderable item ---
+        for item in renderables:
+            # --- Pass 1: Edge ---
+            self.shader.setParameter("EdgeColor", (self.edge_color.r, self.edge_color.g, self.edge_color.b, 1.0))
+            self.shader.setParameter("EdgeSize", self.edge_size)
+            self.shader.activatePass(context, 0) # Activate EdgePass
+            omr.MPxShaderOverride.drawGeometry(context, item)
+
+            # --- Pass 2: Main ---
+            self.shader.setParameter("DiffuseColor", (self.diffuse_color.r, self.diffuse_color.g, self.diffuse_color.b, 1.0))
+            self.shader.setParameter("SpecularColor", (self.specular_color.r, self.specular_color.g, self.specular_color.b))
+            self.shader.setParameter("Shininess", self.shininess)
+            self.shader.setParameter("AmbientColor", (self.ambient_color.r, self.ambient_color.g, self.ambient_color.b))
+            self.shader.setParameter("SphereMode", self.sphere_mode)
+            self.shader.activatePass(context, 1) # Activate MainPass
+            omr.MPxShaderOverride.drawGeometry(context, item)
+
+# ----------------------------------------------------------------------
+# Plugin Registration
+# ----------------------------------------------------------------------
+
+def initializePlugin(plugin):
+    """Register the shader node and override."""
+    vendor = "yohawing"
+    version = "1.0.0"
+    plugin_fn = om.MFnPlugin(plugin, vendor, version)
+
+    try:
+        plugin_fn.registerNode(
+            SHADER_NODE_NAME,
+            MMDShaderNode.creator,
+            om.MPxNode.kLocatorNode,
+            MMDShaderNode.drawDbClassification
+        )
+    except:
+        om.MGlobal.displayError(f"Failed to register node: {SHADER_NODE_NAME}")
+        raise
+
+    try:
+        omr.MDrawRegistry.registerShaderOverrideCreator(
+            MMDShaderNode.drawDbClassification,
+            "mmdShaderOverride", # Unique registrant ID
+            MMDShaderOverride.creator
+        )
+    except:
+        om.MGlobal.displayError("Failed to register shader override.")
+        raise
+
+def uninitializePlugin(plugin):
+    """Deregister the shader node and override."""
+    plugin_fn = om.MFnPlugin(plugin)
+
+    try:
+        omr.MDrawRegistry.deregisterShaderOverrideCreator(
+            MMDShaderNode.drawDbClassification,
+            "mmdShaderOverride"
+        )
+    except:
+        om.MGlobal.displayError("Failed to deregister shader override.")
+        raise
+
+    try:
+        plugin_fn.deregisterNode(MMDShaderNode.kNodeId)
+    except:
+        om.MGlobal.displayError(f"Failed to deregister node: {SHADER_NODE_NAME}")
+        raise

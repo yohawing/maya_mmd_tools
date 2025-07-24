@@ -1,6 +1,6 @@
 from maya import cmds
 from ...core.logger import get_logger
-from ..qt_compat import QColorDialog, QFileDialog, QColor
+from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
 
 logger = get_logger(__name__)
 
@@ -10,6 +10,7 @@ class MaterialPresenter:
         self.app_state = app_state
         self.current_material = None
         self.material_data = {}  # Store original material data for reset
+        self.has_unsaved_changes = False
         self.connect_signals()
         
         # 既に選択されているモデルがある場合はロード
@@ -34,6 +35,26 @@ class MaterialPresenter:
         self.view.texture_browse_btn.clicked.connect(lambda: self.browse_file("texture"))
         self.view.sphere_map_browse_btn.clicked.connect(lambda: self.browse_file("sphere"))
         
+        # Track changes in input fields
+        self.view.specular_coefficient_spin.valueChanged.connect(self._on_value_changed)
+        self.view.transparency_spin.valueChanged.connect(self._on_value_changed)
+        self.view.edge_size_spin.valueChanged.connect(self._on_value_changed)
+        self.view.sphere_mode_combo.currentIndexChanged.connect(self._on_value_changed)
+        self.view.toon_texture_combo.currentIndexChanged.connect(self._on_value_changed)
+        
+        # Check boxes
+        for checkbox in [
+            self.view.both_face_check,
+            self.view.ground_shadow_check,
+            self.view.self_shadow_map_check,
+            self.view.self_shadow_check,
+            self.view.edge_draw_check,
+            self.view.vertex_color_check,
+            self.view.point_draw_check,
+            self.view.line_draw_check
+        ]:
+            checkbox.stateChanged.connect(self._on_value_changed)
+        
         # Apply/Reset buttons
         self.view.apply_btn.clicked.connect(self.apply_changes)
         self.view.reset_btn.clicked.connect(self.reset_changes)
@@ -49,37 +70,120 @@ class MaterialPresenter:
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not cmds.objExists(current_model_root):
             self.view._set_details_enabled(False)
+            self.view.material_count_label.setText("マテリアル数: 0")
+            self.view._show_placeholder()
             return
 
-        shapes = cmds.listRelatives(current_model_root, allDescendents=True, type="mesh")
-        if not shapes:
+        try:
+            # MMDマテリアルノードを探す
+            # モデルルートにアトリビュートとして保存されているマテリアルリストを確認
+            mmd_materials = []
+            
+            # 方法1: mmd_materials アトリビュートから取得
+            if cmds.attributeQuery("mmd_materials", node=current_model_root, exists=True):
+                material_connections = cmds.listConnections(f"{current_model_root}.mmd_materials")
+                if material_connections:
+                    mmd_materials.extend(material_connections)
+            
+            # 方法2: mmd_material_info ノードから取得
+            material_info_nodes = cmds.ls(f"{current_model_root}_material_*", type="transform")
+            for node in material_info_nodes:
+                if cmds.attributeQuery("mmd_material", node=node, exists=True):
+                    mat_conn = cmds.listConnections(f"{node}.mmd_material")
+                    if mat_conn:
+                        mmd_materials.extend(mat_conn)
+            
+            # 方法3: mmd_material_name属性を持つマテリアルを検索
+            if not mmd_materials:
+                shapes = cmds.listRelatives(current_model_root, allDescendents=True, type="mesh")
+                if shapes:
+                    shading_groups = cmds.listConnections(shapes, type='shadingEngine')
+                    if shading_groups:
+                        shading_groups = list(set(shading_groups))
+                        for sg in shading_groups:
+                            materials = cmds.ls(cmds.listConnections(sg), materials=True)
+                            if materials:
+                                for mat in materials:
+                                    # MMD関連の属性があるかチェック
+                                    if (cmds.attributeQuery("mmd_material_name", node=mat, exists=True) or
+                                        cmds.attributeQuery("mmd_draw_flags", node=mat, exists=True) or
+                                        cmds.attributeQuery("mmd_sphere_path", node=mat, exists=True)):
+                                        mmd_materials.append(mat)
+            
+            # 重複を削除
+            unique_materials = list(set(mmd_materials))
+            
+            # Add materials to list with Japanese names
+            for mat in sorted(unique_materials):
+                # 日本語名を取得
+                jp_name = self._get_material_japanese_name(mat)
+                
+                # 表示テキストを決定
+                if jp_name:
+                    display_text = f"{jp_name} ({mat})"
+                else:
+                    display_text = mat
+                
+                # リストに追加
+                from ..qt_compat import QListWidgetItem
+                item = QListWidgetItem(display_text)
+                item.setData(Qt.UserRole, mat)  # 実際のマテリアル名を保存
+                self.view.material_list.addItem(item)
+            
+            # Update material count
+            material_count = self.view.material_list.count()
+            self.view.material_count_label.setText(f"マテリアル数: {material_count}")
+            
+            # Show placeholder if no materials
+            if material_count == 0:
+                self.view._show_placeholder()
+            
+            logger.info(f"Loaded {material_count} MMD materials for model: {current_model_root}")
+            
+        except Exception as e:
+            logger.error(f"Failed to load materials: {e}", exc_info=True)
             self.view._set_details_enabled(False)
-            return
-
-        shading_groups = cmds.listConnections(shapes, type='shadingEngine')
-        if not shading_groups:
-            self.view._set_details_enabled(False)
-            return
-
-        # Get unique shading groups
-        shading_groups = list(set(shading_groups))
-
-        for sg in shading_groups:
-            materials = cmds.ls(cmds.listConnections(sg), materials=True)
-            for mat in materials:
-                self.view.material_list.addItem(mat)
-        
-        logger.info(f"Loaded {self.view.material_list.count()} materials for model: {current_model_root}")
+            self.view.material_count_label.setText("マテリアル数: 0")
+            self.view._show_placeholder()
+            self.app_state.emit_status(f"マテリアルの読み込みに失敗しました: {str(e)}")
 
     def on_material_selected(self, current, previous):
         if not current:
             self.view._set_details_enabled(False)
             return
+        
+        # プレースホルダーアイテムの場合は何もしない
+        if current.text().startswith("--"):
+            return
             
-        material_name = current.text()
+        # 未保存の変更がある場合は警告
+        if self.has_unsaved_changes and previous:
+            from ..qt_compat import QMessageBox
+            reply = QMessageBox.question(
+                self.view, 
+                "未保存の変更",
+                "変更が保存されていません。別のマテリアルを選択しますか？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.No:
+                # 前の選択に戻す
+                self.view.material_list.blockSignals(True)
+                self.view.material_list.setCurrentItem(previous)
+                self.view.material_list.blockSignals(False)
+                return
+        
+        # 実際のマテリアル名を取得（UserRoleに保存されている）
+        material_name = current.data(Qt.UserRole)
+        if not material_name:
+            # 互換性のため、データがない場合はテキストを使用
+            material_name = current.text()
+        
         logger.info(f"Selected material: {material_name}")
         
         self.current_material = material_name
+        self.has_unsaved_changes = False
         self.view._set_details_enabled(True)
         self.load_material_properties(material_name)
     
@@ -89,15 +193,32 @@ class MaterialPresenter:
             # Store original data for reset
             self.material_data = {}
             
+            # Japanese name
+            jp_name = self._get_material_japanese_name(material_name)
+            self.view.material_jp_name_edit.setText(jp_name if jp_name else "")
+            
             # Material name
             self.view.material_name_edit.setText(material_name)
             
             # Get basic colors
-            diffuse_color = cmds.getAttr(f"{material_name}.color")[0]
+            # Check shader type
+            shader_type = cmds.nodeType(material_name)
+            
+            # Get diffuse color based on shader type
+            if shader_type == "standardSurface":
+                diffuse_color = cmds.getAttr(f"{material_name}.baseColor")[0]
+            elif cmds.attributeQuery("color", node=material_name, exists=True):
+                diffuse_color = cmds.getAttr(f"{material_name}.color")[0]
+            else:
+                diffuse_color = (0.5, 0.5, 0.5)
             self.material_data["diffuse"] = diffuse_color
             self._update_color_widget(self.view.diffuse_color_widget, diffuse_color)
             
-            specular_color = cmds.getAttr(f"{material_name}.specularColor")[0]
+            # Get specular color
+            if cmds.attributeQuery("specularColor", node=material_name, exists=True):
+                specular_color = cmds.getAttr(f"{material_name}.specularColor")[0]
+            else:
+                specular_color = (0.5, 0.5, 0.5)
             self.material_data["specular"] = specular_color
             self._update_color_widget(self.view.specular_color_widget, specular_color)
             
@@ -109,22 +230,46 @@ class MaterialPresenter:
             self.material_data["ambient"] = ambient_color
             self._update_color_widget(self.view.ambient_color_widget, ambient_color)
             
-            # Get specular power
-            if cmds.attributeQuery("cosinePower", node=material_name, exists=True):
-                specular_power = cmds.getAttr(f"{material_name}.cosinePower")
+            # Get specular coefficient (MMD style)
+            if cmds.attributeQuery("mmd_specular_coefficient", node=material_name, exists=True):
+                specular_coefficient = cmds.getAttr(f"{material_name}.mmd_specular_coefficient")
+            elif cmds.attributeQuery("specular", node=material_name, exists=True):
+                # StandardSurfaceの場合、specular値を係数に変換
+                specular_weight = cmds.getAttr(f"{material_name}.specular")
+                specular_coefficient = specular_weight * 100.0
             else:
-                specular_power = 5.0
-            self.material_data["specular_power"] = specular_power
-            self.view.specular_power_spin.setValue(specular_power)
+                specular_coefficient = 5.0
+            self.material_data["specular_coefficient"] = specular_coefficient
+            self.view.specular_coefficient_spin.setValue(specular_coefficient)
             
-            # Get transparency
-            transparency = cmds.getAttr(f"{material_name}.transparency")[0]
-            alpha = 1.0 - transparency[0]  # Maya uses transparency, MMD uses opacity
-            self.material_data["alpha"] = alpha
-            self.view.alpha_spin.setValue(alpha)
+            # Get transparency (PMX style)
+            if cmds.attributeQuery("opacity", node=material_name, exists=True):
+                # StandardSurfaceの場合
+                opacity = cmds.getAttr(f"{material_name}.opacity")[0]
+                transparency = 1.0 - opacity[0]  # Convert opacity to transparency
+            elif cmds.attributeQuery("transparency", node=material_name, exists=True):
+                transparency_val = cmds.getAttr(f"{material_name}.transparency")[0]
+                transparency = transparency_val[0]
+            else:
+                transparency = 0.0
+            self.material_data["transparency"] = transparency
+            self.view.transparency_spin.setValue(transparency)
             
             # Get texture paths
-            file_node = cmds.listConnections(f"{material_name}.color", type="file")
+            # Check which attribute to look for connections
+            texture_attrs = []
+            if shader_type == "standardSurface":
+                texture_attrs.append(f"{material_name}.baseColor")
+            if cmds.attributeQuery("color", node=material_name, exists=True):
+                texture_attrs.append(f"{material_name}.color")
+                
+            file_node = None
+            for attr in texture_attrs:
+                connections = cmds.listConnections(attr, type="file")
+                if connections:
+                    file_node = connections
+                    break
+                    
             if file_node:
                 texture_path = cmds.getAttr(f"{file_node[0]}.fileTextureName")
                 self.material_data["texture"] = texture_path
@@ -142,22 +287,22 @@ class MaterialPresenter:
     def _load_mmd_attributes(self, material_name):
         """Load MMD-specific attributes from material"""
         # Sphere map
-        sphere_path = self._get_attr_safe(material_name, "mmdSpherePath", "")
+        sphere_path = self._get_attr_safe(material_name, "mmd_sphere_path", "")
         self.material_data["sphere_map"] = sphere_path
         self.view.sphere_map_path_edit.setText(sphere_path)
         
         # Sphere mode
-        sphere_mode = self._get_attr_safe(material_name, "mmdSphereMode", 0)
+        sphere_mode = self._get_attr_safe(material_name, "mmd_sphere_mode", 0)
         self.material_data["sphere_mode"] = sphere_mode
         self.view.sphere_mode_combo.setCurrentIndex(sphere_mode)
         
         # Toon texture
-        toon_index = self._get_attr_safe(material_name, "mmdToonIndex", 0)
+        toon_index = self._get_attr_safe(material_name, "mmd_toon_index", 0)
         self.material_data["toon_index"] = toon_index
         self.view.toon_texture_combo.setCurrentIndex(toon_index)
         
         # Draw flags
-        draw_flags = self._get_attr_safe(material_name, "mmdDrawFlags", 0x1F)
+        draw_flags = self._get_attr_safe(material_name, "mmd_draw_flags", 0x1F)
         self.material_data["draw_flags"] = draw_flags
         
         self.view.both_face_check.setChecked(bool(draw_flags & 0x01))
@@ -170,13 +315,13 @@ class MaterialPresenter:
         self.view.line_draw_check.setChecked(bool(draw_flags & 0x80))
         
         # Edge properties
-        edge_color = self._get_attr_safe(material_name, "mmdEdgeColor", (0.0, 0.0, 0.0, 1.0))
+        edge_color = self._get_attr_safe(material_name, "mmd_edge_color", (0.0, 0.0, 0.0, 1.0))
         if len(edge_color) == 4:
             edge_color = edge_color[:3]  # Remove alpha
         self.material_data["edge_color"] = edge_color
         self._update_color_widget(self.view.edge_color_widget, edge_color)
         
-        edge_size = self._get_attr_safe(material_name, "mmdEdgeSize", 1.0)
+        edge_size = self._get_attr_safe(material_name, "mmd_edge_size", 1.0)
         self.material_data["edge_size"] = edge_size
         self.view.edge_size_spin.setValue(edge_size)
     
@@ -222,6 +367,7 @@ class MaterialPresenter:
             self._update_color_widget(widget, new_color)
             # Store in temp data (not applied yet)
             self.material_data[color_type] = new_color
+            self.has_unsaved_changes = True
     
     def browse_file(self, file_type):
         """Open file browser dialog"""
@@ -253,6 +399,7 @@ class MaterialPresenter:
         if file_path:
             line_edit.setText(file_path)
             self.material_data[f"{file_type}_path"] = file_path
+            self.has_unsaved_changes = True
     
     def apply_changes(self):
         """Apply material changes to Maya material"""
@@ -262,19 +409,36 @@ class MaterialPresenter:
         try:
             # Apply basic colors
             if "diffuse" in self.material_data:
-                cmds.setAttr(f"{self.current_material}.color", *self.material_data["diffuse"], type="double3")
+                shader_type = cmds.nodeType(self.current_material)
+                if shader_type == "standardSurface":
+                    cmds.setAttr(f"{self.current_material}.baseColor", *self.material_data["diffuse"], type="double3")
+                elif cmds.attributeQuery("color", node=self.current_material, exists=True):
+                    cmds.setAttr(f"{self.current_material}.color", *self.material_data["diffuse"], type="double3")
             
             if "specular" in self.material_data:
                 cmds.setAttr(f"{self.current_material}.specularColor", *self.material_data["specular"], type="double3")
             
             # Apply transparency
-            alpha = self.view.alpha_spin.value()
-            transparency = 1.0 - alpha
-            cmds.setAttr(f"{self.current_material}.transparency", transparency, transparency, transparency, type="double3")
+            transparency = self.view.transparency_spin.value()
+            # StandardSurfaceの場合はopacityに変換
+            if cmds.nodeType(self.current_material) == "standardSurface":
+                opacity = 1.0 - transparency
+                cmds.setAttr(f"{self.current_material}.opacity", opacity, opacity, opacity, type="double3")
+            else:
+                # その他のシェーダーの場合
+                cmds.setAttr(f"{self.current_material}.transparency", transparency, transparency, transparency, type="double3")
             
-            # Apply specular power
-            if cmds.attributeQuery("cosinePower", node=self.current_material, exists=True):
-                cmds.setAttr(f"{self.current_material}.cosinePower", self.view.specular_power_spin.value())
+            # Apply specular coefficient
+            specular_coefficient = self.view.specular_coefficient_spin.value()
+            # MMD係数として保存
+            if not cmds.attributeQuery("mmd_specular_coefficient", node=self.current_material, exists=True):
+                cmds.addAttr(self.current_material, longName="mmd_specular_coefficient", attributeType="double", defaultValue=5.0)
+            cmds.setAttr(f"{self.current_material}.mmd_specular_coefficient", specular_coefficient)
+            
+            # StandardSurfaceの場合はspecularに変換
+            if cmds.nodeType(self.current_material) == "standardSurface":
+                specular_weight = min(1.0, specular_coefficient / 100.0)
+                cmds.setAttr(f"{self.current_material}.specular", specular_weight)
             
             # Apply textures
             texture_path = self.view.texture_path_edit.text()
@@ -284,6 +448,13 @@ class MaterialPresenter:
             # Apply MMD-specific attributes
             self._apply_mmd_attributes()
             
+            # Apply sphere map if specified
+            sphere_path = self.view.sphere_map_path_edit.text()
+            sphere_mode = self.view.sphere_mode_combo.currentIndex()
+            if sphere_path and sphere_mode > 0:  # 0は「無効」
+                self._apply_sphere_map(self.current_material, sphere_path, sphere_mode)
+            
+            self.has_unsaved_changes = False
             logger.info(f"材質 '{self.current_material}' の変更を適用しました")
             self.app_state.emit_status(f"材質の変更を適用しました: {self.current_material}")
             
@@ -293,15 +464,23 @@ class MaterialPresenter:
     
     def _apply_texture(self, material, texture_path):
         """Apply texture to material"""
+        shader_type = cmds.nodeType(material)
+        
+        # Determine which attribute to connect to
+        if shader_type == "standardSurface":
+            color_attr = f"{material}.baseColor"
+        else:
+            color_attr = f"{material}.color"
+        
         # Check if file node already connected
-        file_nodes = cmds.listConnections(f"{material}.color", type="file")
+        file_nodes = cmds.listConnections(color_attr, type="file")
         
         if file_nodes:
             file_node = file_nodes[0]
         else:
             # Create new file node
             file_node = cmds.shadingNode("file", asTexture=True, name=f"{material}_texture")
-            cmds.connectAttr(f"{file_node}.outColor", f"{material}.color", force=True)
+            cmds.connectAttr(f"{file_node}.outColor", color_attr, force=True)
         
         cmds.setAttr(f"{file_node}.fileTextureName", texture_path, type="string")
     
@@ -312,13 +491,13 @@ class MaterialPresenter:
         
         # Sphere map path
         sphere_path = self.view.sphere_map_path_edit.text()
-        cmds.setAttr(f"{self.current_material}.mmdSpherePath", sphere_path, type="string")
+        cmds.setAttr(f"{self.current_material}.mmd_sphere_path", sphere_path, type="string")
         
         # Sphere mode
-        cmds.setAttr(f"{self.current_material}.mmdSphereMode", self.view.sphere_mode_combo.currentIndex())
+        cmds.setAttr(f"{self.current_material}.mmd_sphere_mode", self.view.sphere_mode_combo.currentIndex())
         
         # Toon index
-        cmds.setAttr(f"{self.current_material}.mmdToonIndex", self.view.toon_texture_combo.currentIndex())
+        cmds.setAttr(f"{self.current_material}.mmd_toon_index", self.view.toon_texture_combo.currentIndex())
         
         # Draw flags
         draw_flags = 0
@@ -331,25 +510,26 @@ class MaterialPresenter:
         if self.view.point_draw_check.isChecked(): draw_flags |= 0x40
         if self.view.line_draw_check.isChecked(): draw_flags |= 0x80
         
-        cmds.setAttr(f"{self.current_material}.mmdDrawFlags", draw_flags)
+        cmds.setAttr(f"{self.current_material}.mmd_draw_flags", draw_flags)
         
         # Edge properties
         if "edge_color" in self.material_data:
             edge_color = self.material_data["edge_color"]
-            cmds.setAttr(f"{self.current_material}.mmdEdgeColor", 
+            cmds.setAttr(f"{self.current_material}.mmd_edge_color", 
                         edge_color[0], edge_color[1], edge_color[2], 1.0, type="double4")
         
-        cmds.setAttr(f"{self.current_material}.mmdEdgeSize", self.view.edge_size_spin.value())
+        cmds.setAttr(f"{self.current_material}.mmd_edge_size", self.view.edge_size_spin.value())
     
     def _ensure_mmd_attributes(self, material):
         """Ensure MMD attributes exist on material"""
         attrs = [
-            ("mmdSpherePath", "string", ""),
-            ("mmdSphereMode", "long", 0),
-            ("mmdToonIndex", "long", 0),
-            ("mmdDrawFlags", "long", 0x1F),
-            ("mmdEdgeColor", "double4", None),
-            ("mmdEdgeSize", "double", 1.0),
+            ("mmd_sphere_path", "string", ""),
+            ("mmd_sphere_mode", "long", 0),
+            ("mmd_toon_index", "long", 0),
+            ("mmd_draw_flags", "long", 0x1F),
+            ("mmd_edge_color", "double4", None),
+            ("mmd_edge_size", "double", 1.0),
+            ("mmd_specular_coefficient", "double", 5.0),
             ("ambientColor", "double3", None)
         ]
         
@@ -380,4 +560,75 @@ class MaterialPresenter:
             
         # Reload original properties
         self.load_material_properties(self.current_material)
+        self.has_unsaved_changes = False
         logger.info(f"材質 '{self.current_material}' の変更をリセットしました")
+        self.app_state.emit_status(f"材質の変更をリセットしました: {self.current_material}")
+    
+    def _on_value_changed(self, value=None):
+        """値が変更されたときの処理"""
+        if self.current_material:
+            self.has_unsaved_changes = True
+    
+    def _get_material_japanese_name(self, material_name):
+        """マテリアルの日本語名を取得"""
+        # カスタムアトリビュート mmd_material_name をチェック
+        if cmds.attributeQuery("mmd_material_name", node=material_name, exists=True):
+            jp_name = cmds.getAttr(f"{material_name}.mmd_material_name")
+            if jp_name:
+                return jp_name
+        
+        return None
+    
+    def _apply_sphere_map(self, material, sphere_path, sphere_mode):
+        """スフィアマップをマテリアルに適用"""
+        try:
+            import os
+            if not os.path.exists(sphere_path):
+                logger.warning(f"Sphere map file not found: {sphere_path}")
+                return
+            
+            # スフィアマップ用のファイルノードを作成または取得
+            sphere_file_node = None
+            file_nodes = cmds.ls(type="file")
+            for node in file_nodes:
+                if cmds.getAttr(f"{node}.fileTextureName") == sphere_path:
+                    sphere_file_node = node
+                    break
+            
+            if not sphere_file_node:
+                sphere_file_node = cmds.shadingNode("file", asTexture=True, name=f"{material}_sphere")
+                cmds.setAttr(f"{sphere_file_node}.fileTextureName", sphere_path, type="string")
+            
+            # Mayaでスフィアマップを近似的に再現
+            # モード: 1=乗算, 2=加算, 3=サブテクスチャ
+            if sphere_mode == 1:  # 乗算
+                # layeredTextureを使用して乗算合成
+                layered_texture = cmds.shadingNode("layeredTexture", asTexture=True, name=f"{material}_layered")
+                
+                # ベーステクスチャを接続
+                base_file = cmds.listConnections(f"{material}.baseColor", type="file")
+                if base_file:
+                    cmds.connectAttr(f"{base_file[0]}.outColor", f"{layered_texture}.inputs[0].color")
+                    cmds.setAttr(f"{layered_texture}.inputs[0].blendMode", 0)  # None
+                
+                # スフィアマップを接続
+                cmds.connectAttr(f"{sphere_file_node}.outColor", f"{layered_texture}.inputs[1].color")
+                cmds.setAttr(f"{layered_texture}.inputs[1].blendMode", 6)  # Multiply
+                
+                # マテリアルに接続
+                cmds.connectAttr(f"{layered_texture}.outColor", f"{material}.baseColor", force=True)
+                
+            elif sphere_mode == 2:  # 加算
+                # エミッションにスフィアマップを接続して加算効果を近似
+                cmds.connectAttr(f"{sphere_file_node}.outColor", f"{material}.emissionColor", force=True)
+                cmds.setAttr(f"{material}.emission", 0.5)  # エミッション強度
+                
+            elif sphere_mode == 3:  # サブテクスチャ
+                # スペキュラーマップとして使用
+                cmds.connectAttr(f"{sphere_file_node}.outColor", f"{material}.specularColor", force=True)
+            
+            logger.info(f"Applied sphere map to material '{material}' with mode {sphere_mode}")
+            
+        except Exception as e:
+            logger.error(f"Failed to apply sphere map: {e}", exc_info=True)
+            self.app_state.emit_status(f"スフィアマップの適用に失敗しました: {str(e)}")

@@ -25,6 +25,18 @@ ATTR_MMD_MODEL_NAME_EN = "mmd_model_name_en"  # モデル名（英語）を保�
 ATTR_MMD_COMMENT = "mmd_comment"              # コメント（日本語）を保存するアトリビュート
 ATTR_MMD_COMMENT_EN = "mmd_comment_en"        # コメント（英語）を保存するアトリビュート
 
+# マテリアルカスタムアトリビュート名
+ATTR_MMD_MATERIAL_NAME = "mmd_material_name"        # マテリアル名（日本語）を保存するアトリビュート
+ATTR_MMD_MATERIAL_NAME_EN = "mmd_material_name_en"  # マテリアル名（英語）を保存するアトリビュート
+ATTR_MMD_SPHERE_PATH = "mmd_sphere_path"            # スフィアマップのパスを保存するアトリビュート
+ATTR_MMD_SPHERE_MODE = "mmd_sphere_mode"            # スフィアマップモードを保存するアトリビュート
+ATTR_MMD_TOON_INDEX = "mmd_toon_index"              # トゥーンテクスチャインデックスを保存するアトリビュート
+ATTR_MMD_MEMO = "mmd_memo"                          # メモを保存するアトリビュート
+ATTR_MMD_EDGE_FLAG = "mmd_edge_flag"                # エッジフラグを保存するアトリビュート（PMDのみ）
+ATTR_MMD_DRAW_FLAGS = "mmd_draw_flags"              # 描画フラグを保存するアトリビュート（PMXのみ）
+ATTR_MMD_EDGE_COLOR = "mmd_edge_color"              # エッジカラーを保存するアトリビュート
+ATTR_MMD_EDGE_SIZE = "mmd_edge_size"                # エッジサイズを保官するアトリビュート
+
 # デフォルト値
 DEFAULT_SCALE_FACTOR = 1.0      # インポート時のデフォルトスケール係数
 DEFAULT_IMPORT_PHYSICS = True   # 物理演算をインポートするかのデフォルト設定

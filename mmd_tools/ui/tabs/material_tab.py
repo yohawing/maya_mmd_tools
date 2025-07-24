@@ -15,6 +15,7 @@ from ..qt_compat import (
     QGridLayout,
     QScrollArea,
     QListWidgetItem,
+    Qt,
 )
 from ..base_tab import BaseTab
 
@@ -32,6 +33,11 @@ class MaterialTab(BaseTab):
         
         material_list_group = QGroupBox("マテリアル一覧")
         material_list_layout = QVBoxLayout()
+        
+        # Material count label
+        self.material_count_label = QLabel("マテリアル数: 0")
+        material_list_layout.addWidget(self.material_count_label)
+        
         self.material_list = QListWidget()
         material_list_layout.addWidget(self.material_list)
         
@@ -59,47 +65,54 @@ class MaterialTab(BaseTab):
         basic_group = QGroupBox("基本プロパティ")
         basic_layout = QGridLayout()
         
+        # Japanese Name
+        basic_layout.addWidget(QLabel("日本語名:"), 0, 0)
+        self.material_jp_name_edit = QLineEdit()
+        self.material_jp_name_edit.setReadOnly(True)
+        basic_layout.addWidget(self.material_jp_name_edit, 0, 1, 1, 2)
+        
         # Material Name
-        basic_layout.addWidget(QLabel("マテリアル名:"), 0, 0)
+        basic_layout.addWidget(QLabel("マテリアル名:"), 1, 0)
         self.material_name_edit = QLineEdit()
         self.material_name_edit.setReadOnly(True)
-        basic_layout.addWidget(self.material_name_edit, 0, 1, 1, 2)
+        basic_layout.addWidget(self.material_name_edit, 1, 1, 1, 2)
         
         # Diffuse Color
-        basic_layout.addWidget(QLabel("Diffuse色:"), 1, 0)
+        basic_layout.addWidget(QLabel("Diffuse色:"), 2, 0)
         self.diffuse_color_widget = self._create_color_widget()
-        basic_layout.addWidget(self.diffuse_color_widget, 1, 1)
+        basic_layout.addWidget(self.diffuse_color_widget, 2, 1)
         self.diffuse_color_btn = QPushButton("選択")
-        basic_layout.addWidget(self.diffuse_color_btn, 1, 2)
+        basic_layout.addWidget(self.diffuse_color_btn, 2, 2)
+        
+        # Transparency (Alpha)
+        basic_layout.addWidget(QLabel("透明度:"), 3, 0)
+        self.transparency_spin = QDoubleSpinBox()
+        self.transparency_spin.setRange(0.0, 1.0)
+        self.transparency_spin.setSingleStep(0.1)
+        self.transparency_spin.setDecimals(2)
+        basic_layout.addWidget(self.transparency_spin, 3, 1, 1, 2)
         
         # Specular Color
-        basic_layout.addWidget(QLabel("Specular色:"), 2, 0)
+        basic_layout.addWidget(QLabel("Specular色:"), 4, 0)
         self.specular_color_widget = self._create_color_widget()
-        basic_layout.addWidget(self.specular_color_widget, 2, 1)
+        basic_layout.addWidget(self.specular_color_widget, 4, 1)
         self.specular_color_btn = QPushButton("選択")
-        basic_layout.addWidget(self.specular_color_btn, 2, 2)
+        basic_layout.addWidget(self.specular_color_btn, 4, 2)
+        
+        # Specular Coefficient
+        basic_layout.addWidget(QLabel("スペキュラ係数:"), 5, 0)
+        self.specular_coefficient_spin = QDoubleSpinBox()
+        self.specular_coefficient_spin.setRange(0.0, 100.0)
+        self.specular_coefficient_spin.setSingleStep(1.0)
+        self.specular_coefficient_spin.setDecimals(1)
+        basic_layout.addWidget(self.specular_coefficient_spin, 5, 1, 1, 2)
         
         # Ambient Color
-        basic_layout.addWidget(QLabel("Ambient色:"), 3, 0)
+        basic_layout.addWidget(QLabel("Ambient色:"), 6, 0)
         self.ambient_color_widget = self._create_color_widget()
-        basic_layout.addWidget(self.ambient_color_widget, 3, 1)
+        basic_layout.addWidget(self.ambient_color_widget, 6, 1)
         self.ambient_color_btn = QPushButton("選択")
-        basic_layout.addWidget(self.ambient_color_btn, 3, 2)
-        
-        # Specular Power
-        basic_layout.addWidget(QLabel("Specular係数:"), 4, 0)
-        self.specular_power_spin = QDoubleSpinBox()
-        self.specular_power_spin.setRange(0.0, 100.0)
-        self.specular_power_spin.setDecimals(1)
-        basic_layout.addWidget(self.specular_power_spin, 4, 1, 1, 2)
-        
-        # Transparency
-        basic_layout.addWidget(QLabel("透明度:"), 5, 0)
-        self.alpha_spin = QDoubleSpinBox()
-        self.alpha_spin.setRange(0.0, 1.0)
-        self.alpha_spin.setSingleStep(0.1)
-        self.alpha_spin.setDecimals(2)
-        basic_layout.addWidget(self.alpha_spin, 5, 1, 1, 2)
+        basic_layout.addWidget(self.ambient_color_btn, 6, 2)
         
         basic_group.setLayout(basic_layout)
         details_layout.addWidget(basic_group)
@@ -203,6 +216,7 @@ class MaterialTab(BaseTab):
         
         # Set initial state
         self._set_details_enabled(False)
+        self._show_placeholder()
     
     def _create_color_widget(self):
         """Create a color display widget"""
@@ -214,12 +228,13 @@ class MaterialTab(BaseTab):
     def _set_details_enabled(self, enabled):
         """Enable/disable all detail widgets"""
         widgets = [
+            self.material_jp_name_edit,
             self.material_name_edit,
             self.diffuse_color_btn,
+            self.transparency_spin,
             self.specular_color_btn,
+            self.specular_coefficient_spin,
             self.ambient_color_btn,
-            self.specular_power_spin,
-            self.alpha_spin,
             self.texture_path_edit,
             self.texture_browse_btn,
             self.sphere_map_path_edit,
@@ -241,3 +256,10 @@ class MaterialTab(BaseTab):
         ]
         for widget in widgets:
             widget.setEnabled(enabled)
+    
+    def _show_placeholder(self):
+        """マテリアルリストが空の場合のプレースホルダーを表示"""
+        if self.material_list.count() == 0:
+            placeholder_item = QListWidgetItem("-- マテリアルがありません --")
+            placeholder_item.setFlags(placeholder_item.flags() & ~Qt.ItemIsSelectable)
+            self.material_list.addItem(placeholder_item)
