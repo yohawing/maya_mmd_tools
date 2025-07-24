@@ -5,9 +5,10 @@ from mmd_tools.ui.qt_compat import QApplication
 
 from mmd_tools.ui.main_window import MainWindow
 
-class TestMainWindow(unittest.TestCase):
+class TestUIComponents(unittest.TestCase):
     """
-    MainWindowクラスの単体テスト
+    MMD Tools UIコンポーネント全体の単体テスト
+    メインウィンドウ、タブ、プレゼンターなどUI全体の構成要素をテストする
     """
 
     @classmethod
