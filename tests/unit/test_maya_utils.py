@@ -246,15 +246,18 @@ class TestMayaUtils(MayaTestBase):
         cmds.addAttr(root, longName="mmd_model_name_jp", dataType="string")
 
         skeleton_group = cmds.group(empty=True, name="Skeleton", parent=root)
-        joint = cmds.joint(name="test_joint", parent=skeleton_group)
+        # skeleton_groupを選択してからジョイントを作成
+        cmds.select(skeleton_group)
+        joint = cmds.joint(name="test_joint")
 
         # ジョイントから親のMMDルートを取得
         parent_root = maya_utils.get_parent_mmd_root(joint)
-        self.assertEqual(parent_root, root)
+        # 完全パスの場合も考慮して比較
+        self.assertTrue(parent_root == root or parent_root == f"|{root}")
 
         # ルートノード自体を渡した場合
         parent_root2 = maya_utils.get_parent_mmd_root(root)
-        self.assertEqual(parent_root2, root)
+        self.assertTrue(parent_root2 == root or parent_root2 == f"|{root}")
 
         # MMDモデルではないオブジェクト
         cube = cmds.polyCube(name="test_cube")[0]
