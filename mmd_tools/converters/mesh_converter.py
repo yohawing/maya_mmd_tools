@@ -8,12 +8,12 @@ from mmd_tools.core import maya_utils
 from mmd_tools.core.pmd_parser import PmdParser
 from mmd_tools.core.pmx_parser import PmxParser
 from mmd_tools.core.constants import (
-    GEOMETRY_GROUP, 
-    ATTR_MMD_FILE_TYPE, 
-    ATTR_MMD_MODEL_NAME, 
-    ATTR_MMD_MODEL_NAME_EN, 
-    ATTR_MMD_COMMENT, 
-    ATTR_MMD_COMMENT_EN, 
+    GEOMETRY_GROUP,
+    ATTR_MMD_FILE_TYPE,
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_COMMENT,
+    ATTR_MMD_COMMENT_EN,
     ATTR_MMD_FILE_VERSION,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -63,7 +63,7 @@ class MeshConverter:
 
         # ジオメトリグループを作成
         geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
-        
+
         # カスタムアトリビュートをルートグループに追加
         maya_utils.set_custom_attributes(
             root_group,
@@ -117,7 +117,7 @@ class MeshConverter:
 
         # ジオメトリグループを作成
         geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
-        
+
         # カスタムアトリビュートをルートグループに追加
         maya_utils.set_custom_attributes(
             root_group,
@@ -137,7 +137,13 @@ class MeshConverter:
         )
 
         created_mesh = self._create_unified_mesh(
-            model_name, all_vertices, all_faces, all_materials, None, geo_group, is_pmd=True
+            model_name,
+            all_vertices,
+            all_faces,
+            all_materials,
+            None,
+            geo_group,
+            is_pmd=True,
         )
 
         if separate_by_material:
@@ -259,7 +265,9 @@ class MeshConverter:
 
         return created_mesh
 
-    def _create_material(self, material, texture_path=None, all_textures=None, is_pmd=False):
+    def _create_material(
+        self, material, texture_path=None, all_textures=None, is_pmd=False
+    ):
         """
         MMDマテリアルデータからMayaマテリアルを作成します。
 
@@ -273,10 +281,55 @@ class MeshConverter:
             str: 作成されたシェーダーノード名。
         """
         sanitized_name = maya_utils.sanitize_text(material.name)
-        shader = cmds.shadingNode("standardSurface", asShader=True, name=sanitized_name)
-        
+
+        # create_mmd_shaders設定を確認
+        create_mmd_shaders = settings.get("import.model.create_mmd_shaders")
+
+        # dx11Shaderを試みる
+        shader_created = False
+        if create_mmd_shaders:
+            try:
+                # dx11Shaderを作成
+                shader = cmds.shadingNode(
+                    "dx11Shader", asShader=True, name=sanitized_name
+                )
+                self._setup_dx11_shader(
+                    shader, material, texture_path, all_textures, is_pmd
+                )
+                shader_created = True
+            except RuntimeError as e:
+                # dx11Shaderが作成できなかった場合
+                cmds.warning(
+                    f"Failed to create dx11Shader: {e}. Using standard shader instead."
+                )
+
+        if not shader_created:
+            # 標準のstandardSurfaceを使用
+            shader = cmds.shadingNode(
+                "standardSurface", asShader=True, name=sanitized_name
+            )
+            self._setup_standard_shader(
+                shader, material, texture_path, all_textures, is_pmd
+            )
+
+        return shader
+
+    def _setup_standard_shader(
+        self, shader, material, texture_path, all_textures, is_pmd
+    ):
+        """標準のstandardSurfaceシェーダーを設定"""
+
+        # マテリアル名をサニタイズ（テクスチャノード名に使用）
+        sanitized_name = maya_utils.sanitize_text(material.name)
+
         # 基本色設定（Diffuse）
-        cmds.setAttr(shader + ".baseColor", material.diffuse[0], material.diffuse[1], material.diffuse[2], type="double3")
+        cmds.setAttr(
+            shader + ".baseColor",
+            material.diffuse[0],
+            material.diffuse[1],
+            material.diffuse[2],
+            type="double3",
+        )
         # AlphaをOpacityに変換（StandardSurfaceではopacityを使用）
         cmds.setAttr(
             shader + ".opacity",
@@ -285,16 +338,22 @@ class MeshConverter:
             material.diffuse[3],
             type="double3",
         )
-        
+
         # スペキュラー設定（MMDのspecularをStandardSurfaceにマッピング）
-        if hasattr(material, 'specular') and hasattr(material, 'specular_coefficient'):
+        if hasattr(material, "specular") and hasattr(material, "specular_coefficient"):
             # スペキュラー色
-            cmds.setAttr(shader + ".specularColor", material.specular[0], material.specular[1], material.specular[2], type="double3")
-            
+            cmds.setAttr(
+                shader + ".specularColor",
+                material.specular[0],
+                material.specular[1],
+                material.specular[2],
+                type="double3",
+            )
+
             # スペキュラー係数（MMDの0-100をStandardSurfaceの0-1にマッピング）
             specular_weight = min(1.0, material.specular_coefficient / 100.0)
             cmds.setAttr(shader + ".specular", specular_weight)
-            
+
             # スペキュラーの粗さ（係数が高いほど粗さを下げる）
             roughness = max(0.1, 1.0 - (material.specular_coefficient / 100.0))
             cmds.setAttr(shader + ".specularRoughness", roughness)
@@ -302,15 +361,23 @@ class MeshConverter:
             # デフォルト値
             cmds.setAttr(shader + ".specular", 0.5)
             cmds.setAttr(shader + ".specularRoughness", 0.5)
-        
+
         # アンビエント設定（StandardSurfaceでは間接光の強度として使用）
-        if hasattr(material, 'ambient'):
+        if hasattr(material, "ambient"):
             # アンビエント色の平均値を間接光の強度として使用
-            ambient_intensity = (material.ambient[0] + material.ambient[1] + material.ambient[2]) / 3.0
+            ambient_intensity = (
+                material.ambient[0] + material.ambient[1] + material.ambient[2]
+            ) / 3.0
             # エミッションとして微弱に設定（アンビエント光の表現）
             cmds.setAttr(shader + ".emission", ambient_intensity * 0.1)
-            cmds.setAttr(shader + ".emissionColor", material.ambient[0], material.ambient[1], material.ambient[2], type="double3")
-        
+            cmds.setAttr(
+                shader + ".emissionColor",
+                material.ambient[0],
+                material.ambient[1],
+                material.ambient[2],
+                type="double3",
+            )
+
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
         cmds.setAttr(shader + ".metalness", 0.0)
 
@@ -318,40 +385,71 @@ class MeshConverter:
         custom_attrs = {
             ATTR_MMD_MATERIAL_NAME: material.name,
         }
-        
+
         # PMXマテリアルの場合の追加属性
-        if hasattr(material, 'name_english') and material.name_english:
+        if hasattr(material, "name_english") and material.name_english:
             custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = material.name_english
-        if hasattr(material, 'sphere_texture_index') and material.sphere_texture_index >= 0 and all_textures:
-            custom_attrs[ATTR_MMD_SPHERE_PATH] = all_textures[material.sphere_texture_index]
-        if hasattr(material, 'sphere_mode'):
+        if (
+            hasattr(material, "sphere_texture_index")
+            and material.sphere_texture_index >= 0
+            and all_textures
+        ):
+            custom_attrs[ATTR_MMD_SPHERE_PATH] = all_textures[
+                material.sphere_texture_index
+            ]
+        if hasattr(material, "sphere_mode"):
             custom_attrs[ATTR_MMD_SPHERE_MODE] = material.sphere_mode
-        if hasattr(material, 'toon_texture_index'):
+        if hasattr(material, "toon_texture_index"):
             custom_attrs[ATTR_MMD_TOON_INDEX] = material.toon_texture_index
-        if hasattr(material, 'memo') and material.memo:
+        if hasattr(material, "memo") and material.memo:
             custom_attrs[ATTR_MMD_MEMO] = material.memo
-        if hasattr(material, 'draw_flag'):
+        if hasattr(material, "draw_flag"):
             custom_attrs[ATTR_MMD_DRAW_FLAGS] = material.draw_flag
-            
+
         # エッジ関連の属性
-        if hasattr(material, 'edge_color'):
+        if hasattr(material, "edge_color"):
             # エッジカラーをカスタム属性として保存
             if not cmds.attributeQuery("mmd_edge_color", node=shader, exists=True):
                 cmds.addAttr(shader, longName="mmd_edge_color", attributeType="double4")
-                cmds.addAttr(shader, longName="mmd_edge_colorX", attributeType="double", parent="mmd_edge_color")
-                cmds.addAttr(shader, longName="mmd_edge_colorY", attributeType="double", parent="mmd_edge_color")
-                cmds.addAttr(shader, longName="mmd_edge_colorZ", attributeType="double", parent="mmd_edge_color")
-                cmds.addAttr(shader, longName="mmd_edge_colorW", attributeType="double", parent="mmd_edge_color")
-            cmds.setAttr(f"{shader}.mmd_edge_color", 
-                        material.edge_color[0], material.edge_color[1], 
-                        material.edge_color[2], material.edge_color[3], type="double4")
-        if hasattr(material, 'edge_size'):
+                cmds.addAttr(
+                    shader,
+                    longName="mmd_edge_colorX",
+                    attributeType="double",
+                    parent="mmd_edge_color",
+                )
+                cmds.addAttr(
+                    shader,
+                    longName="mmd_edge_colorY",
+                    attributeType="double",
+                    parent="mmd_edge_color",
+                )
+                cmds.addAttr(
+                    shader,
+                    longName="mmd_edge_colorZ",
+                    attributeType="double",
+                    parent="mmd_edge_color",
+                )
+                cmds.addAttr(
+                    shader,
+                    longName="mmd_edge_colorW",
+                    attributeType="double",
+                    parent="mmd_edge_color",
+                )
+            cmds.setAttr(
+                f"{shader}.mmd_edge_color",
+                material.edge_color[0],
+                material.edge_color[1],
+                material.edge_color[2],
+                material.edge_color[3],
+                type="double4",
+            )
+        if hasattr(material, "edge_size"):
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
-            
+
         # PMDマテリアルの場合の追加属性
-        if hasattr(material, 'edge_flag'):
+        if hasattr(material, "edge_flag"):
             custom_attrs[ATTR_MMD_EDGE_FLAG] = material.edge_flag
-            
+
         maya_utils.set_custom_attributes(shader, custom_attrs)
 
         # テクスチャの設定
@@ -377,4 +475,151 @@ class MeshConverter:
             else:
                 cmds.warning(f"Texture file not found: {full_texture_path}")
 
-        return shader
+    def _setup_dx11_shader(self, shader, material, texture_path, all_textures, is_pmd):
+        """dx11Shaderを設定"""
+
+        # マテリアル名をサニタイズ（テクスチャノード名に使用）
+        sanitized_name = maya_utils.sanitize_text(material.name)
+
+        # シェーダーファイルのパスを設定
+        shader_fx_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "shaders", "MMDShader.fx"
+        )
+        shader_fx_path = os.path.normpath(shader_fx_path)
+
+        # dx11Shaderにエフェクトファイルを設定
+        cmds.setAttr(shader + ".shader", shader_fx_path, type="string")
+
+        # テクニックを設定
+        cmds.setAttr(shader + ".technique", "MMDTechnique", type="string")
+
+        # 基本色設定（Diffuse）
+        try:
+            cmds.setAttr(
+                shader + ".DiffuseColorRGB",
+                material.diffuse[0],
+                material.diffuse[1],
+                material.diffuse[2],
+                material.diffuse[3],
+                type="double4",
+            )
+        except:
+            # アトリビュートが見つからない場合は作成を試みる
+            pass
+
+        # スペキュラー設定
+        if hasattr(material, "specular"):
+            try:
+                cmds.setAttr(
+                    shader + ".SpecularColor",
+                    material.specular[0],
+                    material.specular[1],
+                    material.specular[2],
+                    type="double3",
+                )
+            except:
+                pass
+
+        if hasattr(material, "specular_coefficient"):
+            try:
+                cmds.setAttr(shader + ".Shininess", material.specular_coefficient)
+            except:
+                pass
+
+        # アンビエント設定
+        if hasattr(material, "ambient"):
+            try:
+                cmds.setAttr(
+                    shader + ".AmbientColor",
+                    material.ambient[0],
+                    material.ambient[1],
+                    material.ambient[2],
+                    type="double3",
+                )
+            except:
+                pass
+
+        # エッジ設定（PMXのみ）
+        if not is_pmd:
+            # エッジ色
+            try:
+                cmds.setAttr(
+                    shader + ".EdgeColorRGB",
+                    material.edge_color[0],
+                    material.edge_color[1],
+                    material.edge_color[2],
+                    # material.edge_color[3],
+                    type="double3",
+                )
+            except:
+                pass
+            # エッジサイズ
+            try:
+                cmds.setAttr(shader + ".EdgeSize", material.edge_size)
+            except:
+                pass
+
+        # スフィアモード設定
+        sphere_mode = getattr(material, "sphere_mode", 0)
+        try:
+            cmds.setAttr(shader + ".SphereMode", int(sphere_mode))
+        except:
+            pass
+
+        # テクスチャ設定
+        if texture_path:
+            full_texture_path = os.path.join(self.texture_dir, texture_path)
+            full_texture_path = os.path.normpath(full_texture_path)
+
+            # ファイルが存在するかチェック
+            if os.path.exists(full_texture_path):
+                # ファイルテクスチャノードを作成
+                file_node = cmds.shadingNode(
+                    "file", asTexture=True, name=shader + "_texture"
+                )
+                # ファイルパスを設定
+                cmds.setAttr(
+                    file_node + ".fileTextureName", full_texture_path, type="string"
+                )
+                # dx11ShaderのMainTextureに接続
+                try:
+                    cmds.connectAttr(
+                        file_node + ".outColor", shader + ".MainTexture", force=True
+                    )
+                except:
+                    cmds.warning(f"Failed to connect texture to dx11Shader")
+            else:
+                cmds.warning(f"Texture file not found: {full_texture_path}")
+
+        # スフィアテクスチャ設定（PMXのみ）
+        if (
+            not is_pmd
+            and hasattr(material, "sphere_texture_index")
+            and material.sphere_texture_index >= 0
+        ):
+            if all_textures and material.sphere_texture_index < len(all_textures):
+                sphere_texture_path = all_textures[material.sphere_texture_index]
+                full_sphere_path = os.path.join(self.texture_dir, sphere_texture_path)
+                full_sphere_path = os.path.normpath(full_sphere_path)
+
+                if os.path.exists(full_sphere_path):
+                    sphere_file_node = cmds.shadingNode(
+                        "file", asTexture=True, name=shader + "_sphere_texture"
+                    )
+                    cmds.setAttr(
+                        sphere_file_node + ".fileTextureName",
+                        full_sphere_path,
+                        type="string",
+                    )
+                    try:
+                        cmds.connectAttr(
+                            sphere_file_node + ".outColor",
+                            shader + ".SphereTexture",
+                            force=True,
+                        )
+                    except:
+                        cmds.warning(f"Failed to connect sphere texture to dx11Shader")
+
+        # トゥーンテクスチャ設定
+        # デフォルトのトゥーンテクスチャパスを設定（将来的に実装）
+        # TODO: トゥーンテクスチャの実装
