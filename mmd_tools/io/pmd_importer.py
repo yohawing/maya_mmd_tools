@@ -18,7 +18,7 @@ from ..core.constants import SCENE_ROOT_SUFFIX
 logger = get_logger("mmd_tools.io.pmd_importer")
 
 
-def import_pmd_file(parser, filepath):
+def import_pmd_file(parser, filepath, scale=1.0):
     """
     PMDファイルをMayaシーンにインポートします。
 
@@ -30,7 +30,7 @@ def import_pmd_file(parser, filepath):
         bool: インポートが成功したかどうか
     """
     logger.info("PMXファイルのインポートを開始: %s", filepath)
-    scale = settings.get("import.general.scale_factor", 1.0)
+    
     logger.debug("スケールファクター: %f", scale)
 
     try:
@@ -38,6 +38,17 @@ def import_pmd_file(parser, filepath):
         model_name = parser.header.get_name()
         root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
         logger.debug("ルートグループ作成: %s", root_group)
+
+        # Add attributes to root node
+        cmds.addAttr(root_group, longName='mmd_model_name_jp', dataType='string')
+        cmds.addAttr(root_group, longName='mmd_model_name_en', dataType='string')
+        cmds.addAttr(root_group, longName='mmd_comment_jp', dataType='string')
+        cmds.addAttr(root_group, longName='mmd_comment_en', dataType='string')
+
+        cmds.setAttr(f"{root_group}.mmd_model_name_jp", parser.header.get_name(), type='string')
+        cmds.setAttr(f"{root_group}.mmd_model_name_en", "", type='string')
+        cmds.setAttr(f"{root_group}.mmd_comment_jp", parser.header.get_comment(), type='string')
+        cmds.setAttr(f"{root_group}.mmd_comment_en", "", type='string')
         
         # メッシュを変換
         logger.info("メッシュを変換中...")
@@ -98,4 +109,4 @@ def import_pmd_file(parser, filepath):
         import traceback
 
         logger.error("エラー詳細: %s", traceback.format_exc())
-        return False
+        return None

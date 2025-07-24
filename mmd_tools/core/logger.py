@@ -10,12 +10,7 @@ import os
 import sys
 from typing import Optional, Dict, Any
 
-from .log_handlers import (
-    MayaScriptEditorHandler,
-    MayaOutputWindowHandler,
-    UTF8FileHandler,
-    MayaDialogHandler,
-)
+
 from .log_formatters import MayaFormatter, CompactFormatter
 from ..settings import settings
 
@@ -81,47 +76,9 @@ class MayaLogger:
             self.LOGGING_CONFIG["formatters"]["compact"]
         )
 
-        # コンソールハンドラー
-        if self.LOGGING_CONFIG["handlers"]["console"]["enabled"]:
-            if is_maya_environment():
-                console_handler = MayaOutputWindowHandler()
-            else:
-                console_handler = logging.StreamHandler(sys.stdout)
-            console_handler.setFormatter(compact_formatter)
-            self._logger.addHandler(console_handler)
+        
 
-        # ファイルハンドラー
-        if self.LOGGING_CONFIG["handlers"]["file"]["enabled"]:
-            log_file_path = settings.get("logging.log_file_path", "logs/mmd_tools.log")
-
-            # ファイルパスが文字列であることを確認
-            if not isinstance(log_file_path, str):
-                log_file_path = "logs/mmd_tools.log"
-
-            # 書き込み可能なログファイルパスを取得
-            log_file_path = self._get_writable_log_path(log_file_path)
-
-            if log_file_path:
-                try:
-                    file_handler = UTF8FileHandler(
-                        log_file_path,
-                        max_bytes=self.LOGGING_CONFIG["file"]["max_size"],
-                        backup_count=self.LOGGING_CONFIG["file"]["backup_count"],
-                    )
-                    file_handler.setFormatter(standard_formatter)
-                    self._logger.addHandler(file_handler)
-                except (OSError, IOError) as e:
-                    # ファイルハンドラーの作成に失敗した場合は警告を出力
-                    print(f"ログファイルの作成に失敗しました: {e}")
-
-        # Maya Script Editorハンドラー
-        if (
-            is_maya_environment()
-            and self.LOGGING_CONFIG["handlers"]["maya_script_editor"]["enabled"]
-        ):
-            maya_handler = MayaScriptEditorHandler()
-            maya_handler.setFormatter(compact_formatter)
-            self._logger.addHandler(maya_handler)
+        
 
         # Maya Dialogハンドラー（ERROR/CRITICALレベル用）
         # if is_maya_environment():
