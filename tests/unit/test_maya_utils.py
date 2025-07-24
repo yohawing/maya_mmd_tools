@@ -105,6 +105,23 @@ class TestMayaUtils(MayaTestBase):
                 attr_value, value.decode("utf-8") if isinstance(value, bytes) else value
             )
 
+        # 既存のアトリビュートを更新できるかテスト
+        update_data = {
+            "mmd_string": "Updated Model Name",
+            "mmd_file_version": 2.1,
+            "mmd_bool": False,
+            "mmd_int": 100,
+        }
+        maya_utils.set_custom_attributes(mesh_name, update_data)
+
+        # 更新された値を確認
+        for key, value in update_data.items():
+            attr_value = cmds.getAttr(mesh_name + "." + key)
+            if isinstance(value, float):
+                self.assertAlmostEqual(attr_value, value, places=5)
+            else:
+                self.assertEqual(attr_value, value)
+
     def test_create_ik_handle(self):
         """IKハンドルを作成できるか"""
         # ジョイントチェーンを作成
@@ -148,6 +165,7 @@ class TestMayaUtils(MayaTestBase):
 
         # 制限が設定されているか確認（度数単位で比較）
         import math
+
         self.assertAlmostEqual(
             cmds.getAttr(f"{joint}.minRotXLimit"), math.degrees(limit_min[0]), places=5
         )
@@ -198,6 +216,73 @@ class TestMayaUtils(MayaTestBase):
         self.assertAlmostEqual(euler[0], 0.0, places=5)
         self.assertAlmostEqual(euler[1], 0.0, places=5)
         self.assertAlmostEqual(euler[2], 0.0, places=5)
+
+    def test_find_all_mmd_models(self):
+        """MMDモデルを検索できるか"""
+        # MMDモデルのルートノードを作成
+        model1 = cmds.group(empty=True, name="Model1_root")
+        cmds.addAttr(model1, longName="mmd_model_name_jp", dataType="string")
+        cmds.setAttr(f"{model1}.mmd_model_name_jp", "テストモデル1", type="string")
+
+        model2 = cmds.group(empty=True, name="Model2_root")
+        cmds.addAttr(model2, longName="mmd_model_name_en", dataType="string")
+        cmds.setAttr(f"{model2}.mmd_model_name_en", "Test Model 2", type="string")
+
+        # MMDではないルートノード
+        not_mmd = cmds.group(empty=True, name="NotMMD_root")
+
+        # 検索
+        mmd_models = maya_utils.find_all_mmd_models()
+
+        self.assertIn(model1, mmd_models)
+        self.assertIn(model2, mmd_models)
+        self.assertNotIn(not_mmd, mmd_models)
+        self.assertEqual(len(mmd_models), 2)
+
+    def test_get_parent_mmd_root(self):
+        """親のMMDルートを取得できるか"""
+        # MMDモデルの階層を作成
+        root = cmds.group(empty=True, name="TestModel_root")
+        cmds.addAttr(root, longName="mmd_model_name_jp", dataType="string")
+
+        skeleton_group = cmds.group(empty=True, name="Skeleton", parent=root)
+        joint = cmds.joint(name="test_joint", parent=skeleton_group)
+
+        # ジョイントから親のMMDルートを取得
+        parent_root = maya_utils.get_parent_mmd_root(joint)
+        self.assertEqual(parent_root, root)
+
+        # ルートノード自体を渡した場合
+        parent_root2 = maya_utils.get_parent_mmd_root(root)
+        self.assertEqual(parent_root2, root)
+
+        # MMDモデルではないオブジェクト
+        cube = cmds.polyCube(name="test_cube")[0]
+        parent_root3 = maya_utils.get_parent_mmd_root(cube)
+        self.assertIsNone(parent_root3)
+
+    def test_get_mmd_model_display_name(self):
+        """MMDモデルの表示名を取得できるか"""
+        # 日本語名があるモデル
+        model1 = cmds.group(empty=True, name="Model1_root")
+        cmds.addAttr(model1, longName="mmd_model_name_jp", dataType="string")
+        cmds.setAttr(f"{model1}.mmd_model_name_jp", "初音ミク", type="string")
+
+        display_name1 = maya_utils.get_mmd_model_display_name(model1)
+        self.assertEqual(display_name1, "初音ミク")
+
+        # 英語名のみのモデル
+        model2 = cmds.group(empty=True, name="Model2_root")
+        cmds.addAttr(model2, longName="mmd_model_name_en", dataType="string")
+        cmds.setAttr(f"{model2}.mmd_model_name_en", "Hatsune Miku", type="string")
+
+        display_name2 = maya_utils.get_mmd_model_display_name(model2)
+        self.assertEqual(display_name2, "Hatsune Miku")
+
+        # 名前属性がないモデル
+        model3 = cmds.group(empty=True, name="Model3_root")
+        display_name3 = maya_utils.get_mmd_model_display_name(model3)
+        self.assertEqual(display_name3, "Model3")
 
 
 if __name__ == "__main__":

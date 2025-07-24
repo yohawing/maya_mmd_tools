@@ -255,30 +255,38 @@ def set_custom_attributes(object_name, attributes):
     """
     for attr_name, attr_value in attributes.items():
         attr_type = type(attr_value).__name__
+        actual_attr_type = attr_type  # 実際に使用する型を保存
+        
+        # アトリビュートが存在しない場合は作成
         if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
             if attr_type in ["int", "float", "bool"]:
                 add_numeric_attribute(object_name, attr_name, attr_type)
-                set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
-            if attr_type in ["str", "bytes"]:
+            elif attr_type in ["str", "bytes"]:
                 add_typed_attribute(object_name, attr_name, attr_type)
-                set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
-            if attr_type in ["list", "tuple"]:
+            elif attr_type in ["list", "tuple"]:
                 # リストやタプルの場合は型を指定
                 if len(attr_value) == 3 and all(
                     isinstance(x, float) for x in attr_value
                 ):
-                    attr_type = "double3"
+                    actual_attr_type = "double3"
                 elif len(attr_value) == 3 and all(
                     isinstance(x, int) for x in attr_value
                 ):
-                    attr_type = "long3"
+                    actual_attr_type = "long3"
                 elif all(isinstance(x, float) for x in attr_value):
-                    attr_type = "doubleArray"
+                    actual_attr_type = "doubleArray"
                 elif all(isinstance(x, int) for x in attr_value):
-                    attr_type = "longArray"
-
-                add_typed_attribute(object_name, attr_name, attr_type)
+                    actual_attr_type = "longArray"
+                add_typed_attribute(object_name, attr_name, actual_attr_type)
+        
+        # 値を設定（既存・新規両方に対応）
+        try:
+            if attr_type in ["int", "float", "bool", "str", "bytes"]:
                 set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
+            elif attr_type in ["list", "tuple"]:
+                set_attribute_value_api(object_name, attr_name, attr_value, actual_attr_type)
+        except Exception as e:
+            logger.warning(f"Failed to set attribute {attr_name} on {object_name}: {e}")
 
 
 def add_numeric_attribute(object_name, attr_name, attr_type):
