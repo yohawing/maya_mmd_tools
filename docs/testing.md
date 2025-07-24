@@ -262,6 +262,129 @@ vmd_data = create_test_vmd_data()
 # vmd_dataを使用してアニメーションテスト
 ```
 
+## UIテスト
+
+UIのテストは2つのカテゴリに分類されます。
+
+### テストディレクトリ構造
+
+```
+tests/
+├── unit/                    # ユニットテスト（UIのビジネスロジックを含む）
+│   ├── test_application_state.py
+│   ├── test_info_presenter.py
+│   └── test_import_export_presenter.py
+└── gui/                     # GUI環境でのみ実行可能なテスト
+    ├── gui_test_base.py
+    ├── run_gui_tests.py
+    └── test_ui_components.py
+```
+
+### 1. UIビジネスロジックテスト（Unit）
+
+Maya standalone環境で実行可能なUIのビジネスロジックテスト。PresenterやApplicationStateなどをテストします。
+
+#### 特徴
+- Qtウィジェットはモック化される
+- Maya APIは完全に利用可能
+- CI/CDパイプラインで自動実行可能
+- 高速に実行できる
+
+#### 実行方法
+```bash
+# すべてのユニットテストを実行（UIビジネスロジックを含む）
+python tests/run_tests.py --type unit
+
+# 特定のUIテストを実行
+python tests/run_tests.py --type unit --test test_info_presenter
+```
+
+#### テスト例
+```python
+from unittest.mock import Mock
+from tests.common.maya_test_base import MayaTestBase
+from mmd_tools.ui.presenters.info_presenter import InfoPresenter
+
+class TestInfoPresenter(MayaTestBase):
+    def setUp(self):
+        super().setUp()
+        # Qtウィジェットをモック化
+        self.mock_view = Mock()
+        self.presenter = InfoPresenter(self.mock_view)
+    
+    def test_update_model_info(self):
+        """モデル情報更新のテスト"""
+        # テスト用のMMDモデルを作成
+        model = self._create_test_mmd_model()
+        
+        # プレゼンターのロジックをテスト
+        self.presenter.update_model_info(model)
+        
+        # viewへの呼び出しを検証
+        self.mock_view.set_model_name_jp.assert_called()
+```
+
+### 2. GUI UIテスト
+
+Maya GUIアプリケーション環境でのみ実行可能なテスト。実際のQtウィジェットの作成、表示、インタラクションをテストします。
+
+#### 特徴
+- 実際のQtウィジェットを作成・操作
+- ウィンドウの表示やUIイベントをテスト
+- Maya GUIセッション内でのみ実行可能
+- 手動実行が必要（CI/CDでは実行できない）
+
+#### 実行方法
+
+GUI UIテストはMaya GUIアプリケーション内でスクリプトとして実行する必要があります。
+
+**方法1: Script Editorから実行**
+```python
+# Maya Script Editorで以下を実行
+import sys
+sys.path.append(r'F:\Develop\maya_mmd_tools')  # プロジェクトのパスに変更
+from tests.gui import run_gui_tests
+
+# すべてのGUIテストを実行
+run_gui_tests.run()
+
+# 特定のテストを実行
+run_gui_tests.run_specific_test("TestMainWindow")
+```
+
+**方法2: シェルフボタンから実行**
+1. `scripts/run_ui_tests_gui.py`の内容をコピー
+2. Mayaのシェルフを右クリック → "New Shelf Button"
+3. Pythonスクリプトとして貼り付け
+4. ボタンをクリックしてテスト実行
+
+**方法3: MELスクリプトから実行**
+```mel
+// scripts/run_ui_tests_gui.melを実行
+source "run_ui_tests_gui.mel";
+```
+
+#### GuiTestBaseクラス
+GUI環境でのテストをサポートする基底クラスが提供されています：
+
+```python
+from tests.ui.gui.gui_test_base import GuiTestBase, requires_gui
+
+@requires_gui
+class TestMainWindow(GuiTestBase):
+    def test_window_creation(self):
+        """ウィンドウが正しく作成されるかテスト"""
+        from mmd_tools.ui.main_window import MainWindow
+        window = MainWindow()
+        self.assertTrue(window.isVisible())
+```
+
+### GUIテストの注意事項
+
+- GUIテストは`python tests/run_tests.py --type gui`では実行できません
+- Maya GUIアプリケーション内でスクリプトとして実行する必要があります
+- CI/CDパイプラインでは実行できません
+
 ## テストの実行環境
 
 ### 必要な環境

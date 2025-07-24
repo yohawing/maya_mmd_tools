@@ -73,7 +73,7 @@ def discover_tests(test_type, test_filter=None):
     """テストを探索します。
     
     Args:
-        test_type: 'unit' または 'integration'
+        test_type: 'unit', 'integration', 'gui'
         test_filter: テストをフィルタリングする文字列（オプション）
         
     Returns:
@@ -149,8 +149,8 @@ def main():
         "--type",
         type=str,
         required=True,
-        choices=["unit", "integration"],
-        help="The type of tests to run: 'unit' or 'integration'.",
+        choices=["unit", "integration", "gui"],
+        help="The type of tests to run: 'unit', 'integration', or 'gui'.",
     )
     parser.add_argument(
         "--test",

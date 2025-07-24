@@ -121,8 +121,8 @@ def main():
         "--type",
         type=str,
         default="unit",
-        choices=["unit", "integration"],
-        help="The type of tests to run: 'unit' or 'integration'. Defaults to 'unit'.",
+        choices=["unit", "integration", "gui"],
+        help="The type of tests to run: 'unit', 'integration', or 'gui'. Defaults to 'unit'.",
     )
     parser.add_argument(
         "--test",
