@@ -7,7 +7,7 @@ QT_BINDING = ""
 
 try:
     from PySide6.QtCore import QObject, Signal, Qt, QSettings
-    from PySide6.QtGui import QDoubleValidator
+    from PySide6.QtGui import QDoubleValidator, QColor
     from PySide6.QtWidgets import (
         QApplication,
         QMainWindow,
@@ -30,6 +30,14 @@ try:
         QTreeView,
         QTreeWidget,
         QTreeWidgetItem,
+        QColorDialog,
+        QDoubleSpinBox,
+        QSpinBox,
+        QGridLayout,
+        QScrollArea,
+        QListWidgetItem,
+        QStatusBar,
+        QProgressBar,
     )
     from shiboken6 import wrapInstance
 
@@ -37,7 +45,7 @@ try:
 
 except ImportError:
     from PySide2.QtCore import QObject, Signal, Qt, QSettings
-    from PySide2.QtGui import QDoubleValidator
+    from PySide2.QtGui import QDoubleValidator, QColor
     from PySide2.QtWidgets import (
         QApplication,
         QMainWindow,
@@ -60,6 +68,14 @@ except ImportError:
         QTreeView,
         QTreeWidget,
         QTreeWidgetItem,
+        QColorDialog,
+        QDoubleSpinBox,
+        QSpinBox,
+        QGridLayout,
+        QScrollArea,
+        QListWidgetItem,
+        QStatusBar,
+        QProgressBar,
     )
     from shiboken2 import wrapInstance
 

@@ -6,11 +6,10 @@ from ...io.pmx_exporter import PmxExporter
 logger = get_logger(__name__)
 
 class ImportExportPresenter(QObject):
-    model_imported = Signal(str)
-
-    def __init__(self, view):
+    def __init__(self, view, app_state):
         super().__init__()
         self.view = view
+        self.app_state = app_state
         self.connect_signals()
 
     def connect_signals(self):
@@ -43,15 +42,28 @@ class ImportExportPresenter(QObject):
         file_path = self.view.import_path_edit.text()
         scale = float(self.view.scale_edit.text())
         logger.info(f"Importing file: {file_path} with scale: {scale}")
+        
+        # 進捗開始
+        self.app_state.emit_progress(0)
+        self.app_state.emit_status(f"インポート中: {file_path}")
+        
         try:
             root_node = import_mmd_file(file_path, scale)
             if root_node:
                 logger.info("Import successful.")
-                self.model_imported.emit(root_node)
+                # ApplicationStateを更新
+                self.app_state.refresh_model_list()
+                self.app_state.current_model_root = root_node
+                self.app_state.emit_status(f"インポート完了: {root_node}")
+                self.app_state.emit_progress(100)
             else:
                 logger.error("Import failed.")
+                self.app_state.emit_status("インポートに失敗しました")
+                self.app_state.emit_progress(0)
         except Exception as e:
             logger.error(f"Import failed: {e}", exc_info=True)
+            self.app_state.emit_status(f"インポートエラー: {str(e)}")
+            self.app_state.emit_progress(0)
 
     def export_file(self):
         file_path = self.view.export_path_edit.text()

@@ -2,9 +2,14 @@ import logging
 import os
 from maya import cmds
 import maya.OpenMayaUI as mui
-from .qt_compat import QMainWindow, QTabWidget, QDockWidget, Qt, QSettings, wrapInstance, QWidget
+from .qt_compat import (
+    QMainWindow, QTabWidget, QDockWidget, Qt, QSettings, 
+    wrapInstance, QWidget, QVBoxLayout, QStatusBar, QProgressBar, QLabel
+)
 from ..core.log_handlers import QtLogHandler
 from .components.log_viewer import LogViewer
+from .components.header_widget import HeaderWidget
+from .application_state import ApplicationState
 from ..core.logger import get_logger
 from .tabs.import_export_tab import ImportExportTab
 from .presenters.import_export_presenter import ImportExportPresenter
@@ -38,16 +43,37 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("MMD Tools")
         self.setObjectName(self.WINDOW_NAME)
-
+        
+        # アプリケーション状態管理
+        self.app_state = ApplicationState()
+        
+        # 中央ウィジェットの設定
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # メインレイアウト
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        
+        # ヘッダーウィジェット
+        self.header_widget = HeaderWidget(self.app_state)
+        main_layout.addWidget(self.header_widget)
+        
+        # タブウィジェット
         self.tab_widget = QTabWidget()
-        self.tab_widget.setObjectName("mainTabWidget")  # Add objectName
-        self.setCentralWidget(self.tab_widget)
-
+        self.tab_widget.setObjectName("mainTabWidget")
+        main_layout.addWidget(self.tab_widget)
+        
+        # ステータスバー
+        self.setup_status_bar()
+        
+        # ログビューア（ドッキング可能）
         self.log_viewer = LogViewer()
-        self.log_viewer.setObjectName("logViewer")  # Add objectName
+        self.log_viewer.setObjectName("logViewer")
         log_dock_widget = QDockWidget("Log", self)
-        log_dock_widget.setObjectName("logDockWidget")  # Add objectName
-        log_dock_widget.setWidget(self.log_viewer)  # ログビューアを実際にドックウィジェットに追加
+        log_dock_widget.setObjectName("logDockWidget")
+        log_dock_widget.setWidget(self.log_viewer)
         self.addDockWidget(Qt.BottomDockWidgetArea, log_dock_widget)
 
         self.load_stylesheet()
@@ -55,9 +81,16 @@ class MainWindow(QMainWindow):
         self.setup_tabs()
         self.restore_settings()
         
+        # ApplicationStateのシグナルを接続
+        self.app_state.status_message.connect(self.show_status_message)
+        self.app_state.progress_updated.connect(self.update_progress)
+        
         # 最小サイズを設定
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(500)
+        self.setMinimumWidth(800)
+        self.setMinimumHeight(600)
+        
+        # 初期化完了後、モデルリストを更新
+        self.app_state.refresh_model_list()
 
     @staticmethod
     def get_maya_main_window():
@@ -122,6 +155,40 @@ class MainWindow(QMainWindow):
         if state:
             self.restoreState(state)
 
+    def setup_status_bar(self):
+        """ステータスバーをセットアップ"""
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        
+        # 永続的なウィジェット（右側）
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMaximumWidth(200)
+        self.progress_bar.setVisible(False)
+        self.status_bar.addPermanentWidget(self.progress_bar)
+        
+        # バージョン情報
+        from mmd_tools import __version__
+        maya_version = cmds.about(version=True)
+        version_label = QLabel(f"MMD Tools v{__version__} | Maya {maya_version}")
+        self.status_bar.addPermanentWidget(version_label)
+        
+        # 初期メッセージ
+        self.status_bar.showMessage("準備完了", 2000)
+    
+    def show_status_message(self, message):
+        """ステータスメッセージを表示"""
+        self.status_bar.showMessage(message, 5000)  # 5秒間表示
+    
+    def update_progress(self, value):
+        """進捗状況を更新"""
+        if value > 0 and value < 100:
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(value)
+        else:
+            self.progress_bar.setVisible(False)
+            if value >= 100:
+                self.progress_bar.setValue(100)
+    
     def load_stylesheet(self):
         style_path = os.path.join(os.path.dirname(__file__), "stylesheet.qss")
         try:
@@ -141,64 +208,44 @@ class MainWindow(QMainWindow):
     def setup_tabs(self):
         # File I/O Tab
         import_export_tab = ImportExportTab()
-        self.import_export_presenter = ImportExportPresenter(import_export_tab)
+        self.import_export_presenter = ImportExportPresenter(import_export_tab, self.app_state)
         self.tab_widget.addTab(import_export_tab, "File I/O")
 
         # Info Tab
         info_tab = InfoTab()
-        self.info_presenter = InfoPresenter(info_tab)
+        self.info_presenter = InfoPresenter(info_tab, self.app_state)
         self.tab_widget.addTab(info_tab, "Info")
 
         # Material Tab
         material_tab = MaterialTab()
-        self.material_presenter = MaterialPresenter(material_tab)
+        self.material_presenter = MaterialPresenter(material_tab, self.app_state)
         self.tab_widget.addTab(material_tab, "Material")
 
         # Bone Tab
         bone_tab = BoneTab()
-        self.bone_presenter = BonePresenter(bone_tab)
+        self.bone_presenter = BonePresenter(bone_tab, self.app_state)
         self.tab_widget.addTab(bone_tab, "Bone")
 
         # Morph Tab
         morph_tab = MorphTab()
-        self.morph_presenter = MorphPresenter(morph_tab)
+        self.morph_presenter = MorphPresenter(morph_tab, self.app_state)
         self.tab_widget.addTab(morph_tab, "Morph")
 
         # Display Pane Tab
         display_pane_tab = DisplayPaneTab()
-        self.display_pane_presenter = DisplayPanePresenter(display_pane_tab)
+        self.display_pane_presenter = DisplayPanePresenter(display_pane_tab, self.app_state)
         self.tab_widget.addTab(display_pane_tab, "Display Pane")
 
         # Physics Tab
         physics_tab = PhysicsTab()
-        self.physics_presenter = PhysicsPresenter(physics_tab)
+        self.physics_presenter = PhysicsPresenter(physics_tab, self.app_state)
         self.tab_widget.addTab(physics_tab, "Physics")
 
         # Settings Tab
         settings_tab = SettingsTab()
-        self.settings_presenter = SettingsPresenter(settings_tab)
+        self.settings_presenter = SettingsPresenter(settings_tab, self.app_state)
         self.tab_widget.addTab(settings_tab, "Settings")
         
         # logger参照のためにグローバルスコープで取得
         global logger
         logger = get_logger(__name__)
-
-        # Connect presenters
-        self.import_export_presenter.model_imported.connect(
-            self.info_presenter.on_model_imported
-        )
-        self.import_export_presenter.model_imported.connect(
-            self.material_presenter.on_model_imported
-        )
-        self.import_export_presenter.model_imported.connect(
-            self.bone_presenter.on_model_imported
-        )
-        self.import_export_presenter.model_imported.connect(
-            self.morph_presenter.on_model_imported
-        )
-        self.import_export_presenter.model_imported.connect(
-            self.display_pane_presenter.on_model_imported
-        )
-        self.import_export_presenter.model_imported.connect(
-            self.physics_presenter.on_model_imported
-        )

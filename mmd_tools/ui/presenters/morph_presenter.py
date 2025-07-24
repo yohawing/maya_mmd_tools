@@ -4,26 +4,32 @@ from ...core.logger import get_logger
 logger = get_logger(__name__)
 
 class MorphPresenter:
-    def __init__(self, view):
+    def __init__(self, view, app_state):
         self.view = view
-        self.current_model_root = None
+        self.app_state = app_state
         self.blend_shape_node = None
         self.connect_signals()
 
     def connect_signals(self):
+        # ApplicationStateのシグナル
+        self.app_state.current_model_changed.connect(self.on_current_model_changed)
+        
+        # UIのシグナル
         self.view.morph_list.currentItemChanged.connect(self.on_morph_selected)
         self.view.morph_slider.valueChanged.connect(self.on_morph_slider_changed)
-
-    def on_model_imported(self, root_node):
-        self.current_model_root = root_node
+    
+    def on_current_model_changed(self, model_root):
+        """現在のモデルが変更されたときの処理"""
         self.load_morphs()
 
     def load_morphs(self):
         self.view.morph_list.clear()
-        if not self.current_model_root or not cmds.objExists(self.current_model_root):
+        
+        current_model_root = self.app_state.current_model_root
+        if not current_model_root or not cmds.objExists(current_model_root):
             return
 
-        shapes = cmds.listRelatives(self.current_model_root, allDescendents=True, type="mesh")
+        shapes = cmds.listRelatives(current_model_root, allDescendents=True, type="mesh")
         if not shapes:
             return
 

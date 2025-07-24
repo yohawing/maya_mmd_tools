@@ -4,8 +4,9 @@ from ... import settings
 logger = get_logger(__name__)
 
 class SettingsPresenter:
-    def __init__(self, view):
+    def __init__(self, view, app_state):
         self.view = view
+        self.app_state = app_state
         self._signals_connected = False
         self.load_settings()
         self.connect_signals()
