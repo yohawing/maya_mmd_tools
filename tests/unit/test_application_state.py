@@ -76,9 +76,12 @@ class TestApplicationState(MayaTestBase):
         # current_model_rootが未設定の状態で
         self.assertIsNone(self.app_state.current_model_root)
         
-        # モデルを作成してリフレッシュ（_rootで終わる名前にする）
+        # モデルを作成（_rootで終わる名前にする）
         model1 = self._create_mmd_root("model1_root")
         model2 = self._create_mmd_root("model2_root")
+        
+        # 明示的にMayaの選択をクリア（select_model_from_maya_selectionがFalseを返すように）
+        cmds.select(clear=True)
         
         self.app_state.refresh_model_list()
         
@@ -104,13 +107,19 @@ class TestApplicationState(MayaTestBase):
         """Maya選択からモデルを選択するテスト"""
         # モデルを作成（_rootで終わる名前にする）
         model = self._create_mmd_root("selected_model_root")
-        # 選択をクリアして新しいジョイントを作成
-        cmds.select(clear=True)
+        # モデルを選択してからジョイントを作成
+        cmds.select(model)
         child_joint = cmds.joint(name="child_joint")
-        cmds.parent(child_joint, model)
         
         # リフレッシュしてavailable_modelsに追加
+        # 選択をクリアしてからリフレッシュ（自動選択を防ぐ）
+        cmds.select(clear=True)
         self.app_state.refresh_model_list()
+        
+        # 別のモデルを作成して current_model_root を変更
+        other_model = self._create_mmd_root("other_model_root")
+        self.app_state._available_models.append(other_model)
+        self.app_state.current_model_root = other_model
         
         # 子ジョイントを選択
         cmds.select(child_joint)

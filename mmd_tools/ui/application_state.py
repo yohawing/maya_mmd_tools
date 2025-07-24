@@ -97,9 +97,16 @@ class ApplicationState(QObject):
             
         for obj in selected:
             parent_root = get_parent_mmd_root(obj)
-            if parent_root and parent_root in self._available_models:
-                self.current_model_root = parent_root
-                return True
+            if parent_root:
+                # 完全パスと短い名前の両方をチェック
+                short_name = parent_root.split('|')[-1]
+                if parent_root in self._available_models or short_name in self._available_models:
+                    # available_modelsにある形式で設定
+                    if parent_root in self._available_models:
+                        self.current_model_root = parent_root
+                    else:
+                        self.current_model_root = short_name
+                    return True
         
         return False
     
