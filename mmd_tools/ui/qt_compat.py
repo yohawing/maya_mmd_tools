@@ -42,6 +42,7 @@ try:
         QTableWidget,
         QTableWidgetItem,
         QHeaderView,
+        QMessageBox,
     )
     from shiboken6 import wrapInstance
 
@@ -84,6 +85,7 @@ except ImportError:
         QTableWidget,
         QTableWidgetItem,
         QHeaderView,
+        QMessageBox,
     )
     from shiboken2 import wrapInstance
 

@@ -42,7 +42,7 @@ QTabBar::tab:!selected {
     margin-top: 2px; /* make non-selected tabs look smaller */
 }
 QLineEdit, QTextEdit {
-    background-color: #2b2b2b;
+    /* background-color: #2b2b2b; */
     border: 1px solid #555555;
     border-radius: 3px;
     padding: 2px;
