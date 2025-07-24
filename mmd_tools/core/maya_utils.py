@@ -1076,5 +1076,91 @@ def set_transform_matrix_keyframe(node_name, matrix, frame_number):
         return False
 
 
+def find_all_mmd_models():
+    """
+    シーン内のすべてのMMDモデルのルートノードを検索します。
+    
+    Returns:
+        list: MMDモデルのルートノード名のリスト
+    """
+    from ..core.constants import SCENE_ROOT_SUFFIX
+    
+    # *_rootという名前のトランスフォームノードを検索
+    all_transforms = cmds.ls("*{}".format(SCENE_ROOT_SUFFIX), type="transform")
+    
+    mmd_models = []
+    for transform in all_transforms:
+        # MMD関連のアトリビュートがあるか確認
+        if (cmds.attributeQuery("mmd_model_name_jp", node=transform, exists=True) or
+            cmds.attributeQuery("mmd_model_name_en", node=transform, exists=True)):
+            mmd_models.append(transform)
+    
+    return sorted(mmd_models)  # 名前順でソート
+
+
+def get_parent_mmd_root(node_name):
+    """
+    指定されたノードの親階層からMMDモデルのルートノードを検索します。
+    
+    Args:
+        node_name (str): 検索開始ノード名
+        
+    Returns:
+        str: MMDモデルのルートノード名。見つからない場合はNone
+    """
+    from ..core.constants import SCENE_ROOT_SUFFIX
+    
+    try:
+        # 現在のノードから親を辿る
+        current = node_name
+        while current:
+            # ルートサフィックスを持ち、MMDアトリビュートがあるか確認
+            if (current.endswith(SCENE_ROOT_SUFFIX) and 
+                (cmds.attributeQuery("mmd_model_name_jp", node=current, exists=True) or
+                 cmds.attributeQuery("mmd_model_name_en", node=current, exists=True))):
+                return current
+            
+            # 親ノードを取得
+            parents = cmds.listRelatives(current, parent=True, fullPath=True)
+            if parents:
+                current = parents[0]
+            else:
+                break
+                
+    except Exception as e:
+        logger.warning(f"Failed to find parent MMD root for {node_name}: {e}")
+    
+    return None
+
+
+def get_mmd_model_display_name(root_node):
+    """
+    MMDモデルの表示名を取得します。
+    
+    Args:
+        root_node (str): MMDモデルのルートノード名
+        
+    Returns:
+        str: 表示名（日本語名があれば優先、なければノード名）
+    """
+    try:
+        if cmds.attributeQuery("mmd_model_name_jp", node=root_node, exists=True):
+            name_jp = cmds.getAttr(f"{root_node}.mmd_model_name_jp")
+            if name_jp:
+                return name_jp
+        
+        if cmds.attributeQuery("mmd_model_name_en", node=root_node, exists=True):
+            name_en = cmds.getAttr(f"{root_node}.mmd_model_name_en")
+            if name_en:
+                return name_en
+                
+    except Exception:
+        pass
+    
+    # アトリビュートがない場合はノード名から_rootを除いて返す
+    from ..core.constants import SCENE_ROOT_SUFFIX
+    return root_node.replace(SCENE_ROOT_SUFFIX, "")
+
+
 
 

@@ -104,7 +104,7 @@ def import_pmx_file(parser, filepath, scale=1.0):
         logger.info(
             "PMXファイルのインポートが完了しました: %s", os.path.basename(filepath)
         )
-        return True
+        return root_group  # ルートノードの名前を返す
 
     except Exception as e:
         logger.error("PMXファイルのインポートに失敗しました: %s - %s", filepath, str(e))

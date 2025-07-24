@@ -19,9 +19,10 @@ def import_mmd_file(filepath, scale=1.0):
 
     Args:
         filepath (str): インポートするMMDファイルのパス。
+        scale (float): インポート時のスケール値。
 
     Returns:
-        bool: インポートが成功したかどうか。
+        str: インポートされたモデルのルートノード名。失敗時はNone。
     """
     try:
         # 汎用パーサーでファイルを解析

@@ -102,7 +102,7 @@ def import_pmd_file(parser, filepath, scale=1.0):
 
         cmds.select(root_group)
         logger.info("PMDファイルのインポートが成功しました: %s", filepath)
-        return True
+        return root_group  # ルートノードの名前を返す
 
     except Exception as e:
         logger.error("PMDファイルのインポートに失敗しました: %s", filepath)
