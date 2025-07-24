@@ -1,5 +1,5 @@
 from maya import cmds
-from mmd_tools.ui import install_mmd_menu, uninstall_mmd_menu
+from mmd_tools.plugin_main import install_mmd_menu, uninstall_mmd_menu
 
 
 def mmd_tools_setup():
