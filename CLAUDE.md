@@ -89,10 +89,12 @@ python tests/run_tests.py --type integration
 python tests/run_tests.py --type integration --test test_maya_utils
 ```
 
-### 追加オプション
+### GUIテスト
+`tests/run_gui_tests.py` を使用して、コマンドラインからGUIテストを実行できます。
+詳細は `docs/testing.md` を参照してください。
+
 ```bash
-# 特定のMayaバージョンを指定（デフォルトは2024）
-python tests/run_tests.py --type integration --maya 2023 --test test_maya_utils
+python tests/run_gui_tests.py
 ```
 
 ## コーディング

@@ -12,32 +12,41 @@ from mmd_tools.core.logger import get_logger
 logger = get_logger("mmd_tools.io.mmd_importer")
 
 
-def import_mmd_file(filepath, scale=1.0):
+def import_mmd_file(filepath, scale=None, options=None):
     """
     MMDファイルを解析し、Mayaシーンにインポートします。
     ファイルタイプに応じて適切なインポーターを呼び出します。
 
     Args:
         filepath (str): インポートするMMDファイルのパス。
-        scale (float): インポート時のスケール値。
+        scale (float): インポート時のスケール値。(互換性のために残している)
+        options (dict): インポートオプション。scaleを含むことができる。
 
     Returns:
         str: インポートされたモデルのルートノード名。失敗時はNone。
     """
+    # 互換性のためにscale引数を優先
+    if scale is not None and options is None:
+        options = {'scale': scale}
+    elif scale is not None and options and 'scale' not in options:
+        options['scale'] = scale
+    
+    # デフォルトオプション
+    if options is None:
+        options = {}
     try:
         # 汎用パーサーでファイルを解析
         parsed_data = parse_mmd_file(filepath)
 
         # 解析されたデータのタイプに応じてインポーターを呼び出す
-        # print(isinstance(parsed_data, pmx_parser.PmxParser))
         if isinstance(parsed_data, PmxParser):
-            return pmx_importer.import_pmx_file(parsed_data, filepath, scale)
+            return pmx_importer.import_pmx_file(parsed_data, filepath, options.get('scale', 1.0), options)
 
         elif isinstance(parsed_data, PmdParser):
-            return pmd_importer.import_pmd_file(parsed_data, filepath, scale)
+            return pmd_importer.import_pmd_file(parsed_data, filepath, options.get('scale', 1.0), options)
 
         elif isinstance(parsed_data, VmdParser):
-            return vmd_importer.import_vmd_file(parsed_data, filepath)
+            return vmd_importer.import_vmd_file(parsed_data, filepath, options)
 
         else:
             logger.warning(

@@ -324,51 +324,62 @@ class TestInfoPresenter(MayaTestBase):
         self.mock_view.set_model_name_jp.assert_called()
 ```
 
-### 2. GUI UIテスト
+### 2. GUIインタラクションテスト
 
-Maya GUIアプリケーション環境でのみ実行可能なテスト。実際のQtウィジェットの作成、表示、インタラクションをテストします。
+実際のQtウィジェットの作成、表示、インタラクションをテストします。
+MayaのGUIセッションが必要です。
 
 #### 特徴
 - 実際のQtウィジェットを作成・操作
 - ウィンドウの表示やUIイベントをテスト
-- Maya GUIセッション内でのみ実行可能
-- 手動実行が必要（CI/CDでは実行できない）
+- 実行には完全なMaya GUI環境が必要
 
 #### 実行方法
 
-GUI UIテストはMaya GUIアプリケーション内でスクリプトとして実行する必要があります。
+##### 方法1: コマンドラインからの自動実行 (推奨)
 
-**方法1: Script Editorから実行**
+新しく導入されたテストランナーを使用し、コマンドラインからGUIテストを自動実行します。
+この方法は、Mayaの起動、テスト実行、終了までを完全に自動化します。
+
+```bash
+# tests/gui ディレクトリ内のすべてのGUIテストを実行
+python tests/run_gui_tests.py
+
+# 特定のMayaバージョンを指定して実行
+python tests/run_gui_tests.py --maya_version 2023
+```
+
+このコマンドは以下の処理を自動的に行います。
+1. Mayaアプリケーションをバックグラウンドで起動します。
+2. `commandPort` を通じてMayaに接続します。
+3. `tests/gui` ディレクトリ内のテストを実行するよう指示します。
+4. テストのログを `logs/ui_test_results.log` に出力し、同時にコンソールにも表示します。
+5. テスト完了後、Mayaアプリケーションを自動的に終了します。
+
+##### 方法2: Maya GUI内からの手動実行 (旧方式)
+
+従来通り、MayaのScript Editorやシェルフから手動でテストを実行することも可能です。
+
+**Script Editorから実行:**
 ```python
 # Maya Script Editorで以下を実行
 import sys
-sys.path.append(r'F:\Develop\maya_mmd_tools')  # プロジェクトのパスに変更
+# プロジェクトルートへのパスを適宜変更してください
+sys.path.append(r'F:\Develop\maya_mmd_tools')
 from tests.gui import run_gui_tests
 
 # すべてのGUIテストを実行
 run_gui_tests.run()
-
-# 特定のテストを実行
-run_gui_tests.run_specific_test("TestMainWindow")
 ```
 
-**方法2: シェルフボタンから実行**
-1. `scripts/run_ui_tests_gui.py`の内容をコピー
-2. Mayaのシェルフを右クリック → "New Shelf Button"
-3. Pythonスクリプトとして貼り付け
-4. ボタンをクリックしてテスト実行
-
-**方法3: MELスクリプトから実行**
-```mel
-// scripts/run_ui_tests_gui.melを実行
-source "run_ui_tests_gui.mel";
-```
+**シェルフボタンから実行:**
+1. `scripts/run_ui_tests_gui.py` の内容は、コマンドラインランナーに置き換えられました。シェルフから実行したい場合は、上記Script Editorのコードをシェルフボタンに登録してください。
 
 #### GuiTestBaseクラス
 GUI環境でのテストをサポートする基底クラスが提供されています：
 
 ```python
-from tests.ui.gui.gui_test_base import GuiTestBase, requires_gui
+from tests.common.gui_test_base import GuiTestBase, requires_gui
 
 @requires_gui
 class TestMainWindow(GuiTestBase):
@@ -376,14 +387,15 @@ class TestMainWindow(GuiTestBase):
         """ウィンドウが正しく作成されるかテスト"""
         from mmd_tools.ui.main_window import MainWindow
         window = MainWindow()
-        self.assertTrue(window.isVisible())
+        self.assertIsNotNone(window)
+        window.close()
 ```
 
 ### GUIテストの注意事項
 
-- GUIテストは`python tests/run_tests.py --type gui`では実行できません
-- Maya GUIアプリケーション内でスクリプトとして実行する必要があります
-- CI/CDパイプラインでは実行できません
+- コマンドラインからの実行 (`scripts/run_ui_tests_gui.py`) を推奨します。
+- CI/CD環境など、GUIを持たない環境ではGUIインタラクションテストは実行できません。
+
 
 ## テストの実行環境
 

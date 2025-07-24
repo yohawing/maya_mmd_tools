@@ -17,17 +17,21 @@ from ..core.constants import SCENE_ROOT_SUFFIX
 logger = get_logger("mmd_tools.io.pmx_importer")
 
 
-def import_pmx_file(parser, filepath, scale=1.0):
+def import_pmx_file(parser, filepath, scale=1.0, options=None):
     """
     PMXファイルをMayaシーンにインポートします。
 
     Args:
         parser (PmxParser): PMXファイルを解析したパーサーオブジェクト
         filepath (str): インポートするPMXファイルのパス
+        scale (float): スケール値（互換性のため）
+        options (dict): インポートオプション
 
     Returns:
         bool: インポートが成功したかどうか
     """
+    if options is None:
+        options = {}
     logger.info("PMXファイルのインポートを開始: %s", filepath)
     
     logger.debug("スケールファクター: %f", scale)

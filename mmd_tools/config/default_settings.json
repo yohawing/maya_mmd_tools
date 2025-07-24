@@ -36,6 +36,7 @@
     "animation": {
       "_comment": "Settings for importing VMD animation files",
       "import_animations": true,
+      "import_morph_animation": true,
       "animation_start_frame": 1,
       "resample_curves": false,
       "import_camera_animation": true,
