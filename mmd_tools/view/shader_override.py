@@ -19,11 +19,12 @@ def maya_useNewAPI():
 # ----------------------------------------------------------------------
 # Shader Node Implementation
 # ----------------------------------------------------------------------
-class MMDShaderNode(omui.MPxLocatorNode):
+class MMDShaderNode(om.MPxNode):
     """Custom shader node definition."""
     kNodeName = SHADER_NODE_NAME
     kNodeId = om.MTypeId(0x0007F7F7) # Unique ID, must be registered
     drawDbClassification = f"drawdb/shader/surface/{kNodeName}"
+    classification = "shader/surface"  # For Hypershade
 
     def __init__(self):
         super(MMDShaderNode, self).__init__()
@@ -32,13 +33,37 @@ class MMDShaderNode(omui.MPxLocatorNode):
     def creator(cls):
         return cls()
 
+    def compute(self, plug, dataBlock):
+        """Compute the output color."""
+        if plug == self.a_out_color:
+            # Get input values
+            diffuse_handle = dataBlock.inputValue(self.a_diffuse_color)
+            diffuse_color = diffuse_handle.asFloat3()
+            
+            # Get main texture if connected
+            texture_handle = dataBlock.inputValue(self.a_main_texture)
+            texture_color = texture_handle.asFloat3()
+            
+            # Multiply diffuse color with texture color
+            final_color = [
+                diffuse_color[0] * texture_color[0],
+                diffuse_color[1] * texture_color[1],
+                diffuse_color[2] * texture_color[2]
+            ]
+            
+            # Set output color
+            out_handle = dataBlock.outputValue(self.a_out_color)
+            out_handle.set3Float(final_color[0], final_color[1], final_color[2])
+            dataBlock.setClean(plug)
+
     @classmethod
     def initialize(cls):
         """Initialize node attributes."""
+        om.MGlobal.displayInfo("MMDShaderNode: Starting initialization")
         n_attr = om.MFnNumericAttribute()
 
         # Diffuse Color
-        cls.a_diffuse_color = n_attr.create("diffuseColor", "dc", om.MFnNumericData.kFloat3)
+        cls.a_diffuse_color = n_attr.create("diffuseColor", "dc", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (0.8, 0.8, 0.8)
         n_attr.keyable = True
@@ -46,26 +71,26 @@ class MMDShaderNode(omui.MPxLocatorNode):
 
         # Shininess
         cls.a_shininess = n_attr.create("shininess", "sh", om.MFnNumericData.kFloat, 1.0)
-        n_attr.min = 0.0
+        n_attr.setMin(0.0)
         n_attr.keyable = True
         cls.addAttribute(cls.a_shininess)
 
         # Specular Color
-        cls.a_specular_color = n_attr.create("specularColor", "sc", om.MFnNumericData.kFloat3)
+        cls.a_specular_color = n_attr.create("specularColor", "sc", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (0.5, 0.5, 0.5)
         n_attr.keyable = True
         cls.addAttribute(cls.a_specular_color)
 
         # Ambient Color
-        cls.a_ambient_color = n_attr.create("ambientColor", "ac", om.MFnNumericData.kFloat3)
+        cls.a_ambient_color = n_attr.create("ambientColor", "ac", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (0.3, 0.3, 0.3)
         n_attr.keyable = True
         cls.addAttribute(cls.a_ambient_color)
 
         # Edge Color
-        cls.a_edge_color = n_attr.create("edgeColor", "ec", om.MFnNumericData.kFloat3)
+        cls.a_edge_color = n_attr.create("edgeColor", "ec", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (0.0, 0.0, 0.0)
         n_attr.keyable = True
@@ -73,7 +98,7 @@ class MMDShaderNode(omui.MPxLocatorNode):
 
         # Edge Size
         cls.a_edge_size = n_attr.create("edgeSize", "es", om.MFnNumericData.kFloat, 0.01)
-        n_attr.min = 0.0
+        n_attr.setMin(0.0)
         n_attr.keyable = True
         cls.addAttribute(cls.a_edge_size)
 
@@ -86,16 +111,51 @@ class MMDShaderNode(omui.MPxLocatorNode):
         e_attr.keyable = True
         cls.addAttribute(cls.a_sphere_mode)
 
-        # Texture Attributes (message attributes for connections)
-        t_attr = om.MFnTypedAttribute()
-        cls.a_main_texture = t_attr.create("mainTexture", "mt", om.MFnData.kString)
+        # Texture Attributes (color inputs for texture connections)
+        # These can accept file texture nodes or any other color output
+        cls.a_main_texture = n_attr.create("mainTexture", "mt", om.MFnNumericData.k3Float)
+        n_attr.usedAsColor = True
+        n_attr.default = (1.0, 1.0, 1.0)  # Default white
+        n_attr.keyable = False
+        n_attr.connectable = True
         cls.addAttribute(cls.a_main_texture)
 
-        cls.a_sphere_texture = t_attr.create("sphereTexture", "st", om.MFnData.kString)
+        cls.a_sphere_texture = n_attr.create("sphereTexture", "st", om.MFnNumericData.k3Float)
+        n_attr.usedAsColor = True
+        n_attr.default = (1.0, 1.0, 1.0)  # Default white
+        n_attr.keyable = False
+        n_attr.connectable = True
         cls.addAttribute(cls.a_sphere_texture)
 
-        cls.a_toon_texture = t_attr.create("toonTexture", "tt", om.MFnData.kString)
+        cls.a_toon_texture = n_attr.create("toonTexture", "tt", om.MFnNumericData.k3Float)
+        n_attr.usedAsColor = True
+        n_attr.default = (1.0, 1.0, 1.0)  # Default white
+        n_attr.keyable = False
+        n_attr.connectable = True
         cls.addAttribute(cls.a_toon_texture)
+
+        # Output color attribute (required for shader nodes)
+        out_attr = om.MFnNumericAttribute()
+        cls.a_out_color = out_attr.create("outColor", "oc", om.MFnNumericData.k3Float)
+        out_attr.usedAsColor = True
+        out_attr.writable = False
+        out_attr.readable = True
+        out_attr.storable = True
+        cls.addAttribute(cls.a_out_color)
+
+        # Set attribute affects for proper updates
+        cls.attributeAffects(cls.a_diffuse_color, cls.a_out_color)
+        cls.attributeAffects(cls.a_specular_color, cls.a_out_color)
+        cls.attributeAffects(cls.a_ambient_color, cls.a_out_color)
+        cls.attributeAffects(cls.a_edge_color, cls.a_out_color)
+        cls.attributeAffects(cls.a_shininess, cls.a_out_color)
+        cls.attributeAffects(cls.a_edge_size, cls.a_out_color)
+        cls.attributeAffects(cls.a_sphere_mode, cls.a_out_color)
+        cls.attributeAffects(cls.a_main_texture, cls.a_out_color)
+        cls.attributeAffects(cls.a_sphere_texture, cls.a_out_color)
+        cls.attributeAffects(cls.a_toon_texture, cls.a_out_color)
+        
+        om.MGlobal.displayInfo("MMDShaderNode: Initialization completed")
 
 # ----------------------------------------------------------------------
 # Shader Override Implementation
@@ -219,14 +279,17 @@ def initializePlugin(plugin):
     try:
         plugin_fn.registerNode(
             SHADER_NODE_NAME,
+            MMDShaderNode.kNodeId,
             MMDShaderNode.creator,
-            om.MPxNode.kLocatorNode,
-            MMDShaderNode.drawDbClassification
+            MMDShaderNode.initialize,
+            om.MPxNode.kDependNode,
+            MMDShaderNode.classification
         )
     except:
         om.MGlobal.displayError(f"Failed to register node: {SHADER_NODE_NAME}")
         raise
 
+    # Register shader override for viewport drawing
     try:
         omr.MDrawRegistry.registerShaderOverrideCreator(
             MMDShaderNode.drawDbClassification,

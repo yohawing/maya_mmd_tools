@@ -1,14 +1,11 @@
 from maya import cmds
-
-import maya.OpenMaya as om
-
-import maya.OpenMayaMPx as ommpx
-from mmd_tools.mmd_file_translator import (
-    register_file_translators,
-    unregister_file_translators,
-)
+import maya.api.OpenMaya as om
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.view import shader_override as mmd_shader
+
+def maya_useNewAPI():
+    """Tell Maya to use the Python API 2.0"""
+    pass
 
 def open_main_window(dockable=False):
     """Open the main MMD Tools window."""
@@ -52,13 +49,12 @@ def initializePlugin(mobject):
     vendor = "yohawing"
     version = "1.0.0"
 
-    # プラグインオブジェクトを作成
-    plugin = ommpx.MFnPlugin(mobject, vendor, version)
+    # プラグインオブジェクトを作成 (API 2.0)
+    plugin = om.MFnPlugin(mobject, vendor, version)
 
     try:
-        register_file_translators(plugin)
         install_mmd_menu()
-        mmd_shader.initializePlugin(plugin)  # Register shader
+        mmd_shader.initializePlugin(mobject)  # Register shader with API 2.0
         om.MGlobal.displayInfo("maya_mmd_tools plugin loaded!")
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
@@ -69,13 +65,12 @@ def uninitializePlugin(mobject):
     """
     Plugin exit point.
     """
-    # プラグインオブジェクトを作成
-    plugin = ommpx.MFnPlugin(mobject)
+    # プラグインオブジェクトを作成 (API 2.0)
+    plugin = om.MFnPlugin(mobject)
 
     try:
-        unregister_file_translators(plugin)
         uninstall_mmd_menu()
-        mmd_shader.uninitializePlugin(plugin)  # Deregister shader
+        mmd_shader.uninitializePlugin(mobject)  # Deregister shader with API 2.0
         om.MGlobal.displayInfo("maya_mmd_tools plugin unloaded!")
     except Exception as e:
         om.MGlobal.displayError(f"Plugin uninitialization failed: {str(e)}")
