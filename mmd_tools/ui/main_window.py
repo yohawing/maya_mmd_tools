@@ -1,6 +1,8 @@
 import logging
 import os
-from .qt_compat import QMainWindow, QTabWidget, QDockWidget, Qt, QSettings
+from maya import cmds
+import maya.OpenMayaUI as mui
+from .qt_compat import QMainWindow, QTabWidget, QDockWidget, Qt, QSettings, wrapInstance, QWidget
 from ..core.log_handlers import QtLogHandler
 from .components.log_viewer import LogViewer
 from ..core.logger import get_logger
@@ -23,9 +25,19 @@ from .presenters.settings_presenter import SettingsPresenter
 
 
 class MainWindow(QMainWindow):
+    """Mayaと統合されたメインウィンドウ"""
+    
+    WINDOW_NAME = "MMDToolsMainWindow"
+    WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
+    
     def __init__(self, parent=None):
+        # Mayaのメインウィンドウを親に設定
+        if parent is None:
+            parent = self.get_maya_main_window()
+        
         super().__init__(parent)
         self.setWindowTitle("MMD Tools")
+        self.setObjectName(self.WINDOW_NAME)
 
         self.tab_widget = QTabWidget()
         self.tab_widget.setObjectName("mainTabWidget")  # Add objectName
@@ -35,12 +47,62 @@ class MainWindow(QMainWindow):
         self.log_viewer.setObjectName("logViewer")  # Add objectName
         log_dock_widget = QDockWidget("Log", self)
         log_dock_widget.setObjectName("logDockWidget")  # Add objectName
+        log_dock_widget.setWidget(self.log_viewer)  # ログビューアを実際にドックウィジェットに追加
         self.addDockWidget(Qt.BottomDockWidgetArea, log_dock_widget)
 
         self.load_stylesheet()
         self.setup_logging()
         self.setup_tabs()
         self.restore_settings()
+        
+        # 最小サイズを設定
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(500)
+
+    @staticmethod
+    def get_maya_main_window():
+        """Mayaのメインウィンドウを取得"""
+        main_window_ptr = mui.MQtUtil.mainWindow()
+        return wrapInstance(int(main_window_ptr), QWidget)
+    
+    def show_window(self, dockable=False):
+        """メインウィンドウを表示"""
+        if dockable:
+            # workspaceControlを使用してMayaパネルとして表示
+            self.setWindowFlags(Qt.Widget)
+            self.setAttribute(Qt.WA_DeleteOnClose, False)  # クローズ時に削除しない
+            
+            # workspaceControlの作成
+            workspace_control_name = self.WORKSPACE_CONTROL_NAME
+            if cmds.workspaceControl(workspace_control_name, exists=True):
+                cmds.workspaceControl(workspace_control_name, e=True, close=True)
+                cmds.deleteUI(workspace_control_name)
+            
+            # まずウィンドウを表示
+            self.show()
+            
+            # workspaceControlを作成してウィンドウをホスト
+            cmds.workspaceControl(
+                workspace_control_name,
+                label='MMD Tools',
+                tabToControl=['AttributeEditor', -1],  # アトリビュートエディタの右にタブとして追加
+                initialWidth=800,
+                initialHeight=600,
+                widthProperty='preferred',
+                retain=False,  # Maya終了時に保持しない
+                floating=False
+            )
+            
+            # ウィンドウをworkspaceControlにアタッチ
+            cmds.control(self.WINDOW_NAME, e=True, parent=workspace_control_name)
+        else:
+            # 通常のフローティングウィンドウとして表示
+            self.setWindowFlags(Qt.Window)
+            self.show()
+    
+    def create_main_window(self, dockable=False):
+        """互換性のためのメソッド（show_windowを呼び出す）"""
+        self.show_window(dockable=dockable)
 
     def closeEvent(self, event):
         self.save_settings()
@@ -116,6 +178,10 @@ class MainWindow(QMainWindow):
         settings_tab = SettingsTab()
         self.settings_presenter = SettingsPresenter(settings_tab)
         self.tab_widget.addTab(settings_tab, "Settings")
+        
+        # logger参照のためにグローバルスコープで取得
+        global logger
+        logger = get_logger(__name__)
 
         # Connect presenters
         self.import_export_presenter.model_imported.connect(

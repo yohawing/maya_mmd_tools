@@ -31,6 +31,7 @@ try:
         QTreeWidget,
         QTreeWidgetItem,
     )
+    from shiboken6 import wrapInstance
 
     QT_BINDING = "PySide6"
 
@@ -60,5 +61,6 @@ except ImportError:
         QTreeWidget,
         QTreeWidgetItem,
     )
+    from shiboken2 import wrapInstance
 
     QT_BINDING = "PySide2"
