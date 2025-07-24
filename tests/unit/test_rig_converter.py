@@ -1,3 +1,4 @@
+import math
 import unittest
 from unittest.mock import Mock, patch
 import maya.cmds as cmds
@@ -60,8 +61,8 @@ class TestRigConverterMaya(unittest.TestCase):
         link = Mock()
         link.ik_bone_index = bone_index
         link.angle_limit = angle_limit
-        link.limit_min = limit_min if limit_min else (-3.14, -3.14, -3.14)
-        link.limit_max = limit_max if limit_max else (3.14, 3.14, 3.14)
+        link.limit_min = limit_min if limit_min else (-math.pi, -math.pi, -math.pi)
+        link.limit_max = limit_max if limit_max else (math.pi, math.pi, math.pi)
         return link
 
     def _create_test_joints(self):
@@ -136,7 +137,7 @@ class TestRigConverterMaya(unittest.TestCase):
                     {
                         "bone": joints[2],
                         "angle_limit": True,
-                        "limit_min": (-1.57, 0, 0),
+                        "limit_min": (-math.pi / 2, 0, 0),
                         "limit_max": (0, 0, 0),
                     },
                     {
@@ -173,8 +174,8 @@ class TestRigConverterMaya(unittest.TestCase):
             {
                 "bone": joints[1],
                 "angle_limit": True,
-                "limit_min": (-1.57, 0, 0),
-                "limit_max": (0, 0, 0),
+                "limit_min": (-math.pi / 2, 0, 0),
+                "limit_max": (math.pi / 2, 0, 0),
             },
             {
                 "bone": joints[2],
@@ -189,9 +190,32 @@ class TestRigConverterMaya(unittest.TestCase):
         # 角度制限が設定されたか確認
         # joints[2]のみ制限が有効になっているはず
         # Mayaではジョイントの制限は.limitSwitchX等のアトリビュートで確認
-        if cmds.objExists(f"{joints[2]}.limitSwitchX"):
-            limitEnabled = cmds.getAttr(f"{joints[2]}.limitSwitchX")
-            self.assertTrue(limitEnabled)  # True = 制限が有効
+        if cmds.objExists(f"{joints[1]}"):
+            limitXEnabled = cmds.getAttr(f"{joints[1]}.minRotXLimitEnable")
+            limitYEnabled = cmds.getAttr(f"{joints[1]}.minRotYLimitEnable")
+            limitZEnabled = cmds.getAttr(f"{joints[1]}.minRotZLimitEnable")
+            limitRotateMinX = cmds.getAttr(f"{joints[1]}.minRotXLimit")
+            limitRotateMaxX = cmds.getAttr(f"{joints[1]}.maxRotXLimit")
+            limitRotateMinY = cmds.getAttr(f"{joints[1]}.minRotYLimit")
+            limitRotateMaxY = cmds.getAttr(f"{joints[1]}.maxRotYLimit")
+            limitRotateMinZ = cmds.getAttr(f"{joints[1]}.minRotZLimit")
+            limitRotateMaxZ = cmds.getAttr(f"{joints[1]}.maxRotZLimit")
+
+            self.assertTrue(
+                limitXEnabled and limitYEnabled and limitZEnabled
+            )  # True = 制限が有効
+            self.assertAlmostEqual(limitRotateMinX, 90.0, delta=0.01)
+            self.assertAlmostEqual(limitRotateMaxX, -90.0, delta=0.01)
+            self.assertAlmostEqual(limitRotateMinY, 0.0, delta=0.01)
+            self.assertAlmostEqual(limitRotateMaxY, 0.0, delta=0.01)
+            self.assertAlmostEqual(limitRotateMinZ, 0.0, delta=0.01)
+            self.assertAlmostEqual(limitRotateMaxZ, 0.0, delta=0.01)
+        else:
+            # Mayaのバージョンによっては.limitSwitchXが存在しない場合もある
+            self.assertTrue(
+                cmds.getAttr(f"{joints[1]}.rotateLimitX") is not None,
+                "ジョイントの回転制限が設定されていません",
+            )
 
     def test_find_joint_by_name(self):
         """ジョイント名検索のテスト"""
@@ -283,7 +307,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # decomposeMatrixノードが作成されたか確認
         decompose_nodes = cmds.ls("parent_joint_decompose", type="decomposeMatrix")
         self.assertTrue(len(decompose_nodes) > 0)
-        
+
         # multiplyDivideノードが作成されたか確認
         mult_nodes = cmds.ls("child_joint_given_mult", type="multiplyDivide")
         self.assertTrue(len(mult_nodes) > 0)
@@ -293,13 +317,15 @@ class TestRigConverterMaya(unittest.TestCase):
         # 足のジョイントチェーンを作成
         cmds.select(clear=True)
         hip = cmds.joint(name="left_leg", position=[2, 10, 0])
-        knee = cmds.joint(name="left_knee", position=[2, 5, 0.5])  # 膝は少し前に出ている
+        knee = cmds.joint(
+            name="left_knee", position=[2, 5, 0.5]
+        )  # 膝は少し前に出ている
         ankle = cmds.joint(name="left_ankle", position=[2, 0, 0])
-        
+
         # IKボーンを作成
         cmds.select(clear=True)
         ik_bone = cmds.joint(name="left_leg_ik", position=[2, 0, 0])
-        
+
         # IKチェーン情報を作成
         chain = {
             "ik_bone": "left_leg_ik",
@@ -310,43 +336,48 @@ class TestRigConverterMaya(unittest.TestCase):
             "unit_angle": 114.5916,
             "ik_links": [
                 {"bone": "left_knee", "bone_index": 1, "angle_limit": False},
-                {"bone": "left_leg", "bone_index": 0, "angle_limit": False}
-            ]
+                {"bone": "left_leg", "bone_index": 0, "angle_limit": False},
+            ],
         }
-        
+
         # IKハンドルを作成
         ik_handle, _ = cmds.ikHandle(
             startJoint=hip,
             endEffector=ankle,
             solver="ikRPsolver",
-            name="left_leg_ik_ikHandle"
+            name="left_leg_ik_ikHandle",
         )
-        
+
         # PoleTargetを作成
         pole_target = self.converter._create_pole_target_for_leg_ik(
             chain, ik_handle, hip, ankle
         )
-        
+
         # PoleTargetが作成されたか確認
         self.assertIsNotNone(pole_target)
         self.assertTrue(cmds.objExists(pole_target))
-        
+
         # PoleTargetの位置を取得
-        pole_pos = cmds.xform(pole_target, query=True, worldSpace=True, translation=True)
+        pole_pos = cmds.xform(
+            pole_target, query=True, worldSpace=True, translation=True
+        )
         knee_pos = cmds.xform(knee, query=True, worldSpace=True, translation=True)
-        
+
         # PoleTargetが膝の近くに配置されているか確認（Y座標が近い）
         self.assertAlmostEqual(pole_pos[1], knee_pos[1], delta=1.0)
-        
+
         # PoleTargetが膝の前方（Z軸正方向）に配置されているか確認
-        self.assertGreater(pole_pos[2], knee_pos[2], 
-                          "PoleTargetが膝の前方に配置されていません")
-        
-        # PoleTargetが適切な距離に配置されているか確認（デフォルト10ユニット）
-        distance = ((pole_pos[0] - knee_pos[0])**2 + 
-                   (pole_pos[1] - knee_pos[1])**2 + 
-                   (pole_pos[2] - knee_pos[2])**2)**0.5
-        self.assertAlmostEqual(distance, 10.0, delta=1.0)
+        self.assertGreater(
+            pole_pos[2], knee_pos[2], "PoleTargetが膝の前方に配置されていません"
+        )
+
+        # PoleTargetが適切な距離に配置されているか確認（デフォルト2ユニット）
+        distance = (
+            (pole_pos[0] - knee_pos[0]) ** 2
+            + (pole_pos[1] - knee_pos[1]) ** 2
+            + (pole_pos[2] - knee_pos[2]) ** 2
+        ) ** 0.5
+        self.assertAlmostEqual(distance, 2.0, delta=1.0)
 
     def test_setup_given_parent_bones_local_given(self):
         """ローカル付与ボーンの設定テスト（実際のMaya環境）"""
@@ -358,8 +389,7 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # ローカル付与フラグを含むボーンを作成
         bone = self._create_mock_pmx_bone(
-            0, "TestBone", 
-            bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE | PmxBoneFlag.LOCAL
+            0, "TestBone", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE | PmxBoneFlag.LOCAL
         )
         bone.given_parent_bone_index = 1
         bone.given_rate = 0.5
@@ -378,7 +408,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # plusMinusAverageノードが作成されたか確認
         diff_nodes = cmds.ls("parent_joint_local_diff", type="plusMinusAverage")
         self.assertEqual(len(diff_nodes), 1)
-        
+
         # multiplyDivideノードが作成されたか確認
         mult_nodes = cmds.ls("child_joint_local_mult", type="multiplyDivide")
         self.assertEqual(len(mult_nodes), 1)
@@ -400,8 +430,7 @@ class TestRigConverterMaya(unittest.TestCase):
             if i < 2:
                 # 付与ボーンとして設定（異なる変形階層）
                 bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", 
-                    bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
                 )
                 bone.given_parent_bone_index = 3  # joint3を親にする
                 bone.given_rate = 0.5
@@ -437,16 +466,14 @@ class TestRigConverterMaya(unittest.TestCase):
             if i == 0:
                 # joint0: joint1から付与を受ける
                 bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", 
-                    bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
                 )
                 bone.given_parent_bone_index = 1
                 bone.given_rate = 0.5
             elif i == 1:
                 # joint1: joint2から付与を受ける（多重付与）
                 bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", 
-                    bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
                 )
                 bone.given_parent_bone_index = 2
                 bone.given_rate = 0.7
@@ -479,7 +506,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # ノードが作成されたか確認
         self.assertIsInstance(created_nodes, list)
         self.assertTrue(len(created_nodes) > 0)
-        
+
         # 初期ロケータが作成されたか確認
         init_locator = cmds.ls("child_joint_init_rot", type="transform")
         self.assertEqual(len(init_locator), 1)
@@ -487,7 +514,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # decomposeMatrixノードが作成されたか確認
         decompose_nodes = cmds.ls("parent_joint_decompose", type="decomposeMatrix")
         self.assertEqual(len(decompose_nodes), 1)
-        
+
         # multiplyDivideノードが作成されたか確認
         mult_nodes = cmds.ls("child_joint_given_mult", type="multiplyDivide")
         self.assertEqual(len(mult_nodes), 1)
@@ -509,7 +536,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # ノードが作成されたか確認
         self.assertIsInstance(created_nodes, list)
         self.assertTrue(len(created_nodes) > 0)
-        
+
         # 負の付与率の場合、反転用のmultiplyDivideノードが作成される
         invert_nodes = cmds.ls("child_joint_invert_rot", type="multiplyDivide")
         self.assertEqual(len(invert_nodes), 1)

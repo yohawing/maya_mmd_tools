@@ -1,3 +1,4 @@
+from tkinter import W
 from typing import List, Dict, Optional
 
 import maya.cmds as cmds
@@ -534,12 +535,20 @@ class RigConverter:
             if link["angle_limit"] and link["limit_min"] and link["limit_max"]:
                 joint = link["bone"]
 
-                # MMDの角度制限は度数法、Mayaはラジアン
+                # X軸の正負を反転（MMDとMayaの座標系の違いに対応）
+                limit_min = list(link["limit_min"])
+                limit_max = list(link["limit_max"])
+
+                # X軸の値の符号を反転
+                limit_min[0] = -limit_min[0]
+                limit_max[0] = -limit_max[0]
+
                 # limit_min/maxは既にラジアンで保存されている
+                # maya_utils.set_joint_limitsがラジアンから度数への変換を行う
                 maya_utils.set_joint_limits(
                     joint=joint,
-                    limit_min=link["limit_min"],
-                    limit_max=link["limit_max"],
+                    limit_min=limit_min,
+                    limit_max=limit_max,
                     enable_limits=True,
                 )
 
