@@ -1,4 +1,4 @@
-from ..qt_compat import QWidget, QVBoxLayout, QFormLayout, QLineEdit
+from ..qt_compat import QWidget, QVBoxLayout, QFormLayout, QLineEdit, QGroupBox
 from ..base_tab import BaseTab
 
 class InfoTab(BaseTab):

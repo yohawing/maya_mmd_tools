@@ -7,9 +7,10 @@ from ..qt_compat import (
     QLineEdit,
     QPushButton,
     QCheckBox,
-    QDoubleValidator
+    QDoubleValidator,
 )
 from ..base_tab import BaseTab
+
 
 class ImportExportTab(BaseTab):
     def __init__(self, parent=None):

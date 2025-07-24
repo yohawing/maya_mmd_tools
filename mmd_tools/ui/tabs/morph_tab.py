@@ -1,5 +1,16 @@
-from ..qt_compat import QWidget, QVBoxLayout, QListWidget, QSlider, Qt, QHBoxLayout, QGroupBox, QFormLayout, QLineEdit
+from ..qt_compat import (
+    QWidget,
+    QVBoxLayout,
+    QListWidget,
+    QSlider,
+    Qt,
+    QHBoxLayout,
+    QGroupBox,
+    QFormLayout,
+    QLineEdit,
+)
 from ..base_tab import BaseTab
+
 
 class MorphTab(BaseTab):
     def __init__(self, parent=None):

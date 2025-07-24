@@ -1,5 +1,13 @@
-from ..qt_compat import QWidget, QVBoxLayout, QTabWidget
+from ..qt_compat import (
+    QWidget,
+    QVBoxLayout,
+    QTabWidget,
+    QGroupBox,
+    QHBoxLayout,
+    QListWidget,
+)
 from ..base_tab import BaseTab
+
 
 class PhysicsTab(BaseTab):
     def __init__(self, parent=None):

@@ -4,9 +4,10 @@ from ..qt_compat import (
     QListWidget,
     QPushButton,
     QGroupBox,
-    QHBoxLayout
+    QHBoxLayout,
 )
 from ..base_tab import BaseTab
+
 
 class DisplayPaneTab(BaseTab):
     def __init__(self, parent=None):

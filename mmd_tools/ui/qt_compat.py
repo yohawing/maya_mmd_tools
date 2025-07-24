@@ -31,6 +31,7 @@ try:
         QTreeWidget,
         QTreeWidgetItem,
     )
+
     QT_BINDING = "PySide6"
 
 except ImportError:
@@ -59,4 +60,5 @@ except ImportError:
         QTreeWidget,
         QTreeWidgetItem,
     )
+
     QT_BINDING = "PySide2"

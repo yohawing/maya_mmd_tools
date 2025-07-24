@@ -6,19 +6,23 @@ logger = get_logger(__name__)
 class SettingsPresenter:
     def __init__(self, view):
         self.view = view
+        self._signals_connected = False
         self.load_settings()
         self.connect_signals()
 
     def connect_signals(self):
-        self.view.language_combo.currentTextChanged.connect(self.save_settings)
-        self.view.log_level_combo.currentTextChanged.connect(self.save_settings)
-        self.view.import_physics_check.stateChanged.connect(self.save_settings)
+        if not self._signals_connected:
+            self.view.language_combo.currentTextChanged.connect(self.save_settings)
+            self.view.log_level_combo.currentTextChanged.connect(self.save_settings)
+            self.view.import_physics_check.stateChanged.connect(self.save_settings)
+            self._signals_connected = True
 
     def load_settings(self):
         # Disconnect signals to prevent feedback loops
-        self.view.language_combo.currentTextChanged.disconnect(self.save_settings)
-        self.view.log_level_combo.currentTextChanged.disconnect(self.save_settings)
-        self.view.import_physics_check.stateChanged.disconnect(self.save_settings)
+        if self._signals_connected:
+            self.view.language_combo.currentTextChanged.disconnect(self.save_settings)
+            self.view.log_level_combo.currentTextChanged.disconnect(self.save_settings)
+            self.view.import_physics_check.stateChanged.disconnect(self.save_settings)
 
         language = settings.get("general.language", "English")
         self.view.language_combo.setCurrentText(language)
@@ -30,9 +34,7 @@ class SettingsPresenter:
         self.view.import_physics_check.setChecked(import_physics)
 
         # Reconnect signals
-        self.view.language_combo.currentTextChanged.connect(self.save_settings)
-        self.view.log_level_combo.currentTextChanged.connect(self.save_settings)
-        self.view.import_physics_check.stateChanged.connect(self.save_settings)
+        self.connect_signals()
 
     def save_settings(self):
         settings.set("general.language", self.view.language_combo.currentText())

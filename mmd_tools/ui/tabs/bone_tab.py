@@ -7,9 +7,10 @@ from ..qt_compat import (
     QTreeWidgetItem,
     QFormLayout,
     QLineEdit,
-    QHBoxLayout
+    QHBoxLayout,
 )
 from ..base_tab import BaseTab
+
 
 class BoneTab(BaseTab):
     def __init__(self, parent=None):

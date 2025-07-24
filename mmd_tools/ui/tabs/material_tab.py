@@ -1,5 +1,14 @@
-from ..qt_compat import QWidget, QVBoxLayout, QListWidget
+from ..qt_compat import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QListWidget,
+    QGroupBox,
+    QFormLayout,
+    QLineEdit,
+)
 from ..base_tab import BaseTab
+
 
 class MaterialTab(BaseTab):
     def __init__(self, parent=None):

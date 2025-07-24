@@ -4,9 +4,10 @@ from ..qt_compat import (
     QFormLayout,
     QCheckBox,
     QComboBox,
-    QLineEdit
+    QLineEdit,
 )
 from ..base_tab import BaseTab
+
 
 class SettingsTab(BaseTab):
     def __init__(self, parent=None):

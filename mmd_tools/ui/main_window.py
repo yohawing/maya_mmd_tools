@@ -21,19 +21,20 @@ from .presenters.physics_presenter import PhysicsPresenter
 from .tabs.settings_tab import SettingsTab
 from .presenters.settings_presenter import SettingsPresenter
 
+
 class MainWindow(QMainWindow):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("MMD Tools")
 
         self.tab_widget = QTabWidget()
-        self.tab_widget.setObjectName("mainTabWidget") # Add objectName
+        self.tab_widget.setObjectName("mainTabWidget")  # Add objectName
         self.setCentralWidget(self.tab_widget)
 
         self.log_viewer = LogViewer()
-        self.log_viewer.setObjectName("logViewer") # Add objectName
+        self.log_viewer.setObjectName("logViewer")  # Add objectName
         log_dock_widget = QDockWidget("Log", self)
-        log_dock_widget.setObjectName("logDockWidget") # Add objectName
+        log_dock_widget.setObjectName("logDockWidget")  # Add objectName
         self.addDockWidget(Qt.BottomDockWidgetArea, log_dock_widget)
 
         self.load_stylesheet()
@@ -117,9 +118,21 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(settings_tab, "Settings")
 
         # Connect presenters
-        self.import_export_presenter.model_imported.connect(self.info_presenter.on_model_imported)
-        self.import_export_presenter.model_imported.connect(self.material_presenter.on_model_imported)
-        self.import_export_presenter.model_imported.connect(self.bone_presenter.on_model_imported)
-        self.import_export_presenter.model_imported.connect(self.morph_presenter.on_model_imported)
-        self.import_export_presenter.model_imported.connect(self.display_pane_presenter.on_model_imported)
-        self.import_export_presenter.model_imported.connect(self.physics_presenter.on_model_imported)
+        self.import_export_presenter.model_imported.connect(
+            self.info_presenter.on_model_imported
+        )
+        self.import_export_presenter.model_imported.connect(
+            self.material_presenter.on_model_imported
+        )
+        self.import_export_presenter.model_imported.connect(
+            self.bone_presenter.on_model_imported
+        )
+        self.import_export_presenter.model_imported.connect(
+            self.morph_presenter.on_model_imported
+        )
+        self.import_export_presenter.model_imported.connect(
+            self.display_pane_presenter.on_model_imported
+        )
+        self.import_export_presenter.model_imported.connect(
+            self.physics_presenter.on_model_imported
+        )
