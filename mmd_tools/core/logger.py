@@ -10,9 +10,9 @@ import os
 import sys
 from typing import Optional, Dict, Any
 
+from mmd_tools.core.settings import settings
 
 from .log_formatters import MayaFormatter, CompactFormatter
-from ..settings import settings
 
 
 def is_maya_environment() -> bool:
@@ -75,10 +75,6 @@ class MayaLogger:
         compact_formatter = CompactFormatter(
             self.LOGGING_CONFIG["formatters"]["compact"]
         )
-
-        
-
-        
 
         # Maya Dialogハンドラー（ERROR/CRITICALレベル用）
         # if is_maya_environment():

@@ -8,7 +8,7 @@ from mmd_tools.core import maya_utils
 from mmd_tools.core import utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.validation.bone_validator import BoneValidator
-from mmd_tools.settings import settings
+from mmd_tools.core.settings import settings
 
 
 class RigConverter:

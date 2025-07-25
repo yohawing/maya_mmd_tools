@@ -3,7 +3,7 @@ import os
 from maya import cmds
 from typing import Tuple
 
-from mmd_tools import settings
+from mmd_tools.core.settings import settings
 from mmd_tools.core import maya_utils
 from mmd_tools.core.pmd_parser import PmdParser
 from mmd_tools.core.pmx_parser import PmxParser

@@ -4,7 +4,7 @@ from enum import Enum
 from typing import Tuple
 
 from mmd_tools.core import utils
-from mmd_tools.settings import get_settings
+from mmd_tools.core.settings import get_settings
 
 settings = get_settings()
 

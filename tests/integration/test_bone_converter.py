@@ -2,7 +2,7 @@ import os
 
 from maya import cmds
 
-from mmd_tools import settings
+from mmd_tools.core.settings import settings
 from mmd_tools.converters import BoneConverter, MeshConverter
 from mmd_tools.core import PmdParser, PmxParser, maya_utils
 from tests.common.maya_test_base import MayaTestBase

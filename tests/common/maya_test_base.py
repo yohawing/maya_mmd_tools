@@ -5,7 +5,7 @@ import uuid
 import logging
 
 from maya import cmds
-from mmd_tools import settings
+from mmd_tools.core.settings import settings
 
 from .test_base import TestBase
 

@@ -5,7 +5,7 @@ import maya.cmds as cmds
 
 from mmd_tools.converters.rig_converter import RigConverter
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-from mmd_tools.settings import settings
+from mmd_tools.core.settings import settings
 
 
 class TestRigConverterMaya(unittest.TestCase):

@@ -3,7 +3,7 @@ import struct
 
 from mmd_tools.core import utils
 from mmd_tools.core.pmx_data.ik_link import PmxIKLink
-from mmd_tools.settings import get_settings
+from mmd_tools.core.settings import get_settings
 
 settings = get_settings()
 

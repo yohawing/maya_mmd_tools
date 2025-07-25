@@ -4,18 +4,18 @@
 
 ## 概要
 
-`mmd_tools/config/settings.py` にある `Settings` クラスは、MMD Tools プラグインのユーザー設定可能なすべての項目を管理する責任を負います。これにより、Mayaのセッションをまたいで設定を一元的かつ永続的に保存・アクセスする方法を提供します。
+`mmd_tools/core/settings.py` にある `Settings` クラスは、MMD Tools プラグインのユーザー設定可能なすべての項目を管理する責任を負います。これにより、Mayaのセッションをまたいで設定を一元的かつ永続的に保存・アクセスする方法を提供します。
 
 - **永続性:** 設定はMayaの `optionVar` コマンドを使用して保存されるため、Mayaを閉じて再度開いた後も保持されます。
 - **シングルトンパターン:** このモジュールは `settings` という名前の `Settings` クラスの単一のグローバルアクセス可能なインスタンスを提供します。これにより、プラグインのすべての部分が同じ設定で動作することが保証されます。
-- **デフォルト値:** デフォルト設定は `mmd_tools/config/default_settings.json` ファイルから読み込まれます。ユーザーによって設定が変更されていない場合は、このファイルの値が使用されます。
+- **デフォルト値:** デフォルト設定は `mmd_tools/core/default_settings.json` ファイルから読み込まれます。ユーザーによって設定が変更されていない場合は、このファイルの値が使用されます。
 
 ## 使用方法
 
 プラグインのどこからでも設定にアクセスまたは変更するには、まずグローバルな `settings` オブジェクトをインポートします。
 
 ```python
-from mmd_tools.config.settings import settings
+from mmd_tools.core.settings import settings
 ```
 
 ### 設定の取得

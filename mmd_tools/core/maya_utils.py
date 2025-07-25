@@ -4,7 +4,7 @@ from maya import cmds
 from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
-from mmd_tools.settings import settings
+from mmd_tools.core.settings import settings
 
 from . import utils
 from .logger import get_logger
@@ -256,7 +256,7 @@ def set_custom_attributes(object_name, attributes):
     for attr_name, attr_value in attributes.items():
         attr_type = type(attr_value).__name__
         actual_attr_type = attr_type  # 実際に使用する型を保存
-        
+
         # アトリビュートが存在しない場合は作成
         if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
             if attr_type in ["int", "float", "bool"]:
@@ -278,13 +278,15 @@ def set_custom_attributes(object_name, attributes):
                 elif all(isinstance(x, int) for x in attr_value):
                     actual_attr_type = "longArray"
                 add_typed_attribute(object_name, attr_name, actual_attr_type)
-        
+
         # 値を設定（既存・新規両方に対応）
         try:
             if attr_type in ["int", "float", "bool", "str", "bytes"]:
                 set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
             elif attr_type in ["list", "tuple"]:
-                set_attribute_value_api(object_name, attr_name, attr_value, actual_attr_type)
+                set_attribute_value_api(
+                    object_name, attr_name, attr_value, actual_attr_type
+                )
         except Exception as e:
             logger.warning(f"Failed to set attribute {attr_name} on {object_name}: {e}")
 
@@ -706,16 +708,16 @@ def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
 def create_ik_handle(start_joint, end_joint, solver="ikRPsolver", name=None):
     """
     IKハンドルを作成する。
-    
+
     Args:
         start_joint (str): IKチェーンの開始ジョイント名
         end_joint (str): IKチェーンの終了ジョイント名
         solver (str): 使用するIKソルバー ("ikRPsolver", "ikSCsolver", "ikSplineSolver")
         name (str): IKハンドルの名前（Noneの場合は自動生成）
-        
+
     Returns:
         tuple: (ik_handle, effector) IKハンドル名とエフェクター名のタプル
-        
+
     Raises:
         ValueError: ジョイントが存在しない場合やソルバーが無効な場合
     """
@@ -724,27 +726,29 @@ def create_ik_handle(start_joint, end_joint, solver="ikRPsolver", name=None):
         raise ValueError(f"Start joint '{start_joint}' does not exist")
     if not cmds.objExists(end_joint):
         raise ValueError(f"End joint '{end_joint}' does not exist")
-    
+
     # ソルバーの妥当性確認
     valid_solvers = ["ikRPsolver", "ikSCsolver", "ikSplineSolver"]
     if solver not in valid_solvers:
         raise ValueError(f"Invalid solver '{solver}'. Must be one of: {valid_solvers}")
-    
+
     try:
         # IKハンドルの作成
         ik_handle_result = cmds.ikHandle(
             startJoint=start_joint,
             endEffector=end_joint,
             solver=solver,
-            name=name if name else f"{end_joint}_ikHandle"
+            name=name if name else f"{end_joint}_ikHandle",
         )
-        
+
         ik_handle = ik_handle_result[0]
         effector = ik_handle_result[1]
-        
-        logger.info(f"Created IK handle '{ik_handle}' from '{start_joint}' to '{end_joint}'")
+
+        logger.info(
+            f"Created IK handle '{ik_handle}' from '{start_joint}' to '{end_joint}'"
+        )
         return ik_handle, effector
-        
+
     except Exception as e:
         logger.error(f"Failed to create IK handle: {e}")
         raise
@@ -753,52 +757,52 @@ def create_ik_handle(start_joint, end_joint, solver="ikRPsolver", name=None):
 def set_joint_limits(joint, limit_min=None, limit_max=None, enable_limits=True):
     """
     ジョイントの回転制限を設定する。
-    
+
     Args:
         joint (str): ジョイント名
         limit_min (list): 最小回転制限 [x, y, z] ラジアン単位
         limit_max (list): 最大回転制限 [x, y, z] ラジアン単位
         enable_limits (bool): 制限を有効にするかどうか
-        
+
     Returns:
         bool: 設定が成功したかどうか
     """
     if not cmds.objExists(joint):
         logger.error(f"Joint '{joint}' does not exist")
         return False
-        
+
     if cmds.nodeType(joint) != "joint":
         logger.error(f"'{joint}' is not a joint node")
         return False
-    
+
     try:
         import math
-        
+
         # 回転制限の設定（ラジアンから度数に変換）
         if limit_min:
             cmds.setAttr(f"{joint}.minRotXLimit", math.degrees(limit_min[0]))
             cmds.setAttr(f"{joint}.minRotYLimit", math.degrees(limit_min[1]))
             cmds.setAttr(f"{joint}.minRotZLimit", math.degrees(limit_min[2]))
-            
+
         if limit_max:
             cmds.setAttr(f"{joint}.maxRotXLimit", math.degrees(limit_max[0]))
             cmds.setAttr(f"{joint}.maxRotYLimit", math.degrees(limit_max[1]))
             cmds.setAttr(f"{joint}.maxRotZLimit", math.degrees(limit_max[2]))
-        
+
         # 制限の有効化/無効化
         if limit_min:
             cmds.setAttr(f"{joint}.minRotXLimitEnable", enable_limits)
             cmds.setAttr(f"{joint}.minRotYLimitEnable", enable_limits)
             cmds.setAttr(f"{joint}.minRotZLimitEnable", enable_limits)
-            
+
         if limit_max:
             cmds.setAttr(f"{joint}.maxRotXLimitEnable", enable_limits)
             cmds.setAttr(f"{joint}.maxRotYLimitEnable", enable_limits)
             cmds.setAttr(f"{joint}.maxRotZLimitEnable", enable_limits)
-        
+
         logger.info(f"Set joint limits for '{joint}'")
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to set joint limits for '{joint}': {e}")
         return False
@@ -807,12 +811,12 @@ def set_joint_limits(joint, limit_min=None, limit_max=None, enable_limits=True):
 def create_pole_vector_constraint(ik_handle, pole_vector_object, maintain_offset=True):
     """
     IKハンドルにポールベクターコンストレイントを作成する。
-    
+
     Args:
         ik_handle (str): IKハンドル名
         pole_vector_object (str): ポールベクターコントロールオブジェクト名
         maintain_offset (bool): オフセットを維持するかどうか
-        
+
     Returns:
         str: 作成されたコンストレイントノード名
     """
@@ -820,33 +824,31 @@ def create_pole_vector_constraint(ik_handle, pole_vector_object, maintain_offset
         raise ValueError(f"IK handle '{ik_handle}' does not exist")
     if not cmds.objExists(pole_vector_object):
         raise ValueError(f"Pole vector object '{pole_vector_object}' does not exist")
-    
+
     try:
         constraint = cmds.poleVectorConstraint(
-            pole_vector_object, 
-            ik_handle, 
-            maintainOffset=maintain_offset
+            pole_vector_object, ik_handle, maintainOffset=maintain_offset
         )[0]
-        
-        logger.info(f"Created pole vector constraint from '{pole_vector_object}' to '{ik_handle}'")
+
+        logger.info(
+            f"Created pole vector constraint from '{pole_vector_object}' to '{ik_handle}'"
+        )
         return constraint
-        
+
     except Exception as e:
         logger.error(f"Failed to create pole vector constraint: {e}")
         raise
 
 
-
-
 def create_matrix_from_axes(x_axis, y_axis, z_axis):
     """
     3つの軸ベクトルから回転行列を作成する。
-    
+
     Args:
         x_axis (list): X軸ベクトル [x, y, z]
         y_axis (list): Y軸ベクトル [x, y, z]
         z_axis (list): Z軸ベクトル [x, y, z]
-        
+
     Returns:
         om.MMatrix: 回転行列
     """
@@ -866,10 +868,10 @@ def create_matrix_from_axes(x_axis, y_axis, z_axis):
 def matrix_to_euler(matrix):
     """
     回転行列をオイラー角に変換する。
-    
+
     Args:
         matrix (om.MMatrix): 回転行列
-        
+
     Returns:
         list: オイラー角 [x, y, z] 度数法
     """
@@ -877,22 +879,21 @@ def matrix_to_euler(matrix):
     euler = transform_matrix.rotation(asQuaternion=False)
     # ラジアンから度に変換
     import math
-    return [
-        math.degrees(euler.x),
-        math.degrees(euler.y),
-        math.degrees(euler.z)
-    ]
+
+    return [math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z)]
 
 
-def create_animation_curves(node_name, attributes, tangent_type=oma.MFnAnimCurve.kTangentLinear):
+def create_animation_curves(
+    node_name, attributes, tangent_type=oma.MFnAnimCurve.kTangentLinear
+):
     """
     指定したノードの属性にアニメーションカーブを作成する。
-    
+
     Args:
         node_name (str): ノード名
         attributes (list): アトリビュート名のリスト
         tangent_type: タンジェントタイプ（デフォルト: 線形）
-        
+
     Returns:
         dict: アトリビュート名をキー、MFnAnimCurveオブジェクトを値とする辞書
     """
@@ -901,7 +902,7 @@ def create_animation_curves(node_name, attributes, tangent_type=oma.MFnAnimCurve
     sel_list.add(node_name)
     node = sel_list.getDependNode(0)
     fn_depend = om.MFnDependencyNode(node)
-    
+
     # 既存のアニメーションカーブをクリア
     for attr in attributes:
         connections = cmds.listConnections(
@@ -909,7 +910,7 @@ def create_animation_curves(node_name, attributes, tangent_type=oma.MFnAnimCurve
         )
         if connections:
             cmds.delete(connections)
-    
+
     # アニメーションカーブを作成
     curves = {}
     for attr in attributes:
@@ -917,14 +918,19 @@ def create_animation_curves(node_name, attributes, tangent_type=oma.MFnAnimCurve
         plug = fn_depend.findPlug(attr, False)
         curve.create(plug)
         curves[attr] = curve
-        
+
     return curves
 
 
-def set_keyframes_batch(curves, frame_data_list, value_generator_func, tangent_type=oma.MFnAnimCurve.kTangentLinear):
+def set_keyframes_batch(
+    curves,
+    frame_data_list,
+    value_generator_func,
+    tangent_type=oma.MFnAnimCurve.kTangentLinear,
+):
     """
     複数のアニメーションカーブに一括でキーフレームを設定する。
-    
+
     Args:
         curves (dict): アトリビュート名をキー、MFnAnimCurveオブジェクトを値とする辞書
         frame_data_list (list): フレームデータのリスト
@@ -933,66 +939,74 @@ def set_keyframes_batch(curves, frame_data_list, value_generator_func, tangent_t
         tangent_type: タンジェントタイプ（デフォルト: 線形）
     """
     import math
-    
+
     for frame_data in frame_data_list:
         # 値を生成
         values = value_generator_func(frame_data)
-        
+
         # フレーム番号を取得
         if hasattr(frame_data, "frame_number"):
             frame_num = frame_data.frame_number
         else:
             frame_num = frame_data.get("frame_number", 0)
-            
+
         # MTimeオブジェクトを作成
         time = om.MTime(frame_num, om.MTime.uiUnit())
-        
+
         # 各カーブにキーを設定
         for attr_name, curve in curves.items():
             if attr_name in values:
                 value = values[attr_name]
-                
+
                 # 回転属性の場合はラジアンに変換
                 if attr_name in ["rotateX", "rotateY", "rotateZ"]:
                     value = math.radians(value)
-                    
+
                 curve.addKey(time, value, tangent_type, tangent_type)
 
 
-def set_quaternion_keyframe(node_name, quaternion, frame_number, tangent_type=oma.MFnAnimCurve.kTangentLinear):
+def set_quaternion_keyframe(
+    node_name, quaternion, frame_number, tangent_type=oma.MFnAnimCurve.kTangentLinear
+):
     """
     クォータニオンを使用して回転キーフレームを設定する。
-    
+
     Args:
         node_name (str): ノード名
         quaternion (list): クォータニオン [x, y, z, w]
         frame_number (int): フレーム番号
         tangent_type: タンジェントタイプ
-        
+
     Returns:
         bool: 成功したかどうか
     """
     try:
         # MQuaternionオブジェクトを作成
-        quat = om.MQuaternion(quaternion[0], quaternion[1], quaternion[2], quaternion[3])
+        quat = om.MQuaternion(
+            quaternion[0], quaternion[1], quaternion[2], quaternion[3]
+        )
         quat = quat.normal()  # 正規化
-        
+
         # オイラー角に変換
         euler = quat.asEulerRotation()
-        
+
         # MTimeオブジェクトを作成
         time = om.MTime(frame_number, om.MTime.uiUnit())
-        
+
         # ノードを取得
         sel_list = om.MSelectionList()
         sel_list.add(node_name)
         node = sel_list.getDependNode(0)
         fn_depend = om.MFnDependencyNode(node)
-        
+
         # 回転プラグを取得/作成
-        for axis, value in [("rotateX", euler.x), ("rotateY", euler.y), ("rotateZ", euler.z)]:
+        for axis, value in [
+            ("rotateX", euler.x),
+            ("rotateY", euler.y),
+            ("rotateZ", euler.z),
+        ]:
             plug = fn_depend.findPlug(axis, False)
-            
+
             # 既存のアニメーションカーブを取得または作成
             anim_curve = None
             if plug.isConnected():
@@ -1001,16 +1015,16 @@ def set_quaternion_keyframe(node_name, quaternion, frame_number, tangent_type=om
                     curve_node = connections[0].node()
                     if curve_node.hasFn(om.MFn.kAnimCurve):
                         anim_curve = oma.MFnAnimCurve(curve_node)
-            
+
             if not anim_curve:
                 anim_curve = oma.MFnAnimCurve()
                 anim_curve.create(plug)
-            
+
             # キーフレームを追加
             anim_curve.addKey(time, value, tangent_type, tangent_type)
-            
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to set quaternion keyframe: {e}")
         return False
@@ -1020,24 +1034,24 @@ def set_transform_matrix_keyframe(node_name, matrix, frame_number):
     """
     変換行列を使用してキーフレームを設定する。
     クォータニオンを含む完全な変換を設定できる。
-    
+
     Args:
         node_name (str): ノード名
         matrix (om.MMatrix): 変換行列
         frame_number (int): フレーム番号
-        
+
     Returns:
         bool: 成功したかどうか
     """
     try:
         # MTransformationMatrixを作成
         transform_matrix = om.MTransformationMatrix(matrix)
-        
+
         # 位置、回転、スケールを取得
         translation = transform_matrix.translation(om.MSpace.kWorld)
         rotation = transform_matrix.rotation(asQuaternion=False)
         scale = transform_matrix.scale(om.MSpace.kWorld)
-        
+
         # キーフレーム設定
         attrs = {
             "translateX": translation.x,
@@ -1048,20 +1062,20 @@ def set_transform_matrix_keyframe(node_name, matrix, frame_number):
             "rotateZ": rotation.z,
             "scaleX": scale[0],
             "scaleY": scale[1],
-            "scaleZ": scale[2]
+            "scaleZ": scale[2],
         }
-        
+
         time = om.MTime(frame_number, om.MTime.uiUnit())
-        
+
         # ノードを取得
         sel_list = om.MSelectionList()
         sel_list.add(node_name)
         node = sel_list.getDependNode(0)
         fn_depend = om.MFnDependencyNode(node)
-        
+
         for attr_name, value in attrs.items():
             plug = fn_depend.findPlug(attr_name, False)
-            
+
             # アニメーションカーブを取得または作成
             anim_curve = None
             if plug.isConnected():
@@ -1070,15 +1084,20 @@ def set_transform_matrix_keyframe(node_name, matrix, frame_number):
                     curve_node = connections[0].node()
                     if curve_node.hasFn(om.MFn.kAnimCurve):
                         anim_curve = oma.MFnAnimCurve(curve_node)
-            
+
             if not anim_curve:
                 anim_curve = oma.MFnAnimCurve()
                 anim_curve.create(plug)
-            
-            anim_curve.addKey(time, value, oma.MFnAnimCurve.kTangentLinear, oma.MFnAnimCurve.kTangentLinear)
-            
+
+            anim_curve.addKey(
+                time,
+                value,
+                oma.MFnAnimCurve.kTangentLinear,
+                oma.MFnAnimCurve.kTangentLinear,
+            )
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to set transform matrix keyframe: {e}")
         return False
@@ -1087,67 +1106,69 @@ def set_transform_matrix_keyframe(node_name, matrix, frame_number):
 def find_all_mmd_models():
     """
     シーン内のすべてのMMDモデルのルートノードを検索します。
-    
+
     Returns:
         list: MMDモデルのルートノード名のリスト
     """
     from ..core.constants import SCENE_ROOT_SUFFIX
-    
+
     # *_rootという名前のトランスフォームノードを検索
     all_transforms = cmds.ls("*{}".format(SCENE_ROOT_SUFFIX), type="transform")
-    
+
     mmd_models = []
     for transform in all_transforms:
         # MMD関連のアトリビュートがあるか確認
-        if (cmds.attributeQuery("mmd_model_name_jp", node=transform, exists=True) or
-            cmds.attributeQuery("mmd_model_name_en", node=transform, exists=True)):
+        if cmds.attributeQuery(
+            "mmd_model_name_jp", node=transform, exists=True
+        ) or cmds.attributeQuery("mmd_model_name_en", node=transform, exists=True):
             mmd_models.append(transform)
-    
+
     return sorted(mmd_models)  # 名前順でソート
 
 
 def get_parent_mmd_root(node_name):
     """
     指定されたノードの親階層からMMDモデルのルートノードを検索します。
-    
+
     Args:
         node_name (str): 検索開始ノード名
-        
+
     Returns:
         str: MMDモデルのルートノード名。見つからない場合はNone
     """
     from ..core.constants import SCENE_ROOT_SUFFIX
-    
+
     try:
         # 現在のノードから親を辿る
         current = node_name
         while current:
             # ルートサフィックスを持ち、MMDアトリビュートがあるか確認
-            if (current.endswith(SCENE_ROOT_SUFFIX) and 
-                (cmds.attributeQuery("mmd_model_name_jp", node=current, exists=True) or
-                 cmds.attributeQuery("mmd_model_name_en", node=current, exists=True))):
+            if current.endswith(SCENE_ROOT_SUFFIX) and (
+                cmds.attributeQuery("mmd_model_name_jp", node=current, exists=True)
+                or cmds.attributeQuery("mmd_model_name_en", node=current, exists=True)
+            ):
                 return current
-            
+
             # 親ノードを取得
             parents = cmds.listRelatives(current, parent=True, fullPath=True)
             if parents:
                 current = parents[0]
             else:
                 break
-                
+
     except Exception as e:
         logger.warning(f"Failed to find parent MMD root for {node_name}: {e}")
-    
+
     return None
 
 
 def get_mmd_model_display_name(root_node):
     """
     MMDモデルの表示名を取得します。
-    
+
     Args:
         root_node (str): MMDモデルのルートノード名
-        
+
     Returns:
         str: 表示名（日本語名があれば優先、なければノード名）
     """
@@ -1156,19 +1177,16 @@ def get_mmd_model_display_name(root_node):
             name_jp = cmds.getAttr(f"{root_node}.mmd_model_name_jp")
             if name_jp:
                 return name_jp
-        
+
         if cmds.attributeQuery("mmd_model_name_en", node=root_node, exists=True):
             name_en = cmds.getAttr(f"{root_node}.mmd_model_name_en")
             if name_en:
                 return name_en
-                
+
     except Exception:
         pass
-    
+
     # アトリビュートがない場合はノード名から_rootを除いて返す
     from ..core.constants import SCENE_ROOT_SUFFIX
+
     return root_node.replace(SCENE_ROOT_SUFFIX, "")
-
-
-
-

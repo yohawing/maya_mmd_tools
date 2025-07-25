@@ -10,7 +10,7 @@ import os
 import unittest
 
 from mmd_tools.core.logger import get_logger, is_maya_environment
-from mmd_tools.settings import settings
+from mmd_tools.core.settings import settings
 from tests.common.maya_test_base import MayaTestBase
 
 

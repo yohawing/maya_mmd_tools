@@ -1,9 +1,7 @@
 import struct
 
 from mmd_tools.core import utils
-from mmd_tools.settings import get_settings
-
-settings = get_settings()
+from mmd_tools.core.settings import settings
 
 
 class PmdHeader:
