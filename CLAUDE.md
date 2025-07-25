@@ -140,6 +140,32 @@ logger.info("情報メッセージ")
 logger.warning("警告メッセージ")
 logger.error("エラーメッセージ")
 logger.critical("重大なエラーメッセージ")
+
+```
+
+### よく使うUtility関数
+
+#### `mmd_tools.core.maya_utils`
+
+
+OpenMaya API 2.0を使用してアトリビュート値を設定します。
+cmds.setAttrの代わりに使用します。
+
+```python
+maya_utils.set_attribute_value_api("pCube1", "customAttr1", 1.0, "float")
+maya_utils.set_attribute_value_api("pCube1", "customAttr2", "example", "str")
+maya_utils.set_attribute_value_api("pCube1", "customAttr3", [0.5, 0.5, 0.5], "double3")
+```
+
+OpenMaya API 2.0を使用してアトリビュート値を取得します。
+cmds.getAttrの代わりに使用します。
+```
+value = maya_utils.get_attribute("pCube1", "customAttr1")
+```
+
+MayaオブジェクトにExtraAttributeを設定します。無ければ作成します。
+```
+maya_utils.set_custom_attributes("pCube1", {"floatAttr": 1.0, "doubleAttr": "test", "double3Attr": (1.0, 2.0, 3.0)})
 ```
 
 ### 注意事項

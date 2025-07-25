@@ -53,7 +53,7 @@ class Settings(UserDict):
     def _load_defaults_from_json(self):
         """デフォルトの設定をJSONファイルから読み込みます。"""
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        json_path = os.path.join(current_dir, "config", "default_settings.json")
+        json_path = os.path.join(current_dir, "..", "config", "default_settings.json")
 
         if not os.path.exists(json_path):
             return {}
@@ -93,7 +93,7 @@ class Settings(UserDict):
 
         # cmds.optionVarが利用可能かチェック
         try:
-            if not hasattr(cmds, 'optionVar'):
+            if not hasattr(cmds, "optionVar"):
                 return
         except:
             return
@@ -127,7 +127,7 @@ class Settings(UserDict):
 
         # cmds.optionVarが利用可能かチェック
         try:
-            if not hasattr(cmds, 'optionVar'):
+            if not hasattr(cmds, "optionVar"):
                 return
         except:
             return
@@ -207,9 +207,10 @@ def get_settings():
 # 遅延初期化のためのプロパティ風アクセス
 class SettingsProxy:
     """設定へのプロキシクラス（遅延初期化を実現）"""
+
     def __getattr__(self, name):
         return getattr(get_settings(), name)
-    
+
     def __setattr__(self, name, value):
         return setattr(get_settings(), name, value)
 

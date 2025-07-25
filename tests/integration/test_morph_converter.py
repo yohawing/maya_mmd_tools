@@ -1,10 +1,9 @@
-from pathlib import Path
-
 from maya import cmds
 
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils, pmd_parser, pmx_parser
 from tests.common.maya_test_base import MayaTestBase
+from tests.common.test_fixture_provider import TestFixtureProvider
 
 
 class TestMorphConverter(MayaTestBase):
@@ -22,10 +21,8 @@ class TestMorphConverter(MayaTestBase):
         # 新しいMayaシーンを作成
         cmds.file(new=True, force=True)
 
-        # テストデータのパスを設定
-        self.test_data_dir = Path(__file__).parent.parent / "data"
-        self.pmd_file_path = self.test_data_dir / "miku_v2.pmd"
-        self.pmx_file_path = self.test_data_dir / "Lumine" / "荧.pmx"
+        # TestFixtureProviderを初期化
+        self.fixture_provider = TestFixtureProvider()
 
     def tearDown(self):
         """
@@ -35,18 +32,17 @@ class TestMorphConverter(MayaTestBase):
         super().tearDown()
         # シーンをクリア
         cmds.file(new=True, force=True)
+        # 一時ファイルをクリーンアップ
+        self.fixture_provider.cleanup_temp_files()
 
     def test_convert_pmd_morphs(self):
         """PMDモーフがMayaに正しく変換されることをテストする。"""
-        # PMDファイルが存在するか確認
-        self.assertTrue(
-            self.pmd_file_path.exists(),
-            f"テストPMDファイルが見つかりません: {self.pmd_file_path}",
-        )
+        # TestFixtureProviderからPMDファイルパスを取得
+        pmd_file_path = self.fixture_provider.get_pmd_file('miku_v2')
 
         # PMDファイルをパース
         parser = pmd_parser.PmdParser()
-        pmd_data = parser.parse_file(str(self.pmd_file_path))
+        pmd_data = parser.parse_file(pmd_file_path)
 
         # モーフデータが存在することを確認
         self.assertIsNotNone(pmd_data.morphs, "PMDデータにモーフがありません")
@@ -54,9 +50,12 @@ class TestMorphConverter(MayaTestBase):
         if len(pmd_data.morphs) == 0:
             self.skipTest("PMDデータにモーフが含まれていません")
 
+        # ルートグループを作成
+        root_group = cmds.group(empty=True, name="test_pmd_root")
+        
         # テスト用のメッシュを作成（簡単な四角形）
-        converter = MeshConverter(self.pmd_file_path)
-        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data)
+        converter = MeshConverter(pmd_file_path)
+        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
 
         # MorphConverterを作成して変換を実行
         morph_converter = MorphConverter()
@@ -87,15 +86,12 @@ class TestMorphConverter(MayaTestBase):
 
     def test_convert_pmx_morphs(self):
         """PMXモーフがMayaに正しく変換されることをテストする。"""
-        # PMXファイルが存在するか確認
-        self.assertTrue(
-            self.pmx_file_path.exists(),
-            f"テストPMXファイルが見つかりません: {self.pmx_file_path}",
-        )
+        # TestFixtureProviderからPMXファイルパスを取得
+        pmx_file_path = self.fixture_provider.get_pmx_file('荧')
 
         # PMXファイルをパース
         parser = pmx_parser.PmxParser()
-        pmx_data = parser.parse_file(str(self.pmx_file_path))
+        pmx_data = parser.parse_file(pmx_file_path)
 
         # モーフデータが存在することを確認
         self.assertIsNotNone(pmx_data.morphs, "PMXデータにモーフがありません")
@@ -103,9 +99,12 @@ class TestMorphConverter(MayaTestBase):
         if len(pmx_data.morphs) == 0:
             self.skipTest("PMXデータにモーフが含まれていません")
 
+        # ルートグループを作成
+        root_group = cmds.group(empty=True, name="test_pmx_root")
+        
         # メッシュを作成
-        mesh_converter = MeshConverter(str(self.pmx_file_path))
-        mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(pmx_data)
+        mesh_converter = MeshConverter(pmx_file_path)
+        mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(pmx_data, root_group)
 
         # MorphConverterを作成して変換を実行
         morph_converter = MorphConverter()

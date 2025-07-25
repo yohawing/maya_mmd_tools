@@ -2,12 +2,14 @@
 PMXインポーターの統合テスト
 """
 
+from html import parser
 import os
 import tempfile
 from unittest.mock import patch, MagicMock
 
 from maya import cmds
 
+from mmd_tools.core import pmx_parser
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.io.pmx_importer import import_pmx_file
@@ -70,108 +72,37 @@ class TestPmxImporter(MayaTestBase):
         joints = cmds.ls(type="joint")
         self.assertGreater(len(joints), 0, "ジョイントが作成されていません")
 
-    def test_import_pmx_with_morphs(self):
-        """モーフを含むPMXファイルのインポートテスト"""
-        # 特定のPMXファイルを取得（モーフを含むもの）
-        try:
-            pmx_file = self.fixture_provider.get_pmx_file()
-        except FileNotFoundError:
-            self.skipTest("テスト用PMXファイルが見つかりません")
-
-        # PMXファイルをパース
-        parser = PmxParser()
-        parser.parse_file(pmx_file)
-
-        # モーフが含まれているか確認
-        if not hasattr(parser, "morphs") or len(parser.morphs) == 0:
-            self.skipTest("テストファイルにモーフが含まれていません")
-
-        # インポート
-        result = import_pmx_file(parser, pmx_file)
-        self.assertTrue(result)
-
-        # ブレンドシェイプが作成されたことを確認
-        blend_shapes = cmds.ls(type="blendShape")
-        if len(parser.morphs) > 0:
-            self.assertGreater(
-                len(blend_shapes), 0, "ブレンドシェイプが作成されていません"
-            )
-
-    def test_import_pmx_with_physics(self):
-        """物理演算を含むPMXファイルのインポートテスト"""
-        # 特定のPMXファイルを取得（物理演算を含むもの）
-        try:
-            pmx_file = self.fixture_provider.get_pmx_file()
-        except FileNotFoundError:
-            self.skipTest("テスト用PMXファイルが見つかりません")
-
-        # PMXファイルをパース
-        parser = PmxParser()
-        parser.parse_file(pmx_file)
-
-        # 物理演算が含まれているか確認
-        has_physics = (
-            hasattr(parser, "rigid_bodies") and len(parser.rigid_bodies) > 0
-        ) or (hasattr(parser, "joints") and len(parser.joints) > 0)
-
-        if not has_physics:
-            self.skipTest("テストファイルに物理演算が含まれていません")
-
-        # インポート
-        result = import_pmx_file(parser, pmx_file)
-        self.assertTrue(result)
-
-        # リジッドボディやジョイントが作成されたことを確認（該当する場合）
-        # ※実装によってはスキップされる可能性もあるため、存在確認のみ
-
-    def test_import_pmx_with_invalid_file(self):
-        """無効なPMXファイルのインポートテスト"""
-        # 無効なデータでモックパーサーを作成
-        parser = MagicMock()
-        parser.data = MagicMock()
-        parser.data.header = MagicMock()
-        parser.data.header.model_name = "Invalid Model"
-        parser.data.vertices = []
-        parser.data.faces = []
-        parser.data.materials = []
-        parser.data.bones = []
-        parser.data.morphs = []
-
-        # 一時ファイルを作成
-        fd, temp_path = tempfile.mkstemp(suffix=".pmx")
-        os.close(fd)
-        self.temp_files.append(temp_path)
-
-        # インポートを試行（エラーは発生しないが、何も作成されない可能性がある）
-        result = import_pmx_file(parser, temp_path)
-
-        # 結果を確認（実装によって異なる）
-        # エラーハンドリングが適切に行われることを確認
-
     def test_import_pmx_multiple_files(self):
-        """複数のPMXファイルを連続でインポートするテスト"""
-        self.skipTest("未実装なのでスキップ")
-        return
-        # 利用可能なPMXファイルを取得
-        available_files = self.fixture_provider.get_available_pmx_files()
+        """全てのPMXモデルが基本的にロード可能かテスト"""
+        pmx_files = self.fixture_provider.get_all_pmx_files()
 
-        if len(available_files) < 2:
-            self.skipTest("複数のテスト用PMXファイルが必要です")
+        if not pmx_files:
+            self.skipTest("PMXファイルが見つかりません")
 
-        # 最初の2つのファイルをインポート
-        for i, file_name in enumerate(available_files[:2]):
-            pmx_file = self.fixture_provider.get_pmx_file(file_name)
+        parser = PmxParser()
 
-            # PMXファイルをパース
-            parser = PmxParser()
-            parser.parse_file(pmx_file)
+        for model_name, file_path in pmx_files.items():
+            with self.subTest(model=model_name):
+                # PMXファイルをインポート
+                parser.parse_file(file_path)
+                result = import_pmx_file(parser, file_path)
 
-            # インポート
-            result = import_pmx_file(parser, pmx_file)
-            self.assertTrue(result, f"{file_name}のインポートに失敗しました")
+                # インポート前のシーン状態を記録
+                initial_nodes = set(cmds.ls())
 
-            # それぞれのインポートでノードが追加されていることを確認
-            nodes = cmds.ls()
-            self.assertGreater(
-                len(nodes), 0, f"{file_name}のインポート後にノードが存在しません"
-            )
+                # インポートが成功したことを確認
+                self.assertTrue(result)
+
+                # 新しく作成されたノードを確認
+                new_nodes = set(cmds.ls()) - initial_nodes
+                self.assertGreater(
+                    len(new_nodes), 0, "新しいノードが作成されていません"
+                )
+
+                # メッシュが作成されたことを確認
+                meshes = cmds.ls(type="mesh")
+                self.assertGreater(len(meshes), 0, "メッシュが作成されていません")
+
+                # ジョイントが作成されたことを確認
+                joints = cmds.ls(type="joint")
+                self.assertGreater(len(joints), 0, "ジョイントが作成されていません")

@@ -48,11 +48,15 @@ class TestBoneConverter(MayaTestBase):
 
         # テスト用のメッシュを作成
         pmd_mesh_converter = MeshConverter(self.pmd_file_path)
-        pmd_group_name, pmd_mesh_name = pmd_mesh_converter.convert_pmd_mesh(pmd_data, root_group)
+        pmd_group_name, pmd_mesh_name = pmd_mesh_converter.convert_pmd_mesh(
+            pmd_data, root_group
+        )
 
         # ボーンを変換
         converter = BoneConverter()
-        root_joint, skin_cluster = converter.convert_pmd_bones(pmd_data, pmd_mesh_name, root_group)
+        root_joint, skin_cluster = converter.convert_pmd_bones(
+            pmd_data, pmd_mesh_name, root_group
+        )
 
         # 結果を検証
         self.assertIsNotNone(root_joint, "ルートジョイントが作成されていません。")
@@ -62,7 +66,9 @@ class TestBoneConverter(MayaTestBase):
         all_joints = cmds.ls(type="joint")
         # PMDボーン数以上のジョイントが作成されることを確認
         self.assertGreaterEqual(
-            len(all_joints), len(pmd_data.bones), "ジョイント数が元のPMDボーン数以上でなければなりません。"
+            len(all_joints),
+            len(pmd_data.bones),
+            "ジョイント数が元のPMDボーン数以上でなければなりません。",
         )
 
         # 階層構造と位置を確認
@@ -130,7 +136,9 @@ class TestBoneConverter(MayaTestBase):
 
         # ボーンを変換
         converter = BoneConverter()
-        root_joint, skin_cluster = converter.convert_pmx_bones(pmx_data, mesh_name, root_group)
+        root_joint, skin_cluster = converter.convert_pmx_bones(
+            pmx_data, mesh_name, root_group
+        )
 
         # 結果を検証
         self.assertIsNotNone(root_joint, "ルートジョイントが作成されていません。")
@@ -140,7 +148,9 @@ class TestBoneConverter(MayaTestBase):
         all_joints = cmds.ls(type="joint")
         # PMXボーン数以上のジョイントが作成されることを確認
         self.assertGreaterEqual(
-            len(all_joints), len(pmx_data.bones), "ジョイント数が元のPMXボーン数以上でなければなりません。"
+            len(all_joints),
+            len(pmx_data.bones),
+            "ジョイント数が元のPMXボーン数以上でなければなりません。",
         )
 
         # 階層構造を確認（位置は付与ボーンの処理により変更される可能性があるため、階層のみ確認）
@@ -162,11 +172,14 @@ class TestBoneConverter(MayaTestBase):
                 )
                 # 準標準ボーンの追加により親が変更される場合があるため、厳密な確認は行わない
 
-
         # jointOrinentの確認
 
         # 各種位置決めボーンはJointOrientが(0, 0, 0)であることを確認
         for static_bone in ["master", "center", "center_2", "group"]:
             if cmds.objExists(static_bone):
                 joint_orient = cmds.getAttr(f"{static_bone}.jointOrient")[0]
-                self.assertEqual(joint_orient, (0, 0, 0), f"{static_bone}のJointOrientが正しくありません。")
+                self.assertEqual(
+                    joint_orient,
+                    (0, 0, 0),
+                    f"{static_bone}のJointOrientが正しくありません。",
+                )

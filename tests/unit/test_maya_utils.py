@@ -94,6 +94,8 @@ class TestMayaUtils(MayaTestBase):
             "mmd_string": "Test Model EN",
             "mmd_bool": True,
             "mmd_int": 42,
+            "mmd_float": 3.14,
+            "mmd_double3": (1.0, 2.0, 3.0),
         }
         maya_utils.set_custom_attributes(mesh_name, data)
 
@@ -101,9 +103,19 @@ class TestMayaUtils(MayaTestBase):
         for key, value in data.items():
             self.assertTrue(cmds.attributeQuery(key, node=mesh_name, exists=True))
             attr_value = cmds.getAttr(mesh_name + "." + key)
-            self.assertEqual(
-                attr_value, value.decode("utf-8") if isinstance(value, bytes) else value
-            )
+            if isinstance(value, float):
+                self.assertAlmostEqual(attr_value, value, places=5)
+            else:
+                if isinstance(value, tuple):
+                    # cmds.getAttrはdouble3の場合[(x, y, z)]のリストを返すので、最初の要素を取得
+                    if isinstance(attr_value, list) and len(attr_value) == 1:
+                        attr_value = attr_value[0]
+                    self.assertEqual(attr_value, value)
+                else:
+                    self.assertEqual(
+                        attr_value,
+                        value.decode("utf-8") if isinstance(value, bytes) else value,
+                    )
 
         # 既存のアトリビュートを更新できるかテスト
         update_data = {
@@ -121,6 +133,39 @@ class TestMayaUtils(MayaTestBase):
                 self.assertAlmostEqual(attr_value, value, places=5)
             else:
                 self.assertEqual(attr_value, value)
+
+    def test_get_custom_attributes(self):
+        """カスタムアトリビュートを取得できるか"""
+        mesh_name = "test_mesh_for_get_custom_attr"
+        cmds.polyCube(name=mesh_name)
+
+        data = {
+            "mmd_bytes": b"PMX",
+            "mmd_file_version": 2.0,
+            "mmd_utf8": "裙花蕊颜顔",
+            "mmd_string": "Test Model EN",
+            "mmd_bool": True,
+            "mmd_int": 42,
+            "mmd_float": 3.14,
+            "mmd_double3": (1.0, 2.0, 3.0),
+        }
+        maya_utils.set_custom_attributes(mesh_name, data)
+
+        # Get the attributes
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_bytes"), "PMX")
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_file_version"), 2.0)
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_utf8"), "裙花蕊颜顔")
+        self.assertEqual(
+            maya_utils.get_attribute(mesh_name, "mmd_string"), "Test Model EN"
+        )
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_bool"), True)
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_int"), 42)
+        self.assertAlmostEqual(
+            maya_utils.get_attribute(mesh_name, "mmd_float"), 3.14, places=5
+        )  # type: ignore
+        self.assertEqual(
+            maya_utils.get_attribute(mesh_name, "mmd_double3"), (1.0, 2.0, 3.0)
+        )
 
     def test_create_ik_handle(self):
         """IKハンドルを作成できるか"""

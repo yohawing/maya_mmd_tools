@@ -173,6 +173,45 @@ class TestFixtureProvider:
         """
         return list(self._file_cache.get("vmd", {}).keys())
 
+    def get_all_pmd_files(self) -> Dict[str, str]:
+        """全てのPMDファイルを取得
+
+        Returns:
+            Dict[str, str]: ファイル名をキー、ファイルパスを値とする辞書
+        """
+        return self._file_cache.get("pmd", {}).copy()
+
+    def get_all_pmx_files(self) -> Dict[str, str]:
+        """全てのPMXファイルを取得
+
+        Returns:
+            Dict[str, str]: ファイル名をキー、ファイルパスを値とする辞書
+        """
+        return self._file_cache.get("pmx", {}).copy()
+
+    def get_all_vmd_files(self) -> Dict[str, str]:
+        """全てのVMDファイルを取得
+
+        Returns:
+            Dict[str, str]: ファイル名をキー、ファイルパスを値とする辞書
+        """
+        return self._file_cache.get("vmd", {}).copy()
+
+    def get_all_model_files(self) -> Dict[str, Dict[str, str]]:
+        """全てのモデルファイル（PMDとPMX）を取得
+
+        Returns:
+            Dict[str, Dict[str, str]]: フォーマットをキー、ファイル辞書を値とする辞書
+                例: {
+                    "pmd": {"miku_v2": "/path/to/miku_v2.pmd"},
+                    "pmx": {"model1": "/path/to/model1.pmx"}
+                }
+        """
+        return {
+            "pmd": self.get_all_pmd_files(),
+            "pmx": self.get_all_pmx_files()
+        }
+
     def load_pmd_data(self, name: str = None) -> dict:
         """PMDファイルをロードしてパース済みデータを返す（キャッシュあり）
 
