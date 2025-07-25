@@ -248,10 +248,18 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
 def set_custom_attributes(object_name, attributes):
     """
     Mayaオブジェクトにカスタムアトリビュートを設定します。
+    存在しないアトリビュートは自動的に作成されます。
 
     Args:
         object_name (str): カスタムアトリビュートを設定するオブジェクトの名前。
         attributes (dict): 属性名と値の辞書。
+
+    Example:
+        set_custom_attributes("pCube1", {
+            "customAttr1": 1.0,
+            "customAttr2": "example",
+            "customAttr3": [0.5, 0.5, 0.5],
+        })
     """
     for attr_name, attr_value in attributes.items():
         attr_type = type(attr_value).__name__
@@ -282,11 +290,9 @@ def set_custom_attributes(object_name, attributes):
         # 値を設定（既存・新規両方に対応）
         try:
             if attr_type in ["int", "float", "bool", "str", "bytes"]:
-                set_attribute_value_api(object_name, attr_name, attr_value, attr_type)
+                set_attribute(object_name, attr_name, attr_value, attr_type)
             elif attr_type in ["list", "tuple"]:
-                set_attribute_value_api(
-                    object_name, attr_name, attr_value, actual_attr_type
-                )
+                set_attribute(object_name, attr_name, attr_value, actual_attr_type)
         except Exception as e:
             logger.warning(f"Failed to set attribute {attr_name} on {object_name}: {e}")
 
@@ -380,15 +386,21 @@ def add_typed_attribute(object_name, attr_name, attr_type):
         )
 
 
-def set_attribute_value_api(object_name, attr_name, attr_value, attr_type):
+def set_attribute(object_name, attr_name, attr_value, attr_type):
     """
     OpenMaya API 2.0を使用してアトリビュート値を設定します。
+    cmds.setAttrの代わりに使用します。
 
     Args:
         object_name (str): オブジェクト名
         attr_name (str): アトリビュート名
         attr_value: 設定する値
         attr_type (str, optional): アトリビュートタイプ（配列の場合に必要）
+
+    Example:
+        set_attribute_value_api("pCube1", "customAttr1", 1.0, "float")
+        set_attribute_value_api("pCube1", "customAttr2", "example", "str")
+        set_attribute_value_api("pCube1", "customAttr3", [0.5, 0.5, 0.5], "double3")
     """
     try:
         # オブジェクトのMObjectを取得
@@ -407,7 +419,7 @@ def set_attribute_value_api(object_name, attr_name, attr_value, attr_type):
             plug.setInt(attr_value)
         elif attr_type == "float":
             plug.setFloat(attr_value)
-        elif attr_type == "str":
+        elif attr_type == "str" or attr_type == "string":
             plug.setString(attr_value)
         elif attr_type == "bytes":
             # バイトデータは文字列として設定
@@ -441,6 +453,115 @@ def set_attribute_value_api(object_name, attr_name, attr_value, attr_type):
         logger.error(
             f"Failed to set attribute value '{attr_name}' on '{object_name}': {e}"
         )
+
+
+def get_attribute(object_name, attr_name):
+    """
+    OpenMaya API 2.0を使用してアトリビュート値を取得します。
+    cmds.getAttrの代わりに使用します。
+
+    Args:
+        object_name (str): オブジェクト名
+        attr_name (str): アトリビュート名
+
+    Returns:
+        The value of the attribute, or None if it does not exist.
+    """
+    try:
+        # オブジェクトのMObjectを取得
+        selection_list = om.MSelectionList()
+        selection_list.add(object_name)
+        node_obj = selection_list.getDependNode(0)
+        depend_fn = om.MFnDependencyNode(node_obj)
+
+        # プラグを取得（存在しない場合は例外が発生）
+        try:
+            plug = depend_fn.findPlug(attr_name, False)
+        except:
+            # アトリビュートが存在しない場合
+            return None
+
+        if plug.isNull:
+            return None
+
+        # 複合アトリビュートの場合
+        if plug.isCompound:
+            num_children = plug.numChildren()
+            if num_children == 0:
+                return None
+            # 数値型の複合アトリビュート (double3, float3など)
+            return tuple(plug.child(i).asDouble() for i in range(num_children))
+
+        # 配列アトリビュートの場合
+        if plug.isArray:
+            return [
+                plug.elementByLogicalIndex(i).asDouble()
+                for i in range(plug.numElements)
+            ]
+
+        # 単一アトリビュートの場合、タイプに応じて適切なメソッドを使用
+        obj = plug.attribute()
+
+        # 数値型チェック
+        if obj.hasFn(om.MFn.kNumericAttribute):
+            attr_fn = om.MFnNumericAttribute(obj)
+            numeric_type = attr_fn.numericType()
+
+            if numeric_type == om.MFnNumericData.kBoolean:
+                return plug.asBool()
+            elif numeric_type in [om.MFnNumericData.kInt, om.MFnNumericData.kLong, 
+                                om.MFnNumericData.kByte, om.MFnNumericData.kShort]:
+                return plug.asInt()
+            elif numeric_type == om.MFnNumericData.kFloat:
+                return plug.asFloat()
+            elif numeric_type == om.MFnNumericData.kDouble:
+                return plug.asDouble()
+
+        # 型付きアトリビュート（文字列など）
+        if obj.hasFn(om.MFn.kTypedAttribute):
+            attr_fn = om.MFnTypedAttribute(obj)
+            attr_type = attr_fn.attrType()
+
+            if attr_type == om.MFnData.kString:
+                return plug.asString()
+
+        # その他の場合、型を推測して取得
+        # まずdoubleとして取得を試みる
+        try:
+            return plug.asDouble()
+        except:
+            # 失敗したら文字列として取得
+            try:
+                return plug.asString()
+            except:
+                return None
+
+    except Exception:
+        # オブジェクトが存在しない、その他のエラー
+        return None
+
+
+def get_materials_from_mesh(mesh_name):
+    """メッシュに割り当てられているマテリアルを取得
+
+    Args:
+        mesh_name (str): メッシュの名前
+    Returns:
+        list: メッシュに割り当てられているマテリアルのリスト
+
+    """
+    mesh_shapes = cmds.listRelatives(mesh_name, shapes=True, type="mesh") or []
+    assigned_materials = []
+
+    for shape in mesh_shapes:
+        # シェーディングエンジンを取得
+        shading_engines = cmds.listConnections(shape, type="shadingEngine") or []
+        for sg in shading_engines:
+            # シェーディングエンジンに接続されているマテリアルを取得
+            materials = cmds.listConnections(f"{sg}.surfaceShader") or []
+            assigned_materials.extend(materials)
+
+    return assigned_materials
 
 
 def apply_vertex_weights(

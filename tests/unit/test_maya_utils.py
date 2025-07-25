@@ -148,8 +148,12 @@ class TestMayaUtils(MayaTestBase):
             "mmd_int": 42,
             "mmd_float": 3.14,
             "mmd_double3": (1.0, 2.0, 3.0),
+            "mmd_array": [1.0, 2.0, 3.0, 4.0],
         }
         maya_utils.set_custom_attributes(mesh_name, data)
+
+        # 存在しないアトリビュートはNoneを返すか確認
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "unknown_attribute"), None)
 
         # Get the attributes
         self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_bytes"), "PMX")
@@ -165,6 +169,12 @@ class TestMayaUtils(MayaTestBase):
         )  # type: ignore
         self.assertEqual(
             maya_utils.get_attribute(mesh_name, "mmd_double3"), (1.0, 2.0, 3.0)
+        )
+        self.assertEqual(
+            maya_utils.get_attribute(mesh_name, "mmd_double3"), (1.0, 2.0, 3.0)
+        )
+        self.assertEqual(
+            maya_utils.get_attribute(mesh_name, "mmd_array"), [1.0, 2.0, 3.0, 4.0]
         )
 
     def test_create_ik_handle(self):

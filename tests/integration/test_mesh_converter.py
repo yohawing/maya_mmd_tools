@@ -1,11 +1,34 @@
-import os
-
 from maya import cmds
 
-from mmd_tools import settings
+from mmd_tools.core.settings import settings
 from mmd_tools.converters import MeshConverter, mesh_converter
 from mmd_tools.core import maya_utils, pmd_parser, pmx_parser
 from tests.common.maya_test_base import MayaTestBase
+from tests.common.test_fixture_provider import TestFixtureProvider
+from mmd_tools.core.constants import (
+    ATTR_MMD_TOON_TEXTURE_INDEX,
+    GEOMETRY_GROUP,
+    ATTR_MMD_FILE_TYPE,
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_COMMENT,
+    ATTR_MMD_COMMENT_EN,
+    ATTR_MMD_FILE_VERSION,
+    ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_SPHERE_PATH,
+    ATTR_MMD_SPHERE_MODE,
+    ATTR_MMD_MEMO,
+    ATTR_MMD_EDGE_FLAG,
+    ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_SPHERE_TEXTURE_INDEX,
+    ATTR_MMD_SPHERE_MODE,
+    ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_MATERIAL_INDEX,
+)
 
 
 class TestMeshConverter(MayaTestBase):
@@ -23,12 +46,8 @@ class TestMeshConverter(MayaTestBase):
         # 新しいMayaシーンを作成
         cmds.file(new=True, force=True)
 
-        # テストデータのパスを設定
-        self.test_data_dir = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "data"
-        )
-        self.pmd_file_path = os.path.join(self.test_data_dir, "miku_v2.pmd")
-        self.pmx_file_path = os.path.join(self.test_data_dir, "Lumine", "荧.pmx")
+        # TestFixtureProviderを初期化
+        self.fixture_provider = TestFixtureProvider()
 
     def tearDown(self):
         """
@@ -38,29 +57,31 @@ class TestMeshConverter(MayaTestBase):
         super().tearDown()
         # シーンをクリア
         cmds.file(new=True, force=True)
+        # 一時ファイルをクリーンアップ
+        self.fixture_provider.cleanup_temp_files()
 
     def test_convert_pmd_mesh(self):
         """
         PMDメッシュがMayaに正しく変換されることをテストする。
         実際のPMDファイルを読み込み、変換処理を実行し、結果を検証する。
         """
-        # PMDファイルが存在するか確認
-        self.assertTrue(
-            os.path.exists(self.pmd_file_path),
-            f"テストPMDファイルが見つかりません: {self.pmd_file_path}",
-        )
+        # TestFixtureProviderからPMDファイルパスを取得
+        pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
 
         # PMDファイルをパース
         parser = pmd_parser.PmdParser()
-        pmd_data = parser.parse_file(self.pmd_file_path)
+        pmd_data = parser.parse_file(pmd_file_path)
 
         # モデル名を取得
         model_name = pmd_data.header.model_name
         self.assertIsNotNone(model_name, "モデル名がNoneです")
 
+        # ルートグループを作成
+        root_group = cmds.group(empty=True, name="test_pmd_root")
+
         # MeshConverterを作成して変換を実行
-        converter = MeshConverter(self.pmd_file_path)
-        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data)
+        converter = MeshConverter(pmd_file_path)
+        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
 
         settings.get("import.model.separate_meshes_by_material")
 
@@ -98,23 +119,24 @@ class TestMeshConverter(MayaTestBase):
         PMXメッシュがMayaに正しく変換されることをテストする。
         実際のPMXファイルを読み込み、変換処理を実行し、結果を検証する。
         """
-        # PMXファイルが存在するか確認
-        self.assertTrue(
-            os.path.exists(self.pmx_file_path),
-            f"テストPMXファイルが見つかりません: {self.pmx_file_path}",
-        )
+        # TestFixtureProviderからPMXファイルパスを取得
+        # Lumineフォルダ内の荧.pmxファイルを使用
+        pmx_file_path = self.fixture_provider.get_pmx_file("荧")
 
         # PMXファイルをパース
         parser = pmx_parser.PmxParser()
-        pmx_data = parser.parse_file(self.pmx_file_path)
+        pmx_data = parser.parse_file(pmx_file_path)
 
         # モデル名を取得
         model_name = pmx_data.header.model_name
         self.assertIsNotNone(model_name, "モデル名がNoneです")
 
+        # ルートグループを作成
+        root_group = cmds.group(empty=True, name="test_pmx_root")
+
         # MeshConverterを作成して変換を実行
-        converter = MeshConverter(self.pmx_file_path)
-        mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data)
+        converter = MeshConverter(pmx_file_path)
+        mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
 
         # 結果の検証
         # 1. グループが作成されているか
@@ -151,31 +173,167 @@ class TestMeshConverter(MayaTestBase):
                     len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です"
                 )
 
+    def test_material_custom_attributes_on_pmd(self):
+        """
+        PMDマテリアルにカスタムアトリビュートが正しく設定されることをテストする。
+        現在の実装では失敗することが期待される。
+        """
+        # TestFixtureProviderからPMDファイルパスを取得
+        pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
+
+        # PMDファイルをパース
+        parser = pmd_parser.PmdParser()
+        pmd_data = parser.parse_file(pmd_file_path)
+
+        # ルートグループを作成
+        root_group = cmds.group(empty=True, name="test_pmd_root")
+
+        # MeshConverterを作成して変換を実行
+        converter = MeshConverter(pmd_file_path)
+        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
+
+        # メッシュに割り当てられているマテリアルを取得
+        mesh_shapes = cmds.listRelatives(mesh_name, shapes=True, type="mesh") or []
+        assigned_materials = set()
+
+        assigned_materials = maya_utils.get_materials_from_mesh(mesh_name)
+
+        # 各マテリアルのカスタムアトリビュートを確認
+        for i, material in enumerate(sorted(assigned_materials)):
+            with self.subTest(material=material, index=i):
+                # 標準のMayaマテリアルをスキップ（例：lambert1, standardSurface1など）
+                if material in ["lambert1", "standardSurface1", "particleCloud1"]:
+                    continue
+
+                # mmd_materialアトリビュートの存在確認
+                self.assertTrue(
+                    cmds.attributeQuery("mmd_material", node=material, exists=True),
+                    f"{material}にmmd_materialアトリビュートが存在しません",
+                )
+
+                # PMDマテリアル特有のアトリビュート確認
+                # diffuse_colorアトリビュート
+                self.assertTrue(
+                    cmds.attributeQuery("diffuse_color", node=material, exists=True),
+                    f"{material}にdiffuse_colorアトリビュートが存在しません",
+                )
+
+                # specular_colorアトリビュート
+                self.assertTrue(
+                    cmds.attributeQuery("specular_color", node=material, exists=True),
+                    f"{material}にspecular_colorアトリビュートが存在しません",
+                )
+
+                # ambient_colorアトリビュート
+                self.assertTrue(
+                    cmds.attributeQuery("ambient_color", node=material, exists=True),
+                    f"{material}にambient_colorアトリビュートが存在しません",
+                )
+
+                # shininessアトリビュート
+                self.assertTrue(
+                    cmds.attributeQuery("shininess", node=material, exists=True),
+                    f"{material}にshininessアトリビュートが存在しません",
+                )
+
+                # edge_flagアトリビュート
+                self.assertTrue(
+                    cmds.attributeQuery("edge_flag", node=material, exists=True),
+                    f"{material}にedge_flagアトリビュートが存在しません",
+                )
+
+    def test_material_custom_attributes_on_pmx(self):
+        """
+        PMXマテリアルにカスタムアトリビュートが正しく設定されることをテストする。
+        StandaloneモードだとDx11Shaderがでテスト出来ないので、StandardSurfaceでテストする。
+        """
+        # TestFixtureProviderからPMXファイルパスを取得
+        pmx_file_path = self.fixture_provider.get_pmx_file("荧")
+
+        # PMXファイルをパース
+        parser = pmx_parser.PmxParser()
+        pmx_data = parser.parse_file(pmx_file_path)
+
+        # ルートグループを作成
+        root_group = cmds.group(empty=True, name="test_pmx_root")
+
+        # MeshConverterを作成して変換を実行
+        converter = MeshConverter(pmx_file_path)
+        mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
+
+        # メッシュに割り当てられているマテリアルを取得
+        assigned_materials = maya_utils.get_materials_from_mesh(mesh_name)
+
+        # 重複を除去し、mmd_material_indexを持つマテリアルのみを取得
+        unique_materials = []
+        seen = set()
+        for material in assigned_materials:
+            if material not in seen and cmds.attributeQuery(
+                "mmd_material_index", node=material, exists=True
+            ):
+                unique_materials.append(material)
+                seen.add(material)
+
+        self.assertGreater(
+            len(unique_materials),
+            0,
+            "メッシュに割り当てられたマテリアルが見つかりません",
+        )
+
+        # 各マテリアルのカスタムアトリビュートを確認
+        for material in unique_materials:
+            # マテリアルインデックスを取得
+            material_index = maya_utils.get_attribute(material, ATTR_MMD_MATERIAL_INDEX)
+            self.assertIsNotNone(
+                material_index,
+                f"{material}にmmd_material_indexアトリビュートが存在しません",
+            )
+
+            pmx_material = pmx_data.materials[material_index]
+
+            with self.subTest(material=material, index=material_index):
+                # PMXマテリアル特有のアトリビュート確認
+                # material_nameアトリビュート
+                # チェック対象の属性とpmx_materialの対応辞書
+                attr_map = {
+                    ATTR_MMD_MATERIAL_NAME: "name",
+                    ATTR_MMD_MATERIAL_NAME_EN: "name_english",
+                    ATTR_MMD_MEMO: "memo",
+                    ATTR_MMD_DRAW_FLAGS: "draw_flag",
+                    ATTR_MMD_EDGE_SIZE: "edge_size",
+                    ATTR_MMD_TEXTURE_INDEX: "texture_index",
+                    ATTR_MMD_SPHERE_TEXTURE_INDEX: "sphere_texture_index",
+                    ATTR_MMD_SPHERE_MODE: "sphere_mode",
+                    ATTR_MMD_SHARED_TOON_FLAG: "shared_toon_flag",
+                    ATTR_MMD_TOON_TEXTURE_INDEX: "toon_texture_index",
+                }
+
+                for maya_attr, pmx_attr in attr_map.items():
+                    self.assertEqual(
+                        maya_utils.get_attribute(material, maya_attr),
+                        getattr(pmx_material, pmx_attr),
+                        f"{material}の{maya_attr}がpmx_material.{pmx_attr}と一致しません",
+                    )
+
+            # 色はRGBで返されるため、RGBAはRGBになる
+            attr_map = {
+                # Fileノードにつながってるので、テスト不可
+                # "baseColor": "diffuse",
+                "specularColor": "specular",
+                ATTR_MMD_EDGE_COLOR: "edge_color",
+            }
+
+            for maya_attr, pmx_attr in attr_map.items():
+                if cmds.attributeQuery(maya_attr, node=material, exists=True):
+                    self.assertEqual(
+                        maya_utils.get_attribute(material, maya_attr),
+                        getattr(pmx_material, pmx_attr)[:3],
+                        f"{material}の{maya_attr}がpmx_material.{pmx_attr}と一致しません",
+                    )
+                else:
+                    self.fail(f"{material}に{maya_attr}アトリビュートが存在しません")
+
     # def test_separated_by_material(self):
     #     """
     #     マテリアルごとにメッシュが分割されるオプションが正しく機能するかテストする。
     #     """
-    #     # 設定を一時的にオーバーライドしてマテリアルごとに分割するように設定
-    #     original_setting = settings.get("import.model.separate_meshes_by_material", False)
-    #     settings.set("import.model.separate_meshes_by_material", True)
-
-    #     try:
-    #         # PMXファイルをパース
-    #         parser = pmx_parser.PmxParser()
-    #         pmx_data = parser.parse_file(self.pmx_file_path)
-
-    #         # 変換を実行
-    #         converter = MeshConverter(self.pmx_file_path)
-    #         mesh_group = converter.convert_pmx_mesh(pmx_data)
-
-    #         # マテリアル数と同じ数のメッシュが作成されていることを確認
-    #         children = cmds.listRelatives(mesh_group, children=True, type="transform")
-    #         material_count = len([mat for mat in pmx_data.materials if mat.face_count > 0])
-
-    #         # 注: マテリアルによっては面を持たない場合があるため、実際のメッシュ数は
-    #         # 面を持つマテリアルの数と一致する必要がある
-    #         self.assertEqual(len(children), material_count,
-    #                         f"マテリアル数 {material_count} と一致するメッシュが作成されるべきですが、{len(children)} が作成されました")
-    #     finally:
-    #         # 設定を元に戻す
-    #         maya_utils.settings.set("import.model.separate_meshes_by_material", original_setting)

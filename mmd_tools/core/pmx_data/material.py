@@ -1,6 +1,52 @@
+import enum
 import struct
 
 from mmd_tools.core import utils
+
+
+# bitFlag: 描画フラグ
+#   0x01:両面描画, 0x02:地面影, 0x04:セルフシャドウマップ描画
+#   0x08:セルフシャドウ描画, 0x10:エッジ描画
+#   0x20:頂点カラー(v2.1), 0x40:Point描画(v2.1), 0x80:Line描画(v2.1)
+class PmxDrawFlag(enum.IntFlag):
+    """
+    PMXファイルのボーンフラグを定義するクラス。
+    各フラグはビットマスクで定義されており、ボーンの特性を示す。
+    """
+
+    NONE = 0x00  # 描画しない
+    DOUBLE_SIDED = 0x01  # 両面描画
+    GROUND_SHADOW = 0x02  # 地面影
+    SELF_SHADOW_MAP = 0x04  # セルフシャドウマップ描画
+    SELF_SHADOW = 0x08  # セルフシャドウ描画
+    EDGE_DRAWING = 0x10  # エッジ描画
+    VERTEX_COLOR = 0x20  # 頂点カラー (v2.1)
+    POINT_DRAWING = 0x40  # Point描画 (v2.1)
+    LINE_DRAWING = 0x80  # Line描画 (v2.1)
+
+
+# byte: スフィアモード (0:無効, 1:乗算sph, 2:加算spa, 3:サブテクスチャ)
+class PmxSphereMode(enum.IntEnum):
+    """
+    PMXファイルのスフィアモードを定義する列挙型。
+    スフィアモードは、マテリアルのスフィアテクスチャの使用方法を示す。
+    """
+
+    DISABLED = 0  # 無効
+    MULTIPLY = 1  # 乗算 (sph)
+    ADDITIVE = 2  # 加算 (spa)
+    SUB_TEXTURE = 3  # サブテクスチャ
+
+
+# 共有Toonフラグ
+class PmxSharedToonFlag(enum.IntEnum):
+    """
+    PMXファイルの共有Toonフラグを定義する列挙型。
+    Toonテクスチャの共有方法を示す。
+    """
+
+    SHARED = 0  # 共有Toon
+    NOT_SHARED = 1  # 個別Toon
 
 
 class PmxMaterial:
@@ -17,13 +63,13 @@ class PmxMaterial:
         self.specular = (0.0, 0.0, 0.0)
         self.specular_coefficient = 0.0
         self.ambient = (0.0, 0.0, 0.0)
-        self.draw_flag = 0
+        self.draw_flag = PmxDrawFlag.NONE
         self.edge_color = (0.0, 0.0, 0.0, 0.0)
         self.edge_size = 0.0
         self.texture_index = -1
         self.sphere_texture_index = -1
-        self.sphere_mode = 0
-        self.shared_toon_flag = 0
+        self.sphere_mode = PmxSphereMode.DISABLED
+        self.shared_toon_flag = PmxSharedToonFlag.SHARED
         self.toon_texture_index = -1
         self.memo = ""
         self.face_count = 0

@@ -42,3 +42,4 @@ KIRO.md
 !/tests/data/place_test_data_here
 !/tests/data/miku_v2.pmd
 !/tests/data/for_unit_test
+mmd_tools/shaders/MayaToonOutline.fx

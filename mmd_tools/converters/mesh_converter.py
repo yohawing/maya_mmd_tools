@@ -3,11 +3,16 @@ import os
 from maya import cmds
 from typing import Tuple
 
+import maya
 from mmd_tools.core.settings import settings
 from mmd_tools.core import maya_utils
 from mmd_tools.core.pmd_parser import PmdParser
 from mmd_tools.core.pmx_parser import PmxParser
 from mmd_tools.core.constants import (
+    ATTR_MMD_SHARED_TOON_FLAG,
+    ATTR_MMD_SPHERE_TEXTURE_INDEX,
+    ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_TOON_TEXTURE_INDEX,
     GEOMETRY_GROUP,
     ATTR_MMD_FILE_TYPE,
     ATTR_MMD_MODEL_NAME,
@@ -17,14 +22,13 @@ from mmd_tools.core.constants import (
     ATTR_MMD_FILE_VERSION,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
-    ATTR_MMD_SPHERE_PATH,
     ATTR_MMD_SPHERE_MODE,
-    ATTR_MMD_TOON_INDEX,
     ATTR_MMD_MEMO,
     ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_MATERIAL_INDEX,
 )
 
 
@@ -225,7 +229,7 @@ class MeshConverter:
         )
 
         # マテリアルを作成して、適切な面に割り当てる
-        for material, start_face, end_face in material_face_ranges:
+        for i, (material, start_face, end_face) in enumerate(material_face_ranges):
             if start_face == end_face:
                 continue
 
@@ -247,6 +251,7 @@ class MeshConverter:
                 texture_path=texture_path,
                 all_textures=all_textures,
                 is_pmd=is_pmd,
+                material_index=i,
             )
 
             # 面の範囲を選択してマテリアルを割り当て
@@ -266,7 +271,12 @@ class MeshConverter:
         return created_mesh
 
     def _create_material(
-        self, material, texture_path=None, all_textures=None, is_pmd=False
+        self,
+        material,
+        texture_path=None,
+        all_textures=None,
+        is_pmd=False,
+        material_index=None,
     ):
         """
         MMDマテリアルデータからMayaマテリアルを作成します。
@@ -294,9 +304,11 @@ class MeshConverter:
                     "dx11Shader", asShader=True, name=sanitized_name
                 )
                 self._setup_dx11_shader(
-                    shader, material, texture_path, all_textures, is_pmd
+                    shader, material, texture_path, all_textures, is_pmd, material_index
                 )
                 shader_created = True
+                return shader
+
             except RuntimeError as e:
                 # dx11Shaderが作成できなかった場合
                 cmds.warning(
@@ -309,58 +321,77 @@ class MeshConverter:
                 "standardSurface", asShader=True, name=sanitized_name
             )
             self._setup_standard_shader(
-                shader, material, texture_path, all_textures, is_pmd
+                shader, material, texture_path, all_textures, is_pmd, material_index
             )
 
-        return shader
+            return shader
+
+    def _apply_custom_attributes(
+        self, shader, material, all_textures, is_pmd, material_index=None
+    ):
+        """カスタムアトリビュートを適用する共通処理"""
+        # mmd_materialフラグを追加（このマテリアルがMMDマテリアルであることを示す）
+
+        custom_attrs = {
+            ATTR_MMD_MATERIAL_INDEX: material_index,
+            ATTR_MMD_MATERIAL_NAME: material.name,
+            ATTR_MMD_MATERIAL_NAME_EN: material.name_english,
+            ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
+        }
+
+        if is_pmd:
+            custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)
+        else:
+            custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
+            custom_attrs[ATTR_MMD_SPHERE_TEXTURE_INDEX] = material.sphere_texture_index
+            custom_attrs[ATTR_MMD_TEXTURE_INDEX] = material.texture_index
+            custom_attrs[ATTR_MMD_DRAW_FLAGS] = int(material.draw_flag)
+            custom_attrs[ATTR_MMD_EDGE_COLOR] = material.edge_color[:3]
+            custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
+            custom_attrs[ATTR_MMD_MEMO] = material.memo
+            custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
+
+        maya_utils.set_custom_attributes(
+            shader,
+            custom_attrs,
+        )
 
     def _setup_standard_shader(
-        self, shader, material, texture_path, all_textures, is_pmd
+        self, shader, material, texture_path, all_textures, is_pmd, material_index=None
     ):
         """標準のstandardSurfaceシェーダーを設定"""
 
         # マテリアル名をサニタイズ（テクスチャノード名に使用）
-        sanitized_name = maya_utils.sanitize_text(material.name)
+        sanitized_name = maya_utils.sanitize_text(
+            material.name if material.name else "material"
+        )
 
         # 基本色設定（Diffuse）
-        cmds.setAttr(
-            shader + ".baseColor",
-            material.diffuse[0],
-            material.diffuse[1],
-            material.diffuse[2],
-            type="double3",
-        )
+        maya_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")
+
         # AlphaをOpacityに変換（StandardSurfaceではopacityを使用）
-        cmds.setAttr(
-            shader + ".opacity",
-            material.diffuse[3],
-            material.diffuse[3],
-            material.diffuse[3],
-            type="double3",
-        )
+        maya_utils.set_attribute(shader, "opacity", material.diffuse[3], "float")
 
         # スペキュラー設定（MMDのspecularをStandardSurfaceにマッピング）
-        if hasattr(material, "specular") and hasattr(material, "specular_coefficient"):
+        if hasattr(material, "specular"):
             # スペキュラー色
-            cmds.setAttr(
-                shader + ".specularColor",
-                material.specular[0],
-                material.specular[1],
-                material.specular[2],
-                type="double3",
+            maya_utils.set_attribute(
+                shader, "specularColor", material.specular[:3], "double3"
             )
 
-            # スペキュラー係数（MMDの0-100をStandardSurfaceの0-1にマッピング）
-            specular_weight = min(1.0, material.specular_coefficient / 100.0)
-            cmds.setAttr(shader + ".specular", specular_weight)
+            # スペキュラー係数の取得（PMDとPMXで異なる）
+            specular_coef = None
+            if hasattr(material, "specular_coefficient"):
+                specular_coef = material.specular_coefficient
+            elif hasattr(material, "specular_power"):
+                specular_coef = material.specular_power
 
-            # スペキュラーの粗さ（係数が高いほど粗さを下げる）
-            roughness = max(0.1, 1.0 - (material.specular_coefficient / 100.0))
-            cmds.setAttr(shader + ".specularRoughness", roughness)
-        else:
-            # デフォルト値
-            cmds.setAttr(shader + ".specular", 0.5)
-            cmds.setAttr(shader + ".specularRoughness", 0.5)
+            if specular_coef is not None:
+                # スペキュラー係数（MMDの0-100をStandardSurfaceの0-1にマッピング）
+                specular_weight = min(1.0, specular_coef / 100.0)
+                maya_utils.set_attribute(
+                    shader, "specularColor", material.specular[:3], "double3"
+                )
 
         # アンビエント設定（StandardSurfaceでは間接光の強度として使用）
         if hasattr(material, "ambient"):
@@ -369,88 +400,20 @@ class MeshConverter:
                 material.ambient[0] + material.ambient[1] + material.ambient[2]
             ) / 3.0
             # エミッションとして微弱に設定（アンビエント光の表現）
-            cmds.setAttr(shader + ".emission", ambient_intensity * 0.1)
-            cmds.setAttr(
-                shader + ".emissionColor",
-                material.ambient[0],
-                material.ambient[1],
-                material.ambient[2],
-                type="double3",
+            maya_utils.set_attribute(
+                shader, "emission", ambient_intensity * 0.1, "float"
+            )
+            maya_utils.set_attribute(
+                shader, "emissionColor", material.ambient[:3], "double3"
             )
 
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
-        cmds.setAttr(shader + ".metalness", 0.0)
+        maya_utils.set_attribute(shader, ".metalness", 0.0, "float")
 
-        # MMDマテリアルのメタ情報のみを保存（描画パラメータは除外）
-        custom_attrs = {
-            ATTR_MMD_MATERIAL_NAME: material.name,
-        }
-
-        # PMXマテリアルの場合の追加属性
-        if hasattr(material, "name_english") and material.name_english:
-            custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = material.name_english
-        if (
-            hasattr(material, "sphere_texture_index")
-            and material.sphere_texture_index >= 0
-            and all_textures
-        ):
-            custom_attrs[ATTR_MMD_SPHERE_PATH] = all_textures[
-                material.sphere_texture_index
-            ]
-        if hasattr(material, "sphere_mode"):
-            custom_attrs[ATTR_MMD_SPHERE_MODE] = material.sphere_mode
-        if hasattr(material, "toon_texture_index"):
-            custom_attrs[ATTR_MMD_TOON_INDEX] = material.toon_texture_index
-        if hasattr(material, "memo") and material.memo:
-            custom_attrs[ATTR_MMD_MEMO] = material.memo
-        if hasattr(material, "draw_flag"):
-            custom_attrs[ATTR_MMD_DRAW_FLAGS] = material.draw_flag
-
-        # エッジ関連の属性
-        if hasattr(material, "edge_color"):
-            # エッジカラーをカスタム属性として保存
-            if not cmds.attributeQuery("mmd_edge_color", node=shader, exists=True):
-                cmds.addAttr(shader, longName="mmd_edge_color", attributeType="double4")
-                cmds.addAttr(
-                    shader,
-                    longName="mmd_edge_colorX",
-                    attributeType="double",
-                    parent="mmd_edge_color",
-                )
-                cmds.addAttr(
-                    shader,
-                    longName="mmd_edge_colorY",
-                    attributeType="double",
-                    parent="mmd_edge_color",
-                )
-                cmds.addAttr(
-                    shader,
-                    longName="mmd_edge_colorZ",
-                    attributeType="double",
-                    parent="mmd_edge_color",
-                )
-                cmds.addAttr(
-                    shader,
-                    longName="mmd_edge_colorW",
-                    attributeType="double",
-                    parent="mmd_edge_color",
-                )
-            cmds.setAttr(
-                f"{shader}.mmd_edge_color",
-                material.edge_color[0],
-                material.edge_color[1],
-                material.edge_color[2],
-                material.edge_color[3],
-                type="double4",
-            )
-        if hasattr(material, "edge_size"):
-            custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
-
-        # PMDマテリアルの場合の追加属性
-        if hasattr(material, "edge_flag"):
-            custom_attrs[ATTR_MMD_EDGE_FLAG] = material.edge_flag
-
-        maya_utils.set_custom_attributes(shader, custom_attrs)
+        # カスタムアトリビュートを適用
+        self._apply_custom_attributes(
+            shader, material, all_textures, is_pmd, material_index
+        )
 
         # テクスチャの設定
         if texture_path:
@@ -469,13 +432,15 @@ class MeshConverter:
                 cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
                 cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
 
-                cmds.setAttr(
-                    file_node + ".fileTextureName", full_texture_path, type="string"
+                maya_utils.set_attribute(
+                    file_node, ".fileTextureName", full_texture_path, "string"
                 )
             else:
                 cmds.warning(f"Texture file not found: {full_texture_path}")
 
-    def _setup_dx11_shader(self, shader, material, texture_path, all_textures, is_pmd):
+    def _setup_dx11_shader(
+        self, shader, material, texture_path, all_textures, is_pmd, material_index=None
+    ):
         """dx11Shaderを設定"""
 
         # マテリアル名をサニタイズ（テクスチャノード名に使用）
@@ -520,9 +485,16 @@ class MeshConverter:
             except:
                 pass
 
+        # スペキュラー係数の設定（PMDとPMXで異なる）
+        specular_coef = None
         if hasattr(material, "specular_coefficient"):
+            specular_coef = material.specular_coefficient
+        elif hasattr(material, "specular_power"):
+            specular_coef = material.specular_power
+
+        if specular_coef is not None:
             try:
-                cmds.setAttr(shader + ".Shininess", material.specular_coefficient)
+                cmds.setAttr(shader + ".Shininess", specular_coef)
             except:
                 pass
 
@@ -623,3 +595,8 @@ class MeshConverter:
         # トゥーンテクスチャ設定
         # デフォルトのトゥーンテクスチャパスを設定（将来的に実装）
         # TODO: トゥーンテクスチャの実装
+
+        # カスタムアトリビュートを適用
+        self._apply_custom_attributes(
+            shader, material, all_textures, is_pmd, material_index
+        )

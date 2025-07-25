@@ -2,19 +2,27 @@ import struct
 
 from mmd_tools.core import utils
 
+### トゥーンインデックス
+# - **0xFF**: toon0.bmp
+# - **0x00**: toon01.bmp
+# - **0x01**: toon02.bmp
+# - **...**: ...
+# - **0x09**: toon10.bmp
+
 
 class PmdMaterial:
     """PMDファイルの材質データを保持するクラス。"""
+
     def __init__(self):
         self.name = "PmdDefaultMaterial"
-        self.diffuse = (0.0, 0.0, 0.0, 0.0) # RGBA
+        self.diffuse = (0.0, 0.0, 0.0, 0.0)  # RGBA
         self.specular_power = 0.0
-        self.specular = (0.0, 0.0, 0.0) # RGB
-        self.ambient = (0.0, 0.0, 0.0) # RGB
-        self.toon_index = 0
+        self.specular = (0.0, 0.0, 0.0)  # RGB
+        self.ambient = (0.0, 0.0, 0.0)  # RGB
+        self.toon_texture_index = 0
         self.edge_flag = 0
         self.face_count = 0
-        self.texture_file_name = ''
+        self.texture_file_name = ""
 
     def parse(self, f):
         """
@@ -23,13 +31,13 @@ class PmdMaterial:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        self.diffuse = struct.unpack('<ffff', f.read(16))
-        self.specular_power = struct.unpack('<f', f.read(4))[0]
-        self.specular = struct.unpack('<fff', f.read(12))
-        self.ambient = struct.unpack('<fff', f.read(12))
-        self.toon_index = struct.unpack('<B', f.read(1))[0]
-        self.edge_flag = struct.unpack('<B', f.read(1))[0]
-        self.face_count = struct.unpack('<I', f.read(4))[0]
+        self.diffuse = struct.unpack("<ffff", f.read(16))
+        self.specular_power = struct.unpack("<f", f.read(4))[0]
+        self.specular = struct.unpack("<fff", f.read(12))
+        self.ambient = struct.unpack("<fff", f.read(12))
+        self.toon_texture_index = struct.unpack("<B", f.read(1))[0]
+        self.edge_flag = struct.unpack("<B", f.read(1))[0]
+        self.face_count = struct.unpack("<I", f.read(4))[0]
         self.texture_file_name = utils.decodePMDString(f.read(20))
 
         # テクスチャファイル名から名前を生成
