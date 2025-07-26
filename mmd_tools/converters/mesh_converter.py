@@ -98,7 +98,7 @@ class MeshConverter:
         # if separate_by_material:
         #     maya_utils.split_mesh_by_material(model_group, all_materials)
 
-        cmds.select(geo_group)
+        maya_utils.select_objects(geo_group)
         return geo_group, created_mesh
 
     def convert_pmd_mesh(self, pmd_data: PmdParser, root_group: str):
@@ -153,7 +153,7 @@ class MeshConverter:
         if separate_by_material:
             maya_utils.split_mesh_by_material(geo_group, all_materials)
 
-        cmds.select(geo_group)
+        maya_utils.select_objects(geo_group)
         return geo_group, created_mesh
 
     def _create_unified_mesh(
@@ -259,7 +259,7 @@ class MeshConverter:
             maya_utils.assign_material_to_faces(created_mesh, shader, face_selection)
 
         # 作成したメッシュをグループに追加
-        cmds.parent(created_mesh, model_group)
+        maya_utils.parent_objects(created_mesh, model_group)
 
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
         disable_backface_culling = settings.get(
@@ -335,9 +335,14 @@ class MeshConverter:
         custom_attrs = {
             ATTR_MMD_MATERIAL_INDEX: material_index,
             ATTR_MMD_MATERIAL_NAME: material.name,
-            ATTR_MMD_MATERIAL_NAME_EN: material.name_english,
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
+        
+        # PMDとPMXで異なる属性への対応
+        if hasattr(material, 'name_english'):
+            custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = material.name_english
+        else:
+            custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = ""
 
         if is_pmd:
             custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)

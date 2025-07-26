@@ -43,7 +43,7 @@ class BoneConverter:
                    スキンクラスターの名前)
         """
         # PMXのボーン階層をMayaのjointノードに変換する
-        cmds.select(cl=True)
+        maya_utils.select_objects(clear=True)
 
         # スケルトングループを作成
         skeleton_group = cmds.group(empty=True, name=SKELETON_GROUP, parent=root_group)
@@ -87,7 +87,7 @@ class BoneConverter:
                    スキンクラスターの名前)
         """
         # PMDのボーン階層をMayaのjointノードに変換する
-        cmds.select(cl=True)
+        maya_utils.select_objects(clear=True)
 
         # スケルトングループを作成
         skeleton_group = cmds.group(empty=True, name=SKELETON_GROUP, parent=root_group)
@@ -169,12 +169,12 @@ class BoneConverter:
             try:
                 if bone.parent_bone_index != -1:
                     parent_name = bone_map[bone.parent_bone_index]
-                    cmds.select(parent_name, r=True)
+                    maya_utils.select_objects(parent_name, replace=True)
                 else:
-                    cmds.select(clear=True)
+                    maya_utils.select_objects(clear=True)
             except (TypeError, KeyError):
                 # 親ボーンが存在しない場合は、選択をクリア
-                cmds.select(clear=True)
+                maya_utils.select_objects(clear=True)
                 if parent_name:
                     self.logger.warning(f"{parent_name} の選択でエラーが起きています。")
 
@@ -200,7 +200,7 @@ class BoneConverter:
 
         # ルートジョイントをスケルトングループにペアレント
         for root_joint in root_joints:
-            cmds.parent(root_joint, skeleton_group)
+            maya_utils.parent_objects(root_joint, skeleton_group)
 
         return maya_joints
 

@@ -172,10 +172,7 @@ class TestMayaUtils(MayaTestBase):
             maya_utils.get_attribute(mesh_name, "mmd_double3"), (1.0, 2.0, 3.0)
         )
         self.assertEqual(
-            maya_utils.get_attribute(mesh_name, "mmd_double3"), (1.0, 2.0, 3.0)
-        )
-        self.assertEqual(
-            maya_utils.get_attribute(mesh_name, "mmd_array"), [1.0, 2.0, 3.0, 4.0]
+            maya_utils.get_attribute(mesh_name, "mmd_double4"), (1.0, 2.0, 3.0, 4.0)
         )
 
     def test_create_ik_handle(self):
@@ -342,6 +339,109 @@ class TestMayaUtils(MayaTestBase):
         model3 = cmds.group(empty=True, name="Model3_root")
         display_name3 = maya_utils.get_mmd_model_display_name(model3)
         self.assertEqual(display_name3, "Model3")
+
+    def test_select_objects(self):
+        """オブジェクトを選択できるか"""
+        # テストオブジェクトを作成
+        cube1 = cmds.polyCube(name="test_cube1")[0]
+        cube2 = cmds.polyCube(name="test_cube2")[0]
+        cube3 = cmds.polyCube(name="test_cube3")[0]
+
+        # 選択をクリア
+        result = maya_utils.select_objects(clear=True)
+        self.assertTrue(result)
+        self.assertEqual(cmds.ls(selection=True), [])
+
+        # 単一オブジェクトを選択
+        result = maya_utils.select_objects(cube1)
+        self.assertTrue(result)
+        self.assertEqual(cmds.ls(selection=True), [cube1])
+
+        # 複数オブジェクトを選択
+        result = maya_utils.select_objects([cube1, cube2])
+        self.assertTrue(result)
+        selected = cmds.ls(selection=True)
+        self.assertIn(cube1, selected)
+        self.assertIn(cube2, selected)
+
+        # 追加モードで選択
+        maya_utils.select_objects(cube1)  # まずcube1を選択
+        result = maya_utils.select_objects(cube2, add=True, clear=False, replace=False)
+        self.assertTrue(result)
+        selected = cmds.ls(selection=True)
+        self.assertIn(cube1, selected)
+        self.assertIn(cube2, selected)
+
+    def test_object_exists(self):
+        """オブジェクトの存在を確認できるか"""
+        # 存在するオブジェクト
+        cube = cmds.polyCube(name="test_exists_cube")[0]
+        self.assertTrue(maya_utils.object_exists(cube))
+
+        # 存在しないオブジェクト
+        self.assertFalse(maya_utils.object_exists("nonexistent_object"))
+
+        # オブジェクトを削除した後
+        cmds.delete(cube)
+        self.assertFalse(maya_utils.object_exists(cube))
+
+    def test_parent_objects(self):
+        """オブジェクトの親子関係を設定できるか"""
+        # テストオブジェクトを作成
+        parent = cmds.group(empty=True, name="test_parent")
+        child1 = cmds.polyCube(name="test_child1")[0]
+        child2 = cmds.polyCube(name="test_child2")[0]
+
+        # 単一の子を親付け
+        result = maya_utils.parent_objects(child1, parent)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(cmds.listRelatives(child1, parent=True)[0], parent)
+
+        # 複数の子を親付け
+        result = maya_utils.parent_objects([child2], parent)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(cmds.listRelatives(child2, parent=True)[0], parent)
+
+        # ワールド空間へ親付け
+        child3 = cmds.polyCube(name="test_child3")[0]
+        cmds.parent(child3, parent)  # まず親付け
+        result = maya_utils.parent_objects(child3, world=True)
+        self.assertEqual(len(result), 1)
+        # ワールド空間にある場合、親はNone
+        parents = cmds.listRelatives(child3, parent=True)
+        self.assertIsNone(parents)
+
+    def test_list_objects(self):
+        """オブジェクトをリストできるか"""
+        # テストシーンをセットアップ
+        cmds.file(new=True, force=True)
+        
+        # ジョイントを作成
+        cmds.select(clear=True)
+        joint1 = cmds.joint(name="test_joint1")
+        joint2 = cmds.joint(name="test_joint2")
+        
+        # メッシュを作成
+        cube = cmds.polyCube(name="test_cube")[0]
+        sphere = cmds.polySphere(name="test_sphere")[0]
+
+        # ジョイントのみリスト
+        joints = maya_utils.list_objects(type="joint")
+        joint_names = [j.split("|")[-1] for j in joints]  # フルパスから名前のみ取得
+        self.assertIn("test_joint1", joint_names)
+        self.assertIn("test_joint2", joint_names)
+
+        # トランスフォームをリスト
+        transforms = maya_utils.list_objects(type="transform")
+        transform_names = [t.split("|")[-1] for t in transforms]
+        self.assertIn("test_cube", transform_names)
+        self.assertIn("test_sphere", transform_names)
+
+        # ワイルドカードでフィルター
+        test_objects = maya_utils.list_objects(object_filter="*test*")
+        test_names = [t.split("|")[-1] for t in test_objects]
+        self.assertIn("test_joint1", test_names)
+        self.assertIn("test_cube", test_names)
 
 
 if __name__ == "__main__":

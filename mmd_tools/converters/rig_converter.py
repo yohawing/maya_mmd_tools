@@ -336,7 +336,7 @@ class RigConverter:
                 )
 
                 # IKハンドルをIKボーンにペアレント
-                cmds.parent(ik_handle, chain["ik_bone"])
+                maya_utils.parent_objects(ik_handle, chain["ik_bone"])
 
                 # IKハンドルのアトリビュートを設定
                 cmds.setAttr(f"{ik_handle}.v", 0)  # 非表示
@@ -419,7 +419,7 @@ class RigConverter:
             ik_parent = cmds.listRelatives(chain["ik_bone"], parent=True)
             if ik_parent:
                 # PoleTargetを足IKの親の子として配置
-                cmds.parent(pole_target, ik_parent[0])
+                maya_utils.parent_objects(pole_target, ik_parent[0])
             else:
                 # 親がない場合はワールド直下に配置
                 self.logger.warning(
@@ -617,7 +617,7 @@ class RigConverter:
                     {"joint": child, "position": world_pos, "rotation": world_rot}
                 )
                 # ワールドにペアレント（一時的に切り離す）
-                cmds.parent(child, world=True)
+                maya_utils.parent_objects(child, world=True)
 
             try:
                 # jointOrientを設定
@@ -639,7 +639,7 @@ class RigConverter:
                 # 子を再接続して位置を復元
                 for transform_data in child_transforms:
                     child = transform_data["joint"]
-                    cmds.parent(child, joint)
+                    maya_utils.parent_objects(child, joint)
                     cmds.xform(
                         child, worldSpace=True, translation=transform_data["position"]
                     )
@@ -665,7 +665,7 @@ class RigConverter:
         # 既存の「全ての親」ボーンを日本語名でチェック
         existing_master = self._find_joint_by_japanese_name(["全ての親", "マスター"])
         # 英語名でもチェック
-        if not existing_master and cmds.objExists("master"):
+        if not existing_master and maya_utils.object_exists("master"):
             existing_master = "master"
 
         if not existing_master:
@@ -686,13 +686,13 @@ class RigConverter:
                     continue
                 # ジョイントまたはトランスフォームノードをmasterの子にする
                 if cmds.nodeType(child) in ["joint", "transform"]:
-                    cmds.parent(child, master)
+                    maya_utils.parent_objects(child, master)
 
         # グルーブ
         # 既存のグルーブボーンを日本語名でチェック
         existing_groove = self._find_joint_by_japanese_name(["グルーブ"])
         # 英語名でもチェック
-        if not existing_groove and cmds.objExists("groove"):
+        if not existing_groove and maya_utils.object_exists("groove"):
             existing_groove = "groove"
 
         center_joint = self._find_joint_by_name(
@@ -715,7 +715,7 @@ class RigConverter:
             semi_standard_bones["groove"] = groove
 
             # センターをグルーブの子にする
-            cmds.parent(center_joint, groove)
+            maya_utils.parent_objects(center_joint, groove)
             self.logger.info(f"グルーブボーンを追加: {groove}")
         elif existing_groove:
             self.logger.info(f"既存のグルーブボーンを使用: {existing_groove}")
@@ -752,12 +752,12 @@ class RigConverter:
             ]
 
             # 腰ボーンを作成
-            cmds.select(clear=True)
+            maya_utils.select_objects(clear=True)
             waist = cmds.joint(name="waist", position=waist_pos)
             semi_standard_bones["waist"] = waist
 
             # 階層を設定（下半身の子、足の親）
-            cmds.parent(waist, lower_body_joint)
+            maya_utils.parent_objects(waist, lower_body_joint)
 
             # 左右の足を腰の子にする
             right_leg_joint = self._find_joint_by_name(
@@ -765,9 +765,9 @@ class RigConverter:
             )
 
             # 左足を腰の子にする（既に存在確認済み）
-            cmds.parent(left_leg_joint, waist)
+            maya_utils.parent_objects(left_leg_joint, waist)
             if right_leg_joint:
-                cmds.parent(right_leg_joint, waist)
+                maya_utils.parent_objects(right_leg_joint, waist)
 
             self.logger.info(f"腰ボーンを追加: {waist}")
         elif existing_waist:
@@ -812,7 +812,7 @@ class RigConverter:
             for jp_name in japanese_names:
                 if original_name == jp_name:
                     # 対応するMayaジョイントを探す
-                    all_joints = cmds.ls(type="joint")
+                    all_joints = maya_utils.list_objects(type="joint")
                     for joint in all_joints:
                         # カスタムアトリビュートでボーンインデックスを確認
                         if cmds.attributeQuery(
@@ -1070,7 +1070,7 @@ class RigConverter:
 
         # 子の初期回転を保存
         init_locator = cmds.spaceLocator(name=f"{child_joint}_init_rot")[0]
-        cmds.parent(init_locator, child_joint)
+        maya_utils.parent_objects(init_locator, child_joint)
         cmds.setAttr(f"{init_locator}.v", 0)
         created_nodes.append(init_locator)
 
@@ -1145,13 +1145,13 @@ class RigConverter:
         parent_init_locator = cmds.spaceLocator(name=f"{parent_joint}_init_local_rot")[
             0
         ]
-        cmds.parent(parent_init_locator, parent_joint)
+        maya_utils.parent_objects(parent_init_locator, parent_joint)
         cmds.setAttr(f"{parent_init_locator}.v", 0)  # 非表示
         created_nodes.append(parent_init_locator)
 
         # 子の初期回転を保存するロケータを作成
         child_init_locator = cmds.spaceLocator(name=f"{child_joint}_init_local_rot")[0]
-        cmds.parent(child_init_locator, child_joint)
+        maya_utils.parent_objects(child_init_locator, child_joint)
         cmds.setAttr(f"{child_init_locator}.v", 0)  # 非表示
         created_nodes.append(child_init_locator)
 
@@ -1256,7 +1256,7 @@ class RigConverter:
 
         # 子の初期位置を保存
         init_locator = cmds.spaceLocator(name=f"{child_joint}_init_pos")[0]
-        cmds.parent(init_locator, child_joint)
+        maya_utils.parent_objects(init_locator, child_joint)
         cmds.setAttr(f"{init_locator}.v", 0)
         created_nodes.append(init_locator)
 
@@ -1333,13 +1333,13 @@ class RigConverter:
         parent_init_locator = cmds.spaceLocator(name=f"{parent_joint}_init_local_pos")[
             0
         ]
-        cmds.parent(parent_init_locator, parent_joint)
+        maya_utils.parent_objects(parent_init_locator, parent_joint)
         cmds.setAttr(f"{parent_init_locator}.v", 0)  # 非表示
         created_nodes.append(parent_init_locator)
 
         # 子の初期位置を保存するロケータを作成
         child_init_locator = cmds.spaceLocator(name=f"{child_joint}_init_local_pos")[0]
-        cmds.parent(child_init_locator, child_joint)
+        maya_utils.parent_objects(child_init_locator, child_joint)
         cmds.setAttr(f"{child_init_locator}.v", 0)  # 非表示
         created_nodes.append(child_init_locator)
 

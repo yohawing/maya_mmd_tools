@@ -202,7 +202,7 @@ class PhysicsConverter:
         Returns:
             str: Nucleusソルバーノード名。
         """
-        if self.nucleus_solver and cmds.objExists(self.nucleus_solver):
+        if self.nucleus_solver and maya_utils.object_exists(self.nucleus_solver):
             return self.nucleus_solver
 
         # 既存のNucleusソルバーを検索または作成
@@ -216,7 +216,7 @@ class PhysicsConverter:
 
     def _configure_nucleus_solver(self):
         """Nucleusソルバーの設定を行う。"""
-        if not self.nucleus_solver or not cmds.objExists(self.nucleus_solver):
+        if not self.nucleus_solver or not maya_utils.object_exists(self.nucleus_solver):
             return
 
         # シミュレーション品質に基づいて設定
@@ -368,7 +368,7 @@ class PhysicsConverter:
                     if hair_system:
                         self.created_ncloth_nodes.append(hair_system)
                         # ノードを剛体グループに配置
-                        cmds.parent(hair_system, rigid_bodies_group)
+                        maya_utils.parent_objects(hair_system, rigid_bodies_group)
 
             except Exception as e:
                 self.logger.error(f"髪物理作成中にエラー: {rb.name} - {str(e)}")
@@ -401,7 +401,7 @@ class PhysicsConverter:
                     if ncloth:
                         self.created_ncloth_nodes.append(ncloth)
                         # ノードを剛体グループに配置
-                        cmds.parent(ncloth, rigid_bodies_group)
+                        maya_utils.parent_objects(ncloth, rigid_bodies_group)
 
             except Exception as e:
                 self.logger.error(f"布物理作成中にエラー: {rb.name} - {str(e)}")
@@ -433,7 +433,7 @@ class PhysicsConverter:
                     if nrigid:
                         self.created_nrigid_nodes.append(nrigid)
                         # ノードを剛体グループに配置
-                        cmds.parent(nrigid, rigid_bodies_group)
+                        maya_utils.parent_objects(nrigid, rigid_bodies_group)
 
             except Exception as e:
                 self.logger.error(f"剛体物理作成中にエラー: {rb.name} - {str(e)}")

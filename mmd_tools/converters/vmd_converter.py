@@ -168,9 +168,9 @@ class VmdConverter:
 
         # シーン内のジョイントを検索
         if target_namespace:
-            joints = cmds.ls(f"{target_namespace}:*", type="joint")
+            joints = maya_utils.list_objects(object_filter=f"{target_namespace}:*", type="joint")
         else:
-            joints = cmds.ls(type="joint")
+            joints = maya_utils.list_objects(type="joint")
 
         # カスタム属性から元のボーン名を取得
         for joint in joints:
@@ -494,7 +494,7 @@ class VmdConverter:
             カメラのトランスフォーム名
         """
         # 既存のMMDカメラを検索
-        cameras = cmds.ls(type="camera")
+        cameras = maya_utils.list_objects(type="camera")
         for cam in cameras:
             transform = cmds.listRelatives(cam, parent=True)[0]
             if cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform, exists=True):
@@ -638,7 +638,7 @@ class VmdConverter:
             照明のトランスフォーム名
         """
         # 既存のMMD照明を検索
-        lights = cmds.ls(type="directionalLight")
+        lights = maya_utils.list_objects(type="directionalLight")
         for light in lights:
             transform = cmds.listRelatives(light, parent=True)[0]
             if cmds.attributeQuery(ATTR_MMD_LIGHT, node=transform, exists=True):
@@ -723,9 +723,9 @@ class VmdConverter:
 
         # シーン内のブレンドシェイプノードを検索
         if target_namespace:
-            blend_shapes = cmds.ls(f"{target_namespace}:*", type="blendShape")
+            blend_shapes = maya_utils.list_objects(object_filter=f"{target_namespace}:*", type="blendShape")
         else:
-            blend_shapes = cmds.ls(type="blendShape")
+            blend_shapes = maya_utils.list_objects(type="blendShape")
 
         self.logger.debug(f"見つかったブレンドシェイプ: {blend_shapes}")
 
