@@ -5,7 +5,7 @@ from ...core.maya_utils import (
     get_parent_mmd_root,
     set_custom_attributes,
 )
-from ..qt_compat import QTreeWidgetItem, Qt, QCheckBox, QTableWidgetItem, QTimer
+from ..qt_compat import QTreeWidgetItem, Qt, QCheckBox, QTableWidgetItem, QTimer, QInputDialog, QMessageBox
 
 logger = get_logger(__name__)
 
@@ -36,6 +36,11 @@ class BonePresenter:
         self.view.collapse_all_btn.clicked.connect(self.view.bone_tree.collapseAll)
         self.view.select_in_maya_btn.clicked.connect(self.select_bone_in_maya)
         self.view.search_edit.textChanged.connect(self.filter_bones)
+        
+        # 追加ツールのシグナル
+        self.view.batch_rename_btn.clicked.connect(self.batch_rename_bones)
+        self.view.duplicate_btn.clicked.connect(self.duplicate_bone_hierarchy)
+        self.view.export_settings_btn.clicked.connect(self.export_bone_settings)
         
         # ボーン選択ボタン
         self.view.select_parent_btn.clicked.connect(lambda: self.select_bone_dialog("parent"))
@@ -106,8 +111,11 @@ class BonePresenter:
             # ボーン情報を取得
             name_jp = self._get_attr_safe(joint, "mmd_bone_name_jp", joint)
             
-            # ツリーアイテムを作成（ボーン名のみ）
-            item = QTreeWidgetItem([name_jp])
+            # 英語名も取得
+            name_en = self._get_attr_safe(joint, "mmd_bone_name_en", "")
+            
+            # ツリーアイテムを作成（日本語名と英語名）
+            item = QTreeWidgetItem([name_jp, name_en])
             item.setData(0, Qt.UserRole, joint)  # 実際のジョイント名を保存
             self.bone_tree_items[joint] = item
 
@@ -172,7 +180,7 @@ class BonePresenter:
             text_lower = text.lower()
             for joint, item in self.bone_tree_items.items():
                 name_jp = item.text(0).lower()
-                name_en = item.text(1).lower()
+                name_en = item.text(1).lower() if item.text(1) else ""
                 
                 if text_lower in name_jp or text_lower in name_en or text_lower in joint.lower():
                     item.setHidden(False)
@@ -772,6 +780,171 @@ class BonePresenter:
                     elif attr_name == "mmd_local_z_axis":
                         cmds.setAttr(f"{joint}.{attr_name}", 0.0, 0.0, 1.0, type="double3")
                 else:
-                    cmds.addAttr(joint, longName=attr_name, attributeType=attr_type)
-                    if default is not None:
-                        cmds.setAttr(f"{joint}.{attr_name}", default)
+                    if attr_type == "string":
+                        cmds.addAttr(joint, longName=attr_name, dataType=attr_type)
+                        if default is not None:
+                            cmds.setAttr(f"{joint}.{attr_name}", default, type="string")
+                    else:
+                        cmds.addAttr(joint, longName=attr_name, attributeType=attr_type)
+                        if default is not None:
+                            cmds.setAttr(f"{joint}.{attr_name}", default)
+    
+    def batch_rename_bones(self):
+        """選択されたボーンの一括リネーム"""
+        selected_items = self.view.bone_tree.selectedItems()
+        if not selected_items:
+            self.app_state.emit_status("リネームするボーンを選択してください", "warning")
+            return
+        
+        # プレフィックス/サフィックスを入力
+        prefix, ok1 = QInputDialog.getText(self.view, "一括リネーム", "プレフィックス（前に追加する文字）:")
+        suffix, ok2 = QInputDialog.getText(self.view, "一括リネーム", "サフィックス（後に追加する文字）:")
+        
+        if not (ok1 or ok2):
+            return
+        
+        renamed_count = 0
+        for item in selected_items:
+            joint = item.data(0, Qt.UserRole)
+            if joint and cmds.objExists(joint):
+                # 日本語名を更新
+                name_jp = self._get_attr_safe(joint, "mmd_bone_name_jp", joint)
+                new_name_jp = f"{prefix}{name_jp}{suffix}"
+                set_custom_attributes(joint, {"mmd_bone_name_jp": new_name_jp})
+                
+                # 英語名も更新（存在する場合）
+                name_en = self._get_attr_safe(joint, "mmd_bone_name_en", "")
+                if name_en:
+                    new_name_en = f"{prefix}{name_en}{suffix}"
+                    set_custom_attributes(joint, {"mmd_bone_name_en": new_name_en})
+                
+                # ツリーアイテムを更新
+                item.setText(0, new_name_jp)
+                if name_en:
+                    item.setText(1, new_name_en)
+                
+                renamed_count += 1
+        
+        self.app_state.emit_status(f"{renamed_count}個のボーンをリネームしました")
+    
+    def duplicate_bone_hierarchy(self):
+        """選択されたボーン階層を複製"""
+        if not self.current_bone:
+            self.app_state.emit_status("複製するボーンを選択してください", "warning")
+            return
+        
+        # 確認ダイアログ
+        reply = QMessageBox.question(
+            self.view,
+            "ボーン階層の複製",
+            f"'{self.current_bone}'とその子階層を複製しますか？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        try:
+            # ボーンとその階層を複製
+            duplicated = cmds.duplicate(self.current_bone, renameChildren=True)
+            
+            # MMD属性もコピー
+            self._copy_mmd_attributes_recursive(self.current_bone, duplicated[0])
+            
+            # ボーンツリーを更新
+            self.load_bones()
+            
+            self.app_state.emit_status(f"ボーン階層を複製しました: {duplicated[0]}")
+        except Exception as e:
+            logger.error(f"Failed to duplicate bone hierarchy: {e}", exc_info=True)
+            self.app_state.emit_status(f"複製に失敗しました: {str(e)}", "error")
+    
+    def _copy_mmd_attributes_recursive(self, source, target):
+        """MMD属性を再帰的にコピー"""
+        # 現在のノードの属性をコピー
+        attrs = [
+            "mmd_bone_name_jp", "mmd_bone_name_en", "mmd_bone_flags",
+            "mmd_deform_layer", "mmd_bone_offset", "mmd_connection_bone",
+            "mmd_ik_target", "mmd_ik_loop", "mmd_ik_limit_angle",
+            "mmd_ik_links", "mmd_grant_parent", "mmd_grant_rate",
+            "mmd_fixed_axis", "mmd_local_x_axis", "mmd_local_z_axis",
+            "mmd_external_parent_key"
+        ]
+        
+        self._ensure_mmd_attributes(target)
+        
+        for attr in attrs:
+            if cmds.attributeQuery(attr, node=source, exists=True):
+                value = cmds.getAttr(f"{source}.{attr}")
+                if value is not None:
+                    try:
+                        cmds.setAttr(f"{target}.{attr}", value)
+                    except:
+                        # double3などの特殊な属性の場合
+                        try:
+                            cmds.setAttr(f"{target}.{attr}", *value, type="double3")
+                        except:
+                            pass
+        
+        # 子ノードも処理
+        source_children = cmds.listRelatives(source, children=True, type="joint") or []
+        target_children = cmds.listRelatives(target, children=True, type="joint") or []
+        
+        for src_child, tgt_child in zip(source_children, target_children):
+            self._copy_mmd_attributes_recursive(src_child, tgt_child)
+    
+    def export_bone_settings(self):
+        """ボーン設定をエクスポート"""
+        current_model_root = self.app_state.current_model_root
+        if not current_model_root:
+            self.app_state.emit_status("モデルが選択されていません", "warning")
+            return
+        
+        import json
+        from ...core.file_dialog import get_save_file_path
+        
+        # ファイルパスを取得
+        file_path = get_save_file_path(
+            "ボーン設定をエクスポート",
+            "JSON Files (*.json)",
+            "bone_settings.json"
+        )
+        
+        if not file_path:
+            return
+        
+        try:
+            # 全ボーンの設定を収集
+            joints = cmds.listRelatives(current_model_root, allDescendents=True, type="joint") or []
+            bone_settings = {}
+            
+            for joint in joints:
+                settings = {
+                    "name_jp": self._get_attr_safe(joint, "mmd_bone_name_jp", joint),
+                    "name_en": self._get_attr_safe(joint, "mmd_bone_name_en", ""),
+                    "flags": self._get_attr_safe(joint, "mmd_bone_flags", 0x0005),
+                    "deform_layer": self._get_attr_safe(joint, "mmd_deform_layer", 0),
+                    "parent": cmds.listRelatives(joint, parent=True, type="joint")[0] if cmds.listRelatives(joint, parent=True, type="joint") else None,
+                }
+                
+                # その他の設定も追加
+                if cmds.attributeQuery("mmd_ik_target", node=joint, exists=True):
+                    settings["ik_settings"] = {
+                        "target": self._get_attr_safe(joint, "mmd_ik_target", ""),
+                        "loop": self._get_attr_safe(joint, "mmd_ik_loop", 10),
+                        "limit_angle": self._get_attr_safe(joint, "mmd_ik_limit_angle", 2.0),
+                        "links": self._get_attr_safe(joint, "mmd_ik_links", [])
+                    }
+                
+                bone_settings[joint] = settings
+            
+            # JSONとして保存
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(bone_settings, f, ensure_ascii=False, indent=2)
+            
+            self.app_state.emit_status(f"ボーン設定をエクスポートしました: {file_path}")
+            logger.info(f"Exported bone settings to: {file_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to export bone settings: {e}", exc_info=True)
+            self.app_state.emit_status(f"エクスポートに失敗しました: {str(e)}", "error")

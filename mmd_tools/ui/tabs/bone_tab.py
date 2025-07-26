@@ -76,16 +76,33 @@ class BoneTab(BaseTab):
         toolbar_layout.addWidget(self.collapse_all_btn)
         toolbar_layout.addWidget(self.select_in_maya_btn)
         toolbar_layout.addStretch()
+        
+        # 追加のツールボタン
+        self.batch_rename_btn = QPushButton("一括リネーム")
+        self.batch_rename_btn.setMaximumWidth(100)
+        self.duplicate_btn = QPushButton("階層複製")
+        self.duplicate_btn.setMaximumWidth(80)
+        self.export_settings_btn = QPushButton("設定エクスポート")
+        self.export_settings_btn.setMaximumWidth(120)
+        
+        toolbar_layout.addWidget(self.batch_rename_btn)
+        toolbar_layout.addWidget(self.duplicate_btn)
+        toolbar_layout.addWidget(self.export_settings_btn)
 
         bone_tree_layout.addLayout(toolbar_layout)
 
         # ボーンツリー
         self.bone_tree = QTreeWidget()
-        self.bone_tree.setHeaderLabel("ボーン名")  # ヘッダーを1つに変更
+        self.bone_tree.setHeaderLabels(["日本語名", "英語名"])  # ヘッダーを2つに変更
         self.bone_tree.setAlternatingRowColors(True)
         self.bone_tree.setIndentation(
-            5
-        )  # インデントを5ピクセルに設定（デフォルトは20）
+            15
+        )  # インデントを15ピクセルに設定
+        # カラム幅の調整
+        self.bone_tree.setColumnWidth(0, 200)
+        self.bone_tree.setColumnWidth(1, 150)
+        # 複数選択を有効化
+        self.bone_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
         bone_tree_layout.addWidget(self.bone_tree)
 
         # ボーン検索

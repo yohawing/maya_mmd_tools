@@ -1,0 +1,382 @@
+"""BonePresenterのユニットテスト"""
+
+import unittest
+from unittest.mock import MagicMock, patch, call
+import maya.cmds as cmds
+import json
+import math
+
+from tests.common.maya_test_base import MayaTestBase
+from mmd_tools.ui.presenters.bone_presenter import BonePresenter
+from mmd_tools.ui.tabs.bone_tab import BoneTab
+from mmd_tools.ui.application_state import ApplicationState
+
+
+class TestBonePresenter(MayaTestBase):
+    """BonePresenterクラスのユニットテスト"""
+
+    def setUp(self):
+        """テストのセットアップ"""
+        super().setUp()
+        
+        # モックビューとアプリケーションステートを作成
+        self.mock_view = MagicMock(spec=BoneTab)
+        self.mock_app_state = MagicMock(spec=ApplicationState)
+        
+        # モックビューの属性を設定
+        self.mock_view.bone_tree = MagicMock()
+        self.mock_view.refresh_btn = MagicMock()
+        self.mock_view.expand_all_btn = MagicMock()
+        self.mock_view.collapse_all_btn = MagicMock()
+        self.mock_view.select_in_maya_btn = MagicMock()
+        self.mock_view.batch_rename_btn = MagicMock()
+        self.mock_view.duplicate_btn = MagicMock()
+        self.mock_view.export_settings_btn = MagicMock()
+        self.mock_view.search_edit = MagicMock()
+        
+        # 基本情報タブ
+        self.mock_view.bone_name_jp_edit = MagicMock()
+        self.mock_view.bone_name_en_edit = MagicMock()
+        self.mock_view.parent_bone_edit = MagicMock()
+        self.mock_view.pos_x_spin = MagicMock()
+        self.mock_view.pos_y_spin = MagicMock()
+        self.mock_view.pos_z_spin = MagicMock()
+        self.mock_view.deform_layer_spin = MagicMock()
+        self.mock_view.connection_type_combo = MagicMock()
+        self.mock_view.connection_bone_edit = MagicMock()
+        self.mock_view.offset_x_spin = MagicMock()
+        self.mock_view.offset_y_spin = MagicMock()
+        self.mock_view.offset_z_spin = MagicMock()
+        
+        # 変形制御タブ
+        self.mock_view.rotatable_check = MagicMock()
+        self.mock_view.movable_check = MagicMock()
+        self.mock_view.visible_check = MagicMock()
+        self.mock_view.enabled_check = MagicMock()
+        self.mock_view.after_physics_check = MagicMock()
+        self.mock_view.external_parent_check = MagicMock()
+        self.mock_view.external_parent_key_spin = MagicMock()
+        
+        # IK設定タブ
+        self.mock_view.ik_enabled_check = MagicMock()
+        self.mock_view.ik_settings_group = MagicMock()
+        self.mock_view.ik_links_group = MagicMock()
+        self.mock_view.ik_target_edit = MagicMock()
+        self.mock_view.ik_loop_spin = MagicMock()
+        self.mock_view.ik_limit_angle_spin = MagicMock()
+        self.mock_view.ik_links_table = MagicMock()
+        self.mock_view.add_ik_link_btn = MagicMock()
+        self.mock_view.remove_ik_link_btn = MagicMock()
+        self.mock_view.move_up_btn = MagicMock()
+        self.mock_view.move_down_btn = MagicMock()
+        
+        # 付与設定タブ
+        self.mock_view.rotation_grant_check = MagicMock()
+        self.mock_view.move_grant_check = MagicMock()
+        self.mock_view.grant_settings_group = MagicMock()
+        self.mock_view.grant_parent_edit = MagicMock()
+        self.mock_view.grant_rate_spin = MagicMock()
+        self.mock_view.local_grant_check = MagicMock()
+        
+        # 軸制限タブ
+        self.mock_view.fixed_axis_check = MagicMock()
+        self.mock_view.local_axis_check = MagicMock()
+        self.mock_view.fixed_axis_group = MagicMock()
+        self.mock_view.local_axis_group = MagicMock()
+        self.mock_view.fixed_axis_x_spin = MagicMock()
+        self.mock_view.fixed_axis_y_spin = MagicMock()
+        self.mock_view.fixed_axis_z_spin = MagicMock()
+        self.mock_view.local_x_axis_x_spin = MagicMock()
+        self.mock_view.local_x_axis_y_spin = MagicMock()
+        self.mock_view.local_x_axis_z_spin = MagicMock()
+        self.mock_view.local_z_axis_x_spin = MagicMock()
+        self.mock_view.local_z_axis_y_spin = MagicMock()
+        self.mock_view.local_z_axis_z_spin = MagicMock()
+        
+        # ボタン
+        self.mock_view.select_parent_btn = MagicMock()
+        self.mock_view.select_connection_btn = MagicMock()
+        self.mock_view.select_ik_target_btn = MagicMock()
+        self.mock_view.select_grant_parent_btn = MagicMock()
+        self.mock_view.apply_btn = MagicMock()
+        self.mock_view.reset_btn = MagicMock()
+        
+        # clicked属性を持つモックオブジェクトを設定
+        for attr in dir(self.mock_view):
+            if attr.endswith('_btn'):
+                getattr(self.mock_view, attr).clicked = MagicMock()
+        
+        # その他のウィジェットのシグナル
+        self.mock_view.bone_tree.currentItemChanged = MagicMock()
+        self.mock_view.bone_tree.selectedItems = MagicMock(return_value=[])
+        self.mock_view.search_edit.textChanged = MagicMock()
+        self.mock_view.ik_enabled_check.toggled = MagicMock()
+        self.mock_view.rotation_grant_check.toggled = MagicMock()
+        self.mock_view.move_grant_check.toggled = MagicMock()
+        self.mock_view.fixed_axis_check.toggled = MagicMock()
+        self.mock_view.local_axis_check.toggled = MagicMock()
+        self.mock_view.external_parent_check.toggled = MagicMock()
+        self.mock_view.connection_type_combo.currentIndexChanged = MagicMock()
+        
+        # IKリンクテーブルのモック設定
+        self.mock_view.ik_links_table.rowCount.return_value = 0
+        self.mock_view.ik_links_table.insertRow = MagicMock()
+        self.mock_view.ik_links_table.setItem = MagicMock()
+        self.mock_view.ik_links_table.setCellWidget = MagicMock()
+        self.mock_view.ik_links_table.currentRow.return_value = -1
+        self.mock_view.ik_links_table.removeRow = MagicMock()
+        self.mock_view.ik_links_table.columnCount.return_value = 8
+        self.mock_view.ik_links_table.item = MagicMock(return_value=None)
+        self.mock_view.ik_links_table.cellWidget = MagicMock(return_value=None)
+        self.mock_view.ik_links_table.setCurrentCell = MagicMock()
+        
+        # デフォルト値を設定
+        self.mock_view.connection_type_combo.currentIndex.return_value = 0
+        self.mock_view.ik_enabled_check.isChecked.return_value = False
+        self.mock_view.rotation_grant_check.isChecked.return_value = False
+        self.mock_view.move_grant_check.isChecked.return_value = False
+        self.mock_view.fixed_axis_check.isChecked.return_value = False
+        self.mock_view.local_axis_check.isChecked.return_value = False
+        self.mock_view.external_parent_check.isChecked.return_value = False
+        
+        # スピンボックスのvalue関数
+        for attr in dir(self.mock_view):
+            if attr.endswith('_spin'):
+                spin = getattr(self.mock_view, attr)
+                spin.value.return_value = 0.0
+                spin.setValue = MagicMock()
+        
+        # エディットのtext関数
+        for attr in dir(self.mock_view):
+            if attr.endswith('_edit'):
+                edit = getattr(self.mock_view, attr)
+                edit.text.return_value = ""
+                edit.setText = MagicMock()
+        
+        # チェックボックスのsetChecked関数
+        for attr in dir(self.mock_view):
+            if attr.endswith('_check'):
+                check = getattr(self.mock_view, attr)
+                check.setChecked = MagicMock()
+                check.isChecked.return_value = False
+        
+        # プレゼンターを作成
+        self.presenter = BonePresenter(self.mock_view, self.mock_app_state)
+        
+        # テスト用のモデルとボーンを作成
+        self.test_model = cmds.group(empty=True, name="test_model")
+        # ジョイントは作成時に階層構造を作る
+        cmds.select(clear=True)
+        self.test_bone1 = cmds.joint(name="test_bone1", position=[0, 0, 0])
+        self.test_bone2 = cmds.joint(name="test_bone2", position=[0, 5, 0])
+        self.test_bone3 = cmds.joint(name="test_bone3", position=[0, 10, 0])
+        # test_bone1をtest_modelの子にする
+        cmds.select(clear=True)
+        cmds.parent(self.test_bone1, self.test_model)
+        
+        # MMD属性を追加
+        self.presenter._ensure_mmd_attributes(self.test_bone1)
+        self.presenter._ensure_mmd_attributes(self.test_bone2)
+        self.presenter._ensure_mmd_attributes(self.test_bone3)
+        
+        # 基本的なMMD属性を設定
+        cmds.setAttr(f"{self.test_bone1}.mmd_bone_name_jp", "テストボーン1", type="string")
+        cmds.setAttr(f"{self.test_bone1}.mmd_bone_name_en", "test_bone1", type="string")
+        cmds.setAttr(f"{self.test_bone2}.mmd_bone_name_jp", "テストボーン2", type="string")
+        cmds.setAttr(f"{self.test_bone2}.mmd_bone_name_en", "test_bone2", type="string")
+        cmds.setAttr(f"{self.test_bone3}.mmd_bone_name_jp", "テストボーン3", type="string")
+        cmds.setAttr(f"{self.test_bone3}.mmd_bone_name_en", "test_bone3", type="string")
+
+    def tearDown(self):
+        """テスト後のクリーンアップ"""
+        if cmds.objExists(self.test_model):
+            cmds.delete(self.test_model)
+        super().tearDown()
+
+    def test_init(self):
+        """初期化のテスト"""
+        self.assertIsNone(self.presenter.current_bone)
+        self.assertEqual(self.presenter.bone_data, {})
+        self.assertEqual(self.presenter.bone_tree_items, {})
+        self.assertFalse(self.presenter.is_updating)
+
+    def test_load_bones(self):
+        """ボーン読み込みのテスト"""
+        # モデルルートを設定
+        self.mock_app_state.current_model_root = self.test_model
+        
+        # ボーンを読み込み
+        self.presenter.load_bones()
+        
+        # ツリーがクリアされたことを確認
+        self.mock_view.bone_tree.clear.assert_called()
+        
+        # ボーンが読み込まれたことを確認
+        self.assertEqual(len(self.presenter.bone_tree_items), 3)
+        self.assertIn(self.test_bone1, self.presenter.bone_tree_items)
+        self.assertIn(self.test_bone2, self.presenter.bone_tree_items)
+        self.assertIn(self.test_bone3, self.presenter.bone_tree_items)
+
+    def test_bone_flag_calculation(self):
+        """ボーンフラグ計算のテスト"""
+        # 各フラグを設定
+        self.mock_view.connection_type_combo.currentIndex.return_value = 1  # ボーン接続
+        self.mock_view.rotatable_check.isChecked.return_value = True
+        self.mock_view.movable_check.isChecked.return_value = True
+        self.mock_view.visible_check.isChecked.return_value = True
+        self.mock_view.enabled_check.isChecked.return_value = True
+        self.mock_view.ik_enabled_check.isChecked.return_value = True
+        self.mock_view.after_physics_check.isChecked.return_value = True
+        
+        # フラグを計算
+        flags = self.presenter._calculate_bone_flags()
+        
+        # 期待値を確認
+        expected_flags = 0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x1000
+        self.assertEqual(flags, expected_flags)
+
+    def test_select_bone_in_maya(self):
+        """Mayaでのボーン選択テスト"""
+        self.presenter.current_bone = self.test_bone1
+        
+        # ボーンを選択
+        self.presenter.select_bone_in_maya()
+        
+        # Mayaで選択されたことを確認
+        selected = cmds.ls(selection=True)
+        self.assertEqual(selected, [self.test_bone1])
+
+    def test_ik_settings_toggle(self):
+        """IK設定のトグルテスト"""
+        # IKを有効化
+        self.presenter.on_ik_enabled_toggled(True)
+        self.mock_view.ik_settings_group.setEnabled.assert_called_with(True)
+        self.mock_view.ik_links_group.setEnabled.assert_called_with(True)
+        
+        # IKを無効化
+        self.presenter.on_ik_enabled_toggled(False)
+        self.mock_view.ik_settings_group.setEnabled.assert_called_with(False)
+        self.mock_view.ik_links_group.setEnabled.assert_called_with(False)
+
+    def test_apply_changes(self):
+        """変更適用のテスト"""
+        # 現在のボーンを設定
+        self.presenter.current_bone = self.test_bone1
+        
+        # UI の値を設定
+        self.mock_view.bone_name_jp_edit.text.return_value = "新しい名前"
+        self.mock_view.bone_name_en_edit.text.return_value = "new_name"
+        self.mock_view.deform_layer_spin.value.return_value = 2
+        self.mock_view.pos_x_spin.value.return_value = 1.0
+        self.mock_view.pos_y_spin.value.return_value = 2.0
+        self.mock_view.pos_z_spin.value.return_value = 3.0
+        
+        # 変更を適用
+        self.presenter.apply_changes()
+        
+        # 属性が更新されたことを確認
+        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.mmd_bone_name_jp"), "新しい名前")
+        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.mmd_bone_name_en"), "new_name")
+        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.mmd_deform_layer"), 2)
+        
+        # 位置が更新されたことを確認
+        pos = cmds.xform(self.test_bone1, query=True, translation=True, worldSpace=True)
+        self.assertAlmostEqual(pos[0], 1.0, places=3)
+        self.assertAlmostEqual(pos[1], 2.0, places=3)
+        self.assertAlmostEqual(pos[2], 3.0, places=3)
+
+    def test_batch_rename_bones(self):
+        """一括リネームのテスト"""
+        # ツリーアイテムのモックを作成
+        mock_item1 = MagicMock()
+        mock_item1.data.return_value = self.test_bone1
+        mock_item1.setText = MagicMock()
+        mock_item1.text.return_value = "テストボーン1"
+        
+        self.mock_view.bone_tree.selectedItems.return_value = [mock_item1]
+        
+        # ダイアログのモック
+        with patch('mmd_tools.ui.presenters.bone_presenter.QInputDialog.getText') as mock_dialog:
+            mock_dialog.side_effect = [("prefix_", True), ("_suffix", True)]
+            
+            # 一括リネームを実行
+            self.presenter.batch_rename_bones()
+            
+            # 名前が更新されたことを確認
+            new_name_jp = cmds.getAttr(f"{self.test_bone1}.mmd_bone_name_jp")
+            self.assertEqual(new_name_jp, "prefix_テストボーン1_suffix")
+
+    def test_duplicate_bone_hierarchy(self):
+        """ボーン階層複製のテスト"""
+        self.presenter.current_bone = self.test_bone1
+        
+        # 確認ダイアログのモック
+        with patch('mmd_tools.ui.presenters.bone_presenter.QMessageBox.question') as mock_dialog:
+            from mmd_tools.ui.qt_compat import QMessageBox
+            mock_dialog.return_value = QMessageBox.Yes
+            
+            # 複製を実行
+            self.presenter.duplicate_bone_hierarchy()
+            
+            # 複製されたボーンが存在することを確認
+            duplicated_bones = cmds.ls("test_bone1*", type="joint")
+            self.assertGreater(len(duplicated_bones), 1)
+
+    def test_connection_type_change(self):
+        """接続タイプ変更のテスト"""
+        # 座標オフセットモード
+        self.presenter.on_connection_type_changed(0)
+        self.mock_view.offset_x_spin.setEnabled.assert_called_with(True)
+        self.mock_view.connection_bone_edit.setEnabled.assert_called_with(False)
+        
+        # ボーン接続モード
+        self.presenter.on_connection_type_changed(1)
+        self.mock_view.offset_x_spin.setEnabled.assert_called_with(False)
+        self.mock_view.connection_bone_edit.setEnabled.assert_called_with(True)
+
+    def test_add_ik_link(self):
+        """IKリンク追加のテスト"""
+        # 選択されたボーンを設定
+        cmds.select(self.test_bone2)
+        
+        # IKリンクを追加
+        self.presenter.add_ik_link()
+        
+        # テーブルに行が追加されたことを確認
+        self.mock_view.ik_links_table.insertRow.assert_called()
+
+    def test_filter_bones(self):
+        """ボーン検索フィルタのテスト"""
+        # ツリーアイテムのモックを作成
+        mock_item1 = MagicMock()
+        mock_item1.text.side_effect = lambda i: "テストボーン1" if i == 0 else "test_bone1"
+        mock_item1.setHidden = MagicMock()
+        mock_item1.parent.return_value = None
+        
+        mock_item2 = MagicMock()
+        mock_item2.text.side_effect = lambda i: "テストボーン2" if i == 0 else "test_bone2"
+        mock_item2.setHidden = MagicMock()
+        mock_item2.parent.return_value = None
+        
+        self.presenter.bone_tree_items = {
+            self.test_bone1: mock_item1,
+            self.test_bone2: mock_item2
+        }
+        
+        # "ボーン1"で検索
+        self.presenter.filter_bones("ボーン1")
+        
+        # 1つ目は表示、2つ目は非表示
+        mock_item1.setHidden.assert_called_with(False)
+        mock_item2.setHidden.assert_called_with(True)
+        
+        # 空文字で検索（全て表示）
+        self.presenter.filter_bones("")
+        
+        # 両方とも表示
+        mock_item1.setHidden.assert_called_with(False)
+        mock_item2.setHidden.assert_called_with(False)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -80,6 +80,7 @@ class MorphTab(BaseTab):
         self.group_list.setAlternatingRowColors(True)
         
         # デフォルトグループを追加
+        self.group_list.addItem("全て表示")
         default_groups = ["眉", "目", "口", "その他"]
         for group in default_groups:
             self.group_list.addItem(group)
@@ -178,6 +179,21 @@ class MorphTab(BaseTab):
         reset_layout.addWidget(self.reset_slider_btn)
         reset_layout.addWidget(self.reset_all_btn)
         preview_layout.addLayout(reset_layout)
+        
+        # プリセット機能
+        preset_layout = QHBoxLayout()
+        preset_layout.addWidget(QLabel("プリセット:"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setEditable(True)
+        self.preset_combo.addItems(["なし", "笑顔", "ウィンク", "驚き", "悲しみ"])
+        preset_layout.addWidget(self.preset_combo)
+        self.save_preset_btn = QPushButton("保存")
+        self.load_preset_btn = QPushButton("読込")
+        self.delete_preset_btn = QPushButton("削除")
+        preset_layout.addWidget(self.save_preset_btn)
+        preset_layout.addWidget(self.load_preset_btn)
+        preset_layout.addWidget(self.delete_preset_btn)
+        preview_layout.addLayout(preset_layout)
 
         preview_group.setLayout(preview_layout)
         layout.addWidget(preview_group)
