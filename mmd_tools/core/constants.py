@@ -47,6 +47,50 @@ ATTR_MMD_SHARED_TOON_FLAG = "mmd_shared_toon_flag"
 ATTR_MMD_TOON_TEXTURE_INDEX = "mmd_toon_texture_index"
 ATTR_MMD_MATERIAL_INDEX = "mmd_material_index"
 
+# ボーンカスタムアトリビュート名（共通）
+ATTR_MMD_BONE_NAME = "mmd_bone_name_jp"  # ボーン名（日本語）
+ATTR_MMD_BONE_NAME_EN = "mmd_bone_name_en"  # ボーン名（英語）
+ATTR_MMD_BONE_FLAGS = "mmd_bone_flags"  # ボーンフラグ
+ATTR_MMD_DEFORM_LAYER = "mmd_deform_layer"  # 変形階層
+ATTR_MMD_BONE_OFFSET = "mmd_bone_offset"  # ボーンオフセット（接続先）
+ATTR_MMD_CONNECTION_BONE = "mmd_connection_bone"  # 接続ボーン名
+
+# IK関連
+ATTR_MMD_IK_TARGET = "mmd_ik_target"  # IKターゲットボーン名
+ATTR_MMD_IK_LOOP = "mmd_ik_loop"  # IKループ回数
+ATTR_MMD_IK_LIMIT_ANGLE = "mmd_ik_limit_angle"  # IK制限角度
+ATTR_MMD_IK_LINKS = "mmd_ik_links"  # IKリンク（JSON文字列）
+
+# 付与関連
+ATTR_MMD_GRANT_PARENT = "mmd_grant_parent"  # 付与親ボーン名
+ATTR_MMD_GRANT_RATE = "mmd_grant_rate"  # 付与率
+
+# 軸制限関連
+ATTR_MMD_FIXED_AXIS = "mmd_fixed_axis"  # 固定軸
+ATTR_MMD_LOCAL_X_AXIS = "mmd_local_x_axis"  # ローカルX軸
+ATTR_MMD_LOCAL_Z_AXIS = "mmd_local_z_axis"  # ローカルZ軸
+
+# 外部親関連
+ATTR_MMD_EXTERNAL_PARENT_KEY = "mmd_external_parent_key"  # 外部親キー
+
+# ボーンの詳細アトリビュート名（フォーマット固有の情報を保存）
+ATTR_MMD_BONE_INDEX = "mmd_bone_index"  # ボーンインデックス
+ATTR_MMD_BONE_PARENT_INDEX = "mmd_bone_parent_index"  # 親ボーンインデックス
+ATTR_MMD_CONNECT_TYPE = "mmd_connect_type"  # 接続タイプ
+ATTR_MMD_CONNECT_INDEX = "mmd_connect_index"  # 接続先インデックス
+ATTR_MMD_CONNECT_BONE_INDEX = "mmd_connect_bone_index"  # 接続先ボーンインデックス
+ATTR_MMD_GIVEN_PARENT_INDEX = "mmd_grant_parent_index"  # 付与親インデックス
+ATTR_MMD_AXIS_DIRECTION = "mmd_axis_direction"  # 軸方向（軸固定時）
+ATTR_MMD_X_AXIS_DIRECTION = "mmd_x_axis_direction"  # X軸方向（ローカル軸時）
+ATTR_MMD_Z_AXIS_DIRECTION = "mmd_z_axis_direction"  # Z軸方向（ローカル軸時）
+ATTR_MMD_IK_TARGET_INDEX = "mmd_ik_target_index"  # IKターゲットインデックス
+
+# PMD固有のアトリビュート名（PMDのみに存在）
+ATTR_MMD_BONE_TYPE = "mmd_bone_type"  # ボーンタイプ（PMD固有）
+ATTR_MMD_TAIL_POS_INDEX = (
+    "mmd_tail_pos_index"  # テール位置ボーンインデックス（PMD固有）
+)
+
 # デフォルト値
 DEFAULT_SCALE_FACTOR = 1.0  # インポート時のデフォルトスケール係数
 DEFAULT_IMPORT_PHYSICS = True  # 物理演算をインポートするかのデフォルト設定

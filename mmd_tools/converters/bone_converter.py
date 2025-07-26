@@ -7,7 +7,39 @@ from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from ..core import maya_utils
 from ..core.pmd_parser import PmdParser
 from ..core.pmx_parser import PmxParser
-from ..core.constants import SKELETON_GROUP
+from ..core.constants import (
+    SKELETON_GROUP,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_BONE_FLAGS,
+    ATTR_MMD_DEFORM_LAYER,
+    ATTR_MMD_BONE_OFFSET,
+    ATTR_MMD_CONNECTION_BONE,
+    ATTR_MMD_IK_TARGET,
+    ATTR_MMD_IK_LOOP,
+    ATTR_MMD_IK_LIMIT_ANGLE,
+    ATTR_MMD_IK_LINKS,
+    ATTR_MMD_GRANT_PARENT,
+    ATTR_MMD_GRANT_RATE,
+    ATTR_MMD_FIXED_AXIS,
+    ATTR_MMD_LOCAL_X_AXIS,
+    ATTR_MMD_LOCAL_Z_AXIS,
+    ATTR_MMD_EXTERNAL_PARENT_KEY,
+    # 詳細アトリビュート
+    ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_CONNECT_TYPE,
+    ATTR_MMD_CONNECT_INDEX,
+    ATTR_MMD_CONNECT_BONE_INDEX,
+    ATTR_MMD_GIVEN_PARENT_INDEX,
+    ATTR_MMD_AXIS_DIRECTION,
+    ATTR_MMD_X_AXIS_DIRECTION,
+    ATTR_MMD_Z_AXIS_DIRECTION,
+    ATTR_MMD_IK_TARGET_INDEX,
+    # PMD固有
+    ATTR_MMD_BONE_TYPE,
+    ATTR_MMD_TAIL_POS_INDEX,
+)
 from ..core.logger import get_logger
 from .rig_converter import RigConverter
 
@@ -182,7 +214,11 @@ class BoneConverter:
             position = bone.position
             joint = cmds.joint(
                 name=joint_name,
-                position=[position[0], position[1], -position[2]],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
+                position=[
+                    position[0],
+                    position[1],
+                    -position[2],
+                ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
                 # Maya 2024以降では軸指定オプションは deprecated
                 # 代わりにjointOrientで後から設定する
             )
@@ -207,78 +243,104 @@ class BoneConverter:
     def _set_extra_attributes(self, i, joint, bone, format_type):
         # フォーマットに応じたカスタム属性を設定
         if format_type == "pmx":
+            # 共通アトリビュートを設定
             attrs = {
-                "pmx_bone_index": i,
-                "pmx_bone_flag": bone.bone_flag,
-                "pmx_bone_name": bone.name,
-                "pmx_bone_name_english": bone.name_english,
-                "pmx_bone_parent_bone_index": bone.parent_bone_index,
-                "pmx_bone_rotatable": bool(bone.get_flag(PmxBoneFlag.ROTATABLE)),
-                "pmx_bone_movable": bool(bone.get_flag(PmxBoneFlag.MOVABLE)),
-                "pmx_bone_display": bool(bone.get_flag(PmxBoneFlag.DISPLAY)),
+                ATTR_MMD_BONE_NAME: bone.name,
+                ATTR_MMD_BONE_NAME_EN: bone.name_english,
+                ATTR_MMD_BONE_FLAGS: bone.bone_flag,
+                ATTR_MMD_DEFORM_LAYER: bone.deform_layer
+                if hasattr(bone, "deform_layer")
+                else 0,
             }
 
+            # 詳細アトリビュート
+            attrs.update(
+                {
+                    ATTR_MMD_BONE_INDEX: i,
+                    ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
+                }
+            )
+
             # 接続先ボーンの属性を設定
-            attrs["pmx_connect_bone_type"] = (
+            if not bone.get_flag(PmxBoneFlag.CONNECT_BONE):
+                # 座標オフセットの場合
+                attrs[ATTR_MMD_BONE_OFFSET] = bone.connect_position_offset
+
+            # 接続先属性
+            attrs[ATTR_MMD_CONNECT_TYPE] = (
                 "BONE_INDEX" if bone.get_flag(PmxBoneFlag.CONNECT_BONE) else "RELATIVE"
             )
             if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
-                attrs["pmx_connect_position_index"] = bone.connect_bone_index
-            else:
-                attrs["pmx_connect_bone_offset"] = bone.connect_position_offset
+                attrs[ATTR_MMD_CONNECT_INDEX] = bone.connect_bone_index
 
             # 付与ボーンの属性を設定
-            attrs["pmx_given_parent_rotate"] = bool(
-                bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE)
-            )
-            attrs["pmx_given_parent_move"] = bool(
-                bone.get_flag(PmxBoneFlag.GIVEN_PARENT_MOVE)
-            )
             if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or bone.get_flag(
                 PmxBoneFlag.GIVEN_PARENT_MOVE
             ):
-                attrs["pmx_given_parent_bone_index"] = bone.given_parent_bone_index
-                attrs["pmx_given_rate"] = bone.given_rate
+                attrs[ATTR_MMD_GRANT_RATE] = bone.given_rate
+
+            # 付与属性
+            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or bone.get_flag(
+                PmxBoneFlag.GIVEN_PARENT_MOVE
+            ):
+                attrs[ATTR_MMD_GIVEN_PARENT_INDEX] = bone.given_parent_bone_index
 
             # 軸固定の属性を設定
-            attrs["pmx_axis_fixed"] = bool(bone.get_flag(PmxBoneFlag.AXIS_FIXED))
             if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
-                attrs["pmx_axis_direction"] = bone.axis_direction
+                attrs[ATTR_MMD_FIXED_AXIS] = bone.axis_direction
 
             # ローカル軸の属性を設定
-            attrs["pmx_local_axis"] = bool(bone.get_flag(PmxBoneFlag.LOCAL_AXIS))
             if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-                attrs["pmx_x_axis_direction"] = bone.x_axis_direction
-                attrs["pmx_z_axis_direction"] = bone.z_axis_direction
+                attrs[ATTR_MMD_LOCAL_X_AXIS] = bone.x_axis_direction
+                attrs[ATTR_MMD_LOCAL_Z_AXIS] = bone.z_axis_direction
+
+            # 軸属性
+            if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
+                attrs[ATTR_MMD_AXIS_DIRECTION] = bone.axis_direction
+
+            if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
+                attrs[ATTR_MMD_X_AXIS_DIRECTION] = bone.x_axis_direction
+                attrs[ATTR_MMD_Z_AXIS_DIRECTION] = bone.z_axis_direction
 
             # 外部親変形の属性を設定
-            attrs["pmx_external_parent_deform"] = bool(
-                bone.get_flag(PmxBoneFlag.EXTERNAL_PARENT_DEFORM)
-            )
             if bone.get_flag(PmxBoneFlag.EXTERNAL_PARENT_DEFORM):
-                attrs["pmx_key_value"] = bone.key_value
+                attrs[ATTR_MMD_EXTERNAL_PARENT_KEY] = bone.key_value
+
+            # 外部親属性
 
             # IK関連の属性を設定
-            attrs["pmx_ik"] = bool(bone.get_flag(PmxBoneFlag.IK))
             if bone.get_flag(PmxBoneFlag.IK):
-                attrs["pmx_ik_target_bone_index"] = bone.ik_target_bone_index
-                attrs["pmx_ik_loop_count"] = bone.ik_loop_count
-                attrs["pmx_ik_limit_angle"] = bone.ik_limit_angle
+                attrs[ATTR_MMD_IK_LOOP] = bone.ik_loop_count
+                attrs[ATTR_MMD_IK_LIMIT_ANGLE] = bone.ik_limit_angle
+
+            # IK属性
+            if bone.get_flag(PmxBoneFlag.IK):
+                attrs[ATTR_MMD_IK_TARGET_INDEX] = bone.ik_target_bone_index
                 # attrs["pmx_ik_links"] = bone.ik_links
 
             if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
-                attrs["pmx_connect_bone_index"] = bone.connect_bone_index
+                attrs[ATTR_MMD_CONNECT_BONE_INDEX] = bone.connect_bone_index
 
             maya_utils.set_custom_attributes(joint, attrs)
         elif format_type == "pmd":
+            # 共通アトリビュートを設定
             attrs = {
-                "pmd_index": i,
-                "pmd_type": bone.bone_type.name,  # Enumの名前（文字列）を取得
-                "pmd_name": bone.name,
-                "pmd_name_english": bone.name_english,
-                "pmd_tail_pos_bone_index": bone.tail_pos_bone_index,
-                "pmd_parent_bone_index": bone.parent_bone_index,
+                ATTR_MMD_BONE_NAME: bone.name,
+                ATTR_MMD_BONE_NAME_EN: bone.name_english,
+                # PMDはフラグを持たないのでデフォルト値を設定
+                ATTR_MMD_BONE_FLAGS: 0x0005,  # 回転可能 + 表示
+                ATTR_MMD_DEFORM_LAYER: 0,
             }
+
+            # 詳細アトリビュート
+            attrs.update(
+                {
+                    ATTR_MMD_BONE_INDEX: i,
+                    ATTR_MMD_BONE_TYPE: bone.bone_type.name,  # Enumの名前（文字列）を取得
+                    ATTR_MMD_TAIL_POS_INDEX: bone.tail_pos_bone_index,
+                    ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
+                }
+            )
             maya_utils.set_custom_attributes(joint, attrs)
 
     def _create_skin_cluster(self, maya_joints, mesh_node, max_influence=4):

@@ -10,6 +10,7 @@ from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter
 from mmd_tools.ui.tabs.bone_tab import BoneTab
 from mmd_tools.ui.application_state import ApplicationState
+from mmd_tools.ui.qt_compat import Qt
 
 
 class TestBonePresenter(MayaTestBase):
@@ -24,17 +25,11 @@ class TestBonePresenter(MayaTestBase):
         self.mock_app_state = MagicMock(spec=ApplicationState)
         
         # モックビューの属性を設定
-        self.mock_view.bone_tree = MagicMock()
-        self.mock_view.bone_tree.topLevelItemCount = MagicMock(return_value=0)
-        self.mock_view.bone_tree.expandAll = MagicMock()
-        self.mock_view.bone_tree.collapseAll = MagicMock()
+        self.mock_view.bone_list = MagicMock()
+        self.mock_view.bone_list.clear = MagicMock()
+        self.mock_view.bone_list.addItem = MagicMock()
+        self.mock_view.bone_list.selectedItems = MagicMock(return_value=[])
         self.mock_view.refresh_btn = MagicMock()
-        self.mock_view.expand_all_btn = MagicMock()
-        self.mock_view.collapse_all_btn = MagicMock()
-        self.mock_view.select_in_maya_btn = MagicMock()
-        self.mock_view.batch_rename_btn = MagicMock()
-        self.mock_view.duplicate_btn = MagicMock()
-        self.mock_view.export_settings_btn = MagicMock()
         self.mock_view.search_edit = MagicMock()
         
         # 基本情報タブ
@@ -58,6 +53,7 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view.enabled_check = MagicMock()
         self.mock_view.after_physics_check = MagicMock()
         self.mock_view.external_parent_check = MagicMock()
+        self.mock_view.external_parent_key_label = MagicMock()
         self.mock_view.external_parent_key_spin = MagicMock()
         
         # IK設定タブ
@@ -112,8 +108,8 @@ class TestBonePresenter(MayaTestBase):
                 getattr(self.mock_view, attr).clicked = MagicMock()
         
         # その他のウィジェットのシグナル
-        self.mock_view.bone_tree.currentItemChanged = MagicMock()
-        self.mock_view.bone_tree.selectedItems = MagicMock(return_value=[])
+        self.mock_view.bone_list.currentItemChanged = MagicMock()
+        self.mock_view.bone_list.itemSelectionChanged = MagicMock()
         self.mock_view.search_edit.textChanged = MagicMock()
         self.mock_view.ik_enabled_check.toggled = MagicMock()
         self.mock_view.rotation_grant_check.toggled = MagicMock()
@@ -147,11 +143,11 @@ class TestBonePresenter(MayaTestBase):
         # スピンボックスのvalue関数
         spin_attrs = ['pos_x_spin', 'pos_y_spin', 'pos_z_spin', 'deform_layer_spin', 
                       'offset_x_spin', 'offset_y_spin', 'offset_z_spin',
-                      'rotation_grant_ratio_spin', 'move_grant_ratio_spin',
+                      'grant_rate_spin', 'external_parent_key_spin',
                       'fixed_axis_x_spin', 'fixed_axis_y_spin', 'fixed_axis_z_spin',
                       'local_x_axis_x_spin', 'local_x_axis_y_spin', 'local_x_axis_z_spin',
                       'local_z_axis_x_spin', 'local_z_axis_y_spin', 'local_z_axis_z_spin',
-                      'ik_iteration_spin', 'ik_limit_angle_spin']
+                      'ik_loop_spin', 'ik_limit_angle_spin']
         for attr in spin_attrs:
             if hasattr(self.mock_view, attr):
                 spin = getattr(self.mock_view, attr)
@@ -221,7 +217,8 @@ class TestBonePresenter(MayaTestBase):
         """初期化のテスト"""
         self.assertIsNone(self.presenter.current_bone)
         self.assertEqual(self.presenter.bone_data, {})
-        self.assertEqual(self.presenter.bone_tree_items, {})
+        self.assertEqual(self.presenter.bone_list_items, {})
+        self.assertEqual(self.presenter.all_bones, [])
         self.assertFalse(self.presenter.is_updating)
 
     def test_load_bones(self):
@@ -232,14 +229,14 @@ class TestBonePresenter(MayaTestBase):
         # ボーンを読み込み
         self.presenter.load_bones()
         
-        # ツリーがクリアされたことを確認
-        self.mock_view.bone_tree.clear.assert_called()
+        # リストがクリアされたことを確認
+        self.mock_view.bone_list.clear.assert_called()
         
         # ボーンが読み込まれたことを確認
-        self.assertEqual(len(self.presenter.bone_tree_items), 3)
-        self.assertIn(self.test_bone1, self.presenter.bone_tree_items)
-        self.assertIn(self.test_bone2, self.presenter.bone_tree_items)
-        self.assertIn(self.test_bone3, self.presenter.bone_tree_items)
+        self.assertEqual(len(self.presenter.bone_list_items), 3)
+        self.assertIn(self.test_bone1, self.presenter.bone_list_items)
+        self.assertIn(self.test_bone2, self.presenter.bone_list_items)
+        self.assertIn(self.test_bone3, self.presenter.bone_list_items)
 
     def test_bone_flag_calculation(self):
         """ボーンフラグ計算のテスト"""
@@ -256,15 +253,28 @@ class TestBonePresenter(MayaTestBase):
         flags = self.presenter._calculate_bone_flags()
         
         # 期待値を確認
-        expected_flags = 0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x1000
+        # PmxBoneFlagの値を使用
+        from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+        expected_flags = (
+            PmxBoneFlag.CONNECT_BONE | 
+            PmxBoneFlag.ROTATABLE | 
+            PmxBoneFlag.MOVABLE | 
+            PmxBoneFlag.DISPLAY | 
+            PmxBoneFlag.OPERATABLE | 
+            PmxBoneFlag.IK | 
+            PmxBoneFlag.DEFORM_AFTER_PHYSICS
+        )
         self.assertEqual(flags, expected_flags)
 
-    def test_select_bone_in_maya(self):
-        """Mayaでのボーン選択テスト"""
-        self.presenter.current_bone = self.test_bone1
+    def test_on_selection_changed_maya(self):
+        """リスト選択時のMaya選択テスト"""
+        # モックアイテムを作成
+        mock_item = MagicMock()
+        mock_item.data = MagicMock(return_value=self.test_bone1)
+        self.mock_view.bone_list.selectedItems.return_value = [mock_item]
         
-        # ボーンを選択
-        self.presenter.select_bone_in_maya()
+        # 選択変更を実行
+        self.presenter.on_selection_changed_maya()
         
         # Mayaで選択されたことを確認
         selected = cmds.ls(selection=True)
@@ -274,13 +284,13 @@ class TestBonePresenter(MayaTestBase):
         """IK設定のトグルテスト"""
         # IKを有効化
         self.presenter.on_ik_enabled_toggled(True)
-        self.mock_view.ik_settings_group.setEnabled.assert_called_with(True)
-        self.mock_view.ik_links_group.setEnabled.assert_called_with(True)
+        self.mock_view.ik_settings_group.setVisible.assert_called_with(True)
+        self.mock_view.ik_links_group.setVisible.assert_called_with(True)
         
         # IKを無効化
         self.presenter.on_ik_enabled_toggled(False)
-        self.mock_view.ik_settings_group.setEnabled.assert_called_with(False)
-        self.mock_view.ik_links_group.setEnabled.assert_called_with(False)
+        self.mock_view.ik_settings_group.setVisible.assert_called_with(False)
+        self.mock_view.ik_links_group.setVisible.assert_called_with(False)
 
     def test_apply_changes(self):
         """変更適用のテスト"""
@@ -309,46 +319,18 @@ class TestBonePresenter(MayaTestBase):
         self.assertAlmostEqual(pos[1], 2.0, places=3)
         self.assertAlmostEqual(pos[2], 3.0, places=3)
 
-    def test_batch_rename_bones(self):
-        """一括リネームのテスト"""
-        # ツリーアイテムのモックを作成
-        mock_item1 = MagicMock()
-        mock_item1.data.return_value = self.test_bone1
-        mock_item1.setText = MagicMock()
-        mock_item1.text.return_value = "テストボーン1"
+    def test_grant_settings_toggle(self):
+        """付与設定のトグルテスト"""
+        # 付与を有効化
+        self.mock_view.rotation_grant_check.isChecked.return_value = True
+        self.presenter.on_grant_toggled()
+        self.mock_view.grant_settings_group.setVisible.assert_called_with(True)
         
-        self.mock_view.bone_tree.selectedItems.return_value = [mock_item1]
-        
-        # ダイアログのモック
-        with patch('mmd_tools.ui.presenters.bone_presenter.QInputDialog.getText') as mock_dialog:
-            mock_dialog.side_effect = [("prefix_", True), ("_suffix", True)]
-            
-            # 一括リネームを実行
-            self.presenter.batch_rename_bones()
-            
-            # 名前が更新されたことを確認
-            new_name_jp = cmds.getAttr(f"{self.test_bone1}.mmd_bone_name_jp")
-            self.assertEqual(new_name_jp, "prefix_テストボーン1_suffix")
-
-    def test_duplicate_bone_hierarchy(self):
-        """ボーン階層複製のテスト"""
-        self.presenter.current_bone = self.test_bone1
-        
-        # 複製前のジョイント数を取得
-        joints_before = cmds.ls(type="joint")
-        
-        # 確認ダイアログのモック
-        with patch('mmd_tools.ui.presenters.bone_presenter.QMessageBox.question') as mock_dialog:
-            from mmd_tools.ui.qt_compat import QMessageBox
-            mock_dialog.return_value = QMessageBox.Yes
-            
-            # 複製を実行
-            self.presenter.duplicate_bone_hierarchy()
-            
-            # 複製後のジョイント数を確認
-            joints_after = cmds.ls(type="joint")
-            # 階層複製なので3つ増えるはず
-            self.assertEqual(len(joints_after), len(joints_before) + 3)
+        # 付与を無効化
+        self.mock_view.rotation_grant_check.isChecked.return_value = False
+        self.mock_view.move_grant_check.isChecked.return_value = False
+        self.presenter.on_grant_toggled()
+        self.mock_view.grant_settings_group.setVisible.assert_called_with(False)
 
     def test_connection_type_change(self):
         """接続タイプ変更のテスト"""
@@ -364,18 +346,16 @@ class TestBonePresenter(MayaTestBase):
 
     def test_filter_bones(self):
         """ボーン検索フィルタのテスト"""
-        # ツリーアイテムのモックを作成
+        # リストアイテムのモックを作成
         mock_item1 = MagicMock()
-        mock_item1.text.side_effect = lambda i: "テストボーン1" if i == 0 else "test_bone1"
+        mock_item1.text.return_value = "1:テストボーン1（test_bone1） [test_bone1]"
         mock_item1.setHidden = MagicMock()
-        mock_item1.parent.return_value = None
         
         mock_item2 = MagicMock()
-        mock_item2.text.side_effect = lambda i: "テストボーン2" if i == 0 else "test_bone2"
+        mock_item2.text.return_value = "2:テストボーン2（test_bone2） [test_bone2]"
         mock_item2.setHidden = MagicMock()
-        mock_item2.parent.return_value = None
         
-        self.presenter.bone_tree_items = {
+        self.presenter.bone_list_items = {
             self.test_bone1: mock_item1,
             self.test_bone2: mock_item2
         }

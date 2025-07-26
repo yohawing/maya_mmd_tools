@@ -19,9 +19,11 @@ from ..qt_compat import (
     Qt,
     QTabWidget,
     QListWidget,
+    QListWidgetItem,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
+    QScrollArea,
 )
 from ..base_tab import BaseTab
 
@@ -57,53 +59,25 @@ class BoneTab(BaseTab):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # ボーンリストグループ
-        bone_tree_group = QGroupBox("ボーン階層")
+        bone_tree_group = QGroupBox("ボーンリスト")
         bone_tree_layout = QVBoxLayout()
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
         self.refresh_btn = QPushButton("更新")
         self.refresh_btn.setMaximumWidth(60)
-        self.expand_all_btn = QPushButton("全て展開")
-        self.expand_all_btn.setMaximumWidth(80)
-        self.collapse_all_btn = QPushButton("全て折畳")
-        self.collapse_all_btn.setMaximumWidth(80)
-        self.select_in_maya_btn = QPushButton("Mayaで選択")
-        self.select_in_maya_btn.setMaximumWidth(100)
 
         toolbar_layout.addWidget(self.refresh_btn)
-        toolbar_layout.addWidget(self.expand_all_btn)
-        toolbar_layout.addWidget(self.collapse_all_btn)
-        toolbar_layout.addWidget(self.select_in_maya_btn)
         toolbar_layout.addStretch()
-        
-        # 追加のツールボタン
-        self.batch_rename_btn = QPushButton("一括リネーム")
-        self.batch_rename_btn.setMaximumWidth(100)
-        self.duplicate_btn = QPushButton("階層複製")
-        self.duplicate_btn.setMaximumWidth(80)
-        self.export_settings_btn = QPushButton("設定エクスポート")
-        self.export_settings_btn.setMaximumWidth(120)
-        
-        toolbar_layout.addWidget(self.batch_rename_btn)
-        toolbar_layout.addWidget(self.duplicate_btn)
-        toolbar_layout.addWidget(self.export_settings_btn)
 
         bone_tree_layout.addLayout(toolbar_layout)
 
-        # ボーンツリー
-        self.bone_tree = QTreeWidget()
-        self.bone_tree.setHeaderLabels(["日本語名", "英語名"])  # ヘッダーを2つに変更
-        self.bone_tree.setAlternatingRowColors(True)
-        self.bone_tree.setIndentation(
-            15
-        )  # インデントを15ピクセルに設定
-        # カラム幅の調整
-        self.bone_tree.setColumnWidth(0, 200)
-        self.bone_tree.setColumnWidth(1, 150)
+        # ボーンリスト（単純なリスト表示）
+        self.bone_list = QListWidget()
+        self.bone_list.setAlternatingRowColors(True)
         # 複数選択を有効化
-        self.bone_tree.setSelectionMode(QTreeWidget.ExtendedSelection)
-        bone_tree_layout.addWidget(self.bone_tree)
+        self.bone_list.setSelectionMode(QListWidget.ExtendedSelection)
+        bone_tree_layout.addWidget(self.bone_list)
 
         # ボーン検索
         search_layout = QHBoxLayout()
@@ -121,28 +95,49 @@ class BoneTab(BaseTab):
     def _create_bone_details_section(self):
         """ボーン詳細設定セクションを作成"""
         widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # タブウィジェット
-        self.detail_tabs = QTabWidget()
-
-        # 基本情報タブ
-        self.detail_tabs.addTab(self._create_basic_info_tab(), "基本情報")
-
-        # 変形制御タブ
-        self.detail_tabs.addTab(self._create_transform_control_tab(), "変形制御")
-
-        # IK設定タブ
-        self.detail_tabs.addTab(self._create_ik_settings_tab(), "IK設定")
-
-        # 付与設定タブ
-        self.detail_tabs.addTab(self._create_grant_settings_tab(), "付与設定")
-
-        # 軸制限タブ
-        self.detail_tabs.addTab(self._create_axis_limit_tab(), "軸制限")
-
-        layout.addWidget(self.detail_tabs)
+        main_layout = QVBoxLayout(widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # スクロール可能なエリアを作成
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        
+        # スクロールエリア内のコンテンツウィジェット
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setContentsMargins(5, 5, 5, 5)
+        
+        # 基本情報セクション
+        basic_group = QGroupBox("基本情報")
+        basic_group.setLayout(self._create_basic_info_layout())
+        layout.addWidget(basic_group)
+        
+        # 変形制御セクション
+        transform_group = QGroupBox("変形制御")
+        transform_group.setLayout(self._create_transform_control_layout())
+        layout.addWidget(transform_group)
+        
+        # IK設定セクション
+        ik_group = QGroupBox("IK設定")
+        ik_group.setLayout(self._create_ik_settings_layout())
+        layout.addWidget(ik_group)
+        
+        # 付与設定セクション
+        grant_group = QGroupBox("付与設定")
+        grant_group.setLayout(self._create_grant_settings_layout())
+        layout.addWidget(grant_group)
+        
+        # 軸制限セクション
+        axis_group = QGroupBox("軸制限")
+        axis_group.setLayout(self._create_axis_limit_layout())
+        layout.addWidget(axis_group)
+        
+        # ストレッチを追加して上に詰める
+        layout.addStretch()
+        
+        # スクロールエリアに設定
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
 
         # ボタンバー
         button_layout = QHBoxLayout()
@@ -156,10 +151,9 @@ class BoneTab(BaseTab):
 
         return widget
 
-    def _create_basic_info_tab(self):
-        """基本情報タブを作成"""
-        widget = QWidget()
-        layout = QFormLayout(widget)
+    def _create_basic_info_layout(self):
+        """基本情報レイアウトを作成"""
+        layout = QFormLayout()
 
         # ボーン名
         self.bone_name_jp_edit = QLineEdit()
@@ -232,12 +226,11 @@ class BoneTab(BaseTab):
         offset_layout.addWidget(self.offset_z_spin, 0, 5)
         layout.addRow("オフセット:", offset_layout)
 
-        return widget
+        return layout
 
-    def _create_transform_control_tab(self):
-        """変形制御タブを作成"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+    def _create_transform_control_layout(self):
+        """変形制御レイアウトを作成"""
+        layout = QVBoxLayout()
 
         # 基本フラグ
         flags_group = QGroupBox("基本設定")
@@ -267,22 +260,26 @@ class BoneTab(BaseTab):
         special_layout.addWidget(self.external_parent_check, 0, 1)
 
         # 外部親キー
+        self.external_parent_key_label = QLabel("外部親キー:")
         self.external_parent_key_spin = QSpinBox()
         self.external_parent_key_spin.setRange(-1, 9999)
-        special_layout.addWidget(QLabel("外部親キー:"), 1, 0)
+        special_layout.addWidget(self.external_parent_key_label, 1, 0)
         special_layout.addWidget(self.external_parent_key_spin, 1, 1)
+        
+        # 初期状態では非表示
+        self.external_parent_key_label.setVisible(False)
+        self.external_parent_key_spin.setVisible(False)
 
         special_group.setLayout(special_layout)
         layout.addWidget(special_group)
 
         layout.addStretch()
 
-        return widget
+        return layout
 
-    def _create_ik_settings_tab(self):
-        """IK設定タブを作成"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+    def _create_ik_settings_layout(self):
+        """IK設定レイアウトを作成"""
+        layout = QVBoxLayout()
 
         # IK有効化
         self.ik_enabled_check = QCheckBox("IKを有効にする")
@@ -318,6 +315,9 @@ class BoneTab(BaseTab):
 
         self.ik_settings_group.setLayout(ik_layout)
         layout.addWidget(self.ik_settings_group)
+        
+        # 初期状態では非表示
+        self.ik_settings_group.setVisible(False)
 
         # IKリンクリスト
         self.ik_links_group = QGroupBox("IKリンク")
@@ -349,13 +349,15 @@ class BoneTab(BaseTab):
 
         self.ik_links_group.setLayout(links_layout)
         layout.addWidget(self.ik_links_group)
+        
+        # 初期状態では非表示
+        self.ik_links_group.setVisible(False)
 
-        return widget
+        return layout
 
-    def _create_grant_settings_tab(self):
-        """付与設定タブを作成"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+    def _create_grant_settings_layout(self):
+        """付与設定レイアウトを作成"""
+        layout = QVBoxLayout()
 
         # 回転付与
         self.rotation_grant_check = QCheckBox("回転付与")
@@ -393,15 +395,17 @@ class BoneTab(BaseTab):
 
         self.grant_settings_group.setLayout(grant_layout)
         layout.addWidget(self.grant_settings_group)
+        
+        # 初期状態では非表示
+        self.grant_settings_group.setVisible(False)
 
         layout.addStretch()
 
-        return widget
+        return layout
 
-    def _create_axis_limit_tab(self):
-        """軸制限タブを作成"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
+    def _create_axis_limit_layout(self):
+        """軸制限レイアウトを作成"""
+        layout = QVBoxLayout()
 
         # 軸固定
         self.fixed_axis_check = QCheckBox("軸固定")
@@ -433,6 +437,9 @@ class BoneTab(BaseTab):
 
         self.fixed_axis_group.setLayout(axis_layout)
         layout.addWidget(self.fixed_axis_group)
+        
+        # 初期状態では非表示
+        self.fixed_axis_group.setVisible(False)
 
         # ローカル軸
         self.local_axis_check = QCheckBox("ローカル軸")
@@ -493,13 +500,18 @@ class BoneTab(BaseTab):
 
         self.local_axis_group.setLayout(local_layout)
         layout.addWidget(self.local_axis_group)
+        
+        # 初期状態では非表示
+        self.local_axis_group.setVisible(False)
 
         layout.addStretch()
 
-        return widget
+        return layout
 
     def set_bone_details_enabled(self, enabled):
         """ボーン詳細セクションの有効/無効を設定"""
-        self.detail_tabs.setEnabled(enabled)
+        # スクロールエリア内の各グループを有効/無効化
+        # Note: 現在の実装ではQScrollArea内のウィジェットへの参照を直接保持していないため
+        # このメソッドは後で更新が必要
         self.apply_btn.setEnabled(enabled)
         self.reset_btn.setEnabled(enabled)
