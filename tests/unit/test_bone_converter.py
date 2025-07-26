@@ -3,6 +3,11 @@ from unittest.mock import Mock, patch
 import maya.cmds as cmds
 
 from mmd_tools.converters.bone_converter import BoneConverter
+from mmd_tools.core.constants import (
+    ATTR_MMD_BONE_FLAGS,
+    ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_NAME,
+)
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmd_data.bone import PmdBone
 
@@ -177,10 +182,11 @@ class TestBoneConverterMaya(unittest.TestCase):
         mock_set_attrs.assert_called_once()
         attrs = mock_set_attrs.call_args[0][1]
 
-        self.assertEqual(attrs["pmx_bone_index"], 0)
-        self.assertEqual(attrs["pmx_bone_name"], "TestBone")
-        self.assertTrue(attrs["pmx_bone_rotatable"])
-        self.assertTrue(attrs["pmx_bone_movable"])
+        self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 0)
+        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "TestBone")
+        self.assertTrue(
+            attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE
+        )
 
     def test_create_skin_cluster(self):
         """スキンクラスター作成のテスト（実際のMaya環境）"""

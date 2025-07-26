@@ -332,19 +332,32 @@ class MeshConverter:
             return shader
 
     def _apply_custom_attributes(
-        self, shader, material, all_textures, is_pmd, material_index=None
+        self,
+        shader,
+        material,
+        all_textures,
+        is_pmd,
+        material_index=None,
+        texture_path=None,
+        sphere_texture_path=None,
     ):
         """カスタムアトリビュートを適用する共通処理"""
         # mmd_materialフラグを追加（このマテリアルがMMDマテリアルであることを示す）
 
         custom_attrs = {
             ATTR_MMD_MATERIAL: 1,  # MMDマテリアルであることを示すフラグ
-            ATTR_MMD_MATERIAL_INDEX: material_index,
+            ATTR_MMD_MATERIAL_INDEX: material.material_index,
             ATTR_MMD_MATERIAL_NAME: material.name,
             ATTR_MMD_DIFFUSE_COLOR: material.diffuse[:3],
             ATTR_MMD_AMBIENT_COLOR: material.ambient[:3],
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
+
+        # テクスチャパスを保存
+        if texture_path:
+            custom_attrs["mmd_texture_path"] = texture_path
+        if sphere_texture_path:
+            custom_attrs["mmd_sphere_path"] = sphere_texture_path
 
         # スペキュラー関連の属性
         if hasattr(material, "specular"):
@@ -393,7 +406,12 @@ class MeshConverter:
         maya_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")
 
         # AlphaをOpacityに変換（StandardSurfaceではopacityを使用）
-        maya_utils.set_attribute(shader, "opacity", material.diffuse[3], "float")
+        maya_utils.set_attribute(
+            shader,
+            "opacity",
+            (material.diffuse[3], material.diffuse[3], material.diffuse[3]),
+            "double3",
+        )
 
         # スペキュラー設定（MMDのspecularをStandardSurfaceにマッピング）
         if hasattr(material, "specular"):
@@ -435,7 +453,7 @@ class MeshConverter:
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(
-            shader, material, all_textures, is_pmd, material_index
+            shader, material, all_textures, is_pmd, material_index, texture_path
         )
 
         # テクスチャの設定
@@ -556,6 +574,7 @@ class MeshConverter:
                 cmds.warning(f"Texture file not found: {full_texture_path}")
 
         # スフィアテクスチャ設定（PMXのみ）
+        sphere_texture_path = None
         if (
             not is_pmd
             and hasattr(material, "sphere_texture_index")
@@ -584,5 +603,11 @@ class MeshConverter:
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(
-            shader, material, all_textures, is_pmd, material_index
+            shader,
+            material,
+            all_textures,
+            is_pmd,
+            material_index,
+            texture_path,
+            sphere_texture_path,
         )

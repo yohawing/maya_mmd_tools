@@ -45,7 +45,7 @@ class TestMeshConverter(MayaTestBase):
         super().setUp()
         # 新しいMayaシーンを作成
         cmds.file(new=True, force=True)
-        
+
         # テスト環境ではdx11Shaderを無効にする
         settings.set("import.model.create_mmd_shaders", False)
 

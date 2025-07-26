@@ -16,6 +16,7 @@ from ..qt_compat import (
     QScrollArea,
     QListWidgetItem,
     Qt,
+    QSplitter,
 )
 from ..base_tab import BaseTab
 
@@ -26,40 +27,82 @@ class MaterialTab(BaseTab):
         self.setObjectName("MaterialTab")
 
         main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(5, 5, 5, 5)
 
-        # Left panel - Material List
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
+        # スプリッターで左右を分割
+        splitter = QSplitter(Qt.Horizontal)
+
+        # 左側: マテリアルリスト
+        left_widget = self._create_material_list_section()
+        splitter.addWidget(left_widget)
+
+        # 右側: マテリアル詳細設定
+        right_widget = self._create_material_details_section()
+        splitter.addWidget(right_widget)
+
+        # 初期のスプリッター比率
+        splitter.setSizes([400, 600])
+
+        main_layout.addWidget(splitter)
         
-        material_list_group = QGroupBox("マテリアル一覧")
+        # Set initial state
+        self._set_details_enabled(False)
+        self._show_placeholder()
+
+    def _create_material_list_section(self):
+        """マテリアルリストセクションを作成"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # マテリアルリストグループ
+        material_list_group = QGroupBox("マテリアルリスト")
         material_list_layout = QVBoxLayout()
-        
-        # Material count label
-        self.material_count_label = QLabel("マテリアル数: 0")
-        material_list_layout.addWidget(self.material_count_label)
-        
-        self.material_list = QListWidget()
-        material_list_layout.addWidget(self.material_list)
-        
-        # Refresh button
-        self.refresh_btn = QPushButton("リフレッシュ")
-        material_list_layout.addWidget(self.refresh_btn)
-        
-        material_list_group.setLayout(material_list_layout)
-        left_layout.addWidget(material_list_group)
-        
-        main_layout.addWidget(left_panel, 1)
 
-        # Right panel - Material Details
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
+        # ツールバー
+        toolbar_layout = QHBoxLayout()
+        self.refresh_btn = QPushButton("更新")
+        self.refresh_btn.setMaximumWidth(60)
         
-        # Create scrollable area for details
+        toolbar_layout.addWidget(self.refresh_btn)
+        toolbar_layout.addStretch()
+
+        material_list_layout.addLayout(toolbar_layout)
+
+        # マテリアルリスト
+        self.material_list = QListWidget()
+        self.material_list.setAlternatingRowColors(True)
+        # 複数選択を有効化
+        self.material_list.setSelectionMode(QListWidget.ExtendedSelection)
+        material_list_layout.addWidget(self.material_list)
+
+        # マテリアル検索
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("検索:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("マテリアル名を検索...")
+        search_layout.addWidget(self.search_edit)
+        material_list_layout.addLayout(search_layout)
+
+        material_list_group.setLayout(material_list_layout)
+        layout.addWidget(material_list_group)
+
+        return widget
+
+    def _create_material_details_section(self):
+        """マテリアル詳細設定セクションを作成"""
+        widget = QWidget()
+        main_layout = QVBoxLayout(widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # スクロール可能なエリアを作成
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         
-        details_widget = QWidget()
-        details_layout = QVBoxLayout(details_widget)
+        # スクロールエリア内のコンテンツウィジェット
+        content_widget = QWidget()
+        layout = QVBoxLayout(content_widget)
+        layout.setContentsMargins(5, 5, 5, 5)
         
         # Basic Properties
         basic_group = QGroupBox("基本プロパティ")
@@ -68,54 +111,58 @@ class MaterialTab(BaseTab):
         # Japanese Name
         basic_layout.addWidget(QLabel("日本語名:"), 0, 0)
         self.material_jp_name_edit = QLineEdit()
-        self.material_jp_name_edit.setReadOnly(True)
         basic_layout.addWidget(self.material_jp_name_edit, 0, 1, 1, 2)
         
+        # English Name
+        basic_layout.addWidget(QLabel("英語名:"), 1, 0)
+        self.material_en_name_edit = QLineEdit()
+        basic_layout.addWidget(self.material_en_name_edit, 1, 1, 1, 2)
+        
         # Material Name
-        basic_layout.addWidget(QLabel("マテリアル名:"), 1, 0)
+        basic_layout.addWidget(QLabel("マテリアル名:"), 2, 0)
         self.material_name_edit = QLineEdit()
         self.material_name_edit.setReadOnly(True)
-        basic_layout.addWidget(self.material_name_edit, 1, 1, 1, 2)
+        basic_layout.addWidget(self.material_name_edit, 2, 1, 1, 2)
         
         # Diffuse Color
-        basic_layout.addWidget(QLabel("Diffuse色:"), 2, 0)
+        basic_layout.addWidget(QLabel("Diffuse色:"), 3, 0)
         self.diffuse_color_widget = self._create_color_widget()
-        basic_layout.addWidget(self.diffuse_color_widget, 2, 1)
+        basic_layout.addWidget(self.diffuse_color_widget, 3, 1)
         self.diffuse_color_btn = QPushButton("選択")
-        basic_layout.addWidget(self.diffuse_color_btn, 2, 2)
+        basic_layout.addWidget(self.diffuse_color_btn, 3, 2)
         
         # Transparency (Alpha)
-        basic_layout.addWidget(QLabel("透明度:"), 3, 0)
+        basic_layout.addWidget(QLabel("透明度:"), 4, 0)
         self.transparency_spin = QDoubleSpinBox()
         self.transparency_spin.setRange(0.0, 1.0)
         self.transparency_spin.setSingleStep(0.1)
         self.transparency_spin.setDecimals(2)
-        basic_layout.addWidget(self.transparency_spin, 3, 1, 1, 2)
+        basic_layout.addWidget(self.transparency_spin, 4, 1, 1, 2)
         
         # Specular Color
-        basic_layout.addWidget(QLabel("Specular色:"), 4, 0)
+        basic_layout.addWidget(QLabel("Specular色:"), 5, 0)
         self.specular_color_widget = self._create_color_widget()
-        basic_layout.addWidget(self.specular_color_widget, 4, 1)
+        basic_layout.addWidget(self.specular_color_widget, 5, 1)
         self.specular_color_btn = QPushButton("選択")
-        basic_layout.addWidget(self.specular_color_btn, 4, 2)
+        basic_layout.addWidget(self.specular_color_btn, 5, 2)
         
         # Specular Coefficient
-        basic_layout.addWidget(QLabel("スペキュラ係数:"), 5, 0)
+        basic_layout.addWidget(QLabel("スペキュラ係数:"), 6, 0)
         self.specular_coefficient_spin = QDoubleSpinBox()
         self.specular_coefficient_spin.setRange(0.0, 100.0)
         self.specular_coefficient_spin.setSingleStep(1.0)
         self.specular_coefficient_spin.setDecimals(1)
-        basic_layout.addWidget(self.specular_coefficient_spin, 5, 1, 1, 2)
+        basic_layout.addWidget(self.specular_coefficient_spin, 6, 1, 1, 2)
         
         # Ambient Color
-        basic_layout.addWidget(QLabel("Ambient色:"), 6, 0)
+        basic_layout.addWidget(QLabel("Ambient色:"), 7, 0)
         self.ambient_color_widget = self._create_color_widget()
-        basic_layout.addWidget(self.ambient_color_widget, 6, 1)
+        basic_layout.addWidget(self.ambient_color_widget, 7, 1)
         self.ambient_color_btn = QPushButton("選択")
-        basic_layout.addWidget(self.ambient_color_btn, 6, 2)
+        basic_layout.addWidget(self.ambient_color_btn, 7, 2)
         
         basic_group.setLayout(basic_layout)
-        details_layout.addWidget(basic_group)
+        layout.addWidget(basic_group)
         
         # Texture Properties
         texture_group = QGroupBox("テクスチャ設定")
@@ -148,7 +195,7 @@ class MaterialTab(BaseTab):
         texture_layout.addWidget(self.toon_texture_combo, 3, 1, 1, 2)
         
         texture_group.setLayout(texture_layout)
-        details_layout.addWidget(texture_group)
+        layout.addWidget(texture_group)
         
         # Rendering Flags
         flags_group = QGroupBox("描画フラグ")
@@ -173,7 +220,7 @@ class MaterialTab(BaseTab):
         flags_layout.addWidget(self.line_draw_check)
         
         flags_group.setLayout(flags_layout)
-        details_layout.addWidget(flags_group)
+        layout.addWidget(flags_group)
         
         # Edge Properties
         edge_group = QGroupBox("エッジ設定")
@@ -195,28 +242,26 @@ class MaterialTab(BaseTab):
         edge_layout.addWidget(self.edge_size_spin, 1, 1, 1, 2)
         
         edge_group.setLayout(edge_layout)
-        details_layout.addWidget(edge_group)
+        layout.addWidget(edge_group)
         
-        # Apply/Reset buttons
+        # ストレッチを追加して上に詰める
+        layout.addStretch()
+        
+        # スクロールエリアに設定
+        scroll_area.setWidget(content_widget)
+        main_layout.addWidget(scroll_area)
+
+        # ボタンバー
         button_layout = QHBoxLayout()
-        self.apply_btn = QPushButton("変更を適用")
+        self.apply_btn = QPushButton("適用")
         self.reset_btn = QPushButton("リセット")
+        button_layout.addStretch()
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.reset_btn)
-        button_layout.addStretch()
-        details_layout.addLayout(button_layout)
-        
-        # Add stretch at bottom
-        details_layout.addStretch()
-        
-        scroll_area.setWidget(details_widget)
-        right_layout.addWidget(scroll_area)
-        
-        main_layout.addWidget(right_panel, 2)
-        
-        # Set initial state
-        self._set_details_enabled(False)
-        self._show_placeholder()
+
+        main_layout.addLayout(button_layout)
+
+        return widget
     
     def _create_color_widget(self):
         """Create a color display widget"""
@@ -229,6 +274,7 @@ class MaterialTab(BaseTab):
         """Enable/disable all detail widgets"""
         widgets = [
             self.material_jp_name_edit,
+            self.material_en_name_edit,
             self.material_name_edit,
             self.diffuse_color_btn,
             self.transparency_spin,

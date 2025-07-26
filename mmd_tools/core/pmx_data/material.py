@@ -54,7 +54,7 @@ class PmxMaterial:
     PMXファイルの材質データを保持するクラス。
     """
 
-    def __init__(self, texture_index_size, encoding):
+    def __init__(self, texture_index_size, encoding, material_index):
         self.texture_index_size = texture_index_size
         self.encoding = encoding
         self.name = ""
@@ -73,6 +73,7 @@ class PmxMaterial:
         self.toon_texture_index = -1
         self.memo = ""
         self.face_count = 0
+        self.material_index = material_index
 
     def parse(self, f):
         """

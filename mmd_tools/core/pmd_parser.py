@@ -94,8 +94,8 @@ class PmdParser:
                 # Material
                 material_count = struct.unpack("<I", f.read(4))[0]
                 logger.debug(f"マテリアル数: {material_count}")
-                for _ in range(material_count):
-                    material = PmdMaterial()
+                for i in range(material_count):
+                    material = PmdMaterial(material_index=i)
                     material.parse(f)
                     self.materials.append(material)
 
