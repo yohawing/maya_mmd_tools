@@ -239,8 +239,17 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
     sg_name = cmds.sets(
         renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name
     )
-    # シェーダーをシェーディンググループに接続
-    cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
+    
+    # シェーダーのタイプに応じて適切な接続を行う
+    shader_type = cmds.nodeType(shader_node)
+    
+    if shader_type == "dx11Shader":
+        # dx11Shaderは直接surfaceShaderに接続
+        cmds.connectAttr(shader_node + ".message", sg_name + ".surfaceShader", force=True)
+    else:
+        # 標準シェーダーは.outColorを使用
+        cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
+    
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)
 
@@ -249,6 +258,7 @@ def set_custom_attributes(object_name, attributes):
     """
     Mayaオブジェクトにカスタムアトリビュートを設定します。
     存在しないアトリビュートは自動的に作成されます。
+    cmds.setAttrの代わりにOpenMaya APIを使用して高速化します。
 
     Args:
         object_name (str): カスタムアトリビュートを設定するオブジェクトの名前。
@@ -406,9 +416,9 @@ def set_attribute(object_name, attr_name, attr_value, attr_type):
         attr_type (str, optional): アトリビュートタイプ（配列の場合に必要）
 
     Example:
-        set_attribute_value_api("pCube1", "customAttr1", 1.0, "float")
-        set_attribute_value_api("pCube1", "customAttr2", "example", "str")
-        set_attribute_value_api("pCube1", "customAttr3", [0.5, 0.5, 0.5], "double3")
+        set_attribute("pCube1", "customAttr1", 1.0, "float")
+        set_attribute("pCube1", "customAttr2", "example", "str")
+        set_attribute("pCube1", "customAttr3", [0.5, 0.5, 0.5], "double3")
     """
     try:
         # オブジェクトのMObjectを取得
@@ -522,8 +532,12 @@ def get_attribute(object_name, attr_name):
 
             if numeric_type == om.MFnNumericData.kBoolean:
                 return plug.asBool()
-            elif numeric_type in [om.MFnNumericData.kInt, om.MFnNumericData.kLong, 
-                                om.MFnNumericData.kByte, om.MFnNumericData.kShort]:
+            elif numeric_type in [
+                om.MFnNumericData.kInt,
+                om.MFnNumericData.kLong,
+                om.MFnNumericData.kByte,
+                om.MFnNumericData.kShort,
+            ]:
                 return plug.asInt()
             elif numeric_type == om.MFnNumericData.kFloat:
                 return plug.asFloat()
@@ -1343,35 +1357,35 @@ def select_objects(objects=None, clear=True, add=False, replace=True):
     try:
         # 現在の選択を取得
         current_selection = om.MGlobal.getActiveSelectionList()
-        
+
         if clear or replace:
             # 選択をクリア
             om.MGlobal.setActiveSelectionList(om.MSelectionList())
-        
+
         if objects is None:
             return True
-            
+
         # 新しい選択リストを作成
         new_selection = om.MSelectionList()
-        
+
         # 追加モードの場合は現在の選択を保持
         if add and not clear and not replace:
             new_selection = om.MSelectionList(current_selection)
-        
+
         # オブジェクトを追加
         if isinstance(objects, str):
             objects = [objects]
-        
+
         for obj in objects:
             try:
                 new_selection.add(obj)
             except:
                 logger.warning(f"Could not add '{obj}' to selection")
-        
+
         # 選択を設定
         om.MGlobal.setActiveSelectionList(new_selection)
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to select objects: {e}")
         return False
@@ -1412,16 +1426,16 @@ def parent_objects(children, parent=None, world=False):
     try:
         if isinstance(children, str):
             children = [children]
-        
+
         if world or parent is None:
             # ワールド空間へ親付け
             result = cmds.parent(children, world=True)
         else:
             # 指定された親へ親付け
             result = cmds.parent(children, parent)
-        
+
         return result if isinstance(result, list) else [result]
-        
+
     except Exception as e:
         logger.error(f"Failed to parent objects: {e}")
         return []
@@ -1442,7 +1456,7 @@ def list_objects(object_filter=None, type=None, fullPath=False):
     """
     try:
         result = []
-        
+
         # タイプに応じたイテレータを作成
         if type == "joint":
             it = om.MItDag(om.MItDag.kDepthFirst, om.MFn.kJoint)
@@ -1460,7 +1474,7 @@ def list_objects(object_filter=None, type=None, fullPath=False):
         else:
             # 全てのDAGオブジェクト
             it = om.MItDag(om.MItDag.kDepthFirst)
-        
+
         while not it.isDone():
             try:
                 dag_path = it.getPath()
@@ -1469,22 +1483,23 @@ def list_objects(object_filter=None, type=None, fullPath=False):
                     node_name = dag_path.fullPathName()
                 else:
                     node_name = dag_path.partialPathName()
-                
+
                 # フィルターチェック
                 if object_filter:
                     import fnmatch
+
                     if not fnmatch.fnmatch(node_name, object_filter):
                         it.next()
                         continue
-                
+
                 result.append(node_name)
             except:
                 pass
-            
+
             it.next()
-        
+
         return result
-        
+
     except Exception as e:
         logger.error(f"Failed to list objects: {e}")
         return []
@@ -1493,37 +1508,38 @@ def list_objects(object_filter=None, type=None, fullPath=False):
 def _list_dg_nodes(node_type, object_filter=None):
     """
     DGノード（非DAGノード）をリストする内部ヘルパー関数
-    
+
     Args:
         node_type (str): ノードタイプ
         object_filter (str, optional): オブジェクト名のフィルター
-        
+
     Returns:
         list: マッチしたオブジェクトのリスト
     """
     try:
         result = []
         it = om.MItDependencyNodes(om.MFn.kBlendShape)
-        
+
         while not it.isDone():
             try:
                 node = it.thisNode()
                 fn_node = om.MFnDependencyNode(node)
                 node_name = fn_node.name()
-                
+
                 # フィルターチェック
                 if object_filter:
                     import fnmatch
+
                     if not fnmatch.fnmatch(node_name, object_filter):
                         it.next()
                         continue
-                
+
                 result.append(node_name)
             except:
                 pass
-                
+
             it.next()
-            
+
         return result
     except Exception as e:
         logger.error(f"Failed to list DG nodes: {e}")

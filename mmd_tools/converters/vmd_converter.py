@@ -505,12 +505,14 @@ class VmdConverter:
         camera_transform, camera_shape = cmds.camera(name=DEFAULT_CAMERA_NAME)
         
         # MMDカメラマーカーを追加
-        if not cmds.attributeQuery(ATTR_MMD_CAMERA, node=camera_transform, exists=True):
-            cmds.addAttr(camera_transform, longName=ATTR_MMD_CAMERA, attributeType="bool", defaultValue=True)
+        maya_utils.set_custom_attributes(
+            camera_transform,
+            {ATTR_MMD_CAMERA: True}
+        )
         
         # カメラの初期設定
-        cmds.setAttr(f"{camera_shape}.nearClipPlane", 0.1)
-        cmds.setAttr(f"{camera_shape}.farClipPlane", 10000.0)
+        maya_utils.set_attribute(camera_shape, "nearClipPlane", 0.1, "double")
+        maya_utils.set_attribute(camera_shape, "farClipPlane", 10000.0, "double")
         
         self.logger.info(f"新しいMMDカメラを作成: {camera_transform}")
         return camera_transform
@@ -650,8 +652,10 @@ class VmdConverter:
         light_transform = cmds.listRelatives(light_transform, parent=True)[0]
         
         # MMD照明マーカーを追加
-        if not cmds.attributeQuery(ATTR_MMD_LIGHT, node=light_transform, exists=True):
-            cmds.addAttr(light_transform, longName=ATTR_MMD_LIGHT, attributeType="bool", defaultValue=True)
+        maya_utils.set_custom_attributes(
+            light_transform,
+            {ATTR_MMD_LIGHT: True}
+        )
         
         self.logger.info(f"新しいMMD照明を作成: {light_transform}")
         return light_transform
@@ -831,7 +835,7 @@ class VmdConverter:
             cmds.currentTime(frame.frame_number)
             
             # ウェイト値を設定
-            cmds.setAttr(weight_attr, frame.value)
+            maya_utils.set_attribute(blend_shape, f"weight[{target_index}]", frame.value, "float")
             
             # キーフレームを設定
             cmds.setKeyframe(weight_attr, time=frame.frame_number, value=frame.value)

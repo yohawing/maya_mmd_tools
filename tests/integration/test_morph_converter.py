@@ -2,6 +2,7 @@ from maya import cmds
 
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils, pmd_parser, pmx_parser
+from mmd_tools.core.settings import settings
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 
@@ -20,6 +21,9 @@ class TestMorphConverter(MayaTestBase):
         super().setUp()
         # 新しいMayaシーンを作成
         cmds.file(new=True, force=True)
+        
+        # テスト環境ではdx11Shaderを無効にする
+        settings.set("import.model.create_mmd_shaders", False)
 
         # TestFixtureProviderを初期化
         self.fixture_provider = TestFixtureProvider()

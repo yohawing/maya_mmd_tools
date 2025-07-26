@@ -4,6 +4,7 @@ from ...core.logger import get_logger
 from ...core.maya_utils import (
     get_parent_mmd_root,
     set_custom_attributes,
+    set_attribute,
 )
 from ..qt_compat import QTreeWidgetItem, Qt, QCheckBox, QTableWidgetItem, QTimer, QInputDialog, QMessageBox
 
@@ -767,27 +768,29 @@ class BonePresenter:
         for attr_name, attr_type, default in attrs:
             if not cmds.attributeQuery(attr_name, node=joint, exists=True):
                 if attr_type == "double3":
-                    cmds.addAttr(joint, longName=attr_name, attributeType="double3")
-                    cmds.addAttr(joint, longName=f"{attr_name}X", attributeType="double", parent=attr_name)
-                    cmds.addAttr(joint, longName=f"{attr_name}Y", attributeType="double", parent=attr_name)
-                    cmds.addAttr(joint, longName=f"{attr_name}Z", attributeType="double", parent=attr_name)
-                    if attr_name == "mmd_bone_offset":
-                        cmds.setAttr(f"{joint}.{attr_name}", 0.0, -1.0, 0.0, type="double3")
-                    elif attr_name == "mmd_fixed_axis":
-                        cmds.setAttr(f"{joint}.{attr_name}", 0.0, 0.0, 1.0, type="double3")
-                    elif attr_name == "mmd_local_x_axis":
-                        cmds.setAttr(f"{joint}.{attr_name}", 1.0, 0.0, 0.0, type="double3")
-                    elif attr_name == "mmd_local_z_axis":
-                        cmds.setAttr(f"{joint}.{attr_name}", 0.0, 0.0, 1.0, type="double3")
+                    # double3アトリビュートを作成
+                    defaults = {
+                        "mmd_bone_offset": [0.0, -1.0, 0.0],
+                        "mmd_fixed_axis": [0.0, 0.0, 1.0],
+                        "mmd_local_x_axis": [1.0, 0.0, 0.0],
+                        "mmd_local_z_axis": [0.0, 0.0, 1.0]
+                    }
+                    default_value = defaults.get(attr_name, [0.0, 0.0, 0.0])
+                    set_custom_attributes(joint, {attr_name: default_value})
                 else:
-                    if attr_type == "string":
-                        cmds.addAttr(joint, longName=attr_name, dataType=attr_type)
-                        if default is not None:
-                            cmds.setAttr(f"{joint}.{attr_name}", default, type="string")
+                    # その他のアトリビュートを作成
+                    if default is not None:
+                        set_custom_attributes(joint, {attr_name: default})
                     else:
-                        cmds.addAttr(joint, longName=attr_name, attributeType=attr_type)
-                        if default is not None:
-                            cmds.setAttr(f"{joint}.{attr_name}", default)
+                        # デフォルト値がない場合はタイプに応じて初期値を設定
+                        if attr_type == "string":
+                            set_custom_attributes(joint, {attr_name: ""})
+                        elif attr_type == "double":
+                            set_custom_attributes(joint, {attr_name: 0.0})
+                        elif attr_type == "long":
+                            set_custom_attributes(joint, {attr_name: 0})
+                        elif attr_type == "bool":
+                            set_custom_attributes(joint, {attr_name: False})
     
     def batch_rename_bones(self):
         """選択されたボーンの一括リネーム"""
@@ -878,11 +881,13 @@ class BonePresenter:
                 value = cmds.getAttr(f"{source}.{attr}")
                 if value is not None:
                     try:
-                        cmds.setAttr(f"{target}.{attr}", value)
+                        # アトリビュートのタイプを取得
+                        attr_type = cmds.getAttr(f"{target}.{attr}", type=True)
+                        set_attribute(target, attr, value, attr_type)
                     except:
                         # double3などの特殊な属性の場合
                         try:
-                            cmds.setAttr(f"{target}.{attr}", *value, type="double3")
+                            set_attribute(target, attr, value, "double3")
                         except:
                             pass
         

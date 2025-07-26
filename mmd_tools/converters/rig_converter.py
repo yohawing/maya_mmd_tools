@@ -339,7 +339,7 @@ class RigConverter:
                 maya_utils.parent_objects(ik_handle, chain["ik_bone"])
 
                 # IKハンドルのアトリビュートを設定
-                cmds.setAttr(f"{ik_handle}.v", 0)  # 非表示
+                maya_utils.set_attribute(ik_handle, "v", 0, "bool")  # 非表示
 
                 # カスタムアトリビュートでMMDのIK情報を保存
                 maya_utils.set_custom_attributes(
@@ -498,7 +498,7 @@ class RigConverter:
             pole_constraint = cmds.poleVectorConstraint(pole_target, ik_handle)[0]
 
             # PoleTargetを非表示にする
-            # cmds.setAttr(f"{pole_target}.v", 0)
+            # maya_utils.set_attribute(pole_target, "v", 0, "bool")
 
             # カスタムアトリビュートを追加（後でVMD変換時に使用）
             maya_utils.set_custom_attributes(
@@ -621,14 +621,14 @@ class RigConverter:
 
             try:
                 # jointOrientを設定
-                cmds.setAttr(f"{joint}.jointOrientX", rotation[0])
-                cmds.setAttr(f"{joint}.jointOrientY", rotation[1])
-                cmds.setAttr(f"{joint}.jointOrientZ", rotation[2])
+                maya_utils.set_attribute(joint, "jointOrientX", rotation[0], "double")
+                maya_utils.set_attribute(joint, "jointOrientY", rotation[1], "double")
+                maya_utils.set_attribute(joint, "jointOrientZ", rotation[2], "double")
 
                 # rotateを0にリセット（オプション：必要に応じて）
-                cmds.setAttr(f"{joint}.rotateX", 0)
-                cmds.setAttr(f"{joint}.rotateY", 0)
-                cmds.setAttr(f"{joint}.rotateZ", 0)
+                maya_utils.set_attribute(joint, "rotateX", 0, "double")
+                maya_utils.set_attribute(joint, "rotateY", 0, "double")
+                maya_utils.set_attribute(joint, "rotateZ", 0, "double")
 
                 self.logger.debug(f"ローカル軸を設定: {joint}")
 
@@ -1071,7 +1071,7 @@ class RigConverter:
         # 子の初期回転を保存
         init_locator = cmds.spaceLocator(name=f"{child_joint}_init_rot")[0]
         maya_utils.parent_objects(init_locator, child_joint)
-        cmds.setAttr(f"{init_locator}.v", 0)
+        maya_utils.set_attribute(init_locator, "v", 0, "bool")
         created_nodes.append(init_locator)
 
         # 親の回転を取得するためのdecomposeMatrixノード
@@ -1090,9 +1090,9 @@ class RigConverter:
             cmds.connectAttr(
                 f"{parent_decompose}.outputRotate", f"{invert_node}.input1"
             )
-            cmds.setAttr(f"{invert_node}.input2X", -1)
-            cmds.setAttr(f"{invert_node}.input2Y", -1)
-            cmds.setAttr(f"{invert_node}.input2Z", -1)
+            maya_utils.set_attribute(invert_node, "input2X", -1, "double")
+            maya_utils.set_attribute(invert_node, "input2Y", -1, "double")
+            maya_utils.set_attribute(invert_node, "input2Z", -1, "double")
             created_nodes.append(invert_node)
 
             # 付与率を適用するmultiplyDivideノード（絶対値を使用）
@@ -1100,9 +1100,9 @@ class RigConverter:
                 "multiplyDivide", name=f"{child_joint}_given_mult"
             )
             cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1")
-            cmds.setAttr(f"{mult_node}.input2X", abs(rate))
-            cmds.setAttr(f"{mult_node}.input2Y", abs(rate))
-            cmds.setAttr(f"{mult_node}.input2Z", abs(rate))
+            maya_utils.set_attribute(mult_node, "input2X", abs(rate), "double")
+            maya_utils.set_attribute(mult_node, "input2Y", abs(rate), "double")
+            maya_utils.set_attribute(mult_node, "input2Z", abs(rate), "double")
             created_nodes.append(mult_node)
         else:
             # 正の付与率の場合、直接適用
@@ -1110,9 +1110,9 @@ class RigConverter:
                 "multiplyDivide", name=f"{child_joint}_given_mult"
             )
             cmds.connectAttr(f"{parent_decompose}.outputRotate", f"{mult_node}.input1")
-            cmds.setAttr(f"{mult_node}.input2X", rate)
-            cmds.setAttr(f"{mult_node}.input2Y", rate)
-            cmds.setAttr(f"{mult_node}.input2Z", rate)
+            maya_utils.set_attribute(mult_node, "input2X", rate, "double")
+            maya_utils.set_attribute(mult_node, "input2Y", rate, "double")
+            maya_utils.set_attribute(mult_node, "input2Z", rate, "double")
             created_nodes.append(mult_node)
 
         # 初期回転と付与回転を加算するplusMinusAverageノード
@@ -1146,20 +1146,20 @@ class RigConverter:
             0
         ]
         maya_utils.parent_objects(parent_init_locator, parent_joint)
-        cmds.setAttr(f"{parent_init_locator}.v", 0)  # 非表示
+        maya_utils.set_attribute(parent_init_locator, "v", 0, "bool")  # 非表示
         created_nodes.append(parent_init_locator)
 
         # 子の初期回転を保存するロケータを作成
         child_init_locator = cmds.spaceLocator(name=f"{child_joint}_init_local_rot")[0]
         maya_utils.parent_objects(child_init_locator, child_joint)
-        cmds.setAttr(f"{child_init_locator}.v", 0)  # 非表示
+        maya_utils.set_attribute(child_init_locator, "v", 0, "bool")  # 非表示
         created_nodes.append(child_init_locator)
 
         # 親の現在の回転から初期回転を引くためのplusMinusAverageノード
         parent_diff_node = cmds.createNode(
             "plusMinusAverage", name=f"{parent_joint}_local_diff"
         )
-        cmds.setAttr(f"{parent_diff_node}.operation", 2)  # subtract
+        maya_utils.set_attribute(parent_diff_node, "operation", 2, "long")  # subtract
         cmds.connectAttr(f"{parent_joint}.rotate", f"{parent_diff_node}.input3D[0]")
         cmds.connectAttr(
             f"{parent_init_locator}.rotate", f"{parent_diff_node}.input3D[1]"
@@ -1176,21 +1176,21 @@ class RigConverter:
             invert_node = cmds.createNode(
                 "multiplyDivide", name=f"{child_joint}_local_invert"
             )
-            cmds.setAttr(f"{invert_node}.input2X", -abs(rate))
-            cmds.setAttr(f"{invert_node}.input2Y", -abs(rate))
-            cmds.setAttr(f"{invert_node}.input2Z", -abs(rate))
+            maya_utils.set_attribute(invert_node, "input2X", -abs(rate), "double")
+            maya_utils.set_attribute(invert_node, "input2Y", -abs(rate), "double")
+            maya_utils.set_attribute(invert_node, "input2Z", -abs(rate), "double")
             cmds.connectAttr(f"{parent_diff_node}.output3D", f"{invert_node}.input1")
             created_nodes.append(invert_node)
 
             # 反転した値を使用
             cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1", force=True)
-            cmds.setAttr(f"{mult_node}.input2X", 1)
-            cmds.setAttr(f"{mult_node}.input2Y", 1)
-            cmds.setAttr(f"{mult_node}.input2Z", 1)
+            maya_utils.set_attribute(mult_node, "input2X", 1, "double")
+            maya_utils.set_attribute(mult_node, "input2Y", 1, "double")
+            maya_utils.set_attribute(mult_node, "input2Z", 1, "double")
         else:
-            cmds.setAttr(f"{mult_node}.input2X", rate)
-            cmds.setAttr(f"{mult_node}.input2Y", rate)
-            cmds.setAttr(f"{mult_node}.input2Z", rate)
+            maya_utils.set_attribute(mult_node, "input2X", rate, "double")
+            maya_utils.set_attribute(mult_node, "input2Y", rate, "double")
+            maya_utils.set_attribute(mult_node, "input2Z", rate, "double")
 
         created_nodes.append(mult_node)
 
@@ -1257,7 +1257,7 @@ class RigConverter:
         # 子の初期位置を保存
         init_locator = cmds.spaceLocator(name=f"{child_joint}_init_pos")[0]
         maya_utils.parent_objects(init_locator, child_joint)
-        cmds.setAttr(f"{init_locator}.v", 0)
+        maya_utils.set_attribute(init_locator, "v", 0, "bool")
         created_nodes.append(init_locator)
 
         # 親の位置を取得するためのdecomposeMatrixノード
@@ -1276,9 +1276,9 @@ class RigConverter:
             cmds.connectAttr(
                 f"{parent_decompose}.outputTranslate", f"{invert_node}.input1"
             )
-            cmds.setAttr(f"{invert_node}.input2X", -1)
-            cmds.setAttr(f"{invert_node}.input2Y", -1)
-            cmds.setAttr(f"{invert_node}.input2Z", -1)
+            maya_utils.set_attribute(invert_node, "input2X", -1, "double")
+            maya_utils.set_attribute(invert_node, "input2Y", -1, "double")
+            maya_utils.set_attribute(invert_node, "input2Z", -1, "double")
             created_nodes.append(invert_node)
 
             # 付与率を適用するmultiplyDivideノード（絶対値を使用）
@@ -1286,9 +1286,9 @@ class RigConverter:
                 "multiplyDivide", name=f"{child_joint}_pos_mult"
             )
             cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1")
-            cmds.setAttr(f"{mult_node}.input2X", abs(rate))
-            cmds.setAttr(f"{mult_node}.input2Y", abs(rate))
-            cmds.setAttr(f"{mult_node}.input2Z", abs(rate))
+            maya_utils.set_attribute(mult_node, "input2X", abs(rate), "double")
+            maya_utils.set_attribute(mult_node, "input2Y", abs(rate), "double")
+            maya_utils.set_attribute(mult_node, "input2Z", abs(rate), "double")
             created_nodes.append(mult_node)
         else:
             # 正の付与率の場合、直接適用
@@ -1298,9 +1298,9 @@ class RigConverter:
             cmds.connectAttr(
                 f"{parent_decompose}.outputTranslate", f"{mult_node}.input1"
             )
-            cmds.setAttr(f"{mult_node}.input2X", rate)
-            cmds.setAttr(f"{mult_node}.input2Y", rate)
-            cmds.setAttr(f"{mult_node}.input2Z", rate)
+            maya_utils.set_attribute(mult_node, "input2X", rate, "double")
+            maya_utils.set_attribute(mult_node, "input2Y", rate, "double")
+            maya_utils.set_attribute(mult_node, "input2Z", rate, "double")
             created_nodes.append(mult_node)
 
         # 初期位置と付与位置を加算するplusMinusAverageノード
@@ -1334,20 +1334,20 @@ class RigConverter:
             0
         ]
         maya_utils.parent_objects(parent_init_locator, parent_joint)
-        cmds.setAttr(f"{parent_init_locator}.v", 0)  # 非表示
+        maya_utils.set_attribute(parent_init_locator, "v", 0, "bool")  # 非表示
         created_nodes.append(parent_init_locator)
 
         # 子の初期位置を保存するロケータを作成
         child_init_locator = cmds.spaceLocator(name=f"{child_joint}_init_local_pos")[0]
         maya_utils.parent_objects(child_init_locator, child_joint)
-        cmds.setAttr(f"{child_init_locator}.v", 0)  # 非表示
+        maya_utils.set_attribute(child_init_locator, "v", 0, "bool")  # 非表示
         created_nodes.append(child_init_locator)
 
         # 親の現在の位置から初期位置を引くためのplusMinusAverageノード
         parent_diff_node = cmds.createNode(
             "plusMinusAverage", name=f"{parent_joint}_local_pos_diff"
         )
-        cmds.setAttr(f"{parent_diff_node}.operation", 2)  # subtract
+        maya_utils.set_attribute(parent_diff_node, "operation", 2, "long")  # subtract
         cmds.connectAttr(f"{parent_joint}.translate", f"{parent_diff_node}.input3D[0]")
         cmds.connectAttr(
             f"{parent_init_locator}.translate", f"{parent_diff_node}.input3D[1]"
@@ -1366,21 +1366,21 @@ class RigConverter:
             invert_node = cmds.createNode(
                 "multiplyDivide", name=f"{child_joint}_local_pos_invert"
             )
-            cmds.setAttr(f"{invert_node}.input2X", -abs(rate))
-            cmds.setAttr(f"{invert_node}.input2Y", -abs(rate))
-            cmds.setAttr(f"{invert_node}.input2Z", -abs(rate))
+            maya_utils.set_attribute(invert_node, "input2X", -abs(rate), "double")
+            maya_utils.set_attribute(invert_node, "input2Y", -abs(rate), "double")
+            maya_utils.set_attribute(invert_node, "input2Z", -abs(rate), "double")
             cmds.connectAttr(f"{parent_diff_node}.output3D", f"{invert_node}.input1")
             created_nodes.append(invert_node)
 
             # 反転した値を使用
             cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1", force=True)
-            cmds.setAttr(f"{mult_node}.input2X", 1)
-            cmds.setAttr(f"{mult_node}.input2Y", 1)
-            cmds.setAttr(f"{mult_node}.input2Z", 1)
+            maya_utils.set_attribute(mult_node, "input2X", 1, "double")
+            maya_utils.set_attribute(mult_node, "input2Y", 1, "double")
+            maya_utils.set_attribute(mult_node, "input2Z", 1, "double")
         else:
-            cmds.setAttr(f"{mult_node}.input2X", rate)
-            cmds.setAttr(f"{mult_node}.input2Y", rate)
-            cmds.setAttr(f"{mult_node}.input2Z", rate)
+            maya_utils.set_attribute(mult_node, "input2X", rate, "double")
+            maya_utils.set_attribute(mult_node, "input2Y", rate, "double")
+            maya_utils.set_attribute(mult_node, "input2Z", rate, "double")
 
         created_nodes.append(mult_node)
 

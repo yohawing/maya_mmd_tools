@@ -229,24 +229,26 @@ class PhysicsConverter:
         quality = self.settings.get("simulation_quality", "medium")
         settings = quality_settings.get(quality, quality_settings["medium"])
 
-        cmds.setAttr(f"{self.nucleus_solver}.subSteps", settings["substeps"])
-        cmds.setAttr(
-            f"{self.nucleus_solver}.maxCollisionIterations",
+        maya_utils.set_attribute(self.nucleus_solver, "subSteps", settings["substeps"], "long")
+        maya_utils.set_attribute(
+            self.nucleus_solver,
+            "maxCollisionIterations",
             settings["maxCollisionIterations"],
+            "long",
         )
-        cmds.setAttr(
-            f"{self.nucleus_solver}.startFrame", self.settings.get("start_frame", 1)
+        maya_utils.set_attribute(
+            self.nucleus_solver, "startFrame", self.settings.get("start_frame", 1), "double"
         )
-        cmds.setAttr(
-            f"{self.nucleus_solver}.timeScale", self.settings.get("time_scale", 1.0)
+        maya_utils.set_attribute(
+            self.nucleus_solver, "timeScale", self.settings.get("time_scale", 1.0), "double"
         )
 
         # 重力設定（MMDは下向きをY軸負方向とする）
         # gravity: 重力の大きさ（スカラー）
         # gravityDirection: 重力の方向（ベクトル）
-        cmds.setAttr(f"{self.nucleus_solver}.gravity", 9.8)
-        cmds.setAttr(
-            f"{self.nucleus_solver}.gravityDirection", 0, -1, 0
+        maya_utils.set_attribute(self.nucleus_solver, "gravity", 9.8, "double")
+        maya_utils.set_attribute(
+            self.nucleus_solver, "gravityDirection", [0, -1, 0], "double3"
         )  # Y軸負方向（下向き）
 
         self.logger.debug(f"Nucleusソルバー設定完了: quality={quality}")
@@ -607,7 +609,9 @@ class PhysicsConverter:
                 # hairSystemにパラメータを適用
                 for attr, value in ncloth_params.items():
                     if cmds.attributeQuery(attr, node=hair_system, exists=True):
-                        cmds.setAttr(f"{hair_system}.{attr}", value)
+                        # アトリビュートのタイプを取得
+                        attr_type = cmds.getAttr(f"{hair_system}.{attr}", type=True)
+                        maya_utils.set_attribute(hair_system, attr, value, attr_type)
 
                 return hair_system
 
@@ -658,7 +662,9 @@ class PhysicsConverter:
                 # nClothにパラメータを適用
                 for attr, value in ncloth_params.items():
                     if cmds.attributeQuery(attr, node=ncloth_shape, exists=True):
-                        cmds.setAttr(f"{ncloth_shape}.{attr}", value)
+                        # アトリビュートのタイプを取得
+                        attr_type = cmds.getAttr(f"{ncloth_shape}.{attr}", type=True)
+                        maya_utils.set_attribute(ncloth_shape, attr, value, attr_type)
 
                 return ncloth_shape
 
@@ -707,8 +713,8 @@ class PhysicsConverter:
 
             if nrigid:
                 # その他のパラメータ設定
-                cmds.setAttr(f"{nrigid}.friction", rigid_body.friction)
-                cmds.setAttr(f"{nrigid}.bounce", rigid_body.elasticity)
+                maya_utils.set_attribute(nrigid, "friction", rigid_body.friction, "double")
+                maya_utils.set_attribute(nrigid, "bounce", rigid_body.elasticity, "double")
 
                 return nrigid
 

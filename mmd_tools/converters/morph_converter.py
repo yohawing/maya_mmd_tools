@@ -110,7 +110,7 @@ class MorphConverter:
         target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
 
         # ターゲットメッシュを非表示
-        cmds.setAttr(f"{target_mesh}.visibility", 0)
+        maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
 
         # 頂点オフセットを適用
         self._apply_vertex_offsets_pmd(target_mesh, morph)
@@ -149,7 +149,7 @@ class MorphConverter:
         target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
 
         # ターゲットメッシュを非表示
-        cmds.setAttr(f"{target_mesh}.visibility", 0)
+        maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
 
         # 頂点オフセットを適用
         self._apply_vertex_offsets_pmx(target_mesh, morph)

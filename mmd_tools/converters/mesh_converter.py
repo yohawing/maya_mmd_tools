@@ -476,20 +476,23 @@ class MeshConverter:
         shader_fx_path = os.path.normpath(shader_fx_path)
 
         # dx11Shaderにエフェクトファイルを設定
-        cmds.setAttr(shader + ".shader", shader_fx_path, type="string")
+        maya_utils.set_attribute(shader, "shader", shader_fx_path, "string")
 
         # テクニックを設定
-        cmds.setAttr(shader + ".technique", "MMDTechnique", type="string")
+        maya_utils.set_attribute(shader, "technique", "MMDTechnique", "string")
 
         # 基本色設定（Diffuse）
         try:
-            cmds.setAttr(
-                shader + ".DiffuseColorRGB",
-                material.diffuse[0],
-                material.diffuse[1],
-                material.diffuse[2],
-                material.diffuse[3],
-                type="double4",
+            maya_utils.set_attribute(
+                shader,
+                "DiffuseColorRGB",
+                [
+                    material.diffuse[0],
+                    material.diffuse[1],
+                    material.diffuse[2],
+                    material.diffuse[3],
+                ],
+                "double4",
             )
         except:
             # アトリビュートが見つからない場合は作成を試みる
@@ -498,12 +501,15 @@ class MeshConverter:
         # スペキュラー設定
         if hasattr(material, "specular"):
             try:
-                cmds.setAttr(
-                    shader + ".SpecularColor",
-                    material.specular[0],
-                    material.specular[1],
-                    material.specular[2],
-                    type="double3",
+                maya_utils.set_attribute(
+                    shader,
+                    "SpecularColor",
+                    [
+                        material.specular[0],
+                        material.specular[1],
+                        material.specular[2],
+                    ],
+                    "double3",
                 )
             except:
                 pass
@@ -517,19 +523,22 @@ class MeshConverter:
 
         if specular_coef is not None:
             try:
-                cmds.setAttr(shader + ".Shininess", specular_coef)
+                maya_utils.set_attribute(shader, "Shininess", specular_coef, "float")
             except:
                 pass
 
         # アンビエント設定
         if hasattr(material, "ambient"):
             try:
-                cmds.setAttr(
-                    shader + ".AmbientColor",
-                    material.ambient[0],
-                    material.ambient[1],
-                    material.ambient[2],
-                    type="double3",
+                maya_utils.set_attribute(
+                    shader,
+                    "AmbientColor",
+                    [
+                        material.ambient[0],
+                        material.ambient[1],
+                        material.ambient[2],
+                    ],
+                    "double3",
                 )
             except:
                 pass
@@ -538,26 +547,28 @@ class MeshConverter:
         if not is_pmd:
             # エッジ色
             try:
-                cmds.setAttr(
-                    shader + ".EdgeColorRGB",
-                    material.edge_color[0],
-                    material.edge_color[1],
-                    material.edge_color[2],
-                    # material.edge_color[3],
-                    type="double3",
+                maya_utils.set_attribute(
+                    shader,
+                    "EdgeColorRGB",
+                    [
+                        material.edge_color[0],
+                        material.edge_color[1],
+                        material.edge_color[2],
+                    ],
+                    "double3",
                 )
             except:
                 pass
             # エッジサイズ
             try:
-                cmds.setAttr(shader + ".EdgeSize", material.edge_size)
+                maya_utils.set_attribute(shader, "EdgeSize", material.edge_size, "float")
             except:
                 pass
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)
         try:
-            cmds.setAttr(shader + ".SphereMode", int(sphere_mode))
+            maya_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
         except:
             pass
 
@@ -573,8 +584,8 @@ class MeshConverter:
                     "file", asTexture=True, name=shader + "_texture"
                 )
                 # ファイルパスを設定
-                cmds.setAttr(
-                    file_node + ".fileTextureName", full_texture_path, type="string"
+                maya_utils.set_attribute(
+                    file_node, "fileTextureName", full_texture_path, "string"
                 )
                 # dx11ShaderのMainTextureに接続
                 try:
@@ -601,10 +612,8 @@ class MeshConverter:
                     sphere_file_node = cmds.shadingNode(
                         "file", asTexture=True, name=shader + "_sphere_texture"
                     )
-                    cmds.setAttr(
-                        sphere_file_node + ".fileTextureName",
-                        full_sphere_path,
-                        type="string",
+                    maya_utils.set_attribute(
+                        sphere_file_node, "fileTextureName", full_sphere_path, "string"
                     )
                     try:
                         cmds.connectAttr(
