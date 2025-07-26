@@ -23,6 +23,7 @@ from ...core.constants import (
     ATTR_MMD_LOCAL_X_AXIS,
     ATTR_MMD_LOCAL_Z_AXIS,
     ATTR_MMD_EXTERNAL_PARENT_KEY,
+    ATTR_MMD_BONE_INDEX,
 )
 from ...core.pmx_data.bone import PmxBoneFlag
 from ..qt_compat import (
@@ -150,15 +151,32 @@ class BonePresenter:
             logger.info("No bones found in the model")
             return
 
-        # ボーンをリストに追加（単純なリスト表示）
-        self.all_bones = joints
-        for idx, joint in enumerate(joints):
+        # mmd_bone_indexでソート
+        joints_with_index = []
+        for joint in joints:
+            bone_index = self._get_attr_safe(joint, ATTR_MMD_BONE_INDEX, -1)
+            joints_with_index.append((joint, bone_index))
+        
+        # インデックスでソート（インデックスがない場合は最後に）
+        joints_with_index.sort(key=lambda x: x[1] if x[1] >= 0 else float('inf'))
+        
+        # ソートされたジョイントリストを作成
+        sorted_joints = [joint for joint, _ in joints_with_index]
+
+        # ボーンをリストに追加
+        self.all_bones = sorted_joints
+        for idx, joint in enumerate(sorted_joints):
             # ボーン情報を取得
             name_jp = self._get_attr_safe(joint, ATTR_MMD_BONE_NAME, joint)
             name_en = self._get_attr_safe(joint, ATTR_MMD_BONE_NAME_EN, "")
+            bone_index = self._get_attr_safe(joint, ATTR_MMD_BONE_INDEX, -1)
 
-            # リストアイテムの表示形式: "1:日本語名（Maya名）"
-            display_text = f"{idx + 1}:{name_jp}（{joint}）"
+            # リストアイテムの表示形式: "インデックス:日本語名（Maya名）"
+            if bone_index >= 0:
+                display_text = f"{bone_index}:{name_jp}（{joint}）"
+            else:
+                display_text = f"-:{name_jp}（{joint}）"
+            
             if name_en:
                 display_text += f" [{name_en}]"
 
@@ -761,14 +779,16 @@ class BonePresenter:
             # リストビューの表示を更新
             if self.current_bone in self.bone_list_items:
                 item = self.bone_list_items[self.current_bone]
-                idx = (
-                    self.all_bones.index(self.current_bone)
-                    if self.current_bone in self.all_bones
-                    else 0
-                )
+                bone_index = self._get_attr_safe(self.current_bone, ATTR_MMD_BONE_INDEX, -1)
                 name_jp = self.view.bone_name_jp_edit.text()
                 name_en = self.view.bone_name_en_edit.text()
-                display_text = f"{idx + 1}:{name_jp}（{self.current_bone}）"
+                
+                # 表示フォーマット更新
+                if bone_index >= 0:
+                    display_text = f"{bone_index}:{name_jp}（{self.current_bone}）"
+                else:
+                    display_text = f"-:{name_jp}（{self.current_bone}）"
+                    
                 if name_en:
                     display_text += f" [{name_en}]"
                 item.setText(display_text)
