@@ -336,7 +336,9 @@ class BonePresenter:
                 connection_bone = self._get_attr_safe(
                     self.current_bone, ATTR_MMD_CONNECTION_BONE, ""
                 )
-                self.view.connection_bone_edit.setText(connection_bone)
+                # 接続先ボーンの表示名を作成
+                display_name = self._get_bone_display_name(connection_bone)
+                self.view.connection_bone_edit.setText(display_name)
 
             # IK設定
             self.view.ik_enabled_check.setChecked(bool(flags & PmxBoneFlag.IK))
@@ -387,7 +389,8 @@ class BonePresenter:
 
         # IKターゲット
         ik_target = self._get_attr_safe(self.current_bone, ATTR_MMD_IK_TARGET, "")
-        self.view.ik_target_edit.setText(ik_target)
+        display_name = self._get_bone_display_name(ik_target)
+        self.view.ik_target_edit.setText(display_name)
 
         # IKループ回数
         ik_loop = self._get_attr_safe(self.current_bone, ATTR_MMD_IK_LOOP, 10)
@@ -412,8 +415,10 @@ class BonePresenter:
 
         for link_data in ik_links:
             if isinstance(link_data, dict):
+                bone_name = link_data.get("bone", "")
+                display_name = self._get_bone_display_name(bone_name)
                 self._add_ik_link_row(
-                    link_data.get("bone", ""),
+                    display_name,
                     link_data.get("limit_enabled", False),
                     link_data.get("lower_limit", [0.0, 0.0, 0.0]),
                     link_data.get("upper_limit", [0.0, 0.0, 0.0]),
@@ -455,7 +460,8 @@ class BonePresenter:
 
         # 付与親
         grant_parent = self._get_attr_safe(self.current_bone, ATTR_MMD_GRANT_PARENT, "")
-        self.view.grant_parent_edit.setText(grant_parent)
+        display_name = self._get_bone_display_name(grant_parent)
+        self.view.grant_parent_edit.setText(display_name)
 
         # 付与率
         grant_rate = self._get_attr_safe(self.current_bone, ATTR_MMD_GRANT_RATE, 1.0)
@@ -523,6 +529,7 @@ class BonePresenter:
             return
 
         bone = selected[0]
+        display_name = self._get_bone_display_name(bone)
 
         if target_type == "parent":
             # 現在のボーンの子供でないことを確認
@@ -531,11 +538,11 @@ class BonePresenter:
                 return
             self.view.parent_bone_edit.setText(bone)
         elif target_type == "connection":
-            self.view.connection_bone_edit.setText(bone)
+            self.view.connection_bone_edit.setText(display_name)
         elif target_type == "ik_target":
-            self.view.ik_target_edit.setText(bone)
+            self.view.ik_target_edit.setText(display_name)
         elif target_type == "grant_parent":
-            self.view.grant_parent_edit.setText(bone)
+            self.view.grant_parent_edit.setText(display_name)
 
     def _is_descendant(self, parent, child):
         """childがparentの子孫かどうかをチェック"""
@@ -595,7 +602,8 @@ class BonePresenter:
             return
 
         bone = selected[0]
-        self._add_ik_link_row(bone, False, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        display_name = self._get_bone_display_name(bone)
+        self._add_ik_link_row(display_name, False, [0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
 
     def remove_ik_link(self):
         """選択されたIKリンクを削除"""
@@ -680,14 +688,17 @@ class BonePresenter:
                 ]
                 attributes[ATTR_MMD_BONE_OFFSET] = offset
             else:
-                # ボーン接続
-                attributes[ATTR_MMD_CONNECTION_BONE] = (
-                    self.view.connection_bone_edit.text()
-                )
+                # ボーン接続（表示名から実際のボーン名を抽出）
+                display_name = self.view.connection_bone_edit.text()
+                actual_bone = self._extract_bone_name(display_name)
+                attributes[ATTR_MMD_CONNECTION_BONE] = actual_bone
 
             # IK設定
             if self.view.ik_enabled_check.isChecked():
-                attributes[ATTR_MMD_IK_TARGET] = self.view.ik_target_edit.text()
+                # IKターゲット（表示名から実際のボーン名を抽出）
+                display_name = self.view.ik_target_edit.text()
+                actual_bone = self._extract_bone_name(display_name)
+                attributes[ATTR_MMD_IK_TARGET] = actual_bone
                 attributes[ATTR_MMD_IK_LOOP] = self.view.ik_loop_spin.value()
                 attributes[ATTR_MMD_IK_LIMIT_ANGLE] = math.radians(
                     self.view.ik_limit_angle_spin.value()
@@ -700,8 +711,11 @@ class BonePresenter:
                     limit_widget = self.view.ik_links_table.cellWidget(row, 1)
 
                     if bone_item:
+                        # 表示名から実際のボーン名を抽出
+                        display_name = bone_item.text()
+                        actual_bone = self._extract_bone_name(display_name)
                         link_data = {
-                            "bone": bone_item.text(),
+                            "bone": actual_bone,
                             "limit_enabled": limit_widget.isChecked()
                             if limit_widget
                             else False,
@@ -740,7 +754,10 @@ class BonePresenter:
                 self.view.rotation_grant_check.isChecked()
                 or self.view.move_grant_check.isChecked()
             ):
-                attributes[ATTR_MMD_GRANT_PARENT] = self.view.grant_parent_edit.text()
+                # 付与親（表示名から実際のボーン名を抽出）
+                display_name = self.view.grant_parent_edit.text()
+                actual_bone = self._extract_bone_name(display_name)
+                attributes[ATTR_MMD_GRANT_PARENT] = actual_bone
                 attributes[ATTR_MMD_GRANT_RATE] = self.view.grant_rate_spin.value()
 
             # 軸制限設定
@@ -858,6 +875,27 @@ class BonePresenter:
         return {
             # ここに全ての設定を追加（必要に応じて）
         }
+
+    def _get_bone_display_name(self, bone_name):
+        """ボーンの表示名を取得（Maya名:日本語名）"""
+        if not bone_name or not cmds.objExists(bone_name):
+            return bone_name or ""
+        
+        # MMD日本語名を取得
+        name_jp = self._get_attr_safe(bone_name, ATTR_MMD_BONE_NAME, "")
+        if name_jp and name_jp != bone_name:
+            return f"{bone_name}:{name_jp}"
+        return bone_name
+    
+    def _extract_bone_name(self, display_name):
+        """表示名から実際のボーン名を抽出"""
+        if not display_name:
+            return ""
+        
+        # "Maya名:日本語名"形式の場合、Maya名を抽出
+        if ":" in display_name:
+            return display_name.split(":")[0]
+        return display_name
 
     def _get_attr_safe(self, node, attr, default):
         """属性を安全に取得"""
