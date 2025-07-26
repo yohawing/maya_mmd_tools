@@ -368,3 +368,50 @@ class TestVmdImporter(MayaTestBase):
                 break
                 
         self.assertTrue(has_color_animation, "照明の色アニメーションが設定されていません")
+
+    def test_vmd_morph_animation_import(self):
+        """VMDファイルからモーフアニメーションをインポートするテスト"""
+        # テスト用メッシュとブレンドシェイプを作成
+        cube = cmds.polyCube(name="test_mesh")[0]
+        blend_shape = cmds.blendShape(cube, name="test_blendShape")[0]
+        
+        # テスト用ターゲットを追加（まばたき、笑顔など）
+        morph_names = ["まばたき", "笑顔", "ウィンク"]
+        for i, morph_name in enumerate(morph_names):
+            target = cmds.duplicate(cube)[0]
+            cmds.move(i+1, 0, 0, f"{target}.vtx[*]", relative=True)
+            cmds.blendShape(blend_shape, edit=True, target=(cube, i, target, 1.0))
+            cmds.aliasAttr(morph_name, f"{blend_shape}.weight[{i}]")
+            cmds.delete(target)
+        
+        # VMDファイルのパスを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        
+        if not vmd_files:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        
+        # VMDファイルをパースしてモーフデータがあるか確認
+        parser = VmdParser()
+        parser.parse_file(vmd_path)
+        
+        if not hasattr(parser, 'morph_frames') or not parser.morph_frames:
+            self.skipTest("テストVMDファイルにモーフアニメーションが含まれていません")
+        
+        # VMDファイルをインポート
+        result = import_mmd_file(vmd_path)
+        self.assertTrue(result, "VMDファイルのインポートに失敗しました")
+        
+        # モーフアニメーションが設定されたことを確認
+        has_morph_animation = False
+        for i in range(len(morph_names)):
+            keyframes = cmds.keyframe(f"{blend_shape}.weight[{i}]", query=True)
+            if keyframes:
+                has_morph_animation = True
+                break
+                
+        self.assertTrue(has_morph_animation, "モーフアニメーションが設定されていません")
+        
+        # クリーンアップ
+        cmds.delete(cube)

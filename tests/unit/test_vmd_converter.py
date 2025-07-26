@@ -7,6 +7,8 @@ Maya環境内で実行されるが、シーン操作を伴わないテストを�
 import os
 import sys
 
+import maya.cmds as cmds
+
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
 from mmd_tools.converters.vmd_converter import VmdConverter
@@ -179,3 +181,78 @@ class TestVmdConverter(MayaTestBase):
         keyframes = cmds.keyframe(f"{light_shape}.colorR", query=True)
         self.assertIsNotNone(keyframes)
         self.assertEqual(len(keyframes), 3)
+
+    def test_convert_morph_animation(self):
+        """モーフアニメーション変換テスト"""
+        from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
+        
+        # テスト用モーフフレームを作成
+        morph_frames = []
+        for i in range(3):
+            frame = VmdMorphFrame()
+            frame.frame_number = i * 10
+            frame.morph_name = "mabataki"  # ASCII文字に変更
+            frame.value = i * 0.5  # 0.0, 0.5, 1.0
+            morph_frames.append(frame)
+            
+        # テスト用ブレンドシェイプを作成
+        cube = cmds.polyCube(name="test_mesh")[0]
+        blend_shape = cmds.blendShape(cube, name="test_blendShape")[0]
+        
+        # テスト用ターゲットを追加
+        target = cmds.duplicate(cube)[0]
+        cmds.move(1, 0, 0, f"{target}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape, edit=True, target=(cube, 0, target, 1.0))
+        cmds.aliasAttr("mabataki", f"{blend_shape}.weight[0]")
+        
+        # モーフマッピングを設定
+        self.converter.morph_name_mapping["mabataki"] = (blend_shape, 0, "mabataki")
+        
+        # 変換実行
+        result = self.converter._convert_morph_animation(morph_frames)
+        self.assertTrue(result)
+        
+        # キーフレームが設定されたことを確認
+        keyframes = cmds.keyframe(f"{blend_shape}.weight[0]", query=True)
+        self.assertIsNotNone(keyframes)
+        self.assertEqual(len(keyframes), 3)
+        
+        # クリーンアップ
+        cmds.delete(cube, target)
+
+    def test_build_morph_mappings(self):
+        """モーフマッピング構築テスト"""
+        # テスト用メッシュとブレンドシェイプを作成
+        cube = cmds.polyCube(name="test_mesh")[0]
+        blend_shape = cmds.blendShape(cube, name="test_blendShape")[0]
+        
+        # テスト用ターゲットを追加（ASCII文字に変更）
+        morph_names = ["mabataki", "egao", "wink"]
+        for i, morph_name in enumerate(morph_names):
+            target = cmds.duplicate(cube)[0]
+            cmds.move(i+1, 0, 0, f"{target}.vtx[*]", relative=True)
+            cmds.blendShape(blend_shape, edit=True, target=(cube, i, target, 1.0))
+            cmds.aliasAttr(morph_name, f"{blend_shape}.weight[{i}]")
+            cmds.delete(target)
+        
+        # デバッグ情報を出力
+        print(f"Created blend shape: {blend_shape}")
+        print(f"Weight count: {cmds.blendShape(blend_shape, query=True, weightCount=True)}")
+        for i in range(3):
+            alias = cmds.aliasAttr(f"{blend_shape}.weight[{i}]", query=True)
+            print(f"Alias for weight[{i}]: {alias}")
+        
+        # マッピングを構築
+        self.converter._build_morph_mappings()
+        
+        # デバッグ情報を出力
+        print(f"Morph mapping: {self.converter.morph_name_mapping}")
+        
+        # マッピングが作成されたことを確認
+        self.assertEqual(len(self.converter.morph_name_mapping), 3)
+        self.assertIn("mabataki", self.converter.morph_name_mapping)
+        self.assertIn("egao", self.converter.morph_name_mapping)
+        self.assertIn("wink", self.converter.morph_name_mapping)
+        
+        # クリーンアップ
+        cmds.delete(cube)

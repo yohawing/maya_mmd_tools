@@ -136,6 +136,17 @@ class VmdConverter:
                         "照明アニメーション変換でエラーが発生しました"
                     )
 
+            # モーフアニメーション変換
+            if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
+                self.logger.info(
+                    f"モーフアニメーション変換を開始: {len(vmd_data.morph_frames)}フレーム"
+                )
+                morph_success = self._convert_morph_animation(vmd_data.morph_frames)
+                if not morph_success:
+                    self.logger.warning(
+                        "モーフアニメーション変換でエラーが発生しました"
+                    )
+
             # フェーズ1では線形補間のみのため、補間データは無視
 
             self.logger.info("VMDアニメーション変換が完了しました")
@@ -178,6 +189,9 @@ class VmdConverter:
         self.logger.info(
             f"{len(self.bone_name_mapping)}個のボーンマッピングを構築しました"
         )
+
+        # モーフ名マッピングの構築
+        self._build_morph_mappings(target_namespace)
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
@@ -223,6 +237,12 @@ class VmdConverter:
         # 照明フレームから最大フレーム取得
         if hasattr(vmd_data, "light_frames"):
             for frame_data in vmd_data.light_frames:
+                if hasattr(frame_data, "frame_number"):
+                    max_frame = max(max_frame, frame_data.frame_number)
+        
+        # モーフフレームから最大フレーム取得
+        if hasattr(vmd_data, "morph_frames"):
+            for frame_data in vmd_data.morph_frames:
                 if hasattr(frame_data, "frame_number"):
                     max_frame = max(max_frame, frame_data.frame_number)
 
@@ -692,3 +712,126 @@ class VmdConverter:
         # キーフレームを一括設定
         maya_utils.set_keyframes_batch(rot_curves, frames, generate_light_rotation_values)
         maya_utils.set_keyframes_batch(color_curves, frames, generate_light_color_values)
+
+    def _build_morph_mappings(self, target_namespace: str = None):
+        """モーフ名のマッピングを構築
+
+        Args:
+            target_namespace: 対象となるネームスペース
+        """
+        self.logger.info("モーフ名マッピングを構築しています")
+
+        # シーン内のブレンドシェイプノードを検索
+        if target_namespace:
+            blend_shapes = cmds.ls(f"{target_namespace}:*", type="blendShape")
+        else:
+            blend_shapes = cmds.ls(type="blendShape")
+
+        self.logger.debug(f"見つかったブレンドシェイプ: {blend_shapes}")
+
+        # 各ブレンドシェイプのターゲットを確認
+        for blend_shape in blend_shapes:
+            # ターゲット数を取得
+            target_count = cmds.blendShape(blend_shape, query=True, target=True)
+            if not target_count:
+                self.logger.debug(f"{blend_shape} にターゲットがありません")
+                continue
+
+            # 各ターゲットのエイリアスを取得
+            weight_count = cmds.blendShape(blend_shape, query=True, weightCount=True)
+            self.logger.debug(f"{blend_shape} のウェイト数: {weight_count}")
+            
+            for i in range(weight_count):
+                # エイリアス（モーフ名）を取得
+                alias_attr = f"{blend_shape}.weight[{i}]"
+                alias_name = cmds.aliasAttr(alias_attr, query=True)
+                self.logger.debug(f"weight[{i}] のエイリアス: {alias_name}")
+                
+                if alias_name:
+                    # aliasAttrは文字列を返す
+                    morph_name = alias_name
+                    # 属性がない場合はエイリアス名をそのまま使用
+                    self.morph_name_mapping[morph_name] = (blend_shape, i, morph_name)
+                    self.logger.debug(f"マッピング追加: {morph_name} -> ({blend_shape}, {i}, {morph_name})")
+
+        self.logger.info(
+            f"{len(self.morph_name_mapping)}個のモーフマッピングを構築しました"
+        )
+
+    def _convert_morph_animation(self, morph_frames: List) -> bool:
+        """モーフアニメーションを変換
+
+        Args:
+            morph_frames: モーフフレームデータのリスト
+
+        Returns:
+            変換が成功した場合True
+        """
+        try:
+            if not morph_frames:
+                return True
+
+            # モーフごとにフレームデータをグループ化
+            morph_frame_map: Dict[str, List] = {}
+
+            for frame in morph_frames:
+                morph_name = frame.morph_name
+                if morph_name not in morph_frame_map:
+                    morph_frame_map[morph_name] = []
+                morph_frame_map[morph_name].append(frame)
+
+            success_count = 0
+            total_count = len(morph_frame_map)
+
+            # 各モーフのアニメーションを設定
+            for vmd_morph_name, frames in morph_frame_map.items():
+                if vmd_morph_name in self.morph_name_mapping:
+                    blend_shape, target_index, maya_morph_name = self.morph_name_mapping[vmd_morph_name]
+
+                    try:
+                        # フレームをフレーム番号でソート
+                        frames.sort(key=lambda x: x.frame_number)
+
+                        # モーフのキーフレームを設定
+                        self._set_morph_keyframes(blend_shape, target_index, frames)
+                        success_count += 1
+
+                    except Exception as e:
+                        self.logger.error(
+                            f"モーフ '{vmd_morph_name}' のアニメーション設定中にエラー: {str(e)}"
+                        )
+                else:
+                    self.logger.info(f"モーフ '{vmd_morph_name}' が見つかりません")
+
+            self.logger.info(
+                f"{success_count}/{total_count}個のモーフアニメーションを変換しました"
+            )
+            return success_count > 0
+
+        except Exception as e:
+            self.logger.error(f"モーフアニメーション変換中にエラー: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _set_morph_keyframes(self, blend_shape: str, target_index: int, frames: List):
+        """モーフのキーフレームを設定
+
+        Args:
+            blend_shape: ブレンドシェイプノード名
+            target_index: ターゲットインデックス
+            frames: フレームデータのリスト
+        """
+        # ブレンドシェイプのウェイト属性名
+        weight_attr = f"{blend_shape}.weight[{target_index}]"
+        
+        # 各フレームでキーフレームを設定
+        for frame in frames:
+            # 現在のフレームに移動
+            cmds.currentTime(frame.frame_number)
+            
+            # ウェイト値を設定
+            cmds.setAttr(weight_attr, frame.value)
+            
+            # キーフレームを設定
+            cmds.setKeyframe(weight_attr, time=frame.frame_number, value=frame.value)

@@ -45,6 +45,7 @@ Maya MMD Toolsプラグインは、MayaのネイティブなFile > Import機能�
      - ボーンアニメーション（位置・回転）
      - カメラアニメーション（位置・回転・FOV）
      - 照明アニメーション（方向・色）
+     - モーフアニメーション（表情・その他）
 
 3. **MMD Tools UI**:
    - メニューバーの `MMD Tools > Import/Export` からも利用可能
