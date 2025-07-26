@@ -735,26 +735,28 @@ class VmdConverter:
 
         # 各ブレンドシェイプのターゲットを確認
         for blend_shape in blend_shapes:
-            # ターゲット数を取得
-            target_count = cmds.blendShape(blend_shape, query=True, target=True)
-            if not target_count:
+            # ウェイト数を取得
+            weight_count = cmds.blendShape(blend_shape, query=True, weightCount=True)
+            if not weight_count:
                 self.logger.debug(f"{blend_shape} にターゲットがありません")
                 continue
 
             # 各ターゲットのエイリアスを取得
-            weight_count = cmds.blendShape(blend_shape, query=True, weightCount=True)
             self.logger.debug(f"{blend_shape} のウェイト数: {weight_count}")
+            
+            # エイリアスリストを取得
+            aliases = cmds.aliasAttr(blend_shape, query=True) or []
+            # aliasAttr は [alias1, attr1, alias2, attr2, ...] の形式で返す
+            alias_dict = {}
+            for j in range(0, len(aliases), 2):
+                if j + 1 < len(aliases):
+                    alias_dict[aliases[j+1]] = aliases[j]
             
             for i in range(weight_count):
                 # エイリアス（モーフ名）を取得
-                alias_attr = f"{blend_shape}.weight[{i}]"
-                alias_name = cmds.aliasAttr(alias_attr, query=True)
-                self.logger.debug(f"weight[{i}] のエイリアス: {alias_name}")
-                
-                if alias_name:
-                    # aliasAttrは文字列を返す
-                    morph_name = alias_name
-                    # 属性がない場合はエイリアス名をそのまま使用
+                weight_attr = f"weight[{i}]"
+                if weight_attr in alias_dict:
+                    morph_name = alias_dict[weight_attr]
                     self.morph_name_mapping[morph_name] = (blend_shape, i, morph_name)
                     self.logger.debug(f"マッピング追加: {morph_name} -> ({blend_shape}, {i}, {morph_name})")
 

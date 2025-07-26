@@ -158,6 +158,9 @@ class TestMorphPresenter(MayaTestBase):
         mesh = cmds.polyCube(name="test_mesh")[0]
         target = cmds.polyCube(name="test_target")[0]
         blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
+        
+        # ブレンドシェイプのエイリアスを設定
+        cmds.aliasAttr("test_morph_alias", f"{blend_shape}.weight[0]")
         cmds.delete(target)
         
         # モーフデータを設定
@@ -165,7 +168,7 @@ class TestMorphPresenter(MayaTestBase):
         self.presenter.morph_data = {
             "test_morph": {
                 "blend_shape_node": blend_shape,
-                "blend_shape_target": "test_target"
+                "blend_shape_target": "test_morph_alias"
             }
         }
         
@@ -174,7 +177,7 @@ class TestMorphPresenter(MayaTestBase):
         
         # 結果を確認
         self.mock_view.morph_value_label.setText.assert_called_with("50%")
-        weight = cmds.getAttr(f"{blend_shape}.test_target")
+        weight = cmds.getAttr(f"{blend_shape}.test_morph_alias")
         self.assertAlmostEqual(weight, 0.5, places=5)
         
     def test_reset_all_morphs(self):
@@ -185,14 +188,18 @@ class TestMorphPresenter(MayaTestBase):
             mesh = cmds.polyCube(name=f"test_mesh_{i}")[0]
             target = cmds.polyCube(name=f"test_target_{i}")[0]
             blend_shape = cmds.blendShape(target, mesh, name=f"test_blendShape_{i}")[0]
+            
+            # エイリアスを設定
+            alias_name = f"morph_{i}_alias"
+            cmds.aliasAttr(alias_name, f"{blend_shape}.weight[0]")
             cmds.delete(target)
             
             # 値を設定
-            cmds.setAttr(f"{blend_shape}.test_target_{i}", 0.5)
+            cmds.setAttr(f"{blend_shape}.{alias_name}", 0.5)
             
             morphs_data[f"morph_{i}"] = {
                 "blend_shape_node": blend_shape,
-                "blend_shape_target": f"test_target_{i}"
+                "blend_shape_target": alias_name
             }
         
         self.presenter.morph_data = morphs_data
@@ -202,7 +209,7 @@ class TestMorphPresenter(MayaTestBase):
         
         # 結果を確認
         for i in range(3):
-            weight = cmds.getAttr(f"test_blendShape_{i}.test_target_{i}")
+            weight = cmds.getAttr(f"test_blendShape_{i}.morph_{i}_alias")
             self.assertAlmostEqual(weight, 0.0, places=5)
         
         self.mock_view.morph_slider.setValue.assert_called_with(0)
@@ -266,18 +273,21 @@ class TestMorphPresenter(MayaTestBase):
         mesh = cmds.polyCube(name="test_mesh")[0]
         target = cmds.polyCube(name="test_target")[0]
         blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
+        
+        # エイリアスを設定
+        cmds.aliasAttr("smile_alias", f"{blend_shape}.weight[0]")
         cmds.delete(target)
         
         # モーフデータを設定
         self.presenter.morph_data = {
             "smile": {
                 "blend_shape_node": blend_shape,
-                "blend_shape_target": "test_target"
+                "blend_shape_target": "smile_alias"
             }
         }
         
         # ブレンドシェイプに値を設定
-        cmds.setAttr(f"{blend_shape}.test_target", 0.8)
+        cmds.setAttr(f"{blend_shape}.smile_alias", 0.8)
         
         # プリセット名を設定
         self.mock_view.preset_combo.currentText.return_value = "test_preset"
@@ -294,13 +304,13 @@ class TestMorphPresenter(MayaTestBase):
         self.assertAlmostEqual(presets["test_preset"]["smile"], 0.8, places=5)
         
         # 値をリセット
-        cmds.setAttr(f"{blend_shape}.test_target", 0)
+        cmds.setAttr(f"{blend_shape}.smile_alias", 0)
         
         # プリセットを読み込み
         self.presenter.load_preset()
         
         # 値が復元されたことを確認
-        weight = cmds.getAttr(f"{blend_shape}.test_target")
+        weight = cmds.getAttr(f"{blend_shape}.smile_alias")
         self.assertAlmostEqual(weight, 0.8, places=5)
         
     def test_auto_connect_blend_shapes(self):

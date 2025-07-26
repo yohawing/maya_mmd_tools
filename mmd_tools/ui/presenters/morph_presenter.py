@@ -253,7 +253,7 @@ class MorphPresenter:
                 weight *= self.view.multiplier_spin.value()
 
                 try:
-                    set_attribute(blend_shape_node, target, weight, "float")
+                    cmds.setAttr(f"{blend_shape_node}.{target}", weight)
                 except Exception as e:
                     logger.error(
                         f"Failed to set blend shape weight: {blend_shape_node}.{target}: {e}"
@@ -319,7 +319,7 @@ class MorphPresenter:
                 try:
                     current_value = cmds.getAttr(f"{blend_shape_node}.{target}")
                     if current_value != 0:
-                        set_attribute(blend_shape_node, target, 0, "float")
+                        cmds.setAttr(f"{blend_shape_node}.{target}", 0)
                         reset_count += 1
                 except Exception as e:
                     logger.debug(f"Failed to reset morph: {e}")
@@ -650,7 +650,7 @@ class MorphPresenter:
 
                     if blend_shape_node and target and cmds.objExists(blend_shape_node):
                         try:
-                            set_attribute(blend_shape_node, target, value, "float")
+                            cmds.setAttr(f"{blend_shape_node}.{target}", value)
                             applied_count += 1
                         except:
                             pass

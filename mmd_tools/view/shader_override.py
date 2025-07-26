@@ -62,7 +62,6 @@ class MMDShaderNode(om.MPxNode):
     @classmethod
     def initialize(cls):
         """Initialize node attributes."""
-        om.MGlobal.displayInfo("MMDShaderNode: Starting initialization")
         n_attr = om.MFnNumericAttribute()
 
         # Diffuse Color
@@ -174,7 +173,6 @@ class MMDShaderNode(om.MPxNode):
         cls.attributeAffects(cls.a_sphere_texture, cls.a_out_color)
         cls.attributeAffects(cls.a_toon_texture, cls.a_out_color)
 
-        om.MGlobal.displayInfo("MMDShaderNode: Initialization completed")
 
 
 # ----------------------------------------------------------------------

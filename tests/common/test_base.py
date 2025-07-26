@@ -21,20 +21,19 @@ class TestBase(unittest.TestCase):
         """
         Set up for all tests in the class.
         """
-        print(f"\nSetting up test class: {cls.__name__}")
+        pass
 
     @classmethod
     def tearDownClass(cls):
         """
         Tear down for all tests in the class.
         """
-        print(f"Tearing down test class: {cls.__name__}")
+        pass
 
     def setUp(self):
         """
         Set up before each test method.
         """
-        print(f"  Running test: {self._testMethodName}")
         self.temp_dir = tempfile.mkdtemp()
 
     def tearDown(self):

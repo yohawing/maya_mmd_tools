@@ -171,6 +171,7 @@ def main():
     env = os.environ.copy()
     env["MAYA_SCRIPT_PATH"] = ""
     env["MAYA_MODULE_PATH"] = str(ROOT_DIR)
+    env["MAYA_NO_CONSOLE_WINDOW"] = "1"
 
     # Explicitly add to MAYA_PLUG_IN_PATH as a workaround for test environment
     plugin_path = str(ROOT_DIR / "mmd_tools")

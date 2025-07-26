@@ -137,8 +137,70 @@ class VmdMock:
         Returns:
             bytes: カスタムパラメータのVMDファイルバイナリデータ
         """
-        # 簡単のため、最小限のVMDを返す
-        return VmdMock.create_minimal_vmd()
+        data = bytearray()
+        
+        # ヘッダー
+        data.extend(b'Vocaloid Motion Data 0002\x00\x00\x00\x00\x00')  # 識別子
+        model_name_bytes = model_name.encode('shift-jis', errors='ignore')[:20]
+        data.extend(model_name_bytes + b'\x00' * (20 - len(model_name_bytes)))  # モデル名
+        
+        # ボーンフレーム
+        data.extend(struct.pack('<L', bone_frame_count))
+        for i in range(bone_frame_count):
+            data.extend(b'center' + b'\x00' * (15 - len(b'center')))  # ボーン名
+            data.extend(struct.pack('<L', i))  # フレーム番号
+            data.extend(struct.pack('<fff', i * 0.1, 0.0, 0.0))  # 位置
+            data.extend(struct.pack('<ffff', 0.0, 0.0, 0.0, 1.0))  # 回転
+            data.extend(b'\x00' * 64)  # 補間データ
+        
+        # モーフフレーム
+        data.extend(struct.pack('<L', morph_frame_count))
+        for i in range(morph_frame_count):
+            data.extend(b'smile' + b'\x00' * (15 - len(b'smile')))  # モーフ名
+            data.extend(struct.pack('<L', i))  # フレーム番号
+            data.extend(struct.pack('<f', i * 0.2))  # モーフ値
+        
+        # カメラフレーム
+        data.extend(struct.pack('<L', camera_frame_count))
+        for i in range(camera_frame_count):
+            data.extend(struct.pack('<L', i))  # フレーム番号
+            data.extend(struct.pack('<f', 30.0 + i))  # 距離
+            data.extend(struct.pack('<fff', 0.0, 10.0, i * 0.5))  # 位置
+            data.extend(struct.pack('<fff', 0.0, i * 0.1, 0.0))  # 回転
+            data.extend(b'\x00' * 24)  # 補間データ
+            data.extend(struct.pack('<L', 30))  # 視野角
+            data.extend(struct.pack('<B', 0))  # パースペクティブ
+        
+        # ライトフレーム
+        data.extend(struct.pack('<L', light_frame_count))
+        for i in range(light_frame_count):
+            data.extend(struct.pack('<L', i))  # フレーム番号
+            data.extend(struct.pack('<fff', 1.0, 1.0, 1.0))  # 色（RGB）
+            data.extend(struct.pack('<fff', 0.0, -1.0, 0.0))  # 方向ベクトル
+        
+        # セルフシャドウフレーム
+        data.extend(struct.pack('<L', shadow_frame_count))
+        for i in range(shadow_frame_count):
+            data.extend(struct.pack('<L', i))  # フレーム番号
+            data.extend(struct.pack('<B', 1))  # モード(0-2)
+            data.extend(struct.pack('<f', 0.8))  # 距離
+        
+        # IK表示フレーム
+        data.extend(struct.pack('<L', ik_frame_count))
+        if ik_frame_count > 0:
+            for i in range(ik_frame_count):
+                data.extend(struct.pack('<L', i))  # フレーム番号
+                data.extend(struct.pack('<B', 1))  # 表示状態
+                # IK数
+                ik_count = 2
+                data.extend(struct.pack('<L', ik_count))
+                # 各IKの状態
+                for j in range(ik_count):
+                    ik_name = f'IK{j}'.encode('shift-jis')[:20]
+                    data.extend(ik_name + b'\x00' * (20 - len(ik_name)))
+                    data.extend(struct.pack('<B', 1))  # ON/OFF
+        
+        return bytes(data)
 
 
 def create_test_vmd_data():

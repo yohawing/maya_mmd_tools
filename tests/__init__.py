@@ -32,7 +32,6 @@ def _initialize_maya_if_needed():
 
         # Maya standaloneモードを初期化
         maya.standalone.initialize()
-        print("Maya standalone environment initialized for test discovery")
 
         # PYTHONPATHのパスをsys.pathに追加
         realsyspath = [os.path.realpath(p) for p in sys.path]

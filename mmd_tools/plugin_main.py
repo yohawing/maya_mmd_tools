@@ -55,7 +55,6 @@ def initializePlugin(mobject):
     try:
         install_mmd_menu()
         mmd_shader.initializePlugin(mobject)  # Register shader with API 2.0
-        om.MGlobal.displayInfo("maya_mmd_tools plugin loaded!")
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
         raise
@@ -71,7 +70,6 @@ def uninitializePlugin(mobject):
     try:
         uninstall_mmd_menu()
         mmd_shader.uninitializePlugin(mobject)  # Deregister shader with API 2.0
-        om.MGlobal.displayInfo("maya_mmd_tools plugin unloaded!")
     except Exception as e:
         om.MGlobal.displayError(f"Plugin uninitialization failed: {str(e)}")
         raise
