@@ -150,10 +150,10 @@ class BonePresenter:
         for joint in joints:
             bone_index = self._get_attr_safe(joint, ATTR_MMD_BONE_INDEX, -1)
             joints_with_index.append((joint, bone_index))
-        
+
         # インデックスでソート（インデックスがない場合は最後に）
-        joints_with_index.sort(key=lambda x: x[1] if x[1] >= 0 else float('inf'))
-        
+        joints_with_index.sort(key=lambda x: x[1] if x[1] >= 0 else float("inf"))
+
         # ソートされたジョイントリストを作成
         sorted_joints = [joint for joint, _ in joints_with_index]
 
@@ -170,7 +170,7 @@ class BonePresenter:
                 display_text = f"{bone_index}:{name_jp}（{joint}）"
             else:
                 display_text = f"-:{name_jp}（{joint}）"
-            
+
             if name_en:
                 display_text += f" [{name_en}]"
 
@@ -358,12 +358,14 @@ class BonePresenter:
                     self.current_bone, ATTR_MMD_EXTERNAL_PARENT_KEY, -1
                 )
                 self.view.external_parent_key_spin.setValue(key)
-            
+
             # 初期状態の表示/非表示を設定
             self.on_grant_toggled()
             self.on_axis_toggled()
             self.on_external_parent_toggled(self.view.external_parent_check.isChecked())
-            self.on_connection_type_changed(self.view.connection_type_combo.currentIndex())
+            self.on_connection_type_changed(
+                self.view.connection_type_combo.currentIndex()
+            )
 
             # データを保存（リセット用）
             self._store_bone_data()
@@ -512,7 +514,6 @@ class BonePresenter:
             "flags": self._calculate_bone_flags(),
             "all_settings": self._gather_all_settings(),
         }
-
 
     def select_bone_dialog(self, target_type):
         """ボーン選択ダイアログを表示"""
@@ -773,16 +774,18 @@ class BonePresenter:
             # リストビューの表示を更新
             if self.current_bone in self.bone_list_items:
                 item = self.bone_list_items[self.current_bone]
-                bone_index = self._get_attr_safe(self.current_bone, ATTR_MMD_BONE_INDEX, -1)
+                bone_index = self._get_attr_safe(
+                    self.current_bone, ATTR_MMD_BONE_INDEX, -1
+                )
                 name_jp = self.view.bone_name_jp_edit.text()
                 name_en = self.view.bone_name_en_edit.text()
-                
+
                 # 表示フォーマット更新
                 if bone_index >= 0:
                     display_text = f"{bone_index}:{name_jp}（{self.current_bone}）"
                 else:
                     display_text = f"-:{name_jp}（{self.current_bone}）"
-                    
+
                 if name_en:
                     display_text += f" [{name_en}]"
                 item.setText(display_text)
@@ -857,18 +860,18 @@ class BonePresenter:
         """ボーンの表示名を取得（Maya名:日本語名）"""
         if not bone_name or not cmds.objExists(bone_name):
             return bone_name or ""
-        
+
         # MMD日本語名を取得
         name_jp = self._get_attr_safe(bone_name, ATTR_MMD_BONE_NAME, "")
         if name_jp and name_jp != bone_name:
             return f"{bone_name}:{name_jp}"
         return bone_name
-    
+
     def _extract_bone_name(self, display_name):
         """表示名から実際のボーン名を抽出"""
         if not display_name:
             return ""
-        
+
         # "Maya名:日本語名"形式の場合、Maya名を抽出
         if ":" in display_name:
             return display_name.split(":")[0]
@@ -887,6 +890,13 @@ class BonePresenter:
                         return json.loads(value)
                     except:
                         return default
+                # double3型の場合、タプルをリストに変換
+                if (
+                    isinstance(value, tuple)
+                    and len(value) == 1
+                    and isinstance(value[0], tuple)
+                ):
+                    return list(value[0])
                 return value if value is not None else default
         except:
             pass

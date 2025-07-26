@@ -147,7 +147,7 @@ class BoneTab(BaseTab):
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.reset_btn)
 
-        layout.addLayout(button_layout)
+        main_layout.addLayout(button_layout)
 
         return widget
 

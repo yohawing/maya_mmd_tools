@@ -39,17 +39,17 @@ class MaterialPresenter:
 
         # UIのシグナル
         self.view.material_list.currentItemChanged.connect(self.on_material_selected)
-        self.view.material_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
+        self.view.material_list.itemSelectionChanged.connect(
+            self.on_selection_changed_maya
+        )
         self.view.refresh_btn.clicked.connect(self.load_materials)
         self.view.search_edit.textChanged.connect(self.on_search_text_changed)
 
-        # Color buttons
-        self.view.diffuse_color_btn.clicked.connect(lambda: self.pick_color("diffuse"))
-        self.view.specular_color_btn.clicked.connect(
-            lambda: self.pick_color("specular")
-        )
-        self.view.ambient_color_btn.clicked.connect(lambda: self.pick_color("ambient"))
-        self.view.edge_color_btn.clicked.connect(lambda: self.pick_color("edge"))
+        # Color widgets (clickable)
+        self.view.diffuse_color_widget.mousePressEvent = lambda e: self.pick_color("diffuse")
+        self.view.specular_color_widget.mousePressEvent = lambda e: self.pick_color("specular")
+        self.view.ambient_color_widget.mousePressEvent = lambda e: self.pick_color("ambient")
+        self.view.edge_color_widget.mousePressEvent = lambda e: self.pick_color("edge")
 
         # File browsers
         self.view.texture_browse_btn.clicked.connect(
@@ -69,6 +69,21 @@ class MaterialPresenter:
         self.view.edge_size_spin.valueChanged.connect(self._on_value_changed)
         self.view.sphere_mode_combo.currentIndexChanged.connect(self._on_value_changed)
         self.view.toon_texture_combo.currentIndexChanged.connect(self._on_value_changed)
+        
+        # Slider connections for transparency and specular coefficient
+        self.view.transparency_slider.valueChanged.connect(
+            lambda v: self.view.transparency_spin.setValue(v / 100.0)
+        )
+        self.view.transparency_spin.valueChanged.connect(
+            lambda v: self.view.transparency_slider.setValue(int(v * 100))
+        )
+        
+        self.view.specular_coefficient_slider.valueChanged.connect(
+            lambda v: self.view.specular_coefficient_spin.setValue(v / 100.0)
+        )
+        self.view.specular_coefficient_spin.valueChanged.connect(
+            lambda v: self.view.specular_coefficient_slider.setValue(int(v * 100))
+        )
 
         # Check boxes
         for checkbox in [
@@ -141,7 +156,7 @@ class MaterialPresenter:
                     display_text = f"{idx + 1}:{jp_name}（{mat}）"
                 else:
                     display_text = f"{idx + 1}:（{mat}）"
-                
+
                 if en_name:
                     display_text += f" [{en_name}]"
 
@@ -203,23 +218,22 @@ class MaterialPresenter:
         logger.info(f"Selected material: {material_name}")
 
         self.current_material = material_name
+        # 変更フラグを事前にリセットして、ロード中の変更検知を無効化
+        self.has_unsaved_changes = False
         self.view._set_details_enabled(True)
-        
+
         # Mayaでマテリアルを選択
         try:
             cmds.select(material_name, replace=True)
             logger.debug(f"Selected material in Maya: {material_name}")
-            
+
             # Hypershadeでマテリアルを表示（オプション）
             if cmds.window("hyperShadePanel1Window", exists=True):
                 cmds.hyperShade(material_name, assign=material_name)
         except Exception as e:
             logger.warning(f"Could not select material in Maya: {e}")
-        
+
         self.load_material_properties(material_name)
-        self.has_unsaved_changes = (
-            False  # Reset after loading to prevent false positives
-        )
 
     def load_material_properties(self, material_name):
         """Load material properties from Maya material"""
@@ -238,9 +252,6 @@ class MaterialPresenter:
             self.view.material_en_name_edit.setText(en_name if en_name else "")
             self.material_data["en_name"] = en_name if en_name else ""
 
-            # Material name
-            self.view.material_name_edit.setText(material_name)
-
             # Get basic colors
             # Check shader type
             shader_type = cmds.nodeType(material_name)
@@ -250,14 +261,21 @@ class MaterialPresenter:
                 diffuse_color = maya_utils.get_attribute(material_name, "baseColor")
             elif shader_type == "dx11Shader":
                 # dx11Shaderの場合、DiffuseColorRGBまたはg_Diffuseを試す
-                if cmds.attributeQuery("DiffuseColorRGB", node=material_name, exists=True):
-                    diffuse_color = maya_utils.get_attribute(material_name, "DiffuseColorRGB")
+                if cmds.attributeQuery(
+                    "DiffuseColorRGB", node=material_name, exists=True
+                ):
+                    diffuse_color = maya_utils.get_attribute(
+                        material_name, "DiffuseColorRGB"
+                    )
                 elif cmds.attributeQuery("g_Diffuse", node=material_name, exists=True):
                     diffuse_color = maya_utils.get_attribute(material_name, "g_Diffuse")
                 else:
                     diffuse_color = (0.5, 0.5, 0.5)
                 # タプルが正しい形式であることを確認
-                if not isinstance(diffuse_color, (list, tuple)) or len(diffuse_color) < 3:
+                if (
+                    not isinstance(diffuse_color, (list, tuple))
+                    or len(diffuse_color) < 3
+                ):
                     diffuse_color = (0.5, 0.5, 0.5)
             elif cmds.attributeQuery("color", node=material_name, exists=True):
                 diffuse_color = maya_utils.get_attribute(material_name, "color")
@@ -267,32 +285,40 @@ class MaterialPresenter:
             self._update_color_widget(self.view.diffuse_color_widget, diffuse_color)
 
             # Get specular color
-            if shader_type == "dx11Shader" and cmds.attributeQuery("SpecularColor", node=material_name, exists=True):
-                specular_color = maya_utils.get_attribute(material_name, "SpecularColor")
+            if shader_type == "dx11Shader" and cmds.attributeQuery(
+                "SpecularColor", node=material_name, exists=True
+            ):
+                specular_color = maya_utils.get_attribute(
+                    material_name, "SpecularColor"
+                )
             elif cmds.attributeQuery("specularColor", node=material_name, exists=True):
-                specular_color = maya_utils.get_attribute(material_name, "specularColor")
+                specular_color = maya_utils.get_attribute(
+                    material_name, "specularColor"
+                )
             else:
                 specular_color = (0.5, 0.5, 0.5)
-            
+
             # タプルが正しい形式であることを確認
             if not isinstance(specular_color, (list, tuple)) or len(specular_color) < 3:
                 specular_color = (0.5, 0.5, 0.5)
-                
+
             self.material_data["specular"] = specular_color
             self._update_color_widget(self.view.specular_color_widget, specular_color)
 
             # Get ambient - Maya doesn't have ambient by default, check if attr exists
-            if shader_type == "dx11Shader" and cmds.attributeQuery("AmbientColor", node=material_name, exists=True):
+            if shader_type == "dx11Shader" and cmds.attributeQuery(
+                "AmbientColor", node=material_name, exists=True
+            ):
                 ambient_color = maya_utils.get_attribute(material_name, "AmbientColor")
             elif cmds.attributeQuery("ambientColor", node=material_name, exists=True):
                 ambient_color = maya_utils.get_attribute(material_name, "ambientColor")
             else:
                 ambient_color = (0.5, 0.5, 0.5)
-            
+
             # タプルが正しい形式であることを確認
             if not isinstance(ambient_color, (list, tuple)) or len(ambient_color) < 3:
                 ambient_color = (0.5, 0.5, 0.5)
-                
+
             self.material_data["ambient"] = ambient_color
             self._update_color_widget(self.view.ambient_color_widget, ambient_color)
 
@@ -306,9 +332,9 @@ class MaterialPresenter:
             elif cmds.attributeQuery("specular", node=material_name, exists=True):
                 # StandardSurfaceの場合、specular値を係数に変換
                 specular_weight = maya_utils.get_attribute(material_name, "specular")
-                specular_coefficient = specular_weight * 100.0
+                specular_coefficient = specular_weight
             else:
-                specular_coefficient = 5.0
+                specular_coefficient = 0.5
             self.material_data["specular_coefficient"] = specular_coefficient
             self.view.specular_coefficient_spin.setValue(specular_coefficient)
 
@@ -336,41 +362,58 @@ class MaterialPresenter:
                 # dx11Shaderの場合、MainTextureアトリビュートをチェック
                 if cmds.attributeQuery("MainTexture", node=material_name, exists=True):
                     texture_attrs.append(f"{material_name}.MainTexture")
-                if cmds.attributeQuery("DiffuseTexture", node=material_name, exists=True):
+                if cmds.attributeQuery(
+                    "DiffuseTexture", node=material_name, exists=True
+                ):
                     texture_attrs.append(f"{material_name}.DiffuseTexture")
             if cmds.attributeQuery("color", node=material_name, exists=True):
                 texture_attrs.append(f"{material_name}.color")
             # Also check for direct outColor connections
             if cmds.attributeQuery("outColor", node=material_name, exists=True):
                 texture_attrs.append(f"{material_name}.outColor")
-            
+
             # Debug: Log available attributes
             logger.debug(f"Material type: {shader_type}")
             logger.debug(f"Checking texture attributes: {texture_attrs}")
-            
+
             # Also check all connections to the material
-            all_connections = cmds.listConnections(material_name, source=True, destination=False, plugs=True) or []
+            all_connections = (
+                cmds.listConnections(
+                    material_name, source=True, destination=False, plugs=True
+                )
+                or []
+            )
             logger.debug(f"All connections to {material_name}: {all_connections}")
 
             file_node = None
             # First try direct attribute connections
             for attr in texture_attrs:
-                connections = cmds.listConnections(attr, type="file", source=True, destination=False)
+                connections = cmds.listConnections(
+                    attr, type="file", source=True, destination=False
+                )
                 if connections:
                     file_node = connections
-                    logger.debug(f"Found file node connected to {attr}: {connections[0]}")
+                    logger.debug(
+                        f"Found file node connected to {attr}: {connections[0]}"
+                    )
                     break
-            
+
             # If not found, check for file nodes in the material's shading group
             if not file_node:
-                shading_groups = cmds.listConnections(material_name, type="shadingEngine")
+                shading_groups = cmds.listConnections(
+                    material_name, type="shadingEngine"
+                )
                 if shading_groups:
                     logger.debug(f"Found shading groups: {shading_groups}")
                     for sg in shading_groups:
-                        file_nodes = cmds.ls(cmds.listConnections(sg), type="file") or []
+                        file_nodes = (
+                            cmds.ls(cmds.listConnections(sg), type="file") or []
+                        )
                         if file_nodes:
                             file_node = file_nodes
-                            logger.debug(f"Found file nodes in shading group {sg}: {file_nodes}")
+                            logger.debug(
+                                f"Found file nodes in shading group {sg}: {file_nodes}"
+                            )
                             break
 
             if file_node:
@@ -380,11 +423,15 @@ class MaterialPresenter:
                 logger.info(f"Loaded texture: {texture_path}")
             else:
                 # Check if there's a stored texture path in MMD attributes
-                mmd_texture_path = self._get_attr_safe(material_name, "mmd_texture_path", "")
+                mmd_texture_path = self._get_attr_safe(
+                    material_name, "mmd_texture_path", ""
+                )
                 if mmd_texture_path:
                     self.material_data["texture"] = mmd_texture_path
                     self.view.texture_path_edit.setText(mmd_texture_path)
-                    logger.info(f"Loaded texture from MMD attribute: {mmd_texture_path}")
+                    logger.info(
+                        f"Loaded texture from MMD attribute: {mmd_texture_path}"
+                    )
                 else:
                     self.material_data["texture"] = ""
                     self.view.texture_path_edit.clear()
@@ -400,6 +447,8 @@ class MaterialPresenter:
             )
         finally:
             self._loading_properties = False
+            # プロパティの読み込み完了後、変更フラグを確実にリセット
+            self.has_unsaved_changes = False
 
     def _load_mmd_attributes(self, material_name):
         """Load MMD-specific attributes from material"""
@@ -408,27 +457,27 @@ class MaterialPresenter:
             all_attrs = cmds.listAttr(material_name, userDefined=True) or []
             if all_attrs:
                 logger.debug(f"User-defined attributes on {material_name}: {all_attrs}")
-            
+
             # dx11Shaderの場合、uniformParametersをチェック
             if cmds.nodeType(material_name) == "dx11Shader":
-                uniform_params = cmds.listAttr(material_name + ".uniformParameters") or []
+                uniform_params = (
+                    cmds.listAttr(material_name + ".uniformParameters") or []
+                )
                 if uniform_params:
-                    logger.debug(f"Uniform parameters on {material_name}: {uniform_params}")
+                    logger.debug(
+                        f"Uniform parameters on {material_name}: {uniform_params}"
+                    )
         except:
             pass
-        
+
         # Sphere map
         sphere_path = self._get_attr_safe(material_name, ATTR_MMD_SPHERE_PATH, "")
         if not sphere_path:
             # mmd_sphere_pathカスタムアトリビュートからも確認
             sphere_path = self._get_attr_safe(material_name, "mmd_sphere_path", "")
-        
+
         self.material_data["sphere_map"] = sphere_path
         self.view.sphere_map_path_edit.setText(sphere_path)
-        if sphere_path:
-            logger.info(f"Loaded sphere map: {sphere_path}")
-        else:
-            logger.info(f"No sphere map for material: {material_name}")
 
         # Sphere mode
         sphere_mode = self._get_attr_safe(material_name, ATTR_MMD_SPHERE_MODE, 0)
@@ -465,7 +514,7 @@ class MaterialPresenter:
                 edge_color = (0.0, 0.0, 0.0)
         else:
             edge_color = (0.0, 0.0, 0.0)
-            
+
         self.material_data["edge_color"] = edge_color
         self._update_color_widget(self.view.edge_color_widget, edge_color)
 
@@ -578,16 +627,13 @@ class MaterialPresenter:
             # Apply names
             jp_name = self.view.material_jp_name_edit.text()
             en_name = self.view.material_en_name_edit.text()
-            
+
             # Ensure MMD attributes exist
             maya_utils.set_custom_attributes(
                 self.current_material,
-                {
-                    ATTR_MMD_MATERIAL_NAME: jp_name,
-                    ATTR_MMD_MATERIAL_NAME_EN: en_name
-                }
+                {ATTR_MMD_MATERIAL_NAME: jp_name, ATTR_MMD_MATERIAL_NAME_EN: en_name},
             )
-            
+
             # Apply basic colors
             if "diffuse" in self.material_data:
                 shader_type = cmds.nodeType(self.current_material)
@@ -671,16 +717,16 @@ class MaterialPresenter:
                 if item.data(Qt.UserRole) == self.current_material:
                     # 現在のインデックスを取得
                     idx = i + 1  # 1ベースのインデックス
-                    
+
                     # 表示テキストを更新
                     if jp_name:
                         display_text = f"{idx}:{jp_name}（{self.current_material}）"
                     else:
                         display_text = f"{idx}:（{self.current_material}）"
-                    
+
                     if en_name:
                         display_text += f" [{en_name}]"
-                    
+
                     item.setText(display_text)
                     break
 
@@ -918,7 +964,7 @@ class MaterialPresenter:
             if item.text().startswith("--"):
                 item.setHidden(True)
                 continue
-            
+
             # 検索文字列が空の場合は全て表示
             if not text:
                 item.setHidden(False)
@@ -926,18 +972,22 @@ class MaterialPresenter:
                 # 大文字小文字を区別せずに検索
                 display_text = item.text().lower()
                 search_text = text.lower()
-                
+
                 # マテリアル名を取得して名前でも検索
                 mat_name = item.data(Qt.UserRole)
                 if mat_name:
                     jp_name = maya_utils.get_attribute(mat_name, ATTR_MMD_MATERIAL_NAME)
-                    en_name = maya_utils.get_attribute(mat_name, ATTR_MMD_MATERIAL_NAME_EN)
-                    
+                    en_name = maya_utils.get_attribute(
+                        mat_name, ATTR_MMD_MATERIAL_NAME_EN
+                    )
+
                     # いずれかに検索文字列が含まれていれば表示
-                    if (search_text in display_text or 
-                        search_text in mat_name.lower() or
-                        (jp_name and search_text in jp_name.lower()) or
-                        (en_name and search_text in en_name.lower())):
+                    if (
+                        search_text in display_text
+                        or search_text in mat_name.lower()
+                        or (jp_name and search_text in jp_name.lower())
+                        or (en_name and search_text in en_name.lower())
+                    ):
                         item.setHidden(False)
                     else:
                         item.setHidden(True)
