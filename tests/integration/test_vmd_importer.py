@@ -286,11 +286,12 @@ class TestVmdImporter(MayaTestBase):
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
         
         # MMDカメラが作成されたことを確認
+        from mmd_tools.core.constants import ATTR_MMD_CAMERA
         cameras = cmds.ls(type="camera")
         mmd_camera = None
         for cam in cameras:
             transform = cmds.listRelatives(cam, parent=True)
-            if transform and cmds.attributeQuery("mmd_camera", node=transform[0], exists=True):
+            if transform and cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform[0], exists=True):
                 mmd_camera = transform[0]
                 break
                 
@@ -336,11 +337,12 @@ class TestVmdImporter(MayaTestBase):
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
         
         # MMD照明が作成されたことを確認
+        from mmd_tools.core.constants import ATTR_MMD_LIGHT
         lights = cmds.ls(type="directionalLight")
         mmd_light = None
         for light in lights:
             transform = cmds.listRelatives(light, parent=True)
-            if transform and cmds.attributeQuery("mmd_light", node=transform[0], exists=True):
+            if transform and cmds.attributeQuery(ATTR_MMD_LIGHT, node=transform[0], exists=True):
                 mmd_light = transform[0]
                 mmd_light_shape = light
                 break

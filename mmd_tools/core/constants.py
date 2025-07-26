@@ -52,3 +52,9 @@ PHYSICS_TYPE_HAIR = "hair"  # 髪の毛タイプ（nHairシステムを使用）
 PHYSICS_TYPE_CLOTH = "cloth"  # 布タイプ（nClothシステムを使用）
 PHYSICS_TYPE_RIGID = "rigid"  # 剛体タイプ（nRigidシステムを使用）
 PHYSICS_TYPE_SOFT = "soft"  # ソフトボディタイプ（将来の拡張用）
+
+# カメラ・照明関連
+ATTR_MMD_CAMERA = "mmd_camera"  # MMDカメラマーカー
+ATTR_MMD_LIGHT = "mmd_light"  # MMD照明マーカー
+DEFAULT_CAMERA_NAME = "mmd_camera"  # MMDカメラのデフォルト名
+DEFAULT_LIGHT_NAME = "mmd_light"  # MMD照明のデフォルト名

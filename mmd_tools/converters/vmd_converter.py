@@ -9,17 +9,23 @@ Mayaのアニメーションデータに変換する機能を提供します。
 - 基本的なエラーハンドリング
 """
 
-import struct
 import math
-from typing import Dict, List, Tuple, Optional, Set
-import maya.cmds as cmds
+import struct
+from typing import Dict, List, Optional, Set, Tuple
+
 import maya.api.OpenMaya as om2
 import maya.api.OpenMayaAnim as oma2
+import maya.cmds as cmds
 
-from mmd_tools.core.logger import get_logger
-from mmd_tools.core.vmd_parser import VmdParser
-from mmd_tools.core import maya_utils
-from mmd_tools.core import utils
+from ..core import maya_utils, utils
+from ..core.constants import (
+    ATTR_MMD_CAMERA,
+    ATTR_MMD_LIGHT,
+    DEFAULT_CAMERA_NAME,
+    DEFAULT_LIGHT_NAME,
+)
+from ..core.logger import get_logger
+from ..core.vmd_parser import VmdParser
 
 
 class VmdConverter:
@@ -63,12 +69,12 @@ class VmdConverter:
 
     def __init__(self):
         """VmdConverterの初期化"""
+        self.logger = get_logger(__name__)
         self.bone_name_mapping: Dict[str, str] = {}  # VMDボーン名 -> Mayaジョイント名
         self.morph_name_mapping: Dict[
             str, str
         ] = {}  # VMDモーフ名 -> Mayaブレンドシェイプターゲット名
         self.fps = 30.0  # デフォルトのFPS
-        self.logger = get_logger(self.__class__.__name__)
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
         self._bone_bind_poses: Dict[
             str, Tuple[float, float, float]
@@ -471,16 +477,16 @@ class VmdConverter:
         cameras = cmds.ls(type="camera")
         for cam in cameras:
             transform = cmds.listRelatives(cam, parent=True)[0]
-            if cmds.attributeQuery("mmd_camera", node=transform, exists=True):
+            if cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform, exists=True):
                 self.logger.info(f"既存のMMDカメラを使用: {transform}")
                 return transform
 
         # 新しいカメラを作成
-        camera_transform, camera_shape = cmds.camera(name="mmd_camera")
+        camera_transform, camera_shape = cmds.camera(name=DEFAULT_CAMERA_NAME)
         
         # MMDカメラマーカーを追加
-        if not cmds.attributeQuery("mmd_camera", node=camera_transform, exists=True):
-            cmds.addAttr(camera_transform, longName="mmd_camera", attributeType="bool", defaultValue=True)
+        if not cmds.attributeQuery(ATTR_MMD_CAMERA, node=camera_transform, exists=True):
+            cmds.addAttr(camera_transform, longName=ATTR_MMD_CAMERA, attributeType="bool", defaultValue=True)
         
         # カメラの初期設定
         cmds.setAttr(f"{camera_shape}.nearClipPlane", 0.1)
@@ -615,17 +621,17 @@ class VmdConverter:
         lights = cmds.ls(type="directionalLight")
         for light in lights:
             transform = cmds.listRelatives(light, parent=True)[0]
-            if cmds.attributeQuery("mmd_light", node=transform, exists=True):
+            if cmds.attributeQuery(ATTR_MMD_LIGHT, node=transform, exists=True):
                 self.logger.info(f"既存のMMD照明を使用: {transform}")
                 return transform
 
         # 新しい方向性ライトを作成
-        light_transform = cmds.directionalLight(name="mmd_light", intensity=1.0)
+        light_transform = cmds.directionalLight(name=DEFAULT_LIGHT_NAME, intensity=1.0)
         light_transform = cmds.listRelatives(light_transform, parent=True)[0]
         
         # MMD照明マーカーを追加
-        if not cmds.attributeQuery("mmd_light", node=light_transform, exists=True):
-            cmds.addAttr(light_transform, longName="mmd_light", attributeType="bool", defaultValue=True)
+        if not cmds.attributeQuery(ATTR_MMD_LIGHT, node=light_transform, exists=True):
+            cmds.addAttr(light_transform, longName=ATTR_MMD_LIGHT, attributeType="bool", defaultValue=True)
         
         self.logger.info(f"新しいMMD照明を作成: {light_transform}")
         return light_transform

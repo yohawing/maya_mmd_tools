@@ -33,10 +33,11 @@ class TestVmdConverter(MayaTestBase):
         
         # テスト用カメラとライトを削除
         import maya.cmds as cmds
-        if cmds.objExists("mmd_camera"):
-            cmds.delete("mmd_camera")
-        if cmds.objExists("mmd_light"):
-            cmds.delete("mmd_light")
+        from mmd_tools.core.constants import DEFAULT_CAMERA_NAME, DEFAULT_LIGHT_NAME
+        if cmds.objExists(DEFAULT_CAMERA_NAME):
+            cmds.delete(DEFAULT_CAMERA_NAME)
+        if cmds.objExists(DEFAULT_LIGHT_NAME):
+            cmds.delete(DEFAULT_LIGHT_NAME)
 
     def test_init(self):
         """初期化のテスト"""
@@ -87,12 +88,13 @@ class TestVmdConverter(MayaTestBase):
     def test_get_or_create_camera(self):
         """カメラの作成・取得テスト"""
         import maya.cmds as cmds
+        from mmd_tools.core.constants import ATTR_MMD_CAMERA
         
         # 新規作成
         camera_name = self.converter._get_or_create_camera()
         self.assertIsNotNone(camera_name)
         self.assertTrue(cmds.objExists(camera_name))
-        self.assertTrue(cmds.attributeQuery("mmd_camera", node=camera_name, exists=True))
+        self.assertTrue(cmds.attributeQuery(ATTR_MMD_CAMERA, node=camera_name, exists=True))
         
         # 既存カメラの取得
         camera_name2 = self.converter._get_or_create_camera()
@@ -101,12 +103,13 @@ class TestVmdConverter(MayaTestBase):
     def test_get_or_create_light(self):
         """照明の作成・取得テスト"""
         import maya.cmds as cmds
+        from mmd_tools.core.constants import ATTR_MMD_LIGHT
         
         # 新規作成
         light_name = self.converter._get_or_create_light()
         self.assertIsNotNone(light_name)
         self.assertTrue(cmds.objExists(light_name))
-        self.assertTrue(cmds.attributeQuery("mmd_light", node=light_name, exists=True))
+        self.assertTrue(cmds.attributeQuery(ATTR_MMD_LIGHT, node=light_name, exists=True))
         
         # 既存照明の取得
         light_name2 = self.converter._get_or_create_light()
@@ -133,12 +136,13 @@ class TestVmdConverter(MayaTestBase):
         
         # カメラが作成されたことを確認
         import maya.cmds as cmds
+        from mmd_tools.core.constants import ATTR_MMD_CAMERA
         # カメラ名を正確に確認（変換関数が返すカメラ名をチェック）
         cameras = cmds.ls(type="camera")
         camera_found = False
         for cam in cameras:
             transform = cmds.listRelatives(cam, parent=True)
-            if transform and cmds.attributeQuery("mmd_camera", node=transform[0], exists=True):
+            if transform and cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform[0], exists=True):
                 camera_found = True
                 # キーフレームが設定されたことを確認
                 keyframes = cmds.keyframe(f"{transform[0]}.translateX", query=True)
@@ -167,10 +171,11 @@ class TestVmdConverter(MayaTestBase):
         
         # 照明が作成されたことを確認
         import maya.cmds as cmds
-        self.assertTrue(cmds.objExists("mmd_light"))
+        from mmd_tools.core.constants import DEFAULT_LIGHT_NAME
+        self.assertTrue(cmds.objExists(DEFAULT_LIGHT_NAME))
         
         # キーフレームが設定されたことを確認
-        light_shape = cmds.listRelatives("mmd_light", shapes=True, type="directionalLight")[0]
+        light_shape = cmds.listRelatives(DEFAULT_LIGHT_NAME, shapes=True, type="directionalLight")[0]
         keyframes = cmds.keyframe(f"{light_shape}.colorR", query=True)
         self.assertIsNotNone(keyframes)
         self.assertEqual(len(keyframes), 3)
