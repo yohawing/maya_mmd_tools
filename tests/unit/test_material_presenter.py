@@ -30,7 +30,6 @@ class TestMaterialPresenter(unittest.TestCase):
         # 各種UIウィジェットのモック
         self.mock_view.material_jp_name_edit = Mock()
         self.mock_view.material_en_name_edit = Mock()
-        self.mock_view.material_name_edit = Mock()
         self.mock_view.texture_path_edit = Mock()
         self.mock_view.sphere_map_path_edit = Mock()
         self.mock_view.sphere_mode_combo = Mock()
@@ -57,11 +56,9 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.point_draw_check = Mock()
         self.mock_view.line_draw_check = Mock()
         
-        # カラーボタンのモック
-        self.mock_view.diffuse_color_btn = Mock()
-        self.mock_view.specular_color_btn = Mock()
-        self.mock_view.ambient_color_btn = Mock()
-        self.mock_view.edge_color_btn = Mock()
+        # スライダーのモック
+        self.mock_view.transparency_slider = Mock()
+        self.mock_view.specular_coefficient_slider = Mock()
         
         # ファイルブラウザボタンのモック
         self.mock_view.texture_browse_btn = Mock()
@@ -161,7 +158,7 @@ class TestMaterialPresenter(unittest.TestCase):
             "DiffuseColorRGB": (1.0, 0.5, 0.0),
             "SpecularColor": (0.8, 0.8, 0.8),
             "AmbientColor": (0.2, 0.2, 0.2),
-            "mmd_specular_coefficient": 5.0,
+            "mmd_specular_coefficient": 0.5,
             "transparency": (0.1,),
             ATTR_MMD_SPHERE_PATH: "sphere.spa",
             ATTR_MMD_SPHERE_MODE: 1,
@@ -179,8 +176,7 @@ class TestMaterialPresenter(unittest.TestCase):
         # 各フィールドに値が設定されることを確認
         self.mock_view.material_jp_name_edit.setText.assert_called_with("テストマテリアル")
         self.mock_view.material_en_name_edit.setText.assert_called_with("Test Material")
-        self.mock_view.material_name_edit.setText.assert_called_with(material_name)
-        self.mock_view.specular_coefficient_spin.setValue.assert_called_with(5.0)
+        self.mock_view.specular_coefficient_spin.setValue.assert_called_with(0.5)
 
     def test_update_color_widget_with_valid_color(self):
         """有効な色データでのカラーウィジェット更新テスト"""
@@ -226,7 +222,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.material_jp_name_edit.text.return_value = "新しい名前"
         self.mock_view.material_en_name_edit.text.return_value = "New Name"
         self.mock_view.transparency_spin.value.return_value = 0.5
-        self.mock_view.specular_coefficient_spin.value.return_value = 75.0
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.75
         self.mock_view.texture_path_edit.text.return_value = "texture.png"
         self.mock_view.sphere_map_path_edit.text.return_value = "sphere.spa"
         self.mock_view.sphere_mode_combo.currentIndex.return_value = 1
