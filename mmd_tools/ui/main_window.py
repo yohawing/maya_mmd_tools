@@ -223,46 +223,91 @@ class MainWindow(QMainWindow):
         logger.info("MMD Tools UI initialized.")
 
     def setup_tabs(self):
+        # UITranslatorを取得
+        from .translations import UITranslator
+        translator = UITranslator.instance()
+        
+        # 言語設定を読み込み
+        from .. import settings
+        current_language = settings.get("ui.general.language", "ja")
+        translator.set_language(current_language)
+        
         # File I/O Tab
         import_export_tab = ImportExportTab()
         self.import_export_presenter = ImportExportPresenter(import_export_tab, self.app_state)
-        self.tab_widget.addTab(import_export_tab, "File I/O")
+        self.tab_widget.addTab(import_export_tab, translator.translate("file_io", "tabs"))
 
         # Info Tab
         info_tab = InfoTab()
         self.info_presenter = InfoPresenter(info_tab, self.app_state)
-        self.tab_widget.addTab(info_tab, "Info")
+        self.tab_widget.addTab(info_tab, translator.translate("info", "tabs"))
 
         # Material Tab
         material_tab = MaterialTab()
         self.material_presenter = MaterialPresenter(material_tab, self.app_state)
-        self.tab_widget.addTab(material_tab, "Material")
+        self.tab_widget.addTab(material_tab, translator.translate("material", "tabs"))
 
         # Bone Tab
         bone_tab = BoneTab()
         self.bone_presenter = BonePresenter(bone_tab, self.app_state)
-        self.tab_widget.addTab(bone_tab, "Bone")
+        self.tab_widget.addTab(bone_tab, translator.translate("bone", "tabs"))
 
         # Morph Tab
         morph_tab = MorphTab()
         self.morph_presenter = MorphPresenter(morph_tab, self.app_state)
-        self.tab_widget.addTab(morph_tab, "Morph")
+        self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
 
         # Display Pane Tab
         display_pane_tab = DisplayPaneTab()
         self.display_pane_presenter = DisplayPanePresenter(display_pane_tab, self.app_state)
-        self.tab_widget.addTab(display_pane_tab, "Display Pane")
+        self.tab_widget.addTab(display_pane_tab, translator.translate("display_pane", "tabs"))
 
         # Physics Tab
         physics_tab = PhysicsTab()
         self.physics_presenter = PhysicsPresenter(physics_tab, self.app_state)
-        self.tab_widget.addTab(physics_tab, "Physics")
+        self.tab_widget.addTab(physics_tab, translator.translate("physics", "tabs"))
 
         # Settings Tab
         settings_tab = SettingsTab()
         self.settings_presenter = SettingsPresenter(settings_tab, self.app_state)
-        self.tab_widget.addTab(settings_tab, "Settings")
+        self.tab_widget.addTab(settings_tab, translator.translate("settings", "tabs"))
+        
+        # タブリストを保存（retranslate用）
+        self.tabs = [
+            import_export_tab,
+            info_tab,
+            material_tab,
+            bone_tab,
+            morph_tab,
+            display_pane_tab,
+            physics_tab,
+            settings_tab
+        ]
         
         # logger参照のためにグローバルスコープで取得
         global logger
         logger = get_logger(__name__)
+    
+    def retranslate_all_tabs(self):
+        """すべてのタブのUIテキストを再翻訳"""
+        from .translations import UITranslator
+        translator = UITranslator.instance()
+        
+        # タブのタイトルを再設定
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "display_pane", "physics", "settings"]
+        for i, key in enumerate(tab_keys):
+            self.tab_widget.setTabText(i, translator.translate(key, "tabs"))
+        
+        # 各タブのretranslateUiメソッドを呼び出し
+        for tab in self.tabs:
+            if hasattr(tab, 'retranslateUi'):
+                tab.retranslateUi()
+        
+        # ウィンドウタイトルとドックウィジェットも再翻訳
+        self.retranslateUi()
+    
+    def retranslateUi(self):
+        """メインウィンドウのUIテキストを再翻訳"""
+        # 現在はウィンドウタイトルは固定なので特に処理なし
+        # 将来的にメニューバーなどを追加した場合はここで翻訳
+        pass

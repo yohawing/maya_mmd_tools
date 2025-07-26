@@ -225,11 +225,135 @@ mmd_tools/
 
 これにより、アプリケーションのどこかで生成されたログメッセージ（`logger.info(...)`、`logger.error(...)`など）が、自動的にUIのログビューに表示されるようになります。
 
+## 多言語対応
+
+UIの多言語対応により、日本語圏と中華圏を含む幅広いユーザーに対応します。
+
+### 対応言語
+- 日本語（ja）- デフォルト言語
+- 英語（en）
+- 繁体字中国語（zh-TW）
+- 簡体字中国語（zh-CN）
+
+### 対応範囲
+UIに表示される以下の要素のみを翻訳対象とします：
+- メニュー項目、ボタンラベル
+- タブ名、グループボックスタイトル
+- ツールチップ
+- ステータスメッセージ
+- ダイアログのタイトルとメッセージ
+
+**対応しない範囲:**
+- MMDモデルデータ（モデル名、ボーン名、モーフ名など）
+- ログメッセージの詳細内容
+- ファイルパスやエラーコード
+
+### ファイル構造
+```
+mmd_tools/
+├── config/
+│   ├── translations/
+│   │   ├── ja.json          # 日本語
+│   │   ├── en.json          # 英語
+│   │   ├── zh_tw.json       # 繁体字
+│   │   └── zh_cn.json       # 簡体字
+├── ui/
+│   ├── translations/
+│   │   ├── __init__.py
+│   │   └── translator.py    # 翻訳管理クラス
+```
+
+### 翻訳ファイルの構造
+
+```json
+// config/translations/ja.json
+{
+  "tabs": {
+    "file_io": "ファイルI/O",
+    "info": "情報",
+    "material": "材質",
+    "bone": "ボーン",
+    "morph": "モーフ",
+    "display_pane": "表示枠",
+    "physics": "物理演算",
+    "settings": "設定"
+  },
+  "buttons": {
+    "import": "インポート",
+    "export": "エクスポート",
+    "apply": "適用",
+    "cancel": "キャンセル",
+    "browse": "参照...",
+    "refresh": "更新",
+    "reset": "リセット"
+  },
+  "labels": {
+    "file_path": "ファイルパス:",
+    "scale": "スケール:",
+    "model_name": "モデル名:",
+    "comment": "コメント:",
+    "language": "言語:"
+  },
+  "tooltips": {
+    "import_file": "PMD/PMX/VMDファイルをインポートします",
+    "export_file": "選択したオブジェクトをPMXファイルとしてエクスポートします"
+  },
+  "messages": {
+    "import_success": "インポートが完了しました",
+    "export_success": "エクスポートが完了しました",
+    "error_file_not_found": "ファイルが見つかりません"
+  }
+}
+```
+
+### 実装方針
+
+1. **翻訳管理クラス (UITranslator)**
+   - シングルトンパターンで実装
+   - JSONファイルから翻訳データを読み込み
+   - 現在の言語設定に基づいて適切な文字列を返す
+   - 翻訳が見つからない場合は英語にフォールバック
+
+2. **BaseTabクラスへの統合**
+   ```python
+   class BaseTab:
+       def __init__(self):
+           self._translator = UITranslator.instance()
+           
+       def tr(self, key: str, category: str = None) -> str:
+           """UI文字列を現在の言語設定で取得"""
+           return self._translator.translate(key, category)
+           
+       def retranslateUi(self):
+           """言語切り替え時にUIを再翻訳"""
+           pass  # 各タブで実装
+   ```
+
+3. **言語切り替え機能**
+   - 設定タブに言語選択ドロップダウンを配置
+   - 選択時に全タブの`retranslateUi()`を呼び出し
+   - 設定は`default_settings.json`の`ui.language`に保存
+   - アプリケーション再起動なしで即座に反映
+
+### 使用例
+```python
+# タブでの使用
+class ImportExportTab(BaseTab):
+    def __init__(self):
+        super().__init__()
+        self.import_button = QPushButton(self.tr("import", "buttons"))
+        self.file_label = QLabel(self.tr("labels.file_path"))
+        
+    def retranslateUi(self):
+        self.import_button.setText(self.tr("import", "buttons"))
+        self.file_label.setText(self.tr("labels.file_path"))
+```
+
 ## 設定管理
 
-UI関連の設定（例：ウィンドウのサイズ/位置、最後に使用したディレクトリ）は、`mmd_tools.settings`モジュールを通じて管理されます。
+UI関連の設定（例：ウィンドウのサイズ/位置、最後に使用したディレクトリ、言語設定）は、`mmd_tools.settings`モジュールを通じて管理されます。
 - タブまたはウィンドウが作成されると、その状態について設定モジュールに問い合わせます。
-- UIで設定が変更された場合（例：チェックボックスが切り替えられた）、プレゼンターが`mmd_tools.settings`の適切な関数を呼び出して変更を永続化する責任を負います。
+- UIで設定が変更された場合（例：チェックボックスが切り替えられた、言語が変更された）、プレゼンターが`mmd_tools.settings`の適切な関数を呼び出して変更を永続化する責任を負います。
 
 ## 将来の拡張ワークフロー
 

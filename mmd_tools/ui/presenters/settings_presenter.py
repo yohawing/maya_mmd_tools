@@ -57,6 +57,10 @@ class SettingsPresenter:
                 self.on_setting_changed
             )
             self.view.log_file_browse_btn.clicked.connect(self.browse_log_file)
+            
+            # 言語設定
+            if hasattr(self.view, 'language_combo'):
+                self.view.language_combo.currentIndexChanged.connect(self.on_language_changed)
 
             # インポート設定
             self.view.scale_factor_spin.valueChanged.connect(self.on_setting_changed)
@@ -134,6 +138,14 @@ class SettingsPresenter:
             self.view.log_file_path_edit.setText(
                 settings.get("logging.log_file_path", "logs/mmd_tools.log")
             )
+            
+            # 言語設定
+            if hasattr(self.view, 'language_combo'):
+                current_language = settings.get("ui.general.language", "ja")
+                for i in range(self.view.language_combo.count()):
+                    if self.view.language_combo.itemData(i) == current_language:
+                        self.view.language_combo.setCurrentIndex(i)
+                        break
 
             # インポート設定
             self.view.scale_factor_spin.setValue(
@@ -225,6 +237,13 @@ class SettingsPresenter:
             settings.set(
                 "ui.general.log_level", self.view.ui_log_level_combo.currentText()
             )
+            
+            # 言語設定
+            if hasattr(self.view, 'language_combo'):
+                settings.set(
+                    "ui.general.language", 
+                    self.view.language_combo.currentData()
+                )
 
             # ログ設定
             settings.set("logging.enabled", self.view.logging_enabled_check.isChecked())
@@ -415,3 +434,24 @@ class SettingsPresenter:
 
         if folder:
             self.view.texture_search_path_edit.setText(folder)
+    
+    def on_language_changed(self):
+        """言語が変更されたときの処理"""
+        if self._loading:
+            return
+            
+        # 選択された言語を取得
+        selected_language = self.view.language_combo.currentData()
+        
+        # UITranslatorに言語を設定
+        from ...ui.translations import UITranslator
+        translator = UITranslator.instance()
+        translator.set_language(selected_language)
+        
+        # メインウィンドウに言語変更を通知
+        main_window = self.view.window()
+        if hasattr(main_window, 'retranslate_all_tabs'):
+            main_window.retranslate_all_tabs()
+        
+        # ステータスメッセージ
+        self.app_state.emit_status(f"言語を変更しました: {self.view.language_combo.currentText()}")

@@ -92,6 +92,16 @@ class SettingsTab(BaseTab):
         self.ui_log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
         ui_layout.addRow("UIログレベル:", self.ui_log_level_combo)
         
+        # 言語選択
+        self.language_combo = QComboBox()
+        # UITranslatorから言語リストを取得
+        from ...ui.translations import UITranslator
+        translator = UITranslator.instance()
+        languages = translator.get_supported_languages()
+        for code, name in languages.items():
+            self.language_combo.addItem(name, code)
+        ui_layout.addRow("言語:", self.language_combo)
+        
         ui_group.setLayout(ui_layout)
         layout.addWidget(ui_group)
         
@@ -237,5 +247,20 @@ class SettingsTab(BaseTab):
         
         layout.addStretch()
         return widget
+    
+    def retranslateUi(self):
+        """UIテキストを再翻訳"""
+        # タブテキスト
+        self.settings_tabs.setTabText(0, self.tr("settings.general"))
+        self.settings_tabs.setTabText(1, self.tr("settings.import"))
+        self.settings_tabs.setTabText(2, self.tr("settings.export"))
+        
+        # ボタン
+        self.save_settings_btn.setText(self.tr("save", "buttons"))
+        self.reset_settings_btn.setText(self.tr("reset", "buttons"))
+        self.export_settings_btn.setText(self.tr("export", "buttons"))
+        self.import_settings_btn.setText(self.tr("import", "buttons"))
+        
+        # その他のUIテキストも必要に応じて追加
 
 

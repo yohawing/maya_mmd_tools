@@ -60,7 +60,8 @@
     "_comment": "Settings for the plugin user interface",
     "general": {
       "show_advanced_options": false,
-      "log_level": "INFO"
+      "log_level": "INFO",
+      "language": "ja"
     }
   },
   "logging": {
