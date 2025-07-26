@@ -68,9 +68,6 @@ class BonePresenter:
         self.view.search_edit.textChanged.connect(self.filter_bones)
 
         # ボーン選択ボタン
-        self.view.select_parent_btn.clicked.connect(
-            lambda: self.select_bone_dialog("parent")
-        )
         self.view.select_connection_btn.clicked.connect(
             lambda: self.select_bone_dialog("connection")
         )
@@ -531,13 +528,7 @@ class BonePresenter:
         bone = selected[0]
         display_name = self._get_bone_display_name(bone)
 
-        if target_type == "parent":
-            # 現在のボーンの子供でないことを確認
-            if self._is_descendant(self.current_bone, bone):
-                self.app_state.emit_status("子ボーンを親として設定することはできません")
-                return
-            self.view.parent_bone_edit.setText(bone)
-        elif target_type == "connection":
+        if target_type == "connection":
             self.view.connection_bone_edit.setText(display_name)
         elif target_type == "ik_target":
             self.view.ik_target_edit.setText(display_name)
@@ -670,13 +661,6 @@ class BonePresenter:
                 self.view.pos_z_spin.value(),
             ]
             cmds.xform(self.current_bone, translation=pos, worldSpace=True)
-
-            # 親ボーンの変更
-            new_parent = self.view.parent_bone_edit.text()
-            if new_parent and cmds.objExists(new_parent):
-                current_parent = cmds.listRelatives(self.current_bone, parent=True)
-                if not current_parent or current_parent[0] != new_parent:
-                    cmds.parent(self.current_bone, new_parent)
 
             # 接続先設定
             if self.view.connection_type_combo.currentIndex() == 0:

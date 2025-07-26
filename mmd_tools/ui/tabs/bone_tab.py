@@ -162,14 +162,9 @@ class BoneTab(BaseTab):
         layout.addRow("英語名:", self.bone_name_en_edit)
 
         # 親ボーン
-        parent_layout = QHBoxLayout()
         self.parent_bone_edit = QLineEdit()
         self.parent_bone_edit.setReadOnly(True)
-        self.select_parent_btn = QPushButton("選択")
-        self.select_parent_btn.setMaximumWidth(60)
-        parent_layout.addWidget(self.parent_bone_edit)
-        parent_layout.addWidget(self.select_parent_btn)
-        layout.addRow("親ボーン:", parent_layout)
+        layout.addRow("親ボーン:", self.parent_bone_edit)
 
         # 位置
         position_layout = QGridLayout()
