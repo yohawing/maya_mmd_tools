@@ -30,6 +30,13 @@ class TestVmdConverter(MayaTestBase):
         super().tearDown()
         # 一時ファイルのクリーンアップ
         self.fixture_provider.cleanup_temp_files()
+        
+        # テスト用カメラとライトを削除
+        import maya.cmds as cmds
+        if cmds.objExists("mmd_camera"):
+            cmds.delete("mmd_camera")
+        if cmds.objExists("mmd_light"):
+            cmds.delete("mmd_light")
 
     def test_init(self):
         """初期化のテスト"""
@@ -76,3 +83,94 @@ class TestVmdConverter(MayaTestBase):
         import maya.cmds as cmds
 
         self.assertEqual(cmds.playbackOptions(q=True, max=True), 30)
+
+    def test_get_or_create_camera(self):
+        """カメラの作成・取得テスト"""
+        import maya.cmds as cmds
+        
+        # 新規作成
+        camera_name = self.converter._get_or_create_camera()
+        self.assertIsNotNone(camera_name)
+        self.assertTrue(cmds.objExists(camera_name))
+        self.assertTrue(cmds.attributeQuery("mmd_camera", node=camera_name, exists=True))
+        
+        # 既存カメラの取得
+        camera_name2 = self.converter._get_or_create_camera()
+        self.assertEqual(camera_name, camera_name2)
+        
+    def test_get_or_create_light(self):
+        """照明の作成・取得テスト"""
+        import maya.cmds as cmds
+        
+        # 新規作成
+        light_name = self.converter._get_or_create_light()
+        self.assertIsNotNone(light_name)
+        self.assertTrue(cmds.objExists(light_name))
+        self.assertTrue(cmds.attributeQuery("mmd_light", node=light_name, exists=True))
+        
+        # 既存照明の取得
+        light_name2 = self.converter._get_or_create_light()
+        self.assertEqual(light_name, light_name2)
+        
+    def test_convert_camera_animation(self):
+        """カメラアニメーション変換テスト"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+        
+        # テスト用カメラフレームを作成
+        camera_frames = []
+        for i in range(3):
+            frame = VmdCameraFrame()
+            frame.frame_number = i * 10
+            frame.position = (i * 1.0, i * 2.0, i * 3.0)
+            frame.rotation = (0.0, 0.0, 0.0)
+            frame.distance = 10.0 + i
+            frame.viewing_angle = 30 + i * 5
+            camera_frames.append(frame)
+            
+        # 変換実行
+        result = self.converter._convert_camera_animation(camera_frames)
+        self.assertTrue(result)
+        
+        # カメラが作成されたことを確認
+        import maya.cmds as cmds
+        # カメラ名を正確に確認（変換関数が返すカメラ名をチェック）
+        cameras = cmds.ls(type="camera")
+        camera_found = False
+        for cam in cameras:
+            transform = cmds.listRelatives(cam, parent=True)
+            if transform and cmds.attributeQuery("mmd_camera", node=transform[0], exists=True):
+                camera_found = True
+                # キーフレームが設定されたことを確認
+                keyframes = cmds.keyframe(f"{transform[0]}.translateX", query=True)
+                self.assertIsNotNone(keyframes)
+                self.assertEqual(len(keyframes), 3)
+                break
+        
+        self.assertTrue(camera_found, "MMDカメラが作成されていません")
+        
+    def test_convert_light_animation(self):
+        """照明アニメーション変換テスト"""
+        from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+        
+        # テスト用照明フレームを作成
+        light_frames = []
+        for i in range(3):
+            frame = VmdLightFrame()
+            frame.frame_number = i * 10
+            frame.position = (0.0, -1.0, 0.0)  # 方向ベクトル
+            frame.color = (1.0 - i * 0.1, 1.0 - i * 0.1, 1.0 - i * 0.1)
+            light_frames.append(frame)
+            
+        # 変換実行
+        result = self.converter._convert_light_animation(light_frames)
+        self.assertTrue(result)
+        
+        # 照明が作成されたことを確認
+        import maya.cmds as cmds
+        self.assertTrue(cmds.objExists("mmd_light"))
+        
+        # キーフレームが設定されたことを確認
+        light_shape = cmds.listRelatives("mmd_light", shapes=True, type="directionalLight")[0]
+        keyframes = cmds.keyframe(f"{light_shape}.colorR", query=True)
+        self.assertIsNotNone(keyframes)
+        self.assertEqual(len(keyframes), 3)

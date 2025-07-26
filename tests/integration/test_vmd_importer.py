@@ -260,3 +260,109 @@ class TestVmdImporter(MayaTestBase):
         if len(animated_joints) < 10:  # 少数の場合は詳細を表示
             for joint, bone_name in animated_joints[:5]:
                 print(f"  - {joint} (ボーン名: {bone_name})")
+
+    def test_vmd_camera_animation_import(self):
+        """VMDファイルからカメラアニメーションをインポートするテスト"""
+        # テスト用スケルトンを作成（カメラアニメーションでも必要な場合がある）
+        joints = self._create_test_skeleton()
+        
+        # VMDファイルのパスを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        
+        if not vmd_files:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        
+        # VMDファイルをパースしてカメラデータがあるか確認
+        parser = VmdParser()
+        parser.parse_file(vmd_path)
+        
+        if not hasattr(parser, 'camera_frames') or not parser.camera_frames:
+            self.skipTest("テストVMDファイルにカメラアニメーションが含まれていません")
+        
+        # VMDファイルをインポート
+        result = import_mmd_file(vmd_path)
+        self.assertTrue(result, "VMDファイルのインポートに失敗しました")
+        
+        # MMDカメラが作成されたことを確認
+        cameras = cmds.ls(type="camera")
+        mmd_camera = None
+        for cam in cameras:
+            transform = cmds.listRelatives(cam, parent=True)
+            if transform and cmds.attributeQuery("mmd_camera", node=transform[0], exists=True):
+                mmd_camera = transform[0]
+                break
+                
+        self.assertIsNotNone(mmd_camera, "MMDカメラが作成されていません")
+        
+        # カメラにキーフレームが設定されたことを確認
+        has_animation = False
+        for attr in ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]:
+            keyframes = cmds.keyframe(mmd_camera, attribute=attr, query=True)
+            if keyframes:
+                has_animation = True
+                break
+                
+        self.assertTrue(has_animation, "カメラにアニメーションが設定されていません")
+        
+        # カメラシェイプのFOVアニメーションも確認
+        camera_shape = cmds.listRelatives(mmd_camera, shapes=True, type="camera")[0]
+        fov_keys = cmds.keyframe(camera_shape, attribute="focalLength", query=True)
+        self.assertIsNotNone(fov_keys, "カメラのFOVアニメーションが設定されていません")
+        
+    def test_vmd_light_animation_import(self):
+        """VMDファイルから照明アニメーションをインポートするテスト"""
+        # テスト用スケルトンを作成
+        joints = self._create_test_skeleton()
+        
+        # VMDファイルのパスを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        
+        if not vmd_files:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        
+        # VMDファイルをパースして照明データがあるか確認
+        parser = VmdParser()
+        parser.parse_file(vmd_path)
+        
+        if not hasattr(parser, 'light_frames') or not parser.light_frames:
+            self.skipTest("テストVMDファイルに照明アニメーションが含まれていません")
+        
+        # VMDファイルをインポート
+        result = import_mmd_file(vmd_path)
+        self.assertTrue(result, "VMDファイルのインポートに失敗しました")
+        
+        # MMD照明が作成されたことを確認
+        lights = cmds.ls(type="directionalLight")
+        mmd_light = None
+        for light in lights:
+            transform = cmds.listRelatives(light, parent=True)
+            if transform and cmds.attributeQuery("mmd_light", node=transform[0], exists=True):
+                mmd_light = transform[0]
+                mmd_light_shape = light
+                break
+                
+        self.assertIsNotNone(mmd_light, "MMD照明が作成されていません")
+        
+        # 照明の回転にキーフレームが設定されたことを確認
+        has_rotation_animation = False
+        for attr in ["rotateX", "rotateY", "rotateZ"]:
+            keyframes = cmds.keyframe(mmd_light, attribute=attr, query=True)
+            if keyframes:
+                has_rotation_animation = True
+                break
+                
+        self.assertTrue(has_rotation_animation, "照明の回転アニメーションが設定されていません")
+        
+        # 照明の色にキーフレームが設定されたことを確認
+        has_color_animation = False
+        for attr in ["colorR", "colorG", "colorB"]:
+            keyframes = cmds.keyframe(mmd_light_shape, attribute=attr, query=True)
+            if keyframes:
+                has_color_animation = True
+                break
+                
+        self.assertTrue(has_color_animation, "照明の色アニメーションが設定されていません")
