@@ -20,8 +20,13 @@ from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_FILE_VERSION,
+    ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_DIFFUSE_COLOR,
+    ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_SHININESS,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_MEMO,
     ATTR_MMD_EDGE_FLAG,
@@ -333,10 +338,23 @@ class MeshConverter:
         # mmd_materialフラグを追加（このマテリアルがMMDマテリアルであることを示す）
 
         custom_attrs = {
+            ATTR_MMD_MATERIAL: 1,  # MMDマテリアルであることを示すフラグ
             ATTR_MMD_MATERIAL_INDEX: material_index,
             ATTR_MMD_MATERIAL_NAME: material.name,
+            ATTR_MMD_DIFFUSE_COLOR: material.diffuse[:3],
+            ATTR_MMD_AMBIENT_COLOR: material.ambient[:3],
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
+        
+        # スペキュラー関連の属性
+        if hasattr(material, 'specular'):
+            custom_attrs[ATTR_MMD_SPECULAR_COLOR] = material.specular[:3]
+        
+        # 光沢度（PMDとPMXで属性名が異なる）
+        if hasattr(material, 'specular_power'):
+            custom_attrs[ATTR_MMD_SHININESS] = material.specular_power
+        elif hasattr(material, 'specular_coefficient'):
+            custom_attrs[ATTR_MMD_SHININESS] = material.specular_coefficient
         
         # PMDとPMXで異なる属性への対応
         if hasattr(material, 'name_english'):
@@ -413,7 +431,7 @@ class MeshConverter:
             )
 
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
-        maya_utils.set_attribute(shader, ".metalness", 0.0, "float")
+        maya_utils.set_attribute(shader, "metalness", 0.0, "float")
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(
@@ -438,7 +456,7 @@ class MeshConverter:
                 cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
 
                 maya_utils.set_attribute(
-                    file_node, ".fileTextureName", full_texture_path, "string"
+                    file_node, "fileTextureName", full_texture_path, "string"
                 )
             else:
                 cmds.warning(f"Texture file not found: {full_texture_path}")

@@ -1,52 +1,34 @@
-"""MorphPresenterのユニットテスト"""
-
 import unittest
 from unittest.mock import MagicMock, patch, call
-import maya.cmds as cmds
 import json
-
-from tests.common.maya_test_base import MayaTestBase
+from maya import cmds
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
-from mmd_tools.ui.tabs.morph_tab import MorphTab
-from mmd_tools.ui.application_state import ApplicationState
+from tests.common.maya_test_base import MayaTestBase
 
 
 class TestMorphPresenter(MayaTestBase):
-    """MorphPresenterクラスのユニットテスト"""
-
+    """MorphPresenterのテストクラス"""
+    
     def setUp(self):
         """テストのセットアップ"""
         super().setUp()
         
         # モックビューとアプリケーションステートを作成
-        self.mock_view = MagicMock(spec=MorphTab)
-        self.mock_app_state = MagicMock(spec=ApplicationState)
+        self.mock_view = MagicMock()
+        self.mock_app_state = MagicMock()
+        self.mock_app_state.current_model_root = None
         
-        # モックビューの属性を設定
+        # ビューの各UI要素をモック
+        self._setup_view_mocks()
+        
+        # プレゼンターを作成
+        self.presenter = MorphPresenter(self.mock_view, self.mock_app_state)
+        
+    def _setup_view_mocks(self):
+        """ビューのモックを設定"""
+        # リストウィジェット
         self.mock_view.morph_list = MagicMock()
         self.mock_view.group_list = MagicMock()
-        self.mock_view.morph_slider = MagicMock()
-        self.mock_view.morph_value_label = MagicMock()
-        self.mock_view.preset_combo = MagicMock()
-        self.mock_view.search_edit = MagicMock()
-        
-        # 基本情報タブ
-        self.mock_view.morph_name_jp_edit = MagicMock()
-        self.mock_view.morph_name_en_edit = MagicMock()
-        self.mock_view.panel_combo = MagicMock()
-        self.mock_view.morph_type_combo = MagicMock()
-        self.mock_view.group_combo = MagicMock()
-        
-        # Maya連携タブ
-        self.mock_view.blend_shape_edit = MagicMock()
-        self.mock_view.target_name_edit = MagicMock()
-        self.mock_view.connection_status_label = MagicMock()
-        self.mock_view.invert_check = MagicMock()
-        self.mock_view.multiplier_spin = MagicMock()
-        
-        # オフセットタブ
-        self.mock_view.offset_table = MagicMock()
-        self.mock_view.offset_count_label = MagicMock()
         
         # ボタン
         self.mock_view.refresh_morphs_btn = MagicMock()
@@ -55,305 +37,417 @@ class TestMorphPresenter(MayaTestBase):
         self.mock_view.remove_group_btn = MagicMock()
         self.mock_view.reset_slider_btn = MagicMock()
         self.mock_view.reset_all_btn = MagicMock()
-        self.mock_view.save_preset_btn = MagicMock()
-        self.mock_view.load_preset_btn = MagicMock()
-        self.mock_view.delete_preset_btn = MagicMock()
         self.mock_view.connect_btn = MagicMock()
         self.mock_view.disconnect_btn = MagicMock()
         self.mock_view.auto_connect_btn = MagicMock()
         self.mock_view.select_blend_shape_btn = MagicMock()
         self.mock_view.apply_btn = MagicMock()
         self.mock_view.reset_btn = MagicMock()
+        self.mock_view.save_preset_btn = MagicMock()
+        self.mock_view.load_preset_btn = MagicMock()
+        self.mock_view.delete_preset_btn = MagicMock()
         
-        # clicked属性を持つモックオブジェクトを設定
-        for attr in dir(self.mock_view):
-            if attr.endswith('_btn'):
-                getattr(self.mock_view, attr).clicked = MagicMock()
+        # エディット/コンボボックス
+        self.mock_view.search_edit = MagicMock()
+        self.mock_view.morph_name_jp_edit = MagicMock()
+        self.mock_view.morph_name_en_edit = MagicMock()
+        self.mock_view.blend_shape_edit = MagicMock()
+        self.mock_view.target_name_edit = MagicMock()
+        self.mock_view.panel_combo = MagicMock()
+        self.mock_view.morph_type_combo = MagicMock()
+        self.mock_view.group_combo = MagicMock()
+        self.mock_view.preset_combo = MagicMock()
         
-        # その他のウィジェットのシグナル
-        self.mock_view.morph_list.currentItemChanged = MagicMock()
-        self.mock_view.group_list.currentItemChanged = MagicMock()
-        self.mock_view.morph_slider.valueChanged = MagicMock()
-        self.mock_view.search_edit.textChanged = MagicMock()
-        self.mock_view.morph_type_combo.currentIndexChanged = MagicMock()
+        # スライダー/ラベル
+        self.mock_view.morph_slider = MagicMock()
+        self.mock_view.morph_value_label = MagicMock()
+        self.mock_view.connection_status_label = MagicMock()
+        self.mock_view.offset_count_label = MagicMock()
         
-        # デフォルト値を設定
+        # チェックボックス/スピンボックス
+        self.mock_view.invert_check = MagicMock()
         self.mock_view.invert_check.isChecked.return_value = False
+        self.mock_view.multiplier_spin = MagicMock()
         self.mock_view.multiplier_spin.value.return_value = 1.0
-        self.mock_view.preset_combo.currentText.return_value = "なし"
-        self.mock_view.preset_combo.findText.return_value = -1
         
-        # プレゼンターを作成
-        self.presenter = MorphPresenter(self.mock_view, self.mock_app_state)
+        # テーブル
+        self.mock_view.offset_table = MagicMock()
         
-        # テスト用のモデルとブレンドシェイプを作成
-        self.test_model = cmds.group(empty=True, name="test_model")
-        self.test_mesh = cmds.polyCube(name="test_mesh")[0]
-        cmds.parent(self.test_mesh, self.test_model)
+        # その他のメソッド
+        self.mock_view.set_morph_details_enabled = MagicMock()
         
-        # ブレンドシェイプを作成
-        self.target1 = cmds.duplicate(self.test_mesh)[0]
-        self.target2 = cmds.duplicate(self.test_mesh)[0]
-        cmds.move(1, 0, 0, f"{self.target1}.vtx[*]", relative=True)
-        cmds.move(0, 1, 0, f"{self.target2}.vtx[*]", relative=True)
-        
-        self.blend_shape = cmds.blendShape(
-            self.target1, self.target2, self.test_mesh,
-            name="test_blendShape"
-        )[0]
-        
-        # エイリアスを設定
-        cmds.aliasAttr("smile", f"{self.blend_shape}.weight[0]")
-        cmds.aliasAttr("wink", f"{self.blend_shape}.weight[1]")
-        
-        # ターゲットメッシュを削除
-        cmds.delete(self.target1, self.target2)
-
-    def tearDown(self):
-        """テスト後のクリーンアップ"""
-        if cmds.objExists(self.test_model):
-            cmds.delete(self.test_model)
-        super().tearDown()
-
     def test_init(self):
         """初期化のテスト"""
-        self.assertIsNone(self.presenter.blend_shape_node)  # 初期値はNone
+        # シグナルの接続を確認
+        self.mock_app_state.current_model_changed.connect.assert_called_once()
+        self.mock_view.morph_list.currentItemChanged.connect.assert_called_once()
+        self.mock_view.refresh_morphs_btn.clicked.connect.assert_called_once()
+        
+        # 初期状態の確認
+        self.assertIsNone(self.presenter.blend_shape_node)
         self.assertIsNone(self.presenter.current_morph)
         self.assertEqual(self.presenter.morph_data, {})
         self.assertEqual(self.presenter.group_morphs, {})
         self.assertFalse(self.presenter.is_updating)
-
-    def test_load_morphs(self):
-        """モーフ読み込みのテスト"""
-        # モデルルートを設定
-        self.mock_app_state.current_model_root = self.test_model
         
-        # モーフデータを追加
-        morph_data = {
-            "smile": {
-                "name_jp": "笑顔",
-                "name_en": "smile",
-                "panel": 2,
-                "type": 0,
-                "group": "口"
-            },
-            "wink": {
-                "name_jp": "ウィンク",
-                "name_en": "wink",
-                "panel": 1,
-                "type": 0,
-                "group": "目"
-            }
-        }
-        cmds.addAttr(self.test_model, longName="mmdMorphData", dataType="string")
-        cmds.setAttr(f"{self.test_model}.mmdMorphData", json.dumps(morph_data), type="string")
-        
-        # モーフを読み込み
+    def test_load_morphs_no_model(self):
+        """モデルがない場合のモーフロードのテスト"""
         self.presenter.load_morphs()
         
-        # モーフデータが読み込まれたことを確認
-        self.assertEqual(len(self.presenter.morph_data), 2)
-        self.assertIn("smile", self.presenter.morph_data)
-        self.assertIn("wink", self.presenter.morph_data)
+        # リストがクリアされることを確認
+        self.mock_view.morph_list.clear.assert_called_once()
+        self.assertEqual(self.presenter.morph_data, {})
+        self.assertEqual(self.presenter.group_morphs, {})
+        self.mock_view.set_morph_details_enabled.assert_called_with(False)
         
-        # ブレンドシェイプ情報が追加されたことを確認
-        self.assertEqual(self.presenter.morph_data["smile"]["blend_shape_node"], self.blend_shape)
-        self.assertEqual(self.presenter.morph_data["smile"]["blend_shape_target"], "smile")
-
-    def test_morph_slider_realtime_update(self):
-        """スライダーのリアルタイム更新テスト"""
-        # モーフデータを設定
-        self.presenter.current_morph = "smile"
-        self.presenter.morph_data["smile"] = {
-            "blend_shape_node": self.blend_shape,
-            "blend_shape_target": "smile"
-        }
+    def test_load_morphs_with_model(self):
+        """モデルがある場合のモーフロードのテスト"""
+        # テストモデルを作成
+        test_model = cmds.group(empty=True, name="test_model_root")
+        self.mock_app_state.current_model_root = test_model
         
-        # スライダーを50%に設定
-        self.presenter.on_morph_slider_changed(50)
+        # ブレンドシェイプを持つメッシュを作成
+        mesh = cmds.polyCube(name="test_mesh")[0]
+        cmds.parent(mesh, test_model)
         
-        # ブレンドシェイプの値が更新されたことを確認
-        weight = cmds.getAttr(f"{self.blend_shape}.smile")
-        self.assertAlmostEqual(weight, 0.5, places=3)
+        # ブレンドシェイプを作成
+        target = cmds.polyCube(name="test_target")[0]
+        blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
+        cmds.delete(target)
         
-        # ラベルが更新されたことを確認
-        self.mock_view.morph_value_label.setText.assert_called_with("50%")
-
-    def test_reset_all_morphs(self):
-        """全モーフリセットのテスト"""
-        # モーフに値を設定
-        cmds.setAttr(f"{self.blend_shape}.smile", 0.7)
-        cmds.setAttr(f"{self.blend_shape}.wink", 0.3)
+        # モーフをロード
+        self.presenter.load_morphs()
         
+        # 結果を確認
+        self.mock_view.morph_list.clear.assert_called()
+        self.assertIn("test_target", self.presenter.morph_data)
+        self.assertEqual(self.presenter.blend_shape_node, blend_shape)
+        
+    def test_on_morph_selected(self):
+        """モーフ選択時の処理のテスト"""
         # モーフデータを設定
         self.presenter.morph_data = {
-            "smile": {
-                "blend_shape_node": self.blend_shape,
-                "blend_shape_target": "smile"
-            },
-            "wink": {
-                "blend_shape_node": self.blend_shape,
-                "blend_shape_target": "wink"
-            }
-        }
-        
-        # 全モーフをリセット
-        self.presenter.reset_all_morphs()
-        
-        # 値がリセットされたことを確認
-        self.assertEqual(cmds.getAttr(f"{self.blend_shape}.smile"), 0)
-        self.assertEqual(cmds.getAttr(f"{self.blend_shape}.wink"), 0)
-        
-        # スライダーもリセットされたことを確認
-        self.mock_view.morph_slider.setValue.assert_called_with(0)
-
-    def test_auto_connect_blend_shapes(self):
-        """自動連携のテスト"""
-        # モデルルートを設定
-        self.mock_app_state.current_model_root = self.test_model
-        
-        # モーフデータを設定（ブレンドシェイプ未連携）
-        self.presenter.morph_data = {
-            "smile": {
-                "name_jp": "笑顔",
-                "name_en": "smile",
-                "panel": 2,
-                "type": 0,
-                "group": "口"
-            },
-            "wink": {
-                "name_jp": "ウィンク",
-                "name_en": "wink", 
+            "test_morph": {
+                "name_jp": "テストモーフ",
+                "name_en": "test_morph",
                 "panel": 1,
                 "type": 0,
-                "group": "目"
+                "group": "目",
+                "blend_shape_node": None,
+                "blend_shape_target": None
             }
         }
         
-        # 自動連携を実行
-        self.presenter.auto_connect_blend_shapes()
+        # モーフ選択をシミュレート
+        mock_item = MagicMock()
+        mock_item.text.return_value = "test_morph"
+        self.presenter.on_morph_selected(mock_item, None)
         
-        # 連携が成功したことを確認
-        self.assertEqual(self.presenter.morph_data["smile"]["blend_shape_node"], self.blend_shape)
-        self.assertEqual(self.presenter.morph_data["smile"]["blend_shape_target"], "smile")
-        self.assertEqual(self.presenter.morph_data["wink"]["blend_shape_node"], self.blend_shape)
-        self.assertEqual(self.presenter.morph_data["wink"]["blend_shape_target"], "wink")
-
+        # 結果を確認
+        self.assertEqual(self.presenter.current_morph, "test_morph")
+        self.mock_view.set_morph_details_enabled.assert_called_with(True)
+        self.mock_view.morph_name_jp_edit.setText.assert_called_with("テストモーフ")
+        self.mock_view.morph_name_en_edit.setText.assert_called_with("test_morph")
+        self.mock_view.panel_combo.setCurrentIndex.assert_called_with(1)
+        self.mock_view.morph_type_combo.setCurrentIndex.assert_called_with(0)
+        self.mock_view.group_combo.setCurrentText.assert_called_with("目")
+        
+    def test_on_morph_slider_changed(self):
+        """スライダー変更時の処理のテスト"""
+        # ブレンドシェイプを作成
+        mesh = cmds.polyCube(name="test_mesh")[0]
+        target = cmds.polyCube(name="test_target")[0]
+        blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
+        cmds.delete(target)
+        
+        # モーフデータを設定
+        self.presenter.current_morph = "test_morph"
+        self.presenter.morph_data = {
+            "test_morph": {
+                "blend_shape_node": blend_shape,
+                "blend_shape_target": "test_target"
+            }
+        }
+        
+        # スライダー変更をシミュレート
+        self.presenter.on_morph_slider_changed(50)
+        
+        # 結果を確認
+        self.mock_view.morph_value_label.setText.assert_called_with("50%")
+        weight = cmds.getAttr(f"{blend_shape}.test_target")
+        self.assertAlmostEqual(weight, 0.5, places=5)
+        
+    def test_reset_all_morphs(self):
+        """全モーフリセットのテスト"""
+        # 複数のブレンドシェイプを作成
+        morphs_data = {}
+        for i in range(3):
+            mesh = cmds.polyCube(name=f"test_mesh_{i}")[0]
+            target = cmds.polyCube(name=f"test_target_{i}")[0]
+            blend_shape = cmds.blendShape(target, mesh, name=f"test_blendShape_{i}")[0]
+            cmds.delete(target)
+            
+            # 値を設定
+            cmds.setAttr(f"{blend_shape}.test_target_{i}", 0.5)
+            
+            morphs_data[f"morph_{i}"] = {
+                "blend_shape_node": blend_shape,
+                "blend_shape_target": f"test_target_{i}"
+            }
+        
+        self.presenter.morph_data = morphs_data
+        
+        # リセットを実行
+        self.presenter.reset_all_morphs()
+        
+        # 結果を確認
+        for i in range(3):
+            weight = cmds.getAttr(f"test_blendShape_{i}.test_target_{i}")
+            self.assertAlmostEqual(weight, 0.0, places=5)
+        
+        self.mock_view.morph_slider.setValue.assert_called_with(0)
+        self.mock_app_state.emit_status.assert_called()
+        
+    def test_filter_morphs(self):
+        """モーフフィルタリングのテスト"""
+        # モーフリストアイテムをモック
+        items = []
+        for name in ["smile", "wink", "sad", "angry"]:
+            item = MagicMock()
+            item.text.return_value = name
+            items.append(item)
+        
+        self.mock_view.morph_list.count.return_value = len(items)
+        self.mock_view.morph_list.item = lambda i: items[i]
+        
+        # フィルタリング実行
+        self.presenter.filter_morphs("s")
+        
+        # 結果を確認
+        items[0].setHidden.assert_called_with(False)  # smile
+        items[1].setHidden.assert_called_with(True)   # wink
+        items[2].setHidden.assert_called_with(False)  # sad
+        items[3].setHidden.assert_called_with(True)   # angry
+        
+    def test_connect_blend_shape(self):
+        """ブレンドシェイプ連携のテスト"""
+        # ブレンドシェイプを作成
+        mesh = cmds.polyCube(name="test_mesh")[0]
+        target = cmds.polyCube(name="test_target")[0]
+        blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
+        cmds.delete(target)
+        
+        # UIの値を設定
+        self.presenter.current_morph = "test_morph"
+        self.presenter.morph_data = {"test_morph": {}}
+        self.mock_view.blend_shape_edit.text.return_value = blend_shape
+        self.mock_view.target_name_edit.text.return_value = "test_target"
+        
+        # 連携実行
+        self.presenter.connect_blend_shape()
+        
+        # 結果を確認
+        self.assertEqual(
+            self.presenter.morph_data["test_morph"]["blend_shape_node"],
+            blend_shape
+        )
+        self.assertEqual(
+            self.presenter.morph_data["test_morph"]["blend_shape_target"],
+            "test_target"
+        )
+        self.mock_app_state.emit_status.assert_called()
+        
     def test_save_and_load_preset(self):
-        """プリセット保存・読み込みのテスト"""
-        # モデルルートを設定
-        self.mock_app_state.current_model_root = self.test_model
+        """プリセットの保存と読み込みのテスト"""
+        # モデルとブレンドシェイプを作成
+        test_model = cmds.group(empty=True, name="test_model_root")
+        self.mock_app_state.current_model_root = test_model
+        
+        mesh = cmds.polyCube(name="test_mesh")[0]
+        target = cmds.polyCube(name="test_target")[0]
+        blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
+        cmds.delete(target)
         
         # モーフデータを設定
         self.presenter.morph_data = {
             "smile": {
-                "blend_shape_node": self.blend_shape,
-                "blend_shape_target": "smile"
-            },
-            "wink": {
-                "blend_shape_node": self.blend_shape,
-                "blend_shape_target": "wink"
+                "blend_shape_node": blend_shape,
+                "blend_shape_target": "test_target"
             }
         }
         
-        # モーフに値を設定
-        cmds.setAttr(f"{self.blend_shape}.smile", 0.8)
-        cmds.setAttr(f"{self.blend_shape}.wink", 0.5)
+        # ブレンドシェイプに値を設定
+        cmds.setAttr(f"{blend_shape}.test_target", 0.8)
+        
+        # プリセット名を設定
+        self.mock_view.preset_combo.currentText.return_value = "test_preset"
+        self.mock_view.preset_combo.findText.return_value = -1
         
         # プリセットを保存
-        self.mock_view.preset_combo.currentText.return_value = "test_preset"
         self.presenter.save_preset()
         
-        # プリセットが保存されたことを確認
-        preset_data = cmds.getAttr(f"{self.test_model}.mmdMorphPresets")
-        self.assertIsNotNone(preset_data)
-        presets = json.loads(preset_data)
+        # 保存されたことを確認
+        self.assertTrue(cmds.attributeQuery("mmdMorphPresets", node=test_model, exists=True))
+        presets_json = cmds.getAttr(f"{test_model}.mmdMorphPresets")
+        presets = json.loads(presets_json)
         self.assertIn("test_preset", presets)
-        self.assertAlmostEqual(presets["test_preset"]["smile"], 0.8, places=3)
-        self.assertAlmostEqual(presets["test_preset"]["wink"], 0.5, places=3)
+        self.assertAlmostEqual(presets["test_preset"]["smile"], 0.8, places=5)
         
-        # モーフ値をリセット
-        cmds.setAttr(f"{self.blend_shape}.smile", 0)
-        cmds.setAttr(f"{self.blend_shape}.wink", 0)
+        # 値をリセット
+        cmds.setAttr(f"{blend_shape}.test_target", 0)
         
         # プリセットを読み込み
         self.presenter.load_preset()
         
         # 値が復元されたことを確認
-        self.assertAlmostEqual(cmds.getAttr(f"{self.blend_shape}.smile"), 0.8, places=3)
-        self.assertAlmostEqual(cmds.getAttr(f"{self.blend_shape}.wink"), 0.5, places=3)
-
-    def test_connect_blend_shape_manual(self):
-        """手動連携のテスト"""
-        # 現在のモーフを設定
-        self.presenter.current_morph = "custom_morph"
-        self.presenter.morph_data["custom_morph"] = {}
+        weight = cmds.getAttr(f"{blend_shape}.test_target")
+        self.assertAlmostEqual(weight, 0.8, places=5)
         
-        # UI の値を設定
-        self.mock_view.blend_shape_edit.text.return_value = self.blend_shape
-        self.mock_view.target_name_edit.text.return_value = "smile"
+    def test_auto_connect_blend_shapes(self):
+        """ブレンドシェイプ自動連携のテスト"""
+        # モデルを作成
+        test_model = cmds.group(empty=True, name="test_model_root")
+        self.mock_app_state.current_model_root = test_model
         
-        # 手動連携を実行
-        self.presenter.connect_blend_shape()
+        # ブレンドシェイプを作成
+        mesh = cmds.polyCube(name="test_mesh")[0]
+        cmds.parent(mesh, test_model)
         
-        # 連携が設定されたことを確認
-        self.assertEqual(
-            self.presenter.morph_data["custom_morph"]["blend_shape_node"],
-            self.blend_shape
-        )
-        self.assertEqual(
-            self.presenter.morph_data["custom_morph"]["blend_shape_target"],
-            "smile"
-        )
-
-    def test_filter_morphs_by_group(self):
-        """グループフィルタのテスト"""
-        # グループごとのモーフを設定
-        self.presenter.group_morphs = {
-            "眉": ["eyebrow_up", "eyebrow_down"],
-            "目": ["wink", "blink"],
-            "口": ["smile", "open"],
-            "その他": ["other1", "other2"]
+        # 複数のターゲットでブレンドシェイプを作成
+        targets = []
+        target_names = ["smile", "wink", "sad"]
+        for name in target_names:
+            target = cmds.polyCube(name=f"{name}_target")[0]
+            targets.append(target)
+        
+        blend_shape = cmds.blendShape(targets, mesh, name="test_blendShape")[0]
+        
+        # ターゲットを削除
+        for target in targets:
+            cmds.delete(target)
+        
+        # モーフデータを設定（連携前）
+        self.presenter.morph_data = {
+            "smile": {"name_jp": "笑顔", "name_en": "smile"},
+            "wink": {"name_jp": "ウィンク", "name_en": "wink"},
+            "sad": {"name_jp": "悲しみ", "name_en": "sad"}
         }
         
-        # 目グループでフィルタ
-        self.presenter.filter_morphs_by_group("目")
+        # 自動連携を実行
+        self.presenter.auto_connect_blend_shapes()
         
-        # モーフリストがクリアされたことを確認
-        self.mock_view.morph_list.clear.assert_called()
+        # 結果を確認
+        for name in target_names:
+            self.assertIn("blend_shape_node", self.presenter.morph_data[name])
+            self.assertEqual(
+                self.presenter.morph_data[name]["blend_shape_node"],
+                blend_shape
+            )
+            self.assertIn("blend_shape_target", self.presenter.morph_data[name])
         
-        # 正しいモーフが追加されたことを確認
-        self.assertEqual(self.mock_view.morph_list.addItem.call_count, 2)
-
+        self.mock_app_state.emit_status.assert_called()
+        
+    def test_organize_morphs_by_group(self):
+        """グループごとのモーフ整理のテスト"""
+        # モーフデータを設定
+        self.presenter.morph_data = {
+            "eyebrow_up": {"group": "眉"},
+            "eyebrow_down": {"group": "眉"},
+            "eye_close": {"group": "目"},
+            "mouth_open": {"group": "口"},
+            "cheek_red": {"group": "その他"},
+            "custom_morph": {"group": "カスタム"}
+        }
+        
+        # グループ整理を実行
+        self.presenter._organize_morphs_by_group()
+        
+        # 結果を確認
+        self.assertEqual(len(self.presenter.group_morphs["眉"]), 2)
+        self.assertEqual(len(self.presenter.group_morphs["目"]), 1)
+        self.assertEqual(len(self.presenter.group_morphs["口"]), 1)
+        self.assertEqual(len(self.presenter.group_morphs["その他"]), 1)
+        self.assertEqual(len(self.presenter.group_morphs["カスタム"]), 1)
+        
+        self.assertIn("eyebrow_up", self.presenter.group_morphs["眉"])
+        self.assertIn("eyebrow_down", self.presenter.group_morphs["眉"])
+        self.assertIn("eye_close", self.presenter.group_morphs["目"])
+        
     def test_apply_changes(self):
         """変更適用のテスト"""
-        # モデルルートとモーフを設定
-        self.mock_app_state.current_model_root = self.test_model
-        self.presenter.current_morph = "smile"
-        self.presenter.morph_data["smile"] = {
-            "name_jp": "笑顔",
-            "name_en": "smile",
-            "panel": 2,
-            "type": 0,
-            "group": "口"
+        # モデルを作成
+        test_model = cmds.group(empty=True, name="test_model_root")
+        self.mock_app_state.current_model_root = test_model
+        
+        # モーフデータを設定
+        self.presenter.current_morph = "test_morph"
+        self.presenter.morph_data = {
+            "test_morph": {
+                "name_jp": "旧名前",
+                "name_en": "old_name",
+                "panel": 0,
+                "type": 0,
+                "group": "その他"
+            }
         }
         
-        # UI の値を変更
-        self.mock_view.morph_name_jp_edit.text.return_value = "にっこり"
-        self.mock_view.morph_name_en_edit.text.return_value = "smile_new"
-        self.mock_view.panel_combo.currentIndex.return_value = 3
-        self.mock_view.morph_type_combo.currentIndex.return_value = 1
-        self.mock_view.group_combo.currentText.return_value = "その他"
+        # UIの値を設定
+        self.mock_view.morph_name_jp_edit.text.return_value = "新名前"
+        self.mock_view.morph_name_en_edit.text.return_value = "new_name"
+        self.mock_view.panel_combo.currentIndex.return_value = 1
+        self.mock_view.morph_type_combo.currentIndex.return_value = 2
+        self.mock_view.group_combo.currentText.return_value = "目"
         
         # 変更を適用
         self.presenter.apply_changes()
         
-        # データが更新されたことを確認
-        self.assertEqual(self.presenter.morph_data["smile"]["name_jp"], "にっこり")
-        self.assertEqual(self.presenter.morph_data["smile"]["name_en"], "smile_new")
-        self.assertEqual(self.presenter.morph_data["smile"]["panel"], 3)
-        self.assertEqual(self.presenter.morph_data["smile"]["type"], 1)
-        self.assertEqual(self.presenter.morph_data["smile"]["group"], "その他")
+        # 結果を確認
+        data = self.presenter.morph_data["test_morph"]
+        self.assertEqual(data["name_jp"], "新名前")
+        self.assertEqual(data["name_en"], "new_name")
+        self.assertEqual(data["panel"], 1)
+        self.assertEqual(data["type"], 2)
+        self.assertEqual(data["group"], "目")
+        
+        # MMDアトリビュートに保存されたことを確認
+        self.assertTrue(cmds.attributeQuery("mmdMorphData", node=test_model, exists=True))
+        saved_data = json.loads(cmds.getAttr(f"{test_model}.mmdMorphData"))
+        self.assertEqual(saved_data["test_morph"]["name_jp"], "新名前")
+        
+    def test_delete_preset(self):
+        """プリセット削除のテスト"""
+        # モデルを作成
+        test_model = cmds.group(empty=True, name="test_model_root")
+        self.mock_app_state.current_model_root = test_model
+        
+        # プリセットを作成
+        presets = {
+            "test_preset": {"smile": 0.5},
+            "笑顔": {"smile": 1.0}  # デフォルトプリセット
+        }
+        cmds.addAttr(test_model, longName="mmdMorphPresets", dataType="string")
+        cmds.setAttr(f"{test_model}.mmdMorphPresets", json.dumps(presets), type="string")
+        
+        # カスタムプリセットを削除
+        self.mock_view.preset_combo.currentText.return_value = "test_preset"
+        self.mock_view.preset_combo.findText.return_value = 1
+        self.presenter.delete_preset()
+        
+        # 削除されたことを確認
+        saved_presets = json.loads(cmds.getAttr(f"{test_model}.mmdMorphPresets"))
+        self.assertNotIn("test_preset", saved_presets)
+        self.assertIn("笑顔", saved_presets)  # デフォルトは残る
+        
+        # デフォルトプリセットの削除を試みる
+        self.mock_view.preset_combo.currentText.return_value = "笑顔"
+        self.presenter.delete_preset()
+        
+        # 削除されていないことを確認
+        saved_presets = json.loads(cmds.getAttr(f"{test_model}.mmdMorphPresets"))
+        self.assertIn("笑顔", saved_presets)
+        self.mock_app_state.emit_status.assert_called_with(
+            "デフォルトプリセットは削除できません", "warning"
+        )
 
 
 if __name__ == "__main__":
