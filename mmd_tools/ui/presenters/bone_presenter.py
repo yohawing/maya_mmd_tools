@@ -68,9 +68,6 @@ class BonePresenter:
         self.view.search_edit.textChanged.connect(self.filter_bones)
 
         # ボーン選択ボタン
-        self.view.select_connection_btn.clicked.connect(
-            lambda: self.select_bone_dialog("connection")
-        )
         self.view.select_ik_target_btn.clicked.connect(
             lambda: self.select_bone_dialog("ik_target")
         )
@@ -528,9 +525,7 @@ class BonePresenter:
         bone = selected[0]
         display_name = self._get_bone_display_name(bone)
 
-        if target_type == "connection":
-            self.view.connection_bone_edit.setText(display_name)
-        elif target_type == "ik_target":
+        if target_type == "ik_target":
             self.view.ik_target_edit.setText(display_name)
         elif target_type == "grant_parent":
             self.view.grant_parent_edit.setText(display_name)
@@ -575,13 +570,11 @@ class BonePresenter:
             self.view.offset_y_spin.setEnabled(True)
             self.view.offset_z_spin.setEnabled(True)
             self.view.connection_bone_edit.setEnabled(False)
-            self.view.select_connection_btn.setEnabled(False)
         else:  # ボーン
             self.view.offset_x_spin.setEnabled(False)
             self.view.offset_y_spin.setEnabled(False)
             self.view.offset_z_spin.setEnabled(False)
             self.view.connection_bone_edit.setEnabled(True)
-            self.view.select_connection_btn.setEnabled(True)
 
     def add_ik_link(self):
         """IKリンクを追加"""

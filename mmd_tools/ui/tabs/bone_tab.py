@@ -195,12 +195,9 @@ class BoneTab(BaseTab):
         self.connection_type_combo.addItems(["座標オフセット", "ボーン"])
         self.connection_bone_edit = QLineEdit()
         self.connection_bone_edit.setReadOnly(True)
-        self.select_connection_btn = QPushButton("選択")
-        self.select_connection_btn.setMaximumWidth(60)
 
         connection_layout.addWidget(self.connection_type_combo)
         connection_layout.addWidget(self.connection_bone_edit)
-        connection_layout.addWidget(self.select_connection_btn)
         layout.addRow("接続先:", connection_layout)
 
         # 接続先オフセット
