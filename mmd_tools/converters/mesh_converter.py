@@ -345,19 +345,19 @@ class MeshConverter:
             ATTR_MMD_AMBIENT_COLOR: material.ambient[:3],
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
-        
+
         # スペキュラー関連の属性
-        if hasattr(material, 'specular'):
+        if hasattr(material, "specular"):
             custom_attrs[ATTR_MMD_SPECULAR_COLOR] = material.specular[:3]
-        
+
         # 光沢度（PMDとPMXで属性名が異なる）
-        if hasattr(material, 'specular_power'):
+        if hasattr(material, "specular_power"):
             custom_attrs[ATTR_MMD_SHININESS] = material.specular_power
-        elif hasattr(material, 'specular_coefficient'):
+        elif hasattr(material, "specular_coefficient"):
             custom_attrs[ATTR_MMD_SHININESS] = material.specular_coefficient
-        
+
         # PMDとPMXで異なる属性への対応
-        if hasattr(material, 'name_english'):
+        if hasattr(material, "name_english"):
             custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = material.name_english
         else:
             custom_attrs[ATTR_MMD_MATERIAL_NAME_EN] = ""
@@ -466,9 +466,6 @@ class MeshConverter:
     ):
         """dx11Shaderを設定"""
 
-        # マテリアル名をサニタイズ（テクスチャノード名に使用）
-        sanitized_name = maya_utils.sanitize_text(material.name)
-
         # シェーダーファイルのパスを設定
         shader_fx_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), "shaders", "MMDShader.fx"
@@ -482,37 +479,21 @@ class MeshConverter:
         maya_utils.set_attribute(shader, "technique", "MMDTechnique", "string")
 
         # 基本色設定（Diffuse）
-        try:
-            maya_utils.set_attribute(
-                shader,
-                "DiffuseColorRGB",
-                [
-                    material.diffuse[0],
-                    material.diffuse[1],
-                    material.diffuse[2],
-                    material.diffuse[3],
-                ],
-                "double4",
-            )
-        except:
-            # アトリビュートが見つからない場合は作成を試みる
-            pass
+        maya_utils.set_attribute(
+            shader,
+            "DiffuseColorRGB",
+            material.diffuse[:3],
+            "double3",
+        )
 
         # スペキュラー設定
         if hasattr(material, "specular"):
-            try:
-                maya_utils.set_attribute(
-                    shader,
-                    "SpecularColor",
-                    [
-                        material.specular[0],
-                        material.specular[1],
-                        material.specular[2],
-                    ],
-                    "double3",
-                )
-            except:
-                pass
+            maya_utils.set_attribute(
+                shader,
+                "SpecularColor",
+                material.specular[:3],
+                "double3",
+            )
 
         # スペキュラー係数の設定（PMDとPMXで異なる）
         specular_coef = None
@@ -522,55 +503,32 @@ class MeshConverter:
             specular_coef = material.specular_power
 
         if specular_coef is not None:
-            try:
-                maya_utils.set_attribute(shader, "Shininess", specular_coef, "float")
-            except:
-                pass
+            maya_utils.set_attribute(shader, "Shininess", specular_coef, "float")
 
         # アンビエント設定
         if hasattr(material, "ambient"):
-            try:
-                maya_utils.set_attribute(
-                    shader,
-                    "AmbientColor",
-                    [
-                        material.ambient[0],
-                        material.ambient[1],
-                        material.ambient[2],
-                    ],
-                    "double3",
-                )
-            except:
-                pass
+            maya_utils.set_attribute(
+                shader,
+                "AmbientColor",
+                material.ambient[:3],
+                "double3",
+            )
 
         # エッジ設定（PMXのみ）
         if not is_pmd:
             # エッジ色
-            try:
-                maya_utils.set_attribute(
-                    shader,
-                    "EdgeColorRGB",
-                    [
-                        material.edge_color[0],
-                        material.edge_color[1],
-                        material.edge_color[2],
-                    ],
-                    "double3",
-                )
-            except:
-                pass
+            maya_utils.set_attribute(
+                shader,
+                "EdgeColorRGB",
+                material.edge_color[:3],
+                "double3",
+            )
             # エッジサイズ
-            try:
-                maya_utils.set_attribute(shader, "EdgeSize", material.edge_size, "float")
-            except:
-                pass
+            maya_utils.set_attribute(shader, "EdgeSize", material.edge_size, "float")
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)
-        try:
-            maya_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
-        except:
-            pass
+        maya_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
 
         # テクスチャ設定
         if texture_path:
@@ -623,10 +581,6 @@ class MeshConverter:
                         )
                     except:
                         cmds.warning(f"Failed to connect sphere texture to dx11Shader")
-
-        # トゥーンテクスチャ設定
-        # デフォルトのトゥーンテクスチャパスを設定（将来的に実装）
-        # TODO: トゥーンテクスチャの実装
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(

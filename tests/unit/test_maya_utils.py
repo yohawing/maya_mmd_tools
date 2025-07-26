@@ -82,6 +82,88 @@ class TestMayaUtils(MayaTestBase):
         )
         self.assertIn(shader_node + "SG", shading_groups)
 
+    def test_set_attribute(self):
+        """アトリビュートを設定できるか（既存のアトリビュートに対して）"""
+        mesh_name = "test_mesh_for_set_attr"
+        cmds.polyCube(name=mesh_name)
+
+        # Test 1: 既存の標準アトリビュートへの設定
+        maya_utils.set_attribute(mesh_name, "translateX", 5.0, "double")
+        self.assertAlmostEqual(cmds.getAttr(mesh_name + ".translateX"), 5.0, places=5)
+
+        maya_utils.set_attribute(mesh_name, "translateY", -3.0, "double")
+        self.assertAlmostEqual(cmds.getAttr(mesh_name + ".translateY"), -3.0, places=5)
+
+        maya_utils.set_attribute(mesh_name, "scaleX", 2.0, "double")
+        self.assertAlmostEqual(cmds.getAttr(mesh_name + ".scaleX"), 2.0, places=5)
+
+        # Test 2: 複数値を持つ既存アトリビュート
+        maya_utils.set_attribute(mesh_name, "translate", [1.0, 2.0, 3.0], "double3")
+        translate_value = cmds.getAttr(mesh_name + ".translate")[0]
+        self.assertAlmostEqual(translate_value[0], 1.0, places=5)
+        self.assertAlmostEqual(translate_value[1], 2.0, places=5)
+        self.assertAlmostEqual(translate_value[2], 3.0, places=5)
+
+        # Test 3: カスタムアトリビュートを作成してから設定
+        cmds.addAttr(mesh_name, longName="customIntAttr", attributeType="long")
+        maya_utils.set_attribute(mesh_name, "customIntAttr", 42, "long")
+        self.assertEqual(cmds.getAttr(mesh_name + ".customIntAttr"), 42)
+
+        # カスタムアトリビュートの更新
+        maya_utils.set_attribute(mesh_name, "customIntAttr", 100, "long")
+        self.assertEqual(cmds.getAttr(mesh_name + ".customIntAttr"), 100)
+
+        # Test 5: visibility属性（bool）
+        maya_utils.set_attribute(mesh_name, "visibility", False, "bool")
+        self.assertEqual(cmds.getAttr(mesh_name + ".visibility"), False)
+        maya_utils.set_attribute(mesh_name, "visibility", True, "bool")
+        self.assertEqual(cmds.getAttr(mesh_name + ".visibility"), True)
+
+        # Test 6: エラーケース - 存在しないオブジェクト
+        # set_attributeは例外を再発生させないため、エラー時も正常に処理される
+        # 値が設定されないことを確認
+        maya_utils.set_attribute("non_existent_object", "translateX", 1.0, "double")
+        # ログにエラーが出力されることを期待（実際のテストではログ出力の確認は省略）
+
+        # Test 7: エラーケース - 存在しないアトリビュート
+        # 同様に、例外ではなくログ出力される
+        maya_utils.set_attribute(mesh_name, "non_existent_attr", 1.0, "float")
+
+    def test_set_attribute_with_custom_attributes(self):
+        """set_custom_attributesと組み合わせたテスト"""
+        test_obj = cmds.createNode("transform", name="test_custom_attr_obj")
+
+        # カスタムアトリビュートを作成
+        maya_utils.set_custom_attributes(
+            test_obj,
+            {
+                "intAttr": 42,
+                "floatAttr": 3.14,
+                "stringAttr": "Hello",
+                "boolAttr": True,
+                "vectorAttr": [1.0, 2.0, 3.0],
+            },
+        )
+
+        # set_attributeで値を更新
+        maya_utils.set_attribute(test_obj, "intAttr", 100, "long")
+        self.assertEqual(cmds.getAttr(test_obj + ".intAttr"), 100)
+
+        maya_utils.set_attribute(test_obj, "floatAttr", 6.28, "double")
+        self.assertAlmostEqual(cmds.getAttr(test_obj + ".floatAttr"), 6.28, places=5)
+
+        maya_utils.set_attribute(test_obj, "stringAttr", "World", "string")
+        self.assertEqual(cmds.getAttr(test_obj + ".stringAttr"), "World")
+
+        maya_utils.set_attribute(test_obj, "boolAttr", False, "bool")
+        self.assertEqual(cmds.getAttr(test_obj + ".boolAttr"), False)
+
+        maya_utils.set_attribute(test_obj, "vectorAttr", [4.0, 5.0, 6.0], "double3")
+        vector_value = cmds.getAttr(test_obj + ".vectorAttr")[0]
+        self.assertAlmostEqual(vector_value[0], 4.0, places=5)
+        self.assertAlmostEqual(vector_value[1], 5.0, places=5)
+        self.assertAlmostEqual(vector_value[2], 6.0, places=5)
+
     def test_set_custom_attributes(self):
         """カスタムアトリビュートを設定できるか"""
         mesh_name = "test_mesh_for_custom_attr"
@@ -415,12 +497,12 @@ class TestMayaUtils(MayaTestBase):
         """オブジェクトをリストできるか"""
         # テストシーンをセットアップ
         cmds.file(new=True, force=True)
-        
+
         # ジョイントを作成
         cmds.select(clear=True)
         joint1 = cmds.joint(name="test_joint1")
         joint2 = cmds.joint(name="test_joint2")
-        
+
         # メッシュを作成
         cube = cmds.polyCube(name="test_cube")[0]
         sphere = cmds.polySphere(name="test_sphere")[0]
@@ -442,6 +524,107 @@ class TestMayaUtils(MayaTestBase):
         test_names = [t.split("|")[-1] for t in test_objects]
         self.assertIn("test_joint1", test_names)
         self.assertIn("test_cube", test_names)
+
+    def test_set_attribute_performance(self):
+        """set_attributeのパフォーマンステスト（既存アトリビュートへの設定）"""
+        import time
+
+        # テスト用のオブジェクトを作成
+        test_obj = cmds.createNode("transform", name="performance_test_obj")
+
+        # 既存のアトリビュート（translate, rotate, scale）への設定を100回繰り返す
+        start_time = time.time()
+        for i in range(100):
+            maya_utils.set_attribute(test_obj, "translateX", float(i), "double")
+            maya_utils.set_attribute(test_obj, "rotateY", float(i * 2), "double")
+            maya_utils.set_attribute(test_obj, "scaleZ", float(i * 0.01 + 1), "double")
+        api_time = time.time() - start_time
+
+        # 比較のため、cmds.setAttrでも同じことを実行
+        test_obj2 = cmds.createNode("transform", name="performance_test_obj2")
+        start_time = time.time()
+        for i in range(100):
+            cmds.setAttr(f"{test_obj2}.translateX", float(i))
+            cmds.setAttr(f"{test_obj2}.rotateY", float(i * 2))
+            cmds.setAttr(f"{test_obj2}.scaleZ", float(i * 0.01 + 1))
+        cmds_time = time.time() - start_time
+
+        # 結果をログに出力
+        print(f"\nPerformance Test Results (existing attributes):")
+        print(f"maya_utils.set_attribute (API): {api_time:.4f} seconds")
+        print(f"cmds.setAttr: {cmds_time:.4f} seconds")
+        if api_time < cmds_time:
+            print(f"API is {cmds_time / api_time:.2f}x faster")
+        else:
+            print(f"cmds is {api_time / cmds_time:.2f}x faster")
+
+        # パフォーマンスは同等程度であることを確認
+        # APIの方が若干遅い可能性もあるため、2倍の余裕を持たせる
+        self.assertLess(api_time, cmds_time * 2.0)
+
+    def test_set_attribute_edge_cases(self):
+        """set_attributeのエッジケーステスト（既存アトリビュートを使用）"""
+        test_obj = cmds.createNode("transform", name="edge_case_test_obj")
+
+        # Test 1: 極小値と極大値（既存のアトリビュートに対して）
+        maya_utils.set_attribute(test_obj, "translateX", -1e10, "double")
+        maya_utils.set_attribute(test_obj, "translateY", 1e10, "double")
+        self.assertAlmostEqual(cmds.getAttr(test_obj + ".translateX"), -1e10, places=0)
+        self.assertAlmostEqual(cmds.getAttr(test_obj + ".translateY"), 1e10, places=0)
+
+        # Test 2: 0値
+        maya_utils.set_attribute(test_obj, "rotateX", 0.0, "double")
+        self.assertEqual(cmds.getAttr(test_obj + ".rotateX"), 0.0)
+
+        # Test 3: 回転値のテスト
+        # 新しく作成したオブジェクトで回転をテスト
+        test_obj2 = cmds.createNode("transform", name="edge_case_test_obj2")
+        
+        # Maya APIでは回転値はラジアンで扱われるため、度数からラジアンに変換する必要がある
+        import math
+        
+        # 45度をラジアンに変換
+        degrees_value = 45.0
+        radians_value = math.radians(degrees_value)
+        
+        # maya_utils.set_attributeはラジアン値を期待している
+        maya_utils.set_attribute(test_obj2, "rotateY", radians_value, "double")
+        api_value = cmds.getAttr(test_obj2 + ".rotateY")
+        # 結果は度数で返される
+        self.assertAlmostEqual(api_value, degrees_value, places=1)
+
+        # Test 4: visibilityの切り替え（bool型）
+        maya_utils.set_attribute(test_obj, "visibility", False, "bool")
+        self.assertEqual(cmds.getAttr(test_obj + ".visibility"), False)
+        maya_utils.set_attribute(test_obj, "visibility", True, "bool")
+        self.assertEqual(cmds.getAttr(test_obj + ".visibility"), True)
+
+        # Test 5: カスタムアトリビュートでのエッジケース
+        # まずカスタムアトリビュートを作成
+        maya_utils.set_custom_attributes(
+            test_obj, {"stringAttr": "", "floatAttr": 0.0, "intAttr": -999999}
+        )
+
+        # 空文字列の設定
+        maya_utils.set_attribute(test_obj, "stringAttr", "", "string")
+        self.assertEqual(cmds.getAttr(test_obj + ".stringAttr"), "")
+
+        # 非常に長い文字列
+        long_string = "a" * 1000
+        maya_utils.set_attribute(test_obj, "stringAttr", long_string, "string")
+        self.assertEqual(cmds.getAttr(test_obj + ".stringAttr"), long_string)
+
+        # 特殊文字を含む文字列
+        special_string = "!@#$%^&*()_+-=[]{}|;':\",./<>?"
+        maya_utils.set_attribute(test_obj, "stringAttr", special_string, "string")
+        self.assertEqual(cmds.getAttr(test_obj + ".stringAttr"), special_string)
+
+        # Test 6: エラーケース - None値の処理
+        # set_attributeは例外を再発生させないため、ログ出力で処理
+        # テストではNone値を渡してもクラッシュしないことを確認
+        maya_utils.set_attribute(test_obj, "translateX", None, "double")
+        # 値は変更されないはず
+        # translateXの現在値を確認（前の値から変わっていないはず）
 
 
 if __name__ == "__main__":

@@ -239,17 +239,21 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
     sg_name = cmds.sets(
         renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name
     )
-    
+
     # シェーダーのタイプに応じて適切な接続を行う
     shader_type = cmds.nodeType(shader_node)
-    
+
     if shader_type == "dx11Shader":
         # dx11Shaderは直接surfaceShaderに接続
-        cmds.connectAttr(shader_node + ".message", sg_name + ".surfaceShader", force=True)
+        cmds.connectAttr(
+            shader_node + ".message", sg_name + ".surfaceShader", force=True
+        )
     else:
         # 標準シェーダーは.outColorを使用
-        cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
-    
+        cmds.connectAttr(
+            shader_node + ".outColor", sg_name + ".surfaceShader", force=True
+        )
+
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)
 
@@ -433,10 +437,12 @@ def set_attribute(object_name, attr_name, attr_value, attr_type):
         # 値の型に応じて設定
         if attr_type == "bool":
             plug.setBool(attr_value)
-        elif attr_type == "int":
+        elif attr_type == "int" or attr_type == "long":
             plug.setInt(attr_value)
         elif attr_type == "float":
             plug.setFloat(attr_value)
+        elif attr_type == "double":
+            plug.setDouble(attr_value)
         elif attr_type == "str" or attr_type == "string":
             plug.setString(attr_value)
         elif attr_type == "bytes":
