@@ -1,4 +1,15 @@
 from maya import cmds
+from mmd_tools.core import maya_utils
+from mmd_tools.core.constants import (
+    ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_SPHERE_MODE,
+    ATTR_MMD_SPHERE_PATH,
+    ATTR_MMD_TOON_TEXTURE_INDEX,
+)
+from mmd_tools.core.pmx_data.material import PmxSphereMode
 from ...core.logger import get_logger
 from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
 
@@ -12,6 +23,9 @@ class MaterialPresenter:
         self.current_material = None
         self.material_data = {}  # Store original material data for reset
         self.has_unsaved_changes = False
+        self._loading_properties = (
+            False  # Flag to prevent change tracking during loading
+        )
         self.connect_signals()
 
         # 既に選択されているモデルがある場合はロード
@@ -102,16 +116,8 @@ class MaterialPresenter:
                             if materials:
                                 for mat in materials:
                                     # MMD関連の属性があるかチェック
-                                    if (
-                                        cmds.attributeQuery(
-                                            "mmd_material_name", node=mat, exists=True
-                                        )
-                                        or cmds.attributeQuery(
-                                            "mmd_draw_flags", node=mat, exists=True
-                                        )
-                                        or cmds.attributeQuery(
-                                            "mmd_sphere_path", node=mat, exists=True
-                                        )
+                                    if cmds.attributeQuery(
+                                        ATTR_MMD_MATERIAL_NAME, node=mat, exists=True
                                     ):
                                         mmd_materials.append(mat)
 
@@ -121,7 +127,7 @@ class MaterialPresenter:
             # Add materials to list with Japanese names
             for mat in sorted(unique_materials):
                 # 日本語名を取得
-                jp_name = self._get_material_japanese_name(mat)
+                jp_name = maya_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME)
 
                 # 表示テキストを決定
                 if jp_name:
@@ -192,18 +198,21 @@ class MaterialPresenter:
         logger.info(f"Selected material: {material_name}")
 
         self.current_material = material_name
-        self.has_unsaved_changes = False
         self.view._set_details_enabled(True)
         self.load_material_properties(material_name)
+        self.has_unsaved_changes = (
+            False  # Reset after loading to prevent false positives
+        )
 
     def load_material_properties(self, material_name):
         """Load material properties from Maya material"""
+        self._loading_properties = True
         try:
             # Store original data for reset
             self.material_data = {}
 
             # Japanese name
-            jp_name = self._get_material_japanese_name(material_name)
+            jp_name = maya_utils.get_attribute(material_name, ATTR_MMD_MATERIAL_NAME)
             self.view.material_jp_name_edit.setText(jp_name if jp_name else "")
 
             # Material name
@@ -215,9 +224,9 @@ class MaterialPresenter:
 
             # Get diffuse color based on shader type
             if shader_type == "standardSurface":
-                diffuse_color = cmds.getAttr(f"{material_name}.baseColor")[0]
+                diffuse_color = maya_utils.get_attribute(material_name, "baseColor")
             elif cmds.attributeQuery("color", node=material_name, exists=True):
-                diffuse_color = cmds.getAttr(f"{material_name}.color")[0]
+                diffuse_color = maya_utils.get_attribute(material_name, "color")
             else:
                 diffuse_color = (0.5, 0.5, 0.5)
             self.material_data["diffuse"] = diffuse_color
@@ -225,7 +234,9 @@ class MaterialPresenter:
 
             # Get specular color
             if cmds.attributeQuery("specularColor", node=material_name, exists=True):
-                specular_color = cmds.getAttr(f"{material_name}.specularColor")[0]
+                specular_color = maya_utils.get_attribute(
+                    material_name, "specularColor"
+                )
             else:
                 specular_color = (0.5, 0.5, 0.5)
             self.material_data["specular"] = specular_color
@@ -233,7 +244,7 @@ class MaterialPresenter:
 
             # Get ambient - Maya doesn't have ambient by default, check if attr exists
             if cmds.attributeQuery("ambientColor", node=material_name, exists=True):
-                ambient_color = cmds.getAttr(f"{material_name}.ambientColor")[0]
+                ambient_color = maya_utils.get_attribute(material_name, "ambientColor")
             else:
                 ambient_color = (0.5, 0.5, 0.5)
             self.material_data["ambient"] = ambient_color
@@ -243,12 +254,12 @@ class MaterialPresenter:
             if cmds.attributeQuery(
                 "mmd_specular_coefficient", node=material_name, exists=True
             ):
-                specular_coefficient = cmds.getAttr(
-                    f"{material_name}.mmd_specular_coefficient"
+                specular_coefficient = maya_utils.get_attribute(
+                    material_name, "mmd_specular_coefficient"
                 )
             elif cmds.attributeQuery("specular", node=material_name, exists=True):
                 # StandardSurfaceの場合、specular値を係数に変換
-                specular_weight = cmds.getAttr(f"{material_name}.specular")
+                specular_weight = maya_utils.get_attribute(material_name, "specular")
                 specular_coefficient = specular_weight * 100.0
             else:
                 specular_coefficient = 5.0
@@ -258,10 +269,12 @@ class MaterialPresenter:
             # Get transparency (PMX style)
             if cmds.attributeQuery("opacity", node=material_name, exists=True):
                 # StandardSurfaceの場合
-                opacity = cmds.getAttr(f"{material_name}.opacity")[0]
+                opacity = maya_utils.get_attribute(material_name, "opacity")
                 transparency = 1.0 - opacity[0]  # Convert opacity to transparency
             elif cmds.attributeQuery("transparency", node=material_name, exists=True):
-                transparency_val = cmds.getAttr(f"{material_name}.transparency")[0]
+                transparency_val = maya_utils.get_attribute(
+                    material_name, "transparency"
+                )
                 transparency = transparency_val[0]
             else:
                 transparency = 0.0
@@ -284,7 +297,7 @@ class MaterialPresenter:
                     break
 
             if file_node:
-                texture_path = cmds.getAttr(f"{file_node[0]}.fileTextureName")
+                texture_path = maya_utils.get_attribute(file_node[0], "fileTextureName")
                 self.material_data["texture"] = texture_path
                 self.view.texture_path_edit.setText(texture_path)
             else:
@@ -299,26 +312,28 @@ class MaterialPresenter:
                 f"Failed to load material details for {material_name}: {e}",
                 exc_info=True,
             )
+        finally:
+            self._loading_properties = False
 
     def _load_mmd_attributes(self, material_name):
         """Load MMD-specific attributes from material"""
         # Sphere map
-        sphere_path = self._get_attr_safe(material_name, "mmd_sphere_path", "")
+        sphere_path = self._get_attr_safe(material_name, ATTR_MMD_SPHERE_PATH, "")
         self.material_data["sphere_map"] = sphere_path
         self.view.sphere_map_path_edit.setText(sphere_path)
 
         # Sphere mode
-        sphere_mode = self._get_attr_safe(material_name, "mmd_sphere_mode", 0)
+        sphere_mode = self._get_attr_safe(material_name, ATTR_MMD_SPHERE_MODE, 0)
         self.material_data["sphere_mode"] = sphere_mode
         self.view.sphere_mode_combo.setCurrentIndex(sphere_mode)
 
         # Toon texture
-        toon_index = self._get_attr_safe(material_name, "mmd_toon_index", 0)
+        toon_index = self._get_attr_safe(material_name, ATTR_MMD_TOON_TEXTURE_INDEX, 0)
         self.material_data["toon_index"] = toon_index
         self.view.toon_texture_combo.setCurrentIndex(toon_index)
 
         # Draw flags
-        draw_flags = self._get_attr_safe(material_name, "mmd_draw_flags", 0x1F)
+        draw_flags = self._get_attr_safe(material_name, ATTR_MMD_DRAW_FLAGS, 0x1F)
         self.material_data["draw_flags"] = draw_flags
 
         self.view.both_face_check.setChecked(bool(draw_flags & 0x01))
@@ -332,21 +347,21 @@ class MaterialPresenter:
 
         # Edge properties
         edge_color = self._get_attr_safe(
-            material_name, "mmd_edge_color", (0.0, 0.0, 0.0, 1.0)
+            material_name, ATTR_MMD_EDGE_COLOR, (0.0, 0.0, 0.0, 1.0)
         )
         if len(edge_color) == 4:
             edge_color = edge_color[:3]  # Remove alpha
         self.material_data["edge_color"] = edge_color
         self._update_color_widget(self.view.edge_color_widget, edge_color)
 
-        edge_size = self._get_attr_safe(material_name, "mmd_edge_size", 1.0)
+        edge_size = self._get_attr_safe(material_name, ATTR_MMD_EDGE_SIZE, 1.0)
         self.material_data["edge_size"] = edge_size
         self.view.edge_size_spin.setValue(edge_size)
 
     def _get_attr_safe(self, node, attr, default):
         """Get attribute value safely, return default if not exists"""
         if cmds.attributeQuery(attr, node=node, exists=True):
-            return cmds.getAttr(f"{node}.{attr}")
+            return maya_utils.get_attribute(node, attr)
         return default
 
     def _update_color_widget(self, widget, color):
@@ -444,25 +459,28 @@ class MaterialPresenter:
             if "diffuse" in self.material_data:
                 shader_type = cmds.nodeType(self.current_material)
                 if shader_type == "standardSurface":
-                    cmds.setAttr(
-                        f"{self.current_material}.baseColor",
-                        *self.material_data["diffuse"],
-                        type="double3",
+                    maya_utils.set_attribute(
+                        self.current_material,
+                        "baseColor",
+                        self.material_data["diffuse"],
+                        "double3",
                     )
                 elif cmds.attributeQuery(
                     "color", node=self.current_material, exists=True
                 ):
-                    cmds.setAttr(
-                        f"{self.current_material}.color",
-                        *self.material_data["diffuse"],
-                        type="double3",
+                    maya_utils.set_attribute(
+                        self.current_material,
+                        "color",
+                        self.material_data["diffuse"],
+                        "double3",
                     )
 
             if "specular" in self.material_data:
-                cmds.setAttr(
-                    f"{self.current_material}.specularColor",
-                    *self.material_data["specular"],
-                    type="double3",
+                maya_utils.set_attribute(
+                    self.current_material,
+                    "specularColor",
+                    self.material_data["specular"],
+                    "double3",
                 )
 
             # Apply transparency
@@ -470,44 +488,35 @@ class MaterialPresenter:
             # StandardSurfaceの場合はopacityに変換
             if cmds.nodeType(self.current_material) == "standardSurface":
                 opacity = 1.0 - transparency
-                cmds.setAttr(
-                    f"{self.current_material}.opacity",
-                    opacity,
-                    opacity,
-                    opacity,
-                    type="double3",
+                maya_utils.set_attribute(
+                    self.current_material,
+                    "opacity",
+                    [opacity, opacity, opacity],
+                    "double3",
                 )
             else:
                 # その他のシェーダーの場合
-                cmds.setAttr(
-                    f"{self.current_material}.transparency",
-                    transparency,
-                    transparency,
-                    transparency,
-                    type="double3",
+                maya_utils.set_attribute(
+                    self.current_material,
+                    "transparency",
+                    [transparency, transparency, transparency],
+                    "double3",
                 )
 
             # Apply specular coefficient
             specular_coefficient = self.view.specular_coefficient_spin.value()
             # MMD係数として保存
-            if not cmds.attributeQuery(
-                "mmd_specular_coefficient", node=self.current_material, exists=True
-            ):
-                cmds.addAttr(
-                    self.current_material,
-                    longName="mmd_specular_coefficient",
-                    attributeType="double",
-                    defaultValue=5.0,
-                )
-            cmds.setAttr(
-                f"{self.current_material}.mmd_specular_coefficient",
-                specular_coefficient,
+            maya_utils.set_custom_attributes(
+                self.current_material,
+                {"mmd_specular_coefficient": specular_coefficient},
             )
 
             # StandardSurfaceの場合はspecularに変換
             if cmds.nodeType(self.current_material) == "standardSurface":
                 specular_weight = min(1.0, specular_coefficient / 100.0)
-                cmds.setAttr(f"{self.current_material}.specular", specular_weight)
+                maya_utils.set_attribute(
+                    self.current_material, "specular", specular_weight, "float"
+                )
 
             # Apply textures
             texture_path = self.view.texture_path_edit.text()
@@ -555,7 +564,7 @@ class MaterialPresenter:
             )
             cmds.connectAttr(f"{file_node}.outColor", color_attr, force=True)
 
-        cmds.setAttr(f"{file_node}.fileTextureName", texture_path, type="string")
+        maya_utils.set_attribute(file_node, "fileTextureName", texture_path, "str")
 
     def _apply_mmd_attributes(self):
         """Apply MMD-specific attributes"""
@@ -564,20 +573,24 @@ class MaterialPresenter:
 
         # Sphere map path
         sphere_path = self.view.sphere_map_path_edit.text()
-        cmds.setAttr(
-            f"{self.current_material}.mmd_sphere_path", sphere_path, type="string"
+        maya_utils.set_attribute(
+            self.current_material, "mmd_sphere_path", sphere_path, "str"
         )
 
         # Sphere mode
-        cmds.setAttr(
-            f"{self.current_material}.mmd_sphere_mode",
+        maya_utils.set_attribute(
+            self.current_material,
+            "mmd_sphere_mode",
             self.view.sphere_mode_combo.currentIndex(),
+            "int",
         )
 
         # Toon index
-        cmds.setAttr(
-            f"{self.current_material}.mmd_toon_index",
+        maya_utils.set_attribute(
+            self.current_material,
+            "mmd_toon_index",
             self.view.toon_texture_combo.currentIndex(),
+            "int",
         )
 
         # Draw flags
@@ -599,105 +612,50 @@ class MaterialPresenter:
         if self.view.line_draw_check.isChecked():
             draw_flags |= 0x80
 
-        cmds.setAttr(f"{self.current_material}.mmd_draw_flags", draw_flags)
+        maya_utils.set_attribute(
+            self.current_material, "mmd_draw_flags", draw_flags, "int"
+        )
 
         # Edge properties
         if "edge_color" in self.material_data:
             edge_color = self.material_data["edge_color"]
-            cmds.setAttr(
-                f"{self.current_material}.mmd_edge_color",
-                edge_color[0],
-                edge_color[1],
-                edge_color[2],
-                1.0,
-                type="double4",
+            maya_utils.set_attribute(
+                self.current_material,
+                "mmd_edge_color",
+                [edge_color[0], edge_color[1], edge_color[2], 1.0],
+                "double4",
             )
 
-        cmds.setAttr(
-            f"{self.current_material}.mmd_edge_size", self.view.edge_size_spin.value()
+        maya_utils.set_attribute(
+            self.current_material,
+            "mmd_edge_size",
+            self.view.edge_size_spin.value(),
+            "float",
         )
 
     def _ensure_mmd_attributes(self, material):
         """Ensure MMD attributes exist on material"""
-        attrs = [
-            ("mmd_sphere_path", "string", ""),
-            ("mmd_sphere_mode", "long", 0),
-            ("mmd_toon_index", "long", 0),
-            ("mmd_draw_flags", "long", 0x1F),
-            ("mmd_edge_color", "double4", None),
-            ("mmd_edge_size", "double", 1.0),
-            ("mmd_specular_coefficient", "double", 5.0),
-            ("ambientColor", "double3", None),
-        ]
+        # デフォルト値を設定
+        defaults = {
+            "mmd_sphere_path": "",
+            "mmd_sphere_mode": 0,
+            "mmd_toon_index": 0,
+            "mmd_draw_flags": 0x1F,
+            "mmd_edge_color": [0.0, 0.0, 0.0, 1.0],
+            "mmd_edge_size": 1.0,
+            "mmd_specular_coefficient": 5.0,
+            "ambientColor": [0.5, 0.5, 0.5],
+        }
 
-        for attr_name, attr_type, default in attrs:
+        # 存在しないアトリビュートのみデフォルト値で作成
+        attrs_to_create = {}
+        for attr_name, default_value in defaults.items():
             if not cmds.attributeQuery(attr_name, node=material, exists=True):
-                if attr_type == "double3":
-                    cmds.addAttr(material, longName=attr_name, attributeType="double3")
-                    cmds.addAttr(
-                        material,
-                        longName=f"{attr_name}R",
-                        attributeType="double",
-                        parent=attr_name,
-                    )
-                    cmds.addAttr(
-                        material,
-                        longName=f"{attr_name}G",
-                        attributeType="double",
-                        parent=attr_name,
-                    )
-                    cmds.addAttr(
-                        material,
-                        longName=f"{attr_name}B",
-                        attributeType="double",
-                        parent=attr_name,
-                    )
-                    if default is None:
-                        cmds.setAttr(
-                            f"{material}.{attr_name}", 0.5, 0.5, 0.5, type="double3"
-                        )
-                elif attr_type == "double4":
-                    cmds.addAttr(material, longName=attr_name, attributeType="double4")
-                    cmds.addAttr(
-                        material,
-                        longName=f"{attr_name}X",
-                        attributeType="double",
-                        parent=attr_name,
-                    )
-                    cmds.addAttr(
-                        material,
-                        longName=f"{attr_name}Y",
-                        attributeType="double",
-                        parent=attr_name,
-                    )
-                    cmds.addAttr(
-                        material,
-                        longName=f"{attr_name}Z",
-                        attributeType="double",
-                        parent=attr_name,
-                    )
-                    cmds.addAttr(
-                        material,
-                        longName=f"{attr_name}W",
-                        attributeType="double",
-                        parent=attr_name,
-                    )
-                    if default is None:
-                        cmds.setAttr(
-                            f"{material}.{attr_name}",
-                            0.0,
-                            0.0,
-                            0.0,
-                            1.0,
-                            type="double4",
-                        )
-                else:
-                    cmds.addAttr(
-                        material,
-                        longName=attr_name,
-                        attributeType=attr_type,
-                        defaultValue=default,
-                    )
+                attrs_to_create[attr_name] = default_value
+
+        # 一括で作成・設定
+        if attrs_to_create:
+            maya_utils.set_custom_attributes(material, attrs_to_create)
 
     def reset_changes(self):
         """Reset material properties to original values"""
@@ -714,18 +672,8 @@ class MaterialPresenter:
 
     def _on_value_changed(self, value=None):
         """値が変更されたときの処理"""
-        if self.current_material:
+        if self.current_material and not self._loading_properties:
             self.has_unsaved_changes = True
-
-    def _get_material_japanese_name(self, material_name):
-        """マテリアルの日本語名を取得"""
-        # カスタムアトリビュート mmd_material_name をチェック
-        if cmds.attributeQuery("mmd_material_name", node=material_name, exists=True):
-            jp_name = cmds.getAttr(f"{material_name}.mmd_material_name")
-            if jp_name:
-                return jp_name
-
-        return None
 
     def _apply_sphere_map(self, material, sphere_path, sphere_mode):
         """スフィアマップをマテリアルに適用"""
@@ -740,7 +688,7 @@ class MaterialPresenter:
             sphere_file_node = None
             file_nodes = cmds.ls(type="file")
             for node in file_nodes:
-                if cmds.getAttr(f"{node}.fileTextureName") == sphere_path:
+                if maya_utils.get_attribute(node, "fileTextureName") == sphere_path:
                     sphere_file_node = node
                     break
 
@@ -748,13 +696,13 @@ class MaterialPresenter:
                 sphere_file_node = cmds.shadingNode(
                     "file", asTexture=True, name=f"{material}_sphere"
                 )
-                cmds.setAttr(
-                    f"{sphere_file_node}.fileTextureName", sphere_path, type="string"
+                maya_utils.set_attribute(
+                    sphere_file_node, "fileTextureName", sphere_path, "str"
                 )
 
             # Mayaでスフィアマップを近似的に再現
             # モード: 1=乗算, 2=加算, 3=サブテクスチャ
-            if sphere_mode == 1:  # 乗算
+            if sphere_mode == PmxSphereMode.MULTIPLY:  # 乗算
                 # layeredTextureを使用して乗算合成
                 layered_texture = cmds.shadingNode(
                     "layeredTexture", asTexture=True, name=f"{material}_layered"
@@ -766,29 +714,35 @@ class MaterialPresenter:
                     cmds.connectAttr(
                         f"{base_file[0]}.outColor", f"{layered_texture}.inputs[0].color"
                     )
-                    cmds.setAttr(f"{layered_texture}.inputs[0].blendMode", 0)  # None
+                    maya_utils.set_attribute(
+                        layered_texture, "inputs[0].blendMode", 0, "int"
+                    )  # None
 
                 # スフィアマップを接続
                 cmds.connectAttr(
                     f"{sphere_file_node}.outColor", f"{layered_texture}.inputs[1].color"
                 )
-                cmds.setAttr(f"{layered_texture}.inputs[1].blendMode", 6)  # Multiply
+                maya_utils.set_attribute(
+                    layered_texture, "inputs[1].blendMode", 6, "int"
+                )  # Multiply
 
                 # マテリアルに接続
                 cmds.connectAttr(
                     f"{layered_texture}.outColor", f"{material}.baseColor", force=True
                 )
 
-            elif sphere_mode == 2:  # 加算
+            elif sphere_mode == PmxSphereMode.ADDITIVE:  # 加算
                 # エミッションにスフィアマップを接続して加算効果を近似
                 cmds.connectAttr(
                     f"{sphere_file_node}.outColor",
                     f"{material}.emissionColor",
                     force=True,
                 )
-                cmds.setAttr(f"{material}.emission", 0.5)  # エミッション強度
+                maya_utils.set_attribute(
+                    material, "emission", 0.5, "float"
+                )  # エミッション強度
 
-            elif sphere_mode == 3:  # サブテクスチャ
+            elif sphere_mode == PmxSphereMode.SUB_TEXTURE:  # サブテクスチャ
                 # スペキュラーマップとして使用
                 cmds.connectAttr(
                     f"{sphere_file_node}.outColor",

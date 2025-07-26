@@ -281,6 +281,10 @@ def set_custom_attributes(object_name, attributes):
                     isinstance(x, int) for x in attr_value
                 ):
                     actual_attr_type = "long3"
+                elif len(attr_value) == 4 and all(
+                    isinstance(x, (float, int)) for x in attr_value
+                ):
+                    actual_attr_type = "double4"
                 elif all(isinstance(x, float) for x in attr_value):
                     actual_attr_type = "doubleArray"
                 elif all(isinstance(x, int) for x in attr_value):
@@ -341,7 +345,7 @@ def add_typed_attribute(object_name, attr_name, attr_type):
     Args:
         object_name (str): オブジェクト名
         attr_name (str): アトリビュート名
-        attr_type (str): アトリビュートタイプ (string, double3, long3, doubleArray, longArray)
+        attr_type (str): アトリビュートタイプ (string, double3, long3, double4, doubleArray, longArray)
     """
     try:
         # オブジェクトのMObjectを取得
@@ -366,6 +370,10 @@ def add_typed_attribute(object_name, attr_name, attr_type):
             # 3つのint値を持つアトリビュート
             attr = om.MFnNumericAttribute()
             attr_obj = attr.create(attr_name, attr_name, om.MFnNumericData.k3Int)
+        elif attr_type == "double4":
+            # 4つのdouble値を持つアトリビュート
+            attr = om.MFnNumericAttribute()
+            attr_obj = attr.create(attr_name, attr_name, om.MFnNumericData.k4Double)
         elif attr_type == "doubleArray":
             # double配列アトリビュート
             attr = om.MFnTypedAttribute()
@@ -434,6 +442,11 @@ def set_attribute(object_name, attr_name, attr_value, attr_type):
             for i, value in enumerate(attr_value):
                 child_plug = plug.child(i)
                 child_plug.setInt(value)
+        elif attr_type == "double4" and len(attr_value) == 4:
+            # 4要素のベクトル値
+            for i, value in enumerate(attr_value):
+                child_plug = plug.child(i)
+                child_plug.setDouble(value)
         elif attr_type == "doubleArray":
             double_array_data = om.MFnDoubleArrayData()
             double_array_obj = double_array_data.create()

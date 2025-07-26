@@ -96,6 +96,7 @@ class TestMayaUtils(MayaTestBase):
             "mmd_int": 42,
             "mmd_float": 3.14,
             "mmd_double3": (1.0, 2.0, 3.0),
+            "mmd_double4": (1.0, 2.0, 3.0, 4.0),
         }
         maya_utils.set_custom_attributes(mesh_name, data)
 
@@ -148,7 +149,7 @@ class TestMayaUtils(MayaTestBase):
             "mmd_int": 42,
             "mmd_float": 3.14,
             "mmd_double3": (1.0, 2.0, 3.0),
-            "mmd_array": [1.0, 2.0, 3.0, 4.0],
+            "mmd_double4": (1.0, 2.0, 3.0, 4.0),
         }
         maya_utils.set_custom_attributes(mesh_name, data)
 
