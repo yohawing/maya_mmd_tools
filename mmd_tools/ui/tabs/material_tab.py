@@ -57,12 +57,12 @@ class MaterialTab(BaseTab):
         layout.setContentsMargins(0, 0, 0, 0)
 
         # マテリアルリストグループ
-        material_list_group = QGroupBox("マテリアルリスト")
+        self.material_list_group = QGroupBox(self.tr("material_list", "groups"))
         material_list_layout = QVBoxLayout()
 
         # ツールバー
         toolbar_layout = QHBoxLayout()
-        self.refresh_btn = QPushButton("更新")
+        self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
         self.refresh_btn.setMaximumWidth(60)
         
         toolbar_layout.addWidget(self.refresh_btn)
@@ -79,14 +79,14 @@ class MaterialTab(BaseTab):
 
         # マテリアル検索
         search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel("検索:"))
+        search_layout.addWidget(QLabel(self.tr("search", "fields")))
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("マテリアル名を検索...")
+        self.search_edit.setPlaceholderText(self.tr("search_material_name", "placeholders"))
         search_layout.addWidget(self.search_edit)
         material_list_layout.addLayout(search_layout)
 
-        material_list_group.setLayout(material_list_layout)
-        layout.addWidget(material_list_group)
+        self.material_list_group.setLayout(material_list_layout)
+        layout.addWidget(self.material_list_group)
 
         return widget
 
@@ -106,26 +106,30 @@ class MaterialTab(BaseTab):
         layout.setContentsMargins(5, 5, 5, 5)
         
         # Basic Properties
-        basic_group = QGroupBox("基本プロパティ")
+        self.basic_group = QGroupBox(self.tr("basic_properties", "groups"))
         basic_layout = QGridLayout()
         
         # Japanese Name
-        basic_layout.addWidget(QLabel("日本語名:"), 0, 0)
+        self.material_name_jp_label = QLabel(self.tr("material_name_jp", "fields"))
+        basic_layout.addWidget(self.material_name_jp_label, 0, 0)
         self.material_jp_name_edit = QLineEdit()
         basic_layout.addWidget(self.material_jp_name_edit, 0, 1, 1, 2)
         
         # English Name
-        basic_layout.addWidget(QLabel("英語名:"), 1, 0)
+        self.material_name_en_label = QLabel(self.tr("material_name_en", "fields"))
+        basic_layout.addWidget(self.material_name_en_label, 1, 0)
         self.material_en_name_edit = QLineEdit()
         basic_layout.addWidget(self.material_en_name_edit, 1, 1, 1, 2)
         
         # Diffuse Color
-        basic_layout.addWidget(QLabel("Diffuse色:"), 2, 0)
+        self.diffuse_color_label = QLabel(self.tr("diffuse_color", "fields"))
+        basic_layout.addWidget(self.diffuse_color_label, 2, 0)
         self.diffuse_color_widget = self._create_color_widget()
         basic_layout.addWidget(self.diffuse_color_widget, 2, 1, 1, 2)
         
         # Transparency (Alpha)
-        basic_layout.addWidget(QLabel("透明度:"), 3, 0)
+        self.transparency_label = QLabel(self.tr("transparency", "fields"))
+        basic_layout.addWidget(self.transparency_label, 3, 0)
         transparency_layout = QHBoxLayout()
         self.transparency_spin = QDoubleSpinBox()
         self.transparency_spin.setRange(0.0, 1.0)
@@ -139,12 +143,14 @@ class MaterialTab(BaseTab):
         basic_layout.addLayout(transparency_layout, 3, 1, 1, 2)
         
         # Specular Color
-        basic_layout.addWidget(QLabel("Specular色:"), 4, 0)
+        self.specular_color_label = QLabel(self.tr("specular_color", "fields"))
+        basic_layout.addWidget(self.specular_color_label, 4, 0)
         self.specular_color_widget = self._create_color_widget()
         basic_layout.addWidget(self.specular_color_widget, 4, 1, 1, 2)
         
         # Specular Coefficient
-        basic_layout.addWidget(QLabel("スペキュラ係数:"), 5, 0)
+        self.specular_coefficient_label = QLabel(self.tr("specular_coefficient", "fields"))
+        basic_layout.addWidget(self.specular_coefficient_label, 5, 0)
         specular_layout = QHBoxLayout()
         self.specular_coefficient_spin = QDoubleSpinBox()
         self.specular_coefficient_spin.setRange(0.0, 1.0)
@@ -158,58 +164,66 @@ class MaterialTab(BaseTab):
         basic_layout.addLayout(specular_layout, 5, 1, 1, 2)
         
         # Ambient Color
-        basic_layout.addWidget(QLabel("Ambient色:"), 6, 0)
+        self.ambient_label = QLabel(self.tr("ambient_color", "fields"))
+        basic_layout.addWidget(self.ambient_label, 6, 0)
         self.ambient_color_widget = self._create_color_widget()
         basic_layout.addWidget(self.ambient_color_widget, 6, 1, 1, 2)
         
-        basic_group.setLayout(basic_layout)
-        layout.addWidget(basic_group)
+        self.basic_group.setLayout(basic_layout)
+        layout.addWidget(self.basic_group)
         
         # Texture Properties
-        texture_group = QGroupBox("テクスチャ設定")
+        self.texture_group = QGroupBox(self.tr("textures", "groups"))
         texture_layout = QGridLayout()
         
         # Main Texture
-        texture_layout.addWidget(QLabel("テクスチャ:"), 0, 0)
+        self.texture_label = QLabel(self.tr("texture_path", "fields"))
+        texture_layout.addWidget(self.texture_label, 0, 0)
         self.texture_path_edit = QLineEdit()
         texture_layout.addWidget(self.texture_path_edit, 0, 1)
-        self.texture_browse_btn = QPushButton("参照")
+        self.texture_browse_btn = QPushButton(self.tr("browse", "buttons"))
         texture_layout.addWidget(self.texture_browse_btn, 0, 2)
         
         # Sphere Map
-        texture_layout.addWidget(QLabel("スフィアマップ:"), 1, 0)
+        self.sphere_map_label = QLabel(self.tr("sphere_texture_path", "fields"))
+        texture_layout.addWidget(self.sphere_map_label, 1, 0)
         self.sphere_map_path_edit = QLineEdit()
         texture_layout.addWidget(self.sphere_map_path_edit, 1, 1)
-        self.sphere_map_browse_btn = QPushButton("参照")
+        self.sphere_map_browse_btn = QPushButton(self.tr("browse", "buttons"))
         texture_layout.addWidget(self.sphere_map_browse_btn, 1, 2)
         
         # Sphere Mode
-        texture_layout.addWidget(QLabel("スフィアモード:"), 2, 0)
+        self.sphere_mode_label = QLabel(self.tr("sphere_mode", "fields"))
+        texture_layout.addWidget(self.sphere_mode_label, 2, 0)
         self.sphere_mode_combo = QComboBox()
-        self.sphere_mode_combo.addItems(["無効", "乗算", "加算", "サブテクスチャ"])
+        self.sphere_mode_combo.addItems([self.tr("disabled", "sphere_modes"), 
+                                        self.tr("multiply", "sphere_modes"),
+                                        self.tr("additive", "sphere_modes"),
+                                        self.tr("subtexture", "sphere_modes")])
         texture_layout.addWidget(self.sphere_mode_combo, 2, 1, 1, 2)
         
         # Toon Texture
-        texture_layout.addWidget(QLabel("トゥーンテクスチャ:"), 3, 0)
+        self.toon_texture_label = QLabel(self.tr("toon_texture", "fields"))
+        texture_layout.addWidget(self.toon_texture_label, 3, 0)
         self.toon_texture_combo = QComboBox()
         self.toon_texture_combo.addItems([f"toon{i:02d}.bmp" for i in range(1, 11)])
         texture_layout.addWidget(self.toon_texture_combo, 3, 1, 1, 2)
         
-        texture_group.setLayout(texture_layout)
-        layout.addWidget(texture_group)
+        self.texture_group.setLayout(texture_layout)
+        layout.addWidget(self.texture_group)
         
         # Rendering Flags
-        flags_group = QGroupBox("描画フラグ")
+        self.flags_group = QGroupBox(self.tr("rendering_flags", "groups"))
         flags_layout = QVBoxLayout()
         
-        self.both_face_check = QCheckBox("両面描画")
-        self.ground_shadow_check = QCheckBox("地面影")
-        self.self_shadow_map_check = QCheckBox("セルフシャドウマップへの描画")
-        self.self_shadow_check = QCheckBox("セルフシャドウの描画")
-        self.edge_draw_check = QCheckBox("エッジ描画")
-        self.vertex_color_check = QCheckBox("頂点色")
-        self.point_draw_check = QCheckBox("ポイント描画")
-        self.line_draw_check = QCheckBox("ライン描画")
+        self.both_face_check = QCheckBox(self.tr("double_sided", "rendering_checkboxes"))
+        self.ground_shadow_check = QCheckBox(self.tr("ground_shadow", "rendering_checkboxes"))
+        self.self_shadow_map_check = QCheckBox(self.tr("self_shadow_map", "rendering_checkboxes"))
+        self.self_shadow_check = QCheckBox(self.tr("self_shadow", "rendering_checkboxes"))
+        self.edge_draw_check = QCheckBox(self.tr("edge_drawing", "rendering_checkboxes"))
+        self.vertex_color_check = QCheckBox(self.tr("vertex_color", "rendering_checkboxes"))
+        self.point_draw_check = QCheckBox(self.tr("point_drawing", "rendering_checkboxes"))
+        self.line_draw_check = QCheckBox(self.tr("line_drawing", "rendering_checkboxes"))
         
         flags_layout.addWidget(self.both_face_check)
         flags_layout.addWidget(self.ground_shadow_check)
@@ -220,28 +234,30 @@ class MaterialTab(BaseTab):
         flags_layout.addWidget(self.point_draw_check)
         flags_layout.addWidget(self.line_draw_check)
         
-        flags_group.setLayout(flags_layout)
-        layout.addWidget(flags_group)
+        self.flags_group.setLayout(flags_layout)
+        layout.addWidget(self.flags_group)
         
         # Edge Properties
-        edge_group = QGroupBox("エッジ設定")
+        self.edge_group = QGroupBox(self.tr("edge_properties", "groups"))
         edge_layout = QGridLayout()
         
         # Edge Color
-        edge_layout.addWidget(QLabel("エッジ色:"), 0, 0)
+        self.edge_color_label = QLabel(self.tr("edge_color", "fields"))
+        edge_layout.addWidget(self.edge_color_label, 0, 0)
         self.edge_color_widget = self._create_color_widget()
         edge_layout.addWidget(self.edge_color_widget, 0, 1, 1, 2)
         
         # Edge Size
-        edge_layout.addWidget(QLabel("エッジサイズ:"), 1, 0)
+        self.edge_size_label = QLabel(self.tr("edge_size", "fields"))
+        edge_layout.addWidget(self.edge_size_label, 1, 0)
         self.edge_size_spin = QDoubleSpinBox()
         self.edge_size_spin.setRange(0.0, 10.0)
         self.edge_size_spin.setSingleStep(0.1)
         self.edge_size_spin.setDecimals(2)
         edge_layout.addWidget(self.edge_size_spin, 1, 1, 1, 2)
         
-        edge_group.setLayout(edge_layout)
-        layout.addWidget(edge_group)
+        self.edge_group.setLayout(edge_layout)
+        layout.addWidget(self.edge_group)
         
         # ストレッチを追加して上に詰める
         layout.addStretch()
@@ -252,8 +268,8 @@ class MaterialTab(BaseTab):
 
         # ボタンバー
         button_layout = QHBoxLayout()
-        self.apply_btn = QPushButton("適用")
-        self.reset_btn = QPushButton("リセット")
+        self.apply_btn = QPushButton(self.tr("apply", "buttons"))
+        self.reset_btn = QPushButton(self.tr("reset", "buttons"))
         button_layout.addStretch()
         button_layout.addWidget(self.apply_btn)
         button_layout.addWidget(self.reset_btn)
@@ -307,6 +323,100 @@ class MaterialTab(BaseTab):
     def _show_placeholder(self):
         """マテリアルリストが空の場合のプレースホルダーを表示"""
         if self.material_list.count() == 0:
-            placeholder_item = QListWidgetItem("-- マテリアルがありません --")
+            placeholder_item = QListWidgetItem(self.tr("no_materials", "placeholders"))
             placeholder_item.setFlags(placeholder_item.flags() & ~Qt.ItemIsSelectable)
             self.material_list.addItem(placeholder_item)
+    
+    def retranslateUi(self):
+        """言語切り替え時にUIを再翻訳"""
+        # GroupBoxes
+        if hasattr(self, 'material_list_group'):
+            self.material_list_group.setTitle(self.tr("material_list", "groups"))
+        if hasattr(self, 'basic_group'):
+            self.basic_group.setTitle(self.tr("basic_properties", "groups"))
+        if hasattr(self, 'texture_group'):
+            self.texture_group.setTitle(self.tr("textures", "groups"))
+        if hasattr(self, 'flags_group'):
+            self.flags_group.setTitle(self.tr("rendering_flags", "groups"))
+        if hasattr(self, 'edge_group'):
+            self.edge_group.setTitle(self.tr("edge_properties", "groups"))
+        
+        # Buttons
+        if hasattr(self, 'refresh_btn'):
+            self.refresh_btn.setText(self.tr("refresh", "buttons"))
+        if hasattr(self, 'import_path_button'):
+            self.import_path_button.setText(self.tr("browse", "buttons"))
+        if hasattr(self, 'texture_browse_btn'):
+            self.texture_browse_btn.setText(self.tr("browse", "buttons"))
+        if hasattr(self, 'sphere_map_browse_btn'):
+            self.sphere_map_browse_btn.setText(self.tr("browse", "buttons"))
+        if hasattr(self, 'apply_btn'):
+            self.apply_btn.setText(self.tr("apply", "buttons"))
+        if hasattr(self, 'reset_btn'):
+            self.reset_btn.setText(self.tr("reset", "buttons"))
+        
+        # Labels
+        if hasattr(self, 'material_name_jp_label'):
+            self.material_name_jp_label.setText(self.tr("material_name_jp", "fields"))
+        if hasattr(self, 'material_name_en_label'):
+            self.material_name_en_label.setText(self.tr("material_name_en", "fields"))
+        if hasattr(self, 'diffuse_color_label'):
+            self.diffuse_color_label.setText(self.tr("diffuse_color", "fields"))
+        if hasattr(self, 'transparency_label'):
+            self.transparency_label.setText(self.tr("transparency", "fields"))
+        if hasattr(self, 'specular_color_label'):
+            self.specular_color_label.setText(self.tr("specular_color", "fields"))
+        if hasattr(self, 'specular_coefficient_label'):
+            self.specular_coefficient_label.setText(self.tr("specular_coefficient", "fields"))
+        if hasattr(self, 'ambient_label'):
+            self.ambient_label.setText(self.tr("ambient_color", "fields"))
+        if hasattr(self, 'texture_label'):
+            self.texture_label.setText(self.tr("texture_path", "fields"))
+        if hasattr(self, 'sphere_map_label'):
+            self.sphere_map_label.setText(self.tr("sphere_texture_path", "fields"))
+        if hasattr(self, 'sphere_mode_label'):
+            self.sphere_mode_label.setText(self.tr("sphere_mode", "fields"))
+        if hasattr(self, 'toon_texture_label'):
+            self.toon_texture_label.setText(self.tr("toon_texture", "fields"))
+        if hasattr(self, 'edge_color_label'):
+            self.edge_color_label.setText(self.tr("edge_color", "fields"))
+        if hasattr(self, 'edge_size_label'):
+            self.edge_size_label.setText(self.tr("edge_size", "fields"))
+        
+        # CheckBoxes
+        if hasattr(self, 'both_face_check'):
+            self.both_face_check.setText(self.tr("double_sided", "rendering_checkboxes"))
+        if hasattr(self, 'ground_shadow_check'):
+            self.ground_shadow_check.setText(self.tr("ground_shadow", "rendering_checkboxes"))
+        if hasattr(self, 'self_shadow_map_check'):
+            self.self_shadow_map_check.setText(self.tr("self_shadow_map", "rendering_checkboxes"))
+        if hasattr(self, 'self_shadow_check'):
+            self.self_shadow_check.setText(self.tr("self_shadow", "rendering_checkboxes"))
+        if hasattr(self, 'edge_draw_check'):
+            self.edge_draw_check.setText(self.tr("edge_drawing", "rendering_checkboxes"))
+        if hasattr(self, 'vertex_color_check'):
+            self.vertex_color_check.setText(self.tr("vertex_color", "rendering_checkboxes"))
+        if hasattr(self, 'point_draw_check'):
+            self.point_draw_check.setText(self.tr("point_drawing", "rendering_checkboxes"))
+        if hasattr(self, 'line_draw_check'):
+            self.line_draw_check.setText(self.tr("line_drawing", "rendering_checkboxes"))
+        
+        # ComboBox items - Sphere modes
+        if hasattr(self, 'sphere_mode_combo'):
+            self.sphere_mode_combo.clear()
+            self.sphere_mode_combo.addItems([
+                self.tr("disabled", "sphere_modes"), 
+                self.tr("multiply", "sphere_modes"),
+                self.tr("additive", "sphere_modes"),
+                self.tr("subtexture", "sphere_modes")
+            ])
+        
+        # Placeholders
+        if hasattr(self, 'search_edit'):
+            self.search_edit.setPlaceholderText(self.tr("search_material_name", "placeholders"))
+        
+        # Update material list placeholder if empty
+        if hasattr(self, 'material_list') and self.material_list.count() == 1:
+            item = self.material_list.item(0)
+            if item and item.flags() & ~Qt.ItemIsSelectable:
+                item.setText(self.tr("no_materials", "placeholders"))

@@ -229,6 +229,8 @@ class MainWindow(QMainWindow):
         
         # 言語設定を読み込み
         from .. import settings
+        # 設定を確実に読み込む
+        settings.load()
         current_language = settings.get("ui.general.language", "ja")
         translator.set_language(current_language)
         

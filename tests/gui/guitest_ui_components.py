@@ -3,7 +3,7 @@ import maya.cmds as cmds
 
 from mmd_tools.ui.qt_compat import QApplication
 from mmd_tools.ui.main_window import MainWindow
-from tests.gui.gui_test_base import GuiTestBase, requires_gui
+from tests.common.gui_test_base import GuiTestBase, requires_gui
 
 @requires_gui
 class TestMainWindow(GuiTestBase):

@@ -443,6 +443,9 @@ class SettingsPresenter:
         # 選択された言語を取得
         selected_language = self.view.language_combo.currentData()
         
+        # 設定に保存（即座に永続化）
+        settings.set("ui.general.language", selected_language)
+        
         # UITranslatorに言語を設定
         from ...ui.translations import UITranslator
         translator = UITranslator.instance()

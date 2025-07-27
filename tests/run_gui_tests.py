@@ -107,7 +107,7 @@ def monitor_log_file(log_path, timeout):
         log_path.touch()
 
     start_time = time.time()
-    with open(log_path, 'r', encoding='utf-8') as f:
+    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
         # Move to the end of the file
         f.seek(0, 2)
         while time.time() - start_time < timeout:
