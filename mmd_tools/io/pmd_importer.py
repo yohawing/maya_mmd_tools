@@ -7,6 +7,7 @@ import os
 
 from maya import cmds
 from mmd_tools.converters import bone_converter
+from mmd_tools.core import maya_utils
 
 from .. import settings
 from ..core.logger import get_logger
@@ -34,26 +35,26 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
     if options is None:
         options = {}
     logger.info("PMXファイルのインポートを開始: %s", filepath)
-    
+
     logger.debug("スケールファクター: %f", scale)
 
     try:
         # ルートグループを作成
-        model_name = parser.header.get_name()
+        model_name = maya_utils.sanitize_text(parser.header.get_name())
         root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
         logger.debug("ルートグループ作成: %s", root_group)
 
         # Add attributes to root node
-        cmds.addAttr(root_group, longName='mmd_model_name_jp', dataType='string')
-        cmds.addAttr(root_group, longName='mmd_model_name_en', dataType='string')
-        cmds.addAttr(root_group, longName='mmd_comment_jp', dataType='string')
-        cmds.addAttr(root_group, longName='mmd_comment_en', dataType='string')
+        maya_utils.set_custom_attributes(
+            root_group,
+            {
+                "mmd_model_name_jp": parser.header.get_name(),
+                "mmd_model_name_en": "",
+                "mmd_comment_jp": parser.header.get_comment(),
+                "mmd_comment_en": "",
+            },
+        )
 
-        cmds.setAttr(f"{root_group}.mmd_model_name_jp", parser.header.get_name(), type='string')
-        cmds.setAttr(f"{root_group}.mmd_model_name_en", "", type='string')
-        cmds.setAttr(f"{root_group}.mmd_comment_jp", parser.header.get_comment(), type='string')
-        cmds.setAttr(f"{root_group}.mmd_comment_en", "", type='string')
-        
         # メッシュを変換
         logger.info("メッシュを変換中...")
         mesh_converter = MeshConverter(filepath)
@@ -69,7 +70,9 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
         # ボーンを変換
         logger.info("ボーンを変換中...")
         bone_converter = BoneConverter()
-        maya_joints, skin_cluster = bone_converter.convert_pmd_bones(parser, mesh_name, root_group)
+        maya_joints, skin_cluster = bone_converter.convert_pmd_bones(
+            parser, mesh_name, root_group
+        )
         logger.debug(
             "ボーン変換完了: %d個のジョイント", len(maya_joints) if maya_joints else 0
         )

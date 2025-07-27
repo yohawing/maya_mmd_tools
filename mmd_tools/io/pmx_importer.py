@@ -5,6 +5,7 @@ PMXファイルをMayaシーンにインポートするためのモジュール�
 import os
 
 from maya import cmds
+from mmd_tools.core import maya_utils
 from mmd_tools.core.pmd_data import morph
 
 from .. import settings
@@ -33,25 +34,25 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
     if options is None:
         options = {}
     logger.info("PMXファイルのインポートを開始: %s", filepath)
-    
+
     logger.debug("スケールファクター: %f", scale)
 
     try:
         # ルートグループを作成
-        model_name = parser.header.model_name
+        model_name = maya_utils.sanitize_text(parser.header.get_name())
         root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
         logger.debug("ルートグループ作成: %s", root_group)
 
         # Add attributes to root node
-        cmds.addAttr(root_group, longName='mmd_model_name_jp', dataType='string')
-        cmds.addAttr(root_group, longName='mmd_model_name_en', dataType='string')
-        cmds.addAttr(root_group, longName='mmd_comment_jp', dataType='string')
-        cmds.addAttr(root_group, longName='mmd_comment_en', dataType='string')
-
-        cmds.setAttr(f"{root_group}.mmd_model_name_jp", parser.header.model_name, type='string')
-        cmds.setAttr(f"{root_group}.mmd_model_name_en", parser.header.model_name_english, type='string')
-        cmds.setAttr(f"{root_group}.mmd_comment_jp", parser.header.comment, type='string')
-        cmds.setAttr(f"{root_group}.mmd_comment_en", parser.header.comment_english, type='string')
+        maya_utils.set_custom_attributes(
+            root_group,
+            {
+                "mmd_model_name_jp": parser.header.model_name,
+                "mmd_model_name_en": parser.header.model_name_english,
+                "mmd_comment_jp": parser.header.comment,
+                "mmd_comment_en": parser.header.comment_english,
+            },
+        )
 
         # メッシュを変換
         logger.info("メッシュを変換中...")
