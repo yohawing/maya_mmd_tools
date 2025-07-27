@@ -51,3 +51,16 @@ class PmdHeader:
             return self.model_name_english
 
         return self.model_name
+    
+    def get_comment(self):
+        """
+        モデルのコメントを取得する。英語コメントが設定されていればそれを返し、なければ日本語コメントを返す。
+
+        Returns:
+            str: モデルのコメント。
+        """
+        use_en = settings.get("import.model.joint_name_conversion_with_english", True)
+        if use_en and self.comment_english and self.comment_english != "":
+            return self.comment_english
+
+        return self.comment

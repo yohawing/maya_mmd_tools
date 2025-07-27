@@ -42,4 +42,8 @@ class PmdMaterial:
         self.texture_file_name = utils.decodePMDString(f.read(20))
 
         # テクスチャファイル名から名前を生成
-        self.name = self.texture_file_name
+        if self.texture_file_name:
+            self.name = self.texture_file_name
+        else:
+            # テクスチャがない場合はインデックスを使用したデフォルト名
+            self.name = f"material_{self.material_index}"

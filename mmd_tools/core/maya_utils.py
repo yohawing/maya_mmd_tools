@@ -234,6 +234,11 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
         shader_node (str): 割り当てるシェーダーノード名。
         face_selection (str): 選択する面の指定。例: "mesh_name.f[1:10]"
     """
+    # シェーダーノードの存在確認
+    if not cmds.objExists(shader_node):
+        logger.error(f"Shader node '{shader_node}' does not exist")
+        return
+        
     # マテリアル専用のシェーディンググループを作成
     sanitized_shader_name = shader_node + "SG"
     sg_name = cmds.sets(

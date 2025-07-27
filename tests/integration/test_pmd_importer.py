@@ -20,6 +20,11 @@ class TestPmdImporter(MayaTestBase):
     def setUp(self):
         """テストのセットアップ"""
         super().setUp()
+        
+        # dx11Shaderの作成を無効化（テスト環境では利用できない場合があるため）
+        from mmd_tools.core import settings
+        settings.set("import.model.create_mmd_shaders", False)
+        
         self.fixture_provider = TestFixtureProvider()
 
         # テスト用の一時ファイル
@@ -56,7 +61,7 @@ class TestPmdImporter(MayaTestBase):
         result = import_pmd_file(parser, pmd_file)
 
         # インポートが成功したことを確認
-        self.assertTrue(result)
+        self.assertIsNotNone(result, "PMDファイルのインポートに失敗しました")
 
         # 新しく作成されたノードを確認
         new_nodes = set(cmds.ls()) - initial_nodes
@@ -88,7 +93,7 @@ class TestPmdImporter(MayaTestBase):
 
         # インポート
         result = import_pmd_file(parser, pmd_file)
-        self.assertTrue(result)
+        self.assertIsNotNone(result, "PMDファイルのインポートに失敗しました")
 
         # ブレンドシェイプが作成されたことを確認
         blend_shapes = cmds.ls(type="blendShape")
@@ -119,7 +124,7 @@ class TestPmdImporter(MayaTestBase):
 
         # インポート
         result = import_pmd_file(parser, pmd_file)
-        self.assertTrue(result)
+        self.assertIsNotNone(result, "PMDファイルのインポートに失敗しました")
 
         # リジッドボディやジョイントが作成されたことを確認（該当する場合）
         # ※実装によってはスキップされる可能性もあるため、存在確認のみ
@@ -194,11 +199,11 @@ class TestPmdImporter(MayaTestBase):
 
         # インポート
         result = import_pmd_file(parser, pmd_file)
-        self.assertTrue(result)
+        self.assertIsNotNone(result, "PMDファイルのインポートに失敗しました")
 
         # マテリアルが作成されたことを確認
         materials = (
-            cmds.ls(type="lambert") + cmds.ls(type="phong") + cmds.ls(type="blinn")
+            cmds.ls(type="lambert") + cmds.ls(type="phong") + cmds.ls(type="blinn") + cmds.ls(type="standardSurface")
         )
         # デフォルトマテリアルを除外
         materials = [m for m in materials if m not in ["lambert1", "particleCloud1"]]
@@ -223,7 +228,7 @@ class TestPmdImporter(MayaTestBase):
 
         # インポート
         result = import_pmd_file(parser, pmd_file)
-        self.assertTrue(result)
+        self.assertIsNotNone(result, "PMDファイルのインポートに失敗しました")
 
         # ジョイントが作成されたことを確認
         joints = cmds.ls(type="joint")

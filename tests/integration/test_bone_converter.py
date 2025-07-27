@@ -18,6 +18,10 @@ class TestBoneConverter(MayaTestBase):
         super().setUp()
         # TODO: テストに必要なMayaシーンのセットアップやダミーデータの準備
         cmds.file(new=True, force=True)
+        
+        # dx11Shaderの作成を無効化（テスト環境では利用できない場合があるため）
+        from mmd_tools.core import settings
+        settings.set("import.model.create_mmd_shaders", False)
 
         # テストデータのパスを設定
         self.test_data_dir = os.path.join(

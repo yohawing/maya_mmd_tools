@@ -418,6 +418,20 @@ class MorphConverter:
         
         return target_index
     
+    def _save_categories_to_node(self):
+        """モーフカテゴリ情報をblendShapeノードにカスタムアトリビュートとして保存"""
+        if not self.blend_shape_node or not self.morph_categories:
+            return
+            
+        # カテゴリ情報をJSON形式で保存
+        import json
+        categories_json = json.dumps(self.morph_categories, ensure_ascii=False)
+        
+        # カスタムアトリビュートとして保存
+        maya_utils.set_custom_attributes(self.blend_shape_node, {
+            "morphCategories": categories_json
+        })
+        
     def get_morph_categories_report(self) -> str:
         """モーフカテゴリのレポートを生成"""
         if not self.morph_categories:

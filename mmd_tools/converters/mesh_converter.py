@@ -296,6 +296,9 @@ class MeshConverter:
             str: 作成されたシェーダーノード名。
         """
         sanitized_name = maya_utils.sanitize_text(material.name)
+        # 名前が空の場合はデフォルト名を使用
+        if not sanitized_name:
+            sanitized_name = f"material_{material_index if material_index is not None else 0}"
 
         # create_mmd_shaders設定を確認
         create_mmd_shaders = settings.get("import.model.create_mmd_shaders")
@@ -314,11 +317,14 @@ class MeshConverter:
                 shader_created = True
                 return shader
 
-            except RuntimeError as e:
+            except (RuntimeError, Exception) as e:
                 # dx11Shaderが作成できなかった場合
                 cmds.warning(
                     f"Failed to create dx11Shader: {e}. Using standard shader instead."
                 )
+                # 作成に失敗したdx11Shaderノードを削除
+                if cmds.objExists(sanitized_name):
+                    cmds.delete(sanitized_name)
 
         if not shader_created:
             # 標準のstandardSurfaceを使用
