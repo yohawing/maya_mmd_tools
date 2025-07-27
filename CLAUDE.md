@@ -45,16 +45,16 @@ Important principles for this project:
 
 ** ドキュメントの見出しに数字をつけないでください。 セクションを入れ替えやすくするためです。**
 
-開発者向けドキュメント（docs-dev/）の主な内容：
-- `architecture/`: 全体設計とプラグイン構造
-- `implementation/`: 各機能の実装詳細
-- `specifications/`: ファイルフォーマット仕様（PMD/PMX/VMD）
-- `development/`: 開発ガイド（テスト、設定、コーディング規約）
-- `project-management/`: プロジェクト管理（タスク、バージョニング、リリース）
+開発者向けドキュメント（docs-dev/）には、以下のようなドキュメントがあります：
+- 全体設計とプラグイン構造
+- 各機能の実装詳細
+- ファイルフォーマット仕様（PMD/PMX/VMD）
+- 開発ガイド（テスト、設定、コーディング規約）
+- プロジェクト管理（タスク、バージョニング、リリース）
 
 ## プロジェクトマネージメント
 
-プロジェクトの進行管理、スプリント計画、タスク管理については、`docs-dev/project-management/task-tracking.md`を参照してください。
+プロジェクトの進行管理、スプリント計画、タスク管理については、`docs-dev/task-tracking.md`を参照してください。
 タスク進行管理には、[Linear](https://linear.app/)を使用しています。
 タスクの編集があった場合は、Linear上で行ってください。
 
@@ -64,7 +64,7 @@ Important principles for this project:
 
 ## テスト
 
-テストについて詳しくは、`docs-dev/development/testing.md`に記載されています。
+テストについて詳しくは、`docs-dev/testing.md`に記載されています。
 テスト関連のコードや処理をする場合は必ず参照してください。
 
 テストは、ユニットテストと統合テストの2つのレベルで実施します。
@@ -92,7 +92,7 @@ python tests/run_tests.py --type integration --test test_maya_utils
 
 ### GUIテスト
 `tests/run_gui_tests.py` を使用して、コマンドラインからGUIテストを実行できます。
-詳細は `docs-dev/development/testing.md` を参照してください。
+詳細は `docs-dev/testing.md` を参照してください。
 
 ```bash
 python tests/run_gui_tests.py
