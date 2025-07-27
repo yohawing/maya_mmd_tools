@@ -21,14 +21,6 @@ Important principles for this project:
 - Think in English, but generate responses in Japanese (思考は英語、回答の生成は日本語で行うように)
 - 各フェーズは明示的な人間の承認が必要
 
-機能ごとに設計を作る際は、以下のフローを踏んでください。
-
-主要な開発フロー（3段階承認制）
-  1. 要件 → /spec-requirements → レビュー → 承認
-  2. 設計 → /spec-design → レビュー → 承認
-  3. タスク → /spec-tasks → レビュー → 承認
-  4. 実装開始
-
 ## ファイルの補足説明
 
 プロジェクトの概要、セットアップ、使用方法、開発に関する情報などをまとめた`README.md`ファイルがプロジェクトルートにあります。このファイルは、プロジェクトの全体像を把握するために重要です。

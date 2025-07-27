@@ -266,7 +266,7 @@ mmd_tools/
 ### 翻訳ファイルの構造
 
 ```json
-// config/translations/ja.json
+// mmd_tools/ui/translations/ja.json
 {
   "tabs": {
     "file_io": "ファイルI/O",

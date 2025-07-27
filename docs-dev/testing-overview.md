@@ -266,6 +266,34 @@ vmd_data = create_test_vmd_data()
 
 UIのテストは2つのカテゴリに分類されます。
 
+### 新規追加テスト: UITranslatorのGUIテスト
+
+多言語対応システム（UITranslator）のGUIテストが`tests/gui/guitest_translator.py`に追加されました。
+
+#### テスト内容
+- UITranslatorのシングルトン動作確認
+- サポート言語（日本語、英語、繁体字中国語、簡体字中国語）の確認
+- 翻訳ファイルの読み込み確認
+- 各言語での翻訳動作確認
+- 言語切り替え時のUI更新確認
+- BaseTabクラスとの統合確認
+- 特殊文字を含む翻訳の処理確認
+
+#### 実行方法
+```bash
+# すべてのGUIテストを実行（translatorテストを含む）
+python tests/run_gui_tests.py
+
+# Maya内から直接実行する場合
+# Script Editorで以下を実行:
+import sys
+sys.path.append(r'F:\Develop\maya_mmd_tools')
+from tests.gui.guitest_translator import TestUITranslator
+import unittest
+suite = unittest.TestLoader().loadTestsFromTestCase(TestUITranslator)
+unittest.TextTestRunner(verbosity=2).run(suite)
+```
+
 ### テストディレクトリ構造
 
 ```
