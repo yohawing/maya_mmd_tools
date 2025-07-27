@@ -1,6 +1,14 @@
-# Maya MMD Tools
+# Maya MMD Tools (Alpha)
+
+[![Version](https://img.shields.io/badge/version-0.1.0--alpha.1-orange.svg)](https://github.com/yohawing/maya_mmd_tools/releases)
+[![Maya](https://img.shields.io/badge/Maya-2024-blue.svg)](https://www.autodesk.com/products/maya)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 This repository contains a Python plugin for Autodesk Maya to import MikuMikuDance (MMD) file formats (.pmd, .pmx, .vmd) into Maya scenes.
+
+> ⚠️ **アルファ版に関する注意事項**  
+> これはアルファ版のソフトウェアです。機能が不安定な場合があり、本番環境での使用は推奨しません。  
+> バグ報告やフィードバックは[Issues](https://github.com/yohawing/maya_mmd_tools/issues)でお待ちしています。
 
 ## Getting Started
 

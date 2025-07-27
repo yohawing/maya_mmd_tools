@@ -36,24 +36,25 @@ Important principles for this project:
 
 ## ドキュメンティング
 
-`docs`ディレクトリ内にドキュメントをMarkdownで残してください。
-また、各スクリプトファイルの冒頭に、ファイルの目的や使用方法を簡潔に記述してください。
+ドキュメントは以下の2つのディレクトリに分かれています：
+- `docs/` - ユーザー向けドキュメント（使い方、チュートリアル、トラブルシューティング）
+- `docs-dev/` - 開発者向けドキュメント（設計、実装、仕様書）
+
+各スクリプトファイルの冒頭に、ファイルの目的や使用方法を簡潔に記述してください。
 機能に変更があった場合も、該当のファイルを編集してください。
 
 ** ドキュメントの見出しに数字をつけないでください。 セクションを入れ替えやすくするためです。**
 
-docsディレクトリには、以下のファイルがあります。
-- `design_*.md`: 機能の設計に関するドキュメント
-- `testing.md`: テストの実行方法やテストケースの説明
-- `project_management.md`: プロジェクトの進行管理やタスク管理
-- `settings.md`: プロジェクトの設定方法や利用可能な設定項目
-- `unicode_dictionary_guide.md`: 日本語から英語への翻訳辞書の構造と使用方法
-- `pmx_spec.md`: PMXファイルフォーマットの仕様
-- `pmd_spec.md`: PMDファイルフォーマットの仕様
+開発者向けドキュメント（docs-dev/）の主な内容：
+- `architecture/`: 全体設計とプラグイン構造
+- `implementation/`: 各機能の実装詳細
+- `specifications/`: ファイルフォーマット仕様（PMD/PMX/VMD）
+- `development/`: 開発ガイド（テスト、設定、コーディング規約）
+- `project-management/`: プロジェクト管理（タスク、バージョニング、リリース）
 
 ## プロジェクトマネージメント
 
-プロジェクトの進行管理、スプリント計画、タスク管理については、`docs/project_management.md`を参照してください。
+プロジェクトの進行管理、スプリント計画、タスク管理については、`docs-dev/project-management/task-tracking.md`を参照してください。
 タスク進行管理には、[Linear](https://linear.app/)を使用しています。
 タスクの編集があった場合は、Linear上で行ってください。
 
@@ -63,7 +64,7 @@ docsディレクトリには、以下のファイルがあります。
 
 ## テスト
 
-テストについて詳しくは、`docs/testing.md`に記載されています。
+テストについて詳しくは、`docs-dev/development/testing.md`に記載されています。
 テスト関連のコードや処理をする場合は必ず参照してください。
 
 テストは、ユニットテストと統合テストの2つのレベルで実施します。
@@ -91,7 +92,7 @@ python tests/run_tests.py --type integration --test test_maya_utils
 
 ### GUIテスト
 `tests/run_gui_tests.py` を使用して、コマンドラインからGUIテストを実行できます。
-詳細は `docs/testing.md` を参照してください。
+詳細は `docs-dev/development/testing.md` を参照してください。
 
 ```bash
 python tests/run_gui_tests.py
