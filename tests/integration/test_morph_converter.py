@@ -176,3 +176,76 @@ class TestMorphConverter(MayaTestBase):
         )
 
         return mesh_name
+    
+    def test_single_blendshape_node_pmd(self):
+        """PMDモーフが単一のブレンドシェイプノードに統合されることをテスト"""
+        # TestFixtureProviderからPMDファイルパスを取得
+        pmd_file_path = self.fixture_provider.get_pmd_file('miku_v2')
+
+        # PMDファイルをパース
+        parser = pmd_parser.PmdParser()
+        pmd_data = parser.parse_file(pmd_file_path)
+
+        # ルートグループを作成
+        root_group = cmds.group(empty=True, name="test_pmd_root")
+        
+        # テスト用のメッシュを作成
+        converter = MeshConverter(pmd_file_path)
+        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
+
+        # MorphConverterを作成して変換を実行
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmd_morphs(pmd_data, mesh_name)
+
+        # 単一のブレンドシェイプノードが作成されたことを確認
+        blend_shape_nodes = result.get("blend_shape_nodes", [])
+        self.assertEqual(len(blend_shape_nodes), 1, "複数のブレンドシェイプノードが作成されました")
+        
+        # モーフカテゴリが正しく分類されていることを確認
+        morph_categories = result.get("morph_categories", {})
+        self.assertIn("morph_categories", result)
+        self.assertIsInstance(morph_categories, dict)
+        
+        # カテゴリレポートが生成できることを確認
+        report = morph_converter.get_morph_categories_report()
+        self.assertIsInstance(report, str)
+        self.assertGreater(len(report), 0)
+    
+    def test_sparse_target_creation_pmx(self):
+        """PMXモーフがスパースターゲットとして作成されることをテスト"""
+        # TestFixtureProviderからPMXファイルパスを取得（利用可能な最初のPMXファイルを使用）
+        pmx_file_path = self.fixture_provider.get_pmx_file()
+
+        # PMXファイルをパース
+        parser = pmx_parser.PmxParser()
+        pmx_data = parser.parse_file(pmx_file_path)
+
+        # モーフデータが存在することを確認
+        self.assertIsNotNone(pmx_data.morphs, "PMXデータにモーフがありません")
+
+        if len(pmx_data.morphs) == 0:
+            self.skipTest("PMXデータにモーフが含まれていません")
+
+        # ルートグループを作成
+        root_group = cmds.group(empty=True, name="test_pmx_root")
+        
+        # テスト用のメッシュを作成
+        converter = MeshConverter(pmx_file_path)
+        mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
+
+        # MorphConverterを作成して変換を実行
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(pmx_data, mesh_name)
+
+        # 結果の検証
+        self.assertTrue(result.get("success", False))
+        
+        # スパースターゲットの頂点数情報が含まれていることを確認
+        for morph_result in result.get("results", []):
+            self.assertIn("vertex_count", morph_result)
+            vertex_count = morph_result["vertex_count"]
+            self.assertGreater(vertex_count, 0, "スパースターゲットの頂点数が0です")
+            
+            # デバッグ情報として頂点数を出力
+            morph_name = morph_result.get("morph_name", "Unknown")
+            print(f"Morph '{morph_name}': {vertex_count} vertices")
