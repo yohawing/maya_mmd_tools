@@ -5,7 +5,8 @@ class PmxFace:
     """
     PMXファイルの面データを保持するクラス。
     """
-    def __init__(self, vertex_index_size):
+    def __init__(self, vertex_index_size=2):
+        # デフォルト値を設定（vertex_index_size=2 (unsigned short)）
         self.vertex_index_size = vertex_index_size
         self.indices = (0, 0, 0)
 

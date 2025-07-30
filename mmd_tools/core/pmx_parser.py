@@ -66,7 +66,7 @@ class PmxParser:
                 # Vertex
                 vertex_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(vertex_count):
-                    vertex = PmxVertex(self.header)
+                    vertex = PmxVertex(bone_size, self.header.additional_uv)
                     vertex.parse(f)
                     self.vertices.append(vertex)
 

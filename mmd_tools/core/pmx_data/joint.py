@@ -56,8 +56,8 @@ class PmxJoint:
         Args:
             f (file): バイナリ書き込みモードで開かれたファイルハンドル。
         """
-        f.write(utils.encodePMXString(self.name, self.encoding))
-        f.write(utils.encodePMXString(self.name_english, self.encoding))
+        f.write(utils.encodePMXString(self.name, utils.get_pmx_encoding_string(self.encoding)))
+        f.write(utils.encodePMXString(self.name_english, utils.get_pmx_encoding_string(self.encoding)))
 
         f.write(struct.pack('<B', self.joint_type))
 

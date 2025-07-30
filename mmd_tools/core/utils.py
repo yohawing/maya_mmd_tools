@@ -67,6 +67,19 @@ def encodePMDString(string, length):
         return encoded + b"\x00" * (length - len(encoded))
 
 
+def get_pmx_encoding_string(encoding_flag):
+    """
+    PMXのエンコーディングフラグ（0または1）を文字列に変換
+    
+    Args:
+        encoding_flag (int): 0=UTF-16LE, 1=UTF-8
+        
+    Returns:
+        str: エンコーディング文字列
+    """
+    return "utf-16-le" if encoding_flag == 0 else "utf-8"
+
+
 def encodePMXString(string, encoding="utf-16-le"):
     """
     文字列をPMX形式（長さプレフィックス付き）にエンコードします。

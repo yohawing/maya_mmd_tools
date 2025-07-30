@@ -13,11 +13,12 @@ from mmd_tools.core import utils
 class PmdMaterial:
     """PMDファイルの材質データを保持するクラス。"""
 
-    def __init__(self, material_index):
+    def __init__(self, material_index=0):
+        # デフォルト値を設定
         self.name = "PmdDefaultMaterial"
-        self.diffuse = (0.0, 0.0, 0.0, 0.0)  # RGBA
-        self.specular_power = 0.0
-        self.specular = (0.0, 0.0, 0.0)  # RGB
+        self.diffuse = (1.0, 1.0, 1.0, 1.0)  # RGBA - 白色をデフォルトに
+        self.specular_power = 5.0
+        self.specular = (0.5, 0.5, 0.5)  # RGB
         self.ambient = (0.0, 0.0, 0.0)  # RGB
         self.toon_texture_index = 0
         self.edge_flag = 0

@@ -54,18 +54,19 @@ class PmxMaterial:
     PMXファイルの材質データを保持するクラス。
     """
 
-    def __init__(self, texture_index_size, encoding, material_index):
+    def __init__(self, texture_index_size=1, encoding=1, material_index=0):
+        # デフォルト値を設定
         self.texture_index_size = texture_index_size
         self.encoding = encoding
         self.name = ""
         self.name_english = ""
-        self.diffuse = (0.0, 0.0, 0.0, 0.0)
-        self.specular = (0.0, 0.0, 0.0)
-        self.specular_coefficient = 0.0
-        self.ambient = (0.0, 0.0, 0.0)
-        self.draw_flag = PmxDrawFlag.NONE
-        self.edge_color = (0.0, 0.0, 0.0, 0.0)
-        self.edge_size = 0.0
+        self.diffuse = (1.0, 1.0, 1.0, 1.0)  # 白色をデフォルトに
+        self.specular = (0.5, 0.5, 0.5)
+        self.specular_coefficient = 5.0
+        self.ambient = (0.3, 0.3, 0.3)
+        self.draw_flag = PmxDrawFlag.DOUBLE_SIDED | PmxDrawFlag.GROUND_SHADOW | PmxDrawFlag.EDGE_DRAWING
+        self.edge_color = (0.0, 0.0, 0.0, 1.0)
+        self.edge_size = 1.0
         self.texture_index = -1
         self.sphere_texture_index = -1
         self.sphere_mode = PmxSphereMode.DISABLED
@@ -122,8 +123,8 @@ class PmxMaterial:
         Args:
             f (file): バイナリ書き込みモードで開かれたファイルハンドル。
         """
-        f.write(utils.encodePMXString(self.name, self.encoding))
-        f.write(utils.encodePMXString(self.name_english, self.encoding))
+        f.write(utils.encodePMXString(self.name, utils.get_pmx_encoding_string(self.encoding)))
+        f.write(utils.encodePMXString(self.name_english, utils.get_pmx_encoding_string(self.encoding)))
 
         f.write(struct.pack("<ffff", *self.diffuse))
         f.write(struct.pack("<fff", *self.specular))
@@ -145,6 +146,6 @@ class PmxMaterial:
         else:
             f.write(struct.pack("<B", self.toon_texture_index))
 
-        f.write(utils.encodePMXString(self.memo, self.encoding))
+        f.write(utils.encodePMXString(self.memo, utils.get_pmx_encoding_string(self.encoding)))
 
         f.write(struct.pack("<I", self.face_count))

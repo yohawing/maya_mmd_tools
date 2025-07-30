@@ -41,8 +41,8 @@ class PmxSoftBody:
         """
         # Placeholder for SoftBody writing
         # This section needs to be implemented according to the full PMX 2.1 specification.
-        f.write(utils.encodePMXString(self.name, self.encoding))
-        f.write(utils.encodePMXString(self.name_english, self.encoding))
+        f.write(utils.encodePMXString(self.name, utils.get_pmx_encoding_string(self.encoding)))
+        f.write(utils.encodePMXString(self.name_english, utils.get_pmx_encoding_string(self.encoding)))
         
         # TODO: Write the rest of the SoftBody data based on PMX 2.1 specification
         # For example, shape type, material index, group, collision flags, etc.

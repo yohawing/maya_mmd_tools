@@ -7,8 +7,10 @@ class PmxVertex:
     """
     PMXファイルの頂点データを保持するクラス。
     """
-    def __init__(self, header):
-        self.header = header
+    def __init__(self, bone_index_size=2, additional_vec4_count=0):
+        # パース時にはヘッダーから値を設定、作成時にはデフォルト値を使用
+        self.bone_index_size = bone_index_size
+        self.additional_vec4_count = additional_vec4_count
         self.position = (0.0, 0.0, 0.0)
         self.normal = (0.0, 0.0, 0.0)
         self.uv = (0.0, 0.0)
@@ -18,8 +20,8 @@ class PmxVertex:
         self.bone_weights = []
         self.sdef_c = (0.0, 0.0, 0.0)
         self.sdef_r0 = (0.0, 0.0, 0.0)
-        self.sdef_r1 = (0.0, 0.0, 0.0)
-        self.edge_magnification = 0.0
+        self.sdef_r1 = (0.0, 0.0, 1.0)
+        self.edge_magnification = 1.0
 
     def parse(self, f):
         """
@@ -37,27 +39,27 @@ class PmxVertex:
             self.uv = struct.unpack('<ff', f.read(8))
 
             # Additional UVs
-            for _ in range(self.header.additional_uv):
+            for _ in range(self.additional_vec4_count):
                 self.additional_uvs.append(struct.unpack('<ffff', f.read(16)))
 
             self.weight_transform_type = struct.unpack('<B', f.read(1))[0]
 
-            bone_index_format = {1: '<B', 2: '<H', 4: '<I'}[self.header.bone_index_size]
+            bone_index_format = {1: '<B', 2: '<H', 4: '<I'}[self.bone_index_size]
 
             if self.weight_transform_type == 0:  # BDEF1
-                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
             elif self.weight_transform_type == 1:  # BDEF2
-                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
-                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 self.bone_weights.append(struct.unpack('<f', f.read(4))[0])
             elif self.weight_transform_type == 2:  # BDEF4
                 for _ in range(4):
-                    self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                    self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 for _ in range(4):
                     self.bone_weights.append(struct.unpack('<f', f.read(4))[0])
             elif self.weight_transform_type == 3:  # SDEF
-                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
-                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 self.bone_weights.append(struct.unpack('<f', f.read(4))[0])
                 self.sdef_c = struct.unpack('<fff', f.read(12))
                 self.sdef_r0 = struct.unpack('<fff', f.read(12))
@@ -66,7 +68,7 @@ class PmxVertex:
                 if self.header.version < 2.1:
                     raise ValueError("QDEF weight transform type is only supported in PMX 2.1 and later.")
                 for _ in range(4):
-                    self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.header.bone_index_size))[0])
+                    self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 for _ in range(4):
                     self.bone_weights.append(struct.unpack('<f', f.read(4))[0])
             else:
@@ -95,7 +97,7 @@ class PmxVertex:
         # Weight transform type
         f.write(struct.pack('<B', self.weight_transform_type))
 
-        bone_index_format = {1: '<B', 2: '<H', 4: '<I'}[self.header.bone_index_size]
+        bone_index_format = {1: '<B', 2: '<H', 4: '<I'}[self.bone_index_size]
 
         if self.weight_transform_type == 0:  # BDEF1
             f.write(struct.pack(bone_index_format, self.bone_indices[0]))

@@ -34,7 +34,8 @@ class PmxBone:
     PMXファイルのボーンデータを保持するクラス。
     """
 
-    def __init__(self, bone_index_size, encoding):
+    def __init__(self, bone_index_size=2, encoding=1):
+        # デフォルト値を設定（bone_index_size=2 (short), encoding=1 (UTF-16LE)）
         self.bone_index_size = bone_index_size
         self.encoding = encoding
         self.name = ""
@@ -159,8 +160,9 @@ class PmxBone:
         Args:
             f (file): バイナリ書き込みモードで開かれたファイルハンドル。
         """
-        f.write(utils.encodePMXString(self.name, self.encoding))
-        f.write(utils.encodePMXString(self.name_english, self.encoding))
+        encoding_str = utils.get_pmx_encoding_string(self.encoding)
+        f.write(utils.encodePMXString(self.name, encoding_str))
+        f.write(utils.encodePMXString(self.name_english, encoding_str))
 
         f.write(struct.pack("<fff", *self.position))
 
