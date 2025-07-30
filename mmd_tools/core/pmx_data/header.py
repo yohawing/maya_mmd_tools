@@ -1,7 +1,13 @@
+import enum
 import struct
 
 from mmd_tools.core.settings import settings
 from mmd_tools.core import utils
+
+
+class PmxEncoding(enum.IntEnum):
+    UTF16LE = 0
+    UTF8 = 1
 
 
 class PmxHeader:
@@ -13,8 +19,7 @@ class PmxHeader:
         self.magic = b""
         self.version = 0.0
         self.header_size = 0
-        self.text_encoding = "utf-16-le"  # デフォルトはUTF-16LE
-        self.encoding = "utf-16-le"  # 実際に使用するエンコーディング
+        self.encoding = PmxEncoding.UTF16LE
         self.additional_uv = 0
         self.vertex_index_size = 0
         self.texture_index_size = 0
@@ -43,7 +48,7 @@ class PmxHeader:
         if self.header_size != 8:
             raise ValueError(f"Unsupported PMX header size: {self.header_size}")
 
-        text_encoding = struct.unpack("<B", f.read(1))[0]
+        self.encoding = PmxEncoding(struct.unpack("<B", f.read(1))[0])
         self.additional_uv = struct.unpack("<B", f.read(1))[0]
         self.vertex_index_size = struct.unpack("<B", f.read(1))[0]
         self.texture_index_size = struct.unpack("<B", f.read(1))[0]
@@ -51,8 +56,6 @@ class PmxHeader:
         self.bone_index_size = struct.unpack("<B", f.read(1))[0]
         self.morph_index_size = struct.unpack("<B", f.read(1))[0]
         self.rigid_body_index_size = struct.unpack("<B", f.read(1))[0]
-
-        self.encoding = "utf-16-le" if text_encoding == 0 else "utf-8"
 
         # Model Info
         self.model_name = utils.parsePMXString(f, self.encoding)

@@ -3,6 +3,7 @@ import struct
 from typing import BinaryIO, List, Optional, Tuple
 
 from mmd_tools.core import utils
+from mmd_tools.core.pmx_data.header import PmxEncoding
 from mmd_tools.core.pmx_data.ik_link import PmxIKLink
 from mmd_tools.core.settings import get_settings
 
@@ -35,11 +36,17 @@ class PmxBone:
     PMXファイルのボーンデータを保持するクラス。
     """
 
-    def __init__(self, bone_index_size: int = 2, encoding_flag: int = 1):
-        # デフォルト値を設定（bone_index_size=2 (short), encoding_flag=1 (UTF-8)）
+    def __init__(
+        self, bone_index_size: int = 2, encoding: PmxEncoding = PmxEncoding.UTF16LE
+    ):
+        """
+        コンストラクタ。ボーンの初期値を設定します。
+        Args:
+            bone_index_size (int): ボーンインデックスのサイズ（1, 2, 4バイト）。
+            encoding (PmxEncoding): 文字列エンコーディング方式。
+        """
         self.bone_index_size = bone_index_size
-        self.encoding_flag = encoding_flag  # 0=UTF-16LE, 1=UTF-8
-        self.encoding = utils.get_pmx_encoding_string(encoding_flag)  # "utf-16-le" or "utf-8"
+        self.encoding = encoding
         self.name = ""
         self.name_english = ""
         self.position = (0.0, 0.0, 0.0)
@@ -80,7 +87,10 @@ class PmxBone:
 
         # 各サイズの最大値を-1として扱う
         max_values = {1: 0xFF, 2: 0xFFFF, 4: 0xFFFFFFFF}
-        if self.parent_bone_index == max_values[self.bone_index_size] or self.parent_bone_index < 0:
+        if (
+            self.parent_bone_index == max_values[self.bone_index_size]
+            or self.parent_bone_index < 0
+        ):
             self.parent_bone_index = -1
 
         self.transform_layer = struct.unpack("<i", f.read(4))[0]
@@ -126,7 +136,7 @@ class PmxBone:
             self.ik_limit_angle = struct.unpack("<f", f.read(4))[0]
             ik_link_count = struct.unpack("<i", f.read(4))[0]
             for _ in range(ik_link_count):
-                ik_link = PmxIKLink(self.bone_index_size, self.encoding_flag)
+                ik_link = PmxIKLink(self.bone_index_size)
                 ik_link.parse(f)
                 self.ik_links.append(ik_link)
 
@@ -137,14 +147,11 @@ class PmxBone:
         Returns:
             str: ボーンの名前。
         """
-        if settings.get("import.model.joint_name_conversion_with_english", True):
-            # 英語名があればそれを使用
-            if self.name_english and self.name_english != "":
-                return self.name_english
+        # 英語名があればそれを使用
+        if self.name_english and self.name_english != "":
+            return self.name_english
 
-            return self.name
-        else:
-            return self.name
+        return self.name
 
     def get_flag(self, PmxBoneFlag) -> int:
         """
@@ -169,7 +176,7 @@ class PmxBone:
 
         bone_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.bone_index_size]
         bone_unsigned_format = {1: "<B", 2: "<H", 4: "<I"}[self.bone_index_size]
-        
+
         # Parent bone index (-1 の場合は各サイズの最大値に変換)
         if self.parent_bone_index == -1:
             parent_index = {1: 0xFF, 2: 0xFFFF, 4: 0xFFFFFFFF}[self.bone_index_size]
@@ -188,7 +195,9 @@ class PmxBone:
             f.write(struct.pack("<fff", *self.connect_position_offset))
 
         # 0x0100: 回転付与, 0x0200: 移動付与
-        if self.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or self.get_flag(PmxBoneFlag.GIVEN_PARENT_MOVE):
+        if self.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or self.get_flag(
+            PmxBoneFlag.GIVEN_PARENT_MOVE
+        ):
             f.write(struct.pack(bone_index_format, self.given_parent_bone_index))
             f.write(struct.pack("<f", self.given_rate))
 

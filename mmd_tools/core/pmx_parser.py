@@ -1,6 +1,8 @@
 import os
 import struct
 
+from mmd_tools.core import utils
+
 from .exceptions import MMDParseException
 from .pmx_data.bone import PmxBone
 from .pmx_data.display_frame import PmxDisplayFrame
@@ -55,7 +57,8 @@ class PmxParser:
                 self.header.parse(f)
 
                 # Get sizes from header
-                encoding = self.header.text_encoding
+                encoding_flag = self.header.encoding
+                encoding_text = utils.get_pmx_encoding_string(encoding_flag)
                 vertex_size = self.header.vertex_index_size
                 texture_size = self.header.texture_index_size
                 material_size = self.header.material_index_size
@@ -67,7 +70,7 @@ class PmxParser:
                 vertex_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(vertex_count):
                     vertex = PmxVertex(bone_size, self.header.additional_uv)
-                    vertex.parse(f)
+                    vertex.parse(f, self.header.version)
                     self.vertices.append(vertex)
 
                 # Face
@@ -81,20 +84,22 @@ class PmxParser:
                 texture_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(texture_count):
                     texture_path_length = struct.unpack("<I", f.read(4))[0]
-                    texture_path = f.read(texture_path_length).decode(encoding)
+                    texture_path = f.read(texture_path_length).decode(encoding_text)
                     self.textures.append(texture_path)
 
                 # Material
                 material_count = struct.unpack("<I", f.read(4))[0]
                 for i in range(material_count):
-                    material = PmxMaterial(texture_size, encoding, material_index=i)
+                    material = PmxMaterial(
+                        texture_size, encoding_flag, material_index=i
+                    )
                     material.parse(f)
                     self.materials.append(material)
 
                 # Bone
                 bone_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(bone_count):
-                    bone = PmxBone(bone_size, encoding)
+                    bone = PmxBone(bone_size, encoding_flag)
                     bone.parse(f)
                     self.bones.append(bone)
 
@@ -107,7 +112,7 @@ class PmxParser:
                         bone_size,
                         morph_size,
                         rigid_body_size,
-                        encoding,
+                        encoding_flag,
                     )
                     morph.parse(f)
                     self.morphs.append(morph)
@@ -115,21 +120,23 @@ class PmxParser:
                 # Display Frame
                 display_frame_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(display_frame_count):
-                    display_frame = PmxDisplayFrame(bone_size, morph_size, encoding)
+                    display_frame = PmxDisplayFrame(
+                        bone_size, morph_size, encoding_flag
+                    )
                     display_frame.parse(f)
                     self.display_frames.append(display_frame)
 
                 # Rigid Body
                 rigid_body_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(rigid_body_count):
-                    rigid_body = PmxRigidBody(bone_size, encoding)
+                    rigid_body = PmxRigidBody(bone_size, encoding_flag)
                     rigid_body.parse(f)
                     self.rigid_bodies.append(rigid_body)
 
                 # Joint
                 joint_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(joint_count):
-                    joint = PmxJoint(rigid_body_size, encoding)
+                    joint = PmxJoint(rigid_body_size, encoding_flag)
                     joint.parse(f)
                     self.joints.append(joint)
 
@@ -137,7 +144,7 @@ class PmxParser:
                 if self.header.version >= 2.1:
                     soft_body_count = struct.unpack("<I", f.read(4))[0]
                     for _ in range(soft_body_count):
-                        soft_body = PmxSoftBody(encoding)
+                        soft_body = PmxSoftBody(encoding_flag)
                         soft_body.parse(f)
                         # self.soft_bodies.append(soft_body) # Need to add soft_bodies list to __init__
 
@@ -174,7 +181,7 @@ class PmxParser:
                 vertex_count = len(self.vertices)
                 f.write(struct.pack("<I", vertex_count))
                 for vertex in self.vertices:
-                    vertex.write(f)
+                    vertex.write(f, self.header.version)
 
                 # Face
                 face_count = len(self.faces) * 3

@@ -2,7 +2,9 @@ import os
 import io
 
 from mmd_tools.core import mmd_parser
+from mmd_tools.core.pmd_data.material import PmdMaterial
 from mmd_tools.core.pmx_data.face import PmxFace
+from mmd_tools.core.pmx_data.header import PmxEncoding
 from mmd_tools.core.pmx_data.vertex import PmxVertex
 from mmd_tools.core.pmx_parser import PmxParser
 from tests.common.test_base import TestBase
@@ -59,12 +61,8 @@ class TestPmxParser(TestBase):
         self.assertEqual(
             header.header_size, 8, msg=f"ヘッダサイズが不正です: {header.header_size}"
         )
-        # テキストエンコーディングがUTF-16LEまたはUTF-8であることを確認
-        self.assertIn(
-            header.text_encoding,
-            ["utf-16-le", "utf-8"],
-            msg=f"不正なテキストエンコーディングです: {header.text_encoding}",
-        )
+        # エンコーディングがPMXEncodingのいずれかであることを確認
+        self.assertIsInstance(header.encoding, PmxEncoding)
         # 追加UV数が0から4の範囲内であることを確認
         self.assertIn(
             header.additional_uv,
@@ -194,11 +192,17 @@ class TestPmxParser(TestBase):
         self.assertGreater(len(self.parsed_data.materials), 0, msg="材質リストが空です")
 
         # 最初の材質を取得して、各属性の型と構造を確認
-        material = self.parsed_data.materials[0]
+        material: PmdMaterial = self.parsed_data.materials[0]
         self.assertIsNotNone(material, msg="最初の材質がNoneです")
         self.assertIsInstance(material.name, str, msg="材質名が文字列ではありません")
+
+        # Mockデータの名前チェック
+        self.assertEqual(material.name, "テスト材質", msg="材質名が不正です")
         self.assertIsInstance(
             material.name_english, str, msg="英語材質名が文字列ではありません"
+        )
+        self.assertEqual(
+            material.name_english, "TestMaterial", msg="英語材質名が不正です"
         )
         self.assertEqual(len(material.diffuse), 4, msg="Diffuseの要素数が不正です")
         self.assertEqual(len(material.specular), 3, msg="Specularの要素数が不正です")
@@ -252,9 +256,11 @@ class TestPmxParser(TestBase):
         bone = self.parsed_data.bones[0]
         self.assertIsNotNone(bone, msg="最初のボーンがNoneです")
         self.assertIsInstance(bone.name, str, msg="ボーン名が文字列ではありません")
+        self.assertEqual(bone.name, "センター", msg="ボーン名が不正です")
         self.assertIsInstance(
             bone.name_english, str, msg="英語ボーン名が文字列ではありません"
         )
+        self.assertEqual(bone.name_english, "center", msg="英語ボーン名が不正です")
         self.assertEqual(len(bone.position), 3, msg="ボーン位置の要素数が不正です")
         self.assertIsInstance(
             bone.parent_bone_index, int, msg="親ボーンインデックスがintではありません"

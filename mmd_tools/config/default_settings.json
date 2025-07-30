@@ -14,7 +14,6 @@
       "create_mmd_shaders": true,
       "texture_search_path": "",
       "hide_hidden_geometry": true,
-      "joint_name_conversion_with_english": false,
       "uv_set_name": "map#",
       "disable_backface_culling": true
     },

@@ -3,13 +3,15 @@
 import struct
 from typing import List
 
+from mmd_tools.core.pmx_data.header import PmxEncoding
 
-def parsePMXString(f, encoding="utf-16-le"):
+
+def parsePMXString(f, encoding=0):
     """PMX形式の文字列をファイルから読み込み、通常の文字列に変換します。
 
     Args:
         f: バイナリ読み込みモードで開かれたファイルハンドル
-        encoding (str): 文字エンコーディング（デフォルトはUTF-16LE）
+        encoding (int): 文字エンコーディング（0: UTF-16LE, 1: UTF-8）
 
     Returns:
         str: 読み込まれた文字列
@@ -19,8 +21,11 @@ def parsePMXString(f, encoding="utf-16-le"):
     if length == 0:
         return ""
     (buf,) = struct.unpack("<%ds" % length, f.read(length))
-    # return buf.decode(encoding)
-    return str(buf, encoding, errors="replace")
+    return str(
+        buf,
+        "utf-16-le" if encoding == PmxEncoding.UTF16LE else "utf-8",
+        errors="replace",
+    )
 
 
 def decodePMDString(byteString):
@@ -93,7 +98,7 @@ def encodePMDString(string, length):
         return encoded + b"\x00" * (length - len(encoded))
 
 
-def get_pmx_encoding_string(encoding_flag):
+def get_pmx_encoding_string(encoding_flag: PmxEncoding) -> str:
     """
     PMXのエンコーディングフラグ（0または1）を文字列に変換
 
@@ -103,10 +108,10 @@ def get_pmx_encoding_string(encoding_flag):
     Returns:
         str: エンコーディング文字列
     """
-    return "utf-16-le" if encoding_flag == 0 else "utf-8"
+    return "utf-16-le" if encoding_flag == PmxEncoding.UTF16LE else "utf-8"
 
 
-def encodePMXString(string, encoding="utf-16-le"):
+def encodePMXString(string, encoding=PmxEncoding.UTF16LE):
     """
     文字列をPMX形式（長さプレフィックス付き）にエンコードします。
 
@@ -119,8 +124,10 @@ def encodePMXString(string, encoding="utf-16-le"):
     """
     if not string:
         return struct.pack("<i", 0)
-
-    encoded = string.encode(encoding)
+    if encoding == PmxEncoding.UTF16LE:
+        encoded = string.encode("utf-16-le")
+    else:
+        encoded = string.encode("utf-8")
     return struct.pack("<i", len(encoded)) + encoded
 
 

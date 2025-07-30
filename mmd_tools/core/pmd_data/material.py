@@ -49,6 +49,15 @@ class PmdMaterial:
             # テクスチャがない場合はインデックスを使用したデフォルト名
             self.name = f"material_{self.material_index}"
 
+    def get_name(self):
+        """
+        材質の名前を取得する。
+
+        Returns:
+            str: 材質の名前。
+        """
+        return self.name
+
     def write(self, f):
         """
         PMD材質データをバイナリファイルに書き込む。
