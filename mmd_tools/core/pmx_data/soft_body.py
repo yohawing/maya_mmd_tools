@@ -1,3 +1,5 @@
+from typing import BinaryIO
+
 from mmd_tools.core import utils
 
 
@@ -6,13 +8,14 @@ class PmxSoftBody:
     PMXファイルのSoftBodyデータを保持するクラス (PMX 2.1以降)。
     現在、このクラスはプレースホルダーであり、詳細な解析は実装されていません。
     """
-    def __init__(self, encoding):
+    def __init__(self, encoding_flag: int = 1):
         self.name = ''
         self.name_english = ''
-        self.encoding = encoding
+        self.encoding_flag = encoding_flag  # 0=UTF-16LE, 1=UTF-8
+        self.encoding = utils.get_pmx_encoding_string(encoding_flag)  # "utf-16-le" or "utf-8"
         # TODO: Implement detailed SoftBody parsing based on PMX 2.1 specification
 
-    def parse(self, f):
+    def parse(self, f: BinaryIO) -> None:
         """
         ファイルハンドルからPMX SoftBodyデータを解析し、自身の属性に格納する。
 
@@ -32,7 +35,7 @@ class PmxSoftBody:
         # For demonstration, let's assume a fixed size for now, but this is incorrect.
         # f.read(some_fixed_size_for_softbody_data)
 
-    def write(self, f):
+    def write(self, f: BinaryIO) -> None:
         """
         PMX SoftBodyデータをファイルハンドルに書き込む。
 
@@ -41,8 +44,8 @@ class PmxSoftBody:
         """
         # Placeholder for SoftBody writing
         # This section needs to be implemented according to the full PMX 2.1 specification.
-        f.write(utils.encodePMXString(self.name, utils.get_pmx_encoding_string(self.encoding)))
-        f.write(utils.encodePMXString(self.name_english, utils.get_pmx_encoding_string(self.encoding)))
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
         
         # TODO: Write the rest of the SoftBody data based on PMX 2.1 specification
         # For example, shape type, material index, group, collision flags, etc.

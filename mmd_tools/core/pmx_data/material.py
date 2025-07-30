@@ -1,5 +1,6 @@
 import enum
 import struct
+from typing import BinaryIO
 
 from mmd_tools.core import utils
 
@@ -54,10 +55,11 @@ class PmxMaterial:
     PMXファイルの材質データを保持するクラス。
     """
 
-    def __init__(self, texture_index_size=1, encoding=1, material_index=0):
+    def __init__(self, texture_index_size: int = 1, encoding_flag: int = 1, material_index: int = 0):
         # デフォルト値を設定
         self.texture_index_size = texture_index_size
-        self.encoding = encoding
+        self.encoding_flag = encoding_flag  # 0=UTF-16LE, 1=UTF-8
+        self.encoding = utils.get_pmx_encoding_string(encoding_flag)  # "utf-16-le" or "utf-8"
         self.name = ""
         self.name_english = ""
         self.diffuse = (1.0, 1.0, 1.0, 1.0)  # 白色をデフォルトに
@@ -76,12 +78,12 @@ class PmxMaterial:
         self.face_count = 0
         self.material_index = material_index
 
-    def parse(self, f):
+    def parse(self, f: BinaryIO) -> None:
         """
         ファイルハンドルからPMX材質データを解析し、自身の属性に格納する。
 
         Args:
-            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
+            f: バイナリ読み込みモードで開かれたファイルハンドル。
         """
         self.name = utils.parsePMXString(f, self.encoding)
         self.name_english = utils.parsePMXString(f, self.encoding)
@@ -116,15 +118,15 @@ class PmxMaterial:
 
         self.face_count = struct.unpack("<I", f.read(4))[0]
 
-    def write(self, f):
+    def write(self, f: BinaryIO) -> None:
         """
         PMX材質データをファイルハンドルに書き込む。
 
         Args:
-            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+            f: バイナリ書き込みモードで開かれたファイルハンドル。
         """
-        f.write(utils.encodePMXString(self.name, utils.get_pmx_encoding_string(self.encoding)))
-        f.write(utils.encodePMXString(self.name_english, utils.get_pmx_encoding_string(self.encoding)))
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
 
         f.write(struct.pack("<ffff", *self.diffuse))
         f.write(struct.pack("<fff", *self.specular))
@@ -146,6 +148,6 @@ class PmxMaterial:
         else:
             f.write(struct.pack("<B", self.toon_texture_index))
 
-        f.write(utils.encodePMXString(self.memo, utils.get_pmx_encoding_string(self.encoding)))
+        f.write(utils.encodePMXString(self.memo, self.encoding))
 
         f.write(struct.pack("<I", self.face_count))

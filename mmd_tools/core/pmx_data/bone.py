@@ -1,5 +1,6 @@
 import enum
 import struct
+from typing import BinaryIO, List, Optional, Tuple
 
 from mmd_tools.core import utils
 from mmd_tools.core.pmx_data.ik_link import PmxIKLink
@@ -34,10 +35,11 @@ class PmxBone:
     PMXファイルのボーンデータを保持するクラス。
     """
 
-    def __init__(self, bone_index_size=2, encoding=1):
-        # デフォルト値を設定（bone_index_size=2 (short), encoding=1 (UTF-16LE)）
+    def __init__(self, bone_index_size: int = 2, encoding_flag: int = 1):
+        # デフォルト値を設定（bone_index_size=2 (short), encoding_flag=1 (UTF-8)）
         self.bone_index_size = bone_index_size
-        self.encoding = encoding
+        self.encoding_flag = encoding_flag  # 0=UTF-16LE, 1=UTF-8
+        self.encoding = utils.get_pmx_encoding_string(encoding_flag)  # "utf-16-le" or "utf-8"
         self.name = ""
         self.name_english = ""
         self.position = (0.0, 0.0, 0.0)
@@ -59,12 +61,12 @@ class PmxBone:
         self.ik_limit_angle = 0.0
         self.ik_links = []
 
-    def parse(self, f):
+    def parse(self, f: BinaryIO) -> None:
         """
         ファイルハンドルからPMXボーンデータを解析し、自身の属性に格納する。
 
         Args:
-            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
+            f: バイナリ読み込みモードで開かれたファイルハンドル。
         """
         self.name = utils.parsePMXString(f, self.encoding)
         self.name_english = utils.parsePMXString(f, self.encoding)
@@ -124,7 +126,7 @@ class PmxBone:
             self.ik_limit_angle = struct.unpack("<f", f.read(4))[0]
             ik_link_count = struct.unpack("<i", f.read(4))[0]
             for _ in range(ik_link_count):
-                ik_link = PmxIKLink(self.bone_index_size, self.encoding)
+                ik_link = PmxIKLink(self.bone_index_size, self.encoding_flag)
                 ik_link.parse(f)
                 self.ik_links.append(ik_link)
 
@@ -153,16 +155,15 @@ class PmxBone:
         """
         return self.bone_flag & PmxBoneFlag
 
-    def write(self, f):
+    def write(self, f: BinaryIO) -> None:
         """
         PMXボーンデータをファイルハンドルに書き込む。
 
         Args:
-            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+            f: バイナリ書き込みモードで開かれたファイルハンドル。
         """
-        encoding_str = utils.get_pmx_encoding_string(self.encoding)
-        f.write(utils.encodePMXString(self.name, encoding_str))
-        f.write(utils.encodePMXString(self.name_english, encoding_str))
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
 
         f.write(struct.pack("<fff", *self.position))
 

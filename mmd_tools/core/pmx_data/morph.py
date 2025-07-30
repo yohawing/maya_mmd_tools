@@ -1,5 +1,6 @@
 import enum
 import struct
+from typing import BinaryIO
 
 from mmd_tools.core import utils
 
@@ -21,7 +22,7 @@ class PmxMorph:
     """
     PMXファイルのモーフデータを保持するクラス。
     """
-    def __init__(self, vertex_index_size, material_index_size, bone_index_size, morph_index_size, rigid_body_index_size, encoding):
+    def __init__(self, vertex_index_size: int, material_index_size: int, bone_index_size: int, morph_index_size: int, rigid_body_index_size: int, encoding_flag: int = 1):
         self.vertex_index_size = vertex_index_size
         self.material_index_size = material_index_size
         self.bone_index_size = bone_index_size
@@ -36,7 +37,8 @@ class PmxMorph:
             "rigid_body": {1: '<b', 2: '<h', 4: '<i'}[rigid_body_index_size]
         }
 
-        self.encoding = encoding
+        self.encoding_flag = encoding_flag  # 0=UTF-16LE, 1=UTF-8
+        self.encoding = utils.get_pmx_encoding_string(encoding_flag)  # "utf-16-le" or "utf-8"
 
         self.name = ''
         self.name_english = ''
@@ -45,7 +47,7 @@ class PmxMorph:
         self.offset_count = 0
         self.offsets = []
 
-    def parse(self, f):
+    def parse(self, f: BinaryIO) -> None:
         """
         ファイルハンドルからPMXモーフデータを解析し、自身の属性に格納する。
 
@@ -98,15 +100,15 @@ class PmxMorph:
                 raise ValueError(f"Unknown morph type: {self.morph_type}")
             self.offsets.append(offset_data)
 
-    def write(self, f):
+    def write(self, f: BinaryIO) -> None:
         """
         PMXモーフデータをファイルハンドルに書き込む。
 
         Args:
             f (file): バイナリ書き込みモードで開かれたファイルハンドル。
         """
-        f.write(utils.encodePMXString(self.name, utils.get_pmx_encoding_string(self.encoding)))
-        f.write(utils.encodePMXString(self.name_english, utils.get_pmx_encoding_string(self.encoding)))
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
 
         f.write(struct.pack('<B', self.panel))
         f.write(struct.pack('<B', self.morph_type.value if isinstance(self.morph_type, PmxMorphType) else self.morph_type))

@@ -101,8 +101,12 @@ class PmxHeader:
         f.write(struct.pack("<B", self.rigid_body_index_size))
 
         # Model Info
-        encoding_str = utils.get_pmx_encoding_string(self.encoding)
-        f.write(utils.encodePMXString(self.model_name, encoding_str))
-        f.write(utils.encodePMXString(self.model_name_english, encoding_str))
-        f.write(utils.encodePMXString(self.comment, encoding_str))
-        f.write(utils.encodePMXString(self.comment_english, encoding_str))
+        f.write(utils.encodePMXString(self.model_name, self.encoding))
+        f.write(utils.encodePMXString(self.model_name_english, self.encoding))
+        f.write(utils.encodePMXString(self.comment, self.encoding))
+        f.write(utils.encodePMXString(self.comment_english, self.encoding))
+
+    @property
+    def encoding_flag(self):
+        """エンコーディングフラグ（0=UTF-16LE, 1=UTF-8）を返す"""
+        return 0 if self.encoding == "utf-16-le" else 1

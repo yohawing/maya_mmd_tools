@@ -1,4 +1,5 @@
 import struct
+from typing import BinaryIO
 
 from mmd_tools.core import utils
 
@@ -7,9 +8,10 @@ class PmxJoint:
     """
     PMXファイルのJointデータを保持するクラス。
     """
-    def __init__(self, rigid_body_index_size, encoding):
+    def __init__(self, rigid_body_index_size: int, encoding_flag: int = 1):
         self.rigid_body_index_size = rigid_body_index_size
-        self.encoding = encoding
+        self.encoding_flag = encoding_flag  # 0=UTF-16LE, 1=UTF-8
+        self.encoding = utils.get_pmx_encoding_string(encoding_flag)  # "utf-16-le" or "utf-8"
         self.name = ''
         self.name_english = ''
         self.joint_type = 0
@@ -24,7 +26,7 @@ class PmxJoint:
         self.spring_translation = (0.0, 0.0, 0.0)
         self.spring_rotation = (0.0, 0.0, 0.0)
 
-    def parse(self, f):
+    def parse(self, f: BinaryIO) -> None:
         """
         ファイルハンドルからPMX Jointデータを解析し、自身の属性に格納する。
 
@@ -49,15 +51,15 @@ class PmxJoint:
         self.spring_translation = struct.unpack('<fff', f.read(12))
         self.spring_rotation = struct.unpack('<fff', f.read(12))
 
-    def write(self, f):
+    def write(self, f: BinaryIO) -> None:
         """
         PMX Jointデータをファイルハンドルに書き込む。
 
         Args:
             f (file): バイナリ書き込みモードで開かれたファイルハンドル。
         """
-        f.write(utils.encodePMXString(self.name, utils.get_pmx_encoding_string(self.encoding)))
-        f.write(utils.encodePMXString(self.name_english, utils.get_pmx_encoding_string(self.encoding)))
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
 
         f.write(struct.pack('<B', self.joint_type))
 
