@@ -794,7 +794,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # 足のジョイントチェーンを作成（膝にjointOrientを設定）
         cmds.select(clear=True)
         hip = cmds.joint(name="left_leg", position=[1, 10, 0])
-        knee = cmds.joint(name="left_knee", position=[1, 5, 0])
+        knee = cmds.joint(name="left_knee", position=[1, 5, 1])  # 少し前方に配置
         # jointOrientを設定（膝が前方に曲がる方向）
         cmds.setAttr(f"{knee}.jointOrientX", 0)
         cmds.setAttr(f"{knee}.jointOrientY", 90)  # Y軸周りに90度回転

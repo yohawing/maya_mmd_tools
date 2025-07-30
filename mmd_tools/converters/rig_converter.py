@@ -460,14 +460,18 @@ class RigConverter:
                     try:
                         # 膝のローカルX軸を取得（PMXではX軸が主要な回転軸）
                         local_x_axis = cmds.getAttr(f"{knee_joint}.mmd_local_x_axis")
-                        if local_x_axis and len(local_x_axis) == 3:
-                            # PMX座標系からMaya座標系に変換
-                            knee_bend_direction = utils.pmx_to_maya_vector(local_x_axis)
-                            knee_bend_direction = utils.normalize_vector(knee_bend_direction)
-                            method_used = "pmx_local_axis"
-                            self.logger.debug(
-                                f"PMXローカル軸情報を使用: {knee_bend_direction}"
-                            )
+                        # float3/double3属性は[(x, y, z)]の形式で返される
+                        if local_x_axis and isinstance(local_x_axis, list) and len(local_x_axis) > 0:
+                            if isinstance(local_x_axis[0], (list, tuple)) and len(local_x_axis[0]) == 3:
+                                local_x_axis = local_x_axis[0]
+                            if len(local_x_axis) == 3:
+                                # PMX座標系からMaya座標系に変換
+                                knee_bend_direction = utils.pmx_to_maya_vector(local_x_axis)
+                                knee_bend_direction = utils.normalize_vector(knee_bend_direction)
+                                method_used = "pmx_local_axis"
+                                self.logger.debug(
+                                    f"PMXローカル軸情報を使用: {knee_bend_direction}"
+                                )
                     except Exception as e:
                         self.logger.debug(f"PMXローカル軸の取得に失敗: {e}")
 
@@ -482,14 +486,22 @@ class RigConverter:
                         
                         # jointOrientが設定されている場合
                         if any(abs(angle) > 0.001 for angle in joint_orient):
-                            # jointOrientからローカル軸マトリックスを作成
-                            matrix = maya_utils.create_matrix_from_euler(joint_orient)
-                            # X軸方向を取得（膝の主要な回転軸）
-                            knee_bend_direction = [matrix[0], matrix[1], matrix[2]]
+                            # jointOrientから屈曲方向を計算
+                            # Y軸回転が主要な場合、膝は前方（-Z方向）に曲がる
+                            if abs(joint_orient[1]) > abs(joint_orient[0]) and abs(joint_orient[1]) > abs(joint_orient[2]):
+                                # Y軸回転が最も大きい場合、Z軸方向に屈曲
+                                knee_bend_direction = [0, 0, -1]
+                            elif abs(joint_orient[0]) > abs(joint_orient[1]) and abs(joint_orient[0]) > abs(joint_orient[2]):
+                                # X軸回転が最も大きい場合、Y軸方向に屈曲
+                                knee_bend_direction = [0, 1, 0] if joint_orient[0] > 0 else [0, -1, 0]
+                            else:
+                                # Z軸回転が最も大きい場合、X軸方向に屈曲
+                                knee_bend_direction = [1, 0, 0] if joint_orient[2] > 0 else [-1, 0, 0]
+                            
                             knee_bend_direction = utils.normalize_vector(knee_bend_direction)
                             method_used = "joint_orient"
                             self.logger.debug(
-                                f"jointOrientから屈曲方向を取得: {knee_bend_direction}"
+                                f"jointOrientから屈曲方向を取得: {knee_bend_direction} (orient={joint_orient})"
                             )
                     except Exception as e:
                         self.logger.debug(f"jointOrientの取得に失敗: {e}")
