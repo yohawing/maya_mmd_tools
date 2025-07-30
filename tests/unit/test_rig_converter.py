@@ -747,6 +747,85 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertTrue("semi_standard_bones" in result)
         self.assertTrue("validation_report" in result)
 
+    def test_pole_target_with_pmx_local_axis(self):
+        """PMXローカル軸情報を使用したPoleTarget作成テスト"""
+        # 足のジョイントチェーンを作成
+        cmds.select(clear=True)
+        hip = cmds.joint(name="left_leg", position=[1, 10, 0])
+        knee = cmds.joint(name="left_knee", position=[1, 5, 0])
+        ankle = cmds.joint(name="left_ankle", position=[1, 0, 0])
+
+        # 膝にPMXローカル軸情報を追加
+        cmds.addAttr(knee, longName="mmd_local_x_axis", attributeType="double3")
+        cmds.addAttr(knee, longName="mmd_local_x_axisX", attributeType="double", parent="mmd_local_x_axis")
+        cmds.addAttr(knee, longName="mmd_local_x_axisY", attributeType="double", parent="mmd_local_x_axis")
+        cmds.addAttr(knee, longName="mmd_local_x_axisZ", attributeType="double", parent="mmd_local_x_axis")
+        # X軸が前方を向くように設定（PMX座標系で）
+        cmds.setAttr(f"{knee}.mmd_local_x_axis", 0, 0, -1, type="double3")
+
+        # IKハンドルを作成
+        ik_handle, _ = cmds.ikHandle(startJoint=hip, endEffector=ankle, solver="ikRPsolver")
+
+        # IKチェーン情報を作成
+        chain = {
+            "ik_bone": "left_leg_ik",
+            "ik_links": [{"bone": knee, "bone_index": 1}],
+        }
+
+        # IKボーンを作成
+        cmds.select(clear=True)
+        ik_bone = cmds.joint(name="left_leg_ik", position=[1, 0, 2])
+
+        # PoleTargetを作成
+        pole_target = self.converter._create_pole_target_for_leg_ik(
+            chain, ik_handle, hip, ankle
+        )
+
+        # PoleTargetが作成されたか確認
+        self.assertIsNotNone(pole_target)
+
+        # mmd_pole_methodアトリビュートを確認
+        self.assertTrue(cmds.attributeQuery("mmd_pole_method", node=pole_target, exists=True))
+        method = cmds.getAttr(f"{pole_target}.mmd_pole_method")
+        self.assertEqual(method, "pmx_local_axis", "PMXローカル軸情報が使用されませんでした")
+
+    def test_pole_target_with_joint_orient(self):
+        """jointOrientを使用したPoleTarget作成テスト"""
+        # 足のジョイントチェーンを作成（膝にjointOrientを設定）
+        cmds.select(clear=True)
+        hip = cmds.joint(name="left_leg", position=[1, 10, 0])
+        knee = cmds.joint(name="left_knee", position=[1, 5, 0])
+        # jointOrientを設定（膝が前方に曲がる方向）
+        cmds.setAttr(f"{knee}.jointOrientX", 0)
+        cmds.setAttr(f"{knee}.jointOrientY", 90)  # Y軸周りに90度回転
+        cmds.setAttr(f"{knee}.jointOrientZ", 0)
+        ankle = cmds.joint(name="left_ankle", position=[1, 0, 0])
+
+        # IKハンドルを作成
+        ik_handle, _ = cmds.ikHandle(startJoint=hip, endEffector=ankle, solver="ikRPsolver")
+
+        # IKチェーン情報を作成
+        chain = {
+            "ik_bone": "left_leg_ik",
+            "ik_links": [{"bone": knee, "bone_index": 1}],
+        }
+
+        # IKボーンを作成
+        cmds.select(clear=True)
+        ik_bone = cmds.joint(name="left_leg_ik", position=[1, 0, 2])
+
+        # PoleTargetを作成
+        pole_target = self.converter._create_pole_target_for_leg_ik(
+            chain, ik_handle, hip, ankle
+        )
+
+        # PoleTargetが作成されたか確認
+        self.assertIsNotNone(pole_target)
+
+        # mmd_pole_methodアトリビュートを確認
+        method = cmds.getAttr(f"{pole_target}.mmd_pole_method")
+        self.assertEqual(method, "joint_orient", "jointOrient情報が使用されませんでした")
+
 
 if __name__ == "__main__":
     unittest.main()
