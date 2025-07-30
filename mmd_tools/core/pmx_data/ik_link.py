@@ -26,3 +26,17 @@ class PmxIKLink:
         if self.angle_limit == 1:
             self.limit_min = struct.unpack('<fff', f.read(12))
             self.limit_max = struct.unpack('<fff', f.read(12))
+
+    def write(self, f):
+        """
+        PMX IKリンクデータをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
+        f.write(struct.pack(bone_index_format, self.ik_bone_index))
+        f.write(struct.pack('<B', self.angle_limit))
+        if self.angle_limit == 1:
+            f.write(struct.pack('<fff', *self.limit_min))
+            f.write(struct.pack('<fff', *self.limit_max))

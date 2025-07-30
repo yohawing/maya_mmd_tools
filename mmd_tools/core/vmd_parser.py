@@ -107,3 +107,58 @@ class VmdParser:
                 raise MMDParseException(f"Failed to parse VMD file: {file_path}") from e
 
         return self
+
+    def write_file(self, file_path):
+        """
+        VMDデータをファイルに書き込む。
+
+        Args:
+            file_path (str): 書き込むVMDファイルのパス。
+
+        Raises:
+            IOError: ファイル書き込みに失敗した場合。
+        """
+        try:
+            with open(file_path, 'wb') as f:
+                # Header
+                self.header.write(f)
+
+                # Bone Frames
+                bone_frame_count = len(self.bone_frames)
+                f.write(struct.pack('<I', bone_frame_count))
+                for frame in self.bone_frames:
+                    f.write(frame.write())
+
+                # Morph Frames
+                morph_frame_count = len(self.morph_frames)
+                f.write(struct.pack('<I', morph_frame_count))
+                for frame in self.morph_frames:
+                    f.write(frame.write())
+
+                # Camera Frames
+                camera_frame_count = len(self.camera_frames)
+                f.write(struct.pack('<I', camera_frame_count))
+                for frame in self.camera_frames:
+                    f.write(frame.write())
+
+                # Light Frames
+                light_frame_count = len(self.light_frames)
+                f.write(struct.pack('<I', light_frame_count))
+                for frame in self.light_frames:
+                    f.write(frame.write())
+
+                # Shadow Frames
+                shadow_frame_count = len(self.shadow_frames)
+                f.write(struct.pack('<I', shadow_frame_count))
+                for frame in self.shadow_frames:
+                    f.write(frame.write())
+
+                # IK Show/Hide Frames (optional)
+                if self.ik_show_hide_frames:
+                    ik_frame_count = len(self.ik_show_hide_frames)
+                    f.write(struct.pack('<I', ik_frame_count))
+                    for frame in self.ik_show_hide_frames:
+                        f.write(frame.write())
+
+        except Exception as e:
+            raise IOError(f"Failed to write VMD file: {file_path}") from e

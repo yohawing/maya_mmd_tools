@@ -1,5 +1,7 @@
 import struct
 
+from mmd_tools.core import utils
+
 
 class PmxJoint:
     """
@@ -29,11 +31,8 @@ class PmxJoint:
         Args:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
-        name_length = struct.unpack('<I', f.read(4))[0]
-        self.name = f.read(name_length).decode(self.encoding)
-
-        name_english_length = struct.unpack('<I', f.read(4))[0]
-        self.name_english = f.read(name_english_length).decode(self.encoding)
+        self.name = utils.parsePMXString(f, self.encoding)
+        self.name_english = utils.parsePMXString(f, self.encoding)
 
         self.joint_type = struct.unpack('<B', f.read(1))[0]
 
@@ -49,3 +48,28 @@ class PmxJoint:
         self.rotation_limit_max = struct.unpack('<fff', f.read(12))
         self.spring_translation = struct.unpack('<fff', f.read(12))
         self.spring_rotation = struct.unpack('<fff', f.read(12))
+
+    def write(self, f):
+        """
+        PMX Jointデータをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
+
+        f.write(struct.pack('<B', self.joint_type))
+
+        rigid_body_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.rigid_body_index_size]
+        f.write(struct.pack(rigid_body_index_format, self.rigid_body_a_index))
+        f.write(struct.pack(rigid_body_index_format, self.rigid_body_b_index))
+
+        f.write(struct.pack('<fff', *self.position))
+        f.write(struct.pack('<fff', *self.rotation))
+        f.write(struct.pack('<fff', *self.translation_limit_min))
+        f.write(struct.pack('<fff', *self.translation_limit_max))
+        f.write(struct.pack('<fff', *self.rotation_limit_min))
+        f.write(struct.pack('<fff', *self.rotation_limit_max))
+        f.write(struct.pack('<fff', *self.spring_translation))
+        f.write(struct.pack('<fff', *self.spring_rotation))

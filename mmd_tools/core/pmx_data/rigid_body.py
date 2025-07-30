@@ -51,3 +51,29 @@ class PmxRigidBody:
         self.elasticity = struct.unpack('<f', f.read(4))[0]
         self.friction = struct.unpack('<f', f.read(4))[0]
         self.physics_mode = struct.unpack('<B', f.read(1))[0]
+
+    def write(self, f):
+        """
+        PMX剛体データをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
+
+        bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
+        f.write(struct.pack(bone_index_format, self.related_bone_index))
+
+        f.write(struct.pack('<B', self.group))
+        f.write(struct.pack('<H', self.collision_mask))
+        f.write(struct.pack('<B', self.shape_type))
+        f.write(struct.pack('<fff', *self.size))
+        f.write(struct.pack('<fff', *self.position))
+        f.write(struct.pack('<fff', *self.rotation))
+        f.write(struct.pack('<f', self.mass))
+        f.write(struct.pack('<f', self.velocity_attenuation))
+        f.write(struct.pack('<f', self.rotation_attenuation))
+        f.write(struct.pack('<f', self.elasticity))
+        f.write(struct.pack('<f', self.friction))
+        f.write(struct.pack('<B', self.physics_mode))

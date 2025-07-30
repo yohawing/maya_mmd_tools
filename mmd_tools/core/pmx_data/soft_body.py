@@ -31,3 +31,18 @@ class PmxSoftBody:
         # For example, reading shape type, material index, group, collision flags, etc.
         # For demonstration, let's assume a fixed size for now, but this is incorrect.
         # f.read(some_fixed_size_for_softbody_data)
+
+    def write(self, f):
+        """
+        PMX SoftBodyデータをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        # Placeholder for SoftBody writing
+        # This section needs to be implemented according to the full PMX 2.1 specification.
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
+        
+        # TODO: Write the rest of the SoftBody data based on PMX 2.1 specification
+        # For example, shape type, material index, group, collision flags, etc.

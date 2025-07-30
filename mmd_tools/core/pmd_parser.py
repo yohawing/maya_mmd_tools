@@ -193,3 +193,130 @@ class PmdParser:
 
         logger.info("PMDファイルの解析が完了しました")
         return self
+
+    def write_file(self, file_path):
+        """
+        PMDデータをファイルに書き込む。
+
+        Args:
+            file_path (str): 書き込むPMDファイルのパス。
+
+        Raises:
+            IOError: ファイル書き込みに失敗した場合。
+        """
+        logger.info(f"PMDファイルの書き込みを開始: {file_path}")
+
+        try:
+            with open(file_path, "wb") as f:
+                # Header
+                logger.debug("ヘッダー情報を書き込み中")
+                self.header.write(f)
+
+                # Vertex
+                vertex_count = len(self.vertices)
+                logger.debug(f"頂点数: {vertex_count}")
+                f.write(struct.pack("<I", vertex_count))
+                for vertex in self.vertices:
+                    vertex.write(f)
+
+                # Face
+                face_count = len(self.faces) * 3
+                logger.debug(f"面数: {len(self.faces)}")
+                f.write(struct.pack("<I", face_count))
+                for face in self.faces:
+                    face.write(f)
+
+                # Material
+                material_count = len(self.materials)
+                logger.debug(f"マテリアル数: {material_count}")
+                f.write(struct.pack("<I", material_count))
+                for material in self.materials:
+                    material.write(f)
+
+                # Bone
+                bone_count = len(self.bones)
+                logger.debug(f"ボーン数: {bone_count}")
+                f.write(struct.pack("<H", bone_count))
+                for bone in self.bones:
+                    bone.write(f)
+
+                # IK
+                ik_count = len(self.ik_data)
+                logger.debug(f"IK数: {ik_count}")
+                f.write(struct.pack("<H", ik_count))
+                for ik in self.ik_data:
+                    ik.write(f)
+
+                # Morph
+                morph_count = len(self.morphs)
+                logger.debug(f"モーフ数: {morph_count}")
+                f.write(struct.pack("<H", morph_count))
+                for morph in self.morphs:
+                    morph.write(f)
+
+                # Morph Display List
+                morph_display_count = sum(len(frame.morphs) for frame in self.display_frames)
+                logger.debug(f"モーフ表示数: {morph_display_count}")
+                f.write(struct.pack("<B", morph_display_count))
+                for frame in self.display_frames:
+                    frame.write_morphs(f)
+
+                # Display Frame Names
+                display_frame_count = len(self.display_frames)
+                logger.debug(f"表示枠数: {display_frame_count}")
+                f.write(struct.pack("<B", display_frame_count))
+                for frame in self.display_frames:
+                    frame.write(f)
+
+                # Bone Display List
+                bone_display_count = sum(len(frame.bones) for frame in self.display_frames)
+                logger.debug(f"ボーン表示数: {bone_display_count}")
+                f.write(struct.pack("<I", bone_display_count))
+                for frame in self.display_frames:
+                    frame.write_bones(f)
+
+                # Extended Data
+                # English Header
+                has_english = (self.header.model_name_english != "" or 
+                              self.header.comment_english != "")
+                f.write(struct.pack("<B", 1 if has_english else 0))
+
+                if has_english:
+                    # English Model Name and Comment
+                    self.header.write_english(f)
+
+                    # English Bone Names
+                    for bone in self.bones:
+                        bone.write_english(f)
+
+                    # English Morph Names
+                    for morph in self.morphs:
+                        morph.write_english(f)
+
+                    # English Display Frame Names
+                    for frame in self.display_frames:
+                        frame.write_english(f)
+
+                # Toon Textures (10個固定、未実装部分は空文字列)
+                logger.debug("トゥーンテクスチャ情報を書き込み中")
+                for i in range(10):
+                    f.write(utils.encodePMDString("", 100))
+
+                # Physics
+                rigid_body_count = len(self.rigid_bodies)
+                logger.debug(f"剛体数: {rigid_body_count}")
+                f.write(struct.pack("<I", rigid_body_count))
+                for rigid_body in self.rigid_bodies:
+                    rigid_body.write(f)
+
+                joint_count = len(self.joints)
+                logger.debug(f"ジョイント数: {joint_count}")
+                f.write(struct.pack("<I", joint_count))
+                for joint in self.joints:
+                    joint.write(f)
+
+        except Exception as e:
+            logger.error(f"PMDファイルの書き込みに失敗しました: {file_path}")
+            raise IOError(f"Failed to write PMD file: {file_path}") from e
+
+        logger.info("PMDファイルの書き込みが完了しました")

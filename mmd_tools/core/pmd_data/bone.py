@@ -88,3 +88,27 @@ class PmdBone:
             return self.name_english
 
         return self.name
+
+    def write(self, f):
+        """
+        PMDボーンデータをバイナリファイルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMDString(self.name, 20))
+        parent_index = 0xFFFF if self.parent_bone_index == -1 else self.parent_bone_index
+        f.write(struct.pack("<H", parent_index))
+        f.write(struct.pack("<H", self.tail_pos_bone_index))
+        f.write(struct.pack("<B", self.bone_type.value))
+        f.write(struct.pack("<H", self.ik_parent_bone_index))
+        f.write(struct.pack("<fff", *self.position))
+
+    def write_english(self, f):
+        """
+        英語のPMDボーン名をバイナリファイルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMDString(self.name_english, 20))

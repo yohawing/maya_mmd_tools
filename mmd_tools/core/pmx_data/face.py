@@ -24,3 +24,19 @@ class PmxFace:
             self.indices = struct.unpack('<III', f.read(12))
         else:
             raise ValueError(f"Unsupported vertex index size: {self.vertex_index_size}")
+
+    def write(self, f):
+        """
+        PMX面データをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        if self.vertex_index_size == 1:
+            f.write(struct.pack('<BBB', *self.indices))
+        elif self.vertex_index_size == 2:
+            f.write(struct.pack('<HHH', *self.indices))
+        elif self.vertex_index_size == 4:
+            f.write(struct.pack('<III', *self.indices))
+        else:
+            raise ValueError(f"Unsupported vertex index size: {self.vertex_index_size}")

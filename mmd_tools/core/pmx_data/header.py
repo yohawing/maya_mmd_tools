@@ -14,6 +14,7 @@ class PmxHeader:
         self.version = 0.0
         self.header_size = 0
         self.text_encoding = "utf-16-le"  # デフォルトはUTF-16LE
+        self.encoding = "utf-16-le"  # 実際に使用するエンコーディング
         self.additional_uv = 0
         self.vertex_index_size = 0
         self.texture_index_size = 0
@@ -71,3 +72,36 @@ class PmxHeader:
             return self.model_name_english
 
         return self.model_name
+
+    def write(self, f):
+        """
+        PMXヘッダをバイナリファイルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        # Magic and version
+        f.write(b"PMX ")
+        f.write(struct.pack("<f", self.version))
+
+        # Header size (always 8 for PMX 2.0/2.1)
+        f.write(struct.pack("<B", 8))
+
+        # Encoding flag (0: UTF-16LE, 1: UTF-8)
+        encoding_flag = 0 if self.encoding == "utf-16-le" else 1
+        f.write(struct.pack("<B", encoding_flag))
+
+        # Additional data sizes
+        f.write(struct.pack("<B", self.additional_uv))
+        f.write(struct.pack("<B", self.vertex_index_size))
+        f.write(struct.pack("<B", self.texture_index_size))
+        f.write(struct.pack("<B", self.material_index_size))
+        f.write(struct.pack("<B", self.bone_index_size))
+        f.write(struct.pack("<B", self.morph_index_size))
+        f.write(struct.pack("<B", self.rigid_body_index_size))
+
+        # Model Info
+        f.write(utils.encodePMXString(self.model_name, self.encoding))
+        f.write(utils.encodePMXString(self.model_name_english, self.encoding))
+        f.write(utils.encodePMXString(self.comment, self.encoding))
+        f.write(utils.encodePMXString(self.comment_english, self.encoding))

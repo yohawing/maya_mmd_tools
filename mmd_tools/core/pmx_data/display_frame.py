@@ -43,3 +43,29 @@ class PmxDisplayFrame:
             else:
                 raise ValueError(f"Unknown display frame element type: {element_type}")
             self.elements.append({'type': element_type, 'index': index})
+
+    def write(self, f):
+        """
+        PMX表示枠データをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
+
+        f.write(struct.pack('<B', self.special_flag))
+
+        f.write(struct.pack('<I', len(self.elements)))
+
+        bone_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.bone_index_size]
+        morph_index_format = {1: '<b', 2: '<h', 4: '<i'}[self.morph_index_size]
+
+        for element in self.elements:
+            f.write(struct.pack('<B', element['type']))
+            if element['type'] == 0:  # Bone
+                f.write(struct.pack(bone_index_format, element['index']))
+            elif element['type'] == 1:  # Morph
+                f.write(struct.pack(morph_index_format, element['index']))
+            else:
+                raise ValueError(f"Unknown display frame element type: {element['type']}")

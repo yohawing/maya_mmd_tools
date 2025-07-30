@@ -41,3 +41,27 @@ class PmdMorph:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
         self.english_name = utils.decodeCp932String(f.read(20))
+
+    def write(self, f):
+        """
+        PMDモーフデータをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMDString(self.name, 20))
+        f.write(struct.pack('<I', self.num_vertices))
+        f.write(struct.pack('<B', self.morph_type))
+
+        for vertex_index, position_offset in self.vertices:
+            f.write(struct.pack('<I', vertex_index))
+            f.write(struct.pack('<fff', *position_offset))
+
+    def write_english(self, f):
+        """
+        英語のPMDモーフ名をファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMDString(self.english_name, 20))

@@ -114,3 +114,37 @@ class PmxMaterial:
         self.memo = utils.parsePMXString(f, self.encoding)
 
         self.face_count = struct.unpack("<I", f.read(4))[0]
+
+    def write(self, f):
+        """
+        PMX材質データをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
+
+        f.write(struct.pack("<ffff", *self.diffuse))
+        f.write(struct.pack("<fff", *self.specular))
+        f.write(struct.pack("<f", self.specular_coefficient))
+        f.write(struct.pack("<fff", *self.ambient))
+        f.write(struct.pack("<B", self.draw_flag))
+        f.write(struct.pack("<ffff", *self.edge_color))
+        f.write(struct.pack("<f", self.edge_size))
+
+        texture_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.texture_index_size]
+        f.write(struct.pack(texture_index_format, self.texture_index))
+        f.write(struct.pack(texture_index_format, self.sphere_texture_index))
+
+        f.write(struct.pack("<B", self.sphere_mode))
+        f.write(struct.pack("<B", self.shared_toon_flag))
+
+        if self.shared_toon_flag == 0:
+            f.write(struct.pack(texture_index_format, self.toon_texture_index))
+        else:
+            f.write(struct.pack("<B", self.toon_texture_index))
+
+        f.write(utils.encodePMXString(self.memo, self.encoding))
+
+        f.write(struct.pack("<I", self.face_count))

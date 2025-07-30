@@ -97,3 +97,53 @@ class PmxMorph:
             else:
                 raise ValueError(f"Unknown morph type: {self.morph_type}")
             self.offsets.append(offset_data)
+
+    def write(self, f):
+        """
+        PMXモーフデータをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
+
+        f.write(struct.pack('<B', self.panel))
+        f.write(struct.pack('<B', self.morph_type.value if isinstance(self.morph_type, PmxMorphType) else self.morph_type))
+        f.write(struct.pack('<I', len(self.offsets)))
+
+        for offset_data in self.offsets:
+            if self.morph_type == PmxMorphType.GroupMorph:
+                f.write(struct.pack(self.type_formats["morph"], offset_data['morph_index']))
+                f.write(struct.pack('<f', offset_data['morph_rate']))
+            elif self.morph_type == PmxMorphType.VertexMorph:
+                f.write(struct.pack(self.type_formats["vertex"], offset_data['vertex_index']))
+                f.write(struct.pack('<fff', *offset_data['position_offset']))
+            elif self.morph_type == PmxMorphType.BoneMorph:
+                f.write(struct.pack(self.type_formats["bone"], offset_data['bone_index']))
+                f.write(struct.pack('<fff', *offset_data['translation']))
+                f.write(struct.pack('<ffff', *offset_data['rotation']))
+            elif PmxMorphType.UVMorph <= self.morph_type <= PmxMorphType.AdditionalUVMorph4:
+                f.write(struct.pack(self.type_formats["vertex"], offset_data['vertex_index']))
+                f.write(struct.pack('<ffff', *offset_data['uv_offset']))
+            elif self.morph_type == PmxMorphType.MaterialMorph:
+                f.write(struct.pack(self.type_formats["material"], offset_data['material_index']))
+                f.write(struct.pack('<B', offset_data['operation_type']))
+                f.write(struct.pack('<ffff', *offset_data['diffuse']))
+                f.write(struct.pack('<fff', *offset_data['specular']))
+                f.write(struct.pack('<f', offset_data['specular_coefficient']))
+                f.write(struct.pack('<fff', *offset_data['ambient']))
+                f.write(struct.pack('<ffff', *offset_data['edge_color']))
+                f.write(struct.pack('<f', offset_data['edge_size']))
+                f.write(struct.pack('<ffff', *offset_data['texture_factor']))
+                f.write(struct.pack('<ffff', *offset_data['sphere_texture_factor']))
+                f.write(struct.pack('<ffff', *offset_data['toon_texture_factor']))
+            elif self.morph_type == PmxMorphType.FlipMorph:
+                f.write(struct.pack(self.type_formats["morph"], offset_data['morph_index']))
+                f.write(struct.pack('<f', offset_data['flip_rate']))
+            elif self.morph_type == PmxMorphType.ImpulseMorph:
+                f.write(struct.pack(self.type_formats["rigid_body"], offset_data['rigid_body_index']))
+                f.write(struct.pack('<fff', *offset_data['impulse']))
+                f.write(struct.pack('<fff', *offset_data['torque']))
+            else:
+                raise ValueError(f"Unknown morph type: {self.morph_type}")

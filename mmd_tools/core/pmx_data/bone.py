@@ -75,7 +75,9 @@ class PmxBone:
             bone_index_format, f.read(self.bone_index_size)
         )[0]
 
-        if self.parent_bone_index == 0xFFFFFFFF:
+        # 各サイズの最大値を-1として扱う
+        max_values = {1: 0xFF, 2: 0xFFFF, 4: 0xFFFFFFFF}
+        if self.parent_bone_index == max_values[self.bone_index_size] or self.parent_bone_index < 0:
             self.parent_bone_index = -1
 
         self.transform_layer = struct.unpack("<i", f.read(4))[0]
@@ -149,3 +151,62 @@ class PmxBone:
             int: ボーンのフラグ。
         """
         return self.bone_flag & PmxBoneFlag
+
+    def write(self, f):
+        """
+        PMXボーンデータをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
+
+        f.write(struct.pack("<fff", *self.position))
+
+        bone_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.bone_index_size]
+        bone_unsigned_format = {1: "<B", 2: "<H", 4: "<I"}[self.bone_index_size]
+        
+        # Parent bone index (-1 の場合は各サイズの最大値に変換)
+        if self.parent_bone_index == -1:
+            parent_index = {1: 0xFF, 2: 0xFFFF, 4: 0xFFFFFFFF}[self.bone_index_size]
+            f.write(struct.pack(bone_unsigned_format, parent_index))
+        else:
+            f.write(struct.pack(bone_index_format, self.parent_bone_index))
+
+        f.write(struct.pack("<i", self.transform_layer))
+        f.write(struct.pack("<H", self.bone_flag))
+
+        # Flag-dependent data writing
+        # 0x0001: 接続先表示方法 (0:座標オフセット, 1:ボーン指定)
+        if self.get_flag(PmxBoneFlag.CONNECT_BONE):
+            f.write(struct.pack(bone_index_format, self.connect_bone_index))
+        else:
+            f.write(struct.pack("<fff", *self.connect_position_offset))
+
+        # 0x0100: 回転付与, 0x0200: 移動付与
+        if self.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or self.get_flag(PmxBoneFlag.GIVEN_PARENT_MOVE):
+            f.write(struct.pack(bone_index_format, self.given_parent_bone_index))
+            f.write(struct.pack("<f", self.given_rate))
+
+        # 0x0400: 軸固定
+        if self.get_flag(PmxBoneFlag.AXIS_FIXED):
+            f.write(struct.pack("<fff", *self.axis_direction))
+
+        # 0x0800: ローカル軸
+        if self.get_flag(PmxBoneFlag.LOCAL_AXIS):
+            f.write(struct.pack("<fff", *self.x_axis_direction))
+            f.write(struct.pack("<fff", *self.z_axis_direction))
+
+        # 0x2000: 外部親変形
+        if self.get_flag(PmxBoneFlag.EXTERNAL_PARENT_DEFORM):
+            f.write(struct.pack("<i", self.key_value))
+
+        # 0x0020: IK
+        if self.get_flag(PmxBoneFlag.IK):
+            f.write(struct.pack(bone_index_format, self.ik_target_bone_index))
+            f.write(struct.pack("<i", self.ik_loop_count))
+            f.write(struct.pack("<f", self.ik_limit_angle))
+            f.write(struct.pack("<i", len(self.ik_links)))
+            for ik_link in self.ik_links:
+                ik_link.write(f)

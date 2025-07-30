@@ -47,3 +47,19 @@ class PmdMaterial:
         else:
             # テクスチャがない場合はインデックスを使用したデフォルト名
             self.name = f"material_{self.material_index}"
+
+    def write(self, f):
+        """
+        PMD材質データをバイナリファイルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(struct.pack("<ffff", *self.diffuse))
+        f.write(struct.pack("<f", self.specular_power))
+        f.write(struct.pack("<fff", *self.specular))
+        f.write(struct.pack("<fff", *self.ambient))
+        f.write(struct.pack("<B", self.toon_texture_index))
+        f.write(struct.pack("<B", self.edge_flag))
+        f.write(struct.pack("<I", self.face_count))
+        f.write(utils.encodePMDString(self.texture_file_name, 20))

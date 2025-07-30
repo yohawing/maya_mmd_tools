@@ -44,6 +44,47 @@ def encodeCp932String(string):
         return b"\x00" + string.encode("cp932", errors="replace")[1:]
 
 
+def encodePMDString(string, length):
+    """
+    文字列をPMD形式（固定長Shift-JIS）にエンコードします。
+    
+    Args:
+        string (str): エンコードする文字列
+        length (int): 固定長バイト数
+        
+    Returns:
+        bytes: 固定長のバイト列
+    """
+    if not string:
+        return b"\x00" * length
+    
+    encoded = encodeCp932String(string)
+    if len(encoded) >= length:
+        # 長すぎる場合は切り詰める
+        return encoded[:length-1] + b"\x00"
+    else:
+        # 短い場合はヌル文字でパディング
+        return encoded + b"\x00" * (length - len(encoded))
+
+
+def encodePMXString(string, encoding="utf-16-le"):
+    """
+    文字列をPMX形式（長さプレフィックス付き）にエンコードします。
+    
+    Args:
+        string (str): エンコードする文字列
+        encoding (str): 文字エンコーディング
+        
+    Returns:
+        bytes: 長さプレフィックス付きのバイト列
+    """
+    if not string:
+        return struct.pack("<i", 0)
+    
+    encoded = string.encode(encoding)
+    return struct.pack("<i", len(encoded)) + encoded
+
+
 # Unicode文字列変換API（シンプルインターフェース）
 def convert_utf8_to_ascii(text):
     """
