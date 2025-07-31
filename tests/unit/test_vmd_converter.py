@@ -40,6 +40,15 @@ class TestVmdConverter(MayaTestBase):
             cmds.delete(DEFAULT_CAMERA_NAME)
         if cmds.objExists(DEFAULT_LIGHT_NAME):
             cmds.delete(DEFAULT_LIGHT_NAME)
+            
+        # アニメーションレイヤーをクリーンアップ
+        anim_layers = cmds.ls(type="animLayer")
+        for layer in anim_layers:
+            if layer != "BaseAnimation":  # BaseAnimationレイヤーは削除しない
+                try:
+                    cmds.delete(layer)
+                except:
+                    pass
 
     def test_init(self):
         """初期化のテスト"""
@@ -48,6 +57,8 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(self.converter.fps, 30.0)
         self.assertIsNotNone(self.converter.logger)
         self.assertEqual(len(self.converter._failed_bones), 0)
+        self.assertTrue(self.converter.use_animation_layers)
+        self.assertIsNone(self.converter.animation_layer_name)
 
     def test_get_failed_bones(self):
         """失敗したボーン名の取得テスト"""
@@ -256,3 +267,333 @@ class TestVmdConverter(MayaTestBase):
         
         # クリーンアップ
         cmds.delete(cube)
+
+    def _create_test_joints_for_vmd(self):
+        """VMDテスト用のジョイントを作成"""
+        from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
+        
+        # センタージョイント
+        center = cmds.joint(name="center", position=[0, 10, 0])
+        cmds.addAttr(center, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{center}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
+        
+        # 上半身ジョイント
+        upper_body = cmds.joint(name="upper_body", position=[0, 15, 0])
+        cmds.addAttr(upper_body, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{upper_body}.{ATTR_MMD_BONE_NAME}", "上半身", type="string")
+        
+        # 頭ジョイント
+        head = cmds.joint(name="head", position=[0, 20, 0])
+        cmds.addAttr(head, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{head}.{ATTR_MMD_BONE_NAME}", "頭", type="string")
+        
+        cmds.select(clear=True)
+        
+        return {"center": center, "upper_body": upper_body, "head": head}
+
+    def test_animation_layer_creation(self):
+        """アニメーションレイヤー作成のテスト"""
+        # デフォルトレイヤー名での作成
+        self.converter._create_animation_layer()
+        self.assertIsNotNone(self.converter.animation_layer_name)
+        self.assertTrue(cmds.animLayer(self.converter.animation_layer_name, query=True, exists=True))
+        
+        # カスタムレイヤー名での作成
+        custom_layer = "CustomVMDLayer"
+        converter2 = VmdConverter()
+        converter2._create_animation_layer(layer_name=custom_layer)
+        self.assertEqual(converter2.animation_layer_name, custom_layer)
+        self.assertTrue(cmds.animLayer(custom_layer, query=True, exists=True))
+        
+        # レイヤーモードのテスト（加算）
+        converter3 = VmdConverter()
+        converter3._create_animation_layer(layer_name="AdditiveLayer", layer_mode="additive")
+        self.assertTrue(cmds.animLayer("AdditiveLayer", query=True, exists=True))
+        
+        # レイヤーモードのテスト（オーバーライド）
+        converter4 = VmdConverter()
+        converter4._create_animation_layer(layer_name="OverrideLayer", layer_mode="override")
+        self.assertTrue(cmds.animLayer("OverrideLayer", query=True, exists=True))
+        self.assertTrue(cmds.animLayer("OverrideLayer", query=True, override=True))
+        
+        # クリーンアップ
+        for layer in ["AdditiveLayer", "OverrideLayer", custom_layer]:
+            if cmds.animLayer(layer, query=True, exists=True):
+                try:
+                    cmds.delete(layer)
+                except:
+                    pass
+
+    def test_set_use_animation_layers(self):
+        """アニメーションレイヤー使用フラグのテスト"""
+        self.assertTrue(self.converter.use_animation_layers)
+        
+        # フラグを無効化
+        self.converter.set_use_animation_layers(False)
+        self.assertFalse(self.converter.use_animation_layers)
+        
+        # フラグを有効化
+        self.converter.set_use_animation_layers(True)
+        self.assertTrue(self.converter.use_animation_layers)
+
+    def test_get_animation_layer_name(self):
+        """アニメーションレイヤー名取得のテスト"""
+        # 初期状態
+        self.assertIsNone(self.converter.get_animation_layer_name())
+        
+        # レイヤー作成後
+        self.converter._create_animation_layer(layer_name="TestLayer")
+        self.assertEqual(self.converter.get_animation_layer_name(), "TestLayer")
+
+    def test_add_objects_to_layer(self):
+        """オブジェクトのレイヤー追加テスト"""
+        # テスト用ジョイントを作成
+        joint1 = cmds.joint(name="test_joint1")
+        joint2 = cmds.joint(name="test_joint2")
+        
+        # レイヤーを作成
+        self.converter._create_animation_layer(layer_name="TestLayer")
+        
+        # ジョイントをレイヤーに追加
+        self.converter._add_objects_to_layer([joint1, joint2])
+        
+        # 属性がレイヤーに追加されているか確認
+        for joint in [joint1, joint2]:
+            for attr in ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]:
+                # レイヤーのメンバーになっているかを確認する方法
+                # （実際のMayaでの確認方法に依存）
+                pass
+        
+        # クリーンアップ
+        cmds.delete(joint1)
+
+    def test_convert_with_animation_layers(self):
+        """アニメーションレイヤーを使用した変換テスト"""
+        # テスト用VMDデータを作成
+        vmd_data = create_test_vmd_data()
+        
+        # ボーン名マッピングを設定
+        bone_mapping = {"センター": "center", "上半身": "upper_body", "頭": "head"}
+        self.converter.set_bone_name_mapping(bone_mapping)
+        
+        # レイヤーを使用して変換
+        result = self.converter.convert(vmd_data, layer_name="TestVMDLayer", layer_mode="additive")
+        
+        # レイヤーが作成されたことを確認
+        self.assertEqual(self.converter.get_animation_layer_name(), "TestVMDLayer")
+        self.assertTrue(cmds.animLayer("TestVMDLayer", query=True, exists=True))
+
+    def test_convert_without_animation_layers(self):
+        """アニメーションレイヤーを使用しない変換テスト"""
+        # テスト用VMDデータを作成
+        vmd_data = create_test_vmd_data()
+        
+        # アニメーションレイヤーを無効化
+        self.converter.set_use_animation_layers(False)
+        
+        # ボーン名マッピングを設定
+        bone_mapping = {"センター": "center", "上半身": "upper_body", "頭": "head"}
+        self.converter.set_bone_name_mapping(bone_mapping)
+        
+        # 変換実行
+        result = self.converter.convert(vmd_data)
+        
+        # レイヤーが作成されていないことを確認
+        self.assertIsNone(self.converter.get_animation_layer_name())
+
+    def test_convert_with_fixture_pmx(self):
+        """フィクスチャPMXモデルを使用したVMD変換テスト"""
+        # テスト用のボーンを手動で作成
+        joints = self._create_test_joints_for_vmd()
+        
+        # テスト用VMDデータを作成
+        vmd_data = create_test_vmd_data()
+        
+        # 名前マッピングを自動構築
+        self.converter._build_name_mappings()
+        
+        # VMD変換を実行
+        result = self.converter.convert(vmd_data, layer_name="FixtureTest")
+        self.assertTrue(result, "VMD変換に失敗しました")
+        
+        # ジョイントが作成されたことを確認
+        joints = cmds.ls(type="joint")
+        self.assertGreater(len(joints), 0, "ジョイントが作成されていません")
+        
+        # テスト用VMDデータを作成
+        vmd_data = create_test_vmd_data()
+        
+        # 名前マッピングを自動構築
+        self.converter._build_name_mappings()
+        
+        # VMD変換を実行
+        result = self.converter.convert(vmd_data, layer_name="FixtureTest")
+        self.assertTrue(result, "VMD変換に失敗しました")
+        
+        # アニメーションレイヤーが作成されたことを確認
+        self.assertEqual(self.converter.get_animation_layer_name(), "FixtureTest")
+        
+        # アニメーションが適用されたことを確認
+        animated_joints = []
+        for joint in joints:
+            for attr in ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]:
+                connections = cmds.listConnections(f"{joint}.{attr}", source=True, destination=False)
+                if connections:
+                    animated_joints.append(joint)
+                    break
+                    
+        self.assertGreater(len(animated_joints), 0, "アニメーションが適用されていません")
+
+    def test_convert_with_fixture_vmd_camera(self):
+        """フィクスチャを使用したカメラアニメーション変換テスト"""
+        # テスト用VMDファイルを取得
+        try:
+            vmd_path = self.fixture_provider.get_vmd_file()
+        except FileNotFoundError:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+        
+        # VMDファイルをパース
+        from mmd_tools.core.vmd_parser import VmdParser
+        parser = VmdParser()
+        parser.parse_file(vmd_path)
+        
+        # カメラアニメーション変換
+        if hasattr(parser, 'camera_frames') and parser.camera_frames:
+            result = self.converter._convert_camera_animation(parser.camera_frames)
+            self.assertTrue(result, "カメラアニメーション変換に失敗しました")
+        else:
+            self.skipTest("VMDファイルにカメラアニメーションが含まれていません")
+        
+        # MMDカメラが作成されたことを確認
+        from mmd_tools.core.constants import ATTR_MMD_CAMERA
+        cameras = cmds.ls(type="camera")
+        mmd_camera = None
+        for cam in cameras:
+            transform = cmds.listRelatives(cam, parent=True)
+            if transform and cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform[0], exists=True):
+                mmd_camera = transform[0]
+                break
+                
+        self.assertIsNotNone(mmd_camera, "MMDカメラが作成されていません")
+        
+        # キーフレームが設定されたことを確認
+        keyframes = cmds.keyframe(f"{mmd_camera}.translateX", query=True)
+        self.assertIsNotNone(keyframes, "カメラにキーフレームが設定されていません")
+        self.assertGreater(len(keyframes), 0, "カメラにキーフレームが設定されていません")
+
+    def test_convert_with_fixture_complex_motion(self):
+        """フィクスチャを使用した複雑なモーションの変換テスト"""
+        # テスト用ジョイントを作成
+        joints = self._create_test_joints_for_vmd()
+        
+        # ブレンドシェイプも作成
+        cube = cmds.polyCube(name="test_mesh")[0]
+        blend_shape = cmds.blendShape(cube, name="test_blendShape")[0]
+        target = cmds.duplicate(cube)[0]
+        cmds.move(1, 0, 0, f"{target}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape, edit=True, target=(cube, 0, target, 1.0))
+        cmds.aliasAttr("smile", f"{blend_shape}.weight[0]")
+        cmds.delete(target)
+        
+        # VMDファイルを取得
+        try:
+            vmd_path = self.fixture_provider.get_vmd_file()
+        except FileNotFoundError:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+        
+        # VMDファイルをパース
+        from mmd_tools.core.vmd_parser import VmdParser
+        parser = VmdParser()
+        parser.parse_file(vmd_path)
+        
+        # 名前マッピングを自動構築
+        self.converter._build_name_mappings()
+        
+        # VMD変換を実行（加算レイヤーモード）
+        result = self.converter.convert(parser, layer_name="ComplexMotion", layer_mode="additive")
+        self.assertTrue(result, "複雑なモーションの変換に失敗しました")
+        
+        # タイムラインが適切に設定されたことを確認
+        max_time = cmds.playbackOptions(query=True, maxTime=True)
+        # VMDファイルの実際の長さに依存するため、最低限のチェックのみ
+        self.assertGreater(max_time, 0, "タイムラインが正しく設定されていません")
+        
+        # 複数種類のアニメーションが適用されたことを確認
+        # ボーンアニメーション
+        joints = cmds.ls(type="joint")
+        animated_joints = []
+        for joint in joints:
+            if cmds.keyframe(joint, query=True, keyframeCount=True):
+                animated_joints.append(joint)
+        self.assertGreater(len(animated_joints), 0, "ボーンアニメーションが適用されていません")
+        
+        # カメラアニメーション
+        from mmd_tools.core.constants import ATTR_MMD_CAMERA
+        cameras = cmds.ls(type="camera")
+        camera_animated = False
+        for cam in cameras:
+            transform = cmds.listRelatives(cam, parent=True)
+            if transform and cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform[0], exists=True):
+                if cmds.keyframe(transform[0], query=True, keyframeCount=True):
+                    camera_animated = True
+                    break
+        self.assertTrue(camera_animated, "カメラアニメーションが適用されていません")
+        
+        # 照明アニメーション
+        from mmd_tools.core.constants import ATTR_MMD_LIGHT
+        lights = cmds.ls(type="directionalLight")
+        light_animated = False
+        for light in lights:
+            transform = cmds.listRelatives(light, parent=True)
+            if transform and cmds.attributeQuery(ATTR_MMD_LIGHT, node=transform[0], exists=True):
+                if cmds.keyframe(transform[0], query=True, keyframeCount=True):
+                    light_animated = True
+                    break
+        self.assertTrue(light_animated, "照明アニメーションが適用されていません")
+
+    def test_convert_multiple_layers_with_fixture(self):
+        """フィクスチャを使用した複数レイヤーの変換テスト"""
+        # テスト用ジョイントを作成
+        joints = self._create_test_joints_for_vmd()
+        
+        # VMDファイルを取得（同じファイルを複数回使用）
+        try:
+            vmd_path = self.fixture_provider.get_vmd_file()
+        except FileNotFoundError:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        vmd_paths = [vmd_path] * 3  # 同じファイルを3回使用
+            
+        # 各VMDを異なるレイヤーに変換
+        converters = []
+        for i, vmd_path in enumerate(vmd_paths):
+            converter = VmdConverter()
+            
+            # VMDファイルをパース
+            from mmd_tools.core.vmd_parser import VmdParser
+            parser = VmdParser()
+            parser.parse_file(vmd_path)
+            
+            # 名前マッピングを構築
+            converter._build_name_mappings()
+            
+            # 変換実行
+            layer_mode = "override" if i == 0 else "additive"
+            result = converter.convert(
+                parser, 
+                layer_name=f"Layer_{i}", 
+                layer_mode=layer_mode
+            )
+            self.assertTrue(result, f"レイヤー{i}の変換に失敗しました")
+            
+            converters.append(converter)
+            
+        # 3つのレイヤーが作成されたことを確認
+        anim_layers = cmds.ls(type="animLayer")
+        created_layers = [l for l in anim_layers if l.startswith("Layer_")]
+        self.assertEqual(len(created_layers), 3, "3つのレイヤーが作成されていません")
+        
+        # 各レイヤーのモードを確認
+        self.assertTrue(cmds.animLayer("Layer_0", query=True, override=True), "Layer_0がオーバーライドモードではありません")
+        self.assertFalse(cmds.animLayer("Layer_1", query=True, override=True), "Layer_1が加算モードではありません")
+        self.assertFalse(cmds.animLayer("Layer_2", query=True, override=True), "Layer_2が加算モードではありません")

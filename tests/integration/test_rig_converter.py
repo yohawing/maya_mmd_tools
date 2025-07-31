@@ -5,7 +5,12 @@ import maya.cmds as cmds
 
 from mmd_tools.converters.rig_converter import RigConverter
 from mmd_tools.core import maya_utils
-from mmd_tools.core.constants import ATTR_MMD_GRANT_PARENT_INDEX, ATTR_MMD_GRANT_RATE
+from mmd_tools.core.constants import (
+    ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_GRANT_PARENT_INDEX,
+    ATTR_MMD_GRANT_RATE,
+)
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.settings import settings
 from mmd_tools.io.pmx_importer import import_pmx_file
@@ -353,10 +358,6 @@ class TestRigConverterMaya(unittest.TestCase):
             vmd_data, root_group[0], options={"target_model": "test_given_bone"}
         )
 
-        # 一旦スキップ
-
-        self.skipTest("VMDデータの適用は一時的にスキップ")
-
         # VMDデータの適用を確認
         # 5フレーム目に移動
         cmds.currentTime(5)
@@ -374,103 +375,75 @@ class TestRigConverterMaya(unittest.TestCase):
         # デバッグ情報：実際のボーン構造を出力
         bone_info = {}
         for joint in all_joints:
-            if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
-                index = cmds.getAttr(f"{joint}.mmd_bone_index")
+            if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True):
+                index = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}")
                 name_jp = ""
-                if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
-                    name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
+                if cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
+                    name_jp = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}")
                 bone_info[index] = {"joint": joint, "name_jp": name_jp}
                 print(f"ボーン情報: index={index}, joint={joint}, name_jp={name_jp}")
 
         # A_ (通常ボーン) の確認 - 名前で検索
-        # loc: 1, 0, 1.14, rot: 90, 0, 0
-        bone_a = None
-        for joint in all_joints:
-            if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
-                name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
-                if name_jp == "A":
-                    bone_a = joint
-                    break
+        # loc: 1, 0, 1.14*2, rot: 90, 0, 0
+        bone_a = "A"
 
-        if bone_a:
-            # 位置の確認
-            pos = cmds.xform(bone_a, query=True, worldSpace=True, translation=True)
-            self.assertAlmostEqual(pos[0], 1.0, delta=0.1)
-            self.assertAlmostEqual(pos[1], 0.0, delta=0.1)
-            self.assertAlmostEqual(pos[2], 1.14, delta=0.1)
+        # 位置の確認
+        pos = cmds.xform(bone_a, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(pos[0], 1.0, delta=0.1)
+        self.assertAlmostEqual(pos[1], 0.0, delta=0.1)
+        self.assertAlmostEqual(pos[2], math.sqrt(2) * 2, delta=0.1)
 
-            # 回転の確認
-            rot = cmds.xform(bone_a, query=True, worldSpace=True, rotation=True)
-            self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
-            self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
-            self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
+        # 回転の確認
+        rot = cmds.xform(bone_a, query=True, worldSpace=True, rotation=True)
+        self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
+        self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
+        self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
 
         # B_ (付与ボーン) の確認 - 名前で検索
         # loc: 2, 2, 2, rot: 90, 0, 0  (付与45+回転45)
-        bone_b = None
-        for joint in all_joints:
-            if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
-                name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
-                if name_jp == "B":
-                    bone_b = joint
-                    break
+        bone_b = "B"
 
-        if bone_b:
-            # 位置の確認
-            pos = cmds.xform(bone_b, query=True, worldSpace=True, translation=True)
-            self.assertAlmostEqual(pos[0], 2.0, delta=0.1)
-            self.assertAlmostEqual(pos[1], 2.0, delta=0.1)
-            self.assertAlmostEqual(pos[2], 2.0, delta=0.1)
+        # 位置の確認
+        pos = cmds.xform(bone_b, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(pos[0], 2.0, delta=0.1)
+        self.assertAlmostEqual(pos[1], 2.0, delta=0.1)
+        self.assertAlmostEqual(pos[2], 2.0, delta=0.1)
 
-            # 回転の確認（付与45度 + 自身の回転45度 = 90度）
-            rot = cmds.xform(bone_b, query=True, worldSpace=True, rotation=True)
-            self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
-            self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
-            self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
+        # 回転の確認（付与45度 + 自身の回転45度 = 90度）
+        rot = cmds.xform(bone_b, query=True, worldSpace=True, rotation=True)
+        self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
+        self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
+        self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
 
         # C_ (ローカル付与ボーン) の確認 - 名前で検索
         # loc: 3, 2, 2 rot: 45 (親の回転の付与）
-        bone_c = None
-        for joint in all_joints:
-            if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
-                name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
-                if name_jp == "C":
-                    bone_c = joint
-                    break
+        bone_c = "C"
 
-        if bone_c:
-            # 位置の確認
-            pos = cmds.xform(bone_c, query=True, worldSpace=True, translation=True)
-            self.assertAlmostEqual(pos[0], 3.0, delta=0.1)
-            self.assertAlmostEqual(pos[1], 2.0, delta=0.1)
-            self.assertAlmostEqual(pos[2], 2.0, delta=0.1)
+        # 位置の確認
+        pos = cmds.xform(bone_c, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(pos[0], 3.0, delta=0.1)
+        self.assertAlmostEqual(pos[1], 2.0, delta=0.1)
+        self.assertAlmostEqual(pos[2], 2.0, delta=0.1)
 
-            # 回転の確認（ローカル付与で45度）
-            rot = cmds.xform(bone_c, query=True, worldSpace=True, rotation=True)
-            self.assertAlmostEqual(rot[0], 45.0, delta=1.0)
+        # 回転の確認（ローカル付与で45度）
+        rot = cmds.xform(bone_c, query=True, worldSpace=True, rotation=True)
+        self.assertAlmostEqual(rot[0], 45.0, delta=1.0)
 
         # D_ (多重付与ボーン) の確認 - 名前で検索
         # loc: 0,0,0  rot: 90,0,0 ( Bの付与）
-        bone_d = None
-        for joint in all_joints:
-            if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
-                name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
-                if name_jp == "D":
-                    bone_d = joint
-                    break
+        bone_d = "D"
 
-        if bone_d:
-            # 位置の確認
-            pos = cmds.xform(bone_d, query=True, worldSpace=True, translation=True)
-            self.assertAlmostEqual(pos[0], 0.0, delta=0.1)
-            self.assertAlmostEqual(pos[1], 0.0, delta=0.1)
-            self.assertAlmostEqual(pos[2], 0.0, delta=0.1)
+        # 位置の確認
+        pos = cmds.xform(bone_d, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(pos[0], 0.0, delta=0.1)
+        self.assertAlmostEqual(pos[1], 0.0, delta=0.1)
+        self.assertAlmostEqual(pos[2], 0.0, delta=0.1)
 
-            # 回転の確認（Bから付与された90度）
-            rot = cmds.xform(bone_d, query=True, worldSpace=True, rotation=True)
-            self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
-            self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
-            self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
+        # 回転の確認（Bから付与された90度）
+        rot = cmds.xform(bone_d, query=True, worldSpace=True, rotation=True)
+        self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
+        self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
+        self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
 
         # 付与関係が正しく設定されているかの追加確認
         # 少なくとも1つの付与ボーンが見つかったことを確認

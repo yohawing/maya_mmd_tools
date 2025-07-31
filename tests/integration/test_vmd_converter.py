@@ -6,6 +6,7 @@ from maya import cmds
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters import BoneConverter, MeshConverter
 from mmd_tools.core import PmdParser, PmxParser, VmdParser, maya_utils
+from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 
@@ -246,18 +247,18 @@ class TestVmdConverter(MayaTestBase):
         # 暫定的にマニュアルでボーン階層を作成
         cmds.select(clear=True)
         center = cmds.joint(name="center", position=[0, 0, 0])
-        cmds.addAttr(center, longName="pmx_bone_name", dataType="string")
-        cmds.setAttr(f"{center}.pmx_bone_name", "センター", type="string")
+        cmds.addAttr(center, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{center}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
 
         cmds.select(center)
         upper_body = cmds.joint(name="upper_body", position=[0, 8, 0])
-        cmds.addAttr(upper_body, longName="pmx_bone_name", dataType="string")
-        cmds.setAttr(f"{upper_body}.pmx_bone_name", "上半身", type="string")
+        cmds.addAttr(upper_body, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{upper_body}.{ATTR_MMD_BONE_NAME}", "上半身", type="string")
 
         cmds.select(upper_body)
         head = cmds.joint(name="head", position=[0, 15, 0])
-        cmds.addAttr(head, longName="pmx_bone_name", dataType="string")
-        cmds.setAttr(f"{head}.pmx_bone_name", "頭", type="string")
+        cmds.addAttr(head, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{head}.{ATTR_MMD_BONE_NAME}", "頭", type="string")
 
         # 名前マッピングを構築
         self.converter._build_name_mappings()

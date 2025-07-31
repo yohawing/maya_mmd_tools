@@ -6,6 +6,7 @@ from maya import cmds
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.core.vmd_parser import VmdParser
 from tests.common.maya_test_base import MayaTestBase
+from tests.common.test_fixture_provider import TestFixtureProvider
 
 
 class TestVmdImporter(MayaTestBase):
@@ -32,14 +33,30 @@ class TestVmdImporter(MayaTestBase):
             os.path.dirname(os.path.dirname(__file__)), "data"
         )
         
+        # テストフィクスチャプロバイダーを作成
+        self.fixture_provider = TestFixtureProvider()
+        
     def tearDown(self):
         """
         各テスト後のクリーンアップ処理。
         テスト中に作成されたノードやシーンの状態をリセット。
         """
         super().tearDown()
+        
+        # アニメーションレイヤーをクリーンアップ
+        anim_layers = cmds.ls(type="animLayer")
+        for layer in anim_layers:
+            if layer != "BaseAnimation":  # BaseAnimationレイヤーは削除しない
+                try:
+                    cmds.delete(layer)
+                except:
+                    pass
+                    
         # シーンをクリア
         cmds.file(new=True, force=True)
+        
+        # 一時ファイルのクリーンアップ
+        self.fixture_provider.cleanup_temp_files()
 
     def _create_test_skeleton(self):
         """テスト用のスケルトン構造を作成"""
@@ -428,3 +445,307 @@ class TestVmdImporter(MayaTestBase):
                 self.skipTest("VMDモーフアニメーションの適用に失敗しました")
             else:
                 self.assertTrue(has_morph_animation, "モーフアニメーションが設定されていません")
+
+    def test_vmd_import_with_animation_layers(self):
+        """アニメーションレイヤーを使用したVMDインポートのテスト"""
+        # テスト用スケルトンを作成
+        joints = self._create_test_skeleton()
+        
+        # VMDファイルのパスを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        
+        if not vmd_files:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        
+        # VMDファイルをインポート（デフォルトでアニメーションレイヤーが使用される）
+        result = import_mmd_file(vmd_path)
+        self.assertTrue(result, "VMDファイルのインポートに失敗しました")
+        
+        # アニメーションレイヤーが作成されたことを確認
+        anim_layers = cmds.ls(type="animLayer")
+        # BaseAnimationレイヤーとVMDレイヤーが存在するはず
+        self.assertGreaterEqual(len(anim_layers), 2, "アニメーションレイヤーが作成されていません")
+        
+        # VMDレイヤーが存在することを確認
+        vmd_layer_found = False
+        for layer in anim_layers:
+            if "VMD_Layer_" in layer or layer == "BaseAnimation":
+                vmd_layer_found = True
+                break
+        self.assertTrue(vmd_layer_found, "VMDアニメーションレイヤーが見つかりません")
+
+    def test_multiple_vmd_import_with_layers(self):
+        """複数のVMDファイルを異なるレイヤーにインポートするテスト"""
+        # テスト用スケルトンを作成
+        joints = self._create_test_skeleton()
+        
+        # VMDファイルのパスを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        
+        if len(vmd_files) < 1:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        # 最初のVMDファイルをインポート
+        vmd_path1 = os.path.join(self.test_data_dir, vmd_files[0])
+        result1 = import_mmd_file(vmd_path1)
+        self.assertTrue(result1, "最初のVMDファイルのインポートに失敗しました")
+        
+        # アニメーションレイヤーの数を記録
+        initial_layers = cmds.ls(type="animLayer")
+        initial_count = len(initial_layers)
+        
+        # 同じVMDファイルを再度インポート（新しいレイヤーが作成されるはず）
+        result2 = import_mmd_file(vmd_path1)
+        self.assertTrue(result2, "2回目のVMDファイルのインポートに失敗しました")
+        
+        # 新しいレイヤーが作成されたことを確認
+        final_layers = cmds.ls(type="animLayer")
+        final_count = len(final_layers)
+        self.assertGreater(final_count, initial_count, "新しいアニメーションレイヤーが作成されていません")
+
+    def test_vmd_import_layer_weight(self):
+        """アニメーションレイヤーのウェイト設定テスト"""
+        # テスト用スケルトンを作成
+        joints = self._create_test_skeleton()
+        
+        # VMDファイルのパスを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        
+        if not vmd_files:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        
+        # VMDファイルをインポート
+        result = import_mmd_file(vmd_path)
+        self.assertTrue(result, "VMDファイルのインポートに失敗しました")
+        
+        # VMDレイヤーを探す
+        anim_layers = cmds.ls(type="animLayer")
+        vmd_layer = None
+        for layer in anim_layers:
+            if "VMD_Layer_" in layer:
+                vmd_layer = layer
+                break
+                
+        if vmd_layer:
+            # レイヤーのウェイトが1.0であることを確認
+            weight = cmds.animLayer(vmd_layer, query=True, weight=True)
+            self.assertEqual(weight, 1.0, "アニメーションレイヤーのウェイトが正しくありません")
+
+    def test_vmd_import_additive_layer(self):
+        """加算レイヤーモードでのVMDインポートテスト"""
+        # テスト用スケルトンを作成
+        joints = self._create_test_skeleton()
+        
+        # 初期ポーズを設定（センタージョイントを移動）
+        cmds.setAttr(f"{joints['center']}.translateY", 5)
+        cmds.setKeyframe(joints['center'], attribute="translateY", time=0, value=5)
+        
+        # VMDファイルのパスを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        
+        if not vmd_files:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+            
+        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        
+        # VMDファイルをインポート（デフォルトは加算モード）
+        result = import_mmd_file(vmd_path)
+        self.assertTrue(result, "VMDファイルのインポートに失敗しました")
+        
+        # 加算レイヤーが作成されたことを確認
+        anim_layers = cmds.ls(type="animLayer")
+        additive_layer = None
+        for layer in anim_layers:
+            if "VMD_Layer_" in layer:
+                # 加算モードかどうか確認
+                is_override = cmds.animLayer(layer, query=True, override=True)
+                if not is_override:  # overrideがFalseなら加算モード
+                    additive_layer = layer
+                    break
+                    
+        self.assertIsNotNone(additive_layer, "加算アニメーションレイヤーが見つかりません")
+
+    def test_fixture_pmx_vmd_integration(self):
+        """フィクスチャを使用したPMX+VMD統合テスト"""
+        # テスト用スケルトンを作成
+        joints = self._create_test_skeleton()
+        
+        # テスト用VMDファイルを取得
+        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith('.vmd')]
+        if not vmd_files:
+            self.skipTest("テスト用VMDファイルが見つかりません")
+        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        
+        # VMDファイルをインポート
+        vmd_result = import_mmd_file(vmd_path)
+        self.assertTrue(vmd_result, "VMDファイルのインポートに失敗しました")
+        
+        # アニメーションが適用されたことを確認
+        animated_joints = []
+        for joint in joints:
+            if cmds.keyframe(joint, query=True, keyframeCount=True):
+                animated_joints.append(joint)
+                
+        self.assertGreater(len(animated_joints), 0, "ジョイントにアニメーションが適用されていません")
+        
+        # タイムラインが更新されたことを確認
+        max_time = cmds.playbackOptions(query=True, maxTime=True)
+        self.assertGreaterEqual(max_time, 60, "タイムラインが正しく設定されていません")
+        
+        # アニメーションレイヤーが作成されたことを確認
+        anim_layers = cmds.ls(type="animLayer")
+        vmd_layer_found = any("VMD_Layer_" in layer for layer in anim_layers)
+        self.assertTrue(vmd_layer_found, "VMDアニメーションレイヤーが作成されていません")
+
+    def test_fixture_complex_pmx_vmd(self):
+        """フィクスチャを使用した複雑なPMX+VMDテスト"""
+        # 複雑なPMXファイルを作成（IKボーン、モーフ付き）
+        pmx_path = self.fixture_provider.create_complex_pmx_file("complex_fixture.pmx")
+        self.assertIsNotNone(pmx_path, "複雑なPMXファイルの作成に失敗しました")
+        
+        # PMXファイルをインポート
+        pmx_result = import_mmd_file(pmx_path)
+        self.assertTrue(pmx_result, "複雑なPMXファイルのインポートに失敗しました")
+        
+        # ブレンドシェイプが作成されたことを確認
+        blend_shapes = cmds.ls(type="blendShape")
+        self.assertGreater(len(blend_shapes), 0, "ブレンドシェイプが作成されていません")
+        
+        # 複雑なVMDファイルを作成（全要素含む）
+        vmd_path = self.fixture_provider.create_test_vmd_file(
+            "complex_fixture.vmd",
+            frame_count=120,
+            include_bone=True,
+            include_camera=True,
+            include_light=True,
+            include_morph=True
+        )
+        self.assertIsNotNone(vmd_path, "複雑なVMDファイルの作成に失敗しました")
+        
+        # VMDファイルをインポート
+        vmd_result = import_mmd_file(vmd_path)
+        self.assertTrue(vmd_result, "複雑なVMDファイルのインポートに失敗しました")
+        
+        # 各種アニメーションが適用されたことを確認
+        # ボーンアニメーション
+        joints = cmds.ls(type="joint")
+        animated_joints = [j for j in joints if cmds.keyframe(j, query=True, keyframeCount=True)]
+        self.assertGreater(len(animated_joints), 0, "ボーンアニメーションが適用されていません")
+        
+        # カメラアニメーション
+        from mmd_tools.core.constants import ATTR_MMD_CAMERA
+        cameras = cmds.ls(type="camera")
+        camera_animated = False
+        for cam in cameras:
+            transform = cmds.listRelatives(cam, parent=True)
+            if transform and cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform[0], exists=True):
+                if cmds.keyframe(transform[0], query=True, keyframeCount=True):
+                    camera_animated = True
+                    break
+        self.assertTrue(camera_animated, "カメラアニメーションが適用されていません")
+        
+        # モーフアニメーション
+        morph_animated = False
+        for blend_shape in blend_shapes:
+            weight_attrs = cmds.listAttr(blend_shape, multi=True, string="weight") or []
+            for weight_attr in weight_attrs:
+                if cmds.keyframe(f"{blend_shape}.{weight_attr}", query=True, keyframeCount=True):
+                    morph_animated = True
+                    break
+            if morph_animated:
+                break
+        self.assertTrue(morph_animated, "モーフアニメーションが適用されていません")
+
+    def test_fixture_multiple_vmd_layers(self):
+        """フィクスチャを使用した複数VMDレイヤーテスト"""
+        # テスト用PMXファイルを作成
+        pmx_path = self.fixture_provider.create_test_pmx_file("multi_layer_fixture.pmx")
+        self.assertIsNotNone(pmx_path, "テスト用PMXファイルの作成に失敗しました")
+        
+        # PMXファイルをインポート
+        pmx_result = import_mmd_file(pmx_path)
+        self.assertTrue(pmx_result, "PMXファイルのインポートに失敗しました")
+        
+        # 3つの異なるVMDファイルを作成してインポート
+        layer_names = []
+        for i in range(3):
+            # 異なる内容のVMDを作成
+            vmd_path = self.fixture_provider.create_test_vmd_file(
+                f"layer_{i}.vmd",
+                frame_count=30 + i * 30,  # 30, 60, 90フレーム
+                include_bone=True
+            )
+            self.assertIsNotNone(vmd_path, f"VMDファイル{i}の作成に失敗しました")
+            
+            # VMDをインポート
+            result = import_mmd_file(vmd_path)
+            self.assertTrue(result, f"VMDファイル{i}のインポートに失敗しました")
+            
+            # 作成されたレイヤーを記録
+            anim_layers = cmds.ls(type="animLayer")
+            new_layers = [l for l in anim_layers if "VMD_Layer_" in l and l not in layer_names]
+            if new_layers:
+                layer_names.extend(new_layers)
+                
+        # 3つの異なるレイヤーが作成されたことを確認
+        self.assertGreaterEqual(len(layer_names), 3, "3つのレイヤーが作成されていません")
+        
+        # 各レイヤーが存在し、アクティブであることを確認
+        for layer_name in layer_names:
+            self.assertTrue(cmds.animLayer(layer_name, query=True, exists=True), 
+                           f"レイヤー {layer_name} が存在しません")
+            weight = cmds.animLayer(layer_name, query=True, weight=True)
+            self.assertEqual(weight, 1.0, f"レイヤー {layer_name} のウェイトが1.0ではありません")
+
+    def test_fixture_vmd_namespace_support(self):
+        """フィクスチャを使用したネームスペース対応テスト"""
+        # ネームスペースを作成
+        namespace = "character1"
+        if not cmds.namespace(exists=namespace):
+            cmds.namespace(add=namespace)
+            
+        # ネームスペース内にPMXをインポート
+        cmds.namespace(set=namespace)
+        
+        # テスト用PMXファイルを作成
+        pmx_path = self.fixture_provider.create_test_pmx_file("namespace_test.pmx")
+        self.assertIsNotNone(pmx_path, "テスト用PMXファイルの作成に失敗しました")
+        
+        # PMXファイルをインポート
+        pmx_result = import_mmd_file(pmx_path)
+        self.assertTrue(pmx_result, "PMXファイルのインポートに失敗しました")
+        
+        # デフォルトネームスペースに戻る
+        cmds.namespace(set=":")
+        
+        # ネームスペース付きジョイントが存在することを確認
+        joints = cmds.ls(f"{namespace}:*", type="joint")
+        self.assertGreater(len(joints), 0, "ネームスペース付きジョイントが作成されていません")
+        
+        # ネームスペース付きジョイントを選択
+        if joints:
+            cmds.select(joints[0])
+        
+        # テスト用VMDファイルを作成
+        vmd_path = self.fixture_provider.create_test_vmd_file(
+            "namespace_test.vmd",
+            include_bone=True
+        )
+        self.assertIsNotNone(vmd_path, "テスト用VMDファイルの作成に失敗しました")
+        
+        # VMDファイルをインポート
+        vmd_result = import_mmd_file(vmd_path)
+        self.assertTrue(vmd_result, "VMDファイルのインポートに失敗しました")
+        
+        # ネームスペース付きジョイントにアニメーションが適用されたことを確認
+        animated_joints = []
+        for joint in joints:
+            if cmds.keyframe(joint, query=True, keyframeCount=True):
+                animated_joints.append(joint)
+                
+        self.assertGreater(len(animated_joints), 0, 
+                          "ネームスペース付きジョイントにアニメーションが適用されていません")
