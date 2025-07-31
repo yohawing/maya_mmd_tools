@@ -42,3 +42,25 @@ class PmdRigidBody:
         self.elasticity = struct.unpack('<f', f.read(4))[0]
         self.friction = struct.unpack('<f', f.read(4))[0]
         self.physics_mode = struct.unpack('<B', f.read(1))[0]
+
+    def write(self, f):
+        """
+        PMD剛体データをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMDString(self.name, 20))
+        f.write(struct.pack('<h', self.bone_index))
+        f.write(struct.pack('<B', self.collision_group))
+        f.write(struct.pack('<H', self.collision_mask))
+        f.write(struct.pack('<B', self.shape_type))
+        f.write(struct.pack('<fff', *self.size))
+        f.write(struct.pack('<fff', *self.position))
+        f.write(struct.pack('<fff', *self.rotation))
+        f.write(struct.pack('<f', self.mass))
+        f.write(struct.pack('<f', self.velocity_attenuation))
+        f.write(struct.pack('<f', self.rotation_attenuation))
+        f.write(struct.pack('<f', self.elasticity))
+        f.write(struct.pack('<f', self.friction))
+        f.write(struct.pack('<B', self.physics_mode))

@@ -22,11 +22,12 @@ class TestPmxImporter(MayaTestBase):
     def setUp(self):
         """テストのセットアップ"""
         super().setUp()
-        
+
         # dx11Shaderの作成を無効化（テスト環境では利用できない場合があるため）
         from mmd_tools.core import settings
+
         settings.set("import.model.create_mmd_shaders", False)
-        
+
         self.fixture_provider = TestFixtureProvider()
 
         # テスト用の一時ファイル
@@ -48,7 +49,7 @@ class TestPmxImporter(MayaTestBase):
         """基本的なPMXファイルのインポートテスト"""
         # テストデータのPMXファイルを取得
         try:
-            pmx_file = self.fixture_provider.get_pmx_file()
+            pmx_file = self.fixture_provider.get_pmx_file("荧")
         except FileNotFoundError:
             self.skipTest("テスト用PMXファイルが見つかりません")
 
@@ -81,7 +82,7 @@ class TestPmxImporter(MayaTestBase):
         """全てのPMXモデルが基本的にロード可能かテスト"""
         # 重いテストなので一時的にスキップ
         self.skipTest("全PMXファイルのロードテストは重いため一時的にスキップ")
-        
+
         pmx_files = self.fixture_provider.get_all_pmx_files()
 
         if not pmx_files:

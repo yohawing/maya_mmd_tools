@@ -295,10 +295,12 @@ class MeshConverter:
         Returns:
             str: 作成されたシェーダーノード名。
         """
-        sanitized_name = maya_utils.sanitize_text(material.name)
+        sanitized_name = maya_utils.sanitize_text(material.get_name())
         # 名前が空の場合はデフォルト名を使用
         if not sanitized_name:
-            sanitized_name = f"material_{material_index if material_index is not None else 0}"
+            sanitized_name = (
+                f"material_{material_index if material_index is not None else 0}"
+            )
 
         # create_mmd_shaders設定を確認
         create_mmd_shaders = settings.get("import.model.create_mmd_shaders")

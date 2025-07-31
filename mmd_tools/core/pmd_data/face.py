@@ -16,3 +16,12 @@ class PmdFace:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
         self.indices = struct.unpack('<HHH', f.read(6))
+
+    def write(self, f):
+        """
+        PMD面データをバイナリファイルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(struct.pack('<HHH', *self.indices))

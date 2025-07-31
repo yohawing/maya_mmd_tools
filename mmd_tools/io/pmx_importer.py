@@ -63,6 +63,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
         logger.info("モーフを変換中...")
         morph_converter = MorphConverter()
         morph_converter.convert_pmx_morphs(parser, mesh_name)
+        logger.debug("モーフ変換完了")
 
         # ボーンを変換
         logger.info("ボーンを変換中...")

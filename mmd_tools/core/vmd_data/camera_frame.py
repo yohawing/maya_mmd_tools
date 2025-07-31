@@ -47,3 +47,31 @@ class VmdCameraFrame:
         self.interpolation = data[32:56]
         self.viewing_angle = struct.unpack_from('<I', data, 56)[0]
         self.perspective = struct.unpack_from('<B', data, 60)[0]
+
+    def write(self):
+        """
+        VMDカメラフレームデータをバイトデータに変換する。
+
+        Returns:
+            bytes: カメラフレームのバイナリデータ。
+        """
+        data = b''
+        # フレーム番号を4バイトのunsigned intとしてパック
+        data += struct.pack('<I', self.frame_number)
+        # 距離を4バイトのfloatとしてパック
+        data += struct.pack('<f', self.distance)
+        # 位置を3つのfloatとしてパック
+        data += struct.pack('<fff', *self.position)
+        # 回転を3つのfloat（オイラー角）としてパック
+        data += struct.pack('<fff', *self.rotation)
+        # 補間データをそのまま追加（24バイト）
+        if len(self.interpolation) == 24:
+            data += self.interpolation
+        else:
+            # 補間データが不正な場合はデフォルト値で埋める
+            data += b'\x00' * 24
+        # 視野角を4バイトのunsigned intとしてパック
+        data += struct.pack('<I', self.viewing_angle)
+        # パースペクティブを1バイトのunsigned byteとしてパック
+        data += struct.pack('<B', self.perspective)
+        return data

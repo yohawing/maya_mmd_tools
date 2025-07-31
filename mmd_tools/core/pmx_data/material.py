@@ -1,7 +1,9 @@
 import enum
 import struct
+from typing import BinaryIO
 
 from mmd_tools.core import utils
+from mmd_tools.core.pmx_data.header import PmxEncoding
 
 
 # bitFlag: 描画フラグ
@@ -54,18 +56,28 @@ class PmxMaterial:
     PMXファイルの材質データを保持するクラス。
     """
 
-    def __init__(self, texture_index_size, encoding, material_index):
+    def __init__(
+        self,
+        texture_index_size: int = 1,
+        encoding: PmxEncoding = PmxEncoding.UTF16LE,
+        material_index: int = 0,
+    ):
+        # デフォルト値を設定
         self.texture_index_size = texture_index_size
         self.encoding = encoding
         self.name = ""
         self.name_english = ""
-        self.diffuse = (0.0, 0.0, 0.0, 0.0)
-        self.specular = (0.0, 0.0, 0.0)
-        self.specular_coefficient = 0.0
-        self.ambient = (0.0, 0.0, 0.0)
-        self.draw_flag = PmxDrawFlag.NONE
-        self.edge_color = (0.0, 0.0, 0.0, 0.0)
-        self.edge_size = 0.0
+        self.diffuse = (1.0, 1.0, 1.0, 1.0)  # 白色をデフォルトに
+        self.specular = (0.5, 0.5, 0.5)
+        self.specular_coefficient = 5.0
+        self.ambient = (0.3, 0.3, 0.3)
+        self.draw_flag = (
+            PmxDrawFlag.DOUBLE_SIDED
+            | PmxDrawFlag.GROUND_SHADOW
+            | PmxDrawFlag.EDGE_DRAWING
+        )
+        self.edge_color = (0.0, 0.0, 0.0, 1.0)
+        self.edge_size = 1.0
         self.texture_index = -1
         self.sphere_texture_index = -1
         self.sphere_mode = PmxSphereMode.DISABLED
@@ -75,12 +87,12 @@ class PmxMaterial:
         self.face_count = 0
         self.material_index = material_index
 
-    def parse(self, f):
+    def parse(self, f: BinaryIO) -> None:
         """
         ファイルハンドルからPMX材質データを解析し、自身の属性に格納する。
 
         Args:
-            f (file): バイナリ読み込みモードで開かれたファイルハンドル。
+            f: バイナリ読み込みモードで開かれたファイルハンドル。
         """
         self.name = utils.parsePMXString(f, self.encoding)
         self.name_english = utils.parsePMXString(f, self.encoding)
@@ -114,3 +126,48 @@ class PmxMaterial:
         self.memo = utils.parsePMXString(f, self.encoding)
 
         self.face_count = struct.unpack("<I", f.read(4))[0]
+
+    def get_name(self) -> str:
+        """
+        マテリアルの名前を取得します。英語名が設定されていればそれを返し、なければ日本語名を返す。
+
+        Returns:
+            str: マテリアルの名前
+        """
+        if self.name_english and self.name_english != "":
+            return self.name_english
+        return self.name
+
+    def write(self, f: BinaryIO) -> None:
+        """
+        PMX材質データをファイルハンドルに書き込む。
+
+        Args:
+            f: バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMXString(self.name, self.encoding))
+        f.write(utils.encodePMXString(self.name_english, self.encoding))
+
+        f.write(struct.pack("<ffff", *self.diffuse))
+        f.write(struct.pack("<fff", *self.specular))
+        f.write(struct.pack("<f", self.specular_coefficient))
+        f.write(struct.pack("<fff", *self.ambient))
+        f.write(struct.pack("<B", self.draw_flag))
+        f.write(struct.pack("<ffff", *self.edge_color))
+        f.write(struct.pack("<f", self.edge_size))
+
+        texture_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.texture_index_size]
+        f.write(struct.pack(texture_index_format, self.texture_index))
+        f.write(struct.pack(texture_index_format, self.sphere_texture_index))
+
+        f.write(struct.pack("<B", self.sphere_mode))
+        f.write(struct.pack("<B", self.shared_toon_flag))
+
+        if self.shared_toon_flag == 0:
+            f.write(struct.pack(texture_index_format, self.toon_texture_index))
+        else:
+            f.write(struct.pack("<B", self.toon_texture_index))
+
+        f.write(utils.encodePMXString(self.memo, self.encoding))
+
+        f.write(struct.pack("<I", self.face_count))

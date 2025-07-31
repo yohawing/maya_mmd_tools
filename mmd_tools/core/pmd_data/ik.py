@@ -28,3 +28,20 @@ class PmdIK:
         for i in range(self.chain_length):
             link_bone_index = struct.unpack('<H', f.read(2))[0]
             self.link_bones.append(link_bone_index)
+
+    def write(self, f):
+        """
+        PMD IKデータをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(struct.pack('<H', self.ik_bone_index))
+        f.write(struct.pack('<H', self.target_bone_index))
+        f.write(struct.pack('<B', self.chain_length))
+        f.write(struct.pack('<H', self.iterations))
+        f.write(struct.pack('<f', self.control_weight))
+
+        # Link bones
+        for link_bone_index in self.link_bones:
+            f.write(struct.pack('<H', link_bone_index))

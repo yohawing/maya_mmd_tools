@@ -49,3 +49,27 @@ class VmdBoneFrame:
         self.position = struct.unpack_from('<fff', data, 19)
         self.rotation = struct.unpack_from('<ffff', data, 31)
         self.interpolation = data[47:111]
+
+    def write(self):
+        """
+        VMDボーンフレームデータをバイトデータに変換する。
+
+        Returns:
+            bytes: ボーンフレームのバイナリデータ。
+        """
+        data = b''
+        # ボーン名を15バイトの固定長でエンコード
+        data += utils.encodePMDString(self.bone_name, 15)
+        # フレーム番号を4バイトのunsigned intとしてパック
+        data += struct.pack('<I', self.frame_number)
+        # 位置を3つのfloatとしてパック
+        data += struct.pack('<fff', *self.position)
+        # 回転を4つのfloat（クォータニオン）としてパック
+        data += struct.pack('<ffff', *self.rotation)
+        # 補間データをそのまま追加（64バイト）
+        if len(self.interpolation) == 64:
+            data += self.interpolation
+        else:
+            # 補間データが不正な場合はデフォルト値で埋める
+            data += b'\x00' * 64
+        return data
