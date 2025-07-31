@@ -13,11 +13,12 @@ from mmd_tools.core import utils
 class PmdMaterial:
     """PMDファイルの材質データを保持するクラス。"""
 
-    def __init__(self, material_index):
+    def __init__(self, material_index=0):
+        # デフォルト値を設定
         self.name = "PmdDefaultMaterial"
-        self.diffuse = (0.0, 0.0, 0.0, 0.0)  # RGBA
-        self.specular_power = 0.0
-        self.specular = (0.0, 0.0, 0.0)  # RGB
+        self.diffuse = (1.0, 1.0, 1.0, 1.0)  # RGBA - 白色をデフォルトに
+        self.specular_power = 5.0
+        self.specular = (0.5, 0.5, 0.5)  # RGB
         self.ambient = (0.0, 0.0, 0.0)  # RGB
         self.toon_texture_index = 0
         self.edge_flag = 0
@@ -47,3 +48,28 @@ class PmdMaterial:
         else:
             # テクスチャがない場合はインデックスを使用したデフォルト名
             self.name = f"material_{self.material_index}"
+
+    def get_name(self):
+        """
+        材質の名前を取得する。
+
+        Returns:
+            str: 材質の名前。
+        """
+        return self.name
+
+    def write(self, f):
+        """
+        PMD材質データをバイナリファイルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(struct.pack("<ffff", *self.diffuse))
+        f.write(struct.pack("<f", self.specular_power))
+        f.write(struct.pack("<fff", *self.specular))
+        f.write(struct.pack("<fff", *self.ambient))
+        f.write(struct.pack("<B", self.toon_texture_index))
+        f.write(struct.pack("<B", self.edge_flag))
+        f.write(struct.pack("<I", self.face_count))
+        f.write(utils.encodePMDString(self.texture_file_name, 20))

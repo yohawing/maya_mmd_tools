@@ -35,3 +35,27 @@ class VmdIKShowHideFrame:
             show_flag = struct.unpack_from('<B', data, offset+20)[0]
             self.ik_states.append((ik_name, show_flag))
             offset += 21
+
+    def write(self):
+        """
+        VMD IK表示/非表示フレームデータをバイトデータに変換する。
+
+        Returns:
+            bytes: IK表示/非表示フレームのバイナリデータ。
+        """
+        data = b''
+        # フレーム番号を4バイトのunsigned intとしてパック
+        data += struct.pack('<I', self.frame_number)
+        # モデル表示を1バイトのunsigned byteとしてパック
+        data += struct.pack('<B', self.visible)
+        # IKの数を4バイトのunsigned intとしてパック
+        data += struct.pack('<I', self.ik_count)
+        
+        # 各IKの状態を書き込む
+        for ik_name, show_flag in self.ik_states:
+            # IK名を20バイトの固定長でエンコード
+            data += utils.encodePMDString(ik_name, 20)
+            # 表示フラグを1バイトのunsigned byteとしてパック
+            data += struct.pack('<B', show_flag)
+        
+        return data

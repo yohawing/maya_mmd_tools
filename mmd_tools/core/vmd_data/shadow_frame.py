@@ -23,3 +23,19 @@ class VmdShadowFrame:
         self.frame_number = struct.unpack_from('<I', data, 0)[0]
         self.mode = struct.unpack_from('<B', data, 4)[0]
         self.distance = struct.unpack_from('<f', data, 5)[0]
+
+    def write(self):
+        """
+        VMDシャドウフレームデータをバイトデータに変換する。
+
+        Returns:
+            bytes: シャドウフレームのバイナリデータ。
+        """
+        data = b''
+        # フレーム番号を4バイトのunsigned intとしてパック
+        data += struct.pack('<I', self.frame_number)
+        # モードを1バイトのunsigned byteとしてパック
+        data += struct.pack('<B', self.mode)
+        # 距離を4バイトのfloatとしてパック
+        data += struct.pack('<f', self.distance)
+        return data

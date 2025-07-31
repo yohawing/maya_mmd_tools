@@ -36,3 +36,22 @@ class PmdJoint:
         self.rotation_limit_max = struct.unpack('<fff', f.read(12))
         self.spring_translation = struct.unpack('<fff', f.read(12))
         self.spring_rotation = struct.unpack('<fff', f.read(12))
+
+    def write(self, f):
+        """
+        PMDジョイントデータをファイルハンドルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMDString(self.name, 20))
+        f.write(struct.pack('<I', self.rigid_body_index_a))
+        f.write(struct.pack('<I', self.rigid_body_index_b))
+        f.write(struct.pack('<fff', *self.position))
+        f.write(struct.pack('<fff', *self.rotation))
+        f.write(struct.pack('<fff', *self.translation_limit_min))
+        f.write(struct.pack('<fff', *self.translation_limit_max))
+        f.write(struct.pack('<fff', *self.rotation_limit_min))
+        f.write(struct.pack('<fff', *self.rotation_limit_max))
+        f.write(struct.pack('<fff', *self.spring_translation))
+        f.write(struct.pack('<fff', *self.spring_rotation))

@@ -3,20 +3,40 @@
 import struct
 from typing import List
 
+from mmd_tools.core.pmx_data.header import PmxEncoding
 
-def parsePMXString(f, encoding="utf-16-le"):
-    """PMX形式の文字列をファイルから読み込み、通常の文字列に変換します。"""
+
+def parsePMXString(f, encoding=0):
+    """PMX形式の文字列をファイルから読み込み、通常の文字列に変換します。
+
+    Args:
+        f: バイナリ読み込みモードで開かれたファイルハンドル
+        encoding (int): 文字エンコーディング（0: UTF-16LE, 1: UTF-8）
+
+    Returns:
+        str: 読み込まれた文字列
+
+    """
     (length,) = struct.unpack("<i", f.read(4))
     if length == 0:
         return ""
     (buf,) = struct.unpack("<%ds" % length, f.read(length))
-    # return buf.decode(encoding)
-    return str(buf, encoding, errors="replace")
+    return str(
+        buf,
+        "utf-16-le" if encoding == PmxEncoding.UTF16LE else "utf-8",
+        errors="replace",
+    )
 
 
 def decodePMDString(byteString):
     """PMD形式のバイト文字列を通常の文字列に変換します。
-    文字列は最初のヌル文字で終了します。"""
+
+    Args:
+        byteString (bytes): デコードするバイト列
+
+    Returns:
+        str: デコードされた文字列
+    """
     if not byteString:
         return ""
     return decodeCp932String(byteString)
@@ -25,7 +45,11 @@ def decodePMDString(byteString):
 def decodeCp932String(byteString):
     """
     CP932形式のバイト文字列を通常の文字列に変換します。
-    文字列は最初のヌル文字で終了します。
+
+    Args:
+        byteString (bytes): デコードするバイト列
+    Returns:
+        str: デコードされた文字列
     """
     try:
         null_index = byteString.index(b"\x00")
@@ -37,11 +61,74 @@ def decodeCp932String(byteString):
 
 
 def encodeCp932String(string):
-    """通常の文字列をCP932形式のバイト文字列に変換します。"""
+    """通常の文字列をCP932形式のバイト文字列に変換します。
+
+    Args:
+        string (str): エンコードする文字列
+
+    Returns:
+        bytes: CP932形式のバイト列
+    """
     try:
         return string.encode("cp932")
     except UnicodeEncodeError:
         return b"\x00" + string.encode("cp932", errors="replace")[1:]
+
+
+def encodePMDString(string, length):
+    """
+    文字列をPMD形式（固定長Shift-JIS）にエンコードします。
+
+    Args:
+        string (str): エンコードする文字列
+        length (int): 固定長バイト数
+
+    Returns:
+        bytes: 固定長のバイト列
+    """
+    if not string:
+        return b"\x00" * length
+
+    encoded = encodeCp932String(string)
+    if len(encoded) >= length:
+        # 長すぎる場合は切り詰める
+        return encoded[: length - 1] + b"\x00"
+    else:
+        # 短い場合はヌル文字でパディング
+        return encoded + b"\x00" * (length - len(encoded))
+
+
+def get_pmx_encoding_string(encoding_flag: PmxEncoding) -> str:
+    """
+    PMXのエンコーディングフラグ（0または1）を文字列に変換
+
+    Args:
+        encoding_flag (int): 0=UTF-16LE, 1=UTF-8
+
+    Returns:
+        str: エンコーディング文字列
+    """
+    return "utf-16-le" if encoding_flag == PmxEncoding.UTF16LE else "utf-8"
+
+
+def encodePMXString(string, encoding=PmxEncoding.UTF16LE):
+    """
+    文字列をPMX形式（長さプレフィックス付き）にエンコードします。
+
+    Args:
+        string (str): エンコードする文字列
+        encoding (str): 文字エンコーディング
+
+    Returns:
+        bytes: 長さプレフィックス付きのバイト列
+    """
+    if not string:
+        return struct.pack("<i", 0)
+    if encoding == PmxEncoding.UTF16LE:
+        encoded = string.encode("utf-16-le")
+    else:
+        encoded = string.encode("utf-8")
+    return struct.pack("<i", len(encoded)) + encoded
 
 
 # Unicode文字列変換API（シンプルインターフェース）
@@ -194,6 +281,7 @@ def vector_length(v: List[float]) -> float:
         ベクトルの長さ
     """
     import math
+
     return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
 
 
@@ -227,47 +315,48 @@ def create_bone_joint_mapping(bones, maya_joints, format_type):
 def cross_product(vec1, vec2):
     """
     2つのベクトルの外積を計算する。
-    
+
     Args:
         vec1 (list): ベクトル1 [x, y, z]
         vec2 (list): ベクトル2 [x, y, z]
-        
+
     Returns:
         list: 外積ベクトル [x, y, z]
     """
     return [
         vec1[1] * vec2[2] - vec1[2] * vec2[1],
         vec1[2] * vec2[0] - vec1[0] * vec2[2],
-        vec1[0] * vec2[1] - vec1[1] * vec2[0]
+        vec1[0] * vec2[1] - vec1[1] * vec2[0],
     ]
 
 
 def normalize_vector(vector):
     """
     ベクトルを正規化する。
-    
+
     Args:
         vector (list): ベクトル [x, y, z]
-        
+
     Returns:
         list: 正規化されたベクトル [x, y, z]
     """
     import math
-    length = math.sqrt(vector[0]**2 + vector[1]**2 + vector[2]**2)
+
+    length = math.sqrt(vector[0] ** 2 + vector[1] ** 2 + vector[2] ** 2)
     if length < 1e-6:  # ゼロベクトルのチェック
         return [0.0, 0.0, 0.0]
-    return [vector[0]/length, vector[1]/length, vector[2]/length]
+    return [vector[0] / length, vector[1] / length, vector[2] / length]
 
 
 def pmx_to_maya_vector(pmx_vector):
     """
     PMXの右手座標系ベクトルをMayaの左手座標系に変換する。
     PMX: X(右), Y(上), Z(手前)
-    Maya: X(右), Y(上), Z(奥) 
-    
+    Maya: X(右), Y(上), Z(奥)
+
     Args:
         pmx_vector (list): PMXベクトル [x, y, z]
-        
+
     Returns:
         list: Mayaベクトル [x, y, -z]
     """

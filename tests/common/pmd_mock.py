@@ -297,7 +297,8 @@ class PmdMock:
             data.extend(struct.pack("<fff", 0.0, 0.0, 0.0))  # 移動量
 
         # まばたき表情
-        data.extend(b"\x82\xdc\x82\xce\x82\xbd\x82\xab" + b"\x00" * 10)  # 表情名
+        mabataki_name = b"\x82\xdc\x82\xce\x82\xbd\x82\xab"  # "まばたき" in Shift-JIS
+        data.extend(mabataki_name + b"\x00" * (20 - len(mabataki_name)))  # 表情名
         data.extend(struct.pack("<L", 2))  # 頂点数
         data.extend(struct.pack("<B", 1))  # 表情タイプ
         data.extend(struct.pack("<L", 2))  # 頂点インデックス
@@ -306,7 +307,8 @@ class PmdMock:
         data.extend(struct.pack("<fff", 0.0, -0.2, 0.0))  # 移動量
 
         # 笑い表情
-        data.extend(b"\x8f\xce\x82\xa2" + b"\x00" * 14)  # 表情名
+        warai_name = b"\x8f\xce\x82\xa2"  # "笑い" in Shift-JIS
+        data.extend(warai_name + b"\x00" * (20 - len(warai_name)))  # 表情名
         data.extend(struct.pack("<L", 4))  # 頂点数
         data.extend(struct.pack("<B", 1))  # 表情タイプ
         for i in range(4):
@@ -321,10 +323,13 @@ class PmdMock:
         # ボーン枠データ
         data.extend(struct.pack("<B", 3))  # ボーン枠数
 
-        # ボーン枠名
-        data.extend(b"\x83Z\x83\x93\x83^\x81[" + b"\x00" * 14)  # センター
-        data.extend(b"\x8f\xe3\x94\xbc\x90g" + b"\x00" * 14)  # 上半身
-        data.extend(b"IK" + b"\x00" * 18)  # IK
+        # ボーン枠名（50バイト固定）
+        center_name = b"\x83Z\x83\x93\x83^\x81["  # センター
+        data.extend(center_name + b"\x00" * (50 - len(center_name)))
+        upper_body_name = b"\x8f\xe3\x94\xbc\x90g"  # 上半身
+        data.extend(upper_body_name + b"\x00" * (50 - len(upper_body_name)))
+        ik_name = b"IK"
+        data.extend(ik_name + b"\x00" * (50 - len(ik_name)))
 
         # ボーン枠データ
         data.extend(struct.pack("<L", 1))  # センター枠のボーン数
@@ -383,10 +388,10 @@ class PmdMock:
         data.extend(b"blink" + b"\x00" * 15)
         data.extend(b"smile" + b"\x00" * 15)
 
-        # ボーン枠英語名
-        data.extend(b"Center" + b"\x00" * 44)
-        data.extend(b"Upper Body" + b"\x00" * 40)
-        data.extend(b"IK" + b"\x00" * 48)
+        # ボーン枠英語名（50バイト固定）
+        data.extend(b"Center" + b"\x00" * (50 - len(b"Center")))
+        data.extend(b"Upper Body" + b"\x00" * (50 - len(b"Upper Body")))
+        data.extend(b"IK" + b"\x00" * (50 - len(b"IK")))
 
         # トゥーンテクスチャ
         for i in range(10):

@@ -64,3 +64,25 @@ class PmdHeader:
             return self.comment_english
 
         return self.comment
+
+    def write(self, f):
+        """
+        PMDヘッダをバイナリファイルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(b"Pmd")
+        f.write(struct.pack("<f", self.version))
+        f.write(utils.encodePMDString(self.model_name, 20))
+        f.write(utils.encodePMDString(self.comment, 256))
+
+    def write_english(self, f):
+        """
+        英語のPMDヘッダをバイナリファイルに書き込む。
+
+        Args:
+            f (file): バイナリ書き込みモードで開かれたファイルハンドル。
+        """
+        f.write(utils.encodePMDString(self.model_name_english, 20))
+        f.write(utils.encodePMDString(self.comment_english, 256))

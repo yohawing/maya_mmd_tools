@@ -103,7 +103,7 @@ class MorphConverter:
     def _convert_vertex_morph_pmd(self, morph, mesh_node: str) -> Dict[str, Any]:
         """PMD頂点モーフの変換"""
         # モーフ名をMaya互換に変換
-        morph_name = maya_utils.sanitize_text(morph.name)
+        morph_name = maya_utils.sanitize_text(morph.get_name())
 
         # メッシュを複製してターゲットを作成
         target_mesh = cmds.duplicate(mesh_node)[0]
