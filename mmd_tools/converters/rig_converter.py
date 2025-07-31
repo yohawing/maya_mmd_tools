@@ -7,7 +7,6 @@ from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core import maya_utils
 from mmd_tools.core import utils
 from mmd_tools.core.logger import get_logger
-from mmd_tools.validation.bone_validator import BoneValidator
 from mmd_tools.core.settings import settings
 
 
@@ -23,7 +22,6 @@ class RigConverter:
         コンストラクタ。
         """
         self.logger = get_logger(__name__)
-        self.bone_validator = BoneValidator()
         self.original_bone_names = {}  # ボーンインデックスから元の日本語名へのマッピング
 
     def setup_pmx_rig(
@@ -45,17 +43,9 @@ class RigConverter:
         Returns:
             dict: セットアップ結果の情報
         """
-        result = {
-            "ik_handles": [],
-            "semi_standard_bones": {},
-            "constraints": [],
-            "validation_report": None,
-        }
 
-        # ボーン構造の検証を実行
-        validation_result = self.validate_bones(pmx_data.bones)
-        result["validation_report"] = validation_result
-        self.print_validation_report(pmx_data.bones)
+        self.logger.info("PMXリグセットアップを開始")
+        result = {"ik_handles": [], "semi_standard_bones": {}, "constraints": []}
 
         # IKチェーンを抽出してMayaのIKハンドルを作成
         ik_chains = self._extract_ik_chains(pmx_data.bones, bone_map)
@@ -82,9 +72,7 @@ class RigConverter:
                 )
 
         # 付与ボーンの設定
-        result["constraints"] = self._setup_given_parent_bones(
-            pmx_data.bones, maya_joints
-        )
+        result["constraints"] = self._setup_grant_bones(pmx_data.bones, maya_joints)
         if result["constraints"]:
             self.logger.info(f"{len(result['constraints'])}個の付与関係を設定しました")
 
@@ -109,17 +97,7 @@ class RigConverter:
         Returns:
             dict: セットアップ結果の情報
         """
-        result = {
-            "ik_handles": [],
-            "semi_standard_bones": {},
-            "constraints": [],
-            "validation_report": None,
-        }
-
-        # ボーン構造の検証を実行
-        validation_result = self.validate_bones(pmd_data.bones)
-        result["validation_report"] = validation_result
-        self.print_validation_report(pmd_data.bones)
+        result = {"ik_handles": [], "semi_standard_bones": {}, "constraints": []}
 
         # IKチェーンを抽出してMayaのIKハンドルを作成
         ik_chains = self._extract_ik_chains(pmd_data.bones, bone_map, pmd_data.ik_data)
@@ -143,69 +121,6 @@ class RigConverter:
                 )
 
         return result
-
-    def validate_bones(self, bones) -> Dict[str, any]:
-        """
-        ボーン構造の検証を実行する。
-
-        Args:
-            bones: 検証対象のボーンデータリスト（PMDまたはPMXのボーンオブジェクト）
-
-        Returns:
-            dict: 検証結果を含む辞書
-        """
-        # ボーン名のリストを抽出
-        bone_names = [bone.get_name() for bone in bones]
-
-        # ボーン名の検証を実行
-        missing_bones, naming_issues, bone_mapping = self.bone_validator.validate_bones(
-            bone_names
-        )
-
-        # 階層構造の検証を実行
-        hierarchy_issues = self.bone_validator.validate_bone_hierarchy(bones)
-
-        # レポートを生成
-        report = self.bone_validator.generate_report(bone_names)
-
-        # 階層構造の問題をレポートに追加
-        if any(hierarchy_issues.values()):
-            report += "\n\n【階層構造の問題】"
-            if hierarchy_issues["invalid_references"]:
-                report += "\n無効な親参照:"
-                for issue in hierarchy_issues["invalid_references"]:
-                    report += f"\n  - {issue['bone']} (index={issue['index']}): parent_index={issue['parent_index']} (max={issue['max_index']})"
-            if hierarchy_issues["circular_references"]:
-                report += "\n循環参照:"
-                for issue in hierarchy_issues["circular_references"]:
-                    report += f"\n  - {issue['bone']} (index={issue['index']})"
-
-        # 結果を返す
-        return {
-            "missing_bones": missing_bones,
-            "naming_issues": naming_issues,
-            "bone_mapping": bone_mapping,
-            "hierarchy_issues": hierarchy_issues,
-            "report": report,
-            "total_bones": len(bones),
-            "standard_bones_found": len(bone_mapping),
-        }
-
-    def print_validation_report(self, bones):
-        """
-        ボーン検証レポートをコンソールに出力する。
-
-        Args:
-            bones: 検証対象のボーンデータリスト
-        """
-        validation_result = self.validate_bones(bones)
-        self.logger.info(validation_result["report"])
-
-        # 警告が必要な場合はMayaの警告として表示
-        if validation_result["missing_bones"]:
-            cmds.warning(
-                f"標準ボーンが{len(validation_result['missing_bones'])}個不足しています。詳細はスクリプトエディタを確認してください。"
-            )
 
     def _extract_ik_chains(self, bones, bone_map, ik_data=None):
         """
@@ -456,18 +371,31 @@ class RigConverter:
                 )
 
                 # 方法1: PMXのローカル軸情報を確認
-                if cmds.attributeQuery("mmd_local_x_axis", node=knee_joint, exists=True):
+                if cmds.attributeQuery(
+                    "mmd_local_x_axis", node=knee_joint, exists=True
+                ):
                     try:
                         # 膝のローカルX軸を取得（PMXではX軸が主要な回転軸）
                         local_x_axis = cmds.getAttr(f"{knee_joint}.mmd_local_x_axis")
                         # float3/double3属性は[(x, y, z)]の形式で返される
-                        if local_x_axis and isinstance(local_x_axis, list) and len(local_x_axis) > 0:
-                            if isinstance(local_x_axis[0], (list, tuple)) and len(local_x_axis[0]) == 3:
+                        if (
+                            local_x_axis
+                            and isinstance(local_x_axis, list)
+                            and len(local_x_axis) > 0
+                        ):
+                            if (
+                                isinstance(local_x_axis[0], (list, tuple))
+                                and len(local_x_axis[0]) == 3
+                            ):
                                 local_x_axis = local_x_axis[0]
                             if len(local_x_axis) == 3:
                                 # PMX座標系からMaya座標系に変換
-                                knee_bend_direction = utils.pmx_to_maya_vector(local_x_axis)
-                                knee_bend_direction = utils.normalize_vector(knee_bend_direction)
+                                knee_bend_direction = utils.pmx_to_maya_vector(
+                                    local_x_axis
+                                )
+                                knee_bend_direction = utils.normalize_vector(
+                                    knee_bend_direction
+                                )
                                 method_used = "pmx_local_axis"
                                 self.logger.debug(
                                     f"PMXローカル軸情報を使用: {knee_bend_direction}"
@@ -483,22 +411,32 @@ class RigConverter:
                             cmds.getAttr(f"{knee_joint}.jointOrientY"),
                             cmds.getAttr(f"{knee_joint}.jointOrientZ"),
                         ]
-                        
+
                         # jointOrientが設定されている場合
                         if any(abs(angle) > 0.001 for angle in joint_orient):
                             # jointOrientから屈曲方向を計算
                             # Y軸回転が主要な場合、膝は前方（-Z方向）に曲がる
-                            if abs(joint_orient[1]) > abs(joint_orient[0]) and abs(joint_orient[1]) > abs(joint_orient[2]):
+                            if abs(joint_orient[1]) > abs(joint_orient[0]) and abs(
+                                joint_orient[1]
+                            ) > abs(joint_orient[2]):
                                 # Y軸回転が最も大きい場合、Z軸方向に屈曲
                                 knee_bend_direction = [0, 0, -1]
-                            elif abs(joint_orient[0]) > abs(joint_orient[1]) and abs(joint_orient[0]) > abs(joint_orient[2]):
+                            elif abs(joint_orient[0]) > abs(joint_orient[1]) and abs(
+                                joint_orient[0]
+                            ) > abs(joint_orient[2]):
                                 # X軸回転が最も大きい場合、Y軸方向に屈曲
-                                knee_bend_direction = [0, 1, 0] if joint_orient[0] > 0 else [0, -1, 0]
+                                knee_bend_direction = (
+                                    [0, 1, 0] if joint_orient[0] > 0 else [0, -1, 0]
+                                )
                             else:
                                 # Z軸回転が最も大きい場合、X軸方向に屈曲
-                                knee_bend_direction = [1, 0, 0] if joint_orient[2] > 0 else [-1, 0, 0]
-                            
-                            knee_bend_direction = utils.normalize_vector(knee_bend_direction)
+                                knee_bend_direction = (
+                                    [1, 0, 0] if joint_orient[2] > 0 else [-1, 0, 0]
+                                )
+
+                            knee_bend_direction = utils.normalize_vector(
+                                knee_bend_direction
+                            )
                             method_used = "joint_orient"
                             self.logger.debug(
                                 f"jointOrientから屈曲方向を取得: {knee_bend_direction} (orient={joint_orient})"
@@ -515,12 +453,19 @@ class RigConverter:
 
                     # 直線上の最近点を計算
                     t = sum(
-                        [(knee_pos[i] - start_pos[i]) * hip_to_ankle[i] for i in range(3)]
+                        [
+                            (knee_pos[i] - start_pos[i]) * hip_to_ankle[i]
+                            for i in range(3)
+                        ]
                     )
-                    closest_point = [start_pos[i] + t * hip_to_ankle[i] for i in range(3)]
+                    closest_point = [
+                        start_pos[i] + t * hip_to_ankle[i] for i in range(3)
+                    ]
 
                     # 膝の屈曲方向
-                    knee_bend_direction = [knee_pos[i] - closest_point[i] for i in range(3)]
+                    knee_bend_direction = [
+                        knee_pos[i] - closest_point[i] for i in range(3)
+                    ]
                     bend_length = (
                         knee_bend_direction[0] ** 2
                         + knee_bend_direction[1] ** 2
@@ -528,7 +473,9 @@ class RigConverter:
                     ) ** 0.5
 
                     if bend_length > 0.001:
-                        knee_bend_direction = utils.normalize_vector(knee_bend_direction)
+                        knee_bend_direction = utils.normalize_vector(
+                            knee_bend_direction
+                        )
                         method_used = "calculated_from_position"
                         self.logger.debug(
                             f"膝の位置から屈曲方向を計算: {knee_bend_direction}"
@@ -549,7 +496,9 @@ class RigConverter:
                     + (end_pos[1] - start_pos[1]) ** 2
                     + (end_pos[2] - start_pos[2]) ** 2
                 ) ** 0.5
-                offset_distance = max(leg_length * 0.3, 2.0)  # 脚の長さの30%または最小2ユニット
+                offset_distance = max(
+                    leg_length * 0.3, 2.0
+                )  # 脚の長さの30%または最小2ユニット
 
                 # PoleTargetの位置を計算
                 pole_pos = [
@@ -900,7 +849,7 @@ class RigConverter:
 
         return None
 
-    def _setup_given_parent_bones(self, bones, maya_joints):
+    def _setup_grant_bones(self, bones, maya_joints):
         """
         付与ボーンの設定を行う。
         変形階層（transform_layer）を考慮して適切な順序で処理する。
@@ -925,8 +874,8 @@ class RigConverter:
                 continue
 
             # 付与フラグをチェック
-            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or bone.get_flag(
-                PmxBoneFlag.GIVEN_PARENT_MOVE
+            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(
+                PmxBoneFlag.GRANT_PARENT_MOVE
             ):
                 given_bones.append(
                     {
@@ -958,22 +907,15 @@ class RigConverter:
             is_local_given = bone.get_flag(PmxBoneFlag.LOCAL)
 
             # 回転付与
-            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE):
-                parent_index = bone.given_parent_bone_index
+            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE):
+                parent_index = bone.grant_parent_bone_index
                 if 0 <= parent_index < len(maya_joints):
                     parent_joint = maya_joints[parent_index]
-                    given_rate = bone.given_rate
+                    given_rate = bone.grant_rate
 
-                    # 付与率が1.0かつローカル付与でない場合は通常のorientConstraint
-                    if abs(given_rate - 1.0) < 0.001 and not is_local_given:
-                        constraint = cmds.orientConstraint(
-                            parent_joint, joint, maintainOffset=True, weight=1.0
-                        )[0]
-                    else:
-                        # 付与率が1.0でない場合、またはローカル付与の場合
-                        constraint = self._create_given_rotation_constraint(
-                            parent_joint, joint, given_rate, is_local_given
-                        )
+                    constraint = cmds.orientConstraint(
+                        parent_joint, joint, maintainOffset=True, weight=given_rate
+                    )[0]
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"
@@ -982,22 +924,15 @@ class RigConverter:
                     )
 
             # 移動付与
-            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_MOVE):
-                parent_index = bone.given_parent_bone_index
+            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_MOVE):
+                parent_index = bone.grant_parent_bone_index
                 if 0 <= parent_index < len(maya_joints):
                     parent_joint = maya_joints[parent_index]
-                    given_rate = bone.given_rate
+                    given_rate = bone.grant_rate
 
-                    # 付与率が1.0かつローカル付与でない場合は通常のpointConstraint
-                    if abs(given_rate - 1.0) < 0.001 and not is_local_given:
-                        constraint = cmds.pointConstraint(
-                            parent_joint, joint, maintainOffset=True, weight=1.0
-                        )[0]
-                    else:
-                        # 付与率が1.0でない場合、またはローカル付与の場合
-                        constraint = self._create_given_position_constraint(
-                            parent_joint, joint, given_rate, is_local_given
-                        )
+                    constraint = cmds.pointConstraint(
+                        parent_joint, joint, maintainOffset=True, weight=given_rate
+                    )[0]
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"
@@ -1029,7 +964,7 @@ class RigConverter:
 
             # 付与親が他の付与ボーンかチェック
             if hasattr(bone, "given_parent_bone_index"):
-                parent_index = bone.given_parent_bone_index
+                parent_index = bone.grant_parent_bone_index
                 if parent_index in given_indices:
                     # 多重付与：この付与ボーンは親付与ボーンに依存
                     dependencies[info["index"]].append(parent_index)
@@ -1094,381 +1029,3 @@ class RigConverter:
                     sorted_nodes.append(node)
 
         return sorted_nodes
-
-    def _create_given_rotation_constraint(
-        self, parent_joint, child_joint, rate, is_local=False
-    ):
-        """
-        回転付与を作成する。
-
-        Args:
-            parent_joint (str): 親ジョイント名
-            child_joint (str): 子ジョイント名
-            rate (float): 付与率
-            is_local (bool): ローカル付与かどうか
-
-        Returns:
-            str: コンストレイントまたはエクスプレッション名
-        """
-        if is_local:
-            # ローカル付与の場合：親のローカル変形量を参照
-            return self._create_local_rotation_constraint(
-                parent_joint, child_joint, rate
-            )
-        else:
-            # グローバル付与の場合：親のユーザー変形量を参照
-            if abs(rate - 1.0) < 0.001:
-                # 付与率が1.0の場合は通常のコンストレイントで十分
-                constraint = cmds.orientConstraint(
-                    parent_joint, child_joint, maintainOffset=True, weight=1.0
-                )[0]
-                return constraint
-            else:
-                # 付与率が1.0でない場合は、重み付きコンストレイントを使用
-                return self._create_weighted_rotation_constraint(
-                    parent_joint, child_joint, rate
-                )
-
-    def _create_weighted_rotation_constraint(self, parent_joint, child_joint, rate):
-        """
-        重み付き回転コンストレイントを作成する。
-        ネイティブノードを使用して実装。
-
-        Args:
-            parent_joint (str): 親ジョイント名
-            child_joint (str): 子ジョイント名
-            rate (float): 付与率（負の値も対応）
-
-        Returns:
-            list: 作成されたノードのリスト
-        """
-        created_nodes = []
-
-        # 子の初期回転を保存
-        init_locator = cmds.spaceLocator(name=f"{child_joint}_init_rot")[0]
-        maya_utils.parent_objects(init_locator, child_joint)
-        maya_utils.set_attribute(init_locator, "v", 0, "bool")
-        created_nodes.append(init_locator)
-
-        # 親の回転を取得するためのdecomposeMatrixノード
-        parent_decompose = cmds.createNode(
-            "decomposeMatrix", name=f"{parent_joint}_decompose"
-        )
-        cmds.connectAttr(f"{parent_joint}.matrix", f"{parent_decompose}.inputMatrix")
-        created_nodes.append(parent_decompose)
-
-        # 負の付与率の場合、回転を反転する必要がある
-        if rate < 0:
-            # 反転用のmultiplyDivideノード（-1を掛ける）
-            invert_node = cmds.createNode(
-                "multiplyDivide", name=f"{child_joint}_invert_rot"
-            )
-            cmds.connectAttr(
-                f"{parent_decompose}.outputRotate", f"{invert_node}.input1"
-            )
-            maya_utils.set_attribute(invert_node, "input2X", -1, "double")
-            maya_utils.set_attribute(invert_node, "input2Y", -1, "double")
-            maya_utils.set_attribute(invert_node, "input2Z", -1, "double")
-            created_nodes.append(invert_node)
-
-            # 付与率を適用するmultiplyDivideノード（絶対値を使用）
-            mult_node = cmds.createNode(
-                "multiplyDivide", name=f"{child_joint}_given_mult"
-            )
-            cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1")
-            maya_utils.set_attribute(mult_node, "input2X", abs(rate), "double")
-            maya_utils.set_attribute(mult_node, "input2Y", abs(rate), "double")
-            maya_utils.set_attribute(mult_node, "input2Z", abs(rate), "double")
-            created_nodes.append(mult_node)
-        else:
-            # 正の付与率の場合、直接適用
-            mult_node = cmds.createNode(
-                "multiplyDivide", name=f"{child_joint}_given_mult"
-            )
-            cmds.connectAttr(f"{parent_decompose}.outputRotate", f"{mult_node}.input1")
-            maya_utils.set_attribute(mult_node, "input2X", rate, "double")
-            maya_utils.set_attribute(mult_node, "input2Y", rate, "double")
-            maya_utils.set_attribute(mult_node, "input2Z", rate, "double")
-            created_nodes.append(mult_node)
-
-        # 初期回転と付与回転を加算するplusMinusAverageノード
-        add_node = cmds.createNode("plusMinusAverage", name=f"{child_joint}_given_add")
-        cmds.connectAttr(f"{init_locator}.rotate", f"{add_node}.input3D[0]")
-        cmds.connectAttr(f"{mult_node}.output", f"{add_node}.input3D[1]")
-        created_nodes.append(add_node)
-
-        # 結果を子ジョイントに接続
-        cmds.connectAttr(f"{add_node}.output3D", f"{child_joint}.rotate", force=True)
-
-        return created_nodes
-
-    def _create_local_rotation_constraint(self, parent_joint, child_joint, rate):
-        """
-        ローカル回転付与を作成する（親のローカル変形量を参照）。
-        ネイティブノードを使用して実装。
-
-        Args:
-            parent_joint (str): 親ジョイント名
-            child_joint (str): 子ジョイント名
-            rate (float): 付与率
-
-        Returns:
-            list: 作成されたノードのリスト
-        """
-        created_nodes = []
-
-        # 親の初期回転を保存するロケータを作成
-        parent_init_locator = cmds.spaceLocator(name=f"{parent_joint}_init_local_rot")[
-            0
-        ]
-        maya_utils.parent_objects(parent_init_locator, parent_joint)
-        maya_utils.set_attribute(parent_init_locator, "v", 0, "bool")  # 非表示
-        created_nodes.append(parent_init_locator)
-
-        # 子の初期回転を保存するロケータを作成
-        child_init_locator = cmds.spaceLocator(name=f"{child_joint}_init_local_rot")[0]
-        maya_utils.parent_objects(child_init_locator, child_joint)
-        maya_utils.set_attribute(child_init_locator, "v", 0, "bool")  # 非表示
-        created_nodes.append(child_init_locator)
-
-        # 親の現在の回転から初期回転を引くためのplusMinusAverageノード
-        parent_diff_node = cmds.createNode(
-            "plusMinusAverage", name=f"{parent_joint}_local_diff"
-        )
-        maya_utils.set_attribute(parent_diff_node, "operation", 2, "long")  # subtract
-        cmds.connectAttr(f"{parent_joint}.rotate", f"{parent_diff_node}.input3D[0]")
-        cmds.connectAttr(
-            f"{parent_init_locator}.rotate", f"{parent_diff_node}.input3D[1]"
-        )
-        created_nodes.append(parent_diff_node)
-
-        # 付与率を適用するmultiplyDivideノード
-        mult_node = cmds.createNode("multiplyDivide", name=f"{child_joint}_local_mult")
-        cmds.connectAttr(f"{parent_diff_node}.output3D", f"{mult_node}.input1")
-
-        # 負の付与率の場合の処理
-        if rate < 0:
-            # 反転用のmultiplyDivideノード
-            invert_node = cmds.createNode(
-                "multiplyDivide", name=f"{child_joint}_local_invert"
-            )
-            maya_utils.set_attribute(invert_node, "input2X", -abs(rate), "double")
-            maya_utils.set_attribute(invert_node, "input2Y", -abs(rate), "double")
-            maya_utils.set_attribute(invert_node, "input2Z", -abs(rate), "double")
-            cmds.connectAttr(f"{parent_diff_node}.output3D", f"{invert_node}.input1")
-            created_nodes.append(invert_node)
-
-            # 反転した値を使用
-            cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1", force=True)
-            maya_utils.set_attribute(mult_node, "input2X", 1, "double")
-            maya_utils.set_attribute(mult_node, "input2Y", 1, "double")
-            maya_utils.set_attribute(mult_node, "input2Z", 1, "double")
-        else:
-            maya_utils.set_attribute(mult_node, "input2X", rate, "double")
-            maya_utils.set_attribute(mult_node, "input2Y", rate, "double")
-            maya_utils.set_attribute(mult_node, "input2Z", rate, "double")
-
-        created_nodes.append(mult_node)
-
-        # 子の初期回転と加算するplusMinusAverageノード
-        add_node = cmds.createNode("plusMinusAverage", name=f"{child_joint}_local_add")
-        cmds.connectAttr(f"{child_init_locator}.rotate", f"{add_node}.input3D[0]")
-        cmds.connectAttr(f"{mult_node}.output", f"{add_node}.input3D[1]")
-        created_nodes.append(add_node)
-
-        # 結果を子ジョイントに接続
-        cmds.connectAttr(f"{add_node}.output3D", f"{child_joint}.rotate", force=True)
-
-        return created_nodes
-
-    def _create_given_position_constraint(
-        self, parent_joint, child_joint, rate, is_local=False
-    ):
-        """
-        位置付与を作成する。
-
-        Args:
-            parent_joint (str): 親ジョイント名
-            child_joint (str): 子ジョイント名
-            rate (float): 付与率
-            is_local (bool): ローカル付与かどうか
-
-        Returns:
-            str: コンストレイントまたはエクスプレッション名
-        """
-        if is_local:
-            # ローカル付与の場合：親のローカル変形量を参照
-            return self._create_local_position_constraint(
-                parent_joint, child_joint, rate
-            )
-        else:
-            # グローバル付与の場合：親のユーザー変形量を参照
-            if abs(rate - 1.0) < 0.001:
-                # 付与率が1.0の場合は通常のコンストレイントで十分
-                constraint = cmds.pointConstraint(
-                    parent_joint, child_joint, maintainOffset=True, weight=1.0
-                )[0]
-                return constraint
-            else:
-                # 付与率が1.0でない場合は、重み付きコンストレイントを使用
-                return self._create_weighted_position_constraint(
-                    parent_joint, child_joint, rate
-                )
-
-    def _create_weighted_position_constraint(self, parent_joint, child_joint, rate):
-        """
-        重み付き位置コンストレイントを作成する。
-        ネイティブノードを使用して実装。
-
-        Args:
-            parent_joint (str): 親ジョイント名
-            child_joint (str): 子ジョイント名
-            rate (float): 付与率（負の値も対応）
-
-        Returns:
-            list: 作成されたノードのリスト
-        """
-        created_nodes = []
-
-        # 子の初期位置を保存
-        init_locator = cmds.spaceLocator(name=f"{child_joint}_init_pos")[0]
-        maya_utils.parent_objects(init_locator, child_joint)
-        maya_utils.set_attribute(init_locator, "v", 0, "bool")
-        created_nodes.append(init_locator)
-
-        # 親の位置を取得するためのdecomposeMatrixノード
-        parent_decompose = cmds.createNode(
-            "decomposeMatrix", name=f"{parent_joint}_pos_decompose"
-        )
-        cmds.connectAttr(f"{parent_joint}.matrix", f"{parent_decompose}.inputMatrix")
-        created_nodes.append(parent_decompose)
-
-        # 負の付与率の場合、位置を反転する必要がある
-        if rate < 0:
-            # 反転用のmultiplyDivideノード（-1を掛ける）
-            invert_node = cmds.createNode(
-                "multiplyDivide", name=f"{child_joint}_invert_pos"
-            )
-            cmds.connectAttr(
-                f"{parent_decompose}.outputTranslate", f"{invert_node}.input1"
-            )
-            maya_utils.set_attribute(invert_node, "input2X", -1, "double")
-            maya_utils.set_attribute(invert_node, "input2Y", -1, "double")
-            maya_utils.set_attribute(invert_node, "input2Z", -1, "double")
-            created_nodes.append(invert_node)
-
-            # 付与率を適用するmultiplyDivideノード（絶対値を使用）
-            mult_node = cmds.createNode(
-                "multiplyDivide", name=f"{child_joint}_pos_mult"
-            )
-            cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1")
-            maya_utils.set_attribute(mult_node, "input2X", abs(rate), "double")
-            maya_utils.set_attribute(mult_node, "input2Y", abs(rate), "double")
-            maya_utils.set_attribute(mult_node, "input2Z", abs(rate), "double")
-            created_nodes.append(mult_node)
-        else:
-            # 正の付与率の場合、直接適用
-            mult_node = cmds.createNode(
-                "multiplyDivide", name=f"{child_joint}_pos_mult"
-            )
-            cmds.connectAttr(
-                f"{parent_decompose}.outputTranslate", f"{mult_node}.input1"
-            )
-            maya_utils.set_attribute(mult_node, "input2X", rate, "double")
-            maya_utils.set_attribute(mult_node, "input2Y", rate, "double")
-            maya_utils.set_attribute(mult_node, "input2Z", rate, "double")
-            created_nodes.append(mult_node)
-
-        # 初期位置と付与位置を加算するplusMinusAverageノード
-        add_node = cmds.createNode("plusMinusAverage", name=f"{child_joint}_pos_add")
-        cmds.connectAttr(f"{init_locator}.translate", f"{add_node}.input3D[0]")
-        cmds.connectAttr(f"{mult_node}.output", f"{add_node}.input3D[1]")
-        created_nodes.append(add_node)
-
-        # 結果を子ジョイントに接続
-        cmds.connectAttr(f"{add_node}.output3D", f"{child_joint}.translate", force=True)
-
-        return created_nodes
-
-    def _create_local_position_constraint(self, parent_joint, child_joint, rate):
-        """
-        ローカル位置付与を作成する（親のローカル変形量を参照）。
-        ネイティブノードを使用して実装。
-
-        Args:
-            parent_joint (str): 親ジョイント名
-            child_joint (str): 子ジョイント名
-            rate (float): 付与率
-
-        Returns:
-            list: 作成されたノードのリスト
-        """
-        created_nodes = []
-
-        # 親の初期位置を保存するロケータを作成
-        parent_init_locator = cmds.spaceLocator(name=f"{parent_joint}_init_local_pos")[
-            0
-        ]
-        maya_utils.parent_objects(parent_init_locator, parent_joint)
-        maya_utils.set_attribute(parent_init_locator, "v", 0, "bool")  # 非表示
-        created_nodes.append(parent_init_locator)
-
-        # 子の初期位置を保存するロケータを作成
-        child_init_locator = cmds.spaceLocator(name=f"{child_joint}_init_local_pos")[0]
-        maya_utils.parent_objects(child_init_locator, child_joint)
-        maya_utils.set_attribute(child_init_locator, "v", 0, "bool")  # 非表示
-        created_nodes.append(child_init_locator)
-
-        # 親の現在の位置から初期位置を引くためのplusMinusAverageノード
-        parent_diff_node = cmds.createNode(
-            "plusMinusAverage", name=f"{parent_joint}_local_pos_diff"
-        )
-        maya_utils.set_attribute(parent_diff_node, "operation", 2, "long")  # subtract
-        cmds.connectAttr(f"{parent_joint}.translate", f"{parent_diff_node}.input3D[0]")
-        cmds.connectAttr(
-            f"{parent_init_locator}.translate", f"{parent_diff_node}.input3D[1]"
-        )
-        created_nodes.append(parent_diff_node)
-
-        # 付与率を適用するmultiplyDivideノード
-        mult_node = cmds.createNode(
-            "multiplyDivide", name=f"{child_joint}_local_pos_mult"
-        )
-        cmds.connectAttr(f"{parent_diff_node}.output3D", f"{mult_node}.input1")
-
-        # 負の付与率の場合の処理
-        if rate < 0:
-            # 反転用のmultiplyDivideノード
-            invert_node = cmds.createNode(
-                "multiplyDivide", name=f"{child_joint}_local_pos_invert"
-            )
-            maya_utils.set_attribute(invert_node, "input2X", -abs(rate), "double")
-            maya_utils.set_attribute(invert_node, "input2Y", -abs(rate), "double")
-            maya_utils.set_attribute(invert_node, "input2Z", -abs(rate), "double")
-            cmds.connectAttr(f"{parent_diff_node}.output3D", f"{invert_node}.input1")
-            created_nodes.append(invert_node)
-
-            # 反転した値を使用
-            cmds.connectAttr(f"{invert_node}.output", f"{mult_node}.input1", force=True)
-            maya_utils.set_attribute(mult_node, "input2X", 1, "double")
-            maya_utils.set_attribute(mult_node, "input2Y", 1, "double")
-            maya_utils.set_attribute(mult_node, "input2Z", 1, "double")
-        else:
-            maya_utils.set_attribute(mult_node, "input2X", rate, "double")
-            maya_utils.set_attribute(mult_node, "input2Y", rate, "double")
-            maya_utils.set_attribute(mult_node, "input2Z", rate, "double")
-
-        created_nodes.append(mult_node)
-
-        # 子の初期位置と加算するplusMinusAverageノード
-        add_node = cmds.createNode(
-            "plusMinusAverage", name=f"{child_joint}_local_pos_add"
-        )
-        cmds.connectAttr(f"{child_init_locator}.translate", f"{add_node}.input3D[0]")
-        cmds.connectAttr(f"{mult_node}.output", f"{add_node}.input3D[1]")
-        created_nodes.append(add_node)
-
-        # 結果を子ジョイントに接続
-        cmds.connectAttr(f"{add_node}.output3D", f"{child_joint}.translate", force=True)
-
-        return created_nodes

@@ -19,6 +19,7 @@ import maya.cmds as cmds
 
 from ..core import maya_utils, utils
 from ..core.constants import (
+    ATTR_MMD_BONE_NAME,
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     DEFAULT_CAMERA_NAME,
@@ -132,9 +133,7 @@ class VmdConverter:
                 )
                 light_success = self._convert_light_animation(vmd_data.light_frames)
                 if not light_success:
-                    self.logger.warning(
-                        "照明アニメーション変換でエラーが発生しました"
-                    )
+                    self.logger.warning("照明アニメーション変換でエラーが発生しました")
 
             # モーフアニメーション変換
             if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
@@ -168,21 +167,17 @@ class VmdConverter:
 
         # シーン内のジョイントを検索
         if target_namespace:
-            joints = maya_utils.list_objects(object_filter=f"{target_namespace}:*", type="joint")
+            joints = maya_utils.list_objects(
+                object_filter=f"{target_namespace}:*", type="joint"
+            )
         else:
             joints = maya_utils.list_objects(type="joint")
 
         # カスタム属性から元のボーン名を取得
         for joint in joints:
-            # PMXボーン名属性をチェック
-            if cmds.attributeQuery("pmx_bone_name", node=joint, exists=True):
-                original_name = cmds.getAttr(f"{joint}.pmx_bone_name")
-                if original_name:
-                    self.bone_name_mapping[original_name] = joint
-
-            # PMDボーン名属性もチェック（後方互換性）
-            elif cmds.attributeQuery("pmd_bone_name", node=joint, exists=True):
-                original_name = cmds.getAttr(f"{joint}.pmd_bone_name")
+            # PMX/PMDボーン名属性をチェック（新しい属性名）
+            if cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
+                original_name = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}")
                 if original_name:
                     self.bone_name_mapping[original_name] = joint
 
@@ -218,7 +213,7 @@ class VmdConverter:
 
         # 最大フレーム番号を取得
         max_frame = 0
-        
+
         # ボーンフレームから最大フレーム取得
         if hasattr(vmd_data, "bone_frames"):
             for frame_data in vmd_data.bone_frames:
@@ -227,19 +222,19 @@ class VmdConverter:
                     max_frame = max(max_frame, frame_data.frame_number)
                 else:
                     max_frame = max(max_frame, frame_data.get("frame_number", 0))
-        
+
         # カメラフレームから最大フレーム取得
         if hasattr(vmd_data, "camera_frames"):
             for frame_data in vmd_data.camera_frames:
                 if hasattr(frame_data, "frame_number"):
                     max_frame = max(max_frame, frame_data.frame_number)
-        
+
         # 照明フレームから最大フレーム取得
         if hasattr(vmd_data, "light_frames"):
             for frame_data in vmd_data.light_frames:
                 if hasattr(frame_data, "frame_number"):
                     max_frame = max(max_frame, frame_data.frame_number)
-        
+
         # モーフフレームから最大フレーム取得
         if hasattr(vmd_data, "morph_frames"):
             for frame_data in vmd_data.morph_frames:
@@ -484,6 +479,7 @@ class VmdConverter:
         except Exception as e:
             self.logger.error(f"カメラアニメーション変換中にエラー: {str(e)}")
             import traceback
+
             traceback.print_exc()
             return False
 
@@ -503,17 +499,14 @@ class VmdConverter:
 
         # 新しいカメラを作成
         camera_transform, camera_shape = cmds.camera(name=DEFAULT_CAMERA_NAME)
-        
+
         # MMDカメラマーカーを追加
-        maya_utils.set_custom_attributes(
-            camera_transform,
-            {ATTR_MMD_CAMERA: True}
-        )
-        
+        maya_utils.set_custom_attributes(camera_transform, {ATTR_MMD_CAMERA: True})
+
         # カメラの初期設定
         maya_utils.set_attribute(camera_shape, "nearClipPlane", 0.1, "double")
         maya_utils.set_attribute(camera_shape, "farClipPlane", 10000.0, "double")
-        
+
         self.logger.info(f"新しいMMDカメラを作成: {camera_transform}")
         return camera_transform
 
@@ -525,8 +518,10 @@ class VmdConverter:
             frames: フレームデータのリスト
         """
         # カメラシェイプを取得
-        camera_shape = cmds.listRelatives(camera_transform, shapes=True, type="camera")[0]
-        
+        camera_shape = cmds.listRelatives(camera_transform, shapes=True, type="camera")[
+            0
+        ]
+
         # アニメーションカーブを作成
         trans_attrs = ["translateX", "translateY", "translateZ"]
         rot_attrs = ["rotateX", "rotateY", "rotateZ"]
@@ -541,42 +536,42 @@ class VmdConverter:
             position = frame_data.position
             rotation = frame_data.rotation  # Euler angles in radians
             distance = frame_data.distance
-            
+
             # 回転をラジアンから度に変換し、座標系を調整
             rx_deg = -math.degrees(rotation[0])  # X軸回転を反転
             ry_deg = -math.degrees(rotation[1])  # Y軸回転を反転
-            rz_deg = math.degrees(rotation[2])   # Z軸回転はそのまま
+            rz_deg = math.degrees(rotation[2])  # Z軸回転はそのまま
 
             # カメラの実際の位置を計算
             # MMDではカメラが注視点から指定距離だけ離れた位置にある
             rx_rad = rotation[0]
             ry_rad = rotation[1]
             rz_rad = rotation[2]
-            
+
             # 回転行列を構築（ZXY順）
             cos_x, sin_x = math.cos(rx_rad), math.sin(rx_rad)
             cos_y, sin_y = math.cos(ry_rad), math.sin(ry_rad)
             cos_z, sin_z = math.cos(rz_rad), math.sin(rz_rad)
-            
+
             # カメラの向きベクトル（初期状態では-Z方向を向いている）
             camera_dir_x = sin_y * cos_x
             camera_dir_y = sin_x
             camera_dir_z = cos_y * cos_x
-            
+
             # カメラの実際の位置 = 注視点 + (向きベクトル * 距離)
             camera_x = position[0] + camera_dir_x * distance
             camera_y = position[1] + camera_dir_y * distance
             camera_z = -position[2] + camera_dir_z * distance  # Z軸反転
-            
+
             return {
                 "translateX": camera_x,
                 "translateY": camera_y,
                 "translateZ": camera_z,
                 "rotateX": rx_deg,
                 "rotateY": ry_deg,
-                "rotateZ": rz_deg
+                "rotateZ": rz_deg,
             }
-        
+
         def generate_fov_values(frame_data):
             fov_angle = frame_data.viewing_angle
             # FOVから焦点距離を計算
@@ -585,19 +580,19 @@ class VmdConverter:
             h_aperture = cmds.getAttr(f"{camera_shape}.horizontalFilmAperture")
             h_aperture_mm = h_aperture * 25.4  # インチからmmに変換
             focal_length = h_aperture_mm / (2 * math.tan(math.radians(fov_angle) / 2))
-            
-            return {
-                "focalLength": focal_length
-            }
+
+            return {"focalLength": focal_length}
 
         # キーフレームを一括設定
         # トランスフォームと回転の値を同時に設定
         all_attrs = trans_attrs + rot_attrs
         all_curves = {**trans_curves, **rot_curves}
         maya_utils.set_keyframes_batch(all_curves, frames, generate_camera_values)
-        
+
         # FOVのキーフレームを設定
-        maya_utils.set_keyframes_batch({"focalLength": fov_curve}, frames, generate_fov_values)
+        maya_utils.set_keyframes_batch(
+            {"focalLength": fov_curve}, frames, generate_fov_values
+        )
 
     def _convert_light_animation(self, light_frames: List) -> bool:
         """照明アニメーションを変換
@@ -630,6 +625,7 @@ class VmdConverter:
         except Exception as e:
             self.logger.error(f"照明アニメーション変換中にエラー: {str(e)}")
             import traceback
+
             traceback.print_exc()
             return False
 
@@ -650,13 +646,10 @@ class VmdConverter:
         # 新しい方向性ライトを作成
         light_transform = cmds.directionalLight(name=DEFAULT_LIGHT_NAME, intensity=1.0)
         light_transform = cmds.listRelatives(light_transform, parent=True)[0]
-        
+
         # MMD照明マーカーを追加
-        maya_utils.set_custom_attributes(
-            light_transform,
-            {ATTR_MMD_LIGHT: True}
-        )
-        
+        maya_utils.set_custom_attributes(light_transform, {ATTR_MMD_LIGHT: True})
+
         self.logger.info(f"新しいMMD照明を作成: {light_transform}")
         return light_transform
 
@@ -668,8 +661,10 @@ class VmdConverter:
             frames: フレームデータのリスト
         """
         # 照明シェイプを取得
-        light_shape = cmds.listRelatives(light_transform, shapes=True, type="directionalLight")[0]
-        
+        light_shape = cmds.listRelatives(
+            light_transform, shapes=True, type="directionalLight"
+        )[0]
+
         # アニメーションカーブを作成
         rot_attrs = ["rotateX", "rotateY", "rotateZ"]
         rot_curves = maya_utils.create_animation_curves(light_transform, rot_attrs)
@@ -681,41 +676,39 @@ class VmdConverter:
             # MMDの照明方向をMayaの回転に変換
             # MMDでは照明の方向ベクトルとして与えられる
             direction = frame_data.position  # これは実際には方向ベクトル
-            
+
             # 方向ベクトルから回転角度を計算
             # ベクトルを正規化
-            length = math.sqrt(direction[0]**2 + direction[1]**2 + direction[2]**2)
+            length = math.sqrt(
+                direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2
+            )
             if length > 0:
                 dir_x = direction[0] / length
                 dir_y = direction[1] / length
                 dir_z = -direction[2] / length  # Z軸反転
             else:
                 dir_x, dir_y, dir_z = 0, -1, 0  # デフォルト方向（下向き）
-            
+
             # 方向ベクトルから回転角度を計算
             # Mayaのdirectionalライトは初期状態で-Y方向を向いている
             # アークタンジェントを使用して角度を計算
             ry = math.degrees(math.atan2(dir_x, -dir_z))
             rx = math.degrees(math.asin(dir_y))
             rz = 0  # Z軸回転は通常0
-            
-            return {
-                "rotateX": rx,
-                "rotateY": ry,
-                "rotateZ": rz
-            }
-        
+
+            return {"rotateX": rx, "rotateY": ry, "rotateZ": rz}
+
         def generate_light_color_values(frame_data):
             color = frame_data.color
-            return {
-                "colorR": color[0],
-                "colorG": color[1],
-                "colorB": color[2]
-            }
-        
+            return {"colorR": color[0], "colorG": color[1], "colorB": color[2]}
+
         # キーフレームを一括設定
-        maya_utils.set_keyframes_batch(rot_curves, frames, generate_light_rotation_values)
-        maya_utils.set_keyframes_batch(color_curves, frames, generate_light_color_values)
+        maya_utils.set_keyframes_batch(
+            rot_curves, frames, generate_light_rotation_values
+        )
+        maya_utils.set_keyframes_batch(
+            color_curves, frames, generate_light_color_values
+        )
 
     def _build_morph_mappings(self, target_namespace: str = None):
         """モーフ名のマッピングを構築
@@ -727,7 +720,9 @@ class VmdConverter:
 
         # シーン内のブレンドシェイプノードを検索
         if target_namespace:
-            blend_shapes = maya_utils.list_objects(object_filter=f"{target_namespace}:*", type="blendShape")
+            blend_shapes = maya_utils.list_objects(
+                object_filter=f"{target_namespace}:*", type="blendShape"
+            )
         else:
             blend_shapes = maya_utils.list_objects(type="blendShape")
 
@@ -743,22 +738,24 @@ class VmdConverter:
 
             # 各ターゲットのエイリアスを取得
             self.logger.debug(f"{blend_shape} のウェイト数: {weight_count}")
-            
+
             # エイリアスリストを取得
             aliases = cmds.aliasAttr(blend_shape, query=True) or []
             # aliasAttr は [alias1, attr1, alias2, attr2, ...] の形式で返す
             alias_dict = {}
             for j in range(0, len(aliases), 2):
                 if j + 1 < len(aliases):
-                    alias_dict[aliases[j+1]] = aliases[j]
-            
+                    alias_dict[aliases[j + 1]] = aliases[j]
+
             for i in range(weight_count):
                 # エイリアス（モーフ名）を取得
                 weight_attr = f"weight[{i}]"
                 if weight_attr in alias_dict:
                     morph_name = alias_dict[weight_attr]
                     self.morph_name_mapping[morph_name] = (blend_shape, i, morph_name)
-                    self.logger.debug(f"マッピング追加: {morph_name} -> ({blend_shape}, {i}, {morph_name})")
+                    self.logger.debug(
+                        f"マッピング追加: {morph_name} -> ({blend_shape}, {i}, {morph_name})"
+                    )
 
         self.logger.info(
             f"{len(self.morph_name_mapping)}個のモーフマッピングを構築しました"
@@ -792,7 +789,9 @@ class VmdConverter:
             # 各モーフのアニメーションを設定
             for vmd_morph_name, frames in morph_frame_map.items():
                 if vmd_morph_name in self.morph_name_mapping:
-                    blend_shape, target_index, maya_morph_name = self.morph_name_mapping[vmd_morph_name]
+                    blend_shape, target_index, maya_morph_name = (
+                        self.morph_name_mapping[vmd_morph_name]
+                    )
 
                     try:
                         # フレームをフレーム番号でソート
@@ -817,6 +816,7 @@ class VmdConverter:
         except Exception as e:
             self.logger.error(f"モーフアニメーション変換中にエラー: {str(e)}")
             import traceback
+
             traceback.print_exc()
             return False
 
@@ -830,14 +830,16 @@ class VmdConverter:
         """
         # ブレンドシェイプのウェイト属性名
         weight_attr = f"{blend_shape}.weight[{target_index}]"
-        
+
         # 各フレームでキーフレームを設定
         for frame in frames:
             # 現在のフレームに移動
             cmds.currentTime(frame.frame_number)
-            
+
             # ウェイト値を設定
-            maya_utils.set_attribute(blend_shape, f"weight[{target_index}]", frame.value, "float")
-            
+            maya_utils.set_attribute(
+                blend_shape, f"weight[{target_index}]", frame.value, "float"
+            )
+
             # キーフレームを設定
             cmds.setKeyframe(weight_attr, time=frame.frame_number, value=frame.value)

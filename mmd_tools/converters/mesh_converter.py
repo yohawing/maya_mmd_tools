@@ -6,6 +6,7 @@ from typing import Tuple
 import maya
 from mmd_tools.core.settings import settings
 from mmd_tools.core import maya_utils
+from mmd_tools.core.logger import get_logger
 from mmd_tools.core.pmd_parser import PmdParser
 from mmd_tools.core.pmx_parser import PmxParser
 from mmd_tools.core.constants import (
@@ -42,15 +43,16 @@ class MeshConverter:
     MMDのメッシュデータをMayaのメッシュノードに変換するクラス。
     """
 
-    def __init__(self, pmx_filepath):
+    def __init__(self, pmx_filepath=""):
         """
         コンストラクタ。
 
         Args:
             pmx_filepath (str): 読み込むPMXファイルのパス。
         """
-        self.pmx_filepath = pmx_filepath
-        self.texture_dir = os.path.dirname(pmx_filepath)
+        self.logger = get_logger(__name__)
+        if pmx_filepath:
+            self.texture_dir = os.path.dirname(pmx_filepath)
 
     def convert_pmx_mesh(self, pmx_data: PmxParser, root_group: str) -> Tuple[str, str]:
         """
@@ -72,18 +74,6 @@ class MeshConverter:
 
         # ジオメトリグループを作成
         geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
-
-        # カスタムアトリビュートをルートグループに追加
-        maya_utils.set_custom_attributes(
-            root_group,
-            {
-                ATTR_MMD_FILE_TYPE: pmx_data.header.magic,
-                ATTR_MMD_MODEL_NAME: pmx_data.header.model_name,
-                ATTR_MMD_MODEL_NAME_EN: pmx_data.header.model_name_english,
-                ATTR_MMD_COMMENT: pmx_data.header.comment,
-                ATTR_MMD_COMMENT_EN: pmx_data.header.comment_english,
-            },
-        )
 
         # メッシュのマテリアル分割は、まずは統合メッシュを作った後にSplitする処理をすればいいの
 
@@ -155,7 +145,7 @@ class MeshConverter:
             is_pmd=True,
         )
 
-        if separate_by_material:
+        if separate_by_material and created_mesh:
             maya_utils.split_mesh_by_material(geo_group, all_materials)
 
         maya_utils.select_objects(geo_group)
@@ -184,6 +174,14 @@ class MeshConverter:
         Returns:
             str: 作成されたメッシュノードの名前
         """
+
+        # 頂点数がゼロの場合は警告を出して処理を中断
+        if not all_vertices or len(all_vertices) == 0:
+            self.logger.warning(
+                f"頂点数がゼロのためメッシュを作成しません: {model_name}"
+            )
+            return None
+
         # 統合メッシュの名前を設定
         mesh_name = maya_utils.sanitize_text(model_name) + "_mesh"
 

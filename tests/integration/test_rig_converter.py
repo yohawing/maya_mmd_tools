@@ -486,7 +486,7 @@ class TestRigConverterMaya(unittest.TestCase):
         child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
 
         bone = self._create_mock_pmx_bone(
-            0, "TestBone", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+            0, "TestBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
         )
         bone.given_parent_bone_index = 1
         bone.given_rate = 0.5
@@ -498,7 +498,7 @@ class TestRigConverterMaya(unittest.TestCase):
         bones = [bone, parent_bone]
         maya_joints = [child_joint, parent_joint]
 
-        constraints = self.converter._setup_given_parent_bones(bones, maya_joints)
+        constraints = self.converter._setup_grant_bones(bones, maya_joints)
 
         self.assertEqual(len(constraints), 1)
 
@@ -588,7 +588,7 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # ローカル付与フラグを含むボーンを作成
         bone = self._create_mock_pmx_bone(
-            0, "TestBone", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE | PmxBoneFlag.LOCAL
+            0, "TestBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.LOCAL
         )
         bone.given_parent_bone_index = 1
         bone.given_rate = 0.5
@@ -599,7 +599,7 @@ class TestRigConverterMaya(unittest.TestCase):
         bones = [bone, parent_bone]
         maya_joints = [child_joint, parent_joint]
 
-        constraints = self.converter._setup_given_parent_bones(bones, maya_joints)
+        constraints = self.converter._setup_grant_bones(bones, maya_joints)
 
         self.assertEqual(len(constraints), 1)
 
@@ -629,7 +629,7 @@ class TestRigConverterMaya(unittest.TestCase):
             if i < 2:
                 # 付与ボーンとして設定（異なる変形階層）
                 bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
                 )
                 bone.given_parent_bone_index = 3  # joint3を親にする
                 bone.given_rate = 0.5
@@ -641,7 +641,7 @@ class TestRigConverterMaya(unittest.TestCase):
                 bone.transform_layer = 0  # Mockオブジェクトに属性を追加
             bones.append(bone)
 
-        constraints = self.converter._setup_given_parent_bones(bones, joints)
+        constraints = self.converter._setup_grant_bones(bones, joints)
 
         # 2つの付与関係が設定される
         self.assertEqual(len(constraints), 2)
@@ -665,14 +665,14 @@ class TestRigConverterMaya(unittest.TestCase):
             if i == 0:
                 # joint0: joint1から付与を受ける
                 bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
                 )
                 bone.given_parent_bone_index = 1
                 bone.given_rate = 0.5
             elif i == 1:
                 # joint1: joint2から付与を受ける（多重付与）
                 bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
                 )
                 bone.given_parent_bone_index = 2
                 bone.given_rate = 0.7
@@ -683,7 +683,7 @@ class TestRigConverterMaya(unittest.TestCase):
                 bone.transform_layer = 0  # Mockオブジェクトに属性を追加
             bones.append(bone)
 
-        constraints = self.converter._setup_given_parent_bones(bones, joints)
+        constraints = self.converter._setup_grant_bones(bones, joints)
 
         # 2つの付与関係が設定される
         self.assertEqual(len(constraints), 2)

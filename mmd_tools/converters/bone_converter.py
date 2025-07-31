@@ -14,12 +14,8 @@ from ..core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_BONE_OFFSET,
-    ATTR_MMD_CONNECTION_BONE,
-    ATTR_MMD_IK_TARGET,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_LIMIT_ANGLE,
-    ATTR_MMD_IK_LINKS,
-    ATTR_MMD_GRANT_PARENT,
     ATTR_MMD_GRANT_RATE,
     ATTR_MMD_FIXED_AXIS,
     ATTR_MMD_LOCAL_X_AXIS,
@@ -31,7 +27,7 @@ from ..core.constants import (
     ATTR_MMD_CONNECT_TYPE,
     ATTR_MMD_CONNECT_INDEX,
     ATTR_MMD_CONNECT_BONE_INDEX,
-    ATTR_MMD_GIVEN_PARENT_INDEX,
+    ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_AXIS_DIRECTION,
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
@@ -99,7 +95,10 @@ class BoneConverter:
         )
 
         # 頂点ウェイトを設定
-        self._apply_pmx_vertex_weights(pmx_data, maya_joints, skin_cluster, mesh_node)
+        if mesh_node and skin_cluster:
+            self._apply_pmx_vertex_weights(
+                pmx_data, maya_joints, skin_cluster, mesh_node
+            )
 
         # TODO: 変形階層、表示操作などを正確に再現する。
 
@@ -138,7 +137,10 @@ class BoneConverter:
         )
 
         # 頂点ウェイトを設定
-        self._apply_pmd_vertex_weights(pmd_data, maya_joints, skin_cluster, mesh_node)
+        if mesh_node and skin_cluster:
+            self._apply_pmd_vertex_weights(
+                pmd_data, maya_joints, skin_cluster, mesh_node
+            )
 
         # リグのセットアップはRigConverterに委譲
         rig_result = self.rig_converter.setup_pmd_rig(
@@ -235,8 +237,9 @@ class BoneConverter:
                 root_joints.append(bone_map[i])
 
         # ルートジョイントをスケルトングループにペアレント
+        # absolute=Trueを使用してワールド座標を維持
         for root_joint in root_joints:
-            maya_utils.parent_objects(root_joint, skeleton_group)
+            cmds.parent(root_joint, skeleton_group, absolute=True)
 
         return maya_joints
 
@@ -274,16 +277,16 @@ class BoneConverter:
                 attrs[ATTR_MMD_CONNECT_INDEX] = bone.connect_bone_index
 
             # 付与ボーンの属性を設定
-            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or bone.get_flag(
-                PmxBoneFlag.GIVEN_PARENT_MOVE
+            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(
+                PmxBoneFlag.GRANT_PARENT_MOVE
             ):
-                attrs[ATTR_MMD_GRANT_RATE] = bone.given_rate
+                attrs[ATTR_MMD_GRANT_RATE] = bone.grant_rate
 
             # 付与属性
-            if bone.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or bone.get_flag(
-                PmxBoneFlag.GIVEN_PARENT_MOVE
+            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(
+                PmxBoneFlag.GRANT_PARENT_MOVE
             ):
-                attrs[ATTR_MMD_GIVEN_PARENT_INDEX] = bone.given_parent_bone_index
+                attrs[ATTR_MMD_GRANT_PARENT_INDEX] = bone.grant_parent_bone_index
 
             # 軸固定の属性を設定
             if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
@@ -354,6 +357,15 @@ class BoneConverter:
         Returns:
             str: 作成されたスキンクラスターの名前。
         """
+        # 選択をクリアしてジョイントとメッシュのみを選択
+        maya_utils.select_objects(clear=True)
+
+        # メッシュノードが存在しない場合はNoneを返す
+        if not mesh_node or not cmds.objExists(mesh_node):
+            self.logger.warning(
+                f"メッシュノード '{mesh_node}' が存在しません。スキンクラスターを作成しません。"
+            )
+            return None
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
         skin_cluster = cmds.skinCluster(
@@ -505,6 +517,12 @@ class BoneConverter:
 
             weights.append(vertex_weights)
 
+        # vertexの要素が存在することをチェック
+        if not weights:
+            self.logger.warning(
+                "頂点ウェイトが空です。メッシュに頂点が存在するか確認してください。"
+            )
+            return
         maya_utils.apply_vertex_weights(
             skin_cluster,
             mesh_node,

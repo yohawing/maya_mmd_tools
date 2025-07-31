@@ -23,8 +23,8 @@ class PmxBoneFlag(enum.IntFlag):
     OPERATABLE = 0x0010  # 操作可能
     IK = 0x0020  # IK
     LOCAL = 0x0080  # ローカル付与 (付与対象 0:ユーザー変形値／IKリンク／多重付与 1:親のローカル変形量)
-    GIVEN_PARENT_ROTATE = 0x0100  # 回転付与
-    GIVEN_PARENT_MOVE = 0x0200  # 移動付与
+    GRANT_PARENT_ROTATE = 0x0100  # 回転付与
+    GRANT_PARENT_MOVE = 0x0200  # 移動付与
     AXIS_FIXED = 0x0400  # 軸固定
     LOCAL_AXIS = 0x0800  # ローカル軸
     DEFORM_AFTER_PHYSICS = 0x1000  # 物理演算後変形
@@ -57,8 +57,8 @@ class PmxBone:
         # Flag-dependent data
         self.connect_bone_index = -1
         self.connect_position_offset = (0.0, 0.0, 0.0)
-        self.given_parent_bone_index = -1
-        self.given_rate = 0.0
+        self.grant_parent_bone_index = -1
+        self.grant_rate = 0.0
         self.axis_direction = (0.0, 0.0, 0.0)
         self.x_axis_direction = (1.0, 0.0, 0.0)
         self.z_axis_direction = (0.0, 0.0, 1.0)
@@ -106,13 +106,13 @@ class PmxBone:
             self.connect_position_offset = struct.unpack("<fff", f.read(12))
 
         # 0x0100: 回転付与, 0x0200: 移動付与
-        if self.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or self.get_flag(
-            PmxBoneFlag.GIVEN_PARENT_MOVE
+        if self.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or self.get_flag(
+            PmxBoneFlag.GRANT_PARENT_MOVE
         ):
-            self.given_parent_bone_index = struct.unpack(
+            self.grant_parent_bone_index = struct.unpack(
                 bone_index_format, f.read(self.bone_index_size)
             )[0]
-            self.given_rate = struct.unpack("<f", f.read(4))[0]
+            self.grant_rate = struct.unpack("<f", f.read(4))[0]
 
         # 0x0400: 軸固定
         if self.get_flag(PmxBoneFlag.AXIS_FIXED):
@@ -195,11 +195,11 @@ class PmxBone:
             f.write(struct.pack("<fff", *self.connect_position_offset))
 
         # 0x0100: 回転付与, 0x0200: 移動付与
-        if self.get_flag(PmxBoneFlag.GIVEN_PARENT_ROTATE) or self.get_flag(
-            PmxBoneFlag.GIVEN_PARENT_MOVE
+        if self.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or self.get_flag(
+            PmxBoneFlag.GRANT_PARENT_MOVE
         ):
-            f.write(struct.pack(bone_index_format, self.given_parent_bone_index))
-            f.write(struct.pack("<f", self.given_rate))
+            f.write(struct.pack(bone_index_format, self.grant_parent_bone_index))
+            f.write(struct.pack("<f", self.grant_rate))
 
         # 0x0400: 軸固定
         if self.get_flag(PmxBoneFlag.AXIS_FIXED):

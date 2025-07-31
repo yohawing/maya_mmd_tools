@@ -48,8 +48,8 @@ class TestBoneConverterMaya(unittest.TestCase):
         # デフォルト値を設定
         bone.connect_bone_index = 0
         bone.connect_position_offset = (0, 0, 0)
-        bone.given_parent_bone_index = 0
-        bone.given_rate = 1.0
+        bone.grant_parent_bone_index = 0
+        bone.grant_rate = 1.0
         bone.axis_direction = (0, 1, 0)
         bone.x_axis_direction = (1, 0, 0)
         bone.z_axis_direction = (0, 0, 1)
@@ -189,16 +189,16 @@ class TestBoneConverterMaya(unittest.TestCase):
         )
 
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
-    def test_set_extra_attributes_pmx_given_rotate(self, mock_set_attrs):
+    def test_set_extra_attributes_pmx_grant_rotate(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（回転付与）"""
         bone = self._create_mock_pmx_bone(
-            5, "GivenBone", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+            5, "GrantBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
         )
-        bone.given_parent_bone_index = 3
-        bone.given_rate = 0.5
+        bone.grant_parent_bone_index = 3
+        bone.grant_rate = 0.5
 
         # 実際のジョイントを作成
-        joint = cmds.joint(name="given_joint")
+        joint = cmds.joint(name="grant_joint")
 
         self.converter._set_extra_attributes(5, joint, bone, "pmx")
 
@@ -208,8 +208,8 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         # 基本属性
         self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 5)
-        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "GivenBone")
-        self.assertEqual(attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.GIVEN_PARENT_ROTATE)
+        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "GrantBone")
+        self.assertEqual(attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.GRANT_PARENT_ROTATE)
 
         # 付与関連の属性を確認
         from mmd_tools.core.constants import (
@@ -223,16 +223,16 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 3)
 
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
-    def test_set_extra_attributes_pmx_given_move(self, mock_set_attrs):
+    def test_set_extra_attributes_pmx_grant_move(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（移動付与）"""
         bone = self._create_mock_pmx_bone(
-            7, "GivenMoveBone", bone_flag=PmxBoneFlag.GIVEN_PARENT_MOVE
+            7, "grantMoveBone", bone_flag=PmxBoneFlag.GRANT_PARENT_MOVE
         )
-        bone.given_parent_bone_index = 2
-        bone.given_rate = 1.0
+        bone.grant_parent_bone_index = 2
+        bone.grant_rate = 1.0
 
         # 実際のジョイントを作成
-        joint = cmds.joint(name="given_move_joint")
+        joint = cmds.joint(name="grant_move_joint")
 
         self.converter._set_extra_attributes(7, joint, bone, "pmx")
 
@@ -242,7 +242,7 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         # 基本属性
         self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 7)
-        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "GivenMoveBone")
+        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "grantMoveBone")
 
         # 付与関連の属性を確認
         from mmd_tools.core.constants import (
@@ -256,18 +256,18 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 2)
 
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
-    def test_set_extra_attributes_pmx_given_both(self, mock_set_attrs):
+    def test_set_extra_attributes_pmx_grant_both(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（回転＋移動付与）"""
         bone = self._create_mock_pmx_bone(
             9,
-            "GivenBothBone",
-            bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE | PmxBoneFlag.GIVEN_PARENT_MOVE,
+            "grantBothBone",
+            bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.GRANT_PARENT_MOVE,
         )
-        bone.given_parent_bone_index = 4
-        bone.given_rate = 0.75
+        bone.grant_parent_bone_index = 4
+        bone.grant_rate = 0.75
 
         # 実際のジョイントを作成
-        joint = cmds.joint(name="given_both_joint")
+        joint = cmds.joint(name="grant_both_joint")
 
         self.converter._set_extra_attributes(9, joint, bone, "pmx")
 
@@ -277,7 +277,7 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         # 基本属性
         self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 9)
-        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "GivenBothBone")
+        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "grantBothBone")
 
         # 付与関連の属性を確認
         from mmd_tools.core.constants import (

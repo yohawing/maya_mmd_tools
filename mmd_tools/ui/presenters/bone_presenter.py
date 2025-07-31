@@ -188,8 +188,8 @@ class BonePresenter:
         if flags & PmxBoneFlag.IK:
             return "IK"
         elif (
-            flags & PmxBoneFlag.GIVEN_PARENT_ROTATE
-            or flags & PmxBoneFlag.GIVEN_PARENT_MOVE
+            flags & PmxBoneFlag.GRANT_PARENT_ROTATE
+            or flags & PmxBoneFlag.GRANT_PARENT_MOVE
         ):
             return "付与"
         elif flags & PmxBoneFlag.DEFORM_AFTER_PHYSICS:
@@ -340,10 +340,10 @@ class BonePresenter:
 
             # 付与設定
             self.view.rotation_grant_check.setChecked(
-                bool(flags & PmxBoneFlag.GIVEN_PARENT_ROTATE)
+                bool(flags & PmxBoneFlag.GRANT_PARENT_ROTATE)
             )
             self.view.move_grant_check.setChecked(
-                bool(flags & PmxBoneFlag.GIVEN_PARENT_MOVE)
+                bool(flags & PmxBoneFlag.GRANT_PARENT_MOVE)
             )
             self._load_grant_settings()
 
@@ -831,9 +831,9 @@ class BonePresenter:
         if self.view.local_grant_check.isChecked():
             flags |= PmxBoneFlag.LOCAL
         if self.view.rotation_grant_check.isChecked():
-            flags |= PmxBoneFlag.GIVEN_PARENT_ROTATE
+            flags |= PmxBoneFlag.GRANT_PARENT_ROTATE
         if self.view.move_grant_check.isChecked():
-            flags |= PmxBoneFlag.GIVEN_PARENT_MOVE
+            flags |= PmxBoneFlag.GRANT_PARENT_MOVE
 
         # 軸制限
         if self.view.fixed_axis_check.isChecked():

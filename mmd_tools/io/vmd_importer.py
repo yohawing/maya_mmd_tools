@@ -27,8 +27,8 @@ def import_vmd_file(parser, filepath, options=None):
     try:
         # オプションからターゲットモデルを取得
         target_namespace = None
-        target_model = options.get('target_model')
-        
+        target_model = options.get("target_model")
+
         if target_model:
             # ターゲットモデルからネームスペースを取得
             if ":" in target_model:
@@ -39,10 +39,16 @@ def import_vmd_file(parser, filepath, options=None):
             selected = cmds.ls(selection=True)
             if selected:
                 # 選択されたオブジェクトからネームスペースを取得
-                node_namespace = selected[0].split(":")[0] if ":" in selected[0] else None
+                node_namespace = (
+                    selected[0].split(":")[0] if ":" in selected[0] else None
+                )
                 if node_namespace:
                     target_namespace = node_namespace
                     logger.info(f"ターゲットネームスペース: {target_namespace}")
+            else:
+                logger.warning(
+                    "ターゲットモデルが指定されていません。選択されたオブジェクトからネームスペースを取得します。"
+                )
 
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()
