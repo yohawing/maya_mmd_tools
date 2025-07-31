@@ -188,6 +188,183 @@ class TestBoneConverterMaya(unittest.TestCase):
             attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE
         )
 
+    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    def test_set_extra_attributes_pmx_given_rotate(self, mock_set_attrs):
+        """PMXボーンのカスタムアトリビュート設定テスト（回転付与）"""
+        bone = self._create_mock_pmx_bone(
+            5, "GivenBone", bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE
+        )
+        bone.given_parent_bone_index = 3
+        bone.given_rate = 0.5
+
+        # 実際のジョイントを作成
+        joint = cmds.joint(name="given_joint")
+
+        self.converter._set_extra_attributes(5, joint, bone, "pmx")
+
+        # カスタムアトリビュートが設定されているか確認
+        mock_set_attrs.assert_called_once()
+        attrs = mock_set_attrs.call_args[0][1]
+
+        # 基本属性
+        self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 5)
+        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "GivenBone")
+        self.assertEqual(attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.GIVEN_PARENT_ROTATE)
+
+        # 付与関連の属性を確認
+        from mmd_tools.core.constants import (
+            ATTR_MMD_GRANT_RATE,
+            ATTR_MMD_GRANT_PARENT_INDEX,
+        )
+
+        self.assertIn(ATTR_MMD_GRANT_RATE, attrs)
+        self.assertEqual(attrs[ATTR_MMD_GRANT_RATE], 0.5)
+        self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
+        self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 3)
+
+    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    def test_set_extra_attributes_pmx_given_move(self, mock_set_attrs):
+        """PMXボーンのカスタムアトリビュート設定テスト（移動付与）"""
+        bone = self._create_mock_pmx_bone(
+            7, "GivenMoveBone", bone_flag=PmxBoneFlag.GIVEN_PARENT_MOVE
+        )
+        bone.given_parent_bone_index = 2
+        bone.given_rate = 1.0
+
+        # 実際のジョイントを作成
+        joint = cmds.joint(name="given_move_joint")
+
+        self.converter._set_extra_attributes(7, joint, bone, "pmx")
+
+        # カスタムアトリビュートが設定されているか確認
+        mock_set_attrs.assert_called_once()
+        attrs = mock_set_attrs.call_args[0][1]
+
+        # 基本属性
+        self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 7)
+        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "GivenMoveBone")
+
+        # 付与関連の属性を確認
+        from mmd_tools.core.constants import (
+            ATTR_MMD_GRANT_RATE,
+            ATTR_MMD_GRANT_PARENT_INDEX,
+        )
+
+        self.assertIn(ATTR_MMD_GRANT_RATE, attrs)
+        self.assertEqual(attrs[ATTR_MMD_GRANT_RATE], 1.0)
+        self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
+        self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 2)
+
+    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    def test_set_extra_attributes_pmx_given_both(self, mock_set_attrs):
+        """PMXボーンのカスタムアトリビュート設定テスト（回転＋移動付与）"""
+        bone = self._create_mock_pmx_bone(
+            9,
+            "GivenBothBone",
+            bone_flag=PmxBoneFlag.GIVEN_PARENT_ROTATE | PmxBoneFlag.GIVEN_PARENT_MOVE,
+        )
+        bone.given_parent_bone_index = 4
+        bone.given_rate = 0.75
+
+        # 実際のジョイントを作成
+        joint = cmds.joint(name="given_both_joint")
+
+        self.converter._set_extra_attributes(9, joint, bone, "pmx")
+
+        # カスタムアトリビュートが設定されているか確認
+        mock_set_attrs.assert_called_once()
+        attrs = mock_set_attrs.call_args[0][1]
+
+        # 基本属性
+        self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 9)
+        self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "GivenBothBone")
+
+        # 付与関連の属性を確認
+        from mmd_tools.core.constants import (
+            ATTR_MMD_GRANT_RATE,
+            ATTR_MMD_GRANT_PARENT_INDEX,
+        )
+
+        self.assertIn(ATTR_MMD_GRANT_RATE, attrs)
+        self.assertEqual(attrs[ATTR_MMD_GRANT_RATE], 0.75)
+        self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
+        self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 4)
+
+    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    def test_set_extra_attributes_pmx_ik(self, mock_set_attrs):
+        """PMXボーンのカスタムアトリビュート設定テスト（IKボーン）"""
+        bone = self._create_mock_pmx_bone(10, "IKBone", bone_flag=PmxBoneFlag.IK)
+        bone.ik_target_bone_index = 11
+        bone.ik_loop_count = 20
+        bone.ik_limit_angle = 2.0
+
+        # IKリンクのモック
+        ik_link1 = Mock()
+        ik_link1.ik_bone_index = 12
+        ik_link1.angle_limit = True
+        ik_link1.limit_min = (-1.0, -1.0, -1.0)
+        ik_link1.limit_max = (1.0, 1.0, 1.0)
+
+        bone.ik_links = [ik_link1]
+
+        # 実際のジョイントを作成
+        joint = cmds.joint(name="ik_joint")
+
+        self.converter._set_extra_attributes(10, joint, bone, "pmx")
+
+        # カスタムアトリビュートが設定されているか確認
+        mock_set_attrs.assert_called_once()
+        attrs = mock_set_attrs.call_args[0][1]
+
+        # IK関連の属性を確認
+        from mmd_tools.core.constants import (
+            ATTR_MMD_IK_LOOP,
+            ATTR_MMD_IK_LIMIT_ANGLE,
+            ATTR_MMD_IK_TARGET_INDEX,
+        )
+
+        self.assertIn(ATTR_MMD_IK_LOOP, attrs)
+        self.assertEqual(attrs[ATTR_MMD_IK_LOOP], 20)
+        self.assertIn(ATTR_MMD_IK_LIMIT_ANGLE, attrs)
+        self.assertEqual(attrs[ATTR_MMD_IK_LIMIT_ANGLE], 2.0)
+        self.assertIn(ATTR_MMD_IK_TARGET_INDEX, attrs)
+        self.assertEqual(attrs[ATTR_MMD_IK_TARGET_INDEX], 11)
+
+    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    def test_set_extra_attributes_pmx_local_axis(self, mock_set_attrs):
+        """PMXボーンのカスタムアトリビュート設定テスト（ローカル軸）"""
+        bone = self._create_mock_pmx_bone(
+            15, "LocalAxisBone", bone_flag=PmxBoneFlag.LOCAL_AXIS
+        )
+        bone.x_axis_direction = (1.0, 0.0, 0.0)
+        bone.z_axis_direction = (0.0, 0.0, 1.0)
+
+        # 実際のジョイントを作成
+        joint = cmds.joint(name="local_axis_joint")
+
+        self.converter._set_extra_attributes(15, joint, bone, "pmx")
+
+        # カスタムアトリビュートが設定されているか確認
+        mock_set_attrs.assert_called_once()
+        attrs = mock_set_attrs.call_args[0][1]
+
+        # ローカル軸関連の属性を確認
+        from mmd_tools.core.constants import (
+            ATTR_MMD_LOCAL_X_AXIS,
+            ATTR_MMD_LOCAL_Z_AXIS,
+            ATTR_MMD_X_AXIS_DIRECTION,
+            ATTR_MMD_Z_AXIS_DIRECTION,
+        )
+
+        self.assertIn(ATTR_MMD_LOCAL_X_AXIS, attrs)
+        self.assertEqual(attrs[ATTR_MMD_LOCAL_X_AXIS], (1.0, 0.0, 0.0))
+        self.assertIn(ATTR_MMD_LOCAL_Z_AXIS, attrs)
+        self.assertEqual(attrs[ATTR_MMD_LOCAL_Z_AXIS], (0.0, 0.0, 1.0))
+        self.assertIn(ATTR_MMD_X_AXIS_DIRECTION, attrs)
+        self.assertEqual(attrs[ATTR_MMD_X_AXIS_DIRECTION], (1.0, 0.0, 0.0))
+        self.assertIn(ATTR_MMD_Z_AXIS_DIRECTION, attrs)
+        self.assertEqual(attrs[ATTR_MMD_Z_AXIS_DIRECTION], (0.0, 0.0, 1.0))
+
     def test_create_skin_cluster(self):
         """スキンクラスター作成のテスト（実際のMaya環境）"""
         # テスト用のジョイントを作成

@@ -159,9 +159,9 @@ class TestPmdParser(unittest.TestCase):
 
 ##### データロードメソッド（キャッシュ機能付き）
 
-- `load_pmd_data(name=None)`: PMDファイルをパースして辞書形式で返す
-- `load_pmx_data(name=None)`: PMXファイルをパースして辞書形式で返す
-- `load_vmd_data(name=None)`: VMDファイルをパースして辞書形式で返す
+- `load_pmd_data(name=None)`: PMDファイルをパースしてTupleで返す
+- `load_pmx_data(name=None)`: PMXファイルをパースしてTupleで返す
+- `load_vmd_data(name=None)`: VMDファイルをパースしてTupleで返す
 
 ##### 一時ファイル作成メソッド
 

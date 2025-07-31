@@ -203,13 +203,13 @@ class TestFixtureProvider:
     def get_available_vmd_files(self) -> List[str]:
         """利用可能なVMDファイルの一覧を取得"""
         
-    def load_pmd_data(self, name: str = None) -> dict:
+    def load_pmd_data(self, name: str = None) -> Tuple:
         """PMDファイルをロードしてパース済みデータを返す（キャッシュあり）"""
         
-    def load_pmx_data(self, name: str = None) -> dict:
+    def load_pmx_data(self, name: str = None) -> Tuple:
         """PMXファイルをロードしてパース済みデータを返す（キャッシュあり）"""
-        
-    def load_vmd_data(self, name: str = None) -> dict:
+
+    def load_vmd_data(self, name: str = None) -> Tuple:
         """VMDファイルをロードしてパース済みデータを返す（キャッシュあり）"""
         
     def create_temp_file(self, content: bytes, extension: str) -> str:

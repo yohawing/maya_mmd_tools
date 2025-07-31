@@ -21,9 +21,10 @@ class TestVmdConverter(MayaTestBase):
         super().setUp()
         # 新規シーンを作成
         cmds.file(new=True, force=True)
-        
+
         # dx11Shaderの作成を無効化（テスト環境では利用できない場合があるため）
         from mmd_tools.core import settings
+
         settings.set("import.model.create_mmd_shaders", False)
 
         # VmdConverterのインスタンスを作成
@@ -53,12 +54,9 @@ class TestVmdConverter(MayaTestBase):
         """
         # モデルデータを読み込み
         if model_type == "pmx":
-            model_data = self.fixture_provider.load_pmx_data(model_name)
+            model_data, file_path = self.fixture_provider.load_pmx_data(model_name)
         else:
-            model_data = self.fixture_provider.load_pmd_data(model_name)
-        
-        file_path = model_data["file_path"]
-        model_data = model_data["data"]
+            model_data, file_path = self.fixture_provider.load_pmd_data(model_name)
 
         # ルートグループを作成
         root_group = cmds.group(name="test_model_root", empty=True)
@@ -66,9 +64,13 @@ class TestVmdConverter(MayaTestBase):
         # メッシュを作成（スキニングのため）
         mesh_converter = MeshConverter(file_path)
         if model_type == "pmx":
-            group_name, mesh_name = mesh_converter.convert_pmx_mesh(model_data, root_group)
+            group_name, mesh_name = mesh_converter.convert_pmx_mesh(
+                model_data, root_group
+            )
         else:
-            group_name, mesh_name = mesh_converter.convert_pmd_mesh(model_data, root_group)
+            group_name, mesh_name = mesh_converter.convert_pmd_mesh(
+                model_data, root_group
+            )
 
         # ボーンを作成
         bone_converter = BoneConverter()
@@ -129,7 +131,9 @@ class TestVmdConverter(MayaTestBase):
         """実際のPMDファイルを使用した変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み
         root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
-            self._import_model_and_apply_vmd("Lat式ミクVer2.31_Normal", "Lat式用", model_type="pmd")
+            self._import_model_and_apply_vmd(
+                "Lat式ミクVer2.31_Normal", "Lat式用", model_type="pmd"
+            )
         )
 
         # 検証
@@ -163,7 +167,9 @@ class TestVmdConverter(MayaTestBase):
                 self.skipTest("VMDアニメーションの適用に失敗しました")
             else:
                 self.assertGreater(
-                    len(animated_joints), 0, "アニメーションが設定されたジョイントがありません"
+                    len(animated_joints),
+                    0,
+                    "アニメーションが設定されたジョイントがありません",
                 )
 
     def test_get_failed_bones(self):
@@ -189,7 +195,9 @@ class TestVmdConverter(MayaTestBase):
         """1ボーンVMDデータの変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み
         root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
-            self._import_model_and_apply_vmd("test_1bone_cube", "test_1bone_cube_motion", model_type="pmx")
+            self._import_model_and_apply_vmd(
+                "test_1bone_cube", "test_1bone_cube_motion", model_type="pmx"
+            )
         )
 
         # 変換が成功していることを確認
@@ -208,17 +216,23 @@ class TestVmdConverter(MayaTestBase):
 
         # アニメーションが設定されたジョイントがない場合はスキップ
         if len(animated_joints) == 0:
-            self.skipTest("テスト用の1ボーンVMDデータのアニメーション適用に失敗しました")
+            self.skipTest(
+                "テスト用の1ボーンVMDデータのアニメーション適用に失敗しました"
+            )
 
         # 少なくとも1つのジョイントがアニメーションされていることを確認
-        self.assertGreater(len(animated_joints), 0, "アニメーションが設定されたジョイントがありません")
+        self.assertGreater(
+            len(animated_joints), 0, "アニメーションが設定されたジョイントがありません"
+        )
 
         # アニメーションが設定されたジョイントに対してチェック
         if animated_joints:
             joint = animated_joints[0]
-            
+
             # キーフレームが設定されていることを確認
-            keyframes = cmds.keyframe(f"{joint}.rotateY", query=True, keyframeCount=True)
+            keyframes = cmds.keyframe(
+                f"{joint}.rotateY", query=True, keyframeCount=True
+            )
             self.assertGreater(keyframes, 0, "キーフレームが設定されていません")
 
     def test_convert_with_fixture_bone_hierarchy(self):
@@ -260,7 +274,9 @@ class TestVmdConverter(MayaTestBase):
 
         # タイムラインが正しく設定されていることを確認
         max_time = cmds.playbackOptions(query=True, max=True)
-        self.assertGreaterEqual(max_time, 30)  # 少なくとも30フレーム以上であることを確認
+        self.assertGreaterEqual(
+            max_time, 30
+        )  # 少なくとも30フレーム以上であることを確認
 
         # アニメーションが設定されていることを確認
         cmds.currentTime(30)

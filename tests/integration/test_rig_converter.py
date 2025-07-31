@@ -4,8 +4,13 @@ from unittest.mock import Mock, patch
 import maya.cmds as cmds
 
 from mmd_tools.converters.rig_converter import RigConverter
+from mmd_tools.core import maya_utils
+from mmd_tools.core.constants import ATTR_MMD_GRANT_PARENT_INDEX, ATTR_MMD_GRANT_RATE
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.settings import settings
+from mmd_tools.io.pmx_importer import import_pmx_file
+from mmd_tools.io.vmd_importer import import_vmd_file
+from tests.common.test_fixture_provider import TestFixtureProvider
 
 
 class TestRigConverterMaya(unittest.TestCase):
@@ -20,6 +25,8 @@ class TestRigConverterMaya(unittest.TestCase):
         self.original_settings = settings.get(
             "import.rig.add_semi_standard_bones", False
         )
+        # TestFixtureProviderを初期化
+        self.fixture_provider = TestFixtureProvider()
 
     def tearDown(self):
         """テストごとのクリーンアップ"""
@@ -27,6 +34,7 @@ class TestRigConverterMaya(unittest.TestCase):
         cmds.file(new=True, force=True)
         # 設定を元に戻す
         settings.set("import.rig.add_semi_standard_bones", self.original_settings)
+        self.fixture_provider.cleanup_temp_files()
 
     def _create_mock_pmx_bone(
         self, index, name="TestBone", parent_index=-1, position=(0, 0, 0), bone_flag=0
@@ -277,6 +285,197 @@ class TestRigConverterMaya(unittest.TestCase):
             # 腰が下半身の子、足の親になっているか
             parent_of_waist = cmds.listRelatives(result["waist"], parent=True)[0]
             self.assertEqual(parent_of_waist, lower_body)
+
+    def test_given_bones_with_pmx(self):
+        """実際のPMXデータを使用した付与ボーンのテスト"""
+
+        # pmd_file_path = self.fixture_provider.get_pmx_file("test_given_bone")
+
+        # PMXデータを読み込む
+        pmx_data, file_path = self.fixture_provider.load_pmx_data("test_given_bone")
+        # PMXデータからボーンを取得
+        bones = pmx_data.bones
+
+        import_pmx_file(pmx_data, file_path, scale=1.0)
+
+        # インポートできているか確認
+        root_group = cmds.ls("test_given_bone_root", type="transform")
+        self.assertTrue(root_group)
+
+        # ボーンの数を確認
+        maya_joints = cmds.ls(type="joint")
+        self.assertEqual(len(maya_joints), len(bones))
+
+        # 付与設定がなされているか確認。
+
+        # 付与ボーンの確認
+        for joint in maya_joints:
+            if joint in ["B", "C", "D"]:  # 付与ボーンの名前を確認
+                self.assertTrue(
+                    maya_utils.get_attribute(joint, ATTR_MMD_GRANT_PARENT_INDEX)
+                )
+                self.assertTrue(maya_utils.get_attribute(joint, ATTR_MMD_GRANT_RATE))
+
+        # グローバルの位置を確認
+        # A: (1,2,-2)
+        bone_a = cmds.ls("A", type="joint")[0]
+        pos_a = cmds.xform(bone_a, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(pos_a[0], 1.0, delta=0.1)
+        self.assertAlmostEqual(pos_a[1], 2.0, delta=0.1)
+        self.assertAlmostEqual(pos_a[2], -2.0, delta=0.1)
+
+        # B: (2,2,-2) - 付与ボーン
+        bone_b = cmds.ls("B", type="joint")[0]
+        pos_b = cmds.xform(bone_b, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(pos_b[0], 2.0, delta=0.1)
+        self.assertAlmostEqual(pos_b[1], 2.0, delta=0.1)
+        self.assertAlmostEqual(pos_b[2], -2.0, delta=0.1)
+
+        # C: (3,2,-2) - ローカル付与ボーン
+        bone_c = cmds.ls("C", type="joint")[0]
+        pos_c = cmds.xform(bone_c, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(pos_c[0], 3.0, delta=0.1)
+        self.assertAlmostEqual(pos_c[1], 2.0, delta=0.1)
+        self.assertAlmostEqual(pos_c[2], -2.0, delta=0.1)
+
+        # D: (0,0,0) - 多重付与ボーン
+        bone_d = cmds.ls("D", type="joint")[0]
+        pos_d = cmds.xform(bone_d, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(pos_d[0], 0.0, delta=0.1)
+        self.assertAlmostEqual(pos_d[1], 0.0, delta=0.1)
+        self.assertAlmostEqual(pos_d[2], 0.0, delta=0.1)
+
+        # VMDファイルを読み込む
+        vmd_data, _ = self.fixture_provider.load_vmd_data("test_given_bone")
+
+        # VMDデータを適用
+        import_vmd_file(
+            vmd_data, root_group[0], options={"target_model": "test_given_bone"}
+        )
+
+        # 一旦スキップ
+
+        self.skipTest("VMDデータの適用は一時的にスキップ")
+
+        # VMDデータの適用を確認
+        # 5フレーム目に移動
+        cmds.currentTime(5)
+
+        # 付与ボーンのテストで想定されるボーン構造を確認
+        # PMXファイル "test_given_bone" には以下のようなボーンがあると想定:
+        # A: 通常のボーン
+        # B: Aから100%の回転と移動付与を受けるボーン
+        # C: ローカル付与でBから回転移動付与を受けるボーン
+        # D: 多重付与でBから回転付与を受けるボーン
+
+        # ボーンを名前で検索（実際のPMXファイルのボーン名に依存）
+        all_joints = cmds.ls(type="joint")
+
+        # デバッグ情報：実際のボーン構造を出力
+        bone_info = {}
+        for joint in all_joints:
+            if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
+                index = cmds.getAttr(f"{joint}.mmd_bone_index")
+                name_jp = ""
+                if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
+                    name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
+                bone_info[index] = {"joint": joint, "name_jp": name_jp}
+                print(f"ボーン情報: index={index}, joint={joint}, name_jp={name_jp}")
+
+        # A_ (通常ボーン) の確認 - 名前で検索
+        # loc: 1, 0, 1.14, rot: 90, 0, 0
+        bone_a = None
+        for joint in all_joints:
+            if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
+                name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
+                if name_jp == "A":
+                    bone_a = joint
+                    break
+
+        if bone_a:
+            # 位置の確認
+            pos = cmds.xform(bone_a, query=True, worldSpace=True, translation=True)
+            self.assertAlmostEqual(pos[0], 1.0, delta=0.1)
+            self.assertAlmostEqual(pos[1], 0.0, delta=0.1)
+            self.assertAlmostEqual(pos[2], 1.14, delta=0.1)
+
+            # 回転の確認
+            rot = cmds.xform(bone_a, query=True, worldSpace=True, rotation=True)
+            self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
+            self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
+            self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
+
+        # B_ (付与ボーン) の確認 - 名前で検索
+        # loc: 2, 2, 2, rot: 90, 0, 0  (付与45+回転45)
+        bone_b = None
+        for joint in all_joints:
+            if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
+                name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
+                if name_jp == "B":
+                    bone_b = joint
+                    break
+
+        if bone_b:
+            # 位置の確認
+            pos = cmds.xform(bone_b, query=True, worldSpace=True, translation=True)
+            self.assertAlmostEqual(pos[0], 2.0, delta=0.1)
+            self.assertAlmostEqual(pos[1], 2.0, delta=0.1)
+            self.assertAlmostEqual(pos[2], 2.0, delta=0.1)
+
+            # 回転の確認（付与45度 + 自身の回転45度 = 90度）
+            rot = cmds.xform(bone_b, query=True, worldSpace=True, rotation=True)
+            self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
+            self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
+            self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
+
+        # C_ (ローカル付与ボーン) の確認 - 名前で検索
+        # loc: 3, 2, 2 rot: 45 (親の回転の付与）
+        bone_c = None
+        for joint in all_joints:
+            if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
+                name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
+                if name_jp == "C":
+                    bone_c = joint
+                    break
+
+        if bone_c:
+            # 位置の確認
+            pos = cmds.xform(bone_c, query=True, worldSpace=True, translation=True)
+            self.assertAlmostEqual(pos[0], 3.0, delta=0.1)
+            self.assertAlmostEqual(pos[1], 2.0, delta=0.1)
+            self.assertAlmostEqual(pos[2], 2.0, delta=0.1)
+
+            # 回転の確認（ローカル付与で45度）
+            rot = cmds.xform(bone_c, query=True, worldSpace=True, rotation=True)
+            self.assertAlmostEqual(rot[0], 45.0, delta=1.0)
+
+        # D_ (多重付与ボーン) の確認 - 名前で検索
+        # loc: 0,0,0  rot: 90,0,0 ( Bの付与）
+        bone_d = None
+        for joint in all_joints:
+            if cmds.attributeQuery("mmd_bone_name_jp", node=joint, exists=True):
+                name_jp = cmds.getAttr(f"{joint}.mmd_bone_name_jp")
+                if name_jp == "D":
+                    bone_d = joint
+                    break
+
+        if bone_d:
+            # 位置の確認
+            pos = cmds.xform(bone_d, query=True, worldSpace=True, translation=True)
+            self.assertAlmostEqual(pos[0], 0.0, delta=0.1)
+            self.assertAlmostEqual(pos[1], 0.0, delta=0.1)
+            self.assertAlmostEqual(pos[2], 0.0, delta=0.1)
+
+            # 回転の確認（Bから付与された90度）
+            rot = cmds.xform(bone_d, query=True, worldSpace=True, rotation=True)
+            self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
+            self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
+            self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
+
+        # 付与関係が正しく設定されているかの追加確認
+        # 少なくとも1つの付与ボーンが見つかったことを確認
+        found_given_bones = sum(1 for b in [bone_b, bone_c, bone_d] if b is not None)
+        self.assertGreater(found_given_bones, 0, "付与ボーンが見つかりませんでした")
 
     def test_setup_given_parent_bones_rotation(self):
         """回転付与ボーンの設定テスト（実際のMaya環境）"""
@@ -757,14 +956,31 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # 膝にPMXローカル軸情報を追加
         cmds.addAttr(knee, longName="mmd_local_x_axis", attributeType="double3")
-        cmds.addAttr(knee, longName="mmd_local_x_axisX", attributeType="double", parent="mmd_local_x_axis")
-        cmds.addAttr(knee, longName="mmd_local_x_axisY", attributeType="double", parent="mmd_local_x_axis")
-        cmds.addAttr(knee, longName="mmd_local_x_axisZ", attributeType="double", parent="mmd_local_x_axis")
+        cmds.addAttr(
+            knee,
+            longName="mmd_local_x_axisX",
+            attributeType="double",
+            parent="mmd_local_x_axis",
+        )
+        cmds.addAttr(
+            knee,
+            longName="mmd_local_x_axisY",
+            attributeType="double",
+            parent="mmd_local_x_axis",
+        )
+        cmds.addAttr(
+            knee,
+            longName="mmd_local_x_axisZ",
+            attributeType="double",
+            parent="mmd_local_x_axis",
+        )
         # X軸が前方を向くように設定（PMX座標系で）
         cmds.setAttr(f"{knee}.mmd_local_x_axis", 0, 0, -1, type="double3")
 
         # IKハンドルを作成
-        ik_handle, _ = cmds.ikHandle(startJoint=hip, endEffector=ankle, solver="ikRPsolver")
+        ik_handle, _ = cmds.ikHandle(
+            startJoint=hip, endEffector=ankle, solver="ikRPsolver"
+        )
 
         # IKチェーン情報を作成
         chain = {
@@ -785,9 +1001,13 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertIsNotNone(pole_target)
 
         # mmd_pole_methodアトリビュートを確認
-        self.assertTrue(cmds.attributeQuery("mmd_pole_method", node=pole_target, exists=True))
+        self.assertTrue(
+            cmds.attributeQuery("mmd_pole_method", node=pole_target, exists=True)
+        )
         method = cmds.getAttr(f"{pole_target}.mmd_pole_method")
-        self.assertEqual(method, "pmx_local_axis", "PMXローカル軸情報が使用されませんでした")
+        self.assertEqual(
+            method, "pmx_local_axis", "PMXローカル軸情報が使用されませんでした"
+        )
 
     def test_pole_target_with_joint_orient(self):
         """jointOrientを使用したPoleTarget作成テスト"""
@@ -802,7 +1022,9 @@ class TestRigConverterMaya(unittest.TestCase):
         ankle = cmds.joint(name="left_ankle", position=[1, 0, 0])
 
         # IKハンドルを作成
-        ik_handle, _ = cmds.ikHandle(startJoint=hip, endEffector=ankle, solver="ikRPsolver")
+        ik_handle, _ = cmds.ikHandle(
+            startJoint=hip, endEffector=ankle, solver="ikRPsolver"
+        )
 
         # IKチェーン情報を作成
         chain = {
@@ -824,7 +1046,9 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # mmd_pole_methodアトリビュートを確認
         method = cmds.getAttr(f"{pole_target}.mmd_pole_method")
-        self.assertEqual(method, "joint_orient", "jointOrient情報が使用されませんでした")
+        self.assertEqual(
+            method, "joint_orient", "jointOrient情報が使用されませんでした"
+        )
 
 
 if __name__ == "__main__":

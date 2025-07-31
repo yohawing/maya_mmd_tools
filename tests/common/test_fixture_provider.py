@@ -207,10 +207,7 @@ class TestFixtureProvider:
                     "pmx": {"model1": "/path/to/model1.pmx"}
                 }
         """
-        return {
-            "pmd": self.get_all_pmd_files(),
-            "pmx": self.get_all_pmx_files()
-        }
+        return {"pmd": self.get_all_pmd_files(), "pmx": self.get_all_pmx_files()}
 
     def load_pmd_data(self, name: str = None) -> dict:
         """PMDファイルをロードしてパース済みデータを返す（キャッシュあり）
@@ -228,7 +225,7 @@ class TestFixtureProvider:
             # 実際のパーサーを使用してデータをロード
             pmd_parser = PmdParser()
             pmd_data = pmd_parser.parse_file(file_path)
-            self._data_cache[cache_key] = {"file_path": file_path, "data": pmd_data}
+            self._data_cache[cache_key] = (pmd_data, file_path)
 
         return self._data_cache[cache_key]
 
@@ -249,7 +246,7 @@ class TestFixtureProvider:
 
             pmx_parser = PmxParser()
             pmx_data = pmx_parser.parse_file(file_path)
-            self._data_cache[cache_key] = {"file_path": file_path, "data": pmx_data}
+            self._data_cache[cache_key] = (pmx_data, file_path)
 
         return self._data_cache[cache_key]
 
@@ -270,7 +267,7 @@ class TestFixtureProvider:
 
             vmd_parser = VmdParser()
             vmd_data = vmd_parser.parse_file(file_path)
-            self._data_cache[cache_key] = {"file_path": file_path, "data": vmd_data}
+            self._data_cache[cache_key] = (vmd_data, file_path)
 
         return self._data_cache[cache_key]
 
