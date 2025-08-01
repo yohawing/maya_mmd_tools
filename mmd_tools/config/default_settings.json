@@ -4,14 +4,14 @@
     "general": {
       "_comment": "General import settings that affect the overall process",
       "scale_factor": 1.0,
-      "use_namespace": false,
+      "use_namespace": true,
       "root_bone_name": "root"
     },
     "model": {
       "_comment": "Settings for model geometry, materials, and structure",
       "import_models": true,
       "separate_meshes_by_material": false,
-      "create_mmd_shaders": true,
+      "create_mmd_shaders": false,
       "texture_search_path": "",
       "hide_hidden_geometry": true,
       "uv_set_name": "map#",

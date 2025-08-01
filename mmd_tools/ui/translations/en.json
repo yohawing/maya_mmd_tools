@@ -50,6 +50,7 @@
     "model_name": "Model Name:",
     "comment": "Comment:",
     "language": "Language:",
+    "namespace_placeholder": "Auto-generate",
     "material_name": "Material Name:",
     "bone_name": "Bone Name:",
     "morph_name": "Morph Name:",
@@ -170,6 +171,7 @@
   },
   "checkboxes": {
     "use_namespace": "Use Namespace",
+    "custom_namespace": "Custom namespace:",
     "import_models": "Import Models",
     "create_mmd_shaders": "Create MMD Shaders",
     "separate_meshes": "Separate Meshes by Material",

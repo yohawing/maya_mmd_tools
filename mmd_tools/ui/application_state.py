@@ -129,8 +129,18 @@ class ApplicationState(QObject):
     def _cache_model_info(self, model_root):
         """モデル情報をキャッシュ"""
         try:
+            # namespace情報を取得
+            namespace = None
+            if ':' in model_root:
+                # 最後の':'より前がnamespace
+                namespace = model_root.rsplit(':', 1)[0]
+                # パイプが含まれている場合は最後の要素を取得
+                if '|' in namespace:
+                    namespace = namespace.split('|')[-1]
+            
             info = {
                 'root': model_root,
+                'namespace': namespace,
                 'display_name': get_mmd_model_display_name(model_root),
                 'name_jp': self._get_attr_safe(model_root, 'mmd_model_name_jp', ''),
                 'name_en': self._get_attr_safe(model_root, 'mmd_model_name_en', ''),

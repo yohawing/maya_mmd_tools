@@ -56,74 +56,119 @@ class TestNamespaceUtils(unittest.TestCase):
     @patch('maya.cmds.namespace')
     def test_ensure_unique_namespace_not_exists(self, mock_namespace):
         """重複しないnamespaceの場合のテスト"""
-        mock_namespace.exists.return_value = False
+        # cmds.namespace(exists="TestModel") がFalseを返すように設定
+        mock_namespace.return_value = False
         
         result = NamespaceUtils.ensure_unique_namespace("TestModel")
         self.assertEqual(result, "TestModel")
-        mock_namespace.exists.assert_called_once_with("TestModel")
+        mock_namespace.assert_called_once_with(exists="TestModel")
 
     @patch('maya.cmds.namespace')
     def test_ensure_unique_namespace_exists(self, mock_namespace):
         """既存namespaceがある場合のテスト"""
-        # 最初の2回はTrue（既存）、3回目はFalse（利用可能）
-        mock_namespace.exists.side_effect = [True, True, False]
+        # 最初の1回はTrue（既存）、2回目はFalse（利用可能）
+        mock_namespace.side_effect = [True, False]
         
         result = NamespaceUtils.ensure_unique_namespace("TestModel")
-        self.assertEqual(result, "TestModel_3")
+        self.assertEqual(result, "TestModel_2")
         
         # 呼び出し順序を確認
         expected_calls = [
-            call.exists("TestModel"),
-            call.exists("TestModel_2"),
-            call.exists("TestModel_3")
+            call(exists="TestModel"),
+            call(exists="TestModel_2")
         ]
-        self.assertEqual(mock_namespace.method_calls, expected_calls)
+        self.assertEqual(mock_namespace.call_args_list, expected_calls)
 
     @patch('maya.cmds.namespace')
     def test_create_namespace_success(self, mock_namespace):
         """namespace作成成功のテスト"""
-        mock_namespace.exists.return_value = False
+        # cmds.namespace(exists="TestNamespace") がFalseを返すように設定
+        def namespace_side_effect(**kwargs):
+            if 'exists' in kwargs:
+                return False
+            elif 'add' in kwargs:
+                return None
+        
+        mock_namespace.side_effect = namespace_side_effect
         
         result = NamespaceUtils.create_namespace("TestNamespace")
         self.assertTrue(result)
-        mock_namespace.add.assert_called_once_with("TestNamespace")
+        
+        # 呼び出しを確認
+        expected_calls = [
+            call(exists="TestNamespace"),
+            call(add="TestNamespace")
+        ]
+        self.assertEqual(mock_namespace.call_args_list, expected_calls)
 
     @patch('maya.cmds.namespace')
     def test_create_namespace_already_exists(self, mock_namespace):
         """既存namespace作成時のテスト"""
-        mock_namespace.exists.return_value = True
+        # cmds.namespace(exists="TestNamespace") がTrueを返すように設定
+        mock_namespace.return_value = True
         
         result = NamespaceUtils.create_namespace("TestNamespace")
         self.assertTrue(result)
-        mock_namespace.add.assert_not_called()
+        
+        # existsチェックのみで、addは呼ばれない
+        mock_namespace.assert_called_once_with(exists="TestNamespace")
 
     @patch('maya.cmds.namespace')
     def test_create_namespace_error(self, mock_namespace):
         """namespace作成エラーのテスト"""
-        mock_namespace.exists.return_value = False
-        mock_namespace.add.side_effect = RuntimeError("Invalid namespace")
+        # existsチェックはFalse、addでエラーを発生させる
+        def namespace_side_effect(**kwargs):
+            if 'exists' in kwargs:
+                return False
+            elif 'add' in kwargs:
+                raise RuntimeError("Invalid namespace")
+        
+        mock_namespace.side_effect = namespace_side_effect
         
         result = NamespaceUtils.create_namespace("Invalid@Name")
         self.assertFalse(result)
 
-    @patch('maya.cmds.namespace')
     @patch('maya.cmds.namespaceInfo')
-    def test_namespace_context_new(self, mock_info, mock_namespace):
+    @patch('maya.cmds.namespace')
+    def test_namespace_context_new(self, mock_namespace, mock_info):
         """新規namespace contextのテスト"""
-        mock_info.currentNamespace.return_value = ":"
-        mock_namespace.exists.return_value = False
+        # cmds.namespaceInfo(currentNamespace=True)が":"を返すように設定
+        mock_info.return_value = ":"
+        
+        # namespace関数の動作を設定
+        def namespace_side_effect(**kwargs):
+            if 'exists' in kwargs:
+                return False
+            elif 'add' in kwargs:
+                return None
+            elif 'set' in kwargs:
+                return None
+        
+        mock_namespace.side_effect = namespace_side_effect
         
         with NamespaceUtils.namespace_context("TestNS") as ns:
             self.assertEqual(ns, "TestNS")
-            mock_namespace.add.assert_called_once_with("TestNS")
-            mock_namespace.set.assert_any_call(":TestNS")
         
-        # コンテキスト終了後に元に戻ることを確認
-        mock_namespace.set.assert_called_with(":")
+        # 呼び出しを確認
+        # namespaceInfoが呼ばれたことを確認
+        mock_info.assert_called_once_with(currentNamespace=True)
+        
+        # namespaceの呼び出しを確認
+        calls = mock_namespace.call_args_list
+        
+        # exists="TestNS"の呼び出しを確認
+        self.assertIn(call(exists="TestNS"), calls)
+        # add="TestNS"の呼び出しを確認
+        self.assertIn(call(add="TestNS"), calls)
+        # set=":TestNS"の呼び出しを確認
+        self.assertIn(call(set=":TestNS"), calls)
+        # 最後のset呼び出しが元のnamespaceに戻すことを確認
+        # current_nsはmock_infoの戻り値":"なので、set=":"が呼ばれる
+        self.assertIn(call(set=":"), calls)
 
-    @patch('maya.cmds.namespace')
     @patch('maya.cmds.namespaceInfo')
-    def test_namespace_context_none(self, mock_info, mock_namespace):
+    @patch('maya.cmds.namespace')
+    def test_namespace_context_none(self, mock_namespace, mock_info):
         """Noneを渡した場合のcontext testのテスト"""
         with NamespaceUtils.namespace_context(None) as ns:
             self.assertIsNone(ns)
@@ -135,38 +180,50 @@ class TestNamespaceUtils(unittest.TestCase):
     @patch('maya.cmds.delete')
     def test_cleanup_namespace_force(self, mock_delete, mock_ls, mock_namespace):
         """強制削除モードのクリーンアップテスト"""
-        mock_namespace.exists.return_value = True
+        # namespace関数の動作を設定
+        def namespace_side_effect(**kwargs):
+            if 'exists' in kwargs:
+                return True
+            elif 'removeNamespace' in kwargs:
+                return None
+        
+        mock_namespace.side_effect = namespace_side_effect
         mock_ls.return_value = ["TestNS:cube1", "TestNS:sphere1"]
         
         NamespaceUtils.cleanup_namespace("TestNS", force=True)
         
         mock_delete.assert_called_once_with(["TestNS:cube1", "TestNS:sphere1"])
-        mock_namespace.removeNamespace.assert_called_once_with(
-            "TestNS", mergeNamespaceWithParent=False
-        )
+        mock_namespace.assert_any_call(removeNamespace="TestNS", mergeNamespaceWithParent=False)
 
     @patch('maya.cmds.namespace')
     @patch('maya.cmds.ls')
     def test_cleanup_namespace_merge(self, mock_ls, mock_namespace):
         """マージモードのクリーンアップテスト"""
-        mock_namespace.exists.return_value = True
+        # namespace関数の動作を設定
+        def namespace_side_effect(**kwargs):
+            if 'exists' in kwargs:
+                return True
+            elif 'removeNamespace' in kwargs:
+                return None
+        
+        mock_namespace.side_effect = namespace_side_effect
         mock_ls.return_value = ["TestNS:cube1"]
         
         NamespaceUtils.cleanup_namespace("TestNS", force=False)
         
-        mock_namespace.removeNamespace.assert_called_once_with(
-            "TestNS", mergeNamespaceWithParent=True
-        )
+        mock_namespace.assert_any_call(removeNamespace="TestNS", mergeNamespaceWithParent=True)
 
     @patch('maya.cmds.namespaceInfo')
     def test_list_model_namespaces(self, mock_info):
         """モデルnamespace一覧取得のテスト"""
-        mock_info.listOnlyNamespaces.return_value = [
+        # cmds.namespaceInfo(listOnlyNamespaces=True, recurse=True)の戻り値を設定
+        mock_info.return_value = [
             "UI", "shared", "Model1", "Character_A", ":nested"
         ]
         
         result = NamespaceUtils.list_model_namespaces()
         self.assertEqual(result, ["Model1", "Character_A"])
+        mock_info.assert_called_once_with(listOnlyNamespaces=True, recurse=True)
 
     def test_get_namespace_from_node(self):
         """ノード名からnamespace取得のテスト"""

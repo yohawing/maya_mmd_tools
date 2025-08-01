@@ -40,14 +40,21 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
 
     # Namespace処理
     use_namespace = options.get("use_namespace", False)
+    custom_namespace = options.get("custom_namespace")
     namespace = None
     
     if use_namespace:
-        # モデル名からnamespace生成
+        if custom_namespace:
+            # カスタムnamespaceを使用
+            namespace = NamespaceUtils.ensure_unique_namespace(custom_namespace)
+            logger.info(f"Using custom namespace: {namespace}")
+        else:
+            # モデル名からnamespace生成
+            model_name = maya_utils.sanitize_text(parser.header.get_name())
+            base_ns = NamespaceUtils.generate_namespace(model_name)
+            namespace = NamespaceUtils.ensure_unique_namespace(base_ns)
+            logger.info(f"Using auto-generated namespace: {namespace}")
         model_name = maya_utils.sanitize_text(parser.header.get_name())
-        base_ns = NamespaceUtils.generate_namespace(model_name)
-        namespace = NamespaceUtils.ensure_unique_namespace(base_ns)
-        logger.info(f"Using namespace: {namespace}")
     else:
         model_name = maya_utils.sanitize_text(parser.header.get_name())
 
