@@ -383,6 +383,7 @@ class RigConverter:
                 ]
             else:
                 # 膝が見つからない場合は、チェーンの中点のZ+方向に配置
+                # MMD-37: IKのPole Vectorの向きを常にZ+方向に固定
                 mid_pos = [(start_pos[i] + end_pos[i]) / 2 for i in range(3)]
                 pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] + 2.0]  # Z+方向に配置
                 method_used = "default_midpoint"
