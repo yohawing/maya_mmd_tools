@@ -66,7 +66,7 @@ class MeshConverter:
             str: 作成されたMayaメッシュをまとめるグループノードの名前。
             str: 作成されたMayaメッシュノードの名前。
         """
-        model_name = pmx_data.header.model_name
+        model_name = pmx_data.header.get_name()
         all_vertices = pmx_data.vertices
         all_faces = pmx_data.faces
         all_materials = pmx_data.materials

@@ -69,7 +69,7 @@ class Settings(UserDict):
         super().__setitem__(key, value)
         self.save()
 
-    def _flatten_dict(self, d, parent_key="", sep="_"):
+    def _flatten_dict(self, d, parent_key="", sep="::"):
         """Flatten a nested dictionary."""
         items = []
         for k, v in d.items():
@@ -114,7 +114,7 @@ class Settings(UserDict):
                     value = default_value  # Fallback to default if conversion fails
 
             # Set the loaded value in the nested dictionary
-            keys = key.split("_")
+            keys = key.split("::")
             d = self.data
             for k in keys[:-1]:
                 d = d.setdefault(k, {})

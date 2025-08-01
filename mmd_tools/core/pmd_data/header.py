@@ -46,8 +46,7 @@ class PmdHeader:
         Returns:
             str: モデルの名前。
         """
-        use_en = settings.get("import.model.joint_name_conversion_with_english", True)
-        if use_en and self.model_name_english and self.model_name_english != "":
+        if self.model_name_english and self.model_name_english != "":
             return self.model_name_english
 
         return self.model_name
@@ -59,8 +58,7 @@ class PmdHeader:
         Returns:
             str: モデルのコメント。
         """
-        use_en = settings.get("import.model.joint_name_conversion_with_english", True)
-        if use_en and self.comment_english and self.comment_english != "":
+        if self.comment_english and self.comment_english != "":
             return self.comment_english
 
         return self.comment

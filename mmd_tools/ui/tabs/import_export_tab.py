@@ -78,24 +78,32 @@ class ImportExportTab(BaseTab):
             lambda v: settings.set("import.general.use_namespace", v)
         )
         general_layout.addWidget(self.use_namespace_check)
-        
+
         # Namespace名を手動で指定するオプション
         namespace_layout = QHBoxLayout()
         namespace_layout.setContentsMargins(20, 0, 0, 0)  # インデント
-        
-        self.custom_namespace_check = QCheckBox(self.tr("custom_namespace", "checkboxes"))
+
+        self.custom_namespace_check = QCheckBox(
+            self.tr("custom_namespace", "checkboxes")
+        )
         # カスタムnamespaceチェックボックスの状態を読み込み
-        saved_custom_namespace = self.qt_settings.value("custom_namespace_check", "false")
+        saved_custom_namespace = self.qt_settings.value(
+            "custom_namespace_check", "false"
+        )
         self.custom_namespace_check.setChecked(saved_custom_namespace.lower() == "true")
         self.custom_namespace_check.setEnabled(self.use_namespace_check.isChecked())
         # 状態が変更されたら保存
         self.custom_namespace_check.toggled.connect(
-            lambda checked: self.qt_settings.setValue("custom_namespace_check", str(checked))
+            lambda checked: self.qt_settings.setValue(
+                "custom_namespace_check", str(checked)
+            )
         )
         namespace_layout.addWidget(self.custom_namespace_check)
-        
+
         self.namespace_edit = QLineEdit()
-        self.namespace_edit.setPlaceholderText(self.tr("namespace_placeholder", "labels"))
+        self.namespace_edit.setPlaceholderText(
+            self.tr("namespace_placeholder", "labels")
+        )
         # namespace名を読み込み
         saved_namespace = self.qt_settings.value("custom_namespace_name", "")
         self.namespace_edit.setText(saved_namespace)
@@ -105,11 +113,11 @@ class ImportExportTab(BaseTab):
             lambda text: self.qt_settings.setValue("custom_namespace_name", text)
         )
         namespace_layout.addWidget(self.namespace_edit)
-        
+
         # シグナル接続
         self.use_namespace_check.toggled.connect(self.custom_namespace_check.setEnabled)
         self.custom_namespace_check.toggled.connect(self.namespace_edit.setEnabled)
-        
+
         general_layout.addLayout(namespace_layout)
 
         self.general_group.setLayout(general_layout)
@@ -128,7 +136,9 @@ class ImportExportTab(BaseTab):
         )
         model_layout.addWidget(self.import_models_check)
 
-        self.create_mmd_shaders_check = QCheckBox(self.tr("create_mmd_shaders", "checkboxes"))
+        self.create_mmd_shaders_check = QCheckBox(
+            self.tr("create_mmd_shaders", "checkboxes")
+        )
         self.create_mmd_shaders_check.setChecked(
             settings.get("import.model.create_mmd_shaders", True)
         )
@@ -146,7 +156,9 @@ class ImportExportTab(BaseTab):
         )
         model_layout.addWidget(self.separate_meshes_check)
 
-        self.hide_hidden_geometry_check = QCheckBox(self.tr("hide_hidden_geometry", "checkboxes"))
+        self.hide_hidden_geometry_check = QCheckBox(
+            self.tr("hide_hidden_geometry", "checkboxes")
+        )
         self.hide_hidden_geometry_check.setChecked(
             settings.get("import.model.hide_hidden_geometry", True)
         )
@@ -155,16 +167,9 @@ class ImportExportTab(BaseTab):
         )
         model_layout.addWidget(self.hide_hidden_geometry_check)
 
-        self.joint_name_conversion_check = QCheckBox(self.tr("joint_name_conversion", "checkboxes"))
-        self.joint_name_conversion_check.setChecked(
-            settings.get("import.model.joint_name_conversion_with_english", False)
+        self.disable_backface_culling_check = QCheckBox(
+            self.tr("disable_backface_culling", "checkboxes")
         )
-        self.joint_name_conversion_check.toggled.connect(
-            lambda v: settings.set("import.model.joint_name_conversion_with_english", v)
-        )
-        model_layout.addWidget(self.joint_name_conversion_check)
-
-        self.disable_backface_culling_check = QCheckBox(self.tr("disable_backface_culling", "checkboxes"))
         self.disable_backface_culling_check.setChecked(
             settings.get("import.model.disable_backface_culling", True)
         )
@@ -225,7 +230,9 @@ class ImportExportTab(BaseTab):
         )
         morph_physics_layout.addWidget(self.import_physics_check)
 
-        self.create_rigid_bodies_check = QCheckBox(self.tr("create_rigid_bodies", "checkboxes"))
+        self.create_rigid_bodies_check = QCheckBox(
+            self.tr("create_rigid_bodies", "checkboxes")
+        )
         self.create_rigid_bodies_check.setChecked(
             settings.get("import.physics.create_rigid_bodies", True)
         )
@@ -234,7 +241,9 @@ class ImportExportTab(BaseTab):
         )
         morph_physics_layout.addWidget(self.create_rigid_bodies_check)
 
-        self.create_physics_joints_check = QCheckBox(self.tr("create_physics_joints", "checkboxes"))
+        self.create_physics_joints_check = QCheckBox(
+            self.tr("create_physics_joints", "checkboxes")
+        )
         self.create_physics_joints_check.setChecked(
             settings.get("import.physics.create_physics_joints", True)
         )
@@ -243,7 +252,9 @@ class ImportExportTab(BaseTab):
         )
         morph_physics_layout.addWidget(self.create_physics_joints_check)
 
-        self.group_physics_objects_check = QCheckBox(self.tr("group_physics_objects", "checkboxes"))
+        self.group_physics_objects_check = QCheckBox(
+            self.tr("group_physics_objects", "checkboxes")
+        )
         self.group_physics_objects_check.setChecked(
             settings.get("import.physics.group_physics_objects", True)
         )
@@ -259,7 +270,9 @@ class ImportExportTab(BaseTab):
         self.other_group = QGroupBox(self.tr("other", "groups"))
         other_layout = QVBoxLayout()
 
-        self.add_semi_standard_bones_check = QCheckBox(self.tr("add_semi_standard_bones", "checkboxes"))
+        self.add_semi_standard_bones_check = QCheckBox(
+            self.tr("add_semi_standard_bones", "checkboxes")
+        )
         self.add_semi_standard_bones_check.setChecked(
             settings.get("import.rig.add_semi_standard_bones", False)
         )
@@ -308,7 +321,9 @@ class ImportExportTab(BaseTab):
         anim_settings_layout.addLayout(frame_layout)
 
         # Animation type checkboxes
-        self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
+        self.import_bone_animation_check = QCheckBox(
+            self.tr("import_bone_animation", "checkboxes")
+        )
         self.import_bone_animation_check.setChecked(
             settings.get("import.animation.import_animations", True)
         )
@@ -317,7 +332,9 @@ class ImportExportTab(BaseTab):
         )
         anim_settings_layout.addWidget(self.import_bone_animation_check)
 
-        self.import_morph_animation_check = QCheckBox(self.tr("import_morph_animation", "checkboxes"))
+        self.import_morph_animation_check = QCheckBox(
+            self.tr("import_morph_animation", "checkboxes")
+        )
         self.import_morph_animation_check.setChecked(
             settings.get("import.animation.import_morph_animation", True)
         )
@@ -326,7 +343,9 @@ class ImportExportTab(BaseTab):
         )
         anim_settings_layout.addWidget(self.import_morph_animation_check)
 
-        self.import_camera_animation_check = QCheckBox(self.tr("import_camera_animation", "checkboxes"))
+        self.import_camera_animation_check = QCheckBox(
+            self.tr("import_camera_animation", "checkboxes")
+        )
         self.import_camera_animation_check.setChecked(
             settings.get("import.animation.import_camera_animation", True)
         )
@@ -335,7 +354,9 @@ class ImportExportTab(BaseTab):
         )
         anim_settings_layout.addWidget(self.import_camera_animation_check)
 
-        self.import_light_animation_check = QCheckBox(self.tr("import_light_animation", "checkboxes"))
+        self.import_light_animation_check = QCheckBox(
+            self.tr("import_light_animation", "checkboxes")
+        )
         self.import_light_animation_check.setChecked(
             settings.get("import.animation.import_light_animation", True)
         )
@@ -521,8 +542,10 @@ class ImportExportTab(BaseTab):
     def refresh_model_list(self, restore_selection=False):
         """シーン内のMMDモデルリストを更新"""
         # 現在の選択を保持
-        current_index = self.target_model_combo.currentIndex() if not restore_selection else -1
-        
+        current_index = (
+            self.target_model_combo.currentIndex() if not restore_selection else -1
+        )
+
         self.target_model_combo.clear()
         self.target_model_combo.addItem(self.tr("auto_detect", "actions"))
 
@@ -533,7 +556,7 @@ class ImportExportTab(BaseTab):
                 self.target_model_combo.addItem(display_name, userData=model)
         except:
             pass
-        
+
         # 保存された選択または現在の選択を復元
         if restore_selection:
             saved_target_model = self.qt_settings.value("target_model_index", 0)
@@ -545,76 +568,102 @@ class ImportExportTab(BaseTab):
                 pass
         elif 0 <= current_index < self.target_model_combo.count():
             self.target_model_combo.setCurrentIndex(current_index)
-    
+
     def get_custom_namespace(self):
         """カスタムnamespace名を取得"""
-        if (self.use_namespace_check.isChecked() and 
-            self.custom_namespace_check.isChecked() and 
-            self.namespace_edit.text().strip()):
+        if (
+            self.use_namespace_check.isChecked()
+            and self.custom_namespace_check.isChecked()
+            and self.namespace_edit.text().strip()
+        ):
             return self.namespace_edit.text().strip()
         return None
-    
+
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         # Labels
-        if hasattr(self, 'scale_label'):
+        if hasattr(self, "scale_label"):
             self.scale_label.setText(self.tr("scale_factor", "fields"))
-        if hasattr(self, 'texture_search_label'):
+        if hasattr(self, "texture_search_label"):
             self.texture_search_label.setText(self.tr("texture_search_path", "fields"))
-        if hasattr(self, 'uv_set_label'):
+        if hasattr(self, "uv_set_label"):
             self.uv_set_label.setText(self.tr("uv_set_name", "fields"))
-        if hasattr(self, 'start_frame_label'):
+        if hasattr(self, "start_frame_label"):
             self.start_frame_label.setText(self.tr("start_frame", "fields"))
-        if hasattr(self, 'format_label'):
+        if hasattr(self, "format_label"):
             self.format_label.setText(self.tr("format", "fields"))
-        if hasattr(self, 'import_path_label'):
+        if hasattr(self, "import_path_label"):
             self.import_path_label.setText(self.tr("file_path", "labels"))
-        if hasattr(self, 'vmd_file_label'):
+        if hasattr(self, "vmd_file_label"):
             self.vmd_file_label.setText(self.tr("vmd_file", "fields"))
-        if hasattr(self, 'target_model_label'):
+        if hasattr(self, "target_model_label"):
             self.target_model_label.setText(self.tr("target_model", "fields"))
-        if hasattr(self, 'export_path_label'):
+        if hasattr(self, "export_path_label"):
             self.export_path_label.setText(self.tr("file_path", "labels"))
-        
+
         # GroupBoxes
-        if hasattr(self, 'general_group'):
+        if hasattr(self, "general_group"):
             self.general_group.setTitle(self.tr("general", "groups"))
-        if hasattr(self, 'model_group'):
+        if hasattr(self, "model_group"):
             self.model_group.setTitle(self.tr("model", "groups"))
-        if hasattr(self, 'morph_physics_group'):
+        if hasattr(self, "morph_physics_group"):
             self.morph_physics_group.setTitle(self.tr("morph_physics", "groups"))
-        if hasattr(self, 'other_group'):
+        if hasattr(self, "other_group"):
             self.other_group.setTitle(self.tr("other", "groups"))
-        if hasattr(self, 'model_import_group'):
+        if hasattr(self, "model_import_group"):
             self.model_import_group.setTitle(self.tr("model_import", "groups"))
-        if hasattr(self, 'animation_group'):
+        if hasattr(self, "animation_group"):
             self.animation_group.setTitle(self.tr("animation_import", "groups"))
-        if hasattr(self, 'export_group'):
+        if hasattr(self, "export_group"):
             self.export_group.setTitle(self.tr("export", "buttons"))
-        
+
         # CheckBoxes
         self.use_namespace_check.setText(self.tr("use_namespace", "checkboxes"))
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
-        self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
+        self.create_mmd_shaders_check.setText(
+            self.tr("create_mmd_shaders", "checkboxes")
+        )
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
-        self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
-        self.joint_name_conversion_check.setText(self.tr("joint_name_conversion", "checkboxes"))
-        self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
+        self.hide_hidden_geometry_check.setText(
+            self.tr("hide_hidden_geometry", "checkboxes")
+        )
+        self.joint_name_conversion_check.setText(
+            self.tr("joint_name_conversion", "checkboxes")
+        )
+        self.disable_backface_culling_check.setText(
+            self.tr("disable_backface_culling", "checkboxes")
+        )
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
         self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))
-        self.create_rigid_bodies_check.setText(self.tr("create_rigid_bodies", "checkboxes"))
-        self.create_physics_joints_check.setText(self.tr("create_physics_joints", "checkboxes"))
-        self.group_physics_objects_check.setText(self.tr("group_physics_objects", "checkboxes"))
-        self.add_semi_standard_bones_check.setText(self.tr("add_semi_standard_bones", "checkboxes"))
+        self.create_rigid_bodies_check.setText(
+            self.tr("create_rigid_bodies", "checkboxes")
+        )
+        self.create_physics_joints_check.setText(
+            self.tr("create_physics_joints", "checkboxes")
+        )
+        self.group_physics_objects_check.setText(
+            self.tr("group_physics_objects", "checkboxes")
+        )
+        self.add_semi_standard_bones_check.setText(
+            self.tr("add_semi_standard_bones", "checkboxes")
+        )
         self.translate_names_check.setText(self.tr("translate_names", "checkboxes"))
-        self.import_bone_animation_check.setText(self.tr("import_bone_animation", "checkboxes"))
-        self.import_morph_animation_check.setText(self.tr("import_morph_animation", "checkboxes"))
-        self.import_camera_animation_check.setText(self.tr("import_camera_animation", "checkboxes"))
-        self.import_light_animation_check.setText(self.tr("import_light_animation", "checkboxes"))
+        self.import_bone_animation_check.setText(
+            self.tr("import_bone_animation", "checkboxes")
+        )
+        self.import_morph_animation_check.setText(
+            self.tr("import_morph_animation", "checkboxes")
+        )
+        self.import_camera_animation_check.setText(
+            self.tr("import_camera_animation", "checkboxes")
+        )
+        self.import_light_animation_check.setText(
+            self.tr("import_light_animation", "checkboxes")
+        )
         self.resample_curves_check.setText(self.tr("resample_curves", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
-        
+
         # Buttons
         self.import_path_button.setText(self.tr("browse", "buttons"))
         self.vmd_path_button.setText(self.tr("browse", "buttons"))
@@ -622,12 +671,12 @@ class ImportExportTab(BaseTab):
         self.import_button.setText(self.tr("import_model", "actions"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
         self.export_button.setText(self.tr("export", "buttons"))
-        
+
         # Tab widget texts
-        if hasattr(self, 'left_widget') and self.left_widget.count() >= 3:
+        if hasattr(self, "left_widget") and self.left_widget.count() >= 3:
             self.left_widget.setTabText(0, self.tr("model", "groups"))
             self.left_widget.setTabText(1, self.tr("animation", "tabs"))
             self.left_widget.setTabText(2, self.tr("export", "buttons"))
-        
+
         # Refresh model list to update auto detect text
         self.refresh_model_list()

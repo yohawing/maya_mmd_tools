@@ -70,8 +70,7 @@ class PmxHeader:
         Returns:
             str: モデルの名前。
         """
-        use_en = settings.get("import.model.joint_name_conversion_with_english")
-        if use_en and self.model_name_english and self.model_name_english != "":
+        if self.model_name_english and self.model_name_english != "":
             return self.model_name_english
 
         return self.model_name
