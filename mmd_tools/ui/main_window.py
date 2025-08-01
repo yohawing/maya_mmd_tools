@@ -74,6 +74,8 @@ class MainWindow(QMainWindow):
         log_dock_widget = QDockWidget("Log", self)
         log_dock_widget.setObjectName("logDockWidget")
         log_dock_widget.setWidget(self.log_viewer)
+        # ドックを外せないように設定
+        log_dock_widget.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetClosable)
         self.addDockWidget(Qt.BottomDockWidgetArea, log_dock_widget)
 
         self.load_stylesheet()
