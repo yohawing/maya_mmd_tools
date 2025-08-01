@@ -166,9 +166,8 @@ class TestNamespaceUtils(unittest.TestCase):
         # current_nsはmock_infoの戻り値":"なので、set=":"が呼ばれる
         self.assertIn(call(set=":"), calls)
 
-    @patch('maya.cmds.namespaceInfo')
     @patch('maya.cmds.namespace')
-    def test_namespace_context_none(self, mock_namespace, mock_info):
+    def test_namespace_context_none(self, mock_namespace):
         """Noneを渡した場合のcontext testのテスト"""
         with NamespaceUtils.namespace_context(None) as ns:
             self.assertIsNone(ns)
