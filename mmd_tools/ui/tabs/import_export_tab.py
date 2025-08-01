@@ -84,12 +84,26 @@ class ImportExportTab(BaseTab):
         namespace_layout.setContentsMargins(20, 0, 0, 0)  # インデント
         
         self.custom_namespace_check = QCheckBox(self.tr("custom_namespace", "checkboxes"))
+        # カスタムnamespaceチェックボックスの状態を読み込み
+        saved_custom_namespace = self.qt_settings.value("custom_namespace_check", "false")
+        self.custom_namespace_check.setChecked(saved_custom_namespace.lower() == "true")
         self.custom_namespace_check.setEnabled(self.use_namespace_check.isChecked())
+        # 状態が変更されたら保存
+        self.custom_namespace_check.toggled.connect(
+            lambda checked: self.qt_settings.setValue("custom_namespace_check", str(checked))
+        )
         namespace_layout.addWidget(self.custom_namespace_check)
         
         self.namespace_edit = QLineEdit()
         self.namespace_edit.setPlaceholderText(self.tr("namespace_placeholder", "labels"))
-        self.namespace_edit.setEnabled(False)
+        # namespace名を読み込み
+        saved_namespace = self.qt_settings.value("custom_namespace_name", "")
+        self.namespace_edit.setText(saved_namespace)
+        self.namespace_edit.setEnabled(self.custom_namespace_check.isChecked())
+        # テキストが変更されたら保存
+        self.namespace_edit.textChanged.connect(
+            lambda text: self.qt_settings.setValue("custom_namespace_name", text)
+        )
         namespace_layout.addWidget(self.namespace_edit)
         
         # シグナル接続
@@ -411,6 +425,13 @@ class ImportExportTab(BaseTab):
         import_button_layout = QHBoxLayout()
         self.import_button = QPushButton(self.tr("import_model", "actions"))
         self.new_file_check = QCheckBox(self.tr("new_file", "checkboxes"))
+        # NewFileチェックボックスの状態を読み込み
+        saved_new_file = self.qt_settings.value("new_file_check", "false")
+        self.new_file_check.setChecked(saved_new_file.lower() == "true")
+        # 状態が変更されたら保存
+        self.new_file_check.toggled.connect(
+            lambda checked: self.qt_settings.setValue("new_file_check", str(checked))
+        )
         import_button_layout.addWidget(self.import_button)
         import_button_layout.addWidget(self.new_file_check)
         import_button_layout.addStretch()
@@ -440,7 +461,12 @@ class ImportExportTab(BaseTab):
 
         # Target model selection
         self.target_model_combo = QComboBox()
-        self.refresh_model_list()
+        # モデルリストを更新してから保存された選択を復元
+        self.refresh_model_list(restore_selection=True)
+        # 選択が変更されたら保存
+        self.target_model_combo.currentIndexChanged.connect(
+            lambda index: self.qt_settings.setValue("target_model_index", str(index))
+        )
         self.target_model_label = QLabel(self.tr("target_model", "fields"))
         animation_layout.addRow(self.target_model_label, self.target_model_combo)
 
@@ -492,8 +518,11 @@ class ImportExportTab(BaseTab):
 
         main_layout.addWidget(splitter)
 
-    def refresh_model_list(self):
+    def refresh_model_list(self, restore_selection=False):
         """シーン内のMMDモデルリストを更新"""
+        # 現在の選択を保持
+        current_index = self.target_model_combo.currentIndex() if not restore_selection else -1
+        
         self.target_model_combo.clear()
         self.target_model_combo.addItem(self.tr("auto_detect", "actions"))
 
@@ -504,6 +533,18 @@ class ImportExportTab(BaseTab):
                 self.target_model_combo.addItem(display_name, userData=model)
         except:
             pass
+        
+        # 保存された選択または現在の選択を復元
+        if restore_selection:
+            saved_target_model = self.qt_settings.value("target_model_index", 0)
+            try:
+                index = int(saved_target_model)
+                if 0 <= index < self.target_model_combo.count():
+                    self.target_model_combo.setCurrentIndex(index)
+            except:
+                pass
+        elif 0 <= current_index < self.target_model_combo.count():
+            self.target_model_combo.setCurrentIndex(current_index)
     
     def get_custom_namespace(self):
         """カスタムnamespace名を取得"""
