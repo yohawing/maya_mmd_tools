@@ -76,7 +76,6 @@
     *   [x] `converters/bone_converter.py` のPMD/PMXボーン変換ロジックの実装（完了）
     *   [x] `converters/mesh_converter.py` のPMD/PMXメッシュ変換ロジックの実装（完了）
     *   [x] テストフレームワークの整備（`run_maya_tests.py`、Maya統合テスト環境の構築）
-    *   [x] 実際のテストデータ（`miku_v2.pmd`, `Lumine/荧.pmx`, `Lat式用.vmd`）の準備
     *   [x] 新しいLinearチーム「maya_mmd_tools」の作成と課題管理システムの整備
     *   [x] `converters/morph_converter.py` のPMD/PMXモーフ変換ロジックの実装（YOHA-363）- 完了
     *   [x] `converters/physics_converter.py` のPMD/PMX物理演算変換ロジックの実装（YOHA-364）- 完了

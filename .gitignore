@@ -44,3 +44,7 @@ KIRO.md
 !/tests/data/for_unit_test
 !/tests/data/mmt_test_model.pmx
 mmd_tools/shaders/MayaToonOutline.fx
+
+# Serena
+serena/
+.serena/

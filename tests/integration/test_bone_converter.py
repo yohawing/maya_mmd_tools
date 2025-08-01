@@ -6,6 +6,8 @@ from mmd_tools.core.settings import settings
 from mmd_tools.converters import BoneConverter, MeshConverter
 from mmd_tools.core import PmdParser, PmxParser, maya_utils
 from tests.common.maya_test_base import MayaTestBase
+from tests.common.test_fixture_provider import TestFixtureProvider
+from mmd_tools.core import settings
 
 
 class TestBoneConverter(MayaTestBase):
@@ -18,40 +20,29 @@ class TestBoneConverter(MayaTestBase):
         super().setUp()
         # TODO: テストに必要なMayaシーンのセットアップやダミーデータの準備
         cmds.file(new=True, force=True)
-        
+
         # dx11Shaderの作成を無効化（テスト環境では利用できない場合があるため）
-        from mmd_tools.core import settings
+
         settings.set("import.model.create_mmd_shaders", False)
 
-        # テストデータのパスを設定
-        self.test_data_dir = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "data"
-        )
-        self.pmd_file_path = os.path.join(self.test_data_dir, "miku_v2.pmd")
-        self.pmx_file_path = os.path.join(self.test_data_dir, "Lumine", "荧.pmx")
+        self.fixture_provider = TestFixtureProvider()
 
     def tearDown(self):
         super().tearDown()
         # TODO: テスト後にMayaシーンのクリーンアップ
         cmds.file(new=True, force=True)
+        self.fixture_provider.cleanup_temp_files()
 
     def test_convert_pmd_bones(self):
         """PMDボーンがMayaに正しく変換され、スキニングが適用されることをテストする。"""
         # PMDファイルが存在するか確認
-        self.assertTrue(
-            os.path.exists(self.pmd_file_path),
-            f"テストPMDファイルが見つかりません: {self.pmd_file_path}",
-        )
 
-        # PMDファイルをパース
-        parser = PmdParser()
-        pmd_data = parser.parse_file(self.pmd_file_path)
+        pmd_data, pmd_file_path = self.fixture_provider.load_pmd_data("miku_v2")
 
-        # ルートグループを作成
         root_group = cmds.group(name="pmd_model_root", empty=True)
 
         # テスト用のメッシュを作成
-        pmd_mesh_converter = MeshConverter(self.pmd_file_path)
+        pmd_mesh_converter = MeshConverter(pmd_file_path)
         pmd_group_name, pmd_mesh_name = pmd_mesh_converter.convert_pmd_mesh(
             pmd_data, root_group
         )
@@ -121,21 +112,14 @@ class TestBoneConverter(MayaTestBase):
 
     def test_convert_pmx_bones(self):
         """PMXボーンがMayaに正しく変換され、スキニングが適用されることをテストする。"""
-        # PMXファイルが存在するか確認
-        self.assertTrue(
-            os.path.exists(self.pmx_file_path),
-            f"テストPMXファイルが見つかりません: {self.pmx_file_path}",
-        )
-
-        # PMXファイルをパース
-        parser = PmxParser()
-        pmx_data = parser.parse_file(self.pmx_file_path)
+        # PMXファイルをロード
+        pmx_data, pmx_file_path = self.fixture_provider.load_pmx_data("mmt_test_model")
 
         # ルートグループを作成
         root_group = cmds.group(name="pmx_model_root", empty=True)
 
         # メッシュを作成
-        mesh_converter = MeshConverter(self.pmx_file_path)
+        mesh_converter = MeshConverter(pmx_file_path)
         group_name, mesh_name = mesh_converter.convert_pmx_mesh(pmx_data, root_group)
 
         # ボーンを変換

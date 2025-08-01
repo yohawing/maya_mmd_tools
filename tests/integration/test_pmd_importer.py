@@ -85,19 +85,19 @@ class TestPmdImporter(MayaTestBase):
 
         # PMDファイルをパース
         parser = PmdParser()
-        parser.parse_file(pmd_file)
+        pmd_data = parser.parse_file(pmd_file)
 
         # モーフが含まれているか確認
-        if not hasattr(parser, "morphs") or len(parser.morphs) == 0:
+        if not hasattr(pmd_data, "morphs") or len(pmd_data.morphs) == 0:
             self.skipTest("テストファイルにモーフが含まれていません")
 
         # インポート
-        result = import_pmd_file(parser, pmd_file)
+        result = import_pmd_file(pmd_data, pmd_file)
         self.assertIsNotNone(result, "PMDファイルのインポートに失敗しました")
 
         # ブレンドシェイプが作成されたことを確認
         blend_shapes = cmds.ls(type="blendShape")
-        if len(parser.morphs) > 0:
+        if len(pmd_data.morphs) > 0:
             self.assertGreater(
                 len(blend_shapes), 0, "ブレンドシェイプが作成されていません"
             )
