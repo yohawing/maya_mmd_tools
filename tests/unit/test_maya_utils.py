@@ -3,6 +3,7 @@ import unittest
 from maya import cmds
 
 from mmd_tools.core import maya_utils, utils
+from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME_EN, ATTR_MMD_MODEL_NAME
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -356,12 +357,14 @@ class TestMayaUtils(MayaTestBase):
         """MMDモデルを検索できるか"""
         # MMDモデルのルートノードを作成
         model1 = cmds.group(empty=True, name="Model1_root")
-        cmds.addAttr(model1, longName="mmd_model_name_jp", dataType="string")
-        cmds.setAttr(f"{model1}.mmd_model_name_jp", "テストモデル1", type="string")
+        cmds.addAttr(model1, longName=ATTR_MMD_MODEL_NAME, dataType="string")
+        cmds.setAttr(f"{model1}.{ATTR_MMD_MODEL_NAME}", "テストモデル1", type="string")
 
         model2 = cmds.group(empty=True, name="Model2_root")
-        cmds.addAttr(model2, longName="mmd_model_name_en", dataType="string")
-        cmds.setAttr(f"{model2}.mmd_model_name_en", "Test Model 2", type="string")
+        cmds.addAttr(model2, longName=ATTR_MMD_MODEL_NAME_EN, dataType="string")
+        cmds.setAttr(
+            f"{model2}.{ATTR_MMD_MODEL_NAME_EN}", "Test Model 2", type="string"
+        )
 
         # MMDではないルートノード
         not_mmd = cmds.group(empty=True, name="NotMMD_root")
@@ -378,7 +381,7 @@ class TestMayaUtils(MayaTestBase):
         """親のMMDルートを取得できるか"""
         # MMDモデルの階層を作成
         root = cmds.group(empty=True, name="TestModel_root")
-        cmds.addAttr(root, longName="mmd_model_name_jp", dataType="string")
+        cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME, dataType="string")
 
         skeleton_group = cmds.group(empty=True, name="Skeleton", parent=root)
         # skeleton_groupを選択してからジョイントを作成
@@ -403,16 +406,18 @@ class TestMayaUtils(MayaTestBase):
         """MMDモデルの表示名を取得できるか"""
         # 日本語名があるモデル
         model1 = cmds.group(empty=True, name="Model1_root")
-        cmds.addAttr(model1, longName="mmd_model_name_jp", dataType="string")
-        cmds.setAttr(f"{model1}.mmd_model_name_jp", "初音ミク", type="string")
+        cmds.addAttr(model1, longName=ATTR_MMD_MODEL_NAME, dataType="string")
+        cmds.setAttr(f"{model1}.{ATTR_MMD_MODEL_NAME}", "初音ミク", type="string")
 
         display_name1 = maya_utils.get_mmd_model_display_name(model1)
         self.assertEqual(display_name1, "初音ミク")
 
         # 英語名のみのモデル
         model2 = cmds.group(empty=True, name="Model2_root")
-        cmds.addAttr(model2, longName="mmd_model_name_en", dataType="string")
-        cmds.setAttr(f"{model2}.mmd_model_name_en", "Hatsune Miku", type="string")
+        cmds.addAttr(model2, longName=ATTR_MMD_MODEL_NAME_EN, dataType="string")
+        cmds.setAttr(
+            f"{model2}.{ATTR_MMD_MODEL_NAME_EN}", "Hatsune Miku", type="string"
+        )
 
         display_name2 = maya_utils.get_mmd_model_display_name(model2)
         self.assertEqual(display_name2, "Hatsune Miku")
@@ -579,14 +584,14 @@ class TestMayaUtils(MayaTestBase):
         # Test 3: 回転値のテスト
         # 新しく作成したオブジェクトで回転をテスト
         test_obj2 = cmds.createNode("transform", name="edge_case_test_obj2")
-        
+
         # Maya APIでは回転値はラジアンで扱われるため、度数からラジアンに変換する必要がある
         import math
-        
+
         # 45度をラジアンに変換
         degrees_value = 45.0
         radians_value = math.radians(degrees_value)
-        
+
         # maya_utils.set_attributeはラジアン値を期待している
         maya_utils.set_attribute(test_obj2, "rotateY", radians_value, "double")
         api_value = cmds.getAttr(test_obj2 + ".rotateY")
