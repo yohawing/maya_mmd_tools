@@ -7,7 +7,7 @@ from .qt_compat import (
     wrapInstance, QWidget, QVBoxLayout, QStatusBar, QProgressBar, QLabel
 )
 from ..core.log_handlers import QtLogHandler
-from .components.log_viewer import LogViewer
+from .components.enhanced_log_viewer import EnhancedLogViewer
 from .components.header_widget import HeaderWidget
 from .application_state import ApplicationState
 from ..core.logger import get_logger
@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
         self.setup_status_bar()
         
         # ログビューア（ドッキング可能）
-        self.log_viewer = LogViewer()
+        self.log_viewer = EnhancedLogViewer()
         self.log_viewer.setObjectName("logViewer")
         log_dock_widget = QDockWidget("Log", self)
         log_dock_widget.setObjectName("logDockWidget")

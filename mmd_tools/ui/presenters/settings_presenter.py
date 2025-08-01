@@ -54,7 +54,7 @@ class SettingsPresenter:
                 self.on_setting_changed
             )
             self.view.log_level_combo.currentTextChanged.connect(
-                self.on_setting_changed
+                self.on_log_level_changed
             )
             self.view.log_file_browse_btn.clicked.connect(self.browse_log_file)
             
@@ -225,6 +225,18 @@ class SettingsPresenter:
         """設定が変更されたときの処理"""
         if not self._loading:
             pass  # 必要に応じて自動保存などを実装
+    
+    def on_log_level_changed(self):
+        """ログレベルが変更されたときの処理"""
+        if not self._loading:
+            new_level = self.view.log_level_combo.currentText()
+            # ログレベルを即座に更新
+            import logging
+            level = getattr(logging, new_level, logging.INFO)
+            logger.set_level(level)
+            logger.info(f"ログレベルを {new_level} に変更しました")
+            # 設定も同時に保存
+            self.on_setting_changed()
 
     def save_all_settings(self):
         """すべての設定を保存"""

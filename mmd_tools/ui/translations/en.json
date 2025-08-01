@@ -32,7 +32,13 @@
     "select": "Select",
     "clear": "Clear",
     "save": "Save",
-    "load": "Load"
+    "load": "Load",
+    "search": "Search",
+    "previous": "Previous",
+    "next": "Next",
+    "auto_scroll": "Auto Scroll",
+    "timestamp": "Timestamp",
+    "filter": "Filter"
   },
   "labels": {
     "file_path": "File Path:",
@@ -243,7 +249,10 @@
     "language": "Language:",
     "log_level": "Log Level:",
     "log_file": "Log File:",
-    "export_format": "Export Format:"
+    "export_format": "Export Format:",
+    "log_entries": "Logs:",
+    "search_results": "results",
+    "not_found": "Not found"
   },
   "actions": {
     "import_model": "Import Model",

@@ -5,6 +5,9 @@ class QtLogHandler(logging.Handler):
     def __init__(self):
         super().__init__()
         self._qt_bridge = QtLogBridge()
+        # ログレベル情報を含むフォーマッターを設定
+        formatter = logging.Formatter('[MMD] %(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        self.setFormatter(formatter)
     
     @property
     def message_written(self):
