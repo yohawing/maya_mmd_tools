@@ -29,13 +29,13 @@ class LogEntry:
 class EnhancedLogViewer(QWidget):
     """拡張版ログビューア"""
     
-    # ログレベルごとの色定義
+    # ログレベルごとの色定義（ダークテーマ用）
     LOG_COLORS = {
-        "DEBUG": "#808080",    # グレー
-        "INFO": "#000000",     # 黒
-        "WARNING": "#FFA500",  # オレンジ
-        "ERROR": "#FF0000",    # 赤
-        "CRITICAL": "#800080"  # 紫
+        "DEBUG": "#888888",    # 明るいグレー
+        "INFO": "#FFFFFF",     # 白
+        "WARNING": "#FFB347",  # 明るいオレンジ
+        "ERROR": "#FF6B6B",    # 明るい赤
+        "CRITICAL": "#FF00FF"  # マゼンタ
     }
     
     # 最大ログ行数
@@ -384,9 +384,10 @@ class EnhancedLogViewer(QWidget):
             cursor.movePosition(QTextCursor.Right, QTextCursor.MoveAnchor, index)
             cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, len(self.search_pattern))
             
-            # ハイライト
+            # ハイライト（ダークテーマ用）
             format = QTextCharFormat()
-            format.setBackground(QColor("#FFFF00"))  # 黄色
+            format.setBackground(QColor("#4A4A00"))  # 暗い黄色
+            format.setForeground(QColor("#FFFF00"))  # 明るい黄色文字
             cursor.mergeCharFormat(format)
             
             # カーソルを設定して表示
