@@ -20,7 +20,7 @@ FILE_TYPE_VPD = "VPD"  # VPDファイル形式（ポーズデータ）
 # カスタムアトリビュート名
 ATTR_MMD_FILE_TYPE = "mmd_file_type"
 ATTR_MMD_FILE_VERSION = "mmd_file_version"
-ATTR_MMD_MODEL_NAME_JP = "mmd_model_name"
+ATTR_MMD_MODEL_NAME = "mmd_model_name"
 ATTR_MMD_MODEL_NAME_EN = "mmd_model_name_en"
 ATTR_MMD_COMMENT = "mmd_comment"
 ATTR_MMD_COMMENT_EN = "mmd_comment_en"
