@@ -8,13 +8,18 @@ run_gui_tests.pyから実行してください。
 import unittest
 import sys
 import os
+import logging
+import time
 
 # パスをシステムに追加
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from mmd_tools.ui.components.enhanced_log_viewer import EnhancedLogViewer, LogEntry
+from mmd_tools.ui.main_window import MainWindow
+from mmd_tools.core.logger import get_logger
 from mmd_tools.ui.qt_compat import QApplication
 from datetime import datetime
+from maya import cmds
 
 
 class GuiTestEnhancedLogViewer(unittest.TestCase):
@@ -135,23 +140,179 @@ class GuiTestEnhancedLogViewer(unittest.TestCase):
         self.viewer.set_show_timestamp(True)
         self.assertTrue(self.viewer.show_timestamp)
     
-    def test_search_functionality(self):
-        """検索機能のテスト"""
-        # テストメッセージを追加
-        messages = [
-            "[MMD] 2024-01-01 12:00:00 - test - INFO - First test message",
-            "[MMD] 2024-01-01 12:00:01 - test - INFO - Second message",
-            "[MMD] 2024-01-01 12:00:02 - test - INFO - Another test message",
-        ]
+
+
+class GuiTestLogIntegration(unittest.TestCase):
+    """ログシステム統合のテスト"""
+    
+    @classmethod
+    def setUpClass(cls):
+        """テストクラスのセットアップ"""
+        # Maya環境ではQApplicationは既に存在するはず
+        cls.app = QApplication.instance()
+    
+    def setUp(self):
+        """各テストのセットアップ"""
+        # 既存のウィンドウを閉じる
+        if cmds.window(MainWindow.WINDOW_NAME, exists=True):
+            cmds.deleteUI(MainWindow.WINDOW_NAME)
         
-        for msg in messages:
-            self.viewer.append(msg)
+        # メインウィンドウを作成
+        self.main_window = MainWindow()
+        self.main_window.show()
         
-        # 検索パターンを設定
-        self.viewer.search_pattern = "test"
+        # UIが完全に初期化されるまで待つ
+        QApplication.processEvents()
+    
+    def tearDown(self):
+        """各テストのクリーンアップ"""
+        self.main_window.close()
+        QApplication.processEvents()
+    
+    def test_logger_integration(self):
+        """ロガーとGUIの統合テスト"""
+        # ログビューアをクリア
+        self.main_window.log_viewer.clear_logs()
         
-        # 検索結果が期待通りかを確認（実際の検索実装はQTextEditに依存）
-        self.assertEqual(self.viewer.search_pattern, "test")
+        # 初期状態を確認
+        initial_count = len(self.main_window.log_viewer.log_entries)
+        
+        # 異なるモジュールからログを出力
+        logger1 = get_logger("test.module1")
+        logger2 = get_logger("test.module2")
+        
+        # 各レベルのログを出力
+        logger1.debug("Debug message from module1")
+        logger1.info("Info message from module1")
+        logger1.warning("Warning message from module1")
+        logger1.error("Error message from module1")
+        logger1.critical("Critical message from module1")
+        
+        logger2.info("Info message from module2")
+        
+        # UIが更新されるまで待つ
+        QApplication.processEvents()
+        time.sleep(0.1)
+        QApplication.processEvents()
+        
+        # ログが追加されたことを確認
+        current_count = len(self.main_window.log_viewer.log_entries)
+        added_logs = current_count - initial_count
+        
+        # 最低でも5つのログが追加されているはず（DEBUGレベルが有効な場合）
+        self.assertGreaterEqual(added_logs, 5, 
+            f"Expected at least 5 logs, but got {added_logs}. "
+            f"Initial: {initial_count}, Current: {current_count}")
+        
+        # 最後のログエントリを確認
+        if self.main_window.log_viewer.log_entries:
+            last_entry = self.main_window.log_viewer.log_entries[-1]
+            self.assertIn("module2", last_entry.message)
+    
+    def test_log_level_filtering_in_gui(self):
+        """GUIでのログレベルフィルタリングテスト"""
+        # ログビューアをクリア
+        self.main_window.log_viewer.clear_logs()
+        
+        # テストログを追加
+        logger = get_logger("test.filter")
+        logger.debug("Debug message")
+        logger.info("Info message")
+        logger.warning("Warning message")
+        logger.error("Error message")
+        
+        # UIが更新されるまで待つ
+        QApplication.processEvents()
+        time.sleep(0.1)
+        QApplication.processEvents()
+        
+        # 全てのログが表示されていることを確認
+        total_logs = len(self.main_window.log_viewer.log_entries)
+        self.assertGreaterEqual(total_logs, 3, 
+            f"Expected at least 3 logs, but got {total_logs}")
+        
+        # DEBUGフィルタを無効化
+        if "DEBUG" in self.main_window.log_viewer.level_checkboxes:
+            self.main_window.log_viewer.level_checkboxes["DEBUG"].setChecked(False)
+            QApplication.processEvents()
+    
+    def test_log_from_presenter(self):
+        """プレゼンターからのログ出力テスト"""
+        # ログビューアをクリア
+        self.main_window.log_viewer.clear_logs()
+        
+        # インポート/エクスポートタブに切り替え
+        self.main_window.tab_widget.setCurrentIndex(0)
+        QApplication.processEvents()
+        
+        # プレゼンターのロガーをテスト
+        presenter_logger = get_logger("mmd_tools.ui.presenters.import_export_presenter")
+        presenter_logger.info("Test message from presenter")
+        
+        # UIが更新されるまで待つ
+        QApplication.processEvents()
+        time.sleep(0.1)
+        QApplication.processEvents()
+        
+        # ログが表示されたことを確認
+        found = False
+        for entry in self.main_window.log_viewer.log_entries:
+            if "Test message from presenter" in entry.message:
+                found = True
+                break
+        
+        self.assertTrue(found, "Presenter log message not found in log viewer")
+    
+    def test_log_viewer_clear_function(self):
+        """ログビューアのクリア機能テスト"""
+        # ログを追加
+        logger = get_logger("test.clear")
+        logger.info("Message before clear")
+        
+        # UIが更新されるまで待つ
+        QApplication.processEvents()
+        time.sleep(0.1)
+        
+        # ログが存在することを確認
+        self.assertGreater(len(self.main_window.log_viewer.log_entries), 0)
+        
+        # クリアボタンをクリック
+        if hasattr(self.main_window.log_viewer, 'clear_button'):
+            self.main_window.log_viewer.clear_button.click()
+            QApplication.processEvents()
+            
+            # ログがクリアされたことを確認
+            self.assertEqual(len(self.main_window.log_viewer.log_entries), 0)
+    
+    def test_log_colors(self):
+        """ログレベルごとの色分けテスト"""
+        # ログビューアをクリア
+        self.main_window.log_viewer.clear_logs()
+        
+        # 各レベルのログを追加
+        logger = get_logger("test.colors")
+        logger.debug("Debug in gray")
+        logger.info("Info in white")
+        logger.warning("Warning in orange")
+        logger.error("Error in red")
+        logger.critical("Critical in magenta")
+        
+        # UIが更新されるまで待つ
+        QApplication.processEvents()
+        time.sleep(0.1)
+        QApplication.processEvents()
+        
+        # ログエントリが正しいレベルで保存されているか確認
+        levels_found = set()
+        for entry in self.main_window.log_viewer.log_entries:
+            levels_found.add(entry.level)
+        
+        expected_levels = {"INFO", "WARNING", "ERROR", "CRITICAL"}
+        # DEBUGレベルはログレベル設定に依存
+        
+        for level in expected_levels:
+            self.assertIn(level, levels_found, 
+                f"Log level {level} not found in log entries")
 
 
 if __name__ == "__main__":

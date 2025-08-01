@@ -16,6 +16,10 @@
     "import_settings": "インポート設定",
     "export_settings": "エクスポート設定"
   },
+  "menus": {
+    "view": "表示",
+    "log_viewer": "ログビューア"
+  },
   "buttons": {
     "import": "インポート",
     "export": "エクスポート",
@@ -72,7 +76,10 @@
     "type": "タイプ:",
     "selected": "選択済み:",
     "available": "使用可能:",
-    "offset_count": "オフセット数"
+    "offset_count": "オフセット数",
+    "log_entries": "ログ",
+    "search_results": "件",
+    "not_found": "見つかりません"
   },
   "tooltips": {
     "import_file": "PMD/PMX/VMDファイルをインポートします",
@@ -249,10 +256,7 @@
     "language": "言語:",
     "log_level": "ログレベル:",
     "log_file": "ログファイル:",
-    "export_format": "エクスポート形式:",
-    "log_entries": "ログ",
-    "search_results": "件",
-    "not_found": "見つかりません"
+    "export_format": "エクスポート形式:"
   },
   "actions": {
     "import_model": "モデルをインポート",

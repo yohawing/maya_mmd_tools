@@ -16,6 +16,10 @@
     "import_settings": "导入设置",
     "export_settings": "导出设置"
   },
+  "menus": {
+    "view": "查看",
+    "log_viewer": "日志查看器"
+  },
   "buttons": {
     "import": "导入",
     "export": "导出",
@@ -66,7 +70,10 @@
     "type": "类型:",
     "selected": "已选择:",
     "available": "可使用:",
-    "offset_count": "偏移数量"
+    "offset_count": "偏移数量",
+    "log_entries": "日志",
+    "search_results": "条",
+    "not_found": "未找到"
   },
   "tooltips": {
     "import_file": "导入PMD/PMX/VMD文件",
@@ -243,10 +250,7 @@
     "language": "语言:",
     "log_level": "日志级别:",
     "log_file": "日志文件:",
-    "export_format": "导出格式:",
-    "log_entries": "日志",
-    "search_results": "条",
-    "not_found": "未找到"
+    "export_format": "导出格式:"
   },
   "actions": {
     "import_model": "导入模型",

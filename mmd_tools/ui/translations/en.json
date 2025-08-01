@@ -16,6 +16,10 @@
     "import_settings": "Import",
     "export_settings": "Export"
   },
+  "menus": {
+    "view": "View",
+    "log_viewer": "Log Viewer"
+  },
   "buttons": {
     "import": "Import",
     "export": "Export",
@@ -72,7 +76,10 @@
     "type": "Type:",
     "selected": "Selected:",
     "available": "Available:",
-    "offset_count": "Offset Count"
+    "offset_count": "Offset Count",
+    "log_entries": "Logs",
+    "search_results": "results",
+    "not_found": "Not found"
   },
   "tooltips": {
     "import_file": "Import PMD/PMX/VMD files",
@@ -249,10 +256,7 @@
     "language": "Language:",
     "log_level": "Log Level:",
     "log_file": "Log File:",
-    "export_format": "Export Format:",
-    "log_entries": "Logs",
-    "search_results": "results",
-    "not_found": "Not found"
+    "export_format": "Export Format:"
   },
   "actions": {
     "import_model": "Import Model",

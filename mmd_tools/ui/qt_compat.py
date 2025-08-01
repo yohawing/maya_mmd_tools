@@ -46,6 +46,8 @@ try:
         QInputDialog,
         QToolBar,
         QAction,
+        QMenuBar,
+        QMenu,
     )
     from shiboken6 import wrapInstance
 
@@ -92,6 +94,8 @@ except ImportError:
         QInputDialog,
         QToolBar,
         QAction,
+        QMenuBar,
+        QMenu,
     )
     from shiboken2 import wrapInstance
 
