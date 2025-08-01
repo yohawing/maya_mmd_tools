@@ -159,13 +159,9 @@ class PmxDumper:
                     bone_children[bone.parent_bone_index] = []
                 bone_children[bone.parent_bone_index].append(i)
 
-        # 階層を表示（最大10個まで）
         def dump_bone_tree(
             index: int, indent: str = "", is_last: bool = True, depth: int = 0
         ) -> List[str]:
-            if depth > 3:  # 深さ制限
-                return []
-
             bone = self.pmx.bones[index]
             tree_lines = []
 
@@ -201,7 +197,7 @@ class PmxDumper:
 
             # 子ボーンを表示
             if index in bone_children:
-                children = bone_children[index][:5]  # 最大5個の子
+                children = bone_children[index]
                 for i, child_idx in enumerate(children):
                     is_last_child = i == len(children) - 1
                     child_indent = indent + ("    " if is_last else "│   ")
@@ -211,26 +207,18 @@ class PmxDumper:
                         )
                     )
 
-                if len(bone_children[index]) > 5:
-                    tree_lines.append(
-                        f"{indent}{'    ' if is_last else '│   '}... and {len(bone_children[index]) - 5} more"
-                    )
-
             return tree_lines
 
         # ルートボーンから表示
-        for i, root_idx in enumerate(root_bones[:5]):  # 最大5個のルート
-            is_last = i == len(root_bones) - 1 or i == 4
+        for i, root_idx in enumerate(root_bones):
+            is_last = i == len(root_bones) - 1 or i == root_bones[-1]
             lines.extend(dump_bone_tree(root_idx, "", is_last))
-
-        if len(root_bones) > 5:
-            lines.append(f"... and {len(root_bones) - 5} more root bones")
 
         # IKボーンの詳細
         lines.append("\n=== BONE DETAILS ===")
-        ik_bones = [b for b in self.pmx.bones if b.bone_flag & 0x0020][
-            :5
-        ]  # IKフラグが立っているボーン、最大5個
+        ik_bones = [
+            b for b in self.pmx.bones if b.bone_flag & 0x0020
+        ]  # IKフラグが立っているボーン
 
         for bone in ik_bones:
             lines.append(
@@ -255,11 +243,11 @@ class PmxDumper:
                 )
                 if bone.ik_links:
                     lines.append(f"    IK Links: {len(bone.ik_links)} links")
-                    for link in bone.ik_links[:3]:  # 最大3個
+                    for link in bone.ik_links:
                         limit_str = ""
                         if hasattr(link, "angle_limit") and link.angle_limit:
-                            limit_str = f" [角度制限] ({link.lower_limit[0]:.2f}~{link.upper_limit[0]:.2f}, {link.lower_limit[1]:.2f}~{link.upper_limit[1]:.2f}, {link.lower_limit[2]:.2f}~{link.upper_limit[2]:.2f})"
-                        lines.append(f"        [{link.bone_index}]{limit_str}")
+                            limit_str = f" [角度制限] ({link.limit_min[0]:.2f}~{link.limit_max[0]:.2f}, {link.limit_min[1]:.2f}~{link.limit_max[1]:.2f}, {link.limit_min[2]:.2f}~{link.limit_max[2]:.2f})"
+                        lines.append(f"        [{link.ik_bone_index}]{limit_str}")
 
         return "\n".join(lines)
 
@@ -294,17 +282,13 @@ class PmxDumper:
             type_name = type_names.get(mtype, f"Unknown({mtype})")
             lines.append(f"  {type_name}: {count}")
 
-        # 主要なモーフをリスト（最大10個）
         lines.append("\nMorph List:")
-        for i, morph in enumerate(self.pmx.morphs[:10]):
+        for i, morph in enumerate(self.pmx.morphs):
             panel = {1: "眉", 2: "目", 3: "口", 4: "他"}.get(morph.panel, "?")
             type_name = type_names.get(morph.morph_type, "?")
             lines.append(
                 f"  [{i}] {morph.name} ({morph.name_english}) - {type_name} [Panel: {panel}]"
             )
-
-        if len(self.pmx.morphs) > 10:
-            lines.append(f"  ... and {len(self.pmx.morphs) - 10} more morphs")
 
         return "\n".join(lines)
 
@@ -315,7 +299,7 @@ class PmxDumper:
 
         lines = [f"\n=== MATERIALS ({len(self.pmx.materials)}) ==="]
 
-        for i, mat in enumerate(self.pmx.materials[:10]):  # 最大10個
+        for i, mat in enumerate(self.pmx.materials):
             lines.append(f"\n[{i}] {mat.name} ({mat.name_english})")
             lines.append(
                 f"    Diffuse: ({mat.diffuse[0]:.2f}, {mat.diffuse[1]:.2f}, {mat.diffuse[2]:.2f}, {mat.diffuse[3]:.2f})"
@@ -350,9 +334,6 @@ class PmxDumper:
                 lines.append(f"    Texture: [{mat.texture_index}] {tex_path}")
 
             lines.append(f"    Face Count: {mat.face_count // 3:,}")
-
-        if len(self.pmx.materials) > 10:
-            lines.append(f"\n... and {len(self.pmx.materials) - 10} more materials")
 
         return "\n".join(lines)
 
@@ -393,9 +374,8 @@ class PmxDumper:
             lines.append(f"\nJoints: {len(self.pmx.joints)}")
 
             if self.pmx.joints:
-                # ジョイントサンプル（最大3個）
                 lines.append("  Joint Samples:")
-                for i, joint in enumerate(self.pmx.joints[:3]):
+                for i, joint in enumerate(self.pmx.joints):
                     lines.append(f"    [{i}] {joint.name} ({joint.name_english})")
                     lines.append(
                         f"        Rigid Bodies: [{joint.rigid_body_a_index}] <-> [{joint.rigid_body_b_index}]"
