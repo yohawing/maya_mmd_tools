@@ -7,7 +7,7 @@
 from ..qt_compat import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
     QCheckBox, QPushButton, QLabel,
-    QTextCursor, QTextCharFormat, QColor, Qt
+    QTextCursor, QTextCharFormat, QColor, Qt, QSettings
 )
 from ..translations import UITranslator
 import re
@@ -48,13 +48,16 @@ class EnhancedLogViewer(QWidget):
         self.show_timestamp = True
         self.timestamp_format = "%Y-%m-%d %H:%M:%S"
         
-        # ログレベルフィルタの状態
+        # QSettingsを初期化
+        self.settings = QSettings("maya_mmd_tools", "EnhancedLogViewer")
+        
+        # ログレベルフィルタの状態（保存された設定を読み込み）
         self.level_filters = {
-            "DEBUG": True,
-            "INFO": True,
-            "WARNING": True,
-            "ERROR": True,
-            "CRITICAL": True
+            "DEBUG": self.settings.value("filter_debug", "true").lower() == "true",
+            "INFO": self.settings.value("filter_info", "true").lower() == "true",
+            "WARNING": self.settings.value("filter_warning", "true").lower() == "true",
+            "ERROR": self.settings.value("filter_error", "true").lower() == "true",
+            "CRITICAL": self.settings.value("filter_critical", "true").lower() == "true"
         }
         
         self._setup_ui()
@@ -93,7 +96,7 @@ class EnhancedLogViewer(QWidget):
         self.level_checkboxes: Dict[str, QCheckBox] = {}
         for level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]:
             checkbox = QCheckBox(level)
-            checkbox.setChecked(True)
+            checkbox.setChecked(self.level_filters[level])  # 保存された状態を反映
             checkbox.stateChanged.connect(self._on_filter_changed)
             self.level_checkboxes[level] = checkbox
             
@@ -181,9 +184,11 @@ class EnhancedLogViewer(QWidget):
     
     def _on_filter_changed(self):
         """フィルタが変更されたときの処理"""
-        # フィルタ状態を更新
+        # フィルタ状態を更新して保存
         for level, checkbox in self.level_checkboxes.items():
             self.level_filters[level] = checkbox.isChecked()
+            # 設定を保存
+            self.settings.setValue(f"filter_{level.lower()}", str(checkbox.isChecked()))
         
         # 表示を再構築
         self._rebuild_display()

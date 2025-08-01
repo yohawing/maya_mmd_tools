@@ -17,10 +17,15 @@ from ..qt_compat import (
     Qt,
     QSplitter,
     QTabWidget,
+    QListWidget,
+    QListWidgetItem,
+    QColor,
 )
 from ..base_tab import BaseTab
 from ...core.settings import settings
 from ...core.maya_utils import find_all_mmd_models, get_mmd_model_display_name
+import os
+import json
 
 
 class ImportExportTab(BaseTab):
@@ -520,6 +525,9 @@ class ImportExportTab(BaseTab):
 
         self.export_group.setLayout(export_layout)
         right_layout.addWidget(self.export_group)
+        
+        # 統合履歴表示エリア
+        self._setup_unified_history_area(right_layout)
 
         right_layout.addStretch()
 
@@ -680,3 +688,155 @@ class ImportExportTab(BaseTab):
 
         # Refresh model list to update auto detect text
         self.refresh_model_list()
+    
+    def _load_history(self, key, max_items=10):
+        """履歴を読み込み"""
+        history_json = self.qt_settings.value(key, "[]")
+        try:
+            history = json.loads(history_json)
+            # 存在するファイルのみフィルタリング
+            valid_history = []
+            for path in history:
+                if os.path.exists(path):
+                    valid_history.append(path)
+            return valid_history[:max_items]
+        except:
+            return []
+    
+    def _save_history(self, key, new_path, max_items=10):
+        """履歴を保存"""
+        if not new_path or not os.path.exists(new_path):
+            return
+            
+        history = self._load_history(key, max_items)
+        
+        # 既存のパスを削除
+        if new_path in history:
+            history.remove(new_path)
+        
+        # 先頭に追加
+        history.insert(0, new_path)
+        
+        # 最大数を制限
+        history = history[:max_items]
+        
+        # JSONとして保存
+        self.qt_settings.setValue(key, json.dumps(history))
+    
+    def _setup_unified_history_area(self, layout):
+        """統合履歴表示エリアを設定"""
+        history_group = QGroupBox("ファイル履歴")
+        history_layout = QVBoxLayout()
+        
+        # 統合履歴リスト
+        self.unified_history_list = QListWidget()
+        self.unified_history_list.setMaximumHeight(250)
+        
+        # ダブルクリックでファイルタイプに応じて適切なUIに設定
+        self.unified_history_list.itemDoubleClicked.connect(self._on_history_item_double_clicked)
+        
+        history_layout.addWidget(self.unified_history_list)
+        
+        # 履歴クリアボタン
+        clear_history_button = QPushButton("履歴をクリア")
+        clear_history_button.clicked.connect(self._clear_all_history)
+        history_layout.addWidget(clear_history_button)
+        
+        history_group.setLayout(history_layout)
+        layout.addWidget(history_group)
+        
+        # 初期化時に履歴を読み込み
+        self.refresh_unified_history()
+    
+    def _on_history_item_double_clicked(self, item):
+        """履歴アイテムがダブルクリックされた時の処理"""
+        file_path = item.data(Qt.UserRole)
+        file_type = item.data(Qt.UserRole + 1)
+        
+        if file_type == "import":
+            self.import_path_edit.setText(file_path)
+        elif file_type == "vmd":
+            self.vmd_path_edit.setText(file_path)
+        elif file_type == "export":
+            self.export_path_edit.setText(file_path)
+    
+    def _clear_all_history(self):
+        """すべての履歴をクリア"""
+        self.qt_settings.setValue("import_path_history", "[]")
+        self.qt_settings.setValue("vmd_path_history", "[]")
+        self.qt_settings.setValue("export_path_history", "[]")
+        self.refresh_unified_history()
+    
+    def refresh_unified_history(self):
+        """統合履歴リストを更新"""
+        self.unified_history_list.clear()
+        
+        # すべての履歴を統合して表示
+        all_items = []
+        
+        # インポート履歴
+        import_history = self._load_history("import_path_history")
+        for path in import_history:
+            ext = os.path.splitext(path)[1].lower()
+            if ext in [".pmd", ".pmx"]:
+                item_data = {
+                    "path": path,
+                    "type": "import",
+                    "display": f"[Model] {os.path.basename(path)}"
+                }
+                all_items.append(item_data)
+        
+        # VMD履歴
+        vmd_history = self._load_history("vmd_path_history")
+        for path in vmd_history:
+            item_data = {
+                "path": path,
+                "type": "vmd",
+                "display": f"[Animation] {os.path.basename(path)}"
+            }
+            all_items.append(item_data)
+        
+        # エクスポート履歴
+        export_history = self._load_history("export_path_history")
+        for path in export_history:
+            item_data = {
+                "path": path,
+                "type": "export",
+                "display": f"[Export] {os.path.basename(path)}"
+            }
+            all_items.append(item_data)
+        
+        # リストに追加（最新のものから表示）
+        for item_data in all_items:
+            item = QListWidgetItem(item_data["display"])
+            item.setData(Qt.UserRole, item_data["path"])
+            item.setData(Qt.UserRole + 1, item_data["type"])
+            item.setToolTip(item_data["path"])
+            
+            # タイプによって色分け
+            if item_data["type"] == "import":
+                item.setForeground(QColor(100, 200, 255))  # 水色
+            elif item_data["type"] == "vmd":
+                item.setForeground(QColor(255, 200, 100))  # オレンジ
+            elif item_data["type"] == "export":
+                item.setForeground(QColor(100, 255, 100))  # 緑
+            
+            self.unified_history_list.addItem(item)
+    
+    def add_import_path_to_history(self, path):
+        """インポートパスを履歴に追加"""
+        self._save_history("import_path_history", path)
+        # 履歴リストを更新
+        self.refresh_unified_history()
+    
+    def add_vmd_path_to_history(self, path):
+        """アニメーションパスを履歴に追加"""
+        self._save_history("vmd_path_history", path)
+        # 履歴リストを更新
+        self.refresh_unified_history()
+    
+    def add_export_path_to_history(self, path):
+        """エクスポートパスを履歴に追加"""
+        self._save_history("export_path_history", path)
+        # 履歴リストを更新
+        self.refresh_unified_history()

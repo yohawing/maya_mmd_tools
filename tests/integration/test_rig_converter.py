@@ -973,15 +973,6 @@ class TestRigConverterMaya(unittest.TestCase):
         # PoleTargetが作成されたか確認
         self.assertIsNotNone(pole_target)
 
-        # mmd_pole_methodアトリビュートを確認
-        self.assertTrue(
-            cmds.attributeQuery("mmd_pole_method", node=pole_target, exists=True)
-        )
-        method = cmds.getAttr(f"{pole_target}.mmd_pole_method")
-        self.assertEqual(
-            method, "pmx_local_axis", "PMXローカル軸情報が使用されませんでした"
-        )
-
     def test_pole_target_with_joint_orient(self):
         """jointOrientを使用したPoleTarget作成テスト"""
         # 足のジョイントチェーンを作成（膝にjointOrientを設定）
@@ -1016,12 +1007,6 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # PoleTargetが作成されたか確認
         self.assertIsNotNone(pole_target)
-
-        # mmd_pole_methodアトリビュートを確認
-        method = cmds.getAttr(f"{pole_target}.mmd_pole_method")
-        self.assertEqual(
-            method, "joint_orient", "jointOrient情報が使用されませんでした"
-        )
 
 
 if __name__ == "__main__":

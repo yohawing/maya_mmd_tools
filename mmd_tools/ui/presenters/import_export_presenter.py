@@ -49,7 +49,7 @@ class ImportExportPresenter(QObject):
             self.view.vmd_path_edit.setText(file_path)
 
     def import_file(self):
-        file_path = self.view.import_path_edit.text()
+        file_path = self.view.import_path_edit.text().strip()
         if not file_path:
             self.app_state.emit_status("ファイルパスを入力してください")
             return
@@ -98,6 +98,8 @@ class ImportExportPresenter(QObject):
                 self.app_state.emit_progress(100)
                 # モデルリストを更新
                 self.view.refresh_model_list()
+                # 成功したパスを履歴に追加
+                self.view.add_import_path_to_history(file_path)
             else:
                 logger.error("Import failed.")
                 self.app_state.emit_status("インポートに失敗しました")
@@ -108,7 +110,7 @@ class ImportExportPresenter(QObject):
             self.app_state.emit_progress(0)
 
     def export_file(self):
-        file_path = self.view.export_path_edit.text()
+        file_path = self.view.export_path_edit.text().strip()
         if not file_path:
             self.app_state.emit_status("ファイルパスを入力してください")
             return
@@ -128,13 +130,15 @@ class ImportExportPresenter(QObject):
             exporter.export_pmx_model(file_path, maya_data)
             logger.info("Export successful.")
             self.app_state.emit_status(f"エクスポート完了: {file_path}")
+            # 成功したパスを履歴に追加
+            self.view.add_export_path_to_history(file_path)
         except Exception as e:
             logger.error(f"Export failed: {e}", exc_info=True)
             self.app_state.emit_status(f"エクスポートエラー: {str(e)}")
 
     def import_vmd_file(self):
         """VMDファイルのインポート"""
-        file_path = self.view.vmd_path_edit.text()
+        file_path = self.view.vmd_path_edit.text().strip()
         if not file_path:
             self.app_state.emit_status("VMDファイルパスを入力してください")
             return
@@ -178,6 +182,8 @@ class ImportExportPresenter(QObject):
                 logger.info("VMD import successful.")
                 self.app_state.emit_status(f"VMDインポート完了: {file_path}")
                 self.app_state.emit_progress(100)
+                # 成功したパスを履歴に追加
+                self.view.add_vmd_path_to_history(file_path)
             else:
                 logger.error("VMD import failed.")
                 self.app_state.emit_status("VMDインポートに失敗しました")

@@ -59,17 +59,7 @@ class RigConverter:
             self.original_bone_names[i] = bone.get_name()
 
         # ボーンのローカル軸を設定
-        self._apply_bone_local_axes(pmx_data.bones, maya_joints)
-
-        # 準標準ボーンを追加（設定による）
-        if settings.get("import.rig.add_semi_standard_bones", False):
-            result["semi_standard_bones"] = self._add_semi_standard_bones(
-                maya_joints, bone_map, skeleton_group
-            )
-            if result["semi_standard_bones"]:
-                self.logger.info(
-                    f"{len(result['semi_standard_bones'])}個の準標準ボーンを追加しました"
-                )
+        # self._apply_bone_local_axes(pmx_data.bones, maya_joints)
 
         # 付与ボーンの設定
         result["constraints"] = self._setup_grant_bones(pmx_data.bones, maya_joints)
@@ -257,24 +247,24 @@ class RigConverter:
                 maya_utils.set_attribute(ik_handle, "v", 0, "bool")  # 非表示
 
                 # カスタムアトリビュートでMMDのIK情報を保存
-                maya_utils.set_custom_attributes(
-                    ik_handle,
-                    {
-                        "mmd_ik_loop_count": chain["loop_count"],
-                        "mmd_ik_unit_angle": chain["unit_angle"],
-                        "mmd_ik_bone": chain["ik_bone"],  # IKボーン名を追加
-                    },
-                )
+                # maya_utils.set_custom_attributes(
+                #     ik_handle,
+                #     {
+                #         "mmd_ik_loop_count": chain["loop_count"],
+                #         "mmd_ik_unit_angle": chain["unit_angle"],
+                #         "mmd_ik_bone": chain["ik_bone"],  # IKボーン名を追加
+                #     },
+                # )
 
                 # 角度制限の設定
-                self._set_joint_limits(chain["ik_links"])
+                # self._set_joint_limits(chain["ik_links"])
 
                 # 足IKの場合、PoleTargetを作成
                 pole_target = None
-                if self._is_leg_ik(chain["ik_bone"]):
-                    pole_target = self._create_pole_target_for_leg_ik(
-                        chain, ik_handle, start_joint, end_joint
-                    )
+                # if self._is_leg_ik(chain["ik_bone"]):
+                #     pole_target = self._create_pole_target_for_leg_ik(
+                #         chain, ik_handle, start_joint, end_joint
+                #     )
 
                 ik_handle_info = {
                     "ik_handle": ik_handle,
@@ -316,11 +306,6 @@ class RigConverter:
     def _create_pole_target_for_leg_ik(self, chain, ik_handle, start_joint, end_joint):
         """
         足IK用のPoleTargetロケータを作成する。
-        MMDモデルの特性を考慮し、以下の優先順位で膝の屈曲方向を決定：
-        1. 膝ジョイントのローカル軸情報（PMXのLOCAL_AXIS）
-        2. 膝ジョイントの初期姿勢（jointOrient）
-        3. 実際の膝の位置から計算した屈曲方向
-        4. デフォルトの前方向（-Z）
 
         Args:
             chain (dict): IKチェーン情報
@@ -359,34 +344,9 @@ class RigConverter:
             knee_bend_direction = [0, 0, 1]  # Z+方向
             method_used = "fixed_z_positive"
 
-            if knee_joint:
-                knee_pos = cmds.xform(
-                    knee_joint, query=True, worldSpace=True, translation=True
-                )
-                self.logger.debug("Pole vectorの向きをZ+方向に固定")
-
-                # 脚の長さに基づいてオフセット距離を計算
-                leg_length = (
-                    (end_pos[0] - start_pos[0]) ** 2
-                    + (end_pos[1] - start_pos[1]) ** 2
-                    + (end_pos[2] - start_pos[2]) ** 2
-                ) ** 0.5
-                offset_distance = max(
-                    leg_length * 0.3, 2.0
-                )  # 脚の長さの30%または最小2ユニット
-
-                # PoleTargetの位置を計算
-                pole_pos = [
-                    knee_pos[0] + knee_bend_direction[0] * offset_distance,
-                    knee_pos[1] + knee_bend_direction[1] * offset_distance,
-                    knee_pos[2] + knee_bend_direction[2] * offset_distance,
-                ]
-            else:
-                # 膝が見つからない場合は、チェーンの中点のZ+方向に配置
-                # MMD-37: IKのPole Vectorの向きを常にZ+方向に固定
-                mid_pos = [(start_pos[i] + end_pos[i]) / 2 for i in range(3)]
-                pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] + 2.0]  # Z+方向に配置
-                method_used = "default_midpoint"
+            mid_pos = [(start_pos[i] + end_pos[i]) / 2 for i in range(3)]
+            pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] + 2.0]  # Z+方向に配置
+            method_used = "default_midpoint"
 
             # PoleTargetの位置を設定
             cmds.xform(pole_target, worldSpace=True, translation=pole_pos)
@@ -399,17 +359,6 @@ class RigConverter:
             maya_utils.set_attribute(pole_target, "localScaleX", 0.5, "double")
             maya_utils.set_attribute(pole_target, "localScaleY", 0.5, "double")
             maya_utils.set_attribute(pole_target, "localScaleZ", 0.5, "double")
-
-            # カスタムアトリビュートを追加
-            maya_utils.set_custom_attributes(
-                pole_target,
-                {
-                    "mmd_pole_target": True,
-                    "mmd_ik_handle": ik_handle,
-                    "mmd_ik_bone": chain["ik_bone"],
-                    "mmd_pole_method": method_used,
-                },
-            )
 
             self.logger.info(
                 f"PoleTarget '{pole_target}' を作成しました（{chain['ik_bone']}用、方法: {method_used}）"
