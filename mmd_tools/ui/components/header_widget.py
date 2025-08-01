@@ -82,8 +82,17 @@ class HeaderWidget(QWidget):
         else:
             for model in models:
                 info = self.app_state.get_model_info(model)
-                display_name = info['display_name'] if info else model
-                self.model_combo.addItem(f"{display_name} ({model})", userData=model)
+                if info:
+                    display_name = info['display_name']
+                    namespace = info.get('namespace')
+                    if namespace:
+                        # namespace付きの場合
+                        self.model_combo.addItem(f"{display_name} [{namespace}:{model.split(':')[-1]}]", userData=model)
+                    else:
+                        # namespaceなしの場合
+                        self.model_combo.addItem(f"{display_name} [{model}]", userData=model)
+                else:
+                    self.model_combo.addItem(model, userData=model)
             
             # 現在のモデルを選択
             if current_model in models:

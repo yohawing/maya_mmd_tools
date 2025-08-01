@@ -50,6 +50,7 @@
     "model_name": "モデル名:",
     "comment": "コメント:",
     "language": "言語:",
+    "namespace_placeholder": "自動生成",
     "material_name": "材質名:",
     "bone_name": "ボーン名:",
     "morph_name": "モーフ名:",
@@ -170,6 +171,7 @@
   },
   "checkboxes": {
     "use_namespace": "ネームスペースを使用",
+    "custom_namespace": "カスタムnamespace:",
     "import_models": "モデルをインポート",
     "create_mmd_shaders": "MMDシェーダーを作成",
     "separate_meshes": "マテリアルごとにメッシュを分割",

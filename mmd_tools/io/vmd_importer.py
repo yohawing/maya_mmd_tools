@@ -5,6 +5,7 @@ VMDファイル（モーションデータ）をMayaシーンにインポート�
 from maya import cmds
 from ..converters.vmd_converter import VmdConverter
 from ..core.logger import get_logger
+from ..core.namespace_utils import NamespaceUtils
 
 
 def import_vmd_file(parser, filepath, options=None):
@@ -30,21 +31,20 @@ def import_vmd_file(parser, filepath, options=None):
         target_model = options.get("target_model")
 
         if target_model:
-            # ターゲットモデルからネームスペースを取得
-            if ":" in target_model:
-                target_namespace = target_model.split(":")[0]
+            # ターゲットモデルからネームスペースを取得（改善版）
+            target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
+            if target_namespace:
                 logger.info(f"ターゲットネームスペース: {target_namespace}")
         else:
             # 選択されているオブジェクトからターゲットネームスペースを取得
             selected = cmds.ls(selection=True)
             if selected:
                 # 選択されたオブジェクトからネームスペースを取得
-                node_namespace = (
-                    selected[0].split(":")[0] if ":" in selected[0] else None
-                )
-                if node_namespace:
-                    target_namespace = node_namespace
-                    logger.info(f"ターゲットネームスペース: {target_namespace}")
+                for sel in selected:
+                    target_namespace = NamespaceUtils.get_namespace_from_node(sel)
+                    if target_namespace:
+                        logger.info(f"ターゲットネームスペース: {target_namespace}")
+                        break
             else:
                 logger.warning(
                     "ターゲットモデルが指定されていません。選択されたオブジェクトからネームスペースを取得します。"

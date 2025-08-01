@@ -48,7 +48,7 @@ ATTR_MMD_TOON_TEXTURE_INDEX = "mmd_toon_texture_index"
 ATTR_MMD_MATERIAL_INDEX = "mmd_material_index"
 
 # ボーンカスタムアトリビュート名（共通）
-ATTR_MMD_BONE_NAME = "mmd_bone_name_jp"  # ボーン名（日本語）
+ATTR_MMD_BONE_NAME = "mmd_bone_name"  # ボーン名（日本語）
 ATTR_MMD_BONE_NAME_EN = "mmd_bone_name_en"  # ボーン名（英語）
 ATTR_MMD_BONE_FLAGS = "mmd_bone_flags"  # ボーンフラグ
 ATTR_MMD_DEFORM_LAYER = "mmd_deform_layer"  # 変形階層

@@ -28,8 +28,12 @@ import maya.cmds as cmds
 # PMXファイルをインポート
 cmds.file("C:/Models/character.pmx", i=True, type="MMD Model")
 
-# ネームスペースを指定してインポート
-cmds.file("C:/Models/character.pmx", i=True, type="MMD Model", namespace="character1")
+# オプション付きでインポート
+from mmd_tools.io.mmd_importer import import_mmd_file
+
+# Namespace機能を有効にしてインポート
+options = {"use_namespace": True}
+import_mmd_file("C:/Models/character.pmx", options=options)
 ```
 
 ## インポートオプション
@@ -42,13 +46,16 @@ cmds.file("C:/Models/character.pmx", i=True, type="MMD Model", namespace="charac
 from mmd_tools.core import settings
 
 # スケール調整（MMDは通常cm単位）
-settings.set("import.scale", 1.0)  # デフォルト: 1.0
+settings.set("import.general.scale_factor", 1.0)  # デフォルト: 1.0
 
-# テクスチャパスの解決
-settings.set("import.auto_find_textures", True)  # デフォルト: True
+# Namespace使用（複数モデル対応）
+settings.set("import.general.use_namespace", True)  # デフォルト: False
 
 # マテリアル作成
-settings.set("import.create_materials", True)  # デフォルト: True
+settings.set("import.model.create_mmd_shaders", True)  # デフォルト: True
+
+# 物理演算のインポート
+settings.set("import.physics.import_physics", False)  # デフォルト: False
 ```
 
 ## インポート後の構造
@@ -82,17 +89,30 @@ model_root                    # ルートグループ
 
 ### 複数モデルのインポート
 
-```python
-# 複数のモデルを異なるネームスペースでインポート
-models = [
-    ("character1.pmx", "char1"),
-    ("character2.pmx", "char2"),
-    ("stage.pmx", "stage")
-]
+#### Namespace機能を使用（推奨）
 
-for model_path, namespace in models:
-    cmds.file(model_path, i=True, type="MMD Model", namespace=namespace)
+```python
+from mmd_tools.io.mmd_importer import import_mmd_file
+from mmd_tools.core import settings
+
+# Namespace機能を有効化
+settings.set("import.general.use_namespace", True)
+
+# 複数のモデルをインポート（自動的に異なるNamespaceが割り当てられる）
+models = ["character1.pmx", "character2.pmx", "stage.pmx"]
+
+for model_path in models:
+    root_node = import_mmd_file(model_path)
+    print(f"インポート完了: {root_node}")
+    # 例: Hatsune_Miku:model_root, Hatsune_Miku_2:model_root, stage:model_root
 ```
+
+#### Namespace機能の利点
+
+1. **名前の衝突回避**: 同じ名前のボーンやメッシュが衝突しない
+2. **自動連番付与**: 同じモデルを複数回インポートすると自動的に連番が付く
+3. **日本語名対応**: 日本語のモデル名を英数字に自動変換
+4. **VMD適用が簡単**: Namespace単位でアニメーションを適用可能
 
 ### インポート後の調整
 

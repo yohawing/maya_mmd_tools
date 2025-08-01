@@ -194,23 +194,13 @@ class BoneConverter:
         """
         maya_joints = []
 
+        # まず、すべてのジョイントを親なしで作成
         for i, bone in enumerate(bones):
             # bone_mapから既にユニークな名前を取得
             joint_name = bone_map[i]
 
-            # 親ジョイントが存在する場合
-            parent_name = None
-            try:
-                if bone.parent_bone_index != -1:
-                    parent_name = bone_map[bone.parent_bone_index]
-                    maya_utils.select_objects(parent_name, replace=True)
-                else:
-                    maya_utils.select_objects(clear=True)
-            except (TypeError, KeyError):
-                # 親ボーンが存在しない場合は、選択をクリア
-                maya_utils.select_objects(clear=True)
-                if parent_name:
-                    self.logger.warning(f"{parent_name} の選択でエラーが起きています。")
+            # 選択をクリアしてルートにジョイントを作成
+            maya_utils.select_objects(clear=True)
 
             # ジョイントを作成
             position = bone.position
@@ -221,25 +211,43 @@ class BoneConverter:
                     position[1],
                     -position[2],
                 ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
-                # Maya 2024以降では軸指定オプションは deprecated
-                # 代わりにjointOrientで後から設定する
             )
 
             self._set_extra_attributes(i, joint, bone, format_type)
-
             maya_joints.append(joint)
+
+        # 次に、親子関係を設定
+        for i, bone in enumerate(bones):
+            if bone.parent_bone_index != -1 and bone.parent_bone_index < len(bones):
+                child_joint = maya_joints[i]
+                parent_joint = maya_joints[bone.parent_bone_index]
+
+                try:
+                    # 親子関係を設定
+                    cmds.parent(child_joint, parent_joint)
+                except Exception as e:
+                    self.logger.error(
+                        f"Failed to parent {child_joint} to {parent_joint}: {e}"
+                    )
 
         # ルートジョイントをスケルトングループにペアレント
         # 親を持たないジョイントを探す
         root_joints = []
         for i, bone in enumerate(bones):
             if bone.parent_bone_index == -1:
-                root_joints.append(bone_map[i])
+                # 実際に作成されたジョイント名を使用
+                root_joints.append(maya_joints[i])
+
+        self.logger.debug(f"Root joints to parent: {root_joints}")
+        self.logger.debug(f"Skeleton group: {skeleton_group}")
 
         # ルートジョイントをスケルトングループにペアレント
         # absolute=Trueを使用してワールド座標を維持
         for root_joint in root_joints:
-            cmds.parent(root_joint, skeleton_group, absolute=True)
+            if cmds.objExists(root_joint):
+                cmds.parent(root_joint, skeleton_group, absolute=True)
+            else:
+                self.logger.error(f"Root joint '{root_joint}' does not exist in scene")
 
         return maya_joints
 

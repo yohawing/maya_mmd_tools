@@ -4,6 +4,7 @@ from maya import cmds
 from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
+from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME_EN, ATTR_MMD_MODEL_NAME
 from mmd_tools.core.settings import settings
 
 from . import utils
@@ -238,7 +239,7 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
     if not cmds.objExists(shader_node):
         logger.error(f"Shader node '{shader_node}' does not exist")
         return
-        
+
     # マテリアル専用のシェーディンググループを作成
     sanitized_shader_name = shader_node + "SG"
     sg_name = cmds.sets(
@@ -1272,14 +1273,20 @@ def find_all_mmd_models():
     from ..core.constants import SCENE_ROOT_SUFFIX
 
     # *_rootという名前のトランスフォームノードを検索
-    all_transforms = cmds.ls("*{}".format(SCENE_ROOT_SUFFIX), type="transform")
+    # namespace対応のため、ワイルドカードパターンを使用
+    all_transforms = cmds.ls(
+        "*:*{}".format(SCENE_ROOT_SUFFIX), type="transform"
+    ) + cmds.ls("*{}".format(SCENE_ROOT_SUFFIX), type="transform")
+
+    # 重複を削除
+    all_transforms = list(set(all_transforms))
 
     mmd_models = []
     for transform in all_transforms:
         # MMD関連のアトリビュートがあるか確認
         if cmds.attributeQuery(
-            "mmd_model_name_jp", node=transform, exists=True
-        ) or cmds.attributeQuery("mmd_model_name_en", node=transform, exists=True):
+            ATTR_MMD_MODEL_NAME, node=transform, exists=True
+        ) or cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=transform, exists=True):
             mmd_models.append(transform)
 
     return sorted(mmd_models)  # 名前順でソート
@@ -1303,8 +1310,10 @@ def get_parent_mmd_root(node_name):
         while current:
             # ルートサフィックスを持ち、MMDアトリビュートがあるか確認
             if current.endswith(SCENE_ROOT_SUFFIX) and (
-                cmds.attributeQuery("mmd_model_name_jp", node=current, exists=True)
-                or cmds.attributeQuery("mmd_model_name_en", node=current, exists=True)
+                cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=current, exists=True)
+                or cmds.attributeQuery(
+                    ATTR_MMD_MODEL_NAME_EN, node=current, exists=True
+                )
             ):
                 return current
 
@@ -1332,13 +1341,13 @@ def get_mmd_model_display_name(root_node):
         str: 表示名（日本語名があれば優先、なければノード名）
     """
     try:
-        if cmds.attributeQuery("mmd_model_name_jp", node=root_node, exists=True):
-            name_jp = cmds.getAttr(f"{root_node}.mmd_model_name_jp")
+        if cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=root_node, exists=True):
+            name_jp = cmds.getAttr(f"{root_node}.{ATTR_MMD_MODEL_NAME}")
             if name_jp:
                 return name_jp
 
-        if cmds.attributeQuery("mmd_model_name_en", node=root_node, exists=True):
-            name_en = cmds.getAttr(f"{root_node}.mmd_model_name_en")
+        if cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=root_node, exists=True):
+            name_en = cmds.getAttr(f"{root_node}.{ATTR_MMD_MODEL_NAME_EN}")
             if name_en:
                 return name_en
 

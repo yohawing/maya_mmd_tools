@@ -91,6 +91,25 @@ class ImportExportTab(BaseTab):
             lambda v: settings.set("import.general.use_namespace", v)
         )
         general_layout.addWidget(self.use_namespace_check)
+        
+        # Namespace名を手動で指定するオプション
+        namespace_layout = QHBoxLayout()
+        namespace_layout.setContentsMargins(20, 0, 0, 0)  # インデント
+        
+        self.custom_namespace_check = QCheckBox(self.tr("custom_namespace", "checkboxes"))
+        self.custom_namespace_check.setEnabled(self.use_namespace_check.isChecked())
+        namespace_layout.addWidget(self.custom_namespace_check)
+        
+        self.namespace_edit = QLineEdit()
+        self.namespace_edit.setPlaceholderText(self.tr("namespace_placeholder", "labels"))
+        self.namespace_edit.setEnabled(False)
+        namespace_layout.addWidget(self.namespace_edit)
+        
+        # シグナル接続
+        self.use_namespace_check.toggled.connect(self.custom_namespace_check.setEnabled)
+        self.custom_namespace_check.toggled.connect(self.namespace_edit.setEnabled)
+        
+        general_layout.addLayout(namespace_layout)
 
         self.general_group.setLayout(general_layout)
         model_settings_layout.addWidget(self.general_group)
@@ -498,6 +517,14 @@ class ImportExportTab(BaseTab):
                 self.target_model_combo.addItem(display_name, userData=model)
         except:
             pass
+    
+    def get_custom_namespace(self):
+        """カスタムnamespace名を取得"""
+        if (self.use_namespace_check.isChecked() and 
+            self.custom_namespace_check.isChecked() and 
+            self.namespace_edit.text().strip()):
+            return self.namespace_edit.text().strip()
+        return None
     
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""

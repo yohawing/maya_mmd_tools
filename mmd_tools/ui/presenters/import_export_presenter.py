@@ -74,6 +74,7 @@ class ImportExportPresenter(QObject):
         import_options = {
             "scale": settings.get("import.general.scale_factor", 1.0),
             "use_namespace": settings.get("import.general.use_namespace", False),
+            "custom_namespace": self.view.get_custom_namespace(),  # カスタムnamespace名
             "import_models": settings.get("import.model.import_models", True),
             "create_mmd_shaders": settings.get("import.model.create_mmd_shaders", True),
             "separate_meshes_by_material": settings.get(

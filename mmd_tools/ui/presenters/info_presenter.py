@@ -1,4 +1,10 @@
 from maya import cmds
+from mmd_tools.core.constants import (
+    ATTR_MMD_COMMENT,
+    ATTR_MMD_COMMENT_EN,
+    ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_MODEL_NAME,
+)
 from ..qt_compat import Qt
 from ...core.logger import get_logger
 from ...core.maya_utils import (
@@ -17,7 +23,7 @@ class InfoPresenter:
         self.app_state = app_state
         self.is_updating = False  # 更新中フラグ（フィードバックループ防止）
         self.connect_signals()
-        
+
         # 既に選択されているモデルがある場合は情報をロード
         if self.app_state.current_model_root:
             self.view.set_fields_enabled(True)
@@ -27,7 +33,7 @@ class InfoPresenter:
         # ApplicationStateのシグナル
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
         self.app_state.model_list_updated.connect(self.on_model_list_updated)
-        
+
         # モデル選択（Infoタブ内のコンボボックスは残す場合）
         self.view.model_combo.currentTextChanged.connect(self.on_model_selected)
         self.view.refresh_button.clicked.connect(self.on_refresh_clicked)
@@ -47,7 +53,7 @@ class InfoPresenter:
         else:
             self.view.set_fields_enabled(False)
             self.clear_fields()
-    
+
     def on_model_list_updated(self, models):
         """モデルリストが更新されたときの処理"""
         self.update_model_combo(models)
@@ -69,10 +75,10 @@ class InfoPresenter:
 
             # アトリビュートの存在を確認
             if not cmds.attributeQuery(
-                "mmd_model_name_jp", node=current_model_root, exists=True
+                ATTR_MMD_MODEL_NAME, node=current_model_root, exists=True
             ):
                 logger.warning(
-                    f"Attribute mmd_model_name_jp not found on {current_model_root}"
+                    f"Attribute {ATTR_MMD_MODEL_NAME} not found on {current_model_root}"
                 )
 
             # 文字列アトリビュートの値を安全に取得
@@ -83,7 +89,7 @@ class InfoPresenter:
 
             try:
                 model_name_jp = cmds.getAttr(
-                    f"{current_model_root}.mmd_model_name_jp"
+                    f"{current_model_root}.{ATTR_MMD_MODEL_NAME}"
                 )
                 if model_name_jp is None:
                     model_name_jp = ""
@@ -92,7 +98,7 @@ class InfoPresenter:
 
             try:
                 model_name_en = cmds.getAttr(
-                    f"{current_model_root}.mmd_model_name_en"
+                    f"{current_model_root}.{ATTR_MMD_MODEL_NAME_EN}"
                 )
                 if model_name_en is None:
                     model_name_en = ""
@@ -100,14 +106,14 @@ class InfoPresenter:
                 model_name_en = ""
 
             try:
-                comment_jp = cmds.getAttr(f"{current_model_root}.mmd_comment_jp")
+                comment_jp = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_COMMENT}")
                 if comment_jp is None:
                     comment_jp = ""
             except:
                 comment_jp = ""
 
             try:
-                comment_en = cmds.getAttr(f"{current_model_root}.mmd_comment_en")
+                comment_en = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_COMMENT_EN}")
                 if comment_en is None:
                     comment_en = ""
             except:
@@ -151,14 +157,14 @@ class InfoPresenter:
         try:
             # set_custom_attributesを使用して一括設定
             attributes = {
-                "mmd_model_name_jp": self.view.model_name_jp_edit.text(),
-                "mmd_model_name_en": self.view.model_name_en_edit.text(),
-                "mmd_comment_jp": self.view.comment_jp_edit.toPlainText(),
-                "mmd_comment_en": self.view.comment_en_edit.toPlainText()
+                ATTR_MMD_MODEL_NAME: self.view.model_name_jp_edit.text(),
+                ATTR_MMD_MODEL_NAME_EN: self.view.model_name_en_edit.text(),
+                ATTR_MMD_COMMENT: self.view.comment_jp_edit.toPlainText(),
+                ATTR_MMD_COMMENT_EN: self.view.comment_en_edit.toPlainText(),
             }
             set_custom_attributes(current_model_root, attributes)
             logger.debug(f"Updated model info for {current_model_root}")
-            
+
             # ApplicationStateのキャッシュをクリア
             self.app_state.clear_cache()
         except Exception as e:
@@ -179,7 +185,9 @@ class InfoPresenter:
             # コンボボックスにモデルを追加
             for model in models:
                 display_name = get_mmd_model_display_name(model)
-                self.view.model_combo.addItem(f"{display_name} ({model})", userData=model)
+                self.view.model_combo.addItem(
+                    f"{display_name} ({model})", userData=model
+                )
 
             # 現在のモデルを選択
             if current_model in models:
@@ -187,7 +195,7 @@ class InfoPresenter:
                 self.view.model_combo.setCurrentIndex(index)
             else:
                 self.view.model_combo.setCurrentIndex(0)
-            
+
             self.view.set_fields_enabled(True)
 
         self.is_updating = False
@@ -196,7 +204,7 @@ class InfoPresenter:
         """Refreshボタンがクリックされた時の処理"""
         # ApplicationStateでリフレッシュ
         self.app_state.refresh_model_list()
-        
+
         # Maya選択からモデルを選択
         self.app_state.select_model_from_maya_selection()
 

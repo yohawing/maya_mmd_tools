@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Namespace機能の実装（複数モデル対応）
+  - PMX/PMDインポーターでNamespace自動生成
+  - 日本語モデル名の英数字変換
+  - 同じモデルの連番管理
+  - VMDインポーターのNamespace検出改善
+- NamespaceUtilsクラスの追加
+  - namespace生成・管理機能
+  - context managerサポート
+  - エラー時の自動クリーンアップ
+
+### Changed
+- インポート設定に`use_namespace`オプションを実装（UI既存、機能追加）
+
 ## [0.1.0-alpha.1] - 2025-01-27
 
 ### Added
