@@ -90,6 +90,22 @@ python tests/run_tests.py --type integration --test test_maya_utils
 python tests/run_gui_tests.py
 ```
 
+### データのダンプ
+
+PMXファイルのデータをダンプするためのスクリプトです。
+
+```
+# 基本的な使用
+mayapy tests/dump_pmx.py model.pmx
+
+# 出力ファイルを指定
+mayapy tests/dump_pmx.py model.pmx -o model.txt
+
+# セクションを指定
+mayapy tests/dump_pmx.py model.pmx -s header statistics bones
+
+```
+
 ## コーディング
 
 - Python 3.7以降を使用してください。

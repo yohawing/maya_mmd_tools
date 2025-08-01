@@ -70,19 +70,6 @@ class ImportExportTab(BaseTab):
         self.general_group = QGroupBox(self.tr("general", "groups"))
         general_layout = QVBoxLayout()
 
-        # Root bone name
-        root_bone_layout = QHBoxLayout()
-        self.root_bone_label = QLabel(self.tr("root_bone_name", "fields"))
-        root_bone_layout.addWidget(self.root_bone_label)
-        self.root_bone_name_edit = QLineEdit(
-            settings.get("import.general.root_bone_name", "master")
-        )
-        self.root_bone_name_edit.textChanged.connect(
-            lambda v: settings.set("import.general.root_bone_name", v)
-        )
-        root_bone_layout.addWidget(self.root_bone_name_edit)
-        general_layout.addLayout(root_bone_layout)
-
         self.use_namespace_check = QCheckBox(self.tr("use_namespace", "checkboxes"))
         self.use_namespace_check.setChecked(
             settings.get("import.general.use_namespace", False)
@@ -531,8 +518,6 @@ class ImportExportTab(BaseTab):
         # Labels
         if hasattr(self, 'scale_label'):
             self.scale_label.setText(self.tr("scale_factor", "fields"))
-        if hasattr(self, 'root_bone_label'):
-            self.root_bone_label.setText(self.tr("root_bone_name", "fields"))
         if hasattr(self, 'texture_search_label'):
             self.texture_search_label.setText(self.tr("texture_search_path", "fields"))
         if hasattr(self, 'uv_set_label'):

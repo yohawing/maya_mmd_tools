@@ -4,8 +4,7 @@
     "general": {
       "_comment": "General import settings that affect the overall process",
       "scale_factor": 1.0,
-      "use_namespace": true,
-      "root_bone_name": "root"
+      "use_namespace": false
     },
     "model": {
       "_comment": "Settings for model geometry, materials, and structure",

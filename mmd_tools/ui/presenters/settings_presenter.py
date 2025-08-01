@@ -62,49 +62,6 @@ class SettingsPresenter:
             if hasattr(self.view, 'language_combo'):
                 self.view.language_combo.currentIndexChanged.connect(self.on_language_changed)
 
-            # インポート設定
-            self.view.scale_factor_spin.valueChanged.connect(self.on_setting_changed)
-            self.view.use_namespace_check.stateChanged.connect(self.on_setting_changed)
-            self.view.import_models_check.stateChanged.connect(self.on_setting_changed)
-            self.view.separate_meshes_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.create_mmd_shaders_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.hide_hidden_geometry_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.joint_name_conversion_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.disable_backface_culling_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.import_physics_check.stateChanged.connect(self.on_setting_changed)
-            self.view.create_rigid_bodies_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.create_physics_joints_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.group_physics_objects_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.import_morphs_check.stateChanged.connect(self.on_setting_changed)
-            self.view.add_semi_standard_bones_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.translate_names_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.texture_path_browse_btn.clicked.connect(self.browse_texture_path)
-
-            # エクスポート設定
-            self.view.export_format_combo.currentTextChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.apply_scale_check.stateChanged.connect(self.on_setting_changed)
 
         except AttributeError as e:
             logger.error(f"Failed to connect signal: {e}")
@@ -147,73 +104,6 @@ class SettingsPresenter:
                         self.view.language_combo.setCurrentIndex(i)
                         break
 
-            # インポート設定
-            self.view.scale_factor_spin.setValue(
-                settings.get("import.general.scale_factor", 1.0)
-            )
-            self.view.use_namespace_check.setChecked(
-                settings.get("import.general.use_namespace", False)
-            )
-            self.view.root_bone_name_edit.setText(
-                settings.get("import.general.root_bone_name", "master")
-            )
-
-            self.view.import_models_check.setChecked(
-                settings.get("import.model.import_models", True)
-            )
-            self.view.separate_meshes_check.setChecked(
-                settings.get("import.model.separate_meshes_by_material", False)
-            )
-            self.view.create_mmd_shaders_check.setChecked(
-                settings.get("import.model.create_mmd_shaders", True)
-            )
-            self.view.texture_search_path_edit.setText(
-                settings.get("import.model.texture_search_path", "")
-            )
-            self.view.hide_hidden_geometry_check.setChecked(
-                settings.get("import.model.hide_hidden_geometry", True)
-            )
-            self.view.joint_name_conversion_check.setChecked(
-                settings.get("import.model.joint_name_conversion_with_english", False)
-            )
-            self.view.uv_set_name_edit.setText(
-                settings.get("import.model.uv_set_name", "map#")
-            )
-            self.view.disable_backface_culling_check.setChecked(
-                settings.get("import.model.disable_backface_culling", True)
-            )
-
-            self.view.import_physics_check.setChecked(
-                settings.get("import.physics.import_physics", False)
-            )
-            self.view.create_rigid_bodies_check.setChecked(
-                settings.get("import.physics.create_rigid_bodies", True)
-            )
-            self.view.create_physics_joints_check.setChecked(
-                settings.get("import.physics.create_physics_joints", True)
-            )
-            self.view.group_physics_objects_check.setChecked(
-                settings.get("import.physics.group_physics_objects", True)
-            )
-
-            self.view.import_morphs_check.setChecked(
-                settings.get("import.morph.import_morphs", True)
-            )
-            self.view.add_semi_standard_bones_check.setChecked(
-                settings.get("import.rig.add_semi_standard_bones", False)
-            )
-            self.view.translate_names_check.setChecked(
-                settings.get("import.naming.translate_names", True)
-            )
-
-            # エクスポート設定
-            export_format = settings.get("export.general.export_format", "pmx")
-            index = self.view.export_format_combo.findText(export_format)
-            if index >= 0:
-                self.view.export_format_combo.setCurrentIndex(index)
-            self.view.apply_scale_check.setChecked(
-                settings.get("export.general.apply_scale", True)
-            )
 
         except Exception as e:
             logger.error(f"Failed to load settings: {e}", exc_info=True)
@@ -262,84 +152,6 @@ class SettingsPresenter:
             settings.set("logging.level", self.view.log_level_combo.currentText())
             settings.set("logging.log_file_path", self.view.log_file_path_edit.text())
 
-            # インポート設定
-            settings.set(
-                "import.general.scale_factor", self.view.scale_factor_spin.value()
-            )
-            settings.set(
-                "import.general.use_namespace",
-                self.view.use_namespace_check.isChecked(),
-            )
-            settings.set(
-                "import.general.root_bone_name", self.view.root_bone_name_edit.text()
-            )
-
-            settings.set(
-                "import.model.import_models", self.view.import_models_check.isChecked()
-            )
-            settings.set(
-                "import.model.separate_meshes_by_material",
-                self.view.separate_meshes_check.isChecked(),
-            )
-            settings.set(
-                "import.model.create_mmd_shaders",
-                self.view.create_mmd_shaders_check.isChecked(),
-            )
-            settings.set(
-                "import.model.texture_search_path",
-                self.view.texture_search_path_edit.text(),
-            )
-            settings.set(
-                "import.model.hide_hidden_geometry",
-                self.view.hide_hidden_geometry_check.isChecked(),
-            )
-            settings.set(
-                "import.model.joint_name_conversion_with_english",
-                self.view.joint_name_conversion_check.isChecked(),
-            )
-            settings.set("import.model.uv_set_name", self.view.uv_set_name_edit.text())
-            settings.set(
-                "import.model.disable_backface_culling",
-                self.view.disable_backface_culling_check.isChecked(),
-            )
-
-            settings.set(
-                "import.physics.import_physics",
-                self.view.import_physics_check.isChecked(),
-            )
-            settings.set(
-                "import.physics.create_rigid_bodies",
-                self.view.create_rigid_bodies_check.isChecked(),
-            )
-            settings.set(
-                "import.physics.create_physics_joints",
-                self.view.create_physics_joints_check.isChecked(),
-            )
-            settings.set(
-                "import.physics.group_physics_objects",
-                self.view.group_physics_objects_check.isChecked(),
-            )
-
-            settings.set(
-                "import.morph.import_morphs", self.view.import_morphs_check.isChecked()
-            )
-            settings.set(
-                "import.rig.add_semi_standard_bones",
-                self.view.add_semi_standard_bones_check.isChecked(),
-            )
-            settings.set(
-                "import.naming.translate_names",
-                self.view.translate_names_check.isChecked(),
-            )
-
-            # エクスポート設定
-            settings.set(
-                "export.general.export_format",
-                self.view.export_format_combo.currentText(),
-            )
-            settings.set(
-                "export.general.apply_scale", self.view.apply_scale_check.isChecked()
-            )
 
             settings.save()
             logger.info("設定を保存しました")
@@ -436,16 +248,6 @@ class SettingsPresenter:
         if file_path:
             self.view.log_file_path_edit.setText(file_path)
 
-    def browse_texture_path(self):
-        """テクスチャ検索パスを選択"""
-        folder = QFileDialog.getExistingDirectory(
-            self.view,
-            "テクスチャ検索パスを選択",
-            self.view.texture_search_path_edit.text(),
-        )
-
-        if folder:
-            self.view.texture_search_path_edit.setText(folder)
     
     def on_language_changed(self):
         """言語が変更されたときの処理"""

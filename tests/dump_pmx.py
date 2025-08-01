@@ -5,15 +5,13 @@ PMXファイルダンパーのCLIスクリプト
 使用例:
     # 基本的な使用
     mayapy tests/dump_pmx.py model.pmx
-    
+
     # 出力ファイルを指定
     mayapy tests/dump_pmx.py model.pmx -o dump.txt
-    
+
     # セクションを指定
     mayapy tests/dump_pmx.py model.pmx -s header statistics bones
-    
-    # 詳細モード
-    mayapy tests/dump_pmx.py model.pmx -v
+
 """
 
 import os
