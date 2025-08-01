@@ -7,7 +7,7 @@ from .qt_compat import (
     wrapInstance, QWidget, QVBoxLayout, QStatusBar, QProgressBar, QLabel
 )
 from ..core.log_handlers import QtLogHandler
-from .components.log_viewer import LogViewer
+from .components.enhanced_log_viewer import EnhancedLogViewer
 from .components.header_widget import HeaderWidget
 from .application_state import ApplicationState
 from ..core.logger import get_logger
@@ -69,12 +69,14 @@ class MainWindow(QMainWindow):
         self.setup_status_bar()
         
         # ログビューア（ドッキング可能）
-        self.log_viewer = LogViewer()
+        self.log_viewer = EnhancedLogViewer()
         self.log_viewer.setObjectName("logViewer")
-        log_dock_widget = QDockWidget("Log", self)
-        log_dock_widget.setObjectName("logDockWidget")
-        log_dock_widget.setWidget(self.log_viewer)
-        self.addDockWidget(Qt.BottomDockWidgetArea, log_dock_widget)
+        self.log_dock_widget = QDockWidget("Log", self)
+        self.log_dock_widget.setObjectName("logDockWidget")
+        self.log_dock_widget.setWidget(self.log_viewer)
+        # ドックを外せないように設定（フローティングは禁止、閉じるボタンも無効）
+        self.log_dock_widget.setFeatures(QDockWidget.DockWidgetMovable)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock_widget)
 
         self.load_stylesheet()
         self.setup_logging()
@@ -212,14 +214,22 @@ class MainWindow(QMainWindow):
             with open(style_path, "r") as f:
                 self.setStyleSheet(f.read())
         except FileNotFoundError:
-            logger.warning(f"Stylesheet not found at {style_path}")
+            # loggerがまだ初期化されていない可能性があるので、printを使用
+            print(f"Warning: Stylesheet not found at {style_path}")
 
     def setup_logging(self):
-        logger = get_logger(__name__)
+        # QtLogHandlerを作成
         handler = QtLogHandler()
         handler.message_written.connect(self.log_viewer.append)
-        logger.add_handler(handler)
-        logger.set_level(logging.INFO)
+        handler.setLevel(logging.DEBUG)  # すべてのレベルのログを受け取る
+        
+        # ルートロガーに追加（すべての子ロガーのメッセージをキャッチ）
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        root_logger.setLevel(logging.DEBUG)
+        
+        # このモジュール用のロガーを取得してテストメッセージ
+        logger = get_logger(__name__)
         logger.info("MMD Tools UI initialized.")
 
     def setup_tabs(self):

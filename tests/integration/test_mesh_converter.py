@@ -123,8 +123,7 @@ class TestMeshConverter(MayaTestBase):
         実際のPMXファイルを読み込み、変換処理を実行し、結果を検証する。
         """
         # TestFixtureProviderからPMXファイルパスを取得
-        # Lumineフォルダ内の荧.pmxファイルを使用
-        pmx_file_path = self.fixture_provider.get_pmx_file("荧")
+        pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
         parser = pmx_parser.PmxParser()
@@ -251,7 +250,7 @@ class TestMeshConverter(MayaTestBase):
         StandaloneモードだとDx11Shaderがでテスト出来ないので、StandardSurfaceでテストする。
         """
         # TestFixtureProviderからPMXファイルパスを取得
-        pmx_file_path = self.fixture_provider.get_pmx_file("荧")
+        pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
         parser = pmx_parser.PmxParser()

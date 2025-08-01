@@ -97,7 +97,9 @@ class TestVmdConverter(MayaTestBase):
         """PMXファイルを使用したVMD変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み
         root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
-            self._import_model_and_apply_vmd("Lumine", "Lat式用", model_type="pmx")
+            self._import_model_and_apply_vmd(
+                "mmt_test_model", "Lat式用", model_type="pmx"
+            )
         )
 
         # 検証

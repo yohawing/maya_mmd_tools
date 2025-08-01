@@ -335,16 +335,9 @@ class RigConverter:
             # PoleTargetロケータを作成
             pole_target = cmds.spaceLocator(name=f"{chain['ik_bone']}_poleTarget")[0]
 
-            # IKボーンの親を取得（足IKの親）
-            ik_parent = cmds.listRelatives(chain["ik_bone"], parent=True)
-            if ik_parent:
-                # PoleTargetを足IKの親の子として配置
-                maya_utils.parent_objects(pole_target, ik_parent[0])
-            else:
-                # 親がない場合はワールド直下に配置
-                self.logger.warning(
-                    f"{chain['ik_bone']}の親が見つかりません。PoleTargetをワールド直下に配置します。"
-                )
+            # PoleTargetを太もも（start_joint）の子として配置
+            maya_utils.parent_objects(pole_target, start_joint)
+            self.logger.debug(f"PoleTargetを太もも '{start_joint}' の子として配置")
 
             # PoleTargetの初期位置を計算
             # 太ももと足首の位置を取得
@@ -362,133 +355,15 @@ class RigConverter:
                 knee_joint = chain["ik_links"][0]["bone"]
 
             # 膝の屈曲方向を決定
-            knee_bend_direction = None
-            method_used = "default"
+            # 常にZ+方向を使用
+            knee_bend_direction = [0, 0, 1]  # Z+方向
+            method_used = "fixed_z_positive"
 
             if knee_joint:
                 knee_pos = cmds.xform(
                     knee_joint, query=True, worldSpace=True, translation=True
                 )
-
-                # 方法1: PMXのローカル軸情報を確認
-                if cmds.attributeQuery(
-                    "mmd_local_x_axis", node=knee_joint, exists=True
-                ):
-                    try:
-                        # 膝のローカルX軸を取得（PMXではX軸が主要な回転軸）
-                        local_x_axis = cmds.getAttr(f"{knee_joint}.mmd_local_x_axis")
-                        # float3/double3属性は[(x, y, z)]の形式で返される
-                        if (
-                            local_x_axis
-                            and isinstance(local_x_axis, list)
-                            and len(local_x_axis) > 0
-                        ):
-                            if (
-                                isinstance(local_x_axis[0], (list, tuple))
-                                and len(local_x_axis[0]) == 3
-                            ):
-                                local_x_axis = local_x_axis[0]
-                            if len(local_x_axis) == 3:
-                                # PMX座標系からMaya座標系に変換
-                                knee_bend_direction = utils.pmx_to_maya_vector(
-                                    local_x_axis
-                                )
-                                knee_bend_direction = utils.normalize_vector(
-                                    knee_bend_direction
-                                )
-                                method_used = "pmx_local_axis"
-                                self.logger.debug(
-                                    f"PMXローカル軸情報を使用: {knee_bend_direction}"
-                                )
-                    except Exception as e:
-                        self.logger.debug(f"PMXローカル軸の取得に失敗: {e}")
-
-                # 方法2: jointOrientから膝の優先屈曲方向を取得
-                if not knee_bend_direction:
-                    try:
-                        joint_orient = [
-                            cmds.getAttr(f"{knee_joint}.jointOrientX"),
-                            cmds.getAttr(f"{knee_joint}.jointOrientY"),
-                            cmds.getAttr(f"{knee_joint}.jointOrientZ"),
-                        ]
-
-                        # jointOrientが設定されている場合
-                        if any(abs(angle) > 0.001 for angle in joint_orient):
-                            # jointOrientから屈曲方向を計算
-                            # Y軸回転が主要な場合、膝は前方（-Z方向）に曲がる
-                            if abs(joint_orient[1]) > abs(joint_orient[0]) and abs(
-                                joint_orient[1]
-                            ) > abs(joint_orient[2]):
-                                # Y軸回転が最も大きい場合、Z軸方向に屈曲
-                                knee_bend_direction = [0, 0, -1]
-                            elif abs(joint_orient[0]) > abs(joint_orient[1]) and abs(
-                                joint_orient[0]
-                            ) > abs(joint_orient[2]):
-                                # X軸回転が最も大きい場合、Y軸方向に屈曲
-                                knee_bend_direction = (
-                                    [0, 1, 0] if joint_orient[0] > 0 else [0, -1, 0]
-                                )
-                            else:
-                                # Z軸回転が最も大きい場合、X軸方向に屈曲
-                                knee_bend_direction = (
-                                    [1, 0, 0] if joint_orient[2] > 0 else [-1, 0, 0]
-                                )
-
-                            knee_bend_direction = utils.normalize_vector(
-                                knee_bend_direction
-                            )
-                            method_used = "joint_orient"
-                            self.logger.debug(
-                                f"jointOrientから屈曲方向を取得: {knee_bend_direction} (orient={joint_orient})"
-                            )
-                    except Exception as e:
-                        self.logger.debug(f"jointOrientの取得に失敗: {e}")
-
-                # 方法3: 実際の膝の位置から屈曲方向を計算
-                if not knee_bend_direction:
-                    # 股関節から膝へのベクトル
-                    hip_to_knee = [knee_pos[i] - start_pos[i] for i in range(3)]
-                    hip_to_ankle = [end_pos[i] - start_pos[i] for i in range(3)]
-                    hip_to_ankle = utils.normalize_vector(hip_to_ankle)
-
-                    # 直線上の最近点を計算
-                    t = sum(
-                        [
-                            (knee_pos[i] - start_pos[i]) * hip_to_ankle[i]
-                            for i in range(3)
-                        ]
-                    )
-                    closest_point = [
-                        start_pos[i] + t * hip_to_ankle[i] for i in range(3)
-                    ]
-
-                    # 膝の屈曲方向
-                    knee_bend_direction = [
-                        knee_pos[i] - closest_point[i] for i in range(3)
-                    ]
-                    bend_length = (
-                        knee_bend_direction[0] ** 2
-                        + knee_bend_direction[1] ** 2
-                        + knee_bend_direction[2] ** 2
-                    ) ** 0.5
-
-                    if bend_length > 0.001:
-                        knee_bend_direction = utils.normalize_vector(
-                            knee_bend_direction
-                        )
-                        method_used = "calculated_from_position"
-                        self.logger.debug(
-                            f"膝の位置から屈曲方向を計算: {knee_bend_direction}"
-                        )
-                    else:
-                        knee_bend_direction = None
-
-                # 方法4: デフォルトの方向を使用
-                if not knee_bend_direction:
-                    # MMDモデルでは通常、膝は前方（Z軸負方向）に曲がる
-                    knee_bend_direction = [0, 0, -1]
-                    method_used = "default_forward"
-                    self.logger.debug("デフォルトの前方向を使用")
+                self.logger.debug("Pole vectorの向きをZ+方向に固定")
 
                 # 脚の長さに基づいてオフセット距離を計算
                 leg_length = (
@@ -507,9 +382,9 @@ class RigConverter:
                     knee_pos[2] + knee_bend_direction[2] * offset_distance,
                 ]
             else:
-                # 膝が見つからない場合は、チェーンの中点の前方に配置
+                # 膝が見つからない場合は、チェーンの中点のZ+方向に配置
                 mid_pos = [(start_pos[i] + end_pos[i]) / 2 for i in range(3)]
-                pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] - 2.0]
+                pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] + 2.0]  # Z+方向に配置
                 method_used = "default_midpoint"
 
             # PoleTargetの位置を設定

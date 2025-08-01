@@ -21,7 +21,13 @@ VMDConverter は、MMD（MikuMikuDance）のモーションデータファイル
 - 30fps基準での時間変換
 - アニメーション範囲の自動設定
 
-### 4. エラーハンドリング
+### 4. アニメーションレイヤーサポート
+- Mayaのアニメーションレイヤーシステムを活用した複数VMDファイルの管理
+- 各VMDファイルを独立したアニメーションレイヤーとしてインポート
+- レイヤーのブレンドモードとウェイトの設定
+- 既存アニメーションの保護（非破壊的なインポート）
+
+### 5. エラーハンドリング
 - 存在しないボーン/モーフ名への対処
 - 不正なキーフレームデータの検出と警告
 - 部分的な変換成功の許可（一部失敗しても継続）
@@ -279,6 +285,20 @@ vmd_parser.parse_file("dance.vmd")
 # 変換実行
 converter = VmdConverter()
 success = converter.convert(vmd_parser, target_namespace="character1")
+
+# アニメーションレイヤーを使用した複数VMDのインポート
+# 1つ目のVMD（ベースモーション）
+vmd_parser1 = VmdParser()
+vmd_parser1.parse_file("base_motion.vmd")
+converter.convert(vmd_parser1, target_namespace="character1", layer_name="BaseMotion")
+
+# 2つ目のVMD（追加モーション）
+vmd_parser2 = VmdParser()
+vmd_parser2.parse_file("additional_motion.vmd") 
+converter.convert(vmd_parser2, target_namespace="character1", layer_name="AdditionalMotion")
+
+# レイヤーの重みを調整
+cmds.animLayer("AdditionalMotion", edit=True, weight=0.5)
 ```
 
 ### 制限事項
@@ -402,6 +422,136 @@ converter = VmdConverter(generate_pole_vectors=True)
 converter = VmdConverter(generate_pole_vectors=False)
 ```
 
+### アニメーションレイヤー機能（2025/08/01追加）
+
+複数のVMDファイルを非破壊的に重ね合わせるため、Mayaのアニメーションレイヤーシステムを活用する機能を実装しました。
+
+#### 機能概要
+- 各VMDファイルを独立したアニメーションレイヤーとしてインポート
+- 既存のアニメーションを保持したまま新しいモーションを追加
+- レイヤーごとにウェイトやブレンドモードを調整可能
+- モーションの合成や部分的な適用が可能
+
+#### 実装詳細
+
+##### 1. アニメーションレイヤーの作成
+```python
+def create_animation_layer(layer_name: str, parent_layer: str = None) -> str:
+    """
+    アニメーションレイヤーを作成
+    
+    Args:
+        layer_name: レイヤー名
+        parent_layer: 親レイヤー名（階層構造を作る場合）
+    
+    Returns:
+        作成されたレイヤー名
+    """
+    # 既存のレイヤーをチェック
+    if cmds.animLayer(layer_name, query=True, exists=True):
+        # 既存レイヤーに追加するか、新規作成するかの選択
+        return layer_name
+    
+    # 新規レイヤー作成
+    layer = cmds.animLayer(layer_name)
+    
+    # 親レイヤーがある場合は階層を設定
+    if parent_layer:
+        cmds.animLayer(layer, edit=True, parent=parent_layer)
+    
+    return layer
+```
+
+##### 2. レイヤーへのキーフレーム設定
+```python
+def set_keyframe_on_layer(node: str, attribute: str, time: float, value: float, layer: str):
+    """
+    特定のアニメーションレイヤーにキーフレームを設定
+    
+    Args:
+        node: ノード名
+        attribute: アトリビュート名
+        time: 時間
+        value: 値
+        layer: レイヤー名
+    """
+    # レイヤーをアクティブにする
+    cmds.animLayer(layer, edit=True, selected=True)
+    
+    # レイヤーにアトリビュートを追加
+    cmds.animLayer(layer, edit=True, addAttribute=f"{node}.{attribute}")
+    
+    # キーフレームを設定
+    cmds.setKeyframe(node, attribute=attribute, time=time, value=value, animLayer=layer)
+```
+
+##### 3. レイヤーのブレンドモード設定
+```python
+# Override: 完全に上書き（デフォルト）
+cmds.animLayer(layer_name, edit=True, override=True)
+
+# Additive: 加算合成
+cmds.animLayer(layer_name, edit=True, override=False)
+
+# ウェイト設定（0.0〜1.0）
+cmds.animLayer(layer_name, edit=True, weight=0.7)
+```
+
+#### 使用例
+```python
+# 基本的な使用方法
+converter = VmdConverter()
+
+# ベースアニメーション
+converter.convert(vmd_base, layer_name="BaseAnimation")
+
+# 上半身のみのアニメーション（Additiveモード）
+converter.convert(vmd_upper, layer_name="UpperBodyOverride", blend_mode="additive")
+
+# 表情アニメーション（別レイヤー）
+converter.convert(vmd_facial, layer_name="FacialAnimation")
+
+# レイヤーの調整
+cmds.animLayer("UpperBodyOverride", edit=True, weight=0.8)
+cmds.animLayer("FacialAnimation", edit=True, mute=False)  # ミュート解除
+```
+
+#### 高度な使用例
+```python
+# 複数キャラクターへの同じモーション適用
+characters = ["character1", "character2", "character3"]
+for char in characters:
+    converter.convert(vmd_data, 
+                     target_namespace=char,
+                     layer_name=f"{char}_Dancing")
+
+# 時間オフセット付きインポート
+converter.convert(vmd_data,
+                 layer_name="DelayedMotion",
+                 time_offset=30)  # 30フレーム遅延
+
+# 部分的なボーンのみアニメーション
+converter.convert(vmd_data,
+                 layer_name="ArmsOnly",
+                 bone_filter=["左腕", "右腕", "左ひじ", "右ひじ"])
+```
+
+#### 技術的な考慮事項
+
+##### レイヤーの優先順位
+- 上位レイヤーが下位レイヤーを上書き
+- Overrideモードでは完全に置き換え
+- Additiveモードでは値を加算
+
+##### パフォーマンス
+- 多数のレイヤーは評価速度に影響
+- 不要なレイヤーはミュートまたは削除を推奨
+- ベイク機能で最終結果を単一レイヤーに統合可能
+
+##### 互換性
+- Maya 2016以降で使用可能
+- FBXエクスポート時はベイクが必要な場合あり
+
 #### 制限事項
 - 腕のIKには対応していない（通常MMDでは腕IKを使用しないため）
 - 物理演算の影響は考慮されない
@@ -412,3 +562,5 @@ converter = VmdConverter(generate_pole_vectors=False)
 - アニメーションがずれる場合: FPS設定の確認
 - 回転が反転する場合: 座標系変換の確認
 - PoleVectorが不自然な場合: 初期ポーズの膝の向きを確認
+- レイヤーが適用されない場合: レイヤーのミュート状態とウェイトを確認
+- アニメーションが重複する場合: レイヤーのブレンドモード（Override/Additive）を確認
