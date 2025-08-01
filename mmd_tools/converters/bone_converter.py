@@ -16,6 +16,7 @@ from ..core.constants import (
     ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_LIMIT_ANGLE,
+    ATTR_MMD_IK_LINKS,
     ATTR_MMD_GRANT_RATE,
     ATTR_MMD_FIXED_AXIS,
     ATTR_MMD_LOCAL_X_AXIS,
@@ -327,7 +328,19 @@ class BoneConverter:
             # IK属性
             if bone.get_flag(PmxBoneFlag.IK):
                 attrs[ATTR_MMD_IK_TARGET_INDEX] = bone.ik_target_bone_index
-                # attrs["pmx_ik_links"] = bone.ik_links
+                
+                # IKリンクをJSON形式で保存
+                import json
+                ik_links_data = []
+                for ik_link in bone.ik_links:
+                    link_data = {
+                        "bone": ik_link.ik_bone_index,
+                        "limit_enabled": bool(ik_link.angle_limit),
+                        "lower_limit": list(ik_link.limit_min) if ik_link.angle_limit else [0.0, 0.0, 0.0],
+                        "upper_limit": list(ik_link.limit_max) if ik_link.angle_limit else [0.0, 0.0, 0.0],
+                    }
+                    ik_links_data.append(link_data)
+                attrs[ATTR_MMD_IK_LINKS] = json.dumps(ik_links_data)
 
             if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
                 attrs[ATTR_MMD_CONNECT_BONE_INDEX] = bone.connect_bone_index

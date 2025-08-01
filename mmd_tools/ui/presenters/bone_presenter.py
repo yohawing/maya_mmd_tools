@@ -5,6 +5,7 @@ from ...core.maya_utils import (
     get_parent_mmd_root,
     set_custom_attributes,
     set_attribute,
+    get_attribute,
 )
 from ...core.constants import (
     ATTR_MMD_BONE_NAME,
@@ -13,7 +14,7 @@ from ...core.constants import (
     ATTR_MMD_DEFORM_LAYER,
     ATTR_MMD_BONE_OFFSET,
     ATTR_MMD_CONNECTION_BONE,
-    ATTR_MMD_IK_TARGET,
+    ATTR_MMD_IK_TARGET_INDEX,
     ATTR_MMD_IK_LOOP,
     ATTR_MMD_IK_LIMIT_ANGLE,
     ATTR_MMD_IK_LINKS,
@@ -104,7 +105,6 @@ class BonePresenter:
 
     def load_bones(self):
         """ボーンリストをロード"""
-        logger.debug("Loading bones...")
         self.view.bone_list.clear()
         self.bone_list_items.clear()
         self.all_bones.clear()
@@ -255,7 +255,6 @@ class BonePresenter:
 
         if joints_to_select:
             cmds.select(joints_to_select, replace=True)
-            logger.debug(f"Selected in Maya: {joints_to_select}")
 
     def load_bone_properties(self):
         """選択されたボーンのプロパティをロード"""
@@ -321,9 +320,14 @@ class BonePresenter:
                 offset = self._get_attr_safe(
                     self.current_bone, ATTR_MMD_BONE_OFFSET, [0.0, -1.0, 0.0]
                 )
-                self.view.offset_x_spin.setValue(offset[0])
-                self.view.offset_y_spin.setValue(offset[1])
-                self.view.offset_z_spin.setValue(offset[2])
+                if isinstance(offset, (list, tuple)) and len(offset) >= 3:
+                    self.view.offset_x_spin.setValue(float(offset[0]))
+                    self.view.offset_y_spin.setValue(float(offset[1]))
+                    self.view.offset_z_spin.setValue(float(offset[2]))
+                else:
+                    self.view.offset_x_spin.setValue(0.0)
+                    self.view.offset_y_spin.setValue(-1.0)
+                    self.view.offset_z_spin.setValue(0.0)
                 self.view.connection_bone_edit.clear()
             else:
                 # ボーン接続
@@ -384,8 +388,16 @@ class BonePresenter:
         self.view.ik_links_group.setVisible(True)
 
         # IKターゲット
-        ik_target = self._get_attr_safe(self.current_bone, ATTR_MMD_IK_TARGET, "")
-        display_name = self._get_bone_display_name(ik_target)
+        ik_target_index = self._get_attr_safe(
+            self.current_bone, ATTR_MMD_IK_TARGET_INDEX, -1
+        )
+        if isinstance(ik_target_index, int) and 0 <= ik_target_index < len(
+            self.all_bones
+        ):
+            ik_target = self.all_bones[ik_target_index]
+            display_name = self._get_bone_display_name(ik_target)
+        else:
+            display_name = ""
         self.view.ik_target_edit.setText(display_name)
 
         # IKループ回数
@@ -408,10 +420,19 @@ class BonePresenter:
 
         # IKリンクデータを取得
         ik_links = self._get_attr_safe(self.current_bone, ATTR_MMD_IK_LINKS, [])
+        logger.debug(f"Loading IK links for {self.current_bone}: {ik_links}")
 
         for link_data in ik_links:
             if isinstance(link_data, dict):
-                bone_name = link_data.get("bone", "")
+                bone_index = link_data.get("bone", "")
+                logger.debug(f"Processing IK link with bone index: {bone_index}")
+
+                # ボーンインデックスから実際のボーン名を取得
+                if isinstance(bone_index, int) and bone_index < len(self.all_bones):
+                    bone_name = self.all_bones[bone_index]
+                else:
+                    bone_name = str(bone_index)
+
                 display_name = self._get_bone_display_name(bone_name)
                 self._add_ik_link_row(
                     display_name,
@@ -482,20 +503,44 @@ class BonePresenter:
         # ローカル軸
         self.view.local_axis_group.setVisible(self.view.local_axis_check.isChecked())
         if self.view.local_axis_check.isChecked():
-            local_x = self._get_attr_safe(
-                self.current_bone, ATTR_MMD_LOCAL_X_AXIS, [1.0, 0.0, 0.0]
-            )
-            local_z = self._get_attr_safe(
-                self.current_bone, ATTR_MMD_LOCAL_Z_AXIS, [0.0, 0.0, 1.0]
-            )
+            # maya_utilsのget_attributeを使用
+            local_x = get_attribute(self.current_bone, ATTR_MMD_LOCAL_X_AXIS)
+            if local_x is None:
+                local_x = [1.0, 0.0, 0.0]
 
-            self.view.local_x_axis_x_spin.setValue(local_x[0])
-            self.view.local_x_axis_y_spin.setValue(local_x[1])
-            self.view.local_x_axis_z_spin.setValue(local_x[2])
+            local_z = get_attribute(self.current_bone, ATTR_MMD_LOCAL_Z_AXIS)
+            if local_z is None:
+                local_z = [0.0, 0.0, 1.0]
 
-            self.view.local_z_axis_x_spin.setValue(local_z[0])
-            self.view.local_z_axis_y_spin.setValue(local_z[1])
-            self.view.local_z_axis_z_spin.setValue(local_z[2])
+            # リストまたはタプルであることを確認し、リストに変換
+            if isinstance(local_x, (list, tuple)):
+                local_x = list(local_x)
+            else:
+                logger.warning(f"local_x is not a list or tuple: {type(local_x)}")
+                local_x = [1.0, 0.0, 0.0]
+
+            if isinstance(local_z, (list, tuple)):
+                local_z = list(local_z)
+            else:
+                logger.warning(f"local_z is not a list or tuple: {type(local_z)}")
+                local_z = [0.0, 0.0, 1.0]
+
+            # 各要素を個別に取得して型を確認
+            x_val = float(local_x[0]) if len(local_x) > 0 else 1.0
+            y_val = float(local_x[1]) if len(local_x) > 1 else 0.0
+            z_val = float(local_x[2]) if len(local_x) > 2 else 0.0
+
+            self.view.local_x_axis_x_spin.setValue(x_val)
+            self.view.local_x_axis_y_spin.setValue(y_val)
+            self.view.local_x_axis_z_spin.setValue(z_val)
+
+            x_val = float(local_z[0]) if len(local_z) > 0 else 0.0
+            y_val = float(local_z[1]) if len(local_z) > 1 else 0.0
+            z_val = float(local_z[2]) if len(local_z) > 2 else 1.0
+
+            self.view.local_z_axis_x_spin.setValue(x_val)
+            self.view.local_z_axis_y_spin.setValue(y_val)
+            self.view.local_z_axis_z_spin.setValue(z_val)
 
     def _store_bone_data(self):
         """現在のボーンデータを保存（リセット用）"""
@@ -676,7 +721,6 @@ class BonePresenter:
                 # IKターゲット（表示名から実際のボーン名を抽出）
                 display_name = self.view.ik_target_edit.text()
                 actual_bone = self._extract_bone_name(display_name)
-                attributes[ATTR_MMD_IK_TARGET] = actual_bone
                 attributes[ATTR_MMD_IK_LOOP] = self.view.ik_loop_spin.value()
                 attributes[ATTR_MMD_IK_LIMIT_ANGLE] = math.radians(
                     self.view.ik_limit_angle_spin.value()
@@ -887,18 +931,29 @@ class BonePresenter:
                     import json
 
                     try:
-                        return json.loads(value)
-                    except:
+                        parsed_value = json.loads(value)
+                        logger.debug(
+                            f"Successfully parsed JSON for {attr}: {parsed_value}"
+                        )
+                        return parsed_value
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to parse JSON for {attr}: {e}, value: {value}"
+                        )
                         return default
                 # double3型の場合、タプルをリストに変換
-                if (
-                    isinstance(value, tuple)
-                    and len(value) == 1
-                    and isinstance(value[0], tuple)
-                ):
-                    return list(value[0])
+                if isinstance(value, tuple):
+                    if len(value) == 1 and isinstance(value[0], (tuple, list)):
+                        # ((1.0, 0.0, 0.0),) の形式
+                        return list(value[0])
+                    elif len(value) == 3 and all(
+                        isinstance(v, (int, float)) for v in value
+                    ):
+                        # (1.0, 0.0, 0.0) の形式
+                        return list(value)
                 return value if value is not None else default
-        except:
+        except Exception as e:
+            logger.debug(f"Failed to get attribute {attr} from {node}: {e}")
             pass
         return default
 
