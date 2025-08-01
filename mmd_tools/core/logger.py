@@ -56,9 +56,14 @@ class MayaLogger:
         self.name = name
         self._logger = logging.getLogger(name)
         self._logger.setLevel(level)
+        
+        # 親ロガーへの伝播を確実に有効にする
+        self._logger.propagate = True
 
         # 重複ハンドラーを防ぐため、既存のハンドラーをクリア
-        self._logger.handlers.clear()
+        # Note: _loggersはget_logger関数で管理されるため、ここではシンプルにクリア
+        if not self._logger.handlers:
+            self._logger.handlers.clear()
 
         # 設定に基づいてハンドラーを追加
         self._setup_handlers()

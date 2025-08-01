@@ -7,7 +7,7 @@ QT_BINDING = ""
 
 try:
     from PySide6.QtCore import QObject, Signal, Qt, QSettings, QTimer
-    from PySide6.QtGui import QDoubleValidator, QColor
+    from PySide6.QtGui import QDoubleValidator, QColor, QTextCursor, QTextCharFormat
     from PySide6.QtWidgets import (
         QApplication,
         QMainWindow,
@@ -44,6 +44,10 @@ try:
         QHeaderView,
         QMessageBox,
         QInputDialog,
+        QToolBar,
+        QAction,
+        QMenuBar,
+        QMenu,
     )
     from shiboken6 import wrapInstance
 
@@ -51,7 +55,7 @@ try:
 
 except ImportError:
     from PySide2.QtCore import QObject, Signal, Qt, QSettings, QTimer
-    from PySide2.QtGui import QDoubleValidator, QColor
+    from PySide2.QtGui import QDoubleValidator, QColor, QTextCursor, QTextCharFormat
     from PySide2.QtWidgets import (
         QApplication,
         QMainWindow,
@@ -88,6 +92,10 @@ except ImportError:
         QHeaderView,
         QMessageBox,
         QInputDialog,
+        QToolBar,
+        QAction,
+        QMenuBar,
+        QMenu,
     )
     from shiboken2 import wrapInstance
 

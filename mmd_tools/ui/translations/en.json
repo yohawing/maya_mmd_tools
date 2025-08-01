@@ -16,6 +16,10 @@
     "import_settings": "Import",
     "export_settings": "Export"
   },
+  "menus": {
+    "view": "View",
+    "log_viewer": "Log Viewer"
+  },
   "buttons": {
     "import": "Import",
     "export": "Export",
@@ -32,7 +36,13 @@
     "select": "Select",
     "clear": "Clear",
     "save": "Save",
-    "load": "Load"
+    "load": "Load",
+    "search": "Search",
+    "previous": "Previous",
+    "next": "Next",
+    "auto_scroll": "Auto Scroll",
+    "timestamp": "Timestamp",
+    "filter": "Filter"
   },
   "labels": {
     "file_path": "File Path:",
@@ -66,7 +76,10 @@
     "type": "Type:",
     "selected": "Selected:",
     "available": "Available:",
-    "offset_count": "Offset Count"
+    "offset_count": "Offset Count",
+    "log_entries": "Logs",
+    "search_results": "results",
+    "not_found": "Not found"
   },
   "tooltips": {
     "import_file": "Import PMD/PMX/VMD files",

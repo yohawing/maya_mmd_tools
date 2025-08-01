@@ -16,6 +16,10 @@
     "import_settings": "匯入設定",
     "export_settings": "匯出設定"
   },
+  "menus": {
+    "view": "檢視",
+    "log_viewer": "記錄檢視器"
+  },
   "buttons": {
     "import": "匯入",
     "export": "匯出",
@@ -66,7 +70,10 @@
     "type": "類型:",
     "selected": "已選擇:",
     "available": "可使用:",
-    "offset_count": "偏移數量"
+    "offset_count": "偏移數量",
+    "log_entries": "記錄",
+    "search_results": "筆",
+    "not_found": "找不到"
   },
   "tooltips": {
     "import_file": "匯入PMD/PMX/VMD檔案",
