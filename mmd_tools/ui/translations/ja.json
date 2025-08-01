@@ -250,7 +250,7 @@
     "log_level": "ログレベル:",
     "log_file": "ログファイル:",
     "export_format": "エクスポート形式:",
-    "log_entries": "ログ:",
+    "log_entries": "ログ",
     "search_results": "件",
     "not_found": "見つかりません"
   },

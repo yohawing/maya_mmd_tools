@@ -243,7 +243,10 @@
     "language": "语言:",
     "log_level": "日志级别:",
     "log_file": "日志文件:",
-    "export_format": "导出格式:"
+    "export_format": "导出格式:",
+    "log_entries": "日志",
+    "search_results": "条",
+    "not_found": "未找到"
   },
   "actions": {
     "import_model": "导入模型",

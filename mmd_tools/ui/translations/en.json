@@ -250,7 +250,7 @@
     "log_level": "Log Level:",
     "log_file": "Log File:",
     "export_format": "Export Format:",
-    "log_entries": "Logs:",
+    "log_entries": "Logs",
     "search_results": "results",
     "not_found": "Not found"
   },

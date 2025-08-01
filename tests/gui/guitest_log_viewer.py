@@ -1,11 +1,13 @@
 """
-ログビューアの統合テスト
+ログビューアのGUIテスト
+
+Maya環境内で実行されることを前提としたGUIテスト。
+run_gui_tests.pyから実行してください。
 """
 
 import unittest
 import sys
 import os
-from unittest.mock import MagicMock, patch
 
 # パスをシステムに追加
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -15,16 +17,14 @@ from mmd_tools.ui.qt_compat import QApplication
 from datetime import datetime
 
 
-class TestEnhancedLogViewer(unittest.TestCase):
+class GuiTestEnhancedLogViewer(unittest.TestCase):
     """拡張版ログビューアのテスト"""
     
     @classmethod
     def setUpClass(cls):
         """テストクラスのセットアップ"""
-        if not QApplication.instance():
-            cls.app = QApplication(sys.argv)
-        else:
-            cls.app = QApplication.instance()
+        # Maya環境ではQApplicationは既に存在するはず
+        cls.app = QApplication.instance()
     
     def setUp(self):
         """各テストのセットアップ"""

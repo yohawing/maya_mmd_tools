@@ -243,7 +243,10 @@
     "language": "語言:",
     "log_level": "記錄層級:",
     "log_file": "記錄檔案:",
-    "export_format": "匯出格式:"
+    "export_format": "匯出格式:",
+    "log_entries": "記錄",
+    "search_results": "筆",
+    "not_found": "找不到"
   },
   "actions": {
     "import_model": "匯入模型",
