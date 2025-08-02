@@ -100,9 +100,9 @@ class TestPmxDumper(unittest.TestCase):
         self.assertIn("Rigid Bodies:", result)
         self.assertIn("Joints:", result)
 
-    def test_dump_vertices_verbose(self):
-        """頂点情報のダンプテスト（verboseモード）"""
-        result = self.dumper.dump(sections=["vertices"], verbose=True)
+    def test_dump_vertices(self):
+        """頂点情報のダンプテスト"""
+        result = self.dumper.dump(sections=["vertices"])
         
         if self.pmx_parser.vertices:
             # 頂点情報の確認
@@ -152,14 +152,18 @@ class TestPmxDumper(unittest.TestCase):
         # エラーが適切に処理されているか確認
         self.assertIn("[ERROR]", result)
 
-    def test_verbose_mode(self):
-        """詳細モードのテスト"""
-        result_normal = self.dumper.dump(sections=["header"], verbose=False)
-        result_verbose = self.dumper.dump(sections=["header"], verbose=True)
+    def test_header_contains_index_sizes(self):
+        """ヘッダー情報にインデックスサイズが含まれているかテスト"""
+        result = self.dumper.dump(sections=["header"])
         
-        # verboseモードでより多くの情報が含まれているか確認
-        self.assertGreater(len(result_verbose), len(result_normal))
-        self.assertIn("Index Sizes:", result_verbose)
+        # インデックスサイズ情報が含まれているか確認
+        self.assertIn("Index Sizes:", result)
+        self.assertIn("Vertex:", result)
+        self.assertIn("Texture:", result)
+        self.assertIn("Material:", result)
+        self.assertIn("Bone:", result)
+        self.assertIn("Morph:", result)
+        self.assertIn("Rigid Body:", result)
 
 
 if __name__ == "__main__":
