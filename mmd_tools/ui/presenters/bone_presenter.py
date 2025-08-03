@@ -3,6 +3,7 @@ import math
 from ...core.logger import get_logger
 from ...core.maya_utils import (
     get_parent_mmd_root,
+    object_exists,
     set_custom_attributes,
     set_attribute,
     get_attribute,
@@ -38,6 +39,7 @@ from ..qt_compat import (
     QInputDialog,
     QMessageBox,
 )
+from mmd_tools.core import maya_utils
 
 logger = get_logger(__name__)
 
@@ -149,7 +151,7 @@ class BonePresenter:
         # mmd_bone_indexでソート
         joints_with_index = []
         for joint in joints:
-            bone_index = self._get_attr_safe(joint, ATTR_MMD_BONE_INDEX, -1)
+            bone_index = get_attribute(joint, ATTR_MMD_BONE_INDEX)
             joints_with_index.append((joint, bone_index))
 
         # インデックスでソート（インデックスがない場合は最後に）
@@ -162,9 +164,9 @@ class BonePresenter:
         self.all_bones = sorted_joints
         for idx, joint in enumerate(sorted_joints):
             # ボーン情報を取得
-            name_jp = self._get_attr_safe(joint, ATTR_MMD_BONE_NAME, joint)
-            name_en = self._get_attr_safe(joint, ATTR_MMD_BONE_NAME_EN, "")
-            bone_index = self._get_attr_safe(joint, ATTR_MMD_BONE_INDEX, -1)
+            name_jp = get_attribute(joint, ATTR_MMD_BONE_NAME)
+            name_en = get_attribute(joint, ATTR_MMD_BONE_NAME_EN)
+            bone_index = get_attribute(joint, ATTR_MMD_BONE_INDEX)
 
             # リストアイテムの表示形式: "インデックス:日本語名（Maya名）"
             if bone_index >= 0:
@@ -184,7 +186,7 @@ class BonePresenter:
 
     def _get_bone_type(self, joint):
         """ボーンのタイプを判定"""
-        flags = self._get_attr_safe(joint, ATTR_MMD_BONE_FLAGS, 0)
+        flags = get_attribute(joint, ATTR_MMD_BONE_FLAGS)
 
         if flags & PmxBoneFlag.IK:
             return "IK"
@@ -210,8 +212,8 @@ class BonePresenter:
             for joint, item in self.bone_list_items.items():
                 # 表示テキストから検索
                 display_text = item.text().lower()
-                name_jp = self._get_attr_safe(joint, ATTR_MMD_BONE_NAME, joint).lower()
-                name_en = self._get_attr_safe(joint, ATTR_MMD_BONE_NAME_EN, "").lower()
+                name_jp = get_attribute(joint, ATTR_MMD_BONE_NAME).lower()
+                name_en = get_attribute(joint, ATTR_MMD_BONE_NAME_EN).lower()
 
                 if (
                     text_lower in display_text
@@ -230,7 +232,7 @@ class BonePresenter:
             return
 
         self.current_bone = current.data(Qt.UserRole)
-        if not self.current_bone or not cmds.objExists(self.current_bone):
+        if not self.current_bone or not object_exists(self.current_bone):
             self.view.set_bone_details_enabled(False)
             return
 
@@ -251,7 +253,7 @@ class BonePresenter:
         joints_to_select = []
         for item in selected_items:
             joint = item.data(Qt.UserRole)
-            if joint and cmds.objExists(joint):
+            if joint and object_exists(joint):
                 joints_to_select.append(joint)
 
         if joints_to_select:
@@ -266,12 +268,10 @@ class BonePresenter:
         try:
             # 基本情報
             self.view.bone_name_jp_edit.setText(
-                self._get_attr_safe(
-                    self.current_bone, ATTR_MMD_BONE_NAME, self.current_bone
-                )
+                get_attribute(self.current_bone, ATTR_MMD_BONE_NAME)
             )
             self.view.bone_name_en_edit.setText(
-                self._get_attr_safe(self.current_bone, ATTR_MMD_BONE_NAME_EN, "")
+                get_attribute(self.current_bone, ATTR_MMD_BONE_NAME_EN)
             )
 
             # 親ボーン
@@ -288,15 +288,11 @@ class BonePresenter:
 
             # 変形階層
             self.view.deform_layer_spin.setValue(
-                self._get_attr_safe(self.current_bone, ATTR_MMD_DEFORM_LAYER, 0)
+                get_attribute(self.current_bone, ATTR_MMD_DEFORM_LAYER)
             )
 
             # ボーンフラグ
-            flags = self._get_attr_safe(
-                self.current_bone,
-                ATTR_MMD_BONE_FLAGS,
-                PmxBoneFlag.ROTATABLE | PmxBoneFlag.DISPLAY,
-            )  # デフォルト: 回転可能+表示
+            flags = get_attribute(self.current_bone, ATTR_MMD_BONE_FLAGS)
 
             # 基本フラグ
             self.view.rotatable_check.setChecked(bool(flags & PmxBoneFlag.ROTATABLE))
@@ -318,9 +314,7 @@ class BonePresenter:
 
             if connection_type == 0:
                 # 座標オフセット
-                offset = self._get_attr_safe(
-                    self.current_bone, ATTR_MMD_BONE_OFFSET, [0.0, -1.0, 0.0]
-                )
+                offset = get_attribute(self.current_bone, ATTR_MMD_BONE_OFFSET)
                 if isinstance(offset, (list, tuple)) and len(offset) >= 3:
                     self.view.offset_x_spin.setValue(float(offset[0]))
                     self.view.offset_y_spin.setValue(float(offset[1]))
@@ -332,8 +326,8 @@ class BonePresenter:
                 self.view.connection_bone_edit.clear()
             else:
                 # ボーン接続
-                connection_bone = self._get_attr_safe(
-                    self.current_bone, ATTR_MMD_CONNECTION_BONE, ""
+                connection_bone = get_attribute(
+                    self.current_bone, ATTR_MMD_CONNECTION_BONE
                 )
                 # 接続先ボーンの表示名を作成
                 display_name = self._get_bone_display_name(connection_bone)
@@ -359,9 +353,7 @@ class BonePresenter:
 
             # 外部親
             if flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM:
-                key = self._get_attr_safe(
-                    self.current_bone, ATTR_MMD_EXTERNAL_PARENT_KEY, -1
-                )
+                key = get_attribute(self.current_bone, ATTR_MMD_EXTERNAL_PARENT_KEY)
                 self.view.external_parent_key_spin.setValue(key)
 
             # 初期状態の表示/非表示を設定
@@ -389,9 +381,7 @@ class BonePresenter:
         self.view.ik_links_group.setVisible(True)
 
         # IKターゲット
-        ik_target_index = self._get_attr_safe(
-            self.current_bone, ATTR_MMD_IK_TARGET_INDEX, -1
-        )
+        ik_target_index = get_attribute(self.current_bone, ATTR_MMD_IK_TARGET_INDEX)
         if isinstance(ik_target_index, int) and 0 <= ik_target_index < len(
             self.all_bones
         ):
@@ -402,13 +392,11 @@ class BonePresenter:
         self.view.ik_target_edit.setText(display_name)
 
         # IKループ回数
-        ik_loop = self._get_attr_safe(self.current_bone, ATTR_MMD_IK_LOOP, 10)
+        ik_loop = get_attribute(self.current_bone, ATTR_MMD_IK_LOOP)
         self.view.ik_loop_spin.setValue(ik_loop)
 
         # 制限角度（ラジアンから度に変換）
-        ik_limit_rad = self._get_attr_safe(
-            self.current_bone, ATTR_MMD_IK_LIMIT_ANGLE, 2.0
-        )
+        ik_limit_rad = get_attribute(self.current_bone, ATTR_MMD_IK_LIMIT_ANGLE)
         ik_limit_deg = math.degrees(ik_limit_rad)
         self.view.ik_limit_angle_spin.setValue(ik_limit_deg)
 
@@ -477,16 +465,16 @@ class BonePresenter:
             return
 
         # 付与親
-        grant_parent = self._get_attr_safe(self.current_bone, ATTR_MMD_GRANT_PARENT, "")
+        grant_parent = get_attribute(self.current_bone, ATTR_MMD_GRANT_PARENT)
         display_name = self._get_bone_display_name(grant_parent)
         self.view.grant_parent_edit.setText(display_name)
 
         # 付与率
-        grant_rate = self._get_attr_safe(self.current_bone, ATTR_MMD_GRANT_RATE, 1.0)
+        grant_rate = get_attribute(self.current_bone, ATTR_MMD_GRANT_RATE)
         self.view.grant_rate_spin.setValue(grant_rate)
 
         # ローカル付与
-        flags = self._get_attr_safe(self.current_bone, ATTR_MMD_BONE_FLAGS, 0)
+        flags = get_attribute(self.current_bone, ATTR_MMD_BONE_FLAGS)
         self.view.local_grant_check.setChecked(bool(flags & 0x0080))
 
     def _load_axis_settings(self):
@@ -497,14 +485,20 @@ class BonePresenter:
             fixed_axis = self._get_attr_safe(
                 self.current_bone, ATTR_MMD_FIXED_AXIS, [0.0, 0.0, 1.0]
             )
-            self.view.fixed_axis_x_spin.setValue(fixed_axis[0])
-            self.view.fixed_axis_y_spin.setValue(fixed_axis[1])
-            self.view.fixed_axis_z_spin.setValue(fixed_axis[2])
+            # リストまたはタプルであることを確認
+            if isinstance(fixed_axis, (list, tuple)) and len(fixed_axis) >= 3:
+                self.view.fixed_axis_x_spin.setValue(float(fixed_axis[0]))
+                self.view.fixed_axis_y_spin.setValue(float(fixed_axis[1]))
+                self.view.fixed_axis_z_spin.setValue(float(fixed_axis[2]))
+            else:
+                # デフォルト値を使用
+                self.view.fixed_axis_x_spin.setValue(0.0)
+                self.view.fixed_axis_y_spin.setValue(0.0)
+                self.view.fixed_axis_z_spin.setValue(1.0)
 
         # ローカル軸
         self.view.local_axis_group.setVisible(self.view.local_axis_check.isChecked())
         if self.view.local_axis_check.isChecked():
-            # maya_utilsのget_attributeを使用
             local_x = get_attribute(self.current_bone, ATTR_MMD_LOCAL_X_AXIS)
             if local_x is None:
                 local_x = [1.0, 0.0, 0.0]
@@ -819,9 +813,7 @@ class BonePresenter:
             # リストビューの表示を更新
             if self.current_bone in self.bone_list_items:
                 item = self.bone_list_items[self.current_bone]
-                bone_index = self._get_attr_safe(
-                    self.current_bone, ATTR_MMD_BONE_INDEX, -1
-                )
+                bone_index = get_attribute(self.current_bone, ATTR_MMD_BONE_INDEX)
                 name_jp = self.view.bone_name_jp_edit.text()
                 name_en = self.view.bone_name_en_edit.text()
 
@@ -903,11 +895,11 @@ class BonePresenter:
 
     def _get_bone_display_name(self, bone_name):
         """ボーンの表示名を取得（Maya名:日本語名）"""
-        if not bone_name or not cmds.objExists(bone_name):
+        if not bone_name or not object_exists(bone_name):
             return bone_name or ""
 
         # MMD日本語名を取得
-        name_jp = self._get_attr_safe(bone_name, ATTR_MMD_BONE_NAME, "")
+        name_jp = get_attribute(bone_name, ATTR_MMD_BONE_NAME)
         if name_jp and name_jp != bone_name:
             return f"{bone_name}:{name_jp}"
         return bone_name
@@ -926,9 +918,9 @@ class BonePresenter:
         """属性を安全に取得"""
         try:
             if cmds.attributeQuery(attr, node=node, exists=True):
-                value = cmds.getAttr(f"{node}.{attr}")
+                value = get_attribute(node, attr)
                 # IKリンクの場合、JSON文字列をパース
-                if attr == "mmd_ik_links" and isinstance(value, str):
+                if attr == ATTR_MMD_IK_LINKS and isinstance(value, str):
                     import json
 
                     try:
@@ -942,16 +934,6 @@ class BonePresenter:
                             f"Failed to parse JSON for {attr}: {e}, value: {value}"
                         )
                         return default
-                # double3型の場合、タプルをリストに変換
-                if isinstance(value, tuple):
-                    if len(value) == 1 and isinstance(value[0], (tuple, list)):
-                        # ((1.0, 0.0, 0.0),) の形式
-                        return list(value[0])
-                    elif len(value) == 3 and all(
-                        isinstance(v, (int, float)) for v in value
-                    ):
-                        # (1.0, 0.0, 0.0) の形式
-                        return list(value)
                 return value if value is not None else default
         except Exception as e:
             logger.debug(f"Failed to get attribute {attr} from {node}: {e}")
