@@ -78,7 +78,7 @@ class VmdConverter:
     def __init__(self):
         self.bone_name_mapping = {}  # VMDボーン名 -> Mayaジョイント名
         self.morph_name_mapping = {}  # VMDモーフ名 -> Mayaブレンドシェイプターゲット名
-        self.fps = 30.0
+        self.fps = 60.0
         self.logger = get_logger()
     
     def convert(self, vmd_data: VmdParser, target_namespace: str = None) -> bool:

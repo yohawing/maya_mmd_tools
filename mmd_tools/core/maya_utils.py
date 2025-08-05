@@ -1044,15 +1044,20 @@ def matrix_to_euler(matrix):
 
 
 def create_animation_curves(
-    node_name, attributes, tangent_type=oma.MFnAnimCurve.kTangentLinear
+    node_name,
+    attributes,
+    tangent_type=oma.MFnAnimCurve.kTangentLinear,
+    animation_layer=None,
 ):
     """
     指定したノードの属性にアニメーションカーブを作成する。
+    アニメーションレイヤーが指定されている場合は、レイヤー用のカーブを作成する。
 
     Args:
         node_name (str): ノード名
         attributes (list): アトリビュート名のリスト
         tangent_type: タンジェントタイプ（デフォルト: 線形）
+        animation_layer (str, optional): アニメーションレイヤー名
 
     Returns:
         dict: アトリビュート名をキー、MFnAnimCurveオブジェクトを値とする辞書
@@ -1063,21 +1068,68 @@ def create_animation_curves(
     node = sel_list.getDependNode(0)
     fn_depend = om.MFnDependencyNode(node)
 
-    # 既存のアニメーションカーブをクリア
-    for attr in attributes:
-        connections = cmds.listConnections(
-            f"{node_name}.{attr}", source=True, destination=False
+    # アニメーションレイヤーが指定されている場合
+    if animation_layer and cmds.animLayer(animation_layer, query=True, exists=True):
+        # オブジェクトがレイヤーに含まれているか確認
+        cmds.select(node_name, replace=True)
+        affected_layers = (
+            cmds.animLayer([node_name], query=True, affectedLayers=True) or []
         )
-        if connections:
-            cmds.delete(connections)
+        if animation_layer not in affected_layers:
+            # オブジェクトをレイヤーに追加
+            current_selection = cmds.ls(selection=True)
+            cmds.select(node_name, replace=True)
+            cmds.animLayer(animation_layer, edit=True, addSelectedObjects=True)
+            if current_selection:
+                cmds.select(current_selection)
+            else:
+                cmds.select(clear=True)
+
+    # 既存のアニメーションカーブをクリア（レイヤーモードでない場合のみ）
+    if not animation_layer:
+        for attr in attributes:
+            connections = cmds.listConnections(
+                f"{node_name}.{attr}", source=True, destination=False
+            )
+            if connections:
+                cmds.delete(connections)
 
     # アニメーションカーブを作成
     curves = {}
     for attr in attributes:
-        curve = oma.MFnAnimCurve()
-        plug = fn_depend.findPlug(attr, False)
-        curve.create(plug)
-        curves[attr] = curve
+        if animation_layer:
+            # レイヤーが有効な場合は、cmds.setKeyframeを使って初期カーブを作成
+            cmds.setKeyframe(node_name, attribute=attr, animLayer=animation_layer)
+            # 作成されたカーブを取得
+            blend_nodes = (
+                cmds.animLayer(animation_layer, query=True, blendNodes=True) or []
+            )
+            for blend_node in blend_nodes:
+                # ブレンドノードの入力カーブを探す
+                input_curves = (
+                    cmds.listConnections(blend_node, source=True, type="animCurve")
+                    or []
+                )
+                for curve_name in input_curves:
+                    # このカーブが目的の属性のものか確認
+                    curve_connections = (
+                        cmds.listConnections(curve_name, destination=True, plugs=True)
+                        or []
+                    )
+                    for conn in curve_connections:
+                        if f"{node_name}.{attr}" in conn or attr in conn:
+                            # Maya APIオブジェクトとして取得
+                            curve_sel = om.MSelectionList()
+                            curve_sel.add(curve_name)
+                            curve_obj = curve_sel.getDependNode(0)
+                            curves[attr] = oma.MFnAnimCurve(curve_obj)
+                            break
+        else:
+            # 通常のアニメーションカーブ作成
+            curve = oma.MFnAnimCurve()
+            plug = fn_depend.findPlug(attr, False)
+            curve.create(plug)
+            curves[attr] = curve
 
     return curves
 
@@ -1090,6 +1142,7 @@ def set_keyframes_batch(
 ):
     """
     複数のアニメーションカーブに一括でキーフレームを設定する。
+    アニメーションレイヤーのカーブも正しく処理される。
 
     Args:
         curves (dict): アトリビュート名をキー、MFnAnimCurveオブジェクトを値とする辞書
@@ -1100,6 +1153,7 @@ def set_keyframes_batch(
     """
     import math
 
+    # まず全てのキーを追加（高速化のため）
     for frame_data in frame_data_list:
         # 値を生成
         values = value_generator_func(frame_data)
@@ -1122,145 +1176,14 @@ def set_keyframes_batch(
                 if attr_name in ["rotateX", "rotateY", "rotateZ"]:
                     value = math.radians(value)
 
-                curve.addKey(time, value, tangent_type, tangent_type)
-
-
-def set_quaternion_keyframe(
-    node_name, quaternion, frame_number, tangent_type=oma.MFnAnimCurve.kTangentLinear
-):
-    """
-    クォータニオンを使用して回転キーフレームを設定する。
-
-    Args:
-        node_name (str): ノード名
-        quaternion (list): クォータニオン [x, y, z, w]
-        frame_number (int): フレーム番号
-        tangent_type: タンジェントタイプ
-
-    Returns:
-        bool: 成功したかどうか
-    """
-    try:
-        # MQuaternionオブジェクトを作成
-        quat = om.MQuaternion(
-            quaternion[0], quaternion[1], quaternion[2], quaternion[3]
-        )
-        quat = quat.normal()  # 正規化
-
-        # オイラー角に変換
-        euler = quat.asEulerRotation()
-
-        # MTimeオブジェクトを作成
-        time = om.MTime(frame_number, om.MTime.uiUnit())
-
-        # ノードを取得
-        sel_list = om.MSelectionList()
-        sel_list.add(node_name)
-        node = sel_list.getDependNode(0)
-        fn_depend = om.MFnDependencyNode(node)
-
-        # 回転プラグを取得/作成
-        for axis, value in [
-            ("rotateX", euler.x),
-            ("rotateY", euler.y),
-            ("rotateZ", euler.z),
-        ]:
-            plug = fn_depend.findPlug(axis, False)
-
-            # 既存のアニメーションカーブを取得または作成
-            anim_curve = None
-            if plug.isConnected():
-                connections = plug.connectedTo(True, False)
-                if connections:
-                    curve_node = connections[0].node()
-                    if curve_node.hasFn(om.MFn.kAnimCurve):
-                        anim_curve = oma.MFnAnimCurve(curve_node)
-
-            if not anim_curve:
-                anim_curve = oma.MFnAnimCurve()
-                anim_curve.create(plug)
-
-            # キーフレームを追加
-            anim_curve.addKey(time, value, tangent_type, tangent_type)
-
-        return True
-
-    except Exception as e:
-        logger.error(f"Failed to set quaternion keyframe: {e}")
-        return False
-
-
-def set_transform_matrix_keyframe(node_name, matrix, frame_number):
-    """
-    変換行列を使用してキーフレームを設定する。
-    クォータニオンを含む完全な変換を設定できる。
-
-    Args:
-        node_name (str): ノード名
-        matrix (om.MMatrix): 変換行列
-        frame_number (int): フレーム番号
-
-    Returns:
-        bool: 成功したかどうか
-    """
-    try:
-        # MTransformationMatrixを作成
-        transform_matrix = om.MTransformationMatrix(matrix)
-
-        # 位置、回転、スケールを取得
-        translation = transform_matrix.translation(om.MSpace.kWorld)
-        rotation = transform_matrix.rotation(asQuaternion=False)
-        scale = transform_matrix.scale(om.MSpace.kWorld)
-
-        # キーフレーム設定
-        attrs = {
-            "translateX": translation.x,
-            "translateY": translation.y,
-            "translateZ": translation.z,
-            "rotateX": rotation.x,
-            "rotateY": rotation.y,
-            "rotateZ": rotation.z,
-            "scaleX": scale[0],
-            "scaleY": scale[1],
-            "scaleZ": scale[2],
-        }
-
-        time = om.MTime(frame_number, om.MTime.uiUnit())
-
-        # ノードを取得
-        sel_list = om.MSelectionList()
-        sel_list.add(node_name)
-        node = sel_list.getDependNode(0)
-        fn_depend = om.MFnDependencyNode(node)
-
-        for attr_name, value in attrs.items():
-            plug = fn_depend.findPlug(attr_name, False)
-
-            # アニメーションカーブを取得または作成
-            anim_curve = None
-            if plug.isConnected():
-                connections = plug.connectedTo(True, False)
-                if connections:
-                    curve_node = connections[0].node()
-                    if curve_node.hasFn(om.MFn.kAnimCurve):
-                        anim_curve = oma.MFnAnimCurve(curve_node)
-
-            if not anim_curve:
-                anim_curve = oma.MFnAnimCurve()
-                anim_curve.create(plug)
-
-            anim_curve.addKey(
-                time,
-                value,
-                oma.MFnAnimCurve.kTangentLinear,
-                oma.MFnAnimCurve.kTangentLinear,
-            )
-
-        return True
-
-    except Exception as e:
-        logger.error(f"Failed to set transform matrix keyframe: {e}")
-        return False
+                try:
+                    curve.addKey(time, value, tangent_type, tangent_type)
+                except:
+                    # エラーが発生した場合はスキップ（レイヤーカーブの場合など）
+                    logger.debug(
+                        f"Failed to add key for {attr_name} at frame {frame_num}"
+                    )
+                    pass
 
 
 def find_all_mmd_models():

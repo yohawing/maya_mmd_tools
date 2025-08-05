@@ -11,7 +11,7 @@ Mayaのアニメーションデータに変換する機能を提供します。
 
 import math
 import struct
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple, override
 
 import maya.api.OpenMaya as om2
 import maya.api.OpenMayaAnim as oma2
@@ -37,38 +37,6 @@ class VmdConverter:
     アニメーションレイヤーを使用して、複数のモーションを加算的に適用できます。
     """
 
-    # # 相対位置として扱うボーン（MMDの仕様）
-    # RELATIVE_POSITION_BONES: Set[str] = {
-    #     "センター",
-    #     "グルーブ",
-    #     "腰",
-    #     "上半身",
-    #     "上半身2",
-    #     "上半身3",
-    #     "首",
-    #     "頭",
-    #     "左肩",
-    #     "右肩",
-    #     "左腕",
-    #     "右腕",
-    #     "左ひじ",
-    #     "右ひじ",
-    #     "左手首",
-    #     "右手首",
-    #     "左足",
-    #     "右足",
-    #     "左ひざ",
-    #     "右ひざ",
-    #     "左足首",
-    #     "右足首",
-    #     "左つま先",
-    #     "右つま先",
-    #     "左足ＩＫ",
-    #     "右足ＩＫ",
-    #     "左つま先ＩＫ",
-    #     "右つま先ＩＫ",
-    # }
-
     def __init__(self):
         """VmdConverterの初期化"""
         self.logger = get_logger(__name__)
@@ -76,16 +44,21 @@ class VmdConverter:
         self.morph_name_mapping: Dict[
             str, str
         ] = {}  # VMDモーフ名 -> Mayaブレンドシェイプターゲット名
-        self.fps = 30.0  # デフォルトのFPS
+        self.fps = 60.0  # デフォルトのFPS
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
         self._bone_bind_poses: Dict[
             str, Tuple[float, float, float]
         ] = {}  # ボーンの初期位置
         self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
-        self.animation_layer_name = None  # 現在のアニメーションレイヤー名
+        self.anim_layer = None  # 現在のアニメーションレイヤー名
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
 
-    def convert(self, vmd_data: VmdParser, target_namespace: str = None, layer_name: str = None, layer_mode: str = "additive") -> bool:
+    def convert(
+        self,
+        vmd_data: VmdParser,
+        target_namespace: str = None,
+        layer_name: str = "VMD_Motion",
+    ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
         Args:
@@ -111,7 +84,7 @@ class VmdConverter:
 
             # アニメーションレイヤーの作成（必要な場合）
             if self.use_animation_layers:
-                self._create_animation_layer(layer_name, layer_mode)
+                self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
 
             # ボーンアニメーション変換
             if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
@@ -157,10 +130,6 @@ class VmdConverter:
 
             # フェーズ1では線形補間のみのため、補間データは無視
 
-            # アニメーションレイヤーのウェイト設定（デフォルトは1.0）
-            if self.use_animation_layers and self.animation_layer_name:
-                cmds.animLayer(self.animation_layer_name, edit=True, weight=1.0)
-
             self.logger.info("VMDアニメーション変換が完了しました")
             return True
 
@@ -170,64 +139,31 @@ class VmdConverter:
             )
             return False
 
-    def _create_animation_layer(self, layer_name: str = None, layer_mode: str = "additive"):
-        """アニメーションレイヤーを作成
-
-        Args:
-            layer_name: レイヤー名（省略時は自動生成）
-            layer_mode: レイヤーモード（"additive" または "override"）
-        """
-        # レイヤー名の自動生成
-        if not layer_name:
-            import datetime
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            layer_name = f"VMD_Layer_{timestamp}"
-
-        # ベースアニメーションレイヤーが存在しない場合は作成
-        base_layer = "BaseAnimation"
-        if not cmds.animLayer(base_layer, query=True, exists=True):
-            cmds.animLayer(base_layer)
-
-        # 新しいアニメーションレイヤーを作成
-        if cmds.animLayer(layer_name, query=True, exists=True):
-            self.logger.warning(f"レイヤー '{layer_name}' は既に存在します。既存のレイヤーを使用します。")
-            self.animation_layer_name = layer_name
-        else:
-            # レイヤーを作成
-            self.animation_layer_name = cmds.animLayer(layer_name)
-            
-            # レイヤーモードを設定
-            if layer_mode == "override":
-                cmds.animLayer(self.animation_layer_name, edit=True, override=True)
-            else:  # additive
-                cmds.animLayer(self.animation_layer_name, edit=True, override=False)
-                
-            # ウェイトを設定
-            cmds.animLayer(self.animation_layer_name, edit=True, weight=1.0)
-            
-            self.logger.info(f"アニメーションレイヤー '{self.animation_layer_name}' を作成しました（モード: {layer_mode}）")
-
-        # 現在のレイヤーをアクティブに設定
-        cmds.animLayer(self.animation_layer_name, edit=True, selected=True)
-
     def _add_objects_to_layer(self, objects: List[str]):
         """オブジェクトをアニメーションレイヤーに追加
 
         Args:
             objects: 追加するオブジェクトのリスト
         """
-        if not self.animation_layer_name:
+        if not self.anim_layer:
             return
 
         # オブジェクトをレイヤーに追加
         for obj in objects:
             if cmds.objExists(obj):
                 # 各属性をレイヤーに追加
-                attrs = ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]
+                attrs = [
+                    "translateX",
+                    "translateY",
+                    "translateZ",
+                    "rotateX",
+                    "rotateY",
+                    "rotateZ",
+                ]
                 for attr in attrs:
                     attr_path = f"{obj}.{attr}"
                     if cmds.attributeQuery(attr, node=obj, exists=True):
-                        cmds.animLayer(self.animation_layer_name, edit=True, attribute=attr_path)
+                        cmds.animLayer(self.anim_layer, edit=True, attribute=attr_path)
 
     def _build_name_mappings(self, target_namespace: str = None):
         """ボーン名とモーフ名のマッピングを構築
@@ -375,7 +311,7 @@ class VmdConverter:
                     self._failed_bones.add(vmd_bone_name)
 
         # アニメーションレイヤーにジョイントを追加
-        if self.use_animation_layers and self.animation_layer_name and animated_joints:
+        if self.use_animation_layers and self.anim_layer and animated_joints:
             self._add_objects_to_layer(animated_joints)
 
         self.logger.info(
@@ -392,53 +328,51 @@ class VmdConverter:
             vmd_bone_name: VMDボーン名
         """
         # アニメーションレイヤーが有効な場合、レイヤーを選択
-        if self.use_animation_layers and self.animation_layer_name:
-            cmds.animLayer(self.animation_layer_name, edit=True, selected=True)
+        if self.use_animation_layers and self.anim_layer:
+            cmds.animLayer(self.anim_layer, edit=True, selected=True)
 
-        # アニメーションカーブを作成
-        attrs = [
-            "translateX",
-            "translateY",
-            "translateZ",
-            "rotateX",
-            "rotateY",
-            "rotateZ",
-        ]
-        curves = maya_utils.create_animation_curves(joint, attrs)
+        affected_layers = cmds.animLayer([joint], query=True, affectedLayers=True) or []
+        if self.anim_layer not in affected_layers:
+            # オブジェクトをレイヤーに追加
+            current_selection = cmds.ls(selection=True)
+            cmds.select(joint, replace=True)
+            cmds.animLayer(self.anim_layer, edit=True, addSelectedObjects=True)
 
-        # バインドポーズを取得
-        bind_pose = self._bone_bind_poses.get(vmd_bone_name, (0, 0, 0))
-
-        # 値生成関数を定義
-        def generate_values(frame_data):
-            # VmdBoneFrameオブジェクトか辞書かで処理を分岐
-            if hasattr(frame_data, "frame_number"):
-                position = frame_data.position
-                rotation_quat = frame_data.rotation
+        for frame in frames:
+            if hasattr(frame, "frame_number"):
+                position = frame.position
+                rotation_quat = frame.rotation
             else:
-                position = frame_data.get("position", [0, 0, 0])
-                rotation_quat = frame_data.get("rotation", [0, 0, 0, 1])
+                position = frame.get("position", [0, 0, 0])
+                rotation_quat = frame.get("rotation", [0, 0, 0, 1])
 
-            maya_position = [
-                bind_pose[0] + position[0],
-                bind_pose[1] + position[1],
-                bind_pose[2] - position[2],  # Z軸反転
-            ]
-
-            # クォータニオンをオイラー角に変換
             euler_rotation = self._quaternion_to_euler(rotation_quat)
 
-            return {
-                "translateX": maya_position[0],
-                "translateY": maya_position[1],
-                "translateZ": maya_position[2],
-                "rotateX": euler_rotation[0],
-                "rotateY": euler_rotation[1],
-                "rotateZ": euler_rotation[2],
-            }
+            # 属性リストと値リストをまとめてループ処理
+            attr_value_pairs = [
+                ("translateX", position[0]),
+                ("translateY", position[1]),
+                ("translateZ", -position[2]),
+                ("rotateX", euler_rotation[0]),
+                ("rotateY", euler_rotation[1]),
+                ("rotateZ", euler_rotation[2]),
+            ]
+            for attr, value in attr_value_pairs:
+                cmds.setKeyframe(
+                    joint,
+                    attribute=attr,
+                    value=value,
+                    time=frame.frame_number,
+                    animLayer=self.anim_layer,
+                )
 
-        # キーフレームを一括設定
-        maya_utils.set_keyframes_batch(curves, frames, generate_values)
+        # tODO: maya apiを使うなら、キーフレームを先に打って、カーブを作成した後に、一括で設定するとパフォーマンスが向上する。
+        # curves = maya_utils.create_animation_curves(
+        #     joint, attrs, animation_layer=self.animation_layer_name
+        # )
+
+        # # キーフレームを一括設定
+        # maya_utils.set_keyframes_batch(curves, frames, generate_values)
 
         # Quaternion補間を適用
         if self.use_quaternion_interpolation:
@@ -448,7 +382,7 @@ class VmdConverter:
                     f"{joint}.rotateX",
                     f"{joint}.rotateY",
                     f"{joint}.rotateZ",
-                    convert="quaternion",  # "quaternionSquad"も選択可能（より滑らか）
+                    convert="quaternionSlerp",  # "quaternionSquad"も選択可能（より滑らか）
                 )
             except Exception as e:
                 self.logger.warning(f"{joint}へのQuaternion補間適用に失敗: {str(e)}")
@@ -520,9 +454,9 @@ class VmdConverter:
             self.logger.info(f"シーンFPSを{fps} ({fps_mapping[fps]})に設定しました")
         else:
             self.logger.warning(
-                f"指定されたFPS {fps} はサポートされていません。デフォルトの30.0 FPSを使用します"
+                f"指定されたFPS {fps} はサポートされていません。デフォルトの60.0 FPSを使用します"
             )
-            cmds.currentUnit(time="ntsc")  # デフォルトは30fpsのNTSC
+            cmds.currentUnit(time="ntscf")  # デフォルトは60fpsのNTSCF
 
     def _convert_camera_animation(self, camera_frames: List) -> bool:
         """カメラアニメーションを変換
@@ -550,7 +484,7 @@ class VmdConverter:
             self._set_camera_keyframes(camera_name, camera_frames)
 
             # アニメーションレイヤーにカメラを追加
-            if self.use_animation_layers and self.animation_layer_name:
+            if self.use_animation_layers and self.anim_layer:
                 self._add_objects_to_layer([camera_name])
 
             self.logger.info(f"{len(camera_frames)}個のカメラフレームを変換しました")
@@ -598,8 +532,8 @@ class VmdConverter:
             frames: フレームデータのリスト
         """
         # アニメーションレイヤーが有効な場合、レイヤーを選択
-        if self.use_animation_layers and self.animation_layer_name:
-            cmds.animLayer(self.animation_layer_name, edit=True, selected=True)
+        if self.use_animation_layers and self.anim_layer:
+            cmds.animLayer(self.anim_layer, edit=True, selected=True)
 
         # カメラシェイプを取得
         camera_shape = cmds.listRelatives(camera_transform, shapes=True, type="camera")[
@@ -704,7 +638,7 @@ class VmdConverter:
             self._set_light_keyframes(light_name, light_frames)
 
             # アニメーションレイヤーに照明を追加
-            if self.use_animation_layers and self.animation_layer_name:
+            if self.use_animation_layers and self.anim_layer:
                 self._add_objects_to_layer([light_name])
 
             self.logger.info(f"{len(light_frames)}個の照明フレームを変換しました")
@@ -748,10 +682,6 @@ class VmdConverter:
             light_transform: 照明のトランスフォーム名
             frames: フレームデータのリスト
         """
-        # アニメーションレイヤーが有効な場合、レイヤーを選択
-        if self.use_animation_layers and self.animation_layer_name:
-            cmds.animLayer(self.animation_layer_name, edit=True, selected=True)
-
         # 照明シェイプを取得
         light_shape = cmds.listRelatives(
             light_transform, shapes=True, type="directionalLight"
@@ -904,15 +834,23 @@ class VmdConverter:
                     self.logger.info(f"モーフ '{vmd_morph_name}' が見つかりません")
 
             # アニメーションレイヤーにブレンドシェイプを追加
-            if self.use_animation_layers and self.animation_layer_name and animated_blend_shapes:
+            if self.use_animation_layers and self.anim_layer and animated_blend_shapes:
                 for blend_shape in animated_blend_shapes:
                     # ブレンドシェイプの全ウェイト属性を追加
-                    weight_count = cmds.blendShape(blend_shape, query=True, weightCount=True)
+                    weight_count = cmds.blendShape(
+                        blend_shape, query=True, weightCount=True
+                    )
                     if weight_count:
                         for i in range(weight_count):
                             weight_attr = f"{blend_shape}.weight[{i}]"
-                            if cmds.attributeQuery(f"weight[{i}]", node=blend_shape, exists=True):
-                                cmds.animLayer(self.animation_layer_name, edit=True, attribute=weight_attr)
+                            if cmds.attributeQuery(
+                                f"weight[{i}]", node=blend_shape, exists=True
+                            ):
+                                cmds.animLayer(
+                                    self.anim_layer,
+                                    edit=True,
+                                    attribute=weight_attr,
+                                )
 
             self.logger.info(
                 f"{success_count}/{total_count}個のモーフアニメーションを変換しました"
@@ -935,8 +873,8 @@ class VmdConverter:
             frames: フレームデータのリスト
         """
         # アニメーションレイヤーが有効な場合、レイヤーを選択
-        if self.use_animation_layers and self.animation_layer_name:
-            cmds.animLayer(self.animation_layer_name, edit=True, selected=True)
+        if self.use_animation_layers and self.anim_layer:
+            cmds.animLayer(self.anim_layer, edit=True, selected=True)
 
         # ブレンドシェイプのウェイト属性名
         weight_attr = f"{blend_shape}.weight[{target_index}]"
@@ -968,4 +906,4 @@ class VmdConverter:
         Returns:
             アニメーションレイヤー名（使用していない場合はNone）
         """
-        return self.animation_layer_name
+        return self.anim_layer

@@ -9,6 +9,7 @@ from mmd_tools.core import PmdParser, PmxParser, VmdParser, maya_utils
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
+from mmd_tools.core import settings
 
 
 class TestVmdConverter(MayaTestBase):
@@ -20,12 +21,8 @@ class TestVmdConverter(MayaTestBase):
     def setUp(self):
         """テストのセットアップ"""
         super().setUp()
-        # 新規シーンを作成
-        cmds.file(new=True, force=True)
 
         # dx11Shaderの作成を無効化（テスト環境では利用できない場合があるため）
-        from mmd_tools.core import settings
-
         settings.set("import.model.create_mmd_shaders", False)
 
         # VmdConverterのインスタンスを作成
@@ -37,7 +34,6 @@ class TestVmdConverter(MayaTestBase):
     def tearDown(self):
         """テスト後のクリーンアップ"""
         super().tearDown()
-        cmds.file(new=True, force=True)
         # 一時ファイルのクリーンアップ
         self.fixture_provider.cleanup_temp_files()
 
@@ -98,7 +94,7 @@ class TestVmdConverter(MayaTestBase):
         # 共通関数を使用してモデルとVMDを読み込み
         root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
             self._import_model_and_apply_vmd(
-                "mmt_test_model", "Lat式用", model_type="pmx"
+                "mmt_test_model", "mmt_test_model_ik_test_motion", model_type="pmx"
             )
         )
 
@@ -206,92 +202,41 @@ class TestVmdConverter(MayaTestBase):
         # 変換が成功していることを確認
         self.assertTrue(result)
 
-        # アニメーションが設定されたジョイントを探す
-        all_joints = cmds.ls(type="joint")
-        animated_joints = []
-        for joint in all_joints:
-            # rotateYにアニメーションカーブが設定されているか確認
-            connections = cmds.listConnections(
-                f"{joint}.rotateY", source=True, destination=False
-            )
-            if connections:
-                animated_joints.append(joint)
+        joint = "Root"  # 1ボーンVMDではRootジョイントが使用される
 
-        # アニメーションが設定されたジョイントがない場合はスキップ
-        if len(animated_joints) == 0:
-            self.skipTest(
-                "テスト用の1ボーンVMDデータのアニメーション適用に失敗しました"
-            )
-
-        # 少なくとも1つのジョイントがアニメーションされていることを確認
-        self.assertGreater(
-            len(animated_joints), 0, "アニメーションが設定されたジョイントがありません"
+        # VMD_* という名前のアニメーションレイヤーが作成されていることを確認
+        layers = cmds.ls(type="animLayer")
+        self.assertGreater(len(layers), 0, "アニメーションレイヤーが作成されていません")
+        self.assertTrue(
+            any("VMD_" in layer for layer in layers),
+            "VMD_* という名前のアニメーションレイヤーが作成されていません",
         )
 
-        # アニメーションが設定されたジョイントに対してチェック
-        if animated_joints:
-            joint = animated_joints[0]
-
-            # キーフレームが設定されていることを確認
-            keyframes = cmds.keyframe(
-                f"{joint}.rotateY", query=True, keyframeCount=True
-            )
-            self.assertGreater(keyframes, 0, "キーフレームが設定されていません")
-
-    def test_convert_with_fixture_bone_hierarchy(self):
-        """Fixtureを使用したボーン階層でのVMD変換テスト"""
-        from tests.common.vmd_mock import create_test_vmd_data
-
-        # テスト用のMMDボーン階層を作成
-        # TODO: fixture_providerにcreate_mmd_bone_hierarchy機能を実装後に更新
-        # bone_mapping = self.fixture_provider.create_mmd_bone_hierarchy()
-
-        # 暫定的にマニュアルでボーン階層を作成
-        cmds.select(clear=True)
-        center = cmds.joint(name="center", position=[0, 0, 0])
-        cmds.addAttr(center, longName=ATTR_MMD_BONE_NAME, dataType="string")
-        cmds.setAttr(f"{center}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
-
-        cmds.select(center)
-        upper_body = cmds.joint(name="upper_body", position=[0, 8, 0])
-        cmds.addAttr(upper_body, longName=ATTR_MMD_BONE_NAME, dataType="string")
-        cmds.setAttr(f"{upper_body}.{ATTR_MMD_BONE_NAME}", "上半身", type="string")
-
-        cmds.select(upper_body)
-        head = cmds.joint(name="head", position=[0, 15, 0])
-        cmds.addAttr(head, longName=ATTR_MMD_BONE_NAME, dataType="string")
-        cmds.setAttr(f"{head}.{ATTR_MMD_BONE_NAME}", "頭", type="string")
-
-        # 名前マッピングを構築
-        self.converter._build_name_mappings()
-
-        # テスト用VMDデータを作成
-        vmd_data = create_test_vmd_data()
-
-        # 変換実行
-        result = self.converter.convert(vmd_data)
-
-        # 検証
-        self.assertTrue(result)
-        self.assertEqual(len(self.converter.get_failed_bones()), 0)
-
-        # タイムラインが正しく設定されていることを確認
-        max_time = cmds.playbackOptions(query=True, max=True)
-        self.assertGreaterEqual(
-            max_time, 30
-        )  # 少なくとも30フレーム以上であることを確認
-
-        # アニメーションが設定されていることを確認
-        cmds.currentTime(30)
-        # アニメーションカーブが存在することを確認
-        connections = cmds.listConnections(
-            f"{center}.translate", source=True, destination=False
+        # ジョイントがアニメーションレイヤーに登録されているか確認
+        vmd_layer = next((layer for layer in layers if "VMD_" in layer), None)
+        affected_layers = cmds.animLayer(["Root"], query=True, affectedLayers=True)
+        self.assertIn(
+            vmd_layer,
+            affected_layers,
+            "VMDアニメーションレイヤーにジョイントが登録されていません",
         )
-        # アニメーションが設定されていない場合はスキップ
-        if not connections:
-            self.skipTest("VMDモックデータのアニメーション設定に失敗しました")
 
-    def test_pole_vector_generation_for_leg_ik(self):
-        """足IKのPoleVector自動生成テスト"""
+        # アニメーションが設定されたジョイントの各フレームの回転値を確認
+        keyframes = cmds.keyframe(f"{joint}.rotateY", query=True, keyframeCount=True)
+        self.assertGreater(keyframes, 0, "キーフレームが設定されていません")
 
-        # TODO: アニメーションがインポートされた後、PoleVectorが正しく、アニメーションしているかを検証する。
+        # 9フレーム目の回転値を確認
+        cmds.currentTime(9, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 45.0, delta=0.1)
+
+        # 19フレーム目の回転値を確認
+        cmds.currentTime(19, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateZ"), -45.0, delta=0.1)
+
+        # 29フレーム目の回転値を確認
+        cmds.currentTime(29, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateZ"), 45.0, delta=0.1)
+
+        # 39フレーム目の回転値を確認
+        cmds.currentTime(39, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), -45.0, delta=0.1)

@@ -55,11 +55,11 @@ class TestVmdConverter(MayaTestBase):
         """初期化のテスト"""
         self.assertEqual(self.converter.bone_name_mapping, {})
         self.assertEqual(self.converter.morph_name_mapping, {})
-        self.assertEqual(self.converter.fps, 30.0)
+        self.assertEqual(self.converter.fps, 60.0)
         self.assertIsNotNone(self.converter.logger)
         self.assertEqual(len(self.converter._failed_bones), 0)
         self.assertTrue(self.converter.use_animation_layers)
-        self.assertIsNone(self.converter.animation_layer_name)
+        self.assertIsNone(self.converter.anim_layer)
 
     def test_get_failed_bones(self):
         """失敗したボーン名の取得テスト"""
@@ -308,16 +308,16 @@ class TestVmdConverter(MayaTestBase):
         """アニメーションレイヤー作成のテスト"""
         # デフォルトレイヤー名での作成
         self.converter._create_animation_layer()
-        self.assertIsNotNone(self.converter.animation_layer_name)
+        self.assertIsNotNone(self.converter.anim_layer)
         self.assertTrue(
-            cmds.animLayer(self.converter.animation_layer_name, query=True, exists=True)
+            cmds.animLayer(self.converter.anim_layer, query=True, exists=True)
         )
 
         # カスタムレイヤー名での作成
         custom_layer = "CustomVMDLayer"
         converter2 = VmdConverter()
         converter2._create_animation_layer(layer_name=custom_layer)
-        self.assertEqual(converter2.animation_layer_name, custom_layer)
+        self.assertEqual(converter2.anim_layer, custom_layer)
         self.assertTrue(cmds.animLayer(custom_layer, query=True, exists=True))
 
         # レイヤーモードのテスト（加算）
