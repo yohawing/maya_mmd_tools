@@ -21,10 +21,9 @@ def parsePMXString(f, encoding=0):
     if length == 0:
         return ""
     (buf,) = struct.unpack("<%ds" % length, f.read(length))
-    return str(
-        buf,
+    return buf.decode(
         "utf-16-le" if encoding == PmxEncoding.UTF16LE else "utf-8",
-        errors="replace",
+        errors="replace"
     )
 
 

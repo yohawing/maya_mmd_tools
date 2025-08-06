@@ -7,7 +7,7 @@ from .exceptions import MMDParseException
 from .pmx_data.bone import PmxBone
 from .pmx_data.display_frame import PmxDisplayFrame
 from .pmx_data.face import PmxFace
-from .pmx_data.header import PmxHeader
+from .pmx_data.header import PmxHeader, PmxEncoding
 from .pmx_data.joint import PmxJoint
 from .pmx_data.material import PmxMaterial
 from .pmx_data.morph import PmxMorph
@@ -192,8 +192,10 @@ class PmxParser:
                 # Textures
                 texture_count = len(self.textures)
                 f.write(struct.pack("<I", texture_count))
+                # Convert PmxEncoding to actual encoding string
+                encoding_text = "utf-16-le" if encoding == PmxEncoding.UTF16LE else "utf-8"
                 for texture_path in self.textures:
-                    texture_bytes = texture_path.encode(encoding)
+                    texture_bytes = texture_path.encode(encoding_text)
                     f.write(struct.pack("<I", len(texture_bytes)))
                     f.write(texture_bytes)
 

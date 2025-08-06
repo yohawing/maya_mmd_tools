@@ -155,7 +155,7 @@ class BonePresenter:
             joints_with_index.append((joint, bone_index))
 
         # インデックスでソート（インデックスがない場合は最後に）
-        joints_with_index.sort(key=lambda x: x[1] if x[1] >= 0 else float("inf"))
+        joints_with_index.sort(key=lambda x: x[1] if x[1] is not None and x[1] >= 0 else float("inf"))
 
         # ソートされたジョイントリストを作成
         sorted_joints = [joint for joint, _ in joints_with_index]
@@ -169,7 +169,7 @@ class BonePresenter:
             bone_index = get_attribute(joint, ATTR_MMD_BONE_INDEX)
 
             # リストアイテムの表示形式: "インデックス:日本語名（Maya名）"
-            if bone_index >= 0:
+            if bone_index is not None and bone_index >= 0:
                 display_text = f"{bone_index}:{name_jp}（{joint}）"
             else:
                 display_text = f"-:{name_jp}（{joint}）"

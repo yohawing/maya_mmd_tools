@@ -90,7 +90,7 @@ class PmxHeader:
         f.write(struct.pack("<B", 8))
 
         # Encoding flag (0: UTF-16LE, 1: UTF-8)
-        encoding_flag = 0 if self.encoding == "utf-16-le" else 1
+        encoding_flag = int(self.encoding)
         f.write(struct.pack("<B", encoding_flag))
 
         # Additional data sizes
@@ -111,4 +111,4 @@ class PmxHeader:
     @property
     def encoding_flag(self):
         """エンコーディングフラグ（0=UTF-16LE, 1=UTF-8）を返す"""
-        return 0 if self.encoding == "utf-16-le" else 1
+        return int(self.encoding)

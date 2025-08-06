@@ -19,8 +19,10 @@ class MorphConverter:
 
     def __init__(self):
         from mmd_tools import settings
+        from mmd_tools.core.logger import get_logger
 
         self.settings = settings.get("import.morph", {})
+        self.logger = get_logger(__name__)
 
     def convert_pmd_morphs(self, pmd_data, mesh_node: str) -> Dict[str, Any]:
         """
@@ -42,16 +44,22 @@ class MorphConverter:
         for morph in pmd_data.morphs:
             # ベースモーフはスキップ
             if morph.morph_type == 0:
+                self.logger.debug("Skipping base morph")
                 continue
 
             try:
+                self.logger.debug(
+                    f"Converting morph: {morph.name}, type: {morph.morph_type}"
+                )
                 result = self._convert_vertex_morph_pmd(morph, mesh_node)
                 if result["success"]:
                     results.append(result)
                     if result["blend_shape_node"] not in blend_shape_nodes:
                         blend_shape_nodes.append(result["blend_shape_node"])
-            except Exception:
-                # エラーは無視して次のモーフへ
+                    self.logger.info(f"Successfully converted morph: {morph.name}")
+            except Exception as e:
+                # エラーをログに記録して次のモーフへ
+                self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
                 pass
 
         return {
@@ -83,13 +91,16 @@ class MorphConverter:
             try:
                 # 現在は頂点モーフのみ対応
                 if morph.morph_type == PmxMorphType.VertexMorph:
+                    self.logger.debug(f"Converting vertex morph: {morph.name}")
                     result = self._convert_vertex_morph_pmx(morph, mesh_node)
                     if result["success"]:
                         results.append(result)
                         if result["blend_shape_node"] not in blend_shape_nodes:
                             blend_shape_nodes.append(result["blend_shape_node"])
-            except Exception:
-                # エラーは無視して次のモーフへ
+                        self.logger.info(f"Successfully converted morph: {morph.name}")
+            except Exception as e:
+                # エラーをログに記録して次のモーフへ
+                self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
                 pass
 
         return {
@@ -134,7 +145,7 @@ class MorphConverter:
 
         return {
             "success": True,
-            "morph_name": morph.name,
+            "morph_name": morph.get_name(),
             "blend_shape_node": blend_shape_node,
             "target_index": target_index,
         }
@@ -142,7 +153,7 @@ class MorphConverter:
     def _convert_vertex_morph_pmx(self, morph, mesh_node: str) -> Dict[str, Any]:
         """PMX頂点モーフの変換"""
         # モーフ名をMaya互換に変換
-        morph_name = maya_utils.sanitize_text(morph.name)
+        morph_name = maya_utils.sanitize_text(morph.get_name())
 
         # メッシュを複製してターゲットを作成
         target_mesh = cmds.duplicate(mesh_node)[0]
@@ -173,7 +184,7 @@ class MorphConverter:
 
         return {
             "success": True,
-            "morph_name": morph.name,
+            "morph_name": morph.get_name(),
             "blend_shape_node": blend_shape_node,
             "target_index": target_index,
         }

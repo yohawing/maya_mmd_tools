@@ -65,3 +65,14 @@ class PmdMorph:
             f (file): バイナリ書き込みモードで開かれたファイルハンドル。
         """
         f.write(utils.encodePMDString(self.english_name, 20))
+
+    def get_name(self) -> str:
+        """
+        モーフの名前を取得する。英語名が設定されている場合は英語名を返す。
+
+        Returns:
+            str: モーフの名前。
+        """
+        if self.english_name and self.english_name != "":
+            return self.english_name
+        return self.name

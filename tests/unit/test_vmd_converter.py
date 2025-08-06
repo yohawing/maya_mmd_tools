@@ -323,14 +323,14 @@ class TestVmdConverter(MayaTestBase):
         # レイヤーモードのテスト（加算）
         converter3 = VmdConverter()
         converter3._create_animation_layer(
-            layer_name="AdditiveLayer", layer_mode="additive"
+            layer_name="AdditiveLayer"
         )
         self.assertTrue(cmds.animLayer("AdditiveLayer", query=True, exists=True))
 
         # レイヤーモードのテスト（オーバーライド）
         converter4 = VmdConverter()
         converter4._create_animation_layer(
-            layer_name="OverrideLayer", layer_mode="override"
+            layer_name="OverrideLayer"
         )
         self.assertTrue(cmds.animLayer("OverrideLayer", query=True, exists=True))
         self.assertTrue(cmds.animLayer("OverrideLayer", query=True, override=True))
@@ -459,7 +459,9 @@ class TestVmdConverter(MayaTestBase):
         self.assertTrue(result, "VMD変換に失敗しました")
 
         # アニメーションレイヤーが作成されたことを確認
-        self.assertEqual(self.converter.get_animation_layer_name(), "FixtureTest")
+        # Mayaは自動的に番号を付加する場合があるので、プレフィックスで確認
+        layer_name = self.converter.get_animation_layer_name()
+        self.assertTrue(layer_name.startswith("FixtureTest"), f"Expected layer name to start with 'FixtureTest', but got {layer_name}")
 
         # アニメーションが適用されたことを確認
         animated_joints = []

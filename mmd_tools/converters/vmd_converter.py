@@ -11,7 +11,7 @@ Mayaのアニメーションデータに変換する機能を提供します。
 
 import math
 import struct
-from typing import Dict, List, Optional, Set, Tuple, override
+from typing import Dict, List, Optional, Set, Tuple
 
 import maya.api.OpenMaya as om2
 import maya.api.OpenMayaAnim as oma2
@@ -58,6 +58,7 @@ class VmdConverter:
         vmd_data: VmdParser,
         target_namespace: str = None,
         layer_name: str = "VMD_Motion",
+        layer_mode: str = "override",
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
@@ -84,7 +85,8 @@ class VmdConverter:
 
             # アニメーションレイヤーの作成（必要な場合）
             if self.use_animation_layers:
-                self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
+                override = layer_mode == "override"
+                self.anim_layer = cmds.animLayer(layer_name, override=override, weight=1.0)
 
             # ボーンアニメーション変換
             if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
@@ -907,3 +909,27 @@ class VmdConverter:
             アニメーションレイヤー名（使用していない場合はNone）
         """
         return self.anim_layer
+
+    def _create_animation_layer(self, layer_name: Optional[str] = None) -> Optional[str]:
+        """アニメーションレイヤーを作成
+
+        Args:
+            layer_name: レイヤー名（省略時は自動生成）
+
+        Returns:
+            作成したレイヤー名（失敗時はNone）
+        """
+        if not layer_name:
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            layer_name = f"VMDAnimation_{timestamp}"
+        
+        try:
+            # アニメーションレイヤーを作成
+            if not cmds.animLayer(layer_name, query=True, exists=True):
+                cmds.animLayer(layer_name, override=True)
+            self.anim_layer = layer_name
+            return layer_name
+        except Exception as e:
+            self.logger.error(f"アニメーションレイヤー作成エラー: {e}")
+            return None
