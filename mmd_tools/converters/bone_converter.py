@@ -1,6 +1,9 @@
+import math
 from typing import List, Tuple
 
+import maya
 import maya.cmds as cmds
+import maya.api.OpenMaya as om
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -198,6 +201,19 @@ class BoneConverter:
                 ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
             )
 
+            # ジョイントのローカル軸を設定
+            if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
+                self.logger.debug(f"ジョイントのローカル軸を設定: {bone.name}")
+                self._set_bone_local_axis(joint, bone)
+
+            # ジョイントの軸制限を設定
+            if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
+                self.logger.debug(f"ジョイントの軸制限を設定: {bone.name}")
+                self._set_bone_axis_limits(joint, bone)
+
+            # セグメントスケール補償を無効化
+            maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
+
             self._set_extra_attributes(i, joint, bone, format_type)
             maya_joints.append(joint)
 
@@ -209,7 +225,7 @@ class BoneConverter:
 
                 try:
                     # 親子関係を設定
-                    cmds.parent(child_joint, parent_joint)
+                    cmds.parent(child_joint, parent_joint, absolute=True)
                 except Exception as e:
                     self.logger.error(f"Failed to parent {child_joint} to {parent_joint}: {e}")
 
@@ -518,3 +534,94 @@ class BoneConverter:
             mesh_node,
             weights,
         )
+
+    def _set_bone_local_axis(self, joint, bone):
+        """
+        PMXボーンのローカル軸情報をMayaジョイントに適用する。
+        子ボーンへの影響を防ぐため、子を一時的に切り離して処理する。
+
+        Args:
+            joint (str): Mayaジョイント名
+            bone: PMXボーンオブジェクト
+        """
+
+        x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], bone.x_axis_direction[2])
+        x_axis.normalize()
+
+        z_axis = om.MVector(bone.z_axis_direction[0], bone.z_axis_direction[1], bone.z_axis_direction[2])
+        z_axis.normalize()
+
+        y_axis = z_axis ^ x_axis
+        y_axis.normalize()
+
+        # rotation matrixを作成
+        matrix = om.MMatrix(
+            [
+                [x_axis.x, x_axis.y, x_axis.z, 0],
+                [y_axis.x, y_axis.y, y_axis.z, 0],
+                [z_axis.x, z_axis.y, z_axis.z, 0],
+                [0, 0, 0, 1],
+            ]
+        )
+
+        transform = om.MTransformationMatrix(matrix)
+        euler = transform.rotation(asQuaternion=False)
+
+        # Joint Orientを設定
+        maya_utils.set_attribute(joint, "jointOrient", (euler.x, euler.y, euler.z), "double3")
+
+        # maya_utils.set_attribute(joint, "displayLocalAxis", 1, "int")
+
+    def _set_bone_axis_limits(self, joint, bone):
+        """
+        PMXボーンの軸制限情報をMayaジョイントに適用する。
+
+        Args:
+            joint (str): Mayaジョイント名
+            bone: PMXボーンオブジェクト
+        """
+
+        # ローカル軸が設定されている場合Z軸以外をロック
+        if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
+            # X軸は自由、Y/Z軸は0に固定
+            maya_utils.set_joint_limits(
+                joint,
+                limit_min=(0, 0, -180),
+                limit_max=(0, 0, 180),
+            )
+
+        else:
+            # ローカル軸が設定されてない場合は軸制限情報をローカル軸にする
+            # rotation matrixを作成
+
+            z_axis = om.MVector(bone.axis_direction[0], bone.axis_direction[1], bone.axis_direction[2])
+            z_axis.normalize()
+            x_axis = z_axis ^ om.MVector(0, 1, 0)  # Y軸を基準にX軸を計算
+            x_axis.normalize()
+            y_axis = z_axis ^ x_axis  # Z軸とX軸からY軸を計算
+            y_axis.normalize()
+
+            matrix = om.MMatrix(
+                [
+                    [x_axis.x, x_axis.y, x_axis.z, 0],
+                    [y_axis.x, y_axis.y, y_axis.z, 0],
+                    [z_axis.x, z_axis.y, z_axis.z, 0],
+                    [0, 0, 0, 1],
+                ]
+            )
+
+            transform = om.MTransformationMatrix(matrix)
+            euler = transform.rotation(asQuaternion=False)
+
+            print(f"Joint Orient: {euler}")
+
+            # Joint Orientを設定
+            maya_utils.set_attribute(joint, "jointOrient", (euler.x, euler.y, euler.z), "double3")
+
+            # maya_utils.set_attribute(joint, "displayLocalAxis", 1, "int")
+
+            maya_utils.set_joint_limits(
+                joint,
+                limit_min=(0, 0, -math.pi),
+                limit_max=(0, 0, math.pi),
+            )

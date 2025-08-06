@@ -875,49 +875,25 @@ def set_joint_limits(joint, limit_min=None, limit_max=None, enable_limits=True):
         limit_min (list): 最小回転制限 [x, y, z] ラジアン単位
         limit_max (list): 最大回転制限 [x, y, z] ラジアン単位
         enable_limits (bool): 制限を有効にするかどうか
-
-    Returns:
-        bool: 設定が成功したかどうか
     """
-    if not cmds.objExists(joint):
-        logger.error(f"Joint '{joint}' does not exist")
-        return False
 
-    if cmds.nodeType(joint) != "joint":
-        logger.error(f"'{joint}' is not a joint node")
-        return False
+    # 回転制限の設定（ラジアンから度数に変換）
+    if limit_min:
+        set_attribute(joint, "minRotLimit", limit_min, "double3")
 
-    try:
-        import math
+    if limit_max:
+        set_attribute(joint, "maxRotLimit", limit_max, "double3")
 
-        # 回転制限の設定（ラジアンから度数に変換）
-        if limit_min:
-            cmds.setAttr(f"{joint}.minRotXLimit", math.degrees(limit_min[0]))
-            cmds.setAttr(f"{joint}.minRotYLimit", math.degrees(limit_min[1]))
-            cmds.setAttr(f"{joint}.minRotZLimit", math.degrees(limit_min[2]))
+    # 制限の有効化/無効化
+    if limit_min:
+        cmds.setAttr(f"{joint}.minRotXLimitEnable", enable_limits)
+        cmds.setAttr(f"{joint}.minRotYLimitEnable", enable_limits)
+        cmds.setAttr(f"{joint}.minRotZLimitEnable", enable_limits)
 
-        if limit_max:
-            cmds.setAttr(f"{joint}.maxRotXLimit", math.degrees(limit_max[0]))
-            cmds.setAttr(f"{joint}.maxRotYLimit", math.degrees(limit_max[1]))
-            cmds.setAttr(f"{joint}.maxRotZLimit", math.degrees(limit_max[2]))
-
-        # 制限の有効化/無効化
-        if limit_min:
-            cmds.setAttr(f"{joint}.minRotXLimitEnable", enable_limits)
-            cmds.setAttr(f"{joint}.minRotYLimitEnable", enable_limits)
-            cmds.setAttr(f"{joint}.minRotZLimitEnable", enable_limits)
-
-        if limit_max:
-            cmds.setAttr(f"{joint}.maxRotXLimitEnable", enable_limits)
-            cmds.setAttr(f"{joint}.maxRotYLimitEnable", enable_limits)
-            cmds.setAttr(f"{joint}.maxRotZLimitEnable", enable_limits)
-
-        logger.info(f"Set joint limits for '{joint}'")
-        return True
-
-    except Exception as e:
-        logger.error(f"Failed to set joint limits for '{joint}': {e}")
-        return False
+    if limit_max:
+        cmds.setAttr(f"{joint}.maxRotXLimitEnable", enable_limits)
+        cmds.setAttr(f"{joint}.maxRotYLimitEnable", enable_limits)
+        cmds.setAttr(f"{joint}.maxRotZLimitEnable", enable_limits)
 
 
 def create_pole_vector_constraint(ik_handle, pole_vector_object, maintain_offset=True):

@@ -1,6 +1,7 @@
 from typing import List, Dict
 
 import maya.cmds as cmds
+import maya.api.OpenMaya as om
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core import maya_utils
@@ -56,9 +57,6 @@ class RigConverter:
         # 元のボーン名を保存（日本語名での重複チェック用）
         for i, bone in enumerate(pmx_data.bones):
             self.original_bone_names[i] = bone.get_name()
-
-        # ボーンのローカル軸を設定
-        # self._apply_bone_local_axes(pmx_data.bones, maya_joints)
 
         # 付与ボーンの設定
         result["constraints"] = self._setup_grant_bones(pmx_data.bones, maya_joints)
@@ -368,86 +366,6 @@ class RigConverter:
                     limit_max=limit_max,
                     enable_limits=True,
                 )
-
-    def _apply_bone_local_axes(self, bones, maya_joints):
-        """
-        全てのボーンにローカル軸を適用する。
-
-        Args:
-            bones: ボーンデータのリスト
-            maya_joints (list): Mayaジョイント名のリスト
-        """
-        for i, bone in enumerate(bones):
-            if i < len(maya_joints):
-                self._set_bone_local_axis(maya_joints[i], bone)
-
-    def _set_bone_local_axis(self, joint, bone):
-        """
-        PMXボーンのローカル軸情報をMayaジョイントに適用する。
-        子ボーンへの影響を防ぐため、子を一時的に切り離して処理する。
-
-        Args:
-            joint (str): Mayaジョイント名
-            bone: PMXボーンオブジェクト
-        """
-        if hasattr(bone, "get_flag") and bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-            # PMX仕様書に従った実装
-            x_axis_pmx = bone.x_axis_direction
-            z_axis_pmx = bone.z_axis_direction
-
-            # PMX座標系でY軸を計算（PMX仕様書準拠）
-            # Y = Z × X
-            y_axis_pmx = utils.cross_product(z_axis_pmx, x_axis_pmx)
-            y_axis_pmx = utils.normalize_vector(y_axis_pmx)
-
-            # Z' = X × Y （Z軸を再計算して直交化）
-            z_axis_pmx = utils.cross_product(x_axis_pmx, y_axis_pmx)
-            z_axis_pmx = utils.normalize_vector(z_axis_pmx)
-
-            # PMX座標系からMaya座標系に変換
-            x_axis_maya = utils.pmx_to_maya_vector(x_axis_pmx)
-            y_axis_maya = utils.pmx_to_maya_vector(y_axis_pmx)
-            z_axis_maya = utils.pmx_to_maya_vector(z_axis_pmx)
-
-            # ジョイントオリエンテーションの設定
-            matrix = maya_utils.create_matrix_from_axes(x_axis_maya, y_axis_maya, z_axis_maya)
-            rotation = maya_utils.matrix_to_euler(matrix)
-
-            # 子ジョイントを取得（直接の子のみ）
-            children = cmds.listRelatives(joint, children=True, type=["joint", "transform"]) or []
-            child_transforms = []
-
-            # 子のワールド変換を保存して一時的に切り離す
-            for child in children:
-                world_pos = cmds.xform(child, query=True, worldSpace=True, translation=True)
-                world_rot = cmds.xform(child, query=True, worldSpace=True, rotation=True)
-                child_transforms.append({"joint": child, "position": world_pos, "rotation": world_rot})
-                # ワールドにペアレント（一時的に切り離す）
-                maya_utils.parent_objects(child, world=True)
-
-            try:
-                # jointOrientを設定
-                maya_utils.set_attribute(joint, "jointOrientX", rotation[0], "double")
-                maya_utils.set_attribute(joint, "jointOrientY", rotation[1], "double")
-                maya_utils.set_attribute(joint, "jointOrientZ", rotation[2], "double")
-
-                # rotateを0にリセット（オプション：必要に応じて）
-                maya_utils.set_attribute(joint, "rotateX", 0, "double")
-                maya_utils.set_attribute(joint, "rotateY", 0, "double")
-                maya_utils.set_attribute(joint, "rotateZ", 0, "double")
-
-                self.logger.debug(f"ローカル軸を設定: {joint}")
-
-            except Exception as e:
-                self.logger.error(f"ローカル軸の設定に失敗しました {joint}: {e}")
-
-            finally:
-                # 子を再接続して位置を復元
-                for transform_data in child_transforms:
-                    child = transform_data["joint"]
-                    maya_utils.parent_objects(child, joint)
-                    cmds.xform(child, worldSpace=True, translation=transform_data["position"])
-                    cmds.xform(child, worldSpace=True, rotation=transform_data["rotation"])
 
     def _add_semi_standard_bones(self, maya_joints, bone_map, skeleton_group):
         """

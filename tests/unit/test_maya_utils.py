@@ -1,3 +1,4 @@
+import math
 import unittest
 
 from maya import cmds
@@ -274,16 +275,12 @@ class TestMayaUtils(MayaTestBase):
         joint = cmds.joint(position=[0, 0, 0], name="test_joint")
 
         # 回転制限を設定
-        limit_min = [-1.57, -0.5, -0.3]  # ラジアン
-        limit_max = [1.57, 0.5, 0.3]
+        limit_min = [-1.57, 0, -0.785]
+        limit_max = [1.57, 0, 0.785]
 
-        result = maya_utils.set_joint_limits(joint=joint, limit_min=limit_min, limit_max=limit_max, enable_limits=True)
+        maya_utils.set_joint_limits(joint=joint, limit_min=limit_min, limit_max=limit_max, enable_limits=True)
 
-        self.assertTrue(result)
-
-        # 制限が設定されているか確認（度数単位で比較）
-        import math
-
+        # 制限が正しく設定されているか確認
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.minRotXLimit"), math.degrees(limit_min[0]), places=5)
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.minRotYLimit"), math.degrees(limit_min[1]), places=5)
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.minRotZLimit"), math.degrees(limit_min[2]), places=5)
@@ -293,7 +290,11 @@ class TestMayaUtils(MayaTestBase):
 
         # 制限が有効になっているか確認
         self.assertTrue(cmds.getAttr(f"{joint}.minRotXLimitEnable"))
+        self.assertTrue(cmds.getAttr(f"{joint}.minRotYLimitEnable"))
+        self.assertTrue(cmds.getAttr(f"{joint}.minRotZLimitEnable"))
         self.assertTrue(cmds.getAttr(f"{joint}.maxRotXLimitEnable"))
+        self.assertTrue(cmds.getAttr(f"{joint}.maxRotYLimitEnable"))
+        self.assertTrue(cmds.getAttr(f"{joint}.maxRotZLimitEnable"))
 
     def test_cross_product(self):
         """外積計算が正しいか"""
