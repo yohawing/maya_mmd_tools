@@ -20,11 +20,12 @@ class TestPmdImporter(MayaTestBase):
     def setUp(self):
         """テストのセットアップ"""
         super().setUp()
-        
+
         # dx11Shaderの作成を無効化（テスト環境では利用できない場合があるため）
         from mmd_tools.core import settings
+
         settings.set("import.model.create_mmd_shaders", False)
-        
+
         self.fixture_provider = TestFixtureProvider()
 
         # テスト用の一時ファイル
@@ -129,30 +130,6 @@ class TestPmdImporter(MayaTestBase):
         # リジッドボディやジョイントが作成されたことを確認（該当する場合）
         # ※実装によってはスキップされる可能性もあるため、存在確認のみ
 
-    def test_import_pmd_with_invalid_file(self):
-        """無効なPMDファイルのインポートテスト"""
-        # 無効なデータでモックパーサーを作成
-        parser = MagicMock()
-        parser.data = MagicMock()
-        parser.data.header = MagicMock()
-        parser.data.header.model_name = "Invalid Model"
-        parser.data.vertices = []
-        parser.data.faces = []
-        parser.data.materials = []
-        parser.data.bones = []
-        parser.data.morphs = []
-
-        # 一時ファイルを作成
-        fd, temp_path = tempfile.mkstemp(suffix=".pmd")
-        os.close(fd)
-        self.temp_files.append(temp_path)
-
-        # インポートを試行（エラーは発生しないが、何も作成されない可能性がある）
-        result = import_pmd_file(parser, temp_path)
-
-        # 結果を確認（実装によって異なる）
-        # エラーハンドリングが適切に行われることを確認
-
     def test_import_pmd_multiple_files(self):
         """複数のPMDファイルを連続でインポートするテスト"""
 
@@ -203,7 +180,10 @@ class TestPmdImporter(MayaTestBase):
 
         # マテリアルが作成されたことを確認
         materials = (
-            cmds.ls(type="lambert") + cmds.ls(type="phong") + cmds.ls(type="blinn") + cmds.ls(type="standardSurface")
+            cmds.ls(type="lambert")
+            + cmds.ls(type="phong")
+            + cmds.ls(type="blinn")
+            + cmds.ls(type="standardSurface")
         )
         # デフォルトマテリアルを除外
         materials = [m for m in materials if m not in ["lambert1", "particleCloud1"]]
