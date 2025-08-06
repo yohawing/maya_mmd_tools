@@ -1,8 +1,6 @@
 from ..qt_compat import (
-    QWidget,
     QVBoxLayout,
     QListWidget,
-    QPushButton,
     QGroupBox,
     QHBoxLayout,
 )

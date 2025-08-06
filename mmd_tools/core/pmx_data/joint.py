@@ -39,15 +39,9 @@ class PmxJoint:
 
         self.joint_type = struct.unpack("<B", f.read(1))[0]
 
-        rigid_body_index_format = {1: "<b", 2: "<h", 4: "<i"}[
-            self.rigid_body_index_size
-        ]
-        self.rigid_body_a_index = struct.unpack(
-            rigid_body_index_format, f.read(self.rigid_body_index_size)
-        )[0]
-        self.rigid_body_b_index = struct.unpack(
-            rigid_body_index_format, f.read(self.rigid_body_index_size)
-        )[0]
+        rigid_body_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.rigid_body_index_size]
+        self.rigid_body_a_index = struct.unpack(rigid_body_index_format, f.read(self.rigid_body_index_size))[0]
+        self.rigid_body_b_index = struct.unpack(rigid_body_index_format, f.read(self.rigid_body_index_size))[0]
 
         self.position = struct.unpack("<fff", f.read(12))
         self.rotation = struct.unpack("<fff", f.read(12))
@@ -70,9 +64,7 @@ class PmxJoint:
 
         f.write(struct.pack("<B", self.joint_type))
 
-        rigid_body_index_format = {1: "<b", 2: "<h", 4: "<i"}[
-            self.rigid_body_index_size
-        ]
+        rigid_body_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.rigid_body_index_size]
         f.write(struct.pack(rigid_body_index_format, self.rigid_body_a_index))
         f.write(struct.pack(rigid_body_index_format, self.rigid_body_b_index))
 

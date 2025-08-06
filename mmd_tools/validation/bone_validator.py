@@ -182,9 +182,7 @@ class BoneValidator:
             for variation in variations:
                 self.name_to_standard[variation.lower()] = standard_name
 
-    def validate_bones(
-        self, bones: List[str]
-    ) -> Tuple[List[str], List[Dict[str, str]], Dict[str, str]]:
+    def validate_bones(self, bones: List[str]) -> Tuple[List[str], List[Dict[str, str]], Dict[str, str]]:
         """
         標準ボーンの存在確認と命名規則の検証
 
@@ -302,11 +300,7 @@ class BoneValidator:
         bone_type = "standard"
         if standard_name in self.SEMI_STANDARD_BONES:
             bone_type = "semi_standard"
-        elif any(
-            standard_name in bones
-            for fingers in self.FINGER_BONES.values()
-            for bones in fingers.values()
-        ):
+        elif any(standard_name in bones for fingers in self.FINGER_BONES.values() for bones in fingers.values()):
             bone_type = "finger"
 
         return {
@@ -356,15 +350,11 @@ class BoneValidator:
                 elif parent_idx != -1:
                     # 循環参照のチェック
                     if self._check_circular_reference(i, parent_idx, bones):
-                        issues["circular_references"].append(
-                            {"bone": bone.get_name(), "index": i}
-                        )
+                        issues["circular_references"].append({"bone": bone.get_name(), "index": i})
 
         return issues
 
-    def _check_circular_reference(
-        self, bone_index: int, parent_index: int, bones: List[any]
-    ) -> bool:
+    def _check_circular_reference(self, bone_index: int, parent_index: int, bones: List[any]) -> bool:
         """循環参照をチェックする"""
         visited = set()
         current = parent_index

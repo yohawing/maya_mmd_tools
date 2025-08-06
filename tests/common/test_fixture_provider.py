@@ -4,11 +4,11 @@
 
 import os
 import tempfile
-from typing import List, Dict, Union, Optional
+from typing import List, Dict
 
-from mmd_tools.core.pmx_parser import PmxParser
-from mmd_tools.core.vmd_parser import VmdParser
-from mmd_tools.core.pmd_parser import PmdParser
+from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.vmd_data import VmdData
+from mmd_tools.core.pmd_data import PmdData
 
 
 class TestFixtureProvider:
@@ -209,34 +209,34 @@ class TestFixtureProvider:
         """
         return {"pmd": self.get_all_pmd_files(), "pmx": self.get_all_pmx_files()}
 
-    def load_pmd_data(self, name: str = None) -> dict:
+    def load_pmd_data(self, name: str = None) -> tuple:
         """PMDファイルをロードしてパース済みデータを返す（キャッシュあり）
 
         Args:
             name: 特定のファイル名（拡張子なし）。Noneの場合は最初に見つかったファイル
 
         Returns:
-            dict: パース済みデータ
+            tuple: パース済みデータ
         """
         file_path = self.get_pmd_file(name)
         cache_key = f"pmd_{file_path}"
 
         if cache_key not in self._data_cache:
             # 実際のパーサーを使用してデータをロード
-            pmd_parser = PmdParser()
+            pmd_parser = PmdData()
             pmd_data = pmd_parser.parse_file(file_path)
             self._data_cache[cache_key] = (pmd_data, file_path)
 
         return self._data_cache[cache_key]
 
-    def load_pmx_data(self, name: str = None) -> dict:
+    def load_pmx_data(self, name: str = None) -> tuple:
         """PMXファイルをロードしてパース済みデータを返す（キャッシュあり）
 
         Args:
             name: 特定のファイル名（拡張子なし）。Noneの場合は最初に見つかったファイル
 
         Returns:
-            dict: パース済みデータ
+            tuple: パース済みデータ
         """
         file_path = self.get_pmx_file(name)
         cache_key = f"pmx_{file_path}"
@@ -244,20 +244,19 @@ class TestFixtureProvider:
         if cache_key not in self._data_cache:
             # 実際のパーサーを使用してデータをロード
 
-            pmx_parser = PmxParser()
+            pmx_parser = PmxData()
             pmx_data = pmx_parser.parse_file(file_path)
             self._data_cache[cache_key] = (pmx_data, file_path)
 
         return self._data_cache[cache_key]
 
-    def load_vmd_data(self, name: str = None) -> dict:
+    def load_vmd_data(self, name: str = None) -> tuple:
         """VMDファイルをロードしてパース済みデータを返す（キャッシュあり）
 
         Args:
             name: 特定のファイル名（拡張子なし）。Noneの場合は最初に見つかったファイル
-
         Returns:
-            dict: パース済みデータ
+            tuple: パース済みデータ
         """
         file_path = self.get_vmd_file(name)
         cache_key = f"vmd_{file_path}"
@@ -265,7 +264,7 @@ class TestFixtureProvider:
         if cache_key not in self._data_cache:
             # 実際のパーサーを使用してデータをロード
 
-            vmd_parser = VmdParser()
+            vmd_parser = VmdData()
             vmd_data = vmd_parser.parse_file(file_path)
             self._data_cache[cache_key] = (vmd_data, file_path)
 

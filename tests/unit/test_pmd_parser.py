@@ -1,5 +1,4 @@
 import os
-import io
 
 from mmd_tools.core import mmd_parser
 from mmd_tools.core.pmd_data.face import PmdFace
@@ -8,18 +7,17 @@ from tests.common.pmd_mock import PmdMock
 
 
 class TestPmdParser(TestBase):
-
     def setUp(self):
         super().setUp()
         # モックデータを使用してテスト用PMDファイルを作成
         self.pmd_file_path = os.path.join(self.temp_dir, "test_model.pmd")
-        
+
         # モックを使用してPMDデータを生成
         # TODO: create_full_pmdのバイナリ構造に問題があるため、一時的にminimalを使用
         mock_pmd_data = PmdMock.create_minimal_pmd()
         with open(self.pmd_file_path, "wb") as f:
             f.write(mock_pmd_data)
-        
+
         # ファイルを解析
         self.parsed_data = mmd_parser.parse_mmd_file(self.pmd_file_path)
 
@@ -28,14 +26,13 @@ class TestPmdParser(TestBase):
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data)
         # ヘッダの属性が正しく設定されていることを確認
-        self.assertEqual(self.parsed_data.header.magic, b'Pmd')
+        self.assertEqual(self.parsed_data.header.magic, b"Pmd")
         # ヘッダのバージョンが1.0であることを確認
         self.assertAlmostEqual(self.parsed_data.header.version, 1.0)
         # モデル名とコメントが正しく設定されていることを確認
         self.assertIsInstance(self.parsed_data.header.model_name, str)
         # commentが文字列であることを確認
         self.assertIsInstance(self.parsed_data.header.comment, str)
-
 
     def test_parse_pmd_vertices(self):
         """PMD頂点データが正しく解析されることをテストする。"""

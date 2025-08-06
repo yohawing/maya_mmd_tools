@@ -6,7 +6,6 @@ JSONファイルから翻訳データを読み込み、現在の言語設定に�
 """
 
 import json
-import logging
 import os
 from typing import Dict, Optional
 
@@ -72,9 +71,7 @@ class UITranslator:
                         self._translations[lang_code] = json.load(f)
                     logger.debug(f"翻訳ファイルを読み込みました: {filename}")
                 except Exception as e:
-                    logger.error(
-                        f"翻訳ファイルの読み込みに失敗しました {filename}: {e}"
-                    )
+                    logger.error(f"翻訳ファイルの読み込みに失敗しました {filename}: {e}")
                     self._translations[lang_code] = {}
             else:
                 logger.warning(f"翻訳ファイルが見つかりません: {filepath}")

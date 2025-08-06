@@ -5,7 +5,6 @@ Namespace機能の統合テスト
 """
 
 import os
-import tempfile
 import unittest
 
 from maya import cmds
@@ -22,9 +21,7 @@ class TestNamespaceImport(unittest.TestCase):
     def setUpClass(cls):
         """テストクラスのセットアップ"""
         # テストデータのパスを設定
-        cls.test_data_dir = os.path.join(
-            os.path.dirname(__file__), "..", "test_data"
-        )
+        cls.test_data_dir = os.path.join(os.path.dirname(__file__), "..", "test_data")
         cls.pmx_file = os.path.join(cls.test_data_dir, "simple_cube.pmx")
         cls.pmd_file = os.path.join(cls.test_data_dir, "simple_model.pmd")
 
@@ -32,7 +29,7 @@ class TestNamespaceImport(unittest.TestCase):
         """各テストの前処理"""
         # 新規シーンを作成
         cmds.file(new=True, force=True)
-        
+
         # namespace設定を有効化
         settings.set("import.general.use_namespace", True)
 
@@ -40,7 +37,7 @@ class TestNamespaceImport(unittest.TestCase):
         """各テストの後処理"""
         # namespace設定をリセット
         settings.set("import.general.use_namespace", False)
-        
+
         # 作成されたnamespaceをクリーンアップ
         model_namespaces = NamespaceUtils.list_model_namespaces()
         for ns in model_namespaces:
@@ -56,16 +53,16 @@ class TestNamespaceImport(unittest.TestCase):
             "use_namespace": True,
             "scale": 1.0,
         }
-        
+
         # PMXファイルをインポート
         if os.path.exists(self.pmx_file):
             root_node = import_mmd_file(self.pmx_file, options=options)
             self.assertIsNotNone(root_node)
-            
+
             # namespaceが作成されていることを確認
             namespaces = NamespaceUtils.list_model_namespaces()
             self.assertGreater(len(namespaces), 0)
-            
+
             # root_nodeがnamespace付きであることを確認
             self.assertIn(":", root_node)
 
@@ -75,24 +72,24 @@ class TestNamespaceImport(unittest.TestCase):
             "use_namespace": True,
             "scale": 1.0,
         }
-        
+
         if os.path.exists(self.pmx_file):
             # 1回目のインポート
             root1 = import_mmd_file(self.pmx_file, options=options)
             self.assertIsNotNone(root1)
-            
+
             # 2回目のインポート
             root2 = import_mmd_file(self.pmx_file, options=options)
             self.assertIsNotNone(root2)
-            
+
             # 異なるnamespaceが使用されていることを確認
             ns1 = NamespaceUtils.get_namespace_from_node(root1)
             ns2 = NamespaceUtils.get_namespace_from_node(root2)
-            
+
             self.assertIsNotNone(ns1)
             self.assertIsNotNone(ns2)
             self.assertNotEqual(ns1, ns2)
-            
+
             # 連番が付与されていることを確認
             self.assertTrue(ns2.endswith("_2") or ns2.endswith("_3"))
 
@@ -102,14 +99,14 @@ class TestNamespaceImport(unittest.TestCase):
             "use_namespace": False,
             "scale": 1.0,
         }
-        
+
         if os.path.exists(self.pmx_file):
             root_node = import_mmd_file(self.pmx_file, options=options)
             self.assertIsNotNone(root_node)
-            
+
             # namespaceが使用されていないことを確認
             self.assertNotIn(":", root_node)
-            
+
             # モデル用namespaceが作成されていないことを確認
             namespaces = NamespaceUtils.list_model_namespaces()
             self.assertEqual(len(namespaces), 0)
@@ -120,7 +117,7 @@ class TestNamespaceImport(unittest.TestCase):
         # 実際のテストではPMXパーサーのモックが必要
         japanese_name = "初音ミク"
         namespace = NamespaceUtils.generate_namespace(japanese_name)
-        
+
         # 英数字に変換されていることを確認
         self.assertTrue(namespace.replace("_", "").isalnum())
         self.assertNotIn(" ", namespace)
@@ -133,11 +130,11 @@ class TestNamespaceImport(unittest.TestCase):
             "use_namespace": True,
             "scale": 1.0,
         }
-        
+
         if os.path.exists(self.pmx_file):
             root_node = import_mmd_file(self.pmx_file, options=options)
             self.assertIsNotNone(root_node)
-            
+
             # VMDインポート時のnamespace検出をテスト
             # （実際のVMDファイルが必要）
             namespace = NamespaceUtils.get_namespace_from_node(root_node)
@@ -151,11 +148,11 @@ class TestNamespaceImport(unittest.TestCase):
             "use_namespace": True,
             "scale": 1.0,
         }
-        
+
         # インポートは失敗するはず
         result = import_mmd_file(invalid_file, options=options)
         self.assertIsNone(result)
-        
+
         # namespaceが残っていないことを確認
         namespaces = NamespaceUtils.list_model_namespaces()
         self.assertEqual(len(namespaces), 0)
@@ -166,18 +163,18 @@ class TestNamespaceImport(unittest.TestCase):
             "use_namespace": True,
             "scale": 1.0,
         }
-        
+
         if os.path.exists(self.pmx_file):
             root_node = import_mmd_file(self.pmx_file, options=options)
             self.assertIsNotNone(root_node)
-            
+
             # namespace内のオブジェクトを検索
             namespace = NamespaceUtils.get_namespace_from_node(root_node)
             objects_in_ns = cmds.ls(f"{namespace}:*", type="transform")
-            
+
             # オブジェクトが存在することを確認
             self.assertGreater(len(objects_in_ns), 0)
-            
+
             # root_nodeが含まれていることを確認
             self.assertIn(root_node, objects_in_ns)
 

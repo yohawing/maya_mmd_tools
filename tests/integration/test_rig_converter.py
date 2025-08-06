@@ -27,9 +27,7 @@ class TestRigConverterMaya(unittest.TestCase):
         cmds.file(new=True, force=True)
         self.converter = RigConverter()
         # 設定を保存しておく
-        self.original_settings = settings.get(
-            "import.rig.add_semi_standard_bones", False
-        )
+        self.original_settings = settings.get("import.rig.add_semi_standard_bones", False)
         # TestFixtureProviderを初期化
         self.fixture_provider = TestFixtureProvider()
 
@@ -41,9 +39,7 @@ class TestRigConverterMaya(unittest.TestCase):
         settings.set("import.rig.add_semi_standard_bones", self.original_settings)
         self.fixture_provider.cleanup_temp_files()
 
-    def _create_mock_pmx_bone(
-        self, index, name="TestBone", parent_index=-1, position=(0, 0, 0), bone_flag=0
-    ):
+    def _create_mock_pmx_bone(self, index, name="TestBone", parent_index=-1, position=(0, 0, 0), bone_flag=0):
         """PMXボーンのモックを作成"""
         bone = Mock()
         bone.name = name
@@ -67,9 +63,7 @@ class TestRigConverterMaya(unittest.TestCase):
 
         return bone
 
-    def _create_mock_ik_link(
-        self, bone_index, angle_limit=False, limit_min=None, limit_max=None
-    ):
+    def _create_mock_ik_link(self, bone_index, angle_limit=False, limit_min=None, limit_max=None):
         """IKリンクのモックを作成"""
         link = Mock()
         link.ik_bone_index = bone_index
@@ -214,9 +208,7 @@ class TestRigConverterMaya(unittest.TestCase):
             limitRotateMinZ = cmds.getAttr(f"{joints[1]}.minRotZLimit")
             limitRotateMaxZ = cmds.getAttr(f"{joints[1]}.maxRotZLimit")
 
-            self.assertTrue(
-                limitXEnabled and limitYEnabled and limitZEnabled
-            )  # True = 制限が有効
+            self.assertTrue(limitXEnabled and limitYEnabled and limitZEnabled)  # True = 制限が有効
             self.assertAlmostEqual(limitRotateMinX, 90.0, delta=0.01)
             self.assertAlmostEqual(limitRotateMaxX, -90.0, delta=0.01)
             self.assertAlmostEqual(limitRotateMinY, 0.0, delta=0.01)
@@ -243,9 +235,7 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertEqual(result, "left_arm")
 
         # 見つからない場合
-        result = self.converter._find_joint_by_name(
-            maya_joints, ["存在しない", "notfound"]
-        )
+        result = self.converter._find_joint_by_name(maya_joints, ["存在しない", "notfound"])
         self.assertIsNone(result)
 
     def test_add_semi_standard_bones(self):
@@ -268,9 +258,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # centerをスケルトングループの子にする
         cmds.parent(center, skeleton_group)
 
-        result = self.converter._add_semi_standard_bones(
-            maya_joints, bone_map, skeleton_group
-        )
+        result = self.converter._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
 
         # 追加されたボーンの確認
         self.assertIn("master", result)
@@ -316,9 +304,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # 付与ボーンの確認
         for joint in maya_joints:
             if joint in ["B", "C", "D"]:  # 付与ボーンの名前を確認
-                self.assertTrue(
-                    maya_utils.get_attribute(joint, ATTR_MMD_GRANT_PARENT_INDEX)
-                )
+                self.assertTrue(maya_utils.get_attribute(joint, ATTR_MMD_GRANT_PARENT_INDEX))
                 self.assertTrue(maya_utils.get_attribute(joint, ATTR_MMD_GRANT_RATE))
 
         # グローバルの位置を確認
@@ -354,9 +340,7 @@ class TestRigConverterMaya(unittest.TestCase):
         vmd_data, _ = self.fixture_provider.load_vmd_data("test_given_bone")
 
         # VMDデータを適用
-        import_vmd_file(
-            vmd_data, root_group[0], options={"target_model": "test_given_bone"}
-        )
+        import_vmd_file(vmd_data, root_group[0], options={"target_model": "test_given_bone"})
 
         # VMDデータの適用を確認
         # 5フレーム目に移動
@@ -458,9 +442,7 @@ class TestRigConverterMaya(unittest.TestCase):
         cmds.select(clear=True)
         child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
 
-        bone = self._create_mock_pmx_bone(
-            0, "TestBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
-        )
+        bone = self._create_mock_pmx_bone(0, "TestBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
         bone.given_parent_bone_index = 1
         bone.given_rate = 0.5
 
@@ -489,9 +471,7 @@ class TestRigConverterMaya(unittest.TestCase):
         # 足のジョイントチェーンを作成
         cmds.select(clear=True)
         hip = cmds.joint(name="left_leg", position=[2, 10, 0])
-        knee = cmds.joint(
-            name="left_knee", position=[2, 5, 0.5]
-        )  # 膝は少し前に出ている
+        knee = cmds.joint(name="left_knee", position=[2, 5, 0.5])  # 膝は少し前に出ている
         ankle = cmds.joint(name="left_ankle", position=[2, 0, 0])
 
         # IKボーンを作成
@@ -521,33 +501,25 @@ class TestRigConverterMaya(unittest.TestCase):
         )
 
         # PoleTargetを作成
-        pole_target = self.converter._create_pole_target_for_leg_ik(
-            chain, ik_handle, hip, ankle
-        )
+        pole_target = self.converter._create_pole_target_for_leg_ik(chain, ik_handle, hip, ankle)
 
         # PoleTargetが作成されたか確認
         self.assertIsNotNone(pole_target)
         self.assertTrue(cmds.objExists(pole_target))
 
         # PoleTargetの位置を取得
-        pole_pos = cmds.xform(
-            pole_target, query=True, worldSpace=True, translation=True
-        )
+        pole_pos = cmds.xform(pole_target, query=True, worldSpace=True, translation=True)
         knee_pos = cmds.xform(knee, query=True, worldSpace=True, translation=True)
 
         # PoleTargetが膝の近くに配置されているか確認（Y座標が近い）
         self.assertAlmostEqual(pole_pos[1], knee_pos[1], delta=1.0)
 
         # PoleTargetが膝の前方（Z軸正方向）に配置されているか確認
-        self.assertGreater(
-            pole_pos[2], knee_pos[2], "PoleTargetが膝の前方に配置されていません"
-        )
+        self.assertGreater(pole_pos[2], knee_pos[2], "PoleTargetが膝の前方に配置されていません")
 
         # PoleTargetが適切な距離に配置されているか確認（デフォルト2ユニット）
         distance = (
-            (pole_pos[0] - knee_pos[0]) ** 2
-            + (pole_pos[1] - knee_pos[1]) ** 2
-            + (pole_pos[2] - knee_pos[2]) ** 2
+            (pole_pos[0] - knee_pos[0]) ** 2 + (pole_pos[1] - knee_pos[1]) ** 2 + (pole_pos[2] - knee_pos[2]) ** 2
         ) ** 0.5
         self.assertAlmostEqual(distance, 2.0, delta=1.0)
 
@@ -560,9 +532,7 @@ class TestRigConverterMaya(unittest.TestCase):
         child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
 
         # ローカル付与フラグを含むボーンを作成
-        bone = self._create_mock_pmx_bone(
-            0, "TestBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.LOCAL
-        )
+        bone = self._create_mock_pmx_bone(0, "TestBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.LOCAL)
         bone.given_parent_bone_index = 1
         bone.given_rate = 0.5
 
@@ -601,9 +571,7 @@ class TestRigConverterMaya(unittest.TestCase):
         for i in range(4):
             if i < 2:
                 # 付与ボーンとして設定（異なる変形階層）
-                bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
-                )
+                bone = self._create_mock_pmx_bone(i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
                 bone.given_parent_bone_index = 3  # joint3を親にする
                 bone.given_rate = 0.5
                 bone.transform_layer = 1 if i == 0 else 0  # 異なる階層
@@ -637,16 +605,12 @@ class TestRigConverterMaya(unittest.TestCase):
         for i in range(4):
             if i == 0:
                 # joint0: joint1から付与を受ける
-                bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
-                )
+                bone = self._create_mock_pmx_bone(i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
                 bone.given_parent_bone_index = 1
                 bone.given_rate = 0.5
             elif i == 1:
                 # joint1: joint2から付与を受ける（多重付与）
-                bone = self._create_mock_pmx_bone(
-                    i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
-                )
+                bone = self._create_mock_pmx_bone(i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
                 bone.given_parent_bone_index = 2
                 bone.given_rate = 0.7
             else:
@@ -671,9 +635,7 @@ class TestRigConverterMaya(unittest.TestCase):
 
         rate = 0.5
 
-        created_nodes = self.converter._create_weighted_rotation_constraint(
-            parent_joint, child_joint, rate
-        )
+        created_nodes = self.converter._create_weighted_rotation_constraint(parent_joint, child_joint, rate)
 
         # ノードが作成されたか確認
         self.assertIsInstance(created_nodes, list)
@@ -701,9 +663,7 @@ class TestRigConverterMaya(unittest.TestCase):
 
         rate = -0.5  # 負の付与率
 
-        created_nodes = self.converter._create_weighted_rotation_constraint(
-            parent_joint, child_joint, rate
-        )
+        created_nodes = self.converter._create_weighted_rotation_constraint(parent_joint, child_joint, rate)
 
         # ノードが作成されたか確認
         self.assertIsInstance(created_nodes, list)
@@ -763,9 +723,7 @@ class TestRigConverterMaya(unittest.TestCase):
         skeleton_group = cmds.group(empty=True, name="skeleton_grp")
         cmds.parent(center, skeleton_group)
 
-        result = self.converter.setup_pmx_rig(
-            pmx_data, maya_joints, bone_map, skeleton_group
-        )
+        result = self.converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
 
         # 準標準ボーンが追加されたか確認
         self.assertIn("semi_standard_bones", result)
@@ -789,9 +747,7 @@ class TestRigConverterMaya(unittest.TestCase):
         bone_map = {0: center}
         skeleton_group = cmds.group(empty=True, name="skeleton_grp")
 
-        result = self.converter.setup_pmx_rig(
-            pmx_data, maya_joints, bone_map, skeleton_group
-        )
+        result = self.converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
 
         # 準標準ボーンが追加されていないか確認
         self.assertIn("semi_standard_bones", result)
@@ -820,9 +776,7 @@ class TestRigConverterMaya(unittest.TestCase):
         skeleton_group = cmds.group(empty=True, name="skeleton_grp")
         cmds.parent(master_existing, skeleton_group)
 
-        result = self.converter._add_semi_standard_bones(
-            maya_joints, bone_map, skeleton_group
-        )
+        result = self.converter._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
 
         # 既存のボーンが使用され、新しく作成されていないことを確認
         # master は作成されない（既存のものを使用）
@@ -867,9 +821,7 @@ class TestRigConverterMaya(unittest.TestCase):
             3: "waist",
         }
 
-        result = self.converter._add_semi_standard_bones(
-            maya_joints, bone_map, skeleton_group
-        )
+        result = self.converter._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
 
         # 既存のボーンは新しく作成されない
         self.assertNotIn("master", result)
@@ -906,9 +858,7 @@ class TestRigConverterMaya(unittest.TestCase):
         bone_map = {0: joint1, 1: joint2}
         skeleton_group = cmds.group(empty=True, name="skeleton_grp")
 
-        result = self.converter.setup_pmx_rig(
-            pmx_data, maya_joints, bone_map, skeleton_group
-        )
+        result = self.converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
 
         # 各メソッドが呼ばれたか確認
         mock_extract_ik.assert_called_once()
@@ -951,9 +901,7 @@ class TestRigConverterMaya(unittest.TestCase):
         cmds.setAttr(f"{knee}.mmd_local_x_axis", 0, 0, -1, type="double3")
 
         # IKハンドルを作成
-        ik_handle, _ = cmds.ikHandle(
-            startJoint=hip, endEffector=ankle, solver="ikRPsolver"
-        )
+        ik_handle, _ = cmds.ikHandle(startJoint=hip, endEffector=ankle, solver="ikRPsolver")
 
         # IKチェーン情報を作成
         chain = {
@@ -966,9 +914,7 @@ class TestRigConverterMaya(unittest.TestCase):
         ik_bone = cmds.joint(name="left_leg_ik", position=[1, 0, 2])
 
         # PoleTargetを作成
-        pole_target = self.converter._create_pole_target_for_leg_ik(
-            chain, ik_handle, hip, ankle
-        )
+        pole_target = self.converter._create_pole_target_for_leg_ik(chain, ik_handle, hip, ankle)
 
         # PoleTargetが作成されたか確認
         self.assertIsNotNone(pole_target)
@@ -986,9 +932,7 @@ class TestRigConverterMaya(unittest.TestCase):
         ankle = cmds.joint(name="left_ankle", position=[1, 0, 0])
 
         # IKハンドルを作成
-        ik_handle, _ = cmds.ikHandle(
-            startJoint=hip, endEffector=ankle, solver="ikRPsolver"
-        )
+        ik_handle, _ = cmds.ikHandle(startJoint=hip, endEffector=ankle, solver="ikRPsolver")
 
         # IKチェーン情報を作成
         chain = {
@@ -1001,9 +945,7 @@ class TestRigConverterMaya(unittest.TestCase):
         ik_bone = cmds.joint(name="left_leg_ik", position=[1, 0, 2])
 
         # PoleTargetを作成
-        pole_target = self.converter._create_pole_target_for_leg_ik(
-            chain, ik_handle, hip, ankle
-        )
+        pole_target = self.converter._create_pole_target_for_leg_ik(chain, ik_handle, hip, ankle)
 
         # PoleTargetが作成されたか確認
         self.assertIsNotNone(pole_target)

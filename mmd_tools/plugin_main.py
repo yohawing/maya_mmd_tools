@@ -3,13 +3,14 @@ import maya.api.OpenMaya as om
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.view import shader_override as mmd_shader
 
+
 def maya_useNewAPI():
     """Tell Maya to use the Python API 2.0"""
     pass
 
+
 def open_main_window(dockable=False):
     """Open the main MMD Tools window."""
-    from mmd_tools.ui.main_window import MainWindow
 
     # 既存のウィンドウを削除
     if cmds.window(MainWindow.WINDOW_NAME, exists=True):

@@ -1,5 +1,4 @@
 from ..qt_compat import (
-    QWidget,
     QVBoxLayout,
     QTabWidget,
     QGroupBox,

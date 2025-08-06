@@ -7,7 +7,7 @@
 import os
 import struct
 import tempfile
-from typing import List, Dict, Union, Optional
+from typing import List
 
 
 class PmdMock:
@@ -26,9 +26,7 @@ class PmdMock:
         data.extend(b"Pmd\x00")  # 識別子
         data.extend(struct.pack("<f", 1.0))  # バージョン
         data.extend(b"TestModel" + b"\x00" * (20 - len(b"TestModel")))  # モデル名
-        data.extend(
-            b"Test Comment" + b"\x00" * (256 - len(b"Test Comment"))
-        )  # コメント
+        data.extend(b"Test Comment" + b"\x00" * (256 - len(b"Test Comment")))  # コメント
 
         # 頂点データ（立方体: 8頂点）
         data.extend(struct.pack("<L", 8))  # 頂点数

@@ -1,10 +1,8 @@
 """BonePresenterのユニットテスト"""
 
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import maya.cmds as cmds
-import json
-import math
 
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME,
@@ -15,7 +13,6 @@ from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter
 from mmd_tools.ui.tabs.bone_tab import BoneTab
 from mmd_tools.ui.application_state import ApplicationState
-from mmd_tools.ui.qt_compat import Qt
 
 
 class TestBonePresenter(MayaTestBase):
@@ -243,24 +240,12 @@ class TestBonePresenter(MayaTestBase):
         self.presenter._ensure_mmd_attributes(self.test_bone3)
 
         # 基本的なMMD属性を設定
-        cmds.setAttr(
-            f"{self.test_bone1}.{ATTR_MMD_BONE_NAME}", "テストボーン1", type="string"
-        )
-        cmds.setAttr(
-            f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}", "test_bone1", type="string"
-        )
-        cmds.setAttr(
-            f"{self.test_bone2}.{ATTR_MMD_BONE_NAME}", "テストボーン2", type="string"
-        )
-        cmds.setAttr(
-            f"{self.test_bone2}.{ATTR_MMD_BONE_NAME_EN}", "test_bone2", type="string"
-        )
-        cmds.setAttr(
-            f"{self.test_bone3}.{ATTR_MMD_BONE_NAME}", "テストボーン3", type="string"
-        )
-        cmds.setAttr(
-            f"{self.test_bone3}.{ATTR_MMD_BONE_NAME_EN}", "test_bone3", type="string"
-        )
+        cmds.setAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME}", "テストボーン1", type="string")
+        cmds.setAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}", "test_bone1", type="string")
+        cmds.setAttr(f"{self.test_bone2}.{ATTR_MMD_BONE_NAME}", "テストボーン2", type="string")
+        cmds.setAttr(f"{self.test_bone2}.{ATTR_MMD_BONE_NAME_EN}", "test_bone2", type="string")
+        cmds.setAttr(f"{self.test_bone3}.{ATTR_MMD_BONE_NAME}", "テストボーン3", type="string")
+        cmds.setAttr(f"{self.test_bone3}.{ATTR_MMD_BONE_NAME_EN}", "test_bone3", type="string")
 
     def tearDown(self):
         """テスト後のクリーンアップ"""
@@ -365,12 +350,8 @@ class TestBonePresenter(MayaTestBase):
         self.presenter.apply_changes()
 
         # 属性が更新されたことを確認
-        self.assertEqual(
-            cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME}"), "新しい名前"
-        )
-        self.assertEqual(
-            cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}"), "new_name"
-        )
+        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME}"), "新しい名前")
+        self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_BONE_NAME_EN}"), "new_name")
         self.assertEqual(cmds.getAttr(f"{self.test_bone1}.{ATTR_MMD_DEFORM_LAYER}"), 2)
 
         # 位置が更新されたことを確認

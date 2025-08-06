@@ -11,15 +11,9 @@ from ..qt_compat import (
     QPushButton,
     QLabel,
     QComboBox,
-    QSpinBox,
     QDoubleSpinBox,
-    QTreeWidget,
-    QTreeWidgetItem,
     QTabWidget,
     QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QListWidgetItem,
     QSplitter,
     QCheckBox,
 )
@@ -78,18 +72,18 @@ class MorphTab(BaseTab):
         # グループリスト
         self.group_list = QListWidget()
         self.group_list.setAlternatingRowColors(True)
-        
+
         # デフォルトグループを追加
         self.group_list.addItem(self.tr("show_all", "morph_groups"))
         default_groups = [
             self.tr("eyebrows", "morph_groups"),
             self.tr("eyes", "morph_groups"),
             self.tr("mouth", "morph_groups"),
-            self.tr("other", "morph_groups")
+            self.tr("other", "morph_groups"),
         ]
         for group in default_groups:
             self.group_list.addItem(group)
-        
+
         group_layout.addWidget(self.group_list)
 
         self.group_box.setLayout(group_layout)
@@ -113,7 +107,7 @@ class MorphTab(BaseTab):
         self.refresh_morphs_btn.setMaximumWidth(60)
         self.select_in_maya_btn = QPushButton(self.tr("select_in_maya", "actions"))
         self.select_in_maya_btn.setMaximumWidth(100)
-        
+
         toolbar_layout.addWidget(self.refresh_morphs_btn)
         toolbar_layout.addWidget(self.select_in_maya_btn)
         toolbar_layout.addStretch()
@@ -186,20 +180,22 @@ class MorphTab(BaseTab):
         reset_layout.addWidget(self.reset_slider_btn)
         reset_layout.addWidget(self.reset_all_btn)
         preview_layout.addLayout(reset_layout)
-        
+
         # プリセット機能
         preset_layout = QHBoxLayout()
         self.preset_label = QLabel(self.tr("preset", "fields"))
         preset_layout.addWidget(self.preset_label)
         self.preset_combo = QComboBox()
         self.preset_combo.setEditable(True)
-        self.preset_combo.addItems([
-            self.tr("none", "presets"),
-            self.tr("smile", "presets"),
-            self.tr("wink", "presets"),
-            self.tr("surprise", "presets"),
-            self.tr("sadness", "presets")
-        ])
+        self.preset_combo.addItems(
+            [
+                self.tr("none", "presets"),
+                self.tr("smile", "presets"),
+                self.tr("wink", "presets"),
+                self.tr("surprise", "presets"),
+                self.tr("sadness", "presets"),
+            ]
+        )
         preset_layout.addWidget(self.preset_combo)
         self.save_preset_btn = QPushButton(self.tr("save", "buttons"))
         self.load_preset_btn = QPushButton(self.tr("load", "buttons"))
@@ -239,32 +235,40 @@ class MorphTab(BaseTab):
         # パネル
         panel_layout = QHBoxLayout()
         self.panel_combo = QComboBox()
-        self.panel_combo.addItems([
-            self.tr("none", "morph_panels"),
-            self.tr("eyebrows_lower_left", "morph_panels"),
-            self.tr("eyes_upper_left", "morph_panels"),
-            self.tr("mouth_upper_right", "morph_panels"),
-            self.tr("other_lower_right", "morph_panels")
-        ])
+        self.panel_combo.addItems(
+            [
+                self.tr("none", "morph_panels"),
+                self.tr("eyebrows_lower_left", "morph_panels"),
+                self.tr("eyes_upper_left", "morph_panels"),
+                self.tr("mouth_upper_right", "morph_panels"),
+                self.tr("other_lower_right", "morph_panels"),
+            ]
+        )
         panel_layout.addWidget(self.panel_combo)
         self.panel_label = QLabel(self.tr("panel", "fields"))
         layout.addRow(self.panel_label, panel_layout)
 
         # モーフタイプ
         self.morph_type_combo = QComboBox()
-        self.morph_type_combo.addItems([
-            self.tr("vertex", "morph_types"),
-            "UV", "UV1", "UV2", "UV3", "UV4",
-            self.tr("additional_uv1", "morph_types"),
-            self.tr("additional_uv2", "morph_types"),
-            self.tr("additional_uv3", "morph_types"),
-            self.tr("additional_uv4", "morph_types"),
-            self.tr("bone", "morph_types"),
-            self.tr("material", "morph_types"),
-            self.tr("group", "morph_types"),
-            self.tr("flip", "morph_types"),
-            self.tr("impulse", "morph_types")
-        ])
+        self.morph_type_combo.addItems(
+            [
+                self.tr("vertex", "morph_types"),
+                "UV",
+                "UV1",
+                "UV2",
+                "UV3",
+                "UV4",
+                self.tr("additional_uv1", "morph_types"),
+                self.tr("additional_uv2", "morph_types"),
+                self.tr("additional_uv3", "morph_types"),
+                self.tr("additional_uv4", "morph_types"),
+                self.tr("bone", "morph_types"),
+                self.tr("material", "morph_types"),
+                self.tr("group", "morph_types"),
+                self.tr("flip", "morph_types"),
+                self.tr("impulse", "morph_types"),
+            ]
+        )
         self.morph_type_label = QLabel(self.tr("type", "fields"))
         layout.addRow(self.morph_type_label, self.morph_type_combo)
 
@@ -272,12 +276,14 @@ class MorphTab(BaseTab):
         group_layout = QHBoxLayout()
         self.group_combo = QComboBox()
         self.group_combo.setEditable(True)
-        self.group_combo.addItems([
-            self.tr("eyebrows", "morph_groups"),
-            self.tr("eyes", "morph_groups"),
-            self.tr("mouth", "morph_groups"),
-            self.tr("other", "morph_groups")
-        ])
+        self.group_combo.addItems(
+            [
+                self.tr("eyebrows", "morph_groups"),
+                self.tr("eyes", "morph_groups"),
+                self.tr("mouth", "morph_groups"),
+                self.tr("other", "morph_groups"),
+            ]
+        )
         group_layout.addWidget(self.group_combo)
         self.group_label = QLabel(self.tr("group", "fields"))
         layout.addRow(self.group_label, group_layout)
@@ -299,13 +305,15 @@ class MorphTab(BaseTab):
         # オフセットテーブル
         self.offset_table = QTableWidget()
         self.offset_table.setColumnCount(5)
-        self.offset_table.setHorizontalHeaderLabels([
-            self.tr("index", "table_headers"),
-            self.tr("type", "table_headers"),
-            self.tr("element", "table_headers"),
-            self.tr("value", "table_headers"),
-            self.tr("details", "table_headers")
-        ])
+        self.offset_table.setHorizontalHeaderLabels(
+            [
+                self.tr("index", "table_headers"),
+                self.tr("type", "table_headers"),
+                self.tr("element", "table_headers"),
+                self.tr("value", "table_headers"),
+                self.tr("details", "table_headers"),
+            ]
+        )
         self.offset_table.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.offset_table)
 
@@ -397,172 +405,184 @@ class MorphTab(BaseTab):
         self.reset_slider_btn.setEnabled(enabled)
         self.apply_btn.setEnabled(enabled)
         self.reset_btn.setEnabled(enabled)
-    
+
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         # GroupBoxes
-        if hasattr(self, 'group_box'):
+        if hasattr(self, "group_box"):
             self.group_box.setTitle(self.tr("morph_groups", "groups"))
-        if hasattr(self, 'morph_list_group'):
+        if hasattr(self, "morph_list_group"):
             self.morph_list_group.setTitle(self.tr("morph_list", "groups"))
-        if hasattr(self, 'preview_group'):
+        if hasattr(self, "preview_group"):
             self.preview_group.setTitle(self.tr("preview", "groups"))
-        if hasattr(self, 'blend_group'):
+        if hasattr(self, "blend_group"):
             self.blend_group.setTitle(self.tr("blendshape_connection", "groups"))
-        if hasattr(self, 'advanced_group'):
+        if hasattr(self, "advanced_group"):
             self.advanced_group.setTitle(self.tr("advanced_settings", "groups"))
-        
+
         # Buttons
-        if hasattr(self, 'add_group_btn'):
+        if hasattr(self, "add_group_btn"):
             self.add_group_btn.setText(self.tr("add", "buttons"))
-        if hasattr(self, 'remove_group_btn'):
+        if hasattr(self, "remove_group_btn"):
             self.remove_group_btn.setText(self.tr("delete", "buttons"))
-        if hasattr(self, 'refresh_morphs_btn'):
+        if hasattr(self, "refresh_morphs_btn"):
             self.refresh_morphs_btn.setText(self.tr("refresh", "buttons"))
-        if hasattr(self, 'select_in_maya_btn'):
+        if hasattr(self, "select_in_maya_btn"):
             self.select_in_maya_btn.setText(self.tr("select_in_maya", "actions"))
-        if hasattr(self, 'reset_slider_btn'):
+        if hasattr(self, "reset_slider_btn"):
             self.reset_slider_btn.setText(self.tr("reset", "buttons"))
-        if hasattr(self, 'reset_all_btn'):
+        if hasattr(self, "reset_all_btn"):
             self.reset_all_btn.setText(self.tr("reset_all", "actions"))
-        if hasattr(self, 'save_preset_btn'):
+        if hasattr(self, "save_preset_btn"):
             self.save_preset_btn.setText(self.tr("save", "buttons"))
-        if hasattr(self, 'load_preset_btn'):
+        if hasattr(self, "load_preset_btn"):
             self.load_preset_btn.setText(self.tr("load", "buttons"))
-        if hasattr(self, 'delete_preset_btn'):
+        if hasattr(self, "delete_preset_btn"):
             self.delete_preset_btn.setText(self.tr("delete", "buttons"))
-        if hasattr(self, 'apply_btn'):
+        if hasattr(self, "apply_btn"):
             self.apply_btn.setText(self.tr("apply", "buttons"))
-        if hasattr(self, 'reset_btn'):
+        if hasattr(self, "reset_btn"):
             self.reset_btn.setText(self.tr("reset", "buttons"))
-        if hasattr(self, 'add_offset_btn'):
+        if hasattr(self, "add_offset_btn"):
             self.add_offset_btn.setText(self.tr("add", "buttons"))
-        if hasattr(self, 'remove_offset_btn'):
+        if hasattr(self, "remove_offset_btn"):
             self.remove_offset_btn.setText(self.tr("delete", "buttons"))
-        if hasattr(self, 'clear_offsets_btn'):
+        if hasattr(self, "clear_offsets_btn"):
             self.clear_offsets_btn.setText(self.tr("clear_all", "actions"))
-        if hasattr(self, 'select_blend_shape_btn'):
+        if hasattr(self, "select_blend_shape_btn"):
             self.select_blend_shape_btn.setText(self.tr("select", "buttons"))
-        if hasattr(self, 'connect_btn'):
+        if hasattr(self, "connect_btn"):
             self.connect_btn.setText(self.tr("connect", "actions"))
-        if hasattr(self, 'disconnect_btn'):
+        if hasattr(self, "disconnect_btn"):
             self.disconnect_btn.setText(self.tr("disconnect", "actions"))
-        if hasattr(self, 'auto_connect_btn'):
+        if hasattr(self, "auto_connect_btn"):
             self.auto_connect_btn.setText(self.tr("auto_connect", "actions"))
-        
+
         # Labels
-        if hasattr(self, 'search_label'):
+        if hasattr(self, "search_label"):
             self.search_label.setText(self.tr("search", "fields"))
-        if hasattr(self, 'apply_rate_label'):
+        if hasattr(self, "apply_rate_label"):
             self.apply_rate_label.setText(self.tr("apply_rate", "fields"))
-        if hasattr(self, 'preset_label'):
+        if hasattr(self, "preset_label"):
             self.preset_label.setText(self.tr("preset", "fields"))
-        if hasattr(self, 'morph_name_jp_label'):
+        if hasattr(self, "morph_name_jp_label"):
             self.morph_name_jp_label.setText(self.tr("morph_name_jp", "fields"))
-        if hasattr(self, 'morph_name_en_label'):
+        if hasattr(self, "morph_name_en_label"):
             self.morph_name_en_label.setText(self.tr("morph_name_en", "fields"))
-        if hasattr(self, 'panel_label'):
+        if hasattr(self, "panel_label"):
             self.panel_label.setText(self.tr("panel", "fields"))
-        if hasattr(self, 'morph_type_label'):
+        if hasattr(self, "morph_type_label"):
             self.morph_type_label.setText(self.tr("type", "fields"))
-        if hasattr(self, 'group_label'):
+        if hasattr(self, "group_label"):
             self.group_label.setText(self.tr("group", "fields"))
-        if hasattr(self, 'status_label'):
+        if hasattr(self, "status_label"):
             self.status_label.setText(self.tr("status", "fields"))
-        if hasattr(self, 'node_label'):
+        if hasattr(self, "node_label"):
             self.node_label.setText(self.tr("node", "fields"))
-        if hasattr(self, 'target_name_label'):
+        if hasattr(self, "target_name_label"):
             self.target_name_label.setText(self.tr("target_name", "fields"))
-        if hasattr(self, 'multiplier_label'):
+        if hasattr(self, "multiplier_label"):
             self.multiplier_label.setText(self.tr("multiplier", "fields"))
-        
+
         # Update offset count label
-        if hasattr(self, 'offset_count_label'):
-            count = self.offset_table.rowCount() if hasattr(self, 'offset_table') else 0
+        if hasattr(self, "offset_count_label"):
+            count = self.offset_table.rowCount() if hasattr(self, "offset_table") else 0
             self.offset_count_label.setText(self.tr("offset_count", "labels") + f": {count}")
-        
+
         # CheckBoxes
-        if hasattr(self, 'invert_check'):
+        if hasattr(self, "invert_check"):
             self.invert_check.setText(self.tr("invert_value", "checkboxes"))
-        
+
         # Tab widget texts
-        if hasattr(self, 'detail_tabs'):
+        if hasattr(self, "detail_tabs"):
             if self.detail_tabs.count() >= 3:
                 self.detail_tabs.setTabText(0, self.tr("basic_information", "tabs"))
                 self.detail_tabs.setTabText(1, self.tr("offset_information", "tabs"))
                 self.detail_tabs.setTabText(2, self.tr("maya_connection", "tabs"))
-        
+
         # Group list items
-        if hasattr(self, 'group_list'):
+        if hasattr(self, "group_list"):
             if self.group_list.count() >= 5:
                 self.group_list.item(0).setText(self.tr("show_all", "morph_groups"))
                 self.group_list.item(1).setText(self.tr("eyebrows", "morph_groups"))
                 self.group_list.item(2).setText(self.tr("eyes", "morph_groups"))
                 self.group_list.item(3).setText(self.tr("mouth", "morph_groups"))
                 self.group_list.item(4).setText(self.tr("other", "morph_groups"))
-        
+
         # ComboBox items - Panel
-        if hasattr(self, 'panel_combo'):
+        if hasattr(self, "panel_combo"):
             self.panel_combo.clear()
-            self.panel_combo.addItems([
-                self.tr("none", "morph_panels"),
-                self.tr("eyebrows_lower_left", "morph_panels"),
-                self.tr("eyes_upper_left", "morph_panels"),
-                self.tr("mouth_upper_right", "morph_panels"),
-                self.tr("other_lower_right", "morph_panels")
-            ])
-        
+            self.panel_combo.addItems(
+                [
+                    self.tr("none", "morph_panels"),
+                    self.tr("eyebrows_lower_left", "morph_panels"),
+                    self.tr("eyes_upper_left", "morph_panels"),
+                    self.tr("mouth_upper_right", "morph_panels"),
+                    self.tr("other_lower_right", "morph_panels"),
+                ]
+            )
+
         # ComboBox items - Morph Type
-        if hasattr(self, 'morph_type_combo'):
+        if hasattr(self, "morph_type_combo"):
             self.morph_type_combo.clear()
-            self.morph_type_combo.addItems([
-                self.tr("vertex", "morph_types"),
-                "UV", "UV1", "UV2", "UV3", "UV4",
-                self.tr("additional_uv1", "morph_types"),
-                self.tr("additional_uv2", "morph_types"),
-                self.tr("additional_uv3", "morph_types"),
-                self.tr("additional_uv4", "morph_types"),
-                self.tr("bone", "morph_types"),
-                self.tr("material", "morph_types"),
-                self.tr("group", "morph_types"),
-                self.tr("flip", "morph_types"),
-                self.tr("impulse", "morph_types")
-            ])
-        
+            self.morph_type_combo.addItems(
+                [
+                    self.tr("vertex", "morph_types"),
+                    "UV",
+                    "UV1",
+                    "UV2",
+                    "UV3",
+                    "UV4",
+                    self.tr("additional_uv1", "morph_types"),
+                    self.tr("additional_uv2", "morph_types"),
+                    self.tr("additional_uv3", "morph_types"),
+                    self.tr("additional_uv4", "morph_types"),
+                    self.tr("bone", "morph_types"),
+                    self.tr("material", "morph_types"),
+                    self.tr("group", "morph_types"),
+                    self.tr("flip", "morph_types"),
+                    self.tr("impulse", "morph_types"),
+                ]
+            )
+
         # ComboBox items - Preset
-        if hasattr(self, 'preset_combo'):
+        if hasattr(self, "preset_combo"):
             current_text = self.preset_combo.currentText()
             self.preset_combo.clear()
-            self.preset_combo.addItems([
-                self.tr("none", "presets"),
-                self.tr("smile", "presets"),
-                self.tr("wink", "presets"),
-                self.tr("surprise", "presets"),
-                self.tr("sadness", "presets")
-            ])
+            self.preset_combo.addItems(
+                [
+                    self.tr("none", "presets"),
+                    self.tr("smile", "presets"),
+                    self.tr("wink", "presets"),
+                    self.tr("surprise", "presets"),
+                    self.tr("sadness", "presets"),
+                ]
+            )
             # Try to restore selection if it was a preset
             if current_text in ["なし", "笑顔", "ウィンク", "驚き", "悲しみ", "None", "Smile", "Wink", "Surprise", "Sadness"]:
                 index = self.preset_combo.findText(current_text)
                 if index >= 0:
                     self.preset_combo.setCurrentIndex(index)
-        
+
         # Table headers - Offset table
-        if hasattr(self, 'offset_table'):
-            self.offset_table.setHorizontalHeaderLabels([
-                self.tr("index", "table_headers"),
-                self.tr("type", "table_headers"),
-                self.tr("element", "table_headers"),
-                self.tr("value", "table_headers"),
-                self.tr("details", "table_headers")
-            ])
-        
+        if hasattr(self, "offset_table"):
+            self.offset_table.setHorizontalHeaderLabels(
+                [
+                    self.tr("index", "table_headers"),
+                    self.tr("type", "table_headers"),
+                    self.tr("element", "table_headers"),
+                    self.tr("value", "table_headers"),
+                    self.tr("details", "table_headers"),
+                ]
+            )
+
         # Status label text
-        if hasattr(self, 'connection_status_label'):
+        if hasattr(self, "connection_status_label"):
             if self.connection_status_label.styleSheet() == "color: red;":
                 self.connection_status_label.setText(self.tr("not_connected", "status"))
             else:
                 self.connection_status_label.setText(self.tr("connected", "status"))
-        
+
         # Placeholders
-        if hasattr(self, 'search_edit'):
+        if hasattr(self, "search_edit"):
             self.search_edit.setPlaceholderText(self.tr("search_morph_name", "placeholders"))

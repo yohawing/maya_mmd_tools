@@ -1,12 +1,9 @@
 import os
-import io
 
 from mmd_tools.core import mmd_parser
 from mmd_tools.core.pmd_data.material import PmdMaterial
-from mmd_tools.core.pmx_data.face import PmxFace
 from mmd_tools.core.pmx_data.header import PmxEncoding
-from mmd_tools.core.pmx_data.vertex import PmxVertex
-from mmd_tools.core.pmx_parser import PmxParser
+from mmd_tools.core.pmx_data import PmxData
 from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
 
@@ -35,9 +32,7 @@ class TestPmxParser(TestBase):
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data, msg="パース結果がNoneです")
         # 型のチェック
-        self.assertIsInstance(
-            self.parsed_data, PmxParser, msg="パース結果の型が不正です"
-        )
+        self.assertIsInstance(self.parsed_data, PmxData, msg="パース結果の型が不正です")
 
     def test_parse_pmx_header_success(self):
         """PMXヘッダが正しく解析されることをテストする。"""
@@ -49,18 +44,14 @@ class TestPmxParser(TestBase):
         self.assertIsNotNone(header, msg="ヘッダがNoneです")
 
         # マジックナンバーが'PMX 'であることを確認
-        self.assertEqual(
-            header.magic, b"PMX ", msg=f"マジックナンバーが不正です: {header.magic}"
-        )
+        self.assertEqual(header.magic, b"PMX ", msg=f"マジックナンバーが不正です: {header.magic}")
         # バージョンが2.0または2.1であることを確認（浮動小数点数の誤差を考慮）
         self.assertTrue(
             abs(header.version - 2.0) < 0.01 or abs(header.version - 2.1) < 0.01,
             msg=f"サポート外のバージョンです: {header.version}",
         )
         # ヘッダサイズが8バイトであることを確認
-        self.assertEqual(
-            header.header_size, 8, msg=f"ヘッダサイズが不正です: {header.header_size}"
-        )
+        self.assertEqual(header.header_size, 8, msg=f"ヘッダサイズが不正です: {header.header_size}")
         # エンコーディングがPMXEncodingのいずれかであることを確認
         self.assertIsInstance(header.encoding, PmxEncoding)
         # 追加UV数が0から4の範囲内であることを確認
@@ -124,9 +115,7 @@ class TestPmxParser(TestBase):
             3,
             msg=f"頂点法線の要素数が不正です: {len(vertex.normal)}",
         )
-        self.assertEqual(
-            len(vertex.uv), 2, msg=f"UV座標の要素数が不正です: {len(vertex.uv)}"
-        )
+        self.assertEqual(len(vertex.uv), 2, msg=f"UV座標の要素数が不正です: {len(vertex.uv)}")
         # ウェイト変形方式が0から4のいずれかであることを確認
         self.assertIn(
             vertex.weight_transform_type,
@@ -152,15 +141,9 @@ class TestPmxParser(TestBase):
         # 最初の面を取得して、各頂点インデックスが整数であることを確認
         face = self.parsed_data.faces[0]
         self.assertIsNotNone(face, msg="最初の面がNoneです")
-        self.assertIsInstance(
-            face.indices[0], int, msg="面を構成する頂点インデックスが整数ではありません"
-        )
-        self.assertIsInstance(
-            face.indices[1], int, msg="面を構成する頂点インデックスが整数ではありません"
-        )
-        self.assertIsInstance(
-            face.indices[2], int, msg="面を構成する頂点インデックスが整数ではありません"
-        )
+        self.assertIsInstance(face.indices[0], int, msg="面を構成する頂点インデックスが整数ではありません")
+        self.assertIsInstance(face.indices[1], int, msg="面を構成する頂点インデックスが整数ではありません")
+        self.assertIsInstance(face.indices[2], int, msg="面を構成する頂点インデックスが整数ではありません")
 
     def test_parse_pmx_texture_success(self):
         """PMXテクスチャリストが正しく解析されることをテストする。"""
@@ -168,12 +151,8 @@ class TestPmxParser(TestBase):
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data, msg="パース結果がNoneです")
         # テクスチャリストがNoneでなく、空でないことを確認
-        self.assertIsNotNone(
-            self.parsed_data.textures, msg="テクスチャリストがNoneです"
-        )
-        self.assertGreater(
-            len(self.parsed_data.textures), 0, msg="テクスチャリストが空です"
-        )
+        self.assertIsNotNone(self.parsed_data.textures, msg="テクスチャリストがNoneです")
+        self.assertGreater(len(self.parsed_data.textures), 0, msg="テクスチャリストが空です")
 
         # 最初のテクスチャパスが文字列であることを確認
         self.assertIsInstance(
@@ -198,12 +177,8 @@ class TestPmxParser(TestBase):
 
         # Mockデータの名前チェック
         self.assertEqual(material.name, "テスト材質", msg="材質名が不正です")
-        self.assertIsInstance(
-            material.name_english, str, msg="英語材質名が文字列ではありません"
-        )
-        self.assertEqual(
-            material.name_english, "TestMaterial", msg="英語材質名が不正です"
-        )
+        self.assertIsInstance(material.name_english, str, msg="英語材質名が文字列ではありません")
+        self.assertEqual(material.name_english, "TestMaterial", msg="英語材質名が不正です")
         self.assertEqual(len(material.diffuse), 4, msg="Diffuseの要素数が不正です")
         self.assertEqual(len(material.specular), 3, msg="Specularの要素数が不正です")
         self.assertIsInstance(
@@ -212,36 +187,24 @@ class TestPmxParser(TestBase):
             msg="Specular係数がfloatではありません",
         )
         self.assertEqual(len(material.ambient), 3, msg="Ambientの要素数が不正です")
-        self.assertIsInstance(
-            material.draw_flag, int, msg="描画フラグがintではありません"
-        )
+        self.assertIsInstance(material.draw_flag, int, msg="描画フラグがintではありません")
         self.assertEqual(len(material.edge_color), 4, msg="エッジ色の要素数が不正です")
-        self.assertIsInstance(
-            material.edge_size, float, msg="エッジサイズがfloatではありません"
-        )
-        self.assertIsInstance(
-            material.texture_index, int, msg="テクスチャインデックスがintではありません"
-        )
+        self.assertIsInstance(material.edge_size, float, msg="エッジサイズがfloatではありません")
+        self.assertIsInstance(material.texture_index, int, msg="テクスチャインデックスがintではありません")
         self.assertIsInstance(
             material.sphere_texture_index,
             int,
             msg="スフィアテクスチャインデックスがintではありません",
         )
-        self.assertIn(
-            material.sphere_mode, [0, 1, 2, 3], msg="スフィアモードの値が不正です"
-        )
-        self.assertIn(
-            material.shared_toon_flag, [0, 1], msg="共有Toonフラグの値が不正です"
-        )
+        self.assertIn(material.sphere_mode, [0, 1, 2, 3], msg="スフィアモードの値が不正です")
+        self.assertIn(material.shared_toon_flag, [0, 1], msg="共有Toonフラグの値が不正です")
         self.assertIsInstance(
             material.toon_texture_index,
             int,
             msg="Toonテクスチャインデックスがintではありません",
         )
         self.assertIsInstance(material.memo, str, msg="メモが文字列ではありません")
-        self.assertIsInstance(
-            material.face_count, int, msg="材質に対応する面数がintではありません"
-        )
+        self.assertIsInstance(material.face_count, int, msg="材質に対応する面数がintではありません")
 
     def test_parse_pmx_bone_success(self):
         """PMXボーンデータが正しく解析されることをテストする。"""
@@ -257,20 +220,12 @@ class TestPmxParser(TestBase):
         self.assertIsNotNone(bone, msg="最初のボーンがNoneです")
         self.assertIsInstance(bone.name, str, msg="ボーン名が文字列ではありません")
         self.assertEqual(bone.name, "センター", msg="ボーン名が不正です")
-        self.assertIsInstance(
-            bone.name_english, str, msg="英語ボーン名が文字列ではありません"
-        )
+        self.assertIsInstance(bone.name_english, str, msg="英語ボーン名が文字列ではありません")
         self.assertEqual(bone.name_english, "center", msg="英語ボーン名が不正です")
         self.assertEqual(len(bone.position), 3, msg="ボーン位置の要素数が不正です")
-        self.assertIsInstance(
-            bone.parent_bone_index, int, msg="親ボーンインデックスがintではありません"
-        )
-        self.assertIsInstance(
-            bone.transform_layer, int, msg="変形階層がintではありません"
-        )
-        self.assertIsInstance(
-            bone.bone_flag, int, msg="ボーンフラグがintではありません"
-        )
+        self.assertIsInstance(bone.parent_bone_index, int, msg="親ボーンインデックスがintではありません")
+        self.assertIsInstance(bone.transform_layer, int, msg="変形階層がintではありません")
+        self.assertIsInstance(bone.bone_flag, int, msg="ボーンフラグがintではありません")
 
     def test_parse_pmx_morph_success(self):
         """PMXモーフデータが正しく解析されることをテストする。"""
@@ -285,13 +240,9 @@ class TestPmxParser(TestBase):
         morph = self.parsed_data.morphs[0]
         self.assertIsNotNone(morph, msg="最初のモーフがNoneです")
         self.assertIsInstance(morph.name, str, msg="モーフ名が文字列ではありません")
-        self.assertIsInstance(
-            morph.name_english, str, msg="英語モーフ名が文字列ではありません"
-        )
+        self.assertIsInstance(morph.name_english, str, msg="英語モーフ名が文字列ではありません")
         self.assertIn(morph.panel, [0, 1, 2, 3, 4], msg="操作パネルの値が不正です")
-        self.assertIsInstance(
-            morph.morph_type, int, msg="モーフ種類がintではありません"
-        )
+        self.assertIsInstance(morph.morph_type, int, msg="モーフ種類がintではありません")
         self.assertGreaterEqual(morph.offset_count, 0, msg="オフセット数が負の値です")
         self.assertEqual(
             len(morph.offsets),
@@ -305,28 +256,16 @@ class TestPmxParser(TestBase):
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data, msg="パース結果がNoneです")
         # 表示枠リストがNoneでなく、空でないことを確認
-        self.assertIsNotNone(
-            self.parsed_data.display_frames, msg="表示枠リストがNoneです"
-        )
-        self.assertGreater(
-            len(self.parsed_data.display_frames), 0, msg="表示枠リストが空です"
-        )
+        self.assertIsNotNone(self.parsed_data.display_frames, msg="表示枠リストがNoneです")
+        self.assertGreater(len(self.parsed_data.display_frames), 0, msg="表示枠リストが空です")
 
         # 最初の表示枠を取得して、各属性の型と構造を確認
         display_frame = self.parsed_data.display_frames[0]
         self.assertIsNotNone(display_frame, msg="最初の表示枠がNoneです")
-        self.assertIsInstance(
-            display_frame.name, str, msg="表示枠名が文字列ではありません"
-        )
-        self.assertIsInstance(
-            display_frame.name_english, str, msg="英語表示枠名が文字列ではありません"
-        )
-        self.assertIn(
-            display_frame.special_flag, [0, 1], msg="特殊枠フラグの値が不正です"
-        )
-        self.assertGreaterEqual(
-            len(display_frame.elements), 0, msg="枠内要素数が負の値です"
-        )
+        self.assertIsInstance(display_frame.name, str, msg="表示枠名が文字列ではありません")
+        self.assertIsInstance(display_frame.name_english, str, msg="英語表示枠名が文字列ではありません")
+        self.assertIn(display_frame.special_flag, [0, 1], msg="特殊枠フラグの値が不正です")
+        self.assertGreaterEqual(len(display_frame.elements), 0, msg="枠内要素数が負の値です")
 
     def test_parse_pmx_rigid_body_success(self):
         """PMX剛体データが正しく解析されることをテストする。"""
@@ -335,17 +274,13 @@ class TestPmxParser(TestBase):
         self.assertIsNotNone(self.parsed_data, msg="パース結果がNoneです")
         # 剛体リストがNoneでなく、空でないことを確認
         self.assertIsNotNone(self.parsed_data.rigid_bodies, msg="剛体リストがNoneです")
-        self.assertGreater(
-            len(self.parsed_data.rigid_bodies), 0, msg="剛体リストが空です"
-        )
+        self.assertGreater(len(self.parsed_data.rigid_bodies), 0, msg="剛体リストが空です")
 
         # 最初の剛体を取得して、各属性の型と構造を確認
         rigid_body = self.parsed_data.rigid_bodies[0]
         self.assertIsNotNone(rigid_body, msg="最初の剛体がNoneです")
         self.assertIsInstance(rigid_body.name, str, msg="剛体名が文字列ではありません")
-        self.assertIsInstance(
-            rigid_body.name_english, str, msg="英語剛体名が文字列ではありません"
-        )
+        self.assertIsInstance(rigid_body.name_english, str, msg="英語剛体名が文字列ではありません")
         self.assertIsInstance(
             rigid_body.related_bone_index,
             int,
@@ -362,21 +297,11 @@ class TestPmxParser(TestBase):
         self.assertEqual(len(rigid_body.position), 3, msg="位置の要素数が不正です")
         self.assertEqual(len(rigid_body.rotation), 3, msg="回転の要素数が不正です")
         self.assertIsInstance(rigid_body.mass, float, msg="質量がfloatではありません")
-        self.assertIsInstance(
-            rigid_body.velocity_attenuation, float, msg="移動減衰がfloatではありません"
-        )
-        self.assertIsInstance(
-            rigid_body.rotation_attenuation, float, msg="回転減衰がfloatではありません"
-        )
-        self.assertIsInstance(
-            rigid_body.elasticity, float, msg="反発力がfloatではありません"
-        )
-        self.assertIsInstance(
-            rigid_body.friction, float, msg="摩擦力がfloatではありません"
-        )
-        self.assertIn(
-            rigid_body.physics_mode, [0, 1, 2], msg="物理演算タイプが不正です"
-        )
+        self.assertIsInstance(rigid_body.velocity_attenuation, float, msg="移動減衰がfloatではありません")
+        self.assertIsInstance(rigid_body.rotation_attenuation, float, msg="回転減衰がfloatではありません")
+        self.assertIsInstance(rigid_body.elasticity, float, msg="反発力がfloatではありません")
+        self.assertIsInstance(rigid_body.friction, float, msg="摩擦力がfloatではありません")
+        self.assertIn(rigid_body.physics_mode, [0, 1, 2], msg="物理演算タイプが不正です")
 
     def test_parse_pmx_joint_success(self):
         """PMXジョイントデータが正しく解析されることをテストする。"""
@@ -385,17 +310,13 @@ class TestPmxParser(TestBase):
         self.assertIsNotNone(self.parsed_data, msg="パース結果がNoneです")
         # ジョイントリストがNoneでなく、空でないことを確認
         self.assertIsNotNone(self.parsed_data.joints, msg="ジョイントリストがNoneです")
-        self.assertGreater(
-            len(self.parsed_data.joints), 0, msg="ジョイントリストが空です"
-        )
+        self.assertGreater(len(self.parsed_data.joints), 0, msg="ジョイントリストが空です")
 
         # 最初のジョイントを取得して、各属性の型と構造を確認
         joint = self.parsed_data.joints[0]
         self.assertIsNotNone(joint, msg="最初のジョイントがNoneです")
         self.assertIsInstance(joint.name, str, msg="ジョイント名が文字列ではありません")
-        self.assertIsInstance(
-            joint.name_english, str, msg="英語ジョイント名が文字列ではありません"
-        )
+        self.assertIsInstance(joint.name_english, str, msg="英語ジョイント名が文字列ではありません")
         self.assertIsInstance(joint.joint_type, int, msg="Joint種類がintではありません")
         self.assertIsInstance(
             joint.rigid_body_a_index,
@@ -409,24 +330,12 @@ class TestPmxParser(TestBase):
         )
         self.assertEqual(len(joint.position), 3, msg="位置の要素数が不正です")
         self.assertEqual(len(joint.rotation), 3, msg="回転の要素数が不正です")
-        self.assertEqual(
-            len(joint.translation_limit_min), 3, msg="移動制限下限の要素数が不正です"
-        )
-        self.assertEqual(
-            len(joint.translation_limit_max), 3, msg="移動制限上限の要素数が不正です"
-        )
-        self.assertEqual(
-            len(joint.rotation_limit_min), 3, msg="回転制限下限の要素数が不正です"
-        )
-        self.assertEqual(
-            len(joint.rotation_limit_max), 3, msg="回転制限上限の要素数が不正です"
-        )
-        self.assertEqual(
-            len(joint.spring_translation), 3, msg="バネ定数（移動）の要素数が不正です"
-        )
-        self.assertEqual(
-            len(joint.spring_rotation), 3, msg="バネ定数（回転）の要素数が不正です"
-        )
+        self.assertEqual(len(joint.translation_limit_min), 3, msg="移動制限下限の要素数が不正です")
+        self.assertEqual(len(joint.translation_limit_max), 3, msg="移動制限上限の要素数が不正です")
+        self.assertEqual(len(joint.rotation_limit_min), 3, msg="回転制限下限の要素数が不正です")
+        self.assertEqual(len(joint.rotation_limit_max), 3, msg="回転制限上限の要素数が不正です")
+        self.assertEqual(len(joint.spring_translation), 3, msg="バネ定数（移動）の要素数が不正です")
+        self.assertEqual(len(joint.spring_rotation), 3, msg="バネ定数（回転）の要素数が不正です")
 
     def test_parse_pmx_soft_body_success(self):
         """PMXソフトボディデータが正しく解析されることをテストする。"""
@@ -436,9 +345,7 @@ class TestPmxParser(TestBase):
         # ソフトボディリストがNoneでないことを確認
         # 注: 現在の実装ではSoftBodyのパーサーはプレースホルダーであり、詳細な解析は行われない。
         # そのため、リストがNoneでないことのみを確認する。
-        self.assertIsNotNone(
-            self.parsed_data.soft_bodies, msg="ソフトボディリストがNoneです"
-        )
+        self.assertIsNotNone(self.parsed_data.soft_bodies, msg="ソフトボディリストがNoneです")
 
 
 ""

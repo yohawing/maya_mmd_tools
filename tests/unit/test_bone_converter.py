@@ -32,9 +32,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         # シーンをクリア
         cmds.file(new=True, force=True)
 
-    def _create_mock_pmx_bone(
-        self, index, name="TestBone", parent_index=-1, position=(0, 0, 0), bone_flag=0
-    ):
+    def _create_mock_pmx_bone(self, index, name="TestBone", parent_index=-1, position=(0, 0, 0), bone_flag=0):
         """PMXボーンのモックを作成"""
         bone = Mock(spec=PmxBone)
         bone.name = name
@@ -122,21 +120,15 @@ class TestBoneConverterMaya(unittest.TestCase):
         mock_sanitize.side_effect = lambda x: x
 
         bones = [
-            self._create_mock_pmx_bone(
-                0, "center", parent_index=-1, position=(0, 0, 0)
-            ),
-            self._create_mock_pmx_bone(
-                1, "upper_body", parent_index=0, position=(0, 10, 0)
-            ),
+            self._create_mock_pmx_bone(0, "center", parent_index=-1, position=(0, 0, 0)),
+            self._create_mock_pmx_bone(1, "upper_body", parent_index=0, position=(0, 10, 0)),
             self._create_mock_pmx_bone(2, "head", parent_index=1, position=(0, 20, 0)),
         ]
 
         bone_map = {0: "center", 1: "upper_body", 2: "head"}
         skeleton_group = cmds.group(empty=True, name="skeleton_grp")
 
-        maya_joints = self.converter._create_maya_joints(
-            bones, bone_map, "pmx", skeleton_group
-        )
+        maya_joints = self.converter._create_maya_joints(bones, bone_map, "pmx", skeleton_group)
 
         # ジョイント作成の確認
         self.assertEqual(len(maya_joints), 3)
@@ -152,16 +144,12 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(parent_of_head, maya_joints[1])
 
         # 位置の確認（Mayaは左手系なのでZ座標が反転）
-        center_pos = cmds.xform(
-            maya_joints[0], query=True, worldSpace=True, translation=True
-        )
+        center_pos = cmds.xform(maya_joints[0], query=True, worldSpace=True, translation=True)
         self.assertAlmostEqual(center_pos[0], 0, places=5)
         self.assertAlmostEqual(center_pos[1], 0, places=5)
         self.assertAlmostEqual(center_pos[2], 0, places=5)
 
-        upper_pos = cmds.xform(
-            maya_joints[1], query=True, worldSpace=True, translation=True
-        )
+        upper_pos = cmds.xform(maya_joints[1], query=True, worldSpace=True, translation=True)
         self.assertAlmostEqual(upper_pos[0], 0, places=5)
         self.assertAlmostEqual(upper_pos[1], 10, places=5)
         self.assertAlmostEqual(upper_pos[2], 0, places=5)
@@ -169,9 +157,7 @@ class TestBoneConverterMaya(unittest.TestCase):
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト"""
-        bone = self._create_mock_pmx_bone(
-            0, "TestBone", bone_flag=PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE
-        )
+        bone = self._create_mock_pmx_bone(0, "TestBone", bone_flag=PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE)
 
         # 実際のジョイントを作成
         joint = cmds.joint(name="test_joint")
@@ -184,16 +170,12 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         self.assertEqual(attrs[ATTR_MMD_BONE_INDEX], 0)
         self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "TestBone")
-        self.assertTrue(
-            attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE
-        )
+        self.assertTrue(attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE)
 
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_rotate(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（回転付与）"""
-        bone = self._create_mock_pmx_bone(
-            5, "GrantBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE
-        )
+        bone = self._create_mock_pmx_bone(5, "GrantBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
         bone.grant_parent_bone_index = 3
         bone.grant_rate = 0.5
 
@@ -225,9 +207,7 @@ class TestBoneConverterMaya(unittest.TestCase):
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_move(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（移動付与）"""
-        bone = self._create_mock_pmx_bone(
-            7, "grantMoveBone", bone_flag=PmxBoneFlag.GRANT_PARENT_MOVE
-        )
+        bone = self._create_mock_pmx_bone(7, "grantMoveBone", bone_flag=PmxBoneFlag.GRANT_PARENT_MOVE)
         bone.grant_parent_bone_index = 2
         bone.grant_rate = 1.0
 
@@ -333,9 +313,7 @@ class TestBoneConverterMaya(unittest.TestCase):
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_local_axis(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（ローカル軸）"""
-        bone = self._create_mock_pmx_bone(
-            15, "LocalAxisBone", bone_flag=PmxBoneFlag.LOCAL_AXIS
-        )
+        bone = self._create_mock_pmx_bone(15, "LocalAxisBone", bone_flag=PmxBoneFlag.LOCAL_AXIS)
         bone.x_axis_direction = (1.0, 0.0, 0.0)
         bone.z_axis_direction = (0.0, 0.0, 1.0)
 
@@ -375,9 +353,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         maya_joints = [joint1, joint2, joint3]
 
         # スキンクラスターを作成
-        skin_cluster = self.converter._create_skin_cluster(
-            maya_joints, self.test_mesh, max_influence=4
-        )
+        skin_cluster = self.converter._create_skin_cluster(maya_joints, self.test_mesh, max_influence=4)
 
         # スキンクラスターが作成されたか確認
         self.assertTrue(cmds.objExists(skin_cluster))
@@ -457,9 +433,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x
 
-            maya_joints, skin_cluster = converter.convert_pmx_bones(
-                pmx_data, self.test_mesh, self.root_group
-            )
+            maya_joints, skin_cluster = converter.convert_pmx_bones(pmx_data, self.test_mesh, self.root_group)
 
         # 結果の確認
         self.assertEqual(len(maya_joints), 2)

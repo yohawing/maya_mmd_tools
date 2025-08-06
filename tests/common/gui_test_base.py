@@ -106,9 +106,7 @@ class GuiTestRunner:
             loader = unittest.TestLoader()
 
             # Use discover to find all test modules in the specified directory
-            discovered_suite = loader.discover(
-                str(test_dir), pattern="guitest_*.py", top_level_dir=str(project_root)
-            )
+            discovered_suite = loader.discover(str(test_dir), pattern="guitest_*.py", top_level_dir=str(project_root))
             suite.addTest(discovered_suite)
 
             if suite.countTestCases() == 0:
@@ -120,10 +118,8 @@ class GuiTestRunner:
             runner = unittest.TextTestRunner(stream=log_file, verbosity=2)
             runner.run(suite)
 
-        except Exception as e:
-            logging.error(
-                "An unexpected error occurred during test execution.", exc_info=True
-            )
+        except Exception:
+            logging.error("An unexpected error occurred during test execution.", exc_info=True)
         finally:
             print("\n//-- GUI TEST FINISHED --//")
             log_file.close()

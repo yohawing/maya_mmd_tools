@@ -1,10 +1,7 @@
 from ..qt_compat import (
     QWidget,
     QVBoxLayout,
-    QTreeView,
     QGroupBox,
-    QTreeWidget,
-    QTreeWidgetItem,
     QFormLayout,
     QLineEdit,
     QHBoxLayout,
@@ -17,12 +14,8 @@ from ..qt_compat import (
     QGridLayout,
     QSplitter,
     Qt,
-    QTabWidget,
     QListWidget,
-    QListWidgetItem,
     QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
     QScrollArea,
 )
 from ..base_tab import BaseTab
@@ -98,44 +91,44 @@ class BoneTab(BaseTab):
         widget = QWidget()
         main_layout = QVBoxLayout(widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # スクロール可能なエリアを作成
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        
+
         # スクロールエリア内のコンテンツウィジェット
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
         layout.setContentsMargins(5, 5, 5, 5)
-        
+
         # 基本情報セクション
         self.basic_group = QGroupBox(self.tr("basic_information", "groups"))
         self.basic_group.setLayout(self._create_basic_info_layout())
         layout.addWidget(self.basic_group)
-        
+
         # 変形制御セクション
         self.transform_group = QGroupBox(self.tr("transform_control", "groups"))
         self.transform_group.setLayout(self._create_transform_control_layout())
         layout.addWidget(self.transform_group)
-        
+
         # IK設定セクション
         self.ik_group = QGroupBox(self.tr("ik_settings", "groups"))
         self.ik_group.setLayout(self._create_ik_settings_layout())
         layout.addWidget(self.ik_group)
-        
+
         # 付与設定セクション
         self.grant_group = QGroupBox(self.tr("grant_settings", "groups"))
         self.grant_group.setLayout(self._create_grant_settings_layout())
         layout.addWidget(self.grant_group)
-        
+
         # 軸制限セクション
         self.axis_group = QGroupBox(self.tr("axis_limit", "groups"))
         self.axis_group.setLayout(self._create_axis_limit_layout())
         layout.addWidget(self.axis_group)
-        
+
         # ストレッチを追加して上に詰める
         layout.addStretch()
-        
+
         # スクロールエリアに設定
         scroll_area.setWidget(content_widget)
         main_layout.addWidget(scroll_area)
@@ -198,7 +191,9 @@ class BoneTab(BaseTab):
         # 接続先
         connection_layout = QHBoxLayout()
         self.connection_type_combo = QComboBox()
-        self.connection_type_combo.addItems([self.tr("coordinate_offset", "bone_connection_types"), self.tr("bone", "bone_connection_types")])
+        self.connection_type_combo.addItems(
+            [self.tr("coordinate_offset", "bone_connection_types"), self.tr("bone", "bone_connection_types")]
+        )
         self.connection_bone_edit = QLineEdit()
         self.connection_bone_edit.setReadOnly(True)
 
@@ -265,7 +260,7 @@ class BoneTab(BaseTab):
         self.external_parent_key_spin.setRange(-1, 9999)
         special_layout.addWidget(self.external_parent_key_label, 1, 0)
         special_layout.addWidget(self.external_parent_key_spin, 1, 1)
-        
+
         # 初期状態では非表示
         self.external_parent_key_label.setVisible(False)
         self.external_parent_key_spin.setVisible(False)
@@ -318,7 +313,7 @@ class BoneTab(BaseTab):
 
         self.ik_settings_group.setLayout(ik_layout)
         layout.addWidget(self.ik_settings_group)
-        
+
         # 初期状態では非表示
         self.ik_settings_group.setVisible(False)
 
@@ -344,22 +339,24 @@ class BoneTab(BaseTab):
         # IKリンクテーブル
         self.ik_links_table = QTableWidget()
         self.ik_links_table.setColumnCount(8)
-        self.ik_links_table.setHorizontalHeaderLabels([
-            self.tr("bone", "table_headers"),
-            self.tr("angle_limit", "table_headers"),
-            self.tr("lower_x", "table_headers"),
-            self.tr("lower_y", "table_headers"),
-            self.tr("lower_z", "table_headers"),
-            self.tr("upper_x", "table_headers"),
-            self.tr("upper_y", "table_headers"),
-            self.tr("upper_z", "table_headers")
-        ])
+        self.ik_links_table.setHorizontalHeaderLabels(
+            [
+                self.tr("bone", "table_headers"),
+                self.tr("angle_limit", "table_headers"),
+                self.tr("lower_x", "table_headers"),
+                self.tr("lower_y", "table_headers"),
+                self.tr("lower_z", "table_headers"),
+                self.tr("upper_x", "table_headers"),
+                self.tr("upper_y", "table_headers"),
+                self.tr("upper_z", "table_headers"),
+            ]
+        )
         self.ik_links_table.horizontalHeader().setStretchLastSection(True)
         links_layout.addWidget(self.ik_links_table)
 
         self.ik_links_group.setLayout(links_layout)
         layout.addWidget(self.ik_links_group)
-        
+
         # 初期状態では非表示
         self.ik_links_group.setVisible(False)
 
@@ -407,7 +404,7 @@ class BoneTab(BaseTab):
 
         self.grant_settings_group.setLayout(grant_layout)
         layout.addWidget(self.grant_settings_group)
-        
+
         # 初期状態では非表示
         self.grant_settings_group.setVisible(False)
 
@@ -449,7 +446,7 @@ class BoneTab(BaseTab):
 
         self.fixed_axis_group.setLayout(axis_layout)
         layout.addWidget(self.fixed_axis_group)
-        
+
         # 初期状態では非表示
         self.fixed_axis_group.setVisible(False)
 
@@ -514,7 +511,7 @@ class BoneTab(BaseTab):
 
         self.local_axis_group.setLayout(local_layout)
         layout.addWidget(self.local_axis_group)
-        
+
         # 初期状態では非表示
         self.local_axis_group.setVisible(False)
 
@@ -529,134 +526,135 @@ class BoneTab(BaseTab):
         # このメソッドは後で更新が必要
         self.apply_btn.setEnabled(enabled)
         self.reset_btn.setEnabled(enabled)
-    
+
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         # GroupBoxes
-        if hasattr(self, 'bone_tree_group'):
+        if hasattr(self, "bone_tree_group"):
             self.bone_tree_group.setTitle(self.tr("bone_list", "groups"))
-        if hasattr(self, 'basic_group'):
+        if hasattr(self, "basic_group"):
             self.basic_group.setTitle(self.tr("basic_information", "groups"))
-        if hasattr(self, 'transform_group'):
+        if hasattr(self, "transform_group"):
             self.transform_group.setTitle(self.tr("transform_control", "groups"))
-        if hasattr(self, 'ik_group'):
+        if hasattr(self, "ik_group"):
             self.ik_group.setTitle(self.tr("ik_settings", "groups"))
-        if hasattr(self, 'grant_group'):
+        if hasattr(self, "grant_group"):
             self.grant_group.setTitle(self.tr("grant_settings", "groups"))
-        if hasattr(self, 'axis_group'):
+        if hasattr(self, "axis_group"):
             self.axis_group.setTitle(self.tr("axis_limit", "groups"))
-        if hasattr(self, 'flags_group'):
+        if hasattr(self, "flags_group"):
             self.flags_group.setTitle(self.tr("basic_settings", "groups"))
-        if hasattr(self, 'special_group'):
+        if hasattr(self, "special_group"):
             self.special_group.setTitle(self.tr("special_settings", "groups"))
-        if hasattr(self, 'ik_settings_group'):
+        if hasattr(self, "ik_settings_group"):
             self.ik_settings_group.setTitle(self.tr("ik_settings", "groups"))
-        if hasattr(self, 'ik_links_group'):
+        if hasattr(self, "ik_links_group"):
             self.ik_links_group.setTitle(self.tr("ik_links", "groups"))
-        if hasattr(self, 'grant_settings_group'):
+        if hasattr(self, "grant_settings_group"):
             self.grant_settings_group.setTitle(self.tr("grant_settings", "groups"))
-        if hasattr(self, 'fixed_axis_group'):
+        if hasattr(self, "fixed_axis_group"):
             self.fixed_axis_group.setTitle(self.tr("fixed_axis", "groups"))
-        if hasattr(self, 'local_axis_group'):
+        if hasattr(self, "local_axis_group"):
             self.local_axis_group.setTitle(self.tr("local_axis", "groups"))
-        
+
         # Buttons
-        if hasattr(self, 'refresh_btn'):
+        if hasattr(self, "refresh_btn"):
             self.refresh_btn.setText(self.tr("refresh", "buttons"))
-        if hasattr(self, 'apply_btn'):
+        if hasattr(self, "apply_btn"):
             self.apply_btn.setText(self.tr("apply", "buttons"))
-        if hasattr(self, 'reset_btn'):
+        if hasattr(self, "reset_btn"):
             self.reset_btn.setText(self.tr("reset", "buttons"))
-        if hasattr(self, 'select_ik_target_btn'):
+        if hasattr(self, "select_ik_target_btn"):
             self.select_ik_target_btn.setText(self.tr("select", "buttons"))
-        if hasattr(self, 'add_ik_link_btn'):
+        if hasattr(self, "add_ik_link_btn"):
             self.add_ik_link_btn.setText(self.tr("add", "buttons"))
-        if hasattr(self, 'remove_ik_link_btn'):
+        if hasattr(self, "remove_ik_link_btn"):
             self.remove_ik_link_btn.setText(self.tr("delete", "buttons"))
-        if hasattr(self, 'select_grant_parent_btn'):
+        if hasattr(self, "select_grant_parent_btn"):
             self.select_grant_parent_btn.setText(self.tr("select", "buttons"))
-        
+
         # Labels
-        if hasattr(self, 'search_label'):
+        if hasattr(self, "search_label"):
             self.search_label.setText(self.tr("search", "fields"))
-        if hasattr(self, 'bone_name_jp_label'):
+        if hasattr(self, "bone_name_jp_label"):
             self.bone_name_jp_label.setText(self.tr("bone_name_jp", "fields"))
-        if hasattr(self, 'bone_name_en_label'):
+        if hasattr(self, "bone_name_en_label"):
             self.bone_name_en_label.setText(self.tr("bone_name_en", "fields"))
-        if hasattr(self, 'parent_bone_label'):
+        if hasattr(self, "parent_bone_label"):
             self.parent_bone_label.setText(self.tr("parent_bone", "fields"))
-        if hasattr(self, 'position_label'):
+        if hasattr(self, "position_label"):
             self.position_label.setText(self.tr("position", "fields"))
-        if hasattr(self, 'deform_layer_label'):
+        if hasattr(self, "deform_layer_label"):
             self.deform_layer_label.setText(self.tr("deform_layer", "fields"))
-        if hasattr(self, 'connection_label'):
+        if hasattr(self, "connection_label"):
             self.connection_label.setText(self.tr("connection", "fields"))
-        if hasattr(self, 'offset_label'):
+        if hasattr(self, "offset_label"):
             self.offset_label.setText(self.tr("offset", "fields"))
-        if hasattr(self, 'external_parent_key_label'):
+        if hasattr(self, "external_parent_key_label"):
             self.external_parent_key_label.setText(self.tr("external_parent_key", "fields"))
-        if hasattr(self, 'ik_target_label'):
+        if hasattr(self, "ik_target_label"):
             self.ik_target_label.setText(self.tr("ik_target", "fields"))
-        if hasattr(self, 'ik_loop_label'):
+        if hasattr(self, "ik_loop_label"):
             self.ik_loop_label.setText(self.tr("ik_loop_count", "fields"))
-        if hasattr(self, 'ik_limit_angle_label'):
+        if hasattr(self, "ik_limit_angle_label"):
             self.ik_limit_angle_label.setText(self.tr("ik_limit_angle", "fields"))
-        if hasattr(self, 'grant_parent_label'):
+        if hasattr(self, "grant_parent_label"):
             self.grant_parent_label.setText(self.tr("grant_parent", "fields"))
-        if hasattr(self, 'grant_rate_label'):
+        if hasattr(self, "grant_rate_label"):
             self.grant_rate_label.setText(self.tr("grant_rate", "fields"))
-        if hasattr(self, 'x_axis_direction_label'):
+        if hasattr(self, "x_axis_direction_label"):
             self.x_axis_direction_label.setText(self.tr("x_axis_direction", "fields"))
-        if hasattr(self, 'z_axis_direction_label'):
+        if hasattr(self, "z_axis_direction_label"):
             self.z_axis_direction_label.setText(self.tr("z_axis_direction", "fields"))
-        
+
         # CheckBoxes
-        if hasattr(self, 'rotatable_check'):
+        if hasattr(self, "rotatable_check"):
             self.rotatable_check.setText(self.tr("rotatable", "bone_flags"))
-        if hasattr(self, 'movable_check'):
+        if hasattr(self, "movable_check"):
             self.movable_check.setText(self.tr("movable", "bone_flags"))
-        if hasattr(self, 'visible_check'):
+        if hasattr(self, "visible_check"):
             self.visible_check.setText(self.tr("visible", "bone_flags"))
-        if hasattr(self, 'enabled_check'):
+        if hasattr(self, "enabled_check"):
             self.enabled_check.setText(self.tr("enabled", "bone_flags"))
-        if hasattr(self, 'after_physics_check'):
+        if hasattr(self, "after_physics_check"):
             self.after_physics_check.setText(self.tr("after_physics", "bone_flags"))
-        if hasattr(self, 'external_parent_check'):
+        if hasattr(self, "external_parent_check"):
             self.external_parent_check.setText(self.tr("external_parent", "bone_flags"))
-        if hasattr(self, 'ik_enabled_check'):
+        if hasattr(self, "ik_enabled_check"):
             self.ik_enabled_check.setText(self.tr("enable_ik", "checkboxes"))
-        if hasattr(self, 'rotation_grant_check'):
+        if hasattr(self, "rotation_grant_check"):
             self.rotation_grant_check.setText(self.tr("rotation_grant", "bone_flags"))
-        if hasattr(self, 'move_grant_check'):
+        if hasattr(self, "move_grant_check"):
             self.move_grant_check.setText(self.tr("move_grant", "bone_flags"))
-        if hasattr(self, 'local_grant_check'):
+        if hasattr(self, "local_grant_check"):
             self.local_grant_check.setText(self.tr("local_grant", "bone_flags"))
-        if hasattr(self, 'fixed_axis_check'):
+        if hasattr(self, "fixed_axis_check"):
             self.fixed_axis_check.setText(self.tr("fixed_axis", "bone_flags"))
-        if hasattr(self, 'local_axis_check'):
+        if hasattr(self, "local_axis_check"):
             self.local_axis_check.setText(self.tr("local_axis", "bone_flags"))
-        
+
         # ComboBox items - Connection type
-        if hasattr(self, 'connection_type_combo'):
+        if hasattr(self, "connection_type_combo"):
             self.connection_type_combo.clear()
-            self.connection_type_combo.addItems([
-                self.tr("coordinate_offset", "bone_connection_types"),
-                self.tr("bone", "bone_connection_types")
-            ])
-        
+            self.connection_type_combo.addItems(
+                [self.tr("coordinate_offset", "bone_connection_types"), self.tr("bone", "bone_connection_types")]
+            )
+
         # Table headers - IK Links
-        if hasattr(self, 'ik_links_table'):
-            self.ik_links_table.setHorizontalHeaderLabels([
-                self.tr("bone", "table_headers"),
-                self.tr("angle_limit", "table_headers"),
-                self.tr("lower_x", "table_headers"),
-                self.tr("lower_y", "table_headers"),
-                self.tr("lower_z", "table_headers"),
-                self.tr("upper_x", "table_headers"),
-                self.tr("upper_y", "table_headers"),
-                self.tr("upper_z", "table_headers")
-            ])
-        
+        if hasattr(self, "ik_links_table"):
+            self.ik_links_table.setHorizontalHeaderLabels(
+                [
+                    self.tr("bone", "table_headers"),
+                    self.tr("angle_limit", "table_headers"),
+                    self.tr("lower_x", "table_headers"),
+                    self.tr("lower_y", "table_headers"),
+                    self.tr("lower_z", "table_headers"),
+                    self.tr("upper_x", "table_headers"),
+                    self.tr("upper_y", "table_headers"),
+                    self.tr("upper_z", "table_headers"),
+                ]
+            )
+
         # Placeholders
-        if hasattr(self, 'search_edit'):
+        if hasattr(self, "search_edit"):
             self.search_edit.setPlaceholderText(self.tr("search_bone_name", "placeholders"))

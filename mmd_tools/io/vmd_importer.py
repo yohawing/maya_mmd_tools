@@ -46,9 +46,7 @@ def import_vmd_file(parser, filepath, options=None):
                         logger.info(f"ターゲットネームスペース: {target_namespace}")
                         break
             else:
-                logger.warning(
-                    "ターゲットモデルが指定されていません。選択されたオブジェクトからネームスペースを取得します。"
-                )
+                logger.warning("ターゲットモデルが指定されていません。選択されたオブジェクトからネームスペースを取得します。")
 
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()

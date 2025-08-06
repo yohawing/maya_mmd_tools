@@ -1,9 +1,8 @@
 from ...core.logger import get_logger
 from ... import settings
 from ...core.settings import get_settings
-from ..qt_compat import QFileDialog, QTableWidgetItem, QMessageBox
+from ..qt_compat import QFileDialog, QMessageBox
 import json
-import os
 
 logger = get_logger(__name__)
 
@@ -44,24 +43,15 @@ class SettingsPresenter:
             self.view.import_settings_btn.clicked.connect(self.import_settings)
 
             # 全般設定
-            self.view.show_advanced_options_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.ui_log_level_combo.currentTextChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.logging_enabled_check.stateChanged.connect(
-                self.on_setting_changed
-            )
-            self.view.log_level_combo.currentTextChanged.connect(
-                self.on_log_level_changed
-            )
+            self.view.show_advanced_options_check.stateChanged.connect(self.on_setting_changed)
+            self.view.ui_log_level_combo.currentTextChanged.connect(self.on_setting_changed)
+            self.view.logging_enabled_check.stateChanged.connect(self.on_setting_changed)
+            self.view.log_level_combo.currentTextChanged.connect(self.on_log_level_changed)
             self.view.log_file_browse_btn.clicked.connect(self.browse_log_file)
-            
-            # 言語設定
-            if hasattr(self.view, 'language_combo'):
-                self.view.language_combo.currentIndexChanged.connect(self.on_language_changed)
 
+            # 言語設定
+            if hasattr(self.view, "language_combo"):
+                self.view.language_combo.currentIndexChanged.connect(self.on_language_changed)
 
         except AttributeError as e:
             logger.error(f"Failed to connect signal: {e}")
@@ -76,34 +66,27 @@ class SettingsPresenter:
 
         try:
             # UI設定
-            self.view.show_advanced_options_check.setChecked(
-                settings.get("ui.general.show_advanced_options", False)
-            )
+            self.view.show_advanced_options_check.setChecked(settings.get("ui.general.show_advanced_options", False))
             ui_log_level = settings.get("ui.general.log_level", "INFO")
             index = self.view.ui_log_level_combo.findText(ui_log_level)
             if index >= 0:
                 self.view.ui_log_level_combo.setCurrentIndex(index)
 
             # ログ設定
-            self.view.logging_enabled_check.setChecked(
-                settings.get("logging.enabled", True)
-            )
+            self.view.logging_enabled_check.setChecked(settings.get("logging.enabled", True))
             log_level = settings.get("logging.level", "DEBUG")
             index = self.view.log_level_combo.findText(log_level)
             if index >= 0:
                 self.view.log_level_combo.setCurrentIndex(index)
-            self.view.log_file_path_edit.setText(
-                settings.get("logging.log_file_path", "logs/mmd_tools.log")
-            )
-            
+            self.view.log_file_path_edit.setText(settings.get("logging.log_file_path", "logs/mmd_tools.log"))
+
             # 言語設定
-            if hasattr(self.view, 'language_combo'):
+            if hasattr(self.view, "language_combo"):
                 current_language = settings.get("ui.general.language", "ja")
                 for i in range(self.view.language_combo.count()):
                     if self.view.language_combo.itemData(i) == current_language:
                         self.view.language_combo.setCurrentIndex(i)
                         break
-
 
         except Exception as e:
             logger.error(f"Failed to load settings: {e}", exc_info=True)
@@ -115,13 +98,14 @@ class SettingsPresenter:
         """設定が変更されたときの処理"""
         if not self._loading:
             pass  # 必要に応じて自動保存などを実装
-    
+
     def on_log_level_changed(self):
         """ログレベルが変更されたときの処理"""
         if not self._loading:
             new_level = self.view.log_level_combo.currentText()
             # ログレベルを即座に更新
             import logging
+
             level = getattr(logging, new_level, logging.INFO)
             logger.set_level(level)
             logger.info(f"ログレベルを {new_level} に変更しました")
@@ -136,22 +120,16 @@ class SettingsPresenter:
                 "ui.general.show_advanced_options",
                 self.view.show_advanced_options_check.isChecked(),
             )
-            settings.set(
-                "ui.general.log_level", self.view.ui_log_level_combo.currentText()
-            )
-            
+            settings.set("ui.general.log_level", self.view.ui_log_level_combo.currentText())
+
             # 言語設定
-            if hasattr(self.view, 'language_combo'):
-                settings.set(
-                    "ui.general.language", 
-                    self.view.language_combo.currentData()
-                )
+            if hasattr(self.view, "language_combo"):
+                settings.set("ui.general.language", self.view.language_combo.currentData())
 
             # ログ設定
             settings.set("logging.enabled", self.view.logging_enabled_check.isChecked())
             settings.set("logging.level", self.view.log_level_combo.currentText())
             settings.set("logging.log_file_path", self.view.log_file_path_edit.text())
-
 
             settings.save()
             logger.info("設定を保存しました")
@@ -205,15 +183,11 @@ class SettingsPresenter:
 
             except Exception as e:
                 logger.error(f"Failed to export settings: {e}", exc_info=True)
-                self.app_state.emit_status(
-                    f"設定のエクスポートに失敗しました: {str(e)}"
-                )
+                self.app_state.emit_status(f"設定のエクスポートに失敗しました: {str(e)}")
 
     def import_settings(self):
         """設定をファイルからインポート"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self.view, "設定をインポート", "", "JSON Files (*.json)"
-        )
+        file_path, _ = QFileDialog.getOpenFileName(self.view, "設定をインポート", "", "JSON Files (*.json)")
 
         if file_path:
             try:
@@ -248,27 +222,27 @@ class SettingsPresenter:
         if file_path:
             self.view.log_file_path_edit.setText(file_path)
 
-    
     def on_language_changed(self):
         """言語が変更されたときの処理"""
         if self._loading:
             return
-            
+
         # 選択された言語を取得
         selected_language = self.view.language_combo.currentData()
-        
+
         # 設定に保存（即座に永続化）
         settings.set("ui.general.language", selected_language)
-        
+
         # UITranslatorに言語を設定
         from ...ui.translations import UITranslator
+
         translator = UITranslator.instance()
         translator.set_language(selected_language)
-        
+
         # メインウィンドウに言語変更を通知
         main_window = self.view.window()
-        if hasattr(main_window, 'retranslate_all_tabs'):
+        if hasattr(main_window, "retranslate_all_tabs"):
             main_window.retranslate_all_tabs()
-        
+
         # ステータスメッセージ
         self.app_state.emit_status(f"言語を変更しました: {self.view.language_combo.currentText()}")

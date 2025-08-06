@@ -104,9 +104,7 @@ def wsl_to_windows_path(wsl_path: Path) -> str:
     match = re.match(r"/mnt/([a-z])/", path_str)
     if match:
         drive_letter = match.group(1).upper()
-        return path_str.replace(f"/mnt/{match.group(1)}/", f"{drive_letter}:/").replace(
-            "/", "\\"
-        )
+        return path_str.replace(f"/mnt/{match.group(1)}/", f"{drive_letter}:/").replace("/", "\\")
     return path_str
 
 

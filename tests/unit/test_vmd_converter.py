@@ -4,9 +4,6 @@ VmdConverterクラスの基本的な機能をテスト。
 Maya環境内で実行されるが、シーン操作を伴わないテストを行う。
 """
 
-import os
-import sys
-
 import maya.cmds as cmds
 
 from tests.common.maya_test_base import MayaTestBase
@@ -108,9 +105,7 @@ class TestVmdConverter(MayaTestBase):
         camera_name = self.converter._get_or_create_camera()
         self.assertIsNotNone(camera_name)
         self.assertTrue(cmds.objExists(camera_name))
-        self.assertTrue(
-            cmds.attributeQuery(ATTR_MMD_CAMERA, node=camera_name, exists=True)
-        )
+        self.assertTrue(cmds.attributeQuery(ATTR_MMD_CAMERA, node=camera_name, exists=True))
 
         # 既存カメラの取得
         camera_name2 = self.converter._get_or_create_camera()
@@ -125,9 +120,7 @@ class TestVmdConverter(MayaTestBase):
         light_name = self.converter._get_or_create_light()
         self.assertIsNotNone(light_name)
         self.assertTrue(cmds.objExists(light_name))
-        self.assertTrue(
-            cmds.attributeQuery(ATTR_MMD_LIGHT, node=light_name, exists=True)
-        )
+        self.assertTrue(cmds.attributeQuery(ATTR_MMD_LIGHT, node=light_name, exists=True))
 
         # 既存照明の取得
         light_name2 = self.converter._get_or_create_light()
@@ -161,9 +154,7 @@ class TestVmdConverter(MayaTestBase):
         camera_found = False
         for cam in cameras:
             transform = cmds.listRelatives(cam, parent=True)
-            if transform and cmds.attributeQuery(
-                ATTR_MMD_CAMERA, node=transform[0], exists=True
-            ):
+            if transform and cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform[0], exists=True):
                 camera_found = True
                 # キーフレームが設定されたことを確認
                 keyframes = cmds.keyframe(f"{transform[0]}.translateX", query=True)
@@ -197,9 +188,7 @@ class TestVmdConverter(MayaTestBase):
         self.assertTrue(cmds.objExists(DEFAULT_LIGHT_NAME))
 
         # キーフレームが設定されたことを確認
-        light_shape = cmds.listRelatives(
-            DEFAULT_LIGHT_NAME, shapes=True, type="directionalLight"
-        )[0]
+        light_shape = cmds.listRelatives(DEFAULT_LIGHT_NAME, shapes=True, type="directionalLight")[0]
         keyframes = cmds.keyframe(f"{light_shape}.colorR", query=True)
         self.assertIsNotNone(keyframes)
         self.assertEqual(len(keyframes), 3)
@@ -259,9 +248,7 @@ class TestVmdConverter(MayaTestBase):
 
         # デバッグ情報を出力
         print(f"Created blend shape: {blend_shape}")
-        print(
-            f"Weight count: {cmds.blendShape(blend_shape, query=True, weightCount=True)}"
-        )
+        print(f"Weight count: {cmds.blendShape(blend_shape, query=True, weightCount=True)}")
         for i in range(3):
             alias = cmds.aliasAttr(f"{blend_shape}.weight[{i}]", query=True)
             print(f"Alias for weight[{i}]: {alias}")
@@ -309,9 +296,7 @@ class TestVmdConverter(MayaTestBase):
         # デフォルトレイヤー名での作成
         self.converter._create_animation_layer()
         self.assertIsNotNone(self.converter.anim_layer)
-        self.assertTrue(
-            cmds.animLayer(self.converter.anim_layer, query=True, exists=True)
-        )
+        self.assertTrue(cmds.animLayer(self.converter.anim_layer, query=True, exists=True))
 
         # カスタムレイヤー名での作成
         custom_layer = "CustomVMDLayer"
@@ -322,16 +307,12 @@ class TestVmdConverter(MayaTestBase):
 
         # レイヤーモードのテスト（加算）
         converter3 = VmdConverter()
-        converter3._create_animation_layer(
-            layer_name="AdditiveLayer"
-        )
+        converter3._create_animation_layer(layer_name="AdditiveLayer")
         self.assertTrue(cmds.animLayer("AdditiveLayer", query=True, exists=True))
 
         # レイヤーモードのテスト（オーバーライド）
         converter4 = VmdConverter()
-        converter4._create_animation_layer(
-            layer_name="OverrideLayer"
-        )
+        converter4._create_animation_layer(layer_name="OverrideLayer")
         self.assertTrue(cmds.animLayer("OverrideLayer", query=True, exists=True))
         self.assertTrue(cmds.animLayer("OverrideLayer", query=True, override=True))
 
@@ -403,9 +384,7 @@ class TestVmdConverter(MayaTestBase):
         self.converter.set_bone_name_mapping(bone_mapping)
 
         # レイヤーを使用して変換
-        result = self.converter.convert(
-            vmd_data, layer_name="TestVMDLayer", layer_mode="additive"
-        )
+        result = self.converter.convert(vmd_data, layer_name="TestVMDLayer", layer_mode="additive")
 
         # レイヤーが作成されたことを確認
         self.assertEqual(self.converter.get_animation_layer_name(), "TestVMDLayer")
@@ -461,7 +440,10 @@ class TestVmdConverter(MayaTestBase):
         # アニメーションレイヤーが作成されたことを確認
         # Mayaは自動的に番号を付加する場合があるので、プレフィックスで確認
         layer_name = self.converter.get_animation_layer_name()
-        self.assertTrue(layer_name.startswith("FixtureTest"), f"Expected layer name to start with 'FixtureTest', but got {layer_name}")
+        self.assertTrue(
+            layer_name.startswith("FixtureTest"),
+            f"Expected layer name to start with 'FixtureTest', but got {layer_name}",
+        )
 
         # アニメーションが適用されたことを確認
         animated_joints = []
@@ -474,16 +456,12 @@ class TestVmdConverter(MayaTestBase):
                 "rotateY",
                 "rotateZ",
             ]:
-                connections = cmds.listConnections(
-                    f"{joint}.{attr}", source=True, destination=False
-                )
+                connections = cmds.listConnections(f"{joint}.{attr}", source=True, destination=False)
                 if connections:
                     animated_joints.append(joint)
                     break
 
-        self.assertGreater(
-            len(animated_joints), 0, "アニメーションが適用されていません"
-        )
+        self.assertGreater(len(animated_joints), 0, "アニメーションが適用されていません")
 
     def test_convert_with_fixture_vmd_camera(self):
         """フィクスチャを使用したカメラアニメーション変換テスト"""
@@ -494,9 +472,9 @@ class TestVmdConverter(MayaTestBase):
             self.skipTest("テスト用VMDファイルが見つかりません")
 
         # VMDファイルをパース
-        from mmd_tools.core.vmd_parser import VmdParser
+        from mmd_tools.core.vmd_data import VmdData
 
-        parser = VmdParser()
+        parser = VmdData()
         parser.parse_file(vmd_path)
 
         # カメラアニメーション変換
@@ -513,9 +491,7 @@ class TestVmdConverter(MayaTestBase):
         mmd_camera = None
         for cam in cameras:
             transform = cmds.listRelatives(cam, parent=True)
-            if transform and cmds.attributeQuery(
-                ATTR_MMD_CAMERA, node=transform[0], exists=True
-            ):
+            if transform and cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform[0], exists=True):
                 mmd_camera = transform[0]
                 break
 
@@ -524,9 +500,7 @@ class TestVmdConverter(MayaTestBase):
         # キーフレームが設定されたことを確認
         keyframes = cmds.keyframe(f"{mmd_camera}.translateX", query=True)
         self.assertIsNotNone(keyframes, "カメラにキーフレームが設定されていません")
-        self.assertGreater(
-            len(keyframes), 0, "カメラにキーフレームが設定されていません"
-        )
+        self.assertGreater(len(keyframes), 0, "カメラにキーフレームが設定されていません")
 
     def test_convert_multiple_layers_with_fixture(self):
         """フィクスチャを使用した複数レイヤーの変換テスト"""
@@ -547,9 +521,9 @@ class TestVmdConverter(MayaTestBase):
             converter = VmdConverter()
 
             # VMDファイルをパース
-            from mmd_tools.core.vmd_parser import VmdParser
+            from mmd_tools.core.vmd_data import VmdData
 
-            parser = VmdParser()
+            parser = VmdData()
             parser.parse_file(vmd_path)
 
             # 名前マッピングを構築
@@ -557,9 +531,7 @@ class TestVmdConverter(MayaTestBase):
 
             # 変換実行
             layer_mode = "override" if i == 0 else "additive"
-            result = converter.convert(
-                parser, layer_name=f"Layer_{i}", layer_mode=layer_mode
-            )
+            result = converter.convert(parser, layer_name=f"Layer_{i}", layer_mode=layer_mode)
             self.assertTrue(result, f"レイヤー{i}の変換に失敗しました")
 
             converters.append(converter)

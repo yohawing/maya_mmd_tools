@@ -390,9 +390,7 @@ class PmxMock:
         data.extend(struct.pack("<f", 0.5))  # 回転減衰
         data.extend(struct.pack("<f", 0.5))  # 反発力
         data.extend(struct.pack("<f", 0.5))  # 摩擦力
-        data.extend(
-            struct.pack("<B", 0)
-        )  # 物理演算（0=ボーン追従、1=物理演算、2=物理+ボーン）
+        data.extend(struct.pack("<B", 0))  # 物理演算（0=ボーン追従、1=物理演算、2=物理+ボーン）
 
         # ジョイントデータ（1つのジョイント）
         data.extend(struct.pack("<L", 1))  # ジョイント数

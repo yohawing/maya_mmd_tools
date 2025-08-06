@@ -24,9 +24,7 @@ class TestLogger(MayaTestBase):
         self.original_settings = {
             "logging.enabled": settings.get("logging.enabled", True),
             "logging.level": settings.get("logging.level", "INFO"),
-            "logging.log_file_path": settings.get(
-                "logging.log_file_path", "logs/mmd_tools.log"
-            ),
+            "logging.log_file_path": settings.get("logging.log_file_path", "logs/mmd_tools.log"),
         }
 
     def tearDown(self):
@@ -105,9 +103,7 @@ class TestLogger(MayaTestBase):
         self.assertIsInstance(is_maya, bool)
 
         # このテストはMayaTestBaseを継承しているため、Maya環境で実行されるはず
-        self.assertTrue(
-            is_maya, "MayaTestBaseを使用しているのでMaya環境で実行されるべきです"
-        )
+        self.assertTrue(is_maya, "MayaTestBaseを使用しているのでMaya環境で実行されるべきです")
 
     def test_file_logging(self):
         """ファイル出力のテスト"""
@@ -161,9 +157,7 @@ class TestLogger(MayaTestBase):
         logger2 = get_logger("test_consistency")
 
         # 同じインスタンスであることを確認
-        self.assertIs(
-            logger1, logger2, "同じ名前のロガーは同じインスタンスを返すべきです"
-        )
+        self.assertIs(logger1, logger2, "同じ名前のロガーは同じインスタンスを返すべきです")
 
     def test_different_logger_names(self):
         """異なる名前のロガーが異なるインスタンスを返すことをテスト"""
@@ -171,9 +165,7 @@ class TestLogger(MayaTestBase):
         logger2 = get_logger("test_name2")
 
         # 異なるインスタンスであることを確認
-        self.assertIsNot(
-            logger1, logger2, "異なる名前のロガーは異なるインスタンスを返すべきです"
-        )
+        self.assertIsNot(logger1, logger2, "異なる名前のロガーは異なるインスタンスを返すべきです")
 
 
 if __name__ == "__main__":

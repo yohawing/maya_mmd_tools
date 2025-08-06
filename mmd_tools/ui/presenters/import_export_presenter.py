@@ -1,4 +1,4 @@
-from ..qt_compat import QObject, Signal, QFileDialog
+from ..qt_compat import QObject, QFileDialog
 from ...core.logger import get_logger
 from ...io.mmd_importer import import_mmd_file
 from ...io.pmx_exporter import PmxExporter
@@ -35,16 +35,12 @@ class ImportExportPresenter(QObject):
             self.view.import_path_edit.setText(file_path)
 
     def select_export_file(self):
-        file_path, _ = QFileDialog.getSaveFileName(
-            self.view, "Save PMX File", "", "PMX Files (*.pmx);;All Files (*)"
-        )
+        file_path, _ = QFileDialog.getSaveFileName(self.view, "Save PMX File", "", "PMX Files (*.pmx);;All Files (*)")
         if file_path:
             self.view.export_path_edit.setText(file_path)
 
     def select_vmd_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self.view, "Select VMD File", "", "VMD Files (*.vmd);;All Files (*)"
-        )
+        file_path, _ = QFileDialog.getOpenFileName(self.view, "Select VMD File", "", "VMD Files (*.vmd);;All Files (*)")
         if file_path:
             self.view.vmd_path_edit.setText(file_path)
 
@@ -55,10 +51,7 @@ class ImportExportPresenter(QObject):
             return
 
         # Check if new file is requested
-        if (
-            hasattr(self.view, "new_file_check")
-            and self.view.new_file_check.isChecked()
-        ):
+        if hasattr(self.view, "new_file_check") and self.view.new_file_check.isChecked():
             from maya import cmds
 
             cmds.file(new=True, force=True)
@@ -77,12 +70,8 @@ class ImportExportPresenter(QObject):
             "custom_namespace": self.view.get_custom_namespace(),  # カスタムnamespace名
             "import_models": settings.get("import.model.import_models", True),
             "create_mmd_shaders": settings.get("import.model.create_mmd_shaders", True),
-            "separate_meshes_by_material": settings.get(
-                "import.model.separate_meshes_by_material", False
-            ),
-            "hide_hidden_geometry": settings.get(
-                "import.model.hide_hidden_geometry", True
-            ),
+            "separate_meshes_by_material": settings.get("import.model.separate_meshes_by_material", False),
+            "hide_hidden_geometry": settings.get("import.model.hide_hidden_geometry", True),
             "import_physics": settings.get("import.physics.import_physics", False),
             "import_morphs": settings.get("import.morph.import_morphs", True),
         }
@@ -159,18 +148,10 @@ class ImportExportPresenter(QObject):
         # アニメーション設定を収集
         animation_options = {
             "start_frame": settings.get("import.animation.animation_start_frame", 1),
-            "import_bone_animation": settings.get(
-                "import.animation.import_animations", True
-            ),
-            "import_morph_animation": settings.get(
-                "import.animation.import_morph_animation", True
-            ),
-            "import_camera_animation": settings.get(
-                "import.animation.import_camera_animation", True
-            ),
-            "import_light_animation": settings.get(
-                "import.animation.import_light_animation", True
-            ),
+            "import_bone_animation": settings.get("import.animation.import_animations", True),
+            "import_morph_animation": settings.get("import.animation.import_morph_animation", True),
+            "import_camera_animation": settings.get("import.animation.import_camera_animation", True),
+            "import_light_animation": settings.get("import.animation.import_light_animation", True),
             "resample_curves": settings.get("import.animation.resample_curves", False),
             "target_model": target_model,
         }

@@ -5,11 +5,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MODEL_NAME,
 )
-from ..qt_compat import Qt
 from ...core.logger import get_logger
 from ...core.maya_utils import (
-    find_all_mmd_models,
-    get_parent_mmd_root,
     get_mmd_model_display_name,
     set_custom_attributes,
 )
@@ -74,12 +71,8 @@ class InfoPresenter:
             self.view.comment_en_edit.textChanged.disconnect(self.update_model_info)
 
             # アトリビュートの存在を確認
-            if not cmds.attributeQuery(
-                ATTR_MMD_MODEL_NAME, node=current_model_root, exists=True
-            ):
-                logger.warning(
-                    f"Attribute {ATTR_MMD_MODEL_NAME} not found on {current_model_root}"
-                )
+            if not cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=current_model_root, exists=True):
+                logger.warning(f"Attribute {ATTR_MMD_MODEL_NAME} not found on {current_model_root}")
 
             # 文字列アトリビュートの値を安全に取得
             model_name_jp = ""
@@ -88,18 +81,14 @@ class InfoPresenter:
             comment_en = ""
 
             try:
-                model_name_jp = cmds.getAttr(
-                    f"{current_model_root}.{ATTR_MMD_MODEL_NAME}"
-                )
+                model_name_jp = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_MODEL_NAME}")
                 if model_name_jp is None:
                     model_name_jp = ""
             except:
                 model_name_jp = ""
 
             try:
-                model_name_en = cmds.getAttr(
-                    f"{current_model_root}.{ATTR_MMD_MODEL_NAME_EN}"
-                )
+                model_name_en = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_MODEL_NAME_EN}")
                 if model_name_en is None:
                     model_name_en = ""
             except:
@@ -119,15 +108,11 @@ class InfoPresenter:
             except:
                 comment_en = ""
 
-            logger.debug(
-                f"Loaded values - JP: '{model_name_jp}', EN: '{model_name_en}'"
-            )
+            logger.debug(f"Loaded values - JP: '{model_name_jp}', EN: '{model_name_en}'")
 
             self.view.model_name_jp_edit.setText(model_name_jp)
             self.view.model_name_en_edit.setText(model_name_en)
-            self.view.comment_jp_edit.setPlainText(
-                comment_jp
-            )  # QTextEditはsetPlainTextを使用
+            self.view.comment_jp_edit.setPlainText(comment_jp)  # QTextEditはsetPlainTextを使用
             self.view.comment_en_edit.setPlainText(comment_en)
 
             logger.info(f"Loaded model info for {current_model_root}")
@@ -185,9 +170,7 @@ class InfoPresenter:
             # コンボボックスにモデルを追加
             for model in models:
                 display_name = get_mmd_model_display_name(model)
-                self.view.model_combo.addItem(
-                    f"{display_name} ({model})", userData=model
-                )
+                self.view.model_combo.addItem(f"{display_name} ({model})", userData=model)
 
             # 現在のモデルを選択
             if current_model in models:

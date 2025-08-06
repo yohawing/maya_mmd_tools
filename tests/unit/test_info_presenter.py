@@ -151,10 +151,7 @@ class TestInfoPresenter(MayaTestBase):
 
         # 新しいモデルの情報が読み込まれたか
         # 任意の回数setTextが呼ばれた中で「新モデル」が含まれているか確認
-        all_calls = [
-            call[0][0]
-            for call in self.mock_view.model_name_jp_edit.setText.call_args_list
-        ]
+        all_calls = [call[0][0] for call in self.mock_view.model_name_jp_edit.setText.call_args_list]
         self.assertIn("新モデル", all_calls)
 
     def test_on_current_model_changed_to_none(self):

@@ -4,10 +4,16 @@ import math
 from ..core.logger import get_logger
 from ..core import maya_utils
 from ..core.pmd_data.rigid_body import PmdRigidBody
-from ..core.pmd_data.joint import PmdJoint
 from ..core.pmx_data.rigid_body import PmxRigidBody
-from ..core.pmx_data.joint import PmxJoint
-from ..core.constants import PHYSICS_GROUP, RIGID_BODIES_GROUP, CONSTRAINTS_GROUP, PHYSICS_TYPE_HAIR, PHYSICS_TYPE_CLOTH, PHYSICS_TYPE_RIGID, PHYSICS_TYPE_SOFT
+from ..core.constants import (
+    PHYSICS_GROUP,
+    RIGID_BODIES_GROUP,
+    CONSTRAINTS_GROUP,
+    PHYSICS_TYPE_HAIR,
+    PHYSICS_TYPE_CLOTH,
+    PHYSICS_TYPE_RIGID,
+    PHYSICS_TYPE_SOFT,
+)
 
 
 class PhysicsConverter:
@@ -55,9 +61,7 @@ class PhysicsConverter:
 
         self.logger.info("PhysicsConverterを初期化しました")
 
-    def convert_pmd_physics(
-        self, pmd_data, bone_joints: Dict[str, str], root_group: str
-    ) -> Tuple[List[str], List[str]]:
+    def convert_pmd_physics(self, pmd_data, bone_joints: Dict[str, str], root_group: str) -> Tuple[List[str], List[str]]:
         """
         PMDの物理演算データをMayaのnClothシステムに変換する。
 
@@ -76,36 +80,24 @@ class PhysicsConverter:
             physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
             rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
             constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
-            
+
             # Nucleusソルバーを作成または取得
             self._ensure_nucleus_solver()
 
             # ボーンインデックスからボーン名へのマッピングを作成
-            bone_index_map = self._create_bone_index_mapping(
-                pmd_data.bones, bone_joints
-            )
+            bone_index_map = self._create_bone_index_mapping(pmd_data.bones, bone_joints)
 
             # 剛体データを分析してグループ化
             rigid_body_groups = self._analyze_rigid_bodies(pmd_data.rigid_bodies)
 
             # 各グループに対して適切な物理システムを作成
             for group_type, rigid_bodies in rigid_body_groups.items():
-                if (
-                    group_type == PHYSICS_TYPE_HAIR
-                    and self.settings["enable_hair_physics"]
-                ):
+                if group_type == PHYSICS_TYPE_HAIR and self.settings["enable_hair_physics"]:
                     self._create_hair_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
-                elif (
-                    group_type == PHYSICS_TYPE_CLOTH
-                    and self.settings["enable_cloth_physics"]
-                ):
-                    self._create_cloth_physics(
-                        rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group
-                    )
+                elif group_type == PHYSICS_TYPE_CLOTH and self.settings["enable_cloth_physics"]:
+                    self._create_cloth_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
                 elif group_type == PHYSICS_TYPE_RIGID:
-                    self._create_rigid_physics(
-                        rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group
-                    )
+                    self._create_rigid_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
                 else:
                     self.logger.debug(f"物理タイプ '{group_type}' はスキップされました")
 
@@ -125,9 +117,7 @@ class PhysicsConverter:
             self.logger.error(f"PMD物理変換中にエラーが発生しました: {str(e)}")
             raise
 
-    def convert_pmx_physics(
-        self, pmx_data, bone_joints: Dict[str, str], root_group: str
-    ) -> Tuple[List[str], List[str]]:
+    def convert_pmx_physics(self, pmx_data, bone_joints: Dict[str, str], root_group: str) -> Tuple[List[str], List[str]]:
         """
         PMXの物理演算データをMayaのnClothシステムに変換する。
 
@@ -146,36 +136,24 @@ class PhysicsConverter:
             physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
             rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
             constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
-            
+
             # Nucleusソルバーを作成または取得
             self._ensure_nucleus_solver()
 
             # ボーンインデックスからボーン名へのマッピングを作成
-            bone_index_map = self._create_bone_index_mapping(
-                pmx_data.bones, bone_joints
-            )
+            bone_index_map = self._create_bone_index_mapping(pmx_data.bones, bone_joints)
 
             # 剛体データを分析してグループ化
             rigid_body_groups = self._analyze_rigid_bodies(pmx_data.rigid_bodies)
 
             # 各グループに対して適切な物理システムを作成
             for group_type, rigid_bodies in rigid_body_groups.items():
-                if (
-                    group_type == PHYSICS_TYPE_HAIR
-                    and self.settings["enable_hair_physics"]
-                ):
+                if group_type == PHYSICS_TYPE_HAIR and self.settings["enable_hair_physics"]:
                     self._create_hair_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
-                elif (
-                    group_type == PHYSICS_TYPE_CLOTH
-                    and self.settings["enable_cloth_physics"]
-                ):
-                    self._create_cloth_physics(
-                        rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group
-                    )
+                elif group_type == PHYSICS_TYPE_CLOTH and self.settings["enable_cloth_physics"]:
+                    self._create_cloth_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
                 elif group_type == PHYSICS_TYPE_RIGID:
-                    self._create_rigid_physics(
-                        rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group
-                    )
+                    self._create_rigid_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
                 else:
                     self.logger.debug(f"物理タイプ '{group_type}' はスキップされました")
 
@@ -236,26 +214,18 @@ class PhysicsConverter:
             settings["maxCollisionIterations"],
             "long",
         )
-        maya_utils.set_attribute(
-            self.nucleus_solver, "startFrame", self.settings.get("start_frame", 1), "double"
-        )
-        maya_utils.set_attribute(
-            self.nucleus_solver, "timeScale", self.settings.get("time_scale", 1.0), "double"
-        )
+        maya_utils.set_attribute(self.nucleus_solver, "startFrame", self.settings.get("start_frame", 1), "double")
+        maya_utils.set_attribute(self.nucleus_solver, "timeScale", self.settings.get("time_scale", 1.0), "double")
 
         # 重力設定（MMDは下向きをY軸負方向とする）
         # gravity: 重力の大きさ（スカラー）
         # gravityDirection: 重力の方向（ベクトル）
         maya_utils.set_attribute(self.nucleus_solver, "gravity", 9.8, "double")
-        maya_utils.set_attribute(
-            self.nucleus_solver, "gravityDirection", [0, -1, 0], "double3"
-        )  # Y軸負方向（下向き）
+        maya_utils.set_attribute(self.nucleus_solver, "gravityDirection", [0, -1, 0], "double3")  # Y軸負方向（下向き）
 
         self.logger.debug(f"Nucleusソルバー設定完了: quality={quality}")
 
-    def _analyze_rigid_bodies(
-        self, rigid_bodies: List[Union[PmdRigidBody, PmxRigidBody]]
-    ) -> Dict[str, List]:
+    def _analyze_rigid_bodies(self, rigid_bodies: List[Union[PmdRigidBody, PmxRigidBody]]) -> Dict[str, List]:
         """
         剛体データを分析して物理タイプごとにグループ化する。
 
@@ -288,9 +258,7 @@ class PhysicsConverter:
 
         return groups
 
-    def _analyze_physics_type(
-        self, rigid_body: Union[PmdRigidBody, PmxRigidBody]
-    ) -> str:
+    def _analyze_physics_type(self, rigid_body: Union[PmdRigidBody, PmxRigidBody]) -> str:
         """
         剛体のタイプを分析（髪、布、剛体など）。
 
@@ -355,9 +323,7 @@ class PhysicsConverter:
                 # 関連するボーンを取得
                 bone_name = self._get_bone_name_from_rigid_body(rb, bone_index_map)
                 if bone_name not in bone_joints:
-                    self.logger.warning(
-                        f"剛体 '{rb.name}' に対応するボーンが見つかりません"
-                    )
+                    self.logger.warning(f"剛体 '{rb.name}' に対応するボーンが見つかりません")
                     continue
 
                 joint_name = bone_joints[bone_name]
@@ -491,9 +457,7 @@ class PhysicsConverter:
 
     # ヘルパーメソッド
 
-    def _create_bone_index_mapping(
-        self, bones, bone_joints: Dict[str, str]
-    ) -> Dict[int, str]:
+    def _create_bone_index_mapping(self, bones, bone_joints: Dict[str, str]) -> Dict[int, str]:
         """
         ボーンインデックスからMayaジョイント名へのマッピングを作成する。
 
@@ -513,9 +477,7 @@ class PhysicsConverter:
 
         return bone_index_map
 
-    def _mmd_to_maya_position(
-        self, position: Tuple[float, float, float]
-    ) -> List[float]:
+    def _mmd_to_maya_position(self, position: Tuple[float, float, float]) -> List[float]:
         """
         MMDの座標系をMayaの座標系に変換する。
         MMD: 右手座標系 (X右, Y上, Z手前)
@@ -529,9 +491,7 @@ class PhysicsConverter:
         """
         return [position[0], position[1], -position[2]]
 
-    def _mmd_to_maya_rotation(
-        self, rotation: Tuple[float, float, float]
-    ) -> List[float]:
+    def _mmd_to_maya_rotation(self, rotation: Tuple[float, float, float]) -> List[float]:
         """
         MMDの回転角度をMayaの回転角度に変換する。
         両方ともオイラー角（度数法）を使用。
@@ -549,9 +509,7 @@ class PhysicsConverter:
 
         return [deg_x, deg_y, -deg_z]
 
-    def _get_bone_name_from_rigid_body(
-        self, rigid_body, bone_index_map: Optional[Dict[int, str]] = None
-    ) -> Optional[str]:
+    def _get_bone_name_from_rigid_body(self, rigid_body, bone_index_map: Optional[Dict[int, str]] = None) -> Optional[str]:
         """剛体から関連するボーン名を取得する。"""
         # PMD/PMXの仕様に基づいて実装
         if hasattr(rigid_body, "bone_index"):
@@ -562,15 +520,11 @@ class PhysicsConverter:
         elif hasattr(rigid_body, "related_bone_index"):
             # PMXの場合
             if bone_index_map and rigid_body.related_bone_index in bone_index_map:
-                return maya_utils.sanitize_text(
-                    bone_index_map[rigid_body.related_bone_index]
-                )
+                return maya_utils.sanitize_text(bone_index_map[rigid_body.related_bone_index])
             return f"bone_{rigid_body.related_bone_index}"
         return None
 
-    def _create_dynamic_curve_for_joint(
-        self, joint_name: str, rigid_body
-    ) -> Optional[str]:
+    def _create_dynamic_curve_for_joint(self, joint_name: str, rigid_body) -> Optional[str]:
         """ジョイント用のダイナミックカーブを作成する。"""
         try:
             # ジョイントの位置を取得
@@ -578,9 +532,7 @@ class PhysicsConverter:
 
             # 簡易的なカーブを作成（2点のみ）
             end_pos = [pos[0], pos[1] - 5.0, pos[2]]  # 下方向に伸ばす
-            curve = maya_utils.create_dynamic_curve(
-                [pos, end_pos], name=f"{rigid_body.name}_curve"
-            )
+            curve = maya_utils.create_dynamic_curve([pos, end_pos], name=f"{rigid_body.name}_curve")
 
             return curve
 

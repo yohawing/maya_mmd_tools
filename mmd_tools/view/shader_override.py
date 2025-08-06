@@ -2,7 +2,6 @@
 
 import os
 import maya.api.OpenMaya as om
-import maya.api.OpenMayaUI as omui
 import maya.api.OpenMayaRender as omr
 
 # Shader node name
@@ -65,35 +64,27 @@ class MMDShaderNode(om.MPxNode):
         n_attr = om.MFnNumericAttribute()
 
         # Diffuse Color
-        cls.a_diffuse_color = n_attr.create(
-            "diffuseColor", "dc", om.MFnNumericData.k3Float
-        )
+        cls.a_diffuse_color = n_attr.create("diffuseColor", "dc", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (0.8, 0.8, 0.8)
         n_attr.keyable = True
         cls.addAttribute(cls.a_diffuse_color)
 
         # Shininess
-        cls.a_shininess = n_attr.create(
-            "shininess", "sh", om.MFnNumericData.kFloat, 1.0
-        )
+        cls.a_shininess = n_attr.create("shininess", "sh", om.MFnNumericData.kFloat, 1.0)
         n_attr.setMin(0.0)
         n_attr.keyable = True
         cls.addAttribute(cls.a_shininess)
 
         # Specular Color
-        cls.a_specular_color = n_attr.create(
-            "specularColor", "sc", om.MFnNumericData.k3Float
-        )
+        cls.a_specular_color = n_attr.create("specularColor", "sc", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (0.5, 0.5, 0.5)
         n_attr.keyable = True
         cls.addAttribute(cls.a_specular_color)
 
         # Ambient Color
-        cls.a_ambient_color = n_attr.create(
-            "ambientColor", "ac", om.MFnNumericData.k3Float
-        )
+        cls.a_ambient_color = n_attr.create("ambientColor", "ac", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (0.3, 0.3, 0.3)
         n_attr.keyable = True
@@ -107,9 +98,7 @@ class MMDShaderNode(om.MPxNode):
         cls.addAttribute(cls.a_edge_color)
 
         # Edge Size
-        cls.a_edge_size = n_attr.create(
-            "edgeSize", "es", om.MFnNumericData.kFloat, 0.01
-        )
+        cls.a_edge_size = n_attr.create("edgeSize", "es", om.MFnNumericData.kFloat, 0.01)
         n_attr.setMin(0.0)
         n_attr.keyable = True
         cls.addAttribute(cls.a_edge_size)
@@ -125,27 +114,21 @@ class MMDShaderNode(om.MPxNode):
 
         # Texture Attributes (color inputs for texture connections)
         # These can accept file texture nodes or any other color output
-        cls.a_main_texture = n_attr.create(
-            "mainTexture", "mt", om.MFnNumericData.k3Float
-        )
+        cls.a_main_texture = n_attr.create("mainTexture", "mt", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (1.0, 1.0, 1.0)  # Default white
         n_attr.keyable = False
         n_attr.connectable = True
         cls.addAttribute(cls.a_main_texture)
 
-        cls.a_sphere_texture = n_attr.create(
-            "sphereTexture", "st", om.MFnNumericData.k3Float
-        )
+        cls.a_sphere_texture = n_attr.create("sphereTexture", "st", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (1.0, 1.0, 1.0)  # Default white
         n_attr.keyable = False
         n_attr.connectable = True
         cls.addAttribute(cls.a_sphere_texture)
 
-        cls.a_toon_texture = n_attr.create(
-            "toonTexture", "tt", om.MFnNumericData.k3Float
-        )
+        cls.a_toon_texture = n_attr.create("toonTexture", "tt", om.MFnNumericData.k3Float)
         n_attr.usedAsColor = True
         n_attr.default = (1.0, 1.0, 1.0)  # Default white
         n_attr.keyable = False
@@ -174,7 +157,6 @@ class MMDShaderNode(om.MPxNode):
         cls.attributeAffects(cls.a_toon_texture, cls.a_out_color)
 
 
-
 # ----------------------------------------------------------------------
 # Shader Override Implementation
 # ----------------------------------------------------------------------
@@ -187,9 +169,7 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 
         self.shader = None
         self.shader_path = os.path.join(os.path.dirname(__file__), "..", SHADER_FX_FILE)
-        om.MGlobal.displayInfo(
-            f"MMDShaderOverride: Loading shader from {self.shader_path}"
-        )
+        om.MGlobal.displayInfo(f"MMDShaderOverride: Loading shader from {self.shader_path}")
 
         # Cached values for material properties
         self.diffuse_color = om.MColor((0.8, 0.8, 0.8))
@@ -207,11 +187,7 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 
     def supportedDrawAPIs(self):
         """Declare support for multiple rendering APIs."""
-        return (
-            omr.MRenderer.kDirectX11
-            | omr.MRenderer.kOpenGL
-            | omr.MRenderer.kOpenGLCoreProfile
-        )
+        return omr.MRenderer.kDirectX11 | omr.MRenderer.kOpenGL | omr.MRenderer.kOpenGLCoreProfile
 
     def initialize(self, initContext, userdata):
         """Called once to initialize the shader instance."""
@@ -222,9 +198,7 @@ class MMDShaderOverride(omr.MPxShaderOverride):
             return
 
         # Load the .fx shader file
-        om.MGlobal.displayInfo(
-            f"MMDShaderOverride: Loading shader from {self.shader_path}"
-        )
+        om.MGlobal.displayInfo(f"MMDShaderOverride: Loading shader from {self.shader_path}")
         self.shader = shader_mgr.getEffectsFileShader(self.shader_path, "MMDTechnique")
         if not self.shader:
             om.MGlobal.displayError(f"Failed to load shader file: {self.shader_path}")
@@ -234,14 +208,10 @@ class MMDShaderOverride(omr.MPxShaderOverride):
         # Create rasterizer states for fill and outline
         raster_state_desc = omr.MRasterizerStateDesc()
         raster_state_desc.cullMode = omr.MRasterizerState.kCullFront
-        self.outline_raster_state = omr.MStateManager.acquireRasterizerState(
-            raster_state_desc
-        )
+        self.outline_raster_state = omr.MStateManager.acquireRasterizerState(raster_state_desc)
 
         raster_state_desc.cullMode = omr.MRasterizerState.kCullBack
-        self.fill_raster_state = omr.MStateManager.acquireRasterizerState(
-            raster_state_desc
-        )
+        self.fill_raster_state = omr.MStateManager.acquireRasterizerState(raster_state_desc)
 
     def updateDG(self, obj):
         """Called when node attributes change."""
@@ -252,18 +222,10 @@ class MMDShaderOverride(omr.MPxShaderOverride):
         node = om.MFnDependencyNode(obj)
 
         # Get MColor objects directly from the plugs
-        self.diffuse_color = om.MColor(
-            node.findPlug("diffuseColor", False).asMDataHandle().asFloat3()
-        )
-        self.specular_color = om.MColor(
-            node.findPlug("specularColor", False).asMDataHandle().asFloat3()
-        )
-        self.ambient_color = om.MColor(
-            node.findPlug("ambientColor", False).asMDataHandle().asFloat3()
-        )
-        self.edge_color = om.MColor(
-            node.findPlug("edgeColor", False).asMDataHandle().asFloat3()
-        )
+        self.diffuse_color = om.MColor(node.findPlug("diffuseColor", False).asMDataHandle().asFloat3())
+        self.specular_color = om.MColor(node.findPlug("specularColor", False).asMDataHandle().asFloat3())
+        self.ambient_color = om.MColor(node.findPlug("ambientColor", False).asMDataHandle().asFloat3())
+        self.edge_color = om.MColor(node.findPlug("edgeColor", False).asMDataHandle().asFloat3())
 
         # Get other numeric values
         self.shininess = node.findPlug("shininess", False).asFloat()
@@ -309,13 +271,9 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 
     def draw(self, context, renderables):
         """The main drawing callback."""
-        om.MGlobal.displayInfo(
-            f"MMDShaderOverride: draw() called with {len(renderables)} renderables"
-        )
+        om.MGlobal.displayInfo(f"MMDShaderOverride: draw() called with {len(renderables)} renderables")
         if not self.shader:
-            om.MGlobal.displayWarning(
-                "MMDShaderOverride: No shader loaded, skipping draw"
-            )
+            om.MGlobal.displayWarning("MMDShaderOverride: No shader loaded, skipping draw")
             return
 
         # --- Draw each renderable item ---
@@ -389,9 +347,7 @@ def uninitializePlugin(plugin):
     plugin_fn = om.MFnPlugin(plugin)
 
     try:
-        omr.MDrawRegistry.deregisterShaderOverrideCreator(
-            MMDShaderNode.drawDbClassification, "mmdShaderOverride"
-        )
+        omr.MDrawRegistry.deregisterShaderOverrideCreator(MMDShaderNode.drawDbClassification, "mmdShaderOverride")
     except:
         om.MGlobal.displayError("Failed to deregister shader override.")
         raise

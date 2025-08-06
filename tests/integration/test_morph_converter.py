@@ -1,7 +1,9 @@
 from maya import cmds
 
 from mmd_tools.converters import MorphConverter, MeshConverter
-from mmd_tools.core import maya_utils, pmd_parser, pmx_parser
+from mmd_tools.core import maya_utils
+from mmd_tools.core import pmd_data
+from mmd_tools.core import pmx_data
 from mmd_tools.core.settings import settings
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
@@ -21,7 +23,7 @@ class TestMorphConverter(MayaTestBase):
         super().setUp()
         # 新しいMayaシーンを作成
         cmds.file(new=True, force=True)
-        
+
         # テスト環境ではdx11Shaderを無効にする
         settings.set("import.model.create_mmd_shaders", False)
 
@@ -42,10 +44,10 @@ class TestMorphConverter(MayaTestBase):
     def test_convert_pmd_morphs(self):
         """PMDモーフがMayaに正しく変換されることをテストする。"""
         # TestFixtureProviderからPMDファイルパスを取得
-        pmd_file_path = self.fixture_provider.get_pmd_file('miku_v2')
+        pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
 
         # PMDファイルをパース
-        parser = pmd_parser.PmdParser()
+        parser = pmd_data.PmdData()
         pmd_data = parser.parse_file(pmd_file_path)
 
         # モーフデータが存在することを確認
@@ -56,7 +58,7 @@ class TestMorphConverter(MayaTestBase):
 
         # ルートグループを作成
         root_group = cmds.group(empty=True, name="test_pmd_root")
-        
+
         # テスト用のメッシュを作成（簡単な四角形）
         converter = MeshConverter(pmd_file_path)
         mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
@@ -84,17 +86,15 @@ class TestMorphConverter(MayaTestBase):
         # blendShapeノードのチェックは、実際にモーフが変換された場合のみ
         if morphs_converted > 0:
             blend_shape_nodes = result.get("blend_shape_nodes", [])
-            self.assertGreater(
-                len(blend_shape_nodes), 0, "blendShapeノードが作成されていません"
-            )
+            self.assertGreater(len(blend_shape_nodes), 0, "blendShapeノードが作成されていません")
 
     def test_convert_pmx_morphs(self):
         """PMXモーフがMayaに正しく変換されることをテストする。"""
         # TestFixtureProviderからPMXファイルパスを取得
-        pmx_file_path = self.fixture_provider.get_pmx_file('荧')
+        pmx_file_path = self.fixture_provider.get_pmx_file("荧")
 
         # PMXファイルをパース
-        parser = pmx_parser.PmxParser()
+        parser = pmx_data.PmxData()
         pmx_data = parser.parse_file(pmx_file_path)
 
         # モーフデータが存在することを確認
@@ -105,7 +105,7 @@ class TestMorphConverter(MayaTestBase):
 
         # ルートグループを作成
         root_group = cmds.group(empty=True, name="test_pmx_root")
-        
+
         # メッシュを作成
         mesh_converter = MeshConverter(pmx_file_path)
         mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(pmx_data, root_group)
@@ -125,9 +125,7 @@ class TestMorphConverter(MayaTestBase):
         # PMXの場合、頂点モーフのみがサポートされているため、頂点モーフの数と比較
         from mmd_tools.core.pmx_data.morph import PmxMorphType
 
-        vertex_morphs = [
-            m for m in pmx_data.morphs if m.morph_type == PmxMorphType.VertexMorph
-        ]
+        vertex_morphs = [m for m in pmx_data.morphs if m.morph_type == PmxMorphType.VertexMorph]
         self.assertLessEqual(
             morphs_converted,
             len(vertex_morphs),
@@ -171,8 +169,6 @@ class TestMorphConverter(MayaTestBase):
         uvs = [0, 0, 1, 0, 1, 1, 0, 1]
         face_uv_connects = [0, 1, 2, 3]
 
-        mesh_name = maya_utils.create_mesh_with_uvs(
-            "test_mesh", vertices, face_counts, face_connects, uvs, face_uv_connects
-        )
+        mesh_name = maya_utils.create_mesh_with_uvs("test_mesh", vertices, face_counts, face_connects, uvs, face_uv_connects)
 
         return mesh_name

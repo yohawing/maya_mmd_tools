@@ -1,7 +1,6 @@
 import struct
 
 from mmd_tools.core import utils
-from mmd_tools.core.settings import settings
 
 
 class PmdHeader:

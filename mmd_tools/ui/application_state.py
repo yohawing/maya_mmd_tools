@@ -51,9 +51,7 @@ class ApplicationState(QObject):
                 value = None
 
             if old_value != self._current_model_root:
-                logger.info(
-                    f"Current model changed: {old_value} -> {self._current_model_root}"
-                )
+                logger.info(f"Current model changed: {old_value} -> {self._current_model_root}")
                 self.current_model_changed.emit(self._current_model_root or "")
 
                 # モデル情報をキャッシュ
@@ -72,19 +70,12 @@ class ApplicationState(QObject):
             self._available_models = find_all_mmd_models()
 
             if old_models != self._available_models:
-                logger.info(
-                    f"Model list updated: {len(self._available_models)} models found"
-                )
+                logger.info(f"Model list updated: {len(self._available_models)} models found")
                 self.model_list_updated.emit(self._available_models)
 
             # 現在のモデルがリストにない場合はクリア
-            if (
-                self._current_model_root
-                and self._current_model_root not in self._available_models
-            ):
-                logger.warning(
-                    f"Current model '{self._current_model_root}' no longer exists"
-                )
+            if self._current_model_root and self._current_model_root not in self._available_models:
+                logger.warning(f"Current model '{self._current_model_root}' no longer exists")
                 self.current_model_root = None
 
             # 現在のモデルがない場合
@@ -110,10 +101,7 @@ class ApplicationState(QObject):
             if parent_root:
                 # 完全パスと短い名前の両方をチェック
                 short_name = parent_root.split("|")[-1]
-                if (
-                    parent_root in self._available_models
-                    or short_name in self._available_models
-                ):
+                if parent_root in self._available_models or short_name in self._available_models:
                     # available_modelsにある形式で設定
                     if parent_root in self._available_models:
                         self.current_model_root = parent_root
@@ -166,10 +154,7 @@ class ApplicationState(QObject):
             # 統計情報を収集
             if cmds.objExists(model_root):
                 # メッシュ情報
-                shapes = (
-                    cmds.listRelatives(model_root, allDescendents=True, type="mesh")
-                    or []
-                )
+                shapes = cmds.listRelatives(model_root, allDescendents=True, type="mesh") or []
                 for shape in shapes:
                     vertex_count = cmds.polyEvaluate(shape, vertex=True)
                     if vertex_count:
@@ -177,9 +162,7 @@ class ApplicationState(QObject):
 
                 # マテリアル数
                 if shapes:
-                    shading_groups = (
-                        cmds.listConnections(shapes, type="shadingEngine") or []
-                    )
+                    shading_groups = cmds.listConnections(shapes, type="shadingEngine") or []
                     shading_groups = list(set(shading_groups))
                     materials = []
                     for sg in shading_groups:
@@ -188,17 +171,12 @@ class ApplicationState(QObject):
                     info["material_count"] = len(set(materials))
 
                 # ボーン数
-                joints = (
-                    cmds.listRelatives(model_root, allDescendents=True, type="joint")
-                    or []
-                )
+                joints = cmds.listRelatives(model_root, allDescendents=True, type="joint") or []
                 info["bone_count"] = len(joints)
 
                 # モーフ数（ブレンドシェイプ）
                 if shapes:
-                    blend_shapes = (
-                        cmds.ls(cmds.listHistory(shapes), type="blendShape") or []
-                    )
+                    blend_shapes = cmds.ls(cmds.listHistory(shapes), type="blendShape") or []
                     for bs in blend_shapes:
                         targets = cmds.blendShape(bs, query=True, target=True) or []
                         info["morph_count"] += len(targets)
@@ -206,9 +184,7 @@ class ApplicationState(QObject):
             self._model_info_cache[model_root] = info
 
         except Exception as e:
-            logger.error(
-                f"Failed to cache model info for {model_root}: {e}", exc_info=True
-            )
+            logger.error(f"Failed to cache model info for {model_root}: {e}", exc_info=True)
             self._model_info_cache[model_root] = None
 
     def _get_attr_safe(self, node, attr, default):

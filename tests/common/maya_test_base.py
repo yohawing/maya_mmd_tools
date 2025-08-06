@@ -2,7 +2,6 @@ import os
 import shutil
 import tempfile
 import uuid
-import logging
 
 from maya import cmds
 from mmd_tools.core.settings import settings

@@ -1,12 +1,10 @@
 """VmdConverterの統合テスト"""
 
-import os
 from maya import cmds
 
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters import BoneConverter, MeshConverter
-from mmd_tools.core import PmdParser, PmxParser, VmdParser, maya_utils
-from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
+from mmd_tools.core import VmdData
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core import settings
@@ -61,27 +59,19 @@ class TestVmdConverter(MayaTestBase):
         # メッシュを作成（スキニングのため）
         mesh_converter = MeshConverter(file_path)
         if model_type == "pmx":
-            group_name, mesh_name = mesh_converter.convert_pmx_mesh(
-                model_data, root_group
-            )
+            group_name, mesh_name = mesh_converter.convert_pmx_mesh(model_data, root_group)
         else:
-            group_name, mesh_name = mesh_converter.convert_pmd_mesh(
-                model_data, root_group
-            )
+            group_name, mesh_name = mesh_converter.convert_pmd_mesh(model_data, root_group)
 
         # ボーンを作成
         bone_converter = BoneConverter()
         if model_type == "pmx":
-            root_joint, skin_cluster = bone_converter.convert_pmx_bones(
-                model_data, mesh_name, root_group
-            )
+            root_joint, skin_cluster = bone_converter.convert_pmx_bones(model_data, mesh_name, root_group)
         else:
-            root_joint, skin_cluster = bone_converter.convert_pmd_bones(
-                model_data, mesh_name, root_group
-            )
+            root_joint, skin_cluster = bone_converter.convert_pmd_bones(model_data, mesh_name, root_group)
 
         # VMDファイルを読み込み
-        vmd_parser = VmdParser()
+        vmd_parser = VmdData()
         vmd_data = vmd_parser.parse_file(self.fixture_provider.get_vmd_file(vmd_name))
 
         # アニメーション変換
@@ -92,10 +82,8 @@ class TestVmdConverter(MayaTestBase):
     def test_convert_with_pmx_file(self):
         """PMXファイルを使用したVMD変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み
-        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
-            self._import_model_and_apply_vmd(
-                "mmt_test_model", "mmt_test_model_ik_test_motion", model_type="pmx"
-            )
+        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = self._import_model_and_apply_vmd(
+            "mmt_test_model", "mmt_test_model_ik_test_motion", model_type="pmx"
         )
 
         # 検証
@@ -114,25 +102,19 @@ class TestVmdConverter(MayaTestBase):
                 "rotateY",
                 "rotateZ",
             ]:
-                connections = cmds.listConnections(
-                    f"{joint}.{attr}", source=True, destination=False
-                )
+                connections = cmds.listConnections(f"{joint}.{attr}", source=True, destination=False)
                 if connections:
                     animated_joints.append(joint)
                     break
 
         # 少なくとも1つのジョイントがアニメーションされていることを確認
-        self.assertGreater(
-            len(animated_joints), 0, "アニメーションが設定されたジョイントがありません"
-        )
+        self.assertGreater(len(animated_joints), 0, "アニメーションが設定されたジョイントがありません")
 
     def test_convert_with_pmd_file(self):
         """実際のPMDファイルを使用した変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み
-        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
-            self._import_model_and_apply_vmd(
-                "Lat式ミクVer2.31_Normal", "Lat式用", model_type="pmd"
-            )
+        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = self._import_model_and_apply_vmd(
+            "Lat式ミクVer2.31_Normal", "Lat式用", model_type="pmd"
         )
 
         # 検証
@@ -151,9 +133,7 @@ class TestVmdConverter(MayaTestBase):
                 "rotateY",
                 "rotateZ",
             ]:
-                connections = cmds.listConnections(
-                    f"{joint}.{attr}", source=True, destination=False
-                )
+                connections = cmds.listConnections(f"{joint}.{attr}", source=True, destination=False)
                 if connections:
                     animated_joints.append(joint)
                     break
@@ -193,10 +173,8 @@ class TestVmdConverter(MayaTestBase):
     def test_1bone_vmd_conversion(self):
         """1ボーンVMDデータの変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み
-        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = (
-            self._import_model_and_apply_vmd(
-                "test_1bone_cube", "test_1bone_cube_motion", model_type="pmx"
-            )
+        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = self._import_model_and_apply_vmd(
+            "test_1bone_cube", "test_1bone_cube_motion", model_type="pmx"
         )
 
         # 変換が成功していることを確認

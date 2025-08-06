@@ -7,17 +7,13 @@ import sys
 from typing import List, Optional, TextIO
 
 from mmd_tools.core import utils
-from mmd_tools.core.pmx_data.bone import PmxBone
-from mmd_tools.core.pmx_data.material import PmxMaterial
-from mmd_tools.core.pmx_data.morph import PmxMorph
-from mmd_tools.core.pmx_data.vertex import PmxVertex
-from mmd_tools.core.pmx_parser import PmxParser
+from mmd_tools.core.pmx_data import PmxData
 
 
 class PmxDumper:
     """PMXファイルの内容を人間が読みやすい形式でダンプするクラス"""
 
-    def __init__(self, pmx_data: PmxParser):
+    def __init__(self, pmx_data: PmxData):
         """
         Args:
             pmx_data: 解析済みのPMXデータ
@@ -91,14 +87,12 @@ class PmxDumper:
             "=== PMX MODEL DEBUG DUMP ===",
             f"Version: {header.version} | Encoding: {encoding}",
             f"Model: {header.model_name} ({header.model_name_english})",
-            f"Comment: {header.comment[:50]}... "
-            if len(header.comment) > 50
-            else f"Comment: {header.comment}",
+            f"Comment: {header.comment[:50]}... " if len(header.comment) > 50 else f"Comment: {header.comment}",
         ]
 
         lines.extend(
             [
-                f"\nIndex Sizes:",
+                "\nIndex Sizes:",
                 f"  Vertex: {header.vertex_index_size} bytes",
                 f"  Texture: {header.texture_index_size} bytes",
                 f"  Material: {header.material_index_size} bytes",
@@ -159,9 +153,7 @@ class PmxDumper:
                     bone_children[bone.parent_bone_index] = []
                 bone_children[bone.parent_bone_index].append(i)
 
-        def dump_bone_tree(
-            index: int, indent: str = "", is_last: bool = True, depth: int = 0
-        ) -> List[str]:
+        def dump_bone_tree(index: int, indent: str = "", is_last: bool = True, depth: int = 0) -> List[str]:
             bone = self.pmx.bones[index]
             tree_lines = []
 
@@ -182,18 +174,12 @@ class PmxDumper:
 
             # 接続先情報を取得
             if bone.bone_flag & 0x0001:  # 接続先がボーン
-                tail_str = (
-                    f" → [{bone.connect_bone_index}]"
-                    if bone.connect_bone_index >= 0
-                    else ""
-                )
+                tail_str = f" → [{bone.connect_bone_index}]" if bone.connect_bone_index >= 0 else ""
             else:  # 接続先が相対座標
                 tail_str = f" → offset({bone.connect_position_offset[0]:.1f}, {bone.connect_position_offset[1]:.1f}, {bone.connect_position_offset[2]:.1f})"
 
             prefix = "└─" if is_last else "├─"
-            tree_lines.append(
-                f"{indent}{prefix}[{index}] {bone.name} ({bone.name_english}){flag_str}{tail_str}"
-            )
+            tree_lines.append(f"{indent}{prefix}[{index}] {bone.name} ({bone.name_english}){flag_str}{tail_str}")
 
             # 子ボーンを表示
             if index in bone_children:
@@ -201,11 +187,7 @@ class PmxDumper:
                 for i, child_idx in enumerate(children):
                     is_last_child = i == len(children) - 1
                     child_indent = indent + ("    " if is_last else "│   ")
-                    tree_lines.extend(
-                        dump_bone_tree(
-                            child_idx, child_indent, is_last_child, depth + 1
-                        )
-                    )
+                    tree_lines.extend(dump_bone_tree(child_idx, child_indent, is_last_child, depth + 1))
 
             return tree_lines
 
@@ -216,25 +198,13 @@ class PmxDumper:
 
         # IKボーンの詳細
         lines.append("\n=== BONE DETAILS ===")
-        ik_bones = [
-            b for b in self.pmx.bones if b.bone_flag & 0x0020
-        ]  # IKフラグが立っているボーン
+        ik_bones = [b for b in self.pmx.bones if b.bone_flag & 0x0020]  # IKフラグが立っているボーン
 
         for bone in ik_bones:
-            lines.append(
-                f"\n[{self.pmx.bones.index(bone)}] {bone.name} ({bone.name_english})"
-            )
-            parent_name = (
-                self.pmx.bones[bone.parent_bone_index].name
-                if bone.parent_bone_index >= 0
-                else "None"
-            )
-            lines.append(
-                f"    Parent: [{bone.parent_bone_index}] {parent_name} | Layer: {bone.transform_layer}"
-            )
-            lines.append(
-                f"    Position: ({bone.position[0]:.3f}, {bone.position[1]:.3f}, {bone.position[2]:.3f})"
-            )
+            lines.append(f"\n[{self.pmx.bones.index(bone)}] {bone.name} ({bone.name_english})")
+            parent_name = self.pmx.bones[bone.parent_bone_index].name if bone.parent_bone_index >= 0 else "None"
+            lines.append(f"    Parent: [{bone.parent_bone_index}] {parent_name} | Layer: {bone.transform_layer}")
+            lines.append(f"    Position: ({bone.position[0]:.3f}, {bone.position[1]:.3f}, {bone.position[2]:.3f})")
             lines.append(f"    Flags: 0x{bone.bone_flag:04X}")
 
             if bone.bone_flag & 0x0020:  # IKフラグが立っている場合
@@ -286,9 +256,7 @@ class PmxDumper:
         for i, morph in enumerate(self.pmx.morphs):
             panel = {1: "眉", 2: "目", 3: "口", 4: "他"}.get(morph.panel, "?")
             type_name = type_names.get(morph.morph_type, "?")
-            lines.append(
-                f"  [{i}] {morph.name} ({morph.name_english}) - {type_name} [Panel: {panel}]"
-            )
+            lines.append(f"  [{i}] {morph.name} ({morph.name_english}) - {type_name} [Panel: {panel}]")
 
         return "\n".join(lines)
 
@@ -307,9 +275,7 @@ class PmxDumper:
             lines.append(
                 f"    Specular: ({mat.specular[0]:.2f}, {mat.specular[1]:.2f}, {mat.specular[2]:.2f}) Power: {mat.specular_coefficient}"
             )
-            lines.append(
-                f"    Ambient: ({mat.ambient[0]:.2f}, {mat.ambient[1]:.2f}, {mat.ambient[2]:.2f})"
-            )
+            lines.append(f"    Ambient: ({mat.ambient[0]:.2f}, {mat.ambient[1]:.2f}, {mat.ambient[2]:.2f})")
 
             # フラグ
             flags = []
@@ -326,11 +292,7 @@ class PmxDumper:
 
             # テクスチャ
             if mat.texture_index >= 0:
-                tex_path = (
-                    self.pmx.textures[mat.texture_index]
-                    if mat.texture_index < len(self.pmx.textures)
-                    else "[Invalid]"
-                )
+                tex_path = self.pmx.textures[mat.texture_index] if mat.texture_index < len(self.pmx.textures) else "[Invalid]"
                 lines.append(f"    Texture: [{mat.texture_index}] {tex_path}")
 
             lines.append(f"    Face Count: {mat.face_count // 3:,}")
@@ -377,9 +339,7 @@ class PmxDumper:
                 lines.append("  Joint Samples:")
                 for i, joint in enumerate(self.pmx.joints):
                     lines.append(f"    [{i}] {joint.name} ({joint.name_english})")
-                    lines.append(
-                        f"        Rigid Bodies: [{joint.rigid_body_a_index}] <-> [{joint.rigid_body_b_index}]"
-                    )
+                    lines.append(f"        Rigid Bodies: [{joint.rigid_body_a_index}] <-> [{joint.rigid_body_b_index}]")
         else:
             lines.append("Joints: 0")
 
@@ -401,16 +361,10 @@ class PmxDumper:
                 min_pos[i] = min(min_pos[i], v.position[i])
                 max_pos[i] = max(max_pos[i], v.position[i])
 
-        lines.append(f"Position Range:")
-        lines.append(
-            f"  X: {min_pos[0]:.3f} ~ {max_pos[0]:.3f} (width: {max_pos[0] - min_pos[0]:.3f})"
-        )
-        lines.append(
-            f"  Y: {min_pos[1]:.3f} ~ {max_pos[1]:.3f} (height: {max_pos[1] - min_pos[1]:.3f})"
-        )
-        lines.append(
-            f"  Z: {min_pos[2]:.3f} ~ {max_pos[2]:.3f} (depth: {max_pos[2] - min_pos[2]:.3f})"
-        )
+        lines.append("Position Range:")
+        lines.append(f"  X: {min_pos[0]:.3f} ~ {max_pos[0]:.3f} (width: {max_pos[0] - min_pos[0]:.3f})")
+        lines.append(f"  Y: {min_pos[1]:.3f} ~ {max_pos[1]:.3f} (height: {max_pos[1] - min_pos[1]:.3f})")
+        lines.append(f"  Z: {min_pos[2]:.3f} ~ {max_pos[2]:.3f} (depth: {max_pos[2] - min_pos[2]:.3f})")
 
         # サンプル頂点（最大5個）
         lines.append("\nVertex Samples:")
@@ -434,13 +388,9 @@ class PmxDumper:
 
 def main():
     """CLIエントリーポイント"""
-    parser = argparse.ArgumentParser(
-        description="PMXファイルの構造を人間が読みやすい形式でダンプします"
-    )
+    parser = argparse.ArgumentParser(description="PMXファイルの構造を人間が読みやすい形式でダンプします")
     parser.add_argument("pmx_file", help="ダンプするPMXファイルのパス")
-    parser.add_argument(
-        "-o", "--output", help="出力ファイルパス（指定しない場合は標準出力）"
-    )
+    parser.add_argument("-o", "--output", help="出力ファイルパス（指定しない場合は標準出力）")
     parser.add_argument(
         "-s",
         "--sections",
@@ -461,7 +411,7 @@ def main():
 
     try:
         # PMXファイルを解析
-        pmx_parser = PmxParser()
+        pmx_parser = PmxData()
         pmx_parser.parse_file(args.pmx_file)
 
         # ダンパーを作成

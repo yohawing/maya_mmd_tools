@@ -21,10 +21,7 @@ def parsePMXString(f, encoding=0):
     if length == 0:
         return ""
     (buf,) = struct.unpack("<%ds" % length, f.read(length))
-    return buf.decode(
-        "utf-16-le" if encoding == PmxEncoding.UTF16LE else "utf-8",
-        errors="replace"
-    )
+    return buf.decode("utf-16-le" if encoding == PmxEncoding.UTF16LE else "utf-8", errors="replace")
 
 
 def decodePMDString(byteString):
@@ -208,9 +205,7 @@ def is_unicode_converted_name(text):
     from .unicode_converter import get_converter
 
     converter = get_converter()
-    return converter.is_converted_base64(text) or converter.is_dictionary_converted(
-        text
-    )
+    return converter.is_converted_base64(text) or converter.is_dictionary_converted(text)
 
 
 def add_dictionary_entry(unicode_text: str, ascii_text: str):

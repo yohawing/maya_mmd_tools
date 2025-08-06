@@ -87,9 +87,7 @@ ATTR_MMD_IK_TARGET_INDEX = "mmd_ik_target_index"  # IKターゲットインデ�
 
 # PMD固有のアトリビュート名（PMDのみに存在）
 ATTR_MMD_BONE_TYPE = "mmd_bone_type"  # ボーンタイプ（PMD固有）
-ATTR_MMD_TAIL_POS_INDEX = (
-    "mmd_tail_pos_index"  # テール位置ボーンインデックス（PMD固有）
-)
+ATTR_MMD_TAIL_POS_INDEX = "mmd_tail_pos_index"  # テール位置ボーンインデックス（PMD固有）
 
 # デフォルト値
 DEFAULT_SCALE_FACTOR = 1.0  # インポート時のデフォルトスケール係数

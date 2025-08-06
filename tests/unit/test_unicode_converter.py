@@ -8,7 +8,6 @@ import os
 import sys
 import unittest
 
-import test
 
 # テスト対象モジュールのパスを追加
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -76,7 +75,7 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
                 "上半身2": "upper_body_2",
                 "左腕捩": "left_arm_twist",
                 "右腕捩": "right_arm_twist",
-                "グルーブ": "groove"
+                "グルーブ": "groove",
             },
             "maya_invalid_chars": {"+": "_plus_", "|": "_pipe_"},
         }
@@ -170,9 +169,7 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         # 辞書
         self.assertEqual(self.converter.get_encoding_type("bone"), "dictionary")
         # ハッシュ
-        self.assertEqual(
-            self.converter.get_encoding_type(self.converter.convert("未知")), "hash"
-        )
+        self.assertEqual(self.converter.get_encoding_type(self.converter.convert("未知")), "hash")
         # オリジナル
         self.assertEqual(self.converter.get_encoding_type("original_ascii"), "original")
 
@@ -210,19 +207,19 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
 
     def test_exact_match_conversion(self):
         """完全一致変換のテスト（exact_matchセクション使用）"""
-        
+
         # exact_matchにある項目はprefix/suffix処理より優先される
         self.assertEqual(self.converter.convert("左足IK"), "left_leg_ik")
         self.assertEqual(self.converter.convert("右足IK"), "right_leg_ik")
         self.assertEqual(self.converter.convert("左つま先IK"), "left_toe_ik")
         self.assertEqual(self.converter.convert("右つま先IK"), "right_toe_ik")
-        
+
         # 全角IKも対応
         self.assertEqual(self.converter.convert("左足ＩＫ"), "left_leg_ik")
         self.assertEqual(self.converter.convert("右足ＩＫ"), "right_leg_ik")
         self.assertEqual(self.converter.convert("左つま先ＩＫ"), "left_toe_ik")
         self.assertEqual(self.converter.convert("右つま先ＩＫ"), "right_toe_ik")
-        
+
         # 準標準ボーン
         self.assertEqual(self.converter.convert("上半身2"), "upper_body_2")
         self.assertEqual(self.converter.convert("左腕捩"), "left_arm_twist")
@@ -273,8 +270,6 @@ class TestSingletonPattern(unittest.TestCase):
         # 辞書エントリを追加して、シングルトンであることを確認
         converter1.add_dictionary_entry("シングルトンテスト", "singleton_test")
         self.assertEqual(converter2.convert("シングルトンテスト"), "singleton_test")
-
-
 
 
 if __name__ == "__main__":

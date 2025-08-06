@@ -2,6 +2,7 @@ class PmxExporter:
     """
     MayaのシーンデータをPMXファイルフォーマットにエクスポートするクラス。
     """
+
     def __init__(self):
         pass
 

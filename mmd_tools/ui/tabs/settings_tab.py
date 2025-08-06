@@ -10,14 +10,6 @@ from ..qt_compat import (
     QTabWidget,
     QWidget,
     QLabel,
-    QSpinBox,
-    QDoubleSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
-    QHeaderView,
-    QFileDialog,
-    QGridLayout,
-    QTextEdit,
     QScrollArea,
 )
 from ..base_tab import BaseTab
@@ -27,9 +19,10 @@ class SettingsTab(BaseTab):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SettingsTab")
-        
+
         # デバッグ用
         from ...core.logger import get_logger
+
         logger = get_logger(__name__)
         logger.debug("SettingsTab initialization started")
 
@@ -39,37 +32,37 @@ class SettingsTab(BaseTab):
         # スクロールエリアを作成
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
-        
+
         # スクロール内のウィジェット
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
 
         # タブウィジェット
         self.settings_tabs = QTabWidget()
-        
+
         # 各設定タブを追加
         self.settings_tabs.addTab(self._create_general_tab(), self.tr("general_settings", "tabs"))
-        
+
         scroll_layout.addWidget(self.settings_tabs)
-        
+
         # ボタンバー
         button_layout = QHBoxLayout()
         self.save_settings_btn = QPushButton(self.tr("save_settings", "actions"))
         self.reset_settings_btn = QPushButton(self.tr("reset_to_default", "actions"))
         self.export_settings_btn = QPushButton(self.tr("export_settings", "actions"))
         self.import_settings_btn = QPushButton(self.tr("import_settings", "actions"))
-        
+
         button_layout.addStretch()
         button_layout.addWidget(self.save_settings_btn)
         button_layout.addWidget(self.reset_settings_btn)
         button_layout.addWidget(self.export_settings_btn)
         button_layout.addWidget(self.import_settings_btn)
-        
+
         scroll_layout.addLayout(button_layout)
-        
+
         scroll_area.setWidget(scroll_widget)
         main_layout.addWidget(scroll_area)
-        
+
         # デバッグ：初期化完了
         logger.debug("SettingsTab initialization completed")
         logger.debug(f"SettingsTab attributes: {list(self.__dict__.keys())}")
@@ -78,45 +71,46 @@ class SettingsTab(BaseTab):
         """全般設定タブを作成"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-        
+
         # UI設定
         self.ui_group = QGroupBox(self.tr("ui_settings", "groups"))
         ui_layout = QFormLayout()
-        
+
         self.show_advanced_options_check = QCheckBox(self.tr("show_advanced_options", "checkboxes"))
         ui_layout.addRow("", self.show_advanced_options_check)
-        
+
         self.ui_log_level_combo = QComboBox()
         self.ui_log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
         self.ui_log_level_label = QLabel(self.tr("ui_log_level", "fields"))
         ui_layout.addRow(self.ui_log_level_label, self.ui_log_level_combo)
-        
+
         # 言語選択
         self.language_combo = QComboBox()
         # UITranslatorから言語リストを取得
         from ...ui.translations import UITranslator
+
         translator = UITranslator.instance()
         languages = translator.get_supported_languages()
         for code, name in languages.items():
             self.language_combo.addItem(name, code)
         self.language_label = QLabel(self.tr("language", "fields"))
         ui_layout.addRow(self.language_label, self.language_combo)
-        
+
         self.ui_group.setLayout(ui_layout)
         layout.addWidget(self.ui_group)
-        
+
         # ログ設定
         self.log_group = QGroupBox(self.tr("log_settings", "groups"))
         log_layout = QFormLayout()
-        
+
         self.logging_enabled_check = QCheckBox(self.tr("enable_logging", "checkboxes"))
         log_layout.addRow("", self.logging_enabled_check)
-        
+
         self.log_level_combo = QComboBox()
         self.log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
         self.log_level_label = QLabel(self.tr("log_level", "fields"))
         log_layout.addRow(self.log_level_label, self.log_level_combo)
-        
+
         log_file_layout = QHBoxLayout()
         self.log_file_path_edit = QLineEdit()
         self.log_file_browse_btn = QPushButton(self.tr("browse", "buttons"))
@@ -125,53 +119,50 @@ class SettingsTab(BaseTab):
         log_file_layout.addWidget(self.log_file_browse_btn)
         self.log_file_label = QLabel(self.tr("log_file", "fields"))
         log_layout.addRow(self.log_file_label, log_file_layout)
-        
+
         self.log_group.setLayout(log_layout)
         layout.addWidget(self.log_group)
-        
+
         layout.addStretch()
         return widget
 
-    
     def retranslateUi(self):
         """UIテキストを再翻訳"""
         # タブテキスト
-        if hasattr(self, 'settings_tabs'):
+        if hasattr(self, "settings_tabs"):
             if self.settings_tabs.count() >= 1:
                 self.settings_tabs.setTabText(0, self.tr("general_settings", "tabs"))
-        
+
         # ボタン
-        if hasattr(self, 'save_settings_btn'):
+        if hasattr(self, "save_settings_btn"):
             self.save_settings_btn.setText(self.tr("save_settings", "actions"))
-        if hasattr(self, 'reset_settings_btn'):
+        if hasattr(self, "reset_settings_btn"):
             self.reset_settings_btn.setText(self.tr("reset_to_default", "actions"))
-        if hasattr(self, 'export_settings_btn'):
+        if hasattr(self, "export_settings_btn"):
             self.export_settings_btn.setText(self.tr("export_settings", "actions"))
-        if hasattr(self, 'import_settings_btn'):
+        if hasattr(self, "import_settings_btn"):
             self.import_settings_btn.setText(self.tr("import_settings", "actions"))
-        if hasattr(self, 'log_file_browse_btn'):
+        if hasattr(self, "log_file_browse_btn"):
             self.log_file_browse_btn.setText(self.tr("browse", "buttons"))
-        
+
         # GroupBoxes
-        if hasattr(self, 'ui_group'):
+        if hasattr(self, "ui_group"):
             self.ui_group.setTitle(self.tr("ui_settings", "groups"))
-        if hasattr(self, 'log_group'):
+        if hasattr(self, "log_group"):
             self.log_group.setTitle(self.tr("log_settings", "groups"))
-        
+
         # Labels
-        if hasattr(self, 'ui_log_level_label'):
+        if hasattr(self, "ui_log_level_label"):
             self.ui_log_level_label.setText(self.tr("ui_log_level", "fields"))
-        if hasattr(self, 'language_label'):
+        if hasattr(self, "language_label"):
             self.language_label.setText(self.tr("language", "fields"))
-        if hasattr(self, 'log_level_label'):
+        if hasattr(self, "log_level_label"):
             self.log_level_label.setText(self.tr("log_level", "fields"))
-        if hasattr(self, 'log_file_label'):
+        if hasattr(self, "log_file_label"):
             self.log_file_label.setText(self.tr("log_file", "fields"))
-        
+
         # CheckBoxes
-        if hasattr(self, 'show_advanced_options_check'):
+        if hasattr(self, "show_advanced_options_check"):
             self.show_advanced_options_check.setText(self.tr("show_advanced_options", "checkboxes"))
-        if hasattr(self, 'logging_enabled_check'):
+        if hasattr(self, "logging_enabled_check"):
             self.logging_enabled_check.setText(self.tr("enable_logging", "checkboxes"))
-
-

@@ -9,8 +9,8 @@ class VmdHeader:
     SIGNATURE = b"Vocaloid Motion Data"
 
     def __init__(self):
-        self.magic = b''
-        self.model_name = ''
+        self.magic = b""
+        self.model_name = ""
 
     def parse(self, f):
         """
@@ -34,7 +34,6 @@ class VmdHeader:
         # Magic (30バイト固定、残りは0でパディング)
         magic_data = self.SIGNATURE + b"\x00" * (30 - len(self.SIGNATURE))
         f.write(struct.pack("<30s", magic_data))
-        
+
         # Model name (20バイト固定)
         f.write(utils.encodePMDString(self.model_name, 20))
-

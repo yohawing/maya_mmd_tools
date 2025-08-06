@@ -1,11 +1,11 @@
-
 class PmxIK:
     """PMXファイルのIKデータを保持するクラス。"""
+
     def __init__(self):
         self.target_bone_index = -1
         self.loop_count = 0
         self.rotation_limit = 0.0
-        self.links = [] # List of PmxIKLink objects
+        self.links = []  # List of PmxIKLink objects
 
     def parse(self, file_handle, header):
         """

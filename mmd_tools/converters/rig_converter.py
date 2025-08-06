@@ -1,5 +1,4 @@
-from tkinter import W
-from typing import List, Dict, Optional
+from typing import List, Dict
 
 import maya.cmds as cmds
 
@@ -102,13 +101,9 @@ class RigConverter:
 
         # 準標準ボーンを追加（設定による）
         if settings.get("import.rig.add_semi_standard_bones", False):
-            result["semi_standard_bones"] = self._add_semi_standard_bones(
-                maya_joints, bone_map, skeleton_group
-            )
+            result["semi_standard_bones"] = self._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
             if result["semi_standard_bones"]:
-                self.logger.info(
-                    f"{len(result['semi_standard_bones'])}個の準標準ボーンを追加しました"
-                )
+                self.logger.info(f"{len(result['semi_standard_bones'])}個の準標準ボーンを追加しました")
 
         return result
 
@@ -146,15 +141,9 @@ class RigConverter:
                             link_info = {
                                 "bone": bone_map.get(link.ik_bone_index),
                                 "bone_index": link.ik_bone_index,
-                                "angle_limit": link.angle_limit
-                                if hasattr(link, "angle_limit")
-                                else False,
-                                "limit_min": link.limit_min
-                                if hasattr(link, "limit_min")
-                                else None,
-                                "limit_max": link.limit_max
-                                if hasattr(link, "limit_max")
-                                else None,
+                                "angle_limit": link.angle_limit if hasattr(link, "angle_limit") else False,
+                                "limit_min": link.limit_min if hasattr(link, "limit_min") else None,
+                                "limit_max": link.limit_max if hasattr(link, "limit_max") else None,
                             }
                             ik_chain["ik_links"].append(link_info)
 
@@ -168,9 +157,7 @@ class RigConverter:
         # PMDの場合、別途IKデータを処理
         if ik_data:
             for ik in ik_data:
-                if ik.ik_bone_index < len(bone_map) and ik.target_bone_index < len(
-                    bone_map
-                ):
+                if ik.ik_bone_index < len(bone_map) and ik.target_bone_index < len(bone_map):
                     ik_chain = {
                         "ik_bone": bone_map.get(ik.ik_bone_index),
                         "ik_bone_index": ik.ik_bone_index,
@@ -212,23 +199,15 @@ class RigConverter:
         for chain in ik_chains:
             # IKチェーンの最初と最後のジョイントを特定
             if not chain["ik_links"] or not chain["target_bone"]:
-                self.logger.warning(
-                    f"IKチェーン '{chain['ik_bone']}' にリンクまたはターゲットがありません"
-                )
+                self.logger.warning(f"IKチェーン '{chain['ik_bone']}' にリンクまたはターゲットがありません")
                 continue
 
             # IKリンクの最後（開始ジョイント）から最初（終了ジョイント）の順序
-            start_joint = (
-                chain["ik_links"][-1]["bone"]
-                if chain["ik_links"]
-                else chain["target_bone"]
-            )
+            start_joint = chain["ik_links"][-1]["bone"] if chain["ik_links"] else chain["target_bone"]
             end_joint = chain["target_bone"]
 
             if not start_joint or not end_joint:
-                self.logger.warning(
-                    f"IKチェーン '{chain['ik_bone']}' の開始または終了ジョイントが見つかりません"
-                )
+                self.logger.warning(f"IKチェーン '{chain['ik_bone']}' の開始または終了ジョイントが見つかりません")
                 continue
 
             try:
@@ -276,14 +255,10 @@ class RigConverter:
                 }
 
                 ik_handles.append(ik_handle_info)
-                self.logger.info(
-                    f"IKハンドル '{ik_handle}' を作成しました（{start_joint} → {end_joint}）"
-                )
+                self.logger.info(f"IKハンドル '{ik_handle}' を作成しました（{start_joint} → {end_joint}）")
 
             except Exception as e:
-                self.logger.error(
-                    f"IKハンドルの作成に失敗しました '{chain['ik_bone']}': {e}"
-                )
+                self.logger.error(f"IKハンドルの作成に失敗しました '{chain['ik_bone']}': {e}")
 
         return ik_handles
 
@@ -326,12 +301,8 @@ class RigConverter:
 
             # PoleTargetの初期位置を計算
             # 太ももと足首の位置を取得
-            start_pos = cmds.xform(
-                start_joint, query=True, worldSpace=True, translation=True
-            )
-            end_pos = cmds.xform(
-                end_joint, query=True, worldSpace=True, translation=True
-            )
+            start_pos = cmds.xform(start_joint, query=True, worldSpace=True, translation=True)
+            end_pos = cmds.xform(end_joint, query=True, worldSpace=True, translation=True)
 
             # 中間のジョイント（膝）を取得
             knee_joint = None
@@ -360,15 +331,11 @@ class RigConverter:
             maya_utils.set_attribute(pole_target, "localScaleY", 0.5, "double")
             maya_utils.set_attribute(pole_target, "localScaleZ", 0.5, "double")
 
-            self.logger.info(
-                f"PoleTarget '{pole_target}' を作成しました（{chain['ik_bone']}用、方法: {method_used}）"
-            )
+            self.logger.info(f"PoleTarget '{pole_target}' を作成しました（{chain['ik_bone']}用、方法: {method_used}）")
             return pole_target
 
         except Exception as e:
-            self.logger.error(
-                f"PoleTargetの作成に失敗しました '{chain['ik_bone']}': {e}"
-            )
+            self.logger.error(f"PoleTargetの作成に失敗しました '{chain['ik_bone']}': {e}")
             return None
 
     def _set_joint_limits(self, ik_links):
@@ -443,29 +410,18 @@ class RigConverter:
             z_axis_maya = utils.pmx_to_maya_vector(z_axis_pmx)
 
             # ジョイントオリエンテーションの設定
-            matrix = maya_utils.create_matrix_from_axes(
-                x_axis_maya, y_axis_maya, z_axis_maya
-            )
+            matrix = maya_utils.create_matrix_from_axes(x_axis_maya, y_axis_maya, z_axis_maya)
             rotation = maya_utils.matrix_to_euler(matrix)
 
             # 子ジョイントを取得（直接の子のみ）
-            children = (
-                cmds.listRelatives(joint, children=True, type=["joint", "transform"])
-                or []
-            )
+            children = cmds.listRelatives(joint, children=True, type=["joint", "transform"]) or []
             child_transforms = []
 
             # 子のワールド変換を保存して一時的に切り離す
             for child in children:
-                world_pos = cmds.xform(
-                    child, query=True, worldSpace=True, translation=True
-                )
-                world_rot = cmds.xform(
-                    child, query=True, worldSpace=True, rotation=True
-                )
-                child_transforms.append(
-                    {"joint": child, "position": world_pos, "rotation": world_rot}
-                )
+                world_pos = cmds.xform(child, query=True, worldSpace=True, translation=True)
+                world_rot = cmds.xform(child, query=True, worldSpace=True, rotation=True)
+                child_transforms.append({"joint": child, "position": world_pos, "rotation": world_rot})
                 # ワールドにペアレント（一時的に切り離す）
                 maya_utils.parent_objects(child, world=True)
 
@@ -490,12 +446,8 @@ class RigConverter:
                 for transform_data in child_transforms:
                     child = transform_data["joint"]
                     maya_utils.parent_objects(child, joint)
-                    cmds.xform(
-                        child, worldSpace=True, translation=transform_data["position"]
-                    )
-                    cmds.xform(
-                        child, worldSpace=True, rotation=transform_data["rotation"]
-                    )
+                    cmds.xform(child, worldSpace=True, translation=transform_data["position"])
+                    cmds.xform(child, worldSpace=True, rotation=transform_data["rotation"])
 
     def _add_semi_standard_bones(self, maya_joints, bone_map, skeleton_group):
         """
@@ -545,15 +497,11 @@ class RigConverter:
         if not existing_groove and maya_utils.object_exists("groove"):
             existing_groove = "groove"
 
-        center_joint = self._find_joint_by_name(
-            maya_joints, ["center", "センター", "centre"]
-        )
+        center_joint = self._find_joint_by_name(maya_joints, ["center", "センター", "centre"])
 
         if not existing_groove and center_joint:
             # センターの位置を取得
-            center_pos = cmds.xform(
-                center_joint, query=True, worldSpace=True, translation=True
-            )
+            center_pos = cmds.xform(center_joint, query=True, worldSpace=True, translation=True)
 
             # グルーブを作成
             groove = cmds.group(
@@ -575,25 +523,15 @@ class RigConverter:
         existing_waist = self._find_joint_by_japanese_name(["腰"])
         # 英語名でもチェック
         if not existing_waist:
-            existing_waist = self._find_joint_by_name(
-                maya_joints, ["waist", "腰", "koshi"]
-            )
+            existing_waist = self._find_joint_by_name(maya_joints, ["waist", "腰", "koshi"])
 
-        lower_body_joint = self._find_joint_by_name(
-            maya_joints, ["lower_body", "下半身", "lowerbody"]
-        )
-        left_leg_joint = self._find_joint_by_name(
-            maya_joints, ["left_leg", "左足", "leftleg", "left_thigh", "左もも"]
-        )
+        lower_body_joint = self._find_joint_by_name(maya_joints, ["lower_body", "下半身", "lowerbody"])
+        left_leg_joint = self._find_joint_by_name(maya_joints, ["left_leg", "左足", "leftleg", "left_thigh", "左もも"])
 
         if not existing_waist and lower_body_joint and left_leg_joint:
             # 下半身と左足の中間位置を計算
-            lower_body_pos = cmds.xform(
-                lower_body_joint, query=True, worldSpace=True, translation=True
-            )
-            left_leg_pos = cmds.xform(
-                left_leg_joint, query=True, worldSpace=True, translation=True
-            )
+            lower_body_pos = cmds.xform(lower_body_joint, query=True, worldSpace=True, translation=True)
+            left_leg_pos = cmds.xform(left_leg_joint, query=True, worldSpace=True, translation=True)
 
             waist_pos = [
                 (lower_body_pos[0] + left_leg_pos[0]) / 2,
@@ -610,9 +548,7 @@ class RigConverter:
             maya_utils.parent_objects(waist, lower_body_joint)
 
             # 左右の足を腰の子にする
-            right_leg_joint = self._find_joint_by_name(
-                maya_joints, ["right_leg", "右足", "rightleg", "right_thigh", "右もも"]
-            )
+            right_leg_joint = self._find_joint_by_name(maya_joints, ["right_leg", "右足", "rightleg", "right_thigh", "右もも"])
 
             # 左足を腰の子にする（既に存在確認済み）
             maya_utils.parent_objects(left_leg_joint, waist)
@@ -665,9 +601,7 @@ class RigConverter:
                     all_joints = maya_utils.list_objects(type="joint")
                     for joint in all_joints:
                         # カスタムアトリビュートでボーンインデックスを確認
-                        if cmds.attributeQuery(
-                            "mmd_bone_index", node=joint, exists=True
-                        ):
+                        if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
                             stored_index = cmds.getAttr(f"{joint}.mmd_bone_index")
                             if stored_index == bone_index:
                                 return joint
@@ -699,25 +633,19 @@ class RigConverter:
                 continue
 
             # 付与フラグをチェック
-            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(
-                PmxBoneFlag.GRANT_PARENT_MOVE
-            ):
+            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(PmxBoneFlag.GRANT_PARENT_MOVE):
                 given_bones.append(
                     {
                         "index": i,
                         "bone": bone,
                         "joint": maya_joints[i],
                         "transform_layer": getattr(bone, "transform_layer", 0),
-                        "is_physics_after": bone.get_flag(
-                            PmxBoneFlag.DEFORM_AFTER_PHYSICS
-                        ),
+                        "is_physics_after": bone.get_flag(PmxBoneFlag.DEFORM_AFTER_PHYSICS),
                     }
                 )
 
         # 変形順序でソート（物理前後 → 変形階層 → インデックス）
-        given_bones.sort(
-            key=lambda x: (x["is_physics_after"], x["transform_layer"], x["index"])
-        )
+        given_bones.sort(key=lambda x: (x["is_physics_after"], x["transform_layer"], x["index"]))
 
         # 多重付与の依存関係を解決
         given_bones = self._resolve_given_dependencies(given_bones, bones)
@@ -738,9 +666,7 @@ class RigConverter:
                     parent_joint = maya_joints[parent_index]
                     given_rate = bone.grant_rate
 
-                    constraint = cmds.orientConstraint(
-                        parent_joint, joint, maintainOffset=True, weight=given_rate
-                    )[0]
+                    constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=True, weight=given_rate)[0]
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"
@@ -755,9 +681,7 @@ class RigConverter:
                     parent_joint = maya_joints[parent_index]
                     given_rate = bone.grant_rate
 
-                    constraint = cmds.pointConstraint(
-                        parent_joint, joint, maintainOffset=True, weight=given_rate
-                    )[0]
+                    constraint = cmds.pointConstraint(parent_joint, joint, maintainOffset=True, weight=given_rate)[0]
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"

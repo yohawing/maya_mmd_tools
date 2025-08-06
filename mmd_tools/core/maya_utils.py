@@ -62,9 +62,7 @@ def sanitize_texture_path(texture_path, texture_dir):
     return full_texture_path
 
 
-def create_mesh_with_uvs(
-    name, vertices, face_counts, face_connects, uvs, face_uv_connects
-):
+def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects):
     """
     MayaシーンにUV付きのメッシュオブジェクトを作成します。
     OpenMaya APIを使用して高速化。
@@ -186,9 +184,7 @@ def create_material(name, color, texture_path=None, texture_dir=""):
         # テクスチャパスを解決
         full_texture_path = os.path.join(texture_dir, texture_path)
         if os.path.exists(full_texture_path):
-            file_node = cmds.shadingNode(
-                "file", asTexture=True, name=sanitized_name + "_file"
-            )
+            file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
             place_uv_node = cmds.shadingNode(
                 "place2dTexture",
                 asUtility=True,
@@ -198,9 +194,7 @@ def create_material(name, color, texture_path=None, texture_dir=""):
             cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
             cmds.connectAttr(file_node + ".outColor", shader + ".color")
 
-            cmds.setAttr(
-                file_node + ".fileTextureName", full_texture_path, type="string"
-            )
+            cmds.setAttr(file_node + ".fileTextureName", full_texture_path, type="string")
         else:
             cmds.warning(f"Texture file not found: {full_texture_path}")
 
@@ -217,9 +211,7 @@ def assign_material(mesh_name, shader_node):
     """
     # マテリアル専用のシェーディンググループを作成
     sanitized_shader_name = shader_node + "SG"
-    sg_name = cmds.sets(
-        renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name
-    )
+    sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
     # シェーダーをシェーディンググループに接続
     cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
     # メッシュをシェーディンググループに割り当て
@@ -242,23 +234,17 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
 
     # マテリアル専用のシェーディンググループを作成
     sanitized_shader_name = shader_node + "SG"
-    sg_name = cmds.sets(
-        renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name
-    )
+    sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
 
     # シェーダーのタイプに応じて適切な接続を行う
     shader_type = cmds.nodeType(shader_node)
 
     if shader_type == "dx11Shader":
         # dx11Shaderは直接surfaceShaderに接続
-        cmds.connectAttr(
-            shader_node + ".message", sg_name + ".surfaceShader", force=True
-        )
+        cmds.connectAttr(shader_node + ".message", sg_name + ".surfaceShader", force=True)
     else:
         # 標準シェーダーは.outColorを使用
-        cmds.connectAttr(
-            shader_node + ".outColor", sg_name + ".surfaceShader", force=True
-        )
+        cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
 
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)
@@ -293,17 +279,11 @@ def set_custom_attributes(object_name, attributes):
                 add_typed_attribute(object_name, attr_name, attr_type)
             elif attr_type in ["list", "tuple"]:
                 # リストやタプルの場合は型を指定
-                if len(attr_value) == 3 and all(
-                    isinstance(x, float) for x in attr_value
-                ):
+                if len(attr_value) == 3 and all(isinstance(x, float) for x in attr_value):
                     actual_attr_type = "double3"
-                elif len(attr_value) == 3 and all(
-                    isinstance(x, int) for x in attr_value
-                ):
+                elif len(attr_value) == 3 and all(isinstance(x, int) for x in attr_value):
                     actual_attr_type = "long3"
-                elif len(attr_value) == 4 and all(
-                    isinstance(x, (float, int)) for x in attr_value
-                ):
+                elif len(attr_value) == 4 and all(isinstance(x, (float, int)) for x in attr_value):
                     actual_attr_type = "double4"
                 elif all(isinstance(x, float) for x in attr_value):
                     actual_attr_type = "doubleArray"
@@ -353,9 +333,7 @@ def add_numeric_attribute(object_name, attr_name, attr_type):
         depend_fn.addAttribute(attr_obj)
 
     except Exception as e:
-        logger.error(
-            f"Failed to add numeric attribute '{attr_name}' to '{object_name}': {e}"
-        )
+        logger.error(f"Failed to add numeric attribute '{attr_name}' to '{object_name}': {e}")
 
 
 def add_typed_attribute(object_name, attr_name, attr_type):
@@ -409,9 +387,7 @@ def add_typed_attribute(object_name, attr_name, attr_type):
         depend_fn.addAttribute(attr_obj)
 
     except Exception as e:
-        logger.error(
-            f"Failed to add typed attribute '{attr_name}' to '{object_name}': {e}"
-        )
+        logger.error(f"Failed to add typed attribute '{attr_name}' to '{object_name}': {e}")
 
 
 def set_attribute(object_name, attr_name, attr_value, attr_type):
@@ -485,9 +461,7 @@ def set_attribute(object_name, attr_name, attr_value, attr_type):
             logger.warning(f"Unsupported attribute value type: {type(attr_value)}")
 
     except Exception as e:
-        logger.error(
-            f"Failed to set attribute value '{attr_name}' on '{object_name}': {e}"
-        )
+        logger.error(f"Failed to set attribute value '{attr_name}' on '{object_name}': {e}")
 
 
 def get_attribute(object_name, attr_name):
@@ -529,10 +503,7 @@ def get_attribute(object_name, attr_name):
 
         # 配列アトリビュートの場合
         if plug.isArray:
-            return [
-                plug.elementByLogicalIndex(i).asDouble()
-                for i in range(plug.numElements)
-            ]
+            return [plug.elementByLogicalIndex(i).asDouble() for i in range(plug.numElements)]
 
         # 単一アトリビュートの場合、タイプに応じて適切なメソッドを使用
         obj = plug.attribute()
@@ -656,16 +627,12 @@ def apply_vertex_weights(
             array_index = vertex_index * influence_count + influence_index
 
             # influence_indexがweightsの範囲外の場合は0.0を設定
-            in_range = vertex_index < len(weights) and influence_index < len(
-                weights[vertex_index]
-            )
+            in_range = vertex_index < len(weights) and influence_index < len(weights[vertex_index])
             weight_value = weights[vertex_index][influence_index] if in_range else 0.0
             weight_array[array_index] = weight_value
 
     # 一括で設定
-    skin_fn.setWeights(
-        shape_dag_path, vertex_component_obj, influence_indices, weight_array, False
-    )
+    skin_fn.setWeights(shape_dag_path, vertex_component_obj, influence_indices, weight_array, False)
 
 
 def find_or_create_blendshape_node(mesh_node):
@@ -683,10 +650,7 @@ def find_or_create_blendshape_node(mesh_node):
 
     history = cmds.listHistory(shape_node, il=2, pdo=False) or []
     blendshapes = [
-        x
-        for x in history
-        if cmds.nodeType(x) == "blendShape"
-        and cmds.blendShape(x, q=True, g=True)[0] == shape_node
+        x for x in history if cmds.nodeType(x) == "blendShape" and cmds.blendShape(x, q=True, g=True)[0] == shape_node
     ]
     if blendshapes:
         return blendshapes[0]
@@ -715,9 +679,7 @@ def create_collision_primitive(shape_type, size, name="collision"):
         str: 作成されたオブジェクト名
     """
     if shape_type == 0:  # 箱
-        obj = cmds.polyCube(
-            name=name, width=size[0] * 2, height=size[1] * 2, depth=size[2] * 2
-        )[0]
+        obj = cmds.polyCube(name=name, width=size[0] * 2, height=size[1] * 2, depth=size[2] * 2)[0]
     elif shape_type == 1:  # 球
         obj = cmds.polySphere(name=name, radius=size[0])[0]
     elif shape_type == 2:  # カプセル（円柱で近似）
@@ -748,13 +710,7 @@ def apply_ncloth_to_mesh(mesh, nucleus_solver=None):
         # Nucleusソルバーへの接続
         ncloth_nodes = cmds.ls(type="nCloth")
         if ncloth_nodes:
-            index = len(
-                [
-                    i
-                    for i in cmds.listConnections(nucleus_solver + ".inputActive") or []
-                    if i
-                ]
-            )
+            index = len([i for i in cmds.listConnections(nucleus_solver + ".inputActive") or [] if i])
             cmds.connectAttr(
                 f"{ncloth_shape[0]}.currentState",
                 f"{nucleus_solver}.inputActive[{index}]",
@@ -855,9 +811,7 @@ def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
         # バックフェイスカリングを設定
         cmds.modelEditor(panel_name, edit=True, backfaceCulling=enabled)
 
-        logger.info(
-            f"Backface culling {'enabled' if enabled else 'disabled'} for panel: {panel_name}"
-        )
+        logger.info(f"Backface culling {'enabled' if enabled else 'disabled'} for panel: {panel_name}")
         return True
 
     except Exception as e:
@@ -904,9 +858,7 @@ def create_ik_handle(start_joint, end_joint, solver="ikRPsolver", name=None):
         ik_handle = ik_handle_result[0]
         effector = ik_handle_result[1]
 
-        logger.info(
-            f"Created IK handle '{ik_handle}' from '{start_joint}' to '{end_joint}'"
-        )
+        logger.info(f"Created IK handle '{ik_handle}' from '{start_joint}' to '{end_joint}'")
         return ik_handle, effector
 
     except Exception as e:
@@ -986,13 +938,9 @@ def create_pole_vector_constraint(ik_handle, pole_vector_object, maintain_offset
         raise ValueError(f"Pole vector object '{pole_vector_object}' does not exist")
 
     try:
-        constraint = cmds.poleVectorConstraint(
-            pole_vector_object, ik_handle, maintainOffset=maintain_offset
-        )[0]
+        constraint = cmds.poleVectorConstraint(pole_vector_object, ik_handle, maintainOffset=maintain_offset)[0]
 
-        logger.info(
-            f"Created pole vector constraint from '{pole_vector_object}' to '{ik_handle}'"
-        )
+        logger.info(f"Created pole vector constraint from '{pole_vector_object}' to '{ik_handle}'")
         return constraint
 
     except Exception as e:
@@ -1072,9 +1020,7 @@ def create_animation_curves(
     if animation_layer and cmds.animLayer(animation_layer, query=True, exists=True):
         # オブジェクトがレイヤーに含まれているか確認
         cmds.select(node_name, replace=True)
-        affected_layers = (
-            cmds.animLayer([node_name], query=True, affectedLayers=True) or []
-        )
+        affected_layers = cmds.animLayer([node_name], query=True, affectedLayers=True) or []
         if animation_layer not in affected_layers:
             # オブジェクトをレイヤーに追加
             current_selection = cmds.ls(selection=True)
@@ -1088,9 +1034,7 @@ def create_animation_curves(
     # 既存のアニメーションカーブをクリア（レイヤーモードでない場合のみ）
     if not animation_layer:
         for attr in attributes:
-            connections = cmds.listConnections(
-                f"{node_name}.{attr}", source=True, destination=False
-            )
+            connections = cmds.listConnections(f"{node_name}.{attr}", source=True, destination=False)
             if connections:
                 cmds.delete(connections)
 
@@ -1101,21 +1045,13 @@ def create_animation_curves(
             # レイヤーが有効な場合は、cmds.setKeyframeを使って初期カーブを作成
             cmds.setKeyframe(node_name, attribute=attr, animLayer=animation_layer)
             # 作成されたカーブを取得
-            blend_nodes = (
-                cmds.animLayer(animation_layer, query=True, blendNodes=True) or []
-            )
+            blend_nodes = cmds.animLayer(animation_layer, query=True, blendNodes=True) or []
             for blend_node in blend_nodes:
                 # ブレンドノードの入力カーブを探す
-                input_curves = (
-                    cmds.listConnections(blend_node, source=True, type="animCurve")
-                    or []
-                )
+                input_curves = cmds.listConnections(blend_node, source=True, type="animCurve") or []
                 for curve_name in input_curves:
                     # このカーブが目的の属性のものか確認
-                    curve_connections = (
-                        cmds.listConnections(curve_name, destination=True, plugs=True)
-                        or []
-                    )
+                    curve_connections = cmds.listConnections(curve_name, destination=True, plugs=True) or []
                     for conn in curve_connections:
                         if f"{node_name}.{attr}" in conn or attr in conn:
                             # Maya APIオブジェクトとして取得
@@ -1180,9 +1116,7 @@ def set_keyframes_batch(
                     curve.addKey(time, value, tangent_type, tangent_type)
                 except:
                     # エラーが発生した場合はスキップ（レイヤーカーブの場合など）
-                    logger.debug(
-                        f"Failed to add key for {attr_name} at frame {frame_num}"
-                    )
+                    logger.debug(f"Failed to add key for {attr_name} at frame {frame_num}")
                     pass
 
 
@@ -1197,9 +1131,9 @@ def find_all_mmd_models():
 
     # *_rootという名前のトランスフォームノードを検索
     # namespace対応のため、ワイルドカードパターンを使用
-    all_transforms = cmds.ls(
-        "*:*{}".format(SCENE_ROOT_SUFFIX), type="transform"
-    ) + cmds.ls("*{}".format(SCENE_ROOT_SUFFIX), type="transform")
+    all_transforms = cmds.ls("*:*{}".format(SCENE_ROOT_SUFFIX), type="transform") + cmds.ls(
+        "*{}".format(SCENE_ROOT_SUFFIX), type="transform"
+    )
 
     # 重複を削除
     all_transforms = list(set(all_transforms))
@@ -1207,9 +1141,9 @@ def find_all_mmd_models():
     mmd_models = []
     for transform in all_transforms:
         # MMD関連のアトリビュートがあるか確認
-        if cmds.attributeQuery(
-            ATTR_MMD_MODEL_NAME, node=transform, exists=True
-        ) or cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=transform, exists=True):
+        if cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=transform, exists=True) or cmds.attributeQuery(
+            ATTR_MMD_MODEL_NAME_EN, node=transform, exists=True
+        ):
             mmd_models.append(transform)
 
     return sorted(mmd_models)  # 名前順でソート
@@ -1234,9 +1168,7 @@ def get_parent_mmd_root(node_name):
             # ルートサフィックスを持ち、MMDアトリビュートがあるか確認
             if current.endswith(SCENE_ROOT_SUFFIX) and (
                 cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=current, exists=True)
-                or cmds.attributeQuery(
-                    ATTR_MMD_MODEL_NAME_EN, node=current, exists=True
-                )
+                or cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=current, exists=True)
             ):
                 return current
 

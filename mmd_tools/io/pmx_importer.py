@@ -6,7 +6,6 @@ import os
 
 from maya import cmds
 from mmd_tools.core import maya_utils
-from mmd_tools.core.pmd_data import morph
 
 from .. import settings
 from ..converters import BoneConverter, MeshConverter, MorphConverter, PhysicsConverter
@@ -86,9 +85,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             logger.info("メッシュを変換中...")
             mesh_converter = MeshConverter(filepath)
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
-            logger.debug(
-                "メッシュ変換完了: グループ=%s, 名前=%s", mesh_group, mesh_name
-            )
+            logger.debug("メッシュ変換完了: グループ=%s, 名前=%s", mesh_group, mesh_name)
 
             logger.info("モーフを変換中...")
             morph_converter = MorphConverter()
@@ -98,9 +95,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             # ボーンを変換
             logger.info("ボーンを変換中...")
             bone_converter = BoneConverter()
-            maya_joints, skin_cluster = bone_converter.convert_pmx_bones(
-                parser, mesh_name, root_group
-            )
+            maya_joints, skin_cluster = bone_converter.convert_pmx_bones(parser, mesh_name, root_group)
             logger.debug(
                 "ボーン変換完了: %d個のジョイント",
                 len(maya_joints) if maya_joints else 0,
@@ -112,16 +107,12 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 physics_converter = PhysicsConverter()
 
                 # ボーン名とMayaジョイント名のマッピングを作成
-                bone_joint_mapping = create_bone_joint_mapping(
-                    parser.bones, maya_joints, "pmx"
-                )
+                bone_joint_mapping = create_bone_joint_mapping(parser.bones, maya_joints, "pmx")
 
                 # 物理データが存在する場合のみ変換
                 if hasattr(parser, "rigid_bodies") and parser.rigid_bodies:
-                    ncloth_nodes, constraint_nodes = (
-                        physics_converter.convert_pmx_physics(
-                            parser, bone_joint_mapping, root_group
-                        )
+                    ncloth_nodes, constraint_nodes = physics_converter.convert_pmx_physics(
+                        parser, bone_joint_mapping, root_group
                     )
                     logger.debug(
                         "物理変換完了: nCloth=%d, Constraints=%d",
@@ -140,9 +131,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 cmds.makeIdentity(root_group, apply=True, scale=True)
 
             cmds.select(root_group)
-        logger.info(
-            "PMXファイルのインポートが完了しました: %s", os.path.basename(filepath)
-        )
+        logger.info("PMXファイルのインポートが完了しました: %s", os.path.basename(filepath))
         return root_group  # ルートノードの名前を返す
 
     except Exception as e:

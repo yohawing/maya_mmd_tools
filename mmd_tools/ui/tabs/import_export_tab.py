@@ -7,7 +7,6 @@ from ..qt_compat import (
     QLineEdit,
     QPushButton,
     QCheckBox,
-    QDoubleValidator,
     QSettings,
     QComboBox,
     QSpinBox,
@@ -64,9 +63,7 @@ class ImportExportTab(BaseTab):
         self.scale_spin.setRange(0.001, 1000.0)
         self.scale_spin.setDecimals(3)
         self.scale_spin.setValue(settings.get("import.general.scale_factor", 1.0))
-        self.scale_spin.valueChanged.connect(
-            lambda v: settings.set("import.general.scale_factor", v)
-        )
+        self.scale_spin.valueChanged.connect(lambda v: settings.set("import.general.scale_factor", v))
         scale_layout.addWidget(self.scale_spin)
         scale_layout.addStretch()
         model_settings_layout.addLayout(scale_layout)
@@ -76,47 +73,33 @@ class ImportExportTab(BaseTab):
         general_layout = QVBoxLayout()
 
         self.use_namespace_check = QCheckBox(self.tr("use_namespace", "checkboxes"))
-        self.use_namespace_check.setChecked(
-            settings.get("import.general.use_namespace", False)
-        )
-        self.use_namespace_check.toggled.connect(
-            lambda v: settings.set("import.general.use_namespace", v)
-        )
+        self.use_namespace_check.setChecked(settings.get("import.general.use_namespace", False))
+        self.use_namespace_check.toggled.connect(lambda v: settings.set("import.general.use_namespace", v))
         general_layout.addWidget(self.use_namespace_check)
 
         # Namespace名を手動で指定するオプション
         namespace_layout = QHBoxLayout()
         namespace_layout.setContentsMargins(20, 0, 0, 0)  # インデント
 
-        self.custom_namespace_check = QCheckBox(
-            self.tr("custom_namespace", "checkboxes")
-        )
+        self.custom_namespace_check = QCheckBox(self.tr("custom_namespace", "checkboxes"))
         # カスタムnamespaceチェックボックスの状態を読み込み
-        saved_custom_namespace = self.qt_settings.value(
-            "custom_namespace_check", "false"
-        )
+        saved_custom_namespace = self.qt_settings.value("custom_namespace_check", "false")
         self.custom_namespace_check.setChecked(saved_custom_namespace.lower() == "true")
         self.custom_namespace_check.setEnabled(self.use_namespace_check.isChecked())
         # 状態が変更されたら保存
         self.custom_namespace_check.toggled.connect(
-            lambda checked: self.qt_settings.setValue(
-                "custom_namespace_check", str(checked)
-            )
+            lambda checked: self.qt_settings.setValue("custom_namespace_check", str(checked))
         )
         namespace_layout.addWidget(self.custom_namespace_check)
 
         self.namespace_edit = QLineEdit()
-        self.namespace_edit.setPlaceholderText(
-            self.tr("namespace_placeholder", "labels")
-        )
+        self.namespace_edit.setPlaceholderText(self.tr("namespace_placeholder", "labels"))
         # namespace名を読み込み
         saved_namespace = self.qt_settings.value("custom_namespace_name", "")
         self.namespace_edit.setText(saved_namespace)
         self.namespace_edit.setEnabled(self.custom_namespace_check.isChecked())
         # テキストが変更されたら保存
-        self.namespace_edit.textChanged.connect(
-            lambda text: self.qt_settings.setValue("custom_namespace_name", text)
-        )
+        self.namespace_edit.textChanged.connect(lambda text: self.qt_settings.setValue("custom_namespace_name", text))
         namespace_layout.addWidget(self.namespace_edit)
 
         # シグナル接続
@@ -133,66 +116,36 @@ class ImportExportTab(BaseTab):
         model_layout = QVBoxLayout()
 
         self.import_models_check = QCheckBox(self.tr("import_models", "checkboxes"))
-        self.import_models_check.setChecked(
-            settings.get("import.model.import_models", True)
-        )
-        self.import_models_check.toggled.connect(
-            lambda v: settings.set("import.model.import_models", v)
-        )
+        self.import_models_check.setChecked(settings.get("import.model.import_models", True))
+        self.import_models_check.toggled.connect(lambda v: settings.set("import.model.import_models", v))
         model_layout.addWidget(self.import_models_check)
 
-        self.create_mmd_shaders_check = QCheckBox(
-            self.tr("create_mmd_shaders", "checkboxes")
-        )
-        self.create_mmd_shaders_check.setChecked(
-            settings.get("import.model.create_mmd_shaders", True)
-        )
-        self.create_mmd_shaders_check.toggled.connect(
-            lambda v: settings.set("import.model.create_mmd_shaders", v)
-        )
+        self.create_mmd_shaders_check = QCheckBox(self.tr("create_mmd_shaders", "checkboxes"))
+        self.create_mmd_shaders_check.setChecked(settings.get("import.model.create_mmd_shaders", True))
+        self.create_mmd_shaders_check.toggled.connect(lambda v: settings.set("import.model.create_mmd_shaders", v))
         model_layout.addWidget(self.create_mmd_shaders_check)
 
         self.separate_meshes_check = QCheckBox(self.tr("separate_meshes", "checkboxes"))
-        self.separate_meshes_check.setChecked(
-            settings.get("import.model.separate_meshes_by_material", False)
-        )
-        self.separate_meshes_check.toggled.connect(
-            lambda v: settings.set("import.model.separate_meshes_by_material", v)
-        )
+        self.separate_meshes_check.setChecked(settings.get("import.model.separate_meshes_by_material", False))
+        self.separate_meshes_check.toggled.connect(lambda v: settings.set("import.model.separate_meshes_by_material", v))
         model_layout.addWidget(self.separate_meshes_check)
 
-        self.hide_hidden_geometry_check = QCheckBox(
-            self.tr("hide_hidden_geometry", "checkboxes")
-        )
-        self.hide_hidden_geometry_check.setChecked(
-            settings.get("import.model.hide_hidden_geometry", True)
-        )
-        self.hide_hidden_geometry_check.toggled.connect(
-            lambda v: settings.set("import.model.hide_hidden_geometry", v)
-        )
+        self.hide_hidden_geometry_check = QCheckBox(self.tr("hide_hidden_geometry", "checkboxes"))
+        self.hide_hidden_geometry_check.setChecked(settings.get("import.model.hide_hidden_geometry", True))
+        self.hide_hidden_geometry_check.toggled.connect(lambda v: settings.set("import.model.hide_hidden_geometry", v))
         model_layout.addWidget(self.hide_hidden_geometry_check)
 
-        self.disable_backface_culling_check = QCheckBox(
-            self.tr("disable_backface_culling", "checkboxes")
-        )
-        self.disable_backface_culling_check.setChecked(
-            settings.get("import.model.disable_backface_culling", True)
-        )
-        self.disable_backface_culling_check.toggled.connect(
-            lambda v: settings.set("import.model.disable_backface_culling", v)
-        )
+        self.disable_backface_culling_check = QCheckBox(self.tr("disable_backface_culling", "checkboxes"))
+        self.disable_backface_culling_check.setChecked(settings.get("import.model.disable_backface_culling", True))
+        self.disable_backface_culling_check.toggled.connect(lambda v: settings.set("import.model.disable_backface_culling", v))
         model_layout.addWidget(self.disable_backface_culling_check)
 
         # Texture search path
         texture_layout = QHBoxLayout()
         self.texture_search_label = QLabel(self.tr("texture_search_path", "fields"))
         texture_layout.addWidget(self.texture_search_label)
-        self.texture_search_path_edit = QLineEdit(
-            settings.get("import.model.texture_search_path", "")
-        )
-        self.texture_search_path_edit.textChanged.connect(
-            lambda v: settings.set("import.model.texture_search_path", v)
-        )
+        self.texture_search_path_edit = QLineEdit(settings.get("import.model.texture_search_path", ""))
+        self.texture_search_path_edit.textChanged.connect(lambda v: settings.set("import.model.texture_search_path", v))
         texture_layout.addWidget(self.texture_search_path_edit)
         model_layout.addLayout(texture_layout)
 
@@ -200,12 +153,8 @@ class ImportExportTab(BaseTab):
         uv_layout = QHBoxLayout()
         self.uv_set_label = QLabel(self.tr("uv_set_name", "fields"))
         uv_layout.addWidget(self.uv_set_label)
-        self.uv_set_name_edit = QLineEdit(
-            settings.get("import.model.uv_set_name", "map#")
-        )
-        self.uv_set_name_edit.textChanged.connect(
-            lambda v: settings.set("import.model.uv_set_name", v)
-        )
+        self.uv_set_name_edit = QLineEdit(settings.get("import.model.uv_set_name", "map#"))
+        self.uv_set_name_edit.textChanged.connect(lambda v: settings.set("import.model.uv_set_name", v))
         uv_layout.addWidget(self.uv_set_name_edit)
         uv_layout.addStretch()
         model_layout.addLayout(uv_layout)
@@ -218,54 +167,28 @@ class ImportExportTab(BaseTab):
         morph_physics_layout = QVBoxLayout()
 
         self.import_morphs_check = QCheckBox(self.tr("import_morphs", "checkboxes"))
-        self.import_morphs_check.setChecked(
-            settings.get("import.morph.import_morphs", True)
-        )
-        self.import_morphs_check.toggled.connect(
-            lambda v: settings.set("import.morph.import_morphs", v)
-        )
+        self.import_morphs_check.setChecked(settings.get("import.morph.import_morphs", True))
+        self.import_morphs_check.toggled.connect(lambda v: settings.set("import.morph.import_morphs", v))
         morph_physics_layout.addWidget(self.import_morphs_check)
 
         self.import_physics_check = QCheckBox(self.tr("import_physics", "checkboxes"))
-        self.import_physics_check.setChecked(
-            settings.get("import.physics.import_physics", False)
-        )
-        self.import_physics_check.toggled.connect(
-            lambda v: settings.set("import.physics.import_physics", v)
-        )
+        self.import_physics_check.setChecked(settings.get("import.physics.import_physics", False))
+        self.import_physics_check.toggled.connect(lambda v: settings.set("import.physics.import_physics", v))
         morph_physics_layout.addWidget(self.import_physics_check)
 
-        self.create_rigid_bodies_check = QCheckBox(
-            self.tr("create_rigid_bodies", "checkboxes")
-        )
-        self.create_rigid_bodies_check.setChecked(
-            settings.get("import.physics.create_rigid_bodies", True)
-        )
-        self.create_rigid_bodies_check.toggled.connect(
-            lambda v: settings.set("import.physics.create_rigid_bodies", v)
-        )
+        self.create_rigid_bodies_check = QCheckBox(self.tr("create_rigid_bodies", "checkboxes"))
+        self.create_rigid_bodies_check.setChecked(settings.get("import.physics.create_rigid_bodies", True))
+        self.create_rigid_bodies_check.toggled.connect(lambda v: settings.set("import.physics.create_rigid_bodies", v))
         morph_physics_layout.addWidget(self.create_rigid_bodies_check)
 
-        self.create_physics_joints_check = QCheckBox(
-            self.tr("create_physics_joints", "checkboxes")
-        )
-        self.create_physics_joints_check.setChecked(
-            settings.get("import.physics.create_physics_joints", True)
-        )
-        self.create_physics_joints_check.toggled.connect(
-            lambda v: settings.set("import.physics.create_physics_joints", v)
-        )
+        self.create_physics_joints_check = QCheckBox(self.tr("create_physics_joints", "checkboxes"))
+        self.create_physics_joints_check.setChecked(settings.get("import.physics.create_physics_joints", True))
+        self.create_physics_joints_check.toggled.connect(lambda v: settings.set("import.physics.create_physics_joints", v))
         morph_physics_layout.addWidget(self.create_physics_joints_check)
 
-        self.group_physics_objects_check = QCheckBox(
-            self.tr("group_physics_objects", "checkboxes")
-        )
-        self.group_physics_objects_check.setChecked(
-            settings.get("import.physics.group_physics_objects", True)
-        )
-        self.group_physics_objects_check.toggled.connect(
-            lambda v: settings.set("import.physics.group_physics_objects", v)
-        )
+        self.group_physics_objects_check = QCheckBox(self.tr("group_physics_objects", "checkboxes"))
+        self.group_physics_objects_check.setChecked(settings.get("import.physics.group_physics_objects", True))
+        self.group_physics_objects_check.toggled.connect(lambda v: settings.set("import.physics.group_physics_objects", v))
         morph_physics_layout.addWidget(self.group_physics_objects_check)
 
         self.morph_physics_group.setLayout(morph_physics_layout)
@@ -275,24 +198,14 @@ class ImportExportTab(BaseTab):
         self.other_group = QGroupBox(self.tr("other", "groups"))
         other_layout = QVBoxLayout()
 
-        self.add_semi_standard_bones_check = QCheckBox(
-            self.tr("add_semi_standard_bones", "checkboxes")
-        )
-        self.add_semi_standard_bones_check.setChecked(
-            settings.get("import.rig.add_semi_standard_bones", False)
-        )
-        self.add_semi_standard_bones_check.toggled.connect(
-            lambda v: settings.set("import.rig.add_semi_standard_bones", v)
-        )
+        self.add_semi_standard_bones_check = QCheckBox(self.tr("add_semi_standard_bones", "checkboxes"))
+        self.add_semi_standard_bones_check.setChecked(settings.get("import.rig.add_semi_standard_bones", False))
+        self.add_semi_standard_bones_check.toggled.connect(lambda v: settings.set("import.rig.add_semi_standard_bones", v))
         other_layout.addWidget(self.add_semi_standard_bones_check)
 
         self.translate_names_check = QCheckBox(self.tr("translate_names", "checkboxes"))
-        self.translate_names_check.setChecked(
-            settings.get("import.naming.translate_names", True)
-        )
-        self.translate_names_check.toggled.connect(
-            lambda v: settings.set("import.naming.translate_names", v)
-        )
+        self.translate_names_check.setChecked(settings.get("import.naming.translate_names", True))
+        self.translate_names_check.toggled.connect(lambda v: settings.set("import.naming.translate_names", v))
         other_layout.addWidget(self.translate_names_check)
 
         self.other_group.setLayout(other_layout)
@@ -315,69 +228,39 @@ class ImportExportTab(BaseTab):
         frame_layout.addWidget(self.start_frame_label)
         self.animation_start_frame = QSpinBox()
         self.animation_start_frame.setRange(0, 10000)
-        self.animation_start_frame.setValue(
-            settings.get("import.animation.animation_start_frame", 1)
-        )
-        self.animation_start_frame.valueChanged.connect(
-            lambda v: settings.set("import.animation.animation_start_frame", v)
-        )
+        self.animation_start_frame.setValue(settings.get("import.animation.animation_start_frame", 1))
+        self.animation_start_frame.valueChanged.connect(lambda v: settings.set("import.animation.animation_start_frame", v))
         frame_layout.addWidget(self.animation_start_frame)
         frame_layout.addStretch()
         anim_settings_layout.addLayout(frame_layout)
 
         # Animation type checkboxes
-        self.import_bone_animation_check = QCheckBox(
-            self.tr("import_bone_animation", "checkboxes")
-        )
-        self.import_bone_animation_check.setChecked(
-            settings.get("import.animation.import_animations", True)
-        )
-        self.import_bone_animation_check.toggled.connect(
-            lambda v: settings.set("import.animation.import_animations", v)
-        )
+        self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
+        self.import_bone_animation_check.setChecked(settings.get("import.animation.import_animations", True))
+        self.import_bone_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_animations", v))
         anim_settings_layout.addWidget(self.import_bone_animation_check)
 
-        self.import_morph_animation_check = QCheckBox(
-            self.tr("import_morph_animation", "checkboxes")
-        )
-        self.import_morph_animation_check.setChecked(
-            settings.get("import.animation.import_morph_animation", True)
-        )
-        self.import_morph_animation_check.toggled.connect(
-            lambda v: settings.set("import.animation.import_morph_animation", v)
-        )
+        self.import_morph_animation_check = QCheckBox(self.tr("import_morph_animation", "checkboxes"))
+        self.import_morph_animation_check.setChecked(settings.get("import.animation.import_morph_animation", True))
+        self.import_morph_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_morph_animation", v))
         anim_settings_layout.addWidget(self.import_morph_animation_check)
 
-        self.import_camera_animation_check = QCheckBox(
-            self.tr("import_camera_animation", "checkboxes")
-        )
-        self.import_camera_animation_check.setChecked(
-            settings.get("import.animation.import_camera_animation", True)
-        )
+        self.import_camera_animation_check = QCheckBox(self.tr("import_camera_animation", "checkboxes"))
+        self.import_camera_animation_check.setChecked(settings.get("import.animation.import_camera_animation", True))
         self.import_camera_animation_check.toggled.connect(
             lambda v: settings.set("import.animation.import_camera_animation", v)
         )
         anim_settings_layout.addWidget(self.import_camera_animation_check)
 
-        self.import_light_animation_check = QCheckBox(
-            self.tr("import_light_animation", "checkboxes")
-        )
-        self.import_light_animation_check.setChecked(
-            settings.get("import.animation.import_light_animation", True)
-        )
-        self.import_light_animation_check.toggled.connect(
-            lambda v: settings.set("import.animation.import_light_animation", v)
-        )
+        self.import_light_animation_check = QCheckBox(self.tr("import_light_animation", "checkboxes"))
+        self.import_light_animation_check.setChecked(settings.get("import.animation.import_light_animation", True))
+        self.import_light_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_light_animation", v))
         anim_settings_layout.addWidget(self.import_light_animation_check)
 
         # Resample curves
         self.resample_curves_check = QCheckBox(self.tr("resample_curves", "checkboxes"))
-        self.resample_curves_check.setChecked(
-            settings.get("import.animation.resample_curves", False)
-        )
-        self.resample_curves_check.toggled.connect(
-            lambda v: settings.set("import.animation.resample_curves", v)
-        )
+        self.resample_curves_check.setChecked(settings.get("import.animation.resample_curves", False))
+        self.resample_curves_check.toggled.connect(lambda v: settings.set("import.animation.resample_curves", v))
         anim_settings_layout.addWidget(self.resample_curves_check)
 
         anim_settings_layout.addStretch()
@@ -399,21 +282,15 @@ class ImportExportTab(BaseTab):
         self.export_format_combo.addItems(["pmx", "pmd"])
         current_format = settings.get("export.general.export_format", "pmx")
         self.export_format_combo.setCurrentText(current_format)
-        self.export_format_combo.currentTextChanged.connect(
-            lambda v: settings.set("export.general.export_format", v)
-        )
+        self.export_format_combo.currentTextChanged.connect(lambda v: settings.set("export.general.export_format", v))
         format_layout.addWidget(self.export_format_combo)
         format_layout.addStretch()
         export_settings_layout.addLayout(format_layout)
 
         # Apply scale checkbox
         self.apply_scale_check = QCheckBox(self.tr("apply_scale", "checkboxes"))
-        self.apply_scale_check.setChecked(
-            settings.get("export.general.apply_scale", True)
-        )
-        self.apply_scale_check.toggled.connect(
-            lambda v: settings.set("export.general.apply_scale", v)
-        )
+        self.apply_scale_check.setChecked(settings.get("export.general.apply_scale", True))
+        self.apply_scale_check.toggled.connect(lambda v: settings.set("export.general.apply_scale", v))
         export_settings_layout.addWidget(self.apply_scale_check)
 
         export_settings_layout.addStretch()
@@ -443,9 +320,7 @@ class ImportExportTab(BaseTab):
         model_import_layout.addRow(self.import_path_label, import_path_layout)
 
         # Connect signal to save path when changed
-        self.import_path_edit.textChanged.connect(
-            lambda text: self.qt_settings.setValue("import_path", text)
-        )
+        self.import_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("import_path", text))
 
         # Import button with new file checkbox
         import_button_layout = QHBoxLayout()
@@ -455,9 +330,7 @@ class ImportExportTab(BaseTab):
         saved_new_file = self.qt_settings.value("new_file_check", "false")
         self.new_file_check.setChecked(saved_new_file.lower() == "true")
         # 状態が変更されたら保存
-        self.new_file_check.toggled.connect(
-            lambda checked: self.qt_settings.setValue("new_file_check", str(checked))
-        )
+        self.new_file_check.toggled.connect(lambda checked: self.qt_settings.setValue("new_file_check", str(checked)))
         import_button_layout.addWidget(self.import_button)
         import_button_layout.addWidget(self.new_file_check)
         import_button_layout.addStretch()
@@ -481,9 +354,7 @@ class ImportExportTab(BaseTab):
         self.vmd_file_label = QLabel(self.tr("vmd_file", "fields"))
         animation_layout.addRow(self.vmd_file_label, vmd_path_layout)
 
-        self.vmd_path_edit.textChanged.connect(
-            lambda text: self.qt_settings.setValue("vmd_path", text)
-        )
+        self.vmd_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("vmd_path", text))
 
         # Target model selection
         self.target_model_combo = QComboBox()
@@ -516,16 +387,14 @@ class ImportExportTab(BaseTab):
         self.export_path_label = QLabel(self.tr("file_path", "labels"))
         export_layout.addRow(self.export_path_label, export_path_layout)
 
-        self.export_path_edit.textChanged.connect(
-            lambda text: self.qt_settings.setValue("export_path", text)
-        )
+        self.export_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("export_path", text))
 
         self.export_button = QPushButton(self.tr("export", "buttons"))
         export_layout.addRow(self.export_button)
 
         self.export_group.setLayout(export_layout)
         right_layout.addWidget(self.export_group)
-        
+
         # 統合履歴表示エリア
         self._setup_unified_history_area(right_layout)
 
@@ -550,9 +419,7 @@ class ImportExportTab(BaseTab):
     def refresh_model_list(self, restore_selection=False):
         """シーン内のMMDモデルリストを更新"""
         # 現在の選択を保持
-        current_index = (
-            self.target_model_combo.currentIndex() if not restore_selection else -1
-        )
+        current_index = self.target_model_combo.currentIndex() if not restore_selection else -1
 
         self.target_model_combo.clear()
         self.target_model_combo.addItem(self.tr("auto_detect", "actions"))
@@ -628,46 +495,22 @@ class ImportExportTab(BaseTab):
         # CheckBoxes
         self.use_namespace_check.setText(self.tr("use_namespace", "checkboxes"))
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
-        self.create_mmd_shaders_check.setText(
-            self.tr("create_mmd_shaders", "checkboxes")
-        )
+        self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
-        self.hide_hidden_geometry_check.setText(
-            self.tr("hide_hidden_geometry", "checkboxes")
-        )
-        self.joint_name_conversion_check.setText(
-            self.tr("joint_name_conversion", "checkboxes")
-        )
-        self.disable_backface_culling_check.setText(
-            self.tr("disable_backface_culling", "checkboxes")
-        )
+        self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
+        self.joint_name_conversion_check.setText(self.tr("joint_name_conversion", "checkboxes"))
+        self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
         self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))
-        self.create_rigid_bodies_check.setText(
-            self.tr("create_rigid_bodies", "checkboxes")
-        )
-        self.create_physics_joints_check.setText(
-            self.tr("create_physics_joints", "checkboxes")
-        )
-        self.group_physics_objects_check.setText(
-            self.tr("group_physics_objects", "checkboxes")
-        )
-        self.add_semi_standard_bones_check.setText(
-            self.tr("add_semi_standard_bones", "checkboxes")
-        )
+        self.create_rigid_bodies_check.setText(self.tr("create_rigid_bodies", "checkboxes"))
+        self.create_physics_joints_check.setText(self.tr("create_physics_joints", "checkboxes"))
+        self.group_physics_objects_check.setText(self.tr("group_physics_objects", "checkboxes"))
+        self.add_semi_standard_bones_check.setText(self.tr("add_semi_standard_bones", "checkboxes"))
         self.translate_names_check.setText(self.tr("translate_names", "checkboxes"))
-        self.import_bone_animation_check.setText(
-            self.tr("import_bone_animation", "checkboxes")
-        )
-        self.import_morph_animation_check.setText(
-            self.tr("import_morph_animation", "checkboxes")
-        )
-        self.import_camera_animation_check.setText(
-            self.tr("import_camera_animation", "checkboxes")
-        )
-        self.import_light_animation_check.setText(
-            self.tr("import_light_animation", "checkboxes")
-        )
+        self.import_bone_animation_check.setText(self.tr("import_bone_animation", "checkboxes"))
+        self.import_morph_animation_check.setText(self.tr("import_morph_animation", "checkboxes"))
+        self.import_camera_animation_check.setText(self.tr("import_camera_animation", "checkboxes"))
+        self.import_light_animation_check.setText(self.tr("import_light_animation", "checkboxes"))
         self.resample_curves_check.setText(self.tr("resample_curves", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
@@ -688,7 +531,7 @@ class ImportExportTab(BaseTab):
 
         # Refresh model list to update auto detect text
         self.refresh_model_list()
-    
+
     def _load_history(self, key, max_items=10):
         """履歴を読み込み"""
         history_json = self.qt_settings.value(key, "[]")
@@ -702,117 +545,105 @@ class ImportExportTab(BaseTab):
             return valid_history[:max_items]
         except:
             return []
-    
+
     def _save_history(self, key, new_path, max_items=10):
         """履歴を保存"""
         if not new_path or not os.path.exists(new_path):
             return
-            
+
         history = self._load_history(key, max_items)
-        
+
         # 既存のパスを削除
         if new_path in history:
             history.remove(new_path)
-        
+
         # 先頭に追加
         history.insert(0, new_path)
-        
+
         # 最大数を制限
         history = history[:max_items]
-        
+
         # JSONとして保存
         self.qt_settings.setValue(key, json.dumps(history))
-    
+
     def _setup_unified_history_area(self, layout):
         """統合履歴表示エリアを設定"""
         history_group = QGroupBox("ファイル履歴")
         history_layout = QVBoxLayout()
-        
+
         # 統合履歴リスト
         self.unified_history_list = QListWidget()
         self.unified_history_list.setMaximumHeight(250)
-        
+
         # ダブルクリックでファイルタイプに応じて適切なUIに設定
         self.unified_history_list.itemDoubleClicked.connect(self._on_history_item_double_clicked)
-        
+
         history_layout.addWidget(self.unified_history_list)
-        
+
         # 履歴クリアボタン
         clear_history_button = QPushButton("履歴をクリア")
         clear_history_button.clicked.connect(self._clear_all_history)
         history_layout.addWidget(clear_history_button)
-        
+
         history_group.setLayout(history_layout)
         layout.addWidget(history_group)
-        
+
         # 初期化時に履歴を読み込み
         self.refresh_unified_history()
-    
+
     def _on_history_item_double_clicked(self, item):
         """履歴アイテムがダブルクリックされた時の処理"""
         file_path = item.data(Qt.UserRole)
         file_type = item.data(Qt.UserRole + 1)
-        
+
         if file_type == "import":
             self.import_path_edit.setText(file_path)
         elif file_type == "vmd":
             self.vmd_path_edit.setText(file_path)
         elif file_type == "export":
             self.export_path_edit.setText(file_path)
-    
+
     def _clear_all_history(self):
         """すべての履歴をクリア"""
         self.qt_settings.setValue("import_path_history", "[]")
         self.qt_settings.setValue("vmd_path_history", "[]")
         self.qt_settings.setValue("export_path_history", "[]")
         self.refresh_unified_history()
-    
+
     def refresh_unified_history(self):
         """統合履歴リストを更新"""
         self.unified_history_list.clear()
-        
+
         # すべての履歴を統合して表示
         all_items = []
-        
+
         # インポート履歴
         import_history = self._load_history("import_path_history")
         for path in import_history:
             ext = os.path.splitext(path)[1].lower()
             if ext in [".pmd", ".pmx"]:
-                item_data = {
-                    "path": path,
-                    "type": "import",
-                    "display": f"[Model] {os.path.basename(path)}"
-                }
+                item_data = {"path": path, "type": "import", "display": f"[Model] {os.path.basename(path)}"}
                 all_items.append(item_data)
-        
+
         # VMD履歴
         vmd_history = self._load_history("vmd_path_history")
         for path in vmd_history:
-            item_data = {
-                "path": path,
-                "type": "vmd",
-                "display": f"[Animation] {os.path.basename(path)}"
-            }
+            item_data = {"path": path, "type": "vmd", "display": f"[Animation] {os.path.basename(path)}"}
             all_items.append(item_data)
-        
+
         # エクスポート履歴
         export_history = self._load_history("export_path_history")
         for path in export_history:
-            item_data = {
-                "path": path,
-                "type": "export",
-                "display": f"[Export] {os.path.basename(path)}"
-            }
+            item_data = {"path": path, "type": "export", "display": f"[Export] {os.path.basename(path)}"}
             all_items.append(item_data)
-        
+
         # リストに追加（最新のものから表示）
         for item_data in all_items:
             item = QListWidgetItem(item_data["display"])
             item.setData(Qt.UserRole, item_data["path"])
             item.setData(Qt.UserRole + 1, item_data["type"])
             item.setToolTip(item_data["path"])
-            
+
             # タイプによって色分け
             if item_data["type"] == "import":
                 item.setForeground(QColor(100, 200, 255))  # 水色
@@ -820,21 +651,21 @@ class ImportExportTab(BaseTab):
                 item.setForeground(QColor(255, 200, 100))  # オレンジ
             elif item_data["type"] == "export":
                 item.setForeground(QColor(100, 255, 100))  # 緑
-            
+
             self.unified_history_list.addItem(item)
-    
+
     def add_import_path_to_history(self, path):
         """インポートパスを履歴に追加"""
         self._save_history("import_path_history", path)
         # 履歴リストを更新
         self.refresh_unified_history()
-    
+
     def add_vmd_path_to_history(self, path):
         """アニメーションパスを履歴に追加"""
         self._save_history("vmd_path_history", path)
         # 履歴リストを更新
         self.refresh_unified_history()
-    
+
     def add_export_path_to_history(self, path):
         """エクスポートパスを履歴に追加"""
         self._save_history("export_path_history", path)

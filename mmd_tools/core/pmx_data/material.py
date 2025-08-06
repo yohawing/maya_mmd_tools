@@ -71,11 +71,7 @@ class PmxMaterial:
         self.specular = (0.5, 0.5, 0.5)
         self.specular_coefficient = 5.0
         self.ambient = (0.3, 0.3, 0.3)
-        self.draw_flag = (
-            PmxDrawFlag.DOUBLE_SIDED
-            | PmxDrawFlag.GROUND_SHADOW
-            | PmxDrawFlag.EDGE_DRAWING
-        )
+        self.draw_flag = PmxDrawFlag.DOUBLE_SIDED | PmxDrawFlag.GROUND_SHADOW | PmxDrawFlag.EDGE_DRAWING
         self.edge_color = (0.0, 0.0, 0.0, 1.0)
         self.edge_size = 1.0
         self.texture_index = -1
@@ -106,20 +102,14 @@ class PmxMaterial:
         self.edge_size = struct.unpack("<f", f.read(4))[0]
 
         texture_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.texture_index_size]
-        self.texture_index = struct.unpack(
-            texture_index_format, f.read(self.texture_index_size)
-        )[0]
-        self.sphere_texture_index = struct.unpack(
-            texture_index_format, f.read(self.texture_index_size)
-        )[0]
+        self.texture_index = struct.unpack(texture_index_format, f.read(self.texture_index_size))[0]
+        self.sphere_texture_index = struct.unpack(texture_index_format, f.read(self.texture_index_size))[0]
 
         self.sphere_mode = struct.unpack("<B", f.read(1))[0]
         self.shared_toon_flag = struct.unpack("<B", f.read(1))[0]
 
         if self.shared_toon_flag == 0:
-            self.toon_texture_index = struct.unpack(
-                texture_index_format, f.read(self.texture_index_size)
-            )[0]
+            self.toon_texture_index = struct.unpack(texture_index_format, f.read(self.texture_index_size))[0]
         else:
             self.toon_texture_index = struct.unpack("<B", f.read(1))[0]
 

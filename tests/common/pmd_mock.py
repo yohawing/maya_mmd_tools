@@ -21,9 +21,7 @@ class PmdMock:
         data.extend(b"Pmd")  # 識別子（3バイト）
         data.extend(struct.pack("<f", 1.0))  # バージョン
         data.extend(b"TestModel" + b"\x00" * (20 - len(b"TestModel")))  # モデル名
-        data.extend(
-            b"Test Comment" + b"\x00" * (256 - len(b"Test Comment"))
-        )  # コメント
+        data.extend(b"Test Comment" + b"\x00" * (256 - len(b"Test Comment")))  # コメント
 
         # 頂点データ（立方体: 8頂点）
         data.extend(struct.pack("<L", 8))  # 頂点数
@@ -141,9 +139,7 @@ class PmdMock:
         # ヘッダー
         data.extend(b"Pmd")  # 識別子（3バイト）
         data.extend(struct.pack("<f", 1.0))  # バージョン
-        model_name = (
-            b"\x83e\x83X\x83g\x83\x82\x83f\x83\x8b"  # "テストモデル" in Shift-JIS
-        )
+        model_name = b"\x83e\x83X\x83g\x83\x82\x83f\x83\x8b"  # "テストモデル" in Shift-JIS
         data.extend(model_name + b"\x00" * (20 - len(model_name)))  # モデル名
         comment = b"Full featured test model"
         data.extend(comment + b"\x00" * (256 - len(comment)))  # コメント
@@ -352,9 +348,7 @@ class PmdMock:
 
         # 英語ヘッダー
         data.extend(b"Test Model" + b"\x00" * 10)  # モデル名（英語）
-        data.extend(
-            b"Full featured test model for unit testing" + b"\x00" * 215
-        )  # コメント（英語）
+        data.extend(b"Full featured test model for unit testing" + b"\x00" * 215)  # コメント（英語）
 
         # ボーン英語名
         bone_names_en = [

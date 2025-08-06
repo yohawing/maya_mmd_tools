@@ -23,8 +23,9 @@ TEST_EXECUTION_TIMEOUT = 600  # seconds
 LOG_POLL_INTERVAL = 1  # second
 
 # --- Logger Setup ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
+
 
 def find_maya_executable(maya_version):
     """
@@ -41,7 +42,7 @@ def find_maya_executable(maya_version):
     # Check standard Program Files locations
     for path in [
         Path(os.environ.get("ProgramFiles", "C:/Program Files")) / f"Autodesk/Maya{maya_version}",
-        Path(os.environ.get("ProgramW6432", "C:/Program Files")) / f"Autodesk/Maya{maya_version}"
+        Path(os.environ.get("ProgramW6432", "C:/Program Files")) / f"Autodesk/Maya{maya_version}",
     ]:
         maya_exe = path / "bin" / "maya.exe"
         if maya_exe.is_file():
@@ -50,17 +51,14 @@ def find_maya_executable(maya_version):
 
     raise FileNotFoundError(f"Could not find Maya {maya_version}. Set the MAYA_LOCATION environment variable.")
 
+
 def launch_maya(maya_path, project_root):
     """
     Launches Maya as a subprocess with a commandPort.
     """
     logger.info("Launching Maya...")
-    command = [
-        maya_path,
-        "-command",
-        f'commandPort -name ":{COMMAND_PORT}" -sourceType "python";'
-    ]
-    
+    command = [maya_path, "-command", f'commandPort -name ":{COMMAND_PORT}" -sourceType "python";']
+
     # Add project root to PYTHONPATH for Maya
     env = os.environ.copy()
     python_path = env.get("PYTHONPATH", "")
@@ -69,6 +67,7 @@ def launch_maya(maya_path, project_root):
     process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     logger.info(f"Maya process started with PID: {process.pid}")
     return process
+
 
 def wait_for_maya(timeout):
     """
@@ -85,6 +84,7 @@ def wait_for_maya(timeout):
             time.sleep(1)
     raise TimeoutError("Timed out waiting for Maya commandPort to open.")
 
+
 def send_command_to_maya(command):
     """
     Sends a Python command to Maya via the commandPort.
@@ -92,11 +92,12 @@ def send_command_to_maya(command):
     logger.info("Sending command to Maya...")
     try:
         with socket.create_connection(("127.0.0.1", COMMAND_PORT), timeout=10) as sock:
-            sock.sendall(command.encode('utf-8'))
+            sock.sendall(command.encode("utf-8"))
         logger.info("Command sent successfully.")
     except Exception as e:
         logger.error(f"Failed to send command to Maya: {e}")
         raise
+
 
 def monitor_log_file(log_path, timeout):
     """
@@ -107,20 +108,21 @@ def monitor_log_file(log_path, timeout):
         log_path.touch()
 
     start_time = time.time()
-    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
         # Move to the end of the file
         f.seek(0, 2)
         while time.time() - start_time < timeout:
             line = f.readline()
             if line:
-                print(line, end='')
+                print(line, end="")
                 if "//-- GUI TEST FINISHED --//" in line:
                     logger.info("Test completion marker found in log.")
                     return True
             else:
                 time.sleep(LOG_POLL_INTERVAL)
-        
+
     raise TimeoutError("Timed out waiting for test completion.")
+
 
 def main():
     """
@@ -128,10 +130,13 @@ def main():
     """
     # Reconfigure stdout to handle UTF-8 for printing log content
     import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
     parser = argparse.ArgumentParser(description="Maya GUI Test Runner")
-    parser.add_argument("--maya_version", default=DEFAULT_MAYA_VERSION, help=f"Maya version to use (default: {DEFAULT_MAYA_VERSION})")
+    parser.add_argument(
+        "--maya_version", default=DEFAULT_MAYA_VERSION, help=f"Maya version to use (default: {DEFAULT_MAYA_VERSION})"
+    )
     parser.add_argument("--test_path", default="tests/gui", help="Path to the test directory (relative to project root)")
     args = parser.parse_args()
 
@@ -139,7 +144,7 @@ def main():
     log_dir = project_root / "logs"
     log_dir.mkdir(exist_ok=True)
     log_file_path = log_dir / LOG_FILE_NAME
-    
+
     # Clean up old log file
     if log_file_path.exists():
         log_file_path.unlink()
@@ -183,9 +188,10 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir)
                 logger.warning(f"Failed to quit Maya gracefully, killing process: {e}")
                 maya_process.kill()
             logger.info("Maya process terminated.")
-    
+
     logger.info("GUI test run finished successfully.")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

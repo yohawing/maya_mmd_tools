@@ -2,6 +2,7 @@ class VmdExporter:
     """
     MayaのアニメーションデータをVMDファイルフォーマットにエクスポートするクラス。
     """
+
     def __init__(self):
         pass
 

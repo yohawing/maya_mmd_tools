@@ -1,9 +1,7 @@
-
 from tests.common.test_base import TestBase
 
 
 class TestAnimationConverter(TestBase):
-
     def setUp(self):
         super().setUp()
         # TODO: テストに必要なMayaシーンのセットアップやダミーデータの準備

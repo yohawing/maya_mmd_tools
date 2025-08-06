@@ -1,4 +1,3 @@
-import enum
 import struct
 from enum import Enum
 from typing import Tuple
@@ -57,11 +56,7 @@ class PmdBone:
             self.parent_bone_index = -1
         self.tail_pos_bone_index = struct.unpack("<H", f.read(2))[0]
         bone_type = struct.unpack("<B", f.read(1))[0]
-        self.bone_type = (
-            PmdBoneType(bone_type)
-            if bone_type in PmdBoneType._value2member_map_
-            else PmdBoneType.UNKNOWN
-        )
+        self.bone_type = PmdBoneType(bone_type) if bone_type in PmdBoneType._value2member_map_ else PmdBoneType.UNKNOWN
         self.ik_parent_bone_index = struct.unpack("<H", f.read(2))[0]
         self.position = struct.unpack("<fff", f.read(12))
 
@@ -94,9 +89,7 @@ class PmdBone:
             f (file): バイナリ書き込みモードで開かれたファイルハンドル。
         """
         f.write(utils.encodePMDString(self.name, 20))
-        parent_index = (
-            0xFFFF if self.parent_bone_index == -1 else self.parent_bone_index
-        )
+        parent_index = 0xFFFF if self.parent_bone_index == -1 else self.parent_bone_index
         f.write(struct.pack("<H", parent_index))
         f.write(struct.pack("<H", self.tail_pos_bone_index))
         f.write(struct.pack("<B", self.bone_type.value))

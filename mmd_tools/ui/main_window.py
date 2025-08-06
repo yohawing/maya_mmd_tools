@@ -3,8 +3,17 @@ import os
 from maya import cmds
 import maya.OpenMayaUI as mui
 from .qt_compat import (
-    QMainWindow, QTabWidget, QDockWidget, Qt, QSettings, 
-    wrapInstance, QWidget, QVBoxLayout, QStatusBar, QProgressBar, QLabel
+    QMainWindow,
+    QTabWidget,
+    QDockWidget,
+    Qt,
+    QSettings,
+    wrapInstance,
+    QWidget,
+    QVBoxLayout,
+    QStatusBar,
+    QProgressBar,
+    QLabel,
 )
 from ..core.log_handlers import QtLogHandler
 from .components.enhanced_log_viewer import EnhancedLogViewer
@@ -31,43 +40,43 @@ from .presenters.settings_presenter import SettingsPresenter
 
 class MainWindow(QMainWindow):
     """Mayaと統合されたメインウィンドウ"""
-    
+
     WINDOW_NAME = "MMDToolsMainWindow"
     WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
-    
+
     def __init__(self, parent=None):
         # Mayaのメインウィンドウを親に設定
         if parent is None:
             parent = self.get_maya_main_window()
-        
+
         super().__init__(parent)
         self.setWindowTitle("MMD Tools")
         self.setObjectName(self.WINDOW_NAME)
-        
+
         # アプリケーション状態管理
         self.app_state = ApplicationState()
-        
+
         # 中央ウィジェットの設定
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        
+
         # メインレイアウト
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
-        
+
         # ヘッダーウィジェット
         self.header_widget = HeaderWidget(self.app_state)
         main_layout.addWidget(self.header_widget)
-        
+
         # タブウィジェット
         self.tab_widget = QTabWidget()
         self.tab_widget.setObjectName("mainTabWidget")
         main_layout.addWidget(self.tab_widget)
-        
+
         # ステータスバー
         self.setup_status_bar()
-        
+
         # ログビューア（ドッキング可能）
         self.log_viewer = EnhancedLogViewer()
         self.log_viewer.setObjectName("logViewer")
@@ -82,16 +91,16 @@ class MainWindow(QMainWindow):
         self.setup_logging()
         self.setup_tabs()
         self.restore_settings()
-        
+
         # ApplicationStateのシグナルを接続
         self.app_state.status_message.connect(self.show_status_message)
         self.app_state.progress_updated.connect(self.update_progress)
         self.app_state.current_model_changed.connect(self.update_window_title)
-        
+
         # 最小サイズを設定
         self.setMinimumWidth(800)
         self.setMinimumHeight(600)
-        
+
         # 初期化完了後、モデルリストを更新
         self.app_state.refresh_model_list()
 
@@ -100,42 +109,42 @@ class MainWindow(QMainWindow):
         """Mayaのメインウィンドウを取得"""
         main_window_ptr = mui.MQtUtil.mainWindow()
         return wrapInstance(int(main_window_ptr), QWidget)
-    
+
     def show_window(self, dockable=False):
         """メインウィンドウを表示"""
         if dockable:
             # workspaceControlを使用してMayaパネルとして表示
             self.setWindowFlags(Qt.Widget)
             self.setAttribute(Qt.WA_DeleteOnClose, False)  # クローズ時に削除しない
-            
+
             # workspaceControlの作成
             workspace_control_name = self.WORKSPACE_CONTROL_NAME
             if cmds.workspaceControl(workspace_control_name, exists=True):
                 cmds.workspaceControl(workspace_control_name, e=True, close=True)
                 cmds.deleteUI(workspace_control_name)
-            
+
             # まずウィンドウを表示
             self.show()
-            
+
             # workspaceControlを作成してウィンドウをホスト
             cmds.workspaceControl(
                 workspace_control_name,
-                label='MMD Tools',
-                tabToControl=['AttributeEditor', -1],  # アトリビュートエディタの右にタブとして追加
+                label="MMD Tools",
+                tabToControl=["AttributeEditor", -1],  # アトリビュートエディタの右にタブとして追加
                 initialWidth=800,
                 initialHeight=600,
-                widthProperty='preferred',
+                widthProperty="preferred",
                 retain=False,  # Maya終了時に保持しない
-                floating=False
+                floating=False,
             )
-            
+
             # ウィンドウをworkspaceControlにアタッチ
             cmds.control(self.WINDOW_NAME, e=True, parent=workspace_control_name)
         else:
             # 通常のフローティングウィンドウとして表示
             self.setWindowFlags(Qt.Window)
             self.show()
-    
+
     def create_main_window(self, dockable=False):
         """互換性のためのメソッド（show_windowを呼び出す）"""
         self.show_window(dockable=dockable)
@@ -162,26 +171,27 @@ class MainWindow(QMainWindow):
         """ステータスバーをセットアップ"""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        
+
         # 永続的なウィジェット（右側）
         self.progress_bar = QProgressBar()
         self.progress_bar.setMaximumWidth(200)
         self.progress_bar.setVisible(False)
         self.status_bar.addPermanentWidget(self.progress_bar)
-        
+
         # バージョン情報
         from mmd_tools import __version__
+
         maya_version = cmds.about(version=True)
         version_label = QLabel(f"MMD Tools v{__version__} | Maya {maya_version}")
         self.status_bar.addPermanentWidget(version_label)
-        
+
         # 初期メッセージ
         self.status_bar.showMessage("準備完了", 2000)
-    
+
     def show_status_message(self, message):
         """ステータスメッセージを表示"""
         self.status_bar.showMessage(message, 5000)  # 5秒間表示
-    
+
     def update_progress(self, value):
         """進捗状況を更新"""
         if value > 0 and value < 100:
@@ -191,23 +201,23 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(False)
             if value >= 100:
                 self.progress_bar.setValue(100)
-    
+
     def update_window_title(self, model_root=None):
         """ウィンドウタイトルを更新（現在のモデル名を含める）"""
         base_title = "MMD Tools"
-        
+
         if model_root:
             # モデル情報を取得
             info = self.app_state.get_model_info(model_root)
             if info:
                 # 表示名を優先、なければモデルルート名を使用
-                model_name = info.get('display_name', model_root)
+                model_name = info.get("display_name", model_root)
                 self.setWindowTitle(f"{base_title} - {model_name}")
             else:
                 self.setWindowTitle(f"{base_title} - {model_root}")
         else:
             self.setWindowTitle(base_title)
-    
+
     def load_stylesheet(self):
         style_path = os.path.join(os.path.dirname(__file__), "stylesheet.qss")
         try:
@@ -222,12 +232,12 @@ class MainWindow(QMainWindow):
         handler = QtLogHandler()
         handler.message_written.connect(self.log_viewer.append)
         handler.setLevel(logging.DEBUG)  # すべてのレベルのログを受け取る
-        
+
         # ルートロガーに追加（すべての子ロガーのメッセージをキャッチ）
         root_logger = logging.getLogger()
         root_logger.addHandler(handler)
         root_logger.setLevel(logging.DEBUG)
-        
+
         # このモジュール用のロガーを取得してテストメッセージ
         logger = get_logger(__name__)
         logger.info("MMD Tools UI initialized.")
@@ -235,15 +245,17 @@ class MainWindow(QMainWindow):
     def setup_tabs(self):
         # UITranslatorを取得
         from .translations import UITranslator
+
         translator = UITranslator.instance()
-        
+
         # 言語設定を読み込み
         from .. import settings
+
         # 設定を確実に読み込む
         settings.load()
         current_language = settings.get("ui.general.language", "ja")
         translator.set_language(current_language)
-        
+
         # File I/O Tab
         import_export_tab = ImportExportTab()
         self.import_export_presenter = ImportExportPresenter(import_export_tab, self.app_state)
@@ -283,7 +295,7 @@ class MainWindow(QMainWindow):
         settings_tab = SettingsTab()
         self.settings_presenter = SettingsPresenter(settings_tab, self.app_state)
         self.tab_widget.addTab(settings_tab, translator.translate("settings", "tabs"))
-        
+
         # タブリストを保存（retranslate用）
         self.tabs = [
             import_export_tab,
@@ -293,31 +305,32 @@ class MainWindow(QMainWindow):
             morph_tab,
             display_pane_tab,
             physics_tab,
-            settings_tab
+            settings_tab,
         ]
-        
+
         # logger参照のためにグローバルスコープで取得
         global logger
         logger = get_logger(__name__)
-    
+
     def retranslate_all_tabs(self):
         """すべてのタブのUIテキストを再翻訳"""
         from .translations import UITranslator
+
         translator = UITranslator.instance()
-        
+
         # タブのタイトルを再設定
         tab_keys = ["file_io", "info", "material", "bone", "morph", "display_pane", "physics", "settings"]
         for i, key in enumerate(tab_keys):
             self.tab_widget.setTabText(i, translator.translate(key, "tabs"))
-        
+
         # 各タブのretranslateUiメソッドを呼び出し
         for tab in self.tabs:
-            if hasattr(tab, 'retranslateUi'):
+            if hasattr(tab, "retranslateUi"):
                 tab.retranslateUi()
-        
+
         # ウィンドウタイトルとドックウィジェットも再翻訳
         self.retranslateUi()
-    
+
     def retranslateUi(self):
         """メインウィンドウのUIテキストを再翻訳"""
         # 現在はウィンドウタイトルは固定なので特に処理なし

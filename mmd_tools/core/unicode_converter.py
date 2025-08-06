@@ -49,7 +49,7 @@ class UnicodeToAsciiConverter:
         self.HASH_LENGTH = 8  # ハッシュの長さ（16^8 = 4,294,967,296通り）
         self._conversion_cache = {}
         self._restoration_cache = {}
-        
+
         # exact_match辞書を初期化
         self.exact_match = {}
         self.exact_match_reverse = {}
@@ -65,9 +65,7 @@ class UnicodeToAsciiConverter:
         """
         if dictionary_path is None:
             current_dir = os.path.dirname(os.path.abspath(__file__))
-            dictionary_path = os.path.join(
-                os.path.dirname(current_dir), "config", "unicode_dictionary.json"
-            )
+            dictionary_path = os.path.join(os.path.dirname(current_dir), "config", "unicode_dictionary.json")
 
         try:
             if os.path.exists(dictionary_path):
@@ -81,26 +79,22 @@ class UnicodeToAsciiConverter:
                     self.maya_invalid_chars = data.get("maya_invalid_chars", {})
                     self.prefix_map = data.get("prefix", [])
                     self.suffix_map = data.get("suffix", [])
-                    self.languages = data.get("_meta", {}).get(
-                        "languages", ["jp", "en", "zh-cn", "zh-tw"]
-                    )
+                    self.languages = data.get("_meta", {}).get("languages", ["jp", "en", "zh-cn", "zh-tw"])
                 elif "dictionary" in data and isinstance(data["dictionary"], list):
                     # 旧フォーマット（リスト形式）対応
                     self._process_list_dictionary(data["dictionary"])
                     self.maya_invalid_chars = data.get("maya_invalid_chars", {})
                     self.prefix_map = data.get("prefix", [])
                     self.suffix_map = data.get("suffix", [])
-                    self.languages = data.get("_meta", {}).get(
-                        "languages", ["jp", "en", "zh-cn", "zh-tw"]
-                    )
-                
+                    self.languages = data.get("_meta", {}).get("languages", ["jp", "en", "zh-cn", "zh-tw"])
+
                 # exact_matchセクションの読み込み
                 if "exact_match" in data:
                     self.exact_match = data["exact_match"]
                     # exact_matchの逆引き辞書を構築
                     for unicode_text, ascii_text in self.exact_match.items():
                         self.exact_match_reverse[ascii_text] = unicode_text
-                
+
                 self._build_reverse_map()
 
                 self.logger.info(f"辞書ファイルを読み込みました: {dictionary_path}")
@@ -337,9 +331,7 @@ class UnicodeToAsciiConverter:
                 end_match = re.search(r"([A-Za-z0-9+|_]+)$", text_without_suffix)
                 if end_match:
                     trailing_chars = end_match.group(1)
-                    remaining_text = (
-                        text_without_suffix[: -len(trailing_chars)] + suffix_pair[0]
-                    )
+                    remaining_text = text_without_suffix[: -len(trailing_chars)] + suffix_pair[0]
                     return remaining_text, trailing_chars
 
         # 通常の処理: 末尾の数字・記号のみを抽出（英単語全体は抽出しない）
@@ -403,9 +395,7 @@ class UnicodeToAsciiConverter:
         # 複合語の場合は個別に変換を試みる
         return self._convert_compound_word(text)
 
-    def _build_suffix(
-        self, suffix_parts: List[str], trailing_chars: str, leading_numbers: str = ""
-    ) -> str:
+    def _build_suffix(self, suffix_parts: List[str], trailing_chars: str, leading_numbers: str = "") -> str:
         """suffix部分を組み立て"""
         result_parts = []
 
@@ -508,9 +498,7 @@ class UnicodeToAsciiConverter:
 
         # Maya有効文字以外を_に変換
         # 使用可能な文字: 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_
-        valid_chars = set(
-            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_"
-        )
+        valid_chars = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_")
 
         # 無効文字を_に変換
         safe_result = "".join(c if c in valid_chars else "_" for c in result)
@@ -521,9 +509,7 @@ class UnicodeToAsciiConverter:
         """Maya無効文字の置換を元に戻す"""
         result = text
         # 個別の置換のみを元に戻す（一般的な_は元に戻さない）
-        maya_replacement_to_char = {
-            v: k for k, v in self.maya_invalid_chars.items() if v != "_"
-        }
+        maya_replacement_to_char = {v: k for k, v in self.maya_invalid_chars.items() if v != "_"}
         for replacement, original in maya_replacement_to_char.items():
             result = result.replace(replacement, original)
         return result
@@ -546,7 +532,7 @@ class UnicodeToAsciiConverter:
         # 直接チェック
         if text in self.ascii_to_unicode:
             return True
-        
+
         # exact_matchの逆引きチェック
         if text in self.exact_match_reverse:
             return True
@@ -564,9 +550,7 @@ class UnicodeToAsciiConverter:
         else:
             return "original"
 
-    def get_unique_name(
-        self, base_name: str, existing_names: Optional[set] = None
-    ) -> str:
+    def get_unique_name(self, base_name: str, existing_names: Optional[set] = None) -> str:
         """
         一意な名前を生成
 

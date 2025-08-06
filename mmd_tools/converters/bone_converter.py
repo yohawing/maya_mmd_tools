@@ -1,12 +1,12 @@
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 
 import maya.cmds as cmds
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 from ..core import maya_utils
-from ..core.pmd_parser import PmdParser
-from ..core.pmx_parser import PmxParser
+from ..core.pmd_data import PmdData
+from ..core.pmx_data import PmxData
 from ..core.constants import (
     SKELETON_GROUP,
     ATTR_MMD_BONE_NAME,
@@ -58,7 +58,7 @@ class BoneConverter:
         self.logger = get_logger(__name__)
         self.rig_converter = RigConverter()
 
-    def convert_pmx_bones(self, pmx_data: PmxParser, mesh_node, root_group):
+    def convert_pmx_bones(self, pmx_data: PmxData, mesh_node, root_group):
         """
         PMXのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
 
@@ -81,31 +81,23 @@ class BoneConverter:
         bone_map = self._create_bone_mapping(pmx_data.bones)
 
         # Mayaジョイントを作成
-        maya_joints = self._create_maya_joints(
-            pmx_data.bones, bone_map, "pmx", skeleton_group
-        )
+        maya_joints = self._create_maya_joints(pmx_data.bones, bone_map, "pmx", skeleton_group)
 
         # リグのセットアップはRigConverterに委譲
-        rig_result = self.rig_converter.setup_pmx_rig(
-            pmx_data, maya_joints, bone_map, skeleton_group
-        )
+        rig_result = self.rig_converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
 
         # スキンクラスターを作成
-        skin_cluster = self._create_skin_cluster(
-            maya_joints, mesh_node, max_influence=4
-        )
+        skin_cluster = self._create_skin_cluster(maya_joints, mesh_node, max_influence=4)
 
         # 頂点ウェイトを設定
         if mesh_node and skin_cluster:
-            self._apply_pmx_vertex_weights(
-                pmx_data, maya_joints, skin_cluster, mesh_node
-            )
+            self._apply_pmx_vertex_weights(pmx_data, maya_joints, skin_cluster, mesh_node)
 
         # TODO: 変形階層、表示操作などを正確に再現する。
 
         return maya_joints, skin_cluster
 
-    def convert_pmd_bones(self, pmd_data: PmdParser, mesh_node, root_group):
+    def convert_pmd_bones(self, pmd_data: PmdData, mesh_node, root_group):
         """
         PMDのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
 
@@ -128,25 +120,17 @@ class BoneConverter:
         bone_map = self._create_bone_mapping(pmd_data.bones)
 
         # Mayaジョイントを作成
-        maya_joints = self._create_maya_joints(
-            pmd_data.bones, bone_map, "pmd", skeleton_group
-        )
+        maya_joints = self._create_maya_joints(pmd_data.bones, bone_map, "pmd", skeleton_group)
 
         # スキンクラスターを作成
-        skin_cluster = self._create_skin_cluster(
-            maya_joints, mesh_node, max_influence=2
-        )
+        skin_cluster = self._create_skin_cluster(maya_joints, mesh_node, max_influence=2)
 
         # 頂点ウェイトを設定
         if mesh_node and skin_cluster:
-            self._apply_pmd_vertex_weights(
-                pmd_data, maya_joints, skin_cluster, mesh_node
-            )
+            self._apply_pmd_vertex_weights(pmd_data, maya_joints, skin_cluster, mesh_node)
 
         # リグのセットアップはRigConverterに委譲
-        rig_result = self.rig_converter.setup_pmd_rig(
-            pmd_data, maya_joints, bone_map, skeleton_group
-        )
+        rig_result = self.rig_converter.setup_pmd_rig(pmd_data, maya_joints, bone_map, skeleton_group)
 
         # TODO: ボーンのローカル軸を正確に再現する。
 
@@ -227,9 +211,7 @@ class BoneConverter:
                     # 親子関係を設定
                     cmds.parent(child_joint, parent_joint)
                 except Exception as e:
-                    self.logger.error(
-                        f"Failed to parent {child_joint} to {parent_joint}: {e}"
-                    )
+                    self.logger.error(f"Failed to parent {child_joint} to {parent_joint}: {e}")
 
         # ルートジョイントをスケルトングループにペアレント
         # 親を持たないジョイントを探す
@@ -260,9 +242,7 @@ class BoneConverter:
                 ATTR_MMD_BONE_NAME: bone.name,
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
                 ATTR_MMD_BONE_FLAGS: bone.bone_flag,
-                ATTR_MMD_DEFORM_LAYER: bone.deform_layer
-                if hasattr(bone, "deform_layer")
-                else 0,
+                ATTR_MMD_DEFORM_LAYER: bone.deform_layer if hasattr(bone, "deform_layer") else 0,
             }
 
             # 詳細アトリビュート
@@ -279,22 +259,16 @@ class BoneConverter:
                 attrs[ATTR_MMD_BONE_OFFSET] = bone.connect_position_offset
 
             # 接続先属性
-            attrs[ATTR_MMD_CONNECT_TYPE] = (
-                "BONE_INDEX" if bone.get_flag(PmxBoneFlag.CONNECT_BONE) else "RELATIVE"
-            )
+            attrs[ATTR_MMD_CONNECT_TYPE] = "BONE_INDEX" if bone.get_flag(PmxBoneFlag.CONNECT_BONE) else "RELATIVE"
             if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
                 attrs[ATTR_MMD_CONNECT_INDEX] = bone.connect_bone_index
 
             # 付与ボーンの属性を設定
-            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(
-                PmxBoneFlag.GRANT_PARENT_MOVE
-            ):
+            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(PmxBoneFlag.GRANT_PARENT_MOVE):
                 attrs[ATTR_MMD_GRANT_RATE] = bone.grant_rate
 
             # 付与属性
-            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(
-                PmxBoneFlag.GRANT_PARENT_MOVE
-            ):
+            if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or bone.get_flag(PmxBoneFlag.GRANT_PARENT_MOVE):
                 attrs[ATTR_MMD_GRANT_PARENT_INDEX] = bone.grant_parent_bone_index
 
             # 軸固定の属性を設定
@@ -328,9 +302,10 @@ class BoneConverter:
             # IK属性
             if bone.get_flag(PmxBoneFlag.IK):
                 attrs[ATTR_MMD_IK_TARGET_INDEX] = bone.ik_target_bone_index
-                
+
                 # IKリンクをJSON形式で保存
                 import json
+
                 ik_links_data = []
                 for ik_link in bone.ik_links:
                     link_data = {
@@ -383,9 +358,7 @@ class BoneConverter:
 
         # メッシュノードが存在しない場合はNoneを返す
         if not mesh_node or not cmds.objExists(mesh_node):
-            self.logger.warning(
-                f"メッシュノード '{mesh_node}' が存在しません。スキンクラスターを作成しません。"
-            )
+            self.logger.warning(f"メッシュノード '{mesh_node}' が存在しません。スキンクラスターを作成しません。")
             return None
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
@@ -484,9 +457,7 @@ class BoneConverter:
             for joint_index, weight in weight_maps:
                 # ボーンインデックスの境界チェック
                 if joint_index >= len(maya_joints):
-                    self.logger.warning(
-                        f"無効なボーンインデックス {joint_index}, max={len(maya_joints) - 1}"
-                    )
+                    self.logger.warning(f"無効なボーンインデックス {joint_index}, max={len(maya_joints) - 1}")
                     continue
                 vertex_weights[joint_index] = weight
 
@@ -540,9 +511,7 @@ class BoneConverter:
 
         # vertexの要素が存在することをチェック
         if not weights:
-            self.logger.warning(
-                "頂点ウェイトが空です。メッシュに頂点が存在するか確認してください。"
-            )
+            self.logger.warning("頂点ウェイトが空です。メッシュに頂点が存在するか確認してください。")
             return
         maya_utils.apply_vertex_weights(
             skin_cluster,

@@ -4,6 +4,7 @@
 
 テスト結果を見やすく色分けして表示します。
 """
+
 import platform
 import sys
 import unittest
@@ -11,15 +12,15 @@ from unittest.runner import TextTestResult, TextTestRunner
 
 # ANSIカラーコード
 COLOR = {
-    'RESET': '\033[0m',
-    'BOLD': '\033[1m',
-    'RED': '\033[31m',
-    'GREEN': '\033[32m',
-    'YELLOW': '\033[33m',
-    'BLUE': '\033[34m',
-    'MAGENTA': '\033[35m',
-    'CYAN': '\033[36m',
-    'WHITE': '\033[37m',
+    "RESET": "\033[0m",
+    "BOLD": "\033[1m",
+    "RED": "\033[31m",
+    "GREEN": "\033[32m",
+    "YELLOW": "\033[33m",
+    "BLUE": "\033[34m",
+    "MAGENTA": "\033[35m",
+    "CYAN": "\033[36m",
+    "WHITE": "\033[37m",
 }
 
 
@@ -28,6 +29,7 @@ def enable_windows_ansi_support():
     if platform.system() == "Windows":
         try:
             import ctypes
+
             kernel32 = ctypes.windll.kernel32
             # Windows 10 v1607+ で ANSI エスケープシーケンスを有効化
             kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
@@ -39,7 +41,7 @@ def enable_windows_ansi_support():
 class CustomTestResult(TextTestResult):
     """
     カラー表示に対応したTextTestResultのサブクラス。
-    
+
     成功したテストは緑色、失敗したテストは赤色、エラーはマゼンタ、
     スキップされたテストは青色で表示されます。
     """
@@ -118,25 +120,25 @@ class CustomTestResult(TextTestResult):
         # エラーがあれば表示
         if self.errors and self.use_colors:
             self.stream.writeln(f"{COLOR['BOLD']}{COLOR['MAGENTA']}エラー詳細:{COLOR['RESET']}")
-            self.printErrorList('ERROR', self.errors)
+            self.printErrorList("ERROR", self.errors)
         elif self.errors:
             self.stream.writeln("エラー詳細:")
-            self.printErrorList('ERROR', self.errors)
+            self.printErrorList("ERROR", self.errors)
 
         # 失敗があれば表示
         if self.failures and self.use_colors:
             self.stream.writeln(f"{COLOR['BOLD']}{COLOR['RED']}失敗詳細:{COLOR['RESET']}")
-            self.printErrorList('FAIL', self.failures)
+            self.printErrorList("FAIL", self.failures)
         elif self.failures:
             self.stream.writeln("失敗詳細:")
-            self.printErrorList('FAIL', self.failures)
+            self.printErrorList("FAIL", self.failures)
 
     def printErrorList(self, flavour, errors):
         """エラーリストの表示をカスタマイズ"""
         for test, err in errors:
             self.stream.writeln(self.separator1)
             if self.use_colors:
-                color = COLOR['MAGENTA'] if flavour == 'ERROR' else COLOR['RED']
+                color = COLOR["MAGENTA"] if flavour == "ERROR" else COLOR["RED"]
                 self.stream.writeln(f"{color}{self.getDescription(test)}{COLOR['RESET']}")
                 self.stream.writeln(f"{color}{self.separator2}{COLOR['RESET']}")
                 self.stream.writeln(f"{color}{err}{COLOR['RESET']}")
@@ -149,9 +151,10 @@ class CustomTestResult(TextTestResult):
 class CustomTestRunner(TextTestRunner):
     """
     カラー表示に対応したTextTestRunnerのサブクラス。
-    
+
     テスト結果を色分けして表示し、視認性を向上させます。
     """
+
     resultclass = CustomTestResult
 
     def __init__(self, **kwargs):
@@ -185,7 +188,7 @@ class CustomTestRunner(TextTestRunner):
         return result
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # 使用例
     class ExampleTest(unittest.TestCase):
         def test_success(self):

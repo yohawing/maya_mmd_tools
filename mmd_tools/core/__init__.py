@@ -1,13 +1,13 @@
 from .mmd_parser import parse_mmd_file
-from .pmd_parser import PmdParser
-from .pmx_parser import PmxParser
-from .vmd_parser import VmdParser
+from .pmd_data import PmdData
+from .pmx_data import PmxData
+from .vmd_data import VmdData
 from .settings import get_settings, settings
 
 __all__ = [
-    "PmdParser",
-    "PmxParser",
-    "VmdParser",
+    "PmdData",
+    "PmxData",
+    "VmdData",
     "parse_mmd_file",
     "get_settings",
     "settings",

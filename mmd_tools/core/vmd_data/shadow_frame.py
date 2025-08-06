@@ -3,10 +3,11 @@ import struct
 
 class VmdShadowFrame:
     """VMDファイルのセルフシャドウフレームデータを保持するクラス。"""
+
     def __init__(self):
-        self.frame_number = 0 # フレーム番号
+        self.frame_number = 0  # フレーム番号
         self.mode = 0  # セルフシャドウ種類, 0:OFF, 1:mode1, 2:mode2
-        self.distance = 0.0 # シャドウ距離
+        self.distance = 0.0  # シャドウ距離
 
     @classmethod
     def size(cls):
@@ -20,9 +21,9 @@ class VmdShadowFrame:
         Args:
             data (bytes): シャドウフレームデータ。
         """
-        self.frame_number = struct.unpack_from('<I', data, 0)[0]
-        self.mode = struct.unpack_from('<B', data, 4)[0]
-        self.distance = struct.unpack_from('<f', data, 5)[0]
+        self.frame_number = struct.unpack_from("<I", data, 0)[0]
+        self.mode = struct.unpack_from("<B", data, 4)[0]
+        self.distance = struct.unpack_from("<f", data, 5)[0]
 
     def write(self):
         """
@@ -31,11 +32,11 @@ class VmdShadowFrame:
         Returns:
             bytes: シャドウフレームのバイナリデータ。
         """
-        data = b''
+        data = b""
         # フレーム番号を4バイトのunsigned intとしてパック
-        data += struct.pack('<I', self.frame_number)
+        data += struct.pack("<I", self.frame_number)
         # モードを1バイトのunsigned byteとしてパック
-        data += struct.pack('<B', self.mode)
+        data += struct.pack("<B", self.mode)
         # 距離を4バイトのfloatとしてパック
-        data += struct.pack('<f', self.distance)
+        data += struct.pack("<f", self.distance)
         return data

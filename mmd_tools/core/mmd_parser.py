@@ -4,9 +4,9 @@ from .exceptions import MMDParseException
 from .logger import get_logger
 
 # Import specific parsers
-from .pmd_parser import PmdParser
-from .pmx_parser import PmxParser
-from .vmd_parser import VmdParser
+from .pmd_data import PmdData
+from .pmx_data import PmxData
+from .vmd_data import VmdData
 
 # ロガー取得
 logger = get_logger("mmd_tools.core.mmd_parser")
@@ -44,20 +44,20 @@ def parse_mmd_file(file_path):
 
         if magic_bytes.startswith(b"Pmd"):
             logger.info("PMDファイルとして解析を開始")
-            parser = PmdParser()
+            parser = PmdData()
             parser.parse_file(file_path)
             logger.info("PMDファイルの解析が完了しました")
             return parser
         elif magic_bytes.startswith(b"PMX"):
             logger.info("PMXファイルとして解析を開始")
-            parser = PmxParser()
+            parser = PmxData()
             parser.parse_file(file_path)
             logger.info("PMXファイルの解析が完了しました")
             return parser
         elif f.read(30).startswith(b"Vocaloid Motion Data"):  # VMD magic is longer
             f.seek(0)  # Reset file pointer again
             logger.info("VMDファイルとして解析を開始")
-            parser = VmdParser()
+            parser = VmdData()
             parser.parse_file(file_path)
             logger.info("VMDファイルの解析が完了しました")
             return parser

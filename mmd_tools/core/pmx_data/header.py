@@ -1,7 +1,6 @@
 import enum
 import struct
 
-from mmd_tools.core.settings import settings
 from mmd_tools.core import utils
 
 

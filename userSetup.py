@@ -1,5 +1,5 @@
 from maya import cmds
-from mmd_tools.plugin_main import install_mmd_menu, uninstall_mmd_menu
+from mmd_tools.plugin_main import install_mmd_menu
 
 
 def mmd_tools_setup():
@@ -7,7 +7,7 @@ def mmd_tools_setup():
     try:
         if not cmds.pluginInfo("plugin_main.py", query=True, loaded=True):
             cmds.loadPlugin("plugin_main.py")
-    except Exception as e:
+    except Exception:
         pass  # Silently fail in testing environment
 
     install_mmd_menu()

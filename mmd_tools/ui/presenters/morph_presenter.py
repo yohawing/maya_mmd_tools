@@ -44,9 +44,7 @@ class MorphPresenter:
         self.view.reset_all_btn.clicked.connect(self.reset_all_morphs)
 
         # 基本情報タブ
-        self.view.morph_type_combo.currentIndexChanged.connect(
-            self.on_morph_type_changed
-        )
+        self.view.morph_type_combo.currentIndexChanged.connect(self.on_morph_type_changed)
 
         # Maya連携タブ
         self.view.connect_btn.clicked.connect(self.connect_blend_shape)
@@ -95,9 +93,7 @@ class MorphPresenter:
         # プリセットを読み込み
         self._load_presets(current_model_root)
 
-        logger.info(
-            f"Loaded {self.view.morph_list.count()} morphs for model: {current_model_root}"
-        )
+        logger.info(f"Loaded {self.view.morph_list.count()} morphs for model: {current_model_root}")
 
     def _load_mmd_morphs(self, model_root):
         """MMDモーフデータをロード"""
@@ -255,9 +251,7 @@ class MorphPresenter:
                 try:
                     cmds.setAttr(f"{blend_shape_node}.{target}", weight)
                 except Exception as e:
-                    logger.error(
-                        f"Failed to set blend shape weight: {blend_shape_node}.{target}: {e}"
-                    )
+                    logger.error(f"Failed to set blend shape weight: {blend_shape_node}.{target}: {e}")
 
     def on_group_selected(self, current, previous):
         """グループが選択されたときの処理"""
@@ -300,9 +294,7 @@ class MorphPresenter:
         if blend_shape_node and cmds.objExists(blend_shape_node):
             cmds.select(blend_shape_node, replace=True)
             logger.info(f"Selected blend shape node in Maya: {blend_shape_node}")
-            self.app_state.emit_status(
-                f"ブレンドシェイプノードを選択しました: {blend_shape_node}"
-            )
+            self.app_state.emit_status(f"ブレンドシェイプノードを選択しました: {blend_shape_node}")
 
     def reset_current_morph(self):
         """現在のモーフをリセット"""
@@ -339,9 +331,7 @@ class MorphPresenter:
         from ..qt_compat import QInputDialog
 
         # グループ名を入力
-        group_name, ok = QInputDialog.getText(
-            self.view, "グループ追加", "新しいグループ名を入力してください:"
-        )
+        group_name, ok = QInputDialog.getText(self.view, "グループ追加", "新しいグループ名を入力してください:")
 
         if ok and group_name:
             # 既存のグループと重複チェック
@@ -350,9 +340,7 @@ class MorphPresenter:
                 existing_groups.append(self.view.group_list.item(i).text())
 
             if group_name in existing_groups:
-                self.app_state.emit_status(
-                    f"グループ '{group_name}' は既に存在します", "warning"
-                )
+                self.app_state.emit_status(f"グループ '{group_name}' は既に存在します", "warning")
                 return
 
             # グループリストに追加
@@ -383,25 +371,19 @@ class MorphPresenter:
         target_name = self.view.target_name_edit.text()
 
         if not blend_shape_node or not target_name:
-            self.app_state.emit_status(
-                "ブレンドシェイプノードとターゲット名を入力してください", "warning"
-            )
+            self.app_state.emit_status("ブレンドシェイプノードとターゲット名を入力してください", "warning")
             return
 
         # ノードの存在確認
         if not cmds.objExists(blend_shape_node):
-            self.app_state.emit_status(
-                f"ブレンドシェイプノードが見つかりません: {blend_shape_node}", "error"
-            )
+            self.app_state.emit_status(f"ブレンドシェイプノードが見つかりません: {blend_shape_node}", "error")
             return
 
         # ターゲットの存在確認
         try:
             cmds.getAttr(f"{blend_shape_node}.{target_name}")
         except:
-            self.app_state.emit_status(
-                f"ターゲットが見つかりません: {target_name}", "error"
-            )
+            self.app_state.emit_status(f"ターゲットが見つかりません: {target_name}", "error")
             return
 
         # 連携を設定
@@ -412,9 +394,7 @@ class MorphPresenter:
         # UIを更新
         self.load_morph_details(self.current_morph)
 
-        logger.info(
-            f"モーフを連携しました: {self.current_morph} -> {blend_shape_node}.{target_name}"
-        )
+        logger.info(f"モーフを連携しました: {self.current_morph} -> {blend_shape_node}.{target_name}")
         self.app_state.emit_status(f"モーフを連携しました: {self.current_morph}")
 
     def disconnect_blend_shape(self):
@@ -438,10 +418,7 @@ class MorphPresenter:
             return
 
         # 全てのブレンドシェイプノードを収集
-        shapes = (
-            cmds.listRelatives(current_model_root, allDescendents=True, type="mesh")
-            or []
-        )
+        shapes = cmds.listRelatives(current_model_root, allDescendents=True, type="mesh") or []
         blend_shape_nodes = []
 
         for shape in shapes:
@@ -479,9 +456,7 @@ class MorphPresenter:
                             data["blend_shape_node"] = bs_node
                             data["blend_shape_target"] = target_name
                             connected_count += 1
-                            logger.info(
-                                f"自動連携成功: {morph_name} -> {bs_node}.{target_name}"
-                            )
+                            logger.info(f"自動連携成功: {morph_name} -> {bs_node}.{target_name}")
                             break
 
                     if data.get("blend_shape_node"):
@@ -580,9 +555,7 @@ class MorphPresenter:
         if current_model_root and cmds.objExists(current_model_root):
             # プリセット用アトリビュートを作成
             # プリセット用アトリビュートがなければ作成
-            if not cmds.attributeQuery(
-                "mmdMorphPresets", node=current_model_root, exists=True
-            ):
+            if not cmds.attributeQuery("mmdMorphPresets", node=current_model_root, exists=True):
                 set_custom_attributes(current_model_root, {"mmdMorphPresets": ""})
 
             # 既存のプリセットを読み込み
@@ -619,9 +592,7 @@ class MorphPresenter:
             return
 
         # プリセットを読み込み
-        if not cmds.attributeQuery(
-            "mmdMorphPresets", node=current_model_root, exists=True
-        ):
+        if not cmds.attributeQuery("mmdMorphPresets", node=current_model_root, exists=True):
             self.app_state.emit_status("プリセットが見つかりません", "warning")
             return
 
@@ -633,9 +604,7 @@ class MorphPresenter:
         try:
             presets = json.loads(presets_json)
             if preset_name not in presets:
-                self.app_state.emit_status(
-                    f"プリセット '{preset_name}' が見つかりません", "warning"
-                )
+                self.app_state.emit_status(f"プリセット '{preset_name}' が見つかりません", "warning")
                 return
 
             # プリセットの値を適用
@@ -657,13 +626,9 @@ class MorphPresenter:
 
             # 現在のモーフのスライダーを更新
             if self.current_morph and self.current_morph in preset_data:
-                self.view.morph_slider.setValue(
-                    int(preset_data[self.current_morph] * 100)
-                )
+                self.view.morph_slider.setValue(int(preset_data[self.current_morph] * 100))
 
-            logger.info(
-                f"プリセット '{preset_name}' を適用しました ({applied_count}個のモーフ)"
-            )
+            logger.info(f"プリセット '{preset_name}' を適用しました ({applied_count}個のモーフ)")
             self.app_state.emit_status(f"プリセット '{preset_name}' を適用しました")
 
         except Exception as e:
@@ -678,9 +643,7 @@ class MorphPresenter:
 
         # デフォルトプリセットは削除不可
         if preset_name in ["笑顔", "ウィンク", "驚き", "悲しみ"]:
-            self.app_state.emit_status(
-                "デフォルトプリセットは削除できません", "warning"
-            )
+            self.app_state.emit_status("デフォルトプリセットは削除できません", "warning")
             return
 
         current_model_root = self.app_state.current_model_root
@@ -688,9 +651,7 @@ class MorphPresenter:
             return
 
         # プリセットを読み込み
-        if not cmds.attributeQuery(
-            "mmdMorphPresets", node=current_model_root, exists=True
-        ):
+        if not cmds.attributeQuery("mmdMorphPresets", node=current_model_root, exists=True):
             return
 
         presets_json = cmds.getAttr(f"{current_model_root}.mmdMorphPresets")
@@ -704,9 +665,7 @@ class MorphPresenter:
 
                 # 保存
                 presets_json = json.dumps(presets, ensure_ascii=False)
-                set_attribute(
-                    current_model_root, "mmdMorphPresets", presets_json, "string"
-                )
+                set_attribute(current_model_root, "mmdMorphPresets", presets_json, "string")
 
                 # コンボボックスから削除
                 index = self.view.preset_combo.findText(preset_name)

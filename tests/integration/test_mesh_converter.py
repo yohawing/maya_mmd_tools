@@ -1,25 +1,17 @@
 from maya import cmds
 
+from mmd_tools.core import pmd_data
+from mmd_tools.core import pmx_data
 from mmd_tools.core.settings import settings
-from mmd_tools.converters import MeshConverter, mesh_converter
-from mmd_tools.core import maya_utils, pmd_parser, pmx_parser
+from mmd_tools.converters import MeshConverter
+from mmd_tools.core import maya_utils
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
     ATTR_MMD_TOON_TEXTURE_INDEX,
-    GEOMETRY_GROUP,
-    ATTR_MMD_FILE_TYPE,
-    ATTR_MMD_MODEL_NAME,
-    ATTR_MMD_MODEL_NAME_EN,
-    ATTR_MMD_COMMENT,
-    ATTR_MMD_COMMENT_EN,
-    ATTR_MMD_FILE_VERSION,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
-    ATTR_MMD_SPHERE_PATH,
-    ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_MEMO,
-    ATTR_MMD_EDGE_FLAG,
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
@@ -72,7 +64,7 @@ class TestMeshConverter(MayaTestBase):
         pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
 
         # PMDファイルをパース
-        parser = pmd_parser.PmdParser()
+        parser = pmd_data.PmdData()
         pmd_data = parser.parse_file(pmd_file_path)
 
         # モデル名を取得
@@ -97,9 +89,7 @@ class TestMeshConverter(MayaTestBase):
 
         # 2. グループの中にメッシュが作成されているか
         children = cmds.listRelatives(mesh_group, children=True)
-        self.assertIsNotNone(
-            children, f"メッシュグループ {mesh_group} の中にメッシュがありません"
-        )
+        self.assertIsNotNone(children, f"メッシュグループ {mesh_group} の中にメッシュがありません")
 
         # 3. マテリアルが作成されているか
         materials = cmds.ls(materials=True)
@@ -107,15 +97,10 @@ class TestMeshConverter(MayaTestBase):
 
         # 4. UVが正しく設定されているか
         for child in children:
-            if (
-                cmds.nodeType(child) == "mesh"
-                or cmds.nodeType(cmds.listRelatives(child, shapes=True)[0]) == "mesh"
-            ):
+            if cmds.nodeType(child) == "mesh" or cmds.nodeType(cmds.listRelatives(child, shapes=True)[0]) == "mesh":
                 uv_sets = cmds.polyUVSet(child, query=True, allUVSets=True)
                 self.assertIsNotNone(uv_sets, f"{child} にUVセットがありません")
-                self.assertGreaterEqual(
-                    len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です"
-                )
+                self.assertGreaterEqual(len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です")
 
     def test_convert_pmx_mesh(self):
         """
@@ -126,7 +111,7 @@ class TestMeshConverter(MayaTestBase):
         pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
-        parser = pmx_parser.PmxParser()
+        parser = pmx_data.PmxData()
         pmx_data = parser.parse_file(pmx_file_path)
 
         # モデル名を取得
@@ -149,9 +134,7 @@ class TestMeshConverter(MayaTestBase):
 
         # 2. グループの中にメッシュが作成されているか
         children = cmds.listRelatives(mesh_group, children=True)
-        self.assertIsNotNone(
-            children, f"メッシュグループ {mesh_group} の中にメッシュがありません"
-        )
+        self.assertIsNotNone(children, f"メッシュグループ {mesh_group} の中にメッシュがありません")
 
         # 3. マテリアルが作成されているか
         materials = cmds.ls(materials=True)
@@ -166,14 +149,11 @@ class TestMeshConverter(MayaTestBase):
         # 5. UVが正しく設定されているか
         for child in children:
             if cmds.nodeType(child) == "mesh" or (
-                cmds.listRelatives(child, shapes=True)
-                and cmds.nodeType(cmds.listRelatives(child, shapes=True)[0]) == "mesh"
+                cmds.listRelatives(child, shapes=True) and cmds.nodeType(cmds.listRelatives(child, shapes=True)[0]) == "mesh"
             ):
                 uv_sets = cmds.polyUVSet(child, query=True, allUVSets=True)
                 self.assertIsNotNone(uv_sets, f"{child} にUVセットがありません")
-                self.assertGreaterEqual(
-                    len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です"
-                )
+                self.assertGreaterEqual(len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です")
 
     def test_material_custom_attributes_on_pmd(self):
         """
@@ -184,7 +164,7 @@ class TestMeshConverter(MayaTestBase):
         pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
 
         # PMDファイルをパース
-        parser = pmd_parser.PmdParser()
+        parser = pmd_data.PmdData()
         pmd_data = parser.parse_file(pmd_file_path)
 
         # ルートグループを作成
@@ -253,7 +233,7 @@ class TestMeshConverter(MayaTestBase):
         pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
-        parser = pmx_parser.PmxParser()
+        parser = pmx_data.PmxData()
         pmx_data = parser.parse_file(pmx_file_path)
 
         # ルートグループを作成
@@ -270,9 +250,7 @@ class TestMeshConverter(MayaTestBase):
         unique_materials = []
         seen = set()
         for material in assigned_materials:
-            if material not in seen and cmds.attributeQuery(
-                "mmd_material_index", node=material, exists=True
-            ):
+            if material not in seen and cmds.attributeQuery("mmd_material_index", node=material, exists=True):
                 unique_materials.append(material)
                 seen.add(material)
 

@@ -48,54 +48,32 @@ class PmxVertex:
             bone_index_format = {1: "<B", 2: "<H", 4: "<I"}[self.bone_index_size]
 
             if self.weight_transform_type == 0:  # BDEF1
-                self.bone_indices.append(
-                    struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
-                )
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
             elif self.weight_transform_type == 1:  # BDEF2
-                self.bone_indices.append(
-                    struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
-                )
-                self.bone_indices.append(
-                    struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
-                )
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 self.bone_weights.append(struct.unpack("<f", f.read(4))[0])
             elif self.weight_transform_type == 2:  # BDEF4
                 for _ in range(4):
-                    self.bone_indices.append(
-                        struct.unpack(bone_index_format, f.read(self.bone_index_size))[
-                            0
-                        ]
-                    )
+                    self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 for _ in range(4):
                     self.bone_weights.append(struct.unpack("<f", f.read(4))[0])
             elif self.weight_transform_type == 3:  # SDEF
-                self.bone_indices.append(
-                    struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
-                )
-                self.bone_indices.append(
-                    struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
-                )
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
+                self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 self.bone_weights.append(struct.unpack("<f", f.read(4))[0])
                 self.sdef_c = struct.unpack("<fff", f.read(12))
                 self.sdef_r0 = struct.unpack("<fff", f.read(12))
                 self.sdef_r1 = struct.unpack("<fff", f.read(12))
             elif self.weight_transform_type == 4:  # QDEF (PMX 2.1 only)
                 if version < 2.1:
-                    raise ValueError(
-                        "QDEF weight transform type is only supported in PMX 2.1 and later."
-                    )
+                    raise ValueError("QDEF weight transform type is only supported in PMX 2.1 and later.")
                 for _ in range(4):
-                    self.bone_indices.append(
-                        struct.unpack(bone_index_format, f.read(self.bone_index_size))[
-                            0
-                        ]
-                    )
+                    self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 for _ in range(4):
                     self.bone_weights.append(struct.unpack("<f", f.read(4))[0])
             else:
-                raise ValueError(
-                    f"Unknown weight transform type: {self.weight_transform_type}"
-                )
+                raise ValueError(f"Unknown weight transform type: {self.weight_transform_type}")
 
             self.edge_magnification = struct.unpack("<f", f.read(4))[0]
         except struct.error as e:
@@ -142,17 +120,13 @@ class PmxVertex:
             f.write(struct.pack("<fff", *self.sdef_r1))
         elif self.weight_transform_type == 4:  # QDEF (PMX 2.1 only)
             if version < 2.1:
-                raise ValueError(
-                    "QDEF weight transform type is only supported in PMX 2.1 and later."
-                )
+                raise ValueError("QDEF weight transform type is only supported in PMX 2.1 and later.")
             for bone_index in self.bone_indices:
                 f.write(struct.pack(bone_index_format, bone_index))
             for bone_weight in self.bone_weights:
                 f.write(struct.pack("<f", bone_weight))
         else:
-            raise ValueError(
-                f"Unknown weight transform type: {self.weight_transform_type}"
-            )
+            raise ValueError(f"Unknown weight transform type: {self.weight_transform_type}")
 
         # Edge magnification
         f.write(struct.pack("<f", self.edge_magnification))

@@ -10,14 +10,17 @@ Maya GUIアプリケーション内でスクリプトとして実行してくだ
 import os
 import sys
 
+
 def is_gui_available():
     """Maya GUI環境が利用可能かチェック"""
     try:
         import maya.cmds as cmds
+
         # バッチモードかどうかをチェック
         return not cmds.about(batch=True)
     except:
         return False
+
 
 # GUI環境でない場合は警告を出力
 if not is_gui_available():

@@ -2,18 +2,14 @@
 PMXインポーターの統合テスト
 """
 
-from html import parser
 import os
-import tempfile
-from unittest.mock import patch, MagicMock
 
 from maya import cmds
 
-from mmd_tools.core import pmx_parser
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.io.pmx_importer import import_pmx_file
-from mmd_tools.core.pmx_parser import PmxParser
+from mmd_tools.core.pmx_data import PmxData
 
 
 class TestPmxImporter(MayaTestBase):
@@ -54,7 +50,7 @@ class TestPmxImporter(MayaTestBase):
             self.skipTest("テスト用PMXファイルが見つかりません")
 
         # PMXファイルをパース
-        parser = PmxParser()
+        parser = PmxData()
         parser.parse_file(pmx_file)
 
         # インポート前のシーン状態を記録
@@ -88,7 +84,7 @@ class TestPmxImporter(MayaTestBase):
         if not pmx_files:
             self.skipTest("PMXファイルが見つかりません")
 
-        parser = PmxParser()
+        parser = PmxData()
 
         for model_name, file_path in pmx_files.items():
             with self.subTest(model=model_name):
@@ -104,9 +100,7 @@ class TestPmxImporter(MayaTestBase):
 
                 # 新しく作成されたノードを確認
                 new_nodes = set(cmds.ls()) - initial_nodes
-                self.assertGreater(
-                    len(new_nodes), 0, "新しいノードが作成されていません"
-                )
+                self.assertGreater(len(new_nodes), 0, "新しいノードが作成されていません")
 
                 # メッシュが作成されたことを確認
                 meshes = cmds.ls(type="mesh")

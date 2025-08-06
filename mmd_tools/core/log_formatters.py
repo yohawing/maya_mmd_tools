@@ -7,7 +7,6 @@ Maya環境に特化したログフォーマッターを提供します。
 import logging
 import sys
 import time
-from datetime import datetime
 
 
 class MayaFormatter(logging.Formatter):
@@ -47,9 +46,7 @@ class MayaFormatter(logging.Formatter):
                 formatted_msg = original_msg
             except UnicodeDecodeError:
                 # デコードエラーがある場合は安全に処理
-                formatted_msg = original_msg.encode("utf-8", errors="replace").decode(
-                    "utf-8"
-                )
+                formatted_msg = original_msg.encode("utf-8", errors="replace").decode("utf-8")
         else:
             formatted_msg = str(original_msg)
 

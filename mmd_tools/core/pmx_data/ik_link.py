@@ -1,7 +1,5 @@
 import struct
-from typing import BinaryIO, Tuple
-
-from mmd_tools.core.pmx_data.header import PmxEncoding
+from typing import BinaryIO
 
 
 class PmxIKLink:
@@ -24,9 +22,7 @@ class PmxIKLink:
             f: バイナリ読み込みモードで開かれたファイルハンドル。
         """
         bone_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.bone_index_size]
-        self.ik_bone_index = struct.unpack(
-            bone_index_format, f.read(self.bone_index_size)
-        )[0]
+        self.ik_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
         self.angle_limit = struct.unpack("<B", f.read(1))[0]
         if self.angle_limit == 1:
             self.limit_min = struct.unpack("<fff", f.read(12))

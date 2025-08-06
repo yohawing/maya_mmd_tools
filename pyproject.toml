@@ -19,6 +19,6 @@ classifiers = [
 "Bug Tracker" = "https://github.com/yohawing/maya_mmd_tools/issues"
 
 [tool.ruff]
-line-length = 88
+line-length = 128
 indent-width = 4
 fix = true

@@ -5,8 +5,9 @@ from mmd_tools.core import utils
 
 class VmdMorphFrame:
     """VMDファイルのモーフフレームデータを保持するクラス。"""
+
     def __init__(self):
-        self.morph_name = ''
+        self.morph_name = ""
         self.frame_number = 0
         self.value = 0.0
 
@@ -23,8 +24,8 @@ class VmdMorphFrame:
             data (bytes): モーフフレームデータ。
         """
         self.morph_name = utils.decodePMDString(data[:15])
-        self.frame_number = struct.unpack_from('<I', data, 15)[0]
-        self.value = struct.unpack_from('<f', data, 19)[0]
+        self.frame_number = struct.unpack_from("<I", data, 15)[0]
+        self.value = struct.unpack_from("<f", data, 19)[0]
 
     def write(self):
         """
@@ -33,11 +34,11 @@ class VmdMorphFrame:
         Returns:
             bytes: モーフフレームのバイナリデータ。
         """
-        data = b''
+        data = b""
         # モーフ名を15バイトの固定長でエンコード
         data += utils.encodePMDString(self.morph_name, 15)
         # フレーム番号を4バイトのunsigned intとしてパック
-        data += struct.pack('<I', self.frame_number)
+        data += struct.pack("<I", self.frame_number)
         # モーフ値を4バイトのfloatとしてパック
-        data += struct.pack('<f', self.value)
+        data += struct.pack("<f", self.value)
         return data

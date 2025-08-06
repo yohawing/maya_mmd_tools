@@ -10,14 +10,12 @@ Mayaのアニメーションデータに変換する機能を提供します。
 """
 
 import math
-import struct
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import maya.api.OpenMaya as om2
-import maya.api.OpenMayaAnim as oma2
 import maya.cmds as cmds
 
-from ..core import maya_utils, utils
+from ..core import maya_utils
 from ..core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_CAMERA,
@@ -26,7 +24,7 @@ from ..core.constants import (
     DEFAULT_LIGHT_NAME,
 )
 from ..core.logger import get_logger
-from ..core.vmd_parser import VmdParser
+from ..core.vmd_data import VmdData
 
 
 class VmdConverter:
@@ -41,21 +39,17 @@ class VmdConverter:
         """VmdConverterの初期化"""
         self.logger = get_logger(__name__)
         self.bone_name_mapping: Dict[str, str] = {}  # VMDボーン名 -> Mayaジョイント名
-        self.morph_name_mapping: Dict[
-            str, str
-        ] = {}  # VMDモーフ名 -> Mayaブレンドシェイプターゲット名
+        self.morph_name_mapping: Dict[str, str] = {}  # VMDモーフ名 -> Mayaブレンドシェイプターゲット名
         self.fps = 60.0  # デフォルトのFPS
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
-        self._bone_bind_poses: Dict[
-            str, Tuple[float, float, float]
-        ] = {}  # ボーンの初期位置
+        self._bone_bind_poses: Dict[str, Tuple[float, float, float]] = {}  # ボーンの初期位置
         self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
         self.anim_layer = None  # 現在のアニメーションレイヤー名
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
 
     def convert(
         self,
-        vmd_data: VmdParser,
+        vmd_data: VmdData,
         target_namespace: str = None,
         layer_name: str = "VMD_Motion",
         layer_mode: str = "override",
@@ -90,45 +84,31 @@ class VmdConverter:
 
             # ボーンアニメーション変換
             if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
-                self.logger.info(
-                    f"ボーンアニメーション変換を開始: {len(vmd_data.bone_frames)}フレーム"
-                )
+                self.logger.info(f"ボーンアニメーション変換を開始: {len(vmd_data.bone_frames)}フレーム")
                 bone_success = self._convert_bone_animation(vmd_data.bone_frames)
                 if not bone_success:
-                    self.logger.warning(
-                        "ボーンアニメーション変換で一部エラーが発生しました"
-                    )
+                    self.logger.warning("ボーンアニメーション変換で一部エラーが発生しました")
 
             # カメラアニメーション変換
             if hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
-                self.logger.info(
-                    f"カメラアニメーション変換を開始: {len(vmd_data.camera_frames)}フレーム"
-                )
+                self.logger.info(f"カメラアニメーション変換を開始: {len(vmd_data.camera_frames)}フレーム")
                 camera_success = self._convert_camera_animation(vmd_data.camera_frames)
                 if not camera_success:
-                    self.logger.warning(
-                        "カメラアニメーション変換でエラーが発生しました"
-                    )
+                    self.logger.warning("カメラアニメーション変換でエラーが発生しました")
 
             # 照明アニメーション変換
             if hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
-                self.logger.info(
-                    f"照明アニメーション変換を開始: {len(vmd_data.light_frames)}フレーム"
-                )
+                self.logger.info(f"照明アニメーション変換を開始: {len(vmd_data.light_frames)}フレーム")
                 light_success = self._convert_light_animation(vmd_data.light_frames)
                 if not light_success:
                     self.logger.warning("照明アニメーション変換でエラーが発生しました")
 
             # モーフアニメーション変換
             if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
-                self.logger.info(
-                    f"モーフアニメーション変換を開始: {len(vmd_data.morph_frames)}フレーム"
-                )
+                self.logger.info(f"モーフアニメーション変換を開始: {len(vmd_data.morph_frames)}フレーム")
                 morph_success = self._convert_morph_animation(vmd_data.morph_frames)
                 if not morph_success:
-                    self.logger.warning(
-                        "モーフアニメーション変換でエラーが発生しました"
-                    )
+                    self.logger.warning("モーフアニメーション変換でエラーが発生しました")
 
             # フェーズ1では線形補間のみのため、補間データは無視
 
@@ -136,9 +116,7 @@ class VmdConverter:
             return True
 
         except Exception as e:
-            self.logger.error(
-                f"VMDアニメーション変換中にエラーが発生しました: {str(e)}"
-            )
+            self.logger.error(f"VMDアニメーション変換中にエラーが発生しました: {str(e)}")
             return False
 
     def _add_objects_to_layer(self, objects: List[str]):
@@ -177,9 +155,7 @@ class VmdConverter:
 
         # シーン内のジョイントを検索
         if target_namespace:
-            joints = maya_utils.list_objects(
-                object_filter=f"{target_namespace}:*", type="joint"
-            )
+            joints = maya_utils.list_objects(object_filter=f"{target_namespace}:*", type="joint")
         else:
             joints = maya_utils.list_objects(type="joint")
 
@@ -191,9 +167,7 @@ class VmdConverter:
                 if original_name:
                     self.bone_name_mapping[original_name] = joint
 
-        self.logger.info(
-            f"{len(self.bone_name_mapping)}個のボーンマッピングを構築しました"
-        )
+        self.logger.info(f"{len(self.bone_name_mapping)}個のボーンマッピングを構築しました")
 
         # モーフ名マッピングの構築
         self._build_morph_mappings(target_namespace)
@@ -208,11 +182,9 @@ class VmdConverter:
                 translate = cmds.getAttr(f"{maya_joint}.translate")[0]
                 self._bone_bind_poses[vmd_bone_name] = translate
             except Exception as e:
-                self.logger.warning(
-                    f"{vmd_bone_name}のバインドポーズ取得エラー: {str(e)}"
-                )
+                self.logger.warning(f"{vmd_bone_name}のバインドポーズ取得エラー: {str(e)}")
 
-    def _setup_timeline(self, vmd_data: VmdParser):
+    def _setup_timeline(self, vmd_data: VmdData):
         """タイムラインの設定
 
         Args:
@@ -253,9 +225,7 @@ class VmdConverter:
 
         if max_frame > 0:
             # タイムラインの範囲を設定
-            cmds.playbackOptions(
-                min=0, max=max_frame, animationStartTime=0, animationEndTime=max_frame
-            )
+            cmds.playbackOptions(min=0, max=max_frame, animationStartTime=0, animationEndTime=max_frame)
             self.logger.info(f"タイムライン範囲を設定: 0 - {max_frame}")
 
     def _convert_bone_animation(self, bone_frames: List) -> bool:
@@ -291,11 +261,7 @@ class VmdConverter:
 
                 try:
                     # フレームをフレーム番号でソート
-                    frames.sort(
-                        key=lambda x: x.frame_number
-                        if hasattr(x, "frame_number")
-                        else x.get("frame_number", 0)
-                    )
+                    frames.sort(key=lambda x: x.frame_number if hasattr(x, "frame_number") else x.get("frame_number", 0))
 
                     # 位置と回転のキーフレームを設定
                     self._set_bone_keyframes(maya_joint, frames, vmd_bone_name)
@@ -303,9 +269,7 @@ class VmdConverter:
                     success_count += 1
 
                 except Exception as e:
-                    self.logger.error(
-                        f"ボーン '{vmd_bone_name}' のアニメーション設定中にエラー: {str(e)}"
-                    )
+                    self.logger.error(f"ボーン '{vmd_bone_name}' のアニメーション設定中にエラー: {str(e)}")
                     self._failed_bones.add(vmd_bone_name)
             else:
                 if vmd_bone_name not in self._failed_bones:
@@ -316,9 +280,7 @@ class VmdConverter:
         if self.use_animation_layers and self.anim_layer and animated_joints:
             self._add_objects_to_layer(animated_joints)
 
-        self.logger.info(
-            f"{success_count}/{total_count}個のボーンアニメーションを変換しました"
-        )
+        self.logger.info(f"{success_count}/{total_count}個のボーンアニメーションを変換しました")
         return success_count > 0
 
     def _set_bone_keyframes(self, joint: str, frames: List, vmd_bone_name: str):
@@ -455,9 +417,7 @@ class VmdConverter:
             cmds.currentUnit(time=fps_mapping[fps])
             self.logger.info(f"シーンFPSを{fps} ({fps_mapping[fps]})に設定しました")
         else:
-            self.logger.warning(
-                f"指定されたFPS {fps} はサポートされていません。デフォルトの60.0 FPSを使用します"
-            )
+            self.logger.warning(f"指定されたFPS {fps} はサポートされていません。デフォルトの60.0 FPSを使用します")
             cmds.currentUnit(time="ntscf")  # デフォルトは60fpsのNTSCF
 
     def _convert_camera_animation(self, camera_frames: List) -> bool:
@@ -538,9 +498,7 @@ class VmdConverter:
             cmds.animLayer(self.anim_layer, edit=True, selected=True)
 
         # カメラシェイプを取得
-        camera_shape = cmds.listRelatives(camera_transform, shapes=True, type="camera")[
-            0
-        ]
+        camera_shape = cmds.listRelatives(camera_transform, shapes=True, type="camera")[0]
 
         # アニメーションカーブを作成
         trans_attrs = ["translateX", "translateY", "translateZ"]
@@ -610,9 +568,7 @@ class VmdConverter:
         maya_utils.set_keyframes_batch(all_curves, frames, generate_camera_values)
 
         # FOVのキーフレームを設定
-        maya_utils.set_keyframes_batch(
-            {"focalLength": fov_curve}, frames, generate_fov_values
-        )
+        maya_utils.set_keyframes_batch({"focalLength": fov_curve}, frames, generate_fov_values)
 
     def _convert_light_animation(self, light_frames: List) -> bool:
         """照明アニメーションを変換
@@ -685,9 +641,7 @@ class VmdConverter:
             frames: フレームデータのリスト
         """
         # 照明シェイプを取得
-        light_shape = cmds.listRelatives(
-            light_transform, shapes=True, type="directionalLight"
-        )[0]
+        light_shape = cmds.listRelatives(light_transform, shapes=True, type="directionalLight")[0]
 
         # アニメーションカーブを作成
         rot_attrs = ["rotateX", "rotateY", "rotateZ"]
@@ -703,9 +657,7 @@ class VmdConverter:
 
             # 方向ベクトルから回転角度を計算
             # ベクトルを正規化
-            length = math.sqrt(
-                direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2
-            )
+            length = math.sqrt(direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2)
             if length > 0:
                 dir_x = direction[0] / length
                 dir_y = direction[1] / length
@@ -727,12 +679,8 @@ class VmdConverter:
             return {"colorR": color[0], "colorG": color[1], "colorB": color[2]}
 
         # キーフレームを一括設定
-        maya_utils.set_keyframes_batch(
-            rot_curves, frames, generate_light_rotation_values
-        )
-        maya_utils.set_keyframes_batch(
-            color_curves, frames, generate_light_color_values
-        )
+        maya_utils.set_keyframes_batch(rot_curves, frames, generate_light_rotation_values)
+        maya_utils.set_keyframes_batch(color_curves, frames, generate_light_color_values)
 
     def _build_morph_mappings(self, target_namespace: str = None):
         """モーフ名のマッピングを構築
@@ -744,9 +692,7 @@ class VmdConverter:
 
         # シーン内のブレンドシェイプノードを検索
         if target_namespace:
-            blend_shapes = maya_utils.list_objects(
-                object_filter=f"{target_namespace}:*", type="blendShape"
-            )
+            blend_shapes = maya_utils.list_objects(object_filter=f"{target_namespace}:*", type="blendShape")
         else:
             blend_shapes = maya_utils.list_objects(type="blendShape")
 
@@ -777,13 +723,9 @@ class VmdConverter:
                 if weight_attr in alias_dict:
                     morph_name = alias_dict[weight_attr]
                     self.morph_name_mapping[morph_name] = (blend_shape, i, morph_name)
-                    self.logger.debug(
-                        f"マッピング追加: {morph_name} -> ({blend_shape}, {i}, {morph_name})"
-                    )
+                    self.logger.debug(f"マッピング追加: {morph_name} -> ({blend_shape}, {i}, {morph_name})")
 
-        self.logger.info(
-            f"{len(self.morph_name_mapping)}個のモーフマッピングを構築しました"
-        )
+        self.logger.info(f"{len(self.morph_name_mapping)}個のモーフマッピングを構築しました")
 
     def _convert_morph_animation(self, morph_frames: List) -> bool:
         """モーフアニメーションを変換
@@ -814,9 +756,7 @@ class VmdConverter:
             # 各モーフのアニメーションを設定
             for vmd_morph_name, frames in morph_frame_map.items():
                 if vmd_morph_name in self.morph_name_mapping:
-                    blend_shape, target_index, maya_morph_name = (
-                        self.morph_name_mapping[vmd_morph_name]
-                    )
+                    blend_shape, target_index, maya_morph_name = self.morph_name_mapping[vmd_morph_name]
 
                     try:
                         # フレームをフレーム番号でソート
@@ -829,9 +769,7 @@ class VmdConverter:
                         success_count += 1
 
                     except Exception as e:
-                        self.logger.error(
-                            f"モーフ '{vmd_morph_name}' のアニメーション設定中にエラー: {str(e)}"
-                        )
+                        self.logger.error(f"モーフ '{vmd_morph_name}' のアニメーション設定中にエラー: {str(e)}")
                 else:
                     self.logger.info(f"モーフ '{vmd_morph_name}' が見つかりません")
 
@@ -839,24 +777,18 @@ class VmdConverter:
             if self.use_animation_layers and self.anim_layer and animated_blend_shapes:
                 for blend_shape in animated_blend_shapes:
                     # ブレンドシェイプの全ウェイト属性を追加
-                    weight_count = cmds.blendShape(
-                        blend_shape, query=True, weightCount=True
-                    )
+                    weight_count = cmds.blendShape(blend_shape, query=True, weightCount=True)
                     if weight_count:
                         for i in range(weight_count):
                             weight_attr = f"{blend_shape}.weight[{i}]"
-                            if cmds.attributeQuery(
-                                f"weight[{i}]", node=blend_shape, exists=True
-                            ):
+                            if cmds.attributeQuery(f"weight[{i}]", node=blend_shape, exists=True):
                                 cmds.animLayer(
                                     self.anim_layer,
                                     edit=True,
                                     attribute=weight_attr,
                                 )
 
-            self.logger.info(
-                f"{success_count}/{total_count}個のモーフアニメーションを変換しました"
-            )
+            self.logger.info(f"{success_count}/{total_count}個のモーフアニメーションを変換しました")
             return success_count > 0
 
         except Exception as e:
@@ -887,9 +819,7 @@ class VmdConverter:
             cmds.currentTime(frame.frame_number)
 
             # ウェイト値を設定
-            maya_utils.set_attribute(
-                blend_shape, f"weight[{target_index}]", frame.value, "float"
-            )
+            maya_utils.set_attribute(blend_shape, f"weight[{target_index}]", frame.value, "float")
 
             # キーフレームを設定
             cmds.setKeyframe(weight_attr, time=frame.frame_number, value=frame.value)
@@ -921,9 +851,10 @@ class VmdConverter:
         """
         if not layer_name:
             import datetime
+
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             layer_name = f"VMDAnimation_{timestamp}"
-        
+
         try:
             # アニメーションレイヤーを作成
             if not cmds.animLayer(layer_name, query=True, exists=True):

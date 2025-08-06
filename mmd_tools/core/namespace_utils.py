@@ -44,13 +44,13 @@ class NamespaceUtils:
             sanitized = f"Model_{sanitized}"
 
         # 特殊文字を除去（アンダースコアは許可）
-        sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', sanitized)
+        sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", sanitized)
 
         # 連続するアンダースコアを1つに
-        sanitized = re.sub(r'_+', '_', sanitized)
+        sanitized = re.sub(r"_+", "_", sanitized)
 
         # 先頭と末尾のアンダースコアを除去
-        sanitized = sanitized.strip('_')
+        sanitized = sanitized.strip("_")
 
         # 空になった場合のフォールバック
         if not sanitized:
@@ -167,19 +167,14 @@ class NamespaceUtils:
             if objects:
                 if force:
                     # 強制削除モード：namespace内のオブジェクトを削除
-                    logger.warning(
-                        f"Force deleting {len(objects)} objects in namespace: {namespace_name}"
-                    )
+                    logger.warning(f"Force deleting {len(objects)} objects in namespace: {namespace_name}")
                     cmds.delete(objects)
                 else:
                     # マージモード：親namespaceにマージ
                     logger.info(f"Merging namespace: {namespace_name}")
 
             # namespaceを削除
-            cmds.namespace(
-                removeNamespace=namespace_name, 
-                mergeNamespaceWithParent=not force
-            )
+            cmds.namespace(removeNamespace=namespace_name, mergeNamespaceWithParent=not force)
             logger.info(f"Cleaned up namespace: {namespace_name}")
 
         except Exception as e:
@@ -194,14 +189,11 @@ class NamespaceUtils:
             モデル用namespace名のリスト
         """
         all_namespaces = cmds.namespaceInfo(listOnlyNamespaces=True, recurse=True)
-        
+
         # システムnamespaceを除外
         system_namespaces = {"UI", "shared"}
-        model_namespaces = [
-            ns for ns in all_namespaces 
-            if ns not in system_namespaces and not ns.startswith(":")
-        ]
-        
+        model_namespaces = [ns for ns in all_namespaces if ns not in system_namespaces and not ns.startswith(":")]
+
         return model_namespaces
 
     @staticmethod
@@ -217,7 +209,7 @@ class NamespaceUtils:
         """
         if ":" not in node_name:
             return None
-        
+
         # 最後の:より前がnamespace
         namespace = node_name.rsplit(":", 1)[0]
         return namespace if namespace else None

@@ -5,7 +5,7 @@ MMDのモーフデータをMayaのblendShapeに変換するモジュール。
 Mayaのブレンドシェイプシステムに変換する機能を提供します。
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from maya import cmds
 from maya.api import OpenMaya as om
@@ -48,9 +48,7 @@ class MorphConverter:
                 continue
 
             try:
-                self.logger.debug(
-                    f"Converting morph: {morph.name}, type: {morph.morph_type}"
-                )
+                self.logger.debug(f"Converting morph: {morph.name}, type: {morph.morph_type}")
                 result = self._convert_vertex_morph_pmd(morph, mesh_node)
                 if result["success"]:
                     results.append(result)
@@ -205,9 +203,7 @@ class MorphConverter:
         # モーフオフセットを適用
         for vertex_index, offset_pos in morph.vertices:
             if vertex_index < len(points):
-                points[vertex_index] += om.MVector(
-                    offset_pos[0], offset_pos[1], offset_pos[2]
-                )
+                points[vertex_index] += om.MVector(offset_pos[0], offset_pos[1], offset_pos[2])
 
         # 変更された頂点位置を設定
         mesh_fn.setPoints(points, om.MSpace.kObject)
@@ -232,9 +228,7 @@ class MorphConverter:
                     vertex_index = offset["vertex_index"]
                     offset_pos = offset["position_offset"]
                     if vertex_index < len(points):
-                        points[vertex_index] += om.MVector(
-                            offset_pos[0], offset_pos[1], offset_pos[2]
-                        )
+                        points[vertex_index] += om.MVector(offset_pos[0], offset_pos[1], offset_pos[2])
 
         # 変更された頂点位置を設定
         mesh_fn.setPoints(points, om.MSpace.kObject)

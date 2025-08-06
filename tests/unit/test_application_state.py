@@ -264,9 +264,7 @@ class TestApplicationState(MayaTestBase):
         target2 = cmds.polyCube(name="target2")[0]
 
         # ブレンドシェイプを作成
-        blend_shape = cmds.blendShape(
-            target1, target2, mesh_transform, name="test_blendShape"
-        )[0]
+        blend_shape = cmds.blendShape(target1, target2, mesh_transform, name="test_blendShape")[0]
 
         # ターゲットを削除（通常のワークフロー）
         cmds.delete(target1, target2)
@@ -278,9 +276,7 @@ class TestApplicationState(MayaTestBase):
 
         # モーフ数が正しいか（ブレンドシェイプの数を確認）
         # 注：削除後のターゲット数を確認
-        blend_shape_targets = (
-            cmds.blendShape(blend_shape, query=True, target=True) or []
-        )
+        blend_shape_targets = cmds.blendShape(blend_shape, query=True, target=True) or []
         expected_count = len(blend_shape_targets)
         self.assertEqual(info["morph_count"], expected_count)
 

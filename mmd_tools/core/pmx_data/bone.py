@@ -1,6 +1,6 @@
 import enum
 import struct
-from typing import BinaryIO, List, Optional, Tuple
+from typing import BinaryIO
 
 from mmd_tools.core import utils
 from mmd_tools.core.pmx_data.header import PmxEncoding
@@ -36,9 +36,7 @@ class PmxBone:
     PMXファイルのボーンデータを保持するクラス。
     """
 
-    def __init__(
-        self, bone_index_size: int = 2, encoding: PmxEncoding = PmxEncoding.UTF16LE
-    ):
+    def __init__(self, bone_index_size: int = 2, encoding: PmxEncoding = PmxEncoding.UTF16LE):
         """
         コンストラクタ。ボーンの初期値を設定します。
         Args:
@@ -81,16 +79,11 @@ class PmxBone:
         self.position = struct.unpack("<fff", f.read(12))
 
         bone_index_format = {1: "<b", 2: "<h", 4: "<i"}[self.bone_index_size]
-        self.parent_bone_index = struct.unpack(
-            bone_index_format, f.read(self.bone_index_size)
-        )[0]
+        self.parent_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
 
         # 各サイズの最大値を-1として扱う
         max_values = {1: 0xFF, 2: 0xFFFF, 4: 0xFFFFFFFF}
-        if (
-            self.parent_bone_index == max_values[self.bone_index_size]
-            or self.parent_bone_index < 0
-        ):
+        if self.parent_bone_index == max_values[self.bone_index_size] or self.parent_bone_index < 0:
             self.parent_bone_index = -1
 
         self.transform_layer = struct.unpack("<i", f.read(4))[0]
@@ -99,19 +92,13 @@ class PmxBone:
         # Flag-dependent data parsing
         # 0x0001: 接続先表示方法 (0:座標オフセット, 1:ボーン指定)
         if self.get_flag(PmxBoneFlag.CONNECT_BONE):
-            self.connect_bone_index = struct.unpack(
-                bone_index_format, f.read(self.bone_index_size)
-            )[0]
+            self.connect_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
         else:
             self.connect_position_offset = struct.unpack("<fff", f.read(12))
 
         # 0x0100: 回転付与, 0x0200: 移動付与
-        if self.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or self.get_flag(
-            PmxBoneFlag.GRANT_PARENT_MOVE
-        ):
-            self.grant_parent_bone_index = struct.unpack(
-                bone_index_format, f.read(self.bone_index_size)
-            )[0]
+        if self.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or self.get_flag(PmxBoneFlag.GRANT_PARENT_MOVE):
+            self.grant_parent_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
             self.grant_rate = struct.unpack("<f", f.read(4))[0]
 
         # 0x0400: 軸固定
@@ -129,9 +116,7 @@ class PmxBone:
 
         # 0x0020: IK
         if self.get_flag(PmxBoneFlag.IK):
-            self.ik_target_bone_index = struct.unpack(
-                bone_index_format, f.read(self.bone_index_size)
-            )[0]
+            self.ik_target_bone_index = struct.unpack(bone_index_format, f.read(self.bone_index_size))[0]
             self.ik_loop_count = struct.unpack("<i", f.read(4))[0]
             self.ik_limit_angle = struct.unpack("<f", f.read(4))[0]
             ik_link_count = struct.unpack("<i", f.read(4))[0]
@@ -195,9 +180,7 @@ class PmxBone:
             f.write(struct.pack("<fff", *self.connect_position_offset))
 
         # 0x0100: 回転付与, 0x0200: 移動付与
-        if self.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or self.get_flag(
-            PmxBoneFlag.GRANT_PARENT_MOVE
-        ):
+        if self.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE) or self.get_flag(PmxBoneFlag.GRANT_PARENT_MOVE):
             f.write(struct.pack(bone_index_format, self.grant_parent_bone_index))
             f.write(struct.pack("<f", self.grant_rate))
 

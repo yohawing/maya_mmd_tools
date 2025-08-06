@@ -3,11 +3,12 @@ import struct
 
 class VmdCameraFrame:
     """VMDファイルのカメラフレームデータを保持するクラス。"""
+
     def __init__(self):
         self.frame_number = 0  # フレーム番号
         self.distance = 0.0  # 目標点とカメラの距離
         self.position = (0.0, 0.0, 0.0)
-        self.rotation = (0.0, 0.0, 0.0) # Euler angles (X, Y, Z)
+        self.rotation = (0.0, 0.0, 0.0)  # Euler angles (X, Y, Z)
         # 補間パラメータは4点のベジェ曲線(0,0),(x1,y1),(x2,y2),(127,127)で
         # 表している.各軸のパラメータを
         # X軸の補間パラメータ　 (X_x1,X_y1),(X_x2,X_y2)
@@ -23,10 +24,9 @@ class VmdCameraFrame:
         # R_x1 R_x2 R_y1 R_y2
         # L_x1 L_x2 L_y1 L_y2
         # V_x1 V_x2 V_y1 V_y2
-        self.interpolation = b'' # 24 bytes
-        self.viewing_angle = 0 # 視野角degrees
-        self.perspective = 0 # 0: On, 1: Off
-
+        self.interpolation = b""  # 24 bytes
+        self.viewing_angle = 0  # 視野角degrees
+        self.perspective = 0  # 0: On, 1: Off
 
     @classmethod
     def size(cls):
@@ -40,13 +40,13 @@ class VmdCameraFrame:
         Args:
             data (bytes): カメラフレームデータ。
         """
-        self.frame_number = struct.unpack_from('<I', data, 0)[0]
-        self.distance = struct.unpack_from('<f', data, 4)[0]
-        self.position = struct.unpack_from('<fff', data, 8)
-        self.rotation = struct.unpack_from('<fff', data, 20)
+        self.frame_number = struct.unpack_from("<I", data, 0)[0]
+        self.distance = struct.unpack_from("<f", data, 4)[0]
+        self.position = struct.unpack_from("<fff", data, 8)
+        self.rotation = struct.unpack_from("<fff", data, 20)
         self.interpolation = data[32:56]
-        self.viewing_angle = struct.unpack_from('<I', data, 56)[0]
-        self.perspective = struct.unpack_from('<B', data, 60)[0]
+        self.viewing_angle = struct.unpack_from("<I", data, 56)[0]
+        self.perspective = struct.unpack_from("<B", data, 60)[0]
 
     def write(self):
         """
@@ -55,23 +55,23 @@ class VmdCameraFrame:
         Returns:
             bytes: カメラフレームのバイナリデータ。
         """
-        data = b''
+        data = b""
         # フレーム番号を4バイトのunsigned intとしてパック
-        data += struct.pack('<I', self.frame_number)
+        data += struct.pack("<I", self.frame_number)
         # 距離を4バイトのfloatとしてパック
-        data += struct.pack('<f', self.distance)
+        data += struct.pack("<f", self.distance)
         # 位置を3つのfloatとしてパック
-        data += struct.pack('<fff', *self.position)
+        data += struct.pack("<fff", *self.position)
         # 回転を3つのfloat（オイラー角）としてパック
-        data += struct.pack('<fff', *self.rotation)
+        data += struct.pack("<fff", *self.rotation)
         # 補間データをそのまま追加（24バイト）
         if len(self.interpolation) == 24:
             data += self.interpolation
         else:
             # 補間データが不正な場合はデフォルト値で埋める
-            data += b'\x00' * 24
+            data += b"\x00" * 24
         # 視野角を4バイトのunsigned intとしてパック
-        data += struct.pack('<I', self.viewing_angle)
+        data += struct.pack("<I", self.viewing_angle)
         # パースペクティブを1バイトのunsigned byteとしてパック
-        data += struct.pack('<B', self.perspective)
+        data += struct.pack("<B", self.perspective)
         return data

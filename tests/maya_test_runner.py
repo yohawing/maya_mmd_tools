@@ -4,6 +4,7 @@
 このスクリプトはmayapy経由で実行され、ユニットテストと統合テストの両方を処理します。
 すべてのテストはMaya環境内で実行されるため、Maya APIを使用するテストも問題なく動作します。
 """
+
 import argparse
 import os
 import sys
@@ -28,7 +29,7 @@ from tests.common.custom_test_runner import (
 def initialize_maya():
     """Maya環境を初期化します。"""
     maya.standalone.initialize()
-    
+
     # PYTHONPATHのパスをsys.pathに追加
     # Mayaモジュールが読み込まれたとき、scriptsフォルダがPYTHONPATHに追加されますが、
     # sys.pathには追加されないようです。そのため、手動で追加します。
@@ -53,10 +54,10 @@ def uninitialize_maya():
 
 def get_all_tests(suite_to_flatten):
     """TestSuiteから全てのテストケースを取得します。
-    
+
     Args:
         suite_to_flatten: フラット化するTestSuite
-        
+
     Returns:
         テストケースのリスト
     """
@@ -71,71 +72,71 @@ def get_all_tests(suite_to_flatten):
 
 def discover_tests(test_type, test_filter=None):
     """テストを探索します。
-    
+
     Args:
         test_type: 'unit', 'integration', 'gui'
         test_filter: テストをフィルタリングする文字列（オプション）
-        
+
     Returns:
         テストが含まれるTestSuite
     """
     test_dir = SCRIPT_DIR / test_type
-    
+
     print(f"Discovering '{test_type}' tests in '{test_dir}'...")
-    
+
     # テストを探索
     loader = unittest.TestLoader()
     suite = loader.discover(str(test_dir), pattern="test_*.py")
-    
+
     if suite.countTestCases() == 0:
         print(f"No tests found in '{test_dir}'.")
         return suite
-    
+
     # フィルタリングが指定されている場合
     if test_filter:
         filtered_suite = unittest.TestSuite()
         all_tests = get_all_tests(suite)
-        
+
         for test_case in all_tests:
             if test_filter in test_case.id():
                 filtered_suite.addTest(test_case)
-        
+
         if filtered_suite.countTestCases() == 0:
             print(f"Error: No tests found matching '--test {test_filter}' in the '{test_type}' suite.")
             print("\nAvailable tests in this suite:")
             for test_case in all_tests:
                 print(f"  - {test_case.id()}")
             return filtered_suite
-        
+
         suite = filtered_suite
-    
+
     return suite
 
 
 def run_tests(test_type, test_filter=None):
     """テストを実行します。
-    
+
     Args:
         test_type: 'unit' または 'integration'
         test_filter: テストをフィルタリングする文字列（オプション）
     """
     # テストを探索
     suite = discover_tests(test_type, test_filter)
-    
+
     if suite.countTestCases() == 0:
         sys.exit(1)
-    
+
     print(f"Running {suite.countTestCases()} test(s)...")
-    
+
     # Windows環境でもANSIカラーコードを有効化
     enable_windows_ansi_support()
-    
+
     # カラー対応のテストランナーを使用
     runner = CustomTestRunner(verbosity=2)
     runner.failfast = False
     runner.buffer = True
     result = runner.run(suite)
-    
+
     # テストが失敗した場合は終了コード1で終了
     if not result.wasSuccessful():
         sys.exit(1)
@@ -159,10 +160,10 @@ def main():
         help="A string to filter tests by. Can be a module, class, or method name.",
     )
     args = parser.parse_args()
-    
+
     # Maya環境を初期化
     initialize_maya()
-    
+
     try:
         # テストを実行
         run_tests(args.type, args.test)

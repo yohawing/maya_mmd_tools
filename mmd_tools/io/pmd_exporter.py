@@ -2,6 +2,7 @@ class PmdExporter:
     """
     MayaのシーンデータをPMDファイルフォーマットにエクスポートするクラス。
     """
+
     def __init__(self):
         pass
 

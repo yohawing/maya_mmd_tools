@@ -1,10 +1,8 @@
-import os
-
 from maya import cmds
 
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import BoneConverter, MeshConverter
-from mmd_tools.core import PmdParser, PmxParser, maya_utils
+from mmd_tools.core import maya_utils
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core import settings
@@ -43,15 +41,11 @@ class TestBoneConverter(MayaTestBase):
 
         # テスト用のメッシュを作成
         pmd_mesh_converter = MeshConverter(pmd_file_path)
-        pmd_group_name, pmd_mesh_name = pmd_mesh_converter.convert_pmd_mesh(
-            pmd_data, root_group
-        )
+        pmd_group_name, pmd_mesh_name = pmd_mesh_converter.convert_pmd_mesh(pmd_data, root_group)
 
         # ボーンを変換
         converter = BoneConverter()
-        root_joint, skin_cluster = converter.convert_pmd_bones(
-            pmd_data, pmd_mesh_name, root_group
-        )
+        root_joint, skin_cluster = converter.convert_pmd_bones(pmd_data, pmd_mesh_name, root_group)
 
         # 結果を検証
         self.assertIsNotNone(root_joint, "ルートジョイントが作成されていません。")
@@ -68,9 +62,7 @@ class TestBoneConverter(MayaTestBase):
 
         # 階層構造と位置を確認
         for bone in pmd_data.bones:
-            bone_name = maya_utils.sanitize_text(
-                bone.get_name()
-            )  # 英語名があればそれを使用
+            bone_name = maya_utils.sanitize_text(bone.get_name())  # 英語名があればそれを使用
             self.assertTrue(
                 cmds.objExists(bone_name),
                 f"ジョイント '{bone_name}' が作成されていません。",
@@ -81,16 +73,12 @@ class TestBoneConverter(MayaTestBase):
                 parent_name = pmd_data.bones[bone.parent_bone_index].get_name()
                 parent_name = maya_utils.sanitize_text(parent_name)
                 parent_joint = cmds.listRelatives(bone_name, parent=True, type="joint")
-                self.assertIsNotNone(
-                    parent_joint, f"ジョイント '{bone_name}' に親がいません。"
-                )
+                self.assertIsNotNone(parent_joint, f"ジョイント '{bone_name}' に親がいません。")
 
             # ジョイントが存在する場合のみ位置を確認
             if cmds.objExists(bone_name):
                 # 位置の確認
-                joint_pos = cmds.xform(
-                    bone_name, query=True, translation=True, worldSpace=True
-                )
+                joint_pos = cmds.xform(bone_name, query=True, translation=True, worldSpace=True)
                 self.assertAlmostEqual(
                     joint_pos[0],
                     bone.position[0],
@@ -124,9 +112,7 @@ class TestBoneConverter(MayaTestBase):
 
         # ボーンを変換
         converter = BoneConverter()
-        root_joint, skin_cluster = converter.convert_pmx_bones(
-            pmx_data, mesh_name, root_group
-        )
+        root_joint, skin_cluster = converter.convert_pmx_bones(pmx_data, mesh_name, root_group)
 
         # 結果を検証
         self.assertIsNotNone(root_joint, "ルートジョイントが作成されていません。")
@@ -155,9 +141,7 @@ class TestBoneConverter(MayaTestBase):
                 parent_name = pmx_data.bones[bone.parent_bone_index].get_name()
                 parent_name = maya_utils.sanitize_text(parent_name)
                 parent_joint = cmds.listRelatives(bone_name, parent=True, type="joint")
-                self.assertIsNotNone(
-                    parent_joint, f"ジョイント '{bone_name}' に親がいません。"
-                )
+                self.assertIsNotNone(parent_joint, f"ジョイント '{bone_name}' に親がいません。")
                 # 準標準ボーンの追加により親が変更される場合があるため、厳密な確認は行わない
 
         # jointOrinentの確認

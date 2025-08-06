@@ -3,15 +3,13 @@ PMDインポーターの統合テスト
 """
 
 import os
-import tempfile
-from unittest.mock import patch, MagicMock
 
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.io.pmd_importer import import_pmd_file
-from mmd_tools.core.pmd_parser import PmdParser
+from mmd_tools.core.pmd_data import PmdData
 
 
 class TestPmdImporter(MayaTestBase):
@@ -52,7 +50,7 @@ class TestPmdImporter(MayaTestBase):
             self.skipTest("テスト用PMDファイルが見つかりません")
 
         # PMDファイルをパース
-        parser = PmdParser()
+        parser = PmdData()
         parser.parse_file(pmd_file)
 
         # インポート前のシーン状態を記録
@@ -85,7 +83,7 @@ class TestPmdImporter(MayaTestBase):
             self.skipTest("テスト用PMDファイルが見つかりません")
 
         # PMDファイルをパース
-        parser = PmdParser()
+        parser = PmdData()
         pmd_data = parser.parse_file(pmd_file)
 
         # モーフが含まれているか確認
@@ -99,9 +97,7 @@ class TestPmdImporter(MayaTestBase):
         # ブレンドシェイプが作成されたことを確認
         blend_shapes = cmds.ls(type="blendShape")
         if len(pmd_data.morphs) > 0:
-            self.assertGreater(
-                len(blend_shapes), 0, "ブレンドシェイプが作成されていません"
-            )
+            self.assertGreater(len(blend_shapes), 0, "ブレンドシェイプが作成されていません")
 
     def test_import_pmd_with_physics(self):
         """物理演算を含むPMDファイルのインポートテスト"""
@@ -112,13 +108,13 @@ class TestPmdImporter(MayaTestBase):
             self.skipTest("テスト用PMDファイルが見つかりません")
 
         # PMDファイルをパース
-        parser = PmdParser()
+        parser = PmdData()
         parser.parse_file(pmd_file)
 
         # 物理演算が含まれているか確認
-        has_physics = (
-            hasattr(parser, "rigid_bodies") and len(parser.rigid_bodies) > 0
-        ) or (hasattr(parser, "joints") and len(parser.joints) > 0)
+        has_physics = (hasattr(parser, "rigid_bodies") and len(parser.rigid_bodies) > 0) or (
+            hasattr(parser, "joints") and len(parser.joints) > 0
+        )
 
         if not has_physics:
             self.skipTest("テストファイルに物理演算が含まれていません")
@@ -146,7 +142,7 @@ class TestPmdImporter(MayaTestBase):
             pmd_file = self.fixture_provider.get_pmd_file(file_name)
 
             # PMDファイルをパース
-            parser = PmdParser()
+            parser = PmdData()
             parser.parse_file(pmd_file)
 
             # インポート
@@ -155,9 +151,7 @@ class TestPmdImporter(MayaTestBase):
 
             # それぞれのインポートでノードが追加されていることを確認
             nodes = cmds.ls()
-            self.assertGreater(
-                len(nodes), 0, f"{file_name}のインポート後にノードが存在しません"
-            )
+            self.assertGreater(len(nodes), 0, f"{file_name}のインポート後にノードが存在しません")
 
     def test_import_pmd_with_materials(self):
         """マテリアルを含むPMDファイルのインポートテスト"""
@@ -167,7 +161,7 @@ class TestPmdImporter(MayaTestBase):
             self.skipTest("テスト用PMDファイルが見つかりません")
 
         # PMDファイルをパース
-        parser = PmdParser()
+        parser = PmdData()
         parser.parse_file(pmd_file)
 
         # マテリアルが含まれているか確認
@@ -179,12 +173,7 @@ class TestPmdImporter(MayaTestBase):
         self.assertIsNotNone(result, "PMDファイルのインポートに失敗しました")
 
         # マテリアルが作成されたことを確認
-        materials = (
-            cmds.ls(type="lambert")
-            + cmds.ls(type="phong")
-            + cmds.ls(type="blinn")
-            + cmds.ls(type="standardSurface")
-        )
+        materials = cmds.ls(type="lambert") + cmds.ls(type="phong") + cmds.ls(type="blinn") + cmds.ls(type="standardSurface")
         # デフォルトマテリアルを除外
         materials = [m for m in materials if m not in ["lambert1", "particleCloud1"]]
 
@@ -199,7 +188,7 @@ class TestPmdImporter(MayaTestBase):
             self.skipTest("テスト用PMDファイルが見つかりません")
 
         # PMDファイルをパース
-        parser = PmdParser()
+        parser = PmdData()
         parser.parse_file(pmd_file)
 
         # ボーンが含まれているか確認
@@ -219,7 +208,5 @@ class TestPmdImporter(MayaTestBase):
         )
 
         # ルートジョイントを確認
-        root_joints = [
-            j for j in joints if not cmds.listRelatives(j, parent=True, type="joint")
-        ]
+        root_joints = [j for j in joints if not cmds.listRelatives(j, parent=True, type="joint")]
         self.assertGreater(len(root_joints), 0, "ルートジョイントが見つかりません")

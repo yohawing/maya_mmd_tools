@@ -54,6 +54,8 @@ try:
     QT_BINDING = "PySide6"
 
 except ImportError:
+    QT_BINDING = "PySide2"
+
     from PySide2.QtCore import QObject, Signal, Qt, QSettings, QTimer
     from PySide2.QtGui import QDoubleValidator, QColor, QTextCursor, QTextCharFormat
     from PySide2.QtWidgets import (
@@ -98,5 +100,3 @@ except ImportError:
         QMenu,
     )
     from shiboken2 import wrapInstance
-
-    QT_BINDING = "PySide2"

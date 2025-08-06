@@ -4,9 +4,8 @@ PMDエクスポート機能のユニットテスト
 """
 
 import os
-import io
 
-from mmd_tools.core.pmd_parser import PmdParser
+from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.vertex import PmdVertex
 from mmd_tools.core.pmd_data.face import PmdFace
 from mmd_tools.core.pmd_data.material import PmdMaterial
@@ -30,7 +29,7 @@ class TestPmdExport(TestBase):
             f.write(mock_data)
 
         # モックデータからPMDを読み込む
-        parser1 = PmdParser()
+        parser1 = PmdData()
         parser1.parse_file(tmp_input_path)
 
         # 2. 一時ファイルに書き込む
@@ -38,7 +37,7 @@ class TestPmdExport(TestBase):
         parser1.write_file(tmp_path)
 
         # 3. 書き込んだファイルを再度読み込む
-        parser2 = PmdParser()
+        parser2 = PmdData()
         parser2.parse_file(tmp_path)
 
         # 4. データの一致を確認
@@ -48,14 +47,10 @@ class TestPmdExport(TestBase):
             parser2.header.model_name,
             "モデル名が一致しません",
         )
-        self.assertEqual(
-            parser1.header.comment, parser2.header.comment, "コメントが一致しません"
-        )
+        self.assertEqual(parser1.header.comment, parser2.header.comment, "コメントが一致しません")
 
         # 頂点数の比較
-        self.assertEqual(
-            len(parser1.vertices), len(parser2.vertices), "頂点数が一致しません"
-        )
+        self.assertEqual(len(parser1.vertices), len(parser2.vertices), "頂点数が一致しません")
 
         # 最初の頂点データの比較（サンプル）
         if parser1.vertices:
@@ -69,14 +64,10 @@ class TestPmdExport(TestBase):
         self.assertEqual(len(parser1.faces), len(parser2.faces), "面数が一致しません")
 
         # マテリアル数の比較
-        self.assertEqual(
-            len(parser1.materials), len(parser2.materials), "マテリアル数が一致しません"
-        )
+        self.assertEqual(len(parser1.materials), len(parser2.materials), "マテリアル数が一致しません")
 
         # ボーン数の比較
-        self.assertEqual(
-            len(parser1.bones), len(parser2.bones), "ボーン数が一致しません"
-        )
+        self.assertEqual(len(parser1.bones), len(parser2.bones), "ボーン数が一致しません")
 
     def test_pmd_round_trip_with_full_mock(self):
         """フル機能モックデータを使用したPMDファイルのラウンドトリップテスト"""
@@ -93,7 +84,7 @@ class TestPmdExport(TestBase):
             f.write(mock_data)
 
         # モックデータからPMDを読み込む
-        parser1 = PmdParser()
+        parser1 = PmdData()
         parser1.parse_file(tmp_input_path)
 
         # 2. 一時ファイルに書き込む
@@ -101,7 +92,7 @@ class TestPmdExport(TestBase):
         parser1.write_file(tmp_path)
 
         # 3. 書き込んだファイルを再度読み込む
-        parser2 = PmdParser()
+        parser2 = PmdData()
         parser2.parse_file(tmp_path)
 
         # 4. データの一致を確認
@@ -111,31 +102,21 @@ class TestPmdExport(TestBase):
             parser2.header.model_name,
             "モデル名が一致しません",
         )
-        self.assertEqual(
-            parser1.header.comment, parser2.header.comment, "コメントが一致しません"
-        )
+        self.assertEqual(parser1.header.comment, parser2.header.comment, "コメントが一致しません")
 
         # 詳細なデータ数の比較
-        self.assertEqual(
-            len(parser1.vertices), len(parser2.vertices), "頂点数が一致しません"
-        )
+        self.assertEqual(len(parser1.vertices), len(parser2.vertices), "頂点数が一致しません")
         self.assertEqual(len(parser1.faces), len(parser2.faces), "面数が一致しません")
-        self.assertEqual(
-            len(parser1.materials), len(parser2.materials), "マテリアル数が一致しません"
-        )
-        self.assertEqual(
-            len(parser1.bones), len(parser2.bones), "ボーン数が一致しません"
-        )
+        self.assertEqual(len(parser1.materials), len(parser2.materials), "マテリアル数が一致しません")
+        self.assertEqual(len(parser1.bones), len(parser2.bones), "ボーン数が一致しません")
         self.assertEqual(len(parser1.ik_data), len(parser2.ik_data), "IK数が一致しません")
-        self.assertEqual(
-            len(parser1.morphs), len(parser2.morphs), "モーフ数が一致しません"
-        )
+        self.assertEqual(len(parser1.morphs), len(parser2.morphs), "モーフ数が一致しません")
 
     def test_create_simple_pmd(self):
         """簡単なPMDファイルを作成してエクスポートするテスト"""
 
         # 新しいPMDパーサーインスタンスを作成
-        parser = PmdParser()
+        parser = PmdData()
 
         # ヘッダー情報を設定
         parser.header.magic = b"Pmd"
@@ -206,7 +187,7 @@ class TestPmdExport(TestBase):
         parser.write_file(tmp_path)
 
         # 書き込んだファイルを読み込んで確認
-        parser2 = PmdParser()
+        parser2 = PmdData()
         parser2.parse_file(tmp_path)
 
         # データの検証

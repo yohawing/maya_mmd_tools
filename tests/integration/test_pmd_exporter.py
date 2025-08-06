@@ -4,8 +4,8 @@ from tests.common.maya_test_base import MayaTestBase
 
 # from mmd_tools.io import export_pmd_file
 
-class TestPmdExporter(MayaTestBase):
 
+class TestPmdExporter(MayaTestBase):
     def setUp(self):
         super().setUp()
         # TODO: テストに必要なMayaシーンのセットアップやダミーデータの準備

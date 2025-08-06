@@ -12,9 +12,9 @@ __author__ = "MMD Tools Team"
 # コアモジュールを直接アクセス可能にする
 from .core.exceptions import MMDParseException
 from .core.mmd_parser import parse_mmd_file
-from .core.pmd_parser import PmdParser
-from .core.pmx_parser import PmxParser
-from .core.vmd_parser import VmdParser
+from .core.pmd_data import PmdData
+from .core.pmx_data import PmxData
+from .core.vmd_data import VmdData
 from .core.settings import get_settings, settings
 from .core import settings as _settings_module
 
@@ -24,9 +24,9 @@ sys.modules["mmd_tools.settings"] = _settings_module
 # 公開API
 __all__ = [
     "MMDParseException",
-    "PmdParser",
-    "PmxParser",
-    "VmdParser",
+    "PmdData",
+    "PmxData",
+    "VmdData",
     "get_settings",
     "parse_mmd_file",
     "settings",

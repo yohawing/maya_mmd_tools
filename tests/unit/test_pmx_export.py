@@ -4,9 +4,8 @@ PMXエクスポート機能のユニットテスト
 """
 
 import os
-import io
 
-from mmd_tools.core.pmx_parser import PmxParser
+from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.vertex import PmxVertex
 from mmd_tools.core.pmx_data.face import PmxFace
 from mmd_tools.core.pmx_data.material import PmxMaterial
@@ -31,7 +30,7 @@ class TestPmxExport(TestBase):
             f.write(mock_data)
 
         # モックデータからPMXを読み込む
-        parser1 = PmxParser()
+        parser1 = PmxData()
         parser1.parse_file(tmp_input_path)
 
         # 2. 一時ファイルに書き込む
@@ -39,7 +38,7 @@ class TestPmxExport(TestBase):
         parser1.write_file(tmp_path)
 
         # 3. 書き込んだファイルを再度読み込む
-        parser2 = PmxParser()
+        parser2 = PmxData()
         parser2.parse_file(tmp_path)
 
         # 4. データの一致を確認
@@ -49,9 +48,7 @@ class TestPmxExport(TestBase):
             parser2.header.model_name,
             "モデル名が一致しません",
         )
-        self.assertEqual(
-            parser1.header.comment, parser2.header.comment, "コメントが一致しません"
-        )
+        self.assertEqual(parser1.header.comment, parser2.header.comment, "コメントが一致しません")
         self.assertAlmostEqual(
             parser1.header.version,
             parser2.header.version,
@@ -60,9 +57,7 @@ class TestPmxExport(TestBase):
         )
 
         # 頂点数の比較
-        self.assertEqual(
-            len(parser1.vertices), len(parser2.vertices), "頂点数が一致しません"
-        )
+        self.assertEqual(len(parser1.vertices), len(parser2.vertices), "頂点数が一致しません")
 
         # 最初の頂点データの比較（サンプル）
         if parser1.vertices:
@@ -76,14 +71,10 @@ class TestPmxExport(TestBase):
         self.assertEqual(len(parser1.faces), len(parser2.faces), "面数が一致しません")
 
         # マテリアル数の比較
-        self.assertEqual(
-            len(parser1.materials), len(parser2.materials), "マテリアル数が一致しません"
-        )
+        self.assertEqual(len(parser1.materials), len(parser2.materials), "マテリアル数が一致しません")
 
         # ボーン数の比較
-        self.assertEqual(
-            len(parser1.bones), len(parser2.bones), "ボーン数が一致しません"
-        )
+        self.assertEqual(len(parser1.bones), len(parser2.bones), "ボーン数が一致しません")
 
     def test_pmx_round_trip_with_full_mock(self):
         """フル機能モックデータを使用したPMXファイルのラウンドトリップテスト"""
@@ -97,7 +88,7 @@ class TestPmxExport(TestBase):
             f.write(mock_data)
 
         # モックデータからPMXを読み込む
-        parser1 = PmxParser()
+        parser1 = PmxData()
         parser1.parse_file(tmp_input_path)
 
         # 2. 一時ファイルに書き込む
@@ -105,7 +96,7 @@ class TestPmxExport(TestBase):
         parser1.write_file(tmp_path)
 
         # 3. 書き込んだファイルを再度読み込む
-        parser2 = PmxParser()
+        parser2 = PmxData()
         parser2.parse_file(tmp_path)
 
         # 4. データの一致を確認
@@ -115,24 +106,14 @@ class TestPmxExport(TestBase):
             parser2.header.model_name,
             "モデル名が一致しません",
         )
-        self.assertEqual(
-            parser1.header.comment, parser2.header.comment, "コメントが一致しません"
-        )
+        self.assertEqual(parser1.header.comment, parser2.header.comment, "コメントが一致しません")
 
         # 詳細なデータ数の比較
-        self.assertEqual(
-            len(parser1.vertices), len(parser2.vertices), "頂点数が一致しません"
-        )
+        self.assertEqual(len(parser1.vertices), len(parser2.vertices), "頂点数が一致しません")
         self.assertEqual(len(parser1.faces), len(parser2.faces), "面数が一致しません")
-        self.assertEqual(
-            len(parser1.materials), len(parser2.materials), "マテリアル数が一致しません"
-        )
-        self.assertEqual(
-            len(parser1.bones), len(parser2.bones), "ボーン数が一致しません"
-        )
-        self.assertEqual(
-            len(parser1.morphs), len(parser2.morphs), "モーフ数が一致しません"
-        )
+        self.assertEqual(len(parser1.materials), len(parser2.materials), "マテリアル数が一致しません")
+        self.assertEqual(len(parser1.bones), len(parser2.bones), "ボーン数が一致しません")
+        self.assertEqual(len(parser1.morphs), len(parser2.morphs), "モーフ数が一致しません")
         self.assertEqual(
             len(parser1.display_frames),
             len(parser2.display_frames),
@@ -143,7 +124,7 @@ class TestPmxExport(TestBase):
         """簡単なPMXファイルを作成してエクスポートするテスト"""
 
         # 新しいPMXパーサーインスタンスを作成
-        parser = PmxParser()
+        parser = PmxData()
 
         # ヘッダー情報を設定
         parser.header.magic = b"PMX "
@@ -272,7 +253,7 @@ class TestPmxExport(TestBase):
         parser.write_file(tmp_path)
 
         # 書き込んだファイルを読み込んで確認
-        parser2 = PmxParser()
+        parser2 = PmxData()
         parser2.parse_file(tmp_path)
 
         # データの検証

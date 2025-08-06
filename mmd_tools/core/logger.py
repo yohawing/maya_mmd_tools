@@ -7,8 +7,7 @@ Maya環境に最適化されたロガーシステムを提供します。
 
 import logging
 import os
-import sys
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 from mmd_tools.core.settings import settings
 
@@ -56,7 +55,7 @@ class MayaLogger:
         self.name = name
         self._logger = logging.getLogger(name)
         self._logger.setLevel(level)
-        
+
         # 親ロガーへの伝播を確実に有効にする
         self._logger.propagate = True
 
@@ -74,12 +73,8 @@ class MayaLogger:
             return
 
         # フォーマッターを準備
-        standard_formatter = MayaFormatter(
-            self.LOGGING_CONFIG["formatters"]["standard"]
-        )
-        compact_formatter = CompactFormatter(
-            self.LOGGING_CONFIG["formatters"]["compact"]
-        )
+        standard_formatter = MayaFormatter(self.LOGGING_CONFIG["formatters"]["standard"])
+        compact_formatter = CompactFormatter(self.LOGGING_CONFIG["formatters"]["compact"])
 
         # Maya Dialogハンドラー（ERROR/CRITICALレベル用）
         # if is_maya_environment():
@@ -147,7 +142,7 @@ class MayaLogger:
 
         except (OSError, IOError, PermissionError):
             # 一時ディレクトリでも失敗した場合、ファイルハンドラーを無効化
-            print(f"警告: ログファイルの作成に失敗しました。ファイルログは無効です。")
+            print("警告: ログファイルの作成に失敗しました。ファイルログは無効です。")
             return None
 
     def debug(self, message: str, *args, **kwargs):

@@ -2,10 +2,8 @@ from maya import cmds
 import math
 from ...core.logger import get_logger
 from ...core.maya_utils import (
-    get_parent_mmd_root,
     object_exists,
     set_custom_attributes,
-    set_attribute,
     get_attribute,
 )
 from ...core.constants import (
@@ -30,16 +28,12 @@ from ...core.constants import (
 )
 from ...core.pmx_data.bone import PmxBoneFlag
 from ..qt_compat import (
-    QTreeWidgetItem,
     QListWidgetItem,
     Qt,
     QCheckBox,
     QTableWidgetItem,
     QTimer,
-    QInputDialog,
-    QMessageBox,
 )
-from mmd_tools.core import maya_utils
 
 logger = get_logger(__name__)
 
@@ -72,12 +66,8 @@ class BonePresenter:
         self.view.search_edit.textChanged.connect(self.filter_bones)
 
         # ボーン選択ボタン
-        self.view.select_ik_target_btn.clicked.connect(
-            lambda: self.select_bone_dialog("ik_target")
-        )
-        self.view.select_grant_parent_btn.clicked.connect(
-            lambda: self.select_bone_dialog("grant_parent")
-        )
+        self.view.select_ik_target_btn.clicked.connect(lambda: self.select_bone_dialog("ik_target"))
+        self.view.select_grant_parent_btn.clicked.connect(lambda: self.select_bone_dialog("grant_parent"))
 
         # フラグチェックボックス
         self.view.ik_enabled_check.toggled.connect(self.on_ik_enabled_toggled)
@@ -86,9 +76,7 @@ class BonePresenter:
         self.view.fixed_axis_check.toggled.connect(self.on_axis_toggled)
         self.view.local_axis_check.toggled.connect(self.on_axis_toggled)
         self.view.external_parent_check.toggled.connect(self.on_external_parent_toggled)
-        self.view.connection_type_combo.currentIndexChanged.connect(
-            self.on_connection_type_changed
-        )
+        self.view.connection_type_combo.currentIndexChanged.connect(self.on_connection_type_changed)
 
         # IKリンクテーブル
         self.view.add_ik_link_btn.clicked.connect(self.add_ik_link)
@@ -121,10 +109,7 @@ class BonePresenter:
             return
 
         # ジョイントを検索する複数の方法を試す
-        joints = (
-            cmds.listRelatives(current_model_root, allDescendents=True, type="joint")
-            or []
-        )
+        joints = cmds.listRelatives(current_model_root, allDescendents=True, type="joint") or []
         logger.debug(f"Found {len(joints)} joints using listRelatives")
 
         # もしジョイントが見つからない場合、別の方法を試す
@@ -134,15 +119,9 @@ class BonePresenter:
             logger.debug(f"Direct children of root: {children}")
 
             # 全ての子孫を取得してジョイントをフィルタ
-            all_descendants = (
-                cmds.listRelatives(current_model_root, allDescendents=True) or []
-            )
-            joints = [
-                node for node in all_descendants if cmds.nodeType(node) == "joint"
-            ]
-            logger.debug(
-                f"Found {len(joints)} joints using nodeType filter from {len(all_descendants)} descendants"
-            )
+            all_descendants = cmds.listRelatives(current_model_root, allDescendents=True) or []
+            joints = [node for node in all_descendants if cmds.nodeType(node) == "joint"]
+            logger.debug(f"Found {len(joints)} joints using nodeType filter from {len(all_descendants)} descendants")
 
         if not joints:
             logger.info("No bones found in the model")
@@ -190,10 +169,7 @@ class BonePresenter:
 
         if flags & PmxBoneFlag.IK:
             return "IK"
-        elif (
-            flags & PmxBoneFlag.GRANT_PARENT_ROTATE
-            or flags & PmxBoneFlag.GRANT_PARENT_MOVE
-        ):
+        elif flags & PmxBoneFlag.GRANT_PARENT_ROTATE or flags & PmxBoneFlag.GRANT_PARENT_MOVE:
             return "付与"
         elif flags & PmxBoneFlag.DEFORM_AFTER_PHYSICS:
             return "物理後"
@@ -215,12 +191,7 @@ class BonePresenter:
                 name_jp = get_attribute(joint, ATTR_MMD_BONE_NAME).lower()
                 name_en = get_attribute(joint, ATTR_MMD_BONE_NAME_EN).lower()
 
-                if (
-                    text_lower in display_text
-                    or text_lower in name_jp
-                    or text_lower in name_en
-                    or text_lower in joint.lower()
-                ):
+                if text_lower in display_text or text_lower in name_jp or text_lower in name_en or text_lower in joint.lower():
                     item.setHidden(False)
                 else:
                     item.setHidden(True)
@@ -267,29 +238,21 @@ class BonePresenter:
         self.is_updating = True
         try:
             # 基本情報
-            self.view.bone_name_jp_edit.setText(
-                get_attribute(self.current_bone, ATTR_MMD_BONE_NAME)
-            )
-            self.view.bone_name_en_edit.setText(
-                get_attribute(self.current_bone, ATTR_MMD_BONE_NAME_EN)
-            )
+            self.view.bone_name_jp_edit.setText(get_attribute(self.current_bone, ATTR_MMD_BONE_NAME))
+            self.view.bone_name_en_edit.setText(get_attribute(self.current_bone, ATTR_MMD_BONE_NAME_EN))
 
             # 親ボーン
             parent = cmds.listRelatives(self.current_bone, parent=True, type="joint")
             self.view.parent_bone_edit.setText(parent[0] if parent else "")
 
             # 位置
-            pos = cmds.xform(
-                self.current_bone, query=True, translation=True, worldSpace=True
-            )
+            pos = cmds.xform(self.current_bone, query=True, translation=True, worldSpace=True)
             self.view.pos_x_spin.setValue(pos[0])
             self.view.pos_y_spin.setValue(pos[1])
             self.view.pos_z_spin.setValue(pos[2])
 
             # 変形階層
-            self.view.deform_layer_spin.setValue(
-                get_attribute(self.current_bone, ATTR_MMD_DEFORM_LAYER)
-            )
+            self.view.deform_layer_spin.setValue(get_attribute(self.current_bone, ATTR_MMD_DEFORM_LAYER))
 
             # ボーンフラグ
             flags = get_attribute(self.current_bone, ATTR_MMD_BONE_FLAGS)
@@ -301,12 +264,8 @@ class BonePresenter:
             self.view.enabled_check.setChecked(bool(flags & PmxBoneFlag.OPERATABLE))
 
             # 特殊フラグ
-            self.view.after_physics_check.setChecked(
-                bool(flags & PmxBoneFlag.DEFORM_AFTER_PHYSICS)
-            )
-            self.view.external_parent_check.setChecked(
-                bool(flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM)
-            )
+            self.view.after_physics_check.setChecked(bool(flags & PmxBoneFlag.DEFORM_AFTER_PHYSICS))
+            self.view.external_parent_check.setChecked(bool(flags & PmxBoneFlag.EXTERNAL_PARENT_DEFORM))
 
             # 接続先
             connection_type = 0 if (flags & PmxBoneFlag.CONNECT_BONE) == 0 else 1
@@ -326,9 +285,7 @@ class BonePresenter:
                 self.view.connection_bone_edit.clear()
             else:
                 # ボーン接続
-                connection_bone = get_attribute(
-                    self.current_bone, ATTR_MMD_CONNECTION_BONE
-                )
+                connection_bone = get_attribute(self.current_bone, ATTR_MMD_CONNECTION_BONE)
                 # 接続先ボーンの表示名を作成
                 display_name = self._get_bone_display_name(connection_bone)
                 self.view.connection_bone_edit.setText(display_name)
@@ -338,12 +295,8 @@ class BonePresenter:
             self._load_ik_settings()
 
             # 付与設定
-            self.view.rotation_grant_check.setChecked(
-                bool(flags & PmxBoneFlag.GRANT_PARENT_ROTATE)
-            )
-            self.view.move_grant_check.setChecked(
-                bool(flags & PmxBoneFlag.GRANT_PARENT_MOVE)
-            )
+            self.view.rotation_grant_check.setChecked(bool(flags & PmxBoneFlag.GRANT_PARENT_ROTATE))
+            self.view.move_grant_check.setChecked(bool(flags & PmxBoneFlag.GRANT_PARENT_MOVE))
             self._load_grant_settings()
 
             # 軸制限
@@ -360,9 +313,7 @@ class BonePresenter:
             self.on_grant_toggled()
             self.on_axis_toggled()
             self.on_external_parent_toggled(self.view.external_parent_check.isChecked())
-            self.on_connection_type_changed(
-                self.view.connection_type_combo.currentIndex()
-            )
+            self.on_connection_type_changed(self.view.connection_type_combo.currentIndex())
 
             # データを保存（リセット用）
             self._store_bone_data()
@@ -382,9 +333,7 @@ class BonePresenter:
 
         # IKターゲット
         ik_target_index = get_attribute(self.current_bone, ATTR_MMD_IK_TARGET_INDEX)
-        if isinstance(ik_target_index, int) and 0 <= ik_target_index < len(
-            self.all_bones
-        ):
+        if isinstance(ik_target_index, int) and 0 <= ik_target_index < len(self.all_bones):
             ik_target = self.all_bones[ik_target_index]
             display_name = self._get_bone_display_name(ik_target)
         else:
@@ -455,10 +404,7 @@ class BonePresenter:
 
     def _load_grant_settings(self):
         """付与設定をロード"""
-        grant_enabled = (
-            self.view.rotation_grant_check.isChecked()
-            or self.view.move_grant_check.isChecked()
-        )
+        grant_enabled = self.view.rotation_grant_check.isChecked() or self.view.move_grant_check.isChecked()
         self.view.grant_settings_group.setVisible(grant_enabled)
 
         if not grant_enabled:
@@ -482,9 +428,7 @@ class BonePresenter:
         # 軸固定
         self.view.fixed_axis_group.setVisible(self.view.fixed_axis_check.isChecked())
         if self.view.fixed_axis_check.isChecked():
-            fixed_axis = self._get_attr_safe(
-                self.current_bone, ATTR_MMD_FIXED_AXIS, [0.0, 0.0, 1.0]
-            )
+            fixed_axis = self._get_attr_safe(self.current_bone, ATTR_MMD_FIXED_AXIS, [0.0, 0.0, 1.0])
             # リストまたはタプルであることを確認
             if isinstance(fixed_axis, (list, tuple)) and len(fixed_axis) >= 3:
                 self.view.fixed_axis_x_spin.setValue(float(fixed_axis[0]))
@@ -576,9 +520,7 @@ class BonePresenter:
         if not parent or not child:
             return False
 
-        descendants = (
-            cmds.listRelatives(parent, allDescendents=True, type="joint") or []
-        )
+        descendants = cmds.listRelatives(parent, allDescendents=True, type="joint") or []
         return child in descendants
 
     def on_ik_enabled_toggled(self, checked):
@@ -588,10 +530,7 @@ class BonePresenter:
 
     def on_grant_toggled(self):
         """付与設定トグル時の処理"""
-        enabled = (
-            self.view.rotation_grant_check.isChecked()
-            or self.view.move_grant_check.isChecked()
-        )
+        enabled = self.view.rotation_grant_check.isChecked() or self.view.move_grant_check.isChecked()
         self.view.grant_settings_group.setVisible(enabled)
 
     def on_axis_toggled(self):
@@ -621,9 +560,7 @@ class BonePresenter:
         """IKリンクを追加"""
         selected = cmds.ls(selection=True, type="joint")
         if not selected:
-            self.app_state.emit_status(
-                "IKリンクとして追加するジョイントを選択してください"
-            )
+            self.app_state.emit_status("IKリンクとして追加するジョイントを選択してください")
             return
 
         bone = selected[0]
@@ -667,9 +604,7 @@ class BonePresenter:
                 check.setChecked(data)
                 self.view.ik_links_table.setCellWidget(new_row, col, check)
             else:
-                self.view.ik_links_table.setItem(
-                    new_row, col, QTableWidgetItem(str(data))
-                )
+                self.view.ik_links_table.setItem(new_row, col, QTableWidgetItem(str(data)))
 
         # 選択を維持
         self.view.ik_links_table.setCurrentCell(new_row, 0)
@@ -717,9 +652,7 @@ class BonePresenter:
                 display_name = self.view.ik_target_edit.text()
                 actual_bone = self._extract_bone_name(display_name)
                 attributes[ATTR_MMD_IK_LOOP] = self.view.ik_loop_spin.value()
-                attributes[ATTR_MMD_IK_LIMIT_ANGLE] = math.radians(
-                    self.view.ik_limit_angle_spin.value()
-                )
+                attributes[ATTR_MMD_IK_LIMIT_ANGLE] = math.radians(self.view.ik_limit_angle_spin.value())
 
                 # IKリンク
                 ik_links = []
@@ -733,30 +666,16 @@ class BonePresenter:
                         actual_bone = self._extract_bone_name(display_name)
                         link_data = {
                             "bone": actual_bone,
-                            "limit_enabled": limit_widget.isChecked()
-                            if limit_widget
-                            else False,
+                            "limit_enabled": limit_widget.isChecked() if limit_widget else False,
                             "lower_limit": [
-                                math.radians(
-                                    float(self.view.ik_links_table.item(row, 2).text())
-                                ),
-                                math.radians(
-                                    float(self.view.ik_links_table.item(row, 3).text())
-                                ),
-                                math.radians(
-                                    float(self.view.ik_links_table.item(row, 4).text())
-                                ),
+                                math.radians(float(self.view.ik_links_table.item(row, 2).text())),
+                                math.radians(float(self.view.ik_links_table.item(row, 3).text())),
+                                math.radians(float(self.view.ik_links_table.item(row, 4).text())),
                             ],
                             "upper_limit": [
-                                math.radians(
-                                    float(self.view.ik_links_table.item(row, 5).text())
-                                ),
-                                math.radians(
-                                    float(self.view.ik_links_table.item(row, 6).text())
-                                ),
-                                math.radians(
-                                    float(self.view.ik_links_table.item(row, 7).text())
-                                ),
+                                math.radians(float(self.view.ik_links_table.item(row, 5).text())),
+                                math.radians(float(self.view.ik_links_table.item(row, 6).text())),
+                                math.radians(float(self.view.ik_links_table.item(row, 7).text())),
                             ],
                         }
                         ik_links.append(link_data)
@@ -767,10 +686,7 @@ class BonePresenter:
                 attributes[ATTR_MMD_IK_LINKS] = json.dumps(ik_links)
 
             # 付与設定
-            if (
-                self.view.rotation_grant_check.isChecked()
-                or self.view.move_grant_check.isChecked()
-            ):
+            if self.view.rotation_grant_check.isChecked() or self.view.move_grant_check.isChecked():
                 # 付与親（表示名から実際のボーン名を抽出）
                 display_name = self.view.grant_parent_edit.text()
                 actual_bone = self._extract_bone_name(display_name)
@@ -802,9 +718,7 @@ class BonePresenter:
 
             # 外部親設定
             if self.view.external_parent_check.isChecked():
-                attributes[ATTR_MMD_EXTERNAL_PARENT_KEY] = (
-                    self.view.external_parent_key_spin.value()
-                )
+                attributes[ATTR_MMD_EXTERNAL_PARENT_KEY] = self.view.external_parent_key_spin.value()
 
             # 属性を設定
             self._ensure_mmd_attributes(self.current_bone)
@@ -828,9 +742,7 @@ class BonePresenter:
                 item.setText(display_text)
 
             logger.info(f"ボーン '{self.current_bone}' の変更を適用しました")
-            self.app_state.emit_status(
-                f"ボーンの変更を適用しました: {self.current_bone}"
-            )
+            self.app_state.emit_status(f"ボーンの変更を適用しました: {self.current_bone}")
 
         except Exception as e:
             logger.error(f"Failed to apply bone changes: {e}", exc_info=True)
@@ -925,14 +837,10 @@ class BonePresenter:
 
                     try:
                         parsed_value = json.loads(value)
-                        logger.debug(
-                            f"Successfully parsed JSON for {attr}: {parsed_value}"
-                        )
+                        logger.debug(f"Successfully parsed JSON for {attr}: {parsed_value}")
                         return parsed_value
                     except Exception as e:
-                        logger.warning(
-                            f"Failed to parse JSON for {attr}: {e}, value: {value}"
-                        )
+                        logger.warning(f"Failed to parse JSON for {attr}: {e}, value: {value}")
                         return default
                 return value if value is not None else default
         except Exception as e:

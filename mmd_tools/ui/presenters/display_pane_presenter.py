@@ -3,6 +3,7 @@ from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 
+
 class DisplayPanePresenter:
     def __init__(self, view, app_state):
         self.view = view
@@ -12,17 +13,17 @@ class DisplayPanePresenter:
     def connect_signals(self):
         # ApplicationStateのシグナル
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
-        
+
         # UIのシグナル
         self.view.display_pane_list.currentItemChanged.connect(self.on_display_pane_selected)
-    
+
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
         self.load_display_panes()
 
     def load_display_panes(self):
         self.view.display_pane_list.clear()
-        
+
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not cmds.objExists(current_model_root):
             return

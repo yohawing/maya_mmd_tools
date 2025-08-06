@@ -25,9 +25,7 @@ class TestMayaUtils(MayaTestBase):
         uvs = [0, 0, 1, 0, 1, 1, 0, 1]
         face_uv_connects = [0, 1, 2, 3]
 
-        mesh_transform = maya_utils.create_mesh_with_uvs(
-            name, vertices, face_counts, face_connects, uvs, face_uv_connects
-        )
+        mesh_transform = maya_utils.create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects)
 
         self.assertTrue(cmds.objExists(mesh_transform))
         self.assertEqual(cmds.objectType(mesh_transform), "transform")
@@ -78,9 +76,7 @@ class TestMayaUtils(MayaTestBase):
         maya_utils.assign_material(mesh_name, shader_node)
 
         # Verify assignment
-        shading_groups = cmds.listConnections(
-            cmds.listRelatives(mesh_name, shapes=True)[0], type="shadingEngine"
-        )
+        shading_groups = cmds.listConnections(cmds.listRelatives(mesh_name, shapes=True)[0], type="shadingEngine")
         self.assertIn(shader_node + "SG", shading_groups)
 
     def test_set_attribute(self):
@@ -243,20 +239,12 @@ class TestMayaUtils(MayaTestBase):
         self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_bytes"), "PMX")
         self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_file_version"), 2.0)
         self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_utf8"), "裙花蕊颜顔")
-        self.assertEqual(
-            maya_utils.get_attribute(mesh_name, "mmd_string"), "Test Model EN"
-        )
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_string"), "Test Model EN")
         self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_bool"), True)
         self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_int"), 42)
-        self.assertAlmostEqual(
-            maya_utils.get_attribute(mesh_name, "mmd_float"), 3.14, places=5
-        )  # type: ignore
-        self.assertEqual(
-            maya_utils.get_attribute(mesh_name, "mmd_double3"), (1.0, 2.0, 3.0)
-        )
-        self.assertEqual(
-            maya_utils.get_attribute(mesh_name, "mmd_double4"), (1.0, 2.0, 3.0, 4.0)
-        )
+        self.assertAlmostEqual(maya_utils.get_attribute(mesh_name, "mmd_float"), 3.14, places=5)  # type: ignore
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_double3"), (1.0, 2.0, 3.0))
+        self.assertEqual(maya_utils.get_attribute(mesh_name, "mmd_double4"), (1.0, 2.0, 3.0, 4.0))
 
     def test_create_ik_handle(self):
         """IKハンドルを作成できるか"""
@@ -267,9 +255,7 @@ class TestMayaUtils(MayaTestBase):
         joint3 = cmds.joint(position=[0, 10, 0], name="joint3")
 
         # IKハンドルを作成
-        ik_handle, effector = maya_utils.create_ik_handle(
-            start_joint=joint1, end_joint=joint3, solver="ikRPsolver"
-        )
+        ik_handle, effector = maya_utils.create_ik_handle(start_joint=joint1, end_joint=joint3, solver="ikRPsolver")
 
         self.assertTrue(cmds.objExists(ik_handle))
         self.assertTrue(cmds.objExists(effector))
@@ -278,9 +264,7 @@ class TestMayaUtils(MayaTestBase):
     def test_create_ik_handle_invalid_joint(self):
         """存在しないジョイントでIKハンドル作成時にエラーが発生するか"""
         with self.assertRaises(ValueError) as context:
-            maya_utils.create_ik_handle(
-                start_joint="nonexistent_joint", end_joint="another_nonexistent_joint"
-            )
+            maya_utils.create_ik_handle(start_joint="nonexistent_joint", end_joint="another_nonexistent_joint")
         self.assertIn("does not exist", str(context.exception))
 
     def test_set_joint_limits(self):
@@ -293,33 +277,19 @@ class TestMayaUtils(MayaTestBase):
         limit_min = [-1.57, -0.5, -0.3]  # ラジアン
         limit_max = [1.57, 0.5, 0.3]
 
-        result = maya_utils.set_joint_limits(
-            joint=joint, limit_min=limit_min, limit_max=limit_max, enable_limits=True
-        )
+        result = maya_utils.set_joint_limits(joint=joint, limit_min=limit_min, limit_max=limit_max, enable_limits=True)
 
         self.assertTrue(result)
 
         # 制限が設定されているか確認（度数単位で比較）
         import math
 
-        self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.minRotXLimit"), math.degrees(limit_min[0]), places=5
-        )
-        self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.minRotYLimit"), math.degrees(limit_min[1]), places=5
-        )
-        self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.minRotZLimit"), math.degrees(limit_min[2]), places=5
-        )
-        self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.maxRotXLimit"), math.degrees(limit_max[0]), places=5
-        )
-        self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.maxRotYLimit"), math.degrees(limit_max[1]), places=5
-        )
-        self.assertAlmostEqual(
-            cmds.getAttr(f"{joint}.maxRotZLimit"), math.degrees(limit_max[2]), places=5
-        )
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.minRotXLimit"), math.degrees(limit_min[0]), places=5)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.minRotYLimit"), math.degrees(limit_min[1]), places=5)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.minRotZLimit"), math.degrees(limit_min[2]), places=5)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.maxRotXLimit"), math.degrees(limit_max[0]), places=5)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.maxRotYLimit"), math.degrees(limit_max[1]), places=5)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.maxRotZLimit"), math.degrees(limit_max[2]), places=5)
 
         # 制限が有効になっているか確認
         self.assertTrue(cmds.getAttr(f"{joint}.minRotXLimitEnable"))
@@ -342,9 +312,7 @@ class TestMayaUtils(MayaTestBase):
     def test_matrix_to_euler(self):
         """行列からオイラー角への変換が正しいか"""
         # 単位行列の場合
-        identity_matrix = maya_utils.create_matrix_from_axes(
-            x_axis=[1, 0, 0], y_axis=[0, 1, 0], z_axis=[0, 0, 1]
-        )
+        identity_matrix = maya_utils.create_matrix_from_axes(x_axis=[1, 0, 0], y_axis=[0, 1, 0], z_axis=[0, 0, 1])
 
         euler = maya_utils.matrix_to_euler(identity_matrix)
 
@@ -362,9 +330,7 @@ class TestMayaUtils(MayaTestBase):
 
         model2 = cmds.group(empty=True, name="Model2_root")
         cmds.addAttr(model2, longName=ATTR_MMD_MODEL_NAME_EN, dataType="string")
-        cmds.setAttr(
-            f"{model2}.{ATTR_MMD_MODEL_NAME_EN}", "Test Model 2", type="string"
-        )
+        cmds.setAttr(f"{model2}.{ATTR_MMD_MODEL_NAME_EN}", "Test Model 2", type="string")
 
         # MMDではないルートノード
         not_mmd = cmds.group(empty=True, name="NotMMD_root")
@@ -415,9 +381,7 @@ class TestMayaUtils(MayaTestBase):
         # 英語名のみのモデル
         model2 = cmds.group(empty=True, name="Model2_root")
         cmds.addAttr(model2, longName=ATTR_MMD_MODEL_NAME_EN, dataType="string")
-        cmds.setAttr(
-            f"{model2}.{ATTR_MMD_MODEL_NAME_EN}", "Hatsune Miku", type="string"
-        )
+        cmds.setAttr(f"{model2}.{ATTR_MMD_MODEL_NAME_EN}", "Hatsune Miku", type="string")
 
         display_name2 = maya_utils.get_mmd_model_display_name(model2)
         self.assertEqual(display_name2, "Hatsune Miku")
@@ -555,7 +519,7 @@ class TestMayaUtils(MayaTestBase):
         cmds_time = time.time() - start_time
 
         # 結果をログに出力
-        print(f"\nPerformance Test Results (existing attributes):")
+        print("\nPerformance Test Results (existing attributes):")
         print(f"maya_utils.set_attribute (API): {api_time:.4f} seconds")
         print(f"cmds.setAttr: {cmds_time:.4f} seconds")
         if api_time < cmds_time:
@@ -606,9 +570,7 @@ class TestMayaUtils(MayaTestBase):
 
         # Test 5: カスタムアトリビュートでのエッジケース
         # まずカスタムアトリビュートを作成
-        maya_utils.set_custom_attributes(
-            test_obj, {"stringAttr": "", "floatAttr": 0.0, "intAttr": -999999}
-        )
+        maya_utils.set_custom_attributes(test_obj, {"stringAttr": "", "floatAttr": 0.0, "intAttr": -999999})
 
         # 空文字列の設定
         maya_utils.set_attribute(test_obj, "stringAttr", "", "string")
