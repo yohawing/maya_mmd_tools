@@ -1,2 +1,37 @@
 {
+  "allowedTools": [
+    "maya_mmd_tools",
+    "maya_mmd_tools.mcp",
+    "maya_mmd_tools.mcp.linear",
+    "maya_mmd_tools.mcp.serena"
+  ],
+  "mcpServers": {
+    "MayaMCP": {
+      "type": "stdio",
+      "command": "F:/Develop/Python/MayaMCP/.venv/Scripts/python.exe",
+      "args": [
+        "F:/Develop/Python/MayaMCP/src/maya_mcp_server.py"
+      ],
+      "env": {}
+    },
+    "linear-server": {
+      "type": "sse",
+      "url": "https://mcp.linear.app/sse"
+    },
+    "serena": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant",
+        "--project",
+        "F:/Develop/maya_mmd_tools"
+      ],
+      "env": {}
+    }
+  }
 }

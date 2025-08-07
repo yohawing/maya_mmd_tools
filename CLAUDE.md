@@ -161,9 +161,9 @@ OpenMaya API 2.0を使用してアトリビュート値を設定します。
 cmds.setAttrの代わりに使用します。
 
 ```python
-maya_utils.set_attribute_value_api("pCube1", "customAttr1", 1.0, "float")
-maya_utils.set_attribute_value_api("pCube1", "customAttr2", "example", "str")
-maya_utils.set_attribute_value_api("pCube1", "customAttr3", [0.5, 0.5, 0.5], "double3")
+maya_utils.set_attribute("pCube1", "customAttr1", 1.0, "float")
+maya_utils.set_attribute("pCube1", "customAttr2", "example", "str")
+maya_utils.set_attribute("pCube1", "customAttr3", [0.5, 0.5, 0.5], "double3")
 ```
 
 OpenMaya API 2.0を使用してアトリビュート値を取得します。
