@@ -7,6 +7,7 @@ from .logger import get_logger
 from .pmd_data import PmdData
 from .pmx_data import PmxData
 from .vmd_data import VmdData
+from .vpd_data import VpdData
 
 # ロガー取得
 logger = get_logger("mmd_tools.core.mmd_parser")
@@ -14,13 +15,13 @@ logger = get_logger("mmd_tools.core.mmd_parser")
 
 def parse_mmd_file(file_path):
     """
-    MMDファイル（PMD, PMX, VMD）を解析し、解析されたデータオブジェクトを返す。
+    MMDファイル（PMD, PMX, VMD, VPD）を解析し、解析されたデータオブジェクトを返す。
 
     Args:
         file_path (str): 解析するMMDファイルのパス。
 
     Returns:
-        PmdParser or PmxParser or VmdParser: 解析されたMMDデータを含むパーサーオブジェクト。
+        PmdData or PmxData or VmdData or VpdData: 解析されたMMDデータを含むパーサーオブジェクト。
 
     Raises:
         FileNotFoundError: ファイルが見つからない場合。
@@ -32,6 +33,14 @@ def parse_mmd_file(file_path):
         logger.error(f"MMDファイルが見つかりません: {file_path}")
         raise FileNotFoundError(f"MMD file not found: {file_path}")
 
+    # VPDファイルの拡張子チェック
+    if file_path.lower().endswith('.vpd'):
+        logger.info("VPDファイルとして解析を開始")
+        parser = VpdData()
+        parser.parse_file(file_path)
+        logger.info("VPDファイルの解析が完了しました")
+        return parser
+    
     # ファイルの最初の数バイトを読み込み、マジックナンバーでファイルタイプを判別する。
     # PMD: b'Pmd'
     # PMX: b'PMX '

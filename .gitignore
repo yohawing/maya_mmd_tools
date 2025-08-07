@@ -36,6 +36,7 @@ logs/
 .claude/
 .kiro/
 KIRO.md
+.mcp.json
 
 # TestData
 /tests/data/*
