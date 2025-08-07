@@ -12,7 +12,7 @@ Mayaのアニメーションデータに変換する機能を提供します。
 import math
 from typing import Dict, List, Optional, Tuple
 
-import maya.api.OpenMaya as om2
+import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from ..core import maya_utils
@@ -47,13 +47,7 @@ class VmdConverter:
         self.anim_layer = None  # 現在のアニメーションレイヤー名
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
 
-    def convert(
-        self,
-        vmd_data: VmdData,
-        target_namespace: str = None,
-        layer_name: str = "VMD_Motion",
-        layer_mode: str = "override",
-    ) -> bool:
+    def convert(self, vmd_data: VmdData, target_namespace: str = None, layer_name: str = "VMD_Motion") -> bool:
         """VMDデータをMayaアニメーションに変換
 
         Args:
@@ -77,10 +71,9 @@ class VmdConverter:
             # タイムライン設定
             self._setup_timeline(vmd_data)
 
-            # アニメーションレイヤーの作成（必要な場合）
+            # アニメーションレイヤーの作成(overrideで作って、最後にAdditiveに変換)
             if self.use_animation_layers:
-                override = layer_mode == "override"
-                self.anim_layer = cmds.animLayer(layer_name, override=override, weight=1.0)
+                self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
 
             # ボーンアニメーション変換
             if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
@@ -111,6 +104,10 @@ class VmdConverter:
                     self.logger.warning("モーフアニメーション変換でエラーが発生しました")
 
             # フェーズ1では線形補間のみのため、補間データは無視
+
+            # 最後に作成したアニメーションレイヤーのモードをAdditiveにする
+            # if self.use_animation_layers and self.anim_layer:
+            #     cmds.animLayer(self.anim_layer, edit=True, override=False)
 
             self.logger.info("VMDアニメーション変換が完了しました")
             return True
@@ -304,28 +301,49 @@ class VmdConverter:
 
         for frame in frames:
             if hasattr(frame, "frame_number"):
-                position = frame.position
+                pos = om.MVector(frame.position)
                 rotation_quat = frame.rotation
             else:
-                position = frame.get("position", [0, 0, 0])
+                pos = om.MVector(frame.get("position", [0, 0, 0]))
                 rotation_quat = frame.get("rotation", [0, 0, 0, 1])
 
-            euler_rotation = self._quaternion_to_euler(rotation_quat)
+            # 属性リストをまとめてループ処理
+            attrs = ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]
 
-            # 属性リストと値リストをまとめてループ処理
-            attr_value_pairs = [
-                ("translateX", position[0]),
-                ("translateY", position[1]),
-                ("translateZ", -position[2]),
-                ("rotateX", euler_rotation[0]),
-                ("rotateY", euler_rotation[1]),
-                ("rotateZ", euler_rotation[2]),
-            ]
-            for attr, value in attr_value_pairs:
+            pos.z = -pos.z  # Z軸反転
+            pos += om.MVector(maya_utils.get_attribute(joint, "translate"))
+
+            maya_utils.set_attribute(joint, "translate", pos, "double3")
+
+            rot = om.MQuaternion(rotation_quat[0], rotation_quat[1], rotation_quat[2], rotation_quat[3])
+
+            joint_orient = maya_utils.get_attribute(joint, "jointOrient")
+            orient = om.MEulerRotation(
+                math.radians(joint_orient[0]), math.radians(joint_orient[1]), math.radians(joint_orient[2])
+            ).asQuaternion()
+
+            rot = orient.inverse() * rot * orient
+            euler = rot.asEulerRotation()
+
+            # cmds.xform(joint, edit=True, rotation=rot.asEulerRotation(), worldSpace=True)
+            maya_utils.set_attribute(
+                joint, "rotate", (math.degrees(euler[0]), math.degrees(euler[1]), math.degrees(euler[2])), "double3"
+            )
+
+            attr_map = {
+                "translateX": pos[0],
+                "translateY": pos[1],
+                "translateZ": pos[2],
+                "rotateX": math.degrees(euler[0]),
+                "rotateY": math.degrees(euler[1]),
+                "rotateZ": math.degrees(euler[2]),
+            }
+
+            for attr, value in attr_map.items():
                 cmds.setKeyframe(
                     joint,
                     attribute=attr,
-                    value=value,
+                    # value=value,
                     time=frame.frame_number,
                     animLayer=self.anim_layer,
                 )
@@ -350,34 +368,6 @@ class VmdConverter:
                 )
             except Exception as e:
                 self.logger.warning(f"{joint}へのQuaternion補間適用に失敗: {str(e)}")
-
-    def _quaternion_to_euler(self, quat: List[float]) -> Tuple[float, float, float]:
-        """クォータニオンをオイラー角（度）に変換
-
-        Args:
-            quat: クォータニオン [x, y, z, w]
-
-        Returns:
-            オイラー角（度）のタプル (rx, ry, rz)
-        """
-        # Maya API 2.0のMQuaternionを使用
-        # MMDもMayaも右手座標系だが、Z軸の向きが逆（MMD: +Z手前, Maya: +Z奥）
-        # この違いにより、回転の向きも影響を受ける
-        maya_quat = om2.MQuaternion(quat[0], quat[1], -quat[2], quat[3])
-
-        # 正規化（念のため）
-        maya_quat = maya_quat.normal()
-
-        # オイラー角に変換
-        euler = maya_quat.asEulerRotation()
-
-        # ラジアンから度に変換
-        # Z軸の向きが逆のため、X軸とY軸の回転方向が反転する
-        rx = math.degrees(euler.x) * -1  # X軸回転を反転
-        ry = math.degrees(euler.y) * -1  # Y軸回転を反転
-        rz = math.degrees(euler.z) * -1  # Z軸回転も反転
-
-        return (rx, ry, rz)
 
     def get_failed_bones(self) -> set:
         """変換に失敗したボーン名のセットを取得
@@ -823,44 +813,3 @@ class VmdConverter:
 
             # キーフレームを設定
             cmds.setKeyframe(weight_attr, time=frame.frame_number, value=frame.value)
-
-    def set_use_animation_layers(self, use_layers: bool):
-        """アニメーションレイヤーの使用を設定
-
-        Args:
-            use_layers: アニメーションレイヤーを使用する場合True
-        """
-        self.use_animation_layers = use_layers
-
-    def get_animation_layer_name(self) -> Optional[str]:
-        """現在のアニメーションレイヤー名を取得
-
-        Returns:
-            アニメーションレイヤー名（使用していない場合はNone）
-        """
-        return self.anim_layer
-
-    def _create_animation_layer(self, layer_name: Optional[str] = None) -> Optional[str]:
-        """アニメーションレイヤーを作成
-
-        Args:
-            layer_name: レイヤー名（省略時は自動生成）
-
-        Returns:
-            作成したレイヤー名（失敗時はNone）
-        """
-        if not layer_name:
-            import datetime
-
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            layer_name = f"VMDAnimation_{timestamp}"
-
-        try:
-            # アニメーションレイヤーを作成
-            if not cmds.animLayer(layer_name, query=True, exists=True):
-                cmds.animLayer(layer_name, override=True)
-            self.anim_layer = layer_name
-            return layer_name
-        except Exception as e:
-            self.logger.error(f"アニメーションレイヤー作成エラー: {e}")
-            return None
