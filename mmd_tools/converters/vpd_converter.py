@@ -22,73 +22,9 @@ class VpdConverter:
     def __init__(self):
         """VpdConverterの初期化"""
         self.bone_name_mapping = {}  # MMDボーン名 -> Mayaジョイント名のマッピング
-        self.fallback_mapping = {}  # CustomAttributesがない場合のフォールバック用マッピング
-        self._initialize_fallback_mapping()
+        self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
+        self.anim_layer = None  # 現在のアニメーションレイヤー名
 
-    def _initialize_fallback_mapping(self):
-        """CustomAttributesがない場合のフォールバック用マッピングを初期化"""
-        # 基本的なMMDボーン名とMayaでの一般的な名前のマッピング
-        self.fallback_mapping = {
-            # 体幹
-            "センター": ["center", "Center", "hip", "Hip", "root", "Root"],
-            "上半身": ["spine", "Spine", "spine1", "Spine1", "upper_body", "UpperBody"],
-            "上半身2": ["spine2", "Spine2", "chest", "Chest", "upper_body2", "UpperBody2"],
-            "下半身": ["pelvis", "Pelvis", "lower_body", "LowerBody"],
-            "首": ["neck", "Neck"],
-            "頭": ["head", "Head"],
-            # 腕（左）
-            "左肩": ["shoulder_L", "L_shoulder", "left_shoulder", "LeftShoulder"],
-            "左腕": ["arm_L", "L_arm", "left_arm", "LeftArm", "upperarm_L", "L_upperarm"],
-            "左ひじ": ["elbow_L", "L_elbow", "forearm_L", "L_forearm", "left_elbow", "LeftElbow"],
-            "左手首": ["wrist_L", "L_wrist", "hand_L", "L_hand", "left_wrist", "LeftWrist"],
-            # 腕（右）
-            "右肩": ["shoulder_R", "R_shoulder", "right_shoulder", "RightShoulder"],
-            "右腕": ["arm_R", "R_arm", "right_arm", "RightArm", "upperarm_R", "R_upperarm"],
-            "右ひじ": ["elbow_R", "R_elbow", "forearm_R", "R_forearm", "right_elbow", "RightElbow"],
-            "右手首": ["wrist_R", "R_wrist", "hand_R", "R_hand", "right_wrist", "RightWrist"],
-            # 足（左）
-            "左足": ["leg_L", "L_leg", "thigh_L", "L_thigh", "left_leg", "LeftLeg"],
-            "左ひざ": ["knee_L", "L_knee", "shin_L", "L_shin", "left_knee", "LeftKnee"],
-            "左足首": ["ankle_L", "L_ankle", "foot_L", "L_foot", "left_ankle", "LeftAnkle"],
-            "左つま先": ["toe_L", "L_toe", "toes_L", "L_toes", "left_toe", "LeftToe"],
-            # 足（右）
-            "右足": ["leg_R", "R_leg", "thigh_R", "R_thigh", "right_leg", "RightLeg"],
-            "右ひざ": ["knee_R", "R_knee", "shin_R", "R_shin", "right_knee", "RightKnee"],
-            "右足首": ["ankle_R", "R_ankle", "foot_R", "R_foot", "right_ankle", "RightAnkle"],
-            "右つま先": ["toe_R", "R_toe", "toes_R", "R_toes", "right_toe", "RightToe"],
-            # 指（左手）
-            "左親指０": ["thumb_01_L", "L_thumb_01", "left_thumb_01"],
-            "左親指１": ["thumb_02_L", "L_thumb_02", "left_thumb_02"],
-            "左親指２": ["thumb_03_L", "L_thumb_03", "left_thumb_03"],
-            "左人指１": ["index_01_L", "L_index_01", "left_index_01"],
-            "左人指２": ["index_02_L", "L_index_02", "left_index_02"],
-            "左人指３": ["index_03_L", "L_index_03", "left_index_03"],
-            "左中指１": ["middle_01_L", "L_middle_01", "left_middle_01"],
-            "左中指２": ["middle_02_L", "L_middle_02", "left_middle_02"],
-            "左中指３": ["middle_03_L", "L_middle_03", "left_middle_03"],
-            "左薬指１": ["ring_01_L", "L_ring_01", "left_ring_01"],
-            "左薬指２": ["ring_02_L", "L_ring_02", "left_ring_02"],
-            "左薬指３": ["ring_03_L", "L_ring_03", "left_ring_03"],
-            "左小指１": ["pinky_01_L", "L_pinky_01", "left_pinky_01"],
-            "左小指２": ["pinky_02_L", "L_pinky_02", "left_pinky_02"],
-            "左小指３": ["pinky_03_L", "L_pinky_03", "left_pinky_03"],
-            # 指（右手）
-            "右親指０": ["thumb_01_R", "R_thumb_01", "right_thumb_01"],
-            "右親指１": ["thumb_02_R", "R_thumb_02", "right_thumb_02"],
-            "右親指２": ["thumb_03_R", "R_thumb_03", "right_thumb_03"],
-            "右人指１": ["index_01_R", "R_index_01", "right_index_01"],
-            "右人指２": ["index_02_R", "R_index_02", "right_index_02"],
-            "右人指３": ["index_03_R", "R_index_03", "right_index_03"],
-            "右中指１": ["middle_01_R", "R_middle_01", "right_middle_01"],
-            "右中指２": ["middle_02_R", "R_middle_02", "right_middle_02"],
-            "右中指３": ["middle_03_R", "R_middle_03", "right_middle_03"],
-            "右薬指１": ["ring_01_R", "R_ring_01", "right_ring_01"],
-            "右薬指２": ["ring_02_R", "R_ring_02", "right_ring_02"],
-            "右薬指３": ["ring_03_R", "R_ring_03", "right_ring_03"],
-            "右小指１": ["pinky_01_R", "R_pinky_01", "right_pinky_01"],
-            "右小指２": ["pinky_02_R", "R_pinky_02", "right_pinky_02"],
-            "右小指３": ["pinky_03_R", "R_pinky_03", "right_pinky_03"],
-        }
 
     def convert(self, vpd_data, target_namespace=None, options=None):
         """VPDデータをMayaのポーズに変換して適用
@@ -115,11 +51,29 @@ class VpdConverter:
             logger.warning("ターゲットジョイントが見つかりません")
             return False
 
+        # オプションからレイヤー設定を取得
+        layer_name = options.get('layer_name', 'VPD_Pose')
+        create_keyframe = options.get('create_keyframe', True)
+        current_frame = cmds.currentTime(query=True)
+
+        # アニメーションレイヤーの作成または選択
+        if self.use_animation_layers and create_keyframe:
+            self._setup_animation_layer(layer_name)
+
         # ボーンポーズを適用
         applied_count = 0
+        applied_joints = []  # アニメーションを適用したジョイントのリスト
+        
         for bone_pose in vpd_data.bone_poses:
-            if self._apply_bone_pose(bone_pose, joints, target_namespace):
+            joint = self._apply_bone_pose(bone_pose, joints, target_namespace, create_keyframe, current_frame)
+            if joint:
                 applied_count += 1
+                if joint not in applied_joints:
+                    applied_joints.append(joint)
+
+        # アニメーションレイヤーにジョイントを追加
+        if self.use_animation_layers and self.anim_layer and applied_joints and create_keyframe:
+            self._add_objects_to_layer(applied_joints)
 
         logger.info(f"VPDポーズの変換が完了: {applied_count}/{len(vpd_data.bone_poses)}個のボーンを適用")
 
@@ -176,7 +130,7 @@ class VpdConverter:
         Returns:
             str: 見つかったジョイント名、見つからない場合はNone
         """
-        # まずCustomAttributesベースのマッピングから探す
+        # CustomAttributesベースのマッピングから探す
         if mmd_bone_name in self.bone_name_mapping:
             return self.bone_name_mapping[mmd_bone_name]
 
@@ -186,49 +140,49 @@ class VpdConverter:
             if joint_name == mmd_bone_name:
                 return joint
 
-        # フォールバックマッピングテーブルから探す
-        if mmd_bone_name in self.fallback_mapping:
-            possible_names = self.fallback_mapping[mmd_bone_name]
-            for joint in joints:
-                joint_name = joint.split(":")[-1] if ":" in joint else joint
-                if joint_name in possible_names:
-                    return joint
-
-        # 部分一致を試す（最後の手段）
-        for joint in joints:
-            joint_name = joint.split(":")[-1] if ":" in joint else joint
-            # センター -> center のような簡単な変換
-            if mmd_bone_name in joint_name or joint_name in mmd_bone_name:
-                logger.debug(f"部分一致でボーンを発見: {mmd_bone_name} -> {joint}")
-                return joint
-
         return None
 
-    def _apply_bone_pose(self, bone_pose, joints, namespace=None):
+    def _apply_bone_pose(self, bone_pose, joints, namespace=None, create_keyframe=True, frame_time=None):
         """単一のボーンポーズを適用
 
         Args:
             bone_pose (BonePose): ボーンポーズデータ
             joints (list): ジョイントのリスト
             namespace (str): ネームスペース
+            create_keyframe (bool): キーフレームを作成するか
+            frame_time (float): キーフレームを設定する時間
 
         Returns:
-            bool: 適用が成功したか
+            str: 適用したジョイント名、失敗した場合はNone
         """
         # 対応するMayaジョイントを探す
         maya_joint = self._find_maya_joint(bone_pose.bone_name, joints, namespace)
 
         if not maya_joint:
             logger.debug(f"ボーン '{bone_pose.bone_name}' に対応するジョイントが見つかりません")
-            return False
+            return None
 
         try:
+            # アニメーションレイヤーが有効な場合、レイヤーを選択
+            if create_keyframe and self.use_animation_layers and self.anim_layer:
+                cmds.animLayer(self.anim_layer, edit=True, selected=True)
+
             # 位置の適用（センターボーンなど移動可能なボーンのみ）
             if self._is_movable_bone(bone_pose.bone_name):
                 position = self._convert_position_mmd_to_maya(bone_pose.position)
                 cmds.setAttr(f"{maya_joint}.translateX", position[0])
                 cmds.setAttr(f"{maya_joint}.translateY", position[1])
                 cmds.setAttr(f"{maya_joint}.translateZ", position[2])
+                
+                # キーフレームを作成
+                if create_keyframe:
+                    for i, attr in enumerate(['translateX', 'translateY', 'translateZ']):
+                        cmds.setKeyframe(
+                            maya_joint,
+                            attribute=attr,
+                            time=frame_time if frame_time is not None else cmds.currentTime(query=True),
+                            animLayer=self.anim_layer if self.anim_layer else None
+                        )
 
             # 回転の適用
             rotation = self._convert_quaternion_to_euler(bone_pose.quaternion)
@@ -248,13 +202,23 @@ class VpdConverter:
             cmds.setAttr(f"{maya_joint}.rotateX", rotation[0])
             cmds.setAttr(f"{maya_joint}.rotateY", rotation[1])
             cmds.setAttr(f"{maya_joint}.rotateZ", rotation[2])
+            
+            # キーフレームを作成
+            if create_keyframe:
+                for i, attr in enumerate(['rotateX', 'rotateY', 'rotateZ']):
+                    cmds.setKeyframe(
+                        maya_joint,
+                        attribute=attr,
+                        time=frame_time if frame_time is not None else cmds.currentTime(query=True),
+                        animLayer=self.anim_layer if self.anim_layer else None
+                    )
 
             logger.debug(f"ボーン '{bone_pose.bone_name}' を '{maya_joint}' に適用")
-            return True
+            return maya_joint
 
         except Exception as e:
             logger.warning(f"ボーン '{bone_pose.bone_name}' の適用に失敗: {e}")
-            return False
+            return None
 
     def _is_movable_bone(self, bone_name):
         """移動可能なボーンかどうかを判定
@@ -309,6 +273,50 @@ class VpdConverter:
         """
         # 座標系の違いを補正
         return [rotation[0], rotation[1], -rotation[2]]  # Z軸の回転を反転
+
+    def _setup_animation_layer(self, layer_name):
+        """アニメーションレイヤーを作成または選択
+
+        Args:
+            layer_name (str): レイヤー名
+        """
+        # 既存のレイヤーを確認
+        existing_layers = cmds.ls(type='animLayer')
+        
+        if layer_name in existing_layers:
+            # 既存のレイヤーを使用
+            self.anim_layer = layer_name
+            logger.info(f"既存のアニメーションレイヤーを使用: {layer_name}")
+        else:
+            # 新しいレイヤーを作成
+            self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
+            logger.info(f"新しいアニメーションレイヤーを作成: {layer_name}")
+
+    def _add_objects_to_layer(self, objects):
+        """オブジェクトをアニメーションレイヤーに追加
+
+        Args:
+            objects (list): 追加するオブジェクトのリスト
+        """
+        if not self.anim_layer:
+            return
+
+        # オブジェクトをレイヤーに追加
+        for obj in objects:
+            if cmds.objExists(obj):
+                # 各属性をレイヤーに追加
+                attrs = [
+                    "translateX",
+                    "translateY",
+                    "translateZ",
+                    "rotateX",
+                    "rotateY",
+                    "rotateZ",
+                ]
+                for attr in attrs:
+                    attr_path = f"{obj}.{attr}"
+                    if cmds.attributeQuery(attr, node=obj, exists=True):
+                        cmds.animLayer(self.anim_layer, edit=True, attribute=attr_path)
 
     def _apply_joint_orient_correction(self, rotation, joint_orient):
         """JointOrientを考慮した回転の補正
