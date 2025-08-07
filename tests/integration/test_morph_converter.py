@@ -2,8 +2,8 @@ from maya import cmds
 
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils
-from mmd_tools.core import pmd_data
-from mmd_tools.core import pmx_data
+from mmd_tools.core import PmdData
+from mmd_tools.core import PmxData
 from mmd_tools.core.settings import settings
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
@@ -44,11 +44,7 @@ class TestMorphConverter(MayaTestBase):
     def test_convert_pmd_morphs(self):
         """PMDモーフがMayaに正しく変換されることをテストする。"""
         # TestFixtureProviderからPMDファイルパスを取得
-        pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
-
-        # PMDファイルをパース
-        parser = pmd_data.PmdData()
-        pmd_data = parser.parse_file(pmd_file_path)
+        pmd_data, pmd_path = self.fixture_provider.load_pmd_data("miku_v2")
 
         # モーフデータが存在することを確認
         self.assertIsNotNone(pmd_data.morphs, "PMDデータにモーフがありません")
@@ -60,7 +56,7 @@ class TestMorphConverter(MayaTestBase):
         root_group = cmds.group(empty=True, name="test_pmd_root")
 
         # テスト用のメッシュを作成（簡単な四角形）
-        converter = MeshConverter(pmd_file_path)
+        converter = MeshConverter(pmd_path)
         mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
 
         # MorphConverterを作成して変換を実行
@@ -91,11 +87,7 @@ class TestMorphConverter(MayaTestBase):
     def test_convert_pmx_morphs(self):
         """PMXモーフがMayaに正しく変換されることをテストする。"""
         # TestFixtureProviderからPMXファイルパスを取得
-        pmx_file_path = self.fixture_provider.get_pmx_file("荧")
-
-        # PMXファイルをパース
-        parser = pmx_data.PmxData()
-        pmx_data = parser.parse_file(pmx_file_path)
+        pmx_data, pmx_file_path = self.fixture_provider.load_pmx_data("mmt_test_model")
 
         # モーフデータが存在することを確認
         self.assertIsNotNone(pmx_data.morphs, "PMXデータにモーフがありません")

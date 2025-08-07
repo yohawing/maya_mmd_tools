@@ -1,6 +1,7 @@
 from maya import cmds
 
-from mmd_tools.core import pmd_data
+from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core import pmx_data
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import MeshConverter
@@ -64,8 +65,8 @@ class TestMeshConverter(MayaTestBase):
         pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
 
         # PMDファイルをパース
-        parser = pmd_data.PmdData()
-        pmd_data = parser.parse_file(pmd_file_path)
+        pmd_data = PmdData()
+        pmd_data = pmd_data.parse_file(pmd_file_path)
 
         # モデル名を取得
         model_name = pmd_data.header.model_name
@@ -111,8 +112,8 @@ class TestMeshConverter(MayaTestBase):
         pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
-        parser = pmx_data.PmxData()
-        pmx_data = parser.parse_file(pmx_file_path)
+        pmx_data = PmxData()
+        pmx_data = pmx_data.parse_file(pmx_file_path)
 
         # モデル名を取得
         model_name = pmx_data.header.model_name
@@ -164,8 +165,8 @@ class TestMeshConverter(MayaTestBase):
         pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
 
         # PMDファイルをパース
-        parser = pmd_data.PmdData()
-        pmd_data = parser.parse_file(pmd_file_path)
+        pmd_data = PmdData()
+        pmd_data = pmd_data.parse_file(pmd_file_path)
 
         # ルートグループを作成
         root_group = cmds.group(empty=True, name="test_pmd_root")
@@ -233,8 +234,8 @@ class TestMeshConverter(MayaTestBase):
         pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
-        parser = pmx_data.PmxData()
-        pmx_data = parser.parse_file(pmx_file_path)
+        pmx_data = PmxData()
+        pmx_data = pmx_data.parse_file(pmx_file_path)
 
         # ルートグループを作成
         root_group = cmds.group(empty=True, name="test_pmx_root")
