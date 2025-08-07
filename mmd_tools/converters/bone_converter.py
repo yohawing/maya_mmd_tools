@@ -201,15 +201,16 @@ class BoneConverter:
                 ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
             )
 
-            # ジョイントのローカル軸を設定
-            if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-                self.logger.debug(f"ジョイントのローカル軸を設定: {bone.name}")
-                self._set_bone_local_axis(joint, bone)
+            if format_type == "pmx":
+                # ジョイントのローカル軸を設定
+                if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
+                    self.logger.debug(f"ジョイントのローカル軸を設定: {bone.name}")
+                    self._set_bone_local_axis(joint, bone)
 
-            # ジョイントの軸制限を設定
-            if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
-                self.logger.debug(f"ジョイントの軸制限を設定: {bone.name}")
-                self._set_bone_axis_limits(joint, bone)
+                # ジョイントの軸制限を設定
+                if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
+                    self.logger.debug(f"ジョイントの軸制限を設定: {bone.name}")
+                    self._set_bone_axis_limits(joint, bone)
 
             # セグメントスケール補償を無効化
             maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
@@ -545,10 +546,11 @@ class BoneConverter:
             bone: PMXボーンオブジェクト
         """
 
-        x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], bone.x_axis_direction[2])
+        # MMDのローカル軸はZ-Primary
+        x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], -bone.x_axis_direction[2])
         x_axis.normalize()
 
-        z_axis = om.MVector(bone.z_axis_direction[0], bone.z_axis_direction[1], bone.z_axis_direction[2])
+        z_axis = om.MVector(bone.z_axis_direction[0], bone.z_axis_direction[1], -bone.z_axis_direction[2])
         z_axis.normalize()
 
         y_axis = z_axis ^ x_axis
@@ -586,15 +588,15 @@ class BoneConverter:
             # X軸は自由、Y/Z軸は0に固定
             maya_utils.set_joint_limits(
                 joint,
-                limit_min=(0, 0, -180),
-                limit_max=(0, 0, 180),
+                limit_min=(0, 0, -math.pi),
+                limit_max=(0, 0, math.pi),
             )
 
         else:
             # ローカル軸が設定されてない場合は軸制限情報をローカル軸にする
             # rotation matrixを作成
 
-            z_axis = om.MVector(bone.axis_direction[0], bone.axis_direction[1], bone.axis_direction[2])
+            z_axis = om.MVector(bone.axis_direction[0], bone.axis_direction[1], -bone.axis_direction[2])
             z_axis.normalize()
             x_axis = z_axis ^ om.MVector(0, 1, 0)  # Y軸を基準にX軸を計算
             x_axis.normalize()
@@ -612,8 +614,6 @@ class BoneConverter:
 
             transform = om.MTransformationMatrix(matrix)
             euler = transform.rotation(asQuaternion=False)
-
-            print(f"Joint Orient: {euler}")
 
             # Joint Orientを設定
             maya_utils.set_attribute(joint, "jointOrient", (euler.x, euler.y, euler.z), "double3")
