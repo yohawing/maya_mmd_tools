@@ -10,6 +10,7 @@ Mayaのアニメーションデータに変換する機能を提供します。
 """
 
 import math
+from threading import local
 from typing import Dict, List, Optional, Tuple
 
 import maya.api.OpenMaya as om
@@ -271,11 +272,12 @@ class VmdConverter:
             # 属性リストをまとめてループ処理
             attrs = ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]
 
+            # Translateを適用
             pos.z = -pos.z  # Z軸反転
             pos += om.MVector(maya_utils.get_attribute(joint, "translate"))
-
             maya_utils.set_attribute(joint, "translate", pos, "double3")
 
+            # 回転を適用
             self.apply_rotation(joint, om.MQuaternion(*rotation_quat))
 
             for attr in attrs:
@@ -286,7 +288,7 @@ class VmdConverter:
                     animLayer=self.anim_layer,
                 )
 
-        # tODO: maya apiを使うなら、キーフレームを先に打って、カーブを作成した後に、一括で設定するとパフォーマンスが向上する。
+        # TODO: maya apiを使うなら、キーフレームを先に打って、カーブを作成した後に、一括で設定するとパフォーマンスが向上する。
         # curves = maya_utils.create_animation_curves(
         #     joint, attrs, animation_layer=self.animation_layer_name
         # )
@@ -333,7 +335,9 @@ class VmdConverter:
         flip_matrix = om.MMatrix([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
         transform = om.MTransformationMatrix(flip_matrix)
         flip_quat = transform.rotation(asQuaternion=True)
-        converted_quat = flip_quat * world_quat * flip_quat.inverse()
+        # EulerRotationとして取得
+        flip_euler = transform.rotation()
+        converted_quat = flip_quat.inverse() * world_quat * flip_quat
 
         # JointOrientをQuaternionとして取得
         orient_euler = maya_utils.get_attribute(joint, "jointOrient")
@@ -348,6 +352,13 @@ class VmdConverter:
         )
         # 3. ローカル回転をEulerに変換してrotate属性に設定
         local_euler = local_rotation.asEulerRotation()
+
+        # なぜかはわからないが、QuaternionのZ軸を反転させることはできずに、最後にオイラーにしたものを変換したら出来る。
+        local_euler.z = -local_euler.z  # Z軸反転
+        local_euler = local_euler.inverse()
+
+        # MatrixのZ軸反転と単純にZ軸をInvertするのとでは挙動が違う
+        # local_euler *= flip_euler
 
         maya_utils.set_attribute(joint, "rotate", local_euler, "double3")
 

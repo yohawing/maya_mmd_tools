@@ -48,11 +48,11 @@ class RigConverter:
         result = {"ik_handles": [], "semi_standard_bones": {}, "constraints": []}
 
         # IKチェーンを抽出してMayaのIKハンドルを作成
-        ik_chains = self._extract_ik_chains(pmx_data.bones, bone_map)
-        if ik_chains:
-            self.logger.info(f"{len(ik_chains)}個のIKチェーンを検出しました")
-            result["ik_handles"] = self._create_maya_ik_handles(ik_chains)
-            self.logger.info(f"{len(result['ik_handles'])}個のIKハンドルを作成しました")
+        # ik_chains = self._extract_ik_chains(pmx_data.bones, bone_map)
+        # if ik_chains:
+        #     self.logger.info(f"{len(ik_chains)}個のIKチェーンを検出しました")
+        #     result["ik_handles"] = self._create_maya_ik_handles(ik_chains)
+        #     self.logger.info(f"{len(result['ik_handles'])}個のIKハンドルを作成しました")
 
         # 元のボーン名を保存（日本語名での重複チェック用）
         for i, bone in enumerate(pmx_data.bones):
@@ -582,14 +582,26 @@ class RigConverter:
                 parent_index = bone.grant_parent_bone_index
                 if 0 <= parent_index < len(maya_joints):
                     parent_joint = maya_joints[parent_index]
-                    given_rate = bone.grant_rate
+                    grant_rate = bone.grant_rate
+                    offset_flag = not is_local_given  # ローカル付与の場合はオフセットを維持しない
 
-                    constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=True, weight=given_rate)[0]
+                    if grant_rate == -1:
+                        # -1は付与親の回転の逆を適用する。 （一時的にUpベクトルに固定。）
+                        cmds.orientConstraint("master", joint, maintainOffset=offset_flag, weight=1.0)
+                        constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=offset_flag, weight=0)[0]
+                    if grant_rate >= 0 and grant_rate < 1:
+                        # ０～１のときは、付与親の回転を部分的に適用する。
+                        cmds.orientConstraint("master", joint, maintainOffset=offset_flag, weight=1.0 - grant_rate)
+                        constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=offset_flag, weight=grant_rate)[
+                            0
+                        ]
+                    elif grant_rate == 1:
+                        constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=offset_flag, weight=1.0)[0]
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"
                     self.logger.info(
-                        f"回転付与を設定 ({given_type}): {joint} <- {parent_joint} (rate={given_rate}, layer={given_info['transform_layer']})"
+                        f"回転付与を設定 ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
                     )
 
             # 移動付与
@@ -597,14 +609,14 @@ class RigConverter:
                 parent_index = bone.grant_parent_bone_index
                 if 0 <= parent_index < len(maya_joints):
                     parent_joint = maya_joints[parent_index]
-                    given_rate = bone.grant_rate
+                    grant_rate = bone.grant_rate
 
-                    constraint = cmds.pointConstraint(parent_joint, joint, maintainOffset=True, weight=given_rate)[0]
+                    constraint = cmds.pointConstraint(parent_joint, joint, maintainOffset=True, weight=grant_rate)[0]
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"
                     self.logger.info(
-                        f"移動付与を設定 ({given_type}): {joint} <- {parent_joint} (rate={given_rate}, layer={given_info['transform_layer']})"
+                        f"移動付与を設定 ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
                     )
 
         return constraints
