@@ -1,0 +1,3 @@
+from typing import Any, List, Optional, Union, Tuple
+
+def eval(command: str) -> Any: ...

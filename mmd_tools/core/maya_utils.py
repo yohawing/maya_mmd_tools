@@ -1,8 +1,10 @@
 import os
 
 from maya import cmds
+from maya import mel
 from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
+
 
 from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME_EN, ATTR_MMD_MODEL_NAME
 from mmd_tools.core.settings import settings
@@ -167,15 +169,17 @@ def create_material(name, color, texture_path=None, texture_dir=""):
     """
     sanitized_name = sanitize_text(name)
     shader = cmds.shadingNode("lambert", asShader=True, name=sanitized_name)
-    cmds.setAttr(shader + ".color", color[0], color[1], color[2], type="double3")
+    # cmds.setAttr(shader + ".color", color[0], color[1], color[2], type="double3")
+    set_attribute(shader, "color", color, "double3")
     # AlphaをTransparencyに変換
-    cmds.setAttr(
-        shader + ".transparency",
-        1.0 - color[3],
-        1.0 - color[3],
-        1.0 - color[3],
-        type="double3",
-    )
+    # cmds.setAttr(
+    #     shader + ".transparency",
+    #     1.0 - color[3],
+    #     1.0 - color[3],
+    #     1.0 - color[3],
+    #     type="double3",
+    # )
+    set_attribute(shader, "transparency", 1.0 - color[3], "double3")
 
     # 元の名前を保持
     set_custom_attributes(shader, {"mmd_material_name": name})
@@ -213,7 +217,7 @@ def assign_material(mesh_name, shader_node):
     sanitized_shader_name = shader_node + "SG"
     sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
     # シェーダーをシェーディンググループに接続
-    cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
+    cmds.connectAttr(shader_node + ".outColor", f"'{sg_name}.surfaceShader'", force=True)
     # メッシュをシェーディンググループに割り当て
     cmds.sets(mesh_name, edit=True, forceElement=sg_name)
 
@@ -241,10 +245,10 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
 
     if shader_type == "dx11Shader":
         # dx11Shaderは直接surfaceShaderに接続
-        cmds.connectAttr(shader_node + ".message", sg_name + ".surfaceShader", force=True)
+        cmds.connectAttr(shader_node + ".message", f"'{sg_name}.surfaceShader'", force=True)
     else:
         # 標準シェーダーは.outColorを使用
-        cmds.connectAttr(shader_node + ".outColor", sg_name + ".surfaceShader", force=True)
+        cmds.connectAttr(shader_node + ".outColor", f"'{sg_name}.surfaceShader'", force=True)
 
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)
@@ -701,7 +705,6 @@ def apply_ncloth_to_mesh(mesh, nucleus_solver=None):
     Returns:
         str: 作成されたnClothシェイプノード名
     """
-    from maya import mel
 
     cmds.select(mesh)
     ncloth_shape = mel.eval("createNCloth 0;")
@@ -734,7 +737,6 @@ def apply_nrigid_to_mesh(obj, is_dynamic=True):
     Returns:
         str: 作成されたnRigidノード名
     """
-    from maya import mel
 
     cmds.select(obj)
     nrigid = mel.eval("makeCollideNCloth;")
@@ -771,7 +773,6 @@ def apply_nhair_to_curve(curve):
     Returns:
         str: 作成されたhairSystemノード名
     """
-    from maya import mel
 
     cmds.select(curve)
     mel.eval('makeCurvesDynamic 2 { "1", "0", "1", "1", "0"};')

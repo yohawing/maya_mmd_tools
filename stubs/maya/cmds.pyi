@@ -1,8 +1,7 @@
 # Maya Commands type definitions
 # Auto-generated stub file for maya.cmds
 
-from typing import Any, List, Optional, Union, Dict
-from typing_extensions import Literal
+from typing import Any, List, Optional, Union, Tuple, overload
 
 # Common types
 NodeName = str
@@ -16,9 +15,8 @@ def createNode(
     parent: Optional[str] = None,
     shared: bool = False,
     skipSelect: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> str: ...
-
 def polyCube(
     name: Optional[str] = None,
     constructionHistory: bool = True,
@@ -29,9 +27,8 @@ def polyCube(
     subdivisionsX: int = 1,
     subdivisionsY: int = 1,
     subdivisionsZ: int = 1,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> List[str]: ...
-
 def polySphere(
     name: Optional[str] = None,
     radius: float = 1.0,
@@ -40,14 +37,10 @@ def polySphere(
     axis: Optional[List[float]] = None,
     constructionHistory: bool = True,
     createUVs: int = 2,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> List[str]: ...
-
 def joint(
-    name: Optional[str] = None,
-    position: Optional[List[float]] = None,
-    orientation: Optional[List[float]] = None,
-    **kwargs: Any
+    name: Optional[str] = None, position: Optional[List[float]] = None, orientation: Optional[List[float]] = None, **kwargs: Any
 ) -> str: ...
 
 # Attribute functions
@@ -58,9 +51,8 @@ def setAttr(
     lock: bool = False,
     keyable: bool = True,
     channelBox: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> None: ...
-
 def getAttr(
     attribute: str,
     type: bool = False,
@@ -70,9 +62,8 @@ def getAttr(
     channelBox: bool = False,
     multiIndices: bool = False,
     listChildren: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Any: ...
-
 def addAttr(
     node: str,
     longName: Optional[str] = None,
@@ -85,32 +76,15 @@ def addAttr(
     readable: bool = True,
     writable: bool = True,
     storable: bool = True,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> None: ...
-
 def deleteAttr(node: str, attribute: str) -> None: ...
-
 def connectAttr(
-    sourceAttribute: str,
-    destinationAttribute: str,
-    force: bool = False,
-    nextAvailable: bool = False,
-    **kwargs: Any
+    sourceAttribute: str, destinationAttribute: str, force: bool = False, nextAvailable: bool = False, **kwargs: Any
 ) -> None: ...
-
-def disconnectAttr(
-    sourceAttribute: str,
-    destinationAttribute: str,
-    **kwargs: Any
-) -> None: ...
-
+def disconnectAttr(sourceAttribute: str, destinationAttribute: str, **kwargs: Any) -> None: ...
 def listConnections(
-    node: str,
-    source: bool = True,
-    destination: bool = True,
-    connections: bool = False,
-    plugs: bool = False,
-    **kwargs: Any
+    node: str, source: bool = True, destination: bool = True, connections: bool = False, plugs: bool = False, **kwargs: Any
 ) -> Optional[List[str]]: ...
 
 # Selection functions
@@ -122,9 +96,8 @@ def select(
     toggle: bool = False,
     all: bool = False,
     clear: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> None: ...
-
 def ls(
     *args: str,
     selection: bool = False,
@@ -134,9 +107,8 @@ def ls(
     long: bool = False,
     shortNames: bool = False,
     dagObjects: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> List[str]: ...
-
 def listRelatives(
     node: str,
     parent: bool = False,
@@ -145,7 +117,7 @@ def listRelatives(
     allDescendents: bool = False,
     fullPath: bool = False,
     type: Optional[str] = None,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Optional[List[str]]: ...
 
 # Transform functions
@@ -160,9 +132,8 @@ def xform(
     worldSpace: bool = False,
     objectSpace: bool = False,
     relative: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Any: ...
-
 def move(
     x: float,
     y: float,
@@ -171,9 +142,8 @@ def move(
     relative: bool = False,
     worldSpace: bool = False,
     objectSpace: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> None: ...
-
 def rotate(
     x: float,
     y: float,
@@ -182,46 +152,31 @@ def rotate(
     relative: bool = False,
     worldSpace: bool = False,
     objectSpace: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> None: ...
-
-def scale(
-    x: float,
-    y: float,
-    z: float,
-    *objects: str,
-    relative: bool = False,
-    **kwargs: Any
-) -> None: ...
+def scale(x: float, y: float, z: float, *objects: str, relative: bool = False, **kwargs: Any) -> None: ...
 
 # Group and hierarchy functions
 def group(
-    *objects: str,
+    *objects: Union[str, List[str]],
     name: Optional[str] = None,
     parent: Optional[str] = None,
     world: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> str: ...
-
 def parent(
-    *objects: str,
-    world: bool = False,
-    shape: bool = False,
-    relative: bool = False,
-    **kwargs: Any
+    *objects: Union[str, List[str]], world: bool = False, shape: bool = False, relative: bool = False, **kwargs: Any
 ) -> List[str]: ...
-
 def ungroup(*objects: str, **kwargs: Any) -> List[str]: ...
 
 # Delete functions
-def delete(*objects: str, **kwargs: Any) -> None: ...
-
+def delete(*objects: Union[str, List[str]], **kwargs: Any) -> None: ...
 def duplicate(
-    *objects: str,
+    *objects: Union[str, List[str]],
     name: Optional[str] = None,
     parentOnly: bool = False,
     inputConnections: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> List[str]: ...
 
 # Material and shading functions
@@ -232,16 +187,11 @@ def shadingNode(
     asTexture: bool = False,
     asLight: bool = False,
     asUtility: bool = False,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> str: ...
-
 def sets(
-    *objects: str,
-    name: Optional[str] = None,
-    forceElement: Optional[str] = None,
-    **kwargs: Any
+    *objects: str | None, name: Optional[str] = None, forceElement: Optional[str] = None, **kwargs: Any
 ) -> Optional[str]: ...
-
 def assignMaterial(material: str, *objects: str) -> None: ...
 
 # File I/O functions
@@ -255,43 +205,31 @@ def file(
     exportSelected: bool = False,
     force: bool = False,
     type: Optional[str] = None,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Optional[str]: ...
-
 def loadPlugin(name: str, quiet: bool = False, **kwargs: Any) -> bool: ...
 def unloadPlugin(name: str, force: bool = False, **kwargs: Any) -> None: ...
 
 # Animation functions
 def currentTime(query: bool = False, time: Optional[float] = None, **kwargs: Any) -> Optional[float]: ...
-
 def setKeyframe(
-    *objects: str,
-    attribute: Optional[str] = None,
-    time: Optional[float] = None,
-    value: Optional[float] = None,
-    **kwargs: Any
+    *objects: str, attribute: Optional[str] = None, time: Optional[float] = None, value: Optional[float] = None, **kwargs: Any
 ) -> None: ...
-
 def keyframe(
     *objects: str,
     query: bool = False,
     edit: bool = False,
     time: Optional[tuple] = None,
     attribute: Optional[str] = None,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> Optional[List[float]]: ...
 
 # Utility functions
 def objExists(name: str) -> bool: ...
 def nodeType(node: str, **kwargs: Any) -> str: ...
 def rename(node: str, newName: str, **kwargs: Any) -> str: ...
-
 def warning(message: str) -> None: ...
 def error(message: str) -> None: ...
-
-# Common attribute shortcuts
-def getAttr(attr: str) -> Any: ...
-def setAttr(attr: str, value: Any, **kwargs: Any) -> None: ...
 
 # Mesh functions
 def polyMergeVertex(
@@ -299,13 +237,30 @@ def polyMergeVertex(
     distance: float = 0.001,
     alwaysMergeTwoVertices: bool = False,
     constructionHistory: bool = True,
-    **kwargs: Any
+    **kwargs: Any,
 ) -> str: ...
-
 def polyNormal(
-    *objects: str,
-    normalMode: int = 2,
-    userNormalMode: bool = False,
-    constructionHistory: bool = True,
-    **kwargs: Any
+    *objects: str, normalMode: int = 2, userNormalMode: bool = False, constructionHistory: bool = True, **kwargs: Any
 ) -> str: ...
+def animLayer(name: Union[str, List[str]], **kwargs: Any) -> List[str]: ...
+def attributeQuery(attribute: str, node: str, exists: bool = False, **kwargs: Any) -> Any: ...
+
+# Additional commands used by maya_mmd_tools.mmd_tools.core.maya_utils
+def hyperShade(**kwargs: Any) -> None: ...
+def getPanel(*, withFocus: bool = False, typeOf: Optional[str] = None, type: Optional[str] = None) -> Optional[str]: ...
+def modelEditor(panel: str | None, edit: bool = False, backfaceCulling: bool = False, **kwargs: Any) -> None: ...
+def ikHandle(
+    *,
+    startJoint: Optional[str] = None,
+    endEffector: Optional[str] = None,
+    solver: Optional[str] = None,
+    name: Optional[str] = None,
+    **kwargs: Any,
+) -> List[str]: ...
+def poleVectorConstraint(*objects: str, maintainOffset: bool = True, **kwargs: Any) -> List[str]: ...
+def blendShape(*objects: str, **kwargs: Any) -> List[str]: ...
+def listHistory(*objects: str, **kwargs: Any) -> List[str]: ...
+def curve(
+    d: int = 1, p: Optional[List[Tuple[float, float, float]]] = None, name: Optional[str] = None, **kwargs: Any
+) -> List[str]: ...
+def polyCylinder(name: Optional[str] = None, radius: float = 1.0, height: float = 1.0, **kwargs: Any) -> List[str]: ...

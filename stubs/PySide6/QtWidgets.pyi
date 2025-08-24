@@ -1,9 +1,9 @@
 # PySide2.QtWidgets type definitions
 # Auto-generated stub file for PySide2.QtWidgets
 
-from typing import Any, List, Optional, Union, Callable
+from typing import Any, List, Optional, Union
 from .QtCore import QObject, Signal, QSize, QRect, QPoint
-from .QtGui import QPixmap, QIcon, QFont
+from .QtGui import QPixmap, QIcon
 
 class QWidget(QObject):
     def __init__(self, parent: Optional['QWidget'] = None) -> None: ...

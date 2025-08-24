@@ -1,8 +1,8 @@
 # PySide2.QtGui type definitions
 # Auto-generated stub file for PySide2.QtGui
 
-from typing import Any, List, Optional, Union
-from .QtCore import QObject, QPoint, QPointF, QSize, QSizeF, QRect, QRectF
+from typing import Optional, Union
+from .QtCore import QObject, QPoint, QSize, QRect
 
 class QPixmap:
     def __init__(
