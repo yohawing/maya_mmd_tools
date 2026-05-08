@@ -481,7 +481,6 @@ class VmdConverter:
                 continue
 
             bs_node, weight_index, _ = self.morph_name_mapping[morph_name]
-            attr_path = f"{bs_node}.weight[{weight_index}]"
 
             for frame in frames:
                 frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)

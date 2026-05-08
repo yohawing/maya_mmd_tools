@@ -5,3 +5,9 @@ from mmd_tools.plugin_main import (
     maya_useNewAPI,
     uninitializePlugin,
 )
+
+__all__ = [
+    "initializePlugin",
+    "maya_useNewAPI",
+    "uninitializePlugin",
+]
