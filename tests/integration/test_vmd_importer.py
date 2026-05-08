@@ -49,7 +49,7 @@ class TestVmdImporter(MayaTestBase):
             if layer != "BaseAnimation":  # BaseAnimationレイヤーは削除しない
                 try:
                     cmds.delete(layer)
-                except:
+                except Exception:
                     pass
 
         # シーンをクリア
@@ -108,7 +108,7 @@ class TestVmdImporter(MayaTestBase):
     def test_vmd_import_basic(self):
         """VMDファイルの基本的なインポート機能をテスト"""
         # テスト用スケルトンを作成
-        joints = self._create_test_skeleton()
+        self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
@@ -128,7 +128,6 @@ class TestVmdImporter(MayaTestBase):
         self.assertTrue(result, "VMDファイルのインポートに失敗しました")
 
         # タイムライン設定が更新されたことを確認
-        min_time = cmds.playbackOptions(query=True, minTime=True)
         max_time = cmds.playbackOptions(query=True, maxTime=True)
 
         # タイムラインが拡張されたことを確認（デフォルトの1-24フレームから変更されているはず）
@@ -143,7 +142,7 @@ class TestVmdImporter(MayaTestBase):
 
         # ネームスペース内にスケルトンを作成
         cmds.namespace(set=namespace)
-        joints = self._create_test_skeleton()
+        self._create_test_skeleton()
         cmds.namespace(set=":")
 
         # ネームスペース付きのジョイントを選択
@@ -273,7 +272,7 @@ class TestVmdImporter(MayaTestBase):
     def test_vmd_camera_animation_import(self):
         """VMDファイルからカメラアニメーションをインポートするテスト"""
         # テスト用スケルトンを作成（カメラアニメーションでも必要な場合がある）
-        joints = self._create_test_skeleton()
+        self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
@@ -332,7 +331,7 @@ class TestVmdImporter(MayaTestBase):
     def test_vmd_light_animation_import(self):
         """VMDファイルから照明アニメーションをインポートするテスト"""
         # テスト用スケルトンを作成
-        joints = self._create_test_skeleton()
+        self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
@@ -396,7 +395,7 @@ class TestVmdImporter(MayaTestBase):
     def test_vmd_import_with_animation_layers(self):
         """アニメーションレイヤーを使用したVMDインポートのテスト"""
         # テスト用スケルトンを作成
-        joints = self._create_test_skeleton()
+        self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
@@ -426,7 +425,7 @@ class TestVmdImporter(MayaTestBase):
     def test_multiple_vmd_import_with_layers(self):
         """複数のVMDファイルを異なるレイヤーにインポートするテスト"""
         # テスト用スケルトンを作成
-        joints = self._create_test_skeleton()
+        self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
@@ -459,7 +458,7 @@ class TestVmdImporter(MayaTestBase):
     def test_vmd_import_layer_weight(self):
         """アニメーションレイヤーのウェイト設定テスト"""
         # テスト用スケルトンを作成
-        joints = self._create_test_skeleton()
+        self._create_test_skeleton()
 
         # VMDファイルのパスを取得
         vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]

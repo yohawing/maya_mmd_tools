@@ -4,8 +4,8 @@ import maya.standalone
 
 maya.standalone.initialize(name="python")
 
-from mmd_tools.ui.presenters.material_presenter import MaterialPresenter
-from mmd_tools.core.constants import (
+from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa: E402
+from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
     ATTR_MMD_SPHERE_PATH,
@@ -148,12 +148,15 @@ class TestMaterialPresenter(unittest.TestCase):
         """dx11Shaderのプロパティ読み込みテスト"""
         material_name = "test_material"
         mock_cmds.nodeType.return_value = "dx11Shader"
-        mock_cmds.attributeQuery.side_effect = lambda attr, **kwargs: attr in [
-            "DiffuseColorRGB",
-            "SpecularColor",
-            "AmbientColor",
-            "MainTexture",
-        ]
+        mock_cmds.attributeQuery.side_effect = lambda attr, **kwargs: (
+            attr
+            in [
+                "DiffuseColorRGB",
+                "SpecularColor",
+                "AmbientColor",
+                "MainTexture",
+            ]
+        )
 
         # 色データの設定
         mock_maya_utils.get_attribute.side_effect = lambda node, attr: {

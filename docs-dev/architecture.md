@@ -84,7 +84,7 @@
 `docs/`ディレクトリに以下のドキュメントを配置します。
 
 - `docs/design.md`: この設計ドキュメント。
-- `docs/testing.md`: テスト計画と手順。
+- `docs-dev/testing-overview.md`: テスト計画と手順。
 - `docs/project_management.md`: プロジェクトの進行管理やロードマップ。
 
 また各ファイルには、適切な量のコメントとdocstringを追加し、コードの可読性と保守性を高めます。

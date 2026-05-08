@@ -17,10 +17,10 @@ ROOT_DIR = SCRIPT_DIR.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-import maya.cmds as cmds
-import maya.standalone
+import maya.cmds as cmds  # noqa: E402
+import maya.standalone  # noqa: E402
 
-from tests.common.custom_test_runner import (
+from tests.common.custom_test_runner import (  # noqa: E402
     CustomTestRunner,
     enable_windows_ansi_support,
 )

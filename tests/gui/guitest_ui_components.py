@@ -52,7 +52,7 @@ class TestMainWindow(GuiTestBase):
                 self.window.close()
                 self.window.deleteLater()
             self.window = None
-        except:
+        except Exception:
             pass
 
         # イベントループを処理してウィジェットが完全に削除されるのを待つ

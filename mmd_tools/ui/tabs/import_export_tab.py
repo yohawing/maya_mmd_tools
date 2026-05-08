@@ -376,7 +376,7 @@ class ImportExportTab(BaseTab):
         # VPD Pose Import Group
         self.vpd_group = QGroupBox(self.tr("vpd_import", "buttons"))
         vpd_layout = QFormLayout()
-        
+
         self.vpd_path_edit = QLineEdit()
         saved_vpd_path = self.qt_settings.value("vpd_path", "")
         self.vpd_path_edit.setText(saved_vpd_path)
@@ -386,21 +386,21 @@ class ImportExportTab(BaseTab):
         vpd_path_layout.addWidget(self.vpd_path_button)
         self.vpd_file_label = QLabel(self.tr("vpd_file", "labels"))
         vpd_layout.addRow(self.vpd_file_label, vpd_path_layout)
-        
+
         self.vpd_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("vpd_path", text))
-        
+
         # VPD Options
         self.vpd_create_keyframe_check = QCheckBox(self.tr("create_keyframe", "checkboxes"))
         self.vpd_create_keyframe_check.setChecked(True)
         vpd_layout.addRow(self.vpd_create_keyframe_check)
-        
+
         self.vpd_apply_to_all_check = QCheckBox(self.tr("apply_to_all_models", "checkboxes"))
         self.vpd_apply_to_all_check.setChecked(False)
         vpd_layout.addRow(self.vpd_apply_to_all_check)
-        
+
         self.import_vpd_button = QPushButton(self.tr("import_pose", "actions"))
         vpd_layout.addRow(self.import_vpd_button)
-        
+
         self.vpd_group.setLayout(vpd_layout)
         right_layout.addWidget(self.vpd_group)
 
@@ -460,7 +460,7 @@ class ImportExportTab(BaseTab):
             for model in models:
                 display_name = get_mmd_model_display_name(model)
                 self.target_model_combo.addItem(display_name, userData=model)
-        except:
+        except Exception:
             pass
 
         # 保存された選択または現在の選択を復元
@@ -470,7 +470,7 @@ class ImportExportTab(BaseTab):
                 index = int(saved_target_model)
                 if 0 <= index < self.target_model_combo.count():
                     self.target_model_combo.setCurrentIndex(index)
-            except:
+            except Exception:
                 pass
         elif 0 <= current_index < self.target_model_combo.count():
             self.target_model_combo.setCurrentIndex(current_index)
@@ -586,7 +586,7 @@ class ImportExportTab(BaseTab):
                 if os.path.exists(path):
                     valid_history.append(path)
             return valid_history[:max_items]
-        except:
+        except Exception:
             return []
 
     def _save_history(self, key, new_path, max_items=10):

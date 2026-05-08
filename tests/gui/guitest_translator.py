@@ -70,7 +70,7 @@ class TestUITranslator(GuiTestBase):
                 self.window.deleteLater()
             self.window = None
             self.test_widget = None
-        except:
+        except Exception:
             pass
 
         QApplication.processEvents()

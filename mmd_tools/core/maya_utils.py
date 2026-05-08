@@ -490,7 +490,7 @@ def get_attribute(object_name, attr_name):
         # プラグを取得（存在しない場合は例外が発生）
         try:
             plug = depend_fn.findPlug(attr_name, False)
-        except:
+        except Exception:
             # アトリビュートが存在しない場合
             return None
 
@@ -543,11 +543,11 @@ def get_attribute(object_name, attr_name):
         # まずdoubleとして取得を試みる
         try:
             return plug.asDouble()
-        except:
+        except Exception:
             # 失敗したら文字列として取得
             try:
                 return plug.asString()
-            except:
+            except Exception:
                 return None
 
     except Exception:
@@ -1091,7 +1091,7 @@ def set_keyframes_batch(
 
                 try:
                     curve.addKey(time, value, tangent_type, tangent_type)
-                except:
+                except Exception:
                     # エラーが発生した場合はスキップ（レイヤーカーブの場合など）
                     logger.debug(f"Failed to add key for {attr_name} at frame {frame_num}")
                     pass
@@ -1231,7 +1231,7 @@ def select_objects(objects=None, clear=True, add=False, replace=True):
         for obj in objects:
             try:
                 new_selection.add(obj)
-            except:
+            except Exception:
                 logger.warning(f"Could not add '{obj}' to selection")
 
         # 選択を設定
@@ -1258,7 +1258,7 @@ def object_exists(object_name):
         selection_list = om.MSelectionList()
         selection_list.add(object_name)
         return True
-    except:
+    except Exception:
         return False
 
 
@@ -1345,7 +1345,7 @@ def list_objects(object_filter=None, type=None, fullPath=False):
                         continue
 
                 result.append(node_name)
-            except:
+            except Exception:
                 pass
 
             it.next()
@@ -1387,7 +1387,7 @@ def _list_dg_nodes(node_type, object_filter=None):
                         continue
 
                 result.append(node_name)
-            except:
+            except Exception:
                 pass
 
             it.next()

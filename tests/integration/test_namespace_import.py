@@ -43,7 +43,7 @@ class TestNamespaceImport(unittest.TestCase):
         for ns in model_namespaces:
             try:
                 NamespaceUtils.cleanup_namespace(ns, force=True)
-            except:
+            except Exception:
                 pass
 
     def test_single_model_with_namespace(self):

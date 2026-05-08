@@ -19,6 +19,8 @@ Thumbs.db
 # Build artifacts
 build/
 dist/
+plug-ins/*
+!plug-ins/.gitkeep
 
 # IDE specific files
 .idea/
@@ -29,6 +31,7 @@ dist/
 # Other temporary files
 *.tmp
 logs/
+stubs/
 
 # ai agent files
 .gemini/
@@ -37,6 +40,7 @@ logs/
 .kiro/
 KIRO.md
 .mcp.json
+CLAUDE.md
 
 # TestData
 /tests/data/*
@@ -47,7 +51,3 @@ KIRO.md
 !/tests/data/for_unit_test/*.vmd
 !/tests/data/mmt_test_model.pmx
 mmd_tools/shaders/MayaToonOutline.fx
-
-# Serena
-serena/
-.serena/

@@ -5,7 +5,6 @@ from mmd_tools.converters import BoneConverter, MeshConverter
 from mmd_tools.core import maya_utils
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
-from mmd_tools.core import settings
 
 
 class TestBoneConverter(MayaTestBase):

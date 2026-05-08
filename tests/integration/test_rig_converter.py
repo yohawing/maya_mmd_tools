@@ -441,7 +441,7 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # IKボーンを作成
         cmds.select(clear=True)
-        ik_bone = cmds.joint(name="left_leg_ik", position=[2, 0, 0])
+        cmds.joint(name="left_leg_ik", position=[2, 0, 0])
 
         # IKチェーン情報を作成
         chain = {
@@ -876,7 +876,7 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # IKボーンを作成
         cmds.select(clear=True)
-        ik_bone = cmds.joint(name="left_leg_ik", position=[1, 0, 2])
+        cmds.joint(name="left_leg_ik", position=[1, 0, 2])
 
         # PoleTargetを作成
         pole_target = self.converter._create_pole_target_for_leg_ik(chain, ik_handle, hip, ankle)
@@ -907,7 +907,7 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # IKボーンを作成
         cmds.select(clear=True)
-        ik_bone = cmds.joint(name="left_leg_ik", position=[1, 0, 2])
+        cmds.joint(name="left_leg_ik", position=[1, 0, 2])
 
         # PoleTargetを作成
         pole_target = self.converter._create_pole_target_for_leg_ik(chain, ik_handle, hip, ankle)

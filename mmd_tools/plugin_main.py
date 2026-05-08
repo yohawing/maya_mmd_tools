@@ -1,5 +1,6 @@
 from maya import cmds
 import maya.api.OpenMaya as om
+from mmd_tools import __version__
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.view import shader_override as mmd_shader
 
@@ -48,10 +49,10 @@ def initializePlugin(mobject):
     Plugin entry point.
     """
     vendor = "yohawing"
-    version = "1.0.0"
+    version = __version__
 
     # プラグインオブジェクトを作成 (API 2.0)
-    plugin = om.MFnPlugin(mobject, vendor, version)
+    om.MFnPlugin(mobject, vendor, version)
 
     try:
         install_mmd_menu()
@@ -66,7 +67,7 @@ def uninitializePlugin(mobject):
     Plugin exit point.
     """
     # プラグインオブジェクトを作成 (API 2.0)
-    plugin = om.MFnPlugin(mobject)
+    om.MFnPlugin(mobject)
 
     try:
         uninstall_mmd_menu()

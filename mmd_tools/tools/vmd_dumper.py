@@ -102,7 +102,7 @@ class VmdDumper:
 
         # フレーム範囲を計算
         all_frames = []
-        
+
         if self.vmd.bone_frames:
             all_frames.extend([f.frame_number for f in self.vmd.bone_frames])
         if self.vmd.morph_frames:
@@ -118,7 +118,9 @@ class VmdDumper:
 
         if all_frames:
             lines.append(f"\nFrame Range: {min(all_frames)} - {max(all_frames)}")
-            lines.append(f"Duration: {max(all_frames) - min(all_frames)} frames ({(max(all_frames) - min(all_frames)) / 30:.2f} seconds @ 30fps)")
+            lines.append(
+                f"Duration: {max(all_frames) - min(all_frames)} frames ({(max(all_frames) - min(all_frames)) / 30:.2f} seconds @ 30fps)"
+            )
 
         return "\n".join(lines)
 
@@ -139,36 +141,34 @@ class VmdDumper:
 
         lines.append(f"Unique Bones: {len(bone_counts)}")
         lines.append("\nBone Frame Counts:")
-        
+
         # 最も多いボーンから表示（上位10個）
         sorted_bones = sorted(bone_counts.items(), key=lambda x: len(x[1]), reverse=True)
         for i, (bone_name, frames) in enumerate(sorted_bones[:10]):
             frame_range = f"[{min(frames)}-{max(frames)}]" if len(frames) > 1 else f"[{frames[0]}]"
             lines.append(f"  {bone_name}: {len(frames)} frames {frame_range}")
-        
+
         if len(sorted_bones) > 10:
             lines.append(f"  ... and {len(sorted_bones) - 10} more bones")
 
         # サンプルフレーム（最初の5フレーム）
         lines.append("\nSample Frames:")
         for i, frame in enumerate(self.vmd.bone_frames[:5]):
-            lines.append(
-                f"  Frame {frame.frame_number}: {frame.bone_name}"
-            )
-            lines.append(
-                f"    Pos: ({frame.position[0]:.3f}, {frame.position[1]:.3f}, {frame.position[2]:.3f})"
-            )
+            lines.append(f"  Frame {frame.frame_number}: {frame.bone_name}")
+            lines.append(f"    Pos: ({frame.position[0]:.3f}, {frame.position[1]:.3f}, {frame.position[2]:.3f})")
             lines.append(
                 f"    Rot: ({frame.rotation[0]:.3f}, {frame.rotation[1]:.3f}, {frame.rotation[2]:.3f}, {frame.rotation[3]:.3f})"
             )
-            
+
             # 補間曲線の情報
-            if hasattr(frame, 'interpolation') and frame.interpolation:
+            if hasattr(frame, "interpolation") and frame.interpolation:
                 interp = frame.interpolation
-                lines.append(f"    Interpolation: X({interp[0]},{interp[1]},{interp[2]},{interp[3]}) "
-                           f"Y({interp[4]},{interp[5]},{interp[6]},{interp[7]}) "
-                           f"Z({interp[8]},{interp[9]},{interp[10]},{interp[11]}) "
-                           f"R({interp[12]},{interp[13]},{interp[14]},{interp[15]})")
+                lines.append(
+                    f"    Interpolation: X({interp[0]},{interp[1]},{interp[2]},{interp[3]}) "
+                    f"Y({interp[4]},{interp[5]},{interp[6]},{interp[7]}) "
+                    f"Z({interp[8]},{interp[9]},{interp[10]},{interp[11]}) "
+                    f"R({interp[12]},{interp[13]},{interp[14]},{interp[15]})"
+                )
 
         if len(self.vmd.bone_frames) > 5:
             lines.append(f"  ... and {len(self.vmd.bone_frames) - 5:,} more frames")
@@ -192,22 +192,20 @@ class VmdDumper:
 
         lines.append(f"Unique Morphs: {len(morph_counts)}")
         lines.append("\nMorph Frame Counts:")
-        
+
         # 最も多いモーフから表示（上位10個）
         sorted_morphs = sorted(morph_counts.items(), key=lambda x: len(x[1]), reverse=True)
         for i, (morph_name, frames) in enumerate(sorted_morphs[:10]):
             frame_range = f"[{min(frames)}-{max(frames)}]" if len(frames) > 1 else f"[{frames[0]}]"
             lines.append(f"  {morph_name}: {len(frames)} frames {frame_range}")
-        
+
         if len(sorted_morphs) > 10:
             lines.append(f"  ... and {len(sorted_morphs) - 10} more morphs")
 
         # サンプルフレーム（最初の5フレーム）
         lines.append("\nSample Frames:")
         for i, frame in enumerate(self.vmd.morph_frames[:5]):
-            lines.append(
-                f"  Frame {frame.frame_number}: {frame.morph_name} = {frame.value:.3f}"
-            )
+            lines.append(f"  Frame {frame.frame_number}: {frame.morph_name} = {frame.value:.3f}")
 
         if len(self.vmd.morph_frames) > 5:
             lines.append(f"  ... and {len(self.vmd.morph_frames) - 5:,} more frames")
@@ -229,12 +227,8 @@ class VmdDumper:
         lines.append("\nSample Frames:")
         for i, frame in enumerate(self.vmd.camera_frames[:5]):
             lines.append(f"  Frame {frame.frame_number}:")
-            lines.append(
-                f"    Position: ({frame.position[0]:.3f}, {frame.position[1]:.3f}, {frame.position[2]:.3f})"
-            )
-            lines.append(
-                f"    Rotation: ({frame.rotation[0]:.3f}, {frame.rotation[1]:.3f}, {frame.rotation[2]:.3f})"
-            )
+            lines.append(f"    Position: ({frame.position[0]:.3f}, {frame.position[1]:.3f}, {frame.position[2]:.3f})")
+            lines.append(f"    Rotation: ({frame.rotation[0]:.3f}, {frame.rotation[1]:.3f}, {frame.rotation[2]:.3f})")
             lines.append(f"    Distance: {frame.distance:.3f}")
             lines.append(f"    FOV: {frame.viewing_angle}°")
             lines.append(f"    Perspective: {'ON' if frame.perspective else 'OFF'}")
@@ -259,12 +253,8 @@ class VmdDumper:
         lines.append("\nSample Frames:")
         for i, frame in enumerate(self.vmd.light_frames[:5]):
             lines.append(f"  Frame {frame.frame_number}:")
-            lines.append(
-                f"    Color: ({frame.color[0]:.3f}, {frame.color[1]:.3f}, {frame.color[2]:.3f})"
-            )
-            lines.append(
-                f"    Direction: ({frame.direction[0]:.3f}, {frame.direction[1]:.3f}, {frame.direction[2]:.3f})"
-            )
+            lines.append(f"    Color: ({frame.color[0]:.3f}, {frame.color[1]:.3f}, {frame.color[2]:.3f})")
+            lines.append(f"    Direction: ({frame.direction[0]:.3f}, {frame.direction[1]:.3f}, {frame.direction[2]:.3f})")
 
         if len(self.vmd.light_frames) > 5:
             lines.append(f"  ... and {len(self.vmd.light_frames) - 5:,} more frames")
@@ -310,8 +300,8 @@ class VmdDumper:
         for i, frame in enumerate(self.vmd.ik_show_hide_frames[:5]):
             lines.append(f"  Frame {frame.frame_number}:")
             lines.append(f"    Visible: {'ON' if frame.visible else 'OFF'}")
-            
-            if hasattr(frame, 'ik_states') and frame.ik_states:
+
+            if hasattr(frame, "ik_states") and frame.ik_states:
                 lines.append(f"    IK States: {len(frame.ik_states)} IKs")
                 for ik_name, show_flag in frame.ik_states[:3]:
                     lines.append(f"      {ik_name}: {'ON' if show_flag else 'OFF'}")

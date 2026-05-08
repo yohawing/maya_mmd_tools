@@ -95,7 +95,7 @@ class Settings(UserDict):
         try:
             if not hasattr(cmds, "optionVar"):
                 return
-        except:
+        except Exception:
             return
 
         flat_defaults = self._flatten_dict(self._defaults)
@@ -129,7 +129,7 @@ class Settings(UserDict):
         try:
             if not hasattr(cmds, "optionVar"):
                 return
-        except:
+        except Exception:
             return
 
         flat_data = self._flatten_dict(self.data)

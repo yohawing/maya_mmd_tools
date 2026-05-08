@@ -166,12 +166,6 @@ class PmxData:
 
                 # Get sizes from header
                 encoding = self.header.encoding
-                vertex_size = self.header.vertex_index_size
-                texture_size = self.header.texture_index_size
-                material_size = self.header.material_index_size
-                bone_size = self.header.bone_index_size
-                morph_size = self.header.morph_index_size
-                rigid_body_size = self.header.rigid_body_index_size
 
                 # Vertex
                 vertex_count = len(self.vertices)

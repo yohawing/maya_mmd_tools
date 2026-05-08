@@ -45,7 +45,7 @@ class TestVmdConverter(MayaTestBase):
             if layer != "BaseAnimation":  # BaseAnimationレイヤーは削除しない
                 try:
                     cmds.delete(layer)
-                except:
+                except Exception:
                     pass
 
     def test_init(self):
@@ -88,7 +88,7 @@ class TestVmdConverter(MayaTestBase):
 
         # 変換実行（実際のMayaシーンにボーンがないためFalseを返すが、
         # エラーが発生しないことを確認）
-        result = self.converter.convert(vmd_data)
+        self.converter.convert(vmd_data)
 
         # フレーム数が正しく設定されていることを確認
         # (VMDデータの通常フレームは30)

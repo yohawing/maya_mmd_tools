@@ -193,7 +193,7 @@ class ApplicationState(QObject):
             if cmds.attributeQuery(attr, node=node, exists=True):
                 value = cmds.getAttr(f"{node}.{attr}")
                 return value if value is not None else default
-        except:
+        except Exception:
             pass
         return default
 

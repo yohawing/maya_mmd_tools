@@ -101,7 +101,6 @@ class GuiTestEnhancedLogViewer(unittest.TestCase):
     def test_max_log_entries(self):
         """最大ログエントリ数のテスト"""
         # MAX_LOG_ENTRIESを超える数のログを追加
-        max_entries = EnhancedLogViewer.MAX_LOG_ENTRIES
 
         # 小さい値でテスト（実際は10000）
         self.viewer.log_entries = type(self.viewer.log_entries)(maxlen=10)

@@ -2,7 +2,6 @@ from maya import cmds
 
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmd_data import PmdData
-from mmd_tools.core import pmx_data
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import MeshConverter
 from mmd_tools.core import maya_utils
@@ -176,7 +175,7 @@ class TestMeshConverter(MayaTestBase):
         mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
 
         # メッシュに割り当てられているマテリアルを取得
-        mesh_shapes = cmds.listRelatives(mesh_name, shapes=True, type="mesh") or []
+        cmds.listRelatives(mesh_name, shapes=True, type="mesh") or []
         assigned_materials = set()
 
         assigned_materials = maya_utils.get_materials_from_mesh(mesh_name)

@@ -5,8 +5,7 @@ import maya.api.OpenMaya as om
 import math
 
 from mmd_tools.core.logger import get_logger
-from mmd_tools.core.namespace_utils import NamespaceUtils
-from mmd_tools.core.maya_utils import get_attribute, set_attribute
+from mmd_tools.core.maya_utils import get_attribute
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 
 logger = get_logger(__name__)
@@ -24,7 +23,6 @@ class VpdConverter:
         self.bone_name_mapping = {}  # MMDボーン名 -> Mayaジョイント名のマッピング
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
         self.anim_layer = None  # 現在のアニメーションレイヤー名
-
 
     def convert(self, vpd_data, target_namespace=None, options=None):
         """VPDデータをMayaのポーズに変換して適用
@@ -52,8 +50,8 @@ class VpdConverter:
             return False
 
         # オプションからレイヤー設定を取得
-        layer_name = options.get('layer_name', 'VPD_Pose')
-        create_keyframe = options.get('create_keyframe', True)
+        layer_name = options.get("layer_name", "VPD_Pose")
+        create_keyframe = options.get("create_keyframe", True)
         current_frame = cmds.currentTime(query=True)
 
         # アニメーションレイヤーの作成または選択
@@ -63,7 +61,7 @@ class VpdConverter:
         # ボーンポーズを適用
         applied_count = 0
         applied_joints = []  # アニメーションを適用したジョイントのリスト
-        
+
         for bone_pose in vpd_data.bone_poses:
             joint = self._apply_bone_pose(bone_pose, joints, target_namespace, create_keyframe, current_frame)
             if joint:
@@ -173,15 +171,15 @@ class VpdConverter:
                 cmds.setAttr(f"{maya_joint}.translateX", position[0])
                 cmds.setAttr(f"{maya_joint}.translateY", position[1])
                 cmds.setAttr(f"{maya_joint}.translateZ", position[2])
-                
+
                 # キーフレームを作成
                 if create_keyframe:
-                    for i, attr in enumerate(['translateX', 'translateY', 'translateZ']):
+                    for i, attr in enumerate(["translateX", "translateY", "translateZ"]):
                         cmds.setKeyframe(
                             maya_joint,
                             attribute=attr,
                             time=frame_time if frame_time is not None else cmds.currentTime(query=True),
-                            animLayer=self.anim_layer if self.anim_layer else None
+                            animLayer=self.anim_layer if self.anim_layer else None,
                         )
 
             # 回転の適用
@@ -202,15 +200,15 @@ class VpdConverter:
             cmds.setAttr(f"{maya_joint}.rotateX", rotation[0])
             cmds.setAttr(f"{maya_joint}.rotateY", rotation[1])
             cmds.setAttr(f"{maya_joint}.rotateZ", rotation[2])
-            
+
             # キーフレームを作成
             if create_keyframe:
-                for i, attr in enumerate(['rotateX', 'rotateY', 'rotateZ']):
+                for i, attr in enumerate(["rotateX", "rotateY", "rotateZ"]):
                     cmds.setKeyframe(
                         maya_joint,
                         attribute=attr,
                         time=frame_time if frame_time is not None else cmds.currentTime(query=True),
-                        animLayer=self.anim_layer if self.anim_layer else None
+                        animLayer=self.anim_layer if self.anim_layer else None,
                     )
 
             logger.debug(f"ボーン '{bone_pose.bone_name}' を '{maya_joint}' に適用")
@@ -281,8 +279,8 @@ class VpdConverter:
             layer_name (str): レイヤー名
         """
         # 既存のレイヤーを確認
-        existing_layers = cmds.ls(type='animLayer')
-        
+        existing_layers = cmds.ls(type="animLayer")
+
         if layer_name in existing_layers:
             # 既存のレイヤーを使用
             self.anim_layer = layer_name

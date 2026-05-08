@@ -401,7 +401,7 @@ class MaterialPresenter:
                 uniform_params = cmds.listAttr(material_name + ".uniformParameters") or []
                 if uniform_params:
                     logger.debug(f"Uniform parameters on {material_name}: {uniform_params}")
-        except:
+        except Exception:
             pass
 
         # Sphere map

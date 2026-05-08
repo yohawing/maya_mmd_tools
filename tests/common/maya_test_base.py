@@ -14,7 +14,7 @@ try:
     # Mayaのスタンドアロンモードを初期化
     # maya.standalone.initialize(name="python")
     # MayaのコマンドとMELをインポート
-    from maya import cmds, mel
+    from maya import cmds
 
     MAYA_AVAILABLE = True
 except ImportError:

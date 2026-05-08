@@ -397,7 +397,7 @@ class TestMayaUtils(MayaTestBase):
         # テストオブジェクトを作成
         cube1 = cmds.polyCube(name="test_cube1")[0]
         cube2 = cmds.polyCube(name="test_cube2")[0]
-        cube3 = cmds.polyCube(name="test_cube3")[0]
+        cmds.polyCube(name="test_cube3")
 
         # 選択をクリア
         result = maya_utils.select_objects(clear=True)
@@ -470,12 +470,12 @@ class TestMayaUtils(MayaTestBase):
 
         # ジョイントを作成
         cmds.select(clear=True)
-        joint1 = cmds.joint(name="test_joint1")
-        joint2 = cmds.joint(name="test_joint2")
+        cmds.joint(name="test_joint1")
+        cmds.joint(name="test_joint2")
 
         # メッシュを作成
-        cube = cmds.polyCube(name="test_cube")[0]
-        sphere = cmds.polySphere(name="test_sphere")[0]
+        cmds.polyCube(name="test_cube")
+        cmds.polySphere(name="test_sphere")
 
         # ジョイントのみリスト
         joints = maya_utils.list_objects(type="joint")

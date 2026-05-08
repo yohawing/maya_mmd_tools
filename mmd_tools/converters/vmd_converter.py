@@ -9,9 +9,7 @@ Mayaのアニメーションデータに変換する機能を提供します。
 - 基本的なエラーハンドリング
 """
 
-import math
-from threading import local
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
@@ -19,10 +17,6 @@ import maya.cmds as cmds
 from ..core import maya_utils
 from ..core.constants import (
     ATTR_MMD_BONE_NAME,
-    ATTR_MMD_CAMERA,
-    ATTR_MMD_LIGHT,
-    DEFAULT_CAMERA_NAME,
-    DEFAULT_LIGHT_NAME,
 )
 from ..core.logger import get_logger
 from ..core.vmd_data import VmdData
@@ -257,7 +251,6 @@ class VmdConverter:
         affected_layers = cmds.animLayer([joint], query=True, affectedLayers=True) or []
         if self.anim_layer not in affected_layers:
             # オブジェクトをレイヤーに追加
-            current_selection = cmds.ls(selection=True)
             cmds.select(joint, replace=True)
             cmds.animLayer(self.anim_layer, edit=True, addSelectedObjects=True)
 
@@ -324,7 +317,6 @@ class VmdConverter:
         if parent_path.length() == 0:
             return om.MQuaternion(0, 0, 0, 1)
 
-        parent_transform = om.MFnTransform(parent_path)
         parent_world_matrix = parent_path.inclusiveMatrix()
         parent_transform_matrix = om.MTransformationMatrix(parent_world_matrix)
 
@@ -335,8 +327,6 @@ class VmdConverter:
         flip_matrix = om.MMatrix([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
         transform = om.MTransformationMatrix(flip_matrix)
         flip_quat = transform.rotation(asQuaternion=True)
-        # EulerRotationとして取得
-        flip_euler = transform.rotation()
         converted_quat = flip_quat.inverse() * world_quat * flip_quat
 
         # JointOrientをQuaternionとして取得

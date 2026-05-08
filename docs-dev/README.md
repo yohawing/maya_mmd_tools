@@ -1,73 +1,72 @@
-# Maya MMD Tools - 開発者ドキュメント
+# Maya MMD Tools 開発者ドキュメント
 
-このディレクトリには、Maya MMD Toolsの開発者向けドキュメントが含まれています。
+このディレクトリには、Maya MMD Toolsの開発者向けドキュメントを置いています。
 
-## 📚 ドキュメント構成
+現在は `0.1.0` リリースに向けて構成を絞り込み、設計、ファイル仕様、テスト、リリース作業に必要な文書だけを残しています。
 
-### 🏗️ アーキテクチャ
-- [overview.md](overview.md) - 全体アーキテクチャ設計
-- [plugin-structure.md](plugin-structure.md) - Mayaプラグイン統合
+## ドキュメント構成
 
-### 💻 実装詳細
-#### コア機能
-- [logger.md](logger.md) - ロギングシステム
+### 全体設計
 
-#### コンバーター
-- [morph-converter.md](morph-converter.md) - モーフコンバーター
-- [vmd-converter.md](vmd-converter.md) - VMDコンバーター
-- [physics-converter.md](physics-converter.md) - 物理演算コンバーター
-- [material-converter.md](material-converter.md) - マテリアル・シェーダー
+- [architecture.md](architecture.md) - アプリケーション全体の設計、主要レイヤー、Maya連携方針
+- [setting.md](setting.md) - 設定管理システム
+- [ascii-translation.md](ascii-translation.md) - MMD多言語名をMaya互換名へ変換する仕組み
 
-#### UI
-- [main-window.md](main-window.md) - メインウィンドウUI
+### ファイルフォーマット仕様
 
-#### 最適化
-- [morph-optimization.md](morph-optimization.md) - モーフ最適化
+- [spec-pmd.md](spec-pmd.md) - PMDファイル仕様
+- [spec-pmx.md](spec-pmx.md) - PMXファイル仕様
+- [spec-vmd.md](spec-vmd.md) - VMDファイル仕様
 
-### 📋 仕様書
-#### ファイルフォーマット
-- [pmd-spec.md](pmd-spec.md) - PMDファイル仕様
-- [pmx-spec.md](pmx-spec.md) - PMXファイル仕様
-- [vmd-spec.md](vmd-spec.md) - VMDファイル仕様
+### テスト
 
-#### 内部仕様
-- [bone-mapping.md](bone-mapping.md) - ボーンマッピング・IK仕様
-- [unicode-dict.md](unicode-dict.md) - Unicode辞書仕様
+- [testing-overview.md](testing-overview.md) - テスト戦略、実行方法、Maya環境でのテスト構成
+- [testing-mock.md](testing-mock.md) - PMD/PMX/VMDモックとテストデータ設計
 
-### 🔧 開発ガイド
-- [testing.md](testing.md) - テストガイド
-- [test-mock-design.md](test-mock-design.md) - テストモック設計
-- [configuration.md](configuration.md) - 設定システム
-- [coding-standards.md](coding-standards.md) - コーディング規約
+### リリース
 
-### 📊 プロジェクト管理
-- [task-tracking.md](task-tracking.md) - タスク管理
-- [versioning.md](versioning.md) - バージョニング戦略
-- [release-process.md](release-process.md) - リリースプロセス
+- [release-process.md](release-process.md) - `0.1.0` リリースチェックリストと手順
+- [release-versioning.md](release-versioning.md) - `0.x` 系の単純なバージョニング方針
 
-## 🚀 クイックスタート（開発者向け）
+## 開発者向けクイックスタート
 
-1. **開発環境のセットアップ**
-   - Maya 2024のインストール
-   - Python 3.7以降の環境構築
-   - 必要なツールのインストール
+### コードベースを把握する
 
-2. **コードベースの理解**
-   - [アーキテクチャ概要](overview.md)を読む
-   - [コーディング規約](coding-standards.md)を確認
+1. [architecture.md](architecture.md) で全体構成を確認します。
+2. PMD/PMX/VMDの構造を触る場合は、該当する `spec-*.md` を参照します。
+3. 設定や名前変換を触る場合は、[setting.md](setting.md) と [ascii-translation.md](ascii-translation.md) を確認します。
 
-3. **開発開始**
-   - テストの実行方法は[testing.md](testing.md)を参照
-   - コントリビューション方法は[CONTRIBUTING.md](../CONTRIBUTING.md)を参照
+### テストを実行する
 
-## 📝 ドキュメント更新方針
+ユニットテスト:
 
-- コード変更と同時にドキュメントを更新
-- PRレビュー時にドキュメントの更新を確認
-- 設計変更は必ずドキュメント化
+```bash
+python tests/run_tests.py --type unit
+```
 
-## 🔗 関連リンク
+統合テスト:
+
+```bash
+python tests/run_tests.py --type integration
+```
+
+GUIテスト:
+
+```bash
+python tests/run_gui_tests.py
+```
+
+詳しくは [testing-overview.md](testing-overview.md) を参照してください。
+
+## ドキュメント更新方針
+
+- 実装範囲が変わった場合は、関連する `docs-dev/` 文書も更新します。
+- ユーザー向けの手順は [../docs/README.md](../docs/README.md) に集約します。
+- リリース方針やバージョン方針を変えた場合は、[release-process.md](release-process.md) と [release-versioning.md](release-versioning.md) を同時に確認します。
+- ドキュメントの見出しには番号を付けません。セクションを入れ替えやすくするためです。
+
+## 関連リンク
 
 - [ユーザードキュメント](../docs/README.md)
 - [プロジェクトREADME](../README.md)
-- [開発ガイドライン](../CLAUDE.md)
+- [開発エージェント向け指示](../AGENTS.md)

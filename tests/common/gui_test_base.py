@@ -54,7 +54,7 @@ class GuiTestBase(unittest.TestCase):
             if window.startswith("MayaMMDTools") or window.startswith("mmdTools"):
                 try:
                     cmds.deleteUI(window, window=True)
-                except:
+                except Exception:
                     pass
 
 

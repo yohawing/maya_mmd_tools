@@ -382,7 +382,7 @@ class MorphPresenter:
         # ターゲットの存在確認
         try:
             cmds.getAttr(f"{blend_shape_node}.{target_name}")
-        except:
+        except Exception:
             self.app_state.emit_status(f"ターゲットが見つかりません: {target_name}", "error")
             return
 
@@ -543,7 +543,7 @@ class MorphPresenter:
                     value = cmds.getAttr(f"{blend_shape_node}.{target}")
                     if value != 0:  # 0以外の値のみ保存
                         preset_data[morph_name] = value
-                except:
+                except Exception:
                     pass
 
         if not preset_data:
@@ -564,7 +564,7 @@ class MorphPresenter:
             if presets_json:
                 try:
                     presets = json.loads(presets_json)
-                except:
+                except Exception:
                     pass
 
             # 新しいプリセットを追加
@@ -621,7 +621,7 @@ class MorphPresenter:
                         try:
                             cmds.setAttr(f"{blend_shape_node}.{target}", value)
                             applied_count += 1
-                        except:
+                        except Exception:
                             pass
 
             # 現在のモーフのスライダーを更新
@@ -674,7 +674,7 @@ class MorphPresenter:
 
                 logger.info(f"プリセット '{preset_name}' を削除しました")
                 self.app_state.emit_status(f"プリセット '{preset_name}' を削除しました")
-        except:
+        except Exception:
             pass
 
     def _get_attr_safe(self, node, attr, default=None):
@@ -705,5 +705,5 @@ class MorphPresenter:
             for preset_name in presets.keys():
                 if preset_name not in ["なし", "笑顔", "ウィンク", "驚き", "悲しみ"]:
                     self.view.preset_combo.addItem(preset_name)
-        except:
+        except Exception:
             pass

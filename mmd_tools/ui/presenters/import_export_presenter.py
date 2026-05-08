@@ -106,12 +106,6 @@ class ImportExportPresenter(QObject):
 
         logger.info(f"Exporting file: {file_path}")
 
-        # エクスポート設定を収集
-        export_options = {
-            "format": settings.get("export.general.export_format", "pmx"),
-            "apply_scale": settings.get("export.general.apply_scale", True),
-        }
-
         try:
             exporter = PmxExporter()
             # TODO: Get maya_data from the scene

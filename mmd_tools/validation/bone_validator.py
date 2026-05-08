@@ -329,9 +329,6 @@ class BoneValidator:
             "invalid_references": [],
         }
 
-        # ボーンインデックスと名前のマッピング
-        index_to_name = {i: bone.get_name() for i, bone in enumerate(bones)}
-
         # 各ボーンの親子関係をチェック
         for i, bone in enumerate(bones):
             if hasattr(bone, "parent_bone_index"):

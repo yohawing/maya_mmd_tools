@@ -1,11 +1,9 @@
 from typing import List, Dict
 
 import maya.cmds as cmds
-import maya.api.OpenMaya as om
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core import maya_utils
-from mmd_tools.core import utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.settings import settings
 
@@ -302,15 +300,6 @@ class RigConverter:
             start_pos = cmds.xform(start_joint, query=True, worldSpace=True, translation=True)
             end_pos = cmds.xform(end_joint, query=True, worldSpace=True, translation=True)
 
-            # 中間のジョイント（膝）を取得
-            knee_joint = None
-            if chain["ik_links"]:
-                # IKリンクの最初が膝（MMDのIKチェーンは足首→膝→太ももの順）
-                knee_joint = chain["ik_links"][0]["bone"]
-
-            # 膝の屈曲方向を決定
-            # 常にZ+方向を使用
-            knee_bend_direction = [0, 0, 1]  # Z+方向
             method_used = "fixed_z_positive"
 
             mid_pos = [(start_pos[i] + end_pos[i]) / 2 for i in range(3)]
@@ -321,7 +310,7 @@ class RigConverter:
             cmds.xform(pole_target, worldSpace=True, translation=pole_pos)
 
             # PoleVectorConstraintを作成
-            pole_constraint = cmds.poleVectorConstraint(pole_target, ik_handle)[0]
+            cmds.poleVectorConstraint(pole_target, ik_handle)
 
             # PoleTargetのコントロール性を向上
             # ロケータのサイズを調整

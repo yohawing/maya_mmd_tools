@@ -407,8 +407,6 @@ class MeshConverter:
                 specular_coef = material.specular_power
 
             if specular_coef is not None:
-                # スペキュラー係数（MMDの0-100をStandardSurfaceの0-1にマッピング）
-                specular_weight = min(1.0, specular_coef / 100.0)
                 maya_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
 
         # アンビエント設定（StandardSurfaceでは間接光の強度として使用）
@@ -523,7 +521,7 @@ class MeshConverter:
                 # dx11ShaderのMainTextureに接続
                 try:
                     cmds.connectAttr(file_node + ".outColor", shader + ".MainTexture", force=True)
-                except:
+                except Exception:
                     cmds.warning("Failed to connect texture to dx11Shader")
             else:
                 cmds.warning(f"Texture file not found: {full_texture_path}")
@@ -545,7 +543,7 @@ class MeshConverter:
                             shader + ".SphereTexture",
                             force=True,
                         )
-                    except:
+                    except Exception:
                         cmds.warning("Failed to connect sphere texture to dx11Shader")
 
         # カスタムアトリビュートを適用

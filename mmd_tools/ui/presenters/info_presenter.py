@@ -84,28 +84,28 @@ class InfoPresenter:
                 model_name_jp = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_MODEL_NAME}")
                 if model_name_jp is None:
                     model_name_jp = ""
-            except:
+            except Exception:
                 model_name_jp = ""
 
             try:
                 model_name_en = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_MODEL_NAME_EN}")
                 if model_name_en is None:
                     model_name_en = ""
-            except:
+            except Exception:
                 model_name_en = ""
 
             try:
                 comment_jp = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_COMMENT}")
                 if comment_jp is None:
                     comment_jp = ""
-            except:
+            except Exception:
                 comment_jp = ""
 
             try:
                 comment_en = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_COMMENT_EN}")
                 if comment_en is None:
                     comment_en = ""
-            except:
+            except Exception:
                 comment_en = ""
 
             logger.debug(f"Loaded values - JP: '{model_name_jp}', EN: '{model_name_en}'")

@@ -2,8 +2,6 @@ from maya import cmds
 
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils
-from mmd_tools.core import PmdData
-from mmd_tools.core import PmxData
 from mmd_tools.core.settings import settings
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider

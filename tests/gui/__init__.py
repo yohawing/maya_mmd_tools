@@ -7,10 +7,6 @@ Maya GUIアプリケーション環境でのみ実行可能なテストを含み
 Maya GUIアプリケーション内でスクリプトとして実行してください。
 """
 
-import os
-import sys
-
-
 def is_gui_available():
     """Maya GUI環境が利用可能かチェック"""
     try:
@@ -18,7 +14,7 @@ def is_gui_available():
 
         # バッチモードかどうかをチェック
         return not cmds.about(batch=True)
-    except:
+    except Exception:
         return False
 
 

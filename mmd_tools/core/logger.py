@@ -11,13 +11,12 @@ from typing import Optional, Dict
 
 from mmd_tools.core.settings import settings
 
-from .log_formatters import MayaFormatter, CompactFormatter
 
 
 def is_maya_environment() -> bool:
     """Maya環境かどうかを判定"""
     try:
-        import maya.cmds
+        import maya.cmds  # noqa: F401
 
         return True
     except ImportError:
@@ -71,10 +70,6 @@ class MayaLogger:
         """設定に基づいてハンドラーを設定"""
         if not settings.get("logging.enabled", True):
             return
-
-        # フォーマッターを準備
-        standard_formatter = MayaFormatter(self.LOGGING_CONFIG["formatters"]["standard"])
-        compact_formatter = CompactFormatter(self.LOGGING_CONFIG["formatters"]["compact"])
 
         # Maya Dialogハンドラー（ERROR/CRITICALレベル用）
         # if is_maya_environment():

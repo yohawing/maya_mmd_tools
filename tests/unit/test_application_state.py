@@ -79,7 +79,7 @@ class TestApplicationState(MayaTestBase):
 
         # モデルを作成（_rootで終わる名前にする）
         model1 = self._create_mmd_root("model1_root")
-        model2 = self._create_mmd_root("model2_root")
+        self._create_mmd_root("model2_root")
 
         # 明示的にMayaの選択をクリア（select_model_from_maya_selectionがFalseを返すように）
         cmds.select(clear=True)
@@ -151,7 +151,7 @@ class TestApplicationState(MayaTestBase):
         cmds.parent(mesh_transform, model)
 
         joint1 = cmds.joint(name="joint1")
-        joint2 = cmds.joint(name="joint2")
+        cmds.joint(name="joint2")
         cmds.parent(joint1, model)
 
         self.app_state.current_model_root = model

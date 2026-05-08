@@ -44,16 +44,6 @@ Important principles for this project:
 - 開発ガイド（テスト、設定、コーディング規約）
 - プロジェクト管理（タスク、バージョニング、リリース）
 
-## プロジェクトマネージメント
-
-プロジェクトの進行管理、スプリント計画、タスク管理については、`docs-dev/task-tracking.md`を参照してください。
-タスク進行管理には、[Linear](https://linear.app/)を使用しています。
-タスクの編集があった場合は、Linear上で行ってください。
-
-**プロジェクト名:** Maya MMD Tools
-*   **プロジェクトID:** e4b4bd61-ad6c-4da1-a08a-013c3e1416e5
-*   **プロジェクトURL:** https://linear.app/yohawing/project/maya-mmd-tools-00a307d6ad9d
-
 ## テスト
 
 テストについて詳しくは、`docs-dev/testing.md`に記載されています。
