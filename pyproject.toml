@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maya_mmd_tools"
+version = "0.1.0"
+description = "A set of tools for working with MMD data in Autodesk Maya."
+readme = "README.md"
+requires-python = ">=3.7"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yohawing/maya_mmd_tools"
+"Bug Tracker" = "https://github.com/yohawing/maya_mmd_tools/issues"
+
+[tool.ruff]
+line-length = 128
+indent-width = 4
+fix = true

@@ -1,0 +1,78 @@
+
+QWidget {
+    background-color: #2b2b2b;
+    color: #f0f0f0;
+    border: none;
+}
+QMainWindow {
+    background-color: #2b2b2b;
+}
+QDockWidget {
+    background-color: #3c3c3c;
+    titlebar-close-icon: url(close.png);
+    titlebar-normal-icon: url(float.png);
+}
+QGroupBox {
+    background-color: #3c3c3c;
+    border: 1px solid #555555;
+    border-radius: 5px;
+    margin-top: 1ex; /* leave space at the top for the title */
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 3px;
+}
+QTabWidget::pane {
+    border-top: 1px solid #555555;
+}
+QTabBar::tab {
+    background: #3c3c3c;
+    border: 1px solid #555555;
+    border-bottom-color: #3c3c3c; /* same as pane color */
+    padding: 5px;
+    min-width: 80px;
+}
+QTabBar::tab:selected {
+    background: #555555;
+    border-color: #777777;
+    border-bottom-color: #555555; /* same as pane color */
+}
+QTabBar::tab:!selected {
+    margin-top: 2px; /* make non-selected tabs look smaller */
+}
+QLineEdit, QTextEdit {
+    /* background-color: #2b2b2b; */
+    border: 1px solid #555555;
+    border-radius: 3px;
+    padding: 2px;
+}
+QPushButton {
+    background-color: #555555;
+    border: 1px solid #777777;
+    border-radius: 3px;
+    padding: 5px;
+}
+QPushButton:hover {
+    background-color: #666666;
+}
+QPushButton:pressed {
+    background-color: #444444;
+}
+QListWidget, QTreeWidget {
+    background-color: #2b2b2b;
+    border: 1px solid #555555;
+}
+QSlider::groove:horizontal {
+    border: 1px solid #555555;
+    height: 8px;
+    background: #3c3c3c;
+    margin: 2px 0;
+}
+QSlider::handle:horizontal {
+    background: #777777;
+    border: 1px solid #999999;
+    width: 18px;
+    margin: -2px 0;
+    border-radius: 3px;
+}

@@ -10,6 +10,7 @@ __pycache__/
 *.pyd
 .Python/
 venv/
+.ruff_cache/
 
 # Operating System files
 .DS_Store
@@ -18,6 +19,9 @@ Thumbs.db
 # Build artifacts
 build/
 dist/
+plug-ins/*
+!plug-ins/.gitkeep
+!plug-ins/*.py
 
 # IDE specific files
 .idea/
@@ -27,3 +31,24 @@ dist/
 
 # Other temporary files
 *.tmp
+logs/
+stubs/
+
+# ai agent files
+.gemini/
+.clinerules/
+.claude/
+.kiro/
+KIRO.md
+.mcp.json
+CLAUDE.md
+
+# TestData
+/tests/data/*
+!/tests/data/place_test_data_here
+!/tests/data/miku_v2.pmd
+!/tests/data/for_unit_test/*.pmx
+!/tests/data/for_unit_test/*.pmd
+!/tests/data/for_unit_test/*.vmd
+!/tests/data/mmt_test_model.pmx
+mmd_tools/shaders/MayaToonOutline.fx

@@ -1,0 +1,59 @@
+# Auto detect text files and perform LF normalization
+* text=auto eol=lf
+
+# Python files
+*.py text eol=lf
+*.pyw text eol=lf
+
+# Configuration files
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+
+# Documentation
+*.md text eol=lf
+*.rst text eol=lf
+*.txt text eol=lf
+README text eol=lf
+LICENSE text eol=lf
+
+# Scripts
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Maya module file
+*.mod text eol=lf
+
+# Git files
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.bmp binary
+*.ico binary
+*.pyc binary
+*.pyd binary
+*.pyo binary
+*.db binary
+*.sqlite binary
+*.so binary
+*.dylib binary
+*.dll binary
+
+# Maya files
+*.ma binary
+*.mb binary
+*.mel binary
+
+# MMD files
+*.pmd binary
+*.pmx binary
+*.vmd binary
+*.vpd binary
