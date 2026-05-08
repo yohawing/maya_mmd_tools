@@ -55,10 +55,9 @@ jobs:
           cp -R mmd_tools "${package_root}/"
           cp -R plug-ins "${package_root}/"
           cp -R docs "${package_root}/"
-          cp -R config "${package_root}/"
           cp README.md LICENSE CHANGELOG.md maya_mmd_tools.mod userSetup.py pyproject.toml "${package_root}/"
 
-          for optional_dir in resources shaders examples; do
+          for optional_dir in config resources shaders examples; do
             if [[ -d "${optional_dir}" ]]; then
               cp -R "${optional_dir}" "${package_root}/"
             fi
