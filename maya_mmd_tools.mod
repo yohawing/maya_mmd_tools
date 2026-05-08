@@ -1,6 +1,22 @@
 + MAYAVERSION:2024 maya_mmd_tools 1.0 .
-scripts:= .
-MMD_TOOLS_ROOT:= .
-MAYA_PLUG_IN_PATH:= ./mmd_tools
+scripts: .
+plug-ins: plug-ins
 icons: resources/icons
+MMD_TOOLS_ROOT:= .
 PYTHONPATH +:= .
+
++ MAYAVERSION:2025 PLATFORM:win64 maya_mmd_tools 1.0 .
+scripts: .
+plug-ins: plug-ins
+icons: resources/icons
+MMD_TOOLS_ROOT:= .
+PYTHONPATH +:= .
+MMD_TOOLS_DEV_MODE:= 1
+
++ MAYAVERSION:2026 PLATFORM:win64 maya_mmd_tools 1.0 .
+scripts: .
+plug-ins: plug-ins
+icons: resources/icons
+MMD_TOOLS_ROOT:= .
+PYTHONPATH +:= .
+MMD_TOOLS_DEV_MODE:= 1

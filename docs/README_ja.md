@@ -17,6 +17,7 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 
 - PMD/PMX/VMDエクスポートは未実装です。
 - 物理演算対応は未完成です。
+- VMDモーションは読み込み後に新しいモーションが正しく再生されない未修正の問題があります。`0.1.0`では、VMDの読み込み・解析は利用できますが、モーション再生は未完成として扱ってください。
 - 大規模モデルでは動作が重くなる場合があります。
 - 一部のPMXファイルで読み込みに失敗する場合があります。
 
@@ -41,7 +42,9 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 1. [GitHubリリースページ](https://github.com/yohawing/maya_mmd_tools/releases)から最新版をダウンロードします。
 2. ZIPファイルを任意の場所に解凍します。
 
-### モジュールファイルの配置
+### `.mod` ファイルの配置
+
+Maya MMD Tools本体は任意の場所に配置できます。Mayaの `modules` フォルダには、`maya_mmd_tools.mod` だけを配置します。
 
 Windowsでは以下のフォルダを開きます。
 
@@ -55,7 +58,9 @@ macOSでは以下のフォルダを開きます。
 ~/Documents/maya/2024/modules
 ```
 
-フォルダがない場合は作成してください。解凍したフォルダから `maya_mmd_tools.mod` をコピーし、必要に応じてパスを修正します。
+フォルダがない場合は作成してください。
+
+次に、解凍したフォルダ内の `maya_mmd_tools.mod` をテキストエディタで開き、先頭行の末尾をMaya MMD Tools本体のフォルダパスに変更します。
 
 ```text
 + MAYAVERSION:2024 maya_mmd_tools 1.0 <解凍したフォルダのパス>
@@ -65,12 +70,29 @@ MAYA_PLUG_IN_PATH:= ./mmd_tools
 PYTHONPATH +:= .
 ```
 
-### スクリプトファイルの配置
+例:
 
-Mayaのスクリプトフォルダに `userSetup.py` をコピーします。
+```text
++ MAYAVERSION:2024 maya_mmd_tools 1.0 C:/Tools/maya_mmd_tools
+scripts:= .
+MMD_TOOLS_ROOT:= .
+MAYA_PLUG_IN_PATH:= ./mmd_tools
+PYTHONPATH +:= .
+```
 
-- Windows: `C:\Users\<ユーザー名>\Documents\maya\2024\scripts`
-- macOS: `~/Documents/maya/2024/scripts`
+パスにスペースが含まれる場合は引用符で囲みます。
+
+```text
++ MAYAVERSION:2024 maya_mmd_tools 1.0 "C:/Program Files/maya_mmd_tools"
+scripts:= .
+MMD_TOOLS_ROOT:= .
+MAYA_PLUG_IN_PATH:= ./mmd_tools
+PYTHONPATH +:= .
+```
+
+修正した `maya_mmd_tools.mod` をMayaの `modules` フォルダへコピーします。
+
+`userSetup.py` をMayaの scripts フォルダへ別途コピーする必要はありません。`.mod` の `scripts:= .` 設定により、Maya MMD Tools本体フォルダ内の `userSetup.py` が参照されます。
 
 ### プラグインの有効化
 
@@ -453,8 +475,7 @@ ProjectFolder/
 
 1. Mayaを終了します。
 2. `modules/maya_mmd_tools.mod` を削除します。
-3. Maya scriptsフォルダにコピーした `userSetup.py` を削除します。
-4. インストールしたMaya MMD Toolsフォルダを削除します。
+3. インストールしたMaya MMD Toolsフォルダを削除します。
 
 ## サポート
 

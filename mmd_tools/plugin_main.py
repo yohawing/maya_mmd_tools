@@ -31,7 +31,14 @@ def install_mmd_menu():
     """Install the MMD menu in Maya."""
     if not cmds.menu("MMD", exists=True):
         cmds.menu("MMD", parent="MayaWindow")
+
+    # Keep menu installation idempotent across userSetup, reloads, and plug-in toggles.
+    for item in cmds.menu("MMD", query=True, itemArray=True) or []:
+        if cmds.menuItem(item, query=True, label=True) == "MMD Tools":
+            cmds.deleteUI(item)
+
     cmds.menuItem(
+        "MMDToolsMenuItem",
         label="MMD Tools",
         command=lambda *args: open_main_window(dockable=False),
         parent="MMD",

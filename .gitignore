@@ -21,6 +21,7 @@ build/
 dist/
 plug-ins/*
 !plug-ins/.gitkeep
+!plug-ins/*.py
 
 # IDE specific files
 .idea/

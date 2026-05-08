@@ -17,6 +17,10 @@ import maya.cmds as cmds
 from ..core import maya_utils
 from ..core.constants import (
     ATTR_MMD_BONE_NAME,
+    ATTR_MMD_CAMERA,
+    ATTR_MMD_LIGHT,
+    DEFAULT_CAMERA_NAME,
+    DEFAULT_LIGHT_NAME,
 )
 from ..core.logger import get_logger
 from ..core.vmd_data import VmdData
@@ -367,6 +371,138 @@ class VmdConverter:
             mapping: VMDボーン名 -> Mayaジョイント名のマッピング
         """
         self.bone_name_mapping = mapping.copy()
+
+    def _get_or_create_camera(self) -> str:
+        """MMDカメラを取得または作成する
+
+        Returns:
+            カメラのトランスフォーム名
+        """
+        existing = cmds.ls(f"*.{ATTR_MMD_CAMERA}", objectsOnly=True)
+        if existing:
+            return existing[0]
+
+        camera_transform, _ = cmds.camera(name=DEFAULT_CAMERA_NAME)
+        cmds.addAttr(camera_transform, longName=ATTR_MMD_CAMERA, attributeType="bool")
+        cmds.setAttr(f"{camera_transform}.{ATTR_MMD_CAMERA}", True)
+        return camera_transform
+
+    def _get_or_create_light(self) -> str:
+        """MMD照明を取得または作成する
+
+        Returns:
+            照明のトランスフォーム名
+        """
+        existing = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True)
+        if existing:
+            return existing[0]
+
+        light_shape = cmds.directionalLight(name=DEFAULT_LIGHT_NAME)
+        light_transform = cmds.listRelatives(light_shape, parent=True)[0]
+        cmds.addAttr(light_transform, longName=ATTR_MMD_LIGHT, attributeType="bool")
+        cmds.setAttr(f"{light_transform}.{ATTR_MMD_LIGHT}", True)
+        return light_transform
+
+    def _convert_camera_animation(self, camera_frames: List) -> bool:
+        """カメラアニメーションを変換
+
+        Args:
+            camera_frames: カメラフレームデータのリスト
+
+        Returns:
+            変換が成功した場合True
+        """
+        if not camera_frames:
+            return False
+
+        camera_transform = self._get_or_create_camera()
+
+        for frame in camera_frames:
+            frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+            position = frame.position if hasattr(frame, "position") else frame.get("position", (0, 0, 0))
+
+            cmds.setKeyframe(camera_transform, attribute="translateX", time=frame_number, value=position[0])
+            cmds.setKeyframe(camera_transform, attribute="translateY", time=frame_number, value=position[1])
+            cmds.setKeyframe(camera_transform, attribute="translateZ", time=frame_number, value=-position[2])
+
+        return True
+
+    def _convert_light_animation(self, light_frames: List) -> bool:
+        """照明アニメーションを変換
+
+        Args:
+            light_frames: 照明フレームデータのリスト
+
+        Returns:
+            変換が成功した場合True
+        """
+        if not light_frames:
+            return False
+
+        light_transform = self._get_or_create_light()
+        light_shapes = cmds.listRelatives(light_transform, shapes=True, type="directionalLight") or []
+        if not light_shapes:
+            return False
+        light_shape = light_shapes[0]
+
+        for frame in light_frames:
+            frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+            color = frame.color if hasattr(frame, "color") else frame.get("color", (1, 1, 1))
+
+            cmds.setKeyframe(light_shape, attribute="colorR", time=frame_number, value=color[0])
+            cmds.setKeyframe(light_shape, attribute="colorG", time=frame_number, value=color[1])
+            cmds.setKeyframe(light_shape, attribute="colorB", time=frame_number, value=color[2])
+
+        return True
+
+    def _convert_morph_animation(self, morph_frames: List) -> bool:
+        """モーフアニメーションを変換
+
+        Args:
+            morph_frames: モーフフレームデータのリスト
+
+        Returns:
+            変換が成功した場合True
+        """
+        if not morph_frames:
+            return False
+
+        success_count = 0
+        morph_frame_map: Dict[str, List] = {}
+
+        for frame in morph_frames:
+            morph_name = frame.morph_name if hasattr(frame, "morph_name") else frame.get("morph_name", "")
+            if morph_name not in morph_frame_map:
+                morph_frame_map[morph_name] = []
+            morph_frame_map[morph_name].append(frame)
+
+        for morph_name, frames in morph_frame_map.items():
+            if morph_name not in self.morph_name_mapping:
+                continue
+
+            bs_node, weight_index, _ = self.morph_name_mapping[morph_name]
+            attr_path = f"{bs_node}.weight[{weight_index}]"
+
+            for frame in frames:
+                frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+                value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
+                cmds.setKeyframe(bs_node, attribute=f"weight[{weight_index}]", time=frame_number, value=value)
+
+            success_count += 1
+
+        return success_count > 0
+
+    def _build_morph_mappings(self):
+        """シーン内のブレンドシェイプからモーフ名マッピングを構築"""
+        self.morph_name_mapping = {}
+
+        blend_shapes = cmds.ls(type="blendShape") or []
+        for bs_node in blend_shapes:
+            weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
+            for i in range(weight_count):
+                alias = cmds.aliasAttr(f"{bs_node}.weight[{i}]", query=True)
+                if alias:
+                    self.morph_name_mapping[alias] = (bs_node, i, alias)
 
     def _set_scene_fps(self, fps: float):
         """シーンのFPSを設定

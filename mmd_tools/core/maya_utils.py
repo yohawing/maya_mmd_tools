@@ -169,17 +169,9 @@ def create_material(name, color, texture_path=None, texture_dir=""):
     """
     sanitized_name = sanitize_text(name)
     shader = cmds.shadingNode("lambert", asShader=True, name=sanitized_name)
-    # cmds.setAttr(shader + ".color", color[0], color[1], color[2], type="double3")
-    set_attribute(shader, "color", color, "double3")
-    # AlphaをTransparencyに変換
-    # cmds.setAttr(
-    #     shader + ".transparency",
-    #     1.0 - color[3],
-    #     1.0 - color[3],
-    #     1.0 - color[3],
-    #     type="double3",
-    # )
-    set_attribute(shader, "transparency", 1.0 - color[3], "double3")
+    set_attribute(shader, "color", color[:3], "double3")
+    transparency = 1.0 - color[3]
+    set_attribute(shader, "transparency", [transparency, transparency, transparency], "double3")
 
     # 元の名前を保持
     set_custom_attributes(shader, {"mmd_material_name": name})
@@ -217,7 +209,7 @@ def assign_material(mesh_name, shader_node):
     sanitized_shader_name = shader_node + "SG"
     sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
     # シェーダーをシェーディンググループに接続
-    cmds.connectAttr(shader_node + ".outColor", f"'{sg_name}.surfaceShader'", force=True)
+    cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
     # メッシュをシェーディンググループに割り当て
     cmds.sets(mesh_name, edit=True, forceElement=sg_name)
 
@@ -245,10 +237,10 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
 
     if shader_type == "dx11Shader":
         # dx11Shaderは直接surfaceShaderに接続
-        cmds.connectAttr(shader_node + ".message", f"'{sg_name}.surfaceShader'", force=True)
+        cmds.connectAttr(shader_node + ".message", f"{sg_name}.surfaceShader", force=True)
     else:
         # 標準シェーダーは.outColorを使用
-        cmds.connectAttr(shader_node + ".outColor", f"'{sg_name}.surfaceShader'", force=True)
+        cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
 
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)

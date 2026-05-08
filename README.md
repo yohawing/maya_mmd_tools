@@ -1,8 +1,6 @@
 # Maya MMD Tools
 
-[![Version](https://img.shields.io/badge/version-0.1.0-orange.svg)](https://github.com/yohawing/maya_mmd_tools/releases)
-[![Maya](https://img.shields.io/badge/Maya-2024-blue.svg)](https://www.autodesk.com/products/maya)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[日本語ドキュメント](docs/README_ja.md)
 
 Maya MMD Tools is a Python plugin for Autodesk Maya that imports MikuMikuDance (MMD) model, motion, and pose data into Maya scenes.
 
@@ -28,6 +26,10 @@ The first release target is `0.1.0`.
 - Complete physics support
 - C++ node implementation in the release target
 
+### Known Issues
+
+- VMD motion import still has an unresolved playback issue: newly imported motion may not play back correctly after import. Model import and parts of VMD parsing/import are available, but motion playback should be treated as incomplete in `0.1.0`.
+
 ## Requirements
 
 - Autodesk Maya 2024 or later
@@ -36,14 +38,16 @@ The first release target is `0.1.0`.
 
 ## Installation
 
-1. Clone this repository or download the release archive.
-2. Copy `maya_mmd_tools.mod` into your Maya modules directory.
-3. Copy `userSetup.py` into your Maya scripts directory.
+1. Clone this repository or download and extract the release archive.
+2. Edit `maya_mmd_tools.mod` so the first line points to the extracted project folder.
+3. Copy only `maya_mmd_tools.mod` into your Maya modules directory.
 4. Restart Maya.
 5. Open `Window > Settings/Preferences > Plug-in Manager`.
 6. Enable `plugin_main.py`.
 
-For detailed setup and usage instructions, see [docs/README.md](docs/README.md).
+You do not need to copy `userSetup.py` separately. It is loaded through the module file's `scripts:= .` setting.
+
+For detailed setup and usage instructions in Japanese, see [docs/README_ja.md](docs/README_ja.md).
 
 ## Quick Usage
 
@@ -81,7 +85,7 @@ Expected version for the current release:
 
 All user-facing documentation is consolidated into:
 
-- [docs/README.md](docs/README.md)
+- [docs/README_ja.md](docs/README_ja.md)
 
 It includes installation, quick start, model import, log viewer usage, troubleshooting, best practices, and support information.
 

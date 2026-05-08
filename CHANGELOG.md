@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Known Issues
 - Large models may have performance issues.
 - Some PMX files may fail to import.
+- Newly imported VMD motions may not play back correctly after import.
 - Physics support is incomplete.
 - PMD/PMX/VMD export is not implemented.
 
