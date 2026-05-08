@@ -67,6 +67,6 @@ python tests/run_gui_tests.py
 
 ## 関連リンク
 
-- [ユーザードキュメント](../docs/README.md)
+- [日本語ドキュメント](../docs/README_ja.md)
 - [プロジェクトREADME](../README.md)
 - [開発エージェント向け指示](../AGENTS.md)

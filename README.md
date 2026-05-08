@@ -2,149 +2,273 @@
 
 [日本語ドキュメント](docs/README_ja.md)
 
-Maya MMD Tools is a Python plugin for Autodesk Maya that imports MikuMikuDance (MMD) model, motion, and pose data into Maya scenes.
+Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya.
 
-This is a `0.x` early release. Features may be unstable, and production use is not recommended. Please report bugs and feedback through [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues).
+This is an alpha early release. Some features may be undeveloped or unstable.
 
-## Status
-
-The first release target is `0.1.0`.
-
-### Supported
+## Supported Features
 
 - PMD/PMX model import
 - VMD animation import for bones, morphs, cameras, and lights
-- VPD pose parsing/import support
-- Basic MMD Tools UI
-- Japanese/English UI text support
-- Namespace support for loading multiple models
-- Log viewer for diagnostics
+- Basic UI with Info, Material, Morph, and Bone tabs
+- Japanese/English UI
+- Namespace support
+- Log viewer
 
-### Not Yet Supported
+## Known Limitations
 
-- PMD/PMX/VMD export
-- Complete physics support
-- C++ node implementation in the release target
+- PMD/PMX/VMD export is not implemented.
+- Physics support is incomplete.
+- VMD motion import has an unresolved issue where newly imported motion may not play back correctly. In `0.1.0`, VMD loading/parsing is available, but motion playback should be treated as incomplete.
+- Large models may have performance issues.
+- Some PMX files may fail to import.
 
-### Known Issues
+## System Requirements
 
-- VMD motion import still has an unresolved playback issue: newly imported motion may not play back correctly after import. Model import and parts of VMD parsing/import are available, but motion playback should be treated as incomplete in `0.1.0`.
+### Required
 
-## Requirements
-
-- Autodesk Maya 2024 or later
-- Windows 11 or macOS 15.6
-- Python 3.7 or later through Maya's bundled Python environment
+- **Maya**: 2024 or later
+- **OS**: Windows 11 / macOS 15.6
+- **Python**: 3.7 or later, bundled with Maya
 
 ## Installation
 
-1. Clone this repository or download and extract the release archive.
-2. Edit `maya_mmd_tools.mod` so the first line points to the extracted project folder.
-3. Copy only `maya_mmd_tools.mod` into your Maya modules directory.
-4. Restart Maya.
-5. Open `Window > Settings/Preferences > Plug-in Manager`.
-6. Enable `plugin_main.py`.
+### Download
 
-You do not need to copy `userSetup.py` separately. It is loaded through the module file's `scripts:= .` setting.
+1. Download the latest release from the [GitHub Releases page](https://github.com/yohawing/maya_mmd_tools/releases).
+2. Extract the ZIP file anywhere you like.
 
-For detailed setup and usage instructions in Japanese, see [docs/README_ja.md](docs/README_ja.md).
+### Place the `.mod` File
 
-## Quick Usage
+You can place the Maya MMD Tools folder anywhere. Only `maya_mmd_tools.mod` needs to be placed in Maya's `modules` folder.
 
-Open the UI from Maya:
+On Windows, open:
 
 ```text
-MMD > MMD Tools
+C:\Users\<User Name>\Documents\maya\modules
 ```
 
-Or import files from Maya Script Editor:
+On macOS, open:
 
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-
-import_mmd_file("C:/Models/character.pmx")
-import_mmd_file("C:/Motions/motion.vmd")
+```text
+~/Documents/maya/modules
 ```
 
-Check the installed version:
+Create the folder if it does not exist.
+
+Next, open `maya_mmd_tools.mod` from the extracted folder in a text editor, and change the end of the first line to the folder path of Maya MMD Tools. Replace the `2026` part with the Maya version you use.
+
+```text
++ MAYAVERSION:2026 maya_mmd_tools 0.1.0 <extracted folder path>
+scripts: .
+plug-ins: plug-ins
+icons: resources/icons
+MMD_TOOLS_ROOT:= .
+PYTHONPATH +:= .
+```
+
+Example:
+
+```text
++ MAYAVERSION:2026 maya_mmd_tools 0.1.0 C:/Tools/maya_mmd_tools
+scripts: .
+plug-ins: plug-ins
+icons: resources/icons
+MMD_TOOLS_ROOT:= .
+PYTHONPATH +:= .
+```
+
+If the path contains spaces, wrap it in quotes.
+
+```text
++ MAYAVERSION:2026 maya_mmd_tools 0.1.0 "C:/Program Files/maya_mmd_tools"
+scripts: .
+plug-ins: plug-ins
+icons: resources/icons
+MMD_TOOLS_ROOT:= .
+PYTHONPATH +:= .
+```
+
+Copy the edited `maya_mmd_tools.mod` into Maya's `modules` folder.
+
+You do not need to copy `userSetup.py` separately into Maya's scripts folder. The `.mod` file's `scripts: .` setting points Maya to the `userSetup.py` inside the Maya MMD Tools folder.
+
+### Enable the Plugin
+
+1. Start Maya. If Maya is already running, restart it.
+2. Open `Window > Settings/Preferences > Plug-in Manager`.
+3. Find `mmd_tools_plugin.py`.
+4. Check `Loaded`.
+5. If you want it to load automatically, also check `Auto load`.
+
+## Verify Installation
+
+### Check the Menu
+
+Confirm that `MMD > MMD Tools` appears in Maya's menu bar.
+
+### Check from Script Editor
+
+Run this in Maya Script Editor:
 
 ```python
 import mmd_tools
 print(mmd_tools.__version__)
 ```
 
-Expected version for the current release:
+Expected output:
 
 ```text
 0.1.0
 ```
 
-## Documentation
+## Quick Start
 
-### User Documentation
+### Import a Model
 
-All user-facing documentation is consolidated into:
+1. Select `MMD > MMD Tools`.
+2. In the Import/Export tab, choose a PMX or PMD file.
+3. Click `Import Model`.
 
-- [docs/README_ja.md](docs/README_ja.md)
+To import from a script:
 
-It includes installation, quick start, model import, log viewer usage, troubleshooting, best practices, and support information.
+```python
+from mmd_tools.io.mmd_importer import import_mmd_file
 
-### Developer Documentation
-
-Developer documentation is under [docs-dev/](docs-dev/). The current structure is intentionally compact:
-
-- [Architecture](docs-dev/architecture.md)
-- [ASCII translation](docs-dev/ascii-translation.md)
-- [Settings](docs-dev/setting.md)
-- [Testing overview](docs-dev/testing-overview.md)
-- [Testing mock design](docs-dev/testing-mock.md)
-- [Release process](docs-dev/release-process.md)
-- [Release versioning](docs-dev/release-versioning.md)
-- File format specs:
-  - [PMD](docs-dev/spec-pmd.md)
-  - [PMX](docs-dev/spec-pmx.md)
-  - [VMD](docs-dev/spec-vmd.md)
-
-## Running Tests
-
-Unit tests:
-
-```shell
-python tests/run_tests.py --type unit
+import_mmd_file("path/to/your/model.pmx")
 ```
 
-Integration tests require a Maya environment:
+After a successful import, a `model_root` group is created in the Outliner, and the model appears in the viewport. Materials and textures are applied automatically when possible.
 
-```shell
-python tests/run_tests.py --type integration
+### Open the MMD Tools UI
+
+1. Select `MMD > MMD Tools`.
+2. The MMD Tools UI opens.
+3. You can inspect and adjust settings in each tab.
+
+Main tabs:
+
+- **Info**: Model information
+- **Material**: Material settings
+- **Morph**: Facial expression/morph controls
+- **Bone**: Bone information
+
+### Import Animation
+
+If you have a VMD file:
+
+1. Select `MMD > MMD Tools`.
+2. In the Import/Export tab, choose a VMD file.
+3. Click `Import Animation`.
+4. The animation is applied to the matching model in the scene.
+
+## Model Import
+
+### Supported Formats
+
+- **PMX** (`.pmx`) - Recommended format
+  - PMX 2.0
+  - PMX 2.1
+- **PMD** (`.pmd`) - Legacy format
+
+### Basic Import
+
+```python
+from mmd_tools.io.mmd_importer import import_mmd_file
+
+import_mmd_file("C:/Models/character.pmx")
 ```
 
-GUI tests:
+To enable namespace support:
 
-```shell
-python tests/run_gui_tests.py
+```python
+from mmd_tools.io.mmd_importer import import_mmd_file
+
+options = {"use_namespace": True}
+import_mmd_file("C:/Models/character.pmx", options=options)
 ```
 
-See [docs-dev/testing-overview.md](docs-dev/testing-overview.md) for detailed test guidance.
+### Import Settings
 
-## Release
+```python
+from mmd_tools.core import settings
 
-The release process is documented in [docs-dev/release-process.md](docs-dev/release-process.md).
+# Scale factor. MMD models usually use centimeters.
+settings.set("import.general.scale_factor", 1.0)
 
-Current versioning policy:
+# Namespace support for multiple models.
+settings.set("import.general.use_namespace", True)
 
-- Use simple `0.x` versions such as `0.1.0`, `0.1.1`, and `0.2.0`.
-- Do not use `alpha`, `beta`, or `rc` suffixes for now.
-- If the release should be marked unstable, use GitHub Release's Pre-release flag.
+# Material creation.
+settings.set("import.model.create_mmd_shaders", True)
 
-## Contributing
+# Physics import. Experimental in this early release.
+settings.set("import.physics.import_physics", False)
+```
 
-1. Fork the repository.
-2. Create a branch for your feature or fix.
-3. Make your changes and commit them with clear messages.
-4. Run the relevant tests.
-5. Push your branch and create a pull request.
+### Imported Scene Structure
 
-## License
+```text
+model_root
+├── mesh_root
+│   └── model_mesh
+├── bone_root
+│   ├── センター
+│   ├── 上半身
+│   └── ...
+└── morph_root
+    └── blendShapes
+```
 
-This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
+The model receives these custom attributes:
+
+- `mmd_model`: Model identifier
+- `mmd_model_name`: Japanese model name
+- `mmd_model_name_en`: English model name
+- `mmd_comment`: Comment
+
+### Import Multiple Models
+
+Namespace support avoids name conflicts between bones and meshes. If you import the same model multiple times, suffixes are assigned automatically.
+
+```python
+from mmd_tools.io.mmd_importer import import_mmd_file
+from mmd_tools.core import settings
+
+settings.set("import.general.use_namespace", True)
+
+models = ["character1.pmx", "character2.pmx", "stage.pmx"]
+
+for model_path in models:
+    root_node = import_mmd_file(model_path)
+    print(f"Imported: {root_node}")
+```
+
+### Adjust After Import
+
+```python
+import maya.cmds as cmds
+
+cmds.select("model_root")
+cmds.scale(0.1, 0.1, 0.1)
+cmds.move(0, 0, 100)
+```
+
+## Uninstall
+
+1. Quit Maya.
+2. Delete `modules/maya_mmd_tools.mod`.
+3. Delete the installed Maya MMD Tools folder.
+
+## Support
+
+If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the following information:
+
+- Full error message
+- Maya version
+- OS
+- Maya MMD Tools version
+- PMD/PMX/VMD file type used
+- Steps to reproduce
+
+Developer documentation is available at [docs-dev](docs-dev/README.md).
