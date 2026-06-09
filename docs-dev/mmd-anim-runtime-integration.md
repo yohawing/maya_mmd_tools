@@ -78,6 +78,40 @@ mmd-anim は Rust で実装された高精度な MMD アニメーション評価
 - Python から簡単にノードを作成・操作可能
 - モデルルートと message で関連付け
 
+### GoldenOracle runtime 数値比較
+
+`F:\Develop\MMDDev\GoldenOracle\manifests\motion-numeric.json` を使い、MMD 実機ダンプと mmd-anim runtime の数値比較を行っています。MMD 実機ダンプは `frame + 1` の表示更新後に取得されるため、runtime 側の比較には `--sample-frame-offset 1` を使います。`+1` から外すとモーフ差が再発するため、現在の比較基準は `offset=1` です。
+
+比較用 CLI として `mmd_tools/tools/runtime_oracle_dumper.py` を追加しました。主な用途は以下です。
+
+- GoldenOracle manifest から PMX/VMD/frames を読み、runtime 評価結果を JSONL に出力
+- `--compare-oracle --focus-only` で focus ボーン/モーフだけを比較
+- `--sample-frame-offset` で MMD ダンプの観測タイミングに合わせる
+- `--ik-tolerance` / `--ik-max-iterations-cap` で IK 診断用の評価条件を切り替える
+- offset や IK option を出力ファイル名に含め、比較結果の上書きを避ける
+
+PMM 生成側では、`F:\Develop\MMDDev\MMDDumper\src\pmm-document-vmd-patch.mjs` で VMD の 64 byte ボーン補間を PMM の 16 byte 補間へ反映する修正を行いました。この修正後に PMX ケースの Oracle を再記録し、古い PMM 補間由来の大きな差分を減らしています。
+
+最新の `offset=1` focus 比較結果は以下です。
+
+| case | max bone delta | max morph delta | worst |
+| --- | ---: | ---: | --- |
+| `tda-miku-melancholy-night` | `0.049162259` | `4.9e-10` | `左足首@1200` |
+| `sour-miku-rabbithole` | `0.164652821` | `2.98e-7` | `右ひざ@4800` |
+| `yyb-miku-10th-hibana` | `0.159853459` | `3.33e-10` | `右手捩@3600` |
+| `rem-proseka-miku-vs-marine-mirage` | `0.000019551` | `4.73e-10` | `左親指０@1200` |
+| `rem-proseka-miku-vs-weekender-girl` | `0.243796568` | `0` | `左袖@6420` |
+
+確認済みの切り分け:
+
+- `offset=1` が最小差分になる。時刻ズレではない。
+- 残差ボーンは local translation ではなく local rotation が主因。
+- `--ik-tolerance 0` でも `sour` / `weekender` の主残差はほぼ変わらない。
+- 固定軸を全面無効化すると `yyb` は改善するが `weekender` が悪化するため、恒久化しない。
+- 単軸 IK 専用経路の無効化、IK link 逆順、IK step limit 無効化、Euler 分解順変更はいずれも決定的な改善にならない。
+
+このため、現時点で残っている差分は MMD 実機の IK / 固定軸 / 角度制限の細部再現に寄っていると見ています。小さな数値差を隠すために tolerance を広げるのではなく、次に進める場合は `sour` の膝 IK、`yyb` の固定軸付き手捩、`weekender` の角度制限付き袖 IK を個別に再現する必要があります。
+
 ## 現在の状態
 
 - Phase 0（基盤）と Phase 1（高精度ベイク）の主要機能は動作する状態

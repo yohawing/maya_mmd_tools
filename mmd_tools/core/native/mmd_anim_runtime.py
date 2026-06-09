@@ -152,6 +152,17 @@ def _setup_function_signatures(lib: CDLL) -> None:
     # 評価
     lib.mmd_runtime_instance_evaluate_clip_frame.restype = c_bool
     lib.mmd_runtime_instance_evaluate_clip_frame.argtypes = [c_void_p, c_void_p, c_float]
+    try:
+        lib.mmd_runtime_instance_evaluate_clip_frame_with_ik_options.restype = c_bool
+        lib.mmd_runtime_instance_evaluate_clip_frame_with_ik_options.argtypes = [
+            c_void_p,
+            c_void_p,
+            c_float,
+            c_float,
+            c_uint32,
+        ]
+    except AttributeError:
+        logger.debug("mmd-anim runtime does not expose evaluate_clip_frame_with_ik_options")
 
     # 出力取得 (コピー版を優先)
     lib.mmd_runtime_instance_world_matrix_f32_len.restype = c_size_t
@@ -396,6 +407,49 @@ class MmdRuntimeInstance:
             )
         except Exception as e:
             logger.error(f"evaluate_clip_frame 失敗 (frame={frame}): {e}", exc_info=True)
+            return False
+
+    def evaluate_clip_frame_with_ik_options(
+        self,
+        clip: MmdRuntimeClip,
+        frame: float,
+        *,
+        ik_tolerance: float = 1.0e-2,
+        ik_max_iterations_cap: int = 0,
+    ) -> bool:
+        """
+        IK solver optionを指定してクリップを評価します。
+
+        Args:
+            clip: 評価対象の MmdRuntimeClip。
+            frame: フレーム番号。
+            ik_tolerance: IK収束判定距離。0.0で早期終了を抑制。
+            ik_max_iterations_cap: 0ならPMX設定値を上限なしで使用。
+
+        Returns:
+            成功時 True。
+        """
+        if not self._handle or not clip or not clip.handle or self._lib is None:
+            return False
+        func = getattr(self._lib, "mmd_runtime_instance_evaluate_clip_frame_with_ik_options", None)
+        if func is None:
+            logger.warning("mmd-anim runtime が IK option 評価 ABI を提供していません")
+            return False
+        try:
+            return bool(
+                func(
+                    self._handle,
+                    clip.handle,
+                    c_float(frame),
+                    c_float(ik_tolerance),
+                    c_uint32(max(0, int(ik_max_iterations_cap))),
+                )
+            )
+        except Exception as e:
+            logger.error(
+                f"evaluate_clip_frame_with_ik_options 失敗 (frame={frame}): {e}",
+                exc_info=True,
+            )
             return False
 
     def get_world_matrices(self) -> Optional[List[List[float]]]:

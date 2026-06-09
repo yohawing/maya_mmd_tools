@@ -528,6 +528,7 @@ class RigConverter:
             list: 作成されたコンストレイントのリスト
         """
         constraints = []
+        grant_reference = None
 
         # 付与ボーンの情報を収集し、変形階層でソート
         given_bones = []
@@ -576,16 +577,31 @@ class RigConverter:
 
                     if grant_rate == -1:
                         # -1は付与親の回転の逆を適用する。 （一時的にUpベクトルに固定。）
-                        cmds.orientConstraint("master", joint, maintainOffset=offset_flag, weight=1.0)
-                        constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=offset_flag, weight=0)[0]
-                    if grant_rate >= 0 and grant_rate < 1:
+                        grant_reference = self._get_grant_reference_node(maya_joints, grant_reference)
+                        constraint = cmds.orientConstraint(
+                            [grant_reference, parent_joint],
+                            joint,
+                            maintainOffset=offset_flag,
+                        )[0]
+                        self._set_constraint_target_weights(constraint, [1.0, 0.0])
+                    elif 0 <= grant_rate < 1:
                         # ０～１のときは、付与親の回転を部分的に適用する。
-                        cmds.orientConstraint("master", joint, maintainOffset=offset_flag, weight=1.0 - grant_rate)
-                        constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=offset_flag, weight=grant_rate)[
-                            0
-                        ]
+                        grant_reference = self._get_grant_reference_node(maya_joints, grant_reference)
+                        constraint = cmds.orientConstraint(
+                            [grant_reference, parent_joint],
+                            joint,
+                            maintainOffset=offset_flag,
+                        )[0]
+                        self._set_constraint_target_weights(constraint, [1.0 - grant_rate, grant_rate])
                     elif grant_rate == 1:
                         constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=offset_flag, weight=1.0)[0]
+                    else:
+                        constraint = cmds.orientConstraint(
+                            parent_joint,
+                            joint,
+                            maintainOffset=offset_flag,
+                            weight=grant_rate,
+                        )[0]
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"
@@ -610,6 +626,48 @@ class RigConverter:
 
         return constraints
 
+    def _set_constraint_target_weights(self, constraint, weights):
+        """
+        constraintターゲットのweight aliasへ値を設定する。
+
+        Args:
+            constraint (str): constraintノード名
+            weights (list[float]): 各ターゲットのウェイト
+        """
+        weight_aliases = cmds.orientConstraint(constraint, query=True, weightAliasList=True) or []
+        for alias, weight in zip(weight_aliases, weights):
+            cmds.setAttr(f"{constraint}.{alias}", weight)
+
+    def _get_grant_reference_node(self, maya_joints, cached_reference=None):
+        """
+        部分的な回転付与で使用する中立ターゲットを取得する。
+
+        Args:
+            maya_joints (list): Mayaジョイント名のリスト
+            cached_reference (str): すでに解決済みの参照ノード名
+
+        Returns:
+            str: 実在する参照ノード名
+        """
+        if cached_reference and maya_utils.object_exists(cached_reference):
+            return cached_reference
+
+        master_joint = self._find_joint_by_japanese_name(["全ての親", "マスター"])
+        if master_joint and maya_utils.object_exists(master_joint):
+            return master_joint
+
+        master_joint = self._find_joint_by_name(maya_joints, ["master", "全ての親", "マスター"])
+        if master_joint and maya_utils.object_exists(master_joint):
+            return master_joint
+
+        reference = "mmd_grant_reference"
+        if not maya_utils.object_exists(reference):
+            reference = cmds.group(empty=True, name=reference)
+            maya_utils.set_attribute(reference, "visibility", False, "bool")
+            self.logger.info(f"付与回転用の参照ノードを追加: {reference}")
+
+        return reference
+
     def _resolve_given_dependencies(self, given_bones, all_bones):
         """
         多重付与の依存関係を解決し、適切な順序で処理できるようにソートする。
@@ -631,7 +689,7 @@ class RigConverter:
             dependencies[info["index"]] = []
 
             # 付与親が他の付与ボーンかチェック
-            if hasattr(bone, "given_parent_bone_index"):
+            if hasattr(bone, "grant_parent_bone_index"):
                 parent_index = bone.grant_parent_bone_index
                 if parent_index in given_indices:
                     # 多重付与：この付与ボーンは親付与ボーンに依存
@@ -665,12 +723,13 @@ class RigConverter:
         Returns:
             list: トポロジカルソートされたノードのリスト
         """
-        # 入次数を計算
-        in_degree = {node: 0 for node in dependencies}
-        for deps in dependencies.values():
+        # 入次数と依存先から依存元への隣接リストを計算
+        in_degree = {node: len(deps) for node, deps in dependencies.items()}
+        dependents = {node: [] for node in dependencies}
+        for node, deps in dependencies.items():
             for dep in deps:
-                if dep in in_degree:
-                    in_degree[dep] += 1
+                if dep in dependents:
+                    dependents[dep].append(node)
 
         # 入次数0のノードをキューに追加
         queue = [node for node, degree in in_degree.items() if degree == 0]
@@ -681,11 +740,10 @@ class RigConverter:
             sorted_nodes.append(node)
 
             # このノードに依存するノードの入次数を減らす
-            for other, deps in dependencies.items():
-                if node in deps:
-                    in_degree[other] -= 1
-                    if in_degree[other] == 0:
-                        queue.append(other)
+            for dependent in dependents.get(node, []):
+                in_degree[dependent] -= 1
+                if in_degree[dependent] == 0:
+                    queue.append(dependent)
 
         # 循環依存がある場合は警告
         if len(sorted_nodes) < len(dependencies):
