@@ -1,0 +1,3 @@
+[submodule "external/mmd-anim"]
+	path = external/mmd-anim
+	url = https://github.com/yohawing/mmd-anim

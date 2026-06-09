@@ -38,7 +38,8 @@
       "animation_start_frame": 1,
       "resample_curves": false,
       "import_camera_animation": true,
-      "import_light_animation": true
+      "import_light_animation": true,
+      "use_mmd_runtime_bake": true
     },
     "naming": {
       "_comment": "Settings that control how objects are named in Maya",

@@ -78,6 +78,8 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                     ATTR_MMD_MODEL_NAME_EN: parser.header.model_name_english,
                     ATTR_MMD_COMMENT: parser.header.comment,
                     ATTR_MMD_COMMENT_EN: parser.header.comment_english,
+                    # Phase 1: runtime bake で VMD インポート時に PMX ソースを容易に見つけるため
+                    "mmd_source_file": filepath,
                 },
             )
 

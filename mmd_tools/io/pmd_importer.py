@@ -69,6 +69,8 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
                     ATTR_MMD_MODEL_NAME_EN: "",
                     ATTR_MMD_COMMENT: parser.header.get_comment(),
                     ATTR_MMD_COMMENT_EN: "",
+                    # Phase 1: store source for later VMD runtime bake
+                    "mmd_source_file": filepath,
                 },
             )
 
