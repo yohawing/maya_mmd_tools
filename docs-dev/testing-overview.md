@@ -54,8 +54,13 @@ uvx nox -s cpp_build -- --maya 2024 --config Debug
 # mayapy で C++ プラグインをロードし、mmdRuntimeInstance ノードを作成
 uvx nox -s maya_smoke -- --maya 2024 --config Debug
 
-# C++/native 経路をまとめて CLI だけで検証
+# C++ スタンドアローン CLI runtime smoke (Maya GUI / mayapy 不要)
+# GoldenOracle スタイルの manifest (サブセット) を読み、PMX/VMD を RuntimeBridge で評価してサニティ報告
+uvx nox -s cpp_cli_smoke -- --manifest <path-to-manifest.json> [--case <name>] [--limit <n>]
+
+# C++/native 経路をまとめて CLI だけで検証 (manifest 指定時は cpp_cli_smoke が maya_smoke 前に実行される)
 uvx nox -s cpp_verify -- --maya 2024 --config Debug
+uvx nox -s cpp_verify -- --maya 2024 --config Debug --manifest <path-to-manifest.json> [--case <name>]
 ```
 
 Maya の場所は `MAYA_LOCATION` または `MAYA_LOCATION_2024`、devkit の場所は `MAYA_DEVKIT_ROOT` または `MAYA_DEVKIT_ROOT_2024` で上書きできます。Windows では既定で `C:/Program Files/Autodesk/Maya2024`、macOS では `/Applications/Autodesk/maya2024/Maya.app/Contents` を探索します。

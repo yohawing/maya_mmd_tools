@@ -147,5 +147,59 @@ install(TARGETS mmd_tools_cpp
     RUNTIME DESTINATION "plug-ins/${MAYA_VERSION}"
 )
 
+# ------------------------------------------------------------------
+# Standalone CLI smoke (C++ only, no Maya). Built together with the plugin.
+# Reuses mmdRuntimeBridge (compiled again for exe; small). Links FFI only.
+# Output placed under build/cpp/maya<ver>/<config>/ so no mayapy needed.
+# FFI DLL is copied next to exe (LoadLibrary candidates will find it from app dir).
+# ------------------------------------------------------------------
+add_executable(mmd_runtime_smoke
+    mmdRuntimeSmoke.cpp
+    mmdRuntimeBridge.cpp
+)
+
+target_include_directories(mmd_runtime_smoke PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_compile_features(mmd_runtime_smoke PRIVATE cxx_std_17)
+
+if(EXISTS "${MMD_ANIM_FFI_INCLUDE_DIR}/mmd_runtime.h")
+    target_include_directories(mmd_runtime_smoke PRIVATE ${MMD_ANIM_FFI_INCLUDE_DIR})
+    message(STATUS "mmd_runtime_smoke: using mmd-anim-ffi header at ${MMD_ANIM_FFI_INCLUDE_DIR}")
+else()
+    message(FATAL_ERROR "mmd_runtime.h not found; required for mmd_runtime_smoke. Run ffi_build first.")
+endif()
+
+if(WIN32)
+    if(MMD_ANIM_FFI_LIB)
+        target_link_libraries(mmd_runtime_smoke PRIVATE ${MMD_ANIM_FFI_LIB})
+        add_custom_command(TARGET mmd_runtime_smoke POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MMD_ANIM_FFI_LIB_DIR}/mmd_anim_ffi.dll"
+                "$<TARGET_FILE_DIR:mmd_runtime_smoke>"
+        )
+        message(STATUS "mmd_runtime_smoke: will copy mmd-anim-ffi.dll next to exe")
+    else()
+        message(WARNING "mmd-anim-ffi import library not found for mmd_runtime_smoke.")
+    endif()
+    set_target_properties(mmd_runtime_smoke PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${REPO_ROOT}/build/cpp/maya${MAYA_VERSION}/$<CONFIG>"
+    )
+endif()
+
+if(MSVC)
+    target_compile_options(mmd_runtime_smoke PRIVATE /utf-8)
+    set_property(TARGET mmd_runtime_smoke PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+    )
+endif()
+
+if(APPLE)
+    if(MMD_ANIM_FFI_LIB)
+        target_link_libraries(mmd_runtime_smoke PRIVATE ${MMD_ANIM_FFI_LIB})
+    endif()
+    # RUNTIME_OUTPUT similar if needed for .app-less exe
+endif()
+
 message(STATUS "maya_mmd_tools C++ configured for Maya ${MAYA_VERSION}")
 message(STATUS "  Devkit: ${MAYA_DEVKIT_ROOT}")

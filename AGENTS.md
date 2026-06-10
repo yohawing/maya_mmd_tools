@@ -74,8 +74,12 @@ uvx nox -s native_smoke
 uvx nox -s cpp_build -- --maya 2024 --config Debug
 uvx nox -s maya_smoke -- --maya 2024 --config Debug
 
-# C++/native 経路をまとめて検証
+# C++ スタンドアローン CLI runtime smoke (Maya GUI / mayapy 不要、manifest から PMX/VMD 評価)
+uvx nox -s cpp_cli_smoke -- --manifest <GoldenOracle-manifest.json> [--case <name>]
+
+# C++/native 経路をまとめて検証 (manifest 指定時は cpp_cli_smoke が maya_smoke 前に挿入)
 uvx nox -s cpp_verify -- --maya 2024 --config Debug
+uvx nox -s cpp_verify -- --maya 2024 --config Debug --manifest <...>
 ```
 
 Windows の C++ ビルドでは `vswhere` で Visual Studio C++ tools を自動検出し、`VsDevCmd.bat` 経由で CMake/Ninja を実行します。検出を上書きする場合は `VSDEVCMD_PATH`、`VSWHERE_PATH`、`MAYA_DEVKIT_ROOT_2024` を使ってください。

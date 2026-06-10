@@ -191,6 +191,40 @@ def _cmake_build(session: nox.Session, version: str, config: str) -> None:
         session.run(*command, external=True)
 
 
+def _cpp_smoke_exe(version: str, config: str) -> Path:
+    """Return path to the standalone mmd_runtime_smoke exe produced by cpp build."""
+    build_dir = _cpp_build_dir(version) / config
+    exe = build_dir / "mmd_runtime_smoke"
+    if platform.system() == "Windows":
+        exe = exe.with_suffix(".exe")
+    return exe
+
+
+def _run_cli_smoke(
+    session: nox.Session,
+    version: str,
+    config: str,
+    manifest: str,
+    case: str = "",
+    limit: str = "",
+) -> None:
+    """Run the CLI smoke exe (if manifest provided). Used by cpp_cli_smoke and conditionally by cpp_verify."""
+    if not manifest:
+        return
+    exe = _cpp_smoke_exe(version, config)
+    if not exe.exists():
+        raise FileNotFoundError(
+            f"mmd_runtime_smoke not found at {exe}. "
+            f"Run 'uvx nox -s cpp_build -- --maya {version} --config {config}' first."
+        )
+    smoke_args: list[str] = ["--manifest", manifest]
+    if case:
+        smoke_args.extend(["--case", case])
+    if limit:
+        smoke_args.extend(["--limit", limit])
+    session.run(str(exe), *smoke_args, external=True)
+
+
 @nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
@@ -280,8 +314,41 @@ def maya_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def cpp_cli_smoke(session: nox.Session) -> None:
+    """Run the C++ standalone (no-Maya, no-mayapy) runtime smoke against a GoldenOracle-style manifest.
+
+    Reads JSON manifest subset, resolves relative assets.model / assets.motion, uses
+    mmd::RuntimeBridge (via built exe) to load PMX (+VMD), create model/clip/instance,
+    evaluate frame(s), and report basic sanity counts (bones, morphs, matrix floats, etc).
+    Fails on missing files, creation/eval errors, empty matrices, or NaN/Inf.
+
+    Does NOT compare against oracle JSONL (v1).
+
+    Examples:
+        uvx nox -s cpp_cli_smoke -- --manifest F:\\Develop\\MMDDev\\GoldenOracle\\manifests\\fixture.motion.json
+        uvx nox -s cpp_cli_smoke -- --manifest ... --case fixture-motion-generated-rest-pose-ik-chain --limit 1
+
+    The exe is produced by 'cpp_build' (placed under build/cpp/maya<ver>/<config>/).
+    Use --maya/--config to select which built exe to invoke (defaults 2024/Debug).
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    manifest = _option(session.posargs, "--manifest", "")
+    case_name = _option(session.posargs, "--case", "")
+    limit = _option(session.posargs, "--limit", "")
+    if not manifest:
+        session.error("--manifest <path> is required for cpp_cli_smoke")
+    _run_cli_smoke(session, version, config, manifest, case_name, limit)
+
+
+@nox.session(venv_backend="none")
 def cpp_verify(session: nox.Session) -> None:
-    """Run the CLI-only C++/native verification chain."""
+    """Run the CLI-only C++/native verification chain.
+
+    Always: ffi (release) + native python smoke + cpp_configure + cpp_build.
+    If --manifest is supplied: also runs cpp_cli_smoke (C++ standalone exe path)
+    *before* the maya_smoke (mayapy) step.
+    """
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
 
@@ -307,6 +374,13 @@ def cpp_verify(session: nox.Session) -> None:
 
     _cmake_configure(session, version, config)
     _cmake_build(session, version, config)
+
+    # Insert cpp_cli_smoke before maya_smoke when a manifest is supplied.
+    # This exercises the pure C++ CLI path (no mayapy) for runtime eval.
+    manifest = _option(session.posargs, "--manifest", "")
+    case_name = _option(session.posargs, "--case", "")
+    limit = _option(session.posargs, "--limit", "")
+    _run_cli_smoke(session, version, config, manifest, case_name, limit)
 
     mayapy = _mayapy(version)
     if not mayapy.exists():
