@@ -554,3 +554,137 @@ class TestVmdConverter(MayaTestBase):
         keyframes = cmds.keyframe(f"{mmd_camera}.translateX", query=True)
         self.assertIsNotNone(keyframes, "カメラにキーフレームが設定されていません")
         self.assertGreater(len(keyframes), 0, "カメラにキーフレームが設定されていません")
+
+    # --- 新規追加: runtime bake キャッシュ + API2.0 キーイング 向けフォーカステスト ---
+
+    def test_iter_runtime_bake_frames_returns_every_frame(self):
+        """_iter_runtime_bake_frames が全フレームを返すことを確認（キャッシュ収集の基盤）"""
+        self.assertEqual(self.converter._iter_runtime_bake_frames(0, 5), [0, 1, 2, 3, 4, 5])
+        self.assertEqual(self.converter._iter_runtime_bake_frames(10, 10), [10])
+        self.assertEqual(self.converter._iter_runtime_bake_frames(5, 3), [])
+
+    def test_compute_bone_locals_matches_xform_for_root_and_child(self):
+        """_compute_all_bone_locals が xform(ws) 後の .translate / .rotate と等価な値を返すことを確認（キャッシュの正確性）"""
+        # 親子ジョイント作成 (PMX bone index 順を模擬)
+        parent = cmds.joint(name="test_parent_bone")
+        cmds.select(parent, replace=True)
+        child = cmds.joint(name="test_child_bone")
+        cmds.select(clear=True)
+
+        self.converter.bone_index_to_joint = {0: parent, 1: child}
+        self.converter._bone_parent_map = {0: None, 1: 0}
+        self.converter._bone_rotate_orders = {0: 0, 1: 0}
+
+        # 親: 原点、子: 親から (1,0,0) だけ +X へ (Z flip 考慮で Maya では X同じ Y同じ Z反転だが回転なし)
+        # 簡単のため回転なし、親 (0,0,0), 子ワールド (1, 0, 0) を MMD 行列で表現
+        # mmd trans (1,0,0) -> maya trans (1,0,0)  (Z成分0なので)
+        parent_mmd = [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+        child_mmd = [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            1.0, 0.0, 0.0, 1.0,
+        ]
+        world_mats = [parent_mmd, child_mmd]
+
+        locals_map = self.converter._compute_all_bone_locals(world_mats)
+        self.assertIn(0, locals_map)
+        self.assertIn(1, locals_map)
+
+        p_tx, p_ty, p_tz, p_rx, p_ry, p_rz = locals_map[0]
+        self.assertAlmostEqual(p_tx, 0.0, places=6)
+        self.assertAlmostEqual(p_ty, 0.0, places=6)
+        self.assertAlmostEqual(p_tz, -0.0, places=6)
+        self.assertAlmostEqual(p_rx, 0.0, places=6)
+
+        c_tx, c_ty, c_tz, c_rx, c_ry, c_rz = locals_map[1]
+        # 親が (0,0,0) なので子の local trans は (1,0,0) -> Z flip 後 (1,0,0)
+        self.assertAlmostEqual(c_tx, 1.0, places=6)
+        self.assertAlmostEqual(c_ty, 0.0, places=6)
+        self.assertAlmostEqual(c_tz, 0.0, places=6)
+
+        # 比較: 実際に xform して得られる local を確認
+        maya_p = self.converter._convert_mmd_world_matrix_to_maya(parent_mmd)
+        maya_c = self.converter._convert_mmd_world_matrix_to_maya(child_mmd)
+        cmds.xform(parent, worldSpace=True, matrix=maya_p)
+        cmds.xform(child, worldSpace=True, matrix=maya_c)
+        self.assertAlmostEqual(cmds.getAttr(f"{child}.translateX"), c_tx, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{child}.translateZ"), c_tz, places=6)
+
+        cmds.delete(parent, child)
+
+    def test_compute_bone_locals_matches_maya_with_parent_rotation(self):
+        """親が回転している階層でも runtime world 行列から Maya local 値を再構成できることを確認"""
+        parent = cmds.joint(name="test_parent_rot_bone")
+        cmds.select(clear=True)
+        child = cmds.joint(name="test_child_rot_bone")
+        cmds.parent(child, parent)
+        cmds.select(clear=True)
+
+        cmds.setAttr(f"{parent}.jointOrient", 0, 0, 0)
+        cmds.setAttr(f"{child}.jointOrient", 0, 0, 0)
+        cmds.setAttr(f"{parent}.translate", 1.5, 2.0, -3.0)
+        cmds.setAttr(f"{parent}.rotate", 0.0, 35.0, 10.0)
+        cmds.setAttr(f"{child}.translate", 2.0, -0.5, 1.25)
+        cmds.setAttr(f"{child}.rotate", 15.0, 0.0, -20.0)
+
+        self.converter.bone_index_to_joint = {0: parent, 1: child}
+        self.converter._bone_parent_map = {0: None, 1: 0}
+        self.converter._bone_rotate_orders = {0: 0, 1: 0}
+
+        parent_maya_world = cmds.xform(parent, query=True, worldSpace=True, matrix=True)
+        child_maya_world = cmds.xform(child, query=True, worldSpace=True, matrix=True)
+        parent_mmd_world = self.converter._convert_mmd_world_matrix_to_maya(parent_maya_world)
+        child_mmd_world = self.converter._convert_mmd_world_matrix_to_maya(child_maya_world)
+
+        locals_map = self.converter._compute_all_bone_locals([parent_mmd_world, child_mmd_world])
+        self.assertIn(0, locals_map)
+        self.assertIn(1, locals_map)
+
+        for bidx, joint in ((0, parent), (1, child)):
+            tx, ty, tz, rx, ry, rz = locals_map[bidx]
+            self.assertAlmostEqual(tx, cmds.getAttr(f"{joint}.translateX"), places=5)
+            self.assertAlmostEqual(ty, cmds.getAttr(f"{joint}.translateY"), places=5)
+            self.assertAlmostEqual(tz, cmds.getAttr(f"{joint}.translateZ"), places=5)
+            self.assertAlmostEqual(rx, cmds.getAttr(f"{joint}.rotateX"), places=5)
+            self.assertAlmostEqual(ry, cmds.getAttr(f"{joint}.rotateY"), places=5)
+            self.assertAlmostEqual(rz, cmds.getAttr(f"{joint}.rotateZ"), places=5)
+
+        cmds.delete(parent)
+
+    def test_direct_anim_curve_helper_creates_keyed_values(self):
+        """_batch_create_and_key_curves が MFnAnimCurve / addKeys 経由で translate/rotate にキーを登録し、Maya 空間値が正しくなる"""
+        import math
+
+        joint = cmds.joint(name="test_direct_apikey_joint")
+        # サンプル: 回転値はラジアンで渡す
+        samples = {
+            "translateX": [(0.0, 0.0), (12.0, 1.0)],
+            "translateY": [(0.0, 0.0), (12.0, 2.0)],
+            "translateZ": [(0.0, 0.0), (12.0, -3.0)],
+            "rotateX": [(0.0, 0.0), (12.0, math.radians(30.0))],
+            "rotateY": [(0.0, 0.0), (12.0, 0.0)],
+            "rotateZ": [(0.0, 0.0), (12.0, 0.0)],
+        }
+        ok = self.converter._batch_create_and_key_curves(joint, samples)
+        self.assertTrue(ok, "direct animCurve helper should succeed or fallback with keys")
+
+        # キーが打たれている
+        for attr in ("translateX", "rotateX"):
+            times = cmds.keyframe(f"{joint}.{attr}", query=True, timeChange=True) or []
+            self.assertIn(0.0, times)
+            self.assertIn(12.0, times)
+
+        # 現在フレームで評価値が正しい (Maya 空間)
+        cmds.currentTime(12, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateY"), 2.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateZ"), -3.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 30.0, places=5)
+
+        cmds.delete(joint)

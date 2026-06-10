@@ -176,6 +176,7 @@
     "create_physics_joints": "建立物理關節",
     "group_physics_objects": "群組物理物件",
     "add_semi_standard_bones": "新增準標準骨骼",
+    "bake_mode": "Bake模式（無綁定）",
     "translate_names": "翻譯名稱",
     "import_bone_animation": "匯入骨骼動畫",
     "import_morph_animation": "匯入表情動畫",

@@ -203,6 +203,11 @@ class ImportExportTab(BaseTab):
         self.add_semi_standard_bones_check.toggled.connect(lambda v: settings.set("import.rig.add_semi_standard_bones", v))
         other_layout.addWidget(self.add_semi_standard_bones_check)
 
+        self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
+        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
+        self.bake_mode_check.toggled.connect(lambda v: settings.set("import.rig.bake_mode", v))
+        other_layout.addWidget(self.bake_mode_check)
+
         self.translate_names_check = QCheckBox(self.tr("translate_names", "checkboxes"))
         self.translate_names_check.setChecked(settings.get("import.naming.translate_names", True))
         self.translate_names_check.toggled.connect(lambda v: settings.set("import.naming.translate_names", v))
@@ -541,6 +546,7 @@ class ImportExportTab(BaseTab):
         self.create_physics_joints_check.setText(self.tr("create_physics_joints", "checkboxes"))
         self.group_physics_objects_check.setText(self.tr("group_physics_objects", "checkboxes"))
         self.add_semi_standard_bones_check.setText(self.tr("add_semi_standard_bones", "checkboxes"))
+        self.bake_mode_check.setText(self.tr("bake_mode", "checkboxes"))
         self.translate_names_check.setText(self.tr("translate_names", "checkboxes"))
         self.import_bone_animation_check.setText(self.tr("import_bone_animation", "checkboxes"))
         self.import_morph_animation_check.setText(self.tr("import_morph_animation", "checkboxes"))

@@ -69,7 +69,7 @@ def import_vmd_file(parser, filepath, options=None):
         if not pmx_bytes and not pmx_path and target_model:
             # モデルインポート時に保存した "mmd_source_file" を優先取得
             try:
-                if cmds.attributeQuery("mmd_source_file", node=target_model, exists=True):
+                if cmds.objExists(f"{target_model}.mmd_source_file"):
                     stored = cmds.getAttr(f"{target_model}.mmd_source_file")
                     if stored and os.path.exists(stored):
                         pmx_path = stored
@@ -80,7 +80,6 @@ def import_vmd_file(parser, filepath, options=None):
         if not pmx_bytes and not pmx_path:
             # 同じディレクトリに .pmx/.pmd があるか簡易推定
             try:
-                import os
                 vmd_dir = os.path.dirname(os.path.abspath(filepath))
                 candidates = [f for f in os.listdir(vmd_dir) if f.lower().endswith((".pmx", ".pmd"))] if os.path.isdir(vmd_dir) else []
                 if candidates:

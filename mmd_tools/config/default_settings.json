@@ -29,7 +29,8 @@
     },
     "rig": {
       "_comment": "Settings for rigging system setup",
-      "add_semi_standard_bones": false
+      "add_semi_standard_bones": false,
+      "bake_mode": false
     },
     "animation": {
       "_comment": "Settings for importing VMD animation files",

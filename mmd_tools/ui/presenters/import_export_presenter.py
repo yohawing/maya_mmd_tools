@@ -44,6 +44,31 @@ class ImportExportPresenter(QObject):
         if file_path:
             self.view.vmd_path_edit.setText(file_path)
 
+    def _get_vmd_target_model(self):
+        """VMD import用の対象モデルをUI選択または現在モデルから取得する。"""
+        current_index = self.view.target_model_combo.currentIndex()
+        if current_index > 0:  # "<Auto Detect>"以外が選択されている場合
+            return self.view.target_model_combo.itemData(current_index)
+        if getattr(self.app_state, "current_model_root", None):
+            target_model = self.app_state.current_model_root
+            logger.info(f"Auto-selected current model root for VMD import: {target_model}")
+            return target_model
+        return None
+
+    def _build_vmd_import_options(self, target_model=None):
+        """VMD import用のオプションをUI設定から組み立てる。"""
+        if target_model is None:
+            target_model = self._get_vmd_target_model()
+        return {
+            "start_frame": settings.get("import.animation.animation_start_frame", 1),
+            "import_bone_animation": settings.get("import.animation.import_animations", True),
+            "import_morph_animation": settings.get("import.animation.import_morph_animation", True),
+            "import_camera_animation": settings.get("import.animation.import_camera_animation", True),
+            "import_light_animation": settings.get("import.animation.import_light_animation", True),
+            "resample_curves": settings.get("import.animation.resample_curves", False),
+            "target_model": target_model,
+        }
+
     def import_file(self):
         file_path = self.view.import_path_edit.text().strip()
         if not file_path:
@@ -75,6 +100,11 @@ class ImportExportPresenter(QObject):
             "import_physics": settings.get("import.physics.import_physics", False),
             "import_morphs": settings.get("import.morph.import_morphs", True),
         }
+        if settings.get("import.rig.bake_mode", False):
+            import_options["setup_rig"] = False
+            import_options["setup_bone_orientation"] = False
+        if file_path.lower().endswith(".vmd"):
+            import_options.update(self._build_vmd_import_options())
 
         try:
             root_node = import_mmd_file(file_path, options=import_options)
@@ -127,10 +157,7 @@ class ImportExportPresenter(QObject):
             return
 
         # ターゲットモデルを取得
-        target_model = None
-        current_index = self.view.target_model_combo.currentIndex()
-        if current_index > 0:  # "<Auto Detect>"以外が選択されている場合
-            target_model = self.view.target_model_combo.itemData(current_index)
+        target_model = self._get_vmd_target_model()
 
         logger.info(f"Importing VMD file: {file_path}")
         if target_model:
@@ -140,15 +167,7 @@ class ImportExportPresenter(QObject):
         self.app_state.emit_status(f"VMDインポート中: {file_path}")
 
         # アニメーション設定を収集
-        animation_options = {
-            "start_frame": settings.get("import.animation.animation_start_frame", 1),
-            "import_bone_animation": settings.get("import.animation.import_animations", True),
-            "import_morph_animation": settings.get("import.animation.import_morph_animation", True),
-            "import_camera_animation": settings.get("import.animation.import_camera_animation", True),
-            "import_light_animation": settings.get("import.animation.import_light_animation", True),
-            "resample_curves": settings.get("import.animation.resample_curves", False),
-            "target_model": target_model,
-        }
+        animation_options = self._build_vmd_import_options(target_model)
 
         try:
             # VMDファイルもimport_mmd_fileで処理される

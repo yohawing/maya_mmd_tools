@@ -119,6 +119,15 @@ Docstring: Googleスタイルのdocstringを使用して、関数やクラスの
 - UIの作成は、pyside2にフォールバック可能なpyside6のコードで記述してください。
 - 高速化が期待できる箇所は、Maya Python API2.0を使用してください。
 
+### Maya Python API 2.0 / Devkit 参照
+
+Python API 2.0 で高速化する実装では、Maya 2026 devkit のローカルリファレンスも参照してください。
+
+- `C:\Program Files\Autodesk\Maya2026\devkit\include`
+- `C:\Users\yohaw\Documents\maya\2024\maya-2024-developer-help-enu`
+
+特に VMD/runtime bake の高速化では、`cmds.setKeyframe` を大量に呼ぶ前に、Maya Python API 2.0 の animCurve 直接作成・一括キー投入で置き換えられないか検討してください。
+
 
 ## ロガーの使用方法
 

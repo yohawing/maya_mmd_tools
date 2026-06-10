@@ -2,7 +2,9 @@
 MMDファイル（PMX、PMD、VMD）を解析し、Mayaシーンにインポートするためのメインモジュール。
 """
 
-from mmd_tools.core import PmdData, PmxData, VmdData, settings
+from pathlib import Path
+
+from mmd_tools.core import settings
 from mmd_tools.core.mmd_parser import parse_mmd_file
 from mmd_tools.io import pmd_importer, pmx_importer, vmd_importer
 from mmd_tools.core.logger import get_logger
@@ -31,8 +33,10 @@ def import_mmd_file(filepath, scale=None, options=None):
         # 汎用パーサーでファイルを解析
         parsed_data = parse_mmd_file(filepath)
 
-        # 解析されたデータのタイプに応じてインポーターを呼び出す
-        if isinstance(parsed_data, PmxData):
+        # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
+        # ファイル拡張子でインポーターを選ぶ。
+        suffix = Path(filepath).suffix.lower()
+        if suffix == ".pmx":
             return pmx_importer.import_pmx_file(
                 parsed_data,
                 filepath,
@@ -40,7 +44,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                 options,
             )
 
-        elif isinstance(parsed_data, PmdData):
+        elif suffix == ".pmd":
             return pmd_importer.import_pmd_file(
                 parsed_data,
                 filepath,
@@ -48,7 +52,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                 options,
             )
 
-        elif isinstance(parsed_data, VmdData):
+        elif suffix == ".vmd":
             return vmd_importer.import_vmd_file(parsed_data, filepath, options)
 
         else:

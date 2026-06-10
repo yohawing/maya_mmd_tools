@@ -184,6 +184,7 @@
     "create_physics_joints": "Create Physics Joints",
     "group_physics_objects": "Group Physics Objects",
     "add_semi_standard_bones": "Add Semi-Standard Bones",
+    "bake_mode": "Bake mode (no rig)",
     "translate_names": "Translate Names",
     "import_bone_animation": "Import Bone Animation",
     "import_morph_animation": "Import Morph Animation",

@@ -8,11 +8,15 @@ Phase 1 以降:
 - レガシーパス（従来の変換）との共存と自動フォールバック
 """
 
-from typing import Dict, List, Tuple
+from __future__ import annotations
+
+import time
+from typing import Dict, List, Optional, Tuple
 
 import os
 
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 import maya.cmds as cmds
 
 from ..core import maya_utils
@@ -205,38 +209,90 @@ class VmdConverter:
             return False
 
         try:
+            runtime_start = time.perf_counter()
             # フレーム範囲の決定
             min_frame, max_frame = self._get_animation_frame_range(vmd_data)
-            self.logger.info(f"runtime 評価範囲: {min_frame} - {max_frame}")
+            bake_frames = self._iter_runtime_bake_frames(min_frame, max_frame)
+            self.logger.info(
+                f"runtime 評価範囲: {min_frame} - {max_frame} (keys={len(bake_frames)})"
+            )
             self._disable_mmd_rig_constraints_for_runtime_bake()
 
             # runtime bake は最終姿勢を毎フレーム直焼きするため、animation layerを使わない。
             # layer経由だと全ボーン全フレームのblend node作成が重く、未登録attribute警告も出る。
             runtime_anim_layer = self.anim_layer
             self.anim_layer = None
+            refresh_suspended = False
 
-            # 各フレームを評価してベイク
+            # キャッシュ収集: 評価結果を API 配列へ直接保持（cmds.xform / setKeyframe を内側ループから排除）
+            baked_frames: List[int] = []
+            bake_times = om.MTimeArray()
+            joint_channel_values = self._create_runtime_joint_channel_arrays()
+            joint_channel_static = self._create_runtime_joint_channel_static_state()
+            morph_cache: List[Tuple[int, list]] = []
+            eval_start = time.perf_counter()
+
+            # 各フレームを評価してキャッシュ（Mayaコマンドを呼ばず高速に）
             try:
-                for frame in range(min_frame, max_frame + 1):
+                try:
+                    cmds.refresh(suspend=True)
+                    refresh_suspended = True
+                except Exception:
+                    refresh_suspended = False
+
+                for frame in bake_frames:
                     if not instance.evaluate_clip_frame(clip, float(frame)):
                         continue
 
-                    # ワールド行列を取得（ボーン順）
+                    # ワールド行列・モーフウェイトを取得（ボーン順）
                     world_matrices = instance.get_world_matrices() or []
-
-                    # ボーンごとのベイク
-                    self._bake_bone_poses_from_world_matrices(
-                        frame=frame,
-                        world_matrices=world_matrices,
-                        model_bone_count=len(world_matrices) // 16,
-                    )
-
                     morph_weights = instance.get_morph_weights() or []
-                    self._bake_morph_weights_from_runtime(frame, morph_weights, pmx_morph_names)
+
+                    # ローカルポーズをメモリ内で計算（親子階層を考慮した t/r ）
+                    bone_locals: Dict[int, Tuple[float, float, float, float, float, float]] = {}
+                    if self.bone_index_to_joint:
+                        if not hasattr(self, "_bone_parent_map") or len(getattr(self, "_bone_parent_map", {})) == 0:
+                            self._build_bone_hierarchy_and_order_maps()
+                        bone_locals = self._compute_all_bone_locals(world_matrices)
+
+                    baked_frames.append(int(frame))
+                    bake_times.append(om.MTime(float(frame), om.MTime.uiUnit()))
+                    self._append_bone_locals_to_channel_arrays(
+                        bone_locals, joint_channel_values, joint_channel_static
+                    )
+                    morph_cache.append((int(frame), list(morph_weights)))
             finally:
+                if refresh_suspended:
+                    try:
+                        cmds.refresh(suspend=False)
+                    except Exception:
+                        pass
                 self.anim_layer = runtime_anim_layer
 
-            self.logger.info("mmd-anim runtime によるポーズベイク完了")
+            eval_elapsed = time.perf_counter() - eval_start
+            self.logger.info(
+                f"mmd-anim runtime によるポーズ評価+キャッシュ完了 "
+                f"(frames={len(baked_frames)}, elapsed={eval_elapsed:.3f}s)"
+            )
+
+            # キャッシュから一括でキーフレーム登録（Maya Python API 2.0 優先）
+            if baked_frames:
+                apply_start = time.perf_counter()
+                self._apply_runtime_channel_arrays_to_scene(
+                    joint_channel_values,
+                    joint_channel_static,
+                    bake_times,
+                    baked_frames,
+                    morph_cache,
+                    pmx_morph_names,
+                )
+                apply_elapsed = time.perf_counter() - apply_start
+                self.logger.info(
+                    f"runtime cache キー登録完了 (elapsed={apply_elapsed:.3f}s)"
+                )
+
+            runtime_elapsed = time.perf_counter() - runtime_start
+            self.logger.info(f"runtime bake total elapsed={runtime_elapsed:.3f}s")
 
             return True
 
@@ -263,6 +319,468 @@ class VmdConverter:
                     fn = 0
                 max_f = max(max_f, fn)
         return int(min_f), int(max_f)
+
+    def _iter_runtime_bake_frames(self, min_frame: int, max_frame: int) -> List[int]:
+        """runtime bakeで評価/キー作成する全フレーム列を返す。"""
+        min_frame = int(min_frame)
+        max_frame = int(max_frame)
+        if max_frame < min_frame:
+            return []
+        return list(range(min_frame, max_frame + 1))
+
+    def _build_bone_hierarchy_and_order_maps(self):
+        """runtime bake キャッシュ計算用に、ボーン親子関係と rotateOrder を事前収集する。
+
+        Maya ジョイントの DAG 親子とカスタム属性から bone index ベースのマップを構築。
+        """
+        self._bone_parent_map: Dict[int, Optional[int]] = {}
+        self._bone_rotate_orders: Dict[int, int] = {}
+        for bidx, joint in list(self.bone_index_to_joint.items()):
+            self._bone_rotate_orders[bidx] = 0
+            try:
+                if cmds.attributeQuery("rotateOrder", node=joint, exists=True):
+                    ro = cmds.getAttr(f"{joint}.rotateOrder")
+                    if ro is not None:
+                        self._bone_rotate_orders[bidx] = int(ro)
+            except Exception:
+                pass
+            self._bone_parent_map[bidx] = None
+            try:
+                parents = cmds.listRelatives(joint, parent=True, type="joint", fullPath=False) or []
+                if parents:
+                    pjoint = parents[0]
+                    for pidx, pj in self.bone_index_to_joint.items():
+                        if pj == pjoint:
+                            self._bone_parent_map[bidx] = pidx
+                            break
+            except Exception:
+                pass
+        self.logger.debug(f"Built hierarchy map for {len(self._bone_parent_map)} bones for runtime cache")
+
+    def _compute_all_bone_locals(
+        self, world_matrices: List[List[float]]
+    ) -> Dict[int, Tuple[float, float, float, float, float, float]]:
+        """runtime から得たワールド行列群から、各ボーンの Maya ローカル姿勢 (translate + rotate deg) を計算。
+
+        親ボーンの変換済みワールド行列の逆行列を掛けてローカル行列を得、ジョイントの
+        rotateOrder に適合するオイラー角を抽出する。これにより per-frame の cmds.xform を
+        回避しつつ、ベイク結果の等価性を保つ。
+        """
+        if not world_matrices or not self.bone_index_to_joint:
+            return {}
+        locals_map: Dict[int, Tuple[float, float, float, float, float, float]] = {}
+        maya_worlds: Dict[int, om.MMatrix] = {}
+        for bidx in self.bone_index_to_joint.keys():
+            if bidx < len(world_matrices):
+                mmd_m = world_matrices[bidx]
+                if isinstance(mmd_m, (list, tuple)) and len(mmd_m) == 16:
+                    try:
+                        maya_flat = self._convert_mmd_world_matrix_to_maya(list(mmd_m))
+                        maya_worlds[bidx] = om.MMatrix(maya_flat)
+                    except Exception:
+                        pass
+        for bidx, joint in self.bone_index_to_joint.items():
+            if bidx not in maya_worlds:
+                continue
+            mw = maya_worlds[bidx]
+            pidx = getattr(self, "_bone_parent_map", {}).get(bidx)
+            pw = maya_worlds.get(pidx) if pidx is not None else None
+            try:
+                local_m = (mw * pw.inverse()) if pw is not None else mw
+                tm = om.MTransformationMatrix(local_m)
+                t = tm.translation(om.MSpace.kTransform)
+                tx, ty, tz = float(t.x), float(t.y), float(t.z)
+                ro = getattr(self, "_bone_rotate_orders", {}).get(bidx, 0)
+                rx, ry, rz = self._extract_euler_from_matrix(local_m, ro)
+                locals_map[bidx] = (tx, ty, tz, rx, ry, rz)
+            except Exception as e:
+                self.logger.debug(f"local compute fail for bone_idx={bidx}: {e}")
+        return locals_map
+
+    @staticmethod
+    def _extract_euler_from_matrix(m: om.MMatrix, rotate_order: int) -> Tuple[float, float, float]:
+        """MMatrix から、指定した Maya rotateOrder (0=xyz ... 5=zyx) に対応するオイラー角(度)を抽出。
+        """
+        try:
+            tm = om.MTransformationMatrix(m)
+            q = tm.rotation(asQuaternion=True)
+            order_map = {
+                0: om.MEulerRotation.kXYZ,
+                1: om.MEulerRotation.kYZX,
+                2: om.MEulerRotation.kZXY,
+                3: om.MEulerRotation.kXZY,
+                4: om.MEulerRotation.kYXZ,
+                5: om.MEulerRotation.kZYX,
+            }
+            order = order_map.get(rotate_order, om.MEulerRotation.kXYZ)
+            e = q.asEulerRotation()
+            if e.order != order:
+                e.reorderIt(order)
+            import math
+
+            return (math.degrees(e.x), math.degrees(e.y), math.degrees(e.z))
+        except Exception:
+            return (0.0, 0.0, 0.0)
+
+    def _batch_create_and_key_curves(
+        self,
+        joint_name: str,
+        channel_samples: Dict[str, List[Tuple[float, float]]],
+    ) -> bool:
+        """Maya Python API 2.0 (MFnAnimCurve + addKeys) でカーブ作成・一括キー挿入を行うヘルパ。
+
+        channel_samples の回転値は rotate animCurve 用の内部角度単位（ラジアン）であること。
+        translate は Maya linear unit の値をそのまま渡す。
+        API が使えない/失敗したチャンネルは cmds.setKeyframe にフォールバックして等価動作を維持。
+        """
+        if not cmds.objExists(joint_name) or not channel_samples:
+            return False
+        attrs = list(channel_samples.keys())
+        curves: Dict[str, oma.MFnAnimCurve] = {}
+        try:
+            curves = maya_utils.create_animation_curves(
+                joint_name,
+                attrs,
+                tangent_type=oma.MFnAnimCurve.kTangentLinear,
+                animation_layer=None,
+            )
+        except Exception as e:
+            self.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
+            curves = {}
+
+        tangent = oma.MFnAnimCurve.kTangentLinear
+        import math
+
+        shared_times = None
+        if channel_samples:
+            first_samples = next((samples for samples in channel_samples.values() if samples), None)
+            if first_samples:
+                try:
+                    shared_times = om.MTimeArray()
+                    for frame, _ in first_samples:
+                        shared_times.append(om.MTime(float(frame), om.MTime.uiUnit()))
+                except Exception:
+                    shared_times = None
+
+        success_any = False
+        for attr, samples in channel_samples.items():
+            if not samples:
+                continue
+            used_api = False
+            if attr in curves:
+                curve = curves[attr]
+                try:
+                    times = shared_times
+                    vals = om.MDoubleArray()
+                    for frame, val in samples:
+                        vals.append(float(val))
+                    if times is None or len(times) != len(vals):
+                        times = om.MTimeArray()
+                        for frame, _ in samples:
+                            times.append(om.MTime(float(frame), om.MTime.uiUnit()))
+                    curve.addKeys(times, vals, tangent, tangent, False)
+                    used_api = True
+                    success_any = True
+                    continue
+                except Exception as e:
+                    self.logger.debug(f"addKeys failed for {joint_name}.{attr}, fallback: {e}")
+            # Fallback (cmds) - 値の単位に注意: 回転は度
+            for frame, val in samples:
+                try:
+                    cmd_val = math.degrees(val) if "rotate" in attr else val
+                    cmds.setKeyframe(joint_name, attribute=attr, time=frame, value=cmd_val)
+                    success_any = True
+                except Exception:
+                    pass
+            if not used_api:
+                self.logger.debug(f"Used cmds.setKeyframe fallback for {joint_name}.{attr}")
+        return success_any
+
+    @staticmethod
+    def _runtime_joint_attrs() -> Tuple[str, str, str, str, str, str]:
+        """runtime bakeでキー登録するjoint channel一覧を返す。"""
+        return ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+
+    def _create_runtime_joint_channel_arrays(self) -> Dict[str, Dict[str, Optional[om.MDoubleArray]]]:
+        """runtime bake用にjoint channelごとの値配列を作成する。"""
+        values: Dict[str, Dict[str, Optional[om.MDoubleArray]]] = {}
+        for joint in self.bone_index_to_joint.values():
+            if not cmds.objExists(joint):
+                continue
+            values[joint] = {attr: None for attr in self._runtime_joint_attrs()}
+        return values
+
+    def _create_runtime_joint_channel_static_state(self) -> Dict[str, Dict[str, dict]]:
+        """静的channel判定用の状態を作成する。"""
+        states: Dict[str, Dict[str, dict]] = {}
+        for joint in self.bone_index_to_joint.values():
+            if not cmds.objExists(joint):
+                continue
+            states[joint] = {
+                attr: {"first": None, "is_static": True, "count": 0}
+                for attr in self._runtime_joint_attrs()
+            }
+        return states
+
+    def _append_bone_locals_to_channel_arrays(
+        self,
+        bone_locals: Dict[int, Tuple[float, float, float, float, float, float]],
+        channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
+        static_state: Dict[str, Dict[str, dict]],
+    ):
+        """frameごとのlocal姿勢をjoint channel配列へ直接追加する。"""
+        import math
+
+        for bidx, (tx, ty, tz, rx, ry, rz) in bone_locals.items():
+            joint = self.bone_index_to_joint.get(bidx)
+            chans = channel_values.get(joint)
+            states = static_state.get(joint)
+            if not chans or not states:
+                continue
+
+            values = {
+                "translateX": float(tx),
+                "translateY": float(ty),
+                "translateZ": float(tz),
+                "rotateX": math.radians(float(rx)),
+                "rotateY": math.radians(float(ry)),
+                "rotateZ": math.radians(float(rz)),
+            }
+            for attr, value in values.items():
+                state = states[attr]
+                first = state["first"]
+                if first is None:
+                    state["first"] = value
+                    state["count"] = 1
+                    continue
+
+                if state["is_static"]:
+                    if abs(float(value) - float(first)) <= 1e-10:
+                        state["count"] += 1
+                        continue
+
+                    array = om.MDoubleArray()
+                    for _ in range(int(state["count"])):
+                        array.append(float(first))
+                    array.append(float(value))
+                    chans[attr] = array
+                    state["is_static"] = False
+                    state["count"] += 1
+                    continue
+
+                array = chans[attr]
+                if array is not None:
+                    array.append(float(value))
+                state["count"] += 1
+
+    def _batch_create_and_key_curve_arrays(
+        self,
+        joint_name: str,
+        channel_values: Dict[str, Optional[om.MDoubleArray]],
+        static_state: Dict[str, dict],
+        times: om.MTimeArray,
+        frame_numbers: List[int],
+    ) -> Tuple[int, int]:
+        """MDoubleArrayへ収集済みのchannel値をMFnAnimCurve.addKeysで一括登録する。"""
+        if not cmds.objExists(joint_name) or not channel_values:
+            return 0, 0
+
+        dynamic_attrs = []
+        skipped_static = 0
+        for attr, values in channel_values.items():
+            state = static_state.get(attr, {})
+            if state.get("is_static", False):
+                skipped_static += 1
+                if state.get("first") is not None:
+                    try:
+                        value = float(state["first"])
+                        if "rotate" in attr:
+                            import math
+
+                            value = math.degrees(value)
+                        cmds.setAttr(f"{joint_name}.{attr}", value)
+                    except Exception:
+                        pass
+                continue
+            if values is None or len(values) != len(times):
+                continue
+            dynamic_attrs.append(attr)
+
+        if not dynamic_attrs:
+            return 0, skipped_static
+
+        try:
+            curves = maya_utils.create_animation_curves(
+                joint_name,
+                dynamic_attrs,
+                tangent_type=oma.MFnAnimCurve.kTangentLinear,
+                animation_layer=None,
+            )
+        except Exception as e:
+            self.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
+            curves = {}
+
+        tangent = oma.MFnAnimCurve.kTangentLinear
+        keyed = 0
+        for attr in dynamic_attrs:
+            values = channel_values[attr]
+            curve = curves.get(attr)
+            if curve:
+                try:
+                    curve.addKeys(times, values, tangent, tangent, False)
+                    keyed += 1
+                    continue
+                except Exception as e:
+                    self.logger.debug(f"addKeys failed for {joint_name}.{attr}, fallback: {e}")
+
+            for index, frame in enumerate(frame_numbers):
+                try:
+                    value = float(values[index])
+                    if "rotate" in attr:
+                        import math
+
+                        value = math.degrees(value)
+                    cmds.setKeyframe(joint_name, attribute=attr, time=frame, value=value)
+                except Exception:
+                    pass
+            keyed += 1
+
+        return keyed, skipped_static
+
+    def _apply_runtime_channel_arrays_to_scene(
+        self,
+        joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
+        joint_channel_static: Dict[str, Dict[str, dict]],
+        bake_times: om.MTimeArray,
+        baked_frames: List[int],
+        morph_cache: List[Tuple[int, list]],
+        pmx_morph_names: List[str],
+    ):
+        """API配列へ収集済みのruntime bake結果をMaya sceneへ一括適用する。"""
+        keyed_channels = 0
+        skipped_static_channels = 0
+        total_channels = 0
+
+        for joint, channels in joint_channel_values.items():
+            total_channels += len(channels)
+            try:
+                keyed, skipped = self._batch_create_and_key_curve_arrays(
+                    joint,
+                    channels,
+                    joint_channel_static.get(joint, {}),
+                    bake_times,
+                    baked_frames,
+                )
+                keyed_channels += keyed
+                skipped_static_channels += skipped
+            except Exception as e:
+                self.logger.debug(f"batch array keying error for {joint}: {e}")
+
+        self.logger.info(
+            "runtime joint channel pruning: "
+            f"keyed={keyed_channels}, skipped_static={skipped_static_channels}, "
+            f"total={total_channels}"
+        )
+
+        for frame, morph_weights in morph_cache:
+            try:
+                self._bake_morph_weights_from_runtime(frame, morph_weights, pmx_morph_names)
+            except Exception as e:
+                self.logger.debug(f"post-apply morph bake error at frame {frame}: {e}")
+
+        self.logger.info(f"runtime cache 適用完了: {len(baked_frames)} フレームをキー登録")
+
+    def _apply_runtime_cache_to_scene(
+        self, runtime_cache: List[dict], pmx_morph_names: List[str]
+    ):
+        """キャッシュ済みフレームデータから、ジョイントの translate/rotate を API 2.0 で一括キーイング。
+
+        モーフは既存パスで後処理（評価ループ外）。これにより内側ループの cmds.xform/setKeyframe を排除。
+        """
+        if not runtime_cache:
+            return
+
+        # ジョイント: per-joint でチャンネル別サンプルをまとめ、一括登録
+        if self.bone_index_to_joint:
+            per_joint_channels: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
+            import math
+
+            for fd in runtime_cache:
+                f = fd["frame"]
+                for bidx, (tx, ty, tz, rx, ry, rz) in fd.get("bone_locals", {}).items():
+                    jname = self.bone_index_to_joint.get(bidx)
+                    if not jname:
+                        continue
+                    if jname not in per_joint_channels:
+                        per_joint_channels[jname] = {
+                            "translateX": [],
+                            "translateY": [],
+                            "translateZ": [],
+                            "rotateX": [],
+                            "rotateY": [],
+                            "rotateZ": [],
+                        }
+                    chans = per_joint_channels[jname]
+                    chans["translateX"].append((f, tx))
+                    chans["translateY"].append((f, ty))
+                    chans["translateZ"].append((f, tz))
+                    # 回転サンプルは addKeys のためラジアンで保持
+                    chans["rotateX"].append((f, math.radians(rx)))
+                    chans["rotateY"].append((f, math.radians(ry)))
+                    chans["rotateZ"].append((f, math.radians(rz)))
+
+            total_channels = 0
+            keyed_channels = 0
+            skipped_static_channels = 0
+            for jname, chans in per_joint_channels.items():
+                try:
+                    dynamic_chans = {}
+                    for attr, samples in chans.items():
+                        total_channels += 1
+                        if self._is_static_channel(samples):
+                            skipped_static_channels += 1
+                            if samples:
+                                try:
+                                    value = float(samples[0][1])
+                                    if "rotate" in attr:
+                                        import math
+
+                                        value = math.degrees(value)
+                                    cmds.setAttr(f"{jname}.{attr}", value)
+                                except Exception:
+                                    pass
+                            continue
+                        dynamic_chans[attr] = samples
+
+                    if dynamic_chans:
+                        keyed_channels += len(dynamic_chans)
+                        self._batch_create_and_key_curves(jname, dynamic_chans)
+                except Exception as e:
+                    self.logger.debug(f"batch keying error for {jname} (will have used fallbacks): {e}")
+            self.logger.info(
+                "runtime joint channel pruning: "
+                f"keyed={keyed_channels}, skipped_static={skipped_static_channels}, "
+                f"total={total_channels}"
+            )
+
+        # モーフ: 評価ループの外で後処理（cmds ではあるが、キャッシュ適用フェーズ）
+        for fd in runtime_cache:
+            try:
+                self._bake_morph_weights_from_runtime(
+                    fd["frame"], fd.get("morph_weights", []), pmx_morph_names
+                )
+            except Exception as e:
+                self.logger.debug(f"post-apply morph bake error at frame {fd['frame']}: {e}")
+
+        self.logger.info(f"runtime cache 適用完了: {len(runtime_cache)} フレームをキー登録")
+
+    @staticmethod
+    def _is_static_channel(samples: List[Tuple[float, float]], tolerance: float = 1e-10) -> bool:
+        """全サンプル値が同一なら True を返す。"""
+        if len(samples) <= 1:
+            return True
+        first = float(samples[0][1])
+        return all(abs(float(value) - first) <= tolerance for _, value in samples[1:])
 
     def _bake_bone_poses_from_world_matrices(
         self, frame: int, world_matrices: list, model_bone_count: int
