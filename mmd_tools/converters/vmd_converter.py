@@ -25,6 +25,7 @@ from ..core.constants import (
     DEFAULT_LIGHT_NAME,
 )
 from ..core.logger import get_logger
+from ..core.pmx_data import PmxData
 from ..core.vmd_data import VmdData
 
 # mmd-anim runtime (Phase 1+)
@@ -177,6 +178,14 @@ class VmdConverter:
             return False
 
         # モデル・クリップ・インスタンス作成
+        pmx_morph_names = []
+        if pmx_path and os.path.exists(pmx_path):
+            try:
+                pmx_data = PmxData().parse_file(pmx_path)
+                pmx_morph_names = [morph.name for morph in pmx_data.morphs]
+            except Exception as e:
+                self.logger.warning(f"runtime morph bake 用 PMX morph 名の取得に失敗: {e}")
+
         model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
         if model is None:
             self.logger.error("MmdRuntimeModel の作成に失敗しました")
@@ -199,35 +208,35 @@ class VmdConverter:
             # フレーム範囲の決定
             min_frame, max_frame = self._get_animation_frame_range(vmd_data)
             self.logger.info(f"runtime 評価範囲: {min_frame} - {max_frame}")
+            self._disable_mmd_rig_constraints_for_runtime_bake()
 
-            # アニメーションレイヤー選択（存在する場合）
-            if self.use_animation_layers and self.anim_layer:
-                cmds.animLayer(self.anim_layer, edit=True, selected=True)
+            # runtime bake は最終姿勢を毎フレーム直焼きするため、animation layerを使わない。
+            # layer経由だと全ボーン全フレームのblend node作成が重く、未登録attribute警告も出る。
+            runtime_anim_layer = self.anim_layer
+            self.anim_layer = None
 
             # 各フレームを評価してベイク
-            for frame in range(min_frame, max_frame + 1):
-                if not instance.evaluate_clip_frame(clip, float(frame)):
-                    continue
+            try:
+                for frame in range(min_frame, max_frame + 1):
+                    if not instance.evaluate_clip_frame(clip, float(frame)):
+                        continue
 
-                # ワールド行列を取得（ボーン順）
-                world_matrices = instance.get_world_matrices() or []
+                    # ワールド行列を取得（ボーン順）
+                    world_matrices = instance.get_world_matrices() or []
 
-                # ボーンごとのベイク
-                self._bake_bone_poses_from_world_matrices(
-                    frame=frame,
-                    world_matrices=world_matrices,
-                    model_bone_count=len(world_matrices) // 16,
-                )
+                    # ボーンごとのベイク
+                    self._bake_bone_poses_from_world_matrices(
+                        frame=frame,
+                        world_matrices=world_matrices,
+                        model_bone_count=len(world_matrices) // 16,
+                    )
 
-                # モーフウェイトのベイク（高精度） - 現時点では legacy マッピングにフォールバック
-                morph_weights = instance.get_morph_weights() or []
-                self._bake_morph_weights_from_runtime(frame, morph_weights)
+                    morph_weights = instance.get_morph_weights() or []
+                    self._bake_morph_weights_from_runtime(frame, morph_weights, pmx_morph_names)
+            finally:
+                self.anim_layer = runtime_anim_layer
 
             self.logger.info("mmd-anim runtime によるポーズベイク完了")
-
-            # モーフアニメは legacy ロジックでも処理（マッピングが別途必要）
-            if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
-                self._convert_morph_animation(vmd_data.morph_frames)
 
             return True
 
@@ -262,13 +271,13 @@ class VmdConverter:
         mmd-anim runtime から得たワールド行列 (PMXボーン順) を使って
         Maya ジョイントに正確なポーズをベイクする。
 
-        - bone_index_to_joint を使って対応する joint を特定
+        - bone_index_to_joint から PMX bone index 順 (昇順) で反復し、親ボーン(低index)を子(高index)より先に適用
         - world matrix を Maya 座標系に変換 (Z反転)
         - cmds.xform(ws=True, matrix=...) で目的のワールド姿勢を適用
         - その結果のローカル値をキーフレーム
 
-        これにより、runtime が解決した付与変形・IK・ベジェ補間の結果が
-        Maya アニメーションカーブに焼き込まれる。
+        index 順にすることで、同一フレーム内の複数ボーン xform(ws) 時に親のワールドが先に確定し、
+        子のローカル分解が正しい親基準で行われる。左手捩などツイストボーンの回転再現に重要。
         """
         if not world_matrices or not self.bone_index_to_joint:
             # フォールバック: 最低限キーフレームだけ打つ（評価自体は runtime で済んでいる）
@@ -287,13 +296,12 @@ class VmdConverter:
                         pass
             return
 
-        for vmd_bone_name, maya_joint in self.bone_name_mapping.items():
+        # PMXボーンindex昇順で適用（親→子）。bone_name_mapping の挿入順(DAG DFS順やその他)に依存せず、
+        # 常に低index(親)を先に xform して子の world 解決を正しくする。
+        for bone_idx in sorted(self.bone_index_to_joint.keys()):
+            maya_joint = self.bone_index_to_joint[bone_idx]
             if not cmds.objExists(maya_joint):
                 continue
-            if vmd_bone_name not in self.bone_name_to_index:
-                continue
-
-            bone_idx = self.bone_name_to_index[vmd_bone_name]
             if bone_idx >= len(world_matrices):
                 continue
 
@@ -343,11 +351,54 @@ class VmdConverter:
 
         return maya_matrix
 
-    def _bake_morph_weights_from_runtime(self, frame: int, morph_weights: list):
-        """runtime から得た正確なモーフウェイトをベイク"""
-        # 現在の実装では morph_name_mapping が不完全なため、既存の _convert_morph_animation に委ねる
-        # ここでは placeholder（将来的に runtime の morph 順と Maya blendShape を対応づける）
-        pass
+    def _bake_morph_weights_from_runtime(
+        self,
+        frame: int,
+        morph_weights: list,
+        pmx_morph_names: List[str] = None,
+    ):
+        """runtime から得た PMX morph 順のウェイトを Maya blendShape にベイク"""
+        if not morph_weights:
+            return
+
+        pmx_morph_names = pmx_morph_names or []
+        for index, weight in enumerate(morph_weights):
+            if index >= len(pmx_morph_names):
+                continue
+            morph_name = pmx_morph_names[index]
+            if morph_name not in self.morph_name_mapping:
+                continue
+
+            bs_node, weight_index, _ = self.morph_name_mapping[morph_name]
+            try:
+                cmds.setKeyframe(
+                    bs_node,
+                    attribute=f"weight[{weight_index}]",
+                    time=frame,
+                    value=float(weight),
+                )
+            except Exception as e:
+                self.logger.debug(
+                    f"runtime morph bake error for {morph_name} at frame {frame}: {e}"
+                )
+
+    def _disable_mmd_rig_constraints_for_runtime_bake(self):
+        """runtime bake と二重評価になる PMX 付与constraintを無効化する。"""
+        constraints = cmds.ls("*.mmd_grant_constraint", objectsOnly=True) or []
+        disabled = 0
+        for constraint in constraints:
+            try:
+                if cmds.attributeQuery("nodeState", node=constraint, exists=True):
+                    cmds.setAttr(f"{constraint}.nodeState", 2)
+                    disabled += 1
+                elif cmds.attributeQuery("envelope", node=constraint, exists=True):
+                    cmds.setAttr(f"{constraint}.envelope", 0)
+                    disabled += 1
+            except Exception as e:
+                self.logger.debug(f"failed to disable MMD grant constraint {constraint}: {e}")
+
+        if disabled:
+            self.logger.info(f"runtime bake 用に {disabled} 個のMMD付与constraintを無効化しました")
 
 
     def _add_objects_to_layer(self, objects: List[str]):
@@ -773,7 +824,38 @@ class VmdConverter:
             for i in range(weight_count):
                 alias = cmds.aliasAttr(f"{bs_node}.weight[{i}]", query=True)
                 if alias:
-                    self.morph_name_mapping[alias] = (bs_node, i, alias)
+                    mapping = (bs_node, i, alias)
+                    self.morph_name_mapping[alias] = mapping
+                    for original_name in self._get_original_morph_name_candidates(alias):
+                        self.morph_name_mapping.setdefault(original_name, mapping)
+
+    def _get_original_morph_name_candidates(self, alias: str) -> List[str]:
+        """Maya aliasからVMD/PMX側の元モーフ名候補を取得する。
+
+        PMX import では日本語名を Maya 安全なASCII aliasへ変換する一方、
+        VMD morph frame は日本語名のまま来る。そのため alias と辞書逆引き名の
+        両方を mapping key として登録する。
+        """
+        candidates = []
+        if not alias:
+            return candidates
+
+        try:
+            from mmd_tools.core.unicode_converter import get_converter
+
+            converter = get_converter()
+            for source_map in (converter.unicode_to_ascii, converter.exact_match):
+                for original_name, converted_name in source_map.items():
+                    if converted_name == alias:
+                        candidates.append(original_name)
+        except Exception:
+            pass
+
+        unique_candidates = []
+        for candidate in candidates:
+            if candidate and candidate not in unique_candidates:
+                unique_candidates.append(candidate)
+        return unique_candidates
 
     def _set_scene_fps(self, fps: float):
         """シーンのFPSを設定

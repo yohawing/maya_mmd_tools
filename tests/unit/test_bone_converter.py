@@ -448,6 +448,57 @@ class TestBoneConverterMaya(unittest.TestCase):
         # RigConverterが呼ばれたことを確認
         mock_rig_converter.setup_pmx_rig.assert_called_once()
 
+    @patch("mmd_tools.converters.bone_converter.RigConverter")
+    def test_convert_pmx_bones_can_skip_rig_setup(self, mock_rig_converter_class):
+        """runtime bake用にPMXリグ構築をスキップできる"""
+        mock_rig_converter = Mock()
+        mock_rig_converter_class.return_value = mock_rig_converter
+
+        converter = BoneConverter()
+
+        pmx_data = Mock()
+        pmx_data.bones = [
+            self._create_mock_pmx_bone(0, "center"),
+            self._create_mock_pmx_bone(1, "upper_body", parent_index=0),
+        ]
+        pmx_data.vertices = []
+
+        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+            mock_sanitize.side_effect = lambda x: x
+            maya_joints, skin_cluster = converter.convert_pmx_bones(
+                pmx_data,
+                self.test_mesh,
+                self.root_group,
+                setup_rig=False,
+            )
+
+        self.assertEqual(len(maya_joints), 2)
+        self.assertTrue(cmds.objExists(skin_cluster))
+        mock_rig_converter.setup_pmx_rig.assert_not_called()
+
+    def test_create_maya_joints_can_skip_pmx_bone_orientation(self):
+        """runtime bake用にPMXローカル軸のjointOrient適用をスキップできる"""
+        bone = self._create_mock_pmx_bone(
+            0,
+            "local_axis_bone",
+            bone_flag=PmxBoneFlag.LOCAL_AXIS | PmxBoneFlag.AXIS_FIXED,
+        )
+        bone.x_axis_direction = (0.0, 1.0, 0.0)
+        bone.z_axis_direction = (0.0, 0.0, 1.0)
+        bone.axis_direction = (0.0, 1.0, 0.0)
+
+        skeleton_group = cmds.group(empty=True, name="skeleton_no_orient_grp")
+        maya_joints = self.converter._create_maya_joints(
+            [bone],
+            {0: "local_axis_bone"},
+            "pmx",
+            skeleton_group,
+            setup_bone_orientation=False,
+        )
+
+        joint_orient = cmds.getAttr(f"{maya_joints[0]}.jointOrient")[0]
+        self.assertEqual(tuple(round(value, 6) for value in joint_orient), (0.0, 0.0, 0.0))
+
 
 if __name__ == "__main__":
     unittest.main()

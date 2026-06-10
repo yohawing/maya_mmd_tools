@@ -60,7 +60,14 @@ class BoneConverter:
         self.logger = get_logger(__name__)
         self.rig_converter = RigConverter()
 
-    def convert_pmx_bones(self, pmx_data: PmxData, mesh_node, root_group):
+    def convert_pmx_bones(
+        self,
+        pmx_data: PmxData,
+        mesh_node,
+        root_group,
+        setup_rig=True,
+        setup_bone_orientation=True,
+    ):
         """
         PMXのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
 
@@ -68,6 +75,8 @@ class BoneConverter:
             pmx_data (PmxParser): 解析されたPMXデータオブジェクト。
             mesh_node (str): スキニングを適用するMayaのメッシュノードの名前。
             root_group (str): ルートグループの名前。
+            setup_rig (bool): Trueの場合、PMXの付与/IKなどのMayaリグを構築する。
+            setup_bone_orientation (bool): Trueの場合、PMXローカル軸/軸固定をjointOrient等へ反映する。
 
         Returns:
             tuple: (作成されたMayaジョイントノードの名前のリスト,
@@ -83,10 +92,18 @@ class BoneConverter:
         bone_map = self._create_bone_mapping(pmx_data.bones)
 
         # Mayaジョイントを作成
-        maya_joints = self._create_maya_joints(pmx_data.bones, bone_map, "pmx", skeleton_group)
+        maya_joints = self._create_maya_joints(
+            pmx_data.bones,
+            bone_map,
+            "pmx",
+            skeleton_group,
+            setup_bone_orientation=setup_bone_orientation,
+        )
 
-        # リグのセットアップはRigConverterに委譲
-        self.rig_converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
+        # リグのセットアップはRigConverterに委譲。
+        # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
+        if setup_rig:
+            self.rig_converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
 
         # スキンクラスターを作成
         skin_cluster = self._create_skin_cluster(maya_joints, mesh_node, max_influence=4)
@@ -166,7 +183,14 @@ class BoneConverter:
 
         return bone_map
 
-    def _create_maya_joints(self, bones, bone_map, format_type, skeleton_group):
+    def _create_maya_joints(
+        self,
+        bones,
+        bone_map,
+        format_type,
+        skeleton_group,
+        setup_bone_orientation=True,
+    ):
         """
         Mayaジョイントを作成する。
 
@@ -175,6 +199,7 @@ class BoneConverter:
             bone_map (dict): ボーン名のマッピング。
             format_type (str): フォーマットタイプ（'pmx' または 'pmd'）。
             skeleton_group (str): スケルトングループの名前。
+            setup_bone_orientation (bool): PMXローカル軸/軸固定をMaya jointへ反映するか。
 
         Returns:
             list: 作成されたMayaジョイントノードの名前のリスト。
@@ -200,7 +225,7 @@ class BoneConverter:
                 ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
             )
 
-            if format_type == "pmx":
+            if format_type == "pmx" and setup_bone_orientation:
                 # ジョイントのローカル軸を設定
                 if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
                     self.logger.debug(f"ジョイントのローカル軸を設定: {bone.name}")

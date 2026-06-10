@@ -97,7 +97,13 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             # ボーンを変換
             logger.info("ボーンを変換中...")
             bone_converter = BoneConverter()
-            maya_joints, skin_cluster = bone_converter.convert_pmx_bones(parser, mesh_name, root_group)
+            maya_joints, skin_cluster = bone_converter.convert_pmx_bones(
+                parser,
+                mesh_name,
+                root_group,
+                setup_rig=options.get("setup_rig", True),
+                setup_bone_orientation=options.get("setup_bone_orientation", True),
+            )
             logger.debug(
                 "ボーン変換完了: %d個のジョイント",
                 len(maya_joints) if maya_joints else 0,

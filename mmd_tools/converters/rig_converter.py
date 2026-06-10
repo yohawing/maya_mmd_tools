@@ -583,6 +583,7 @@ class RigConverter:
                             joint,
                             maintainOffset=offset_flag,
                         )[0]
+                        self._mark_mmd_grant_constraint(constraint)
                         self._set_constraint_target_weights(constraint, [1.0, 0.0])
                     elif 0 <= grant_rate < 1:
                         # ０～１のときは、付与親の回転を部分的に適用する。
@@ -592,9 +593,11 @@ class RigConverter:
                             joint,
                             maintainOffset=offset_flag,
                         )[0]
+                        self._mark_mmd_grant_constraint(constraint)
                         self._set_constraint_target_weights(constraint, [1.0 - grant_rate, grant_rate])
                     elif grant_rate == 1:
                         constraint = cmds.orientConstraint(parent_joint, joint, maintainOffset=offset_flag, weight=1.0)[0]
+                        self._mark_mmd_grant_constraint(constraint)
                     else:
                         constraint = cmds.orientConstraint(
                             parent_joint,
@@ -602,6 +605,7 @@ class RigConverter:
                             maintainOffset=offset_flag,
                             weight=grant_rate,
                         )[0]
+                        self._mark_mmd_grant_constraint(constraint)
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"
@@ -617,6 +621,7 @@ class RigConverter:
                     grant_rate = bone.grant_rate
 
                     constraint = cmds.pointConstraint(parent_joint, joint, maintainOffset=True, weight=grant_rate)[0]
+                    self._mark_mmd_grant_constraint(constraint)
 
                     constraints.append(constraint)
                     given_type = "ローカル付与" if is_local_given else "グローバル付与"
@@ -625,6 +630,15 @@ class RigConverter:
                     )
 
         return constraints
+
+    def _mark_mmd_grant_constraint(self, constraint):
+        """runtime bake時に無効化できるMMD付与constraintとして印を付ける。"""
+        try:
+            if not cmds.attributeQuery("mmd_grant_constraint", node=constraint, exists=True):
+                cmds.addAttr(constraint, longName="mmd_grant_constraint", attributeType="bool")
+            cmds.setAttr(f"{constraint}.mmd_grant_constraint", True)
+        except Exception:
+            pass
 
     def _set_constraint_target_weights(self, constraint, weights):
         """

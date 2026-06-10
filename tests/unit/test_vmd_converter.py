@@ -389,6 +389,51 @@ class TestVmdConverter(MayaTestBase):
         # クリーンアップ
         cmds.delete(cube, target)
 
+    def test_bake_morph_weights_from_runtime_uses_pmx_morph_order(self):
+        """runtime morph weightをPMX morph順の日本語名でblendShapeへベイクする"""
+        cube = cmds.polyCube(name="test_runtime_morph_mesh")[0]
+        blend_shape = cmds.blendShape(cube, name="test_runtime_morph_blendShape")[0]
+
+        target = cmds.duplicate(cube)[0]
+        cmds.move(1, 0, 0, f"{target}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape, edit=True, target=(cube, 0, target, 1.0))
+        cmds.aliasAttr("blink", f"{blend_shape}.weight[0]")
+        cmds.delete(target)
+
+        self.converter._build_morph_mappings()
+        self.converter._bake_morph_weights_from_runtime(
+            frame=7,
+            morph_weights=[0.75],
+            pmx_morph_names=["まばたき"],
+        )
+
+        cmds.currentTime(7, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.75, places=6)
+
+        keyframes = cmds.keyframe(f"{blend_shape}.weight[0]", query=True)
+        self.assertIn(7.0, keyframes)
+
+        cmds.delete(cube)
+
+    def test_disable_mmd_rig_constraints_for_runtime_bake_only_marked_constraints(self):
+        """runtime bakeではMMD付与constraintだけを無効化する"""
+        source = cmds.spaceLocator(name="grant_source")[0]
+        target = cmds.spaceLocator(name="grant_target")[0]
+        other_source = cmds.spaceLocator(name="other_source")[0]
+        other_target = cmds.spaceLocator(name="other_target")[0]
+
+        marked = cmds.orientConstraint(source, target)[0]
+        unmarked = cmds.orientConstraint(other_source, other_target)[0]
+        cmds.addAttr(marked, longName="mmd_grant_constraint", attributeType="bool")
+        cmds.setAttr(f"{marked}.mmd_grant_constraint", True)
+
+        self.converter._disable_mmd_rig_constraints_for_runtime_bake()
+
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 2)
+        self.assertEqual(cmds.getAttr(f"{unmarked}.nodeState"), 0)
+
+        cmds.delete(source, target, other_source, other_target)
+
     def test_build_morph_mappings(self):
         """モーフマッピング構築テスト"""
         # テスト用メッシュとブレンドシェイプを作成
@@ -418,12 +463,34 @@ class TestVmdConverter(MayaTestBase):
         print(f"Morph mapping: {self.converter.morph_name_mapping}")
 
         # マッピングが作成されたことを確認
-        self.assertEqual(len(self.converter.morph_name_mapping), 3)
+        self.assertGreaterEqual(len(self.converter.morph_name_mapping), 3)
         self.assertIn("mabataki", self.converter.morph_name_mapping)
         self.assertIn("egao", self.converter.morph_name_mapping)
         self.assertIn("wink", self.converter.morph_name_mapping)
 
         # クリーンアップ
+        cmds.delete(cube)
+
+    def test_build_morph_mappings_adds_original_japanese_names(self):
+        """Maya aliasが辞書変換名でもVMDの日本語モーフ名で引けることを確認"""
+        cube = cmds.polyCube(name="test_mesh_jp_morph")[0]
+        blend_shape = cmds.blendShape(cube, name="test_blendShape_jp_morph")[0]
+
+        target = cmds.duplicate(cube)[0]
+        cmds.move(1, 0, 0, f"{target}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape, edit=True, target=(cube, 0, target, 1.0))
+        cmds.aliasAttr("blink", f"{blend_shape}.weight[0]")
+        cmds.delete(target)
+
+        self.converter._build_morph_mappings()
+
+        self.assertIn("blink", self.converter.morph_name_mapping)
+        self.assertIn("まばたき", self.converter.morph_name_mapping)
+        self.assertEqual(
+            self.converter.morph_name_mapping["まばたき"],
+            self.converter.morph_name_mapping["blink"],
+        )
+
         cmds.delete(cube)
 
     def _create_test_joints_for_vmd(self):
