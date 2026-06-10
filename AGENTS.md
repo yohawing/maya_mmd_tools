@@ -74,6 +74,10 @@ uvx nox -s native_smoke
 uvx nox -s cpp_build -- --maya 2024 --config Debug
 uvx nox -s maya_smoke -- --maya 2024 --config Debug
 
+# mayapy でのオフスクリーン viewport キャプチャ smoke（GUI不要、C++プラグイン非依存の最小 smoke）
+uvx nox -s maya_viewport_capture -- --maya 2024
+uvx nox -s maya_viewport_capture -- --maya 2024 --out build/captures/viewport_smoke.png --width 640 --height 480
+
 # C++ スタンドアローン CLI runtime smoke (Maya GUI / mayapy 不要、manifest から PMX/VMD 評価)
 uvx nox -s cpp_cli_smoke -- --manifest <GoldenOracle-manifest.json> [--case <name>]
 
@@ -83,6 +87,8 @@ uvx nox -s cpp_verify -- --maya 2024 --config Debug --manifest <...>
 ```
 
 Windows の C++ ビルドでは `vswhere` で Visual Studio C++ tools を自動検出し、`VsDevCmd.bat` 経由で CMake/Ninja を実行します。検出を上書きする場合は `VSDEVCMD_PATH`、`VSWHERE_PATH`、`MAYA_DEVKIT_ROOT_2024` を使ってください。
+
+`maya_viewport_capture` は DX11Shader / `mmd_tools/shaders/MMDShader.fx` の表示検証へ拡張する前段です。まず cube capture の存在・非ゼロサイズを gate にし、shader 検証は別 session として Windows 専用に分けて追加してください。
 
 実行方法は以下です。
 

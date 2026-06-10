@@ -314,6 +314,60 @@ def maya_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_viewport_capture(session: nox.Session) -> None:
+    """Minimal mayapy offscreen viewport capture smoke (no GUI, no plugin).
+
+    Creates a trivial polyCube + camera + light scene and uses playblast with
+    offScreen=True, offScreenViewportUpdate=True, viewer=False, format=image,
+    compression=png to produce a PNG. Verifies the file exists with >0 size.
+
+    The script tolerates playblast emitting frame-padded names (e.g. foo.0001.png)
+    by detecting the actual written file in the target directory.
+
+    Defaults: Maya 2024, output build/captures/viewport_smoke.png, frame 1, 640x480.
+
+    Does NOT depend on mmd_tools or the C++ plugin (pure Maya standalone smoke).
+
+    Examples:
+        uvx nox -s maya_viewport_capture -- --maya 2024
+        uvx nox -s maya_viewport_capture -- --maya 2024 --out build/captures/viewport_smoke.png --frame 1 --width 640 --height 480
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    out = _option(session.posargs, "--out", str(ROOT / "build/captures/viewport_smoke.png"))
+    out_path = Path(out)
+    if not out_path.is_absolute():
+        out_path = (ROOT / out_path).resolve()
+    frame = _option(session.posargs, "--frame", "1")
+    width = _option(session.posargs, "--width", "640")
+    height = _option(session.posargs, "--height", "480")
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    env = {
+        **os.environ,
+        "MAYA_VERSION": version,
+        "PYTHONPATH": str(ROOT),
+        # Intentionally no MMD_TOOLS_CPP_* or plugin env; this smoke is plugin-free.
+    }
+    session.run(
+        str(mayapy),
+        "tests/viewport/smoke_viewport_capture.py",
+        "--out",
+        str(out_path),
+        "--frame",
+        frame,
+        "--width",
+        width,
+        "--height",
+        height,
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def cpp_cli_smoke(session: nox.Session) -> None:
     """Run the C++ standalone (no-Maya, no-mayapy) runtime smoke against a GoldenOracle-style manifest.
 

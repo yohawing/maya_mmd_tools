@@ -54,6 +54,11 @@ uvx nox -s cpp_build -- --maya 2024 --config Debug
 # mayapy で C++ プラグインをロードし、mmdRuntimeInstance ノードを作成
 uvx nox -s maya_smoke -- --maya 2024 --config Debug
 
+# mayapy での最小限オフスクリーン viewport キャプチャ smoke（GUI 不要・プラグイン非依存）
+# シンプルなポリゴンキューブシーンを作成し、playblast で PNG を出力して存在と非ゼロサイズを検証
+uvx nox -s maya_viewport_capture -- --maya 2024
+uvx nox -s maya_viewport_capture -- --maya 2024 --out build/captures/viewport_smoke.png --frame 1 --width 640 --height 480
+
 # C++ スタンドアローン CLI runtime smoke (Maya GUI / mayapy 不要)
 # GoldenOracle スタイルの manifest (サブセット) を読み、PMX/VMD を RuntimeBridge で評価してサニティ報告
 uvx nox -s cpp_cli_smoke -- --manifest <path-to-manifest.json> [--case <name>] [--limit <n>]
@@ -66,6 +71,10 @@ uvx nox -s cpp_verify -- --maya 2024 --config Debug --manifest <path-to-manifest
 Maya の場所は `MAYA_LOCATION` または `MAYA_LOCATION_2024`、devkit の場所は `MAYA_DEVKIT_ROOT` または `MAYA_DEVKIT_ROOT_2024` で上書きできます。Windows では既定で `C:/Program Files/Autodesk/Maya2024`、macOS では `/Applications/Autodesk/maya2024/Maya.app/Contents` を探索します。
 
 Windows の C++ ビルドは `vswhere` で Visual Studio C++ tools を自動検出し、`VsDevCmd.bat` 経由で CMake/Ninja を実行します。自動検出が合わない場合は `VSDEVCMD_PATH` または `VSWHERE_PATH` で上書きできます。
+
+`maya_viewport_capture` は Maya の Viewport 2.0 / playblast 経路が CLI から PNG を出せるかを見る最小 smoke です。`playblast` は `viewport_smoke.0000.png` のようにフレーム番号付きファイルを出力する場合があります。この smoke は実際に生成された PNG を検出して、存在と非ゼロサイズを検証します。
+
+この smoke は DX11Shader / `mmd_tools/shaders/MMDShader.fx` の検証へ拡張するための基盤です。まずはプラグイン非依存の cube capture を安定 gate にし、その後 Windows 専用の shader capture session を追加して、MMD material / toon / sphere map / alpha の viewport 表示を PNG と簡易 pixel check で確認します。
 
 ### 基本的なテスト実行方法
 
