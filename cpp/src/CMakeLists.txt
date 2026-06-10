@@ -98,6 +98,13 @@ target_compile_definitions(mmd_tools_cpp PRIVATE
     _BOOL
 )
 
+if(MSVC)
+    target_compile_options(mmd_tools_cpp PRIVATE /utf-8)
+    set_property(TARGET mmd_tools_cpp PROPERTY
+        MSVC_RUNTIME_LIBRARY "MultiThreadedDLL"
+    )
+endif()
+
 if(WIN32)
     target_compile_definitions(mmd_tools_cpp PRIVATE NT_PLUGIN)
     target_link_directories(mmd_tools_cpp PRIVATE ${MAYA_LIB_DIR})

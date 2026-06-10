@@ -21,8 +21,10 @@
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnTypedAttribute.h>
 #include <maya/MFnMatrixAttribute.h>
+#include <maya/MFnUnitAttribute.h>
 #include <maya/MDataHandle.h>
 #include <maya/MArrayDataHandle.h>
+#include <maya/MArrayDataBuilder.h>
 #include <maya/MGlobal.h>
 #include <maya/MTime.h>
 
@@ -51,14 +53,15 @@ MStatus MmdRuntimeNode::initialize() {
     MStatus status;
 
     // time input
-    MFnNumericAttribute nAttr;
-    aTime = nAttr.create("time", "tm", MFnNumericData::kTime, 0.0, &status);
-    nAttr.setWritable(true);
-    nAttr.setReadable(false);
-    nAttr.setKeyable(true);
+    MFnUnitAttribute uAttr;
+    aTime = uAttr.create("time", "tm", MFnUnitAttribute::kTime, 0.0, &status);
+    uAttr.setWritable(true);
+    uAttr.setReadable(false);
+    uAttr.setKeyable(true);
     addAttribute(aTime);
 
     // placeholder for data (later: byte array or path)
+    MFnNumericAttribute nAttr;
     MFnTypedAttribute tAttr;
     aPmxData = tAttr.create("pmxData", "pmx", MFnData::kString, MObject::kNullObj, &status);
     tAttr.setWritable(true);

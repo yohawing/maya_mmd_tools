@@ -57,6 +57,9 @@ def main() -> int:
     import maya.standalone
 
     plugin_path = _find_plugin_path()
+    os.environ["PATH"] = str(plugin_path.parent) + os.pathsep + os.environ.get("PATH", "")
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(str(plugin_path.parent))
 
     maya.standalone.initialize(name="python")
     try:

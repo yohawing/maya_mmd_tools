@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 
@@ -80,9 +81,83 @@ def _cpp_build_dir(version: str) -> Path:
     return ROOT / "build" / "cpp" / f"maya{version}"
 
 
-def _cmake_configure(session: nox.Session, version: str) -> None:
+def _vswhere_path() -> Path:
+    """Return the default vswhere path."""
+    explicit = os.environ.get("VSWHERE_PATH")
+    if explicit:
+        return Path(explicit)
+    return Path("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe")
+
+
+def _find_vsdevcmd() -> Path | None:
+    """Find VsDevCmd.bat for Windows C++ builds."""
+    explicit = os.environ.get("VSDEVCMD_PATH")
+    if explicit:
+        path = Path(explicit)
+        return path if path.exists() else None
+
+    vswhere = _vswhere_path()
+    if vswhere.exists():
+        try:
+            result = subprocess.run(
+                [
+                    str(vswhere),
+                    "-latest",
+                    "-prerelease",
+                    "-products",
+                    "*",
+                    "-requires",
+                    "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+                    "-property",
+                    "installationPath",
+                ],
+                check=False,
+                text=True,
+                capture_output=True,
+            )
+            for line in result.stdout.splitlines():
+                candidate = Path(line.strip()) / "Common7" / "Tools" / "VsDevCmd.bat"
+                if candidate.exists():
+                    return candidate
+        except OSError:
+            pass
+
+    for root in (
+        Path("C:/Program Files/Microsoft Visual Studio/18"),
+        Path("C:/Program Files/Microsoft Visual Studio/2022"),
+        Path("C:/Program Files (x86)/Microsoft Visual Studio/2022"),
+    ):
+        if not root.exists():
+            continue
+        for candidate in root.glob("*/Common7/Tools/VsDevCmd.bat"):
+            if candidate.exists():
+                return candidate
+
+    return None
+
+
+def _run_in_vs_dev_cmd(session: nox.Session, command: list[str]) -> None:
+    """Run a Windows command after initializing Visual Studio C++ tools."""
+    vsdevcmd = _find_vsdevcmd()
+    if vsdevcmd is None or os.environ.get("MMD_TOOLS_SKIP_VSDEVCMD"):
+        session.run(*command, external=True)
+        return
+
+    body = subprocess.list2cmdline(command)
+    session.log(f"Using Visual Studio developer environment: {vsdevcmd}")
+    result = subprocess.run(
+        f'"{vsdevcmd}" -arch=x64 -host_arch=x64 >nul && {body}',
+        cwd=ROOT,
+        shell=True,
+    )
+    if result.returncode != 0:
+        session.error(f"Command failed with exit code {result.returncode}: {body}")
+
+
+def _cmake_configure(session: nox.Session, version: str, config: str = DEFAULT_CMAKE_CONFIG) -> None:
     """Configure the Maya C++ plugin build."""
     args = [
+        "cmake",
         "-S",
         "cpp/src",
         "-B",
@@ -93,9 +168,27 @@ def _cmake_configure(session: nox.Session, version: str) -> None:
     ]
 
     if platform.system() == "Windows" and not os.environ.get("CMAKE_GENERATOR"):
-        args.extend(["-G", "Visual Studio 17 2022", "-A", "x64"])
+        args.extend(["-G", "Ninja", f"-DCMAKE_BUILD_TYPE={config}"])
 
-    session.run("cmake", *args, external=True)
+    if platform.system() == "Windows":
+        _run_in_vs_dev_cmd(session, args)
+    else:
+        session.run(*args, external=True)
+
+
+def _cmake_build(session: nox.Session, version: str, config: str) -> None:
+    """Build the Maya C++ plugin."""
+    command = [
+        "cmake",
+        "--build",
+        str(_cpp_build_dir(version)),
+        "--config",
+        config,
+    ]
+    if platform.system() == "Windows":
+        _run_in_vs_dev_cmd(session, command)
+    else:
+        session.run(*command, external=True)
 
 
 @nox.session(venv_backend="none")
@@ -150,7 +243,8 @@ def native_smoke(session: nox.Session) -> None:
 def cpp_config(session: nox.Session) -> None:
     """Configure the Maya C++ plugin build."""
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    _cmake_configure(session, version)
+    config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
+    _cmake_configure(session, version, config)
 
 
 @nox.session(venv_backend="none")
@@ -158,15 +252,8 @@ def cpp_build(session: nox.Session) -> None:
     """Configure and build the Maya C++ plugin."""
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
-    _cmake_configure(session, version)
-    session.run(
-        "cmake",
-        "--build",
-        str(_cpp_build_dir(version)),
-        "--config",
-        config,
-        external=True,
-    )
+    _cmake_configure(session, version, config)
+    _cmake_build(session, version, config)
 
 
 @nox.session(venv_backend="none")
@@ -218,15 +305,8 @@ def cpp_verify(session: nox.Session) -> None:
     )
     session.run(sys.executable, "-c", code, external=True)
 
-    _cmake_configure(session, version)
-    session.run(
-        "cmake",
-        "--build",
-        str(_cpp_build_dir(version)),
-        "--config",
-        config,
-        external=True,
-    )
+    _cmake_configure(session, version, config)
+    _cmake_build(session, version, config)
 
     mayapy = _mayapy(version)
     if not mayapy.exists():

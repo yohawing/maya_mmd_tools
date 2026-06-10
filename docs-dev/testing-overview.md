@@ -60,6 +60,8 @@ uvx nox -s cpp_verify -- --maya 2024 --config Debug
 
 Maya の場所は `MAYA_LOCATION` または `MAYA_LOCATION_2024`、devkit の場所は `MAYA_DEVKIT_ROOT` または `MAYA_DEVKIT_ROOT_2024` で上書きできます。Windows では既定で `C:/Program Files/Autodesk/Maya2024`、macOS では `/Applications/Autodesk/maya2024/Maya.app/Contents` を探索します。
 
+Windows の C++ ビルドは `vswhere` で Visual Studio C++ tools を自動検出し、`VsDevCmd.bat` 経由で CMake/Ninja を実行します。自動検出が合わない場合は `VSDEVCMD_PATH` または `VSWHERE_PATH` で上書きできます。
+
 ### 基本的なテスト実行方法
 
 #### 全てのテストを実行

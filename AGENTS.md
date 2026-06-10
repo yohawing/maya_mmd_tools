@@ -78,6 +78,8 @@ uvx nox -s maya_smoke -- --maya 2024 --config Debug
 uvx nox -s cpp_verify -- --maya 2024 --config Debug
 ```
 
+Windows の C++ ビルドでは `vswhere` で Visual Studio C++ tools を自動検出し、`VsDevCmd.bat` 経由で CMake/Ninja を実行します。検出を上書きする場合は `VSDEVCMD_PATH`、`VSWHERE_PATH`、`MAYA_DEVKIT_ROOT_2024` を使ってください。
+
 実行方法は以下です。
 
 ### ユニットテスト
