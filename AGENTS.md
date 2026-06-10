@@ -51,6 +51,33 @@ Important principles for this project:
 
 テストは、ユニットテストと統合テストの2つのレベルで実施します。
 
+### タスクランナー
+
+開発用の共通入口は `noxfile.py` に集約します。設定ファイルを増やさないため、新しいビルド・検証タスクは原則として Nox セッションとして追加してください。
+
+Nox は追加の仮想環境を作らず、既存の `mayapy` / CMake / Cargo / Python スクリプトを呼び出す薄い CLI ランナーとして使います。
+
+よく使うコマンド:
+
+```bash
+# 既存のユニットテスト
+uvx nox -s tests
+
+# 既存の統合テスト
+uvx nox -s tests -- --type integration
+
+# mmd-anim FFI のビルドと Python native ロード確認
+uvx nox -s ffi_build
+uvx nox -s native_smoke
+
+# C++ プラグインの CLI ビルドと mayapy smoke
+uvx nox -s cpp_build -- --maya 2024 --config Debug
+uvx nox -s maya_smoke -- --maya 2024 --config Debug
+
+# C++/native 経路をまとめて検証
+uvx nox -s cpp_verify -- --maya 2024 --config Debug
+```
+
 実行方法は以下です。
 
 ### ユニットテスト

@@ -58,7 +58,6 @@ set(SOURCES
 set(HEADERS
     mmdRuntimeBridge.h
     mmdRuntimeNode.h
-    mmd_runtime.h   # 可能ならコピー or include
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})
@@ -70,9 +69,25 @@ target_include_directories(mmd_tools_cpp PRIVATE
 
 if(EXISTS "${MMD_ANIM_FFI_INCLUDE_DIR}/mmd_runtime.h")
     target_include_directories(mmd_tools_cpp PRIVATE ${MMD_ANIM_FFI_INCLUDE_DIR})
+    target_sources(mmd_tools_cpp PRIVATE "${MMD_ANIM_FFI_INCLUDE_DIR}/mmd_runtime.h")
     message(STATUS "Found mmd-anim-ffi header at ${MMD_ANIM_FFI_INCLUDE_DIR}")
 else()
     message(WARNING "mmd_runtime.h not found at ${MMD_ANIM_FFI_INCLUDE_DIR}. FFI bridge will be stub.")
+endif()
+
+set(MMD_ANIM_FFI_LIB_DIR "${REPO_ROOT}/external/mmd-anim/target/release" CACHE PATH "Path to mmd-anim-ffi import library")
+if(WIN32)
+    find_library(MMD_ANIM_FFI_LIB
+        NAMES mmd_anim_ffi mmd_anim_ffi.dll
+        PATHS "${MMD_ANIM_FFI_LIB_DIR}"
+        NO_DEFAULT_PATH
+    )
+elseif(APPLE)
+    find_library(MMD_ANIM_FFI_LIB
+        NAMES mmd_anim_ffi libmmd_anim_ffi
+        PATHS "${MMD_ANIM_FFI_LIB_DIR}"
+        NO_DEFAULT_PATH
+    )
 endif()
 
 # ------------------------------------------------------------------
@@ -89,16 +104,32 @@ if(WIN32)
     target_link_libraries(mmd_tools_cpp PRIVATE
         OpenMaya.lib
         Foundation.lib
-        # mmd_anim_ffi.lib が必要ならここに (遅延ロード推奨)
     )
+    if(MMD_ANIM_FFI_LIB)
+        target_link_libraries(mmd_tools_cpp PRIVATE ${MMD_ANIM_FFI_LIB})
+        add_custom_command(TARGET mmd_tools_cpp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MMD_ANIM_FFI_LIB_DIR}/mmd_anim_ffi.dll"
+                "$<TARGET_FILE_DIR:mmd_tools_cpp>"
+        )
+        message(STATUS "Found mmd-anim-ffi import library: ${MMD_ANIM_FFI_LIB}")
+    else()
+        message(WARNING "mmd-anim-ffi import library not found. Build mmd-anim-ffi first.")
+    endif()
     set_target_properties(mmd_tools_cpp PROPERTIES
         SUFFIX ".mll"
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/plug-ins/${MAYA_VERSION}/$<CONFIG>"
+        RUNTIME_OUTPUT_DIRECTORY "${REPO_ROOT}/plug-ins/${MAYA_VERSION}/$<CONFIG>"
     )
 endif()
 
 if(APPLE)
     target_compile_definitions(mmd_tools_cpp PRIVATE MAC_PLUGIN)
+    if(MMD_ANIM_FFI_LIB)
+        target_link_libraries(mmd_tools_cpp PRIVATE ${MMD_ANIM_FFI_LIB})
+        message(STATUS "Found mmd-anim-ffi library: ${MMD_ANIM_FFI_LIB}")
+    else()
+        message(WARNING "mmd-anim-ffi library not found. Build mmd-anim-ffi first.")
+    endif()
     # .bundle 設定など追加必要
 endif()
 

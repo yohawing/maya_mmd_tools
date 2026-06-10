@@ -29,6 +29,37 @@ tests/
 - **柔軟なテストフィルタリング**: 特定のテストモジュール、クラス、メソッドを指定して実行可能
 - **カラー対応出力**: テスト結果が色分けされて表示され、視認性が向上
 
+### Nox タスクランナー
+
+開発用の共通入口として `noxfile.py` を使用します。Nox は追加の仮想環境を作らず、既存の `mayapy` / CMake / Cargo ランナーを呼び出す薄いタスクランナーとして扱います。
+
+基本コマンド:
+
+```bash
+# 既存のユニットテストを実行
+uvx nox -s tests
+
+# 既存の統合テストを実行
+uvx nox -s tests -- --type integration
+
+# mmd-anim FFI をビルド
+uvx nox -s ffi_build
+
+# Python から native runtime をロードできるか確認
+uvx nox -s native_smoke
+
+# Maya C++ プラグインをビルド
+uvx nox -s cpp_build -- --maya 2024 --config Debug
+
+# mayapy で C++ プラグインをロードし、mmdRuntimeInstance ノードを作成
+uvx nox -s maya_smoke -- --maya 2024 --config Debug
+
+# C++/native 経路をまとめて CLI だけで検証
+uvx nox -s cpp_verify -- --maya 2024 --config Debug
+```
+
+Maya の場所は `MAYA_LOCATION` または `MAYA_LOCATION_2024`、devkit の場所は `MAYA_DEVKIT_ROOT` または `MAYA_DEVKIT_ROOT_2024` で上書きできます。Windows では既定で `C:/Program Files/Autodesk/Maya2024`、macOS では `/Applications/Autodesk/maya2024/Maya.app/Contents` を探索します。
+
 ### 基本的なテスト実行方法
 
 #### 全てのテストを実行
