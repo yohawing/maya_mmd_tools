@@ -236,6 +236,8 @@ def _setup_parsed_model_signatures(lib: CDLL) -> None:
             c_size_t,
             [c_void_p],
         )
+        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_count", c_size_t, [c_void_p])
+        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_offset_count", c_size_t, [c_void_p])
 
         # ポインターアクセサ (const model* → const float* / const uint32_t*)
         _set_sig(lib, "mmd_runtime_parsed_model_positions", c_void_p, [c_void_p])
@@ -246,8 +248,17 @@ def _setup_parsed_model_signatures(lib: CDLL) -> None:
         _set_sig(lib, "mmd_runtime_parsed_model_skin_indices", c_void_p, [c_void_p])
         _set_sig(lib, "mmd_runtime_parsed_model_skin_weights", c_void_p, [c_void_p])
         _set_sig(lib, "mmd_runtime_parsed_model_material_groups", c_void_p, [c_void_p])
+        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_spans", c_void_p, [c_void_p])
+        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_vertex_indices", c_void_p, [c_void_p])
+        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_position_offsets", c_void_p, [c_void_p])
 
-        # metadata_json (const model* → MmdRuntimeFfiByteBuffer by value)
+        # byte buffers (const model* → MmdRuntimeFfiByteBuffer by value)
+        _set_sig(
+            lib,
+            "mmd_runtime_parsed_model_vertex_morph_name",
+            MmdRuntimeFfiByteBuffer,
+            [c_void_p, c_size_t],
+        )
         _set_sig(lib, "mmd_runtime_parsed_model_metadata_json", MmdRuntimeFfiByteBuffer, [c_void_p])
     except Exception as exc:
         logger.debug(f"parsed-model ABI のシグネチャ設定中にエラー: {exc}")
@@ -743,6 +754,32 @@ class MmdParsedModel:
         except Exception:
             return 0
 
+    @property
+    def vertex_morph_count(self) -> int:
+        """頂点モーフ数を返す。失敗時は 0。"""
+        if not self._handle or self._lib is None:
+            return 0
+        func = getattr(self._lib, "mmd_runtime_parsed_model_vertex_morph_count", None)
+        if func is None:
+            return 0
+        try:
+            return func(self._handle)
+        except Exception:
+            return 0
+
+    @property
+    def vertex_morph_offset_count(self) -> int:
+        """全頂点モーフ offset 数を返す。失敗時は 0。"""
+        if not self._handle or self._lib is None:
+            return 0
+        func = getattr(self._lib, "mmd_runtime_parsed_model_vertex_morph_offset_count", None)
+        if func is None:
+            return 0
+        try:
+            return func(self._handle)
+        except Exception:
+            return 0
+
     # ---- ポインター配列 → Python list 変換 ----
 
     @property
@@ -879,6 +916,87 @@ class MmdParsedModel:
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
             logger.error(f"material_groups 読み取り失敗: {e}")
+            return None
+
+    @property
+    def vertex_morph_spans(self) -> Optional[List[Tuple[int, int, int]]]:
+        """
+        頂点モーフ span [(start, count, pmx_morph_index), ...] を返す。
+        利用不可または空の場合は None。
+        """
+        ptr = self._get_ptr("mmd_runtime_parsed_model_vertex_morph_spans")
+        if ptr is None:
+            return None
+        try:
+            n = self.vertex_morph_count
+            arr = (c_uint32 * (n * 3)).from_address(ptr)
+            return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
+        except Exception as e:
+            logger.error(f"vertex_morph_spans 読み取り失敗: {e}")
+            return None
+
+    @property
+    def vertex_morph_vertex_indices(self) -> Optional[List[int]]:
+        """
+        全頂点モーフ offset の vertex index 配列を返す。
+        利用不可または空の場合は None。
+        """
+        ptr = self._get_ptr("mmd_runtime_parsed_model_vertex_morph_vertex_indices")
+        if ptr is None:
+            return None
+        try:
+            n = self.vertex_morph_offset_count
+            arr = (c_uint32 * n).from_address(ptr)
+            return list(arr)
+        except Exception as e:
+            logger.error(f"vertex_morph_vertex_indices 読み取り失敗: {e}")
+            return None
+
+    @property
+    def vertex_morph_position_offsets(self) -> Optional[List[Tuple[float, float, float]]]:
+        """
+        全頂点モーフ offset の移動量 [(dx, dy, dz), ...] を返す。
+        利用不可または空の場合は None。
+        """
+        ptr = self._get_ptr("mmd_runtime_parsed_model_vertex_morph_position_offsets")
+        if ptr is None:
+            return None
+        try:
+            n = self.vertex_morph_offset_count
+            arr = (c_float * (n * 3)).from_address(ptr)
+            return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
+        except Exception as e:
+            logger.error(f"vertex_morph_position_offsets 読み取り失敗: {e}")
+            return None
+
+    @property
+    def vertex_morph_names(self) -> Optional[List[str]]:
+        """頂点モーフ名を vertex morph accessor 順に返す。"""
+        if not self._handle or self._lib is None:
+            return None
+        func = getattr(self._lib, "mmd_runtime_parsed_model_vertex_morph_name", None)
+        free_func = getattr(self._lib, "mmd_runtime_byte_buffer_free", None)
+        if func is None or free_func is None:
+            return None
+        names = []
+        try:
+            for i in range(self.vertex_morph_count):
+                buf: MmdRuntimeFfiByteBuffer = func(self._handle, i)
+                if not buf.data or buf.len == 0:
+                    free_func(buf)
+                    names.append("")
+                    continue
+                addr = ctypes.cast(buf.data, c_void_p).value
+                if addr is None or addr == 0:
+                    free_func(buf)
+                    names.append("")
+                    continue
+                raw_bytes = (c_uint8 * buf.len).from_address(addr)
+                names.append(bytes(raw_bytes).decode("utf-8", errors="replace"))
+                free_func(buf)
+            return names
+        except Exception as e:
+            logger.error(f"vertex_morph_names 読み取り失敗: {e}")
             return None
 
     @property

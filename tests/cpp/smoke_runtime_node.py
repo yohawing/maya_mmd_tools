@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 NODE_TYPE = "mmdRuntimeInstance"
 FAST_LOAD_MODEL = ROOT / "tests" / "data" / "mmt_test_model.pmx"
 FAST_IMPORT_SKIN_MODEL = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
+FAST_LOAD_MORPH_MODEL = ROOT / "tests" / "data" / "Lumine" / "Lumine.pmx"
 
 
 def _candidate_plugin_paths() -> list[Path]:
@@ -97,6 +98,19 @@ def main() -> int:
             raise RuntimeError(f"mmdFastLoad undo did not delete transform: {transform}")
 
         print(f"OK: mmdFastLoad created {vertex_count} vertices / {face_count} faces and undo succeeded")
+
+        morph_result = cmds.mmdFastLoad(f=str(FAST_LOAD_MORPH_MODEL), n="mmd_fast_morph_smoke", s=1.0, mo=True)
+        if not morph_result or len(morph_result) != 2:
+            raise RuntimeError(f"mmdFastLoad morph smoke returned unexpected result: {morph_result!r}")
+        morph_transform, _morph_mesh = morph_result
+        blend_shapes = cmds.ls(type="blendShape") or []
+        if not blend_shapes:
+            raise RuntimeError("mmdFastLoad(morphs=True) did not create a blendShape")
+        weight_count = cmds.blendShape(blend_shapes[0], query=True, weightCount=True) or 0
+        if int(weight_count) <= 0:
+            raise RuntimeError(f"mmdFastLoad(morphs=True) blendShape has no weights: {blend_shapes[0]}")
+        cmds.delete(morph_transform)
+        print(f"OK: mmdFastLoad(morphs=True) created {int(weight_count)} vertex morph target(s)")
 
         from mmd_tools.io.cpp_fast_importer import fast_import
 

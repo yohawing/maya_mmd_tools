@@ -10,6 +10,7 @@
  *   -name/-n  <string> Optional. Base name for created transform/mesh.
  *                      Default: derived from filename.
  *   -scale/-s <double> Optional. Uniform scale factor (default 1.0).
+ *   -morphs/-mo <bool> Optional. Create vertex morph blendShape targets.
  *
  * Creates one Maya transform + mesh from PMX geometry (positions, indices, UVs).
  * Coordinate conversion: x→x, y→y, z→-z (MMD → Maya), V-flip on UV.
@@ -50,6 +51,7 @@ private:
     std::string filePath_;
     std::string baseName_;
     double scale_ = 1.0;
+    bool enableMorphs_ = false;
 
     // Created node names (for undo)
     MString transformName_;

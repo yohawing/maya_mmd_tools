@@ -17,6 +17,7 @@
 #include <maya/MDGModifier.h>
 #include <maya/MDagPath.h>
 #include <maya/MFloatArray.h>
+#include <maya/MFnDagNode.h>
 #include <maya/MFnMesh.h>
 #include <maya/MFnTransform.h>
 #include <maya/MGlobal.h>
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <cctype>
 #include <fstream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -63,6 +65,9 @@ MSyntax MmdFastLoad::newSyntax()
     // -scale / -s <double> (optional, default 1.0)
     syntax.addFlag("-s", "-scale", MSyntax::kDouble);
 
+    // -morphs / -mo <bool> (optional, default false)
+    syntax.addFlag("-mo", "-morphs", MSyntax::kBoolean);
+
     syntax.enableEdit(false);
 
     return syntax;
@@ -92,6 +97,10 @@ bool MmdFastLoad::parseArgs(const MArgList& args)
         scale_ = argData.flagArgumentDouble("-s", 0);
     }
 
+    if (argData.isFlagSet("-mo")) {
+        enableMorphs_ = argData.flagArgumentBool("-mo", 0);
+    }
+
     if (scale_ <= 0.0) {
         MGlobal::displayError("[mmdFastLoad] -scale must be > 0.0");
         return false;
@@ -116,7 +125,7 @@ std::string sanitizeName(const std::string& raw)
     std::string out;
     out.reserve(raw.size());
     for (unsigned char c : raw) {
-        if (std::isalnum(c) || c == '_') {
+        if (c < 128 && (std::isalnum(c) || c == '_')) {
             out += static_cast<char>(c);
         } else {
             out += '_';
@@ -129,6 +138,32 @@ std::string sanitizeName(const std::string& raw)
         out.insert(0U, "M_");
     }
     return out;
+}
+
+std::string uniqueName(const std::string& base, std::set<std::string>& used)
+{
+    std::string candidate = sanitizeName(base);
+    if (candidate.empty()) {
+        candidate = "MMDNode";
+    }
+
+    std::string unique = candidate;
+    unsigned int counter = 1;
+    while (used.find(unique) != used.end()) {
+        unique = candidate + "_" + std::to_string(counter++);
+    }
+    used.insert(unique);
+    return unique;
+}
+
+std::string quoteMelName(const MString& name)
+{
+    return "\"" + std::string(name.asChar()) + "\"";
+}
+
+std::string quoteMelName(const std::string& name)
+{
+    return "\"" + name + "\"";
 }
 
 /**
@@ -151,6 +186,144 @@ std::vector<uint8_t> readBinaryFile(const std::string& path)
         return {};
     }
     return buf;
+}
+
+std::string byteBufferToStringAndFree(mmd_runtime_ffi_byte_buffer_t buffer)
+{
+    std::string out;
+    if (buffer.data && buffer.len > 0) {
+        out.assign(reinterpret_cast<const char*>(buffer.data), buffer.len);
+    }
+    mmd_runtime_byte_buffer_free(buffer);
+    return out;
+}
+
+unsigned int createVertexMorphBlendShapes(
+    mmd_runtime_parsed_model_t* model,
+    const MString& baseTransformName,
+    const MPointArray& basePoints,
+    const MIntArray& polygonCounts,
+    const MIntArray& polygonConnects,
+    double scale)
+{
+    const size_t morphCount = mmd_runtime_parsed_model_vertex_morph_count(model);
+    const size_t offsetCount = mmd_runtime_parsed_model_vertex_morph_offset_count(model);
+    if (morphCount == 0 || offsetCount == 0) {
+        return 0;
+    }
+
+    const uint32_t* spans = mmd_runtime_parsed_model_vertex_morph_spans(model);
+    const uint32_t* vertexIndices =
+        mmd_runtime_parsed_model_vertex_morph_vertex_indices(model);
+    const float* offsets = mmd_runtime_parsed_model_vertex_morph_position_offsets(model);
+    if (!spans || !vertexIndices || !offsets) {
+        MGlobal::displayWarning("[mmdFastLoad] Vertex morph FFI accessors returned null.");
+        return 0;
+    }
+
+    const std::string baseName(baseTransformName.asChar());
+    const std::string blendShapeName = sanitizeName(baseName + "_vertexMorphs");
+    MStringArray commandResult;
+    MStatus status = MGlobal::executeCommand(
+        MString(("blendShape -name " + quoteMelName(blendShapeName) + " " +
+                 quoteMelName(baseTransformName)).c_str()),
+        commandResult,
+        false,
+        false);
+    if (!status || commandResult.length() == 0) {
+        MGlobal::displayWarning("[mmdFastLoad] Failed to create vertex morph blendShape.");
+        return 0;
+    }
+    const std::string blendShapeNode(commandResult[0].asChar());
+
+    std::set<std::string> usedNames;
+    usedNames.insert(blendShapeName);
+    unsigned int created = 0;
+
+    for (size_t morphIndex = 0; morphIndex < morphCount; ++morphIndex) {
+        const size_t spanBase = morphIndex * 3;
+        const uint32_t start = spans[spanBase];
+        const uint32_t count = spans[spanBase + 1];
+        if (count == 0 || static_cast<size_t>(start) + count > offsetCount) {
+            continue;
+        }
+
+        std::string rawName = byteBufferToStringAndFree(
+            mmd_runtime_parsed_model_vertex_morph_name(model, morphIndex));
+        if (rawName.empty()) {
+            rawName = "morph_" + std::to_string(morphIndex);
+        }
+        const std::string morphName = uniqueName(rawName, usedNames);
+        const std::string targetTransformName =
+            uniqueName(baseName + "_" + morphName + "_target", usedNames);
+
+        MPointArray targetPoints(basePoints);
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t offsetIndex = start + i;
+            const uint32_t vertexIndex = vertexIndices[offsetIndex];
+            if (vertexIndex >= targetPoints.length()) {
+                continue;
+            }
+            targetPoints[vertexIndex].x += offsets[offsetIndex * 3] * scale;
+            targetPoints[vertexIndex].y += offsets[offsetIndex * 3 + 1] * scale;
+            targetPoints[vertexIndex].z += -offsets[offsetIndex * 3 + 2] * scale;
+        }
+
+        MFnMesh targetMeshFn;
+        MStatus createStatus;
+        MObject targetMeshObj = targetMeshFn.create(
+            static_cast<int>(targetPoints.length()),
+            static_cast<int>(polygonCounts.length()),
+            targetPoints,
+            polygonCounts,
+            polygonConnects,
+            MObject::kNullObj,
+            &createStatus);
+        if (!createStatus) {
+            MGlobal::displayWarning(
+                MString("[mmdFastLoad] Failed to create morph target: ") +
+                morphName.c_str());
+            continue;
+        }
+
+        MDagPath targetDag;
+        MDagPath::getAPathTo(targetMeshObj, targetDag);
+        MFnTransform targetTransformFn(targetDag.transform());
+        targetTransformFn.setName(MString(targetTransformName.c_str()));
+
+        const std::string targetName(targetTransformFn.name().asChar());
+        MGlobal::executeCommand(
+            MString(("setAttr " + quoteMelName(targetName + ".visibility") + " 0").c_str()),
+            false,
+            false);
+        MGlobal::executeCommand(
+            MString(("parent " + quoteMelName(targetName) + " " +
+                     quoteMelName(baseTransformName)).c_str()),
+            false,
+            false);
+
+        const std::string editCmd =
+            "blendShape -edit -target " + quoteMelName(baseTransformName) + " " +
+            std::to_string(created) + " " + quoteMelName(targetName) + " 1.0 " +
+            quoteMelName(blendShapeNode);
+        status = MGlobal::executeCommand(MString(editCmd.c_str()), false, false);
+        if (!status) {
+            MGlobal::displayWarning(
+                MString("[mmdFastLoad] Failed to attach morph target: ") +
+                morphName.c_str());
+            continue;
+        }
+
+        MGlobal::executeCommand(
+            MString(("aliasAttr " + quoteMelName(morphName) + " " +
+                     quoteMelName(blendShapeNode + ".w[" + std::to_string(created) + "]"))
+                        .c_str()),
+            false,
+            false);
+        ++created;
+    }
+
+    return created;
 }
 
 } // anonymous namespace
@@ -309,6 +482,22 @@ MStatus MmdFastLoad::redoIt()
         }
 
         meshFn.assignUVs(uvCounts, uvConnects, &uvSetName);
+    }
+
+    // ---- Free parsed model (no longer needed) ----
+    if (enableMorphs_) {
+        const unsigned int morphTargets = createVertexMorphBlendShapes(
+            model,
+            transformFn.name(),
+            mayaPoints,
+            polygonCounts,
+            polygonConnects,
+            scale_);
+        if (morphTargets > 0) {
+            MGlobal::displayInfo(
+                MString("[mmdFastLoad] Created vertex morph blendShape targets: ") +
+                std::to_string(morphTargets).c_str());
+        }
     }
 
     // ---- Free parsed model (no longer needed) ----

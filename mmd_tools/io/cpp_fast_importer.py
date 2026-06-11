@@ -89,6 +89,7 @@ def fast_import(
     base_name: str = "mmd_fast_model",
     scale: float = 1.0,
     mesh_only: bool = True,
+    include_morphs: bool = True,
 ) -> Optional[str]:
     """Attempt fast PMX import via the compiled C++ ``mmdFastLoad`` command.
 
@@ -104,6 +105,10 @@ def fast_import(
         If True (default), only mesh geometry is imported.
         If False, a basic Maya skeleton (joints) and skinCluster are
         also created from the mmd-anim parsed metadata.
+    include_morphs:
+        If True, asks the C++ command to create PMX vertex morph
+        blendShape targets. Non-vertex morph types are not created by the
+        fast path.
 
     Returns
     -------
@@ -151,7 +156,7 @@ def fast_import(
 
     # --- run fast load ----------------------------------------------------
     try:
-        result = cmds.mmdFastLoad(f=filepath, n=base_name, s=scale)
+        result = cmds.mmdFastLoad(f=filepath, n=base_name, s=scale, mo=include_morphs)
     except RuntimeError as exc:
         logger.info("mmdFastLoad failed: %s – falling back to Python importer.", exc)
         return None

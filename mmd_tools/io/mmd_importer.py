@@ -49,7 +49,17 @@ def import_mmd_file(filepath, scale=None, options=None):
                 if scale is not None
                 else options.get("scale", settings.get("import.general.scale_factor", 1.0))
             )
-            fast_root = fast_import(filepath, base_name=base_name, scale=import_scale, mesh_only=mesh_only)
+            include_morphs = options.get(
+                "import_morphs",
+                settings.get("import.morph.import_morphs", True),
+            )
+            fast_root = fast_import(
+                filepath,
+                base_name=base_name,
+                scale=import_scale,
+                mesh_only=mesh_only,
+                include_morphs=include_morphs,
+            )
             if fast_root is not None:
                 logger.info("C++ fast import succeeded: %s", fast_root)
                 return fast_root

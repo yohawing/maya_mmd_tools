@@ -152,6 +152,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             base_name="model",
             scale=1.0,
             mesh_only=True,
+            include_morphs=True,
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
@@ -217,6 +218,7 @@ class TestCppFastImportRouting(unittest.TestCase):
             base_name="model",
             scale=1.0,
             mesh_only=False,
+            include_morphs=True,
         )
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
@@ -252,7 +254,40 @@ class TestCppFastImportRouting(unittest.TestCase):
             base_name="model",
             scale=1.0,
             mesh_only=True,
+            include_morphs=True,
         )
+        self.assertEqual(result, "cpp_root")
+
+    @patch("mmd_tools.io.mmd_importer.fast_import")
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_fast_import_honors_import_morphs_option(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+        mock_fast: MagicMock,
+    ):
+        """import_morphs=False disables C++ vertex morph creation."""
+        mock_fast.return_value = "cpp_root"
+
+        result = import_mmd_file(
+            "model.pmx",
+            options={
+                "scale": 1.0,
+                "use_cpp_fast_load": True,
+                "import_morphs": False,
+            },
+        )
+
+        mock_fast.assert_called_once_with(
+            "model.pmx",
+            base_name="model",
+            scale=1.0,
+            mesh_only=True,
+            include_morphs=False,
+        )
+        mock_parse.assert_not_called()
+        mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
 
     # ------------------------------------------------------------------

@@ -22,6 +22,8 @@ This is an alpha early release. Some features may be undeveloped or unstable.
 - VMD motion import has an unresolved issue where newly imported motion may not play back correctly. In `0.1.0`, VMD loading/parsing is available, but motion playback should be treated as incomplete.
 - Large models may have performance issues.
 - Some PMX files may fail to import.
+- The opt-in C++ PMX fast path currently supports mesh, basic materials, basic skeleton/skin, and vertex morph blendShape targets.
+- C++ fast path morphs not yet implemented: UV/additional UV morphs, material morphs, bone morphs, and group morphs.
 
 ## System Requirements
 
