@@ -17,6 +17,7 @@
 #include <maya/MStatus.h>
 
 #include "mmdRuntimeNode.h"
+#include "mmdFastLoad.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -37,6 +38,14 @@ MStatus initializePlugin(MObject obj)
     MGlobal::displayInfo("maya_mmd_tools_cpp plugin loaded (Phase 2 - mmd-anim runtime).");
     MGlobal::displayInfo("mmdRuntimeInstance node registered. Live MMD evaluation is under development.");
 
+    // mmdFastLoad command (Phase 3 - fast PMX mesh loading)
+    status = plugin.registerCommand("mmdFastLoad",
+                                    MmdFastLoad::creator,
+                                    MmdFastLoad::newSyntax);
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+
+    MGlobal::displayInfo("mmdFastLoad command registered.");
+
     return MS::kSuccess;
 }
 
@@ -47,6 +56,9 @@ MStatus uninitializePlugin(MObject obj)
 
     // 登録ノード解除
     status = plugin.deregisterNode(MmdRuntimeNode::id);
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+
+    status = plugin.deregisterCommand("mmdFastLoad");
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
     MGlobal::displayInfo("maya_mmd_tools_cpp plugin unloaded.");

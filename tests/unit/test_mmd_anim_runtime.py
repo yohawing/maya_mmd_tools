@@ -10,15 +10,24 @@ mmd-anim runtime (Python ctypes ラッパー) の基本動作を検証するユ�
 - docs-dev/runtime-architecture.md
 """
 
+import json
+import os
 import unittest
+from pathlib import Path
 
 from mmd_tools.core.native import (
     is_mmd_runtime_available,
-    MmdRuntimeModel,
+    is_native_pmx_parser_available,
+    MmdParsedModel,
     MmdRuntimeClip,
     MmdRuntimeInstance,
+    MmdRuntimeModel,
     get_mmd_runtime_library,
 )
+
+_THIS_DIR = Path(__file__).resolve().parent
+_TEST_DATA_DIR = _THIS_DIR.parent / "data"
+_MMT_PMX_PATH = _TEST_DATA_DIR / "mmt_test_model.pmx"
 
 
 class TestMmdAnimRuntimeAvailability(unittest.TestCase):
@@ -59,6 +68,71 @@ class TestMmdAnimRuntimeAvailability(unittest.TestCase):
         instance = MmdRuntimeInstance.for_model(None)
         self.assertIsNone(instance)
 
+    # ---- parsed-model の unavailable-path テスト ----
+
+    def test_is_native_pmx_parser_available_returns_bool(self):
+        """is_native_pmx_parser_available() が bool を返すこと。"""
+        result = is_native_pmx_parser_available()
+        self.assertIsInstance(result, bool)
+
+    def test_parsed_model_from_pmx_bytes_returns_none_when_unavailable(self):
+        """
+        DLL またはシンボルが利用できない環境でも
+        MmdParsedModel.from_pmx_bytes が安全に None を返すこと。
+        """
+        dummy = b"PMX\0\0\0\0"  # 完全に無効なデータ
+        model = MmdParsedModel.from_pmx_bytes(dummy)
+        # DLL が無い／シンボルが無い → None
+        # DLL とシンボルが揃っていてもパース失敗 → None
+        self.assertIsNone(model)
+
+    def test_parsed_model_properties_are_safe_on_none_handle(self):
+        """
+        MmdParsedModel を None ハンドルで初期化した場合、
+        全プロパティが例外を投げずに安全な値を返すこと。
+        """
+        lib = get_mmd_runtime_library()
+        if lib is None:
+            # ダミーオブジェクトでテスト
+            model = object.__new__(MmdParsedModel)
+            model._lib = None
+            model._handle = None
+        else:
+            model = object.__new__(MmdParsedModel)
+            model._lib = lib
+            model._handle = None
+
+        self.assertEqual(model.vertex_count, 0)
+        self.assertEqual(model.index_count, 0)
+        self.assertEqual(model.material_group_count, 0)
+        self.assertIsNone(model.positions)
+        self.assertIsNone(model.normals)
+        self.assertIsNone(model.uvs)
+        self.assertIsNone(model.edge_scale)
+        self.assertIsNone(model.indices)
+        self.assertIsNone(model.skin_indices)
+        self.assertIsNone(model.skin_weights)
+        self.assertIsNone(model.material_groups)
+        self.assertIsNone(model.metadata_json)
+
+        # free も安全に呼べること
+        try:
+            model.free()
+        except Exception:
+            self.fail("free() raised unexpectedly on invalid handle")
+
+    def test_parsed_model_del_is_safe(self):
+        """解放済み/空の MmdParsedModel で __del__ が安全であること。"""
+        model = MmdParsedModel.from_pmx_bytes(b"\0\0\0\0")
+        if model is None:
+            # DLL またはシンボルがない環境ではスキップ
+            return
+        # 2回 free を呼んでも安全
+        model.free()
+        model.free()
+        # __del__ でも安全
+        model.__del__()
+
 
 class TestMmdAnimRuntimeWhenAvailable(unittest.TestCase):
     """
@@ -75,17 +149,123 @@ class TestMmdAnimRuntimeWhenAvailable(unittest.TestCase):
 
     def test_create_model_from_minimal_pmx(self):
         """最小の PMX データでモデル作成ができること (実在の有効 PMX が必要)。"""
-        # ここでは「利用可能」であることだけを確認し、
-        # 本格的なデータを使った評価は統合テストや Phase 1 以降に委ねる。
-        # 実データが必要な場合は TestFixtureProvider 経由で取得する。
         self.assertTrue(is_mmd_runtime_available())
 
     def test_basic_lifecycle_does_not_crash(self):
         """モデル→クリップ→インスタンス→評価→解放の一連の流れでクラッシュしないこと。"""
-        # 実際の有効な PMX/VMD バイトが必要なため、ここでは利用可能性の再確認のみ。
-        # 将来的に tests/data/for_unit_test/ や mmt_test_model を使った
-        # 具体的な行列/モーフ検証を追加予定。
         self.assertTrue(is_mmd_runtime_available())
+
+
+class TestParsedModelWhenAvailable(unittest.TestCase):
+    """
+    parsed-model ABI が利用可能な環境での MmdParsedModel スモークテスト。
+
+    tests/data/mmt_test_model.pmx を使って基本機能を検証します。
+    """
+
+    _pmx_bytes: bytes = b""
+
+    @classmethod
+    def setUpClass(cls):
+        if not is_native_pmx_parser_available():
+            raise unittest.SkipTest(
+                "parsed-model native symbols are not available in this environment"
+            )
+        if not _MMT_PMX_PATH.exists():
+            raise unittest.SkipTest(
+                f"test model not found: {_MMT_PMX_PATH}"
+            )
+        with open(_MMT_PMX_PATH, "rb") as f:
+            cls._pmx_bytes = f.read()
+
+    def test_create_from_valid_pmx(self):
+        """有効な PMX から MmdParsedModel が作成できること。"""
+        model = MmdParsedModel.from_pmx_bytes(self._pmx_bytes)
+        self.assertIsNotNone(model)
+        model.free()
+
+    def test_counts_are_positive(self):
+        """カウントプロパティが正の値を返すこと。"""
+        model = MmdParsedModel.from_pmx_bytes(self._pmx_bytes)
+        self.assertIsNotNone(model)
+        try:
+            self.assertGreater(model.vertex_count, 0)
+            self.assertGreater(model.index_count, 0)
+            self.assertGreater(model.material_group_count, 0)
+        finally:
+            model.free()
+
+    def test_pointer_accessors_return_data(self):
+        """ポインターアクセサが None でない Python リストを返すこと。"""
+        model = MmdParsedModel.from_pmx_bytes(self._pmx_bytes)
+        self.assertIsNotNone(model)
+        try:
+            vc = model.vertex_count
+            ic = model.index_count
+
+            self.assertIsNotNone(model.positions)
+            self.assertEqual(len(model.positions), vc)
+
+            self.assertIsNotNone(model.normals)
+            self.assertEqual(len(model.normals), vc)
+
+            self.assertIsNotNone(model.uvs)
+            self.assertEqual(len(model.uvs), vc)
+
+            self.assertIsNotNone(model.edge_scale)
+            self.assertEqual(len(model.edge_scale), vc)
+
+            self.assertIsNotNone(model.indices)
+            self.assertEqual(len(model.indices), ic)
+
+            self.assertIsNotNone(model.skin_indices)
+            self.assertEqual(len(model.skin_indices), vc)
+
+            self.assertIsNotNone(model.skin_weights)
+            self.assertEqual(len(model.skin_weights), vc)
+        finally:
+            model.free()
+
+    def test_material_groups_triples(self):
+        """material_groups が (start, count, material_index) のタプルリストであること。"""
+        model = MmdParsedModel.from_pmx_bytes(self._pmx_bytes)
+        self.assertIsNotNone(model)
+        try:
+            groups = model.material_groups
+            self.assertIsNotNone(groups)
+            self.assertGreater(len(groups), 0)
+            for g in groups:
+                self.assertEqual(len(g), 3)
+                # start と count は非負整数
+                self.assertIsInstance(g[0], int)
+                self.assertIsInstance(g[1], int)
+                self.assertIsInstance(g[2], int)
+        finally:
+            model.free()
+
+    def test_metadata_json_is_valid_json(self):
+        """metadata_json がパース可能な JSON 文字列を返すこと。"""
+        model = MmdParsedModel.from_pmx_bytes(self._pmx_bytes)
+        self.assertIsNotNone(model)
+        try:
+            raw = model.metadata_json
+            self.assertIsNotNone(raw)
+            self.assertIsInstance(raw, str)
+            data = json.loads(raw)
+            # 最低限のフィールド確認
+            self.assertIn("format", data)
+            self.assertIn("version", data)
+            self.assertIn("name", data)
+            self.assertIn("counts", data)
+        finally:
+            model.free()
+
+    def test_multiple_create_free_cycles(self):
+        """作成/解放を繰り返してもメモリリークやクラッシュが起きないこと。"""
+        for _ in range(5):
+            model = MmdParsedModel.from_pmx_bytes(self._pmx_bytes)
+            self.assertIsNotNone(model)
+            model.free()
 
 
 if __name__ == "__main__":

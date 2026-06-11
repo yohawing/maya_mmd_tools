@@ -43,6 +43,11 @@
       "import_light_animation": true,
       "use_mmd_runtime_bake": true
     },
+    "native": {
+      "_comment": "Settings for the compiled C++ fast import path",
+      "use_cpp_fast_load": false,
+      "cpp_fast_load_mesh_only": true
+    },
     "naming": {
       "_comment": "Settings that control how objects are named in Maya",
       "translate_names": true,

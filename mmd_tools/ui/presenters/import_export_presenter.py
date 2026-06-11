@@ -104,6 +104,12 @@ class ImportExportPresenter(QObject):
         if settings.get("import.rig.bake_mode", False):
             import_options["setup_rig"] = False
             import_options["setup_bone_orientation"] = False
+        import_options["use_cpp_fast_load"] = settings.get(
+            "import.native.use_cpp_fast_load", False
+        )
+        import_options["cpp_fast_load_mesh_only"] = settings.get(
+            "import.native.cpp_fast_load_mesh_only", True
+        )
         if file_path.lower().endswith(".vmd"):
             import_options.update(self._build_vmd_import_options())
 

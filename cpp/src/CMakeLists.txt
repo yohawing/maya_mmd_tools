@@ -53,11 +53,13 @@ set(SOURCES
     pluginMain.cpp
     mmdRuntimeBridge.cpp
     mmdRuntimeNode.cpp
+    mmdFastLoad.cpp
 )
 
 set(HEADERS
     mmdRuntimeBridge.h
     mmdRuntimeNode.h
+    mmdFastLoad.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})

@@ -1,8 +1,8 @@
-"""Smoke test for loading the C++ runtime node in Maya.
+"""Smoke test for loading the C++ plugin in Maya.
 
 This script intentionally has no pytest dependency. It is launched by mayapy
 from Nox or by hand, initializes Maya standalone, loads the compiled plugin,
-and verifies that the mmdRuntimeInstance node can be created.
+and verifies that the mmdRuntimeInstance node and mmdFastLoad command work.
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE_TYPE = "mmdRuntimeInstance"
+FAST_LOAD_MODEL = ROOT / "tests" / "data" / "mmt_test_model.pmx"
+FAST_IMPORT_SKIN_MODEL = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
 
 
 def _candidate_plugin_paths() -> list[Path]:
@@ -74,6 +76,58 @@ def main() -> int:
 
         print(f"OK: loaded {plugin_path}")
         print(f"OK: created {node} ({NODE_TYPE})")
+
+        result = cmds.mmdFastLoad(f=str(FAST_LOAD_MODEL), n="mmt_fast_smoke", s=1.0)
+        if not result or len(result) != 2:
+            raise RuntimeError(f"mmdFastLoad returned unexpected result: {result!r}")
+
+        transform, mesh = result
+        if not cmds.objExists(transform) or not cmds.objExists(mesh):
+            raise RuntimeError(f"mmdFastLoad result nodes do not exist: {result!r}")
+
+        vertex_count = cmds.polyEvaluate(mesh, vertex=True)
+        face_count = cmds.polyEvaluate(mesh, face=True)
+        if vertex_count <= 0 or face_count <= 0:
+            raise RuntimeError(
+                f"mmdFastLoad created empty mesh: vertices={vertex_count}, faces={face_count}"
+            )
+
+        cmds.undo()
+        if cmds.objExists(transform):
+            raise RuntimeError(f"mmdFastLoad undo did not delete transform: {transform}")
+
+        print(f"OK: mmdFastLoad created {vertex_count} vertices / {face_count} faces and undo succeeded")
+
+        from mmd_tools.io.cpp_fast_importer import fast_import
+
+        root = fast_import(
+            str(FAST_IMPORT_SKIN_MODEL),
+            base_name="fast_import_skin_smoke",
+            scale=1.0,
+            mesh_only=False,
+        )
+        if not root or not cmds.objExists(root):
+            raise RuntimeError(f"fast_import(mesh_only=False) did not create a root: {root!r}")
+
+        joints = cmds.ls(type="joint") or []
+        skins = cmds.ls(type="skinCluster") or []
+        if not joints:
+            raise RuntimeError("fast_import(mesh_only=False) did not create joints")
+        if not skins:
+            raise RuntimeError("fast_import(mesh_only=False) did not create a skinCluster")
+
+        mesh_shapes = cmds.listRelatives(root, shapes=True, type="mesh") or []
+        if not mesh_shapes:
+            raise RuntimeError(f"fast_import(mesh_only=False) created no mesh shapes under {root}")
+        weights = cmds.skinPercent(skins[0], f"{mesh_shapes[0]}.vtx[0]", query=True, value=True)
+        if not weights or abs(sum(weights) - 1.0) > 0.0001:
+            raise RuntimeError(f"fast_import skin weights are invalid: {weights!r}")
+
+        cmds.delete(root)
+        print(
+            f"OK: fast_import(mesh_only=False) created {len(joints)} joints, "
+            f"{len(skins)} skinCluster(s), and normalized weights"
+        )
         return 0
     finally:
         maya.standalone.uninitialize()
