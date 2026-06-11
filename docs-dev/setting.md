@@ -69,6 +69,7 @@ settings.get('import.physics.import_physics', False)
 |               | `group_morphs_by_panel`      | `bool`  | `true`       | MMDの表示枠パネルに基づいてモーフをグループ化するか。                |
 | **animation** | `import_animations`          | `bool`  | `true`       | VMDアニメーションをインポートするかのマスター設定。                  |
 |               | `animation_start_frame`      | `int`   | `1`          | アニメーションの開始フレーム。                                       |
+|               | `vmd_fps`                    | `int`   | `30`         | VMDインポート時のMayaシーン時間単位（30または60）。VMDファイルはフレーム番号を格納するがFPSメタデータを持たない。デフォルトは30。 |
 |               | `resample_curves`            | `bool`  | `false`      | アニメーションカーブをリサンプリングするか。                         |
 |               | `import_camera_animation`    | `bool`  | `true`       | カメラアニメーションをインポートするか。                             |
 |               | `import_light_animation`     | `bool`  | `true`       | 照明アニメーションをインポートするか。                               |

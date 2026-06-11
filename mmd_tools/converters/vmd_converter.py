@@ -61,7 +61,7 @@ class VmdConverter:
         self.logger = get_logger(__name__)
         self.bone_name_mapping: Dict[str, str] = {}  # VMDボーン名 -> Mayaジョイント名
         self.morph_name_mapping: Dict[str, str] = {}  # VMDモーフ名 -> Mayaブレンドシェイプターゲット名
-        self.fps = 60.0  # デフォルトのFPS
+        self.fps = 30.0  # デフォルトのFPS (VMD import setting)
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
         self._bone_bind_poses: Dict[str, Tuple[float, float, float]] = {}  # ボーンの初期位置
         self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
@@ -1397,5 +1397,5 @@ class VmdConverter:
             cmds.currentUnit(time=fps_mapping[fps])
             self.logger.info(f"シーンFPSを{fps} ({fps_mapping[fps]})に設定しました")
         else:
-            self.logger.warning(f"指定されたFPS {fps} はサポートされていません。デフォルトの60.0 FPSを使用します")
-            cmds.currentUnit(time="ntscf")  # デフォルトは60fpsのNTSCF
+            self.logger.warning(f"指定されたFPS {fps} はサポートされていません。デフォルトの30.0 FPSを使用します")
+            cmds.currentUnit(time="ntsc")  # デフォルトは30fpsのNTSC

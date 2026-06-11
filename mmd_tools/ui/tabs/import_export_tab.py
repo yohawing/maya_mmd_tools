@@ -239,6 +239,28 @@ class ImportExportTab(BaseTab):
         frame_layout.addStretch()
         anim_settings_layout.addLayout(frame_layout)
 
+        # VMD FPS (Maya scene time unit for VMD import; VMD has no FPS metadata)
+        fps_layout = QHBoxLayout()
+        self.vmd_fps_label = QLabel(self.tr("vmd_fps", "fields"))
+        fps_layout.addWidget(self.vmd_fps_label)
+        self.vmd_fps_combo = QComboBox()
+        self.vmd_fps_combo.addItems(["30", "60"])
+        vmd_fps_val = settings.get("import.animation.vmd_fps", 30)
+        try:
+            vmd_fps_int = int(vmd_fps_val)
+        except (TypeError, ValueError):
+            vmd_fps_int = 30
+        if vmd_fps_int not in (30, 60):
+            vmd_fps_int = 30
+            settings.set("import.animation.vmd_fps", 30)
+        self.vmd_fps_combo.setCurrentText(str(vmd_fps_int))
+        self.vmd_fps_combo.currentTextChanged.connect(
+            lambda v: settings.set("import.animation.vmd_fps", int(v))
+        )
+        fps_layout.addWidget(self.vmd_fps_combo)
+        fps_layout.addStretch()
+        anim_settings_layout.addLayout(fps_layout)
+
         # Animation type checkboxes
         self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
         self.import_bone_animation_check.setChecked(settings.get("import.animation.import_animations", True))
@@ -501,6 +523,8 @@ class ImportExportTab(BaseTab):
             self.uv_set_label.setText(self.tr("uv_set_name", "fields"))
         if hasattr(self, "start_frame_label"):
             self.start_frame_label.setText(self.tr("start_frame", "fields"))
+        if hasattr(self, "vmd_fps_label"):
+            self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
         if hasattr(self, "format_label"):
             self.format_label.setText(self.tr("format", "fields"))
         if hasattr(self, "import_path_label"):

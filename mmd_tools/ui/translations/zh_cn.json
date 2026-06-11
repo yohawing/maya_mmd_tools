@@ -196,6 +196,7 @@
     "texture_search_path": "贴图搜索路径:",
     "uv_set_name": "UV集名称:",
     "start_frame": "开始帧:",
+    "vmd_fps": "VMD FPS:",
     "format": "格式:",
     "vmd_file": "VMD文件:",
     "target_model": "目标模型:",

@@ -204,6 +204,7 @@
     "texture_search_path": "Texture Search Path:",
     "uv_set_name": "UV Set Name:",
     "start_frame": "Start Frame:",
+    "vmd_fps": "VMD FPS:",
     "format": "Format:",
     "vmd_file": "VMD File:",
     "target_model": "Target Model:",

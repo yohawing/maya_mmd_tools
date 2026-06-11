@@ -52,7 +52,7 @@ class TestVmdConverter(MayaTestBase):
         """初期化のテスト"""
         self.assertEqual(self.converter.bone_name_mapping, {})
         self.assertEqual(self.converter.morph_name_mapping, {})
-        self.assertEqual(self.converter.fps, 60.0)
+        self.assertEqual(self.converter.fps, 30.0)
         self.assertIsNotNone(self.converter.logger)
         self.assertEqual(len(self.converter._failed_bones), 0)
         self.assertTrue(self.converter.use_animation_layers)

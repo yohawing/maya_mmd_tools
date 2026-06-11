@@ -61,6 +61,7 @@ class ImportExportPresenter(QObject):
             target_model = self._get_vmd_target_model()
         return {
             "start_frame": settings.get("import.animation.animation_start_frame", 1),
+            "vmd_fps": settings.get("import.animation.vmd_fps", 30),
             "import_bone_animation": settings.get("import.animation.import_animations", True),
             "import_morph_animation": settings.get("import.animation.import_morph_animation", True),
             "import_camera_animation": settings.get("import.animation.import_camera_animation", True),

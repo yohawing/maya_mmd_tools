@@ -37,6 +37,7 @@
       "import_animations": true,
       "import_morph_animation": true,
       "animation_start_frame": 1,
+      "vmd_fps": 30,
       "resample_curves": false,
       "import_camera_animation": true,
       "import_light_animation": true,

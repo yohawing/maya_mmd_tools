@@ -159,8 +159,11 @@ If you have a VMD file:
 
 1. Select `MMD > MMD Tools`.
 2. In the Import/Export tab, choose a VMD file.
-3. Click `Import Animation`.
-4. The animation is applied to the matching model in the scene.
+3. (Optional) In animation import settings, set VMD FPS (choices: 30 or 60; default 30). This changes the Maya scene time unit before import.
+4. Click `Import Animation`.
+5. The animation is applied to the matching model in the scene.
+
+Note: VMD stores integer frame numbers but does not store FPS metadata. Frame numbers are used as-is (not rescaled); only the scene time unit is set according to the VMD FPS choice.
 
 ## Model Import
 

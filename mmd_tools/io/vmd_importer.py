@@ -25,6 +25,7 @@ def import_vmd_file(parser, filepath, options=None):
             - target_model: 対象モデル
             - pmx_path: 対応する PMX ファイルのパス（runtime bake 用）
             - pmx_bytes: 生 PMX バイト（runtime bake 用）
+            - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
 
     Returns:
         bool: インポートが成功したかどうか
@@ -90,6 +91,18 @@ def import_vmd_file(parser, filepath, options=None):
 
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()
+        # Apply VMD import FPS setting (sets Maya scene time unit; VMD frame numbers are not rescaled)
+        vmd_fps = options.get("vmd_fps", 30)
+        if vmd_fps not in (30, 60):
+            try:
+                v = int(vmd_fps)
+                if v not in (30, 60):
+                    raise ValueError(v)
+                vmd_fps = v
+            except (TypeError, ValueError):
+                logger.warning(f"Invalid vmd_fps={vmd_fps} (only 30 or 60 allowed), falling back to 30")
+                vmd_fps = 30
+        converter.fps = float(vmd_fps)
         success = converter.convert(
             parser,
             target_namespace,
