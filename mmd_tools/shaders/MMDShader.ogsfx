@@ -1,0 +1,94 @@
+// Minimal MMD-style GLSL OGSFX shader.
+// Uniforms are mirrored with MMD Toon material parameters.
+
+#define OGSFX 1
+
+#define HIDE_OGSFX_CODE 1
+
+//**********
+// Uniform parameters
+//**********
+uniform mat4 World : WORLD < string UIWidget = "None"; >;
+uniform mat4 WorldViewProjection : WorldViewProjection < string UIWidget = "None"; >;
+uniform vec3 ViewPosition : ViewPosition < string UIWidget = "None"; >;
+uniform vec4 DiffuseColor = {0.8, 0.8, 0.8, 1.0};
+uniform vec3 SpecularColor = {0.5, 0.5, 0.5};
+uniform vec3 AmbientColor = {0.2, 0.2, 0.2};
+uniform float Shininess = 20.0;
+uniform vec4 EdgeColor = {0.0, 0.0, 0.0, 1.0};
+uniform float EdgeSize = 1.0;
+uniform int SphereMode = 0;
+uniform float Opacity = 1.0;
+
+//**********
+// Stream definitions
+//**********
+
+attribute appdata {
+    vec3 Position : POSITION;
+    vec3 Normal   : NORMAL;
+};
+
+attribute mmdVertexOutput {
+    vec3 NormalWS : TEXCOORD0;
+    vec3 ViewDir  : TEXCOORD1;
+};
+
+attribute pixelOut {
+    vec4 colorOut : COLOR0;
+};
+
+//**********
+// Vertex shader
+//**********
+GLSLShader VS
+{
+    void main()
+    {
+        vec4 world_pos = World * vec4(Position, 1.0);
+        vsOut.NormalWS = normalize((World * vec4(Normal, 0.0)).xyz);
+        vsOut.ViewDir = normalize(ViewPosition - world_pos.xyz);
+        gl_Position = WorldViewProjection * vec4(Position, 1.0);
+    }
+}
+
+//**********
+// Fragment shader
+//**********
+GLSLShader FS
+{
+    void main()
+    {
+        vec3 n = normalize(psIn.NormalWS);
+        vec3 l = normalize(vec3(0.0, 0.0, 1.0));
+        float ndotl = clamp(dot(n, -l), 0.0, 1.0);
+        float band = floor(ndotl * 4.0) / 4.0;
+        vec3 lighting = AmbientColor + DiffuseColor.rgb * (0.2 + band);
+        float specDot = max(dot(reflect(l, n), normalize(psIn.ViewDir)), 0.0);
+        float spec = pow(specDot, max(Shininess, 1.0)) * 0.8;
+        lighting += SpecularColor * spec;
+
+        float edge = step(0.0, EdgeSize) * smoothstep(0.95, 1.0, 1.0 - ndotl);
+        lighting = mix(lighting, EdgeColor.rgb, clamp(edge * EdgeSize * 0.1, 0.0, 1.0));
+
+        if (SphereMode == 1)
+        {
+            lighting *= 0.85;
+        }
+        else if (SphereMode == 2)
+        {
+            lighting += 0.15;
+        }
+
+        colorOut = vec4(lighting, DiffuseColor.a * Opacity);
+    }
+}
+
+technique Main
+{
+    pass p0
+    {
+        VertexShader(in appdata, out mmdVertexOutput vsOut) = VS;
+        PixelShader(in mmdVertexOutput psIn, out pixelOut) = FS;
+    }
+}

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -34,6 +35,23 @@ def _option(args: list[str], name: str, default: str) -> str:
         return args[index + 1]
     except IndexError as exc:
         raise ValueError(f"{name} requires a value") from exc
+
+
+def _has_flag(args: list[str], name: str) -> bool:
+    """Return True if a boolean flag is present in positional arguments."""
+    return name in args
+
+
+def _require_build_path(session: nox.Session, value: str, option_name: str) -> Path:
+    """Resolve an output path and require it to stay under build/."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = ROOT / path
+    path = path.resolve()
+    build_root = (ROOT / "build").resolve()
+    if path != build_root and build_root not in path.parents:
+        session.error(f"{option_name} must resolve under {build_root}: {path}")
+    return path
 
 
 def _maya_location(version: str) -> Path:
@@ -365,6 +383,349 @@ def maya_viewport_capture(session: nox.Session) -> None:
         env=env,
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def maya_static_render(session: nox.Session) -> None:
+    """Import a PMX fixture and capture one frame with fixed camera/light.
+
+    Creates a scene by importing a PMX model via mmd_tools.io.mmd_importer,
+    sets up a GoldenOracle-style fixed camera and directional light, and
+    captures one frame to PNG via playblast with offScreen=True. Verifies
+    the PNG exists with >0 size and is not effectively blank.
+
+    This is a report-only capture baseline, NOT an image-comparison gate.
+    No FLIP or pixel-diff comparison is performed.
+
+    Defaults: model tests/data/for_unit_test/test_1bone_cube.pmx, frame 0,
+    1024x1024, output build/captures/static_render_1bone_cube.png.
+
+    Requires the mmd_tools package (no C++ plugin needed for PMX import).
+
+    The script explicitly sets View Transform / Display / Rendering Space
+    via colorManagementPrefs before capture.  These can be overridden:
+        --view-transform 'Un-tone-mapped (sRGB)'  (default)
+        --display 'sRGB'                           (default)
+        --rendering-space 'ACEScg'                 (default)
+    If a requested value is not available in the current Maya environment,
+    the operation fails with a RuntimeError listing available values.
+
+    Examples:
+        uvx nox -s maya_static_render -- --maya 2024
+        uvx nox -s maya_static_render -- --maya 2024 --model tests/data/for_unit_test/test_1bone_cube.pmx --out build/captures/static_render_1bone_cube.png --frame 0 --width 1024 --height 1024
+        uvx nox -s maya_static_render -- --maya 2024 --shader --view-transform "Un-tone-mapped (sRGB)" --out build/captures/static_render_1bone_cube_shader_untone.png
+        uvx nox -s maya_static_render -- --maya 2024 --shader --view-transform "ACES 1.0 SDR-video (sRGB)" --out build/captures/static_render_1bone_cube_shader_aces.png
+        uvx nox -s maya_static_render -- --maya 2024 --shader --shader-backend dx11 --out build/captures/static_render_1bone_cube_shader_dx11.png
+        uvx nox -s maya_static_render -- --maya 2024 --shader --shader-backend glsl --out build/captures/static_render_1bone_cube_shader_glsl.png
+    """
+    if _has_flag(session.posargs, "--shader"):
+        shader_flag = "--shader"
+    else:
+        shader_flag = "--no-shader"  # default
+
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    model = _option(session.posargs, "--model", str(ROOT / "tests/data/for_unit_test/test_1bone_cube.pmx"))
+    out = _option(session.posargs, "--out", str(ROOT / "build/captures/static_render_1bone_cube.png"))
+    out_path = Path(out)
+    if not out_path.is_absolute():
+        out_path = (ROOT / out_path).resolve()
+    frame = _option(session.posargs, "--frame", "0")
+    width = _option(session.posargs, "--width", "1024")
+    height = _option(session.posargs, "--height", "1024")
+    shader_backend = _option(session.posargs, "--shader-backend", "auto")
+    if shader_backend not in {"auto", "dx11", "glsl", "standard"}:
+        session.error(f"Unsupported --shader-backend: {shader_backend}")
+    vp2_device = _option(session.posargs, "--vp2-device", "default")
+    if vp2_device not in {"default", "gl", "glcore", "dx11"}:
+        session.error(f"Unsupported --vp2-device: {vp2_device}")
+
+    view_transform = _option(session.posargs, "--view-transform", "Un-tone-mapped (sRGB)")
+    display = _option(session.posargs, "--display", "sRGB")
+    rendering_space = _option(session.posargs, "--rendering-space", "ACEScg")
+    diagnostics_out = _option(session.posargs, "--diagnostics-out", "")
+    diagnostics_args: list[str] = []
+    if diagnostics_out:
+        diagnostics_path = _require_build_path(session, diagnostics_out, "--diagnostics-out")
+        diagnostics_args.extend(["--diagnostics-out", str(diagnostics_path)])
+    if _has_flag(session.posargs, "--allow-blank"):
+        diagnostics_args.append("--allow-blank")
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    env = {
+        **os.environ,
+        "MAYA_VERSION": version,
+        "PYTHONPATH": str(ROOT),
+    }
+    vp2_device_map = {
+        "gl": "VirtualDeviceGL",
+        "glcore": "VirtualDeviceGLCore",
+        "dx11": "VirtualDeviceDx11",
+    }
+    if vp2_device in vp2_device_map:
+        env["MAYA_VP2_DEVICE_OVERRIDE"] = vp2_device_map[vp2_device]
+
+    cmd = [
+        str(mayapy),
+        "tests/viewport/static_render_capture.py",
+        shader_flag,
+        "--out",
+        str(out_path),
+        "--model",
+        model,
+        "--frame",
+        frame,
+        "--width",
+        width,
+        "--height",
+        height,
+        "--shader-backend",
+        shader_backend,
+        "--view-transform",
+        view_transform,
+        "--display",
+        display,
+        "--rendering-space",
+        rendering_space,
+    ]
+    cmd.extend(diagnostics_args)
+    session.run(*cmd, env=env, external=True)
+
+
+@nox.session(venv_backend="none")
+def maya_visual_regression(session: nox.Session) -> None:
+    """Run manifest-driven Maya GUI / DX11 viewport visual regression captures.
+
+    This is a report-only visual harness around GoldenOracle-compatible render
+    manifests. The manifest path is intentionally required so local asset roots
+    are injected by the caller instead of hard-coded in the repository.
+
+    Examples:
+        uvx nox -s maya_visual_regression -- --maya 2024 --manifest <render-manifest.json> --case fixture-render-generated-visual-mmd-diffuse-lit-box
+        uvx nox -s maya_visual_regression -- --manifest <manifest.json> --tag visual --limit 3 --out build/visual-regression/local
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    manifest = _option(session.posargs, "--manifest", "")
+    if not manifest:
+        session.error("--manifest is required for maya_visual_regression")
+
+    out = _option(session.posargs, "--out", "build/visual-regression/maya-dx11")
+    out_path = _require_build_path(session, out, "--out")
+    port = _option(session.posargs, "--port", "7721")
+    width = _option(session.posargs, "--width", "1024")
+    height = _option(session.posargs, "--height", "1024")
+    timeout = _option(session.posargs, "--timeout", "420")
+
+    forwarded: list[str] = []
+    passthrough_flags = {"--keep-maya", "--no-compare", "--attach-existing", "--debug-lambert-control", "--hide-orig-shapes"}
+    passthrough_options = {"--case", "--tag", "--limit", "--launch-mode", "--shader-fx"}
+    i = 0
+    while i < len(session.posargs):
+        arg = session.posargs[i]
+        if arg in passthrough_flags:
+            forwarded.append(arg)
+            i += 1
+            continue
+        if arg in passthrough_options:
+            if i + 1 >= len(session.posargs):
+                session.error(f"{arg} requires a value")
+            forwarded.extend([arg, session.posargs[i + 1]])
+            i += 2
+            continue
+        i += 1
+
+    python = sys.executable
+    cmd = [
+        python,
+        "tests/viewport/visual_regression_capture.py",
+        "--maya",
+        version,
+        "--manifest",
+        manifest,
+        "--out",
+        str(out_path),
+        "--port",
+        port,
+        "--width",
+        width,
+        "--height",
+        height,
+        "--timeout",
+        timeout,
+    ]
+    cmd.extend(forwarded)
+    session.run(*cmd, external=True)
+
+
+@nox.session(venv_backend="none")
+def maya_batch_import(session: nox.Session) -> None:
+    """Run Track 6 manifest-driven Maya batch import checks.
+
+    Examples:
+        uvx nox -s maya_batch_import -- --maya 2024 --scan-root F:\\MMD --write-manifest build/batch-import/manifest.json --max-models 20 --max-motions 20
+        uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --limit 1
+        uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --case failing_case --save-scenes
+        uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --limit 1 --save-scenes --capture
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    runner_args: list[str] = []
+    skip_next = False
+    for arg in session.posargs:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--maya":
+            skip_next = True
+            continue
+        runner_args.append(arg)
+
+    if not runner_args:
+        runner_args = [
+            "--manifest",
+            str(ROOT / "tests/track6/manifest_template.json"),
+            "--limit",
+            "1",
+        ]
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    env = {
+        **os.environ,
+        "MAYA_VERSION": version,
+        "PYTHONPATH": str(ROOT),
+    }
+    session.run(
+        str(mayapy),
+        "tests/track6/track6_runner.py",
+        *runner_args,
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def pmx_roundtrip(session: nox.Session) -> None:
+    """PMX roundtrip: import \u2192 parse \u2192 export \u2192 re-import.
+
+    For each manifest case:
+      1. Parse source PMX via PmxData.
+      2. New Maya scene, import source PMX.
+      3. Convert PmxData \u2192 exporter dict.
+      4. Export to a fresh PMX under --out-dir/exports/.
+      5. Parse the exported PMX to verify binary integrity.
+      6. New Maya scene, import the exported PMX.
+
+    Results \u2192 --out-dir/results.json.
+
+    Examples:
+        uvx nox -s pmx_roundtrip -- --maya 2024
+        uvx nox -s pmx_roundtrip -- --maya 2024 --manifest tests/roundtrip/manifest_template.json --limit 1
+        uvx nox -s pmx_roundtrip -- --maya 2024 --case 1bone
+        uvx nox -s pmx_roundtrip -- --maya 2024 --manifest tests/roundtrip/manifest_supported.json --require-clean --out-dir build/roundtrip/supported-clean
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    runner_args: list[str] = []
+    skip_next = False
+    for arg in session.posargs:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--maya":
+            skip_next = True
+            continue
+        runner_args.append(arg)
+
+    if not runner_args:
+        runner_args = [
+            "--manifest",
+            str(ROOT / "tests/roundtrip/manifest_template.json"),
+            "--limit",
+            "1",
+        ]
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    env = {
+        **os.environ,
+        "MAYA_VERSION": version,
+        "PYTHONPATH": str(ROOT),
+    }
+    session.run(
+        str(mayapy),
+        "tests/roundtrip/pmx_roundtrip_runner.py",
+        *runner_args,
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def flip_report(session: nox.Session) -> None:
+    """Run NVIDIA FLIP image comparison (report-only, no pass/fail gate).
+
+    Compares a reference PNG against a test (Maya capture) PNG using the
+    external `flip` CLI.  Produces a text report, an error-map PNG, and an
+    optional CSV summary.
+
+    This session is **report-only**: the flip mean/weighted-median/max scores
+    are NOT used to decide session pass/fail.  Only a flip process crash
+    (non-zero exit) causes session failure.
+
+    Default out-dir is rooted under build/flip-reports/.  If --out-dir is
+    supplied relative it is resolved relative to the project root.
+
+    Examples:
+        uvx nox -s flip_report -- \\
+            --reference F:\\Develop\\MMDDev\\GoldenOracle\\runs\\fixture-render\\fixture-render-generated-visual-mmd-diffuse-lit-box\\frame-0.png \\
+            --test build/captures/static_render_1bone_cube.0000.png \\
+            --out-dir build/flip-reports/static-render-1bone \\
+            --basename static_render_1bone_cube \\
+            --csv build/flip-reports/static-render-1bone/results.csv
+    """
+    args = session.posargs
+
+    reference = _option(args, "--reference", "")
+    test = _option(args, "--test", "")
+    out_dir = _option(args, "--out-dir", "build/flip-reports/report")
+    basename = _option(args, "--basename", "flip_result")
+    csv = _option(args, "--csv", "")
+
+    if not reference:
+        session.error("--reference <path> is required")
+    if not test:
+        session.error("--test <path> is required")
+
+    out_path = _require_build_path(session, out_dir, "--out-dir")
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    csv_arg = ["-c", str(_require_build_path(session, csv, "--csv"))] if csv else []
+    flip_exe = shutil.which("flip")
+    if not flip_exe:
+        session.error("NVIDIA FLIP CLI not found. Install dev dependencies with: python -m pip install -e .[dev]")
+
+    cmd: list[str] = [
+        flip_exe,
+        "-r",
+        reference,
+        "-t",
+        test,
+        "-d",
+        str(out_path),
+        "-b",
+        basename,
+        "-txt",
+        *csv_arg,
+    ]
+
+    session.log(f"FLIP report-only: reference={reference}, test={test}")
+    session.log(f"  out-dir={out_path}, basename={basename}")
+    session.run(*cmd, external=True)
 
 
 @nox.session(venv_backend="none")

@@ -232,15 +232,15 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
     sanitized_shader_name = shader_node + "SG"
     sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
 
-    # シェーダーのタイプに応じて適切な接続を行う
     shader_type = cmds.nodeType(shader_node)
 
-    if shader_type == "dx11Shader":
-        # dx11Shaderは直接surfaceShaderに接続
+    if cmds.attributeQuery("outColor", node=shader_node, exists=True):
+        cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
+    elif shader_type == "dx11Shader":
         cmds.connectAttr(shader_node + ".message", f"{sg_name}.surfaceShader", force=True)
     else:
-        # 標準シェーダーは.outColorを使用
-        cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
+        logger.error("Shader node '%s' has no outColor attribute", shader_node)
+        return
 
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)

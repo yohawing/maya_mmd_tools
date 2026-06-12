@@ -3,6 +3,7 @@ from maya import cmds
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.settings import settings
+from mmd_tools.converters import mesh_converter as mesh_converter_module
 from mmd_tools.converters import MeshConverter
 from mmd_tools.core import maya_utils
 from tests.common.maya_test_base import MayaTestBase
@@ -40,6 +41,7 @@ class TestMeshConverter(MayaTestBase):
 
         # テスト環境ではdx11Shaderを無効にする
         settings.set("import.model.create_mmd_shaders", False)
+        settings.set("import.model.separate_meshes_by_material", False)
 
         # TestFixtureProviderを初期化
         self.fixture_provider = TestFixtureProvider()
@@ -313,7 +315,101 @@ class TestMeshConverter(MayaTestBase):
                 else:
                     self.fail(f"{material}に{maya_attr}アトリビュートが存在しません")
 
-    # def test_separated_by_material(self):
-    #     """
-    #     マテリアルごとにメッシュが分割されるオプションが正しく機能するかテストする。
-    #     """
+    def test_convert_pmx_mesh_with_material_split(self):
+        """
+        separate_meshes_by_material=True で PMX メッシュがマテリアルごとに分割されることをテストする。
+        """
+        # 設定を一時的に有効化
+        settings.set("import.model.separate_meshes_by_material", True)
+
+        try:
+            # 複数マテリアルを持つPMX fixtureを使用
+            pmx_file_path = self.fixture_provider.get_pmx_file("Lumine")
+
+            # PMXファイルをパース
+            pmx_data = PmxData()
+            pmx_data = pmx_data.parse_file(pmx_file_path)
+
+            # マテリアル数を記録
+            expected_material_count = len(
+                [m for m in pmx_data.materials if m.face_count > 0]
+            )
+            self.assertGreater(expected_material_count, 1, "split test には複数 material fixture が必要です")
+
+            # ルートグループを作成
+            root_group = cmds.group(empty=True, name="test_pmx_split_root")
+
+            # MeshConverterを作成して変換を実行
+            converter = MeshConverter(pmx_file_path)
+            mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
+
+            # 結果の検証: mesh_name がリストであることを確認
+            self.assertIsInstance(
+                mesh_name,
+                list,
+                f"split mode では mesh_name は list であるべき: {type(mesh_name)}",
+            )
+
+            # material 数と同数の mesh transform が GEOMETRY_GROUP 直下にある
+            self.assertEqual(
+                len(mesh_name),
+                expected_material_count,
+                f"メッシュ数 ({len(mesh_name)}) が material 数 ({expected_material_count}) と一致しません",
+            )
+
+            # 各 mesh に mesh shape / UV / material がある
+            for mn in mesh_name:
+                self.assertTrue(
+                    cmds.objExists(mn),
+                    f"メッシュ '{mn}' が存在しません",
+                )
+
+                # shape node がある
+                shapes = cmds.listRelatives(mn, shapes=True, type="mesh") or []
+                self.assertGreater(
+                    len(shapes),
+                    0,
+                    f"'{mn}' に mesh shape がありません",
+                )
+
+                # UV がある
+                uv_sets = cmds.polyUVSet(mn, query=True, allUVSets=True)
+                self.assertIsNotNone(uv_sets, f"'{mn}' に UV がありません")
+                self.assertGreaterEqual(
+                    len(uv_sets),
+                    1,
+                    f"'{mn}' に UV セットがありません",
+                )
+
+                # マテリアルが割り当てられている
+                materials = maya_utils.get_materials_from_mesh(mn)
+                self.assertGreater(
+                    len(materials),
+                    0,
+                    f"'{mn}' にマテリアルがありません",
+                )
+
+        finally:
+            # 設定を元に戻す
+            settings.set("import.model.separate_meshes_by_material", False)
+
+    def test_ensure_mmd_shader_uniform_attributes_fallback_four_component_colors(self):
+        """
+        standalone fallback path で DiffuseColor と EdgeColor が4成分 compound 属性として作成されることを確認する。
+        """
+        shader_node = cmds.createNode("network", name="uniform_fallback_test")
+
+        mesh_converter_module._ensure_mmd_shader_uniform_attributes(shader_node)
+
+        for attr in ("DiffuseColor", "EdgeColor"):
+            self.assertTrue(
+                cmds.attributeQuery(attr, node=shader_node, exists=True),
+                f"{attr} が作成されていません",
+            )
+            children = cmds.attributeQuery(attr, node=shader_node, listChildren=True)
+            self.assertEqual(
+                children,
+                [f"{attr}0", f"{attr}1", f"{attr}2", f"{attr}3"],
+            )
+
+        self.assertTrue(cmds.attributeQuery("SpecularColor", node=shader_node, exists=True))

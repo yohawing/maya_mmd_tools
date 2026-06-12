@@ -11,6 +11,7 @@
       "import_models": true,
       "separate_meshes_by_material": false,
       "create_mmd_shaders": false,
+      "mmd_shader_backend": "auto",
       "texture_search_path": "",
       "hide_hidden_geometry": true,
       "uv_set_name": "map#",

@@ -9,6 +9,7 @@ from mmd_tools.core import maya_utils
 
 from .. import settings
 from ..converters import BoneConverter, MeshConverter, MorphConverter, PhysicsConverter
+from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core.logger import get_logger
 from ..core.utils import create_bone_joint_mapping
 from ..core.constants import (
@@ -87,6 +88,9 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             logger.info("メッシュを変換中...")
             mesh_converter = MeshConverter(filepath)
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
+
+            # mesh_name が list かどうかで分岐
+            mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
             logger.debug("メッシュ変換完了: グループ=%s, 名前=%s", mesh_group, mesh_name)
 
             logger.info("モーフを変換中...")
@@ -105,8 +109,9 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 setup_bone_orientation=options.get("setup_bone_orientation", True),
             )
             logger.debug(
-                "ボーン変換完了: %d個のジョイント",
+                "ボーン変換完了: %d個のジョイント, %d個のメッシュ",
                 len(maya_joints) if maya_joints else 0,
+                len(mesh_names),
             )
 
             # 物理を変換（設定で有効な場合）
@@ -139,6 +144,19 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 cmds.makeIdentity(root_group, apply=True, scale=True)
 
             cmds.select(root_group)
+            try:
+                try:
+                    # dx11Shader generates effect attrs such as DiffuseColorRGB
+                    # only after VP2 evaluates the .fx file.  Force that once
+                    # before copying MMD custom attrs into generated uniforms.
+                    cmds.refresh(force=True)
+                except Exception:
+                    pass
+                synced_dx11 = sync_dx11_generated_uniforms(mesh_converter.created_shaders)
+                if synced_dx11:
+                    logger.debug("dx11Shader generated uniforms synchronized: %d", synced_dx11)
+            except Exception:
+                logger.debug("Failed to synchronize dx11 generated uniforms", exc_info=True)
         logger.info("PMXファイルのインポートが完了しました: %s", os.path.basename(filepath))
         return root_group  # ルートノードの名前を返す
 
