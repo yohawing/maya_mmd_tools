@@ -430,10 +430,10 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     float3 sphereColor = float3(1.0, 1.0, 1.0);
     if (SphereMode > 0 && HasSphereTexture != 0)
     {
-        float3 reflectVec = reflect(-viewDir, normal);
+        float3 sphereNormal = normalize(mul(float4(normal, 0.0), View).xyz);
         float2 sphereUV;
-        sphereUV.x = reflectVec.x * 0.5 + 0.5;
-        sphereUV.y = reflectVec.y * -0.5 + 0.5;
+        sphereUV.x = sphereNormal.x * 0.35 + 0.5;
+        sphereUV.y = sphereNormal.y * -0.35 + 0.5;
         sphereColor = SphereTexture.Sample(LinearSampler, sphereUV).rgb;
     }
 
