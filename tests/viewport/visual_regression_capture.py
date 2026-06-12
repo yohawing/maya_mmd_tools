@@ -127,6 +127,8 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
         camera.update(case.get("metadata", {}).get("camera", {}))
         image = dict(defaults.get("image", {}))
         image.update(case.get("image", {}))
+        light = dict(defaults.get("light", {}))
+        light.update(case.get("metadata", {}).get("light", {}))
 
         model = (manifest_dir / case["assets"]["model"]).resolve()
         oracle_rel = case.get("oracle", {}).get("path")
@@ -140,6 +142,7 @@ def _load_cases(manifest_path: Path, names: list[str], tags: list[str], limit: i
                 "frame": int(case.get("frames", [defaults.get("frame", 0)])[0]),
                 "camera": camera,
                 "image": image,
+                "light": light,
                 "oracle_png": str(oracle_png) if oracle_png else None,
                 "metadata": case.get("metadata", {}),
             }
@@ -699,25 +702,60 @@ def _color_management_diag():
 def _apply_unique_shader_path():
     from mmd_tools.converters.mesh_converter import sync_dx11_generated_uniforms
     shaders = cmds.ls(type="dx11Shader") or []
+    techniques = {{}}
     for shader in shaders:
+        if cmds.attributeQuery("technique", node=shader, exists=True):
+            techniques[shader] = cmds.getAttr(shader + ".technique") or "MMDTechnique"
         cmds.setAttr(shader + ".shader", str(_shader_fx), type="string")
     cmds.refresh(force=True)
     sync_dx11_generated_uniforms(shaders)
     for shader in shaders:
         if cmds.attributeQuery("technique", node=shader, exists=True):
-            technique = cmds.getAttr(shader + ".technique") or "MMDTechnique"
-            cmds.setAttr(shader + ".technique", technique, type="string")
+            cmds.setAttr(shader + ".technique", techniques.get(shader, "MMDTechnique"), type="string")
     return shaders
+
+def _apply_fixed_light(case):
+    light = case.get("light") or {{}}
+    source_direction = light.get("direction") or [0.5, -1.0, 0.5]
+    # GoldenOracle/three fixture lights are authored in the source MMD/three
+    # coordinate frame. The imported Maya mesh path mirrors X/Z for the DX11
+    # viewport comparison, so the fixed light direction must be mirrored too.
+    direction = [-float(source_direction[0]), float(source_direction[1]), -float(source_direction[2])]
+    color = light.get("color") or [1.0, 1.0, 1.0]
+    updated = []
+    for shader in cmds.ls(type="dx11Shader") or []:
+        if cmds.attributeQuery("UseFixedLight", node=shader, exists=True):
+            cmds.setAttr(shader + ".UseFixedLight", 1)
+        if cmds.attributeQuery("FixedLightDirection", node=shader, exists=True):
+            cmds.setAttr(shader + ".FixedLightDirection", float(direction[0]), float(direction[1]), float(direction[2]), type="double3")
+        if cmds.attributeQuery("FixedLightColor", node=shader, exists=True):
+            cmds.setAttr(shader + ".FixedLightColor", float(color[0]), float(color[1]), float(color[2]), type="double3")
+        updated.append(shader)
+    return {{"sourceDirection": source_direction, "mayaDirection": direction, "color": color, "shaders": updated}}
 
 def _capture_case(case):
     import importlib
+    import mmd_tools.converters as converters
     import mmd_tools.converters.mesh_converter as mesh_converter
+    import mmd_tools.core.mmd_parser as mmd_parser
+    import mmd_tools.core.pmx_data as pmx_data
+    import mmd_tools.core.pmx_data.vertex as pmx_vertex
     import mmd_tools.core.maya_utils as maya_utils
     import mmd_tools.io.mmd_importer as mmd_importer
+    import mmd_tools.io.pmd_importer as pmd_importer
+    import mmd_tools.io.pmx_importer as pmx_importer
+    import mmd_tools.io.vmd_importer as vmd_importer
     from mmd_tools.core.settings import settings
 
     maya_utils = importlib.reload(maya_utils)
+    pmx_vertex = importlib.reload(pmx_vertex)
+    pmx_data = importlib.reload(pmx_data)
+    mmd_parser = importlib.reload(mmd_parser)
     mesh_converter = importlib.reload(mesh_converter)
+    converters = importlib.reload(converters)
+    pmd_importer = importlib.reload(pmd_importer)
+    pmx_importer = importlib.reload(pmx_importer)
+    vmd_importer = importlib.reload(vmd_importer)
     mmd_importer = importlib.reload(mmd_importer)
 
     cmds.file(new=True, force=True)
@@ -732,7 +770,7 @@ def _capture_case(case):
     if root is None:
         raise RuntimeError("import_mmd_file returned None: " + case["model"])
     _apply_unique_shader_path()
-    debug_actions = {{}}
+    debug_actions = {{"fixedLight": _apply_fixed_light(case)}}
     if _hide_orig_shapes:
         debug_actions["hideOrigShapes"] = _mark_orig_shapes_intermediate()
     if _debug_lambert_control:

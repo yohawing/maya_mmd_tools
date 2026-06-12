@@ -267,6 +267,21 @@ float3 Light0Dir : DIRECTION
     int UIOrder = 1000;
 > = {0.0f, -1.0f, 0.0f};
 
+int UseFixedLight<
+    string UIGroup = "Lighting";
+    string UIName = "Use Fixed Light";
+> = 0;
+
+float3 FixedLightDirection<
+    string UIGroup = "Lighting";
+    string UIName = "Fixed Light Direction";
+> = {0.5f, -1.0f, 0.5f};
+
+float3 FixedLightColor<
+    string UIGroup = "Lighting";
+    string UIName = "Fixed Light Color";
+> = {1.0f, 1.0f, 1.0f};
+
 float4x4 Light0Matrix : SHADOWMAPMATRIX
 <
     string Object = "Light 0";
@@ -369,6 +384,12 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     float3 normal = normalize(input.worldNormal);
     float3 viewDir = normalize(ViewPosition - input.worldPosition);
     float3 lightDir = (Light0Type == 4) ? -normalize(Light0Dir) : normalize(Light0Pos - input.worldPosition);
+    float3 lightColor = Light0Color;
+    if (UseFixedLight != 0)
+    {
+        lightDir = -normalize(FixedLightDirection);
+        lightColor = FixedLightColor;
+    }
 
     // Sample textures
     float4 texColor = float4(1.0, 1.0, 1.0, 1.0);
@@ -388,19 +409,22 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     float NdotL = dot(normal, lightDir);
     float halfLambert = NdotL * 0.5 + 0.5;
     
-    // Sample toon texture
-    float toonFactor = saturate(halfLambert);
+    // Sample toon texture. MMD toon ramps are conventionally vertical strips;
+    // use RGB as the ramp color rather than a scalar red-channel factor.
+    float rampCoord = saturate(halfLambert);
+    float3 toonColor = rampCoord.xxx;
     if (HasToonTexture != 0)
     {
-        toonFactor = ToonTexture.Sample(ToonSampler, float2(halfLambert, 0.5)).r;
+        rampCoord = saturate(halfLambert * 0.5 + 0.25);
+        toonColor = ToonTexture.Sample(ToonSampler, float2(0.5, 1.0 - rampCoord)).rgb;
     }
-    float3 diffuse = Light0Color * toonFactor * shadow;
+    float3 diffuse = lightColor * toonColor * shadow;
 
     // Specular light
     float3 halfVec = normalize(lightDir + viewDir);
     float NdotH = saturate(dot(normal, halfVec));
     float specFactor = pow(NdotH, Shininess);
-    float3 specular = SpecularColor * specFactor * Light0Color * shadow;
+    float3 specular = SpecularColor * specFactor * lightColor * shadow;
 
     // Sphere mapping
     float3 sphereColor = float3(1.0, 1.0, 1.0);
@@ -414,7 +438,11 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     }
 
     // Combine lighting
-    float3 litColor = ambient + diffuse * baseColor.rgb + specular;
+    float3 litColor = diffuse * baseColor.rgb + specular;
+    if (HasToonTexture == 0)
+    {
+        litColor += ambient;
+    }
 
     // Apply sphere map
     if (SphereMode == 1 && HasSphereTexture != 0) // Multiply
@@ -540,6 +568,23 @@ technique11 MMDTechnique<
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, MainPS()));
         SetRasterizerState(CullNone);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDTechniqueTransparent<
+    int isTransparent = 1;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
     }
 }
 
@@ -554,5 +599,22 @@ technique11 MMDTechniqueNoEdge<
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, MainPS()));
         SetRasterizerState(CullNone);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDTechniqueNoEdgeTransparent<
+    int isTransparent = 1;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
     }
 }

@@ -39,6 +39,43 @@ from mmd_tools.core.constants import (
 
 LOGGER = get_logger(__name__)
 
+_ALPHA_CAPABLE_TEXTURE_EXTENSIONS = {".png", ".tga", ".tif", ".tiff", ".dds"}
+_STANDARD_TOON_TEXTURE_DIR = os.path.normpath(
+    os.path.join(os.path.dirname(os.path.dirname(__file__)), "shaders", "toon_textures")
+)
+
+
+def _material_uses_transparency(material, texture_path=None) -> bool:
+    """Return whether the material should use the alpha-blended DX11 technique."""
+    opacity = material.diffuse[3] if hasattr(material, "diffuse") and len(material.diffuse) > 3 else 1.0
+    if opacity < 0.999:
+        return True
+
+    if texture_path:
+        return os.path.splitext(str(texture_path))[1].lower() in _ALPHA_CAPABLE_TEXTURE_EXTENSIONS
+
+    return False
+
+
+def _resolve_pmx_toon_texture_path(texture_dir, material, all_textures):
+    """Resolve a PMX custom/shared toon texture to an absolute file path."""
+    if not hasattr(material, "shared_toon_flag") or not hasattr(material, "toon_texture_index"):
+        return None
+
+    toon_index = int(material.toon_texture_index)
+    if toon_index < 0:
+        return None
+
+    # PMX shared_toon_flag: 0 = regular texture table, 1 = shared toon01..toon10.
+    if int(material.shared_toon_flag) == 0:
+        if not all_textures or toon_index >= len(all_textures):
+            return None
+        return os.path.normpath(os.path.join(texture_dir, all_textures[toon_index]))
+
+    if toon_index > 9:
+        return None
+    return os.path.join(_STANDARD_TOON_TEXTURE_DIR, f"toon{toon_index + 1:02d}.bmp")
+
 
 def _ensure_mmd_shader_uniform_attributes(shader_node):
     """MMD シェーダーで uniform 属性がない場合に補完する。
@@ -388,6 +425,8 @@ class MeshConverter:
         # 全ての頂点と面を直接使用 z*= -1
         vertices = [v.position for v in all_vertices]
         vertices = [(v[0], v[1], -v[2]) for v in vertices]
+        normals = [v.normal for v in all_vertices]
+        normals = [(n[0], n[1], -n[2]) for n in normals]
 
         uvs = []
         for vertex in all_vertices:
@@ -429,6 +468,7 @@ class MeshConverter:
             face_connects=face_connects,
             uvs=uvs,
             face_uv_connects=face_uv_connects,
+            normals=normals,
         )
 
         # マテリアルを作成して、適切な面に割り当てる
@@ -503,6 +543,8 @@ class MeshConverter:
         # 全頂点座標 (z*= -1)
         vertices = [v.position for v in all_vertices]
         vertices = [(v[0], v[1], -v[2]) for v in vertices]
+        normals = [v.normal for v in all_vertices]
+        normals = [(n[0], n[1], -n[2]) for n in normals]
 
         # 全UV (flip V)
         uvs = []
@@ -541,6 +583,7 @@ class MeshConverter:
                 face_connects=sub_face_connects,
                 uvs=uvs,
                 face_uv_connects=sub_face_uv_connects,
+                normals=normals,
             )
 
             # テクスチャパスを取得
@@ -867,10 +910,12 @@ class MeshConverter:
         if not is_pmd and hasattr(material, "draw_flag"):
             edge_enabled = bool(material.draw_flag & PmxDrawFlag.EDGE_DRAWING)
 
+        transparent = _material_uses_transparency(material, texture_path)
         if edge_enabled:
-            maya_utils.set_attribute(shader, "technique", "MMDTechnique", "string")
+            technique = "MMDTechniqueTransparent" if transparent else "MMDTechnique"
         else:
-            maya_utils.set_attribute(shader, "technique", "MMDTechniqueNoEdge", "string")
+            technique = "MMDTechniqueNoEdgeTransparent" if transparent else "MMDTechniqueNoEdge"
+        cmds.setAttr(f"{shader}.technique", technique, type="string")
 
         # 基本色設定（Diffuse）
         _set_dx11_color_uniform(shader, "DiffuseColor", material.diffuse)
@@ -964,21 +1009,11 @@ class MeshConverter:
                     except Exception:
                         cmds.warning("Failed to connect sphere texture to dx11Shader")
 
-        # Toon texture setting (PMX custom toon uses the regular texture table).
-        if (
-            not is_pmd
-            and hasattr(material, "shared_toon_flag")
-            and int(material.shared_toon_flag) == 0
-            and hasattr(material, "toon_texture_index")
-            and material.toon_texture_index >= 0
-            and all_textures
-            and material.toon_texture_index < len(all_textures)
-        ):
-            toon_texture_path = all_textures[material.toon_texture_index]
-            full_toon_path = os.path.join(self.texture_dir, toon_texture_path)
-            full_toon_path = os.path.normpath(full_toon_path)
-
-            if os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
+        # Toon texture setting. PMX custom toon uses the regular texture table;
+        # shared toon uses bundled toon01.bmp..toon10.bmp assets.
+        if not is_pmd:
+            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+            if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
                 toon_file_node = cmds.shadingNode("file", asTexture=True, name=shader + "_toon_texture")
                 maya_utils.set_attribute(toon_file_node, "fileTextureName", full_toon_path, "string")
                 try:
@@ -991,7 +1026,7 @@ class MeshConverter:
                         maya_utils.set_attribute(shader, "HasToonTexture", 1, "long")
                 except Exception:
                     cmds.warning("Failed to connect toon texture to dx11Shader")
-            else:
+            elif full_toon_path:
                 cmds.warning(f"Toon texture file not found: {full_toon_path}")
 
         # カスタムアトリビュートを適用

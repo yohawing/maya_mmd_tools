@@ -64,7 +64,7 @@ def sanitize_texture_path(texture_path, texture_dir):
     return full_texture_path
 
 
-def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects):
+def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):
     """
     MayaシーンにUV付きのメッシュオブジェクトを作成します。
     OpenMaya APIを使用して高速化。
@@ -76,6 +76,7 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
         face_connects (list[int]): 面を構成する頂点インデックスのリスト。
         uvs (list[float]): UV座標のフラットなリスト (u1, v1, u2, v2, ...)。
         face_uv_connects (list[int]): 各面の各頂点に対応するUVのインデックスリスト。
+        normals (list[tuple[float, float, float]] | None): 頂点法線のリスト。
 
     Returns:
         str: 作成されたメッシュのトランスフォームノード名。
@@ -99,6 +100,23 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     # メッシュを作成
     mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
+
+    if normals:
+        normal_array = om.MVectorArray()
+        normal_face_ids = om.MIntArray()
+        normal_vertex_ids = om.MIntArray()
+        face_id = 0
+        cursor = 0
+        for count in face_counts:
+            for _ in range(count):
+                vertex_id = face_connects[cursor]
+                normal = normals[vertex_id]
+                normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
+                normal_face_ids.append(face_id)
+                normal_vertex_ids.append(vertex_id)
+                cursor += 1
+            face_id += 1
+        mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
 
     # UVセットを作成
     if uvs and face_uv_connects:
