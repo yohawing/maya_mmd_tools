@@ -114,8 +114,12 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 len(mesh_names),
             )
 
-            # 物理を変換（設定で有効な場合）
-            if settings.get("import.physics.import_physics", True):
+            # 呼び出しオプションを優先し、未指定時はグローバル設定に従う。
+            import_physics = options.get(
+                "import_physics",
+                settings.get("import.physics.import_physics", True),
+            )
+            if import_physics:
                 logger.info("物理を変換中...")
                 physics_converter = PhysicsConverter()
 
