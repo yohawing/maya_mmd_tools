@@ -190,6 +190,10 @@ uvx nox -s pmx_roundtrip -- --maya 2024 --out-dir build/roundtrip-custom
 各 case の `audit` には、import 後の scene inspection と Python logger 由来の診断が入ります。`missing_textures` は存在しない `fileTextureName` を持つ file node、`shader_errors` は shader mode 時の dx11Shader 作成・設定エラー、`log_warnings` / `log_errors` は case 実行中の warning/error log です。summary には `missing_texture_count` / `shader_error_count` / `warning_count` / `error_log_count` が出ます。
 
 ```bash
+# separate_meshes_by_material を一時的に有効化して profile 計測
+# mesh transform/shape 数・material 数・skinCluster 数・blendShape 数を results.json/profile に記録
+uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --limit 1 --separate-meshes --out-dir build/batch-import/separate-meshes-audit
+
 # 代表 case を import し、PNG capture まで確認
 uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --case <case-name> --capture
 

@@ -58,6 +58,7 @@ settings.get('import.physics.import_physics', False)
 | **model**     | `import_models`              | `bool`  | `true`       | モデル（メッシュ、マテリアル等）をインポートするか。                 |
 |               | `merge_meshes_by_material`   | `bool`  | `false`      | 同じマテリアルを持つメッシュを統合するか。                           |
 |               | `create_mmd_shaders`         | `bool`  | `true`       | MMDライクなシェーダーを自動で作成・割り当てするか。                  |
+|               | `mmd_shader_backend`         | `str`   | `"auto"`     | `auto` / `dx11` / `glsl` / `standard`（glsl 指定時は GLSLShader、auto は dx11 成功後 glsl、最終 fallback standardSurface）。 |
 |               | `texture_search_path`        | `str`   | `""`         | テクスチャファイルを追加で検索するパス。                             |
 |               | `hide_hidden_geometry`       | `bool`  | `true`       | 非表示設定のジオメトリをインポート時に隠すか。                       |
 | **physics**   | `import_physics`             | `bool`  | `true`       | 物理関連の要素（剛体、ジョイント）をインポートするかのマスター設定。 |

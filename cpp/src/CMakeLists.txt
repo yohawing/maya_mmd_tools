@@ -54,12 +54,16 @@ set(SOURCES
     mmdRuntimeBridge.cpp
     mmdRuntimeNode.cpp
     mmdFastLoad.cpp
+    MmdAppendNode.cpp
+    MmdCcdIkNode.cpp
 )
 
 set(HEADERS
     mmdRuntimeBridge.h
     mmdRuntimeNode.h
     mmdFastLoad.h
+    MmdAppendNode.h
+    MmdCcdIkNode.h
 )
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})

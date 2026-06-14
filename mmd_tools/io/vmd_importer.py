@@ -118,12 +118,30 @@ def import_vmd_file(parser, filepath, options=None):
 
                 # Phase 2: ライブノードの自動作成オプション
                 if options.get("use_live_runtime", False) and target_model:
-                    try:
-                        from mmd_tools.core.native import create_runtime_node_for_model
-                        node = create_runtime_node_for_model(target_model, pmx_path or "", filepath)
-                        logger.info(f"ライブランタイムノードを作成: {node}")
-                    except Exception as e:
-                        logger.warning(f"ライブノード作成に失敗: {e}")
+                    if not pmx_path or not os.path.exists(pmx_path):
+                        logger.warning(
+                            "ライブランタイムノード作成をスキップ: PMX ファイル path が解決できません"
+                        )
+                    else:
+                        try:
+                            from mmd_tools.core.native.mmd_anim_runtime import (
+                                connect_runtime_node_outputs_to_model,
+                                create_runtime_node_for_model,
+                            )
+                            node = create_runtime_node_for_model(target_model, pmx_path, filepath)
+                            logger.info(f"ライブランタイムノードを作成: {node}")
+                            dg_result = connect_runtime_node_outputs_to_model(node, target_model, pmx_path=pmx_path)
+                            logger.info(
+                                "ライブランタイムDG接続: bones=%d morphs=%d skipped=%d warnings=%d",
+                                len(dg_result.get("connected_bones", [])),
+                                len(dg_result.get("connected_morphs", [])),
+                                len(dg_result.get("skipped", [])),
+                                len(dg_result.get("warnings", [])),
+                            )
+                            for warning in dg_result.get("warnings", []):
+                                logger.warning(f"ライブランタイムDG接続警告: {warning}")
+                        except Exception as e:
+                            logger.warning(f"ライブノード作成に失敗: {e}")
 
             cmds.inViewMessage(
                 amg=f"VMD animation imported successfully from: {filepath}",

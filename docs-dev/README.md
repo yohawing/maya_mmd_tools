@@ -22,6 +22,7 @@
 
 - [testing-overview.md](testing-overview.md) - テスト戦略、実行方法、Maya環境でのテスト構成
 - [testing-mock.md](testing-mock.md) - PMD/PMX/VMDモックとテストデータ設計
+- [maya-commandport-workflow.md](maya-commandport-workflow.md) - Maya GUI / DX11 検証用の commandPort 接続手順
 
 ### リリース
 

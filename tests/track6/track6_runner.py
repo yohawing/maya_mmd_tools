@@ -736,6 +736,53 @@ def _prepare_shader_mode(use_shader: bool, shader_backend: str = "auto") -> list
     return errors
 
 
+def _collect_profile(
+    model_root: str,
+    separate_meshes: bool,
+    import_elapsed_sec: float,
+    parsed_data: Any,
+) -> dict[str, Any]:
+    """Collect compact profile metrics after a successful model import."""
+    from maya import cmds
+
+    mesh_shapes = cmds.listRelatives(model_root, allDescendents=True, type="mesh", fullPath=True) or []
+    visible_mesh_shapes = []
+    intermediate_mesh_shapes = []
+    mesh_transforms = set()
+    for shape in mesh_shapes:
+        try:
+            is_intermediate = bool(cmds.getAttr(f"{shape}.intermediateObject"))
+        except Exception:
+            is_intermediate = False
+        if is_intermediate:
+            intermediate_mesh_shapes.append(shape)
+            continue
+        visible_mesh_shapes.append(shape)
+        parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        if parents:
+            mesh_transforms.add(parents[0])
+
+    material_count_from_parse: int | None = None
+    if parsed_data is not None:
+        mats = getattr(parsed_data, "materials", None)
+        if mats is not None:
+            material_count_from_parse = len(mats)
+
+    skin_cluster_count = len(cmds.ls(type="skinCluster") or [])
+    blend_shape_count = len(cmds.ls(type="blendShape") or [])
+
+    return {
+        "separate_meshes_by_material": separate_meshes,
+        "import_elapsed_sec": round(import_elapsed_sec, 3),
+        "mesh_transform_count": len(mesh_transforms),
+        "mesh_shape_count": len(visible_mesh_shapes),
+        "intermediate_mesh_shape_count": len(intermediate_mesh_shapes),
+        "material_count_from_parse": material_count_from_parse,
+        "skin_cluster_count": skin_cluster_count,
+        "blend_shape_count": blend_shape_count,
+    }
+
+
 def run_case(
     case: dict[str, Any],
     out_dir: Path,
@@ -747,12 +794,14 @@ def run_case(
     capture_fov: float = 25.0,
     use_shader: bool = False,
     shader_backend: str = "auto",
+    separate_meshes: bool | None = None,
 ) -> dict[str, Any]:
     """Import one model plus optional motion and return a serializable result.
 
     When capture=True, also renders one offscreen frame to PNG.
     """
     from maya import cmds
+    from mmd_tools.core import settings as mmd_settings
     from mmd_tools.core.mmd_parser import parse_mmd_file
     from mmd_tools.io.mmd_importer import import_mmd_file
 
@@ -765,6 +814,7 @@ def run_case(
     error = None
     traceback_text = None
     capture_result = None
+    profile: dict[str, Any] | None = None
     audit: dict[str, Any] = {
         "missing_textures": [],
         "shader_errors": [],
@@ -777,6 +827,8 @@ def run_case(
     log_records: list[dict[str, str]] = []
     log_handler = _CaseLogHandler(log_records)
     logging.getLogger("mmd_tools").addHandler(log_handler)
+    previous_separate_meshes = None
+    changed_separate_meshes = False
 
     try:
         if not Path(model_path).is_file():
@@ -786,7 +838,13 @@ def run_case(
 
         cmds.file(new=True, force=True)
         shader_setup_errors = _prepare_shader_mode(use_shader, shader_backend)
-        parse_mmd_file(model_path)
+        previous_separate_meshes = mmd_settings.get("import.model.separate_meshes_by_material", False)
+        if separate_meshes is not None:
+            mmd_settings.set("import.model.separate_meshes_by_material", separate_meshes)
+            changed_separate_meshes = True
+        effective_separate_meshes = mmd_settings.get("import.model.separate_meshes_by_material", False)
+        parsed_data = parse_mmd_file(model_path)
+        import_start = time.perf_counter()
         model_root = import_mmd_file(
             model_path,
             options={
@@ -794,8 +852,11 @@ def run_case(
                 "import_physics": False,
             },
         )
+        import_elapsed = time.perf_counter() - import_start
         if not model_root:
             raise RuntimeError("model import returned no root node")
+
+        profile = _collect_profile(model_root, bool(effective_separate_meshes), import_elapsed, parsed_data)
 
         if motion_path:
             parse_mmd_file(str(motion_path))
@@ -840,6 +901,11 @@ def run_case(
         traceback_text = traceback.format_exc()
     finally:
         logging.getLogger("mmd_tools").removeHandler(log_handler)
+        if changed_separate_meshes:
+            try:
+                mmd_settings.set("import.model.separate_meshes_by_material", previous_separate_meshes)
+            except Exception:
+                pass
         _apply_log_audit(audit, log_records, use_shader)
 
     return {
@@ -854,6 +920,7 @@ def run_case(
         "capture_error": capture_result["error"] if capture_result else None,
         "capture_png_stats": capture_result["png_stats"] if capture_result else None,
         "audit": audit,
+        "profile": profile,
         "elapsed_sec": round(time.perf_counter() - start, 3),
     }
 
@@ -871,6 +938,7 @@ def run_manifest(
     capture_fov: float = 25.0,
     use_shader: bool = False,
     shader_backend: str = "auto",
+    separate_meshes: bool | None = None,
 ) -> int:
     """Run manifest cases in Maya standalone and write result JSON."""
     out_path = _require_build_path(out_dir, "--out-dir")
@@ -898,6 +966,7 @@ def run_manifest(
             capture_fov,
             use_shader=use_shader,
             shader_backend=shader_backend,
+            separate_meshes=separate_meshes,
         )
         print(f"  {result['status']} ({result['elapsed_sec']}s)", flush=True)
         results.append(result)
@@ -979,6 +1048,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     shader_group.add_argument("--shader", action="store_true", dest="use_shader", help="Enable MMD shader creation during model import (default: no shader).")
     shader_group.add_argument("--no-shader", action="store_false", dest="use_shader", help="Disable MMD shader creation (default).")
     parser.set_defaults(use_shader=False)
+    split_group = parser.add_mutually_exclusive_group()
+    split_group.add_argument(
+        "--separate-meshes",
+        action="store_true",
+        dest="separate_meshes",
+        help="Enable import.model.separate_meshes_by_material; records per-case profile metrics.",
+    )
+    split_group.add_argument(
+        "--no-separate-meshes",
+        action="store_false",
+        dest="separate_meshes",
+        help="Disable separate_meshes_by_material for this run.",
+    )
+    parser.set_defaults(separate_meshes=None)
     return parser.parse_args(argv)
 
 
@@ -1014,6 +1097,7 @@ def main(argv: list[str] | None = None) -> int:
         capture_fov=args.capture_fov,
         use_shader=args.use_shader,
         shader_backend=args.shader_backend,
+        separate_meshes=args.separate_meshes,
     )
 
 

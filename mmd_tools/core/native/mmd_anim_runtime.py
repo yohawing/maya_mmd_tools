@@ -1109,7 +1109,19 @@ def create_runtime_node_for_model(model_root: str, pmx_path: str, vmd_path: str 
     # モデルルートにメッセージで関連付け (将来のドライバ用)
     if cmds.objExists(model_root):
         try:
-            cmds.addAttr(model_root, ln="mmdRuntimeNode", at="message")
+            if not cmds.attributeQuery("mmdRuntimeNode", node=model_root, exists=True):
+                cmds.addAttr(model_root, ln="mmdRuntimeNode", at="message")
+            existing_connections = (
+                cmds.listConnections(f"{model_root}.mmdRuntimeNode", source=True, destination=False, plugs=True)
+                or []
+            )
+            for source in existing_connections:
+                if source == f"{node}.message":
+                    break
+                try:
+                    cmds.disconnectAttr(source, f"{model_root}.mmdRuntimeNode")
+                except Exception:
+                    pass
             cmds.connectAttr(f"{node}.message", f"{model_root}.mmdRuntimeNode", force=True)
         except:
             pass
@@ -1124,3 +1136,297 @@ def get_runtime_matrices_from_node(node: str) -> list:
         return cmds.getAttr(f"{node}.worldMatrices[*]") or []
     except:
         return []
+
+
+def connect_runtime_node_outputs_to_model(
+    node: str,
+    model_root: str,
+    pmx_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Connect an mmdRuntimeInstance node\'s worldMatrices/morphWeights outputs to existing
+    Maya joints (with mmd_bone_index) and blendShape weights via standard DG nodes.
+
+    For each bone with a matching joint:
+      1. Build a fourByFourMatrix from the 16 raw runtime float values.
+      2. Apply the MMD-to-Maya Z-flip via S * M * S where S = diag(1,1,-1,1)
+         using a shared Z-flip fourByFourMatrix and two multMatrix nodes.
+      3. Multiply by the DAG parent\'s worldInverseMatrix[0] to get the local matrix.
+      4. DecomposeMatrix with the joint\'s rotateOrder, then connect translate/rotate.
+
+    For morphs, when pmx_path resolves:
+      - Parse PMX vertex morph names, find matching blendShape aliases,
+        and connect morphWeights[pmx_idx] → blendShape.weight[bs_idx].
+
+    Args:
+        node: The mmdRuntimeInstance node name.
+        model_root: The root transform of the imported MMD model.
+        pmx_path: Path to the .pmx file (optional; needed for morph resolution).
+
+    Returns:
+        A dict with keys:
+          connected_bones: list of (joint_name, bone_index) connected.
+          connected_morphs: list of (morph_name, pmx_index, bs_node, weight_idx) connected.
+          skipped: list of strings describing why some bones/morphs were skipped.
+          warnings: list of strings describing non-blocking issues (jointOrient, rotateAxis).
+          utility_nodes: list of created DG node names (for cleanup).
+    """
+    import maya.cmds as cmds
+    from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
+
+    result: Dict[str, Any] = {
+        "connected_bones": [],
+        "connected_morphs": [],
+        "skipped": [],
+        "warnings": [],
+        "utility_nodes": [],
+    }
+
+    if not cmds.objExists(node):
+        result["skipped"].append(f"Runtime node {node!r} does not exist")
+        return result
+    if not cmds.objExists(model_root):
+        result["skipped"].append(f"Model root {model_root!r} does not exist")
+        return result
+
+    _ATTR_MAP = [
+        (0, "in00"), (1, "in01"), (2, "in02"), (3, "in03"),
+        (4, "in10"), (5, "in11"), (6, "in12"), (7, "in13"),
+        (8, "in20"), (9, "in21"), (10, "in22"), (11, "in23"),
+        (12, "in30"), (13, "in31"), (14, "in32"), (15, "in33"),
+    ]
+
+    def _make_zflip_node() -> str:
+        """Create a shared fourByFourMatrix representing S = diag(1,1,-1,1)."""
+        flip = cmds.createNode("fourByFourMatrix", name=f"{node}_zflip")
+        result["utility_nodes"].append(flip)
+        # S = diag(1,1,-1,1) in row-major for fourByFourMatrix
+        for row in range(4):
+            for col in range(4):
+                if row == col == 0:
+                    val = 1.0
+                elif row == col == 1:
+                    val = 1.0
+                elif row == col == 2:
+                    val = -1.0
+                elif row == col == 3:
+                    val = 1.0
+                else:
+                    val = 0.0
+                attr_name = f"in{row}{col}"
+                cmds.setAttr(f"{flip}.{attr_name}", val)
+        return flip
+
+    # Collect joints with mmd_bone_index
+    joints_by_index: Dict[int, str] = {}
+    for joint in cmds.listRelatives(model_root, allDescendents=True, type="joint") or []:
+        if not cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True):
+            continue
+        try:
+            bi = int(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}"))
+        except Exception:
+            continue
+        if bi in joints_by_index:
+            result["warnings"].append(
+                f"Duplicate mmd_bone_index={bi}: {joints_by_index[bi]} and {joint}"
+            )
+        joints_by_index[bi] = joint
+
+    if not joints_by_index:
+        result["skipped"].append("No joints with mmd_bone_index found")
+        return result
+
+    unsupported_orientation = []
+    for bone_idx in sorted(joints_by_index.keys()):
+        joint = joints_by_index[bone_idx]
+        try:
+            jo = cmds.getAttr(f"{joint}.jointOrient")[0]
+            if any(abs(v) > 1e-6 for v in jo):
+                unsupported_orientation.append(
+                    f"{joint} (bone_idx={bone_idx}) has non-zero jointOrient {jo}"
+                )
+        except Exception:
+            pass
+        try:
+            ra = cmds.getAttr(f"{joint}.rotateAxis")[0]
+            if any(abs(v) > 1e-6 for v in ra):
+                unsupported_orientation.append(
+                    f"{joint} (bone_idx={bone_idx}) has non-zero rotateAxis {ra}"
+                )
+        except Exception:
+            pass
+    if unsupported_orientation:
+        result["skipped"].append(
+            "Live DG connection skipped because jointOrient/rotateAxis is not yet supported: "
+            + "; ".join(unsupported_orientation)
+        )
+        return result
+
+    zflip = _make_zflip_node()
+
+    for bone_idx in sorted(joints_by_index.keys()):
+        joint = joints_by_index[bone_idx]
+
+        # --- Step 1: fourByFourMatrix from raw runtime floats ---
+        fbf = cmds.createNode("fourByFourMatrix", name=f"{joint}_fbf")
+        result["utility_nodes"].append(fbf)
+
+        base_idx = bone_idx * 16
+        for offset, attr_name in _ATTR_MAP:
+            src = f"{node}.worldMatrices[{base_idx + offset}]"
+            dst = f"{fbf}.{attr_name}"
+            try:
+                cmds.connectAttr(src, dst, force=True)
+            except Exception as e:
+                result["warnings"].append(
+                    f"Failed to connect {src} → {dst}: {e}"
+                )
+
+        # --- Step 2: S * M * S (Z-flip) via multMatrix ---
+        # multMatrix output = matrix0 * matrix1 * matrix2 * ...
+        # We want S * raw * S, so inputs: [zflip, fbf, zflip]
+        mm_world = cmds.createNode("multMatrix", name=f"{joint}_mm_world")
+        result["utility_nodes"].append(mm_world)
+        cmds.connectAttr(f"{zflip}.output", f"{mm_world}.matrixIn[0]", force=True)
+        cmds.connectAttr(f"{fbf}.output", f"{mm_world}.matrixIn[1]", force=True)
+        cmds.connectAttr(f"{zflip}.output", f"{mm_world}.matrixIn[2]", force=True)
+
+        # --- Step 3: parent-relative (local matrix) ---
+        parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
+        if parents:
+            parent_node = parents[0]
+            mm_local = cmds.createNode("multMatrix", name=f"{joint}_mm_local")
+            result["utility_nodes"].append(mm_local)
+            # local = world * parentWorldInverse
+            cmds.connectAttr(f"{mm_world}.matrixSum", f"{mm_local}.matrixIn[0]", force=True)
+            cmds.connectAttr(
+                f"{parent_node}.worldInverseMatrix[0]",
+                f"{mm_local}.matrixIn[1]",
+                force=True,
+            )
+            matrix_source = f"{mm_local}.matrixSum"
+        else:
+            # Root joint: world = local
+            matrix_source = f"{mm_world}.matrixSum"
+
+        # --- Step 4: decomposeMatrix with correct rotateOrder ---
+        dm = cmds.createNode("decomposeMatrix", name=f"{joint}_dm")
+        result["utility_nodes"].append(dm)
+        cmds.connectAttr(matrix_source, f"{dm}.inputMatrix", force=True)
+
+        # RotateOrder: Maya uses 0=xyz, 1=yzx, 2=zxy, 3=xzy, 4=yxz, 5=zyx
+        # MMD bone rotation order is typically ZXY (Maya index 2) matching
+        # VMD channel order. Query the joint\'s actual rotateOrder.
+        try:
+            ro = int(cmds.getAttr(f"{joint}.rotateOrder"))
+            cmds.setAttr(f"{dm}.inputRotateOrder", ro)
+        except Exception:
+            pass
+
+        # --- Step 5: Connect to joint ---
+        try:
+            cmds.connectAttr(f"{dm}.outputTranslate", f"{joint}.translate", force=True)
+            cmds.connectAttr(f"{dm}.outputRotate", f"{joint}.rotate", force=True)
+        except Exception as e:
+            result["warnings"].append(
+                f"Failed to connect {dm} outputs to {joint}: {e}"
+            )
+            continue
+
+        result["connected_bones"].append((joint, bone_idx))
+
+    # --- Morph connections (only if pmx_path resolves) ---
+    if pmx_path:
+        try:
+            from mmd_tools.core.maya_utils import sanitize_text
+
+            pmx_bytes = Path(pmx_path).read_bytes()
+            parsed = MmdParsedModel.from_pmx_bytes(pmx_bytes)
+            if parsed is not None and parsed.vertex_morph_count > 0:
+                pmx_morph_names = parsed.vertex_morph_names or []
+                # Get vertex_morph_spans to map vertex-morph-index to global PMX morph index
+                pmx_morph_spans = parsed.vertex_morph_spans or []
+                parsed.free()
+
+                # Build a mapping: vertex_morph_index to global_pmx_morph_index
+                # Each span entry is (start, count, pmx_morph_index)
+                vtx_idx_to_global = {}
+                for vmi, span in enumerate(pmx_morph_spans):
+                    if len(span) >= 3:
+                        vtx_idx_to_global[vmi] = int(span[2])
+                    else:
+                        vtx_idx_to_global[vmi] = vmi  # fallback
+
+                # Find blendShape nodes affecting mesh shapes under model_root.  A
+                # blendShape is a DG node, not a DAG child, so listRelatives() on
+                # the blendShape itself does not identify model ownership.
+                mesh_shapes = cmds.listRelatives(
+                    model_root,
+                    allDescendents=True,
+                    type="mesh",
+                    fullPath=True,
+                ) or []
+                model_blend_shapes = []
+                for shape in mesh_shapes:
+                    for history_node in cmds.listHistory(shape, pruneDagObjects=True) or []:
+                        if cmds.nodeType(history_node) != "blendShape":
+                            continue
+                        if history_node not in model_blend_shapes:
+                            model_blend_shapes.append(history_node)
+
+                for bs_node in model_blend_shapes:
+
+                    weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
+                    for vmi, pmx_name in enumerate(pmx_morph_names):
+                        if not pmx_name:
+                            continue
+                        # Resolve global PMX morph index for correct morphWeights indexing
+                        global_idx = vtx_idx_to_global.get(vmi, vmi)
+
+                        # Compute sanitized alias using the same logic as MorphConverter
+                        sanitized_alias = sanitize_text(pmx_name)
+
+                        # Find the alias that matches this PMX morph name
+                        found_bs_weight = False
+                        for wi in range(weight_count):
+                            alias = cmds.aliasAttr(f"{bs_node}.weight[{wi}]", query=True)
+                            if not alias:
+                                continue
+                            # Try: sanitized alias match first, then exact (raw) match
+                            if alias == sanitized_alias or alias == pmx_name:
+                                # Direct connection from morphWeights[global_idx] to weight[wi]
+                                try:
+                                    src = f"{node}.morphWeights[{global_idx}]"
+                                    dst = f"{bs_node}.weight[{wi}]"
+                                    existing_sources = (
+                                        cmds.listConnections(
+                                            dst,
+                                            source=True,
+                                            destination=False,
+                                            plugs=True,
+                                        )
+                                        or []
+                                    )
+                                    if src not in existing_sources:
+                                        cmds.connectAttr(src, dst, force=True)
+                                    result["connected_morphs"].append(
+                                        (pmx_name, global_idx, bs_node, wi)
+                                    )
+                                except Exception as e:
+                                    result["warnings"].append(
+                                        f"Failed to connect morphWeights[{global_idx}] → "
+                                        f"{bs_node}.weight[{wi}]: {e}"
+                                    )
+                                found_bs_weight = True
+                                break
+        except Exception as e:
+            result["warnings"].append(
+                f"Morph resolution skipped (could not read PMX morph names): {e}"
+            )
+    else:
+        result["warnings"].append(
+            "pmx_path not provided; morphWeights → blendShape connection skipped. "
+            "Pass pmx_path to enable morph resolution."
+        )
+
+    return result

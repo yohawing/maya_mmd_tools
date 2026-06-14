@@ -113,7 +113,9 @@ MStatus MmdRuntimeNode::compute(const MPlug& plug, MDataBlock& data) {
     if (plug == aWorldMatrices || plug == aMorphWeights || plug == aIkEnabled) {
         // 時間取得
         MTime timeVal = data.inputValue(aTime, &status).asTime();
-        float frame = static_cast<float>(timeVal.as(MTime::kFilm));  // 例: film (24fps) 単位。必要に応じて調整
+        // Match VMD/runtime bake semantics: scene frame numbers are passed to
+        // mmd-anim unchanged after the importer sets the desired UI time unit.
+        float frame = static_cast<float>(timeVal.as(MTime::uiUnit()));
 
         // データロード (簡易版: string をパスとして扱う)
         MString pmxStr = data.inputValue(aPmxData, &status).asString();
@@ -138,8 +140,15 @@ MStatus MmdRuntimeNode::compute(const MPlug& plug, MDataBlock& data) {
         }
 
         if (modelLoaded_ && clipLoaded_) {
+            if (!bridge_.isInstanceValid()) {
+                bool instanceOk = bridge_.createInstance();
+                if (!instanceOk) {
+                    MGlobal::displayError("[mmdRuntimeNode] Failed to create runtime instance.");
+                }
+            }
+
             // 評価
-            bool evalOk = bridge_.evaluateFrame(frame);
+            bool evalOk = bridge_.isInstanceValid() && bridge_.evaluateFrame(frame);
             if (!evalOk) {
                 MGlobal::displayWarning("[mmdRuntimeNode] Evaluate failed (check model/clip).");
             }

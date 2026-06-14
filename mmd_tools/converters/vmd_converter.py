@@ -11,9 +11,10 @@ Phase 1 以降:
 from __future__ import annotations
 
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import os
+from pathlib import Path
 
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
@@ -60,7 +61,9 @@ class VmdConverter:
         """VmdConverterの初期化"""
         self.logger = get_logger(__name__)
         self.bone_name_mapping: Dict[str, str] = {}  # VMDボーン名 -> Mayaジョイント名
-        self.morph_name_mapping: Dict[str, str] = {}  # VMDモーフ名 -> Mayaブレンドシェイプターゲット名
+        self.morph_name_mapping: Dict[str, Union[Tuple[str, str, str], List[Tuple[str, str, str]]]] = {}
+        # VMDモーフ名 -> [(node, attr, 元名), ...]
+        # 単一 mapping の既存コード互換を保つため、値は list / tuple のいずれも許容。
         self.fps = 30.0  # デフォルトのFPS (VMD import setting)
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
         self._bone_bind_poses: Dict[str, Tuple[float, float, float]] = {}  # ボーンの初期位置
@@ -102,6 +105,7 @@ class VmdConverter:
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
+            self.logger.info(f"VMD種別判定: {self._detect_vmd_motion_kind(vmd_data)}")
 
             # タイムライン設定
             self._setup_timeline(vmd_data)
@@ -137,6 +141,16 @@ class VmdConverter:
                 self.logger.info("モーフアニメーションを変換します（レガシー）")
                 self._convert_morph_animation(vmd_data.morph_frames)
 
+            # カメラアニメーション（レガシー）
+            if hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
+                self.logger.info(f"カメラアニメーションを変換します: {len(vmd_data.camera_frames)}フレーム")
+                self._convert_camera_animation(vmd_data.camera_frames)
+
+            # ライトアニメーション（レガシー）
+            if hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
+                self.logger.info(f"ライトアニメーションを変換します: {len(vmd_data.light_frames)}フレーム")
+                self._convert_light_animation(vmd_data.light_frames)
+
             self.logger.info("VMDアニメーション変換が完了しました")
             return True
 
@@ -147,13 +161,16 @@ class VmdConverter:
     def _should_use_mmd_runtime_bake(
         self, vmd_bytes: bytes, pmx_bytes: bytes, pmx_path: str
     ) -> bool:
-        """mmd-anim runtime を使った高精度ベイクを使用すべきかを判定"""
+        """PMX 専用の runtime ベイクを使うか判定（pmx_bytes or .pmx path）。"""
         if not (HAS_MMD_RUNTIME and is_mmd_runtime_available()):
             return False
 
         # 少なくとも vmd_bytes と (pmx_bytes または pmx_path) が必要
         has_vmd = bool(vmd_bytes)
-        has_pmx = bool(pmx_bytes) or (pmx_path and os.path.exists(pmx_path))
+        if bool(pmx_bytes):
+            has_pmx = True
+        else:
+            has_pmx = bool(pmx_path) and Path(pmx_path).suffix.lower() == ".pmx" and os.path.exists(pmx_path)
         return has_vmd and has_pmx
 
     def _convert_using_mmd_runtime(
@@ -309,6 +326,8 @@ class VmdConverter:
         for frame_list in [
             getattr(vmd_data, "bone_frames", []),
             getattr(vmd_data, "morph_frames", []),
+            getattr(vmd_data, "camera_frames", []),
+            getattr(vmd_data, "light_frames", []),
         ]:
             for f in frame_list:
                 if hasattr(f, "frame_number"):
@@ -884,21 +903,22 @@ class VmdConverter:
             if index >= len(pmx_morph_names):
                 continue
             morph_name = pmx_morph_names[index]
-            if morph_name not in self.morph_name_mapping:
+            mappings = self._iter_morph_mappings(self.morph_name_mapping.get(morph_name))
+            if not mappings:
                 continue
 
-            bs_node, weight_index, _ = self.morph_name_mapping[morph_name]
-            try:
-                cmds.setKeyframe(
-                    bs_node,
-                    attribute=f"weight[{weight_index}]",
-                    time=frame,
-                    value=float(weight),
-                )
-            except Exception as e:
-                self.logger.debug(
-                    f"runtime morph bake error for {morph_name} at frame {frame}: {e}"
-                )
+            for morph_node, weight_attr, _ in mappings:
+                try:
+                    cmds.setKeyframe(
+                        morph_node,
+                        attribute=weight_attr,
+                        time=frame,
+                        value=float(weight),
+                    )
+                except Exception as e:
+                    self.logger.debug(
+                        f"runtime morph bake error for {morph_name} at frame {frame}: {e}"
+                    )
 
     def _disable_mmd_rig_constraints_for_runtime_bake(self):
         """runtime bake と二重評価になる PMX 付与constraintを無効化する。"""
@@ -1256,20 +1276,84 @@ class VmdConverter:
         if not camera_frames:
             return False
 
+        import math
+
         camera_transform = self._get_or_create_camera()
+        camera_shapes = cmds.listRelatives(camera_transform, shapes=True, type="camera") or []
+        camera_shape = camera_shapes[0] if camera_shapes else None
+
+        for attr_name, attr_type, default_value in (
+            ("mmd_camera_distance", "double", 0.0),
+            ("mmd_camera_viewing_angle", "double", 45.0),
+            ("mmd_camera_perspective", "long", 0),
+        ):
+            if not cmds.attributeQuery(attr_name, node=camera_transform, exists=True):
+                cmds.addAttr(camera_transform, longName=attr_name, attributeType=attr_type, keyable=True)
+                cmds.setAttr(f"{camera_transform}.{attr_name}", default_value)
 
         for frame in camera_frames:
             frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
             position = frame.position if hasattr(frame, "position") else frame.get("position", (0, 0, 0))
+            rotation = frame.rotation if hasattr(frame, "rotation") else frame.get("rotation", (0, 0, 0))
+            distance = frame.distance if hasattr(frame, "distance") else frame.get("distance", 0.0)
+            viewing_angle = frame.viewing_angle if hasattr(frame, "viewing_angle") else frame.get("viewing_angle", 45)
+            perspective = frame.perspective if hasattr(frame, "perspective") else frame.get("perspective", 0)
 
             cmds.setKeyframe(camera_transform, attribute="translateX", time=frame_number, value=position[0])
             cmds.setKeyframe(camera_transform, attribute="translateY", time=frame_number, value=position[1])
             cmds.setKeyframe(camera_transform, attribute="translateZ", time=frame_number, value=-position[2])
+            cmds.setKeyframe(camera_transform, attribute="rotateX", time=frame_number, value=math.degrees(rotation[0]))
+            cmds.setKeyframe(camera_transform, attribute="rotateY", time=frame_number, value=math.degrees(rotation[1]))
+            cmds.setKeyframe(camera_transform, attribute="rotateZ", time=frame_number, value=-math.degrees(rotation[2]))
+            cmds.setKeyframe(camera_transform, attribute="mmd_camera_distance", time=frame_number, value=distance)
+            cmds.setKeyframe(
+                camera_transform,
+                attribute="mmd_camera_viewing_angle",
+                time=frame_number,
+                value=float(viewing_angle),
+            )
+            cmds.setKeyframe(camera_transform, attribute="mmd_camera_perspective", time=frame_number, value=int(perspective))
+
+            if camera_shape:
+                focal_length = self._viewing_angle_to_focal_length(camera_shape, float(viewing_angle))
+                cmds.setKeyframe(camera_shape, attribute="focalLength", time=frame_number, value=focal_length)
+                if cmds.attributeQuery("orthographic", node=camera_shape, exists=True):
+                    cmds.setKeyframe(camera_shape, attribute="orthographic", time=frame_number, value=bool(perspective))
 
         return True
 
+    def _detect_vmd_motion_kind(self, vmd_data: VmdData) -> str:
+        """VMD内容から大まかなモーション種別を判定する。"""
+        has_model = bool(getattr(vmd_data, "bone_frames", [])) or bool(getattr(vmd_data, "morph_frames", []))
+        has_camera = bool(getattr(vmd_data, "camera_frames", []))
+        has_light = bool(getattr(vmd_data, "light_frames", []))
+
+        if has_model and (has_camera or has_light):
+            return "mixed"
+        if has_camera:
+            return "camera"
+        if has_light:
+            return "light"
+        if has_model:
+            return "model"
+        return "empty"
+
+    def _viewing_angle_to_focal_length(self, camera_shape: str, viewing_angle: float) -> float:
+        """VMD viewing_angle(deg) を Maya camera focalLength(mm) に変換する。"""
+        import math
+
+        clamped_angle = max(1.0, min(179.0, float(viewing_angle)))
+        aperture_inch = cmds.getAttr(f"{camera_shape}.horizontalFilmAperture")
+        aperture_mm = float(aperture_inch) * 25.4
+        return aperture_mm / (2.0 * math.tan(math.radians(clamped_angle) / 2.0))
+
     def _convert_light_animation(self, light_frames: List) -> bool:
         """照明アニメーションを変換
+
+        VMD light_frames の position を方向ベクトルとして扱い、Maya directionalLight の
+        rotateX/Y/Z キーフレームも設定する。位置 (x, y, z) は Maya 方向 (x, y, -z) に変換。
+        Maya の directionalLight はローカル -Z 方向に照射するため、指定方向へ -Z を
+        向ける Euler 角 (rx, ry) を算出する（rz は常に 0）。
 
         Args:
             light_frames: 照明フレームデータのリスト
@@ -1277,6 +1361,8 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
+        import math
+
         if not light_frames:
             return False
 
@@ -1289,10 +1375,41 @@ class VmdConverter:
         for frame in light_frames:
             frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
             color = frame.color if hasattr(frame, "color") else frame.get("color", (1, 1, 1))
+            position = frame.position if hasattr(frame, "position") else frame.get("position", (0.0, -1.0, 0.0))
 
+            # color keyframe（常に設定）
             cmds.setKeyframe(light_shape, attribute="colorR", time=frame_number, value=color[0])
             cmds.setKeyframe(light_shape, attribute="colorG", time=frame_number, value=color[1])
             cmds.setKeyframe(light_shape, attribute="colorB", time=frame_number, value=color[2])
+
+            # 方向ベクトル: VMD (x, y, z) → Maya (x, y, -z)
+            dx, dy, dz = float(position[0]), float(position[1]), -float(position[2])
+            length = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+            if length < 1e-10:
+                self.logger.warning(
+                    f"frame {frame_number}: position がゼロベクトルのため rotation key をスキップします"
+                )
+                continue
+
+            # 正規化
+            dx /= length
+            dy /= length
+            dz /= length
+
+            # Euler 角を算出: Ry * Rx * (0, 0, -1) = (dx, dy, dz)
+            # dx = -sin(ry)*cos(rx), dy = sin(rx), dz = -cos(ry)*cos(rx)
+            rx = math.asin(dy)  # -pi/2 .. pi/2
+            cos_rx = math.cos(rx)
+            if abs(cos_rx) > 1e-10:
+                ry = math.atan2(-dx / cos_rx, -dz / cos_rx)
+            else:
+                # cos(rx) ≈ 0 → 真上/真下向き, 任意の ry で可
+                ry = 0.0
+
+            cmds.setKeyframe(light_transform, attribute="rotateX", time=frame_number, value=math.degrees(rx))
+            cmds.setKeyframe(light_transform, attribute="rotateY", time=frame_number, value=math.degrees(ry))
+            cmds.setKeyframe(light_transform, attribute="rotateZ", time=frame_number, value=0.0)
 
         return True
 
@@ -1318,22 +1435,60 @@ class VmdConverter:
             morph_frame_map[morph_name].append(frame)
 
         for morph_name, frames in morph_frame_map.items():
-            if morph_name not in self.morph_name_mapping:
+            mappings = self._iter_morph_mappings(self.morph_name_mapping.get(morph_name))
+            if not mappings:
                 continue
 
-            bs_node, weight_index, _ = self.morph_name_mapping[morph_name]
-
-            for frame in frames:
-                frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
-                value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
-                cmds.setKeyframe(bs_node, attribute=f"weight[{weight_index}]", time=frame_number, value=value)
+            for morph_node, weight_attr, _ in mappings:
+                for frame in frames:
+                    frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+                    value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
+                    cmds.setKeyframe(morph_node, attribute=weight_attr, time=frame_number, value=value)
 
             success_count += 1
 
         return success_count > 0
 
+    @staticmethod
+    def _iter_morph_mappings(mapping_entry):
+        if isinstance(mapping_entry, list):
+            mappings = mapping_entry
+        elif mapping_entry:
+            mappings = [mapping_entry]
+        else:
+            return []
+
+        normalized_mappings = []
+        for entry in mappings:
+            if not isinstance(entry, tuple) or len(entry) != 3:
+                continue
+
+            morph_node, weight_ref, morph_name = entry
+            if isinstance(weight_ref, int):
+                weight_ref = f"weight[{weight_ref}]"
+            normalized_mappings.append((morph_node, weight_ref, morph_name))
+
+        return normalized_mappings
+
+    def _register_morph_mapping(self, morph_name: str, mapping: Tuple[str, str, str]) -> None:
+        existing = self.morph_name_mapping.get(morph_name)
+        if existing is None:
+            self.morph_name_mapping[morph_name] = [mapping]
+            return
+
+        if isinstance(existing, tuple):
+            if existing == mapping:
+                return
+            self.morph_name_mapping[morph_name] = [existing, mapping]
+            return
+
+        for existing_mapping in existing:
+            if existing_mapping == mapping:
+                return
+        existing.append(mapping)
+
     def _build_morph_mappings(self):
-        """シーン内のブレンドシェイプからモーフ名マッピングを構築"""
+        """シーン内のblendShapeとbone morph networkからモーフ名マッピングを構築"""
         self.morph_name_mapping = {}
 
         blend_shapes = cmds.ls(type="blendShape") or []
@@ -1342,10 +1497,38 @@ class VmdConverter:
             for i in range(weight_count):
                 alias = cmds.aliasAttr(f"{bs_node}.weight[{i}]", query=True)
                 if alias:
-                    mapping = (bs_node, i, alias)
-                    self.morph_name_mapping[alias] = mapping
+                    mapping = (bs_node, f"weight[{i}]", alias)
+                    self._register_morph_mapping(alias, mapping)
                     for original_name in self._get_original_morph_name_candidates(alias):
-                        self.morph_name_mapping.setdefault(original_name, mapping)
+                        self._register_morph_mapping(original_name, mapping)
+
+        for morph_node in cmds.ls(type="network") or []:
+            if not cmds.attributeQuery("mmd_morph_type", node=morph_node, exists=True):
+                continue
+            morph_type = cmds.getAttr(f"{morph_node}.mmd_morph_type")
+            if morph_type not in {"bone", "material"}:
+                continue
+            if not cmds.attributeQuery("weight", node=morph_node, exists=True):
+                continue
+
+            original_name = ""
+            if cmds.attributeQuery("mmd_morph_name", node=morph_node, exists=True):
+                original_name = cmds.getAttr(f"{morph_node}.mmd_morph_name") or ""
+            if not original_name:
+                continue
+
+            mapping = (morph_node, "weight", original_name)
+            self._register_morph_mapping(original_name, mapping)
+            safe_name = morph_node
+            for suffix in ("_boneMorph", "_materialMorph"):
+                if safe_name.endswith(suffix):
+                    safe_name = safe_name[: -len(suffix)]
+                    break
+            self._register_morph_mapping(safe_name, mapping)
+            if cmds.attributeQuery("mmd_morph_name_en", node=morph_node, exists=True):
+                english_name = cmds.getAttr(f"{morph_node}.mmd_morph_name_en") or ""
+                if english_name:
+                    self._register_morph_mapping(english_name, mapping)
 
     def _get_original_morph_name_candidates(self, alias: str) -> List[str]:
         """Maya aliasからVMD/PMX側の元モーフ名候補を取得する。

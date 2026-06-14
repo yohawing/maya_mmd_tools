@@ -1,5 +1,5 @@
 import math
-from typing import List, Tuple
+from typing import List, Tuple, Union
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
@@ -63,7 +63,7 @@ class BoneConverter:
     def convert_pmx_bones(
         self,
         pmx_data: PmxData,
-        mesh_node,
+        mesh_node: Union[str, List[str]],
         root_group,
         setup_rig=True,
         setup_bone_orientation=True,
@@ -73,14 +73,14 @@ class BoneConverter:
 
         Args:
             pmx_data (PmxParser): 解析されたPMXデータオブジェクト。
-            mesh_node (str): スキニングを適用するMayaのメッシュノードの名前。
+            mesh_node (str or list): スキニングを適用するMayaのメッシュノード名、またはそのリスト。
             root_group (str): ルートグループの名前。
             setup_rig (bool): Trueの場合、PMXの付与/IKなどのMayaリグを構築する。
             setup_bone_orientation (bool): Trueの場合、PMXローカル軸/軸固定をjointOrient等へ反映する。
 
         Returns:
             tuple: (作成されたMayaジョイントノードの名前のリスト,
-                   スキンクラスターの名前)
+                   スキンクラスターの名前、またはスキンクラスター名のリスト)
         """
         # PMXのボーン階層をMayaのjointノードに変換する
         maya_utils.select_objects(clear=True)
@@ -91,7 +91,7 @@ class BoneConverter:
         # ボーン名とインデックスのマッピングを作成
         bone_map = self._create_bone_mapping(pmx_data.bones)
 
-        # Mayaジョイントを作成
+        # Mayaジョイントを作成 (1回だけ)
         maya_joints = self._create_maya_joints(
             pmx_data.bones,
             bone_map,
@@ -105,29 +105,34 @@ class BoneConverter:
         if setup_rig:
             self.rig_converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
 
-        # スキンクラスターを作成
-        skin_cluster = self._create_skin_cluster(maya_joints, mesh_node, max_influence=4)
+        # 複数メッシュ対応: mesh_node がリストの場合、各メッシュに同一 skeleton で skinCluster を適用
+        mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
+        skin_clusters = []
 
-        # 頂点ウェイトを設定
-        if mesh_node and skin_cluster:
-            self._apply_pmx_vertex_weights(pmx_data, maya_joints, skin_cluster, mesh_node)
+        for mn in mesh_nodes:
+            if not mn or not cmds.objExists(mn):
+                continue
+            sc = self._create_skin_cluster(maya_joints, mn, max_influence=4)
+            if sc:
+                self._apply_pmx_vertex_weights(pmx_data, maya_joints, sc, mn)
+                skin_clusters.append(sc)
 
-        # TODO: 変形階層、表示操作などを正確に再現する。
+        result_cluster = skin_clusters[0] if len(skin_clusters) == 1 else skin_clusters
 
-        return maya_joints, skin_cluster
+        return maya_joints, result_cluster
 
-    def convert_pmd_bones(self, pmd_data: PmdData, mesh_node, root_group):
+    def convert_pmd_bones(self, pmd_data: PmdData, mesh_node: Union[str, List[str]], root_group):
         """
         PMDのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
 
         Args:
             pmd_data (PmdParser): 解析されたPMDデータオブジェクト。
-            mesh_node (str): スキニングを適用するMayaのメッシュノードの名前。
+            mesh_node (str or list): スキニングを適用するMayaのメッシュノード名、またはそのリスト。
             root_group (str): ルートグループの名前。
 
         Returns:
             tuple: (作成されたMayaジョイントノードの名前のリスト,
-                   スキンクラスターの名前)
+                   スキンクラスターの名前、またはスキンクラスター名のリスト)
         """
         # PMDのボーン階層をMayaのjointノードに変換する
         maya_utils.select_objects(clear=True)
@@ -138,22 +143,29 @@ class BoneConverter:
         # ボーン名とインデックスのマッピングを作成
         bone_map = self._create_bone_mapping(pmd_data.bones)
 
-        # Mayaジョイントを作成
+        # Mayaジョイントを作成 (1回だけ)
         maya_joints = self._create_maya_joints(pmd_data.bones, bone_map, "pmd", skeleton_group)
 
-        # スキンクラスターを作成
-        skin_cluster = self._create_skin_cluster(maya_joints, mesh_node, max_influence=2)
+        # 複数メッシュ対応: mesh_node がリストの場合、各メッシュに同一 skeleton で skinCluster を適用
+        mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
+        skin_clusters = []
 
-        # 頂点ウェイトを設定
-        if mesh_node and skin_cluster:
-            self._apply_pmd_vertex_weights(pmd_data, maya_joints, skin_cluster, mesh_node)
+        for mn in mesh_nodes:
+            if not mn or not cmds.objExists(mn):
+                continue
+            sc = self._create_skin_cluster(maya_joints, mn, max_influence=2)
+            if sc:
+                self._apply_pmd_vertex_weights(pmd_data, maya_joints, sc, mn)
+                skin_clusters.append(sc)
+
+        result_cluster = skin_clusters[0] if len(skin_clusters) == 1 else skin_clusters
 
         # リグのセットアップはRigConverterに委譲
         self.rig_converter.setup_pmd_rig(pmd_data, maya_joints, bone_map, skeleton_group)
 
         # TODO: ボーンのローカル軸を正確に再現する。
 
-        return maya_joints, skin_cluster
+        return maya_joints, result_cluster
 
     def _create_bone_mapping(self, bones):
         """
@@ -521,6 +533,8 @@ class BoneConverter:
             mesh_node (str): メッシュノードの名前。
         """
 
+        max_joint_index = len(maya_joints) - 1
+        invalid_bone_indices = set()
         weights = []
         for vertex in pmd_data.vertices:
             # ボーンの数でリストを初期化
@@ -529,24 +543,31 @@ class BoneConverter:
             # PMD頂点の重み情報を取得
             bone1_index = vertex.bone_indices[0]
             bone2_index = vertex.bone_indices[1]
+            weight1 = vertex.bone_weight / 100.0
+            weight2 = 1.0 - weight1
 
-            # ボーンインデックスの境界チェック
-            if bone1_index >= len(maya_joints) or bone2_index >= len(maya_joints):
-                self.logger.warning(
-                    f"無効なボーンインデックス bone1={bone1_index}, bone2={bone2_index}, max={len(maya_joints) - 1}"
-                )
-                weights.append(vertex_weights)
-                continue
+            # PMDの未使用ボーンインデックス(例: 65535)を個別に扱う
+            bone1_valid = 0 <= bone1_index < len(maya_joints)
+            bone2_valid = 0 <= bone2_index < len(maya_joints)
 
-            if bone1_index == bone2_index:
+            if bone1_valid and bone2_valid and bone1_index == bone2_index:
                 # 同一ボーンの場合は100%の重み
                 vertex_weights[bone1_index] = 1.0
             else:
                 # 2つのボーンに分割
-                weight1 = vertex.bone_weight / 100.0
-                weight2 = 1.0 - weight1
-                vertex_weights[bone1_index] = weight1
-                vertex_weights[bone2_index] = weight2
+                if bone1_valid and weight1 > 0:
+                    vertex_weights[bone1_index] = weight1
+                if bone2_valid and weight2 > 0:
+                    vertex_weights[bone2_index] = weight2
+
+            if (not bone1_valid and weight1 > 0) or (not bone2_valid and weight2 > 0):
+                warning_key = (bone1_index, bone2_index, max_joint_index)
+                if warning_key not in invalid_bone_indices:
+                    self.logger.warning(
+                        "無効なボーンインデックス "
+                        f"bone1={bone1_index}, bone2={bone2_index}, max={max_joint_index}"
+                    )
+                    invalid_bone_indices.add(warning_key)
 
             weights.append(vertex_weights)
 

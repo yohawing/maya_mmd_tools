@@ -18,6 +18,8 @@
 
 #include "mmdRuntimeNode.h"
 #include "mmdFastLoad.h"
+#include "MmdAppendNode.h"
+#include "MmdCcdIkNode.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -44,7 +46,25 @@ MStatus initializePlugin(MObject obj)
                                     MmdFastLoad::newSyntax);
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
-    MGlobal::displayInfo("mmdFastLoad command registered.");
+    // mmdAppendNode 登録 (Track 4, Phase B)
+    status = plugin.registerNode(
+        "mmdAppendNode",
+        MmdAppendNode::id,
+        MmdAppendNode::creator,
+        MmdAppendNode::initialize);
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+
+    MGlobal::displayInfo("mmdAppendNode (Phase B) registered.");
+
+    // mmdCcdIkNode 登録 (Track 4, Phase A - CCDIK)
+    status = plugin.registerNode(
+        "mmdCcdIkNode",
+        MmdCcdIkNode::id,
+        MmdCcdIkNode::creator,
+        MmdCcdIkNode::initialize);
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+
+    MGlobal::displayInfo("mmdCcdIkNode (Phase A) registered.");
 
     return MS::kSuccess;
 }
@@ -59,6 +79,12 @@ MStatus uninitializePlugin(MObject obj)
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
     status = plugin.deregisterCommand("mmdFastLoad");
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+
+    status = plugin.deregisterNode(MmdAppendNode::id);
+    CHECK_MSTATUS_AND_RETURN_IT(status);
+
+    status = plugin.deregisterNode(MmdCcdIkNode::id);
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
     MGlobal::displayInfo("maya_mmd_tools_cpp plugin unloaded.");

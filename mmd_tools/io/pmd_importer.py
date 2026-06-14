@@ -78,6 +78,8 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
             logger.info("メッシュを変換中...")
             mesh_converter = MeshConverter(filepath)
             mesh_group, mesh_name = mesh_converter.convert_pmd_mesh(parser, root_group)
+
+            mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
             logger.debug("メッシュ変換完了: グループ=%s, 名前=%s", mesh_group, mesh_name)
 
             # モーフを変換
@@ -91,8 +93,9 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
             bone_converter = BoneConverter()
             maya_joints, skin_cluster = bone_converter.convert_pmd_bones(parser, mesh_name, root_group)
             logger.debug(
-                "ボーン変換完了: %d個のジョイント",
+                "ボーン変換完了: %d個のジョイント, %d個のメッシュ",
                 len(maya_joints) if maya_joints else 0,
+                len(mesh_names),
             )
 
             # 物理を変換（設定で有効な場合）

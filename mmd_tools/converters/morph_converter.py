@@ -5,7 +5,8 @@ MMDのモーフデータをMayaのblendShapeに変換するモジュール。
 Mayaのブレンドシェイプシステムに変換する機能を提供します。
 """
 
-from typing import Any, Dict
+import json
+from typing import Any, Dict, List, Union
 
 from maya import cmds
 from maya.api import OpenMaya as om
@@ -24,13 +25,13 @@ class MorphConverter:
         self.settings = settings.get("import.morph", {})
         self.logger = get_logger(__name__)
 
-    def convert_pmd_morphs(self, pmd_data, mesh_node: str) -> Dict[str, Any]:
+    def convert_pmd_morphs(self, pmd_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
         """
         PMDのモーフデータをMayaのブレンドシェイプに変換する。
 
         Args:
             pmd_data: 解析されたPMDデータオブジェクト
-            mesh_node (str): ブレンドシェイプを適用するMayaのメッシュノード
+            mesh_node (str or list): ブレンドシェイプを適用するMayaのメッシュノード名、またはそのリスト。
 
         Returns:
             Dict[str, Any]: 変換結果の辞書
@@ -38,27 +39,30 @@ class MorphConverter:
         if not self.settings.get("import_morphs", True):
             return {"success": True, "morphs_converted": 0}
 
+        mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
+
         results = []
         blend_shape_nodes = []
 
-        for morph in pmd_data.morphs:
-            # ベースモーフはスキップ
-            if morph.morph_type == 0:
-                self.logger.debug("Skipping base morph")
-                continue
+        for mn in mesh_nodes:
+            for morph in pmd_data.morphs:
+                # ベースモーフはスキップ
+                if morph.morph_type == 0:
+                    self.logger.debug("Skipping base morph")
+                    continue
 
-            try:
-                self.logger.debug(f"Converting morph: {morph.name}, type: {morph.morph_type}")
-                result = self._convert_vertex_morph_pmd(morph, mesh_node)
-                if result["success"]:
-                    results.append(result)
-                    if result["blend_shape_node"] not in blend_shape_nodes:
-                        blend_shape_nodes.append(result["blend_shape_node"])
-                    self.logger.info(f"Successfully converted morph: {morph.name}")
-            except Exception as e:
-                # エラーをログに記録して次のモーフへ
-                self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
-                pass
+                try:
+                    self.logger.debug(f"Converting morph: {morph.name}, type: {morph.morph_type}")
+                    result = self._convert_vertex_morph_pmd(morph, mn)
+                    if result["success"]:
+                        results.append(result)
+                        if result["blend_shape_node"] not in blend_shape_nodes:
+                            blend_shape_nodes.append(result["blend_shape_node"])
+                        self.logger.info(f"Successfully converted morph: {morph.name}")
+                except Exception as e:
+                    # エラーをログに記録して次のモーフへ
+                    self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
+                    pass
 
         return {
             "success": True,
@@ -68,13 +72,13 @@ class MorphConverter:
             "results": results,
         }
 
-    def convert_pmx_morphs(self, pmx_data, mesh_node: str) -> Dict[str, Any]:
+    def convert_pmx_morphs(self, pmx_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
         """
         PMXのモーフデータをMayaのブレンドシェイプに変換する。
 
         Args:
             pmx_data: 解析されたPMXデータオブジェクト
-            mesh_node (str): ブレンドシェイプを適用するMayaのメッシュノード
+            mesh_node (str or list): ブレンドシェイプを適用するMayaのメッシュノード名、またはそのリスト。
 
         Returns:
             Dict[str, Any]: 変換結果の辞書
@@ -82,32 +86,122 @@ class MorphConverter:
         if not self.settings.get("import_morphs", True):
             return {"success": True, "morphs_converted": 0}
 
+        mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
+
         results = []
         blend_shape_nodes = []
+        bone_morph_nodes = []
+        material_morph_nodes = []
+        converted_bone_morphs = set()
+        converted_material_morphs = set()
 
-        for morph in pmx_data.morphs:
-            try:
-                # 現在は頂点モーフのみ対応
-                if morph.morph_type == PmxMorphType.VertexMorph:
-                    self.logger.debug(f"Converting vertex morph: {morph.name}")
-                    result = self._convert_vertex_morph_pmx(morph, mesh_node)
-                    if result["success"]:
-                        results.append(result)
-                        if result["blend_shape_node"] not in blend_shape_nodes:
-                            blend_shape_nodes.append(result["blend_shape_node"])
-                        self.logger.info(f"Successfully converted morph: {morph.name}")
-            except Exception as e:
-                # エラーをログに記録して次のモーフへ
-                self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
-                pass
+        for mn in mesh_nodes:
+            for morph in pmx_data.morphs:
+                try:
+                    if morph.morph_type == PmxMorphType.VertexMorph:
+                        self.logger.debug(f"Converting vertex morph: {morph.name}")
+                        result = self._convert_vertex_morph_pmx(morph, mn)
+                        if result["success"]:
+                            results.append(result)
+                            if result["blend_shape_node"] not in blend_shape_nodes:
+                                blend_shape_nodes.append(result["blend_shape_node"])
+                            self.logger.info(f"Successfully converted morph: {morph.name}")
+                    elif morph.morph_type == PmxMorphType.BoneMorph and morph.name not in converted_bone_morphs:
+                        self.logger.debug(f"Converting bone morph metadata: {morph.name}")
+                        result = self._convert_bone_morph_pmx(morph)
+                        if result["success"]:
+                            converted_bone_morphs.add(morph.name)
+                            results.append(result)
+                            bone_morph_nodes.append(result["morph_node"])
+                            self.logger.info(f"Successfully imported bone morph metadata: {morph.name}")
+                    elif (
+                        morph.morph_type == PmxMorphType.MaterialMorph
+                        and morph.name not in converted_material_morphs
+                    ):
+                        self.logger.debug(f"Converting material morph metadata: {morph.name}")
+                        result = self._convert_material_morph_pmx(morph)
+                        if result["success"]:
+                            converted_material_morphs.add(morph.name)
+                            results.append(result)
+                            material_morph_nodes.append(result["morph_node"])
+                            self.logger.info(f"Successfully imported material morph metadata: {morph.name}")
+                except Exception as e:
+                    # エラーをログに記録して次のモーフへ
+                    self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
+                    pass
 
         return {
             "success": True,
             "morphs_converted": len(results),
             "total_morphs": len(pmx_data.morphs),
             "blend_shape_nodes": blend_shape_nodes,
+            "bone_morph_nodes": bone_morph_nodes,
+            "material_morph_nodes": material_morph_nodes,
             "results": results,
         }
+
+    def collect_morphs_from_scene_for_export(self) -> List[Dict[str, Any]]:
+        """シーン内の network モーフノードから exporter 用の morph dict を収集する。"""
+        morphs = []
+
+        for morph_node in cmds.ls(type="network") or []:
+            try:
+                if not cmds.attributeQuery("mmd_morph_type", node=morph_node, exists=True):
+                    continue
+
+                morph_type = cmds.getAttr(f"{morph_node}.mmd_morph_type")
+                if morph_type not in {"bone", "material"}:
+                    continue
+
+                offsets_attr = (
+                    "mmd_bone_morph_offsets_json"
+                    if morph_type == "bone"
+                    else "mmd_material_morph_offsets_json"
+                )
+                if not cmds.attributeQuery(offsets_attr, node=morph_node, exists=True):
+                    self.logger.warning(
+                        f"skip morph node {morph_node}: missing {offsets_attr} attribute"
+                    )
+                    continue
+
+                try:
+                    offsets_json = cmds.getAttr(f"{morph_node}.{offsets_attr}")
+                    offsets = json.loads(offsets_json) if offsets_json else []
+                except (TypeError, json.JSONDecodeError) as e:
+                    self.logger.warning(f"skip morph node {morph_node}: invalid JSON in {offsets_attr}: {e}")
+                    continue
+
+                if not isinstance(offsets, list):
+                    self.logger.warning(
+                        f"skip morph node {morph_node}: offsets data must be list, got {type(offsets).__name__}"
+                    )
+                    continue
+
+                morph_name = ""
+                if cmds.attributeQuery("mmd_morph_name", node=morph_node, exists=True):
+                    morph_name = cmds.getAttr(f"{morph_node}.mmd_morph_name") or ""
+
+                name_english = ""
+                if cmds.attributeQuery("mmd_morph_name_en", node=morph_node, exists=True):
+                    name_english = cmds.getAttr(f"{morph_node}.mmd_morph_name_en") or ""
+
+                panel = 0
+                if cmds.attributeQuery("mmd_morph_panel", node=morph_node, exists=True):
+                    panel = int(cmds.getAttr(f"{morph_node}.mmd_morph_panel"))
+
+                morphs.append(
+                    {
+                        "type": morph_type,
+                        "name": morph_name,
+                        "name_english": name_english,
+                        "panel": panel,
+                        "offsets": offsets,
+                    }
+                )
+            except Exception as e:
+                self.logger.warning(f"skip morph node {morph_node}: {e}")
+
+        return morphs
 
     def _convert_vertex_morph_pmd(self, morph, mesh_node: str) -> Dict[str, Any]:
         """PMD頂点モーフの変換"""
@@ -147,6 +241,139 @@ class MorphConverter:
             "blend_shape_node": blend_shape_node,
             "target_index": target_index,
         }
+
+    def _convert_bone_morph_pmx(self, morph) -> Dict[str, Any]:
+        """PMXボーンモーフをMayaのnetwork nodeとしてインポートする。
+
+        ここでは joint 変形へは接続せず、VMD morph frame がキー化できる
+        `weight` と、後段評価用の offset metadata だけを作る。
+        """
+        morph_name = morph.get_name()
+        safe_name = maya_utils.sanitize_text(morph_name)
+        node_name = f"{safe_name}_boneMorph"
+
+        if cmds.objExists(node_name):
+            morph_node = node_name
+        else:
+            morph_node = cmds.createNode("network", name=node_name)
+
+        if not cmds.attributeQuery("weight", node=morph_node, exists=True):
+            cmds.addAttr(
+                morph_node,
+                longName="weight",
+                attributeType="double",
+                minValue=0.0,
+                maxValue=1.0,
+                defaultValue=0.0,
+                keyable=True,
+            )
+
+        offsets = []
+        for offset in getattr(morph, "offsets", []):
+            if "bone_index" not in offset:
+                continue
+            offsets.append(
+                {
+                    "bone_index": int(offset["bone_index"]),
+                    "translation": [float(v) for v in offset.get("translation", (0.0, 0.0, 0.0))],
+                    "rotation": [float(v) for v in offset.get("rotation", (0.0, 0.0, 0.0, 1.0))],
+                }
+            )
+
+        maya_utils.set_custom_attributes(
+            morph_node,
+            {
+                "mmd_morph_name": str(morph_name),
+                "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                "mmd_morph_type": "bone",
+                "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                "mmd_bone_morph_offset_count": len(offsets),
+                "mmd_bone_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
+            },
+        )
+
+        return {
+            "success": True,
+            "morph_name": morph_name,
+            "morph_node": morph_node,
+            "morph_type": "bone",
+            "offset_count": len(offsets),
+        }
+
+    def _convert_material_morph_pmx(self, morph) -> Dict[str, Any]:
+        """PMXマテリアルモーフをMayaのnetwork nodeとしてインポートする。
+
+        shader parameter へは接続せず、VMD morph frame がキー化できる
+        `weight` と、後段評価用の offset metadata だけを作る。
+        """
+        morph_name = morph.get_name()
+        safe_name = maya_utils.sanitize_text(morph_name)
+        node_name = f"{safe_name}_materialMorph"
+
+        if cmds.objExists(node_name):
+            morph_node = node_name
+        else:
+            morph_node = cmds.createNode("network", name=node_name)
+
+        if not cmds.attributeQuery("weight", node=morph_node, exists=True):
+            cmds.addAttr(
+                morph_node,
+                longName="weight",
+                attributeType="double",
+                minValue=0.0,
+                maxValue=1.0,
+                defaultValue=0.0,
+                keyable=True,
+            )
+
+        offsets = []
+        for offset in getattr(morph, "offsets", []):
+            if "material_index" not in offset:
+                continue
+            offsets.append(
+                {
+                    "material_index": int(offset["material_index"]),
+                    "operation_type": int(offset.get("operation_type", 0)),
+                    "diffuse": self._json_float_list(offset.get("diffuse", (0.0, 0.0, 0.0, 0.0))),
+                    "specular": self._json_float_list(offset.get("specular", (0.0, 0.0, 0.0))),
+                    "specular_coefficient": float(offset.get("specular_coefficient", 0.0)),
+                    "ambient": self._json_float_list(offset.get("ambient", (0.0, 0.0, 0.0))),
+                    "edge_color": self._json_float_list(offset.get("edge_color", (0.0, 0.0, 0.0, 0.0))),
+                    "edge_size": float(offset.get("edge_size", 0.0)),
+                    "texture_factor": self._json_float_list(offset.get("texture_factor", (0.0, 0.0, 0.0, 0.0))),
+                    "sphere_texture_factor": self._json_float_list(
+                        offset.get("sphere_texture_factor", (0.0, 0.0, 0.0, 0.0))
+                    ),
+                    "toon_texture_factor": self._json_float_list(
+                        offset.get("toon_texture_factor", (0.0, 0.0, 0.0, 0.0))
+                    ),
+                }
+            )
+
+        maya_utils.set_custom_attributes(
+            morph_node,
+            {
+                "mmd_morph_name": str(morph_name),
+                "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                "mmd_morph_type": "material",
+                "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                "mmd_material_morph_offset_count": len(offsets),
+                "mmd_material_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
+            },
+        )
+
+        return {
+            "success": True,
+            "morph_name": morph_name,
+            "morph_node": morph_node,
+            "morph_type": "material",
+            "offset_count": len(offsets),
+        }
+
+    @staticmethod
+    def _json_float_list(values) -> List[float]:
+        """JSON metadata 用に数値列を float list へ正規化する。"""
+        return [float(v) for v in values]
 
     def _convert_vertex_morph_pmx(self, morph, mesh_node: str) -> Dict[str, Any]:
         """PMX頂点モーフの変換"""

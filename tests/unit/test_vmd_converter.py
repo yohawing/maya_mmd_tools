@@ -4,8 +4,13 @@ VmdConverterクラスの基本的な機能をテスト。
 Maya環境内で実行されるが、シーン操作を伴わないテストを行う。
 """
 
+import os
+import tempfile
+from unittest.mock import patch
+
 import maya.cmds as cmds
 
+import mmd_tools.converters.vmd_converter as vmd_converter_module
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
 from mmd_tools.converters.vmd_converter import VmdConverter
@@ -136,7 +141,7 @@ class TestVmdConverter(MayaTestBase):
             frame = VmdCameraFrame()
             frame.frame_number = i * 10
             frame.position = (i * 1.0, i * 2.0, i * 3.0)
-            frame.rotation = (0.0, 0.0, 0.0)
+            frame.rotation = (0.1 * i, 0.2 * i, 0.3 * i)
             frame.distance = 10.0 + i
             frame.viewing_angle = 30 + i * 5
             camera_frames.append(frame)
@@ -160,12 +165,70 @@ class TestVmdConverter(MayaTestBase):
                 keyframes = cmds.keyframe(f"{transform[0]}.translateX", query=True)
                 self.assertIsNotNone(keyframes)
                 self.assertEqual(len(keyframes), 3)
+                self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.rotateX", query=True))
+                self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.mmd_camera_distance", query=True))
+                self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.mmd_camera_viewing_angle", query=True))
+                focal_keys = cmds.keyframe(f"{cam}.focalLength", query=True)
+                self.assertIsNotNone(focal_keys)
+                self.assertEqual(len(focal_keys), 3)
                 break
 
         self.assertTrue(camera_found, "MMDカメラが作成されていません")
 
+    def test_convert_camera_animation_via_convert(self):
+        """convert() のレガシーパスが camera_frames を変換することを確認"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame = VmdCameraFrame()
+        frame.frame_number = 15
+        frame.position = (1.0, 2.0, 3.0)
+        frame.rotation = (0.1, 0.2, 0.3)
+        frame.distance = 12.0
+        frame.viewing_angle = 40
+
+        vmd_data = type(
+            "FakeVmdData",
+            (),
+            {
+                "bone_frames": [],
+                "morph_frames": [],
+                "camera_frames": [frame],
+                "light_frames": [],
+            },
+        )()
+
+        result = self.converter.convert(vmd_data)
+        self.assertTrue(result)
+
+        camera_name = self.converter._get_or_create_camera()
+        cmds.currentTime(15, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), -3.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 12.0, places=6)
+
+    def test_detect_vmd_motion_kind(self):
+        """VMD内容から model/camera/light/mixed/empty を判定できることを確認"""
+        def fake(**kwargs):
+            defaults = {
+                "bone_frames": [],
+                "morph_frames": [],
+                "camera_frames": [],
+                "light_frames": [],
+            }
+            defaults.update(kwargs)
+            return type("FakeVmdData", (), defaults)()
+
+        self.assertEqual(self.converter._detect_vmd_motion_kind(fake()), "empty")
+        self.assertEqual(self.converter._detect_vmd_motion_kind(fake(bone_frames=[object()])), "model")
+        self.assertEqual(self.converter._detect_vmd_motion_kind(fake(camera_frames=[object()])), "camera")
+        self.assertEqual(self.converter._detect_vmd_motion_kind(fake(light_frames=[object()])), "light")
+        self.assertEqual(
+            self.converter._detect_vmd_motion_kind(fake(bone_frames=[object()], camera_frames=[object()])),
+            "mixed",
+        )
+
     def test_convert_light_animation(self):
-        """照明アニメーション変換テスト"""
+        """照明アニメーション変換テスト — color に加えて rotateX/Y/Z の keyframe が作成される"""
         from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
 
         # テスト用照明フレームを作成
@@ -173,7 +236,7 @@ class TestVmdConverter(MayaTestBase):
         for i in range(3):
             frame = VmdLightFrame()
             frame.frame_number = i * 10
-            frame.position = (0.0, -1.0, 0.0)  # 方向ベクトル
+            frame.position = (0.5, -1.0, 1.0)  # 方向ベクトル (非ゼロ)
             frame.color = (1.0 - i * 0.1, 1.0 - i * 0.1, 1.0 - i * 0.1)
             light_frames.append(frame)
 
@@ -186,6 +249,85 @@ class TestVmdConverter(MayaTestBase):
         from mmd_tools.core.constants import DEFAULT_LIGHT_NAME
 
         self.assertTrue(cmds.objExists(DEFAULT_LIGHT_NAME))
+
+        # rotateX/Y/Z に keyframe が 3 個ずつ設定されている
+        for attr in ("rotateX", "rotateY", "rotateZ"):
+            keys = cmds.keyframe(f"{DEFAULT_LIGHT_NAME}.{attr}", query=True, timeChange=True)
+            self.assertIsNotNone(keys, f"{attr} に keyframe がありません")
+            self.assertEqual(len(keys), 3, f"{attr} の keyframe 数が期待と異なります")
+
+    def test_convert_light_animation_zero_vector_skips_rotation(self):
+        """ゼロベクトルのフレームでは rotation key がスキップされるが color key は維持される"""
+        from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+
+        light_frames = []
+        # フレーム 0: ゼロベクトル
+        frame0 = VmdLightFrame()
+        frame0.frame_number = 0
+        frame0.position = (0.0, 0.0, 0.0)
+        frame0.color = (1.0, 1.0, 1.0)
+        light_frames.append(frame0)
+        # フレーム 10: 通常方向
+        frame1 = VmdLightFrame()
+        frame1.frame_number = 10
+        frame1.position = (0.5, -0.5, 1.0)
+        frame1.color = (0.5, 0.5, 0.5)
+        light_frames.append(frame1)
+
+        result = self.converter._convert_light_animation(light_frames)
+        self.assertTrue(result)
+
+        import maya.cmds as cmds
+        from mmd_tools.core.constants import DEFAULT_LIGHT_NAME
+
+        self.assertTrue(cmds.objExists(DEFAULT_LIGHT_NAME))
+
+        # colorR は両フレームに key がある (zero vector でも color は維持)
+        color_keys = cmds.keyframe(f"{DEFAULT_LIGHT_NAME}.colorR", query=True, timeChange=True)
+        self.assertEqual(len(color_keys), 2)
+        self.assertIn(0.0, color_keys)
+        self.assertIn(10.0, color_keys)
+
+        # rotateX はゼロベクトルフレーム 0 がスキップされ、フレーム 10 のみ key がある
+        rot_keys = cmds.keyframe(f"{DEFAULT_LIGHT_NAME}.rotateX", query=True, timeChange=True)
+        self.assertEqual(len(rot_keys), 1)
+        self.assertIn(10.0, rot_keys)
+        self.assertNotIn(0.0, rot_keys)
+
+    def test_convert_light_animation_via_convert(self):
+        """convert() が light_frames を持つ VMD で _convert_light_animation を呼ぶことを確認"""
+        from mmd_tools.core.vmd_data import VmdData
+        from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+
+        vmd_data = VmdData()
+        vmd_data.bone_frames = []
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = []
+        vmd_data.light_frames = []
+        vmd_data.shadow_frames = []
+        vmd_data.ik_show_hide_frames = []
+        vmd_data.header.model_name = "TestLight"
+
+        frame = VmdLightFrame()
+        frame.frame_number = 0
+        frame.position = (0.5, -1.0, 0.5)
+        frame.color = (0.8, 0.8, 0.8)
+        vmd_data.light_frames.append(frame)
+
+        result = self.converter.convert(vmd_data)
+        self.assertTrue(result)
+
+        import maya.cmds as cmds
+        from mmd_tools.core.constants import DEFAULT_LIGHT_NAME
+
+        self.assertTrue(cmds.objExists(DEFAULT_LIGHT_NAME))
+        # color と rotate の key が作成されている
+        color_keys = cmds.keyframe(f"{DEFAULT_LIGHT_NAME}.colorR", query=True, timeChange=True)
+        self.assertIsNotNone(color_keys)
+        self.assertGreater(len(color_keys), 0)
+        rot_keys = cmds.keyframe(f"{DEFAULT_LIGHT_NAME}.rotateX", query=True, timeChange=True)
+        self.assertIsNotNone(rot_keys)
+        self.assertGreater(len(rot_keys), 0)
 
     def test_runtime_bake_infrastructure(self):
         """Phase 1 runtime bake のインフラテスト (native なし環境でも安全)"""
@@ -204,6 +346,29 @@ class TestVmdConverter(MayaTestBase):
         # runtime bake インフラの確認のみ (キーフレーム検証は別テストに依存しないよう削除)
         # ここでは convert が例外なく完了し、should_use が正しく動くことを確認
         pass  # 追加の検証は test_convert_light_animation 等で行う
+
+    def test_should_use_mmd_runtime_bake_requires_pmx_source(self):
+        """runtime ベイクは pmx bytes または .pmx path の場合のみ有効"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            pmx_path = os.path.join(temp_dir, "model.pmx")
+            pmd_path = os.path.join(temp_dir, "model.pmd")
+            open(pmx_path, "wb").close()
+            open(pmd_path, "wb").close()
+
+            with patch.object(vmd_converter_module, "HAS_MMD_RUNTIME", True), patch.object(
+                vmd_converter_module,
+                "is_mmd_runtime_available",
+                return_value=True,
+            ):
+                self.assertTrue(
+                    self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=None, pmx_path=pmx_path)
+                )
+                self.assertFalse(
+                    self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=None, pmx_path=pmd_path)
+                )
+                self.assertTrue(
+                    self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=b"pmx", pmx_path=pmd_path)
+                )
 
     def test_runtime_matrix_coordinate_conversion_identity_and_translation(self):
         """runtime world matrix の座標変換で identity を壊さず Z translation だけ反転する"""
@@ -375,7 +540,7 @@ class TestVmdConverter(MayaTestBase):
         cmds.aliasAttr("mabataki", f"{blend_shape}.weight[0]")
 
         # モーフマッピングを設定
-        self.converter.morph_name_mapping["mabataki"] = (blend_shape, 0, "mabataki")
+        self.converter.morph_name_mapping["mabataki"] = (blend_shape, "weight[0]", "mabataki")
 
         # 変換実行
         result = self.converter._convert_morph_animation(morph_frames)
@@ -388,6 +553,143 @@ class TestVmdConverter(MayaTestBase):
 
         # クリーンアップ
         cmds.delete(cube, target)
+
+    def test_convert_morph_animation_with_split_mesh_aliases(self):
+        """同名 alias が複数 mesh の blendShape にある場合、全 mapping に keyframe を打つ"""
+        from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
+
+        morph_frames = []
+        frame = VmdMorphFrame()
+        frame.frame_number = 5
+        frame.morph_name = "morph_split"
+        frame.value = 0.75
+        morph_frames.append(frame)
+
+        mesh_a = cmds.polyCube(name="morph_split_mesh_a")[0]
+        blend_shape_a = cmds.blendShape(mesh_a, name="morph_split_bs_a")[0]
+        target_a = cmds.duplicate(mesh_a)[0]
+        cmds.move(1, 0, 0, f"{target_a}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape_a, edit=True, target=(mesh_a, 0, target_a, 1.0))
+        cmds.aliasAttr("morph_split", f"{blend_shape_a}.weight[0]")
+        cmds.delete(target_a)
+
+        mesh_b = cmds.polyCube(name="morph_split_mesh_b")[0]
+        blend_shape_b = cmds.blendShape(mesh_b, name="morph_split_bs_b")[0]
+        target_b = cmds.duplicate(mesh_b)[0]
+        cmds.move(0, 1, 0, f"{target_b}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape_b, edit=True, target=(mesh_b, 0, target_b, 1.0))
+        cmds.aliasAttr("morph_split", f"{blend_shape_b}.weight[0]")
+        cmds.delete(target_b)
+
+        self.converter._build_morph_mappings()
+        self.assertEqual(len(self.converter._iter_morph_mappings(self.converter.morph_name_mapping["morph_split"])), 2)
+        result = self.converter._convert_morph_animation(morph_frames)
+        self.assertTrue(result)
+
+        keys_a = cmds.keyframe(f"{blend_shape_a}.weight[0]", query=True, timeChange=True)
+        keys_b = cmds.keyframe(f"{blend_shape_b}.weight[0]", query=True, timeChange=True)
+        self.assertIn(5.0, keys_a)
+        self.assertIn(5.0, keys_b)
+
+        # クリーンアップ
+        cmds.delete(mesh_a, blend_shape_a, mesh_b, blend_shape_b)
+
+    def test_convert_morph_animation_legacy_mapping_uses_weight_index_tuple(self):
+        """旧形式の mapping tuple に int の weight index が渡っても変換できる"""
+        from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
+
+        frame = VmdMorphFrame()
+        frame.frame_number = 5
+        frame.morph_name = "mabataki"
+        frame.value = 0.6
+
+        cube = cmds.polyCube(name="legacy_mapping_morph_mesh")[0]
+        blend_shape = cmds.blendShape(cube, name="legacy_mapping_blendShape")[0]
+
+        target = cmds.duplicate(cube)[0]
+        cmds.move(1, 0, 0, f"{target}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape, edit=True, target=(cube, 0, target, 1.0))
+        cmds.aliasAttr("mabataki", f"{blend_shape}.weight[0]")
+        self.converter.morph_name_mapping["mabataki"] = (blend_shape, 0, "mabataki")
+        cmds.delete(target)
+
+        result = self.converter._convert_morph_animation([frame])
+        self.assertTrue(result)
+
+        cmds.currentTime(5, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.6, places=6)
+        keyframes = cmds.keyframe(f"{blend_shape}.weight[0]", query=True)
+        self.assertIn(5.0, keyframes)
+
+        cmds.delete(cube)
+
+    def test_convert_bone_morph_network_weight_animation(self):
+        """bone morph network の weight にVMD morph frameのキーを打てることを確認"""
+        from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
+
+        morph_node = cmds.createNode("network", name="boneSmile_boneMorph")
+        cmds.addAttr(
+            morph_node,
+            longName="weight",
+            attributeType="double",
+            minValue=0.0,
+            maxValue=1.0,
+            defaultValue=0.0,
+            keyable=True,
+        )
+        cmds.addAttr(morph_node, longName="mmd_morph_type", dataType="string")
+        cmds.setAttr(f"{morph_node}.mmd_morph_type", "bone", type="string")
+        cmds.addAttr(morph_node, longName="mmd_morph_name", dataType="string")
+        cmds.setAttr(f"{morph_node}.mmd_morph_name", "ボーン笑い", type="string")
+
+        frame = VmdMorphFrame()
+        frame.frame_number = 12
+        frame.morph_name = "ボーン笑い"
+        frame.value = 0.8
+
+        self.converter._build_morph_mappings()
+        result = self.converter._convert_morph_animation([frame])
+        self.assertTrue(result)
+
+        cmds.currentTime(12, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{morph_node}.weight"), 0.8, places=6)
+        self.assertIn(12.0, cmds.keyframe(f"{morph_node}.weight", query=True))
+
+        cmds.delete(morph_node)
+
+    def test_convert_material_morph_network_weight_animation(self):
+        """material morph network の weight にVMD morph frameのキーを打てることを確認"""
+        from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
+
+        morph_node = cmds.createNode("network", name="materialFlash_materialMorph")
+        cmds.addAttr(
+            morph_node,
+            longName="weight",
+            attributeType="double",
+            minValue=0.0,
+            maxValue=1.0,
+            defaultValue=0.0,
+            keyable=True,
+        )
+        cmds.addAttr(morph_node, longName="mmd_morph_type", dataType="string")
+        cmds.setAttr(f"{morph_node}.mmd_morph_type", "material", type="string")
+        cmds.addAttr(morph_node, longName="mmd_morph_name", dataType="string")
+        cmds.setAttr(f"{morph_node}.mmd_morph_name", "材質点滅", type="string")
+
+        frame = VmdMorphFrame()
+        frame.frame_number = 18
+        frame.morph_name = "材質点滅"
+        frame.value = 0.35
+
+        self.converter._build_morph_mappings()
+        result = self.converter._convert_morph_animation([frame])
+        self.assertTrue(result)
+
+        cmds.currentTime(18, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{morph_node}.weight"), 0.35, places=6)
+        self.assertIn(18.0, cmds.keyframe(f"{morph_node}.weight", query=True))
+
+        cmds.delete(morph_node)
 
     def test_bake_morph_weights_from_runtime_uses_pmx_morph_order(self):
         """runtime morph weightをPMX morph順の日本語名でblendShapeへベイクする"""
@@ -412,6 +714,69 @@ class TestVmdConverter(MayaTestBase):
 
         keyframes = cmds.keyframe(f"{blend_shape}.weight[0]", query=True)
         self.assertIn(7.0, keyframes)
+
+        cmds.delete(cube)
+
+    def test_bake_morph_weights_from_runtime_with_split_mesh_aliases(self):
+        """runtime bake でも同名 alias を全 blendShape にベイクする"""
+        mesh_a = cmds.polyCube(name="runtime_split_mesh_a")[0]
+        blend_shape_a = cmds.blendShape(mesh_a, name="runtime_split_bs_a")[0]
+        target_a = cmds.duplicate(mesh_a)[0]
+        cmds.move(1, 0, 0, f"{target_a}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape_a, edit=True, target=(mesh_a, 0, target_a, 1.0))
+        cmds.aliasAttr("morph_split", f"{blend_shape_a}.weight[0]")
+        cmds.delete(target_a)
+
+        mesh_b = cmds.polyCube(name="runtime_split_mesh_b")[0]
+        blend_shape_b = cmds.blendShape(mesh_b, name="runtime_split_bs_b")[0]
+        target_b = cmds.duplicate(mesh_b)[0]
+        cmds.move(0, 1, 0, f"{target_b}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape_b, edit=True, target=(mesh_b, 0, target_b, 1.0))
+        cmds.aliasAttr("morph_split", f"{blend_shape_b}.weight[0]")
+        cmds.delete(target_b)
+
+        self.converter._build_morph_mappings()
+        self.assertEqual(len(self.converter._iter_morph_mappings(self.converter.morph_name_mapping["morph_split"])), 2)
+
+        self.converter._bake_morph_weights_from_runtime(
+            frame=11,
+            morph_weights=[0.4],
+            pmx_morph_names=["morph_split"],
+        )
+
+        cmds.currentTime(11, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape_a}.weight[0]"), 0.4, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape_b}.weight[0]"), 0.4, places=6)
+
+        keys_a = cmds.keyframe(f"{blend_shape_a}.weight[0]", query=True, timeChange=True)
+        keys_b = cmds.keyframe(f"{blend_shape_b}.weight[0]", query=True, timeChange=True)
+        self.assertIn(11.0, keys_a)
+        self.assertIn(11.0, keys_b)
+
+        cmds.delete(mesh_a, blend_shape_a, mesh_b, blend_shape_b)
+
+    def test_bake_morph_weights_from_runtime_with_legacy_mapping(self):
+        """runtime bake で旧形式の weight index tuple が使える"""
+        cube = cmds.polyCube(name="legacy_runtime_morph_mesh")[0]
+        blend_shape = cmds.blendShape(cube, name="legacy_runtime_morph_blendShape")[0]
+
+        target = cmds.duplicate(cube)[0]
+        cmds.move(1, 0, 0, f"{target}.vtx[*]", relative=True)
+        cmds.blendShape(blend_shape, edit=True, target=(cube, 0, target, 1.0))
+        cmds.aliasAttr("mabataki", f"{blend_shape}.weight[0]")
+        self.converter.morph_name_mapping["mabataki"] = (blend_shape, 0, "mabataki")
+        cmds.delete(target)
+
+        self.converter._bake_morph_weights_from_runtime(
+            frame=19,
+            morph_weights=[0.55],
+            pmx_morph_names=["mabataki"],
+        )
+
+        cmds.currentTime(19, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.55, places=6)
+        keyframes = cmds.keyframe(f"{blend_shape}.weight[0]", query=True)
+        self.assertIn(19.0, keyframes)
 
         cmds.delete(cube)
 
@@ -487,8 +852,8 @@ class TestVmdConverter(MayaTestBase):
         self.assertIn("blink", self.converter.morph_name_mapping)
         self.assertIn("まばたき", self.converter.morph_name_mapping)
         self.assertEqual(
-            self.converter.morph_name_mapping["まばたき"],
-            self.converter.morph_name_mapping["blink"],
+            self.converter._iter_morph_mappings(self.converter.morph_name_mapping["まばたき"]),
+            self.converter._iter_morph_mappings(self.converter.morph_name_mapping["blink"]),
         )
 
         cmds.delete(cube)
