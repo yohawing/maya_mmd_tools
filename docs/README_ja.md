@@ -201,9 +201,17 @@ settings.set("import.general.use_namespace", True)
 # マテリアル作成
 settings.set("import.model.create_mmd_shaders", True)
 
+# マテリアルごとのメッシュ分割
+# 通常は false 推奨。材質単位で個別編集・表示制御したい場合だけ true にします。
+settings.set("import.model.separate_meshes_by_material", False)
+
 # 物理演算のインポート（早期リリースでは実験的）
 settings.set("import.physics.import_physics", False)
 ```
+
+`import.model.separate_meshes_by_material` は、PMX/PMD の material ごとに mesh を分ける opt-in 設定です。
+既定の `False` では単一メッシュに face 単位で material を割り当てるため、通常のモデル import ではこちらを推奨します。
+`True` にすると材質単位の編集や表示切替はしやすくなりますが、mesh / skinCluster / blendShape が増えるため、重いモデルでは import 時間とシーンノード数が増えます。
 
 ### インポート後の構造
 

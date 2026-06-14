@@ -56,8 +56,8 @@ settings.get('import.physics.import_physics', False)
 |               | `use_namespace`              | `bool`  | `false`      | インポート時にMayaの名前空間を使用するか。                           |
 |               | `root_bone_name`             | `str`   | `"master"`   | 生成されるルートボーンの名前。                                       |
 | **model**     | `import_models`              | `bool`  | `true`       | モデル（メッシュ、マテリアル等）をインポートするか。                 |
-|               | `merge_meshes_by_material`   | `bool`  | `false`      | 同じマテリアルを持つメッシュを統合するか。                           |
-|               | `create_mmd_shaders`         | `bool`  | `true`       | MMDライクなシェーダーを自動で作成・割り当てするか。                  |
+|               | `separate_meshes_by_material`| `bool`  | `false`      | マテリアルごとにメッシュを分割するか。通常は単一メッシュのまま使い、材質単位で個別編集・表示制御が必要な場合だけ有効化する。 |
+|               | `create_mmd_shaders`         | `bool`  | `false`      | MMDライクなシェーダーを自動で作成・割り当てするか。                  |
 |               | `mmd_shader_backend`         | `str`   | `"auto"`     | `auto` / `dx11` / `glsl` / `standard`（glsl 指定時は GLSLShader、auto は dx11 成功後 glsl、最終 fallback standardSurface）。 |
 |               | `texture_search_path`        | `str`   | `""`         | テクスチャファイルを追加で検索するパス。                             |
 |               | `hide_hidden_geometry`       | `bool`  | `true`       | 非表示設定のジオメトリをインポート時に隠すか。                       |
