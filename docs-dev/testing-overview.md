@@ -191,7 +191,10 @@ uvx nox -s pmx_roundtrip -- --maya 2024 --out-dir build/roundtrip-custom
 
 ```bash
 # separate_meshes_by_material を一時的に有効化して profile 計測
-# mesh transform/shape 数・material 数・skinCluster 数・blendShape 数を results.json/profile に記録
+# mesh transform/shape 数・material 数・skinCluster 数・blendShape 数に加え、
+# profile/importer に importer phase timing と mesh_converter breakdown を記録
+# material split 時は mesh_vertex_slots_estimated と morph_result.vertex_morphs_skipped_by_material も確認する
+# compact PMX split mesh は mmd_source_vertex_indices で元 PMX vertex index を保持する
 uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --limit 1 --separate-meshes --out-dir build/batch-import/separate-meshes-audit
 
 # 代表 case を import し、PNG capture まで確認

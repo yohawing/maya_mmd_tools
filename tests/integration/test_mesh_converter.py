@@ -21,6 +21,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 
 
@@ -358,6 +359,7 @@ class TestMeshConverter(MayaTestBase):
             )
 
             # 各 mesh に mesh shape / UV / material がある
+            split_vertex_counts = []
             for mn in mesh_name:
                 self.assertTrue(
                     cmds.objExists(mn),
@@ -388,6 +390,25 @@ class TestMeshConverter(MayaTestBase):
                     0,
                     f"'{mn}' にマテリアルがありません",
                 )
+
+                self.assertTrue(
+                    cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mn, exists=True),
+                    f"'{mn}' に compact split source index attribute がありません",
+                )
+                source_indices = maya_utils.get_int_array_attribute(mn, ATTR_MMD_SOURCE_VERTEX_INDICES)
+                vertex_count = cmds.polyEvaluate(mn, vertex=True)
+                split_vertex_counts.append(vertex_count)
+                self.assertEqual(
+                    len(source_indices),
+                    vertex_count,
+                    f"'{mn}' の source index 数と local vertex 数が一致しません",
+                )
+
+            self.assertLess(
+                min(split_vertex_counts),
+                len(pmx_data.vertices),
+                "compact split mesh が全頂点保持のままです",
+            )
 
         finally:
             # 設定を元に戻す

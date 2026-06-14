@@ -46,6 +46,7 @@ ATTR_MMD_SPHERE_MODE = "mmd_sphere_mode"
 ATTR_MMD_SHARED_TOON_FLAG = "mmd_shared_toon_flag"
 ATTR_MMD_TOON_TEXTURE_INDEX = "mmd_toon_texture_index"
 ATTR_MMD_MATERIAL_INDEX = "mmd_material_index"
+ATTR_MMD_SOURCE_VERTEX_INDICES = "mmd_source_vertex_indices"
 
 # ボーンカスタムアトリビュート名（共通）
 ATTR_MMD_BONE_NAME = "mmd_bone_name"  # ボーン名（日本語）

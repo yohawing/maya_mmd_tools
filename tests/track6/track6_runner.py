@@ -741,6 +741,7 @@ def _collect_profile(
     separate_meshes: bool,
     import_elapsed_sec: float,
     parsed_data: Any,
+    importer_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Collect compact profile metrics after a successful model import."""
     from maya import cmds
@@ -771,7 +772,7 @@ def _collect_profile(
     skin_cluster_count = len(cmds.ls(type="skinCluster") or [])
     blend_shape_count = len(cmds.ls(type="blendShape") or [])
 
-    return {
+    profile = {
         "separate_meshes_by_material": separate_meshes,
         "import_elapsed_sec": round(import_elapsed_sec, 3),
         "mesh_transform_count": len(mesh_transforms),
@@ -781,6 +782,9 @@ def _collect_profile(
         "skin_cluster_count": skin_cluster_count,
         "blend_shape_count": blend_shape_count,
     }
+    if importer_profile:
+        profile["importer"] = importer_profile
+    return profile
 
 
 def run_case(
@@ -845,18 +849,26 @@ def run_case(
         effective_separate_meshes = mmd_settings.get("import.model.separate_meshes_by_material", False)
         parsed_data = parse_mmd_file(model_path)
         import_start = time.perf_counter()
+        importer_profile: dict[str, Any] = {}
         model_root = import_mmd_file(
             model_path,
             options={
                 "create_mmd_shaders": use_shader,
                 "import_physics": False,
+                "profile": importer_profile,
             },
         )
         import_elapsed = time.perf_counter() - import_start
         if not model_root:
             raise RuntimeError("model import returned no root node")
 
-        profile = _collect_profile(model_root, bool(effective_separate_meshes), import_elapsed, parsed_data)
+        profile = _collect_profile(
+            model_root,
+            bool(effective_separate_meshes),
+            import_elapsed,
+            parsed_data,
+            importer_profile,
+        )
 
         if motion_path:
             parse_mmd_file(str(motion_path))

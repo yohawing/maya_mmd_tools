@@ -6,12 +6,13 @@ Mayaのブレンドシェイプシステムに変換する機能を提供しま�
 """
 
 import json
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Set, Union
 
 from maya import cmds
 from maya.api import OpenMaya as om
 
 from mmd_tools.core import maya_utils
+from mmd_tools.core.constants import ATTR_MMD_MATERIAL_INDEX, ATTR_MMD_SOURCE_VERTEX_INDICES
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 
 
@@ -94,11 +95,31 @@ class MorphConverter:
         material_morph_nodes = []
         converted_bone_morphs = set()
         converted_material_morphs = set()
+        material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
+        skipped_vertex_morphs_by_material = 0
 
         for mn in mesh_nodes:
+            mesh_material_index = self._get_mesh_material_index(mn)
+            visible_vertex_indices = (
+                material_vertex_sets.get(mesh_material_index)
+                if mesh_material_index is not None
+                else None
+            )
             for morph in pmx_data.morphs:
                 try:
                     if morph.morph_type == PmxMorphType.VertexMorph:
+                        if visible_vertex_indices is not None and not self._vertex_morph_affects_vertices(
+                            morph,
+                            visible_vertex_indices,
+                        ):
+                            skipped_vertex_morphs_by_material += 1
+                            self.logger.debug(
+                                "Skipping vertex morph %s for material split mesh %s (material_index=%s)",
+                                morph.get_name(),
+                                mn,
+                                mesh_material_index,
+                            )
+                            continue
                         self.logger.debug(f"Converting vertex morph: {morph.name}")
                         result = self._convert_vertex_morph_pmx(morph, mn)
                         if result["success"]:
@@ -137,8 +158,63 @@ class MorphConverter:
             "blend_shape_nodes": blend_shape_nodes,
             "bone_morph_nodes": bone_morph_nodes,
             "material_morph_nodes": material_morph_nodes,
+            "vertex_morphs_skipped_by_material": skipped_vertex_morphs_by_material,
             "results": results,
         }
+
+    def _build_pmx_material_vertex_sets(self, pmx_data) -> Dict[int, Set[int]]:
+        """Return vertex indices referenced by each PMX material face range."""
+        material_vertex_sets: Dict[int, Set[int]] = {}
+        face_offset = 0
+        faces = getattr(pmx_data, "faces", []) or []
+        for material_index, material in enumerate(getattr(pmx_data, "materials", []) or []):
+            num_material_faces = int(getattr(material, "face_count", 0) or 0) // 3
+            vertices: Set[int] = set()
+            for face in faces[face_offset : face_offset + num_material_faces]:
+                vertices.update(int(idx) for idx in getattr(face, "indices", []) or [])
+            material_vertex_sets[material_index] = vertices
+            face_offset += num_material_faces
+        return material_vertex_sets
+
+    def _get_mesh_material_index(self, mesh_node: str) -> Optional[int]:
+        """Return material index for a material-split mesh, or None for unified meshes."""
+        try:
+            if not cmds.objExists(mesh_node):
+                return None
+            if not cmds.attributeQuery("mmd_material_split_mesh", node=mesh_node, exists=True):
+                return None
+            if not bool(cmds.getAttr(f"{mesh_node}.mmd_material_split_mesh")):
+                return None
+            if not cmds.attributeQuery(ATTR_MMD_MATERIAL_INDEX, node=mesh_node, exists=True):
+                return None
+            return int(cmds.getAttr(f"{mesh_node}.{ATTR_MMD_MATERIAL_INDEX}"))
+        except Exception:
+            return None
+
+    def _get_mesh_source_vertex_map(self, mesh_node: str) -> Optional[Dict[int, int]]:
+        """Return original PMX vertex index to local mesh vertex index mapping."""
+        try:
+            if not cmds.objExists(mesh_node):
+                return None
+            if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh_node, exists=True):
+                return None
+            source_indices = maya_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
+            if not source_indices:
+                return None
+            return {source_index: local_index for local_index, source_index in enumerate(source_indices)}
+        except Exception:
+            return None
+
+    def _vertex_morph_affects_vertices(self, morph, vertex_indices: Set[int]) -> bool:
+        """Return True when a vertex morph touches at least one visible vertex."""
+        for offset in getattr(morph, "offsets", []) or []:
+            try:
+                vertex_index = int(offset.get("vertex_index"))
+            except Exception:
+                continue
+            if vertex_index in vertex_indices:
+                return True
+        return False
 
     def collect_morphs_from_scene_for_export(self) -> List[Dict[str, Any]]:
         """シーン内の network モーフノードから exporter 用の morph dict を収集する。"""
@@ -379,6 +455,7 @@ class MorphConverter:
         """PMX頂点モーフの変換"""
         # モーフ名をMaya互換に変換
         morph_name = maya_utils.sanitize_text(morph.get_name())
+        source_to_local = self._get_mesh_source_vertex_map(mesh_node)
 
         # メッシュを複製してターゲットを作成
         target_mesh = cmds.duplicate(mesh_node)[0]
@@ -388,7 +465,7 @@ class MorphConverter:
         maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
 
         # 頂点オフセットを適用
-        self._apply_vertex_offsets_pmx(target_mesh, morph)
+        self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
 
         # blendShapeノードを取得または作成
         blend_shape_node = maya_utils.find_or_create_blendshape_node(mesh_node)
@@ -435,7 +512,7 @@ class MorphConverter:
         # 変更された頂点位置を設定
         mesh_fn.setPoints(points, om.MSpace.kObject)
 
-    def _apply_vertex_offsets_pmx(self, mesh_node: str, morph):
+    def _apply_vertex_offsets_pmx(self, mesh_node: str, morph, source_to_local: Optional[Dict[int, int]] = None):
         """PMXの頂点オフセットを適用"""
         # MSelectionListを使用してDAGパスを取得
         sel_list = om.MSelectionList()
@@ -452,7 +529,13 @@ class MorphConverter:
         if hasattr(morph, "offsets"):
             for offset in morph.offsets:
                 if "vertex_index" in offset and "position_offset" in offset:
-                    vertex_index = offset["vertex_index"]
+                    source_vertex_index = int(offset["vertex_index"])
+                    if source_to_local is not None:
+                        if source_vertex_index not in source_to_local:
+                            continue
+                        vertex_index = source_to_local[source_vertex_index]
+                    else:
+                        vertex_index = source_vertex_index
                     offset_pos = offset["position_offset"]
                     if vertex_index < len(points):
                         points[vertex_index] += om.MVector(offset_pos[0], offset_pos[1], offset_pos[2])

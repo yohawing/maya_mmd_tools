@@ -3,6 +3,7 @@ PMXファイルをMayaシーンにインポートするためのモジュール�
 """
 
 import os
+import time
 
 from maya import cmds
 from mmd_tools.core import maya_utils
@@ -40,6 +41,13 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
     """
     if options is None:
         options = {}
+    profile = options.get("profile") if isinstance(options.get("profile"), dict) else None
+    phase_timings = {}
+
+    def _record_phase(name: str, start: float) -> None:
+        if profile is not None:
+            phase_timings[name] = round(time.perf_counter() - start, 6)
+
     logger.info("PMXファイルのインポートを開始: %s", filepath)
 
     logger.debug("スケールファクター: %f", scale)
@@ -87,7 +95,9 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             # メッシュを変換
             logger.info("メッシュを変換中...")
             mesh_converter = MeshConverter(filepath)
+            phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
+            _record_phase("mesh_conversion_sec", phase_start)
 
             # mesh_name が list かどうかで分岐
             mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
@@ -95,12 +105,15 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
 
             logger.info("モーフを変換中...")
             morph_converter = MorphConverter()
-            morph_converter.convert_pmx_morphs(parser, mesh_name)
+            phase_start = time.perf_counter()
+            morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
+            _record_phase("morph_conversion_sec", phase_start)
             logger.debug("モーフ変換完了")
 
             # ボーンを変換
             logger.info("ボーンを変換中...")
             bone_converter = BoneConverter()
+            phase_start = time.perf_counter()
             maya_joints, skin_cluster = bone_converter.convert_pmx_bones(
                 parser,
                 mesh_name,
@@ -108,6 +121,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 setup_rig=options.get("setup_rig", True),
                 setup_bone_orientation=options.get("setup_bone_orientation", True),
             )
+            _record_phase("bone_and_skin_conversion_sec", phase_start)
             logger.debug(
                 "ボーン変換完了: %d個のジョイント, %d個のメッシュ",
                 len(maya_joints) if maya_joints else 0,
@@ -128,9 +142,11 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
 
                 # 物理データが存在する場合のみ変換
                 if hasattr(parser, "rigid_bodies") and parser.rigid_bodies:
+                    phase_start = time.perf_counter()
                     ncloth_nodes, constraint_nodes = physics_converter.convert_pmx_physics(
                         parser, bone_joint_mapping, root_group
                     )
+                    _record_phase("physics_conversion_sec", phase_start)
                     logger.debug(
                         "物理変換完了: nCloth=%d, Constraints=%d",
                         len(ncloth_nodes),
@@ -153,14 +169,32 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                     # dx11Shader generates effect attrs such as DiffuseColorRGB
                     # only after VP2 evaluates the .fx file.  Force that once
                     # before copying MMD custom attrs into generated uniforms.
+                    phase_start = time.perf_counter()
                     cmds.refresh(force=True)
+                    _record_phase("refresh_sec", phase_start)
                 except Exception:
                     pass
+                phase_start = time.perf_counter()
                 synced_dx11 = sync_dx11_generated_uniforms(mesh_converter.created_shaders)
+                _record_phase("dx11_uniform_sync_sec", phase_start)
                 if synced_dx11:
                     logger.debug("dx11Shader generated uniforms synchronized: %d", synced_dx11)
             except Exception:
                 logger.debug("Failed to synchronize dx11 generated uniforms", exc_info=True)
+            if profile is not None:
+                profile["phase_timings"] = phase_timings
+                profile["mesh_converter"] = dict(mesh_converter.profile)
+                profile["morph_result"] = {
+                    "morphs_converted": morph_result.get("morphs_converted"),
+                    "total_morphs": morph_result.get("total_morphs"),
+                    "blend_shape_nodes": len(morph_result.get("blend_shape_nodes", []) or []),
+                    "bone_morph_nodes": len(morph_result.get("bone_morph_nodes", []) or []),
+                    "material_morph_nodes": len(morph_result.get("material_morph_nodes", []) or []),
+                    "vertex_morphs_skipped_by_material": morph_result.get(
+                        "vertex_morphs_skipped_by_material",
+                        0,
+                    ),
+                }
         logger.info("PMXファイルのインポートが完了しました: %s", os.path.basename(filepath))
         return root_group  # ルートノードの名前を返す
 

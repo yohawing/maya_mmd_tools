@@ -7,6 +7,7 @@ from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils
+from mmd_tools.core.constants import ATTR_MMD_SOURCE_VERTEX_INDICES
 from mmd_tools.core.settings import settings
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from tests.common.maya_test_base import MayaTestBase
@@ -223,6 +224,140 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(offsets[0]["diffuse"], [0.1, 0.2, 0.3, 0.4])
 
         cmds.delete(mesh_name, morph_node)
+
+    def test_material_split_mesh_skips_unaffected_vertex_morphs(self):
+        """material split mesh では表示 material に関係しない vertex morph を作らない。"""
+        mesh_a = self._create_test_mesh()
+        mesh_b = self._create_test_mesh()
+        maya_utils.set_custom_attributes(
+            mesh_a,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 0,
+            },
+        )
+        maya_utils.set_custom_attributes(
+            mesh_b,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 1,
+            },
+        )
+
+        class FakeFace:
+            def __init__(self, indices):
+                self.indices = indices
+
+        class FakeMaterial:
+            face_count = 3
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+
+            def __init__(self, name, vertex_index):
+                self.name = name
+                self.offsets = [
+                    {
+                        "vertex_index": vertex_index,
+                        "position_offset": (0.1, 0.0, 0.0),
+                    }
+                ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [FakeFace([0, 1, 2]), FakeFace([0, 2, 3])],
+                "materials": [FakeMaterial(), FakeMaterial()],
+                "morphs": [
+                    FakeVertexMorph("mat0_only", 1),
+                    FakeVertexMorph("mat1_only", 3),
+                ],
+            },
+        )()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, [mesh_a, mesh_b])
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 2)
+        self.assertEqual(result.get("vertex_morphs_skipped_by_material"), 2)
+        self.assertEqual(len(result.get("blend_shape_nodes", [])), 2)
+
+        mesh_a_aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
+        mesh_b_aliases = cmds.aliasAttr(result["blend_shape_nodes"][1], query=True) or []
+        self.assertIn("mat0_only", mesh_a_aliases)
+        self.assertNotIn("mat1_only", mesh_a_aliases)
+        self.assertIn("mat1_only", mesh_b_aliases)
+        self.assertNotIn("mat0_only", mesh_b_aliases)
+
+    def test_compact_material_split_mesh_maps_vertex_morph_source_indices(self):
+        """compact split mesh では PMX source vertex index を local vertex index に写して morph を適用する。"""
+        mesh = maya_utils.create_mesh_with_uvs(
+            "compact_split_mesh",
+            [(0, 0, 0), (1, 0, 0), (1, 1, 0)],
+            [3],
+            [0, 1, 2],
+            [0, 0, 1, 0, 1, 1],
+            [0, 1, 2],
+        )
+        maya_utils.set_custom_attributes(
+            mesh,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 0,
+            },
+        )
+        maya_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 2, 3], "longArray")
+
+        class FakeFace:
+            indices = [0, 2, 3]
+
+        class FakeMaterial:
+            face_count = 3
+
+        class FakeVertexMorph:
+            name = "source2_move"
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            offsets = [
+                {
+                    "vertex_index": 2,
+                    "position_offset": (0.25, 0.0, 0.0),
+                },
+                {
+                    "vertex_index": 1,
+                    "position_offset": (10.0, 0.0, 0.0),
+                },
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [FakeFace()],
+                "materials": [FakeMaterial()],
+                "morphs": [FakeVertexMorph()],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        self.assertTrue(cmds.objExists("source2_move_target"))
+        moved_position = cmds.pointPosition("source2_move_target.vtx[1]", local=True)
+        unchanged_position = cmds.pointPosition("source2_move_target.vtx[0]", local=True)
+        self.assertAlmostEqual(moved_position[0], 1.25, places=5)
+        self.assertAlmostEqual(unchanged_position[0], 0.0, places=5)
 
     def test_collect_morphs_from_scene_for_export(self):
         """シーン内の network metadata から exporter 用 morph dict を復元して PMX を再生成する。"""

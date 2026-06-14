@@ -35,6 +35,7 @@ from ..core.constants import (
     ATTR_MMD_X_AXIS_DIRECTION,
     ATTR_MMD_Z_AXIS_DIRECTION,
     ATTR_MMD_IK_TARGET_INDEX,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
     # PMD固有
     ATTR_MMD_BONE_TYPE,
     ATTR_MMD_TAIL_POS_INDEX,
@@ -501,7 +502,16 @@ class BoneConverter:
         """
 
         weights = []
-        for vertex in pmx_data.vertices:
+        source_vertex_indices = self._get_mesh_source_vertex_indices(mesh_node)
+        vertices = pmx_data.vertices
+        vertex_indices = source_vertex_indices if source_vertex_indices is not None else range(len(vertices))
+
+        for source_vertex_index in vertex_indices:
+            if source_vertex_index < 0 or source_vertex_index >= len(vertices):
+                weights.append([0.0] * len(maya_joints))
+                continue
+
+            vertex = vertices[source_vertex_index]
             # PMX頂点の重み情報を取得
             weight_maps = self._get_pmx_vertex_weights(vertex)
             # ボーンの数でリストを初期化
@@ -521,6 +531,18 @@ class BoneConverter:
             mesh_node,
             weights,
         )
+
+    def _get_mesh_source_vertex_indices(self, mesh_node):
+        """compact material split mesh の元 PMX vertex index 配列を取得する。"""
+        try:
+            if not mesh_node or not cmds.objExists(mesh_node):
+                return None
+            if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh_node, exists=True):
+                return None
+            source_indices = maya_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
+            return source_indices or None
+        except Exception:
+            return None
 
     def _apply_pmd_vertex_weights(self, pmd_data, maya_joints, skin_cluster, mesh_node):
         """

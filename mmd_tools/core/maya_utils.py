@@ -565,6 +565,27 @@ def get_attribute(object_name, attr_name):
         return None
 
 
+def get_int_array_attribute(object_name, attr_name):
+    """OpenMaya typed intArray attribute を Python の int list として取得する。"""
+    try:
+        selection_list = om.MSelectionList()
+        selection_list.add(object_name)
+        node_obj = selection_list.getDependNode(0)
+        depend_fn = om.MFnDependencyNode(node_obj)
+        plug = depend_fn.findPlug(attr_name, False)
+        if plug.isNull:
+            return None
+
+        data_obj = plug.asMObject()
+        if data_obj.isNull() or not data_obj.hasFn(om.MFn.kIntArrayData):
+            return None
+
+        int_array = om.MFnIntArrayData(data_obj).array()
+        return [int(int_array[i]) for i in range(len(int_array))]
+    except Exception:
+        return None
+
+
 def get_materials_from_mesh(mesh_name):
     """メッシュに割り当てられているマテリアルを取得
 

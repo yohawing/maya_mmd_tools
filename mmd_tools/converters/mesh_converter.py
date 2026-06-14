@@ -1,4 +1,5 @@
 import os
+import time
 
 from maya import cmds
 from typing import Tuple, Union, List
@@ -35,6 +36,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 
 LOGGER = get_logger(__name__)
@@ -279,8 +281,23 @@ class MeshConverter:
         """
         self.logger = get_logger(__name__)
         self.created_shaders = []
+        self.profile = {
+            "mesh_create_sec": 0.0,
+            "material_create_sec": 0.0,
+            "material_assign_sec": 0.0,
+            "parent_sec": 0.0,
+            "created_mesh_count": 0,
+            "source_vertex_count": 0,
+            "mesh_vertex_slots_estimated": 0,
+            "face_count": 0,
+            "material_count_processed": 0,
+        }
         if pmx_filepath:
             self.texture_dir = os.path.dirname(pmx_filepath)
+
+    def _add_profile_time(self, key: str, start: float) -> None:
+        """Accumulate timing in the converter profile."""
+        self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
     def convert_pmx_mesh(self, pmx_data: PmxData, root_group: str) -> Tuple[str, Union[str, List[str]]]:
         """
@@ -461,6 +478,7 @@ class MeshConverter:
             face_offset += num_material_faces
 
         # 統合メッシュを作成
+        create_start = time.perf_counter()
         created_mesh = maya_utils.create_mesh_with_uvs(
             name=mesh_name,
             vertices=vertices,
@@ -470,6 +488,11 @@ class MeshConverter:
             face_uv_connects=face_uv_connects,
             normals=normals,
         )
+        self._add_profile_time("mesh_create_sec", create_start)
+        self.profile["created_mesh_count"] += 1
+        self.profile["source_vertex_count"] = len(vertices)
+        self.profile["mesh_vertex_slots_estimated"] += len(vertices)
+        self.profile["face_count"] += len(face_counts)
 
         # マテリアルを作成して、適切な面に割り当てる
         for i, (material, start_face, end_face) in enumerate(material_face_ranges):
@@ -487,6 +510,7 @@ class MeshConverter:
                     texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
 
             # マテリアルを作成
+            material_start = time.perf_counter()
             shader = self._create_material(
                 material=material,
                 texture_path=texture_path,
@@ -494,14 +518,20 @@ class MeshConverter:
                 is_pmd=is_pmd,
                 material_index=i,
             )
+            self._add_profile_time("material_create_sec", material_start)
             self.created_shaders.append(shader)
+            self.profile["material_count_processed"] += 1
 
             # 面の範囲を選択してマテリアルを割り当て
             face_selection = f"{created_mesh}.f[{start_face}:{end_face - 1}]"
+            assign_start = time.perf_counter()
             maya_utils.assign_material_to_faces(created_mesh, shader, face_selection)
+            self._add_profile_time("material_assign_sec", assign_start)
 
         # 作成したメッシュをグループに追加
+        parent_start = time.perf_counter()
         maya_utils.parent_objects(created_mesh, model_group)
+        self._add_profile_time("parent_sec", parent_start)
 
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
         disable_backface_culling = settings.get("import.model.disable_backface_culling", True)
@@ -522,7 +552,8 @@ class MeshConverter:
     ):
         """
         マテリアルごとに分割したメッシュを作成する。
-        各 sub-mesh は全頂点/全UVを保持し、face_connects/face_uv_connects だけ該当 material 範囲に絞る。
+        PMX の sub-mesh は該当 material の face が参照する頂点だけを保持し、
+        mmd_source_vertex_indices に元 PMX vertex index を保存する。PMD は既存互換のため全頂点を保持する。
 
         Args:
             model_name (str): モデル名
@@ -564,27 +595,71 @@ class MeshConverter:
             sub_face_connects = []
             sub_face_counts = []
             sub_face_uv_connects = []
+            source_vertex_indices = []
+            source_to_local = {}
+
+            def get_local_vertex_index(source_index):
+                source_index = int(source_index)
+                if is_pmd:
+                    return source_index
+                if source_index not in source_to_local:
+                    source_to_local[source_index] = len(source_vertex_indices)
+                    source_vertex_indices.append(source_index)
+                return source_to_local[source_index]
 
             for j in range(face_offset, face_offset + num_material_faces):
                 face = all_faces[j]
                 reverced_indices = face.indices[::-1]
-                sub_face_connects.extend(reverced_indices)
+                local_indices = [get_local_vertex_index(index) for index in reverced_indices]
+                sub_face_connects.extend(local_indices)
                 sub_face_counts.append(len(reverced_indices))
-                sub_face_uv_connects.extend(reverced_indices)
+                sub_face_uv_connects.extend(local_indices)
+
+            if is_pmd:
+                mesh_vertices = vertices
+                mesh_normals = normals
+                mesh_uvs = uvs
+            else:
+                mesh_vertices = [vertices[index] for index in source_vertex_indices]
+                mesh_normals = [normals[index] for index in source_vertex_indices]
+                mesh_uvs = []
+                for index in source_vertex_indices:
+                    mesh_uvs.extend(uvs[index * 2 : index * 2 + 2])
 
             # マテリアル名からメッシュ名生成
             mat_name = material.get_name() if material.get_name() else f"material_{i}"
             sub_mesh_name = maya_utils.sanitize_text(f"{model_name}_{mat_name}_mesh")
 
+            create_start = time.perf_counter()
             created_mesh = maya_utils.create_mesh_with_uvs(
                 name=sub_mesh_name,
-                vertices=vertices,
+                vertices=mesh_vertices,
                 face_counts=sub_face_counts,
                 face_connects=sub_face_connects,
-                uvs=uvs,
+                uvs=mesh_uvs,
                 face_uv_connects=sub_face_uv_connects,
-                normals=normals,
+                normals=mesh_normals,
             )
+            self._add_profile_time("mesh_create_sec", create_start)
+            self.profile["created_mesh_count"] += 1
+            self.profile["source_vertex_count"] = len(vertices)
+            self.profile["mesh_vertex_slots_estimated"] += len(mesh_vertices)
+            self.profile["face_count"] += len(sub_face_counts)
+            maya_utils.set_custom_attributes(
+                created_mesh,
+                {
+                    ATTR_MMD_MATERIAL_INDEX: i,
+                    "mmd_material_split_mesh": True,
+                },
+            )
+            if not is_pmd:
+                maya_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+                maya_utils.set_attribute(
+                    created_mesh,
+                    ATTR_MMD_SOURCE_VERTEX_INDICES,
+                    source_vertex_indices,
+                    "longArray",
+                )
 
             # テクスチャパスを取得
             texture_path = None
@@ -594,6 +669,7 @@ class MeshConverter:
                     texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
 
             # マテリアルを作成 (全体割当)
+            material_start = time.perf_counter()
             shader = self._create_material(
                 material=material,
                 texture_path=texture_path,
@@ -601,15 +677,21 @@ class MeshConverter:
                 is_pmd=is_pmd,
                 material_index=i,
             )
+            self._add_profile_time("material_create_sec", material_start)
             self.created_shaders.append(shader)
+            self.profile["material_count_processed"] += 1
 
             # 全 face にマテリアルを割り当て
+            assign_start = time.perf_counter()
             maya_utils.assign_material_to_faces(
                 created_mesh, shader, f"{created_mesh}.f[0:{num_material_faces - 1}]"
             )
+            self._add_profile_time("material_assign_sec", assign_start)
 
             # グループに追加
+            parent_start = time.perf_counter()
             maya_utils.parent_objects(created_mesh, geo_group)
+            self._add_profile_time("parent_sec", parent_start)
             mesh_names.append(created_mesh)
 
             face_offset += num_material_faces

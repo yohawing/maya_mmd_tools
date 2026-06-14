@@ -3,10 +3,12 @@ from unittest.mock import Mock, patch
 import maya.cmds as cmds
 
 from mmd_tools.converters.bone_converter import BoneConverter
+from mmd_tools.core import maya_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmd_data.bone import PmdBone
@@ -405,6 +407,32 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(weights[1], (2, 0.3))
         self.assertEqual(weights[2], (3, 0.2))
         self.assertEqual(weights[3], (4, 0.1))
+
+    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
+    def test_apply_pmx_vertex_weights_uses_source_vertex_indices_for_compact_split(self, mock_apply_weights):
+        """compact material split mesh では local vertex 順に対応する元 PMX vertex の weight を適用する。"""
+        pmx_data = Mock()
+        vertices = []
+        for bone_index in [0, 1, 0, 1]:
+            vertex = Mock()
+            vertex.weight_transform_type = 0
+            vertex.bone_indices = [bone_index, 0, 0, 0]
+            vertices.append(vertex)
+        pmx_data.vertices = vertices
+
+        maya_utils.add_typed_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_utils.set_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [1, 2], "longArray")
+
+        self.converter._apply_pmx_vertex_weights(
+            pmx_data,
+            ["joint_0", "joint_1"],
+            "skinCluster",
+            self.test_mesh,
+        )
+
+        mock_apply_weights.assert_called_once()
+        applied_weights = mock_apply_weights.call_args[0][2]
+        self.assertEqual(applied_weights, [[0.0, 1.0], [1.0, 0.0]])
 
     @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
     def test_apply_pmd_vertex_weights_with_sentinel_bone2(self, mock_apply_weights):
