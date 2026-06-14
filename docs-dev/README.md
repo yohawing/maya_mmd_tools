@@ -11,6 +11,7 @@
 - [architecture.md](architecture.md) - アプリケーション全体の設計、主要レイヤー、Maya連携方針
 - [setting.md](setting.md) - 設定管理システム
 - [ascii-translation.md](ascii-translation.md) - MMD多言語名をMaya互換名へ変換する仕組み
+- [material-split-import.md](material-split-import.md) - material split import と morph group split の設計メモ
 
 ### ファイルフォーマット仕様
 
