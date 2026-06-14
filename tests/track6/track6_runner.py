@@ -739,6 +739,7 @@ def _prepare_shader_mode(use_shader: bool, shader_backend: str = "auto") -> list
 def _collect_profile(
     model_root: str,
     separate_meshes: bool,
+    morph_group_split: bool,
     import_elapsed_sec: float,
     parsed_data: Any,
     importer_profile: dict[str, Any] | None = None,
@@ -774,6 +775,7 @@ def _collect_profile(
 
     profile = {
         "separate_meshes_by_material": separate_meshes,
+        "split_meshes_by_morph_groups": morph_group_split,
         "import_elapsed_sec": round(import_elapsed_sec, 3),
         "mesh_transform_count": len(mesh_transforms),
         "mesh_shape_count": len(visible_mesh_shapes),
@@ -799,6 +801,7 @@ def run_case(
     use_shader: bool = False,
     shader_backend: str = "auto",
     separate_meshes: bool | None = None,
+    morph_group_split: bool | None = None,
 ) -> dict[str, Any]:
     """Import one model plus optional motion and return a serializable result.
 
@@ -833,6 +836,8 @@ def run_case(
     logging.getLogger("mmd_tools").addHandler(log_handler)
     previous_separate_meshes = None
     changed_separate_meshes = False
+    previous_morph_group_split = None
+    changed_morph_group_split = False
 
     try:
         if not Path(model_path).is_file():
@@ -843,10 +848,15 @@ def run_case(
         cmds.file(new=True, force=True)
         shader_setup_errors = _prepare_shader_mode(use_shader, shader_backend)
         previous_separate_meshes = mmd_settings.get("import.model.separate_meshes_by_material", False)
+        previous_morph_group_split = mmd_settings.get("import.model.split_meshes_by_morph_groups", False)
         if separate_meshes is not None:
             mmd_settings.set("import.model.separate_meshes_by_material", separate_meshes)
             changed_separate_meshes = True
+        if morph_group_split is not None:
+            mmd_settings.set("import.model.split_meshes_by_morph_groups", morph_group_split)
+            changed_morph_group_split = True
         effective_separate_meshes = mmd_settings.get("import.model.separate_meshes_by_material", False)
+        effective_morph_group_split = mmd_settings.get("import.model.split_meshes_by_morph_groups", False)
         parsed_data = parse_mmd_file(model_path)
         import_start = time.perf_counter()
         importer_profile: dict[str, Any] = {}
@@ -865,6 +875,7 @@ def run_case(
         profile = _collect_profile(
             model_root,
             bool(effective_separate_meshes),
+            bool(effective_morph_group_split),
             import_elapsed,
             parsed_data,
             importer_profile,
@@ -918,6 +929,11 @@ def run_case(
                 mmd_settings.set("import.model.separate_meshes_by_material", previous_separate_meshes)
             except Exception:
                 pass
+        if changed_morph_group_split:
+            try:
+                mmd_settings.set("import.model.split_meshes_by_morph_groups", previous_morph_group_split)
+            except Exception:
+                pass
         _apply_log_audit(audit, log_records, use_shader)
 
     return {
@@ -951,6 +967,7 @@ def run_manifest(
     use_shader: bool = False,
     shader_backend: str = "auto",
     separate_meshes: bool | None = None,
+    morph_group_split: bool | None = None,
 ) -> int:
     """Run manifest cases in Maya standalone and write result JSON."""
     out_path = _require_build_path(out_dir, "--out-dir")
@@ -979,6 +996,7 @@ def run_manifest(
             use_shader=use_shader,
             shader_backend=shader_backend,
             separate_meshes=separate_meshes,
+            morph_group_split=morph_group_split,
         )
         print(f"  {result['status']} ({result['elapsed_sec']}s)", flush=True)
         results.append(result)
@@ -1074,6 +1092,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Disable separate_meshes_by_material for this run.",
     )
     parser.set_defaults(separate_meshes=None)
+    parser.add_argument(
+        "--morph-group-split",
+        action="store_true",
+        dest="morph_group_split",
+        help="Enable experimental import.model.split_meshes_by_morph_groups for this run.",
+    )
+    parser.add_argument(
+        "--no-morph-group-split",
+        action="store_false",
+        dest="morph_group_split",
+        help="Disable experimental split_meshes_by_morph_groups for this run.",
+    )
+    parser.set_defaults(morph_group_split=None)
     return parser.parse_args(argv)
 
 
@@ -1110,6 +1141,7 @@ def main(argv: list[str] | None = None) -> int:
         use_shader=args.use_shader,
         shader_backend=args.shader_backend,
         separate_meshes=args.separate_meshes,
+        morph_group_split=args.morph_group_split,
     )
 
 

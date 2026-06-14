@@ -194,6 +194,10 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                         "vertex_morphs_skipped_by_material",
                         0,
                     ),
+                    "vertex_morphs_skipped_by_group": morph_result.get(
+                        "vertex_morphs_skipped_by_group",
+                        0,
+                    ),
                 }
         logger.info("PMXファイルのインポートが完了しました: %s", os.path.basename(filepath))
         return root_group  # ルートノードの名前を返す

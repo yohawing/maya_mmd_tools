@@ -12,7 +12,12 @@ from maya import cmds
 from maya.api import OpenMaya as om
 
 from mmd_tools.core import maya_utils
-from mmd_tools.core.constants import ATTR_MMD_MATERIAL_INDEX, ATTR_MMD_SOURCE_VERTEX_INDICES
+from mmd_tools.core.constants import (
+    ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
+)
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 
 
@@ -97,6 +102,7 @@ class MorphConverter:
         converted_material_morphs = set()
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
+        skipped_vertex_morphs_by_group = 0
 
         for mn in mesh_nodes:
             mesh_material_index = self._get_mesh_material_index(mn)
@@ -105,9 +111,19 @@ class MorphConverter:
                 if mesh_material_index is not None
                 else None
             )
+            allowed_vertex_morph_names = self._get_mesh_vertex_morph_name_filter(mn)
             for morph in pmx_data.morphs:
                 try:
                     if morph.morph_type == PmxMorphType.VertexMorph:
+                        morph_name = morph.get_name()
+                        if allowed_vertex_morph_names is not None and morph_name not in allowed_vertex_morph_names:
+                            skipped_vertex_morphs_by_group += 1
+                            self.logger.debug(
+                                "Skipping vertex morph %s for morph group split mesh %s",
+                                morph_name,
+                                mn,
+                            )
+                            continue
                         if visible_vertex_indices is not None and not self._vertex_morph_affects_vertices(
                             morph,
                             visible_vertex_indices,
@@ -159,6 +175,7 @@ class MorphConverter:
             "bone_morph_nodes": bone_morph_nodes,
             "material_morph_nodes": material_morph_nodes,
             "vertex_morphs_skipped_by_material": skipped_vertex_morphs_by_material,
+            "vertex_morphs_skipped_by_group": skipped_vertex_morphs_by_group,
             "results": results,
         }
 
@@ -202,6 +219,25 @@ class MorphConverter:
             if not source_indices:
                 return None
             return {source_index: local_index for local_index, source_index in enumerate(source_indices)}
+        except Exception:
+            return None
+
+    def _get_mesh_vertex_morph_name_filter(self, mesh_node: str) -> Optional[Set[str]]:
+        """Return allowed vertex morph names for a morph-group split mesh."""
+        try:
+            if not cmds.objExists(mesh_node):
+                return None
+            if not cmds.attributeQuery(ATTR_MMD_MORPH_GROUP_SPLIT_MESH, node=mesh_node, exists=True):
+                return None
+            if not bool(cmds.getAttr(f"{mesh_node}.{ATTR_MMD_MORPH_GROUP_SPLIT_MESH}")):
+                return None
+            if not cmds.attributeQuery(ATTR_MMD_VERTEX_MORPH_NAMES_JSON, node=mesh_node, exists=True):
+                return set()
+            raw_names = cmds.getAttr(f"{mesh_node}.{ATTR_MMD_VERTEX_MORPH_NAMES_JSON}") or "[]"
+            names = json.loads(raw_names)
+            if not isinstance(names, list):
+                return set()
+            return {str(name) for name in names}
         except Exception:
             return None
 

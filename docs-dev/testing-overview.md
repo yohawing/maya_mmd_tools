@@ -197,6 +197,10 @@ uvx nox -s pmx_roundtrip -- --maya 2024 --out-dir build/roundtrip-custom
 # compact PMX split mesh は mmd_source_vertex_indices で元 PMX vertex index を保持する
 uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --limit 1 --separate-meshes --out-dir build/batch-import/separate-meshes-audit
 
+# 実験的な PMX morph group split を有効化して profile 計測
+# separate_meshes_by_material は無効のまま、VertexMorph が触る material set ごとに compact mesh を作る
+uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --case <case-name> --no-separate-meshes --morph-group-split --out-dir build/batch-import/morph-group-split-audit
+
 # 代表 case を import し、PNG capture まで確認
 uvx nox -s maya_batch_import -- --maya 2024 --manifest build/batch-import/manifest.json --case <case-name> --capture
 

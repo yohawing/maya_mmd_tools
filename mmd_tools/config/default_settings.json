@@ -10,6 +10,7 @@
       "_comment": "Settings for model geometry, materials, and structure",
       "import_models": true,
       "separate_meshes_by_material": false,
+      "split_meshes_by_morph_groups": false,
       "create_mmd_shaders": false,
       "mmd_shader_backend": "auto",
       "texture_search_path": "",

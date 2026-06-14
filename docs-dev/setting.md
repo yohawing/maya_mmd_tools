@@ -57,6 +57,7 @@ settings.get('import.physics.import_physics', False)
 |               | `root_bone_name`             | `str`   | `"master"`   | 生成されるルートボーンの名前。                                       |
 | **model**     | `import_models`              | `bool`  | `true`       | モデル（メッシュ、マテリアル等）をインポートするか。                 |
 |               | `separate_meshes_by_material`| `bool`  | `false`      | マテリアルごとにメッシュを分割するか。通常は単一メッシュのまま使い、材質単位で個別編集・表示制御が必要な場合だけ有効化する。 |
+|               | `split_meshes_by_morph_groups`| `bool` | `false`      | 実験的な PMX-only 設定。VertexMorph が触る material set ごとに compact mesh を作り、material split より mesh / blendShape の増加を抑える。 |
 |               | `create_mmd_shaders`         | `bool`  | `false`      | MMDライクなシェーダーを自動で作成・割り当てするか。                  |
 |               | `mmd_shader_backend`         | `str`   | `"auto"`     | `auto` / `dx11` / `glsl` / `standard`（glsl 指定時は GLSLShader、auto は dx11 成功後 glsl、最終 fallback standardSurface）。 |
 |               | `texture_search_path`        | `str`   | `""`         | テクスチャファイルを追加で検索するパス。                             |

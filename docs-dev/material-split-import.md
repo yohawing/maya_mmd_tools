@@ -25,13 +25,13 @@ Mixing the two would make the setting name misleading and would break expectatio
 
 ## Proposed Morph Group Split
 
-If implemented, add a separate experimental option such as:
+The experimental option is:
 
 ```python
 settings.set("import.model.split_meshes_by_morph_groups", False)
 ```
 
-The first implementation should be PMX-only and should not replace the default unified mesh path.
+The first implementation is PMX-only and does not replace the default unified mesh path.
 
 Recommended grouping:
 
@@ -69,3 +69,11 @@ Record at minimum:
 - `profile.importer.morph_result.vertex_morphs_skipped_by_material`
 
 The first target case is `stage07black__Eye_morph`, because it has already exposed material split import cost and has baseline results for unified and material split paths.
+
+Initial `stage07black__Eye_morph` results:
+
+| path | import | mesh transforms | blendShape | skinCluster | vertex slots | morph phase |
+|------|--------|-----------------|------------|-------------|--------------|-------------|
+| unified | 0.986s | 11 | 1 | 1 | 27,523 | 0.360s |
+| material split compact | 0.845s | 26 | 5 | 9 | 27,779 | 0.247s |
+| morph group split | 0.750s | 14 | 3 | 4 | 27,523 | 0.152s |
