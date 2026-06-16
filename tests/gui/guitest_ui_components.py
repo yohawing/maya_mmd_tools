@@ -87,8 +87,12 @@ class TestMainWindow(GuiTestBase):
         # 正しい数のタブが作成されている（8つ）
         self.assertEqual(self.window.tab_widget.count(), 8)
 
-        # 各タブのタイトルを確認
-        expected_titles = ["File I/O", "Info", "Material", "Bone", "Morph", "Display Pane", "Physics", "Settings"]
+        # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
+        from mmd_tools.ui.translations import UITranslator
+
+        translator = UITranslator.instance()
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "display_pane", "physics", "settings"]
+        expected_titles = [translator.translate(key, "tabs") for key in tab_keys]
 
         for i, title in enumerate(expected_titles):
             self.assertEqual(self.window.tab_widget.tabText(i), title)
@@ -208,7 +212,13 @@ class TestMainWindow(GuiTestBase):
         QApplication.processEvents()
 
         self.assertEqual(self.window.tab_widget.currentIndex(), 1)
-        self.assertEqual(self.window.tab_widget.tabText(1), "Info")
+        # 期待値は翻訳辞書から取得（UI 言語に依存しない）
+        from mmd_tools.ui.translations import UITranslator
+
+        self.assertEqual(
+            self.window.tab_widget.tabText(1),
+            UITranslator.instance().translate("info", "tabs"),
+        )
 
     def test_window_resize(self):
         """
