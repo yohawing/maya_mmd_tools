@@ -53,6 +53,8 @@ class TestRigConverterMaya(unittest.TestCase):
         # デフォルト値を設定
         bone.given_parent_bone_index = 0
         bone.given_rate = 1.0
+        bone.grant_parent_bone_index = 0
+        bone.grant_rate = 1.0
         bone.x_axis_direction = (1, 0, 0)
         bone.z_axis_direction = (0, 0, 1)
         bone.ik_target_bone_index = 0
@@ -430,6 +432,32 @@ class TestRigConverterMaya(unittest.TestCase):
         # multiplyDivideノードが作成されたか確認
         mult_nodes = cmds.ls("child_joint_given_mult", type="multiplyDivide")
         self.assertTrue(len(mult_nodes) > 0)
+
+    def test_setup_grant_bones_without_master_reference(self):
+        """masterが存在しないPMXでも部分回転付与を設定できることを確認"""
+        cmds.select(clear=True)
+        parent_joint = cmds.joint(name="parent_joint", position=[0, 0, 0])
+        cmds.select(clear=True)
+        child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
+
+        child_bone = self._create_mock_pmx_bone(
+            0,
+            "ChildBone",
+            bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE,
+        )
+        child_bone.grant_parent_bone_index = 1
+        child_bone.grant_rate = 0.5
+
+        parent_bone = self._create_mock_pmx_bone(1, "ParentBone")
+
+        constraints = self.converter._setup_grant_bones(
+            [child_bone, parent_bone],
+            [child_joint, parent_joint],
+        )
+
+        self.assertEqual(len(constraints), 1)
+        self.assertFalse(cmds.objExists("master"))
+        self.assertTrue(cmds.objExists("mmd_grant_reference"))
 
     def test_pole_target_position_for_leg_ik(self):
         """足IKのPoleTarget位置が膝の前方に配置されるかテスト"""

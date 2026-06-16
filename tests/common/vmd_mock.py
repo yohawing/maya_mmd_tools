@@ -117,6 +117,7 @@ class VmdMock:
     @staticmethod
     def create_custom_vmd(
         model_name: str = "TestModel",
+        morph_name: str = "smile",
         bone_frame_count: int = 10,
         morph_frame_count: int = 5,
         camera_frame_count: int = 0,
@@ -128,6 +129,7 @@ class VmdMock:
 
         Args:
             model_name: モデル名
+            morph_name: モーフフレーム名
             bone_frame_count: ボーンフレーム数
             morph_frame_count: モーフフレーム数
             camera_frame_count: カメラフレーム数
@@ -156,8 +158,9 @@ class VmdMock:
 
         # モーフフレーム
         data.extend(struct.pack("<L", morph_frame_count))
+        morph_name_bytes = morph_name.encode("shift-jis", errors="ignore")[:15]
         for i in range(morph_frame_count):
-            data.extend(b"smile" + b"\x00" * (15 - len(b"smile")))  # モーフ名
+            data.extend(morph_name_bytes + b"\x00" * (15 - len(morph_name_bytes)))  # モーフ名
             data.extend(struct.pack("<L", i))  # フレーム番号
             data.extend(struct.pack("<f", i * 0.2))  # モーフ値
 

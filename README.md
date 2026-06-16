@@ -22,6 +22,8 @@ This is an alpha early release. Some features may be undeveloped or unstable.
 - VMD motion import has an unresolved issue where newly imported motion may not play back correctly. In `0.1.0`, VMD loading/parsing is available, but motion playback should be treated as incomplete.
 - Large models may have performance issues.
 - Some PMX files may fail to import.
+- The opt-in C++ PMX fast path currently supports mesh, basic materials, basic skeleton/skin, and vertex morph blendShape targets.
+- C++ fast path morphs not yet implemented: UV/additional UV morphs, material morphs, bone morphs, and group morphs.
 
 ## System Requirements
 
@@ -159,8 +161,11 @@ If you have a VMD file:
 
 1. Select `MMD > MMD Tools`.
 2. In the Import/Export tab, choose a VMD file.
-3. Click `Import Animation`.
-4. The animation is applied to the matching model in the scene.
+3. (Optional) In animation import settings, set VMD FPS (choices: 30 or 60; default 30). This changes the Maya scene time unit before import.
+4. Click `Import Animation`.
+5. The animation is applied to the matching model in the scene.
+
+Note: VMD stores integer frame numbers but does not store FPS metadata. Frame numbers are used as-is (not rescaled); only the scene time unit is set according to the VMD FPS choice.
 
 ## Model Import
 

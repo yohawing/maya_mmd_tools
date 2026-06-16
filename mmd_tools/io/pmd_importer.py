@@ -2,6 +2,8 @@
 PMDファイルをMayaシーンにインポートするためのモジュール。
 """
 
+import time
+
 from maya import cmds
 from mmd_tools.core import maya_utils
 
@@ -37,6 +39,13 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
     """
     if options is None:
         options = {}
+    profile = options.get("profile") if isinstance(options.get("profile"), dict) else None
+    phase_timings = {}
+
+    def _record_phase(name: str, start: float) -> None:
+        if profile is not None:
+            phase_timings[name] = round(time.perf_counter() - start, 6)
+
     logger.info("PMXファイルのインポートを開始: %s", filepath)
 
     logger.debug("スケールファクター: %f", scale)
@@ -69,32 +78,47 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
                     ATTR_MMD_MODEL_NAME_EN: "",
                     ATTR_MMD_COMMENT: parser.header.get_comment(),
                     ATTR_MMD_COMMENT_EN: "",
+                    # Phase 1: store source for later VMD runtime bake
+                    "mmd_source_file": filepath,
                 },
             )
 
             # メッシュを変換
             logger.info("メッシュを変換中...")
             mesh_converter = MeshConverter(filepath)
+            phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmd_mesh(parser, root_group)
+            _record_phase("mesh_conversion_sec", phase_start)
+
+            mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
             logger.debug("メッシュ変換完了: グループ=%s, 名前=%s", mesh_group, mesh_name)
 
             # モーフを変換
             logger.info("モーフを変換中...")
             morph_converter = MorphConverter()
-            morph_converter.convert_pmd_morphs(parser, mesh_name)
+            phase_start = time.perf_counter()
+            morph_result = morph_converter.convert_pmd_morphs(parser, mesh_name)
+            _record_phase("morph_conversion_sec", phase_start)
             logger.debug("モーフ変換完了: %s", mesh_name)
 
             # ボーンを変換
             logger.info("ボーンを変換中...")
             bone_converter = BoneConverter()
+            phase_start = time.perf_counter()
             maya_joints, skin_cluster = bone_converter.convert_pmd_bones(parser, mesh_name, root_group)
+            _record_phase("bone_and_skin_conversion_sec", phase_start)
             logger.debug(
-                "ボーン変換完了: %d個のジョイント",
+                "ボーン変換完了: %d個のジョイント, %d個のメッシュ",
                 len(maya_joints) if maya_joints else 0,
+                len(mesh_names),
             )
 
             # 物理を変換（設定で有効な場合）
-            if settings.get("import.physics.import_physics", True):
+            import_physics = options.get(
+                "import_physics",
+                settings.get("import.physics.import_physics", True),
+            )
+            if import_physics:
                 logger.info("物理を変換中...")
                 physics_converter = PhysicsConverter()
 
@@ -103,9 +127,11 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
 
                 # 物理データが存在する場合のみ変換
                 if hasattr(parser, "rigid_bodies") and parser.rigid_bodies:
+                    phase_start = time.perf_counter()
                     ncloth_nodes, constraint_nodes = physics_converter.convert_pmd_physics(
                         parser, bone_joint_mapping, root_group
                     )
+                    _record_phase("physics_conversion_sec", phase_start)
                     logger.debug(
                         "物理変換完了: nCloth=%d, Constraints=%d",
                         len(ncloth_nodes),
@@ -122,6 +148,14 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
                 cmds.makeIdentity(root_group, apply=True, scale=True)
 
             cmds.select(root_group)
+            if profile is not None:
+                profile["phase_timings"] = phase_timings
+                profile["mesh_converter"] = dict(mesh_converter.profile)
+                profile["morph_result"] = {
+                    "morphs_converted": morph_result.get("morphs_converted"),
+                    "total_morphs": morph_result.get("total_morphs"),
+                    "blend_shape_nodes": len(morph_result.get("blend_shape_nodes", []) or []),
+                }
         logger.info("PMDファイルのインポートが成功しました: %s", filepath)
         return root_group  # ルートノードの名前を返す
 

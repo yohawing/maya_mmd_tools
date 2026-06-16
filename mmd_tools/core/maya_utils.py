@@ -64,7 +64,7 @@ def sanitize_texture_path(texture_path, texture_dir):
     return full_texture_path
 
 
-def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects):
+def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):
     """
     MayaシーンにUV付きのメッシュオブジェクトを作成します。
     OpenMaya APIを使用して高速化。
@@ -76,6 +76,7 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
         face_connects (list[int]): 面を構成する頂点インデックスのリスト。
         uvs (list[float]): UV座標のフラットなリスト (u1, v1, u2, v2, ...)。
         face_uv_connects (list[int]): 各面の各頂点に対応するUVのインデックスリスト。
+        normals (list[tuple[float, float, float]] | None): 頂点法線のリスト。
 
     Returns:
         str: 作成されたメッシュのトランスフォームノード名。
@@ -99,6 +100,23 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     # メッシュを作成
     mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
+
+    if normals:
+        normal_array = om.MVectorArray()
+        normal_face_ids = om.MIntArray()
+        normal_vertex_ids = om.MIntArray()
+        face_id = 0
+        cursor = 0
+        for count in face_counts:
+            for _ in range(count):
+                vertex_id = face_connects[cursor]
+                normal = normals[vertex_id]
+                normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
+                normal_face_ids.append(face_id)
+                normal_vertex_ids.append(vertex_id)
+                cursor += 1
+            face_id += 1
+        mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
 
     # UVセットを作成
     if uvs and face_uv_connects:
@@ -232,15 +250,15 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
     sanitized_shader_name = shader_node + "SG"
     sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
 
-    # シェーダーのタイプに応じて適切な接続を行う
     shader_type = cmds.nodeType(shader_node)
 
-    if shader_type == "dx11Shader":
-        # dx11Shaderは直接surfaceShaderに接続
+    if cmds.attributeQuery("outColor", node=shader_node, exists=True):
+        cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
+    elif shader_type == "dx11Shader":
         cmds.connectAttr(shader_node + ".message", f"{sg_name}.surfaceShader", force=True)
     else:
-        # 標準シェーダーは.outColorを使用
-        cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
+        logger.error("Shader node '%s' has no outColor attribute", shader_node)
+        return
 
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)
@@ -544,6 +562,27 @@ def get_attribute(object_name, attr_name):
 
     except Exception:
         # オブジェクトが存在しない、その他のエラー
+        return None
+
+
+def get_int_array_attribute(object_name, attr_name):
+    """OpenMaya typed intArray attribute を Python の int list として取得する。"""
+    try:
+        selection_list = om.MSelectionList()
+        selection_list.add(object_name)
+        node_obj = selection_list.getDependNode(0)
+        depend_fn = om.MFnDependencyNode(node_obj)
+        plug = depend_fn.findPlug(attr_name, False)
+        if plug.isNull:
+            return None
+
+        data_obj = plug.asMObject()
+        if data_obj.isNull() or not data_obj.hasFn(om.MFn.kIntArrayData):
+            return None
+
+        int_array = om.MFnIntArrayData(data_obj).array()
+        return [int(int_array[i]) for i in range(len(int_array))]
+    except Exception:
         return None
 
 

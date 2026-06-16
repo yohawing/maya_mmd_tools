@@ -56,8 +56,10 @@ settings.get('import.physics.import_physics', False)
 |               | `use_namespace`              | `bool`  | `false`      | インポート時にMayaの名前空間を使用するか。                           |
 |               | `root_bone_name`             | `str`   | `"master"`   | 生成されるルートボーンの名前。                                       |
 | **model**     | `import_models`              | `bool`  | `true`       | モデル（メッシュ、マテリアル等）をインポートするか。                 |
-|               | `merge_meshes_by_material`   | `bool`  | `false`      | 同じマテリアルを持つメッシュを統合するか。                           |
-|               | `create_mmd_shaders`         | `bool`  | `true`       | MMDライクなシェーダーを自動で作成・割り当てするか。                  |
+|               | `separate_meshes_by_material`| `bool`  | `false`      | マテリアルごとにメッシュを分割するか。通常は単一メッシュのまま使い、材質単位で個別編集・表示制御が必要な場合だけ有効化する。 |
+|               | `split_meshes_by_morph_groups`| `bool` | `false`      | 実験的な PMX-only 設定。VertexMorph が触る material set ごとに compact mesh を作り、material split より mesh / blendShape の増加を抑える。 |
+|               | `create_mmd_shaders`         | `bool`  | `false`      | MMDライクなシェーダーを自動で作成・割り当てするか。                  |
+|               | `mmd_shader_backend`         | `str`   | `"auto"`     | `auto` / `dx11` / `glsl` / `standard`（glsl 指定時は GLSLShader、auto は dx11 成功後 glsl、最終 fallback standardSurface）。 |
 |               | `texture_search_path`        | `str`   | `""`         | テクスチャファイルを追加で検索するパス。                             |
 |               | `hide_hidden_geometry`       | `bool`  | `true`       | 非表示設定のジオメトリをインポート時に隠すか。                       |
 | **physics**   | `import_physics`             | `bool`  | `true`       | 物理関連の要素（剛体、ジョイント）をインポートするかのマスター設定。 |
@@ -69,6 +71,7 @@ settings.get('import.physics.import_physics', False)
 |               | `group_morphs_by_panel`      | `bool`  | `true`       | MMDの表示枠パネルに基づいてモーフをグループ化するか。                |
 | **animation** | `import_animations`          | `bool`  | `true`       | VMDアニメーションをインポートするかのマスター設定。                  |
 |               | `animation_start_frame`      | `int`   | `1`          | アニメーションの開始フレーム。                                       |
+|               | `vmd_fps`                    | `int`   | `30`         | VMDインポート時のMayaシーン時間単位（30または60）。VMDファイルはフレーム番号を格納するがFPSメタデータを持たない。デフォルトは30。 |
 |               | `resample_curves`            | `bool`  | `false`      | アニメーションカーブをリサンプリングするか。                         |
 |               | `import_camera_animation`    | `bool`  | `true`       | カメラアニメーションをインポートするか。                             |
 |               | `import_light_animation`     | `bool`  | `true`       | 照明アニメーションをインポートするか。                               |

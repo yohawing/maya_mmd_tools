@@ -1,0 +1,13 @@
+{
+  "description": "Minimal GoldenOracle-style example manifest for cpp_cli_smoke (manifest-subset only). Uses repo-bundled test assets under tests/data/. Not for oracle comparison.",
+  "cases": [
+    {
+      "name": "mmt-test-model-rest-pose",
+      "assets": {
+        "model": "../data/for_unit_test/test_1bone_cube.pmx",
+        "motion": "../data/for_unit_test/test_1bone_cube_motion.vmd"
+      },
+      "frames": [0, 5, 10]
+    }
+  ]
+}

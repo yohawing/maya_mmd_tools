@@ -2,9 +2,12 @@
 MMDファイル（PMX、PMD、VMD）を解析し、Mayaシーンにインポートするためのメインモジュール。
 """
 
-from mmd_tools.core import PmdData, PmxData, VmdData, settings
+from pathlib import Path
+
+from mmd_tools.core import settings
 from mmd_tools.core.mmd_parser import parse_mmd_file
 from mmd_tools.io import pmd_importer, pmx_importer, vmd_importer
+from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
 
 logger = get_logger("mmd_tools.io.mmd_importer")
@@ -27,12 +30,48 @@ def import_mmd_file(filepath, scale=None, options=None):
     # デフォルトオプション
     if options is None:
         options = {}
+    suffix = Path(filepath).suffix.lower()
+
+    # --- C++ fast import path (opt-in, PMX only) -------------------------
+    if suffix == ".pmx":
+        use_fast = options.get(
+            "use_cpp_fast_load",
+            settings.get("import.native.use_cpp_fast_load", False),
+        )
+        if use_fast:
+            mesh_only = options.get(
+                "cpp_fast_load_mesh_only",
+                settings.get("import.native.cpp_fast_load_mesh_only", True),
+            )
+            base_name = options.get("custom_namespace") or Path(filepath).stem
+            import_scale = (
+                scale
+                if scale is not None
+                else options.get("scale", settings.get("import.general.scale_factor", 1.0))
+            )
+            include_morphs = options.get(
+                "import_morphs",
+                settings.get("import.morph.import_morphs", True),
+            )
+            fast_root = fast_import(
+                filepath,
+                base_name=base_name,
+                scale=import_scale,
+                mesh_only=mesh_only,
+                include_morphs=include_morphs,
+            )
+            if fast_root is not None:
+                logger.info("C++ fast import succeeded: %s", fast_root)
+                return fast_root
+            logger.info("C++ fast import failed/excluded – falling back to Python parser")
+
     try:
         # 汎用パーサーでファイルを解析
         parsed_data = parse_mmd_file(filepath)
 
-        # 解析されたデータのタイプに応じてインポーターを呼び出す
-        if isinstance(parsed_data, PmxData):
+        # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
+        # ファイル拡張子でインポーターを選ぶ。
+        if suffix == ".pmx":
             return pmx_importer.import_pmx_file(
                 parsed_data,
                 filepath,
@@ -40,7 +79,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                 options,
             )
 
-        elif isinstance(parsed_data, PmdData):
+        elif suffix == ".pmd":
             return pmd_importer.import_pmd_file(
                 parsed_data,
                 filepath,
@@ -48,7 +87,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                 options,
             )
 
-        elif isinstance(parsed_data, VmdData):
+        elif suffix == ".vmd":
             return vmd_importer.import_vmd_file(parsed_data, filepath, options)
 
         else:

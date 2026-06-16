@@ -18,6 +18,11 @@ classifiers = [
 "Homepage" = "https://github.com/yohawing/maya_mmd_tools"
 "Bug Tracker" = "https://github.com/yohawing/maya_mmd_tools/issues"
 
+[project.optional-dependencies]
+dev = [
+    "flip-evaluator>=1.7,<2; python_version >= '3.8'",
+]
+
 [tool.ruff]
 line-length = 128
 indent-width = 4

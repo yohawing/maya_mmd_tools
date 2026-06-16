@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "Supported-only PMX roundtrip manifest for clean verification.",
+  "cases": [
+    {
+      "name": "repo_1bone_cube",
+      "model": "../data/for_unit_test/test_1bone_cube.pmx"
+    },
+    {
+      "name": "repo_supported_full",
+      "synthetic": "supported_full"
+    }
+  ]
+}

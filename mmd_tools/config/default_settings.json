@@ -10,7 +10,9 @@
       "_comment": "Settings for model geometry, materials, and structure",
       "import_models": true,
       "separate_meshes_by_material": false,
+      "split_meshes_by_morph_groups": false,
       "create_mmd_shaders": false,
+      "mmd_shader_backend": "auto",
       "texture_search_path": "",
       "hide_hidden_geometry": true,
       "uv_set_name": "map#",
@@ -29,16 +31,24 @@
     },
     "rig": {
       "_comment": "Settings for rigging system setup",
-      "add_semi_standard_bones": false
+      "add_semi_standard_bones": false,
+      "bake_mode": false
     },
     "animation": {
       "_comment": "Settings for importing VMD animation files",
       "import_animations": true,
       "import_morph_animation": true,
       "animation_start_frame": 1,
+      "vmd_fps": 30,
       "resample_curves": false,
       "import_camera_animation": true,
-      "import_light_animation": true
+      "import_light_animation": true,
+      "use_mmd_runtime_bake": true
+    },
+    "native": {
+      "_comment": "Settings for the compiled C++ fast import path",
+      "use_cpp_fast_load": false,
+      "cpp_fast_load_mesh_only": true
     },
     "naming": {
       "_comment": "Settings that control how objects are named in Maya",
