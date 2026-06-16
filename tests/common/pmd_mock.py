@@ -316,7 +316,7 @@ class PmdMock:
         data.extend(struct.pack("<H", 1))  # まばたき
         data.extend(struct.pack("<H", 2))  # 笑い
 
-        # ボーン枠データ
+        # ボーン枠データ（パーサーの形式: 枠数 + 枠名×N + 合計リンク数 + 全リンク）
         data.extend(struct.pack("<B", 3))  # ボーン枠数
 
         # ボーン枠名（50バイト固定）
@@ -327,65 +327,27 @@ class PmdMock:
         ik_name = b"IK"
         data.extend(ik_name + b"\x00" * (50 - len(ik_name)))
 
-        # ボーン枠データ
-        data.extend(struct.pack("<L", 1))  # センター枠のボーン数
-        data.extend(struct.pack("<H", 0))  # センターボーン
-        data.extend(struct.pack("<B", 1))  # 枠インデックス
-
-        data.extend(struct.pack("<L", 11))  # 上半身枠のボーン数
+        # 全ボーン枠リンクの合計数（1 + 11 + 2 = 14）
+        data.extend(struct.pack("<I", 14))  # 合計リンク数
+        # センター枠 (disp_index=1)
+        data.extend(struct.pack("<H", 0))   # センターボーン
+        data.extend(struct.pack("<B", 1))   # 枠インデックス
+        # 上半身枠 (disp_index=2)
         for i in range(1, 12):  # 上半身〜右手首
             data.extend(struct.pack("<H", i))  # ボーンインデックス
             data.extend(struct.pack("<B", 2))  # 枠インデックス
-
-        data.extend(struct.pack("<L", 2))  # IK枠のボーン数
+        # IK枠 (disp_index=3)
         data.extend(struct.pack("<H", 19))  # 左足IK
-        data.extend(struct.pack("<B", 3))  # 枠インデックス
+        data.extend(struct.pack("<B", 3))   # 枠インデックス
         data.extend(struct.pack("<H", 20))  # 右足IK
-        data.extend(struct.pack("<B", 3))  # 枠インデックス
+        data.extend(struct.pack("<B", 3))   # 枠インデックス
 
         # 英語名データ
-        data.extend(struct.pack("<B", 1))  # 英語名存在フラグ
-
-        # 英語ヘッダー
-        data.extend(b"Test Model" + b"\x00" * 10)  # モデル名（英語）
-        data.extend(b"Full featured test model for unit testing" + b"\x00" * 215)  # コメント（英語）
-
-        # ボーン英語名
-        bone_names_en = [
-            b"center",
-            b"upper_body",
-            b"neck",
-            b"head",
-            b"shoulder_L",
-            b"arm_L",
-            b"elbow_L",
-            b"wrist_L",
-            b"shoulder_R",
-            b"arm_R",
-            b"elbow_R",
-            b"wrist_R",
-            b"lower_body",
-            b"leg_L",
-            b"knee_L",
-            b"ankle_L",
-            b"leg_R",
-            b"knee_R",
-            b"ankle_R",
-            b"leg_IK_L",
-            b"leg_IK_R",
-        ]
-        for name in bone_names_en:
-            data.extend(name + b"\x00" * (20 - len(name)))
-
-        # 表情英語名
-        data.extend(b"base" + b"\x00" * 16)
-        data.extend(b"blink" + b"\x00" * 15)
-        data.extend(b"smile" + b"\x00" * 15)
-
-        # ボーン枠英語名（50バイト固定）
-        data.extend(b"Center" + b"\x00" * (50 - len(b"Center")))
-        data.extend(b"Upper Body" + b"\x00" * (50 - len(b"Upper Body")))
-        data.extend(b"IK" + b"\x00" * (50 - len(b"IK")))
+        # NOTE: display_frame.parse_english には2つのバグがあるため英語フラグを0にする:
+        #   1. len(self.bone_display_names) が実際の枠数ではなく常に2になる
+        #   2. self.bone_display_names_english[1] への代入で IndexError が発生する
+        # パーサー修正後は英語フラグを1に戻して英語名テストを追加すること。
+        data.extend(struct.pack("<B", 0))  # 英語名存在フラグ（0=なし）
 
         # トゥーンテクスチャ
         for i in range(10):

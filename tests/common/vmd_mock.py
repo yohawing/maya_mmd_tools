@@ -57,11 +57,20 @@ class VmdMock:
     def create_full_vmd() -> bytes:
         """全機能を含むVMDファイルバイナリデータを生成
 
+        ボーンフレーム・モーフフレーム・カメラフレーム・ライトフレーム・
+        セルフシャドウフレームを含む。
+
         Returns:
             bytes: 全機能を含むVMDファイルバイナリデータ
         """
-        # 基本的には最小限のVMDと同じ構造
-        return VmdMock.create_minimal_vmd()
+        return VmdMock.create_custom_vmd(
+            model_name="FullTestModel",
+            bone_frame_count=5,
+            morph_frame_count=3,
+            camera_frame_count=2,
+            light_frame_count=2,
+            shadow_frame_count=2,
+        )
 
     @staticmethod
     def create_camera_vmd() -> bytes:

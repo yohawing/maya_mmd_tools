@@ -1,4 +1,5 @@
 import os
+import unittest
 
 from tests.common.maya_test_base import MayaTestBase
 
@@ -17,6 +18,7 @@ class TestVmdExporter(MayaTestBase):
         if os.path.exists(self.output_file):
             os.remove(self.output_file)
 
+    @unittest.skip("VMDエクスポーター未実装: export_vmd_file の実装後に有効化する")
     def test_export_vmd_animation(self):
         """MayaシーンからVMDアニメーションが正しくエクスポートされることをテストする。"""
         # TODO: Mayaシーンにダミーのボーンアニメーション、ブレンドシェイプアニメーション、カメラ、照明などを設定する。

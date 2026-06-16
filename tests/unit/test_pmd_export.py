@@ -72,9 +72,6 @@ class TestPmdExport(TestBase):
     def test_pmd_round_trip_with_full_mock(self):
         """フル機能モックデータを使用したPMDファイルのラウンドトリップテスト"""
 
-        # フル機能モックに問題があるため、一時的にスキップ
-        # self.skipTest("フル機能モックデータに問題があるため一時的にスキップ")
-
         # モックデータを作成
         mock_data = PmdMock.create_full_pmd()
 

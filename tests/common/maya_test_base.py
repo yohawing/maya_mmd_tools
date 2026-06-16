@@ -86,7 +86,7 @@ class MayaTestBase(TestBase):
         @param plugin: プラグイン名。
         """
         cmds.loadPlugin(plugin, qt=True)
-        cls.plugins_loaded.add(plugin)
+        cls.plugins_loaded.append(plugin)
 
     @classmethod
     def unload_plugins(cls):
@@ -104,7 +104,7 @@ class MayaTestBase(TestBase):
             for f in cls.files_created:
                 if os.path.exists(f):
                     os.remove(f)
-            cls.files_create = []
+            cls.files_created = []
             if os.path.exists(Settings.temp_dir):
                 shutil.rmtree(Settings.temp_dir)
 

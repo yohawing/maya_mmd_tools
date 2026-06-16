@@ -3,6 +3,7 @@ PMDインポーターの統合テスト
 """
 
 import os
+import unittest
 
 from maya import cmds
 
@@ -126,11 +127,9 @@ class TestPmdImporter(MayaTestBase):
         # リジッドボディやジョイントが作成されたことを確認（該当する場合）
         # ※実装によってはスキップされる可能性もあるため、存在確認のみ
 
+    @unittest.skip("複数PMDファイル連続インポートテスト未実装: get_available_pmd_files の実装後に有効化する")
     def test_import_pmd_multiple_files(self):
         """複数のPMDファイルを連続でインポートするテスト"""
-
-        self.skipTest("未実装なのでスキップ")
-        return
         # 利用可能なPMDファイルを取得
         available_files = self.fixture_provider.get_available_pmd_files()
 

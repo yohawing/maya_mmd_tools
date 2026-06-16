@@ -13,8 +13,7 @@ class TestPmdParser(TestBase):
         self.pmd_file_path = os.path.join(self.temp_dir, "test_model.pmd")
 
         # モックを使用してPMDデータを生成
-        # TODO: create_full_pmdのバイナリ構造に問題があるため、一時的にminimalを使用
-        mock_pmd_data = PmdMock.create_minimal_pmd()
+        mock_pmd_data = PmdMock.create_full_pmd()
         with open(self.pmd_file_path, "wb") as f:
             f.write(mock_pmd_data)
 
@@ -77,14 +76,7 @@ class TestPmdParser(TestBase):
         """PMD IKデータが正しく解析されることをテストする。"""
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data)
-        # IKデータリストが空でないことを確認
-        # PMDファイルにはIKデータが存在しない場合もあるため、必ずしも空でないことを確認する。
-        # ただし、存在する場合は正しく解析されていることを確認
-        if not self.parsed_data.ik_data:
-            return
-        # IKデータが存在する場合、最初のIKデータを取得して確認
-        self.assertIsNotNone(self.parsed_data.ik_data)
-        # IKデータが存在する場合、最初のIKデータを取得して確認
+        # create_full_pmd には2つのIKが含まれる
         self.assertGreater(len(self.parsed_data.ik_data), 0)
         ik = self.parsed_data.ik_data[0]
         self.assertIsInstance(ik.ik_bone_index, int)
@@ -111,14 +103,8 @@ class TestPmdParser(TestBase):
         """PMD剛体データが正しく解析されることをテストする。"""
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data)
-        # 剛体リストが空でないことを確認
-        # 剛体リストがからの場合もあるため、必ずしも空でないことを確認する。
-        # ただし、存在する場合は正しく解析されていることを確認
-        if not self.parsed_data.rigid_bodies:
-            return
-        # 剛体データが存在する場合、最初の剛体データを取得して確認
-        self.assertIsNotNone(self.parsed_data.rigid_bodies)
-        # 剛体データが存在する場合、最初の剛体データを取得して確認
+        # create_full_pmd には2つの剛体が含まれる
+        self.assertGreater(len(self.parsed_data.rigid_bodies), 0)
         rigid_body = self.parsed_data.rigid_bodies[0]
         self.assertIsInstance(rigid_body.name, str)
         self.assertIsInstance(rigid_body.position, tuple)

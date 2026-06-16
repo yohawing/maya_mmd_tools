@@ -3,6 +3,7 @@ PMXインポーターの統合テスト
 """
 
 import os
+import unittest
 
 from maya import cmds
 
@@ -74,10 +75,9 @@ class TestPmxImporter(MayaTestBase):
         joints = cmds.ls(type="joint")
         self.assertGreater(len(joints), 0, "ジョイントが作成されていません")
 
+    @unittest.skip("全PMXファイルのロードテストは重いため保留中: 軽量バージョンへの置換を検討すること")
     def test_import_pmx_multiple_files(self):
         """全てのPMXモデルが基本的にロード可能かテスト"""
-        # 重いテストなので一時的にスキップ
-        self.skipTest("全PMXファイルのロードテストは重いため一時的にスキップ")
 
         pmx_files = self.fixture_provider.get_all_pmx_files()
 

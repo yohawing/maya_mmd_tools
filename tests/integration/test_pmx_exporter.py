@@ -1,3 +1,5 @@
+import unittest
+
 from tests.common.maya_test_base import MayaTestBase
 
 # from mmd_tools.io import export_pmx_file
@@ -15,10 +17,10 @@ class TestPmxExporter(MayaTestBase):
         # if os.path.exists(self.output_file):
         #     os.remove(self.output_file)
 
+    @unittest.skip("PMXエクスポーター未実装: export_pmx_file の実装後に有効化する")
     def test_export_pmx_model(self):
         """MayaシーンからPMXモデルが正しくエクスポートされることをテストする。"""
         # TODO: Mayaシーンにダミーのメッシュ、ボーン、モーフ、物理演算、材質などを設定する。
         # TODO: pmx_exporter.export_pmx_modelを呼び出す。
         # TODO: エクスポートされたPMXファイルが存在し、その内容が期待通りであることをアサートする。
-        # self.assertTrue(True)  # Placeholder assertion, replace with actual test logic
         pass
