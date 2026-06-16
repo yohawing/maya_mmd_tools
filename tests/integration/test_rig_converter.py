@@ -332,7 +332,6 @@ class TestRigConverterMaya(unittest.TestCase):
                 if cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
                     name_jp = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}")
                 bone_info[index] = {"joint": joint, "name_jp": name_jp}
-                print(f"ボーン情報: index={index}, joint={joint}, name_jp={name_jp}")
 
         # A_ (通常ボーン) の確認 - 名前で検索
         # loc: 1, 0, 1.14*2, rot: 90, 0, 0

@@ -346,6 +346,3 @@ class TestPmxParser(TestBase):
         # 注: 現在の実装ではSoftBodyのパーサーはプレースホルダーであり、詳細な解析は行われない。
         # そのため、リストがNoneでないことのみを確認する。
         self.assertIsNotNone(self.parsed_data.soft_bodies, msg="ソフトボディリストがNoneです")
-
-
-""

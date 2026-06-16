@@ -87,8 +87,6 @@ class TestMeshConverter(MayaTestBase):
         converter = MeshConverter(pmd_file_path)
         mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
 
-        settings.get("import.model.separate_meshes_by_material")
-
         # 結果の検証
         # 1. グループが作成されているか
         self.assertTrue(
@@ -184,7 +182,6 @@ class TestMeshConverter(MayaTestBase):
         mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
 
         # メッシュに割り当てられているマテリアルを取得
-        cmds.listRelatives(mesh_name, shapes=True, type="mesh") or []
         assigned_materials = set()
 
         assigned_materials = maya_utils.get_materials_from_mesh(mesh_name)
