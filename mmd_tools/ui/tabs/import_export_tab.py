@@ -306,7 +306,8 @@ class ImportExportTab(BaseTab):
         self.format_label = QLabel(self.tr("format", "fields"))
         format_layout.addWidget(self.format_label)
         self.export_format_combo = QComboBox()
-        self.export_format_combo.addItems(["pmx", "pmd"])
+        # PMD エクスポートは PmdExporter が未実装のため選択肢に出さない（pmx のみ）
+        self.export_format_combo.addItems(["pmx"])
         current_format = settings.get("export.general.export_format", "pmx")
         self.export_format_combo.setCurrentText(current_format)
         self.export_format_combo.currentTextChanged.connect(lambda v: settings.set("export.general.export_format", v))
@@ -429,6 +430,10 @@ class ImportExportTab(BaseTab):
         vpd_layout.addRow(self.import_vpd_button)
 
         self.vpd_group.setLayout(vpd_layout)
+        # VPD ポーズインポートは presenter にシグナル未接続で未実装のため、UI を無効化して
+        # 「押しても無反応」を防ぐ。実装してシグナル接続したら再有効化する。
+        self.vpd_group.setEnabled(False)
+        self.vpd_group.setToolTip("VPDポーズインポートは未実装です")
         right_layout.addWidget(self.vpd_group)
 
         # Export Group
@@ -562,7 +567,6 @@ class ImportExportTab(BaseTab):
         self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
         self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
-        self.joint_name_conversion_check.setText(self.tr("joint_name_conversion", "checkboxes"))
         self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
         self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))

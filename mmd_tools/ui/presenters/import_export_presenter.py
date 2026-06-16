@@ -1,7 +1,6 @@
 from ..qt_compat import QObject, QFileDialog
 from ...core.logger import get_logger
 from ...io.mmd_importer import import_mmd_file
-from ...io.pmx_exporter import PmxExporter
 from ...core.settings import settings
 
 logger = get_logger(__name__)
@@ -141,20 +140,12 @@ class ImportExportPresenter(QObject):
             self.app_state.emit_status("ファイルパスを入力してください")
             return
 
-        logger.info(f"Exporting file: {file_path}")
-
-        try:
-            exporter = PmxExporter()
-            # TODO: Get maya_data from the scene
-            maya_data = {}
-            exporter.export_pmx_model(file_path, maya_data)
-            logger.info("Export successful.")
-            self.app_state.emit_status(f"エクスポート完了: {file_path}")
-            # 成功したパスを履歴に追加
-            self.view.add_export_path_to_history(file_path)
-        except Exception as e:
-            logger.error(f"Export failed: {e}", exc_info=True)
-            self.app_state.emit_status(f"エクスポートエラー: {str(e)}")
+        # NOTE: Maya シーンから PMX 用データ（頂点/面/材質/ボーン等）を収集する処理が
+        # 未実装。収集なしで PmxExporter を呼ぶと必ず ValueError になり、ユーザーに
+        # 紛らわしいエラーを見せてしまうため、現時点では未実装であることを明示する。
+        # シーン収集（collect_*_from_scene_for_export 等）を実装したら有効化する。
+        logger.warning("PMX export is not implemented yet (scene data collection missing)")
+        self.app_state.emit_status("PMXエクスポートは未実装です（シーンからのデータ収集が未対応）")
 
     def import_vmd_file(self):
         """VMDファイルのインポート"""

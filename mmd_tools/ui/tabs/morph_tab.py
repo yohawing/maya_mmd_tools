@@ -322,6 +322,10 @@ class MorphTab(BaseTab):
         self.add_offset_btn = QPushButton(self.tr("add", "buttons"))
         self.remove_offset_btn = QPushButton(self.tr("delete", "buttons"))
         self.clear_offsets_btn = QPushButton(self.tr("clear_all", "actions"))
+        # オフセット操作は presenter にシグナル未接続、かつオフセット表示自体が未実装の
+        # ため無効化する（押しても無反応を防ぐ）。実装・接続後に再有効化する。
+        for _offset_btn in (self.add_offset_btn, self.remove_offset_btn, self.clear_offsets_btn):
+            _offset_btn.setEnabled(False)
         toolbar_layout.addWidget(self.add_offset_btn)
         toolbar_layout.addWidget(self.remove_offset_btn)
         toolbar_layout.addWidget(self.clear_offsets_btn)
