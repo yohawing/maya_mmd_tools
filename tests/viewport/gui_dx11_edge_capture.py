@@ -56,7 +56,7 @@ DEFAULT_MAYA_VERSION = "2024"
 COMMAND_PORT = 7721
 LOG_FILE_NAME = "gui_dx11_edge_capture.log"
 MAYA_START_TIMEOUT = 120  # seconds
-CAPTURE_TIMEOUT = 300  # seconds
+CAPTURE_TIMEOUT = 600  # seconds (full character models can be slow to import)
 LOG_POLL_INTERVAL = 1  # second
 
 CAPTURES_DIR = Path("build/captures/gui-dx11")
@@ -423,7 +423,7 @@ def _build_maya_command(
     # All print() calls go to Maya's script editor but we redirect
     # key messages to the log file for the host to monitor.
     code = f"""
-import sys, os, json, struct, zlib, math
+import sys, os, json, struct, zlib, math, time
 from pathlib import Path
 
 _project_root = Path(r"{project_root}")
@@ -1079,8 +1079,24 @@ def main() -> int:
             log_path=str(log_path),
         )
 
-        # Send it
-        _send_command(args.port, maya_cmd)
+        # Send it. Maya's commandPort python source-type is unreliable for
+        # large multi-line blobs: blank lines inside def bodies break the
+        # interactive-style parser and the whole block is silently dropped
+        # (observed: empty capture log, no execution).  Instead write the
+        # code to a file and send a short one-liner that exec()s it; only
+        # the tiny command crosses the socket, which is reliable.
+        cmd_file = output_dir / "_maya_capture_cmd.py"
+        cmd_file.write_text(maya_cmd, encoding="utf-8")
+        # Use POSIX (forward-slash) path in the transmitted command. Backslash
+        # Windows paths get mangled by Maya's MEL->python commandPort bridge
+        # (e.g. \b \f become escapes), which silently breaks open().  This is
+        # the same precaution run_gui_tests.py takes via Path.as_posix().
+        cmd_file_posix = cmd_file.as_posix()
+        one_liner = (
+            f"exec(compile(open(r'{cmd_file_posix}', encoding='utf-8').read(), "
+            f"r'{cmd_file_posix}', 'exec'))"
+        )
+        _send_command(args.port, one_liner)
 
         # Monitor for completion
         _monitor_log(log_path, CAPTURE_TIMEOUT)
