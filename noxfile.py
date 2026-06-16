@@ -244,6 +244,60 @@ def _run_cli_smoke(
 
 
 @nox.session(venv_backend="none")
+def ci_unit(session: nox.Session) -> None:
+    """Run pure-python unit tests without mayapy.
+
+    Dynamically discovers tests/unit/test_*.py files that can be imported
+    without Maya, so any new tests added to tests/unit are automatically
+    included — no manual listing required.
+
+    A test file is included when it can be imported successfully with a
+    plain ``python -c "import tests.unit.<stem>"`` probe (i.e. it has no
+    transitive dependency on ``maya``).  Files that fail this probe are
+    skipped with a notice; they require mayapy and belong to the ``tests``
+    session instead.
+
+    Examples:
+        uvx nox -s ci_unit
+    """
+    unit_dir = ROOT / "tests" / "unit"
+    importable: list[str] = []
+    skipped: list[str] = []
+
+    for py_file in sorted(unit_dir.glob("test_*.py")):
+        module_name = f"tests.unit.{py_file.stem}"
+        probe = subprocess.run(
+            [sys.executable, "-c", f"import {module_name}"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if probe.returncode == 0:
+            importable.append(module_name)
+        else:
+            skipped.append(py_file.name)
+
+    if skipped:
+        session.log(
+            f"Skipping {len(skipped)} test file(s) that require mayapy: "
+            + ", ".join(skipped)
+        )
+
+    if not importable:
+        session.error("No importable pure-python unit tests found in tests/unit/")
+
+    session.log(f"Running {len(importable)} pure-python unit test module(s)")
+    session.run(
+        sys.executable,
+        "-m",
+        "unittest",
+        *importable,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
 
