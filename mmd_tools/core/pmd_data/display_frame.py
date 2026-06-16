@@ -67,10 +67,15 @@ class PmdDisplayFrame:
             f (file): バイナリ読み込みモードで開かれたファイルハンドル。
         """
         bone_disps = []
-        for _ in range(len(self.bone_display_names)):
+        # bone_display_names は [<日本語の表示枠名リスト>, None] という構造のため、
+        # 英語名は日本語の表示枠名と同数だけ読む。len(self.bone_display_names) だと
+        # 常に 2 になり、表示枠数が 2 以外のとき読み取り数が狂う。
+        for _ in range(len(self.bone_display_names[0])):
             name = utils.decodePMDString(f.read(50))
             bone_disps.append(name)
-        self.bone_display_names_english[1] = bone_disps
+        # write_english() が bone_display_names_english[1] を参照するため、
+        # 英語名は index 1 に格納する（初期値は [] なので直接代入で再構築する）。
+        self.bone_display_names_english = [None, bone_disps]
 
     def write(self, f):
         """

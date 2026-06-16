@@ -1,6 +1,8 @@
+import io
 import os
 
 from mmd_tools.core import mmd_parser
+from mmd_tools.core.pmd_data.display_frame import PmdDisplayFrame
 from mmd_tools.core.pmd_data.face import PmdFace
 from tests.common.test_base import TestBase
 from tests.common.pmd_mock import PmdMock
@@ -129,3 +131,50 @@ class TestPmdParser(TestBase):
         self.assertEqual(len(joint.position), 3)
         self.assertIsInstance(joint.rotation, tuple)
         self.assertEqual(len(joint.rotation), 3)
+
+
+class TestPmdDisplayFrameEnglish(TestBase):
+    """PmdDisplayFrame の英語表示枠名の write/parse 往復テスト。
+
+    display_frame.parse_english() の回帰防止を目的とする。過去に以下の2バグがあった:
+      1. 読み取り件数に len(bone_display_names) を使い、構造が [<jp names>, None] の
+         ため常に 2 件しか読まなかった（実際の表示枠数を無視）。
+      2. bone_display_names_english[1] への代入が、初期値 [] に対する IndexError に
+         なっていた。
+    本テストは write_english -> parse_english の往復で英語名が保たれることを検証する。
+    """
+
+    def test_english_round_trip_preserves_names(self):
+        """3件の英語表示枠名が write/parse 往復で保たれることを確認する。"""
+        writer = PmdDisplayFrame()
+        writer.bone_display_names_english = [None, ["Frame1", "Frame2", "Frame3"]]
+
+        buf = io.BytesIO()
+        writer.write_english(buf)
+        buf.seek(0)
+
+        reader = PmdDisplayFrame()
+        # parse_english は len(bone_display_names[0]) 件読むため、日本語表示枠名を
+        # 3 件セットしておく（バグ時は常に 2 件しか読まず往復が壊れる）。
+        reader.bone_display_names = [["a", "b", "c"], None]
+        reader.parse_english(buf)
+
+        self.assertEqual(
+            reader.bone_display_names_english[1],
+            ["Frame1", "Frame2", "Frame3"],
+        )
+
+    def test_english_parse_reads_exact_count(self):
+        """表示枠が1件でも正しく1件だけ読むことを確認する（件数バグ検出）。"""
+        writer = PmdDisplayFrame()
+        writer.bone_display_names_english = [None, ["OnlyFrame"]]
+
+        buf = io.BytesIO()
+        writer.write_english(buf)
+        buf.seek(0)
+
+        reader = PmdDisplayFrame()
+        reader.bone_display_names = [["solo"], None]
+        reader.parse_english(buf)
+
+        self.assertEqual(reader.bone_display_names_english[1], ["OnlyFrame"])

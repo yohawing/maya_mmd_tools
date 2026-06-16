@@ -343,10 +343,11 @@ class PmdMock:
         data.extend(struct.pack("<B", 3))   # 枠インデックス
 
         # 英語名データ
-        # NOTE: display_frame.parse_english には2つのバグがあるため英語フラグを0にする:
-        #   1. len(self.bone_display_names) が実際の枠数ではなく常に2になる
-        #   2. self.bone_display_names_english[1] への代入で IndexError が発生する
-        # パーサー修正後は英語フラグを1に戻して英語名テストを追加すること。
+        # NOTE: display_frame.parse_english の2バグ（枠数が常に2になる / [1] 代入で
+        #   IndexError）は修正済み。英語表示枠名の write/parse 往復は
+        #   tests/unit/test_pmd_parser.py::TestPmdDisplayFrameEnglish で直接検証する。
+        #   この full mock 経由で英語ブロック全体（モデル名・ボーン名・表情名・
+        #   表示枠名の英語）を書き起こす実装は未対応のため、ここではフラグ0のまま。
         data.extend(struct.pack("<B", 0))  # 英語名存在フラグ（0=なし）
 
         # トゥーンテクスチャ
