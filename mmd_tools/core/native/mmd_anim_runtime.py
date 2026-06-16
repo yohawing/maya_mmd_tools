@@ -30,10 +30,8 @@ from ctypes import (
     CDLL,
     POINTER,
     Structure,
-    byref,
     c_bool,
     c_float,
-    c_int32,
     c_size_t,
     c_uint8,
     c_uint32,
@@ -1103,7 +1101,7 @@ def create_runtime_node_for_model(model_root: str, pmx_path: str, vmd_path: str 
     # 簡易: expression や scriptJob で駆動。フルは time1.outTime を接続
     try:
         cmds.connectAttr("time1.outTime", f"{node}.time", force=True)
-    except:
+    except Exception:
         pass
 
     # モデルルートにメッセージで関連付け (将来のドライバ用)
@@ -1123,7 +1121,7 @@ def create_runtime_node_for_model(model_root: str, pmx_path: str, vmd_path: str 
                 except Exception:
                     pass
             cmds.connectAttr(f"{node}.message", f"{model_root}.mmdRuntimeNode", force=True)
-        except:
+        except Exception:
             pass
 
     return node
@@ -1134,7 +1132,7 @@ def get_runtime_matrices_from_node(node: str) -> list:
     import maya.cmds as cmds
     try:
         return cmds.getAttr(f"{node}.worldMatrices[*]") or []
-    except:
+    except Exception:
         return []
 
 
@@ -1387,7 +1385,6 @@ def connect_runtime_node_outputs_to_model(
                         sanitized_alias = sanitize_text(pmx_name)
 
                         # Find the alias that matches this PMX morph name
-                        found_bs_weight = False
                         for wi in range(weight_count):
                             alias = cmds.aliasAttr(f"{bs_node}.weight[{wi}]", query=True)
                             if not alias:
@@ -1417,7 +1414,6 @@ def connect_runtime_node_outputs_to_model(
                                         f"Failed to connect morphWeights[{global_idx}] → "
                                         f"{bs_node}.weight[{wi}]: {e}"
                                     )
-                                found_bs_weight = True
                                 break
         except Exception as e:
             result["warnings"].append(

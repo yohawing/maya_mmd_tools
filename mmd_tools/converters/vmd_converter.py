@@ -44,7 +44,8 @@ try:
     HAS_MMD_RUNTIME = True
 except Exception:
     HAS_MMD_RUNTIME = False
-    is_mmd_runtime_available = lambda: False
+    def is_mmd_runtime_available():
+        return False
     MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = None  # type: ignore
 
 
