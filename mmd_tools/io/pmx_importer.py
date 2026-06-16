@@ -155,6 +155,15 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 else:
                     logger.debug("物理データが存在しません")
 
+            # MMD ライトコントローラ（操作可能なヌル）を作成（get-or-create）。
+            if settings.get("import.light.create_controller", True):
+                try:
+                    from ..converters.light_converter import create_mmd_light_controller
+
+                    create_mmd_light_controller()
+                except Exception:
+                    logger.debug("MMD ライトコントローラ作成に失敗", exc_info=True)
+
             # スケールを適用
             if root_group and scale != 1.0:
                 logger.info("スケールを適用中: %f", scale)
