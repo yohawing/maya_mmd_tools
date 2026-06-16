@@ -58,6 +58,33 @@ _CONSTRAINT_LOCKED = 1
 _CONSTRAINT_LIMITED = 2
 
 
+def _clamp_to_range(
+    value: float,
+    min_val: Optional[float] = None,
+    max_val: Optional[float] = None,
+) -> float:
+    """
+    値を [min_val, max_val] の範囲にクランプする純粋関数。
+
+    min_val / max_val が None の場合、その側の制限は適用しない。
+    Maya 非依存なのでユニットテストから直接検証できる。
+
+    Args:
+        value: 入力値
+        min_val: 下限（None なら無制限）
+        max_val: 上限（None なら無制限）
+
+    Returns:
+        float: クランプ後の値
+    """
+    result = float(value)
+    if min_val is not None:
+        result = max(result, float(min_val))
+    if max_val is not None:
+        result = min(result, float(max_val))
+    return result
+
+
 class PhysicsConverter:
     """
     MMD の物理演算データを Maya の物理システムに変換する。
@@ -430,12 +457,19 @@ class PhysicsConverter:
 
         if hasattr(pmd_data, "rigid_bodies") and pmd_data.rigid_bodies:
             for idx, rb in enumerate(pmd_data.rigid_bodies):
-                self._create_bullet_rigid_body(rb, idx, rigid_bodies_group, "pmd", bone_index_map)
+                # 1 剛体の失敗で物理変換全体を止めない（ログ失敗も含めて握る）。
+                try:
+                    self._create_bullet_rigid_body(rb, idx, rigid_bodies_group, "pmd", bone_index_map)
+                except Exception as e:
+                    self._safe_log_error("Bullet 剛体作成エラー", rb, e)
 
         create_joints = self.settings.get("create_physics_joints", True)
         if create_joints and hasattr(pmd_data, "joints") and pmd_data.joints:
             for joint in pmd_data.joints:
-                self._create_bullet_constraint_pmd(joint, pmd_data.rigid_bodies, constraints_group)
+                try:
+                    self._create_bullet_constraint_pmd(joint, pmd_data.rigid_bodies, constraints_group)
+                except Exception as e:
+                    self._safe_log_error("PMD joint 作成エラー", joint, e)
 
         self.logger.info(
             f"PMD Bullet 物理変換完了: Rb={len(self.created_bullet_rigid_bodies)} "
@@ -462,12 +496,19 @@ class PhysicsConverter:
 
         if hasattr(pmx_data, "rigid_bodies") and pmx_data.rigid_bodies:
             for idx, rb in enumerate(pmx_data.rigid_bodies):
-                self._create_bullet_rigid_body(rb, idx, rigid_bodies_group, "pmx", bone_index_map)
+                # 1 剛体の失敗で物理変換全体を止めない（ログ失敗も含めて握る）。
+                try:
+                    self._create_bullet_rigid_body(rb, idx, rigid_bodies_group, "pmx", bone_index_map)
+                except Exception as e:
+                    self._safe_log_error("Bullet 剛体作成エラー", rb, e)
 
         create_joints = self.settings.get("create_physics_joints", True)
         if create_joints and hasattr(pmx_data, "joints") and pmx_data.joints:
             for joint in pmx_data.joints:
-                self._create_bullet_constraint_pmx(joint, pmx_data.rigid_bodies, constraints_group)
+                try:
+                    self._create_bullet_constraint_pmx(joint, pmx_data.rigid_bodies, constraints_group)
+                except Exception as e:
+                    self._safe_log_error("PMX joint 作成エラー", joint, e)
 
         self.logger.info(
             f"PMX Bullet 物理変換完了: Rb={len(self.created_bullet_rigid_bodies)} "
@@ -478,6 +519,70 @@ class PhysicsConverter:
     # ------------------------------------------------------------------
     # Bullet 剛体作成
     # ------------------------------------------------------------------
+
+    def _safe_log_error(self, prefix: str, mmd_obj, error: Exception) -> None:
+        """
+        剛体/ジョイント作成失敗を安全にログ出力する。
+
+        ログ出力経路（カスタムハンドラ/フィルタや Maya API 由来）が
+        例外を投げても呼び出し元に伝播させず、最終的に必ず握りつぶす。
+        これにより 1 要素の失敗が import 全体を巻き込むのを防ぐ。
+
+        Args:
+            prefix: ログメッセージの接頭辞
+            mmd_obj: 失敗した MMD オブジェクト（name 属性を持つ想定）
+            error: 発生した例外
+        """
+        try:
+            name = getattr(mmd_obj, "name", "?")
+        except Exception:
+            name = "?"
+        try:
+            self.logger.error(f"{prefix} '{name}': {error}")
+        except Exception:
+            # ロガー自体が失敗した場合の最終フォールバック
+            try:
+                print(f"[MMD] {prefix} '{name}': {error}")
+            except Exception:
+                pass
+
+    def _set_attr_clamped(self, node: str, attr: str, value: float) -> None:
+        """
+        数値アトリビュートを設定する。属性に min/max が定義されている場合は
+        その有効範囲へクランプしてから設定する。
+
+        MMD の剛体パラメータ（回転減衰など）は Maya Bullet が許容する範囲
+        ([0,1] など) を超えることがあり、そのまま setAttr すると
+        RuntimeError で剛体作成全体が失敗するため、ここで安全側に丸める。
+
+        Args:
+            node: 対象ノード名（shape など）
+            attr: アトリビュート名（例: "angularDamping"）
+            value: 設定したい値
+        """
+        plug = f"{node}.{attr}"
+        try:
+            clamped = float(value)
+        except (TypeError, ValueError):
+            clamped = 0.0
+
+        min_val = None
+        max_val = None
+        try:
+            if cmds.attributeQuery(attr, node=node, minExists=True):
+                queried_min = cmds.attributeQuery(attr, node=node, minimum=True)
+                if queried_min:
+                    min_val = float(queried_min[0])
+            if cmds.attributeQuery(attr, node=node, maxExists=True):
+                queried_max = cmds.attributeQuery(attr, node=node, maximum=True)
+                if queried_max:
+                    max_val = float(queried_max[0])
+        except Exception as exc:
+            # 範囲取得に失敗してもクランプ無しで続行する
+            self.logger.debug(f"'{plug}' の有効範囲取得に失敗しました: {exc}")
+
+        clamped = _clamp_to_range(clamped, min_val, max_val)
+        cmds.setAttr(plug, clamped)
 
     def _create_bullet_rigid_body(
         self,
@@ -541,11 +646,13 @@ class PhysicsConverter:
             cmds.setAttr(f"{shape}.bodyType", bullet_body)
 
             # 物理パラメータ
-            cmds.setAttr(f"{shape}.mass", getattr(rb, "mass", 0.0))
-            cmds.setAttr(f"{shape}.linearDamping", getattr(rb, "velocity_attenuation", 0.0))
-            cmds.setAttr(f"{shape}.angularDamping", getattr(rb, "rotation_attenuation", 0.0))
-            cmds.setAttr(f"{shape}.friction", getattr(rb, "friction", 0.0))
-            cmds.setAttr(f"{shape}.restitution", getattr(rb, "elasticity", 0.0))
+            # MMD の減衰/摩擦/反発は Maya Bullet の許容範囲（多くは [0,1]）を
+            # 超えることがあるため、属性の有効範囲にクランプして設定する。
+            self._set_attr_clamped(shape, "mass", getattr(rb, "mass", 0.0))
+            self._set_attr_clamped(shape, "linearDamping", getattr(rb, "velocity_attenuation", 0.0))
+            self._set_attr_clamped(shape, "angularDamping", getattr(rb, "rotation_attenuation", 0.0))
+            self._set_attr_clamped(shape, "friction", getattr(rb, "friction", 0.0))
+            self._set_attr_clamped(shape, "restitution", getattr(rb, "elasticity", 0.0))
 
             self._connect_bullet_rigid_body(transform, shape)
 
@@ -563,7 +670,9 @@ class PhysicsConverter:
             return transform
 
         except Exception as e:
-            self.logger.error(f"Bullet 剛体作成エラー '{getattr(rb, 'name', '?')}': {e}")
+            # 1 剛体の失敗は握りつぶし、残りの剛体変換を続行する。
+            # ログ出力自体が失敗しても import 全体を止めないよう防御する。
+            self._safe_log_error("Bullet 剛体作成エラー", rb, e)
             return None
 
     def _attach_static_bullet_body_to_bone(
@@ -697,7 +806,7 @@ class PhysicsConverter:
                 spring_rot=joint.spring_rotation if hasattr(joint, "spring_rotation") else None,
             )
         except Exception as e:
-            self.logger.error(f"PMD joint 作成エラー '{getattr(joint, 'name', '?')}': {e}")
+            self._safe_log_error("PMD joint 作成エラー", joint, e)
             return None
 
     # ------------------------------------------------------------------
@@ -737,7 +846,7 @@ class PhysicsConverter:
                 spring_rot=joint.spring_rotation if hasattr(joint, "spring_rotation") else None,
             )
         except Exception as e:
-            self.logger.error(f"PMX joint 作成エラー '{getattr(joint, 'name', '?')}': {e}")
+            self._safe_log_error("PMX joint 作成エラー", joint, e)
             return None
 
     # ------------------------------------------------------------------

@@ -404,6 +404,31 @@ def add_typed_attribute(object_name, attr_name, attr_type):
         logger.error(f"Failed to add typed attribute '{attr_name}' to '{object_name}': {e}")
 
 
+def _set_string_plug(plug, object_name, attr_name, value):
+    """
+    文字列アトリビュートを日本語・特殊文字でも安全に設定する。
+
+    OpenMaya API 2.0 の ``MPlug.setString()`` は一部の Maya ビルドで
+    非ASCII文字列を narrow ``wchar`` へ変換する際に文字化けし、
+    ``wchar ...`` エラーや文字化けした値が書き込まれることがある。
+    UTF-8 を正しく扱う ``cmds.setAttr(plug, value, type="string")``
+    を優先し、失敗した場合のみ ``MPlug.setString`` にフォールバックする。
+
+    Args:
+        plug (om.MPlug): 対象プラグ
+        object_name (str): オブジェクト名
+        attr_name (str): アトリビュート名
+        value (str): 設定する文字列
+    """
+    text = "" if value is None else str(value)
+    try:
+        cmds.setAttr(f"{object_name}.{attr_name}", text, type="string")
+        return
+    except Exception as exc:
+        logger.debug(f"cmds.setAttr による文字列設定に失敗、MPlug.setString にフォールバックします '{attr_name}': {exc}")
+    plug.setString(text)
+
+
 def set_attribute(object_name, attr_name, attr_value, attr_type):
     """
     OpenMaya API 2.0を使用してアトリビュート値を設定します。
@@ -440,10 +465,10 @@ def set_attribute(object_name, attr_name, attr_value, attr_type):
         elif attr_type == "double":
             plug.setDouble(attr_value)
         elif attr_type == "str" or attr_type == "string":
-            plug.setString(attr_value)
+            _set_string_plug(plug, object_name, attr_name, attr_value)
         elif attr_type == "bytes":
             # バイトデータは文字列として設定
-            plug.setString(attr_value.decode("utf-8"))
+            _set_string_plug(plug, object_name, attr_name, attr_value.decode("utf-8"))
         elif attr_type == "double3" and len(attr_value) == 3:
             # 3要素のベクトル値
             for i, value in enumerate(attr_value):
