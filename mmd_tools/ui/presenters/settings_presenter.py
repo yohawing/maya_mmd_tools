@@ -150,7 +150,9 @@ class SettingsPresenter:
         )
 
         if reply == QMessageBox.Yes:
-            # TODO: デフォルト値の定義
+            # JSON のデフォルト値で optionVar を上書きしてから UI に反映する。
+            # （以前は load_settings() のみで、実際にはリセットされていなかった）
+            settings.reset()
             self.load_settings()
             self.app_state.emit_status("設定をデフォルトに戻しました")
 
