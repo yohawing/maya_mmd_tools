@@ -567,6 +567,14 @@ class RigConverter:
             # ローカル付与フラグをチェック
             is_local_given = bone.get_flag(PmxBoneFlag.LOCAL)
 
+            # 自己参照ガード: 付与親が自分自身のジョイントを指す場合、Maya の
+            # orient/pointConstraint は「自分自身にはコンストレイントできない」と例外を
+            # 投げるため、warning を出してこのボーンの付与をスキップする。
+            grant_parent_index = getattr(bone, "grant_parent_bone_index", -1)
+            if 0 <= grant_parent_index < len(maya_joints) and maya_joints[grant_parent_index] == joint:
+                self.logger.warning(f"付与親が自分自身を指しているため付与をスキップします: {joint}")
+                continue
+
             # 回転付与
             if bone.get_flag(PmxBoneFlag.GRANT_PARENT_ROTATE):
                 parent_index = bone.grant_parent_bone_index
