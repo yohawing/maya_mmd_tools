@@ -1,28 +1,18 @@
 import math
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 import maya.cmds as cmds
 
 from mmd_tools.converters.rig_converter import RigConverter
 from mmd_tools.core import maya_utils
 from mmd_tools.core.constants import (
-    ATTR_MMD_BONE_INDEX,
-    ATTR_MMD_BONE_NAME,
     ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core.settings import settings
 from mmd_tools.io.pmx_importer import import_pmx_file
-from mmd_tools.io.vmd_importer import import_vmd_file
 from tests.common.test_fixture_provider import TestFixtureProvider
-
-# 付与ボーン実装のリファクタ（属性名 given_*→grant_*、実装をノードネットワークから
-# orientConstraint+ターゲット重みへ変更、setup_pmx_rig の呼出経路変更）に追従できて
-# いない旧API依存テスト。現行コンバータ自体は production / runtime-oracle で検証済みのため、
-# 緑化を優先して skip し、現行挙動に合わせた書き直しは follow-up とする。
-# 追跡: docs/TODO.md「Track C / integration」参照。
-_STALE_GRANT_API = "stale: RigConverter 付与ボーン refactor(given_*→grant_*) 未追従。現行挙動への書き直し待ち"
 
 
 class TestRigConverterMaya(unittest.TestCase):
@@ -58,8 +48,6 @@ class TestRigConverterMaya(unittest.TestCase):
         bone.get_flag = Mock(side_effect=lambda flag: bool(bone_flag & flag))
 
         # デフォルト値を設定
-        bone.given_parent_bone_index = 0
-        bone.given_rate = 1.0
         bone.grant_parent_bone_index = 0
         bone.grant_rate = 1.0
         bone.x_axis_direction = (1, 0, 0)
@@ -253,9 +241,13 @@ class TestRigConverterMaya(unittest.TestCase):
             parent_of_waist = cmds.listRelatives(result["waist"], parent=True)[0]
             self.assertEqual(parent_of_waist, lower_body)
 
-    @unittest.skip(_STALE_GRANT_API)
     def test_given_bones_with_pmx(self):
-        """実際のPMXデータを使用した付与ボーンのテスト"""
+        """実際のPMXデータを使用した付与ボーンのテスト（構造検証）。
+
+        rest pose の位置・付与属性・付与 constraint の設定を検証する。
+        VMD 適用後のフレーム単位の厳密な変換値は MMD モーションオラクルでの
+        検証が必要なため、本テストでは扱わない（follow-up）。
+        """
 
         # pmd_file_path = self.fixture_provider.get_pmx_file("test_given_bone")
 
@@ -311,106 +303,28 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertAlmostEqual(pos_d[1], 0.0, delta=0.1)
         self.assertAlmostEqual(pos_d[2], 0.0, delta=0.1)
 
-        # VMDファイルを読み込む
-        vmd_data, _ = self.fixture_provider.load_vmd_data("test_given_bone")
+        # 付与ボーン B/C/D の joint に MMD 付与 constraint が設定されていることを確認する。
+        # PMXファイル "test_given_bone" には以下のボーンがある想定:
+        #   A: 通常ボーン / B: Aから付与 / C: ローカル付与 / D: 多重付与
+        # （フレーム単位の厳密な変換値は MMD モーションオラクルでの検証が必要なため、
+        #   ここでは付与関係が constraint として構造的に作られていることを確認する。）
+        for grant_bone_name in ["B", "C", "D"]:
+            joints = cmds.ls(grant_bone_name, type="joint")
+            self.assertTrue(joints, f"付与ボーン {grant_bone_name} が見つかりません")
+            connected = cmds.listConnections(joints[0], type="constraint") or []
+            grant_marked = [
+                c
+                for c in connected
+                if cmds.attributeQuery("mmd_grant_constraint", node=c, exists=True)
+                and cmds.getAttr(f"{c}.mmd_grant_constraint")
+            ]
+            self.assertTrue(
+                grant_marked,
+                f"付与ボーン {grant_bone_name} に MMD 付与 constraint が設定されていません",
+            )
 
-        # VMDデータを適用
-        import_vmd_file(vmd_data, root_group[0], options={"target_model": "test_given_bone"})
-
-        # VMDデータの適用を確認
-        # 5フレーム目に移動
-        cmds.currentTime(5)
-
-        # 付与ボーンのテストで想定されるボーン構造を確認
-        # PMXファイル "test_given_bone" には以下のようなボーンがあると想定:
-        # A: 通常のボーン
-        # B: Aから100%の回転と移動付与を受けるボーン
-        # C: ローカル付与でBから回転移動付与を受けるボーン
-        # D: 多重付与でBから回転付与を受けるボーン
-
-        # ボーンを名前で検索（実際のPMXファイルのボーン名に依存）
-        all_joints = cmds.ls(type="joint")
-
-        # デバッグ情報：実際のボーン構造を出力
-        bone_info = {}
-        for joint in all_joints:
-            if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True):
-                index = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}")
-                name_jp = ""
-                if cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
-                    name_jp = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}")
-                bone_info[index] = {"joint": joint, "name_jp": name_jp}
-
-        # A_ (通常ボーン) の確認 - 名前で検索
-        # loc: 1, 0, 1.14*2, rot: 90, 0, 0
-        bone_a = "A"
-
-        # 位置の確認
-        pos = cmds.xform(bone_a, query=True, worldSpace=True, translation=True)
-        self.assertAlmostEqual(pos[0], 1.0, delta=0.1)
-        self.assertAlmostEqual(pos[1], 0.0, delta=0.1)
-        self.assertAlmostEqual(pos[2], math.sqrt(2) * 2, delta=0.1)
-
-        # 回転の確認
-        rot = cmds.xform(bone_a, query=True, worldSpace=True, rotation=True)
-        self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
-        self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
-        self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
-
-        # B_ (付与ボーン) の確認 - 名前で検索
-        # loc: 2, 2, 2, rot: 90, 0, 0  (付与45+回転45)
-        bone_b = "B"
-
-        # 位置の確認
-        pos = cmds.xform(bone_b, query=True, worldSpace=True, translation=True)
-        self.assertAlmostEqual(pos[0], 2.0, delta=0.1)
-        self.assertAlmostEqual(pos[1], 2.0, delta=0.1)
-        self.assertAlmostEqual(pos[2], 2.0, delta=0.1)
-
-        # 回転の確認（付与45度 + 自身の回転45度 = 90度）
-        rot = cmds.xform(bone_b, query=True, worldSpace=True, rotation=True)
-        self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
-        self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
-        self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
-
-        # C_ (ローカル付与ボーン) の確認 - 名前で検索
-        # loc: 3, 2, 2 rot: 45 (親の回転の付与）
-        bone_c = "C"
-
-        # 位置の確認
-        pos = cmds.xform(bone_c, query=True, worldSpace=True, translation=True)
-        self.assertAlmostEqual(pos[0], 3.0, delta=0.1)
-        self.assertAlmostEqual(pos[1], 2.0, delta=0.1)
-        self.assertAlmostEqual(pos[2], 2.0, delta=0.1)
-
-        # 回転の確認（ローカル付与で45度）
-        rot = cmds.xform(bone_c, query=True, worldSpace=True, rotation=True)
-        self.assertAlmostEqual(rot[0], 45.0, delta=1.0)
-
-        # D_ (多重付与ボーン) の確認 - 名前で検索
-        # loc: 0,0,0  rot: 90,0,0 ( Bの付与）
-        bone_d = "D"
-
-        # 位置の確認
-        pos = cmds.xform(bone_d, query=True, worldSpace=True, translation=True)
-        self.assertAlmostEqual(pos[0], 0.0, delta=0.1)
-        self.assertAlmostEqual(pos[1], 0.0, delta=0.1)
-        self.assertAlmostEqual(pos[2], 0.0, delta=0.1)
-
-        # 回転の確認（Bから付与された90度）
-        rot = cmds.xform(bone_d, query=True, worldSpace=True, rotation=True)
-        self.assertAlmostEqual(rot[0], 90.0, delta=1.0)
-        self.assertAlmostEqual(rot[1], 0.0, delta=1.0)
-        self.assertAlmostEqual(rot[2], 0.0, delta=1.0)
-
-        # 付与関係が正しく設定されているかの追加確認
-        # 少なくとも1つの付与ボーンが見つかったことを確認
-        found_given_bones = sum(1 for b in [bone_b, bone_c, bone_d] if b is not None)
-        self.assertGreater(found_given_bones, 0, "付与ボーンが見つかりませんでした")
-
-    @unittest.skip(_STALE_GRANT_API)
     def test_setup_given_parent_bones_rotation(self):
-        """回転付与ボーンの設定テスト（実際のMaya環境）"""
+        """回転付与ボーン(部分付与)の設定テスト（実際のMaya環境）"""
         # テスト用のジョイントを作成
         cmds.select(clear=True)
         parent_joint = cmds.joint(name="parent_joint", position=[0, 0, 0])
@@ -418,12 +332,10 @@ class TestRigConverterMaya(unittest.TestCase):
         child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
 
         bone = self._create_mock_pmx_bone(0, "TestBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
-        bone.given_parent_bone_index = 1
-        bone.given_rate = 0.5
+        bone.grant_parent_bone_index = 1
+        bone.grant_rate = 0.5
 
-        # Mockの問題を回避するため、完全なMockボーンを作成
-        parent_bone = Mock()
-        parent_bone.get_flag = Mock(return_value=False)
+        parent_bone = self._create_mock_pmx_bone(1, "ParentBone")
 
         bones = [bone, parent_bone]
         maya_joints = [child_joint, parent_joint]
@@ -431,15 +343,11 @@ class TestRigConverterMaya(unittest.TestCase):
         constraints = self.converter._setup_grant_bones(bones, maya_joints)
 
         self.assertEqual(len(constraints), 1)
-
-        # ネイティブノードが作成されたか確認（付与率が1.0でない場合）
-        # decomposeMatrixノードが作成されたか確認
-        decompose_nodes = cmds.ls("parent_joint_decompose", type="decomposeMatrix")
-        self.assertTrue(len(decompose_nodes) > 0)
-
-        # multiplyDivideノードが作成されたか確認
-        mult_nodes = cmds.ls("child_joint_given_mult", type="multiplyDivide")
-        self.assertTrue(len(mult_nodes) > 0)
+        constraint = constraints[0]
+        self.assertEqual(cmds.nodeType(constraint), "orientConstraint")
+        self.assertTrue(cmds.getAttr(f"{constraint}.mmd_grant_constraint"))
+        # 部分付与(rate=0.5)では中立リファレンスノードが作成される
+        self.assertTrue(cmds.objExists("mmd_grant_reference"))
 
     def test_setup_grant_bones_without_master_reference(self):
         """masterが存在しないPMXでも部分回転付与を設定できることを確認"""
@@ -524,7 +432,6 @@ class TestRigConverterMaya(unittest.TestCase):
         ) ** 0.5
         self.assertAlmostEqual(distance, 2.0, delta=1.0)
 
-    @unittest.skip(_STALE_GRANT_API)
     def test_setup_given_parent_bones_local_given(self):
         """ローカル付与ボーンの設定テスト（実際のMaya環境）"""
         # テスト用のジョイントを作成
@@ -535,11 +442,10 @@ class TestRigConverterMaya(unittest.TestCase):
 
         # ローカル付与フラグを含むボーンを作成
         bone = self._create_mock_pmx_bone(0, "TestBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE | PmxBoneFlag.LOCAL)
-        bone.given_parent_bone_index = 1
-        bone.given_rate = 0.5
+        bone.grant_parent_bone_index = 1
+        bone.grant_rate = 0.5
 
-        parent_bone = Mock()
-        parent_bone.get_flag = Mock(return_value=False)
+        parent_bone = self._create_mock_pmx_bone(1, "ParentBone")
 
         bones = [bone, parent_bone]
         maya_joints = [child_joint, parent_joint]
@@ -547,17 +453,12 @@ class TestRigConverterMaya(unittest.TestCase):
         constraints = self.converter._setup_grant_bones(bones, maya_joints)
 
         self.assertEqual(len(constraints), 1)
+        constraint = constraints[0]
+        self.assertEqual(cmds.nodeType(constraint), "orientConstraint")
+        self.assertTrue(cmds.getAttr(f"{constraint}.mmd_grant_constraint"))
+        # ローカル+部分付与でも中立リファレンスノードが作成される
+        self.assertTrue(cmds.objExists("mmd_grant_reference"))
 
-        # ローカル付与の場合はネイティブノードが作成される
-        # plusMinusAverageノードが作成されたか確認
-        diff_nodes = cmds.ls("parent_joint_local_diff", type="plusMinusAverage")
-        self.assertEqual(len(diff_nodes), 1)
-
-        # multiplyDivideノードが作成されたか確認
-        mult_nodes = cmds.ls("child_joint_local_mult", type="multiplyDivide")
-        self.assertEqual(len(mult_nodes), 1)
-
-    @unittest.skip(_STALE_GRANT_API)
     def test_setup_given_parent_bones_with_transform_layer(self):
         """変形階層を考慮した付与ボーンのテスト"""
         # 複数のジョイントを作成
@@ -575,8 +476,8 @@ class TestRigConverterMaya(unittest.TestCase):
             if i < 2:
                 # 付与ボーンとして設定（異なる変形階層）
                 bone = self._create_mock_pmx_bone(i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
-                bone.given_parent_bone_index = 3  # joint3を親にする
-                bone.given_rate = 0.5
+                bone.grant_parent_bone_index = 3  # joint3を親にする
+                bone.grant_rate = 0.5
                 bone.transform_layer = 1 if i == 0 else 0  # 異なる階層
             else:
                 # 通常のボーン
@@ -590,7 +491,6 @@ class TestRigConverterMaya(unittest.TestCase):
         # 2つの付与関係が設定される
         self.assertEqual(len(constraints), 2)
 
-    @unittest.skip(_STALE_GRANT_API)
     def test_multiple_given_dependencies(self):
         """多重付与（付与ボーンが他の付与ボーンを参照）のテスト"""
         # ジョイントチェーンを作成
@@ -610,13 +510,13 @@ class TestRigConverterMaya(unittest.TestCase):
             if i == 0:
                 # joint0: joint1から付与を受ける
                 bone = self._create_mock_pmx_bone(i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
-                bone.given_parent_bone_index = 1
-                bone.given_rate = 0.5
+                bone.grant_parent_bone_index = 1
+                bone.grant_rate = 0.5
             elif i == 1:
                 # joint1: joint2から付与を受ける（多重付与）
                 bone = self._create_mock_pmx_bone(i, f"Bone{i}", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
-                bone.given_parent_bone_index = 2
-                bone.given_rate = 0.7
+                bone.grant_parent_bone_index = 2
+                bone.grant_rate = 0.7
             else:
                 # 通常のボーン
                 bone = Mock()
@@ -629,59 +529,61 @@ class TestRigConverterMaya(unittest.TestCase):
         # 2つの付与関係が設定される
         self.assertEqual(len(constraints), 2)
 
-    @unittest.skip(_STALE_GRANT_API)
-    def test_create_weighted_rotation_constraint(self):
-        """重み付き回転コンストレイントの作成テスト"""
-        # テスト用のジョイントを作成
+    def test_partial_rotation_grant_uses_weighted_orient_constraint(self):
+        """部分回転付与(rate=0.5)が重み付き orientConstraint で作成されることを確認。
+
+        旧実装の decomposeMatrix/multiplyDivide ノードネットワークは撤去され、
+        現在は [中立リファレンス, 付与親] を重み [1-rate, rate] で合成する
+        orientConstraint を使う。
+        """
         cmds.select(clear=True)
         parent_joint = cmds.joint(name="parent_joint", position=[0, 0, 0])
         cmds.select(clear=True)
         child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
 
-        rate = 0.5
+        child_bone = self._create_mock_pmx_bone(0, "ChildBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
+        child_bone.grant_parent_bone_index = 1
+        child_bone.grant_rate = 0.5
+        parent_bone = self._create_mock_pmx_bone(1, "ParentBone")
 
-        created_nodes = self.converter._create_weighted_rotation_constraint(parent_joint, child_joint, rate)
+        constraints = self.converter._setup_grant_bones([child_bone, parent_bone], [child_joint, parent_joint])
 
-        # ノードが作成されたか確認
-        self.assertIsInstance(created_nodes, list)
-        self.assertTrue(len(created_nodes) > 0)
+        self.assertEqual(len(constraints), 1)
+        constraint = constraints[0]
+        self.assertEqual(cmds.nodeType(constraint), "orientConstraint")
+        # MMD付与constraintとして印付けされている
+        self.assertTrue(cmds.attributeQuery("mmd_grant_constraint", node=constraint, exists=True))
+        self.assertTrue(cmds.getAttr(f"{constraint}.mmd_grant_constraint"))
+        # 部分付与は2ターゲット、重みの合計は 1.0
+        weights = cmds.orientConstraint(constraint, query=True, weightAliasList=True)
+        self.assertEqual(len(weights), 2)
+        weight_sum = sum(cmds.getAttr(f"{constraint}.{w}") for w in weights)
+        self.assertAlmostEqual(weight_sum, 1.0, places=4)
 
-        # 初期ロケータが作成されたか確認
-        init_locator = cmds.ls("child_joint_init_rot", type="transform")
-        self.assertEqual(len(init_locator), 1)
+    def test_negative_rate_rotation_grant_uses_negative_weight(self):
+        """負の付与率(-0.5)が単一ターゲットの負ウェイト orientConstraint になることを確認。
 
-        # decomposeMatrixノードが作成されたか確認
-        decompose_nodes = cmds.ls("parent_joint_decompose", type="decomposeMatrix")
-        self.assertEqual(len(decompose_nodes), 1)
-
-        # multiplyDivideノードが作成されたか確認
-        mult_nodes = cmds.ls("child_joint_given_mult", type="multiplyDivide")
-        self.assertEqual(len(mult_nodes), 1)
-
-    @unittest.skip(_STALE_GRANT_API)
-    def test_create_negative_rate_rotation_constraint(self):
-        """負の付与率の回転コンストレイントの作成テスト"""
-        # テスト用のジョイントを作成
+        rate==-1 以外の負値は付与親1ターゲットに負の weight を与える経路を通る。
+        """
         cmds.select(clear=True)
         parent_joint = cmds.joint(name="parent_joint", position=[0, 0, 0])
         cmds.select(clear=True)
         child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
 
-        rate = -0.5  # 負の付与率
+        child_bone = self._create_mock_pmx_bone(0, "ChildBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
+        child_bone.grant_parent_bone_index = 1
+        child_bone.grant_rate = -0.5
+        parent_bone = self._create_mock_pmx_bone(1, "ParentBone")
 
-        created_nodes = self.converter._create_weighted_rotation_constraint(parent_joint, child_joint, rate)
+        constraints = self.converter._setup_grant_bones([child_bone, parent_bone], [child_joint, parent_joint])
 
-        # ノードが作成されたか確認
-        self.assertIsInstance(created_nodes, list)
-        self.assertTrue(len(created_nodes) > 0)
-
-        # 負の付与率の場合、反転用のmultiplyDivideノードが作成される
-        invert_nodes = cmds.ls("child_joint_invert_rot", type="multiplyDivide")
-        self.assertEqual(len(invert_nodes), 1)
-
-        # 初期ロケータが作成されたか確認
-        init_locator = cmds.ls("child_joint_init_rot", type="transform")
-        self.assertEqual(len(init_locator), 1)
+        self.assertEqual(len(constraints), 1)
+        constraint = constraints[0]
+        self.assertEqual(cmds.nodeType(constraint), "orientConstraint")
+        self.assertTrue(cmds.getAttr(f"{constraint}.mmd_grant_constraint"))
+        weights = cmds.orientConstraint(constraint, query=True, weightAliasList=True)
+        self.assertEqual(len(weights), 1)
+        self.assertAlmostEqual(cmds.getAttr(f"{constraint}.{weights[0]}"), -0.5, places=4)
 
     def test_find_joint_by_japanese_name(self):
         """日本語名でのジョイント検索テスト"""
@@ -843,38 +745,41 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertEqual(len(all_grooves), 1)  # 1つのみ（既存のもの）
         self.assertEqual(len(all_waists), 1)  # 1つのみ（既存のもの）
 
-    @unittest.skip(_STALE_GRANT_API)
-    @patch.object(RigConverter, "_extract_ik_chains")
-    @patch.object(RigConverter, "_create_maya_ik_handles")
-    def test_setup_pmx_rig_integration(self, mock_ik_handles, mock_extract_ik):
-        """PMXリグセットアップの統合テスト（実際のMaya環境）"""
-        # モックの戻り値設定
-        mock_extract_ik.return_value = [{"ik_bone": "test_ik"}]
-        mock_ik_handles.return_value = [{"ik_handle": "test_ikHandle"}]
+    def test_setup_pmx_rig_integration(self):
+        """PMXリグセットアップの統合テスト（現行 setup_pmx_rig の挙動）。
 
-        # テストデータ
-        pmx_data = Mock()
-        pmx_data.bones = []
-
-        # テスト用のジョイントとグループを作成
+        現行の setup_pmx_rig は付与ボーンの constraint 設定を行い、PMX の IK ハンドル
+        生成は無効化されている（IK は別経路で扱う）。戻り値の構造と付与 constraint の
+        作成を検証する。
+        """
+        # テスト用のジョイントとグループを作成（index0=child, index1=parent）
         cmds.select(clear=True)
-        joint1 = cmds.joint(name="joint1", position=[0, 0, 0])
-        joint2 = cmds.joint(name="joint2", position=[0, 5, 0])
-        maya_joints = [joint1, joint2]
+        child_joint = cmds.joint(name="joint0", position=[5, 0, 0])
+        cmds.select(clear=True)
+        parent_joint = cmds.joint(name="joint1", position=[0, 0, 0])
+        maya_joints = [child_joint, parent_joint]
 
-        bone_map = {0: joint1, 1: joint2}
+        # 付与ボーン1つを含む PMX データ
+        grant_bone = self._create_mock_pmx_bone(0, "ChildBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
+        grant_bone.grant_parent_bone_index = 1
+        grant_bone.grant_rate = 1.0
+        parent_bone = self._create_mock_pmx_bone(1, "ParentBone")
+
+        pmx_data = Mock()
+        pmx_data.bones = [grant_bone, parent_bone]
+
+        bone_map = {0: child_joint, 1: parent_joint}
         skeleton_group = cmds.group(empty=True, name="skeleton_grp")
 
         result = self.converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
 
-        # 各メソッドが呼ばれたか確認
-        mock_extract_ik.assert_called_once()
-        mock_ik_handles.assert_called_once()
-
-        # 結果の確認
-        self.assertEqual(len(result["ik_handles"]), 1)
-        self.assertTrue("semi_standard_bones" in result)
-        self.assertTrue("validation_report" in result)
+        # 戻り値の構造を確認
+        self.assertIn("constraints", result)
+        self.assertIn("ik_handles", result)
+        self.assertIn("semi_standard_bones", result)
+        # 付与関係が1つ設定され、PMX IK ハンドルは作成されない
+        self.assertEqual(len(result["constraints"]), 1)
+        self.assertEqual(result["ik_handles"], [])
 
     def test_pole_target_with_pmx_local_axis(self):
         """PMXローカル軸情報を使用したPoleTarget作成テスト"""
