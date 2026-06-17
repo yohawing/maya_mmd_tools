@@ -460,7 +460,7 @@ class ImportExportTab(BaseTab):
         # VPD ポーズインポートは presenter にシグナル未接続で未実装のため、UI を無効化して
         # 「押しても無反応」を防ぐ。実装してシグナル接続したら再有効化する。
         self.vpd_group.setEnabled(False)
-        self.vpd_group.setToolTip("VPDポーズインポートは未実装です")
+        self.vpd_group.setToolTip(self.tr("vpd_not_implemented", "tooltips"))
         right_layout.addWidget(self.vpd_group)
 
         # Export Group
@@ -587,6 +587,7 @@ class ImportExportTab(BaseTab):
             self.export_group.setTitle(self.tr("export", "buttons"))
         if hasattr(self, "vpd_group"):
             self.vpd_group.setTitle(self.tr("vpd_import", "buttons"))
+            self.vpd_group.setToolTip(self.tr("vpd_not_implemented", "tooltips"))
 
         # CheckBoxes
         self.use_namespace_check.setText(self.tr("use_namespace", "checkboxes"))

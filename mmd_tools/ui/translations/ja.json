@@ -93,7 +93,8 @@
     "add_item": "新しい項目を追加します",
     "remove_item": "選択した項目を削除します",
     "move_up": "選択した項目を上に移動します",
-    "move_down": "選択した項目を下に移動します"
+    "move_down": "選択した項目を下に移動します",
+    "vpd_not_implemented": "VPDポーズインポートは未実装です"
   },
   "messages": {
     "import_success": "インポートが完了しました",

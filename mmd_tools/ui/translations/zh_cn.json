@@ -37,7 +37,13 @@
     "clear": "清除",
     "save": "保存",
     "load": "加载",
-    "apply_to_selected": "应用到所选"
+    "apply_to_selected": "应用到所选",
+    "auto_scroll": "自动滚动",
+    "filter": "筛选",
+    "next": "下一个",
+    "previous": "上一个",
+    "search": "搜索",
+    "timestamp": "时间戳"
   },
   "labels": {
     "file_path": "文件路径:",
@@ -75,7 +81,8 @@
     "offset_not_supported": "偏移: 不支持",
     "log_entries": "日志",
     "search_results": "条",
-    "not_found": "未找到"
+    "not_found": "未找到",
+    "namespace_placeholder": "自动生成"
   },
   "tooltips": {
     "import_file": "导入PMD/PMX/VMD文件",
@@ -86,7 +93,8 @@
     "add_item": "添加新项目",
     "remove_item": "移除选中的项目",
     "move_up": "将选中的项目上移",
-    "move_down": "将选中的项目下移"
+    "move_down": "将选中的项目下移",
+    "vpd_not_implemented": "VPD 姿势导入尚未实现"
   },
   "messages": {
     "import_success": "导入完成",
@@ -191,7 +199,8 @@
     "invert_value": "反转值",
     "show_advanced_options": "显示高级选项",
     "enable_logging": "启用日志记录",
-    "auto_classify_transparency": "自动分类透明 (扫描纹理α)"
+    "auto_classify_transparency": "自动分类透明 (扫描纹理α)",
+    "custom_namespace": "自定义命名空间:"
   },
   "fields": {
     "scale_factor": "缩放系数:",

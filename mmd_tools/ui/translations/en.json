@@ -93,7 +93,8 @@
     "add_item": "Add new item",
     "remove_item": "Remove selected item",
     "move_up": "Move selected item up",
-    "move_down": "Move selected item down"
+    "move_down": "Move selected item down",
+    "vpd_not_implemented": "VPD pose import is not implemented yet"
   },
   "messages": {
     "import_success": "Import completed successfully",

@@ -37,7 +37,13 @@
     "clear": "清除",
     "save": "儲存",
     "load": "載入",
-    "apply_to_selected": "套用到所選"
+    "apply_to_selected": "套用到所選",
+    "auto_scroll": "自動捲動",
+    "filter": "篩選",
+    "next": "下一個",
+    "previous": "上一個",
+    "search": "搜尋",
+    "timestamp": "時間戳記"
   },
   "labels": {
     "file_path": "檔案路徑:",
@@ -75,7 +81,8 @@
     "offset_not_supported": "偏移: 不支援",
     "log_entries": "記錄",
     "search_results": "筆",
-    "not_found": "找不到"
+    "not_found": "找不到",
+    "namespace_placeholder": "自動產生"
   },
   "tooltips": {
     "import_file": "匯入PMD/PMX/VMD檔案",
@@ -86,7 +93,8 @@
     "add_item": "新增項目",
     "remove_item": "移除選取的項目",
     "move_up": "將選取的項目上移",
-    "move_down": "將選取的項目下移"
+    "move_down": "將選取的項目下移",
+    "vpd_not_implemented": "VPD 姿勢匯入尚未實作"
   },
   "messages": {
     "import_success": "匯入完成",
@@ -191,7 +199,8 @@
     "invert_value": "反轉值",
     "show_advanced_options": "顯示進階選項",
     "enable_logging": "啟用記錄",
-    "auto_classify_transparency": "自動分類透明 (掃描紋理α)"
+    "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
+    "custom_namespace": "自訂命名空間:"
   },
   "fields": {
     "scale_factor": "縮放係數:",
