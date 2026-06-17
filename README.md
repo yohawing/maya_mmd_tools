@@ -259,6 +259,46 @@ cmds.scale(0.1, 0.1, 0.1)
 cmds.move(0, 0, 100)
 ```
 
+## Viewport Look (DX11 Shader & Color Management)
+
+The DX11 MMD toon shader (`MMDShader.fx`) reproduces the MikuMikuDance look, which
+is authored and lit in **gamma (sRGB) space**. Maya's default Color Management
+renders through a linear / ACES pipeline, so without matching settings an imported
+model looks washed out and desaturated.
+
+To get the correct look, model import automatically configures Color Management.
+Color Management stays **enabled** — only the following are changed:
+
+- **Rendering space** → `scene-linear Rec.709-sRGB`. Maya 2026 defaults to
+  `ACEScg`, whose wider (AP1) primaries are converted to Rec.709 by the view
+  transform; the shader cannot cancel that color matrix, so colors shift and
+  over-saturate.
+- **View Transform** → `Un-tone-mapped (sRGB)`. The default
+  `ACES 1.0 SDR-video (sRGB)` applies a film tone-map that washes out and
+  desaturates the toon shading.
+
+The shader de-gammas its final output so the `Un-tone-mapped (sRGB)` view
+transform's sRGB encode cancels it exactly, restoring the gamma-space MMD result.
+ACES users can switch the View Transform back afterwards; non-MMD assets are
+unaffected by this opt-out:
+
+```python
+from mmd_tools.core import settings
+
+# Skip the automatic MMD color-management setup on import.
+settings.set("import.view.setup_color_management", False)
+```
+
+### MMD Light
+
+Each import creates (or reuses) a single **`mmd_light`** controller null: a
+directional light with an arrow draw handle and an `mmd_light_color` attribute.
+The DX11 shader is driven **only** by this controller (Maya's automatic
+scene-light binding is intentionally not used), so rotating the `mmd_light` null
+changes the MMD light direction live in Viewport 2.0 — independent of the
+viewport lighting mode ("Use Default/All Lights"). VMD light animation keys this
+same controller.
+
 ## Uninstall
 
 1. Quit Maya.
