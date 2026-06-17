@@ -84,14 +84,14 @@ class TestMainWindow(GuiTestBase):
         # タブウィジェットが存在する
         self.assertIsNotNone(self.window.tab_widget)
 
-        # 正しい数のタブが作成されている（8つ）
-        self.assertEqual(self.window.tab_widget.count(), 8)
+        # 正しい数のタブが作成されている（7つ。display_pane はデッドタブのため非表示）
+        self.assertEqual(self.window.tab_widget.count(), 7)
 
         # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
         from mmd_tools.ui.translations import UITranslator
 
         translator = UITranslator.instance()
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "display_pane", "physics", "settings"]
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "physics", "settings"]
         expected_titles = [translator.translate(key, "tabs") for key in tab_keys]
 
         for i, title in enumerate(expected_titles):
@@ -107,7 +107,8 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.material_presenter)
         self.assertIsNotNone(self.window.bone_presenter)
         self.assertIsNotNone(self.window.morph_presenter)
-        self.assertIsNotNone(self.window.display_pane_presenter)
+        # display_pane_presenter はデッドタブ非表示に伴い生成しない（属性自体が存在しない）
+        self.assertFalse(hasattr(self.window, "display_pane_presenter"))
         self.assertIsNotNone(self.window.physics_presenter)
         self.assertIsNotNone(self.window.settings_presenter)
 

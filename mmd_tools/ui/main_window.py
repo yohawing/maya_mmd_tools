@@ -30,8 +30,11 @@ from .tabs.bone_tab import BoneTab
 from .presenters.bone_presenter import BonePresenter
 from .tabs.morph_tab import MorphTab
 from .presenters.morph_presenter import MorphPresenter
-from .tabs.display_pane_tab import DisplayPaneTab
-from .presenters.display_pane_presenter import DisplayPanePresenter
+# NOTE: Display Pane タブはデータソース（mmd_display_panes 属性）を書き出す経路が
+#   未実装で、常に空のデッドタブのためリリースでは非表示にしている。
+#   表示枠インポートを実装する際に下記の addTab とともに復活させる。
+#   from .tabs.display_pane_tab import DisplayPaneTab
+#   from .presenters.display_pane_presenter import DisplayPanePresenter
 from .tabs.physics_tab import PhysicsTab
 from .presenters.physics_presenter import PhysicsPresenter
 from .tabs.settings_tab import SettingsTab
@@ -281,10 +284,8 @@ class MainWindow(QMainWindow):
         self.morph_presenter = MorphPresenter(morph_tab, self.app_state)
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
 
-        # Display Pane Tab
-        display_pane_tab = DisplayPaneTab()
-        self.display_pane_presenter = DisplayPanePresenter(display_pane_tab, self.app_state)
-        self.tab_widget.addTab(display_pane_tab, translator.translate("display_pane", "tabs"))
+        # Display Pane Tab — 非表示（mmd_display_panes 属性を書く経路が未実装の
+        #   デッドタブ。実装時に DisplayPaneTab/Presenter の import と addTab を復活させる）
 
         # Physics Tab
         physics_tab = PhysicsTab()
@@ -303,7 +304,6 @@ class MainWindow(QMainWindow):
             material_tab,
             bone_tab,
             morph_tab,
-            display_pane_tab,
             physics_tab,
             settings_tab,
         ]
@@ -319,7 +319,8 @@ class MainWindow(QMainWindow):
         translator = UITranslator.instance()
 
         # タブのタイトルを再設定
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "display_pane", "physics", "settings"]
+        # display_pane は非表示のため tab_keys から除外（インデックスずれ防止）
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "physics", "settings"]
         for i, key in enumerate(tab_keys):
             self.tab_widget.setTabText(i, translator.translate(key, "tabs"))
 

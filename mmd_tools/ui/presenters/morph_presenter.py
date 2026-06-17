@@ -219,12 +219,14 @@ class MorphPresenter:
         self.is_updating = False
 
     def update_offset_table(self, morph_name):
-        """オフセットテーブルを更新"""
-        self.view.offset_table.setRowCount(0)
+        """オフセットテーブルを更新する。
 
-        # TODO: オフセットデータの実装
-        # 現在はプレースホルダー
-        self.view.offset_count_label.setText("オフセット数: 0")
+        モーフのオフセットデータ（頂点/材質オフセット等）の表示は未対応。
+        編集ボタンは morph_tab 側で無効化済み。ここでは表を空にし、
+        ラベルで未対応であることを明示する（数値 0 件と誤認させない）。
+        """
+        self.view.offset_table.setRowCount(0)
+        self.view.offset_count_label.setText(self.view.tr("offset_not_supported", "labels"))
 
     def on_morph_slider_changed(self, value):
         """スライダーが変更されたときの処理"""

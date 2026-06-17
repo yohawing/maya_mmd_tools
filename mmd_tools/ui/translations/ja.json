@@ -79,6 +79,7 @@
     "selected": "選択済み:",
     "available": "使用可能:",
     "offset_count": "オフセット数",
+    "offset_not_supported": "オフセット: 未対応",
     "log_entries": "ログ",
     "search_results": "件",
     "not_found": "見つかりません"

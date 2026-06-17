@@ -72,6 +72,7 @@
     "selected": "已选择:",
     "available": "可使用:",
     "offset_count": "偏移数量",
+    "offset_not_supported": "偏移: 不支持",
     "log_entries": "日志",
     "search_results": "条",
     "not_found": "未找到"

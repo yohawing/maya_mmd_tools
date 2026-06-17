@@ -79,6 +79,7 @@
     "selected": "Selected:",
     "available": "Available:",
     "offset_count": "Offset Count",
+    "offset_not_supported": "Offsets: Not supported",
     "log_entries": "Logs",
     "search_results": "results",
     "not_found": "Not found"

@@ -295,9 +295,9 @@ class MorphTab(BaseTab):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # オフセット数表示
+        # オフセット数表示（オフセットデータ表示は未対応のため未対応ラベルを表示）
         info_layout = QHBoxLayout()
-        self.offset_count_label = QLabel(self.tr("offset_count", "labels") + ": 0")
+        self.offset_count_label = QLabel(self.tr("offset_not_supported", "labels"))
         info_layout.addWidget(self.offset_count_label)
         info_layout.addStretch()
         layout.addLayout(info_layout)
@@ -488,10 +488,9 @@ class MorphTab(BaseTab):
         if hasattr(self, "multiplier_label"):
             self.multiplier_label.setText(self.tr("multiplier", "fields"))
 
-        # Update offset count label
+        # オフセット表示は未対応のため、件数ではなく未対応ラベルを表示する
         if hasattr(self, "offset_count_label"):
-            count = self.offset_table.rowCount() if hasattr(self, "offset_table") else 0
-            self.offset_count_label.setText(self.tr("offset_count", "labels") + f": {count}")
+            self.offset_count_label.setText(self.tr("offset_not_supported", "labels"))
 
         # CheckBoxes
         if hasattr(self, "invert_check"):

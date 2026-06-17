@@ -72,6 +72,7 @@
     "selected": "已選擇:",
     "available": "可使用:",
     "offset_count": "偏移數量",
+    "offset_not_supported": "偏移: 不支援",
     "log_entries": "記錄",
     "search_results": "筆",
     "not_found": "找不到"
