@@ -8,11 +8,15 @@ from tests.common.vmd_mock import VmdMock
 
 
 class TestVmdParser(TestBase):
-    """VMDパーサーのユニットテスト（モックベース）"""
+    """VMDパーサーのユニットテスト。
+
+    bone/morph/IK の基本解析は実フィクスチャ ``tests/data/Lat式用.vmd`` を用いる。
+    camera/light/shadow など実ファイルに含まれないフレームは VmdMock 生成データで補う。
+    """
 
     def setUp(self):
         super().setUp()
-        # 実際のファイルを使用する代わりに、モックデータを使用
+        # bone/morph/IK 系は実フィクスチャを解析して検証する
         self.sample_vmd_path = os.path.join(os.path.dirname(__file__), "..", "data", "Lat式用.vmd")
         self.parsed_data = mmd_parser.parse_mmd_file(self.sample_vmd_path)
 

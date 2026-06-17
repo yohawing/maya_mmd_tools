@@ -119,11 +119,10 @@ class TestPmdParser(TestBase):
         """PMDジョイントデータが正しく解析されることをテストする。"""
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data)
-        # ジョイントリストが空でないことを確認
+        # create_full_pmd には1つのジョイントが含まれる（IK/剛体テストと同じく
+        # 空リストを許容する no-op にせず、必ず存在することをアサートする）
         self.assertIsInstance(self.parsed_data.joints, list)
-        if len(self.parsed_data.joints) == 0:
-            # ジョイントが存在しない場合はテストをスキップ
-            return
+        self.assertGreater(len(self.parsed_data.joints), 0)
         joint = self.parsed_data.joints[0]
         # ジョイントの属性が正しく設定されていることを確認
         self.assertIsInstance(joint.name, str)
