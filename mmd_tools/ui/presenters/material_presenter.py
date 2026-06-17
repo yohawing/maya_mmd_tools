@@ -163,7 +163,7 @@ class MaterialPresenter:
             logger.error(f"Failed to load materials: {e}", exc_info=True)
             self.view._set_details_enabled(False)
             self.view._show_placeholder()
-            self.app_state.emit_status(f"マテリアルの読み込みに失敗しました: {str(e)}")
+            self.app_state.emit_status(f"Failed to load materials: {str(e)}")
 
     def on_material_selected(self, current, previous):
         if not current:
@@ -180,8 +180,8 @@ class MaterialPresenter:
 
             reply = QMessageBox.question(
                 self.view,
-                "未保存の変更",
-                "変更が保存されていません。別のマテリアルを選択しますか？",
+                "Unsaved Changes",
+                "You have unsaved changes. Select a different material anyway?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -514,7 +514,7 @@ class MaterialPresenter:
 
         # Open color dialog
         initial_color = QColor(int(current[0] * 255), int(current[1] * 255), int(current[2] * 255))
-        color = QColorDialog.getColor(initial_color, self.view, f"{color_type.capitalize()}色を選択")
+        color = QColorDialog.getColor(initial_color, self.view, f"Select {color_type.capitalize()} Color")
 
         if color.isValid():
             # Update display
@@ -534,11 +534,11 @@ class MaterialPresenter:
             return
 
         if file_type == "texture":
-            caption = "テクスチャファイルを選択"
+            caption = "Select Texture File"
             filter_str = "Image Files (*.png *.jpg *.jpeg *.bmp *.tga *.dds);;All Files (*.*)"
             line_edit = self.view.texture_path_edit
         elif file_type == "sphere":
-            caption = "スフィアマップを選択"
+            caption = "Select Sphere Map"
             filter_str = "Sphere Maps (*.spa *.sph *.png *.jpg *.bmp);;All Files (*.*)"
             line_edit = self.view.sphere_map_path_edit
         else:
@@ -687,11 +687,11 @@ class MaterialPresenter:
 
             self.has_unsaved_changes = False
             logger.info(f"材質 '{self.current_material}' の変更を適用しました")
-            self.app_state.emit_status(f"材質の変更を適用しました: {self.current_material}")
+            self.app_state.emit_status(f"Applied material changes: {self.current_material}")
 
         except Exception as e:
             logger.error(f"Failed to apply material changes: {e}", exc_info=True)
-            self.app_state.emit_status(f"材質の変更に失敗しました: {str(e)}")
+            self.app_state.emit_status(f"Failed to apply material changes: {str(e)}")
 
     def _apply_texture(self, material, texture_path):
         """Apply texture to material"""
@@ -837,7 +837,7 @@ class MaterialPresenter:
         # Reflect the change on the currently shown material's combo.
         if self.current_material in targets:
             self.material_data["transparency_mode"] = idx
-        self.app_state.emit_status(f"透過モード '{mode}' を {applied} 材質に適用しました")
+        self.app_state.emit_status(f"Applied transparency mode '{mode}' to {applied} material(s)")
         logger.info(f"Batch-applied transparency mode '{mode}' to {applied} materials")
 
     def reset_changes(self):
@@ -849,7 +849,7 @@ class MaterialPresenter:
         self.load_material_properties(self.current_material)
         self.has_unsaved_changes = False
         logger.info(f"材質 '{self.current_material}' の変更をリセットしました")
-        self.app_state.emit_status(f"材質の変更をリセットしました: {self.current_material}")
+        self.app_state.emit_status(f"Reset material changes: {self.current_material}")
 
     def _on_value_changed(self, value=None):
         """値が変更されたときの処理"""
@@ -917,7 +917,7 @@ class MaterialPresenter:
 
         except Exception as e:
             logger.error(f"Failed to apply sphere map: {e}", exc_info=True)
-            self.app_state.emit_status(f"スフィアマップの適用に失敗しました: {str(e)}")
+            self.app_state.emit_status(f"Failed to apply sphere map: {str(e)}")
 
     def on_search_text_changed(self, text):
         """検索テキストが変更されたときの処理"""

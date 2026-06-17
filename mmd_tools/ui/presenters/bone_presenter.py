@@ -504,7 +504,7 @@ class BonePresenter:
         # 簡易的な実装：現在のMaya選択を使用
         selected = cmds.ls(selection=True, type="joint")
         if not selected:
-            self.app_state.emit_status("ジョイントを選択してください")
+            self.app_state.emit_status("Please select a joint")
             return
 
         bone = selected[0]
@@ -560,7 +560,7 @@ class BonePresenter:
         """IKリンクを追加"""
         selected = cmds.ls(selection=True, type="joint")
         if not selected:
-            self.app_state.emit_status("IKリンクとして追加するジョイントを選択してください")
+            self.app_state.emit_status("Please select a joint to add as an IK link")
             return
 
         bone = selected[0]
@@ -742,17 +742,17 @@ class BonePresenter:
                 item.setText(display_text)
 
             logger.info(f"ボーン '{self.current_bone}' の変更を適用しました")
-            self.app_state.emit_status(f"ボーンの変更を適用しました: {self.current_bone}")
+            self.app_state.emit_status(f"Applied bone changes: {self.current_bone}")
 
         except Exception as e:
             logger.error(f"Failed to apply bone changes: {e}", exc_info=True)
-            self.app_state.emit_status(f"ボーンの変更に失敗しました: {str(e)}")
+            self.app_state.emit_status(f"Failed to apply bone changes: {str(e)}")
 
     def reset_changes(self):
         """変更をリセット"""
         if self.current_bone and self.bone_data:
             self.load_bone_properties()
-            self.app_state.emit_status("変更をリセットしました")
+            self.app_state.emit_status("Reset changes")
 
     def _calculate_bone_flags(self):
         """UIの状態からボーンフラグを計算"""

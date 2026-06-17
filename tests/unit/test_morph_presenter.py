@@ -427,7 +427,7 @@ class TestMorphPresenter(MayaTestBase):
         # 削除されていないことを確認
         saved_presets = json.loads(cmds.getAttr(f"{test_model}.mmdMorphPresets"))
         self.assertIn("笑顔", saved_presets)
-        self.mock_app_state.emit_status.assert_called_with("デフォルトプリセットは削除できません", "warning")
+        self.mock_app_state.emit_status.assert_called_with("Default presets cannot be deleted", "warning")
 
 
 if __name__ == "__main__":

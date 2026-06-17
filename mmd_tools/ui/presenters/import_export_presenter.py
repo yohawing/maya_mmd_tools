@@ -72,7 +72,7 @@ class ImportExportPresenter(QObject):
     def import_file(self):
         file_path = self.view.import_path_edit.text().strip()
         if not file_path:
-            self.app_state.emit_status("ファイルパスを入力してください")
+            self.app_state.emit_status("Please enter a file path")
             return
 
         # Check if new file is requested
@@ -86,7 +86,7 @@ class ImportExportPresenter(QObject):
 
         # 進捗開始
         self.app_state.emit_progress(0)
-        self.app_state.emit_status(f"インポート中: {file_path}")
+        self.app_state.emit_status(f"Importing: {file_path}")
 
         # 設定を収集
         import_options = {
@@ -119,7 +119,7 @@ class ImportExportPresenter(QObject):
                 # ApplicationStateを更新
                 self.app_state.refresh_model_list()
                 self.app_state.current_model_root = root_node
-                self.app_state.emit_status(f"インポート完了: {root_node}")
+                self.app_state.emit_status(f"Import complete: {root_node}")
                 self.app_state.emit_progress(100)
                 # モデルリストを更新
                 self.view.refresh_model_list()
@@ -127,17 +127,17 @@ class ImportExportPresenter(QObject):
                 self.view.add_import_path_to_history(file_path)
             else:
                 logger.error("Import failed.")
-                self.app_state.emit_status("インポートに失敗しました")
+                self.app_state.emit_status("Import failed")
                 self.app_state.emit_progress(0)
         except Exception as e:
             logger.error(f"Import failed: {e}", exc_info=True)
-            self.app_state.emit_status(f"インポートエラー: {str(e)}")
+            self.app_state.emit_status(f"Import error: {str(e)}")
             self.app_state.emit_progress(0)
 
     def export_file(self):
         file_path = self.view.export_path_edit.text().strip()
         if not file_path:
-            self.app_state.emit_status("ファイルパスを入力してください")
+            self.app_state.emit_status("Please enter a file path")
             return
 
         # NOTE: Maya シーンから PMX 用データ（頂点/面/材質/ボーン等）を収集する処理が
@@ -145,13 +145,13 @@ class ImportExportPresenter(QObject):
         # 紛らわしいエラーを見せてしまうため、現時点では未実装であることを明示する。
         # シーン収集（collect_*_from_scene_for_export 等）を実装したら有効化する。
         logger.warning("PMX export is not implemented yet (scene data collection missing)")
-        self.app_state.emit_status("PMXエクスポートは未実装です（シーンからのデータ収集が未対応）")
+        self.app_state.emit_status("PMX export is not implemented yet (scene data collection is unsupported)")
 
     def import_vmd_file(self):
         """VMDファイルのインポート"""
         file_path = self.view.vmd_path_edit.text().strip()
         if not file_path:
-            self.app_state.emit_status("VMDファイルパスを入力してください")
+            self.app_state.emit_status("Please enter a VMD file path")
             return
 
         # ターゲットモデルを取得
@@ -162,7 +162,7 @@ class ImportExportPresenter(QObject):
             logger.info(f"Target model: {target_model}")
 
         self.app_state.emit_progress(0)
-        self.app_state.emit_status(f"VMDインポート中: {file_path}")
+        self.app_state.emit_status(f"Importing VMD: {file_path}")
 
         # アニメーション設定を収集
         animation_options = self._build_vmd_import_options(target_model)
@@ -172,15 +172,15 @@ class ImportExportPresenter(QObject):
             success = import_mmd_file(file_path, options=animation_options)
             if success:
                 logger.info("VMD import successful.")
-                self.app_state.emit_status(f"VMDインポート完了: {file_path}")
+                self.app_state.emit_status(f"VMD import complete: {file_path}")
                 self.app_state.emit_progress(100)
                 # 成功したパスを履歴に追加
                 self.view.add_vmd_path_to_history(file_path)
             else:
                 logger.error("VMD import failed.")
-                self.app_state.emit_status("VMDインポートに失敗しました")
+                self.app_state.emit_status("VMD import failed")
                 self.app_state.emit_progress(0)
         except Exception as e:
             logger.error(f"VMD import failed: {e}", exc_info=True)
-            self.app_state.emit_status(f"VMDインポートエラー: {str(e)}")
+            self.app_state.emit_status(f"VMD import error: {str(e)}")
             self.app_state.emit_progress(0)

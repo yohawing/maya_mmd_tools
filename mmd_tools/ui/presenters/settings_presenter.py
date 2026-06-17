@@ -133,18 +133,18 @@ class SettingsPresenter:
 
             settings.save()
             logger.info("設定を保存しました")
-            self.app_state.emit_status("設定を保存しました")
+            self.app_state.emit_status("Settings saved")
 
         except Exception as e:
             logger.error(f"Failed to save settings: {e}", exc_info=True)
-            self.app_state.emit_status(f"設定の保存に失敗しました: {str(e)}")
+            self.app_state.emit_status(f"Failed to save settings: {str(e)}")
 
     def reset_to_defaults(self):
         """デフォルト設定に戻す"""
         reply = QMessageBox.question(
             self.view,
-            "確認",
-            "すべての設定をデフォルトに戻しますか？",
+            "Confirm",
+            "Reset all settings to their defaults?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -154,13 +154,13 @@ class SettingsPresenter:
             # （以前は load_settings() のみで、実際にはリセットされていなかった）
             settings.reset()
             self.load_settings()
-            self.app_state.emit_status("設定をデフォルトに戻しました")
+            self.app_state.emit_status("Settings reset to defaults")
 
     def export_settings(self):
         """設定をファイルにエクスポート"""
         file_path, _ = QFileDialog.getSaveFileName(
             self.view,
-            "設定をエクスポート",
+            "Export Settings",
             "mmd_tools_settings.json",
             "JSON Files (*.json)",
         )
@@ -181,15 +181,15 @@ class SettingsPresenter:
                     json.dump(export_data, f, ensure_ascii=False, indent=2)
 
                 logger.info(f"設定をエクスポートしました: {file_path}")
-                self.app_state.emit_status("設定をエクスポートしました")
+                self.app_state.emit_status("Settings exported")
 
             except Exception as e:
                 logger.error(f"Failed to export settings: {e}", exc_info=True)
-                self.app_state.emit_status(f"設定のエクスポートに失敗しました: {str(e)}")
+                self.app_state.emit_status(f"Failed to export settings: {str(e)}")
 
     def import_settings(self):
         """設定をファイルからインポート"""
-        file_path, _ = QFileDialog.getOpenFileName(self.view, "設定をインポート", "", "JSON Files (*.json)")
+        file_path, _ = QFileDialog.getOpenFileName(self.view, "Import Settings", "", "JSON Files (*.json)")
 
         if file_path:
             try:
@@ -206,17 +206,17 @@ class SettingsPresenter:
                 self.load_settings()
 
                 logger.info(f"設定をインポートしました: {file_path}")
-                self.app_state.emit_status("設定をインポートしました")
+                self.app_state.emit_status("Settings imported")
 
             except Exception as e:
                 logger.error(f"Failed to import settings: {e}", exc_info=True)
-                self.app_state.emit_status(f"設定のインポートに失敗しました: {str(e)}")
+                self.app_state.emit_status(f"Failed to import settings: {str(e)}")
 
     def browse_log_file(self):
         """ログファイルのパスを選択"""
         file_path, _ = QFileDialog.getSaveFileName(
             self.view,
-            "ログファイルを選択",
+            "Select Log File",
             self.view.log_file_path_edit.text() or "mmd_tools.log",
             "Log Files (*.log);;All Files (*.*)",
         )
@@ -247,4 +247,4 @@ class SettingsPresenter:
             main_window.retranslate_all_tabs()
 
         # ステータスメッセージ
-        self.app_state.emit_status(f"言語を変更しました: {self.view.language_combo.currentText()}")
+        self.app_state.emit_status(f"Language changed: {self.view.language_combo.currentText()}")
