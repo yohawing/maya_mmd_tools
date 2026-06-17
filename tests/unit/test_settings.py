@@ -12,7 +12,7 @@ import unittest
 # プロジェクトルートを sys.path に追加
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from mmd_tools.core.settings import Settings, get_settings, SettingsProxy
+from mmd_tools.core.settings import Settings, get_settings
 
 
 def _reset_singleton():

@@ -38,11 +38,9 @@ import json
 import logging
 import os
 import socket
-import struct
 import subprocess
 import sys
 import time
-import zlib
 from pathlib import Path
 
 # Lazily imported for PMX fixture generation (requires mmd_tools on sys.path)

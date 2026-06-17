@@ -15,7 +15,7 @@ import 全体が巻き込まれて失敗していた。``_safe_log`` でこれ�
 import logging
 import unittest
 
-from mmd_tools.core.logger import MayaLogger, get_logger
+from mmd_tools.core.logger import get_logger
 
 
 class _RaisingHandler(logging.Handler):

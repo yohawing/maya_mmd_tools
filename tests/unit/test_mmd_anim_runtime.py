@@ -11,7 +11,6 @@ mmd-anim runtime (Python ctypes ラッパー) の基本動作を検証するユ�
 """
 
 import json
-import os
 import unittest
 from pathlib import Path
 

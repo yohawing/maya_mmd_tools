@@ -16,7 +16,7 @@ import sys
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock, call
+from unittest.mock import MagicMock, patch
 
 
 class _StubModule(types.ModuleType):
@@ -80,7 +80,6 @@ from mmd_tools.core.settings import settings
 from mmd_tools.io.cpp_fast_importer import (
     _apply_fast_skeleton_skin,
     _sanitize_node_name,
-    fast_import,
 )
 
 
