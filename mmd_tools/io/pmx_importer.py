@@ -156,11 +156,14 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                     logger.debug("物理データが存在しません")
 
             # MMD ライトコントローラ（操作可能なヌル）を作成（get-or-create）。
+            # シェーダーへの結線は dx11 uniform 生成（refresh）後に行うため、
+            # ここでは transform 名だけ控えておく。
+            light_ctrl = None
             if settings.get("import.light.create_controller", True):
                 try:
                     from ..converters.light_converter import create_mmd_light_controller
 
-                    create_mmd_light_controller()
+                    light_ctrl = create_mmd_light_controller()
                 except Exception:
                     logger.debug("MMD ライトコントローラ作成に失敗", exc_info=True)
 
@@ -190,6 +193,19 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                     logger.debug("dx11Shader generated uniforms synchronized: %d", synced_dx11)
             except Exception:
                 logger.debug("Failed to synchronize dx11 generated uniforms", exc_info=True)
+
+            # MMD ライトコントローラを各 dx11Shader に結線（uniform 生成後）。
+            if light_ctrl:
+                try:
+                    from ..converters.light_converter import wire_dx11_shaders_to_mmd_light
+
+                    wire_dx11_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)
+                except Exception:
+                    logger.debug("MMD ライト結線に失敗", exc_info=True)
+
+            # Color Management を MMD 向けに整える（CM の enable は触らない）。
+            if settings.get("import.view.setup_color_management", True):
+                maya_utils.setup_mmd_color_management()
             if profile is not None:
                 profile["phase_timings"] = phase_timings
                 profile["mesh_converter"] = dict(mesh_converter.profile)

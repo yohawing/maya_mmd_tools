@@ -1452,3 +1452,54 @@ def _list_dg_nodes(node_type, object_filter=None):
     except Exception as e:
         logger.error(f"Failed to list DG nodes: {e}")
         return []
+
+
+def setup_mmd_color_management(
+    rendering_space="scene-linear Rec.709-sRGB",
+    view_transform="Un-tone-mapped (sRGB)",
+):
+    """Color Management を MMD 向けに整える（CM の有効/無効は変更しない）。
+
+    MMD シェーダーは出口で de-gamma して view transform の sRGB encode を相殺し、
+    MMD のガンマ空間ルックを CM ON のまま再現する。これが**厳密に**成立するには:
+
+    - **Rendering space = scene-linear Rec.709-sRGB**: 既定の ACEScg のままだと
+      view transform に AP1→Rec.709 の primaries 変換行列が混ざり、出口 de-gamma
+      （転送関数のみ）では打ち消せず**彩度がズレる**。sRGB プライマリの線形空間に
+      すれば view transform は純ガンマだけになり相殺が厳密になる。
+    - **View transform = Un-tone-mapped (sRGB)**: 既定の ACES filmic はトーンマップで
+      白く眠くなる。純 sRGB encode にする。
+
+    ACES で見たい人は後から戻せる。CM の enable 状態はユーザー設定を尊重。
+
+    Returns:
+        bool: いずれかを設定できたら True。
+    """
+    changed = False
+    try:
+        spaces = cmds.colorManagementPrefs(q=True, renderingSpaceNames=True) or []
+        if rendering_space in spaces:
+            current = cmds.colorManagementPrefs(q=True, renderingSpaceName=True)
+            if current != rendering_space:
+                cmds.colorManagementPrefs(e=True, renderingSpaceName=rendering_space)
+                logger.info("Rendering space を MMD 向けに設定: %s (旧: %s)", rendering_space, current)
+            changed = True
+        else:
+            logger.debug("Rendering space '%s' は利用不可。スキップ", rendering_space)
+    except Exception:
+        logger.debug("Rendering space の設定に失敗", exc_info=True)
+
+    try:
+        transforms = cmds.colorManagementPrefs(q=True, viewTransformNames=True) or []
+        if view_transform in transforms:
+            current = cmds.colorManagementPrefs(q=True, viewTransformName=True)
+            if current != view_transform:
+                cmds.colorManagementPrefs(e=True, viewTransformName=view_transform)
+                logger.info("View Transform を MMD 向けに設定: %s (旧: %s)", view_transform, current)
+            changed = True
+        else:
+            logger.debug("View Transform '%s' は利用不可。スキップ", view_transform)
+    except Exception:
+        logger.debug("View Transform の設定に失敗", exc_info=True)
+
+    return changed

@@ -6,6 +6,25 @@
 #define PI 3.1415926
 
 //--------------------------------------------------------------------------------------
+// sRGB helper
+//--------------------------------------------------------------------------------------
+// MMD performs all texture/lighting math in gamma (sRGB) space, and dx11Shader
+// feeds the effect raw gamma texels, so the lighting below is already MMD-correct
+// in gamma space. The only mismatch is the OUTPUT: with Color Management on, the
+// view transform applies an extra linear->sRGB encode to our (already gamma-space)
+// color, double-gamma-ing it into a washed-out look. Decoding the final color to
+// linear here cancels that encode exactly, restoring the MMD look (and matching
+// the CM-off reference). Under CM-off (no view transform) this would darken the
+// result, so the importer steers the viewport to a CM-on sRGB/Un-tone-mapped view.
+float3 SrgbToLinear(float3 c)
+{
+    c = max(c, 0.0);
+    float3 lo = c / 12.92;
+    float3 hi = pow((c + 0.055) / 1.055, 2.4);
+    return lerp(hi, lo, step(c, 0.04045));
+}
+
+//--------------------------------------------------------------------------------------
 // Samplers
 //--------------------------------------------------------------------------------------
 SamplerState LinearSampler : register(s0)
@@ -232,54 +251,19 @@ float ShadowBias : ShadowMapBias<
     int UIOrder = 602;
 > = 0.01f;
 
-// Light parameters
-int Light0Type : LIGHTTYPE
-<
-    string Object = "Light 0";
-    string UIName = "Light 0 Type";
-    string UIWidget = "None";
-    int UIOrder = 1000;
-> = 0;
-
-float3 Light0Pos : POSITION
-<
-    string Object = "Light 0";
-    string UIName = "Light 0 Position";
-    string Space = "World";
-    string UIWidget = "None";
-    int UIOrder = 1000;
-> = {100.0f, 100.0f, 100.0f};
-
-float3 Light0Color : LIGHTCOLOR
-<
-    string Object = "Light 0";
-    string UIName = "Light 0 Color";
-    string UIWidget = "None";
-    int UIOrder = 1000;
-> = {1.0f, 1.0f, 1.0f};
-
-float3 Light0Dir : DIRECTION
-<
-    string Object = "Light 0";
-    string UIName = "Light 0 Direction";
-    string Space = "World";
-    string UIWidget = "None";
-    int UIOrder = 1000;
-> = {0.0f, -1.0f, 0.0f};
-
-int UseFixedLight<
+// MMD light. MMD has exactly one global directional light. It is driven by the
+// `mmd_light` controller null (worldMatrix -> direction, mmd_light_color -> color)
+// and is the ONLY light this shader reacts to: Maya's automatic scene-light
+// binding (DIRECTION / LIGHTCOLOR semantics) is intentionally not used, so the
+// look does not depend on the viewport lighting mode ("Use Default/All Lights").
+float3 MMDLightDirection<
     string UIGroup = "Lighting";
-    string UIName = "Use Fixed Light";
-> = 0;
-
-float3 FixedLightDirection<
-    string UIGroup = "Lighting";
-    string UIName = "Fixed Light Direction";
+    string UIName = "MMD Light Direction";
 > = {0.5f, -1.0f, 0.5f};
 
-float3 FixedLightColor<
+float3 MMDLightColor<
     string UIGroup = "Lighting";
-    string UIName = "Fixed Light Color";
+    string UIName = "MMD Light Color";
 > = {1.0f, 1.0f, 1.0f};
 
 float4x4 Light0Matrix : SHADOWMAPMATRIX
@@ -383,15 +367,13 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Normalize inputs
     float3 normal = normalize(input.worldNormal);
     float3 viewDir = normalize(ViewPosition - input.worldPosition);
-    float3 lightDir = (Light0Type == 4) ? -normalize(Light0Dir) : normalize(Light0Pos - input.worldPosition);
-    float3 lightColor = Light0Color;
-    if (UseFixedLight != 0)
-    {
-        lightDir = -normalize(FixedLightDirection);
-        lightColor = FixedLightColor;
-    }
+    // MMDLightDirection is the direction the light travels (light's world -Z);
+    // negate to get the surface -> light vector used by the lighting model.
+    float3 lightDir = -normalize(MMDLightDirection);
+    float3 lightColor = MMDLightColor;
 
-    // Sample textures
+    // Sample textures. dx11Shader feeds the effect raw gamma (sRGB) texels even
+    // under CM-on, which is the space MMD's lighting math expects, so sample as-is.
     float4 texColor = float4(1.0, 1.0, 1.0, 1.0);
     if (HasMainTexture != 0)
     {
@@ -464,7 +446,9 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // depth and punch black holes / halos into whatever is behind them.
     clip(opacity - 0.003);
 
-    return float4(litColor, opacity);
+    // Decode the gamma-space MMD result to linear; the view transform re-encodes
+    // it to sRGB for display, restoring the exact MMD look under CM-on.
+    return float4(SrgbToLinear(litColor), opacity);
 }
 
 //--------------------------------------------------------------------------------------
@@ -506,7 +490,9 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
 //--------------------------------------------------------------------------------------
 float4 EdgePS(VS_OUTPUT input) : SV_TARGET
 {
-    return float4(EdgeColorRGB, EdgeColorA);
+    // EdgeColorRGB is an authored gamma-space color; decode to linear so the
+    // view transform re-encode displays it as authored (no-op for pure black).
+    return float4(SrgbToLinear(EdgeColorRGB), EdgeColorA);
 }
 
 //--------------------------------------------------------------------------------------

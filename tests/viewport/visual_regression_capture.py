@@ -544,13 +544,21 @@ def _panel_diag(capture_panel=None):
     return {{"focusedPanel": focused, "visiblePanels": visible, "capturePanel": capture_panel, "modelPanels": items}}
 
 def _setup_color_management():
+    # The MMD shader reproduces MMD's gamma-space look under CM-on (linear texture
+    # input) + an sRGB / Un-tone-mapped view transform -- the same path a normal
+    # GUI import targets. Validate against that exact pipeline (previously this
+    # disabled CM, which no longer matches the shader's assumptions).
     result = {{}}
     try:
-        cmds.colorManagementPrefs(e=True, cmEnabled=False)
+        cmds.colorManagementPrefs(e=True, cmEnabled=True)
         result["cmEnabled"] = cmds.colorManagementPrefs(q=True, cmEnabled=True)
     except Exception as exc:
         result["cmEnabled_error"] = str(exc)
+    # Rendering space must be sRGB-primary linear so the view transform is a pure
+    # sRGB encode that the shader's output de-gamma cancels exactly. The default
+    # ACEScg adds an AP1->Rec.709 primaries matrix the shader cannot undo.
     for query, edit, value in [
+        ("renderingSpaceName", "renderingSpaceName", "scene-linear Rec.709-sRGB"),
         ("viewTransformName", "viewTransformName", "Un-tone-mapped (sRGB)"),
         ("displayName", "displayName", "sRGB"),
     ]:
@@ -714,24 +722,21 @@ def _apply_unique_shader_path():
             cmds.setAttr(shader + ".technique", techniques.get(shader, "MMDTechnique"), type="string")
     return shaders
 
-def _apply_fixed_light(case):
+def _apply_mmd_light(case):
     light = case.get("light") or {{}}
     source_direction = light.get("direction") or [0.5, -1.0, 0.5]
     # GoldenOracle/three fixture lights are authored in the source MMD/three
     # coordinate frame. The imported Maya mesh path mirrors X/Z for the DX11
-    # viewport comparison, so the fixed light direction must be mirrored too.
+    # viewport comparison, so the MMD light direction must be mirrored too.
     direction = [-float(source_direction[0]), float(source_direction[1]), -float(source_direction[2])]
     color = light.get("color") or [1.0, 1.0, 1.0]
-    updated = []
-    for shader in cmds.ls(type="dx11Shader") or []:
-        if cmds.attributeQuery("UseFixedLight", node=shader, exists=True):
-            cmds.setAttr(shader + ".UseFixedLight", 1)
-        if cmds.attributeQuery("FixedLightDirection", node=shader, exists=True):
-            cmds.setAttr(shader + ".FixedLightDirection", float(direction[0]), float(direction[1]), float(direction[2]), type="double3")
-        if cmds.attributeQuery("FixedLightColor", node=shader, exists=True):
-            cmds.setAttr(shader + ".FixedLightColor", float(color[0]), float(color[1]), float(color[2]), type="double3")
-        updated.append(shader)
-    return {{"sourceDirection": source_direction, "mayaDirection": direction, "color": color, "shaders": updated}}
+    # The import wires each shader's MMDLightDirection/MMDLightColor to the
+    # `mmd_light` controller, so those attrs are connected and cannot be
+    # setAttr'd directly. Drive the controller instead (the real runtime path):
+    # its world -Z feeds MMDLightDirection through the wired vectorProduct.
+    from mmd_tools.converters import light_converter
+    ctrl = light_converter.set_mmd_light_direction(direction, color)
+    return {{"sourceDirection": source_direction, "mayaDirection": direction, "color": color, "controller": ctrl}}
 
 def _capture_case(case):
     import importlib
@@ -770,7 +775,7 @@ def _capture_case(case):
     if root is None:
         raise RuntimeError("import_mmd_file returned None: " + case["model"])
     _apply_unique_shader_path()
-    debug_actions = {{"fixedLight": _apply_fixed_light(case)}}
+    debug_actions = {{"mmdLight": _apply_mmd_light(case)}}
     if _hide_orig_shapes:
         debug_actions["hideOrigShapes"] = _mark_orig_shapes_intermediate()
     if _debug_lambert_control:

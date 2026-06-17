@@ -103,6 +103,11 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
         ("HasMainTexture", om.MFnNumericData.kLong, 1, False, 0),
         ("HasSphereTexture", om.MFnNumericData.kLong, 1, False, 0),
         ("HasToonTexture", om.MFnNumericData.kLong, 1, False, 0),
+        # MMD ライト（コントローラ駆動の唯一の光源）。GUI では dx11Shader が .fx
+        # から自動生成するが、standalone/テストでは生成されないため補完しておき、
+        # 後段のコントローラ結線が失敗しないようにする。
+        ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
+        ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
     ]
 
     try:
