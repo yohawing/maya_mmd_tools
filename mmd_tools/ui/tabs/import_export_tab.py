@@ -130,6 +130,33 @@ class ImportExportTab(BaseTab):
         self.separate_meshes_check.toggled.connect(lambda v: settings.set("import.model.separate_meshes_by_material", v))
         model_layout.addWidget(self.separate_meshes_check)
 
+        # Auto-classify transparency (opt-in): scan each material's used-UV texture
+        # alpha to assign cutout/blend. Off by default -> materials import opaque
+        # and the user assigns blend manually in the Material tab.
+        self.auto_classify_transparency_check = QCheckBox(self.tr("auto_classify_transparency", "checkboxes"))
+        self.auto_classify_transparency_check.setChecked(
+            settings.get("import.model.auto_classify_transparency", False)
+        )
+        self.auto_classify_transparency_check.toggled.connect(
+            lambda v: settings.set("import.model.auto_classify_transparency", v)
+        )
+        model_layout.addWidget(self.auto_classify_transparency_check)
+
+        transparency_threshold_layout = QHBoxLayout()
+        self.transparency_threshold_label = QLabel(self.tr("transparency_opaque_threshold", "fields"))
+        self.transparency_threshold_spin = QSpinBox()
+        self.transparency_threshold_spin.setRange(0, 255)
+        self.transparency_threshold_spin.setValue(
+            int(settings.get("import.model.transparency_opaque_threshold", 255))
+        )
+        self.transparency_threshold_spin.valueChanged.connect(
+            lambda v: settings.set("import.model.transparency_opaque_threshold", int(v))
+        )
+        transparency_threshold_layout.addWidget(self.transparency_threshold_label)
+        transparency_threshold_layout.addWidget(self.transparency_threshold_spin)
+        transparency_threshold_layout.addStretch()
+        model_layout.addLayout(transparency_threshold_layout)
+
         self.hide_hidden_geometry_check = QCheckBox(self.tr("hide_hidden_geometry", "checkboxes"))
         self.hide_hidden_geometry_check.setChecked(settings.get("import.model.hide_hidden_geometry", True))
         self.hide_hidden_geometry_check.toggled.connect(lambda v: settings.set("import.model.hide_hidden_geometry", v))

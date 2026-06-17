@@ -206,6 +206,9 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             # Color Management を MMD 向けに整える（CM の enable は触らない）。
             if settings.get("import.view.setup_color_management", True):
                 maya_utils.setup_mmd_color_management()
+            # 透過アルゴリズムを Depth Peeling(OIT) にして近接透過マテリアルの順序を解決。
+            if settings.get("import.view.setup_transparency", True):
+                maya_utils.setup_mmd_transparency()
             if profile is not None:
                 profile["phase_timings"] = phase_timings
                 profile["mesh_converter"] = dict(mesh_converter.profile)

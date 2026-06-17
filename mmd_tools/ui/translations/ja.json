@@ -42,7 +42,8 @@
     "next": "次へ",
     "auto_scroll": "自動スクロール",
     "timestamp": "タイムスタンプ",
-    "filter": "フィルタ"
+    "filter": "フィルタ",
+    "apply_to_selected": "選択に適用"
   },
   "labels": {
     "file_path": "ファイルパス:",
@@ -196,7 +197,8 @@
     "enable_ik": "IKを有効にする",
     "invert_value": "値を反転",
     "show_advanced_options": "詳細オプションを表示",
-    "enable_logging": "ログを有効にする"
+    "enable_logging": "ログを有効にする",
+    "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)"
   },
   "fields": {
     "scale_factor": "スケール係数:",
@@ -260,7 +262,9 @@
     "language": "言語:",
     "log_level": "ログレベル:",
     "log_file": "ログファイル:",
-    "export_format": "エクスポート形式:"
+    "export_format": "エクスポート形式:",
+    "transparency_mode": "透過モード:",
+    "transparency_opaque_threshold": "不透明とみなすα閾値:"
   },
   "actions": {
     "import_model": "モデルをインポート",
@@ -372,5 +376,10 @@
   "status": {
     "not_connected": "未連携",
     "connected": "連携中"
+  },
+  "transparency_modes": {
+    "opaque": "不透明",
+    "cutout": "カットアウト",
+    "blend": "ブレンド"
   }
 }

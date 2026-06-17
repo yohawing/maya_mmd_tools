@@ -61,6 +61,7 @@ class MaterialPresenter:
         self.view.edge_size_spin.valueChanged.connect(self._on_value_changed)
         self.view.sphere_mode_combo.currentIndexChanged.connect(self._on_value_changed)
         self.view.toon_texture_combo.currentIndexChanged.connect(self._on_value_changed)
+        self.view.transparency_mode_combo.currentIndexChanged.connect(self._on_value_changed)
 
         # Slider connections for transparency and specular coefficient
         self.view.transparency_slider.valueChanged.connect(lambda v: self.view.transparency_spin.setValue(v / 100.0))
@@ -89,6 +90,9 @@ class MaterialPresenter:
         # Apply/Reset buttons
         self.view.apply_btn.clicked.connect(self.apply_changes)
         self.view.reset_btn.clicked.connect(self.reset_changes)
+
+        # Batch-apply transparency mode to all selected materials
+        self.view.transparency_mode_apply_btn.clicked.connect(self.apply_transparency_mode_to_selected)
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
@@ -423,6 +427,23 @@ class MaterialPresenter:
         self.material_data["toon_index"] = toon_index
         self.view.toon_texture_combo.setCurrentIndex(toon_index)
 
+        # Transparency mode (DX11 technique selection: opaque/cutout/blend)
+        mode_index = 0
+        try:
+            if cmds.nodeType(material_name) == "dx11Shader":
+                from mmd_tools.converters import mesh_converter
+
+                mode = mesh_converter.get_transparency_mode(material_name)
+                mode_index = {
+                    mesh_converter.TRANSPARENCY_MODE_OPAQUE: 0,
+                    mesh_converter.TRANSPARENCY_MODE_CUTOUT: 1,
+                    mesh_converter.TRANSPARENCY_MODE_BLEND: 2,
+                }.get(mode, 0)
+        except Exception:
+            mode_index = 0
+        self.material_data["transparency_mode"] = mode_index
+        self.view.transparency_mode_combo.setCurrentIndex(mode_index)
+
         # Draw flags
         draw_flags = self._get_attr_safe(material_name, ATTR_MMD_DRAW_FLAGS, 0x1F)
         self.material_data["draw_flags"] = draw_flags
@@ -623,6 +644,22 @@ class MaterialPresenter:
             # Apply MMD-specific attributes
             self._apply_mmd_attributes()
 
+            # Apply transparency mode (DX11 technique) if applicable
+            try:
+                if cmds.nodeType(self.current_material) == "dx11Shader":
+                    from mmd_tools.converters import mesh_converter
+
+                    modes = [
+                        mesh_converter.TRANSPARENCY_MODE_OPAQUE,
+                        mesh_converter.TRANSPARENCY_MODE_CUTOUT,
+                        mesh_converter.TRANSPARENCY_MODE_BLEND,
+                    ]
+                    idx = self.view.transparency_mode_combo.currentIndex()
+                    if 0 <= idx < len(modes):
+                        mesh_converter.apply_transparency_mode(self.current_material, modes[idx])
+            except Exception as e:
+                logger.warning(f"Failed to apply transparency mode: {e}")
+
             # Apply sphere map if specified
             sphere_path = self.view.sphere_map_path_edit.text()
             sphere_mode = self.view.sphere_mode_combo.currentIndex()
@@ -764,6 +801,44 @@ class MaterialPresenter:
         # 一括で作成・設定
         if attrs_to_create:
             maya_utils.set_custom_attributes(material, attrs_to_create)
+
+    def apply_transparency_mode_to_selected(self):
+        """Apply the chosen transparency mode to every selected material (batch)."""
+        from mmd_tools.converters import mesh_converter
+
+        modes = [
+            mesh_converter.TRANSPARENCY_MODE_OPAQUE,
+            mesh_converter.TRANSPARENCY_MODE_CUTOUT,
+            mesh_converter.TRANSPARENCY_MODE_BLEND,
+        ]
+        idx = self.view.transparency_mode_combo.currentIndex()
+        if not (0 <= idx < len(modes)):
+            return
+        mode = modes[idx]
+
+        targets = [
+            item.data(Qt.UserRole)
+            for item in self.view.material_list.selectedItems()
+            if item.data(Qt.UserRole)
+        ]
+        if not targets and self.current_material:
+            targets = [self.current_material]
+
+        applied = 0
+        for material in targets:
+            if not material or not cmds.objExists(material) or cmds.nodeType(material) != "dx11Shader":
+                continue
+            try:
+                mesh_converter.apply_transparency_mode(material, mode)
+                applied += 1
+            except Exception as e:
+                logger.warning(f"Failed to apply transparency mode to {material}: {e}")
+
+        # Reflect the change on the currently shown material's combo.
+        if self.current_material in targets:
+            self.material_data["transparency_mode"] = idx
+        self.app_state.emit_status(f"透過モード '{mode}' を {applied} 材質に適用しました")
+        logger.info(f"Batch-applied transparency mode '{mode}' to {applied} materials")
 
     def reset_changes(self):
         """Reset material properties to original values"""

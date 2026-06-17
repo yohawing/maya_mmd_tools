@@ -36,7 +36,8 @@
     "select": "选择",
     "clear": "清除",
     "save": "保存",
-    "load": "加载"
+    "load": "加载",
+    "apply_to_selected": "应用到所选"
   },
   "labels": {
     "file_path": "文件路径:",
@@ -188,7 +189,8 @@
     "enable_ik": "启用IK",
     "invert_value": "反转值",
     "show_advanced_options": "显示高级选项",
-    "enable_logging": "启用日志记录"
+    "enable_logging": "启用日志记录",
+    "auto_classify_transparency": "自动分类透明 (扫描纹理α)"
   },
   "fields": {
     "scale_factor": "缩放系数:",
@@ -252,7 +254,9 @@
     "language": "语言:",
     "log_level": "日志级别:",
     "log_file": "日志文件:",
-    "export_format": "导出格式:"
+    "export_format": "导出格式:",
+    "transparency_mode": "透明模式:",
+    "transparency_opaque_threshold": "不透明α阈值:"
   },
   "actions": {
     "import_model": "导入模型",
@@ -364,5 +368,10 @@
   "status": {
     "not_connected": "未连接",
     "connected": "已连接"
+  },
+  "transparency_modes": {
+    "opaque": "不透明",
+    "cutout": "镂空",
+    "blend": "混合"
   }
 }

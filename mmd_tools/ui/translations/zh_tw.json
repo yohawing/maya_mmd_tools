@@ -36,7 +36,8 @@
     "select": "選擇",
     "clear": "清除",
     "save": "儲存",
-    "load": "載入"
+    "load": "載入",
+    "apply_to_selected": "套用到所選"
   },
   "labels": {
     "file_path": "檔案路徑:",
@@ -188,7 +189,8 @@
     "enable_ik": "啟用IK",
     "invert_value": "反轉值",
     "show_advanced_options": "顯示進階選項",
-    "enable_logging": "啟用記錄"
+    "enable_logging": "啟用記錄",
+    "auto_classify_transparency": "自動分類透明 (掃描紋理α)"
   },
   "fields": {
     "scale_factor": "縮放係數:",
@@ -252,7 +254,9 @@
     "language": "語言:",
     "log_level": "記錄層級:",
     "log_file": "記錄檔案:",
-    "export_format": "匯出格式:"
+    "export_format": "匯出格式:",
+    "transparency_mode": "透明模式:",
+    "transparency_opaque_threshold": "不透明α閾值:"
   },
   "actions": {
     "import_model": "匯入模型",
@@ -364,5 +368,10 @@
   "status": {
     "not_connected": "未連接",
     "connected": "已連接"
+  },
+  "transparency_modes": {
+    "opaque": "不透明",
+    "cutout": "鏤空",
+    "blend": "混合"
   }
 }

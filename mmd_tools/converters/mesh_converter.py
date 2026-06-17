@@ -51,16 +51,86 @@ _STANDARD_TOON_TEXTURE_DIR = os.path.normpath(
 )
 
 
-def _material_uses_transparency(material, texture_path=None) -> bool:
-    """Return whether the material should use the alpha-blended DX11 technique."""
+# DX11 transparency handling modes (drives technique selection).
+TRANSPARENCY_MODE_OPAQUE = "opaque"
+TRANSPARENCY_MODE_CUTOUT = "cutout"
+TRANSPARENCY_MODE_BLEND = "blend"
+TRANSPARENCY_MODES = (TRANSPARENCY_MODE_OPAQUE, TRANSPARENCY_MODE_CUTOUT, TRANSPARENCY_MODE_BLEND)
+
+
+def _classify_material_transparency(material, texture_path=None) -> str:
+    """Simple diffuse-alpha-only fallback classification.
+
+    Used only when the accurate per-material UV-region classification
+    (``_precompute_transparency_modes`` -> :mod:`texture_alpha`) is unavailable
+    (e.g. PMD, or texture decode failure). Texture-extension-based cutout
+    detection is intentionally NOT done here: MMD atlases are routinely saved as
+    32-bit RGBA even when opaque, so the extension/header is not a reliable
+    signal. Defaulting such materials to opaque is the safe choice; the user can
+    override per material in the Material tab.
+
+    - ``blend``  : diffuse alpha < 1 (genuinely translucent).
+    - ``opaque`` : everything else.
+    """
     opacity = material.diffuse[3] if hasattr(material, "diffuse") and len(material.diffuse) > 3 else 1.0
     if opacity < 0.999:
-        return True
+        return TRANSPARENCY_MODE_BLEND
+    return TRANSPARENCY_MODE_OPAQUE
 
-    if texture_path:
-        return os.path.splitext(str(texture_path))[1].lower() in _ALPHA_CAPABLE_TEXTURE_EXTENSIONS
 
-    return False
+def _technique_for_transparency(mode: str, edge_enabled: bool) -> str:
+    """Map a transparency mode + edge flag to a dx11Shader technique name."""
+    if mode == TRANSPARENCY_MODE_BLEND:
+        return "MMDTechniqueTranslucent" if edge_enabled else "MMDTechniqueNoEdgeTranslucent"
+    if mode == TRANSPARENCY_MODE_CUTOUT:
+        return "MMDTechniqueTransparent" if edge_enabled else "MMDTechniqueNoEdgeTransparent"
+    return "MMDTechnique" if edge_enabled else "MMDTechniqueNoEdge"
+
+
+def _material_uses_transparency(material, texture_path=None) -> bool:
+    """Return whether the material is alpha-handled (cutout or blend) at all."""
+    return _classify_material_transparency(material, texture_path) != TRANSPARENCY_MODE_OPAQUE
+
+
+def _store_transparency_mode_attr(shader: str, mode: str) -> None:
+    """Persist the chosen transparency mode on the shader (read by the UI)."""
+    if not cmds.attributeQuery("mmdTransparencyMode", node=shader, exists=True):
+        cmds.addAttr(shader, longName="mmdTransparencyMode", dataType="string")
+    cmds.setAttr(f"{shader}.mmdTransparencyMode", mode, type="string")
+
+
+def get_transparency_mode(shader: str) -> str:
+    """Return the shader's stored transparency mode (defaults to opaque)."""
+    if cmds.attributeQuery("mmdTransparencyMode", node=shader, exists=True):
+        value = cmds.getAttr(f"{shader}.mmdTransparencyMode")
+        if value in TRANSPARENCY_MODES:
+            return value
+    # Fall back to inferring from the currently assigned technique.
+    technique = ""
+    if cmds.attributeQuery("technique", node=shader, exists=True):
+        technique = cmds.getAttr(f"{shader}.technique") or ""
+    if "Translucent" in technique:
+        return TRANSPARENCY_MODE_BLEND
+    if "Transparent" in technique:
+        return TRANSPARENCY_MODE_CUTOUT
+    return TRANSPARENCY_MODE_OPAQUE
+
+
+def apply_transparency_mode(shader: str, mode: str) -> str:
+    """Re-apply a transparency mode to an existing dx11Shader (UI entry point).
+
+    Keeps the shader's current edge (NoEdge) variant. Returns the technique set.
+    """
+    if mode not in TRANSPARENCY_MODES:
+        raise ValueError(f"Unknown transparency mode: {mode!r}")
+    technique = ""
+    if cmds.attributeQuery("technique", node=shader, exists=True):
+        technique = cmds.getAttr(f"{shader}.technique") or ""
+    edge_enabled = "NoEdge" not in technique
+    new_technique = _technique_for_transparency(mode, edge_enabled)
+    cmds.setAttr(f"{shader}.technique", new_technique, type="string")
+    _store_transparency_mode_attr(shader, mode)
+    return new_technique
 
 
 def _resolve_pmx_toon_texture_path(texture_dir, material, all_textures):
@@ -290,6 +360,9 @@ class MeshConverter:
         """
         self.logger = get_logger(__name__)
         self.created_shaders = []
+        # material_index -> transparency mode ("opaque"/"cutout"/"blend"),
+        # precomputed from per-material UV-region texture alpha (atlas-safe).
+        self._transparency_modes = {}
         self.profile = {
             "mesh_create_sec": 0.0,
             "material_create_sec": 0.0,
@@ -308,6 +381,78 @@ class MeshConverter:
         """Accumulate timing in the converter profile."""
         self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
+    def _precompute_transparency_modes(self, all_vertices, all_faces, all_materials, all_textures):
+        """Classify each material's transparency from its used UV-region texture alpha.
+
+        Atlas-safe: rasterizes every material's UV triangles and samples texture
+        alpha only where the material actually maps, so an opaque sub-region of an
+        otherwise transparent atlas (and vice versa) is classified correctly.
+        Results are stored in ``self._transparency_modes`` keyed by material index.
+        Best-effort: any failure leaves a material unclassified and the simple
+        diffuse-alpha fallback in ``_setup_dx11_shader`` applies.
+        """
+        self._transparency_modes = {}
+        if not settings.get("import.model.create_mmd_shaders"):
+            return
+        # Default is opaque: texture-based cutout/blend auto-classification is
+        # opt-in, because diffuse-texture alpha cannot reliably tell an occluding
+        # translucent material (hair) from a see-through one (skirt frill) -- that
+        # is a semantic choice the user makes per material in the Material tab.
+        # When off, _setup_dx11_shader falls back to diffuse-alpha only
+        # (alpha < 1 -> blend, otherwise opaque).
+        if not settings.get("import.model.auto_classify_transparency", False):
+            return
+        texture_dir = getattr(self, "texture_dir", None)
+        if not texture_dir:
+            return
+        try:
+            from . import texture_alpha
+        except Exception:
+            return
+
+        opaque_threshold = int(settings.get("import.model.transparency_opaque_threshold", 255))
+        classify_start = time.perf_counter()
+        alpha_cache = {}
+        cursor = 0
+        for material_index, material in enumerate(all_materials):
+            try:
+                triangle_count = int(getattr(material, "face_count", 0)) // 3
+            except Exception:
+                triangle_count = 0
+            start_tri, end_tri = cursor, cursor + triangle_count
+            cursor = end_tri
+            try:
+                opacity = (
+                    material.diffuse[3]
+                    if hasattr(material, "diffuse") and len(material.diffuse) > 3
+                    else 1.0
+                )
+                if opacity < 0.999:
+                    self._transparency_modes[material_index] = TRANSPARENCY_MODE_BLEND
+                    continue
+
+                tex_index = int(getattr(material, "texture_index", -1))
+                if not all_textures or tex_index < 0 or tex_index >= len(all_textures):
+                    self._transparency_modes[material_index] = TRANSPARENCY_MODE_OPAQUE
+                    continue
+
+                resolved = os.path.normpath(os.path.join(texture_dir, all_textures[tex_index]))
+                triangles = []
+                for tri in range(start_tri, end_tri):
+                    face = all_faces[tri]
+                    i0, i1, i2 = face.indices
+                    uv0 = all_vertices[i0].uv
+                    uv1 = all_vertices[i1].uv
+                    uv2 = all_vertices[i2].uv
+                    triangles.append((uv0[0], uv0[1], uv1[0], uv1[1], uv2[0], uv2[1]))
+                self._transparency_modes[material_index] = texture_alpha.classify_material(
+                    resolved, triangles, alpha_cache=alpha_cache, opaque_threshold=opaque_threshold
+                )
+            except Exception:
+                self.logger.debug("透過分類に失敗 (material %s)", material_index, exc_info=True)
+
+        self._add_profile_time("transparency_classify_sec", classify_start)
+
     def convert_pmx_mesh(self, pmx_data: PmxData, root_group: str) -> Tuple[str, Union[str, List[str]]]:
         """
         PMXのメッシュデータをMayaのメッシュノードに変換する。
@@ -325,6 +470,9 @@ class MeshConverter:
         all_faces = pmx_data.faces
         all_materials = pmx_data.materials
         all_textures = pmx_data.textures
+
+        # マテリアルごとの透過モードを先に算出（使用UV領域のテクスチャαを見る）。
+        self._precompute_transparency_modes(all_vertices, all_faces, all_materials, all_textures)
 
         # ジオメトリグループを作成
         geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
@@ -1235,12 +1383,14 @@ class MeshConverter:
         if not is_pmd and hasattr(material, "draw_flag"):
             edge_enabled = bool(material.draw_flag & PmxDrawFlag.EDGE_DRAWING)
 
-        transparent = _material_uses_transparency(material, texture_path)
-        if edge_enabled:
-            technique = "MMDTechniqueTransparent" if transparent else "MMDTechnique"
-        else:
-            technique = "MMDTechniqueNoEdgeTransparent" if transparent else "MMDTechniqueNoEdge"
+        # Prefer the accurate per-material UV-region classification computed up
+        # front; fall back to the simple diffuse-alpha rule if unavailable.
+        mode = self._transparency_modes.get(material_index)
+        if mode is None:
+            mode = _classify_material_transparency(material, texture_path)
+        technique = _technique_for_transparency(mode, edge_enabled)
         cmds.setAttr(f"{shader}.technique", technique, type="string")
+        _store_transparency_mode_attr(shader, mode)
 
         # 基本色設定（Diffuse）
         _set_dx11_color_uniform(shader, "DiffuseColor", material.diffuse)

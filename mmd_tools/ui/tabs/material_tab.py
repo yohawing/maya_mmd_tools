@@ -236,6 +236,26 @@ class MaterialTab(BaseTab):
         flags_layout.addWidget(self.point_draw_check)
         flags_layout.addWidget(self.line_draw_check)
 
+        # Transparency mode (DX11 technique selection: opaque / cutout / blend).
+        # Overrides the importer's heuristic so a misclassified material (e.g. a
+        # sheer skirt drawn opaque) can be forced to blend in the viewport.
+        transparency_mode_layout = QHBoxLayout()
+        self.transparency_mode_label = QLabel(self.tr("transparency_mode", "fields"))
+        self.transparency_mode_combo = QComboBox()
+        self.transparency_mode_combo.addItems(
+            [
+                self.tr("opaque", "transparency_modes"),
+                self.tr("cutout", "transparency_modes"),
+                self.tr("blend", "transparency_modes"),
+            ]
+        )
+        self.transparency_mode_apply_btn = QPushButton(self.tr("apply_to_selected", "buttons"))
+        transparency_mode_layout.addWidget(self.transparency_mode_label)
+        transparency_mode_layout.addWidget(self.transparency_mode_combo)
+        transparency_mode_layout.addWidget(self.transparency_mode_apply_btn)
+        transparency_mode_layout.addStretch()
+        flags_layout.addLayout(transparency_mode_layout)
+
         self.flags_group.setLayout(flags_layout)
         layout.addWidget(self.flags_group)
 
@@ -314,6 +334,8 @@ class MaterialTab(BaseTab):
             self.vertex_color_check,
             self.point_draw_check,
             self.line_draw_check,
+            self.transparency_mode_combo,
+            self.transparency_mode_apply_btn,
             self.edge_color_widget,
             self.edge_size_spin,
             self.apply_btn,
@@ -384,6 +406,25 @@ class MaterialTab(BaseTab):
             self.edge_color_label.setText(self.tr("edge_color", "fields"))
         if hasattr(self, "edge_size_label"):
             self.edge_size_label.setText(self.tr("edge_size", "fields"))
+        if hasattr(self, "transparency_mode_label"):
+            self.transparency_mode_label.setText(self.tr("transparency_mode", "fields"))
+        if hasattr(self, "transparency_mode_apply_btn"):
+            self.transparency_mode_apply_btn.setText(self.tr("apply_to_selected", "buttons"))
+
+        # ComboBox items - Transparency modes
+        if hasattr(self, "transparency_mode_combo"):
+            current = self.transparency_mode_combo.currentIndex()
+            self.transparency_mode_combo.blockSignals(True)
+            self.transparency_mode_combo.clear()
+            self.transparency_mode_combo.addItems(
+                [
+                    self.tr("opaque", "transparency_modes"),
+                    self.tr("cutout", "transparency_modes"),
+                    self.tr("blend", "transparency_modes"),
+                ]
+            )
+            self.transparency_mode_combo.setCurrentIndex(max(0, current))
+            self.transparency_mode_combo.blockSignals(False)
 
         # CheckBoxes
         if hasattr(self, "both_face_check"):

@@ -42,7 +42,8 @@
     "next": "Next",
     "auto_scroll": "Auto Scroll",
     "timestamp": "Timestamp",
-    "filter": "Filter"
+    "filter": "Filter",
+    "apply_to_selected": "Apply to Selected"
   },
   "labels": {
     "file_path": "File Path:",
@@ -196,7 +197,8 @@
     "enable_ik": "Enable IK",
     "invert_value": "Invert Value",
     "show_advanced_options": "Show Advanced Options",
-    "enable_logging": "Enable Logging"
+    "enable_logging": "Enable Logging",
+    "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)"
   },
   "fields": {
     "scale_factor": "Scale Factor:",
@@ -260,7 +262,9 @@
     "language": "Language:",
     "log_level": "Log Level:",
     "log_file": "Log File:",
-    "export_format": "Export Format:"
+    "export_format": "Export Format:",
+    "transparency_mode": "Transparency Mode:",
+    "transparency_opaque_threshold": "Opaque alpha threshold:"
   },
   "actions": {
     "import_model": "Import Model",
@@ -372,5 +376,10 @@
   "status": {
     "not_connected": "Not Connected",
     "connected": "Connected"
+  },
+  "transparency_modes": {
+    "opaque": "Opaque",
+    "cutout": "Cutout",
+    "blend": "Blend"
   }
 }

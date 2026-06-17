@@ -536,15 +536,30 @@ BlendState NoBlend
 //--------------------------------------------------------------------------------------
 // Depth Stencil States
 //--------------------------------------------------------------------------------------
-// MMD parity (see mmd-shading-notes §11): every material draws in material
-// order with depth-write ON and a STRICT-less depth test. Strict less keeps
-// coincident double-sided sheets single-layered (LEqual double-draws them and
-// over-saturates); depth-write lets transparent surfaces occlude what is behind
-// them instead of letting everything bleed through.
+// MMD parity (see mmd-shading-notes §11): opaque and cutout materials draw in
+// material order with depth-write ON and a STRICT-less depth test. Strict-less
+// keeps coincident double-sided sheets single-layered (LEqual double-draws them
+// and over-saturates); depth-write lets cutout layers (hair/ribbons) occlude
+// what is behind them instead of bleeding through.
 DepthStencilState EnableDepth
 {
     DepthEnable = TRUE;
     DepthWriteMask = ALL;
+    DepthFunc = LESS;
+};
+
+// Genuinely translucent materials (diffuse alpha < 1, e.g. a sheer skirt) use
+// this state: they still depth-TEST against opaque geometry (so the body
+// correctly occludes them), but do NOT depth-WRITE, so a nearer translucent
+// material cannot depth-reject a farther one. Overlapping *different*
+// translucent materials then blend (the MMD look) instead of one punching the
+// other through to the background. VP2 Object Sorting draws them back-to-front.
+// NOTE: only translucent materials use this -- cutout (hard-edged alpha
+// textures) stay on EnableDepth so layered hair strands keep occluding.
+DepthStencilState EnableDepthNoWrite
+{
+    DepthEnable = TRUE;
+    DepthWriteMask = ZERO;
     DepthFunc = LESS;
 };
 
@@ -585,6 +600,24 @@ technique11 MMDTechniqueTransparent<
     }
 }
 
+// Translucent (alpha-blended, depth-test but no depth-write). Same as
+// MMDTechniqueTransparent except for the depth state, so overlapping different
+// translucent materials blend instead of depth-rejecting each other.
+technique11 MMDTechniqueTranslucent<
+    int isTransparent = 1;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
+}
+
 // Technique without edge for performance
 technique11 MMDTechniqueNoEdge<
     int isTransparent = 0;
@@ -613,5 +646,21 @@ technique11 MMDTechniqueNoEdgeTransparent<
         SetRasterizerState(CullNone);
         SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+// Translucent without edge (alpha-blended, depth-test but no depth-write).
+technique11 MMDTechniqueNoEdgeTranslucent<
+    int isTransparent = 1;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullNone);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
     }
 }

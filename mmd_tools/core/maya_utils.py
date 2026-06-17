@@ -1503,3 +1503,36 @@ def setup_mmd_color_management(
         logger.debug("View Transform の設定に失敗", exc_info=True)
 
     return changed
+
+
+# Viewport 2.0 transparency algorithm enum (hardwareRenderingGlobals):
+#   0 Simple / 1 Object Sorting / 2 Weighted Average / 3 Depth Peeling / 5 Alpha Cut
+TRANSPARENCY_ALGORITHM_DEPTH_PEELING = 3
+
+
+def setup_mmd_transparency(algorithm=TRANSPARENCY_ALGORITHM_DEPTH_PEELING):
+    """VP2 の透過アルゴリズムを MMD 向け（Depth Peeling / OIT）に設定する。
+
+    既定の Object Sorting は**オブジェクト/レンダーアイテムを距離順**で並べるため、
+    スカートのように近接した別マテリアルどうしだと並びが逆転する（MMD のマテリアル
+    順にならない）。Depth Peeling は**画素単位の順序非依存合成**なので、距離が近い
+    透過マテリアルでも正しく重なる。グローバル設定なので全ビューポートに効く（性能
+    負荷あり）。設定キー ``import.view.setup_transparency`` で opt-out 可。
+
+    Returns:
+        bool: 設定できたら True。
+    """
+    try:
+        node = "hardwareRenderingGlobals"
+        attr = f"{node}.transparencyAlgorithm"
+        if not cmds.objExists(node) or not cmds.attributeQuery("transparencyAlgorithm", node=node, exists=True):
+            logger.debug("transparencyAlgorithm 属性が利用不可。スキップ")
+            return False
+        current = cmds.getAttr(attr)
+        if current != algorithm:
+            cmds.setAttr(attr, algorithm)
+            logger.info("Transparency algorithm を MMD 向けに設定: %s (旧: %s)", algorithm, current)
+        return True
+    except Exception:
+        logger.debug("Transparency algorithm の設定に失敗", exc_info=True)
+        return False
