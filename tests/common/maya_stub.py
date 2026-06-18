@@ -54,7 +54,10 @@ def _is_real_maya_present() -> bool:
         return False
     # 既存が我々のスタブ (MagicMock 属性) なら「本物ではない」
     cmds = getattr(maya_mod, "cmds", None)
-    if isinstance(cmds, MagicMock):
+    # cmds が None → 他テストの _seed_maya_modules() 等が maya モジュールに
+    # cmds 属性をセットしないまま sys.modules だけ登録した状態。本物の Maya では
+    # maya.cmds は必ず実モジュールなので None は「本物ではない」と判定する。
+    if cmds is None or isinstance(cmds, MagicMock):
         return False
     # それ以外で maya が存在するなら本物 (mayapy) とみなす
     return True
@@ -155,6 +158,43 @@ def _make_stub_qclass(name):
     return type(name, (object,), {"__init__": lambda self, *a, **k: None})
 
 
+class _StubQt:
+    """Qt namespace stub with minimal constants for headless tests."""
+    UserRole = 256
+    ItemDataRole = type("ItemDataRole", (), {"UserRole": 256})()
+    AlignLeft = 1
+    AlignRight = 2
+    AlignCenter = 4
+    Horizontal = 1
+    Vertical = 2
+
+
+class _StubQListWidgetItem:
+    """QListWidgetItem stub with setData/data support."""
+
+    def __init__(self, *args, **kwargs):
+        self._role_data: dict = {}
+        self._text = args[0] if args else ""
+
+    def text(self):
+        return self._text
+
+    def setText(self, text):
+        self._text = text
+
+    def setData(self, role, value):
+        self._role_data[role] = value
+
+    def data(self, role):
+        return self._role_data.get(role)
+
+    def setHidden(self, hidden):
+        pass
+
+    def isHidden(self):
+        return False
+
+
 def _qt_already_available() -> bool:
     """本物の PySide6/PySide2 が import 可能かを判定する。"""
     for mod in ("PySide6", "PySide2"):
@@ -190,6 +230,7 @@ def install_qt_stub() -> bool:
     qtcore.Signal = _StubSignal
     for n in _QTCORE_NAMES:
         setattr(qtcore, n, _make_stub_qclass(n))
+    qtcore.Qt = _StubQt  # override with constant-bearing version
 
     qtgui = ModuleType("PySide6.QtGui")
     for n in _QTGUI_NAMES:
@@ -198,6 +239,7 @@ def install_qt_stub() -> bool:
     qtwidgets = ModuleType("PySide6.QtWidgets")
     for n in _QTWIDGETS_NAMES:
         setattr(qtwidgets, n, _make_stub_qclass(n))
+    qtwidgets.QListWidgetItem = _StubQListWidgetItem  # override with data-aware version
 
     shiboken6 = ModuleType("shiboken6")
     shiboken6.wrapInstance = MagicMock(name="shiboken6.wrapInstance")
@@ -218,3 +260,66 @@ def install_headless_ui_stubs() -> None:
     """Maya + Qt をまとめてスタブ化する (presenter 等の純Python テスト用)。"""
     install_maya_stub()
     install_qt_stub()
+
+
+# ----------------------------------------------------------------------
+# om.MDoubleArray スタブ
+# ----------------------------------------------------------------------
+#
+# MagicMock では ``len()`` が Mock を返し、数値比較が成立しない。
+# ``_append_bone_locals_to_channel_arrays`` などのように MDoubleArray に
+# append / len / iter を使うロジックを純Python で検証するには
+# list ベースの実装スタブが必要になる。
+
+
+class _MDoubleArray:
+    """``om.MDoubleArray`` の最小限スタブ。純Python テスト専用。
+
+    - append(value): float に変換して追加
+    - __len__ / __iter__ / __getitem__: list 委譲
+    """
+
+    def __init__(self):
+        self._data: list = []
+
+    def append(self, value: float) -> None:
+        self._data.append(float(value))
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __getitem__(self, idx):
+        return self._data[idx]
+
+    def __repr__(self) -> str:
+        return f"_MDoubleArray({self._data!r})"
+
+
+def install_om_double_array_stub() -> None:
+    """``om.MDoubleArray`` を実用的なスタブクラスに差し替える。
+
+    ``install_maya_stub()`` の呼び出し後に呼ぶこと。
+    ``maya.api.OpenMaya`` モジュール (MagicMock) の ``MDoubleArray`` 属性を
+    ``_MDoubleArray`` 実クラスで上書きする。これにより、テスト対象コードが
+    ``om.MDoubleArray()`` を呼ぶと list ベースのスタブインスタンスが返る。
+    本物の maya が存在する場合は何もしない。
+
+    他のテストが先に ``maya.api.OpenMaya`` を ``sys.modules`` に登録していた場合、
+    ``vmd_converter`` がそのオブジェクトを ``om`` として既にバインドしている可能性
+    がある。その場合は ``sys.modules`` の差し替えだけでは不十分なため、
+    ``vmd_converter`` モジュール内の ``om`` 参照に対しても直接パッチする。
+    """
+    if _is_real_maya_present():
+        return
+    om = sys.modules.get("maya.api.OpenMaya")
+    if om is not None:
+        om.MDoubleArray = _MDoubleArray
+    # vmd_converter が先行インポート済みで別の om オブジェクトを保持している場合
+    vmd_mod = sys.modules.get("mmd_tools.converters.vmd_converter")
+    if vmd_mod is not None:
+        bound_om = getattr(vmd_mod, "om", None)
+        if bound_om is not None and bound_om is not om:
+            bound_om.MDoubleArray = _MDoubleArray

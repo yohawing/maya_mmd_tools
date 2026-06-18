@@ -43,7 +43,7 @@ class SettingsPresenter:
             self.view.import_settings_btn.clicked.connect(self.import_settings)
 
             # 全般設定
-            self.view.show_advanced_options_check.stateChanged.connect(self.on_setting_changed)
+            self.view.development_mode_check.stateChanged.connect(self.on_development_mode_changed)
             self.view.ui_log_level_combo.currentTextChanged.connect(self.on_setting_changed)
             self.view.logging_enabled_check.stateChanged.connect(self.on_setting_changed)
             self.view.log_level_combo.currentTextChanged.connect(self.on_log_level_changed)
@@ -66,8 +66,8 @@ class SettingsPresenter:
 
         try:
             # UI設定
-            self.view.show_advanced_options_check.setChecked(settings.get("ui.general.show_advanced_options", False))
-            ui_log_level = settings.get("ui.general.log_level", "INFO")
+            self.view.development_mode_check.setChecked(settings.get("ui.general.development_mode", False))
+            ui_log_level = settings.get("ui.general.log_level", "WARNING")
             index = self.view.ui_log_level_combo.findText(ui_log_level)
             if index >= 0:
                 self.view.ui_log_level_combo.setCurrentIndex(index)
@@ -94,6 +94,34 @@ class SettingsPresenter:
         finally:
             self._loading = False
 
+    def on_development_mode_changed(self):
+        """Development Mode チェックボックス変更時の処理。
+
+        Dev ON → ui.general.log_level と logging.level を INFO に設定。
+        Dev OFF → WARNING に設定。コンボボックス UI も同期する。
+        """
+        if self._loading:
+            return
+        import logging
+
+        dev_on = self.view.development_mode_check.isChecked()
+        level_str = "INFO" if dev_on else "WARNING"
+
+        # コンボボックスの表示を更新
+        for combo in (self.view.ui_log_level_combo, self.view.log_level_combo):
+            idx = combo.findText(level_str)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+
+        # 設定値に反映
+        settings.set("ui.general.log_level", level_str)
+        settings.set("logging.level", level_str)
+
+        # ロガーに即座に適用
+        level = getattr(logging, level_str, logging.WARNING)
+        logger.set_level(level)
+        logger.info(f"Development Mode {'enabled' if dev_on else 'disabled'}: log level set to {level_str}")
+
     def on_setting_changed(self):
         """設定が変更されたときの処理"""
         if not self._loading:
@@ -112,14 +140,23 @@ class SettingsPresenter:
             # 設定も同時に保存
             self.on_setting_changed()
 
+    def _refresh_development_mode_visibility(self):
+        """現在のメインウィンドウに Development Mode 表示を再適用する。"""
+        main_window = self.view.window()
+        if hasattr(main_window, "refresh_development_mode_visibility"):
+            main_window.refresh_development_mode_visibility()
+            return
+
+        # Unit tests and older host windows may only expose the Import/Export tab.
+        import_export_tab = getattr(main_window, "import_export_tab", None)
+        if hasattr(import_export_tab, "_apply_dev_mode_visibility"):
+            import_export_tab._apply_dev_mode_visibility()
+
     def save_all_settings(self):
         """すべての設定を保存"""
         try:
             # UI設定
-            settings.set(
-                "ui.general.show_advanced_options",
-                self.view.show_advanced_options_check.isChecked(),
-            )
+            settings.set("ui.general.development_mode", self.view.development_mode_check.isChecked())
             settings.set("ui.general.log_level", self.view.ui_log_level_combo.currentText())
 
             # 言語設定
@@ -132,6 +169,7 @@ class SettingsPresenter:
             settings.set("logging.log_file_path", self.view.log_file_path_edit.text())
 
             settings.save()
+            self._refresh_development_mode_visibility()
             logger.info("設定を保存しました")
             self.app_state.emit_status("Settings saved")
 
@@ -154,6 +192,7 @@ class SettingsPresenter:
             # （以前は load_settings() のみで、実際にはリセットされていなかった）
             settings.reset()
             self.load_settings()
+            self._refresh_development_mode_visibility()
             self.app_state.emit_status("Settings reset to defaults")
 
     def export_settings(self):
@@ -204,6 +243,7 @@ class SettingsPresenter:
 
                 # UIを更新
                 self.load_settings()
+                self._refresh_development_mode_visibility()
 
                 logger.info(f"設定をインポートしました: {file_path}")
                 self.app_state.emit_status("Settings imported")

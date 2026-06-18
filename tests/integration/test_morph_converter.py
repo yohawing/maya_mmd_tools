@@ -8,6 +8,7 @@ from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils
 from mmd_tools.core.constants import (
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
@@ -413,6 +414,65 @@ class TestMorphConverter(MayaTestBase):
         aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
         self.assertIn("allowed_morph", aliases)
         self.assertNotIn("blocked_morph", aliases)
+
+    def test_vertex_morph_stores_raw_name_and_uniquifies_colliding_alias(self):
+        """sanitize が衝突する別モーフでも一意 alias を割り当て、生名を JSON に保存する。
+
+        「にっこり」と「にやり」はどちらも sanitize_text で "grin" に化けるため、
+        従来は aliasAttr 衝突で片方が到達不能になり、辞書逆引きでも取り違えが起きた。
+        """
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            name_english = ""
+
+            def __init__(self, name, vertex_index):
+                self.name = name
+                self.offsets = [
+                    {
+                        "vertex_index": vertex_index,
+                        "position_offset": (0.1, 0.0, 0.0),
+                    }
+                ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [
+                    FakeVertexMorph("にっこり", 1),
+                    FakeVertexMorph("にやり", 2),
+                ],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 2)
+
+        bs_node = result["blend_shape_nodes"][0]
+
+        # alias は衝突しても一意化される（grin / grin_1）
+        alias_names = set((cmds.aliasAttr(bs_node, query=True) or [])[0::2])
+        self.assertEqual(len(alias_names), 2)
+        self.assertIn("grin", alias_names)
+        self.assertIn("grin_1", alias_names)
+
+        # 生のモーフ名が weight index 対応で保存されている（権威キー）
+        self.assertTrue(
+            cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True)
+        )
+        stored = json.loads(cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"))
+        self.assertEqual(stored.get("0"), "にっこり")
+        self.assertEqual(stored.get("1"), "にやり")
 
     def test_collect_morphs_from_scene_for_export(self):
         """シーン内の network metadata から exporter 用 morph dict を復元して PMX を再生成する。"""

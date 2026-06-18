@@ -4,6 +4,7 @@ VmdConverterクラスの基本的な機能をテスト。
 Maya環境内で実行されるが、シーン操作を伴わないテストを行う。
 """
 
+import json
 import os
 import tempfile
 from unittest.mock import patch
@@ -855,6 +856,52 @@ class TestVmdConverter(MayaTestBase):
             self.converter._iter_morph_mappings(self.converter.morph_name_mapping["まばたき"]),
             self.converter._iter_morph_mappings(self.converter.morph_name_mapping["blink"]),
         )
+
+        cmds.delete(cube)
+
+    def test_build_morph_mappings_uses_stored_raw_names_without_contamination(self):
+        """import 時保存の生名で正確にマッピングし、辞書逆引きの取り違えを起こさない。
+
+        「にっこり」と「にやり」はどちらも sanitize_text で "grin" に化けるため、
+        従来は alias 逆引きで両者が同一ターゲットへ巻き込まれていた。生名保存により
+        それぞれが自分の weight に正確に対応することを確認する。
+        """
+        from mmd_tools.core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
+
+        cube = cmds.polyCube(name="test_mesh_stored_morph")[0]
+        blend_shape = cmds.blendShape(cube, name="test_blendShape_stored_morph")[0]
+
+        for i, alias in enumerate(["grin", "grin_1"]):
+            target = cmds.duplicate(cube)[0]
+            cmds.move(i + 1, 0, 0, f"{target}.vtx[*]", relative=True)
+            cmds.blendShape(blend_shape, edit=True, target=(cube, i, target, 1.0))
+            cmds.aliasAttr(alias, f"{blend_shape}.weight[{i}]")
+            cmds.delete(target)
+
+        # import 時に保存される権威マップ（weight index -> 生モーフ名）
+        cmds.addAttr(blend_shape, longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, dataType="string")
+        cmds.setAttr(
+            f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
+            json.dumps({"0": "にっこり", "1": "にやり"}, ensure_ascii=False),
+            type="string",
+        )
+
+        self.converter._build_morph_mappings()
+
+        nikkori = self.converter._iter_morph_mappings(self.converter.morph_name_mapping.get("にっこり"))
+        niyari = self.converter._iter_morph_mappings(self.converter.morph_name_mapping.get("にやり"))
+
+        # それぞれ自分の weight に正確に対応する
+        self.assertEqual(len(nikkori), 1)
+        self.assertEqual(nikkori[0][1], "weight[0]")
+        self.assertEqual(len(niyari), 1)
+        self.assertEqual(niyari[0][1], "weight[1]")
+
+        # 取り違えがない（互いのターゲットに巻き込まれていない）
+        self.assertNotEqual(nikkori[0][1], niyari[0][1])
+
+        # 生名が保存されている blendShape では lossy な逆引きを使わない
+        self.assertNotIn("blink", self.converter.morph_name_mapping)
 
         cmds.delete(cube)
 

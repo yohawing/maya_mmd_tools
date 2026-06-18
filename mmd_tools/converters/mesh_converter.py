@@ -887,6 +887,12 @@ class MeshConverter:
             return []
 
         material_vertex_sets = self._build_material_vertex_sets(all_faces, all_materials)
+
+        vertex_to_materials = {}
+        for material_index, vertex_indices in material_vertex_sets.items():
+            for vi in vertex_indices:
+                vertex_to_materials.setdefault(vi, set()).add(material_index)
+
         morph_names_by_material_set = {}
         touched_materials = set()
 
@@ -900,9 +906,7 @@ class MeshConverter:
                     vertex_index = int(offset.get("vertex_index"))
                 except Exception:
                     continue
-                for material_index, vertex_indices in material_vertex_sets.items():
-                    if vertex_index in vertex_indices:
-                        morph_materials.add(material_index)
+                morph_materials.update(vertex_to_materials.get(vertex_index, set()))
 
             if not morph_materials:
                 continue

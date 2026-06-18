@@ -17,8 +17,7 @@
     "export_settings": "エクスポート設定"
   },
   "menus": {
-    "view": "表示",
-    "log_viewer": "ログビューア"
+    "view": "表示"
   },
   "buttons": {
     "import": "インポート",
@@ -198,9 +197,11 @@
     "new_file": "新規ファイル",
     "enable_ik": "IKを有効にする",
     "invert_value": "値を反転",
+    "development_mode": "開発モード",
     "show_advanced_options": "詳細オプションを表示",
     "enable_logging": "ログを有効にする",
-    "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)"
+    "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
+    "split_meshes_by_morph_groups": "【実験的】モーフグループでメッシュを分割"
   },
   "fields": {
     "scale_factor": "スケール係数:",

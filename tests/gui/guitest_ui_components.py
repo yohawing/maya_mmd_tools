@@ -33,6 +33,11 @@ class TestMainWindow(GuiTestBase):
         """
         super().setUp()
 
+        # development_mode を保存し、通常モード (False) に固定する
+        from mmd_tools import settings as _s
+        self._saved_dev_mode = _s.get("ui.general.development_mode", False)
+        _s.set("ui.general.development_mode", False)
+
         # テスト用のシーンをクリア
         cmds.file(new=True, force=True)
 
@@ -58,6 +63,10 @@ class TestMainWindow(GuiTestBase):
         # イベントループを処理してウィジェットが完全に削除されるのを待つ
         QApplication.processEvents()
 
+        # development_mode を元の値に戻す
+        from mmd_tools import settings as _s
+        _s.set("ui.general.development_mode", self._saved_dev_mode)
+
         super().tearDown()
 
     def test_initialization(self):
@@ -79,19 +88,20 @@ class TestMainWindow(GuiTestBase):
 
     def test_tab_creation(self):
         """
-        すべてのタブが作成され、タブウィジェットに追加されるかをテストする
+        通常モード（development_mode=False）でのタブ作成をテストする
         """
         # タブウィジェットが存在する
         self.assertIsNotNone(self.window.tab_widget)
 
-        # 正しい数のタブが作成されている（7つ。display_pane はデッドタブのため非表示）
-        self.assertEqual(self.window.tab_widget.count(), 7)
+        # 通常モードでは Physics タブなし: 6タブ
+        # （display_pane はデッドタブのため非表示、physics は dev mode のみ）
+        self.assertEqual(self.window.tab_widget.count(), 6)
 
         # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
         from mmd_tools.ui.translations import UITranslator
 
         translator = UITranslator.instance()
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "physics", "settings"]
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "settings"]
         expected_titles = [translator.translate(key, "tabs") for key in tab_keys]
 
         for i, title in enumerate(expected_titles):
@@ -99,7 +109,7 @@ class TestMainWindow(GuiTestBase):
 
     def test_presenter_initialization(self):
         """
-        各プレゼンターが初期化されているかをテストする
+        通常モードのプレゼンター初期化をテストする
         """
         # 各プレゼンターが属性として存在する
         self.assertIsNotNone(self.window.import_export_presenter)
@@ -109,21 +119,30 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.morph_presenter)
         # display_pane_presenter はデッドタブ非表示に伴い生成しない（属性自体が存在しない）
         self.assertFalse(hasattr(self.window, "display_pane_presenter"))
-        self.assertIsNotNone(self.window.physics_presenter)
+        # 通常モード: Physics タブ/プレゼンターは存在しない
+        self.assertIsNone(self.window.physics_tab)
+        self.assertFalse(hasattr(self.window, "physics_presenter"))
         self.assertIsNotNone(self.window.settings_presenter)
 
-    def test_log_viewer_integration(self):
+    def test_physics_tab_in_dev_mode(self):
         """
-        ログビューアが作成され、正しく統合されているかをテストする
+        開発モード (development_mode=True) では Physics タブとプレゼンターが作成される
         """
-        # ログビューアが作成されている
-        self.assertIsNotNone(self.window.log_viewer)
+        from mmd_tools import settings as _s
 
-        # ログビューアのオブジェクト名が設定されている
-        self.assertEqual(self.window.log_viewer.objectName(), "logViewer")
-
-        # ログビューアが表示可能か確認
-        self.assertTrue(self.window.log_viewer.isVisible() or self.window.log_viewer.isHidden())
+        _s.set("ui.general.development_mode", True)
+        dev_window = None
+        try:
+            dev_window = MainWindow()
+            self.assertEqual(dev_window.tab_widget.count(), 7)
+            self.assertIsNotNone(dev_window.physics_tab)
+            self.assertIsNotNone(dev_window.physics_presenter)
+        finally:
+            _s.set("ui.general.development_mode", False)
+            if dev_window is not None:
+                dev_window.close()
+                dev_window.deleteLater()
+                QApplication.processEvents()
 
     def test_status_bar_setup(self):
         """

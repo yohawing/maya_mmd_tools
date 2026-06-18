@@ -1,8 +1,9 @@
 import unittest
 from unittest.mock import Mock, patch
-import maya.standalone
 
-maya.standalone.initialize(name="python")
+from tests.common.maya_stub import install_headless_ui_stubs
+
+install_headless_ui_stubs()
 
 from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa: E402
 from mmd_tools.core.constants import (  # noqa: E402

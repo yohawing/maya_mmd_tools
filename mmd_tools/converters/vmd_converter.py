@@ -10,6 +10,7 @@ Phase 1 以降:
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -22,6 +23,7 @@ import maya.cmds as cmds
 
 from ..core import maya_utils
 from ..core.constants import (
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_CAMERA,
@@ -31,6 +33,7 @@ from ..core.constants import (
 )
 from ..core.logger import get_logger
 from ..core.pmx_data import PmxData
+from ..core.settings import settings
 from ..core.vmd_data import VmdData
 
 # mmd-anim runtime (Phase 1+)
@@ -71,6 +74,18 @@ class VmdConverter:
         self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
         self.anim_layer = None  # 現在のアニメーションレイヤー名
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
+
+        # runtime bake: 静的チャンネル判定の閾値。ワールド行列→ローカル分解で乗る
+        # 浮動小数ジッタを吸収し、これ未満しか動かないチャンネルはキーを打たず
+        # setAttr 一回で固定する（不要な全フレームキーを抑制）。
+        # 並進は Maya linear 単位、回転は度で指定（内部比較時にラジアン換算）。
+        import math as _math
+        self._static_eps_translate = float(
+            settings.get("import.animation.static_channel_epsilon_translate", 1e-4)
+        )
+        self._static_eps_rotate = _math.radians(
+            float(settings.get("import.animation.static_channel_epsilon_rotate_deg", 0.01))
+        )
 
     def convert(
         self,
@@ -574,8 +589,13 @@ class VmdConverter:
                     state["count"] = 1
                     continue
 
+                eps = (
+                    self._static_eps_rotate
+                    if attr.startswith("rotate")
+                    else self._static_eps_translate
+                )
                 if state["is_static"]:
-                    if abs(float(value) - float(first)) <= 1e-10:
+                    if abs(float(value) - float(first)) <= eps:
                         state["count"] += 1
                         continue
 
@@ -1488,20 +1508,53 @@ class VmdConverter:
                 return
         existing.append(mapping)
 
+    def _read_blendshape_morph_names(self, blend_shape_node: str) -> Dict[int, str]:
+        """blendShape に保存された weight index → 生モーフ名 (PmxMorph.name) を読み出す。
+
+        import 時に MorphConverter が保存した権威マップ。lossy な alias 逆引きに頼らず、
+        VMD/PMX が参照する生名で正確にマッピングするために使う。
+        """
+        result: Dict[int, str] = {}
+        if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape_node, exists=True):
+            return result
+        try:
+            raw = cmds.getAttr(f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return result
+        if not isinstance(parsed, dict):
+            return result
+        for key, value in parsed.items():
+            try:
+                result[int(key)] = str(value)
+            except (TypeError, ValueError):
+                continue
+        return result
+
     def _build_morph_mappings(self):
         """シーン内のblendShapeとbone morph networkからモーフ名マッピングを構築"""
         self.morph_name_mapping = {}
 
         blend_shapes = cmds.ls(type="blendShape") or []
         for bs_node in blend_shapes:
+            stored_names = self._read_blendshape_morph_names(bs_node)
             weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
             for i in range(weight_count):
                 alias = cmds.aliasAttr(f"{bs_node}.weight[{i}]", query=True)
+                mapping = (bs_node, f"weight[{i}]", alias or f"weight[{i}]")
                 if alias:
-                    mapping = (bs_node, f"weight[{i}]", alias)
                     self._register_morph_mapping(alias, mapping)
-                    for original_name in self._get_original_morph_name_candidates(alias):
-                        self._register_morph_mapping(original_name, mapping)
+
+                original_name = stored_names.get(i)
+                if original_name:
+                    # import 時に保存した生のモーフ名（権威キー）。VMD/PMX の参照名と一致する。
+                    self._register_morph_mapping(original_name, mapping)
+                elif alias:
+                    # レガシーシーン（生名未保存）のフォールバック: 辞書逆引き。
+                    # 同一 alias に複数モーフが化ける衝突があり lossy なため、
+                    # 保存済み生名がある blendShape では使わない。
+                    for candidate in self._get_original_morph_name_candidates(alias):
+                        self._register_morph_mapping(candidate, mapping)
 
         for morph_node in cmds.ls(type="network") or []:
             if not cmds.attributeQuery("mmd_morph_type", node=morph_node, exists=True):

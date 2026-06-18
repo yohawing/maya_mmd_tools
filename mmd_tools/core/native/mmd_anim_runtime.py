@@ -24,6 +24,7 @@ PMX モデルと VMD モーションの忠実なランタイム評価を提供�
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import platform
 from ctypes import (
@@ -1170,7 +1171,7 @@ def connect_runtime_node_outputs_to_model(
           utility_nodes: list of created DG node names (for cleanup).
     """
     import maya.cmds as cmds
-    from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
+    from mmd_tools.core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, ATTR_MMD_BONE_INDEX
 
     result: Dict[str, Any] = {
         "connected_bones": [],
@@ -1375,6 +1376,24 @@ def connect_runtime_node_outputs_to_model(
                 for bs_node in model_blend_shapes:
 
                     weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
+
+                    # Authoritative map stored at import time: raw morph name -> weight index.
+                    # Preferred over the lossy sanitized-alias match (aliases can collide and
+                    # are uniquified with numeric suffixes, so alias == sanitize(name) may fail).
+                    stored_raw_to_index = {}
+                    if cmds.attributeQuery(
+                        ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True
+                    ):
+                        try:
+                            parsed_names = json.loads(
+                                cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
+                            )
+                            if isinstance(parsed_names, dict):
+                                for stored_index, stored_name in parsed_names.items():
+                                    stored_raw_to_index[str(stored_name)] = int(stored_index)
+                        except (TypeError, ValueError):
+                            stored_raw_to_index = {}
+
                     for vmi, pmx_name in enumerate(pmx_morph_names):
                         if not pmx_name:
                             continue
@@ -1383,38 +1402,45 @@ def connect_runtime_node_outputs_to_model(
 
                         # Compute sanitized alias using the same logic as MorphConverter
                         sanitized_alias = sanitize_text(pmx_name)
+                        stored_wi = stored_raw_to_index.get(pmx_name)
 
-                        # Find the alias that matches this PMX morph name
+                        # Find the weight index that matches this PMX morph name
                         for wi in range(weight_count):
-                            alias = cmds.aliasAttr(f"{bs_node}.weight[{wi}]", query=True)
-                            if not alias:
-                                continue
-                            # Try: sanitized alias match first, then exact (raw) match
-                            if alias == sanitized_alias or alias == pmx_name:
-                                # Direct connection from morphWeights[global_idx] to weight[wi]
-                                try:
-                                    src = f"{node}.morphWeights[{global_idx}]"
-                                    dst = f"{bs_node}.weight[{wi}]"
-                                    existing_sources = (
-                                        cmds.listConnections(
-                                            dst,
-                                            source=True,
-                                            destination=False,
-                                            plugs=True,
-                                        )
-                                        or []
+                            if stored_wi is not None:
+                                # Authoritative: only connect the exact stored index.
+                                if wi != stored_wi:
+                                    continue
+                            else:
+                                alias = cmds.aliasAttr(f"{bs_node}.weight[{wi}]", query=True)
+                                if not alias:
+                                    continue
+                                # Fallback: sanitized alias match first, then exact (raw) match
+                                if not (alias == sanitized_alias or alias == pmx_name):
+                                    continue
+                            # Direct connection from morphWeights[global_idx] to weight[wi]
+                            try:
+                                src = f"{node}.morphWeights[{global_idx}]"
+                                dst = f"{bs_node}.weight[{wi}]"
+                                existing_sources = (
+                                    cmds.listConnections(
+                                        dst,
+                                        source=True,
+                                        destination=False,
+                                        plugs=True,
                                     )
-                                    if src not in existing_sources:
-                                        cmds.connectAttr(src, dst, force=True)
-                                    result["connected_morphs"].append(
-                                        (pmx_name, global_idx, bs_node, wi)
-                                    )
-                                except Exception as e:
-                                    result["warnings"].append(
-                                        f"Failed to connect morphWeights[{global_idx}] → "
-                                        f"{bs_node}.weight[{wi}]: {e}"
-                                    )
-                                break
+                                    or []
+                                )
+                                if src not in existing_sources:
+                                    cmds.connectAttr(src, dst, force=True)
+                                result["connected_morphs"].append(
+                                    (pmx_name, global_idx, bs_node, wi)
+                                )
+                            except Exception as e:
+                                result["warnings"].append(
+                                    f"Failed to connect morphWeights[{global_idx}] → "
+                                    f"{bs_node}.weight[{wi}]: {e}"
+                                )
+                            break
         except Exception as e:
             result["warnings"].append(
                 f"Morph resolution skipped (could not read PMX morph names): {e}"

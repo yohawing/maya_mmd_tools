@@ -105,12 +105,16 @@ class TestImportExportPresenter(unittest.TestCase):
     """ImportExportPresenterのimport options構築を検証する。"""
 
     def setUp(self):
-        self._old_bake_mode = settings.get("import.rig.bake_mode", False)
+        self._old_bake_mode = settings.get("import.rig.bake_mode", True)
+        self._old_dev_mode = settings.get("ui.general.development_mode", False)
 
     def tearDown(self):
         settings.set("import.rig.bake_mode", self._old_bake_mode)
+        settings.set("ui.general.development_mode", self._old_dev_mode)
 
     def test_import_file_passes_no_rig_options_when_bake_mode_enabled(self):
+        # Dev mode required so the saved bake_mode setting is respected.
+        settings.set("ui.general.development_mode", True)
         settings.set("import.rig.bake_mode", True)
         view = _FakeView()
         app_state = _FakeAppState()
@@ -127,6 +131,8 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertFalse(options["setup_bone_orientation"])
 
     def test_import_file_leaves_rig_options_unset_by_default(self):
+        # In dev mode with bake_mode=False the rig setup keys must be absent.
+        settings.set("ui.general.development_mode", True)
         settings.set("import.rig.bake_mode", False)
         view = _FakeView()
         app_state = _FakeAppState()
@@ -388,6 +394,18 @@ class TestVmdImportOptions(unittest.TestCase):
 class TestExportFile(unittest.TestCase):
     """export_file は未実装である旨を明示する分岐を検証する。"""
 
+    _KEYS_TO_PRESERVE = (
+        "export.general.export_format",
+        "export.general.apply_scale",
+    )
+
+    def setUp(self):
+        self._saved = {k: settings.get(k) for k in self._KEYS_TO_PRESERVE}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            settings.set(k, v)
+
     def test_empty_path_guard(self):
         view = _FakeView()
         view.export_path_edit = _FakeLineEdit("")
@@ -405,6 +423,188 @@ class TestExportFile(unittest.TestCase):
         self.assertTrue(
             any("not implemented" in s.lower() for s in app_state.statuses)
         )
+
+    def test_build_export_options_includes_file_path(self):
+        view = _FakeView()
+        view.export_path_edit = _FakeLineEdit("  out.pmx  ")
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+
+        opts = presenter._build_export_options()
+
+        self.assertEqual(opts["file_path"], "out.pmx")
+
+    def test_build_export_options_reads_format_from_settings(self):
+        settings.set("export.general.export_format", "pmd")
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+
+        opts = presenter._build_export_options()
+
+        self.assertEqual(opts["export_format"], "pmd")
+
+    def test_build_export_options_reads_apply_scale_from_settings(self):
+        settings.set("export.general.apply_scale", False)
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+
+        opts = presenter._build_export_options()
+
+        self.assertFalse(opts["apply_scale"])
+
+    def test_export_file_does_not_call_pmx_exporter_before_scene_collection_exists(self):
+        view = _FakeView()
+        view.export_path_edit = _FakeLineEdit("out.pmx")
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+
+        with patch("mmd_tools.io.pmx_exporter.PmxExporter") as mock_exporter:
+            presenter.export_file()
+
+        mock_exporter.assert_not_called()
+        self.assertTrue(
+            any("not implemented" in s.lower() for s in app_state.statuses)
+        )
+
+
+class TestDevModeBehaviorGating(unittest.TestCase):
+    """通常モードが dev-only 設定を強制デフォルトに上書きすることを検証する。"""
+
+    _KEYS_TO_PRESERVE = (
+        "ui.general.development_mode",
+        "import.model.import_models",
+        "import.physics.import_physics",
+        "import.model.separate_meshes_by_material",
+        "import.model.split_meshes_by_morph_groups",
+        "import.model.hide_hidden_geometry",
+        "import.model.auto_classify_transparency",
+        "import.model.disable_backface_culling",
+        "import.model.uv_set_name",
+        "import.model.texture_search_path",
+        "import.rig.add_semi_standard_bones",
+        "import.naming.translate_names",
+        "import.rig.bake_mode",
+        "import.animation.resample_curves",
+    )
+
+    def setUp(self):
+        self._saved = {k: settings.get(k) for k in self._KEYS_TO_PRESERVE}
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            settings.set(k, v)
+
+    def _run_import(self, path="model.pmx"):
+        view = _FakeView()
+        view.import_path_edit = _FakeLineEdit(path)
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+        with patch(
+            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
+            return_value="root",
+        ) as mock_import:
+            presenter.import_file()
+        return mock_import.call_args.kwargs["options"]
+
+    def test_normal_mode_forces_import_models_true(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.import_models", False)
+        opts = self._run_import()
+        self.assertTrue(opts["import_models"])
+
+    def test_normal_mode_forces_import_physics_false(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.physics.import_physics", True)
+        opts = self._run_import()
+        self.assertFalse(opts["import_physics"])
+
+    def test_normal_mode_forces_separate_meshes_false(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.separate_meshes_by_material", True)
+        opts = self._run_import()
+        self.assertFalse(opts["separate_meshes_by_material"])
+
+    def test_normal_mode_forces_hide_hidden_geometry_false(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.hide_hidden_geometry", True)
+        opts = self._run_import()
+        self.assertFalse(opts["hide_hidden_geometry"])
+
+    def test_normal_mode_bake_mode_forced_true_produces_no_rig_options(self):
+        # In normal mode bake_mode is always True regardless of the saved setting.
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.rig.bake_mode", False)
+        opts = self._run_import()
+        self.assertFalse(opts.get("setup_rig", True))
+        self.assertFalse(opts.get("setup_bone_orientation", True))
+
+    def test_dev_mode_preserves_non_default_separate_meshes(self):
+        settings.set("ui.general.development_mode", True)
+        settings.set("import.model.separate_meshes_by_material", True)
+        opts = self._run_import()
+        self.assertTrue(opts["separate_meshes_by_material"])
+
+    def test_normal_mode_vmd_forces_resample_curves_false(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.animation.resample_curves", True)
+        opts = self._run_import(path="motion.vmd")
+        self.assertFalse(opts["resample_curves"])
+
+    def test_dev_mode_vmd_preserves_resample_curves_true(self):
+        settings.set("ui.general.development_mode", True)
+        settings.set("import.animation.resample_curves", True)
+        opts = self._run_import(path="motion.vmd")
+        self.assertTrue(opts["resample_curves"])
+
+    def test_normal_mode_forces_add_semi_standard_bones_false(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.rig.add_semi_standard_bones", True)
+        opts = self._run_import()
+        self.assertFalse(opts["add_semi_standard_bones"])
+
+    def test_normal_mode_forces_translate_names_true(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.naming.translate_names", False)
+        opts = self._run_import()
+        self.assertTrue(opts["translate_names"])
+
+    def test_normal_mode_forces_disable_backface_culling_true(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.disable_backface_culling", False)
+        opts = self._run_import()
+        self.assertTrue(opts["disable_backface_culling"])
+
+    def test_normal_mode_forces_uv_set_name_default(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.uv_set_name", "customUV")
+        opts = self._run_import()
+        self.assertEqual(opts["uv_set_name"], "map#")
+
+    def test_normal_mode_forces_texture_search_path_empty(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.texture_search_path", "/some/path")
+        opts = self._run_import()
+        self.assertEqual(opts["texture_search_path"], "")
+
+    def test_normal_mode_forces_auto_classify_transparency_false(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.auto_classify_transparency", True)
+        opts = self._run_import()
+        self.assertFalse(opts["auto_classify_transparency"])
+
+    def test_normal_mode_forces_split_meshes_by_morph_groups_false(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.split_meshes_by_morph_groups", True)
+        opts = self._run_import()
+        self.assertFalse(opts["split_meshes_by_morph_groups"])
+
+    def test_dev_mode_preserves_split_meshes_by_morph_groups_true(self):
+        settings.set("ui.general.development_mode", True)
+        settings.set("import.model.split_meshes_by_morph_groups", True)
+        opts = self._run_import()
+        self.assertTrue(opts["split_meshes_by_morph_groups"])
 
 
 if __name__ == "__main__":

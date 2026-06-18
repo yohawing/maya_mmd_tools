@@ -17,8 +17,7 @@
     "export_settings": "导出设置"
   },
   "menus": {
-    "view": "查看",
-    "log_viewer": "日志查看器"
+    "view": "查看"
   },
   "buttons": {
     "import": "导入",
@@ -197,9 +196,11 @@
     "new_file": "新建文件",
     "enable_ik": "启用IK",
     "invert_value": "反转值",
+    "development_mode": "开发模式",
     "show_advanced_options": "显示高级选项",
     "enable_logging": "启用日志记录",
     "auto_classify_transparency": "自动分类透明 (扫描纹理α)",
+    "split_meshes_by_morph_groups": "【实验性】按表情组分离网格",
     "custom_namespace": "自定义命名空间:"
   },
   "fields": {

@@ -105,7 +105,6 @@ instantiate Maya Qt widgets and must run inside a full Maya GUI session.
 | File | Notes |
 |---|---|
 | `tests/gui/guitest_import_export_tab_gui.py` | Import/Export tab widgets |
-| `tests/gui/guitest_log_viewer.py` | Log viewer widget; also needs maya |
 | `tests/gui/guitest_translator.py` | Translator UI |
 | `tests/gui/guitest_ui_components.py` | Generic UI components; also needs maya |
 | `tests/gui/test_material_tab.py` | Placeholder only (empty after refactor) |

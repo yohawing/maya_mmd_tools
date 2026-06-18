@@ -130,6 +130,11 @@ class ImportExportTab(BaseTab):
         self.separate_meshes_check.toggled.connect(lambda v: settings.set("import.model.separate_meshes_by_material", v))
         model_layout.addWidget(self.separate_meshes_check)
 
+        self.split_by_morph_groups_check = QCheckBox(self.tr("split_meshes_by_morph_groups", "checkboxes"))
+        self.split_by_morph_groups_check.setChecked(settings.get("import.model.split_meshes_by_morph_groups", False))
+        self.split_by_morph_groups_check.toggled.connect(lambda v: settings.set("import.model.split_meshes_by_morph_groups", v))
+        model_layout.addWidget(self.split_by_morph_groups_check)
+
         # Auto-classify transparency (opt-in): scan each material's used-UV texture
         # alpha to assign cutout/blend. Off by default -> materials import opaque
         # and the user assigns blend manually in the Material tab.
@@ -142,7 +147,9 @@ class ImportExportTab(BaseTab):
         )
         model_layout.addWidget(self.auto_classify_transparency_check)
 
-        transparency_threshold_layout = QHBoxLayout()
+        self.transparency_threshold_row = QWidget()
+        transparency_threshold_layout = QHBoxLayout(self.transparency_threshold_row)
+        transparency_threshold_layout.setContentsMargins(0, 0, 0, 0)
         self.transparency_threshold_label = QLabel(self.tr("transparency_opaque_threshold", "fields"))
         self.transparency_threshold_spin = QSpinBox()
         self.transparency_threshold_spin.setRange(0, 255)
@@ -155,7 +162,7 @@ class ImportExportTab(BaseTab):
         transparency_threshold_layout.addWidget(self.transparency_threshold_label)
         transparency_threshold_layout.addWidget(self.transparency_threshold_spin)
         transparency_threshold_layout.addStretch()
-        model_layout.addLayout(transparency_threshold_layout)
+        model_layout.addWidget(self.transparency_threshold_row)
 
         self.hide_hidden_geometry_check = QCheckBox(self.tr("hide_hidden_geometry", "checkboxes"))
         self.hide_hidden_geometry_check.setChecked(settings.get("import.model.hide_hidden_geometry", True))
@@ -168,23 +175,27 @@ class ImportExportTab(BaseTab):
         model_layout.addWidget(self.disable_backface_culling_check)
 
         # Texture search path
-        texture_layout = QHBoxLayout()
+        self.texture_row = QWidget()
+        texture_layout = QHBoxLayout(self.texture_row)
+        texture_layout.setContentsMargins(0, 0, 0, 0)
         self.texture_search_label = QLabel(self.tr("texture_search_path", "fields"))
         texture_layout.addWidget(self.texture_search_label)
         self.texture_search_path_edit = QLineEdit(settings.get("import.model.texture_search_path", ""))
         self.texture_search_path_edit.textChanged.connect(lambda v: settings.set("import.model.texture_search_path", v))
         texture_layout.addWidget(self.texture_search_path_edit)
-        model_layout.addLayout(texture_layout)
+        model_layout.addWidget(self.texture_row)
 
         # UV set name
-        uv_layout = QHBoxLayout()
+        self.uv_row = QWidget()
+        uv_layout = QHBoxLayout(self.uv_row)
+        uv_layout.setContentsMargins(0, 0, 0, 0)
         self.uv_set_label = QLabel(self.tr("uv_set_name", "fields"))
         uv_layout.addWidget(self.uv_set_label)
         self.uv_set_name_edit = QLineEdit(settings.get("import.model.uv_set_name", "map#"))
         self.uv_set_name_edit.textChanged.connect(lambda v: settings.set("import.model.uv_set_name", v))
         uv_layout.addWidget(self.uv_set_name_edit)
         uv_layout.addStretch()
-        model_layout.addLayout(uv_layout)
+        model_layout.addWidget(self.uv_row)
 
         self.model_group.setLayout(model_layout)
         model_settings_layout.addWidget(self.model_group)
@@ -350,7 +361,7 @@ class ImportExportTab(BaseTab):
 
         export_settings_layout.addStretch()
         export_settings_tab.setWidget(export_settings_widget)
-        self.left_widget.addTab(export_settings_tab, self.tr("export", "buttons"))
+        # Export subtab is intentionally not added: export is not yet implemented.
 
         # 右側：インポート/エクスポートセクション
         right_scroll = QScrollArea()
@@ -506,6 +517,38 @@ class ImportExportTab(BaseTab):
 
         main_layout.addWidget(splitter)
 
+        # Export is not yet implemented: always hide the export surface.
+        self.export_group.setVisible(False)
+        # import_models is always ON in behavior; checkbox removed from UI.
+        self.import_models_check.setVisible(False)
+
+        # Dev-only controls: shown only when development_mode=True.
+        self._dev_only_widgets = [
+            self.separate_meshes_check,
+            self.split_by_morph_groups_check,
+            self.auto_classify_transparency_check,
+            self.transparency_threshold_row,
+            self.hide_hidden_geometry_check,
+            self.disable_backface_culling_check,
+            self.texture_row,
+            self.uv_row,
+            self.import_physics_check,
+            self.create_rigid_bodies_check,
+            self.create_physics_joints_check,
+            self.group_physics_objects_check,
+            self.add_semi_standard_bones_check,
+            self.bake_mode_check,
+            self.translate_names_check,
+            self.resample_curves_check,
+        ]
+        self._apply_dev_mode_visibility()
+
+    def _apply_dev_mode_visibility(self):
+        """dev-only UI controls の表示/非表示を development_mode 設定に合わせる。"""
+        is_dev = settings.get("ui.general.development_mode", False)
+        for widget in self._dev_only_widgets:
+            widget.setVisible(is_dev)
+
     def refresh_model_list(self, restore_selection=False):
         """シーン内のMMDモデルリストを更新"""
         # 現在の選択を保持
@@ -594,6 +637,7 @@ class ImportExportTab(BaseTab):
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
         self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
+        self.split_by_morph_groups_check.setText(self.tr("split_meshes_by_morph_groups", "checkboxes"))
         self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
         self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
@@ -629,10 +673,9 @@ class ImportExportTab(BaseTab):
             self.import_vpd_button.setText(self.tr("import_pose", "actions"))
 
         # Tab widget texts
-        if hasattr(self, "left_widget") and self.left_widget.count() >= 3:
+        if hasattr(self, "left_widget") and self.left_widget.count() >= 2:
             self.left_widget.setTabText(0, self.tr("model", "groups"))
             self.left_widget.setTabText(1, self.tr("animation", "tabs"))
-            self.left_widget.setTabText(2, self.tr("export", "buttons"))
 
         # Refresh model list to update auto detect text
         self.refresh_model_list()

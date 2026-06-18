@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-MayaLogger の堅牢性テスト（pure-python / Maya 非依存）。
+MayaLogger / MayaScriptEditorHandler の堅牢性テスト（pure-python / Maya 非依存）。
 
 ハンドラやフィルタが例外を投げても、ロガーの公開メソッドが
 その例外を呼び出し元へ伝播させないことを検証する。
@@ -13,9 +13,16 @@ import 全体が巻き込まれて失敗していた。``_safe_log`` でこれ�
 """
 
 import logging
+import sys
 import unittest
+from types import ModuleType
+from unittest.mock import MagicMock
 
-from mmd_tools.core.logger import get_logger
+from mmd_tools.core.logger import (
+    MayaScriptEditorHandler,
+    get_logger,
+    install_maya_script_editor_handler,
+)
 
 
 class _RaisingHandler(logging.Handler):
@@ -70,6 +77,104 @@ class TestLoggerSafety(unittest.TestCase):
         mlogger._logger.addHandler(_RaisingHandler())
 
         mlogger.error("ボタンを押してください：失敗 ✕ €")
+
+
+class TestMayaScriptEditorHandler(unittest.TestCase):
+    """MayaScriptEditorHandler のルーティングと安全性を確認する。"""
+
+    def setUp(self):
+        # ``import maya.OpenMaya as _om`` は親パッケージ ``maya`` が
+        # sys.modules に存在しないと ImportError になるため両方登録する。
+        self._prev_maya = sys.modules.get("maya")
+        self._prev_om = sys.modules.get("maya.OpenMaya")
+
+        self.mock_mglobal = MagicMock(name="MGlobal")
+        om_stub = ModuleType("maya.OpenMaya")
+        om_stub.MGlobal = self.mock_mglobal
+        maya_stub = ModuleType("maya")
+        maya_stub.OpenMaya = om_stub
+
+        sys.modules["maya"] = maya_stub
+        sys.modules["maya.OpenMaya"] = om_stub
+
+        self.handler = MayaScriptEditorHandler()
+        self.handler.setFormatter(logging.Formatter("%(message)s"))
+
+    def tearDown(self):
+        if self._prev_maya is None:
+            sys.modules.pop("maya", None)
+        else:
+            sys.modules["maya"] = self._prev_maya
+        if self._prev_om is None:
+            sys.modules.pop("maya.OpenMaya", None)
+        else:
+            sys.modules["maya.OpenMaya"] = self._prev_om
+
+    def _rec(self, level, msg="test"):
+        return logging.LogRecord("mmd_tools.test", level, "", 0, msg, (), None)
+
+    def test_debug_routes_to_displayInfo(self):
+        self.handler.emit(self._rec(logging.DEBUG, "dbg"))
+        self.mock_mglobal.displayInfo.assert_called_once_with("dbg")
+        self.mock_mglobal.displayWarning.assert_not_called()
+        self.mock_mglobal.displayError.assert_not_called()
+
+    def test_info_routes_to_displayInfo(self):
+        self.handler.emit(self._rec(logging.INFO, "inf"))
+        self.mock_mglobal.displayInfo.assert_called_once_with("inf")
+
+    def test_warning_routes_to_displayWarning(self):
+        self.handler.emit(self._rec(logging.WARNING, "wrn"))
+        self.mock_mglobal.displayWarning.assert_called_once_with("wrn")
+        self.mock_mglobal.displayInfo.assert_not_called()
+
+    def test_error_routes_to_displayError(self):
+        self.handler.emit(self._rec(logging.ERROR, "err"))
+        self.mock_mglobal.displayError.assert_called_once_with("err")
+
+    def test_critical_routes_to_displayError(self):
+        self.handler.emit(self._rec(logging.CRITICAL, "crit"))
+        self.mock_mglobal.displayError.assert_called_once_with("crit")
+
+    def test_safe_when_maya_absent(self):
+        """maya.OpenMaya が import できない場合は displayXxx を呼ばず silent に返る。"""
+        sys.modules.pop("maya.OpenMaya", None)
+        sys.modules.pop("maya", None)
+        # Should not raise
+        self.handler.emit(self._rec(logging.ERROR, "no maya"))
+        self.mock_mglobal.displayError.assert_not_called()
+
+
+class TestInstallMayaScriptEditorHandler(unittest.TestCase):
+    """install_maya_script_editor_handler の冪等性を確認する。"""
+
+    def _cleanup(self):
+        mmd_root = logging.getLogger("mmd_tools")
+        mmd_root.handlers = [
+            h for h in mmd_root.handlers if not isinstance(h, MayaScriptEditorHandler)
+        ]
+
+    def setUp(self):
+        self._cleanup()
+
+    def tearDown(self):
+        self._cleanup()
+
+    def test_installs_exactly_once_on_repeated_calls(self):
+        install_maya_script_editor_handler()
+        install_maya_script_editor_handler()
+        install_maya_script_editor_handler()
+
+        mmd_root = logging.getLogger("mmd_tools")
+        count = sum(1 for h in mmd_root.handlers if isinstance(h, MayaScriptEditorHandler))
+        self.assertEqual(count, 1)
+
+    def test_handler_attached_to_mmd_tools_logger(self):
+        install_maya_script_editor_handler()
+        mmd_root = logging.getLogger("mmd_tools")
+        self.assertTrue(
+            any(isinstance(h, MayaScriptEditorHandler) for h in mmd_root.handlers)
+        )
 
 
 if __name__ == "__main__":

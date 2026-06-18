@@ -5,6 +5,22 @@ from ...core.settings import settings
 
 logger = get_logger(__name__)
 
+# Dev-only import keys: forced to these values in normal mode (development_mode=False).
+# In dev mode the saved setting is used instead.
+_NORMAL_MODE_IMPORT_OVERRIDES = {
+    "import_models": True,
+    "import_physics": False,
+    "separate_meshes_by_material": False,
+    "split_meshes_by_morph_groups": False,
+    "hide_hidden_geometry": False,
+    "auto_classify_transparency": False,
+    "disable_backface_culling": True,
+    "uv_set_name": "map#",
+    "texture_search_path": "",
+    "add_semi_standard_bones": False,
+    "translate_names": True,
+}
+
 
 class ImportExportPresenter(QObject):
     def __init__(self, view, app_state):
@@ -58,6 +74,7 @@ class ImportExportPresenter(QObject):
         """VMD import用のオプションをUI設定から組み立てる。"""
         if target_model is None:
             target_model = self._get_vmd_target_model()
+        is_dev = settings.get("ui.general.development_mode", False)
         return {
             "start_frame": settings.get("import.animation.animation_start_frame", 1),
             "vmd_fps": settings.get("import.animation.vmd_fps", 30),
@@ -65,8 +82,50 @@ class ImportExportPresenter(QObject):
             "import_morph_animation": settings.get("import.animation.import_morph_animation", True),
             "import_camera_animation": settings.get("import.animation.import_camera_animation", True),
             "import_light_animation": settings.get("import.animation.import_light_animation", True),
-            "resample_curves": settings.get("import.animation.resample_curves", False),
+            "resample_curves": settings.get("import.animation.resample_curves", False) if is_dev else False,
             "target_model": target_model,
+        }
+
+    def _build_pmx_import_options(self):
+        """PMX/PMD import用のオプションを組み立てる。
+
+        通常モード（development_mode=False）では dev-only 設定を強制デフォルトに上書きする。
+        """
+        is_dev = settings.get("ui.general.development_mode", False)
+        opts = {
+            "scale": settings.get("import.general.scale_factor", 1.0),
+            "use_namespace": settings.get("import.general.use_namespace", False),
+            "custom_namespace": self.view.get_custom_namespace(),
+            "import_models": settings.get("import.model.import_models", True),
+            "create_mmd_shaders": settings.get("import.model.create_mmd_shaders", True),
+            "separate_meshes_by_material": settings.get("import.model.separate_meshes_by_material", False),
+            "split_meshes_by_morph_groups": settings.get("import.model.split_meshes_by_morph_groups", False),
+            "hide_hidden_geometry": settings.get("import.model.hide_hidden_geometry", False),
+            "auto_classify_transparency": settings.get("import.model.auto_classify_transparency", False),
+            "disable_backface_culling": settings.get("import.model.disable_backface_culling", True),
+            "uv_set_name": settings.get("import.model.uv_set_name", "map#"),
+            "texture_search_path": settings.get("import.model.texture_search_path", ""),
+            "import_physics": settings.get("import.physics.import_physics", False),
+            "import_morphs": settings.get("import.morph.import_morphs", True),
+            "add_semi_standard_bones": settings.get("import.rig.add_semi_standard_bones", False),
+            "translate_names": settings.get("import.naming.translate_names", True),
+        }
+        if not is_dev:
+            opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
+        bake_mode = settings.get("import.rig.bake_mode", True) if is_dev else True
+        if bake_mode:
+            opts["setup_rig"] = False
+            opts["setup_bone_orientation"] = False
+        opts["use_cpp_fast_load"] = settings.get("import.native.use_cpp_fast_load", False)
+        opts["cpp_fast_load_mesh_only"] = settings.get("import.native.cpp_fast_load_mesh_only", True)
+        return opts
+
+    def _build_export_options(self):
+        """PMX/PMD export用の基本オプションを設定から組み立てる。"""
+        return {
+            "file_path": self.view.export_path_edit.text().strip(),
+            "export_format": settings.get("export.general.export_format", "pmx"),
+            "apply_scale": settings.get("export.general.apply_scale", True),
         }
 
     def import_file(self):
@@ -88,27 +147,7 @@ class ImportExportPresenter(QObject):
         self.app_state.emit_progress(0)
         self.app_state.emit_status(f"Importing: {file_path}")
 
-        # 設定を収集
-        import_options = {
-            "scale": settings.get("import.general.scale_factor", 1.0),
-            "use_namespace": settings.get("import.general.use_namespace", False),
-            "custom_namespace": self.view.get_custom_namespace(),  # カスタムnamespace名
-            "import_models": settings.get("import.model.import_models", True),
-            "create_mmd_shaders": settings.get("import.model.create_mmd_shaders", True),
-            "separate_meshes_by_material": settings.get("import.model.separate_meshes_by_material", False),
-            "hide_hidden_geometry": settings.get("import.model.hide_hidden_geometry", True),
-            "import_physics": settings.get("import.physics.import_physics", False),
-            "import_morphs": settings.get("import.morph.import_morphs", True),
-        }
-        if settings.get("import.rig.bake_mode", False):
-            import_options["setup_rig"] = False
-            import_options["setup_bone_orientation"] = False
-        import_options["use_cpp_fast_load"] = settings.get(
-            "import.native.use_cpp_fast_load", False
-        )
-        import_options["cpp_fast_load_mesh_only"] = settings.get(
-            "import.native.cpp_fast_load_mesh_only", True
-        )
+        import_options = self._build_pmx_import_options()
         if file_path.lower().endswith(".vmd"):
             import_options.update(self._build_vmd_import_options())
 
@@ -139,6 +178,9 @@ class ImportExportPresenter(QObject):
         if not file_path:
             self.app_state.emit_status("Please enter a file path")
             return
+
+        export_options = self._build_export_options()
+        logger.debug(f"Export options: {export_options}")
 
         # NOTE: Maya シーンから PMX 用データ（頂点/面/材質/ボーン等）を収集する処理が
         # 未実装。収集なしで PmxExporter を呼ぶと必ず ValueError になり、ユーザーに

@@ -12,6 +12,49 @@ from typing import Optional, Dict
 from mmd_tools.core.settings import settings
 
 
+class MayaScriptEditorHandler(logging.Handler):
+    """Maya Script Editor に emit するハンドラ。
+
+    - DEBUG/INFO  → MGlobal.displayInfo
+    - WARNING     → MGlobal.displayWarning
+    - ERROR/CRITICAL → MGlobal.displayError
+
+    ``maya.OpenMaya`` が import できない環境（非Maya）では silent に返るため
+    クラッシュしない。emit 失敗時は標準の handleError() に委ねる。
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            try:
+                import maya.OpenMaya as _om  # noqa: PLC0415
+                MGlobal = _om.MGlobal
+            except ImportError:
+                return
+            if record.levelno >= logging.ERROR:
+                MGlobal.displayError(msg)
+            elif record.levelno >= logging.WARNING:
+                MGlobal.displayWarning(msg)
+            else:
+                MGlobal.displayInfo(msg)
+        except Exception:
+            self.handleError(record)
+
+
+def install_maya_script_editor_handler() -> None:
+    """mmd_tools ロガーに MayaScriptEditorHandler を一度だけ追加する。
+
+    重複呼び出しに対して冪等（既にハンドラが存在する場合は何もしない）。
+    ルートロガーのレベルは変更しない。
+    """
+    mmd_root = logging.getLogger("mmd_tools")
+    if any(isinstance(h, MayaScriptEditorHandler) for h in mmd_root.handlers):
+        return
+    handler = MayaScriptEditorHandler()
+    handler.setFormatter(logging.Formatter("[MMD] %(levelname)s: %(message)s"))
+    mmd_root.addHandler(handler)
+
+
 
 def is_maya_environment() -> bool:
     """Maya環境かどうかを判定"""

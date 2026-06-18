@@ -13,6 +13,7 @@ from maya.api import OpenMaya as om
 
 from mmd_tools.core import maya_utils
 from mmd_tools.core.constants import (
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
@@ -315,9 +316,67 @@ class MorphConverter:
 
         return morphs
 
+    @staticmethod
+    def _raw_morph_name(morph) -> str:
+        """VMD/PMX が参照する生のモーフ名（PmxMorph.name 相当）を返す。
+
+        VmdConverter のランタイムベイクは PmxMorph.name でモーフを引くため、
+        alias (sanitize 済み) ではなくこの生名を権威キーとして保存・登録する。
+        """
+        raw = getattr(morph, "name", "") or ""
+        if raw:
+            return str(raw)
+        getter = getattr(morph, "get_name", None)
+        if callable(getter):
+            return str(getter() or "")
+        return ""
+
+    def _existing_blendshape_aliases(self, blend_shape_node: str) -> Set[str]:
+        """blendShape ノードに既に割り当て済みの alias 名集合を返す。"""
+        flat = cmds.aliasAttr(blend_shape_node, query=True) or []
+        # aliasAttr -q はフラットな [alias, attr, alias, attr, ...] を返す
+        return set(flat[0::2])
+
+    def _unique_blendshape_alias(self, blend_shape_node: str, base_alias: str) -> str:
+        """blendShape ノード内で一意な alias を返す。
+
+        sanitize_text は lossy なため、異なるモーフが同一 ASCII に化けて
+        aliasAttr が衝突し片方が到達不能になることがある。数値サフィックスで回避する。
+        """
+        existing = self._existing_blendshape_aliases(blend_shape_node)
+        if base_alias not in existing:
+            return base_alias
+        index = 1
+        while f"{base_alias}_{index}" in existing:
+            index += 1
+        return f"{base_alias}_{index}"
+
+    def _store_blendshape_morph_name(self, blend_shape_node: str, target_index: int, raw_name: str) -> None:
+        """blendShape ノードに weight index → 生モーフ名 の対応を JSON で保存する。"""
+        if not raw_name:
+            return
+        names: Dict[str, str] = {}
+        if cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape_node, exists=True):
+            try:
+                raw = cmds.getAttr(f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    names = {str(k): str(v) for k, v in parsed.items()}
+            except (TypeError, ValueError):
+                names = {}
+        else:
+            cmds.addAttr(blend_shape_node, longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, dataType="string")
+        names[str(target_index)] = str(raw_name)
+        cmds.setAttr(
+            f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
+            json.dumps(names, ensure_ascii=False, separators=(",", ":")),
+            type="string",
+        )
+
     def _convert_vertex_morph_pmd(self, morph, mesh_node: str) -> Dict[str, Any]:
         """PMD頂点モーフの変換"""
         # モーフ名をMaya互換に変換
+        raw_name = self._raw_morph_name(morph)
         morph_name = maya_utils.sanitize_text(morph.get_name())
 
         # メッシュを複製してターゲットを作成
@@ -344,14 +403,17 @@ class MorphConverter:
             target=(mesh_node, target_index, target_mesh, 1.0),
         )
 
-        # ターゲットの名前を設定
-        cmds.aliasAttr(morph_name, f"{blend_shape_node}.w[{target_index}]")
+        # ターゲットの名前を設定（衝突時は一意化）。生名は別途保存し正確なマッピングを保証する。
+        alias = self._unique_blendshape_alias(blend_shape_node, morph_name)
+        cmds.aliasAttr(alias, f"{blend_shape_node}.w[{target_index}]")
+        self._store_blendshape_morph_name(blend_shape_node, target_index, raw_name)
 
         return {
             "success": True,
             "morph_name": morph.get_name(),
             "blend_shape_node": blend_shape_node,
             "target_index": target_index,
+            "alias": alias,
         }
 
     def _convert_bone_morph_pmx(self, morph) -> Dict[str, Any]:
@@ -490,6 +552,7 @@ class MorphConverter:
     def _convert_vertex_morph_pmx(self, morph, mesh_node: str) -> Dict[str, Any]:
         """PMX頂点モーフの変換"""
         # モーフ名をMaya互換に変換
+        raw_name = self._raw_morph_name(morph)
         morph_name = maya_utils.sanitize_text(morph.get_name())
         source_to_local = self._get_mesh_source_vertex_map(mesh_node)
 
@@ -517,14 +580,17 @@ class MorphConverter:
             target=(mesh_node, target_index, target_mesh, 1.0),
         )
 
-        # ターゲットの名前を設定
-        cmds.aliasAttr(morph_name, f"{blend_shape_node}.w[{target_index}]")
+        # ターゲットの名前を設定（衝突時は一意化）。生名は別途保存し正確なマッピングを保証する。
+        alias = self._unique_blendshape_alias(blend_shape_node, morph_name)
+        cmds.aliasAttr(alias, f"{blend_shape_node}.w[{target_index}]")
+        self._store_blendshape_morph_name(blend_shape_node, target_index, raw_name)
 
         return {
             "success": True,
             "morph_name": morph.get_name(),
             "blend_shape_node": blend_shape_node,
             "target_index": target_index,
+            "alias": alias,
         }
 
     def _apply_vertex_offsets_pmd(self, mesh_node: str, morph):

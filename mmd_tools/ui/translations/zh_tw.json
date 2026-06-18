@@ -17,8 +17,7 @@
     "export_settings": "匯出設定"
   },
   "menus": {
-    "view": "檢視",
-    "log_viewer": "記錄檢視器"
+    "view": "檢視"
   },
   "buttons": {
     "import": "匯入",
@@ -197,9 +196,11 @@
     "new_file": "新建檔案",
     "enable_ik": "啟用IK",
     "invert_value": "反轉值",
+    "development_mode": "開發模式",
     "show_advanced_options": "顯示進階選項",
     "enable_logging": "啟用記錄",
     "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
+    "split_meshes_by_morph_groups": "【實驗性】依表情群組分離網格",
     "custom_namespace": "自訂命名空間:"
   },
   "fields": {

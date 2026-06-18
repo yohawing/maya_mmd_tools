@@ -228,7 +228,7 @@ class PmxExporter:
         else:
             # Distribute face counts: if any material is missing face_count,
             # assign all remaining index count to the first unspecified material.
-            specified_total = sum(m.get("face_count", 0) for m in materials_raw)
+            specified_total = sum(m.get("face_count") or 0 for m in materials_raw)
             unspecified_indices = [
                 i for i, m in enumerate(materials_raw) if m.get("face_count") is None
             ]

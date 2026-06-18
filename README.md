@@ -6,24 +6,101 @@ Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VM
 
 This is an alpha early release. Some features may be undeveloped or unstable.
 
-## Supported Features
+## Feature Support Matrix
 
-- PMD/PMX model import
-- VMD animation import for bones, morphs, cameras, and lights
-- Basic UI with Info, Material, Morph, and Bone tabs
-- Japanese/English UI
-- Namespace support
-- Log viewer
+Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-in) · ⛔ Not supported yet
+
+> This is an alpha release. See [Known Limitations](#known-limitations) below for details.
+
+### Import — File Formats
+
+| Format | Status | Notes |
+|---|---|---|
+| PMX (`.pmx`) 2.0 / 2.1 | ✅ | Recommended format |
+| PMD (`.pmd`) | ✅ | Legacy format |
+| VMD (`.vmd`) motion | ✅ | See [Animation](#animation-vmd) below |
+| VPD (`.vpd`) pose | ⛔ | Parser exists, but the import UI is disabled and not yet wired up |
+
+### Import — Model
+
+| Feature | Status | Notes |
+|---|---|---|
+| Mesh / vertices / normals | ✅ | |
+| Materials & textures | ✅ | Auto-applied when found; texture search path supported |
+| Primary UV | ✅ | |
+| Additional UV (UV1–4) | ⛔ | Read but not applied |
+| Edge / outline flags | ✅ | |
+| Bones & skeleton | ✅ | |
+| IK | ✅ | Resolved on import / during motion bake |
+| Append (grant / 付与) bones | ✅ | |
+| Bone local axis | 🔶 | Approximate; fidelity not fully verified |
+| Display frames (表示枠) | ⛔ | Read but not reflected in Maya yet |
+| Name translation (JP → EN) | ✅ | Toggle |
+
+### Import — Morphs
+
+| Morph type | Status | Notes |
+|---|---|---|
+| Vertex | ✅ | blendShape targets |
+| Bone | 🔶 | Driven by motion bake; limited interactive control |
+| Material | 🔶 | Driven by motion bake; limited interactive control |
+| Group | ⛔ | |
+| UV (incl. additional UV) | ⛔ | |
+| Flip | ⛔ | |
+| Impulse | ⛔ | |
+
+### Import — Physics
+
+| Feature | Status | Notes |
+|---|---|---|
+| Rigid bodies & joints | 🧪 | Opt-in (`import.physics.import_physics`) |
+| Soft body (PMX 2.1) | ⛔ | Read but silently ignored |
+
+### Animation (VMD)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Bone animation | ✅ | High-precision bake via the MMD runtime (Bézier interpolation, IK, and grant resolved); falls back to linear interpolation when the runtime is unavailable |
+| Morph animation | ✅ | |
+| Camera animation | ✅ | |
+| Light animation | ✅ | Drives the `mmd_light` controller |
+| IK on/off frames | 🔶 | Simplified handling |
+
+### Export
+
+| Format | Status | Notes |
+|---|---|---|
+| PMX / PMD / VMD | ⛔ | Import-only for now; the UI shows an explicit "not implemented" message |
+
+### Viewport & Shading
+
+| Feature | Status | Notes |
+|---|---|---|
+| DX11 MMD toon shader (Windows) | ✅ | Toon shading, outline, and transparency; automatic color-management setup on import |
+| MMD light controller | ✅ | Single directional-light null |
+| Transparency (opaque / cutout / blend) | ✅ | Manual, plus opt-in auto-classification |
+| GLSL shader (macOS) | 🧪 | Not fully verified on macOS |
+
+### UI
+
+| Feature | Status |
+|---|---|
+| Info / Material / Morph / Bone tabs | ✅ |
+| Japanese / English UI | ✅ |
+| Namespace (multiple models) | ✅ |
 
 ## Known Limitations
 
-- PMD/PMX/VMD export is not implemented.
-- Physics support is incomplete.
-- VMD motion import has an unresolved issue where newly imported motion may not play back correctly. In `0.1.0`, VMD loading/parsing is available, but motion playback should be treated as incomplete.
-- Large models may have performance issues.
-- Some PMX files may fail to import.
-- The opt-in C++ PMX fast path currently supports mesh, basic materials, basic skeleton/skin, and vertex morph blendShape targets.
-- C++ fast path morphs not yet implemented: UV/additional UV morphs, material morphs, bone morphs, and group morphs.
+- **Export is not available.** This is an import-only tool for now — PMX/PMD/VMD export is not implemented (the UI states this explicitly).
+- **VPD pose import is not yet available.** The parser exists, but the UI is disabled until it is wired up.
+- **Additional UV / multi-UV is not applied** (read but ignored).
+- **Group, UV, Flip, and Impulse morphs are not supported.** Vertex morphs are fully supported; bone and material morphs are applied through motion bake.
+- **Soft body (PMX 2.1) data is silently ignored.** The rest of the file still imports correctly.
+- **Display frames (表示枠) are read but not reflected in Maya.**
+- **Physics is experimental** and off by default.
+- **Bone local-axis fidelity is approximate** and not fully verified.
+- Large models may have performance issues, and some PMX files may fail to import.
+- The opt-in C++ fast-import path supports mesh, basic materials, basic skeleton/skin, and vertex-morph blendShape targets only (UV / material / bone / group morphs are not handled on that path).
 
 ## System Requirements
 
@@ -207,9 +284,20 @@ settings.set("import.general.use_namespace", True)
 # Material creation.
 settings.set("import.model.create_mmd_shaders", True)
 
+# Split meshes per material. Off by default.
+# Enable only if you want to edit or toggle visibility per material.
+settings.set("import.model.separate_meshes_by_material", False)
+
 # Physics import. Experimental in this early release.
 settings.set("import.physics.import_physics", False)
 ```
+
+`import.model.separate_meshes_by_material` is an opt-in setting that splits the
+mesh per PMX/PMD material. With the default `False`, materials are assigned per
+face on a single mesh, which is recommended for normal model imports. Setting it
+to `True` makes per-material editing and visibility toggling easier, but it
+creates more mesh / skinCluster / blendShape nodes, increasing import time and
+scene node count for heavy models.
 
 ### Imported Scene Structure
 

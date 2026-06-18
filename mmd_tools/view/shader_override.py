@@ -1,4 +1,12 @@
 # -*- coding: utf-8 -*-
+"""Legacy experimental VP2.0 shader override.
+
+Production material import uses Maya's built-in shader nodes through
+``mmd_tools.converters.mesh_converter`` (dx11Shader / GLSLShader / standardSurface).
+This custom override remains registered for compatibility experiments, but it is
+not the product shader backend and should not receive feature work without live
+Maya VP2.0 validation.
+"""
 
 import os
 import maya.api.OpenMaya as om

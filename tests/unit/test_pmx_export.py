@@ -25,6 +25,7 @@ from mmd_tools.core.pmx_data.vertex import PmxVertex
 from mmd_tools.core.pmx_data.face import PmxFace
 from mmd_tools.core.pmx_data.material import PmxMaterial
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
 from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
@@ -488,6 +489,31 @@ class TestPmxExporterFromDict(TestBase):
 
         self.assertEqual(len(pmx.materials), 2)
         self.assertEqual(pmx.materials[0].face_count, 6)  # first gets all index count
+        self.assertEqual(pmx.materials[1].face_count, 0)
+
+    def test_export_material_face_count_none_gets_remaining_indices(self):
+        """face_count=None は未指定扱いで残りインデックス数を割り当てる。"""
+        data = {
+            "model_name": "MatNone",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "materials": [
+                {"name": "MatA", "face_count": None},
+                {"name": "MatB", "face_count": 0},
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "mat_none.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.materials), 2)
+        self.assertEqual(pmx.materials[0].face_count, 3)
         self.assertEqual(pmx.materials[1].face_count, 0)
 
     def test_export_with_textures(self):
@@ -1068,23 +1094,42 @@ class TestPmxExporterFromDict(TestBase):
                 data,
             )
 
-    def test_export_unsupported_morph_type_raises(self):
-        """未対応 morph type は ValueError"""
-        data = {
-            "model_name": "BadMorphType",
+    def test_export_unsupported_morph_types_raise(self):
+        """UV / Flip / Impulse モーフは文字列・enum・数値いずれの指定でも ValueError"""
+        _base_data = {
+            "model_name": "UnsupportedMorphTypes",
             "vertices": [
                 {"position": [0.0, 0.0, 0.0]},
                 {"position": [1.0, 0.0, 0.0]},
                 {"position": [0.0, 1.0, 0.0]},
             ],
             "faces": [[0, 1, 2]],
-            "morphs": [{"type": "uv", "name": "uv_morph", "offsets": []}],
         }
-        with self.assertRaises(ValueError):
-            self.exporter.export_pmx_model(
-                os.path.join(self.temp_dir, "unsupported_morph_type.pmx"),
-                data,
-            )
+
+        unsupported_types = [
+            # string aliases
+            "uv",
+            "flip",
+            "impulse",
+            # PmxMorphType enum values
+            PmxMorphType.UVMorph,
+            PmxMorphType.FlipMorph,
+            PmxMorphType.ImpulseMorph,
+            # numeric equivalents
+            int(PmxMorphType.UVMorph),    # 3
+            int(PmxMorphType.FlipMorph),   # 9
+            int(PmxMorphType.ImpulseMorph),  # 10
+        ]
+
+        for morph_type in unsupported_types:
+            with self.subTest(morph_type=morph_type):
+                data = dict(_base_data)
+                data["morphs"] = [{"type": morph_type, "name": "bad", "offsets": []}]
+                with self.assertRaises(ValueError):
+                    self.exporter.export_pmx_model(
+                        os.path.join(self.temp_dir, f"unsupported_{str(morph_type).replace(' ', '_')}.pmx"),
+                        data,
+                    )
 
     def test_export_morph_vertex_index_out_of_range_raises(self):
         """VertexMorph offset の vertex index が範囲外なら ValueError"""

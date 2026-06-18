@@ -2,6 +2,7 @@
 MMDファイル（PMX、PMD、VMD）を解析し、Mayaシーンにインポートするためのメインモジュール。
 """
 
+from contextlib import contextmanager
 from pathlib import Path
 
 from mmd_tools.core import settings
@@ -11,6 +12,41 @@ from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
 
 logger = get_logger("mmd_tools.io.mmd_importer")
+
+# Maps option-dict keys to global settings paths for model imports.
+# Used by _scoped_settings_override to ensure downstream converters that read
+# settings directly receive the same forced values as the options dict.
+_OPTION_TO_SETTINGS_KEY = {
+    "separate_meshes_by_material": "import.model.separate_meshes_by_material",
+    "split_meshes_by_morph_groups": "import.model.split_meshes_by_morph_groups",
+    "auto_classify_transparency": "import.model.auto_classify_transparency",
+    "disable_backface_culling": "import.model.disable_backface_culling",
+    "uv_set_name": "import.model.uv_set_name",
+    "texture_search_path": "import.model.texture_search_path",
+    "add_semi_standard_bones": "import.rig.add_semi_standard_bones",
+    "translate_names": "import.naming.translate_names",
+    "hide_hidden_geometry": "import.model.hide_hidden_geometry",
+}
+
+
+@contextmanager
+def _scoped_settings_override(options):
+    """Temporarily apply option values to global settings for the duration of a model import.
+
+    Downstream converters that read settings directly will see the values from
+    the options dict. Original values are restored unconditionally in a finally block.
+    Only option keys present in both *options* and *_OPTION_TO_SETTINGS_KEY* are applied.
+    """
+    saved = {}
+    for opt_key, settings_key in _OPTION_TO_SETTINGS_KEY.items():
+        if opt_key in options:
+            saved[settings_key] = settings.get(settings_key)
+            settings.set(settings_key, options[opt_key])
+    try:
+        yield
+    finally:
+        for settings_key, original_value in saved.items():
+            settings.set(settings_key, original_value)
 
 
 def import_mmd_file(filepath, scale=None, options=None):
@@ -72,20 +108,22 @@ def import_mmd_file(filepath, scale=None, options=None):
         # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
         # ファイル拡張子でインポーターを選ぶ。
         if suffix == ".pmx":
-            return pmx_importer.import_pmx_file(
-                parsed_data,
-                filepath,
-                settings.get("import.general.scale_factor", 1.0),
-                options,
-            )
+            with _scoped_settings_override(options):
+                return pmx_importer.import_pmx_file(
+                    parsed_data,
+                    filepath,
+                    settings.get("import.general.scale_factor", 1.0),
+                    options,
+                )
 
         elif suffix == ".pmd":
-            return pmd_importer.import_pmd_file(
-                parsed_data,
-                filepath,
-                settings.get("import.general.scale_factor", 1.0),
-                options,
-            )
+            with _scoped_settings_override(options):
+                return pmd_importer.import_pmd_file(
+                    parsed_data,
+                    filepath,
+                    settings.get("import.general.scale_factor", 1.0),
+                    options,
+                )
 
         elif suffix == ".vmd":
             return vmd_importer.import_vmd_file(parsed_data, filepath, options)
