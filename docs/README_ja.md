@@ -4,8 +4,6 @@
 
 Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVMDモーションを読み込むためのツールです。
 
-現在はアルファ版の早期リリースです。一部の機能が未実装もしくは不安定な場合があります。
-
 ## 機能サポート一覧
 
 凡例: ✅ 対応 · 🔶 一部対応／制限あり · 🧪 試験的（opt-in） · ⛔ 未対応
@@ -21,7 +19,7 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 | Maya向け名前解決 | 🔶 | 一部対応。テクスチャの解決に失敗する場合があります |
 | プライマリ UV | ✅ | |
 | 追加 UV（UV1–4） | ⛔ | 非対応 |
-| エッジ／輪郭フラグ | ✅ | |
+| エッジ／輪郭フラグ | ✅ | シェーダーアウトライン描画はマテリアルタブから opt-in |
 | ボーン・スケルトン | ✅ | |
 | IK | ⛔ | 非対応 |
 | 付与ボーン | ⛔ |　非対応 |
@@ -44,8 +42,8 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 |---|---|---|
 | ボーンアニメーション | 🔶 | [mmd-anim](https://github.com/yohawing/mmd-anim)による高精度ベイク（ベジェ補間・IK・付与を解決）のみ対応 |
 | モーフアニメーション | 🔶 |　頂点モーフのみ対応 |
-| カメラアニメーション | ⛔ | 非対応 |
-| 照明アニメーション | ⛔ | `mmd_light` コントローラを駆動 |
+| カメラアニメーション | ✅ | `mmd_camera` を作成・キー設定 |
+| 照明アニメーション | ✅ | `mmd_light` コントローラを駆動 |
 | IK オン／オフフレーム | ⛔ | 非対応 |
 | エクスポート | ⛔ | 非対応 |
 
@@ -53,7 +51,7 @@ Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVM
 
 | 機能 | 状態 | 備考 |
 |---|---|---|
-| DX11 MMD トゥーンシェーダー（Windows） | ✅ | トゥーン・輪郭・透過。import 時にカラーマネジメントを自動設定 |
+| DX11 MMD トゥーンシェーダー（Windows） | ✅ | トゥーン・透過。輪郭は描画順の都合で既定オフ、マテリアルタブから opt-in |
 | MMD ライトコントローラ | ✅ | 単一の directional light ヌル |
 | 透過（不透明／カットアウト／ブレンド） | ✅ | 手動＋ opt-in の自動分類 |
 | GLSL シェーダー（macOS） | ⛔ | 非対応 |

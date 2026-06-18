@@ -3,14 +3,13 @@ import time
 import json
 
 from maya import cmds
-from typing import Tuple, Union, List
+from typing import Tuple, Union, List, Optional
 
 from mmd_tools.core.settings import settings
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmx_data import PmxData
-from mmd_tools.core.pmx_data.material import PmxDrawFlag
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
@@ -37,6 +36,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
     ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
@@ -133,6 +133,28 @@ def apply_transparency_mode(shader: str, mode: str) -> str:
     return new_technique
 
 
+def get_shader_outline_enabled(shader: str) -> bool:
+    """Return whether the dx11Shader technique currently renders outlines."""
+    technique = ""
+    if cmds.attributeQuery("technique", node=shader, exists=True):
+        technique = cmds.getAttr(f"{shader}.technique") or ""
+    return bool(technique) and "NoEdge" not in technique
+
+
+def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] = None) -> str:
+    """Enable/disable the dx11Shader outline pass while preserving transparency mode."""
+    mode = get_transparency_mode(shader)
+    new_technique = _technique_for_transparency(mode, enabled)
+    cmds.setAttr(f"{shader}.technique", new_technique, type="string")
+    if edge_size is not None and cmds.attributeQuery("EdgeSize", node=shader, exists=True):
+        cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))) if enabled else 0.0)
+    if not cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
+        maya_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
+    else:
+        maya_utils.set_attribute(shader, ATTR_MMD_SHADER_OUTLINE_ENABLED, bool(enabled), "bool")
+    return new_technique
+
+
 def _resolve_pmx_toon_texture_path(texture_dir, material, all_textures):
     """Resolve a PMX custom/shared toon texture to an absolute file path."""
     if not hasattr(material, "shared_toon_flag") or not hasattr(material, "toon_texture_index"):
@@ -146,11 +168,20 @@ def _resolve_pmx_toon_texture_path(texture_dir, material, all_textures):
     if int(material.shared_toon_flag) == 0:
         if not all_textures or toon_index >= len(all_textures):
             return None
-        return os.path.normpath(os.path.join(texture_dir, all_textures[toon_index]))
+        return _resolve_texture_path(texture_dir, all_textures[toon_index])
 
     if toon_index > 9:
         return None
     return os.path.join(_STANDARD_TOON_TEXTURE_DIR, f"toon{toon_index + 1:02d}.bmp")
+
+
+def _resolve_texture_path(texture_dir, texture_path):
+    """Resolve a texture path once, preserving already-absolute paths."""
+    if not texture_path:
+        return None
+    if os.path.isabs(texture_path):
+        return os.path.normpath(texture_path)
+    return os.path.normpath(os.path.join(texture_dir, texture_path))
 
 
 def _ensure_mmd_shader_uniform_attributes(shader_node):
@@ -342,6 +373,21 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
                 _set_dx11_color_uniform(shader, "EdgeColor", edge_color + [edge_alpha])
             except Exception:
                 LOGGER.warning("Failed to sync dx11 EdgeColor uniforms for '%s'", shader, exc_info=True)
+
+        if (
+            cmds.attributeQuery(ATTR_MMD_EDGE_SIZE, node=shader, exists=True)
+            and cmds.attributeQuery("EdgeSize", node=shader, exists=True)
+        ):
+            try:
+                if cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
+                    outline_enabled = bool(cmds.getAttr(f"{shader}.{ATTR_MMD_SHADER_OUTLINE_ENABLED}"))
+                else:
+                    outline_enabled = get_shader_outline_enabled(shader)
+                edge_size = float(cmds.getAttr(f"{shader}.{ATTR_MMD_EDGE_SIZE}")) if outline_enabled else 0.0
+                cmds.setAttr(f"{shader}.EdgeSize", edge_size)
+                synced += 1
+            except Exception:
+                LOGGER.warning("Failed to sync dx11 EdgeSize uniform for '%s'", shader, exc_info=True)
 
     return synced
 
@@ -1230,6 +1276,7 @@ class MeshConverter:
 
         if is_pmd:
             custom_attrs[ATTR_MMD_EDGE_FLAG] = int(material.edge_flag)
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
         else:
             custom_attrs[ATTR_MMD_SPHERE_MODE] = int(material.sphere_mode)
             custom_attrs[ATTR_MMD_SPHERE_TEXTURE_INDEX] = material.sphere_texture_index
@@ -1237,6 +1284,7 @@ class MeshConverter:
             custom_attrs[ATTR_MMD_DRAW_FLAGS] = int(material.draw_flag)
             custom_attrs[ATTR_MMD_EDGE_COLOR] = material.edge_color[:3]
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
+            custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
 
@@ -1294,8 +1342,8 @@ class MeshConverter:
         # テクスチャの設定
         if texture_path:
             # テクスチャパスを解決
-            full_texture_path = os.path.join(self.texture_dir, texture_path)
-            if os.path.exists(full_texture_path):
+            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path)
+            if full_texture_path and os.path.exists(full_texture_path):
                 file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
                 place_uv_node = cmds.shadingNode(
                     "place2dTexture",
@@ -1323,10 +1371,6 @@ class MeshConverter:
         maya_utils.set_attribute(shader, "technique", "Main", "string")
         _ensure_mmd_shader_uniform_attributes(shader)
 
-        edge_enabled = is_pmd
-        if not is_pmd and hasattr(material, "draw_flag"):
-            edge_enabled = bool(material.draw_flag & PmxDrawFlag.EDGE_DRAWING)
-
         maya_utils.set_attribute(shader, "DiffuseColor", material.diffuse, "double4")
 
         if hasattr(material, "specular"):
@@ -1349,8 +1393,7 @@ class MeshConverter:
             if len(edge_color) == 3:
                 edge_color.append(1.0)
         maya_utils.set_attribute(shader, "EdgeColor", edge_color, "double4")
-        edge_size = 0.0 if not edge_enabled else getattr(material, "edge_size", 1.0)
-        maya_utils.set_attribute(shader, "EdgeSize", edge_size, "float")
+        maya_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
 
         sphere_mode = getattr(material, "sphere_mode", 0)
         maya_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
@@ -1382,17 +1425,12 @@ class MeshConverter:
         # 自動生成しないため、事前に動的アトリビュートとして作成しておく
         _ensure_dx11_uniform_attributes(shader)
 
-        # テクニックを設定（PMX draw_flag の EDGE_DRAWING で分岐）
-        edge_enabled = is_pmd  # PMD は常に edge enabled として扱う
-        if not is_pmd and hasattr(material, "draw_flag"):
-            edge_enabled = bool(material.draw_flag & PmxDrawFlag.EDGE_DRAWING)
-
         # Prefer the accurate per-material UV-region classification computed up
         # front; fall back to the simple diffuse-alpha rule if unavailable.
         mode = self._transparency_modes.get(material_index)
         if mode is None:
             mode = _classify_material_transparency(material, texture_path)
-        technique = _technique_for_transparency(mode, edge_enabled)
+        technique = _technique_for_transparency(mode, False)
         cmds.setAttr(f"{shader}.technique", technique, type="string")
         _store_transparency_mode_attr(shader, mode)
 
@@ -1433,9 +1471,7 @@ class MeshConverter:
         if not is_pmd:
             # エッジ色
             _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
-            # エッジサイズ（EDGE_DRAWING 無効時は 0.0）
-            edge_size = material.edge_size if edge_enabled else 0.0
-            maya_utils.set_attribute(shader, "EdgeSize", edge_size, "float")
+        maya_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)
@@ -1447,11 +1483,14 @@ class MeshConverter:
 
         # テクスチャ設定
         if texture_path:
-            full_texture_path = os.path.join(self.texture_dir, texture_path)
-            full_texture_path = os.path.normpath(full_texture_path)
+            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path)
 
             # ファイルが存在するかチェック
-            if os.path.exists(full_texture_path) and cmds.attributeQuery("MainTexture", node=shader, exists=True):
+            if (
+                full_texture_path
+                and os.path.exists(full_texture_path)
+                and cmds.attributeQuery("MainTexture", node=shader, exists=True)
+            ):
                 # ファイルテクスチャノードを作成
                 file_node = cmds.shadingNode("file", asTexture=True, name=shader + "_texture")
                 # ファイルパスを設定
@@ -1471,10 +1510,13 @@ class MeshConverter:
         if not is_pmd and hasattr(material, "sphere_texture_index") and material.sphere_texture_index >= 0:
             if all_textures and material.sphere_texture_index < len(all_textures):
                 sphere_texture_path = all_textures[material.sphere_texture_index]
-                full_sphere_path = os.path.join(self.texture_dir, sphere_texture_path)
-                full_sphere_path = os.path.normpath(full_sphere_path)
+                full_sphere_path = _resolve_texture_path(self.texture_dir, sphere_texture_path)
 
-                if os.path.exists(full_sphere_path) and cmds.attributeQuery("SphereTexture", node=shader, exists=True):
+                if (
+                    full_sphere_path
+                    and os.path.exists(full_sphere_path)
+                    and cmds.attributeQuery("SphereTexture", node=shader, exists=True)
+                ):
                     sphere_file_node = cmds.shadingNode("file", asTexture=True, name=shader + "_sphere_texture")
                     maya_utils.set_attribute(sphere_file_node, "fileTextureName", full_sphere_path, "string")
                     try:

@@ -149,6 +149,7 @@
     "edge_settings": "Edge Settings",
     "edge_properties": "Edge Properties",
     "rendering_flags": "Rendering Flags",
+    "viewport_settings": "Viewport Settings",
     "bone_list": "Bone List",
     "basic_information": "Basic Information",
     "transform_control": "Transform Control",
@@ -307,6 +308,7 @@
     "self_shadow_map": "Cast Self Shadow",
     "self_shadow": "Receive Self Shadow",
     "edge_drawing": "Edge Drawing",
+    "shader_outline": "Shader Outline",
     "vertex_color": "Vertex Color",
     "point_drawing": "Point Drawing",
     "line_drawing": "Line Drawing"

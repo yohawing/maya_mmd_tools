@@ -104,15 +104,16 @@ def generate_manifest(
 
     valid_motions: list[Path] = []
     skipped_motions: list[str] = []
-    for motion in motions:
-        try:
-            parse_mmd_file(str(motion))
-        except Exception as exc:  # noqa: BLE001 - manifest generation records local data quality.
-            skipped_motions.append(f"{motion}: {type(exc).__name__}: {exc}")
-            continue
-        valid_motions.append(motion)
-        if len(valid_motions) >= max_motions:
-            break
+    if max_motions > 0:
+        for motion in motions:
+            try:
+                parse_mmd_file(str(motion))
+            except Exception as exc:  # noqa: BLE001 - manifest generation records local data quality.
+                skipped_motions.append(f"{motion}: {type(exc).__name__}: {exc}")
+                continue
+            valid_motions.append(motion)
+            if len(valid_motions) >= max_motions:
+                break
     motions = valid_motions
 
     cases: list[dict[str, Any]] = []
@@ -568,11 +569,15 @@ def _collect_audit(
     root_node: str,
     use_shader: bool,
     shader_backend: str = "auto",
+    model_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Inspect Maya scene for texture and shader diagnostics.
 
     Returns an audit dict:
       missing_textures: list of dicts {file_node, texture_path, exists}
+      source_file: dict describing the root mmd_source_file attr
+      scene_health: compact scene-level sanity checks
+      suspicious_string_attrs: non-fatal list of MMD string attrs containing '?'
       shader_errors: list of error strings
       shader_summary: brief string describing what was found
     """
@@ -587,10 +592,52 @@ def _collect_audit(
         return cmds.ls(type=node_type) or []
 
     missing_textures: list[dict] = []
+    suspicious_string_attrs: list[dict] = []
     shader_errors: list[str] = []
     backend = (shader_backend or "auto").lower()
     dx11_count = 0
     glsl_count = 0
+
+    texture_base_dir = Path(model_dir).resolve() if model_dir else None
+
+    def _path_exists(value: str) -> bool:
+        if not value or not value.strip():
+            return False
+        candidate = Path(value.strip())
+        if candidate.exists():
+            return True
+        if texture_base_dir and not candidate.is_absolute():
+            return (texture_base_dir / candidate).exists()
+        return False
+
+    def _audit_path_attr(node: str, attr_name: str, source: str) -> dict[str, Any] | None:
+        if not cmds.objExists(node) or not cmds.attributeQuery(attr_name, node=node, exists=True):
+            return None
+        try:
+            value = cmds.getAttr(f"{node}.{attr_name}") or ""
+        except Exception:
+            return None
+        item = {
+            "source": source,
+            "node": node,
+            "attr": attr_name,
+            "path": value,
+            "exists": _path_exists(value),
+        }
+        if value and not item["exists"]:
+            missing_textures.append(
+                {
+                    "source": source,
+                    "node": node,
+                    "attr": attr_name,
+                    "texture_path": value,
+                    "exists": False,
+                }
+            )
+        return item
+
+    # --- Root source path audit ---
+    source_file = _audit_path_attr(root_node, "mmd_source_file", "root_attr")
 
     # --- File node texture audit ---
     file_nodes = cmds.ls(type="file") or []
@@ -603,7 +650,83 @@ def _collect_audit(
             tex_path = Path(val.strip())
             if not tex_path.exists():
                 missing_textures.append(
-                    {"file_node": fn, "texture_path": str(tex_path), "exists": False}
+                    {
+                        "source": "file_node",
+                        "file_node": fn,
+                        "texture_path": str(tex_path),
+                        "exists": False,
+                    }
+                )
+
+    # --- MMD path custom attributes on materials/shaders ---
+    for attr_name in ("mmd_texture_path", "mmd_sphere_path"):
+        for node in cmds.ls(f"*.{attr_name}", objectsOnly=True) or []:
+            _audit_path_attr(node, attr_name, "shader_attr")
+
+    # --- Scene health audit ---
+    mesh_shapes = cmds.listRelatives(root_node, allDescendents=True, type="mesh", fullPath=True) or []
+    visible_mesh_shapes: list[str] = []
+    intermediate_mesh_shapes: list[str] = []
+    empty_meshes: list[dict[str, Any]] = []
+    meshes_without_uvs: list[str] = []
+    for shape in mesh_shapes:
+        try:
+            is_intermediate = bool(cmds.getAttr(f"{shape}.intermediateObject"))
+        except Exception:
+            is_intermediate = False
+        if is_intermediate:
+            intermediate_mesh_shapes.append(shape)
+            continue
+        visible_mesh_shapes.append(shape)
+        try:
+            vertex_count = int(cmds.polyEvaluate(shape, vertex=True) or 0)
+            face_count = int(cmds.polyEvaluate(shape, face=True) or 0)
+        except Exception:
+            vertex_count = 0
+            face_count = 0
+        if vertex_count <= 0 or face_count <= 0:
+            empty_meshes.append(
+                {"mesh": shape, "vertices": vertex_count, "faces": face_count}
+            )
+        try:
+            uv_names = cmds.polyUVSet(shape, query=True, allUVSets=True) or []
+        except Exception:
+            uv_names = []
+        if not uv_names:
+            meshes_without_uvs.append(shape)
+
+    scene_health = {
+        "root_exists": bool(root_node and cmds.objExists(root_node)),
+        "node_count": len(cmds.ls() or []),
+        "visible_mesh_shape_count": len(visible_mesh_shapes),
+        "intermediate_mesh_shape_count": len(intermediate_mesh_shapes),
+        "empty_meshes": empty_meshes,
+        "meshes_without_uvs": meshes_without_uvs,
+        "joint_count": len(cmds.ls(type="joint") or []),
+        "skin_cluster_count": len(cmds.ls(type="skinCluster") or []),
+        "blend_shape_count": len(cmds.ls(type="blendShape") or []),
+        "file_node_count": len(file_nodes),
+    }
+
+    # --- Non-fatal scan for string attrs that look CP932-replaced ---
+    for attr_name in (
+        "mmd_model_name",
+        "mmd_model_name_en",
+        "mmd_material_name",
+        "mmd_material_name_en",
+        "mmd_bone_name",
+        "mmd_bone_name_en",
+        "mmd_comment",
+        "mmd_comment_en",
+    ):
+        for node in cmds.ls(f"*.{attr_name}", objectsOnly=True) or []:
+            try:
+                value = cmds.getAttr(f"{node}.{attr_name}") or ""
+            except Exception:
+                continue
+            if isinstance(value, str) and ("?" in value or "\ufffd" in value):
+                suspicious_string_attrs.append(
+                    {"node": node, "attr": attr_name, "value": value}
                 )
 
     # --- Shader node audit ---
@@ -636,6 +759,9 @@ def _collect_audit(
 
     return {
         "missing_textures": missing_textures,
+        "source_file": source_file,
+        "scene_health": scene_health,
+        "suspicious_string_attrs": suspicious_string_attrs,
         "shader_errors": shader_errors,
         "shader_summary": shader_summary,
         "log_warnings": [],
@@ -789,6 +915,59 @@ def _collect_profile(
     return profile
 
 
+def _is_cp932_lossy(text: str) -> bool:
+    """Return True when *text* cannot roundtrip through Windows Japanese ACP."""
+    if not isinstance(text, str):
+        return False
+    encoded = text.encode("cp932", errors="replace")
+    return encoded.decode("cp932", errors="replace") != text
+
+
+def _collect_preflight(path: str, parsed_data: Any | None = None) -> dict[str, Any]:
+    """Collect model-file facts before Maya scene creation/import."""
+    model_path = Path(path)
+    preflight: dict[str, Any] = {
+        "path": str(model_path),
+        "exists": model_path.is_file(),
+        "suffix": model_path.suffix.lower(),
+        "size_bytes": model_path.stat().st_size if model_path.is_file() else None,
+        "path_cp932_lossy": _is_cp932_lossy(str(model_path)),
+    }
+    if parsed_data is None:
+        return preflight
+
+    textures = list(getattr(parsed_data, "textures", []) or [])
+    texture_entries = []
+    for index, texture in enumerate(textures):
+        texture_entries.append(
+            {
+                "index": index,
+                "path": texture,
+                "cp932_lossy": _is_cp932_lossy(texture),
+            }
+        )
+
+    faces = getattr(parsed_data, "faces", []) or []
+    vertices = getattr(parsed_data, "vertices", []) or []
+    materials = getattr(parsed_data, "materials", []) or []
+    bones = getattr(parsed_data, "bones", []) or []
+    morphs = getattr(parsed_data, "morphs", []) or []
+    preflight.update(
+        {
+            "parsed_type": type(parsed_data).__name__,
+            "vertex_count": len(vertices),
+            "face_count": len(faces),
+            "material_count": len(materials),
+            "bone_count": len(bones),
+            "morph_count": len(morphs),
+            "texture_count": len(textures),
+            "texture_cp932_lossy_count": sum(1 for item in texture_entries if item["cp932_lossy"]),
+            "textures": texture_entries[:200],
+        }
+    )
+    return preflight
+
+
 def run_case(
     case: dict[str, Any],
     out_dir: Path,
@@ -822,6 +1001,7 @@ def run_case(
     traceback_text = None
     capture_result = None
     profile: dict[str, Any] | None = None
+    preflight: dict[str, Any] | None = None
     audit: dict[str, Any] = {
         "missing_textures": [],
         "shader_errors": [],
@@ -845,6 +1025,7 @@ def run_case(
         if motion_path and not Path(str(motion_path)).is_file():
             raise FileNotFoundError(f"motion not found: {motion_path}")
 
+        preflight = _collect_preflight(model_path)
         cmds.file(new=True, force=True)
         shader_setup_errors = _prepare_shader_mode(use_shader, shader_backend)
         previous_separate_meshes = mmd_settings.get("import.model.separate_meshes_by_material", False)
@@ -858,6 +1039,7 @@ def run_case(
         effective_separate_meshes = mmd_settings.get("import.model.separate_meshes_by_material", False)
         effective_morph_group_split = mmd_settings.get("import.model.split_meshes_by_morph_groups", False)
         parsed_data = parse_mmd_file(model_path)
+        preflight = _collect_preflight(model_path, parsed_data)
         import_start = time.perf_counter()
         importer_profile: dict[str, Any] = {}
         model_root = import_mmd_file(
@@ -894,7 +1076,7 @@ def run_case(
             if not ok:
                 raise RuntimeError("motion import returned false")
 
-        audit = _collect_audit(model_root, use_shader, shader_backend)
+        audit = _collect_audit(model_root, use_shader, shader_backend, Path(model_path).parent)
         audit["shader_errors"].extend(shader_setup_errors)
 
         # Capture before saving scene (capture modifies the scene with cam/light).
@@ -947,9 +1129,129 @@ def run_case(
         "capture_path": capture_result["capture_path"] if capture_result else None,
         "capture_error": capture_result["error"] if capture_result else None,
         "capture_png_stats": capture_result["png_stats"] if capture_result else None,
+        "preflight": preflight,
         "audit": audit,
         "profile": profile,
         "elapsed_sec": round(time.perf_counter() - start, 3),
+    }
+
+
+def _count_results_with(results: list[dict[str, Any]], predicate: Any) -> int:
+    """Return how many case results match *predicate*."""
+    return sum(1 for result in results if predicate(result))
+
+
+def _sum_result_values(results: list[dict[str, Any]], getter: Any) -> int:
+    """Return the integer sum of *getter(result)* across case results."""
+    return sum(int(getter(result) or 0) for result in results)
+
+
+def _collect_diagnostic_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate broad import diagnostics for quick result triage."""
+
+    def _audit(result: dict[str, Any]) -> dict[str, Any]:
+        return result.get("audit") or {}
+
+    def _preflight(result: dict[str, Any]) -> dict[str, Any]:
+        return result.get("preflight") or {}
+
+    def _scene_health(result: dict[str, Any]) -> dict[str, Any]:
+        return _audit(result).get("scene_health") or {}
+
+    return {
+        "preflight": {
+            "missing_model_cases": _count_results_with(
+                results, lambda r: _preflight(r).get("exists") is False
+            ),
+            "path_cp932_lossy_cases": _count_results_with(
+                results, lambda r: bool(_preflight(r).get("path_cp932_lossy"))
+            ),
+            "texture_cp932_lossy_cases": _count_results_with(
+                results, lambda r: int(_preflight(r).get("texture_cp932_lossy_count") or 0) > 0
+            ),
+            "texture_cp932_lossy_count": _sum_result_values(
+                results, lambda r: _preflight(r).get("texture_cp932_lossy_count")
+            ),
+            "zero_vertex_cases": _count_results_with(
+                results,
+                lambda r: "vertex_count" in _preflight(r)
+                and int(_preflight(r).get("vertex_count") or 0) <= 0,
+            ),
+            "zero_material_cases": _count_results_with(
+                results,
+                lambda r: "material_count" in _preflight(r)
+                and int(_preflight(r).get("material_count") or 0) <= 0,
+            ),
+        },
+        "scene": {
+            "root_missing_cases": _count_results_with(
+                results, lambda r: _scene_health(r).get("root_exists") is False
+            ),
+            "no_visible_mesh_cases": _count_results_with(
+                results,
+                lambda r: "visible_mesh_shape_count" in _scene_health(r)
+                and int(_scene_health(r).get("visible_mesh_shape_count") or 0) <= 0,
+            ),
+            "empty_mesh_cases": _count_results_with(
+                results, lambda r: bool(_scene_health(r).get("empty_meshes"))
+            ),
+            "empty_mesh_count": _sum_result_values(
+                results, lambda r: len(_scene_health(r).get("empty_meshes") or [])
+            ),
+            "mesh_without_uv_cases": _count_results_with(
+                results, lambda r: bool(_scene_health(r).get("meshes_without_uvs"))
+            ),
+            "mesh_without_uv_count": _sum_result_values(
+                results, lambda r: len(_scene_health(r).get("meshes_without_uvs") or [])
+            ),
+            "no_skin_cluster_cases": _count_results_with(
+                results,
+                lambda r: "skin_cluster_count" in _scene_health(r)
+                and int(_scene_health(r).get("skin_cluster_count") or 0) <= 0,
+            ),
+        },
+        "paths": {
+            "missing_texture_cases": _count_results_with(
+                results, lambda r: bool(_audit(r).get("missing_textures"))
+            ),
+            "missing_texture_count": _sum_result_values(
+                results, lambda r: len(_audit(r).get("missing_textures") or [])
+            ),
+            "source_file_missing_cases": _count_results_with(
+                results,
+                lambda r: (_audit(r).get("source_file") or {}).get("exists") is False,
+            ),
+        },
+        "strings": {
+            "suspicious_string_attr_cases": _count_results_with(
+                results, lambda r: bool(_audit(r).get("suspicious_string_attrs"))
+            ),
+            "suspicious_string_attr_count": _sum_result_values(
+                results, lambda r: len(_audit(r).get("suspicious_string_attrs") or [])
+            ),
+        },
+        "logs": {
+            "warning_cases": _count_results_with(
+                results, lambda r: int(_audit(r).get("warning_count") or 0) > 0
+            ),
+            "warning_count": _sum_result_values(
+                results, lambda r: _audit(r).get("warning_count")
+            ),
+            "error_log_cases": _count_results_with(
+                results, lambda r: int(_audit(r).get("error_count") or 0) > 0
+            ),
+            "error_log_count": _sum_result_values(
+                results, lambda r: _audit(r).get("error_count")
+            ),
+        },
+        "shader": {
+            "shader_error_cases": _count_results_with(
+                results, lambda r: bool(_audit(r).get("shader_errors"))
+            ),
+            "shader_error_count": _sum_result_values(
+                results, lambda r: len(_audit(r).get("shader_errors") or [])
+            ),
+        },
     }
 
 
@@ -1001,30 +1303,10 @@ def run_manifest(
         print(f"  {result['status']} ({result['elapsed_sec']}s)", flush=True)
         results.append(result)
 
-    missing_texture_cases = sum(
-        1 for r in results if r.get("audit", {}).get("missing_textures")
-    )
-    missing_texture_count = sum(
-        len(r.get("audit", {}).get("missing_textures", [])) for r in results
-    )
-    shader_error_cases = sum(
-        1 for r in results if r.get("audit", {}).get("shader_errors")
-    )
-    shader_error_count = sum(
-        len(r.get("audit", {}).get("shader_errors", [])) for r in results
-    )
-    warning_cases = sum(
-        1 for r in results if r.get("audit", {}).get("warning_count", 0) > 0
-    )
-    warning_count = sum(
-        r.get("audit", {}).get("warning_count", 0) for r in results
-    )
-    error_log_cases = sum(
-        1 for r in results if r.get("audit", {}).get("error_count", 0) > 0
-    )
-    error_log_count = sum(
-        r.get("audit", {}).get("error_count", 0) for r in results
-    )
+    diagnostic_summary = _collect_diagnostic_summary(results)
+    path_summary = diagnostic_summary["paths"]
+    shader_summary = diagnostic_summary["shader"]
+    log_summary = diagnostic_summary["logs"]
 
     result_doc = {
         "manifest": str(Path(manifest_path).resolve()),
@@ -1034,14 +1316,15 @@ def run_manifest(
         "failed": sum(1 for result in results if result["status"] == "failed"),
         "captured": sum(1 for result in results if result.get("capture_path")),
         "capture_errors": sum(1 for result in results if result.get("capture_error")),
-        "missing_texture_cases": missing_texture_cases,
-        "missing_texture_count": missing_texture_count,
-        "shader_error_cases": shader_error_cases,
-        "shader_error_count": shader_error_count,
-        "warning_cases": warning_cases,
-        "warning_count": warning_count,
-        "error_log_cases": error_log_cases,
-        "error_log_count": error_log_count,
+        "missing_texture_cases": path_summary["missing_texture_cases"],
+        "missing_texture_count": path_summary["missing_texture_count"],
+        "shader_error_cases": shader_summary["shader_error_cases"],
+        "shader_error_count": shader_summary["shader_error_count"],
+        "warning_cases": log_summary["warning_cases"],
+        "warning_count": log_summary["warning_count"],
+        "error_log_cases": log_summary["error_log_cases"],
+        "error_log_count": log_summary["error_log_count"],
+        "diagnostic_summary": diagnostic_summary,
         "results": results,
     }
     result_file = out_path / "results.json"

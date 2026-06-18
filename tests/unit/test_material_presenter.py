@@ -13,6 +13,7 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
@@ -43,6 +44,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.specular_coefficient_spin = Mock()
         self.mock_view.transparency_spin = Mock()
         self.mock_view.edge_size_spin = Mock()
+        self.mock_view.shader_outline_check = Mock()
         self.mock_view.search_edit = Mock()
         self.mock_view.refresh_btn = Mock()
         self.mock_view.apply_btn = Mock()
@@ -173,6 +175,7 @@ class TestMaterialPresenter(unittest.TestCase):
             ATTR_MMD_DRAW_FLAGS: 0x1F,
             ATTR_MMD_EDGE_COLOR: (0.0, 0.0, 0.0, 1.0),
             ATTR_MMD_EDGE_SIZE: 1.0,
+            ATTR_MMD_SHADER_OUTLINE_ENABLED: False,
             ATTR_MMD_TOON_TEXTURE_INDEX: 0,
         }.get(attr, None)
 
@@ -229,6 +232,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.sphere_map_path_edit.text.return_value = "sphere.spa"
         self.mock_view.sphere_mode_combo.currentIndex.return_value = 1
         self.mock_view.edge_size_spin.value.return_value = 1.5
+        self.mock_view.shader_outline_check.isChecked.return_value = True
 
         # チェックボックスの状態を設定
         self.mock_view.both_face_check.isChecked.return_value = True
@@ -251,6 +255,53 @@ class TestMaterialPresenter(unittest.TestCase):
 
         # 変更フラグがリセットされることを確認
         self.assertFalse(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.converters.mesh_converter.apply_shader_outline")
+    @patch("mmd_tools.converters.mesh_converter.apply_transparency_mode")
+    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
+    def test_apply_transparency_mode_to_selected_applies_outline(self, mock_cmds, mock_apply_mode, mock_apply_outline):
+        """選択マテリアルへの透過モード適用時にアウトライン設定も反映される"""
+        item = Mock()
+        item.data.return_value = "dx11_mat"
+        self.mock_view.material_list.selectedItems.return_value = [item]
+        self.mock_view.transparency_mode_combo.currentIndex.return_value = 2
+        self.mock_view.shader_outline_check.isChecked.return_value = True
+        self.mock_view.edge_size_spin.value.return_value = 1.25
+        mock_cmds.objExists.return_value = True
+        mock_cmds.nodeType.return_value = "dx11Shader"
+
+        self.presenter.apply_transparency_mode_to_selected()
+
+        mock_apply_mode.assert_called_once()
+        mock_apply_outline.assert_called_once_with("dx11_mat", True, 1.25)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
+    def test_apply_mmd_attributes_preserves_raw_edge_size_when_spin_unchanged(self, mock_maya_utils, mock_cmds):
+        """UI上限を超える元のエッジサイズは未変更なら保持する"""
+        self.presenter.current_material = "test_material"
+        self.presenter.material_data = {"edge_size": 2.5, "edge_size_view": 2.0}
+        self.mock_view.edge_size_spin.value.return_value = 2.0
+        self.mock_view.sphere_map_path_edit.text.return_value = ""
+        self.mock_view.sphere_mode_combo.currentIndex.return_value = 0
+        self.mock_view.toon_texture_combo.currentIndex.return_value = 0
+        self.mock_view.shader_outline_check.isChecked.return_value = False
+        for checkbox in [
+            self.mock_view.both_face_check,
+            self.mock_view.ground_shadow_check,
+            self.mock_view.self_shadow_map_check,
+            self.mock_view.self_shadow_check,
+            self.mock_view.edge_draw_check,
+            self.mock_view.vertex_color_check,
+            self.mock_view.point_draw_check,
+            self.mock_view.line_draw_check,
+        ]:
+            checkbox.isChecked.return_value = False
+        mock_cmds.attributeQuery.return_value = True
+
+        self.presenter._apply_mmd_attributes()
+
+        mock_maya_utils.set_attribute.assert_any_call("test_material", "mmd_edge_size", 2.5, "float")
 
     def test_on_search_text_changed(self):
         """検索機能のテスト"""

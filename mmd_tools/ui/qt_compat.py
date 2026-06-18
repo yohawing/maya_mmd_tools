@@ -24,15 +24,15 @@ try:
         QGroupBox,
         QFormLayout,
         QCheckBox,
-        QComboBox,
+        QComboBox as _QComboBox,
         QListWidget,
-        QSlider,
+        QSlider as _QSlider,
         QTreeView,
         QTreeWidget,
         QTreeWidgetItem,
         QColorDialog,
-        QDoubleSpinBox,
-        QSpinBox,
+        QDoubleSpinBox as _QDoubleSpinBox,
+        QSpinBox as _QSpinBox,
         QGridLayout,
         QScrollArea,
         QListWidgetItem,
@@ -71,15 +71,15 @@ except ImportError:
         QGroupBox,
         QFormLayout,
         QCheckBox,
-        QComboBox,
+        QComboBox as _QComboBox,
         QListWidget,
-        QSlider,
+        QSlider as _QSlider,
         QTreeView,
         QTreeWidget,
         QTreeWidgetItem,
         QColorDialog,
-        QDoubleSpinBox,
-        QSpinBox,
+        QDoubleSpinBox as _QDoubleSpinBox,
+        QSpinBox as _QSpinBox,
         QGridLayout,
         QScrollArea,
         QListWidgetItem,
@@ -99,3 +99,27 @@ except ImportError:
     from shiboken2 import wrapInstance  # noqa: F401
 
     QT_BINDING = "PySide2"
+
+
+class _IgnoreWheelMixin:
+    """Prevent accidental value edits while scroll areas handle mouse wheels."""
+
+    def wheelEvent(self, event):
+        if hasattr(event, "ignore"):
+            event.ignore()
+
+
+class QComboBox(_IgnoreWheelMixin, _QComboBox):
+    pass
+
+
+class QSlider(_IgnoreWheelMixin, _QSlider):
+    pass
+
+
+class QDoubleSpinBox(_IgnoreWheelMixin, _QDoubleSpinBox):
+    pass
+
+
+class QSpinBox(_IgnoreWheelMixin, _QSpinBox):
+    pass

@@ -149,6 +149,7 @@
     "edge_settings": "エッジ設定",
     "edge_properties": "エッジ設定",
     "rendering_flags": "描画フラグ",
+    "viewport_settings": "ビューポート設定",
     "bone_list": "ボーンリスト",
     "basic_information": "基本情報",
     "transform_control": "変形制御",
@@ -307,6 +308,7 @@
     "self_shadow_map": "セルフシャドウマップへの描画",
     "self_shadow": "セルフシャドウ",
     "edge_drawing": "エッジ描画",
+    "shader_outline": "シェーダーアウトライン",
     "vertex_color": "頂点色",
     "point_drawing": "ポイント描画",
     "line_drawing": "ライン描画"

@@ -149,6 +149,7 @@
     "edge_settings": "边缘设置",
     "edge_properties": "边缘属性",
     "rendering_flags": "渲染标记",
+    "viewport_settings": "视口设置",
     "bone_list": "骨骼列表",
     "basic_information": "基本信息",
     "transform_control": "变换控制",
@@ -307,6 +308,7 @@
     "self_shadow_map": "投射自身阴影",
     "self_shadow": "接收自身阴影",
     "edge_drawing": "边缘绘制",
+    "shader_outline": "着色器描边",
     "vertex_color": "顶点颜色",
     "point_drawing": "点绘制",
     "line_drawing": "线绘制"

@@ -149,6 +149,7 @@
     "edge_settings": "邊緣設定",
     "edge_properties": "邊緣屬性",
     "rendering_flags": "算圖標記",
+    "viewport_settings": "視埠設定",
     "bone_list": "骨骼清單",
     "basic_information": "基本資訊",
     "transform_control": "變換控制",
@@ -307,6 +308,7 @@
     "self_shadow_map": "投射自身陰影",
     "self_shadow": "接收自身陰影",
     "edge_drawing": "邊緣繪製",
+    "shader_outline": "著色器描邊",
     "vertex_color": "頂點顏色",
     "point_drawing": "點繪製",
     "line_drawing": "線繪製"

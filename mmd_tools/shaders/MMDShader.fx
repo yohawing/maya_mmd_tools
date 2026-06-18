@@ -101,6 +101,7 @@ float4x4 ViewInv    : ViewInverse<string UIWidget = "None";>;
 float4x4 Projection : Projection<string UIWidget = "None";>;
 float4x4 ViewProjection : ViewProjection<string UIWidget = "None";>;
 float3 ViewPosition : ViewPosition<string UIWidget = "None";>;
+float2 ScreenSize : ViewportPixelSize<string UIWidget = "None";>;
 
 // Per-object parameters
 float4x4 World               : World<string UIWidget = "None";>;
@@ -310,7 +311,7 @@ float CalculateShadow(float4 shadowCoord, Texture2D shadowMap)
 
     // Transform to shadow map space
     float3 shadowPos = shadowCoord.xyz / shadowCoord.w;
-    
+
     // Check if position is in shadow map bounds
     if (shadowPos.x < -1.0f || shadowPos.x > 1.0f ||
         shadowPos.y < -1.0f || shadowPos.y > 1.0f ||
@@ -327,7 +328,7 @@ float CalculateShadow(float4 shadowCoord, Texture2D shadowMap)
 
     // Calculate shadow
     float shadow = (currentDepth > shadowDepth) ? 0.0f : 1.0f;
-    
+
     return lerp(1.0f, shadow, ShadowStrength);
 }
 
@@ -390,7 +391,7 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Diffuse light (Half-Lambert for toon shading)
     float NdotL = dot(normal, lightDir);
     float halfLambert = NdotL * 0.5 + 0.5;
-    
+
     // Sample toon texture. MMD toon ramps are conventionally vertical strips;
     // use RGB as the ramp color rather than a scalar red-channel factor.
     float rampCoord = saturate(halfLambert);
@@ -458,28 +459,19 @@ VS_OUTPUT EdgeVS(VS_INPUT input)
 {
     VS_OUTPUT output = (VS_OUTPUT)0;
 
-    // Calculate object scale
-    float3 objectScale = float3(
-        length(World._m00_m10_m20),
-        length(World._m01_m11_m21),
-        length(World._m02_m12_m22)
-    );
-
-    // Transform to view space for consistent edge width
-    float4 viewPos = mul(float4(input.position, 1.0), mul(World, View));
-    
-    // Scale edge by view distance. objectScale is per-axis; use X explicitly
-    // (MMD models are uniformly scaled) to avoid an implicit float3->float
-    // truncation warning.
-    float edgeScale = saturate(abs(viewPos.z) * 0.01) * 0.1 / objectScale.x;
-    
-    // Extrude along normal
-    float3 extrudedPos = input.position + input.normal * EdgeSize * edgeScale;
-    
-    // Transform to clip space
-    float4 localPos = float4(extrudedPos, 1.0);
+    float4 localPos = float4(input.position, 1.0);
     float4 worldPos = mul(localPos, World);
-    output.position = mul(localPos, WorldViewProjection);
+    float4 clipPos = mul(localPos, WorldViewProjection);
+
+    float3 worldNormal = normalize(mul(input.normal, (float3x3)WorldInverseTranspose));
+    float3 viewNormal = normalize(mul(worldNormal, (float3x3)View));
+    float2 screenNormal = viewNormal.xy;
+    screenNormal /= max(length(screenNormal), 1.0e-5);
+
+    float2 safeScreenSize = max(ScreenSize, float2(1.0, 1.0));
+    clipPos.xy += screenNormal / (safeScreenSize * 0.5) * EdgeSize * 4.0 * clipPos.w;
+
+    output.position = clipPos;
     output.worldPosition = worldPos.xyz;
 
     return output;
@@ -572,8 +564,15 @@ technique11 MMDTechnique<
     int isTransparent = 0;
 >
 {
-    // Main model pass. Keep this first because Maya's dx11Shader VP2 path can
-    // let the first pass dominate material evaluation for simple captures.
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
     pass MainPass
     {
         SetVertexShader(CompileShader(vs_5_0, MainVS()));
@@ -589,6 +588,15 @@ technique11 MMDTechniqueTransparent<
     int isTransparent = 1;
 >
 {
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
     pass MainPass
     {
         SetVertexShader(CompileShader(vs_5_0, MainVS()));
@@ -600,13 +608,19 @@ technique11 MMDTechniqueTransparent<
     }
 }
 
-// Translucent (alpha-blended, depth-test but no depth-write). Same as
-// MMDTechniqueTransparent except for the depth state, so overlapping different
-// translucent materials blend instead of depth-rejecting each other.
 technique11 MMDTechniqueTranslucent<
     int isTransparent = 1;
 >
 {
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
     pass MainPass
     {
         SetVertexShader(CompileShader(vs_5_0, MainVS()));

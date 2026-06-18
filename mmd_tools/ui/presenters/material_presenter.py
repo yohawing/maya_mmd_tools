@@ -6,6 +6,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SPHERE_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
@@ -84,6 +85,7 @@ class MaterialPresenter:
             self.view.vertex_color_check,
             self.view.point_draw_check,
             self.view.line_draw_check,
+            self.view.shader_outline_check,
         ]:
             checkbox.stateChanged.connect(self._on_value_changed)
 
@@ -444,6 +446,21 @@ class MaterialPresenter:
         self.material_data["transparency_mode"] = mode_index
         self.view.transparency_mode_combo.setCurrentIndex(mode_index)
 
+        # Shader outline is an opt-in viewport rendering setting. Keep the
+        # authored MMD draw flag separately in edge_draw_check.
+        outline_enabled = False
+        try:
+            if cmds.nodeType(material_name) == "dx11Shader":
+                from mmd_tools.converters import mesh_converter
+
+                outline_enabled = mesh_converter.get_shader_outline_enabled(material_name)
+            else:
+                outline_enabled = bool(self._get_attr_safe(material_name, ATTR_MMD_SHADER_OUTLINE_ENABLED, False))
+        except Exception:
+            outline_enabled = False
+        self.material_data["shader_outline_enabled"] = outline_enabled
+        self.view.shader_outline_check.setChecked(outline_enabled)
+
         # Draw flags
         draw_flags = self._get_attr_safe(material_name, ATTR_MMD_DRAW_FLAGS, 0x1F)
         self.material_data["draw_flags"] = draw_flags
@@ -471,9 +488,11 @@ class MaterialPresenter:
         self.material_data["edge_color"] = edge_color
         self._update_color_widget(self.view.edge_color_widget, edge_color)
 
-        edge_size = self._get_attr_safe(material_name, ATTR_MMD_EDGE_SIZE, 1.0)
-        self.material_data["edge_size"] = edge_size
-        self.view.edge_size_spin.setValue(edge_size)
+        raw_edge_size = float(self._get_attr_safe(material_name, ATTR_MMD_EDGE_SIZE, 1.0))
+        visible_edge_size = max(0.0, min(2.0, raw_edge_size))
+        self.material_data["edge_size"] = raw_edge_size
+        self.material_data["edge_size_view"] = visible_edge_size
+        self.view.edge_size_spin.setValue(visible_edge_size)
 
     def _get_attr_safe(self, node, attr, default):
         """Get attribute value safely, return default if not exists"""
@@ -657,6 +676,11 @@ class MaterialPresenter:
                     idx = self.view.transparency_mode_combo.currentIndex()
                     if 0 <= idx < len(modes):
                         mesh_converter.apply_transparency_mode(self.current_material, modes[idx])
+                        mesh_converter.apply_shader_outline(
+                            self.current_material,
+                            self.view.shader_outline_check.isChecked(),
+                            self.view.edge_size_spin.value(),
+                        )
             except Exception as e:
                 logger.warning(f"Failed to apply transparency mode: {e}")
 
@@ -771,11 +795,21 @@ class MaterialPresenter:
                 "double4",
             )
 
+        edge_size_value = self.view.edge_size_spin.value()
+        if abs(edge_size_value - float(self.material_data.get("edge_size_view", edge_size_value))) < 1e-6:
+            edge_size_value = float(self.material_data.get("edge_size", edge_size_value))
+
         maya_utils.set_attribute(
             self.current_material,
             "mmd_edge_size",
-            self.view.edge_size_spin.value(),
+            edge_size_value,
             "float",
+        )
+        maya_utils.set_attribute(
+            self.current_material,
+            ATTR_MMD_SHADER_OUTLINE_ENABLED,
+            self.view.shader_outline_check.isChecked(),
+            "bool",
         )
 
     def _ensure_mmd_attributes(self, material):
@@ -788,6 +822,7 @@ class MaterialPresenter:
             "mmd_draw_flags": 0x1F,
             "mmd_edge_color": [0.0, 0.0, 0.0, 1.0],
             "mmd_edge_size": 1.0,
+            ATTR_MMD_SHADER_OUTLINE_ENABLED: False,
             "mmd_specular_coefficient": 5.0,
             "ambientColor": [0.5, 0.5, 0.5],
         }
@@ -803,7 +838,7 @@ class MaterialPresenter:
             maya_utils.set_custom_attributes(material, attrs_to_create)
 
     def apply_transparency_mode_to_selected(self):
-        """Apply the chosen transparency mode to every selected material (batch)."""
+        """Apply the chosen transparency and outline settings to selected materials."""
         from mmd_tools.converters import mesh_converter
 
         modes = [
@@ -815,6 +850,8 @@ class MaterialPresenter:
         if not (0 <= idx < len(modes)):
             return
         mode = modes[idx]
+        outline_enabled = self.view.shader_outline_check.isChecked()
+        edge_size = self.view.edge_size_spin.value()
 
         targets = [
             item.data(Qt.UserRole)
@@ -830,6 +867,7 @@ class MaterialPresenter:
                 continue
             try:
                 mesh_converter.apply_transparency_mode(material, mode)
+                mesh_converter.apply_shader_outline(material, outline_enabled, edge_size)
                 applied += 1
             except Exception as e:
                 logger.warning(f"Failed to apply transparency mode to {material}: {e}")
@@ -837,8 +875,16 @@ class MaterialPresenter:
         # Reflect the change on the currently shown material's combo.
         if self.current_material in targets:
             self.material_data["transparency_mode"] = idx
-        self.app_state.emit_status(f"Applied transparency mode '{mode}' to {applied} material(s)")
-        logger.info(f"Batch-applied transparency mode '{mode}' to {applied} materials")
+            self.material_data["shader_outline_enabled"] = outline_enabled
+            self.material_data["edge_size"] = edge_size
+        self.app_state.emit_status(f"Applied shader material settings to {applied} material(s)")
+        logger.info(
+            "Batch-applied material shader settings mode='%s' outline=%s edge_size=%.3f to %d materials",
+            mode,
+            outline_enabled,
+            edge_size,
+            applied,
+        )
 
     def reset_changes(self):
         """Reset material properties to original values"""

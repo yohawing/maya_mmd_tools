@@ -408,11 +408,10 @@ def _set_string_plug(plug, object_name, attr_name, value):
     """
     文字列アトリビュートを日本語・特殊文字でも安全に設定する。
 
-    OpenMaya API 2.0 の ``MPlug.setString()`` は一部の Maya ビルドで
-    非ASCII文字列を narrow ``wchar`` へ変換する際に文字化けし、
-    ``wchar ...`` エラーや文字化けした値が書き込まれることがある。
-    UTF-8 を正しく扱う ``cmds.setAttr(plug, value, type="string")``
-    を優先し、失敗した場合のみ ``MPlug.setString`` にフォールバックする。
+    Maya 2024 on Windows では ``cmds.setAttr(..., type="string")`` が
+    fileTextureName のような既存 string attr に CP932 非対応文字を含む
+    パスを書き込むと ``?`` に置換することがある。OpenMaya API 2.0 の
+    ``MPlug.setString()`` は同じ値を保持できるため、こちらを優先する。
 
     Args:
         plug (om.MPlug): 対象プラグ
@@ -422,11 +421,15 @@ def _set_string_plug(plug, object_name, attr_name, value):
     """
     text = "" if value is None else str(value)
     try:
-        cmds.setAttr(f"{object_name}.{attr_name}", text, type="string")
-        return
+        plug.setString(text)
+        try:
+            if plug.asString() == text:
+                return
+        except Exception:
+            return
     except Exception as exc:
-        logger.debug(f"cmds.setAttr による文字列設定に失敗、MPlug.setString にフォールバックします '{attr_name}': {exc}")
-    plug.setString(text)
+        logger.debug(f"MPlug.setString による文字列設定に失敗、cmds.setAttr にフォールバックします '{attr_name}': {exc}")
+    cmds.setAttr(f"{object_name}.{attr_name}", text, type="string")
 
 
 def set_attribute(object_name, attr_name, attr_value, attr_type):
