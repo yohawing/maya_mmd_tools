@@ -48,9 +48,20 @@ def install_maya_script_editor_handler() -> None:
     ルートロガーのレベルは変更しない。
     """
     mmd_root = logging.getLogger("mmd_tools")
-    if any(isinstance(h, MayaScriptEditorHandler) for h in mmd_root.handlers):
+    marker = "_mmd_tools_maya_script_editor_handler"
+    mmd_root.handlers = [
+        h
+        for h in mmd_root.handlers
+        if getattr(h, marker, False)
+        or not (
+            type(h).__name__ == "MayaScriptEditorHandler"
+            and type(h).__module__ == __name__
+        )
+    ]
+    if any(getattr(h, marker, False) for h in mmd_root.handlers):
         return
     handler = MayaScriptEditorHandler()
+    setattr(handler, marker, True)
     handler.setFormatter(logging.Formatter("[MMD] %(levelname)s: %(message)s"))
     mmd_root.addHandler(handler)
 
