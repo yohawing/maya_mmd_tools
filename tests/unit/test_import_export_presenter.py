@@ -16,6 +16,7 @@ from tests.common.maya_stub import install_headless_ui_stubs
 install_headless_ui_stubs()
 
 from mmd_tools.core.settings import settings  # noqa: E402
+from mmd_tools.actions.export_model_action import ExportModelResult  # noqa: E402
 from mmd_tools.actions.import_model_action import ImportModelResult  # noqa: E402
 from mmd_tools.actions.import_vmd_action import ImportVmdResult  # noqa: E402
 from mmd_tools.ui.presenters.import_export_presenter import (  # noqa: E402
@@ -131,6 +132,21 @@ class _RecordingImportVmdAction:
 class _FailingImportVmdAction:
     def execute(self, _request):
         raise AssertionError("vmd action must not be used")
+
+
+class _RecordingExportModelAction:
+    def __init__(self, result):
+        self.result = result
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(request)
+        return self.result
+
+
+class _FailingExportModelAction:
+    def execute(self, _request):
+        raise AssertionError("export action must not be used")
 
 
 class TestImportExportPresenter(unittest.TestCase):
@@ -547,7 +563,7 @@ class TestExportFile(unittest.TestCase):
         view = _FakeView()
         view.export_path_edit = _FakeLineEdit("")
         app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
+        presenter = ImportExportPresenter(view, app_state, export_model_action=_FailingExportModelAction())
         presenter.export_file()
         self.assertIn("Please enter a file path", app_state.statuses)
 
@@ -555,8 +571,15 @@ class TestExportFile(unittest.TestCase):
         view = _FakeView()
         view.export_path_edit = _FakeLineEdit("out.pmx")
         app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
+        action = _RecordingExportModelAction(
+            ExportModelResult(
+                status_message="PMX export is not implemented yet (scene data collection is unsupported)"
+            )
+        )
+        presenter = ImportExportPresenter(view, app_state, export_model_action=action)
         presenter.export_file()
+        self.assertEqual(len(action.requests), 1)
+        self.assertEqual(action.requests[0].file_path, "out.pmx")
         self.assertTrue(
             any("not implemented" in s.lower() for s in app_state.statuses)
         )
@@ -604,6 +627,30 @@ class TestExportFile(unittest.TestCase):
         self.assertTrue(
             any("not implemented" in s.lower() for s in app_state.statuses)
         )
+
+    def test_export_file_passes_built_options_to_injected_action(self):
+        settings.set("export.general.export_format", "pmx")
+        settings.set("export.general.apply_scale", False)
+        view = _FakeView()
+        view.export_path_edit = _FakeLineEdit("  out.pmx  ")
+        app_state = _FakeAppState()
+        action = _RecordingExportModelAction(ExportModelResult(status_message="not implemented"))
+        presenter = ImportExportPresenter(view, app_state, export_model_action=action)
+
+        presenter.export_file()
+
+        self.assertEqual(len(action.requests), 1)
+        request = action.requests[0]
+        self.assertEqual(request.file_path, "out.pmx")
+        self.assertEqual(
+            request.options,
+            {
+                "file_path": "out.pmx",
+                "export_format": "pmx",
+                "apply_scale": False,
+            },
+        )
+        self.assertIn("not implemented", app_state.statuses)
 
 
 class TestDevModeBehaviorGating(unittest.TestCase):

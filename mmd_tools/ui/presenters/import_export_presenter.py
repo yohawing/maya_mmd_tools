@@ -1,4 +1,5 @@
 from ..qt_compat import QObject, QFileDialog
+from ...actions.export_model_action import ExportModelAction, ExportModelRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...core.logger import get_logger
@@ -25,12 +26,20 @@ _NORMAL_MODE_IMPORT_OVERRIDES = {
 
 
 class ImportExportPresenter(QObject):
-    def __init__(self, view, app_state, import_model_action=None, import_vmd_action=None):
+    def __init__(
+        self,
+        view,
+        app_state,
+        import_model_action=None,
+        import_vmd_action=None,
+        export_model_action=None,
+    ):
         super().__init__()
         self.view = view
         self.app_state = app_state
         self.import_model_action = import_model_action or ImportModelAction()
         self.import_vmd_action = import_vmd_action or ImportVmdAction()
+        self.export_model_action = export_model_action or ExportModelAction()
         self.connect_signals()
 
     def connect_signals(self):
@@ -227,12 +236,14 @@ class ImportExportPresenter(QObject):
         export_options = self._build_export_options()
         logger.debug(f"Export options: {export_options}")
 
-        # NOTE: Maya シーンから PMX 用データ（頂点/面/材質/ボーン等）を収集する処理が
-        # 未実装。収集なしで PmxExporter を呼ぶと必ず ValueError になり、ユーザーに
-        # 紛らわしいエラーを見せてしまうため、現時点では未実装であることを明示する。
-        # シーン収集（collect_*_from_scene_for_export 等）を実装したら有効化する。
-        logger.warning("PMX export is not implemented yet (scene data collection missing)")
-        self.app_state.emit_status("PMX export is not implemented yet (scene data collection is unsupported)")
+        request = ExportModelRequest(file_path=file_path, options=export_options)
+        result = self.export_model_action.execute(request)
+        if result.error:
+            logger.error(f"Export failed: {result.error}")
+            self.app_state.emit_status(f"Export error: {str(result.error)}")
+            return
+        if result.status_message:
+            self.app_state.emit_status(result.status_message)
 
     def import_vmd_file(self):
         """VMDファイルのインポート"""
