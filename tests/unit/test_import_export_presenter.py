@@ -17,6 +17,7 @@ install_headless_ui_stubs()
 
 from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.actions.import_model_action import ImportModelResult  # noqa: E402
+from mmd_tools.actions.import_vmd_action import ImportVmdResult  # noqa: E402
 from mmd_tools.ui.presenters.import_export_presenter import (  # noqa: E402
     ImportExportPresenter,
 )
@@ -117,6 +118,21 @@ class _FailingImportModelAction:
         raise AssertionError("model action must not be used")
 
 
+class _RecordingImportVmdAction:
+    def __init__(self, result):
+        self.result = result
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(request)
+        return self.result
+
+
+class _FailingImportVmdAction:
+    def execute(self, _request):
+        raise AssertionError("vmd action must not be used")
+
+
 class TestImportExportPresenter(unittest.TestCase):
     """ImportExportPresenterのimport options構築を検証する。"""
 
@@ -171,15 +187,13 @@ class TestImportExportPresenter(unittest.TestCase):
         view.import_path_edit = _FakeLineEdit("motion.vmd")
         app_state = _FakeAppState()
         app_state.current_model_root = "model_root"
-        presenter = ImportExportPresenter(view, app_state)
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
-        with patch(
-            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
-            return_value=True,
-        ) as mock_import:
-            presenter.import_file()
+        presenter.import_file()
 
-        options = mock_import.call_args.kwargs["options"]
+        self.assertEqual(len(action.requests), 1)
+        options = action.requests[0].options
         self.assertEqual(options["target_model"], "model_root")
 
     def test_import_file_passes_profile_and_shows_texture_issue_dialog(self):
@@ -238,7 +252,12 @@ class TestImportExportPresenter(unittest.TestCase):
         view = _RecordingView()
         app_state = _FakeAppState()
         action = _RecordingImportModelAction(ImportModelResult(root_node="model_root", succeeded=True))
-        presenter = ImportExportPresenter(view, app_state, import_model_action=action)
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
 
         presenter.import_file()
 
@@ -256,15 +275,31 @@ class TestImportExportPresenter(unittest.TestCase):
         view = _FakeView()
         view.import_path_edit = _FakeLineEdit("motion.vmd")
         app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state, import_model_action=_FailingImportModelAction())
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_FailingImportModelAction(),
+            import_vmd_action=action,
+        )
 
-        with patch(
-            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
-            return_value=True,
-        ) as mock_import:
-            presenter.import_file()
+        presenter.import_file()
 
-        mock_import.assert_called_once()
+        self.assertEqual(len(action.requests), 1)
+        self.assertEqual(action.requests[0].file_path, "motion.vmd")
+
+    def test_import_file_vmd_branch_passes_create_new_scene_to_action(self):
+        view = _FakeView()
+        view.import_path_edit = _FakeLineEdit("motion.vmd")
+        view.new_file_check = _FakeCheckBox(True)
+        app_state = _FakeAppState()
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_file()
+
+        self.assertEqual(len(action.requests), 1)
+        self.assertTrue(action.requests[0].create_new_scene)
 
     def test_import_vmd_auto_detect_uses_current_model_root(self):
         view = _FakeView()
@@ -400,7 +435,7 @@ class TestVmdImportOptions(unittest.TestCase):
         presenter = ImportExportPresenter(view, app_state)
 
         with patch(
-            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
+            "mmd_tools.actions.import_vmd_action.import_mmd_file",
             return_value=True,
         ) as mock_import:
             presenter.import_file()
@@ -604,7 +639,7 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         app_state = _FakeAppState()
         presenter = ImportExportPresenter(view, app_state)
         mock_target = (
-            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file"
+            "mmd_tools.actions.import_vmd_action.import_mmd_file"
             if path.lower().endswith(".vmd")
             else "mmd_tools.actions.import_model_action.import_mmd_file"
         )

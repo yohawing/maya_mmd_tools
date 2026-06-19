@@ -1,5 +1,6 @@
 from ..qt_compat import QObject, QFileDialog
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
+from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...core.logger import get_logger
 from ...io.mmd_importer import import_mmd_file
 from ...core.settings import settings
@@ -24,11 +25,12 @@ _NORMAL_MODE_IMPORT_OVERRIDES = {
 
 
 class ImportExportPresenter(QObject):
-    def __init__(self, view, app_state, import_model_action=None):
+    def __init__(self, view, app_state, import_model_action=None, import_vmd_action=None):
         super().__init__()
         self.view = view
         self.app_state = app_state
         self.import_model_action = import_model_action or ImportModelAction()
+        self.import_vmd_action = import_vmd_action or ImportVmdAction()
         self.connect_signals()
 
     def connect_signals(self):
@@ -155,11 +157,6 @@ class ImportExportPresenter(QObject):
 
         create_new_scene = hasattr(self.view, "new_file_check") and self.view.new_file_check.isChecked()
         is_vmd = file_path.lower().endswith(".vmd")
-        if is_vmd and create_new_scene:
-            from maya import cmds
-
-            cmds.file(new=True, force=True)
-            logger.info("Created new file before import")
 
         logger.info(f"Importing file: {file_path}")
 
@@ -176,7 +173,17 @@ class ImportExportPresenter(QObject):
 
         try:
             if is_vmd:
-                root_node = import_mmd_file(file_path, options=import_options)
+                request = ImportVmdRequest(
+                    file_path=file_path,
+                    options=import_options,
+                    create_new_scene=create_new_scene,
+                )
+                result = self.import_vmd_action.execute(request)
+                if result.error:
+                    raise result.error
+                root_node = result.root_node if result.succeeded else None
+                if create_new_scene:
+                    logger.info("Created new file before import")
             else:
                 request = ImportModelRequest(
                     file_path=file_path,
