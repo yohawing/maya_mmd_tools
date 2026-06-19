@@ -1,4 +1,5 @@
 from ..qt_compat import QObject, QFileDialog
+from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...core.logger import get_logger
 from ...io.mmd_importer import import_mmd_file
 from ...core.settings import settings
@@ -23,10 +24,11 @@ _NORMAL_MODE_IMPORT_OVERRIDES = {
 
 
 class ImportExportPresenter(QObject):
-    def __init__(self, view, app_state):
+    def __init__(self, view, app_state, import_model_action=None):
         super().__init__()
         self.view = view
         self.app_state = app_state
+        self.import_model_action = import_model_action or ImportModelAction()
         self.connect_signals()
 
     def connect_signals(self):
@@ -151,8 +153,9 @@ class ImportExportPresenter(QObject):
             self.app_state.emit_status("Please enter a file path")
             return
 
-        # Check if new file is requested
-        if hasattr(self.view, "new_file_check") and self.view.new_file_check.isChecked():
+        create_new_scene = hasattr(self.view, "new_file_check") and self.view.new_file_check.isChecked()
+        is_vmd = file_path.lower().endswith(".vmd")
+        if is_vmd and create_new_scene:
             from maya import cmds
 
             cmds.file(new=True, force=True)
@@ -166,13 +169,26 @@ class ImportExportPresenter(QObject):
 
         import_options = self._build_pmx_import_options()
         import_profile = {}
-        if file_path.lower().endswith(".vmd"):
+        if is_vmd:
             import_options.update(self._build_vmd_import_options())
         else:
             import_options["profile"] = import_profile
 
         try:
-            root_node = import_mmd_file(file_path, options=import_options)
+            if is_vmd:
+                root_node = import_mmd_file(file_path, options=import_options)
+            else:
+                request = ImportModelRequest(
+                    file_path=file_path,
+                    options=import_options,
+                    create_new_scene=create_new_scene,
+                )
+                result = self.import_model_action.execute(request)
+                if result.error:
+                    raise result.error
+                root_node = result.root_node if result.succeeded else None
+                if create_new_scene:
+                    logger.info("Created new file before import")
             if root_node:
                 logger.info("Import successful.")
                 # ApplicationStateを更新
@@ -184,7 +200,7 @@ class ImportExportPresenter(QObject):
                 self.view.refresh_model_list()
                 # 成功したパスを履歴に追加
                 self.view.add_import_path_to_history(file_path)
-                if not file_path.lower().endswith(".vmd"):
+                if not is_vmd:
                     self._maybe_show_texture_issue_dialog(import_profile, file_path)
             else:
                 logger.error("Import failed.")
