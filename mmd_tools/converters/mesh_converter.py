@@ -8,6 +8,11 @@ from typing import Tuple, Union, List, Optional
 from mmd_tools.core.settings import settings
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.texture_path_cache import (
+    classify_unreadable_file_texture_path,
+    find_resolvable_source,
+    is_unreadable_file_texture_path,
+)
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.morph import PmxMorphType
@@ -406,6 +411,9 @@ class MeshConverter:
         """
         self.logger = get_logger(__name__)
         self.created_shaders = []
+        self.unresolved_texture_count = 0
+        self.unresolved_textures = []
+        self.model_filepath = pmx_filepath
         # material_index -> transparency mode ("opaque"/"cutout"/"blend"),
         # precomputed from per-material UV-region texture alpha (atlas-safe).
         self._transparency_modes = {}
@@ -419,6 +427,8 @@ class MeshConverter:
             "mesh_vertex_slots_estimated": 0,
             "face_count": 0,
             "material_count_processed": 0,
+            "unresolved_texture_count": 0,
+            "unresolved_textures": [],
         }
         if pmx_filepath:
             self.texture_dir = os.path.dirname(pmx_filepath)
@@ -426,6 +436,37 @@ class MeshConverter:
     def _add_profile_time(self, key: str, start: float) -> None:
         """Accumulate timing in the converter profile."""
         self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
+
+    def _record_unresolved_texture_issue(
+        self,
+        *,
+        file_node,
+        shader,
+        material,
+        original_path,
+        current_path,
+    ) -> dict:
+        """Record one texture issue in a Qt-independent import report."""
+
+        reason = classify_unreadable_file_texture_path(current_path) or "unreadable_path"
+        source, source_reason = find_resolvable_source(original_path, self.model_filepath)
+        issue = {
+            "file_node": file_node,
+            "material": shader,
+            "material_name": getattr(material, "name", "") or shader,
+            "original_path": os.fspath(original_path) if original_path else "",
+            "current_path": os.fspath(current_path) if current_path else "",
+            "reason": reason,
+            "resolvable": source is not None,
+            "source_path": str(source) if source is not None else "",
+        }
+        if source is None and source_reason:
+            issue["source_reason"] = source_reason
+        self.unresolved_textures.append(issue)
+        self.unresolved_texture_count = len(self.unresolved_textures)
+        self.profile["unresolved_texture_count"] = self.unresolved_texture_count
+        self.profile["unresolved_textures"] = list(self.unresolved_textures)
+        return issue
 
     def _precompute_transparency_modes(self, all_vertices, all_faces, all_materials, all_textures):
         """Classify each material's transparency from its used UV-region texture alpha.
@@ -718,6 +759,7 @@ class MeshConverter:
 
             # テクスチャパスを取得
             texture_path = None
+            raw_texture_path = None
             if all_textures:
                 if material.texture_index != -1:
                     raw_texture_path = all_textures[material.texture_index]
@@ -731,6 +773,7 @@ class MeshConverter:
                 all_textures=all_textures,
                 is_pmd=is_pmd,
                 material_index=i,
+                original_texture_path=raw_texture_path,
             )
             self._add_profile_time("material_create_sec", material_start)
             self.created_shaders.append(shader)
@@ -877,6 +920,7 @@ class MeshConverter:
 
             # テクスチャパスを取得
             texture_path = None
+            raw_texture_path = None
             if all_textures:
                 if material.texture_index != -1:
                     raw_texture_path = all_textures[material.texture_index]
@@ -890,6 +934,7 @@ class MeshConverter:
                 all_textures=all_textures,
                 is_pmd=is_pmd,
                 material_index=i,
+                original_texture_path=raw_texture_path,
             )
             self._add_profile_time("material_create_sec", material_start)
             self.created_shaders.append(shader)
@@ -1119,6 +1164,7 @@ class MeshConverter:
 
         for material_index, material, start_face, end_face in local_material_ranges:
             texture_path = None
+            raw_texture_path = None
             if all_textures and material.texture_index != -1:
                 raw_texture_path = all_textures[material.texture_index]
                 texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
@@ -1130,6 +1176,7 @@ class MeshConverter:
                 all_textures=all_textures,
                 is_pmd=False,
                 material_index=material_index,
+                original_texture_path=raw_texture_path,
             )
             self._add_profile_time("material_create_sec", material_start)
             self.created_shaders.append(shader)
@@ -1151,6 +1198,7 @@ class MeshConverter:
         all_textures=None,
         is_pmd=False,
         material_index=None,
+        original_texture_path=None,
     ):
         """
         MMDマテリアルデータからMayaマテリアルを作成します。
@@ -1226,7 +1274,15 @@ class MeshConverter:
 
         # 標準のstandardSurfaceを使用
         shader = cmds.shadingNode("standardSurface", asShader=True, name=sanitized_name)
-        self._setup_standard_shader(shader, material, texture_path, all_textures, is_pmd, material_index)
+        self._setup_standard_shader(
+            shader,
+            material,
+            texture_path,
+            all_textures,
+            is_pmd,
+            material_index,
+            original_texture_path,
+        )
 
         return shader
 
@@ -1293,7 +1349,16 @@ class MeshConverter:
             custom_attrs,
         )
 
-    def _setup_standard_shader(self, shader, material, texture_path, all_textures, is_pmd, material_index=None):
+    def _setup_standard_shader(
+        self,
+        shader,
+        material,
+        texture_path,
+        all_textures,
+        is_pmd,
+        material_index=None,
+        original_texture_path=None,
+    ):
         """標準のstandardSurfaceシェーダーを設定"""
 
         # マテリアル名をサニタイズ（テクスチャノード名に使用）
@@ -1340,10 +1405,11 @@ class MeshConverter:
         self._apply_custom_attributes(shader, material, all_textures, is_pmd, material_index, texture_path)
 
         # テクスチャの設定
-        if texture_path:
+        intended_texture_path = original_texture_path or texture_path
+        if intended_texture_path:
             # テクスチャパスを解決
-            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path)
-            if full_texture_path and os.path.exists(full_texture_path):
+            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or intended_texture_path)
+            if full_texture_path:
                 file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
                 place_uv_node = cmds.shadingNode(
                     "place2dTexture",
@@ -1355,8 +1421,28 @@ class MeshConverter:
                 cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
 
                 maya_utils.set_attribute(file_node, "fileTextureName", full_texture_path, "string")
-            else:
-                cmds.warning(f"Texture file not found: {full_texture_path}")
+                unresolved = is_unreadable_file_texture_path(full_texture_path)
+                maya_utils.mark_mmd_texture_file_node(
+                    file_node,
+                    intended_texture_path,
+                    self.model_filepath,
+                    unresolved=unresolved,
+                )
+                if unresolved:
+                    issue = self._record_unresolved_texture_issue(
+                        file_node=file_node,
+                        shader=shader,
+                        material=material,
+                        original_path=intended_texture_path,
+                        current_path=full_texture_path,
+                    )
+                    if issue.get("reason") == "missing_file":
+                        cmds.warning(f"Texture file not found: {full_texture_path}")
+                    else:
+                        cmds.warning(
+                            f"Texture path needs resolution ({issue.get('reason', 'unreadable_path')}): "
+                            f"{full_texture_path}"
+                        )
 
     def _setup_glsl_shader(self, shader, material, texture_path, all_textures, is_pmd, material_index=None):
         """GLSLShader を設定する。"""

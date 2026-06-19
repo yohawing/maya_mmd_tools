@@ -184,11 +184,17 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
             if profile is not None:
                 profile["phase_timings"] = phase_timings
                 profile["mesh_converter"] = dict(mesh_converter.profile)
+                profile["texture_issues"] = list(mesh_converter.unresolved_textures)
                 profile["morph_result"] = {
                     "morphs_converted": morph_result.get("morphs_converted"),
                     "total_morphs": morph_result.get("total_morphs"),
                     "blend_shape_nodes": len(morph_result.get("blend_shape_nodes", []) or []),
                 }
+            if mesh_converter.unresolved_texture_count:
+                logger.warning(
+                    "%d texture(s) could not be loaded. Use Resolve textures to repair them.",
+                    mesh_converter.unresolved_texture_count,
+                )
         logger.info("PMDファイルのインポートが成功しました: %s", filepath)
         return root_group  # ルートノードの名前を返す
 

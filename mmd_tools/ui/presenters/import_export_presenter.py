@@ -120,6 +120,23 @@ class ImportExportPresenter(QObject):
         opts["cpp_fast_load_mesh_only"] = settings.get("import.native.cpp_fast_load_mesh_only", True)
         return opts
 
+    def _maybe_show_texture_issue_dialog(self, profile, file_path):
+        """Show post-import texture issues for UI-triggered PMX/PMD imports."""
+
+        issues = profile.get("texture_issues") or profile.get("mesh_converter", {}).get("unresolved_textures") or []
+        if not issues or not settings.get("import.model.show_texture_issue_dialog", True):
+            return
+        try:
+            from ..texture_issue_dialog import TextureIssueDialog
+
+            dialog = TextureIssueDialog(issues, model_path=file_path, app_state=self.app_state, parent=self.view)
+            if hasattr(dialog, "exec"):
+                dialog.exec()
+            else:
+                dialog.exec_()
+        except Exception as exc:
+            logger.error("Failed to show texture issue dialog: %s", exc, exc_info=True)
+
     def _build_export_options(self):
         """PMX/PMD export用の基本オプションを設定から組み立てる。"""
         return {
@@ -148,8 +165,11 @@ class ImportExportPresenter(QObject):
         self.app_state.emit_status(f"Importing: {file_path}")
 
         import_options = self._build_pmx_import_options()
+        import_profile = {}
         if file_path.lower().endswith(".vmd"):
             import_options.update(self._build_vmd_import_options())
+        else:
+            import_options["profile"] = import_profile
 
         try:
             root_node = import_mmd_file(file_path, options=import_options)
@@ -164,6 +184,8 @@ class ImportExportPresenter(QObject):
                 self.view.refresh_model_list()
                 # 成功したパスを履歴に追加
                 self.view.add_import_path_to_history(file_path)
+                if not file_path.lower().endswith(".vmd"):
+                    self._maybe_show_texture_issue_dialog(import_profile, file_path)
             else:
                 logger.error("Import failed.")
                 self.app_state.emit_status("Import failed")

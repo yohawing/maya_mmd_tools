@@ -386,5 +386,36 @@
     "opaque": "不透明",
     "cutout": "カットアウト",
     "blend": "ブレンド"
+  },
+  "texture_issues": {
+    "title": "表示できないテクスチャがあります ({count})",
+    "intro": "Maya がこれらのテクスチャを読み込めません。「すべて修復」を押すと、各ファイルをこのプロジェクトの sourceimages フォルダへ英数字名でコピーして貼り直し、表示できるようにします。元のファイルは変更しません。",
+    "header_material": "マテリアル",
+    "header_problem": "問題",
+    "header_texture": "テクスチャ",
+    "detail_placeholder": "行を選択すると完全なパスを表示します。",
+    "detail_original": "元: {path}",
+    "detail_current": "現在: {path}",
+    "fix_all": "すべて修復",
+    "open_folder": "フォルダを開く",
+    "close": "閉じる",
+    "dont_show_again": "今後表示しない",
+    "status_fixed": "{count} 件のテクスチャを修復しました"
+  },
+  "texture_issue_reasons": {
+    "ansi_incompatible_path": "パスに使えない文字があります",
+    "missing_file": "ファイルが見つかりません",
+    "question_mark_path": "再オープンでパスが壊れています",
+    "empty_path": "テクスチャパスが空です",
+    "resolved": "修復済み",
+    "missing_original_path": "元のパスが記録されていません",
+    "absolute_original_path_rejected": "元のパスが絶対パスです（安全でない）",
+    "parent_traversal_rejected": "パスがモデルフォルダの外に出ています",
+    "outside_model_directory_rejected": "ファイルがモデルフォルダの外にあります",
+    "extension_rejected": "対応していないファイル形式です",
+    "symlink_rejected": "シンボリックリンクは使用できません",
+    "source_not_found": "元ファイルが見つかりません",
+    "source_not_file": "元がファイルではありません",
+    "source_not_readable": "元ファイルを読み取れません"
   }
 }

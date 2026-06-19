@@ -386,5 +386,36 @@
     "opaque": "不透明",
     "cutout": "鏤空",
     "blend": "混合"
+  },
+  "texture_issues": {
+    "title": "有些貼圖無法顯示 ({count})",
+    "intro": "Maya 無法載入這些貼圖檔案。按下「全部修復」會將每個檔案以英文安全的名稱複製到本專案的 sourceimages 資料夾並重新連結，以便正常顯示。原始檔案不會被修改。",
+    "header_material": "材質",
+    "header_problem": "問題",
+    "header_texture": "貼圖",
+    "detail_placeholder": "選擇一列以檢視完整路徑。",
+    "detail_original": "原始: {path}",
+    "detail_current": "目前: {path}",
+    "fix_all": "全部修復",
+    "open_folder": "開啟資料夾",
+    "close": "關閉",
+    "dont_show_again": "不再顯示",
+    "status_fixed": "已修復 {count} 個貼圖"
+  },
+  "texture_issue_reasons": {
+    "ansi_incompatible_path": "路徑包含無法使用的字元",
+    "missing_file": "找不到檔案",
+    "question_mark_path": "重新開啟後路徑已損毀",
+    "empty_path": "貼圖路徑為空",
+    "resolved": "已修復",
+    "missing_original_path": "未記錄原始路徑",
+    "absolute_original_path_rejected": "原始路徑為絕對路徑（不安全）",
+    "parent_traversal_rejected": "路徑超出了模型資料夾",
+    "outside_model_directory_rejected": "檔案位於模型資料夾之外",
+    "extension_rejected": "不支援的檔案類型",
+    "symlink_rejected": "不允許使用符號連結",
+    "source_not_found": "找不到來源檔案",
+    "source_not_file": "來源不是檔案",
+    "source_not_readable": "無法讀取來源檔案"
   }
 }

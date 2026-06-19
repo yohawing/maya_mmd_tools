@@ -386,5 +386,36 @@
     "opaque": "不透明",
     "cutout": "镂空",
     "blend": "混合"
+  },
+  "texture_issues": {
+    "title": "有些贴图无法显示 ({count})",
+    "intro": "Maya 无法加载这些贴图文件。点击“全部修复”会将每个文件以英文安全的名称复制到本项目的 sourceimages 文件夹并重新链接，以便正常显示。原始文件不会被修改。",
+    "header_material": "材质",
+    "header_problem": "问题",
+    "header_texture": "贴图",
+    "detail_placeholder": "选择一行以查看完整路径。",
+    "detail_original": "原始: {path}",
+    "detail_current": "当前: {path}",
+    "fix_all": "全部修复",
+    "open_folder": "打开文件夹",
+    "close": "关闭",
+    "dont_show_again": "不再显示",
+    "status_fixed": "已修复 {count} 个贴图"
+  },
+  "texture_issue_reasons": {
+    "ansi_incompatible_path": "路径包含无法使用的字符",
+    "missing_file": "找不到文件",
+    "question_mark_path": "重新打开后路径已损坏",
+    "empty_path": "贴图路径为空",
+    "resolved": "已修复",
+    "missing_original_path": "未记录原始路径",
+    "absolute_original_path_rejected": "原始路径为绝对路径（不安全）",
+    "parent_traversal_rejected": "路径超出了模型文件夹",
+    "outside_model_directory_rejected": "文件位于模型文件夹之外",
+    "extension_rejected": "不支持的文件类型",
+    "symlink_rejected": "不允许使用符号链接",
+    "source_not_found": "找不到源文件",
+    "source_not_file": "源不是文件",
+    "source_not_readable": "无法读取源文件"
   }
 }

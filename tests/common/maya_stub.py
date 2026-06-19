@@ -143,7 +143,7 @@ _QTGUI_NAMES = [
 ]
 _QTWIDGETS_NAMES = [
     "QApplication", "QMainWindow", "QTabWidget", "QDockWidget", "QPushButton",
-    "QLineEdit", "QWidget", "QVBoxLayout", "QHBoxLayout", "QLabel", "QTextEdit",
+    "QLineEdit", "QWidget", "QVBoxLayout", "QHBoxLayout", "QLabel", "QTextEdit", "QDialog",
     "QFileDialog", "QGroupBox", "QFormLayout", "QCheckBox", "QComboBox",
     "QListWidget", "QSlider", "QTreeView", "QTreeWidget", "QTreeWidgetItem",
     "QColorDialog", "QDoubleSpinBox", "QSpinBox", "QGridLayout", "QScrollArea",

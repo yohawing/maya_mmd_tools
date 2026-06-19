@@ -6,11 +6,25 @@ from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
 
-from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME_EN, ATTR_MMD_MODEL_NAME
+from mmd_tools.core.constants import (
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+    ATTR_MMD_SOURCE_MODEL_PATH,
+    ATTR_MMD_TEXTURE_CACHE_PATH,
+    ATTR_MMD_TEXTURE_UNRESOLVED,
+)
 from mmd_tools.core.settings import settings
 
 from . import utils
 from .logger import get_logger
+from .texture_path_cache import (
+    classify_texture_resolution,
+    decode_original_texture_path,
+    encode_original_texture_path,
+    is_unreadable_file_texture_path,
+    resolve_texture_to_cache,
+)
 
 logger = get_logger(__name__)
 
@@ -62,6 +76,125 @@ def sanitize_texture_path(texture_path, texture_dir):
         return None
 
     return full_texture_path
+
+
+def mark_mmd_texture_file_node(file_node, original_path, model_path, unresolved=False):
+    """Store MMD texture provenance on a Maya file node."""
+
+    set_custom_attributes(
+        file_node,
+        {
+            ATTR_MMD_ORIGINAL_TEXTURE_PATH: encode_original_texture_path(original_path),
+            ATTR_MMD_SOURCE_MODEL_PATH: model_path or "",
+            ATTR_MMD_TEXTURE_UNRESOLVED: bool(unresolved),
+        },
+    )
+
+
+def get_mmd_original_texture_path(file_node):
+    """Return the decoded original texture path stored on a Maya file node."""
+
+    encoded = get_attribute(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)
+    return decode_original_texture_path(encoded)
+
+
+def is_mmd_file_node_unreadable(file_node):
+    """Return whether an MMD file node currently points at an unreadable texture."""
+
+    texture_path = get_attribute(file_node, "fileTextureName")
+    return is_unreadable_file_texture_path(texture_path)
+
+
+def find_material_texture_file_node(material):
+    """Find the base texture file node used by a material, if any."""
+
+    shader_type = cmds.nodeType(material)
+    texture_attrs = []
+    if shader_type == "standardSurface":
+        texture_attrs.append(f"{material}.baseColor")
+    elif shader_type == "dx11Shader":
+        if cmds.attributeQuery("MainTexture", node=material, exists=True):
+            texture_attrs.append(f"{material}.MainTexture")
+        if cmds.attributeQuery("DiffuseTexture", node=material, exists=True):
+            texture_attrs.append(f"{material}.DiffuseTexture")
+    if cmds.attributeQuery("color", node=material, exists=True):
+        texture_attrs.append(f"{material}.color")
+
+    for attr in texture_attrs:
+        connections = cmds.listConnections(attr, type="file", source=True, destination=False) or []
+        if connections:
+            return connections[0]
+    return None
+
+
+def classify_mmd_texture_file_node(file_node):
+    """Classify a Maya MMD file node for on-demand texture resolution."""
+
+    original_path = get_mmd_original_texture_path(file_node)
+    model_path = get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
+    file_texture_path = get_attribute(file_node, "fileTextureName") or ""
+    if not model_path:
+        return None
+    return classify_texture_resolution(
+        original_path=original_path,
+        file_texture_path=file_texture_path,
+        model_path=model_path,
+    )
+
+
+def resolve_mmd_texture_file_node(file_node, workspace_root=None):
+    """Resolve one MMD file node into the workspace texture cache."""
+
+    if workspace_root is None:
+        workspace_root = cmds.workspace(q=True, rootDirectory=True)
+    original_path = get_mmd_original_texture_path(file_node)
+    model_path = get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
+    file_texture_path = get_attribute(file_node, "fileTextureName") or ""
+    if not model_path:
+        return None
+
+    resolution = resolve_texture_to_cache(
+        original_path=original_path,
+        file_texture_path=file_texture_path,
+        model_path=model_path,
+        workspace_root=workspace_root,
+    )
+    if resolution.status == "resolved" and resolution.cache_path:
+        set_attribute(file_node, "fileTextureName", resolution.cache_path, "string")
+        set_custom_attributes(
+            file_node,
+            {
+                ATTR_MMD_TEXTURE_CACHE_PATH: resolution.cache_path,
+                ATTR_MMD_TEXTURE_UNRESOLVED: False,
+            },
+        )
+    elif resolution.status == "unrecoverable":
+        set_custom_attributes(file_node, {ATTR_MMD_TEXTURE_UNRESOLVED: True})
+    return resolution
+
+
+def resolve_mmd_material_texture(material, workspace_root=None):
+    """Resolve the selected material's base texture file node, if present."""
+
+    file_node = find_material_texture_file_node(material)
+    if not file_node:
+        return None
+    return resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
+
+
+def resolve_scene_mmd_textures(workspace_root=None):
+    """Resolve all broken MMD file nodes in the current Maya scene."""
+
+    results = []
+    for file_node in cmds.ls(type="file") or []:
+        if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
+            continue
+        classification = classify_mmd_texture_file_node(file_node)
+        if classification and classification.status == "resolvable":
+            results.append(resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root))
+        elif classification:
+            results.append(classification)
+    return results
 
 
 def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):
@@ -172,7 +305,7 @@ def split_mesh_by_material(mesh_name, materials):
         cmds.hyperShade(assign=material.name)
 
 
-def create_material(name, color, texture_path=None, texture_dir=""):
+def create_material(name, color, texture_path=None, texture_dir="", model_path=None):
     """
     Mayaシーンにマテリアルを作成します。
 
@@ -181,6 +314,7 @@ def create_material(name, color, texture_path=None, texture_dir=""):
         color (tuple[float, float, float, float]): RGBAカラー。
         texture_path (str, optional): テクスチャファイルのパス。
         texture_dir (str, optional): テクスチャファイルが置かれているディレクトリ。
+        model_path (str, optional): 元 PMX/PMD ファイルのパス。
 
     Returns:
         str: 作成されたシェーダーノード名。
@@ -196,20 +330,26 @@ def create_material(name, color, texture_path=None, texture_dir=""):
 
     if texture_path:
         # テクスチャパスを解決
-        full_texture_path = os.path.join(texture_dir, texture_path)
-        if os.path.exists(full_texture_path):
-            file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
-            place_uv_node = cmds.shadingNode(
-                "place2dTexture",
-                asUtility=True,
-                name=sanitized_name + "_place2dTexture",
-            )
-            # 標準的なUV接続
-            cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
-            cmds.connectAttr(file_node + ".outColor", shader + ".color")
+        full_texture_path = os.path.normpath(os.path.join(texture_dir, texture_path))
+        file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
+        place_uv_node = cmds.shadingNode(
+            "place2dTexture",
+            asUtility=True,
+            name=sanitized_name + "_place2dTexture",
+        )
+        # 標準的なUV接続
+        cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
+        cmds.connectAttr(file_node + ".outColor", shader + ".color")
 
-            cmds.setAttr(file_node + ".fileTextureName", full_texture_path, type="string")
-        else:
+        set_attribute(file_node, "fileTextureName", full_texture_path, "string")
+        source_model_path = model_path or os.path.join(texture_dir, "_mmd_tools_legacy_model.pmd")
+        mark_mmd_texture_file_node(
+            file_node,
+            texture_path,
+            source_model_path,
+            unresolved=not os.path.exists(full_texture_path),
+        )
+        if not os.path.exists(full_texture_path):
             cmds.warning(f"Texture file not found: {full_texture_path}")
 
     return shader

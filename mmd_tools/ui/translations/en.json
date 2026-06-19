@@ -386,5 +386,36 @@
     "opaque": "Opaque",
     "cutout": "Cutout",
     "blend": "Blend"
+  },
+  "texture_issues": {
+    "title": "Some textures can't be displayed ({count})",
+    "intro": "Maya can't load these texture files. \"Fix all\" copies each one into this project's sourceimages folder with an English-safe name and re-links it, so it can be displayed. Your original files are NOT changed.",
+    "header_material": "Material",
+    "header_problem": "Problem",
+    "header_texture": "Texture",
+    "detail_placeholder": "Select a row to see its full path.",
+    "detail_original": "Original: {path}",
+    "detail_current": "Current: {path}",
+    "fix_all": "Fix all",
+    "open_folder": "Open folder",
+    "close": "Close",
+    "dont_show_again": "Don't show again",
+    "status_fixed": "Fixed {count} texture(s)"
+  },
+  "texture_issue_reasons": {
+    "ansi_incompatible_path": "Unsupported characters in path",
+    "missing_file": "File not found",
+    "question_mark_path": "Path corrupted on reopen",
+    "empty_path": "No texture path",
+    "resolved": "Fixed",
+    "missing_original_path": "Original path not recorded",
+    "absolute_original_path_rejected": "Original path is absolute (unsafe)",
+    "parent_traversal_rejected": "Path escapes the model folder",
+    "outside_model_directory_rejected": "File is outside the model folder",
+    "extension_rejected": "Unsupported file type",
+    "symlink_rejected": "Symbolic link not allowed",
+    "source_not_found": "Source file not found",
+    "source_not_file": "Source is not a file",
+    "source_not_readable": "Source file is not readable"
   }
 }

@@ -107,10 +107,12 @@ class TestImportExportPresenter(unittest.TestCase):
     def setUp(self):
         self._old_bake_mode = settings.get("import.rig.bake_mode", True)
         self._old_dev_mode = settings.get("ui.general.development_mode", False)
+        self._old_texture_dialog = settings.get("import.model.show_texture_issue_dialog", True)
 
     def tearDown(self):
         settings.set("import.rig.bake_mode", self._old_bake_mode)
         settings.set("ui.general.development_mode", self._old_dev_mode)
+        settings.set("import.model.show_texture_issue_dialog", self._old_texture_dialog)
 
     def test_import_file_passes_no_rig_options_when_bake_mode_enabled(self):
         # Dev mode required so the saved bake_mode setting is respected.
@@ -163,6 +165,48 @@ class TestImportExportPresenter(unittest.TestCase):
 
         options = mock_import.call_args.kwargs["options"]
         self.assertEqual(options["target_model"], "model_root")
+
+    def test_import_file_passes_profile_and_shows_texture_issue_dialog(self):
+        settings.set("import.model.show_texture_issue_dialog", True)
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+        issue = {"file_node": "file1", "material": "mat1", "reason": "ansi_incompatible_path"}
+
+        def fake_import(_path, options=None):
+            options["profile"]["texture_issues"] = [issue]
+            return "model_root"
+
+        with patch(
+            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
+            side_effect=fake_import,
+        ) as mock_import, patch(
+            "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
+        ) as mock_dialog:
+            presenter.import_file()
+
+        options = mock_import.call_args.kwargs["options"]
+        self.assertIn("profile", options)
+        mock_dialog.assert_called_once_with([issue], model_path="model.pmx", app_state=app_state, parent=view)
+        mock_dialog.return_value.exec.assert_called_once()
+
+    def test_import_file_skips_texture_issue_dialog_when_setting_disabled(self):
+        settings.set("import.model.show_texture_issue_dialog", False)
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+
+        def fake_import(_path, options=None):
+            options["profile"]["texture_issues"] = [{"file_node": "file1"}]
+            return "model_root"
+
+        with patch(
+            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
+            side_effect=fake_import,
+        ), patch("mmd_tools.ui.texture_issue_dialog.TextureIssueDialog") as mock_dialog:
+            presenter.import_file()
+
+        mock_dialog.assert_not_called()
 
     def test_import_vmd_auto_detect_uses_current_model_root(self):
         view = _FakeView()
