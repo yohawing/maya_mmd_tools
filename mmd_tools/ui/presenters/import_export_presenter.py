@@ -4,25 +4,9 @@ from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...core.logger import get_logger
 from ...io.mmd_importer import import_mmd_file
-from ...core.settings import settings
+from ...services.settings_service import SettingsService
 
 logger = get_logger(__name__)
-
-# Dev-only import keys: forced to these values in normal mode (development_mode=False).
-# In dev mode the saved setting is used instead.
-_NORMAL_MODE_IMPORT_OVERRIDES = {
-    "import_models": True,
-    "import_physics": False,
-    "separate_meshes_by_material": False,
-    "split_meshes_by_morph_groups": False,
-    "hide_hidden_geometry": False,
-    "auto_classify_transparency": False,
-    "disable_backface_culling": True,
-    "uv_set_name": "map#",
-    "texture_search_path": "",
-    "add_semi_standard_bones": False,
-    "translate_names": True,
-}
 
 
 class ImportExportPresenter(QObject):
@@ -33,6 +17,7 @@ class ImportExportPresenter(QObject):
         import_model_action=None,
         import_vmd_action=None,
         export_model_action=None,
+        settings_service=None,
     ):
         super().__init__()
         self.view = view
@@ -40,6 +25,7 @@ class ImportExportPresenter(QObject):
         self.import_model_action = import_model_action or ImportModelAction()
         self.import_vmd_action = import_vmd_action or ImportVmdAction()
         self.export_model_action = export_model_action or ExportModelAction()
+        self.settings_service = settings_service or SettingsService()
         self.connect_signals()
 
     def connect_signals(self):
@@ -87,57 +73,20 @@ class ImportExportPresenter(QObject):
         """VMD import用のオプションをUI設定から組み立てる。"""
         if target_model is None:
             target_model = self._get_vmd_target_model()
-        is_dev = settings.get("ui.general.development_mode", False)
-        return {
-            "start_frame": settings.get("import.animation.animation_start_frame", 1),
-            "vmd_fps": settings.get("import.animation.vmd_fps", 30),
-            "import_bone_animation": settings.get("import.animation.import_animations", True),
-            "import_morph_animation": settings.get("import.animation.import_morph_animation", True),
-            "import_camera_animation": settings.get("import.animation.import_camera_animation", True),
-            "import_light_animation": settings.get("import.animation.import_light_animation", True),
-            "resample_curves": settings.get("import.animation.resample_curves", False) if is_dev else False,
-            "target_model": target_model,
-        }
+        return self.settings_service.build_vmd_import_options(target_model)
 
     def _build_pmx_import_options(self):
         """PMX/PMD import用のオプションを組み立てる。
 
         通常モード（development_mode=False）では dev-only 設定を強制デフォルトに上書きする。
         """
-        is_dev = settings.get("ui.general.development_mode", False)
-        opts = {
-            "scale": settings.get("import.general.scale_factor", 1.0),
-            "use_namespace": settings.get("import.general.use_namespace", False),
-            "custom_namespace": self.view.get_custom_namespace(),
-            "import_models": settings.get("import.model.import_models", True),
-            "create_mmd_shaders": settings.get("import.model.create_mmd_shaders", True),
-            "separate_meshes_by_material": settings.get("import.model.separate_meshes_by_material", False),
-            "split_meshes_by_morph_groups": settings.get("import.model.split_meshes_by_morph_groups", False),
-            "hide_hidden_geometry": settings.get("import.model.hide_hidden_geometry", False),
-            "auto_classify_transparency": settings.get("import.model.auto_classify_transparency", False),
-            "disable_backface_culling": settings.get("import.model.disable_backface_culling", True),
-            "uv_set_name": settings.get("import.model.uv_set_name", "map#"),
-            "texture_search_path": settings.get("import.model.texture_search_path", ""),
-            "import_physics": settings.get("import.physics.import_physics", False),
-            "import_morphs": settings.get("import.morph.import_morphs", True),
-            "add_semi_standard_bones": settings.get("import.rig.add_semi_standard_bones", False),
-            "translate_names": settings.get("import.naming.translate_names", True),
-        }
-        if not is_dev:
-            opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        bake_mode = settings.get("import.rig.bake_mode", True) if is_dev else True
-        if bake_mode:
-            opts["setup_rig"] = False
-            opts["setup_bone_orientation"] = False
-        opts["use_cpp_fast_load"] = settings.get("import.native.use_cpp_fast_load", False)
-        opts["cpp_fast_load_mesh_only"] = settings.get("import.native.cpp_fast_load_mesh_only", True)
-        return opts
+        return self.settings_service.build_pmx_import_options(self.view.get_custom_namespace())
 
     def _maybe_show_texture_issue_dialog(self, profile, file_path):
         """Show post-import texture issues for UI-triggered PMX/PMD imports."""
 
         issues = profile.get("texture_issues") or profile.get("mesh_converter", {}).get("unresolved_textures") or []
-        if not issues or not settings.get("import.model.show_texture_issue_dialog", True):
+        if not issues or not self.settings_service.should_show_texture_issue_dialog():
             return
         try:
             from ..texture_issue_dialog import TextureIssueDialog
@@ -152,11 +101,7 @@ class ImportExportPresenter(QObject):
 
     def _build_export_options(self):
         """PMX/PMD export用の基本オプションを設定から組み立てる。"""
-        return {
-            "file_path": self.view.export_path_edit.text().strip(),
-            "export_format": settings.get("export.general.export_format", "pmx"),
-            "apply_scale": settings.get("export.general.apply_scale", True),
-        }
+        return self.settings_service.build_export_options(self.view.export_path_edit.text().strip())
 
     def import_file(self):
         file_path = self.view.import_path_edit.text().strip()
