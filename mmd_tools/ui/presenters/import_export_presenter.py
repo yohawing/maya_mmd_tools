@@ -7,7 +7,6 @@ from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...core import maya_utils
 from ...core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH, ATTR_MMD_TEXTURE_CACHE_PATH
 from ...core.logger import get_logger
-from ...io.mmd_importer import import_mmd_file
 from ...services.settings_service import SettingsService
 from ..translations.translator import UITranslator
 
@@ -299,8 +298,15 @@ class ImportExportPresenter(QObject):
         animation_options = self._build_vmd_import_options(target_model)
 
         try:
-            # VMDファイルもimport_mmd_fileで処理される
-            success = import_mmd_file(file_path, options=animation_options)
+            request = ImportVmdRequest(
+                file_path=file_path,
+                options=animation_options,
+                create_new_scene=False,
+            )
+            result = self.import_vmd_action.execute(request)
+            if result.error:
+                raise result.error
+            success = result.succeeded
             if success:
                 logger.info("VMD import successful.")
                 self.app_state.emit_status(f"VMD import complete: {file_path}")

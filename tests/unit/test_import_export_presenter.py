@@ -426,15 +426,13 @@ class TestImportExportPresenter(unittest.TestCase):
         view = _FakeView()
         app_state = _FakeAppState()
         app_state.current_model_root = "model_root"
-        presenter = ImportExportPresenter(view, app_state)
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
-        with patch(
-            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
-            return_value=True,
-        ) as mock_import:
-            presenter.import_vmd_file()
+        presenter.import_vmd_file()
 
-        options = mock_import.call_args.kwargs["options"]
+        self.assertEqual(len(action.requests), 1)
+        options = action.requests[0].options
         self.assertEqual(options["target_model"], "model_root")
 
     def test_import_vmd_explicit_target_overrides_current_model_root(self):
@@ -442,15 +440,13 @@ class TestImportExportPresenter(unittest.TestCase):
         view.target_model_combo = _FakeComboBox(1, {1: "explicit_model_root"})
         app_state = _FakeAppState()
         app_state.current_model_root = "current_model_root"
-        presenter = ImportExportPresenter(view, app_state)
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
-        with patch(
-            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
-            return_value=True,
-        ) as mock_import:
-            presenter.import_vmd_file()
+        presenter.import_vmd_file()
 
-        options = mock_import.call_args.kwargs["options"]
+        self.assertEqual(len(action.requests), 1)
+        options = action.requests[0].options
         self.assertEqual(options["target_model"], "explicit_model_root")
 
 
@@ -617,14 +613,12 @@ class TestVmdImportOptions(unittest.TestCase):
         view = _FakeView()
         view.vmd_path_edit = _FakeLineEdit("")
         app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
-        with patch(
-            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
-        ) as mock_import:
-            presenter.import_vmd_file()
+        presenter.import_vmd_file()
 
-        mock_import.assert_not_called()
+        self.assertEqual(action.requests, [])
         self.assertIn("Please enter a VMD file path", app_state.statuses)
 
     def test_import_vmd_success_adds_history(self):
@@ -637,16 +631,49 @@ class TestVmdImportOptions(unittest.TestCase):
         view = _RecordingView()
         view.vmd_path_edit = _FakeLineEdit("dance.vmd")
         app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
-        with patch(
-            "mmd_tools.ui.presenters.import_export_presenter.import_mmd_file",
-            return_value=True,
-        ):
-            presenter.import_vmd_file()
+        presenter.import_vmd_file()
 
+        self.assertEqual(len(action.requests), 1)
+        self.assertEqual(action.requests[0].file_path, "dance.vmd")
+        self.assertFalse(action.requests[0].create_new_scene)
         self.assertEqual(recorded, ["dance.vmd"])
         self.assertIn(100, app_state.progress)
+
+    def test_import_vmd_failure_result_emits_failure_and_skips_history(self):
+        recorded = []
+
+        class _RecordingView(_FakeView):
+            def add_vmd_path_to_history(self, path):
+                recorded.append(path)
+
+        view = _RecordingView()
+        view.vmd_path_edit = _FakeLineEdit("dance.vmd")
+        app_state = _FakeAppState()
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=None, succeeded=False))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertEqual(len(action.requests), 1)
+        self.assertEqual(recorded, [])
+        self.assertIn("VMD import failed", app_state.statuses)
+        self.assertIn(0, app_state.progress)
+
+    def test_import_vmd_error_result_is_reported(self):
+        view = _FakeView()
+        view.vmd_path_edit = _FakeLineEdit("dance.vmd")
+        app_state = _FakeAppState()
+        action = _RecordingImportVmdAction(ImportVmdResult(error=RuntimeError("boom")))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        presenter.import_vmd_file()
+
+        self.assertEqual(len(action.requests), 1)
+        self.assertTrue(any("VMD import error: boom" in s for s in app_state.statuses))
+        self.assertIn(0, app_state.progress)
 
 
 class TestExportFile(unittest.TestCase):
