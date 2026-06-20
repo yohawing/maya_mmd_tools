@@ -1,9 +1,8 @@
-from maya import cmds
-
 from ..qt_compat import QObject, QFileDialog
 from ...actions.export_model_action import ExportModelAction, ExportModelRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
+from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core import maya_utils
 from ...core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH, ATTR_MMD_TEXTURE_CACHE_PATH
 from ...core.logger import get_logger
@@ -22,6 +21,7 @@ class ImportExportPresenter(QObject):
         import_vmd_action=None,
         export_model_action=None,
         settings_service=None,
+        maya_adapter=None,
     ):
         super().__init__()
         self.view = view
@@ -30,6 +30,7 @@ class ImportExportPresenter(QObject):
         self.import_vmd_action = import_vmd_action or ImportVmdAction()
         self.export_model_action = export_model_action or ExportModelAction()
         self.settings_service = settings_service or SettingsService()
+        self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.connect_signals()
 
     def connect_signals(self):
@@ -122,7 +123,7 @@ class ImportExportPresenter(QObject):
         """Return a connected shader/material name, falling back to the file node."""
 
         try:
-            connections = cmds.listConnections(file_node, destination=True) or []
+            connections = self.maya_adapter.list_connections(file_node, destination=True) or []
             for node in connections:
                 if node:
                     return node
@@ -137,7 +138,7 @@ class ImportExportPresenter(QObject):
         cache_path = getattr(resolution, "cache_path", "") or ""
         if not cache_path:
             try:
-                if cmds.attributeQuery(ATTR_MMD_TEXTURE_CACHE_PATH, node=file_node, exists=True):
+                if self.maya_adapter.attribute_exists(ATTR_MMD_TEXTURE_CACHE_PATH, node=file_node):
                     cache_path = maya_utils.get_attribute(file_node, ATTR_MMD_TEXTURE_CACHE_PATH) or ""
             except Exception:
                 logger.debug("Failed to read texture cache path for file node %s", file_node, exc_info=True)
@@ -159,8 +160,8 @@ class ImportExportPresenter(QObject):
         """Collect non-ok MMD texture file-node issues from the current scene."""
 
         issues = []
-        for file_node in cmds.ls(type="file") or []:
-            if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
+        for file_node in self.maya_adapter.ls(type="file") or []:
+            if not self.maya_adapter.attribute_exists(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node):
                 continue
             classification = maya_utils.classify_mmd_texture_file_node(file_node)
             if not classification or classification.status == "ok":

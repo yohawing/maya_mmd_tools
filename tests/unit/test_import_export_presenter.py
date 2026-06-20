@@ -15,6 +15,10 @@ from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
+from mmd_tools.core.constants import (  # noqa: E402
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+    ATTR_MMD_TEXTURE_CACHE_PATH,
+)
 from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.actions.export_model_action import ExportModelResult  # noqa: E402
 from mmd_tools.actions.import_model_action import ImportModelResult  # noqa: E402
@@ -117,6 +121,28 @@ class _FakeAppState:
 
     def refresh_model_list(self):
         pass
+
+
+class _FakeMayaAdapter:
+    def __init__(self, file_nodes=None, existing_attrs=None, connections=None):
+        self.file_nodes = file_nodes or []
+        self.existing_attrs = existing_attrs or {}
+        self.connections = connections or {}
+        self.attribute_exists_calls = []
+        self.list_connections_calls = []
+        self.ls_calls = []
+
+    def ls(self, *args, **kwargs):
+        self.ls_calls.append((args, kwargs))
+        return list(self.file_nodes)
+
+    def attribute_exists(self, attr, node):
+        self.attribute_exists_calls.append((attr, node))
+        return attr in self.existing_attrs.get(node, set())
+
+    def list_connections(self, node, **kwargs):
+        self.list_connections_calls.append((node, kwargs))
+        return list(self.connections.get(node, []))
 
 
 class _RecordingImportModelAction:
@@ -308,11 +334,22 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn(expected_status, app_state.statuses)
 
     @patch("mmd_tools.ui.presenters.import_export_presenter.maya_utils")
-    @patch("mmd_tools.ui.presenters.import_export_presenter.cmds")
-    def test_collect_scene_texture_issues_filters_and_converts_file_nodes(self, mock_cmds, mock_maya_utils):
+    def test_collect_scene_texture_issues_filters_and_converts_file_nodes(self, mock_maya_utils):
         view = _FakeView()
         app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
+        maya_adapter = _FakeMayaAdapter(
+            file_nodes=["non_mmd_file", "ok_file", "bad_file", "lost_file"],
+            existing_attrs={
+                "ok_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "bad_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "lost_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+            },
+            connections={
+                "bad_file": ["mat1"],
+                "lost_file": [],
+            },
+        )
+        presenter = ImportExportPresenter(view, app_state, maya_adapter=maya_adapter)
         ok = MagicMock(
             status="ok",
             reason="",
@@ -334,17 +371,11 @@ class TestImportExportPresenter(unittest.TestCase):
             file_texture_path="missing.png",
             source_path=None,
         )
-        mock_cmds.ls.return_value = ["non_mmd_file", "ok_file", "bad_file", "lost_file"]
-        mock_cmds.attributeQuery.side_effect = lambda _attr, node, exists: node != "non_mmd_file"
         mock_maya_utils.classify_mmd_texture_file_node.side_effect = {
             "ok_file": ok,
             "bad_file": resolvable,
             "lost_file": unrecoverable,
         }.get
-        mock_cmds.listConnections.side_effect = lambda node, destination=True: {
-            "bad_file": ["mat1"],
-            "lost_file": [],
-        }.get(node, [])
 
         issues = presenter._collect_scene_texture_issues()
 
@@ -358,6 +389,46 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(issues[1]["material"], "lost_file")
         self.assertEqual(issues[1]["reason"], "missing_file")
         self.assertFalse(issues[1]["resolvable"])
+        self.assertEqual(maya_adapter.ls_calls, [((), {"type": "file"})])
+        self.assertIn((ATTR_MMD_ORIGINAL_TEXTURE_PATH, "non_mmd_file"), maya_adapter.attribute_exists_calls)
+        self.assertEqual(
+            maya_adapter.list_connections_calls,
+            [("bad_file", {"destination": True}), ("lost_file", {"destination": True})],
+        )
+
+    def test_material_name_for_file_node_uses_injected_adapter_connections(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        maya_adapter = _FakeMayaAdapter(connections={"file1": ["mat1"]})
+        presenter = ImportExportPresenter(view, app_state, maya_adapter=maya_adapter)
+
+        self.assertEqual(presenter._material_name_for_file_node("file1"), "mat1")
+        self.assertEqual(maya_adapter.list_connections_calls, [("file1", {"destination": True})])
+
+    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_utils")
+    def test_texture_resolution_to_issue_prefers_resolution_cache_path(self, mock_maya_utils):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        maya_adapter = _FakeMayaAdapter(
+            existing_attrs={"file1": {ATTR_MMD_TEXTURE_CACHE_PATH}},
+            connections={"file1": ["mat1"]},
+        )
+        presenter = ImportExportPresenter(view, app_state, maya_adapter=maya_adapter)
+        resolution = MagicMock(
+            status="resolvable",
+            reason="non_ascii_path",
+            original_path="original.png",
+            file_texture_path="fileTexture.png",
+            cache_path="cache.png",
+            source_path="source.png",
+        )
+
+        issue = presenter._texture_resolution_to_issue("file1", resolution)
+
+        self.assertEqual(issue["current_path"], "cache.png")
+        self.assertEqual(issue["material"], "mat1")
+        self.assertNotIn((ATTR_MMD_TEXTURE_CACHE_PATH, "file1"), maya_adapter.attribute_exists_calls)
+        mock_maya_utils.get_attribute.assert_not_called()
 
     def test_import_file_model_branch_uses_injected_action_and_updates_ui_state(self):
         recorded_refreshes = []
