@@ -35,6 +35,49 @@ DX11_TEXTURE_SLOTS = {
 }
 
 
+def _is_non_bool_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _infer_sequence_attribute_type(attr_value):
+    if not all(_is_non_bool_number(x) for x in attr_value):
+        return type(attr_value).__name__
+    if len(attr_value) == 3:
+        return "double3"
+    if len(attr_value) == 4:
+        return "double4"
+    return "doubleArray"
+
+
+def _add_compound_attribute_with_cmds(object_name, attr_name, attr_type):
+    compound_specs = {
+        "double3": (3, "double"),
+        "long3": (3, "long"),
+        "double4": (4, "double"),
+    }
+    if attr_type not in compound_specs:
+        return
+
+    child_count, child_type = compound_specs[attr_type]
+    try:
+        cmds.addAttr(object_name, ln=attr_name, at=attr_type)
+        for suffix in ("X", "Y", "Z", "W")[:child_count]:
+            cmds.addAttr(object_name, ln=f"{attr_name}{suffix}", at=child_type, p=attr_name)
+    except Exception as e:
+        logger.error(f"Failed to add typed attribute '{attr_name}' to '{object_name}': {e}")
+
+
+def _ensure_compound_attribute_created(object_name, attr_name, attr_type):
+    if attr_type not in {"double3", "long3", "double4"}:
+        return
+    if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
+        _add_compound_attribute_with_cmds(object_name, attr_name, attr_type)
+
+
+def _set_compound_attribute_with_cmds(object_name, attr_name, attr_value, attr_type):
+    cmds.setAttr(f"{object_name}.{attr_name}", *attr_value, type=attr_type)
+
+
 def sanitize_text(name):
     """
     Maya用に名前をサニタイズする。
@@ -568,6 +611,9 @@ def set_custom_attributes(object_name, attributes):
     for attr_name, attr_value in attributes.items():
         attr_type = type(attr_value).__name__
         actual_attr_type = attr_type  # 実際に使用する型を保存
+        if attr_type in ["list", "tuple"]:
+            # リストやタプルの場合は型を指定
+            actual_attr_type = _infer_sequence_attribute_type(attr_value)
 
         # アトリビュートが存在しない場合は作成
         if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
@@ -576,18 +622,8 @@ def set_custom_attributes(object_name, attributes):
             elif attr_type in ["str", "bytes"]:
                 add_typed_attribute(object_name, attr_name, attr_type)
             elif attr_type in ["list", "tuple"]:
-                # リストやタプルの場合は型を指定
-                if len(attr_value) == 3 and all(isinstance(x, float) for x in attr_value):
-                    actual_attr_type = "double3"
-                elif len(attr_value) == 3 and all(isinstance(x, int) for x in attr_value):
-                    actual_attr_type = "long3"
-                elif len(attr_value) == 4 and all(isinstance(x, (float, int)) for x in attr_value):
-                    actual_attr_type = "double4"
-                elif all(isinstance(x, float) for x in attr_value):
-                    actual_attr_type = "doubleArray"
-                elif all(isinstance(x, int) for x in attr_value):
-                    actual_attr_type = "longArray"
                 add_typed_attribute(object_name, attr_name, actual_attr_type)
+                _ensure_compound_attribute_created(object_name, attr_name, actual_attr_type)
 
         # 値を設定（既存・新規両方に対応）
         try:
@@ -758,19 +794,28 @@ def set_attribute(object_name, attr_name, attr_value, attr_type):
             _set_string_plug(plug, object_name, attr_name, attr_value.decode("utf-8"))
         elif attr_type == "double3" and len(attr_value) == 3:
             # 3要素のベクトル値
-            for i, value in enumerate(attr_value):
-                child_plug = plug.child(i)
-                child_plug.setDouble(value)
+            try:
+                for i, value in enumerate(attr_value):
+                    child_plug = plug.child(i)
+                    child_plug.setDouble(value)
+            except Exception:
+                _set_compound_attribute_with_cmds(object_name, attr_name, attr_value, attr_type)
         elif attr_type == "long3" and len(attr_value) == 3:
             # 3要素の整数値
-            for i, value in enumerate(attr_value):
-                child_plug = plug.child(i)
-                child_plug.setInt(value)
+            try:
+                for i, value in enumerate(attr_value):
+                    child_plug = plug.child(i)
+                    child_plug.setInt(value)
+            except Exception:
+                _set_compound_attribute_with_cmds(object_name, attr_name, attr_value, attr_type)
         elif attr_type == "double4" and len(attr_value) == 4:
             # 4要素のベクトル値
-            for i, value in enumerate(attr_value):
-                child_plug = plug.child(i)
-                child_plug.setDouble(value)
+            try:
+                for i, value in enumerate(attr_value):
+                    child_plug = plug.child(i)
+                    child_plug.setDouble(value)
+            except Exception:
+                _set_compound_attribute_with_cmds(object_name, attr_name, attr_value, attr_type)
         elif attr_type == "doubleArray":
             double_array_data = om.MFnDoubleArrayData()
             double_array_obj = double_array_data.create()
