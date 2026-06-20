@@ -1,13 +1,14 @@
-from maya import cmds
+from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 
 logger = get_logger(__name__)
 
 
 class DisplayPanePresenter:
-    def __init__(self, view, app_state):
+    def __init__(self, view, app_state, maya_adapter=None):
         self.view = view
         self.app_state = app_state
+        self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.connect_signals()
 
     def connect_signals(self):
@@ -25,13 +26,13 @@ class DisplayPanePresenter:
         self.view.display_pane_list.clear()
 
         current_model_root = self.app_state.current_model_root
-        if not current_model_root or not cmds.objExists(current_model_root):
+        if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             return
 
         # This is a simplified example. Display panes are not directly represented in Maya.
         # We would need to store this information as attributes on the root node.
-        if cmds.attributeQuery("mmd_display_panes", node=current_model_root, exists=True):
-            display_panes = cmds.getAttr(f"{current_model_root}.mmd_display_panes")
+        if self.maya_adapter.attribute_exists("mmd_display_panes", node=current_model_root):
+            display_panes = self.maya_adapter.get_attr(f"{current_model_root}.mmd_display_panes")
         else:
             display_panes = None
         if display_panes:
