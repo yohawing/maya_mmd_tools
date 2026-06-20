@@ -1,4 +1,3 @@
-from maya import cmds
 from mmd_tools.core import maya_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_DRAW_FLAGS,
@@ -12,6 +11,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
 from mmd_tools.core.pmx_data.material import PmxSphereMode
+from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
 
@@ -19,9 +19,10 @@ logger = get_logger(__name__)
 
 
 class MaterialPresenter:
-    def __init__(self, view, app_state):
+    def __init__(self, view, app_state, maya_adapter=None):
         self.view = view
         self.app_state = app_state
+        self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.current_material = None
         self.material_data = {}  # Store original material data for reset
         self.has_unsaved_changes = False
@@ -105,7 +106,7 @@ class MaterialPresenter:
         self.view.material_list.clear()
 
         current_model_root = self.app_state.current_model_root
-        if not current_model_root or not cmds.objExists(current_model_root):
+        if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             self.view._set_details_enabled(False)
             self.view._show_placeholder()
             return
@@ -117,17 +118,17 @@ class MaterialPresenter:
 
             # 方法3: mmd_material_name属性を持つマテリアルを検索
             if not mmd_materials:
-                shapes = cmds.listRelatives(current_model_root, allDescendents=True, type="mesh")
+                shapes = self.maya_adapter.list_relatives(current_model_root, allDescendents=True, type="mesh")
                 if shapes:
-                    shading_groups = cmds.listConnections(shapes, type="shadingEngine")
+                    shading_groups = self.maya_adapter.list_connections(shapes, type="shadingEngine")
                     if shading_groups:
                         shading_groups = list(set(shading_groups))
                         for sg in shading_groups:
-                            materials = cmds.ls(cmds.listConnections(sg), materials=True)
+                            materials = self.maya_adapter.ls(self.maya_adapter.list_connections(sg), materials=True)
                             if materials:
                                 for mat in materials:
                                     # MMD関連の属性があるかチェック
-                                    if cmds.attributeQuery(ATTR_MMD_MATERIAL_NAME, node=mat, exists=True):
+                                    if self.maya_adapter.attribute_exists(ATTR_MMD_MATERIAL_NAME, mat):
                                         mmd_materials.append(mat)
 
             # 重複を削除
@@ -210,12 +211,12 @@ class MaterialPresenter:
 
         # Mayaでマテリアルを選択
         try:
-            cmds.select(material_name, replace=True)
+            self.maya_adapter.select(material_name, replace=True)
             logger.debug(f"Selected material in Maya: {material_name}")
 
             # Hypershadeでマテリアルを表示（オプション）
-            if cmds.window("hyperShadePanel1Window", exists=True):
-                cmds.hyperShade(material_name, assign=material_name)
+            if self.maya_adapter.window("hyperShadePanel1Window", exists=True):
+                self.maya_adapter.hyper_shade(material_name, assign=material_name)
         except Exception as e:
             logger.warning(f"Could not select material in Maya: {e}")
 
@@ -240,23 +241,23 @@ class MaterialPresenter:
 
             # Get basic colors
             # Check shader type
-            shader_type = cmds.nodeType(material_name)
+            shader_type = self.maya_adapter.node_type(material_name)
 
             # Get diffuse color based on shader type
             if shader_type == "standardSurface":
                 diffuse_color = maya_utils.get_attribute(material_name, "baseColor")
             elif shader_type == "dx11Shader":
                 # dx11Shaderの場合、DiffuseColorRGBまたはg_Diffuseを試す
-                if cmds.attributeQuery("DiffuseColorRGB", node=material_name, exists=True):
+                if self.maya_adapter.attribute_exists("DiffuseColorRGB", material_name):
                     diffuse_color = maya_utils.get_attribute(material_name, "DiffuseColorRGB")
-                elif cmds.attributeQuery("g_Diffuse", node=material_name, exists=True):
+                elif self.maya_adapter.attribute_exists("g_Diffuse", material_name):
                     diffuse_color = maya_utils.get_attribute(material_name, "g_Diffuse")
                 else:
                     diffuse_color = (0.5, 0.5, 0.5)
                 # タプルが正しい形式であることを確認
                 if not isinstance(diffuse_color, (list, tuple)) or len(diffuse_color) < 3:
                     diffuse_color = (0.5, 0.5, 0.5)
-            elif cmds.attributeQuery("color", node=material_name, exists=True):
+            elif self.maya_adapter.attribute_exists("color", material_name):
                 diffuse_color = maya_utils.get_attribute(material_name, "color")
             else:
                 diffuse_color = (0.5, 0.5, 0.5)
@@ -264,9 +265,9 @@ class MaterialPresenter:
             self._update_color_widget(self.view.diffuse_color_widget, diffuse_color)
 
             # Get specular color
-            if shader_type == "dx11Shader" and cmds.attributeQuery("SpecularColor", node=material_name, exists=True):
+            if shader_type == "dx11Shader" and self.maya_adapter.attribute_exists("SpecularColor", material_name):
                 specular_color = maya_utils.get_attribute(material_name, "SpecularColor")
-            elif cmds.attributeQuery("specularColor", node=material_name, exists=True):
+            elif self.maya_adapter.attribute_exists("specularColor", material_name):
                 specular_color = maya_utils.get_attribute(material_name, "specularColor")
             else:
                 specular_color = (0.5, 0.5, 0.5)
@@ -279,9 +280,9 @@ class MaterialPresenter:
             self._update_color_widget(self.view.specular_color_widget, specular_color)
 
             # Get ambient - Maya doesn't have ambient by default, check if attr exists
-            if shader_type == "dx11Shader" and cmds.attributeQuery("AmbientColor", node=material_name, exists=True):
+            if shader_type == "dx11Shader" and self.maya_adapter.attribute_exists("AmbientColor", material_name):
                 ambient_color = maya_utils.get_attribute(material_name, "AmbientColor")
-            elif cmds.attributeQuery("ambientColor", node=material_name, exists=True):
+            elif self.maya_adapter.attribute_exists("ambientColor", material_name):
                 ambient_color = maya_utils.get_attribute(material_name, "ambientColor")
             else:
                 ambient_color = (0.5, 0.5, 0.5)
@@ -294,9 +295,9 @@ class MaterialPresenter:
             self._update_color_widget(self.view.ambient_color_widget, ambient_color)
 
             # Get specular coefficient (MMD style)
-            if cmds.attributeQuery("mmd_specular_coefficient", node=material_name, exists=True):
+            if self.maya_adapter.attribute_exists("mmd_specular_coefficient", material_name):
                 specular_coefficient = maya_utils.get_attribute(material_name, "mmd_specular_coefficient")
-            elif cmds.attributeQuery("specular", node=material_name, exists=True):
+            elif self.maya_adapter.attribute_exists("specular", material_name):
                 # StandardSurfaceの場合、specular値を係数に変換
                 specular_weight = maya_utils.get_attribute(material_name, "specular")
                 specular_coefficient = specular_weight
@@ -306,11 +307,11 @@ class MaterialPresenter:
             self.view.specular_coefficient_spin.setValue(specular_coefficient)
 
             # Get transparency (PMX style)
-            if cmds.attributeQuery("opacity", node=material_name, exists=True):
+            if self.maya_adapter.attribute_exists("opacity", material_name):
                 # StandardSurfaceの場合
                 opacity = maya_utils.get_attribute(material_name, "opacity")
                 transparency = 1.0 - opacity[0]  # Convert opacity to transparency
-            elif cmds.attributeQuery("transparency", node=material_name, exists=True):
+            elif self.maya_adapter.attribute_exists("transparency", material_name):
                 transparency_val = maya_utils.get_attribute(material_name, "transparency")
                 transparency = transparency_val[0]
             else:
@@ -325,14 +326,14 @@ class MaterialPresenter:
                 texture_attrs.append(f"{material_name}.baseColor")
             elif shader_type == "dx11Shader":
                 # dx11Shaderの場合、MainTextureアトリビュートをチェック
-                if cmds.attributeQuery("MainTexture", node=material_name, exists=True):
+                if self.maya_adapter.attribute_exists("MainTexture", material_name):
                     texture_attrs.append(f"{material_name}.MainTexture")
-                if cmds.attributeQuery("DiffuseTexture", node=material_name, exists=True):
+                if self.maya_adapter.attribute_exists("DiffuseTexture", material_name):
                     texture_attrs.append(f"{material_name}.DiffuseTexture")
-            if cmds.attributeQuery("color", node=material_name, exists=True):
+            if self.maya_adapter.attribute_exists("color", material_name):
                 texture_attrs.append(f"{material_name}.color")
             # Also check for direct outColor connections
-            if cmds.attributeQuery("outColor", node=material_name, exists=True):
+            if self.maya_adapter.attribute_exists("outColor", material_name):
                 texture_attrs.append(f"{material_name}.outColor")
 
             # Debug: Log available attributes
@@ -340,13 +341,13 @@ class MaterialPresenter:
             logger.debug(f"Checking texture attributes: {texture_attrs}")
 
             # Also check all connections to the material
-            all_connections = cmds.listConnections(material_name, source=True, destination=False, plugs=True) or []
+            all_connections = self.maya_adapter.list_connections(material_name, source=True, destination=False, plugs=True) or []
             logger.debug(f"All connections to {material_name}: {all_connections}")
 
             file_node = None
             # First try direct attribute connections
             for attr in texture_attrs:
-                connections = cmds.listConnections(attr, type="file", source=True, destination=False)
+                connections = self.maya_adapter.list_connections(attr, type="file", source=True, destination=False)
                 if connections:
                     file_node = connections
                     logger.debug(f"Found file node connected to {attr}: {connections[0]}")
@@ -354,11 +355,11 @@ class MaterialPresenter:
 
             # If not found, check for file nodes in the material's shading group
             if not file_node:
-                shading_groups = cmds.listConnections(material_name, type="shadingEngine")
+                shading_groups = self.maya_adapter.list_connections(material_name, type="shadingEngine")
                 if shading_groups:
                     logger.debug(f"Found shading groups: {shading_groups}")
                     for sg in shading_groups:
-                        file_nodes = cmds.ls(cmds.listConnections(sg), type="file") or []
+                        file_nodes = self.maya_adapter.ls(self.maya_adapter.list_connections(sg), type="file") or []
                         if file_nodes:
                             file_node = file_nodes
                             logger.debug(f"Found file nodes in shading group {sg}: {file_nodes}")
@@ -398,13 +399,13 @@ class MaterialPresenter:
         """Load MMD-specific attributes from material"""
         # Debug: List all attributes on the material
         try:
-            all_attrs = cmds.listAttr(material_name, userDefined=True) or []
+            all_attrs = self.maya_adapter.list_attr(material_name, userDefined=True) or []
             if all_attrs:
                 logger.debug(f"User-defined attributes on {material_name}: {all_attrs}")
 
             # dx11Shaderの場合、uniformParametersをチェック
-            if cmds.nodeType(material_name) == "dx11Shader":
-                uniform_params = cmds.listAttr(material_name + ".uniformParameters") or []
+            if self.maya_adapter.node_type(material_name) == "dx11Shader":
+                uniform_params = self.maya_adapter.list_attr(material_name + ".uniformParameters") or []
                 if uniform_params:
                     logger.debug(f"Uniform parameters on {material_name}: {uniform_params}")
         except Exception:
@@ -432,7 +433,7 @@ class MaterialPresenter:
         # Transparency mode (DX11 technique selection: opaque/cutout/blend)
         mode_index = 0
         try:
-            if cmds.nodeType(material_name) == "dx11Shader":
+            if self.maya_adapter.node_type(material_name) == "dx11Shader":
                 from mmd_tools.converters import mesh_converter
 
                 mode = mesh_converter.get_transparency_mode(material_name)
@@ -450,7 +451,7 @@ class MaterialPresenter:
         # authored MMD draw flag separately in edge_draw_check.
         outline_enabled = False
         try:
-            if cmds.nodeType(material_name) == "dx11Shader":
+            if self.maya_adapter.node_type(material_name) == "dx11Shader":
                 from mmd_tools.converters import mesh_converter
 
                 outline_enabled = mesh_converter.get_shader_outline_enabled(material_name)
@@ -496,7 +497,7 @@ class MaterialPresenter:
 
     def _get_attr_safe(self, node, attr, default):
         """Get attribute value safely, return default if not exists"""
-        if cmds.attributeQuery(attr, node=node, exists=True):
+        if self.maya_adapter.attribute_exists(attr, node):
             return maya_utils.get_attribute(node, attr)
         return default
 
@@ -570,7 +571,7 @@ class MaterialPresenter:
 
             start_dir = os.path.dirname(current_path)
         else:
-            start_dir = cmds.workspace(query=True, rootDirectory=True)
+            start_dir = self.maya_adapter.workspace(query=True, rootDirectory=True)
 
         # Open file dialog
         file_path, _ = QFileDialog.getOpenFileName(self.view, caption, start_dir, filter_str)
@@ -598,7 +599,7 @@ class MaterialPresenter:
 
             # Apply basic colors
             if "diffuse" in self.material_data:
-                shader_type = cmds.nodeType(self.current_material)
+                shader_type = self.maya_adapter.node_type(self.current_material)
                 if shader_type == "standardSurface":
                     maya_utils.set_attribute(
                         self.current_material,
@@ -606,7 +607,7 @@ class MaterialPresenter:
                         self.material_data["diffuse"],
                         "double3",
                     )
-                elif cmds.attributeQuery("color", node=self.current_material, exists=True):
+                elif self.maya_adapter.attribute_exists("color", self.current_material):
                     maya_utils.set_attribute(
                         self.current_material,
                         "color",
@@ -625,7 +626,7 @@ class MaterialPresenter:
             # Apply transparency
             transparency = self.view.transparency_spin.value()
             # StandardSurfaceの場合はopacityに変換
-            if cmds.nodeType(self.current_material) == "standardSurface":
+            if self.maya_adapter.node_type(self.current_material) == "standardSurface":
                 opacity = 1.0 - transparency
                 maya_utils.set_attribute(
                     self.current_material,
@@ -651,7 +652,7 @@ class MaterialPresenter:
             )
 
             # StandardSurfaceの場合はspecularに変換
-            if cmds.nodeType(self.current_material) == "standardSurface":
+            if self.maya_adapter.node_type(self.current_material) == "standardSurface":
                 specular_weight = min(1.0, specular_coefficient / 100.0)
                 maya_utils.set_attribute(self.current_material, "specular", specular_weight, "float")
 
@@ -665,7 +666,7 @@ class MaterialPresenter:
 
             # Apply transparency mode (DX11 technique) if applicable
             try:
-                if cmds.nodeType(self.current_material) == "dx11Shader":
+                if self.maya_adapter.node_type(self.current_material) == "dx11Shader":
                     from mmd_tools.converters import mesh_converter
 
                     modes = [
@@ -719,7 +720,7 @@ class MaterialPresenter:
 
     def _apply_texture(self, material, texture_path):
         """Apply texture to material"""
-        shader_type = cmds.nodeType(material)
+        shader_type = self.maya_adapter.node_type(material)
 
         # Determine which attribute to connect to
         if shader_type == "standardSurface":
@@ -728,14 +729,14 @@ class MaterialPresenter:
             color_attr = f"{material}.color"
 
         # Check if file node already connected
-        file_nodes = cmds.listConnections(color_attr, type="file")
+        file_nodes = self.maya_adapter.list_connections(color_attr, type="file")
 
         if file_nodes:
             file_node = file_nodes[0]
         else:
             # Create new file node
-            file_node = cmds.shadingNode("file", asTexture=True, name=f"{material}_texture")
-            cmds.connectAttr(f"{file_node}.outColor", color_attr, force=True)
+            file_node = self.maya_adapter.shading_node("file", asTexture=True, name=f"{material}_texture")
+            self.maya_adapter.connect_attr(f"{file_node}.outColor", color_attr, force=True)
 
         maya_utils.set_attribute(file_node, "fileTextureName", texture_path, "str")
 
@@ -830,7 +831,7 @@ class MaterialPresenter:
         # 存在しないアトリビュートのみデフォルト値で作成
         attrs_to_create = {}
         for attr_name, default_value in defaults.items():
-            if not cmds.attributeQuery(attr_name, node=material, exists=True):
+            if not self.maya_adapter.attribute_exists(attr_name, material):
                 attrs_to_create[attr_name] = default_value
 
         # 一括で作成・設定
@@ -863,7 +864,7 @@ class MaterialPresenter:
 
         applied = 0
         for material in targets:
-            if not material or not cmds.objExists(material) or cmds.nodeType(material) != "dx11Shader":
+            if not material or not self.maya_adapter.object_exists(material) or self.maya_adapter.node_type(material) != "dx11Shader":
                 continue
             try:
                 mesh_converter.apply_transparency_mode(material, mode)
@@ -913,38 +914,38 @@ class MaterialPresenter:
 
             # スフィアマップ用のファイルノードを作成または取得
             sphere_file_node = None
-            file_nodes = cmds.ls(type="file")
+            file_nodes = self.maya_adapter.ls(type="file")
             for node in file_nodes:
                 if maya_utils.get_attribute(node, "fileTextureName") == sphere_path:
                     sphere_file_node = node
                     break
 
             if not sphere_file_node:
-                sphere_file_node = cmds.shadingNode("file", asTexture=True, name=f"{material}_sphere")
+                sphere_file_node = self.maya_adapter.shading_node("file", asTexture=True, name=f"{material}_sphere")
                 maya_utils.set_attribute(sphere_file_node, "fileTextureName", sphere_path, "str")
 
             # Mayaでスフィアマップを近似的に再現
             # モード: 1=乗算, 2=加算, 3=サブテクスチャ
             if sphere_mode == PmxSphereMode.MULTIPLY:  # 乗算
                 # layeredTextureを使用して乗算合成
-                layered_texture = cmds.shadingNode("layeredTexture", asTexture=True, name=f"{material}_layered")
+                layered_texture = self.maya_adapter.shading_node("layeredTexture", asTexture=True, name=f"{material}_layered")
 
                 # ベーステクスチャを接続
-                base_file = cmds.listConnections(f"{material}.baseColor", type="file")
+                base_file = self.maya_adapter.list_connections(f"{material}.baseColor", type="file")
                 if base_file:
-                    cmds.connectAttr(f"{base_file[0]}.outColor", f"{layered_texture}.inputs[0].color")
+                    self.maya_adapter.connect_attr(f"{base_file[0]}.outColor", f"{layered_texture}.inputs[0].color")
                     maya_utils.set_attribute(layered_texture, "inputs[0].blendMode", 0, "int")  # None
 
                 # スフィアマップを接続
-                cmds.connectAttr(f"{sphere_file_node}.outColor", f"{layered_texture}.inputs[1].color")
+                self.maya_adapter.connect_attr(f"{sphere_file_node}.outColor", f"{layered_texture}.inputs[1].color")
                 maya_utils.set_attribute(layered_texture, "inputs[1].blendMode", 6, "int")  # Multiply
 
                 # マテリアルに接続
-                cmds.connectAttr(f"{layered_texture}.outColor", f"{material}.baseColor", force=True)
+                self.maya_adapter.connect_attr(f"{layered_texture}.outColor", f"{material}.baseColor", force=True)
 
             elif sphere_mode == PmxSphereMode.ADDITIVE:  # 加算
                 # エミッションにスフィアマップを接続して加算効果を近似
-                cmds.connectAttr(
+                self.maya_adapter.connect_attr(
                     f"{sphere_file_node}.outColor",
                     f"{material}.emissionColor",
                     force=True,
@@ -953,7 +954,7 @@ class MaterialPresenter:
 
             elif sphere_mode == PmxSphereMode.SUB_TEXTURE:  # サブテクスチャ
                 # スペキュラーマップとして使用
-                cmds.connectAttr(
+                self.maya_adapter.connect_attr(
                     f"{sphere_file_node}.outColor",
                     f"{material}.specularColor",
                     force=True,
@@ -1011,12 +1012,12 @@ class MaterialPresenter:
         materials_to_select = []
         for item in selected_items:
             mat_name = item.data(Qt.UserRole)
-            if mat_name and cmds.objExists(mat_name):
+            if mat_name and self.maya_adapter.object_exists(mat_name):
                 materials_to_select.append(mat_name)
 
         if materials_to_select:
             try:
-                cmds.select(materials_to_select, replace=True)
+                self.maya_adapter.select(materials_to_select, replace=True)
                 logger.debug(f"Selected materials in Maya: {materials_to_select}")
             except Exception as e:
                 logger.warning(f"Could not select materials in Maya: {e}")

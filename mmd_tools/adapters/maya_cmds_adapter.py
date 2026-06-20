@@ -43,6 +43,14 @@ class MayaCmdsAdapter:
         """Pass through to maya.cmds.listConnections."""
         return self._cmds.listConnections(node, **kwargs)
 
+    def node_type(self, *args, **kwargs):
+        """Pass through to maya.cmds.nodeType."""
+        return self._cmds.nodeType(*args, **kwargs)
+
+    def list_attr(self, *args, **kwargs):
+        """Pass through to maya.cmds.listAttr."""
+        return self._cmds.listAttr(*args, **kwargs)
+
     def list_history(self, shapes):
         """Pass through to maya.cmds.listHistory."""
         return self._cmds.listHistory(shapes)
@@ -50,6 +58,26 @@ class MayaCmdsAdapter:
     def blend_shape(self, node, **kwargs):
         """Pass through to maya.cmds.blendShape."""
         return self._cmds.blendShape(node, **kwargs)
+
+    def shading_node(self, *args, **kwargs):
+        """Pass through to maya.cmds.shadingNode."""
+        return self._cmds.shadingNode(*args, **kwargs)
+
+    def connect_attr(self, *args, **kwargs):
+        """Pass through to maya.cmds.connectAttr."""
+        return self._cmds.connectAttr(*args, **kwargs)
+
+    def hyper_shade(self, *args, **kwargs):
+        """Pass through to maya.cmds.hyperShade."""
+        return self._cmds.hyperShade(*args, **kwargs)
+
+    def window(self, *args, **kwargs):
+        """Pass through to maya.cmds.window."""
+        return self._cmds.window(*args, **kwargs)
+
+    def workspace(self, *args, **kwargs):
+        """Pass through to maya.cmds.workspace."""
+        return self._cmds.workspace(*args, **kwargs)
 
     def select(self, nodes, replace=True):
         """Pass through to maya.cmds.select."""

@@ -75,15 +75,25 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_app_state.emit_status = Mock()
 
         # プレゼンターを作成
-        self.presenter = MaterialPresenter(self.mock_view, self.mock_app_state)
+        self.mock_maya_adapter = Mock()
+        self.mock_maya_adapter.object_exists.return_value = False
+        self.mock_maya_adapter.attribute_exists.return_value = False
+        self.mock_maya_adapter.node_type.return_value = ""
+        self.mock_maya_adapter.list_connections.return_value = None
+        self.mock_maya_adapter.list_attr.return_value = []
+        self.mock_maya_adapter.window.return_value = False
+        self.presenter = MaterialPresenter(
+            self.mock_view,
+            self.mock_app_state,
+            maya_adapter=self.mock_maya_adapter,
+        )
 
     def tearDown(self):
         """テスト後のクリーンアップ"""
         pass
 
-    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_load_materials_with_no_model(self, mock_maya_utils, mock_cmds):
+    def test_load_materials_with_no_model(self, mock_maya_utils):
         """モデルが選択されていない場合のマテリアル読み込みテスト"""
         self.presenter.load_materials()
 
@@ -94,26 +104,25 @@ class TestMaterialPresenter(unittest.TestCase):
         # プレースホルダーが表示されることを確認
         self.mock_view._show_placeholder.assert_called_once()
 
-    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_load_materials_with_model(self, mock_maya_utils, mock_cmds):
+    def test_load_materials_with_model(self, mock_maya_utils):
         """モデルが選択されている場合のマテリアル読み込みテスト"""
         # モデルが存在する設定
         self.mock_app_state.current_model_root = "test_model"
-        mock_cmds.objExists.return_value = True
-        mock_cmds.listRelatives.return_value = ["mesh1", "mesh2"]
+        self.mock_maya_adapter.object_exists.return_value = True
+        self.mock_maya_adapter.list_relatives.return_value = ["meshShape"]
 
         # より詳細なlistConnectionsの設定
         def mock_list_connections(nodes, **kwargs):
             if kwargs.get("type") == "shadingEngine":
-                return ["shadingEngine1"]
-            elif nodes == "shadingEngine1":
-                return ["material1"]
+                return ["SG"]
+            elif nodes == "SG":
+                return ["mat1"]
             return None
 
-        mock_cmds.listConnections.side_effect = mock_list_connections
-        mock_cmds.ls.return_value = ["material1"]
-        mock_cmds.attributeQuery.return_value = True
+        self.mock_maya_adapter.list_connections.side_effect = mock_list_connections
+        self.mock_maya_adapter.ls.return_value = ["mat1"]
+        self.mock_maya_adapter.attribute_exists.return_value = True
         mock_maya_utils.get_attribute.side_effect = lambda node, attr: {
             "mmd_material_name": "Material 1",
             "mmd_material_name_en": "Material 1 EN",
@@ -125,33 +134,39 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.material_list.clear.assert_called_once()
         # マテリアルがリストに追加されることを確認
         self.mock_view.material_list.addItem.assert_called()
+        self.mock_maya_adapter.list_relatives.assert_called_with(
+            "test_model",
+            allDescendents=True,
+            type="mesh",
+        )
+        self.mock_maya_adapter.list_connections.assert_any_call(["meshShape"], type="shadingEngine")
+        self.mock_maya_adapter.ls.assert_called_with(["mat1"], materials=True)
+        self.mock_maya_adapter.attribute_exists.assert_called_with(ATTR_MMD_MATERIAL_NAME, "mat1")
 
-    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_on_material_selected(self, mock_maya_utils, mock_cmds):
+    def test_on_material_selected(self, mock_maya_utils):
         """マテリアル選択時の処理テスト"""
         # モックアイテムを作成
         mock_item = Mock()
         mock_item.text.return_value = "1:Material 1（material1）"
         mock_item.data.return_value = "material1"
 
-        mock_cmds.objExists.return_value = True
-        mock_cmds.select.return_value = None
+        self.mock_maya_adapter.object_exists.return_value = True
+        self.mock_maya_adapter.select.return_value = None
 
         self.presenter.on_material_selected(mock_item, None)
 
         # マテリアルが選択されることを確認
-        mock_cmds.select.assert_called_with("material1", replace=True)
+        self.mock_maya_adapter.select.assert_called_with("material1", replace=True)
         # 詳細が有効化されることを確認
         self.mock_view._set_details_enabled.assert_called_with(True)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_load_material_properties_dx11shader(self, mock_maya_utils, mock_cmds):
+    def test_load_material_properties_dx11shader(self, mock_maya_utils):
         """dx11Shaderのプロパティ読み込みテスト"""
         material_name = "test_material"
-        mock_cmds.nodeType.return_value = "dx11Shader"
-        mock_cmds.attributeQuery.side_effect = lambda attr, **kwargs: (
+        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, node: (
             attr
             in [
                 "DiffuseColorRGB",
@@ -180,7 +195,7 @@ class TestMaterialPresenter(unittest.TestCase):
         }.get(attr, None)
 
         # テクスチャ接続の設定
-        mock_cmds.listConnections.return_value = ["file1"]
+        self.mock_maya_adapter.list_connections.return_value = ["file1"]
 
         self.presenter.load_material_properties(material_name)
 
@@ -211,9 +226,8 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter._update_color_widget(widget, (1.0, 0.5))
         widget.setStyleSheet.assert_called_with("background-color: rgb(128, 128, 128); border: 1px solid black;")
 
-    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_changes(self, mock_maya_utils, mock_cmds):
+    def test_apply_changes(self, mock_maya_utils):
         """変更適用のテスト"""
         self.presenter.current_material = "test_material"
         self.presenter.material_data = {
@@ -245,8 +259,8 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.line_draw_check.isChecked.return_value = False
 
         # シェーダータイプを設定
-        mock_cmds.nodeType.return_value = "standardSurface"
-        mock_cmds.attributeQuery.return_value = True
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self.mock_maya_adapter.attribute_exists.return_value = True
 
         self.presenter.apply_changes()
 
@@ -258,8 +272,7 @@ class TestMaterialPresenter(unittest.TestCase):
 
     @patch("mmd_tools.converters.mesh_converter.apply_shader_outline")
     @patch("mmd_tools.converters.mesh_converter.apply_transparency_mode")
-    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
-    def test_apply_transparency_mode_to_selected_applies_outline(self, mock_cmds, mock_apply_mode, mock_apply_outline):
+    def test_apply_transparency_mode_to_selected_applies_outline(self, mock_apply_mode, mock_apply_outline):
         """選択マテリアルへの透過モード適用時にアウトライン設定も反映される"""
         item = Mock()
         item.data.return_value = "dx11_mat"
@@ -267,17 +280,16 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.transparency_mode_combo.currentIndex.return_value = 2
         self.mock_view.shader_outline_check.isChecked.return_value = True
         self.mock_view.edge_size_spin.value.return_value = 1.25
-        mock_cmds.objExists.return_value = True
-        mock_cmds.nodeType.return_value = "dx11Shader"
+        self.mock_maya_adapter.object_exists.return_value = True
+        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
 
         self.presenter.apply_transparency_mode_to_selected()
 
         mock_apply_mode.assert_called_once()
         mock_apply_outline.assert_called_once_with("dx11_mat", True, 1.25)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.cmds")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_mmd_attributes_preserves_raw_edge_size_when_spin_unchanged(self, mock_maya_utils, mock_cmds):
+    def test_apply_mmd_attributes_preserves_raw_edge_size_when_spin_unchanged(self, mock_maya_utils):
         """UI上限を超える元のエッジサイズは未変更なら保持する"""
         self.presenter.current_material = "test_material"
         self.presenter.material_data = {"edge_size": 2.5, "edge_size_view": 2.0}
@@ -297,7 +309,7 @@ class TestMaterialPresenter(unittest.TestCase):
             self.mock_view.line_draw_check,
         ]:
             checkbox.isChecked.return_value = False
-        mock_cmds.attributeQuery.return_value = True
+        self.mock_maya_adapter.attribute_exists.return_value = True
 
         self.presenter._apply_mmd_attributes()
 

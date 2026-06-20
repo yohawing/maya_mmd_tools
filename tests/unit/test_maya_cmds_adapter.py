@@ -92,6 +92,23 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.listConnections.assert_called_once_with("pCubeShape1", type="shadingEngine")
         self.assertIs(result, expected)
 
+    def test_node_type_delegates_args_and_kwargs(self):
+        self.cmds.nodeType.return_value = "standardSurface"
+
+        result = self.adapter.node_type("mat1", inherited=True)
+
+        self.cmds.nodeType.assert_called_once_with("mat1", inherited=True)
+        self.assertEqual(result, "standardSurface")
+
+    def test_list_attr_delegates_args_and_kwargs(self):
+        expected = ["mmd_material_name"]
+        self.cmds.listAttr.return_value = expected
+
+        result = self.adapter.list_attr("mat1", userDefined=True)
+
+        self.cmds.listAttr.assert_called_once_with("mat1", userDefined=True)
+        self.assertIs(result, expected)
+
     def test_list_history_delegates_shapes(self):
         expected = ["polyCube1"]
         self.cmds.listHistory.return_value = expected
@@ -109,6 +126,48 @@ class TestMayaCmdsAdapter(unittest.TestCase):
 
         self.cmds.blendShape.assert_called_once_with("faceBlendShape", query=True, target=True)
         self.assertIs(result, expected)
+
+    def test_shading_node_delegates_args_and_kwargs(self):
+        self.cmds.shadingNode.return_value = "mat1_texture"
+
+        result = self.adapter.shading_node("file", asTexture=True, name="mat1_texture")
+
+        self.cmds.shadingNode.assert_called_once_with("file", asTexture=True, name="mat1_texture")
+        self.assertEqual(result, "mat1_texture")
+
+    def test_connect_attr_delegates_args_and_kwargs(self):
+        expected = None
+        self.cmds.connectAttr.return_value = expected
+
+        result = self.adapter.connect_attr("file1.outColor", "mat1.color", force=True)
+
+        self.cmds.connectAttr.assert_called_once_with("file1.outColor", "mat1.color", force=True)
+        self.assertIs(result, expected)
+
+    def test_hyper_shade_delegates_args_and_kwargs(self):
+        expected = None
+        self.cmds.hyperShade.return_value = expected
+
+        result = self.adapter.hyper_shade("mat1", assign="mat1")
+
+        self.cmds.hyperShade.assert_called_once_with("mat1", assign="mat1")
+        self.assertIs(result, expected)
+
+    def test_window_delegates_args_and_kwargs(self):
+        self.cmds.window.return_value = True
+
+        result = self.adapter.window("hyperShadePanel1Window", exists=True)
+
+        self.cmds.window.assert_called_once_with("hyperShadePanel1Window", exists=True)
+        self.assertIs(result, True)
+
+    def test_workspace_delegates_args_and_kwargs(self):
+        self.cmds.workspace.return_value = "F:/Project/"
+
+        result = self.adapter.workspace(query=True, rootDirectory=True)
+
+        self.cmds.workspace.assert_called_once_with(query=True, rootDirectory=True)
+        self.assertEqual(result, "F:/Project/")
 
     def test_select_delegates_replace_true(self):
         expected = None
