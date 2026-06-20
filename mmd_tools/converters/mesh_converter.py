@@ -1359,6 +1359,7 @@ class MeshConverter:
                                 all_textures,
                                 is_pmd,
                                 material_index,
+                                original_texture_path,
                             )
                             return shader
                         except (RuntimeError, Exception) as e:
@@ -1378,6 +1379,7 @@ class MeshConverter:
                                 all_textures,
                                 is_pmd,
                                 material_index,
+                                original_texture_path,
                             )
                             return shader
                         except (RuntimeError, Exception) as e:
@@ -1524,11 +1526,26 @@ class MeshConverter:
         self._apply_custom_attributes(shader, material, all_textures, is_pmd, material_index, texture_path)
 
         # テクスチャの設定
-        intended_texture_path = original_texture_path or texture_path
-        if intended_texture_path:
+        raw_texture_path = original_texture_path or texture_path
+        if raw_texture_path:
             # テクスチャパスを解決
-            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or intended_texture_path)
+            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or raw_texture_path)
             if full_texture_path:
+                file_texture_path = full_texture_path
+                unresolved = is_unreadable_file_texture_path(full_texture_path)
+                cache_path = None
+                if unresolved and settings.get("import.model.auto_resolve_textures", True):
+                    resolution = resolve_texture_to_cache(
+                        original_path=raw_texture_path,
+                        file_texture_path=full_texture_path,
+                        model_path=self.model_filepath,
+                        workspace_root=cmds.workspace(q=True, rootDirectory=True),
+                    )
+                    if resolution.status == "resolved" and resolution.cache_path:
+                        file_texture_path = resolution.cache_path
+                        cache_path = resolution.cache_path
+                        unresolved = False
+
                 file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
                 place_uv_node = cmds.shadingNode(
                     "place2dTexture",
@@ -1539,20 +1556,27 @@ class MeshConverter:
                 cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
                 cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
 
-                maya_utils.set_attribute(file_node, "fileTextureName", full_texture_path, "string")
-                unresolved = is_unreadable_file_texture_path(full_texture_path)
+                maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
                 maya_utils.mark_mmd_texture_file_node(
                     file_node,
-                    intended_texture_path,
+                    raw_texture_path,
                     self.model_filepath,
                     unresolved=unresolved,
                 )
+                if cache_path:
+                    maya_utils.set_custom_attributes(
+                        file_node,
+                        {
+                            ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
+                            ATTR_MMD_TEXTURE_UNRESOLVED: False,
+                        },
+                    )
                 if unresolved:
                     issue = self._record_unresolved_texture_issue(
                         file_node=file_node,
                         shader=shader,
                         material=material,
-                        original_path=intended_texture_path,
+                        original_path=raw_texture_path,
                         current_path=full_texture_path,
                     )
                     if issue.get("reason") == "missing_file":
@@ -1563,7 +1587,16 @@ class MeshConverter:
                             f"{full_texture_path}"
                         )
 
-    def _setup_glsl_shader(self, shader, material, texture_path, all_textures, is_pmd, material_index=None):
+    def _setup_glsl_shader(
+        self,
+        shader,
+        material,
+        texture_path,
+        all_textures,
+        is_pmd,
+        material_index=None,
+        original_texture_path=None,
+    ):
         """GLSLShader を設定する。"""
         shader_ogsfx_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
@@ -1626,6 +1659,8 @@ class MeshConverter:
         has_texture_attr,
         node_suffix,
         warning_label,
+        source_kind="pmx_texture",
+        shared_toon_id="",
     ):
         """Connect a readable or resolved secondary texture to a dx11Shader."""
         if not (
@@ -1654,11 +1689,15 @@ class MeshConverter:
 
         file_node = cmds.shadingNode("file", asTexture=True, name=shader + node_suffix)
         maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
+        mark_kwargs = {"unresolved": unresolved}
+        if source_kind != "pmx_texture" or shared_toon_id:
+            mark_kwargs["source_kind"] = source_kind
+            mark_kwargs["shared_toon_id"] = shared_toon_id
         maya_utils.mark_mmd_texture_file_node(
             file_node,
             original_path,
             self.model_filepath,
-            unresolved=unresolved,
+            **mark_kwargs,
         )
         if cache_path:
             maya_utils.set_custom_attributes(
@@ -1685,7 +1724,16 @@ class MeshConverter:
         if not bind_dx11_texture_file_node(shader, file_node, texture_attr, has_texture_attr):
             cmds.warning(f"Failed to connect {warning_label.lower()} texture to dx11Shader")
 
-    def _setup_dx11_shader(self, shader, material, texture_path, all_textures, is_pmd, material_index=None):
+    def _setup_dx11_shader(
+        self,
+        shader,
+        material,
+        texture_path,
+        all_textures,
+        is_pmd,
+        material_index=None,
+        original_texture_path=None,
+    ):
         """dx11Shaderを設定"""
 
         # シェーダーファイルのパスを設定
@@ -1758,8 +1806,9 @@ class MeshConverter:
                 maya_utils.set_attribute(shader, texture_flag, 0, "long")
 
         # テクスチャ設定
-        if texture_path:
-            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path)
+        raw_texture_path = original_texture_path or texture_path
+        if raw_texture_path:
+            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or raw_texture_path)
 
             # ファイルが存在するかチェック
             if (
@@ -1772,7 +1821,7 @@ class MeshConverter:
                 cache_path = None
                 if unresolved and settings.get("import.model.auto_resolve_textures", True):
                     resolution = resolve_texture_to_cache(
-                        original_path=texture_path,
+                        original_path=raw_texture_path,
                         file_texture_path=full_texture_path,
                         model_path=self.model_filepath,
                         workspace_root=cmds.workspace(q=True, rootDirectory=True),
@@ -1788,7 +1837,7 @@ class MeshConverter:
                 maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
                 maya_utils.mark_mmd_texture_file_node(
                     file_node,
-                    texture_path,
+                    raw_texture_path,
                     self.model_filepath,
                     unresolved=unresolved,
                 )
@@ -1805,7 +1854,7 @@ class MeshConverter:
                         file_node=file_node,
                         shader=shader,
                         material=material,
-                        original_path=texture_path,
+                        original_path=raw_texture_path,
                         current_path=full_texture_path,
                     )
                     cmds.warning(
@@ -1848,7 +1897,9 @@ class MeshConverter:
         if not is_pmd:
             full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
             if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
-                toon_original_path = full_toon_path
+                toon_original_path = ""
+                toon_source_kind = "shared_toon"
+                toon_shared_id = ""
                 if (
                     hasattr(material, "shared_toon_flag")
                     and hasattr(material, "toon_texture_index")
@@ -1857,6 +1908,9 @@ class MeshConverter:
                     and 0 <= int(material.toon_texture_index) < len(all_textures)
                 ):
                     toon_original_path = all_textures[int(material.toon_texture_index)]
+                    toon_source_kind = "pmx_texture"
+                elif hasattr(material, "toon_texture_index"):
+                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
                 self._connect_dx11_secondary_texture(
                     shader,
                     material,
@@ -1866,6 +1920,8 @@ class MeshConverter:
                     "HasToonTexture",
                     "_toon_texture",
                     "Toon",
+                    source_kind=toon_source_kind,
+                    shared_toon_id=toon_shared_id,
                 )
             elif full_toon_path:
                 cmds.warning(f"Toon texture file not found: {full_toon_path}")

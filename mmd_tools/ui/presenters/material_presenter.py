@@ -5,9 +5,11 @@ from mmd_tools.core.constants import (
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SPHERE_PATH,
+    ATTR_MMD_TEXTURE_CACHE_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
 from mmd_tools.core.pmx_data.material import PmxSphereMode
@@ -369,6 +371,7 @@ class MaterialPresenter:
                 texture_path = maya_utils.get_attribute(file_node[0], "fileTextureName")
                 self.material_data["texture"] = texture_path
                 self.view.texture_path_edit.setText(texture_path)
+                self._load_texture_provenance(file_node[0])
                 logger.info(f"Loaded texture: {texture_path}")
             else:
                 # Check if there's a stored texture path in MMD attributes
@@ -376,10 +379,12 @@ class MaterialPresenter:
                 if mmd_texture_path:
                     self.material_data["texture"] = mmd_texture_path
                     self.view.texture_path_edit.setText(mmd_texture_path)
+                    self._set_texture_provenance_fields("", "")
                     logger.info(f"Loaded texture from MMD attribute: {mmd_texture_path}")
                 else:
                     self.material_data["texture"] = ""
                     self.view.texture_path_edit.clear()
+                    self._set_texture_provenance_fields("", "")
                     logger.info(f"No texture found for material: {material_name}")
 
             # Get MMD-specific attributes if they exist
@@ -394,6 +399,33 @@ class MaterialPresenter:
             self._loading_properties = False
             # プロパティの読み込み完了後、変更フラグを確実にリセット
             self.has_unsaved_changes = False
+
+    def _set_texture_provenance_fields(self, original_path, resolved_path):
+        """Update read-only texture provenance fields when the view provides them."""
+
+        if hasattr(self.view, "original_pmx_path_edit"):
+            self.view.original_pmx_path_edit.setText(original_path or "")
+        if hasattr(self.view, "resolved_cache_path_edit"):
+            self.view.resolved_cache_path_edit.setText(resolved_path or "")
+
+    def _load_texture_provenance(self, file_node):
+        original_path = ""
+        resolved_path = ""
+        try:
+            if self.maya_adapter.attribute_exists(ATTR_MMD_ORIGINAL_TEXTURE_PATH, file_node):
+                original_path = maya_utils.get_mmd_original_texture_path(file_node)
+        except Exception:
+            logger.debug("Failed to read original PMX texture path from %s", file_node, exc_info=True)
+        try:
+            if self.maya_adapter.attribute_exists(ATTR_MMD_TEXTURE_CACHE_PATH, file_node):
+                resolved_path = maya_utils.get_attribute(file_node, ATTR_MMD_TEXTURE_CACHE_PATH) or ""
+            if not resolved_path:
+                resolved_path = maya_utils.get_attribute(file_node, "fileTextureName") or ""
+        except Exception:
+            logger.debug("Failed to read resolved texture path from %s", file_node, exc_info=True)
+        self.material_data["original_pmx_texture_path"] = original_path
+        self.material_data["resolved_cache_path"] = resolved_path
+        self._set_texture_provenance_fields(original_path, resolved_path)
 
     def _load_mmd_attributes(self, material_name):
         """Load MMD-specific attributes from material"""

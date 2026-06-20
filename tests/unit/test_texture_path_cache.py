@@ -1,3 +1,4 @@
+import hashlib
 import os
 import tempfile
 import unittest
@@ -29,6 +30,8 @@ class TestTexturePathCache(unittest.TestCase):
 
         self.assertTrue(encoded.isascii())
         self.assertEqual(cache.decode_original_texture_path(encoded), original)
+        self.assertEqual(cache.decode_original_texture_path(original), original)
+        self.assertEqual(cache.decode_original_texture_path("plain text"), "plain text")
 
     def test_unreadable_detection_missing_and_question_mark(self):
         self.assertTrue(cache.is_unreadable_file_texture_path(str(self.root / "missing.png")))
@@ -175,24 +178,37 @@ class TestTexturePathCache(unittest.TestCase):
         self.assertIsNone(source)
         self.assertEqual(reason, "symlink_rejected")
 
-    def test_cache_name_ascii_reuse_and_collision_suffix(self):
-        first = cache.copy_texture_to_cache(self.texture, self.workspace, self.model)
-        reused = cache.copy_texture_to_cache(self.texture, self.workspace, self.model)
+    def test_cache_name_is_deterministic_from_original_path_and_overwrites(self):
+        original = "textures/../纹理.png"
+        expected_key = "纹理.png"
+        expected_name = hashlib.sha256(expected_key.encode("utf-8")).hexdigest()[:16] + ".png"
+
+        first = cache.copy_texture_to_cache(self.texture, self.workspace, self.model, original_path=original)
+        self.texture.write_bytes(b"updated texture bytes")
+        reused = cache.copy_texture_to_cache(self.texture, self.workspace, self.model, original_path=original)
+
         self.assertEqual(first, reused)
         self.assertTrue(first.name.isascii())
-        self.assertEqual(first.suffix, ".png")
+        self.assertEqual(first.name, expected_name)
+        self.assertEqual(first.read_bytes(), b"updated texture bytes")
 
-        colliding_source = self.root / "collision.PNG"
-        colliding_source.write_bytes(b"different")
-        target_hash = cache.hashlib.sha256(colliding_source.read_bytes()).hexdigest()[:16]
-        cache_dir = self.workspace / "sourceimages" / "mmd_tools_texture_cache" / cache.compute_model_hash(self.model)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        (cache_dir / f"{target_hash}.png").write_bytes(b"preexisting mismatch")
+    def test_cache_key_relative_and_absolute_under_model_parent_match(self):
+        relative = self.texture.name
+        absolute = str(self.texture)
 
-        collided = cache.copy_texture_to_cache(colliding_source, self.workspace, self.model)
+        rel_path = cache.cache_path_for_original_texture(relative, self.workspace, self.model, source_path=self.texture)
+        abs_path = cache.cache_path_for_original_texture(absolute, self.workspace, self.model, source_path=self.texture)
 
-        self.assertEqual(collided.name, f"{target_hash}_001.png")
-        self.assertEqual((cache_dir / f"{target_hash}.png").read_bytes(), b"preexisting mismatch")
+        self.assertEqual(rel_path, abs_path)
+        self.assertEqual(rel_path.suffix, ".png")
+
+    def test_cache_name_uses_lowercase_suffix(self):
+        source = self.root / "Upper.PNG"
+        source.write_bytes(b"upper")
+
+        copied = cache.copy_texture_to_cache(source, self.workspace, self.model, original_path=source.name)
+
+        self.assertEqual(copied.suffix, ".png")
 
     def test_model_hash_same_content_and_unreadable_fallback(self):
         same = self.root / "same.pmd"
@@ -213,6 +229,8 @@ class TestTexturePathCache(unittest.TestCase):
         self.assertEqual(result.status, "resolved")
         self.assertTrue(result.cached)
         self.assertTrue(Path(result.file_texture_path).exists())
+        expected_name = hashlib.sha256(self.texture.name.encode("utf-8")).hexdigest()[:16] + ".png"
+        self.assertEqual(Path(result.file_texture_path).name, expected_name)
 
     def test_resolve_texture_to_cache_accepts_absolute_original_under_model_parent(self):
         result = cache.resolve_texture_to_cache(

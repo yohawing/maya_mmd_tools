@@ -21,7 +21,6 @@ from .logger import get_logger
 from .texture_path_cache import (
     classify_texture_resolution,
     decode_original_texture_path,
-    encode_original_texture_path,
     is_unreadable_file_texture_path,
     resolve_texture_to_cache,
 )
@@ -127,24 +126,36 @@ def sanitize_texture_path(texture_path, texture_dir):
     return full_texture_path
 
 
-def mark_mmd_texture_file_node(file_node, original_path, model_path, unresolved=False):
+ATTR_MMD_TEXTURE_SOURCE_KIND = "mmd_texture_source_kind"
+ATTR_MMD_SHARED_TOON_ID = "mmd_shared_toon_id"
+
+
+def mark_mmd_texture_file_node(
+    file_node,
+    original_path,
+    model_path,
+    unresolved=False,
+    source_kind="pmx_texture",
+    shared_toon_id="",
+):
     """Store MMD texture provenance on a Maya file node."""
 
-    set_custom_attributes(
-        file_node,
-        {
-            ATTR_MMD_ORIGINAL_TEXTURE_PATH: encode_original_texture_path(original_path),
-            ATTR_MMD_SOURCE_MODEL_PATH: model_path or "",
-            ATTR_MMD_TEXTURE_UNRESOLVED: bool(unresolved),
-        },
-    )
+    attrs = {
+        ATTR_MMD_ORIGINAL_TEXTURE_PATH: "" if original_path is None else os.fspath(original_path),
+        ATTR_MMD_SOURCE_MODEL_PATH: model_path or "",
+        ATTR_MMD_TEXTURE_UNRESOLVED: bool(unresolved),
+        ATTR_MMD_TEXTURE_SOURCE_KIND: source_kind or "pmx_texture",
+    }
+    if shared_toon_id:
+        attrs[ATTR_MMD_SHARED_TOON_ID] = shared_toon_id
+    set_custom_attributes(file_node, attrs)
 
 
 def get_mmd_original_texture_path(file_node):
-    """Return the decoded original texture path stored on a Maya file node."""
+    """Return the original PMX texture path stored on a Maya file node."""
 
-    encoded = get_attribute(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)
-    return decode_original_texture_path(encoded)
+    value = get_attribute(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)
+    return decode_original_texture_path(value)
 
 
 def is_mmd_file_node_unreadable(file_node):
@@ -179,6 +190,8 @@ def find_material_texture_file_node(material):
 def classify_mmd_texture_file_node(file_node):
     """Classify a Maya MMD file node for on-demand texture resolution."""
 
+    if get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
+        return None
     original_path = get_mmd_original_texture_path(file_node)
     model_path = get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
     file_texture_path = get_attribute(file_node, "fileTextureName") or ""
@@ -194,6 +207,8 @@ def classify_mmd_texture_file_node(file_node):
 def resolve_mmd_texture_file_node(file_node, workspace_root=None):
     """Resolve one MMD file node into the workspace texture cache."""
 
+    if get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
+        return None
     if workspace_root is None:
         workspace_root = cmds.workspace(q=True, rootDirectory=True)
     original_path = get_mmd_original_texture_path(file_node)

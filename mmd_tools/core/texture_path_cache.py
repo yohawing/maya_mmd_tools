@@ -51,14 +51,26 @@ def encode_original_texture_path(path) -> str:
 
 
 def decode_original_texture_path(encoded) -> str:
-    """Decode an ASCII-safe original texture path."""
+    """Decode a legacy ASCII-safe original texture path when it is path-like."""
 
     if not encoded:
         return ""
+    text = os.fspath(encoded)
     try:
-        return base64.urlsafe_b64decode(encoded.encode("ascii")).decode("utf-8")
+        decoded = base64.b64decode(text.encode("ascii"), altchars=b"-_", validate=True).decode("utf-8")
     except Exception:
-        return ""
+        return text
+    if _looks_like_texture_path(decoded):
+        return decoded
+    return text
+
+
+def _looks_like_texture_path(path) -> bool:
+    text = "" if path is None else os.fspath(path)
+    if not text or "\x00" in text:
+        return False
+    suffix = Path(text.replace("\\", "/")).suffix.lower()
+    return "/" in text or "\\" in text or suffix in ALLOWED_TEXTURE_EXTENSIONS
 
 
 def is_ansi_incompatible_path(path, encoding=None) -> bool:
@@ -201,7 +213,12 @@ def resolve_texture_to_cache(
         return classified
 
     try:
-        cache_path = copy_texture_to_cache(classified.source_path, workspace_root, model_path)
+        cache_path = copy_texture_to_cache(
+            classified.source_path,
+            workspace_root,
+            model_path,
+            original_path=classified.original_path,
+        )
     except OSError:
         return TextureResolution(
             original_path=classified.original_path,
@@ -238,26 +255,60 @@ def find_resolvable_source(original_path, model_path) -> Tuple[Optional[Path], s
     return _validate_source(candidate, model_parent)
 
 
-def copy_texture_to_cache(source_path, workspace_root, model_path) -> Path:
-    """Copy source into the MMD texture cache without overwriting mismatches."""
+def normalize_original_texture_key(original_path, model_path) -> str:
+    """Return the logical model-parent-relative texture key used for cache naming."""
+
+    original_text = "" if original_path is None else os.fspath(original_path)
+    if not original_text:
+        return ""
+
+    model_parent = Path(model_path).resolve(strict=False).parent
+    original = Path(original_text)
+    if original.is_absolute():
+        try:
+            rel = original.resolve(strict=False).relative_to(model_parent)
+        except ValueError:
+            return original_text.replace("\\", "/")
+        return rel.as_posix()
+
+    normalized = Path(original_text.replace("\\", "/"))
+    parts = []
+    for part in normalized.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(part)
+    return "/".join(parts)
+
+
+def texture_cache_dir(workspace_root, model_path) -> Path:
+    """Return the workspace cache directory for one PMX/PMD model."""
+
+    return Path(workspace_root) / "sourceimages" / "mmd_tools_texture_cache" / compute_model_hash(model_path)
+
+
+def cache_path_for_original_texture(original_path, workspace_root, model_path, source_path=None) -> Path:
+    """Return the deterministic cache path for an original PMX texture path."""
+
+    key = normalize_original_texture_key(original_path, model_path)
+    suffix_source = Path(source_path) if source_path else Path(key)
+    suffix = suffix_source.suffix.lower()
+    stem = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+    return texture_cache_dir(workspace_root, model_path) / f"{stem}{suffix}"
+
+
+def copy_texture_to_cache(source_path, workspace_root, model_path, original_path=None) -> Path:
+    """Copy source into the deterministic MMD texture cache, overwriting in place."""
 
     source = Path(source_path)
-    content = source.read_bytes()
-    stem = hashlib.sha256(content).hexdigest()[:16]
-    suffix = source.suffix.lower()
-    cache_dir = Path(workspace_root) / "sourceimages" / "mmd_tools_texture_cache" / compute_model_hash(model_path)
+    cache_dir = texture_cache_dir(workspace_root, model_path)
     cache_dir.mkdir(parents=True, exist_ok=True)
-
-    index = 0
-    while True:
-        filename = f"{stem}{suffix}" if index == 0 else f"{stem}_{index:03d}{suffix}"
-        target = cache_dir / filename
-        if not target.exists():
-            shutil.copy2(source, target)
-            return target
-        if target.read_bytes() == content:
-            return target
-        index += 1
+    target = cache_path_for_original_texture(original_path or source.name, workspace_root, model_path, source_path=source)
+    shutil.copy2(source, target)
+    return target
 
 
 def _validate_source(candidate: Path, model_parent: Path) -> Tuple[Optional[Path], str]:
