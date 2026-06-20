@@ -66,6 +66,22 @@ TRANSPARENCY_MODE_CUTOUT = "cutout"
 TRANSPARENCY_MODE_BLEND = "blend"
 TRANSPARENCY_MODES = (TRANSPARENCY_MODE_OPAQUE, TRANSPARENCY_MODE_CUTOUT, TRANSPARENCY_MODE_BLEND)
 _PMX_DOUBLE_SIDED_DRAW_FLAG = int(getattr(PmxDrawFlag, "DOUBLE_SIDED", 0x01))
+_ATTR_MMD_DOUBLE_SIDED = "mmdDoubleSided"
+_DX11_TECHNIQUE_BY_RENDERING = {
+    (TRANSPARENCY_MODE_OPAQUE, True, False): "MMDTechnique",
+    (TRANSPARENCY_MODE_CUTOUT, True, False): "MMDTechniqueTransparent",
+    (TRANSPARENCY_MODE_BLEND, True, False): "MMDTechniqueTranslucent",
+    (TRANSPARENCY_MODE_OPAQUE, False, False): "MMDTechniqueNoEdge",
+    (TRANSPARENCY_MODE_CUTOUT, False, False): "MMDTechniqueNoEdgeTransparent",
+    (TRANSPARENCY_MODE_BLEND, False, False): "MMDTechniqueNoEdgeTranslucent",
+    (TRANSPARENCY_MODE_OPAQUE, True, True): "MMDTechniqueDoubleSided",
+    (TRANSPARENCY_MODE_CUTOUT, True, True): "MMDTechniqueTransparentDoubleSided",
+    (TRANSPARENCY_MODE_BLEND, True, True): "MMDTechniqueTranslucentDoubleSided",
+    (TRANSPARENCY_MODE_OPAQUE, False, True): "MMDTechniqueNoEdgeDoubleSided",
+    (TRANSPARENCY_MODE_CUTOUT, False, True): "MMDTechniqueNoEdgeTransparentDoubleSided",
+    (TRANSPARENCY_MODE_BLEND, False, True): "MMDTechniqueNoEdgeTranslucentDoubleSided",
+}
+_DX11_RENDERING_BY_TECHNIQUE = {name: key for key, name in _DX11_TECHNIQUE_BY_RENDERING.items()}
 
 
 def _material_is_double_sided(material) -> bool:
@@ -106,13 +122,64 @@ def _classify_material_transparency(material, texture_path=None) -> str:
     return TRANSPARENCY_MODE_OPAQUE
 
 
-def _technique_for_transparency(mode: str, edge_enabled: bool) -> str:
-    """Map a transparency mode + edge flag to a dx11Shader technique name."""
-    if mode == TRANSPARENCY_MODE_BLEND:
-        return "MMDTechniqueTranslucent" if edge_enabled else "MMDTechniqueNoEdgeTranslucent"
-    if mode == TRANSPARENCY_MODE_CUTOUT:
-        return "MMDTechniqueTransparent" if edge_enabled else "MMDTechniqueNoEdgeTransparent"
-    return "MMDTechnique" if edge_enabled else "MMDTechniqueNoEdge"
+def _technique_for_transparency(mode: str, edge_enabled: bool, double_sided: bool = False) -> str:
+    """Map dx11Shader rendering state to a technique name."""
+    mode = mode if mode in TRANSPARENCY_MODES else TRANSPARENCY_MODE_OPAQUE
+    return _DX11_TECHNIQUE_BY_RENDERING[(mode, bool(edge_enabled), bool(double_sided))]
+
+
+def _dx11_rendering_from_technique(technique: str) -> Tuple[str, bool, bool]:
+    """Return transparency mode, edge flag, and double-sided flag from a technique name."""
+    rendering = _DX11_RENDERING_BY_TECHNIQUE.get(technique)
+    if rendering:
+        return rendering
+    if "Translucent" in technique:
+        mode = TRANSPARENCY_MODE_BLEND
+    elif "Transparent" in technique:
+        mode = TRANSPARENCY_MODE_CUTOUT
+    else:
+        mode = TRANSPARENCY_MODE_OPAQUE
+    edge_enabled = "NoEdge" not in technique
+    double_sided = technique.endswith("DoubleSided")
+    return mode, edge_enabled, double_sided
+
+
+def _shader_technique(shader: str) -> str:
+    """Return a dx11Shader technique string if the attribute is present."""
+    if cmds.attributeQuery("technique", node=shader, exists=True):
+        return cmds.getAttr(f"{shader}.technique") or ""
+    return ""
+
+
+def _draw_flags_double_sided_from_node(node: str) -> Optional[bool]:
+    """Read MMD draw flags from a node if present and parseable."""
+    if not cmds.attributeQuery(ATTR_MMD_DRAW_FLAGS, node=node, exists=True):
+        return None
+    try:
+        draw_flags = cmds.getAttr(f"{node}.{ATTR_MMD_DRAW_FLAGS}")
+        return bool(int(draw_flags) & _PMX_DOUBLE_SIDED_DRAW_FLAG)
+    except (TypeError, ValueError):
+        return None
+
+
+def _store_shader_double_sided_attr(shader: str, enabled: bool) -> None:
+    """Persist dx11Shader double-sided state for UI re-application."""
+    if not cmds.attributeQuery(_ATTR_MMD_DOUBLE_SIDED, node=shader, exists=True):
+        maya_utils.set_custom_attributes(shader, {_ATTR_MMD_DOUBLE_SIDED: bool(enabled)})
+    else:
+        maya_utils.set_attribute(shader, _ATTR_MMD_DOUBLE_SIDED, bool(enabled), "bool")
+
+
+def _shader_is_double_sided(shader: str, technique: Optional[str] = None) -> bool:
+    """Return a dx11Shader's double-sided state, preferring authored draw flags."""
+    draw_flags_state = _draw_flags_double_sided_from_node(shader)
+    if draw_flags_state is not None:
+        return draw_flags_state
+    if cmds.attributeQuery(_ATTR_MMD_DOUBLE_SIDED, node=shader, exists=True):
+        return bool(cmds.getAttr(f"{shader}.{_ATTR_MMD_DOUBLE_SIDED}"))
+    technique = technique if technique is not None else _shader_technique(shader)
+    _, _, double_sided = _dx11_rendering_from_technique(technique)
+    return double_sided
 
 
 def _material_uses_transparency(material, texture_path=None) -> bool:
@@ -134,14 +201,8 @@ def get_transparency_mode(shader: str) -> str:
         if value in TRANSPARENCY_MODES:
             return value
     # Fall back to inferring from the currently assigned technique.
-    technique = ""
-    if cmds.attributeQuery("technique", node=shader, exists=True):
-        technique = cmds.getAttr(f"{shader}.technique") or ""
-    if "Translucent" in technique:
-        return TRANSPARENCY_MODE_BLEND
-    if "Transparent" in technique:
-        return TRANSPARENCY_MODE_CUTOUT
-    return TRANSPARENCY_MODE_OPAQUE
+    mode, _, _ = _dx11_rendering_from_technique(_shader_technique(shader))
+    return mode
 
 
 def apply_transparency_mode(shader: str, mode: str) -> str:
@@ -151,29 +212,30 @@ def apply_transparency_mode(shader: str, mode: str) -> str:
     """
     if mode not in TRANSPARENCY_MODES:
         raise ValueError(f"Unknown transparency mode: {mode!r}")
-    technique = ""
-    if cmds.attributeQuery("technique", node=shader, exists=True):
-        technique = cmds.getAttr(f"{shader}.technique") or ""
-    edge_enabled = "NoEdge" not in technique
-    new_technique = _technique_for_transparency(mode, edge_enabled)
+    technique = _shader_technique(shader)
+    _, edge_enabled, _ = _dx11_rendering_from_technique(technique)
+    double_sided = _shader_is_double_sided(shader, technique)
+    new_technique = _technique_for_transparency(mode, edge_enabled, double_sided)
     cmds.setAttr(f"{shader}.technique", new_technique, type="string")
     _store_transparency_mode_attr(shader, mode)
+    _store_shader_double_sided_attr(shader, double_sided)
     return new_technique
 
 
 def get_shader_outline_enabled(shader: str) -> bool:
     """Return whether the dx11Shader technique currently renders outlines."""
-    technique = ""
-    if cmds.attributeQuery("technique", node=shader, exists=True):
-        technique = cmds.getAttr(f"{shader}.technique") or ""
-    return bool(technique) and "NoEdge" not in technique
+    technique = _shader_technique(shader)
+    _, edge_enabled, _ = _dx11_rendering_from_technique(technique)
+    return bool(technique) and edge_enabled
 
 
 def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] = None) -> str:
     """Enable/disable the dx11Shader outline pass while preserving transparency mode."""
     mode = get_transparency_mode(shader)
-    new_technique = _technique_for_transparency(mode, enabled)
+    double_sided = _shader_is_double_sided(shader)
+    new_technique = _technique_for_transparency(mode, enabled, double_sided)
     cmds.setAttr(f"{shader}.technique", new_technique, type="string")
+    _store_shader_double_sided_attr(shader, double_sided)
     if edge_size is not None and cmds.attributeQuery("EdgeSize", node=shader, exists=True):
         cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))) if enabled else 0.0)
     if not cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
@@ -1397,6 +1459,7 @@ class MeshConverter:
             custom_attrs[ATTR_MMD_EDGE_COLOR] = material.edge_color[:3]
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
             custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
+            custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
 
@@ -1641,9 +1704,11 @@ class MeshConverter:
         mode = self._transparency_modes.get(material_index)
         if mode is None:
             mode = _classify_material_transparency(material, texture_path)
-        technique = _technique_for_transparency(mode, False)
+        double_sided = _material_is_double_sided(material)
+        technique = _technique_for_transparency(mode, False, double_sided)
         cmds.setAttr(f"{shader}.technique", technique, type="string")
         _store_transparency_mode_attr(shader, mode)
+        _store_shader_double_sided_attr(shader, double_sided)
 
         # 基本色設定（Diffuse）
         _set_dx11_color_uniform(shader, "DiffuseColor", material.diffuse)

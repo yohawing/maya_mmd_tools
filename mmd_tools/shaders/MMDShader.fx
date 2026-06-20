@@ -578,6 +578,30 @@ technique11 MMDTechnique<
         SetVertexShader(CompileShader(vs_5_0, MainVS()));
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullBack);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDTechniqueDoubleSided<
+    int isTransparent = 0;
+>
+{
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
         SetRasterizerState(CullNone);
         SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepth, 0);
@@ -585,6 +609,30 @@ technique11 MMDTechnique<
 }
 
 technique11 MMDTechniqueTransparent<
+    int isTransparent = 1;
+>
+{
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullBack);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDTechniqueTransparentDoubleSided<
     int isTransparent = 1;
 >
 {
@@ -626,6 +674,30 @@ technique11 MMDTechniqueTranslucent<
         SetVertexShader(CompileShader(vs_5_0, MainVS()));
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullBack);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
+}
+
+technique11 MMDTechniqueTranslucentDoubleSided<
+    int isTransparent = 1;
+>
+{
+    pass EdgePass
+    {
+        SetVertexShader(CompileShader(vs_5_0, EdgeVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, EdgePS()));
+        SetRasterizerState(CullFront);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
         SetRasterizerState(CullNone);
         SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepthNoWrite, 0);
@@ -634,6 +706,21 @@ technique11 MMDTechniqueTranslucent<
 
 // Technique without edge for performance
 technique11 MMDTechniqueNoEdge<
+    int isTransparent = 0;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullBack);
+        SetBlendState(NoBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDTechniqueNoEdgeDoubleSided<
     int isTransparent = 0;
 >
 {
@@ -657,6 +744,21 @@ technique11 MMDTechniqueNoEdgeTransparent<
         SetVertexShader(CompileShader(vs_5_0, MainVS()));
         SetGeometryShader(NULL);
         SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullBack);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepth, 0);
+    }
+}
+
+technique11 MMDTechniqueNoEdgeTransparentDoubleSided<
+    int isTransparent = 1;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
         SetRasterizerState(CullNone);
         SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
         SetDepthStencilState(EnableDepth, 0);
@@ -665,6 +767,21 @@ technique11 MMDTechniqueNoEdgeTransparent<
 
 // Translucent without edge (alpha-blended, depth-test but no depth-write).
 technique11 MMDTechniqueNoEdgeTranslucent<
+    int isTransparent = 1;
+>
+{
+    pass MainPass
+    {
+        SetVertexShader(CompileShader(vs_5_0, MainVS()));
+        SetGeometryShader(NULL);
+        SetPixelShader(CompileShader(ps_5_0, MainPS()));
+        SetRasterizerState(CullBack);
+        SetBlendState(AlphaBlend, float4(0.0, 0.0, 0.0, 0.0), 0xFFFFFFFF);
+        SetDepthStencilState(EnableDepthNoWrite, 0);
+    }
+}
+
+technique11 MMDTechniqueNoEdgeTranslucentDoubleSided<
     int isTransparent = 1;
 >
 {
