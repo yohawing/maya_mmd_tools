@@ -92,6 +92,41 @@ class TestMaterialPresenter(unittest.TestCase):
         """テスト後のクリーンアップ"""
         pass
 
+    def _configure_apply_inputs(self):
+        self.presenter.current_material = "test_material"
+        self.presenter.material_data = {
+            "diffuse": (1.0, 0.5, 0.0),
+            "specular": (0.8, 0.8, 0.8),
+            "edge_color": (0.1, 0.2, 0.3),
+            "edge_size_view": 1.5,
+        }
+        self.mock_view.material_jp_name_edit.text.return_value = "新しい名前"
+        self.mock_view.material_en_name_edit.text.return_value = "New Name"
+        self.mock_view.transparency_spin.value.return_value = 0.25
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.75
+        self.mock_view.texture_path_edit.text.return_value = ""
+        self.mock_view.sphere_map_path_edit.text.return_value = ""
+        self.mock_view.sphere_mode_combo.currentIndex.return_value = 0
+        self.mock_view.toon_texture_combo.currentIndex.return_value = 0
+        self.mock_view.edge_size_spin.value.return_value = 1.5
+        self.mock_view.shader_outline_check.isChecked.return_value = False
+        self.mock_view.transparency_mode_combo.currentIndex.return_value = 0
+        for checkbox in [
+            self.mock_view.both_face_check,
+            self.mock_view.ground_shadow_check,
+            self.mock_view.self_shadow_map_check,
+            self.mock_view.self_shadow_check,
+            self.mock_view.edge_draw_check,
+            self.mock_view.vertex_color_check,
+            self.mock_view.point_draw_check,
+            self.mock_view.line_draw_check,
+        ]:
+            checkbox.isChecked.return_value = False
+
+    def _set_existing_mmd_attribute_query(self, missing_attrs=()):
+        missing = set(missing_attrs)
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, node: attr not in missing
+
     @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
     def test_load_materials_with_no_model(self, mock_maya_utils):
         """モデルが選択されていない場合のマテリアル読み込みテスト"""
@@ -268,6 +303,81 @@ class TestMaterialPresenter(unittest.TestCase):
         mock_maya_utils.set_custom_attributes.assert_called()
 
         # 変更フラグがリセットされることを確認
+        self.assertFalse(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.converters.mesh_converter.apply_shader_outline")
+    @patch("mmd_tools.converters.mesh_converter.apply_transparency_mode")
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
+    def test_apply_changes_skips_dx11_missing_specular_and_transparency(
+        self,
+        mock_maya_utils,
+        mock_apply_mode,
+        mock_apply_outline,
+    ):
+        """dx11Shaderに無い標準shader属性は設定せず、MMD edge colorはdouble3で保存する"""
+        self._configure_apply_inputs()
+        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
+        self._set_existing_mmd_attribute_query(missing_attrs=("color", "specularColor", "transparency"))
+
+        self.presenter.apply_changes()
+
+        set_attr_names = [call[0][1] for call in mock_maya_utils.set_attribute.call_args_list]
+        self.assertNotIn("specularColor", set_attr_names)
+        self.assertNotIn("transparency", set_attr_names)
+        mock_maya_utils.set_attribute.assert_any_call(
+            "test_material",
+            "mmd_edge_color",
+            [0.1, 0.2, 0.3],
+            "double3",
+        )
+        mock_apply_mode.assert_called_once()
+        mock_apply_outline.assert_called_once_with("test_material", False, 1.5)
+        self.assertFalse(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
+    def test_apply_changes_routes_standard_surface_opacity_and_specular(self, mock_maya_utils):
+        """standardSurfaceは透過をopacityへ変換し、存在するspecularColorだけ設定する"""
+        self._configure_apply_inputs()
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self._set_existing_mmd_attribute_query()
+
+        self.presenter.apply_changes()
+
+        mock_maya_utils.set_attribute.assert_any_call(
+            "test_material",
+            "opacity",
+            [0.75, 0.75, 0.75],
+            "double3",
+        )
+        mock_maya_utils.set_attribute.assert_any_call(
+            "test_material",
+            "specularColor",
+            (0.8, 0.8, 0.8),
+            "double3",
+        )
+        self.assertFalse(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
+    def test_apply_changes_routes_transparency_when_attribute_exists(self, mock_maya_utils):
+        """transparency属性を持つ非standardSurface shaderでは従来通りtransparencyを設定する"""
+        self._configure_apply_inputs()
+        self.mock_maya_adapter.node_type.return_value = "blinn"
+        self._set_existing_mmd_attribute_query()
+
+        self.presenter.apply_changes()
+
+        mock_maya_utils.set_attribute.assert_any_call(
+            "test_material",
+            "transparency",
+            [0.25, 0.25, 0.25],
+            "double3",
+        )
+        mock_maya_utils.set_attribute.assert_any_call(
+            "test_material",
+            "specularColor",
+            (0.8, 0.8, 0.8),
+            "double3",
+        )
         self.assertFalse(self.presenter.has_unsaved_changes)
 
     @patch("mmd_tools.converters.mesh_converter.apply_shader_outline")

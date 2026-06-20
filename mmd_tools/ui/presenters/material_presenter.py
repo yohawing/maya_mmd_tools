@@ -615,7 +615,9 @@ class MaterialPresenter:
                         "double3",
                     )
 
-            if "specular" in self.material_data:
+            if "specular" in self.material_data and self.maya_adapter.attribute_exists(
+                "specularColor", self.current_material
+            ):
                 maya_utils.set_attribute(
                     self.current_material,
                     "specularColor",
@@ -634,7 +636,7 @@ class MaterialPresenter:
                     [opacity, opacity, opacity],
                     "double3",
                 )
-            else:
+            elif self.maya_adapter.attribute_exists("transparency", self.current_material):
                 # その他のシェーダーの場合
                 maya_utils.set_attribute(
                     self.current_material,
@@ -792,8 +794,8 @@ class MaterialPresenter:
             maya_utils.set_attribute(
                 self.current_material,
                 "mmd_edge_color",
-                [edge_color[0], edge_color[1], edge_color[2], 1.0],
-                "double4",
+                [edge_color[0], edge_color[1], edge_color[2]],
+                "double3",
             )
 
         edge_size_value = self.view.edge_size_spin.value()
@@ -821,7 +823,7 @@ class MaterialPresenter:
             "mmd_sphere_mode": 0,
             "mmd_toon_index": 0,
             "mmd_draw_flags": 0x1F,
-            "mmd_edge_color": [0.0, 0.0, 0.0, 1.0],
+            "mmd_edge_color": [0.0, 0.0, 0.0],
             "mmd_edge_size": 1.0,
             ATTR_MMD_SHADER_OUTLINE_ENABLED: False,
             "mmd_specular_coefficient": 5.0,
