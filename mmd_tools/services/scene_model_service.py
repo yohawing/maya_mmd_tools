@@ -4,6 +4,7 @@ ApplicationStateやPresenterがMayaコマンドへ直接依存しすぎないよ
 モデル列挙・選択解決・概要情報収集を集約します。
 """
 
+from ..adapters import MayaCmdsAdapter
 from ..core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN, SCENE_ROOT_SUFFIX
 from ..core.logger import get_logger
 
@@ -13,28 +14,29 @@ logger = get_logger(__name__)
 class SceneModelService:
     """MayaシーンからMMDモデルに関する状態を読み取るサービス。"""
 
-    def __init__(self, cmds_module=None):
-        if cmds_module is None:
-            from maya import cmds as maya_cmds
-
-            cmds_module = maya_cmds
-        self._cmds = cmds_module
+    def __init__(self, cmds_module=None, cmds_adapter=None):
+        if cmds_adapter is not None:
+            self._cmds_adapter = cmds_adapter
+        else:
+            self._cmds_adapter = MayaCmdsAdapter(cmds_module=cmds_module)
 
     def object_exists(self, node):
         """ノードが存在するかを返す。"""
         if not node:
             return False
-        return bool(self._cmds.objExists(node))
+        return bool(self._cmds_adapter.object_exists(node))
 
     def list_mmd_models(self):
         """シーン内のMMDモデル root を名前順で返す。"""
-        namespaced = self._cmds.ls("*:*{}".format(SCENE_ROOT_SUFFIX), type="transform") or []
-        plain = self._cmds.ls("*{}".format(SCENE_ROOT_SUFFIX), type="transform") or []
+        namespaced = self._cmds_adapter.ls("*:*{}".format(SCENE_ROOT_SUFFIX), type="transform") or []
+        plain = self._cmds_adapter.ls("*{}".format(SCENE_ROOT_SUFFIX), type="transform") or []
 
         mmd_models = []
         for transform in set(namespaced + plain):
-            if self._cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=transform, exists=True) or self._cmds.attributeQuery(
-                ATTR_MMD_MODEL_NAME_EN, node=transform, exists=True
+            if self._cmds_adapter.attribute_exists(
+                ATTR_MMD_MODEL_NAME, node=transform
+            ) or self._cmds_adapter.attribute_exists(
+                ATTR_MMD_MODEL_NAME_EN, node=transform
             ):
                 mmd_models.append(transform)
 
@@ -46,12 +48,12 @@ class SceneModelService:
             current = node
             while current:
                 if current.endswith(SCENE_ROOT_SUFFIX) and (
-                    self._cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=current, exists=True)
-                    or self._cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=current, exists=True)
+                    self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_NAME, node=current)
+                    or self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_NAME_EN, node=current)
                 ):
                     return current
 
-                parents = self._cmds.listRelatives(current, parent=True, fullPath=True) or []
+                parents = self._cmds_adapter.list_relatives(current, parent=True, fullPath=True) or []
                 if not parents:
                     break
                 current = parents[0]
@@ -63,13 +65,13 @@ class SceneModelService:
     def get_model_display_name(self, model_root):
         """MMDモデルの表示名を返す。"""
         try:
-            if self._cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=model_root, exists=True):
-                name_jp = self._cmds.getAttr(f"{model_root}.{ATTR_MMD_MODEL_NAME}")
+            if self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_NAME, node=model_root):
+                name_jp = self._cmds_adapter.get_attr(f"{model_root}.{ATTR_MMD_MODEL_NAME}")
                 if name_jp:
                     return name_jp
 
-            if self._cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=model_root, exists=True):
-                name_en = self._cmds.getAttr(f"{model_root}.{ATTR_MMD_MODEL_NAME_EN}")
+            if self._cmds_adapter.attribute_exists(ATTR_MMD_MODEL_NAME_EN, node=model_root):
+                name_en = self._cmds_adapter.get_attr(f"{model_root}.{ATTR_MMD_MODEL_NAME_EN}")
                 if name_en:
                     return name_en
         except Exception:
@@ -80,8 +82,8 @@ class SceneModelService:
     def get_selected_nodes(self, node_type=None):
         """Mayaの現在選択を返す。"""
         if node_type:
-            return self._cmds.ls(selection=True, type=node_type) or []
-        return self._cmds.ls(selection=True) or []
+            return self._cmds_adapter.ls(selection=True, type=node_type) or []
+        return self._cmds_adapter.ls(selection=True) or []
 
     def resolve_model_from_selection(self, available_models):
         """現在選択から、available_models に含まれるMMDモデル root を推測する。"""
@@ -126,27 +128,31 @@ class SceneModelService:
                 "morph_count": 0,
             }
 
-            shapes = self._cmds.listRelatives(model_root, allDescendents=True, type="mesh") or []
+            shapes = self._cmds_adapter.list_relatives(model_root, allDescendents=True, type="mesh") or []
             for shape in shapes:
-                vertex_count = self._cmds.polyEvaluate(shape, vertex=True)
+                vertex_count = self._cmds_adapter.poly_evaluate(shape, vertex=True)
                 if vertex_count:
                     info["vertex_count"] += vertex_count
 
             if shapes:
-                shading_groups = self._cmds.listConnections(shapes, type="shadingEngine") or []
+                shading_groups = self._cmds_adapter.list_connections(shapes, type="shadingEngine") or []
                 materials = []
                 for sg in set(shading_groups):
-                    mats = self._cmds.ls(self._cmds.listConnections(sg), materials=True) or []
+                    mats = self._cmds_adapter.ls(
+                        self._cmds_adapter.list_connections(sg), materials=True
+                    ) or []
                     materials.extend(mats)
                 info["material_count"] = len(set(materials))
 
-            joints = self._cmds.listRelatives(model_root, allDescendents=True, type="joint") or []
+            joints = self._cmds_adapter.list_relatives(model_root, allDescendents=True, type="joint") or []
             info["bone_count"] = len(joints)
 
             if shapes:
-                blend_shapes = self._cmds.ls(self._cmds.listHistory(shapes), type="blendShape") or []
+                blend_shapes = self._cmds_adapter.ls(
+                    self._cmds_adapter.list_history(shapes), type="blendShape"
+                ) or []
                 for blend_shape in blend_shapes:
-                    targets = self._cmds.blendShape(blend_shape, query=True, target=True) or []
+                    targets = self._cmds_adapter.blend_shape(blend_shape, query=True, target=True) or []
                     info["morph_count"] += len(targets)
 
             return info
@@ -157,8 +163,8 @@ class SceneModelService:
     def get_attr_safe(self, node, attr, default=None):
         """属性値を安全に取得する。"""
         try:
-            if self._cmds.attributeQuery(attr, node=node, exists=True):
-                value = self._cmds.getAttr(f"{node}.{attr}")
+            if self._cmds_adapter.attribute_exists(attr, node=node):
+                value = self._cmds_adapter.get_attr(f"{node}.{attr}")
                 return value if value is not None else default
         except Exception:
             pass
@@ -166,4 +172,4 @@ class SceneModelService:
 
     def select_nodes(self, nodes, replace=True):
         """ノードを選択する。"""
-        self._cmds.select(nodes, replace=replace)
+        self._cmds_adapter.select(nodes, replace=replace)

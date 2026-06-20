@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
+from ..adapters import MayaCmdsAdapter
 from ..io.mmd_importer import import_mmd_file
 
 
@@ -31,8 +32,10 @@ class ImportModelAction:
         self,
         importer: Optional[Callable[..., Any]] = None,
         new_scene: Optional[Callable[[], None]] = None,
+        maya_adapter: Optional[MayaCmdsAdapter] = None,
     ):
         self._importer = importer
+        self._maya_adapter = maya_adapter
         self._new_scene = new_scene or self._create_new_scene
 
     def execute(self, request: ImportModelRequest) -> ImportModelResult:
@@ -46,8 +49,6 @@ class ImportModelAction:
             return ImportModelResult(error=exc)
         return ImportModelResult(root_node=root_node, succeeded=bool(root_node))
 
-    @staticmethod
-    def _create_new_scene() -> None:
-        from maya import cmds
-
-        cmds.file(new=True, force=True)
+    def _create_new_scene(self) -> None:
+        adapter = self._maya_adapter or MayaCmdsAdapter()
+        adapter.new_scene(force=True)

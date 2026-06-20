@@ -12,6 +12,14 @@ from mmd_tools.actions.import_model_action import (  # noqa: E402
 )
 
 
+class _FakeMayaAdapter:
+    def __init__(self, calls):
+        self.calls = calls
+
+    def new_scene(self, force=True):
+        self.calls.append(("adapter_new_scene", force))
+
+
 class TestImportModelAction(unittest.TestCase):
     """PMX/PMD model import action の依存境界を検証する。"""
 
@@ -47,6 +55,39 @@ class TestImportModelAction(unittest.TestCase):
 
         self.assertTrue(result.succeeded)
         self.assertEqual(calls, ["new_scene", "importer"])
+
+    def test_execute_uses_adapter_new_scene_before_import_when_requested(self):
+        calls = []
+
+        def importer(_file_path, options=None):
+            calls.append(("importer", options))
+            return "root"
+
+        action = ImportModelAction(importer=importer, maya_adapter=_FakeMayaAdapter(calls))
+        result = action.execute(ImportModelRequest("model.pmx", {}, create_new_scene=True))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(calls, [("adapter_new_scene", True), ("importer", {})])
+
+    def test_execute_prefers_explicit_new_scene_callable_over_adapter(self):
+        calls = []
+
+        def new_scene():
+            calls.append("callable_new_scene")
+
+        def importer(_file_path, options=None):
+            calls.append("importer")
+            return "root"
+
+        action = ImportModelAction(
+            importer=importer,
+            new_scene=new_scene,
+            maya_adapter=_FakeMayaAdapter(calls),
+        )
+        result = action.execute(ImportModelRequest("model.pmx", {}, create_new_scene=True))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(calls, ["callable_new_scene", "importer"])
 
     def test_execute_does_not_call_new_scene_when_not_requested(self):
         calls = []

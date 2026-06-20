@@ -1,5 +1,6 @@
 import unittest
 
+from mmd_tools.adapters import MayaCmdsAdapter
 from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN
 from mmd_tools.services.scene_model_service import SceneModelService
 
@@ -81,6 +82,57 @@ class _FakeCmds:
 
 
 class TestSceneModelService(unittest.TestCase):
+    def test_cmds_module_legacy_injection_still_works(self):
+        cmds = _FakeCmds()
+        cmds.existing = {"model_root"}
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertTrue(service.object_exists("model_root"))
+        self.assertFalse(service.object_exists("missing_root"))
+
+    def test_cmds_adapter_injection_supports_service_methods(self):
+        cmds = _FakeCmds()
+        cmds.existing = {"ns:model_root"}
+        cmds.transforms = ["ns:model_root"]
+        cmds.attrs = {
+            "ns:model_root": {ATTR_MMD_MODEL_NAME: "表示名", ATTR_MMD_MODEL_NAME_EN: "Name"}
+        }
+        cmds.meshes = {"ns:model_root": ["meshShape"]}
+        cmds.vertices = {"meshShape": 3}
+        cmds.connections = {"meshShape": ["sg"], "sg": ["mat"]}
+        cmds.materials_for_connections = {"mat": ["mat"]}
+        cmds.joints = {"ns:model_root": ["joint"]}
+        cmds.history = {"meshShape": ["blendShape"]}
+        cmds.blend_targets = {"blendShape": ["smile"]}
+        cmds.selection = ["ns:model_root"]
+        adapter = MayaCmdsAdapter(cmds_module=cmds)
+        service = SceneModelService(cmds_adapter=adapter)
+
+        self.assertTrue(service.object_exists("ns:model_root"))
+        self.assertEqual(service.list_mmd_models(), ["ns:model_root"])
+        info = service.get_model_info("ns:model_root")
+        self.assertEqual(info["display_name"], "表示名")
+        self.assertEqual(info["vertex_count"], 3)
+        self.assertEqual(info["material_count"], 1)
+        self.assertEqual(info["bone_count"], 1)
+        self.assertEqual(info["morph_count"], 1)
+
+        service.select_nodes(["ns:model_root"], replace=False)
+        self.assertEqual(cmds.selected, (["ns:model_root"], False))
+
+    def test_cmds_adapter_takes_priority_over_cmds_module(self):
+        cmds_module = _FakeCmds()
+        cmds_adapter_source = _FakeCmds()
+        cmds_module.existing = {"module_root"}
+        cmds_adapter_source.existing = {"adapter_root"}
+        service = SceneModelService(
+            cmds_module=cmds_module,
+            cmds_adapter=MayaCmdsAdapter(cmds_module=cmds_adapter_source),
+        )
+
+        self.assertFalse(service.object_exists("module_root"))
+        self.assertTrue(service.object_exists("adapter_root"))
+
     def test_list_mmd_models_returns_sorted_mmd_roots_only(self):
         cmds = _FakeCmds()
         cmds.transforms = ["b_root", "not_mmd_root", "ns:a_root", "b_root"]
