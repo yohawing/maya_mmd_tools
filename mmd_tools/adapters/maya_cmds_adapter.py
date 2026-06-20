@@ -31,6 +31,10 @@ class MayaCmdsAdapter:
         """Pass through to maya.cmds.getAttr."""
         return self._cmds.getAttr(attr_path)
 
+    def set_attr(self, *args, **kwargs):
+        """Pass through to maya.cmds.setAttr."""
+        return self._cmds.setAttr(*args, **kwargs)
+
     def list_relatives(self, node, **kwargs):
         """Pass through to maya.cmds.listRelatives."""
         return self._cmds.listRelatives(node, **kwargs)
@@ -50,6 +54,10 @@ class MayaCmdsAdapter:
     def list_attr(self, *args, **kwargs):
         """Pass through to maya.cmds.listAttr."""
         return self._cmds.listAttr(*args, **kwargs)
+
+    def alias_attr(self, *args, **kwargs):
+        """Pass through to maya.cmds.aliasAttr."""
+        return self._cmds.aliasAttr(*args, **kwargs)
 
     def list_history(self, shapes):
         """Pass through to maya.cmds.listHistory."""
@@ -78,6 +86,10 @@ class MayaCmdsAdapter:
     def workspace(self, *args, **kwargs):
         """Pass through to maya.cmds.workspace."""
         return self._cmds.workspace(*args, **kwargs)
+
+    def xform(self, *args, **kwargs):
+        """Pass through to maya.cmds.xform."""
+        return self._cmds.xform(*args, **kwargs)
 
     def select(self, nodes, replace=True):
         """Pass through to maya.cmds.select."""

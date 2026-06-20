@@ -66,6 +66,15 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.getAttr.assert_called_once_with("pCube1.translateX")
         self.assertEqual(result, 3.0)
 
+    def test_set_attr_delegates_args_and_kwargs(self):
+        expected = None
+        self.cmds.setAttr.return_value = expected
+
+        result = self.adapter.set_attr("pCube1.translateX", 3.0, lock=True)
+
+        self.cmds.setAttr.assert_called_once_with("pCube1.translateX", 3.0, lock=True)
+        self.assertIs(result, expected)
+
     def test_list_relatives_delegates_kwargs(self):
         expected = ["root|pCube1"]
         self.cmds.listRelatives.return_value = expected
@@ -107,6 +116,15 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         result = self.adapter.list_attr("mat1", userDefined=True)
 
         self.cmds.listAttr.assert_called_once_with("mat1", userDefined=True)
+        self.assertIs(result, expected)
+
+    def test_alias_attr_delegates_args_and_kwargs(self):
+        expected = ["smile", "faceBlendShape.weight[0]"]
+        self.cmds.aliasAttr.return_value = expected
+
+        result = self.adapter.alias_attr("smile", "faceBlendShape.weight[0]", query=True)
+
+        self.cmds.aliasAttr.assert_called_once_with("smile", "faceBlendShape.weight[0]", query=True)
         self.assertIs(result, expected)
 
     def test_list_history_delegates_shapes(self):
@@ -168,6 +186,15 @@ class TestMayaCmdsAdapter(unittest.TestCase):
 
         self.cmds.workspace.assert_called_once_with(query=True, rootDirectory=True)
         self.assertEqual(result, "F:/Project/")
+
+    def test_xform_delegates_args_and_kwargs(self):
+        expected = [1.0, 2.0, 3.0]
+        self.cmds.xform.return_value = expected
+
+        result = self.adapter.xform("bone_jnt", query=True, worldSpace=True, translation=True)
+
+        self.cmds.xform.assert_called_once_with("bone_jnt", query=True, worldSpace=True, translation=True)
+        self.assertIs(result, expected)
 
     def test_select_delegates_replace_true(self):
         expected = None
