@@ -48,8 +48,9 @@ class _FakeSignal:
 
 
 class _FakeAppState:
-    def __init__(self, current_model_root=None):
+    def __init__(self, current_model_root=None, scene_model_service=None):
         self._current_model_root = current_model_root
+        self.scene_model_service = scene_model_service or _FakeSceneModelService()
         self.current_model_changed = _FakeSignal()
         self.model_list_updated = _FakeSignal()
         self._refresh_calls = 0
@@ -71,6 +72,29 @@ class _FakeAppState:
 
     def clear_cache(self):
         pass
+
+
+class _FakeSceneModelService:
+    def __init__(self, exists=True, attr_values=None, display_names=None, attr_exists=True):
+        self.exists = exists
+        self.attr_values = attr_values or {}
+        self.display_names = display_names or {}
+        self.attr_exists = attr_exists
+
+    def object_exists(self, node):
+        return bool(node and self.exists)
+
+    def attribute_exists(self, node, attr):
+        return bool(node and self.attr_exists)
+
+    def get_attr_safe(self, node, attr, default=None):
+        if not self.attribute_exists(node, attr):
+            return default
+        value = self.attr_values.get(f"{node}.{attr}", default)
+        return value if value is not None else default
+
+    def get_model_display_name(self, model_root):
+        return self.display_names.get(model_root, model_root)
 
 
 def _make_mock_view():
@@ -97,12 +121,9 @@ def _make_presenter_with_model(model=TEST_MODEL, attr_values=None):
     """モデルが選択された状態でプレゼンターを生成するヘルパー。"""
     values = attr_values if attr_values is not None else {k: "" for k in _ATTR_VALUES}
     view = _make_mock_view()
-    app_state = _FakeAppState(current_model_root=model)
-    with patch(f"{_MOD}.cmds") as mock_cmds:
-        mock_cmds.objExists.return_value = True
-        mock_cmds.attributeQuery.return_value = True
-        mock_cmds.getAttr.side_effect = lambda attr: values.get(attr, "")
-        presenter = InfoPresenter(view, app_state)
+    service = _FakeSceneModelService(attr_values=values)
+    app_state = _FakeAppState(current_model_root=model, scene_model_service=service)
+    presenter = InfoPresenter(view, app_state)
     return presenter, view, app_state
 
 
@@ -129,12 +150,9 @@ class TestLoadModelInfo(unittest.TestCase):
     def setUp(self):
         self.presenter, self.view, self.app_state = _make_presenter_with_model()
 
-    def test_sets_text_fields_from_cmds_getattr(self):
-        with patch(f"{_MOD}.cmds") as mock_cmds:
-            mock_cmds.objExists.return_value = True
-            mock_cmds.attributeQuery.return_value = True
-            mock_cmds.getAttr.side_effect = lambda attr: _ATTR_VALUES.get(attr, "")
-            self.presenter.load_model_info()
+    def test_sets_text_fields_from_scene_model_service_attrs(self):
+        self.app_state.scene_model_service.attr_values = _ATTR_VALUES
+        self.presenter.load_model_info()
 
         self.view.model_name_jp_edit.setText.assert_called_with("テストモデル")
         self.view.model_name_en_edit.setText.assert_called_with("Test Model")
@@ -144,9 +162,7 @@ class TestLoadModelInfo(unittest.TestCase):
     def test_clears_fields_when_no_model(self):
         self.app_state._current_model_root = None
 
-        with patch(f"{_MOD}.cmds") as mock_cmds:
-            mock_cmds.objExists.return_value = False
-            self.presenter.load_model_info()
+        self.presenter.load_model_info()
 
         self.view.model_name_jp_edit.clear.assert_called()
         self.view.model_name_en_edit.clear.assert_called()
@@ -154,11 +170,33 @@ class TestLoadModelInfo(unittest.TestCase):
         self.view.comment_en_edit.clear.assert_called()
 
     def test_clears_fields_when_model_does_not_exist(self):
-        with patch(f"{_MOD}.cmds") as mock_cmds:
-            mock_cmds.objExists.return_value = False
-            self.presenter.load_model_info()
+        self.app_state.scene_model_service.exists = False
+        self.presenter.load_model_info()
 
         self.view.model_name_jp_edit.clear.assert_called()
+
+    def test_uses_empty_string_when_attrs_are_missing_or_none(self):
+        self.app_state.scene_model_service.attr_values = {
+            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}": None,
+            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME_EN}": None,
+            f"{TEST_MODEL}.{ATTR_MMD_COMMENT}": None,
+            f"{TEST_MODEL}.{ATTR_MMD_COMMENT_EN}": None,
+        }
+        self.presenter.load_model_info()
+
+        self.view.model_name_jp_edit.setText.assert_called_with("")
+        self.view.model_name_en_edit.setText.assert_called_with("")
+        self.view.comment_jp_edit.setPlainText.assert_called_with("")
+        self.view.comment_en_edit.setPlainText.assert_called_with("")
+
+    def test_uses_empty_string_when_attrs_do_not_exist(self):
+        self.app_state.scene_model_service.attr_exists = False
+        self.presenter.load_model_info()
+
+        self.view.model_name_jp_edit.setText.assert_called_with("")
+        self.view.model_name_en_edit.setText.assert_called_with("")
+        self.view.comment_jp_edit.setPlainText.assert_called_with("")
+        self.view.comment_en_edit.setPlainText.assert_called_with("")
 
 
 class TestUpdateModelInfo(unittest.TestCase):
@@ -171,9 +209,7 @@ class TestUpdateModelInfo(unittest.TestCase):
         self.view.comment_jp_edit.toPlainText.return_value = "新しいコメント"
         self.view.comment_en_edit.toPlainText.return_value = "New Comment"
 
-        with patch(f"{_MOD}.cmds") as mock_cmds, \
-             patch(f"{_MOD}.set_custom_attributes") as mock_set:
-            mock_cmds.objExists.return_value = True
+        with patch(f"{_MOD}.set_custom_attributes") as mock_set:
             self.presenter.update_model_info()
 
         mock_set.assert_called_once_with(
@@ -189,9 +225,7 @@ class TestUpdateModelInfo(unittest.TestCase):
     def test_skips_when_no_model(self):
         self.app_state._current_model_root = None
 
-        with patch(f"{_MOD}.cmds") as mock_cmds, \
-             patch(f"{_MOD}.set_custom_attributes") as mock_set:
-            mock_cmds.objExists.return_value = False
+        with patch(f"{_MOD}.set_custom_attributes") as mock_set:
             self.presenter.update_model_info()
 
         mock_set.assert_not_called()
@@ -213,11 +247,8 @@ class TestCurrentModelChanged(unittest.TestCase):
             f"{new_model}.{ATTR_MMD_COMMENT}": "",
             f"{new_model}.{ATTR_MMD_COMMENT_EN}": "",
         }
-        with patch(f"{_MOD}.cmds") as mock_cmds:
-            mock_cmds.objExists.return_value = True
-            mock_cmds.attributeQuery.return_value = True
-            mock_cmds.getAttr.side_effect = lambda attr: new_values.get(attr, "")
-            self.presenter.on_current_model_changed(new_model)
+        self.app_state.scene_model_service.attr_values = new_values
+        self.presenter.on_current_model_changed(new_model)
 
         self.view.set_fields_enabled.assert_called_with(True)
         all_calls = [c[0][0] for c in self.view.model_name_jp_edit.setText.call_args_list]
@@ -236,8 +267,7 @@ class TestModelCombo(unittest.TestCase):
         self.presenter, self.view, self.app_state = _make_presenter_with_model()
 
     def test_update_combo_adds_item_per_model(self):
-        with patch(f"{_MOD}.get_mmd_model_display_name", side_effect=lambda m: m):
-            self.presenter.update_model_combo(["model1", "model2"])
+        self.presenter.update_model_combo(["model1", "model2"])
 
         self.view.model_combo.clear.assert_called()
         self.assertEqual(self.view.model_combo.addItem.call_count, 2)
@@ -263,9 +293,8 @@ class TestRefreshAndSelect(unittest.TestCase):
         self.view.model_combo.currentIndex.return_value = 0
         self.view.model_combo.itemData.return_value = TEST_MODEL
 
-        with patch(f"{_MOD}.cmds") as mock_cmds:
-            mock_cmds.objExists.return_value = True
-            self.presenter.on_model_selected("Test Model (test_mmd_model)")
+        self.app_state.scene_model_service.exists = True
+        self.presenter.on_model_selected("Test Model (test_mmd_model)")
 
         self.assertEqual(self.app_state.current_model_root, TEST_MODEL)
 
@@ -273,9 +302,8 @@ class TestRefreshAndSelect(unittest.TestCase):
         self.view.model_combo.currentIndex.return_value = 0
         self.view.model_combo.itemData.return_value = "non_existent"
 
-        with patch(f"{_MOD}.cmds") as mock_cmds:
-            mock_cmds.objExists.return_value = False
-            self.presenter.on_model_selected("Non Existent Model")
+        self.app_state.scene_model_service.exists = False
+        self.presenter.on_model_selected("Non Existent Model")
 
         self.assertIsNone(self.app_state.current_model_root)
 

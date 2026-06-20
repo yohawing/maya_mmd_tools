@@ -27,6 +27,11 @@ class ApplicationState(QObject):
         self._model_info_cache = {}  # モデル情報のキャッシュ
 
     @property
+    def scene_model_service(self):
+        """Mayaシーン内のMMDモデル状態を取得するサービス。"""
+        return self._scene_model_service
+
+    @property
     def current_model_root(self):
         """現在選択中のモデルルートノード"""
         return self._current_model_root

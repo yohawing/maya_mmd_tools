@@ -26,6 +26,12 @@ class SceneModelService:
             return False
         return bool(self._cmds_adapter.object_exists(node))
 
+    def attribute_exists(self, node, attr):
+        """ノードに属性が存在するかを返す。"""
+        if not node or not attr:
+            return False
+        return bool(self._cmds_adapter.attribute_exists(attr, node=node))
+
     def list_mmd_models(self):
         """シーン内のMMDモデル root を名前順で返す。"""
         namespaced = self._cmds_adapter.ls("*:*{}".format(SCENE_ROOT_SUFFIX), type="transform") or []

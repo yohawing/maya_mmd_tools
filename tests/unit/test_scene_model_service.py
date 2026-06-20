@@ -85,10 +85,14 @@ class TestSceneModelService(unittest.TestCase):
     def test_cmds_module_legacy_injection_still_works(self):
         cmds = _FakeCmds()
         cmds.existing = {"model_root"}
+        cmds.attrs = {"model_root": {ATTR_MMD_MODEL_NAME: "Model"}}
         service = SceneModelService(cmds_module=cmds)
 
         self.assertTrue(service.object_exists("model_root"))
         self.assertFalse(service.object_exists("missing_root"))
+        self.assertTrue(service.attribute_exists("model_root", ATTR_MMD_MODEL_NAME))
+        self.assertFalse(service.attribute_exists("model_root", ATTR_MMD_MODEL_NAME_EN))
+        self.assertFalse(service.attribute_exists("", ATTR_MMD_MODEL_NAME))
 
     def test_cmds_adapter_injection_supports_service_methods(self):
         cmds = _FakeCmds()
@@ -200,6 +204,17 @@ class TestSceneModelService(unittest.TestCase):
 
         self.assertEqual(service.get_attr_safe("node", "present", "fallback"), "fallback")
         self.assertEqual(service.get_attr_safe("node", "missing", "fallback"), "fallback")
+
+    def test_get_attr_safe_returns_default_when_get_attr_raises(self):
+        class _FailingGetAttrCmds(_FakeCmds):
+            def getAttr(self, attr_path):
+                raise RuntimeError("getAttr failed")
+
+        cmds = _FailingGetAttrCmds()
+        cmds.attrs = {"node": {"present": "value"}}
+        service = SceneModelService(cmds_module=cmds)
+
+        self.assertEqual(service.get_attr_safe("node", "present", "fallback"), "fallback")
 
 
 if __name__ == "__main__":

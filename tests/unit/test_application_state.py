@@ -46,6 +46,12 @@ class TestApplicationStateWithInjectedService(unittest.TestCase):
         app_state = ApplicationState(scene_model_service=service)
 
         self.assertIs(app_state._scene_model_service, service)
+
+    def test_scene_model_service_property_returns_constructor_service(self):
+        service = _FakeSceneModelService()
+        app_state = ApplicationState(scene_model_service=service)
+
+        self.assertIs(app_state.scene_model_service, service)
         self.assertIsNone(app_state.current_model_root)
         self.assertEqual(app_state.available_models, [])
 
