@@ -201,6 +201,7 @@
     "show_advanced_options": "显示高级选项",
     "enable_logging": "启用日志记录",
     "auto_classify_transparency": "自动分类透明 (扫描纹理α)",
+    "auto_resolve_textures": "自动修复贴图（ASCII缓存）",
     "split_meshes_by_morph_groups": "【实验性】按表情组分离网格",
     "custom_namespace": "自定义命名空间:"
   },
@@ -400,22 +401,27 @@
     "open_folder": "打开文件夹",
     "close": "关闭",
     "dont_show_again": "不再显示",
-    "status_fixed": "已修复 {count} 个贴图"
+    "status_fixed": "已修复 {count} 个贴图",
+    "fix_texture_path": "修正贴图路径",
+    "status_no_issues": "未发现贴图路径问题。",
+    "status_scan_failed": "无法扫描贴图路径问题。"
   },
   "texture_issue_reasons": {
+    "non_ascii_path": "Maya 可能无法显示此贴图路径",
     "ansi_incompatible_path": "路径包含无法使用的字符",
     "missing_file": "找不到文件",
     "question_mark_path": "重新打开后路径已损坏",
     "empty_path": "贴图路径为空",
     "resolved": "已修复",
     "missing_original_path": "未记录原始路径",
-    "absolute_original_path_rejected": "原始路径为绝对路径（不安全）",
+    "absolute_original_path_rejected": "绝对路径位于模型文件夹之外",
     "parent_traversal_rejected": "路径超出了模型文件夹",
     "outside_model_directory_rejected": "文件位于模型文件夹之外",
     "extension_rejected": "不支持的文件类型",
     "symlink_rejected": "不允许使用符号链接",
     "source_not_found": "找不到源文件",
     "source_not_file": "源不是文件",
-    "source_not_readable": "无法读取源文件"
+    "source_not_readable": "无法读取源文件",
+    "cache_copy_failed": "无法将贴图复制到缓存"
   }
 }

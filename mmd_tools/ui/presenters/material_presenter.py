@@ -51,8 +51,6 @@ class MaterialPresenter:
         # File browsers
         self.view.texture_browse_btn.clicked.connect(lambda: self.browse_file("texture"))
         self.view.sphere_map_browse_btn.clicked.connect(lambda: self.browse_file("sphere"))
-        if hasattr(self.view, "resolve_texture_btn"):
-            self.view.resolve_texture_btn.clicked.connect(self.resolve_current_texture)
 
         # Track changes in input fields
         self.view.material_jp_name_edit.textChanged.connect(self._on_value_changed)
@@ -369,7 +367,6 @@ class MaterialPresenter:
             if file_node:
                 texture_path = maya_utils.get_attribute(file_node[0], "fileTextureName")
                 self.material_data["texture"] = texture_path
-                self.material_data["texture_file_node"] = file_node[0]
                 self.view.texture_path_edit.setText(texture_path)
                 logger.info(f"Loaded texture: {texture_path}")
             else:
@@ -377,25 +374,21 @@ class MaterialPresenter:
                 mmd_texture_path = self._get_attr_safe(material_name, "mmd_texture_path", "")
                 if mmd_texture_path:
                     self.material_data["texture"] = mmd_texture_path
-                    self.material_data["texture_file_node"] = None
                     self.view.texture_path_edit.setText(mmd_texture_path)
                     logger.info(f"Loaded texture from MMD attribute: {mmd_texture_path}")
                 else:
                     self.material_data["texture"] = ""
-                    self.material_data["texture_file_node"] = None
                     self.view.texture_path_edit.clear()
                     logger.info(f"No texture found for material: {material_name}")
 
             # Get MMD-specific attributes if they exist
             self._load_mmd_attributes(material_name)
-            self._update_resolve_texture_button()
 
         except Exception as e:
             logger.error(
                 f"Failed to load material details for {material_name}: {e}",
                 exc_info=True,
             )
-            self._set_resolve_texture_enabled(False)
         finally:
             self._loading_properties = False
             # プロパティの読み込み完了後、変更フラグを確実にリセット
@@ -506,44 +499,6 @@ class MaterialPresenter:
         if cmds.attributeQuery(attr, node=node, exists=True):
             return maya_utils.get_attribute(node, attr)
         return default
-
-    def _set_resolve_texture_enabled(self, enabled):
-        if hasattr(self.view, "resolve_texture_btn"):
-            self.view.resolve_texture_btn.setEnabled(bool(enabled))
-
-    def _update_resolve_texture_button(self):
-        """Enable Resolve texture only when the selected material can be repaired."""
-        file_node = self.material_data.get("texture_file_node")
-        if not file_node:
-            self._set_resolve_texture_enabled(False)
-            return
-        try:
-            resolution = maya_utils.classify_mmd_texture_file_node(file_node)
-            self._set_resolve_texture_enabled(bool(resolution and resolution.status == "resolvable"))
-        except Exception:
-            logger.debug("Failed to classify texture file node for resolve button", exc_info=True)
-            self._set_resolve_texture_enabled(False)
-
-    def resolve_current_texture(self):
-        """Resolve the selected material texture into the workspace cache."""
-        if not self.current_material:
-            return
-        try:
-            resolution = maya_utils.resolve_mmd_material_texture(self.current_material)
-            if resolution and resolution.status == "resolved":
-                self.view.texture_path_edit.setText(resolution.file_texture_path)
-                self.material_data["texture"] = resolution.file_texture_path
-                self.has_unsaved_changes = False
-                self.app_state.emit_status(f"Fixed texture: {resolution.file_texture_path}")
-            elif resolution:
-                self.app_state.emit_status(f"Could not fix texture: {resolution.reason}")
-            else:
-                self.app_state.emit_status("No texture file node found for selected material")
-        except Exception as e:
-            logger.error(f"Failed to resolve texture: {e}", exc_info=True)
-            self.app_state.emit_status(f"Failed to resolve texture: {str(e)}")
-        finally:
-            self._update_resolve_texture_button()
 
     def _update_color_widget(self, widget, color):
         """Update color display widget"""

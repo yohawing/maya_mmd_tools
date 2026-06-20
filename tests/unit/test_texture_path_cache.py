@@ -42,25 +42,51 @@ class TestTexturePathCache(unittest.TestCase):
         self.assertTrue(cache.is_ansi_incompatible_path("textures/日本語.png", encoding="ascii"))
         self.assertFalse(cache.is_ansi_incompatible_path("textures/plain.png", encoding="ascii"))
 
+    def test_non_ascii_path_detection(self):
+        self.assertTrue(cache.is_non_ascii_path("textures/日本語.png"))
+        self.assertFalse(cache.is_non_ascii_path("textures/plain.png"))
+        self.assertFalse(cache.is_non_ascii_path(""))
+        self.assertFalse(cache.is_non_ascii_path(None))
+
     def test_ansi_incompatible_path_ignores_unknown_codec(self):
         self.assertFalse(cache.is_ansi_incompatible_path("textures/颜.png", encoding="missing-codec"))
 
     def test_unreadable_detection_includes_ansi_incompatible_existing_path(self):
-        with patch.object(cache, "is_ansi_incompatible_path", return_value=True):
+        with patch.object(cache, "is_non_ascii_path", return_value=False), patch.object(
+            cache, "is_ansi_incompatible_path", return_value=True
+        ):
             self.assertTrue(cache.is_unreadable_file_texture_path(str(self.texture)))
 
     def test_classify_unreadable_reason_can_inject_windows_codepage(self):
+        with patch.object(cache, "is_non_ascii_path", return_value=False):
+            self.assertEqual(
+                cache.classify_unreadable_file_texture_path(str(self.texture), encoding="cp932"),
+                "ansi_incompatible_path",
+            )
+
+    def test_classify_unreadable_reason_detects_non_ascii_existing_file(self):
         self.assertEqual(
             cache.classify_unreadable_file_texture_path(str(self.texture), encoding="cp932"),
-            "ansi_incompatible_path",
+            "non_ascii_path",
+        )
+
+    def test_classify_unreadable_reason_prioritizes_question_mark_over_non_ascii(self):
+        self.assertEqual(
+            cache.classify_unreadable_file_texture_path(str(self.root / "日本語????.png")),
+            "question_mark_path",
         )
 
     def test_describe_texture_issue_is_plain_language(self):
+        self.assertEqual(
+            cache.describe_texture_issue("non_ascii_path"),
+            "Maya may fail to display this texture path",
+        )
         self.assertEqual(
             cache.describe_texture_issue("ansi_incompatible_path"),
             "Unsupported characters in path",
         )
         self.assertEqual(cache.describe_texture_issue("missing_file"), "File not found")
+        self.assertEqual(cache.describe_texture_issue("cache_copy_failed"), "Failed to copy texture to cache")
         self.assertEqual(cache.describe_texture_issue(""), "Cannot be displayed")
         # Unknown codes fall back to the raw reason so nothing is hidden.
         self.assertEqual(cache.describe_texture_issue("brand_new_code"), "brand_new_code")
@@ -85,9 +111,12 @@ class TestTexturePathCache(unittest.TestCase):
     def test_safety_rejects_absolute_parent_traversal_outside_and_extension(self):
         bad_ext = self.root / "texture.exe"
         bad_ext.write_bytes(b"exe")
+        outside = Path(self.tmp.name).parent / "outside_texture.png"
+        outside.write_bytes(b"outside")
+        self.addCleanup(lambda: outside.exists() and outside.unlink())
 
         cases = [
-            (str(self.texture), "absolute_original_path_rejected"),
+            (str(outside), "absolute_original_path_rejected"),
             ("../outside.png", "parent_traversal_rejected"),
             ("texture.exe", "extension_rejected"),
         ]
@@ -96,6 +125,43 @@ class TestTexturePathCache(unittest.TestCase):
                 source, actual_reason = cache.find_resolvable_source(original, self.model)
                 self.assertIsNone(source)
                 self.assertEqual(actual_reason, reason)
+
+    def test_absolute_original_under_model_parent_is_resolvable(self):
+        source, reason = cache.find_resolvable_source(str(self.texture), self.model)
+
+        self.assertEqual(source, self.texture)
+        self.assertEqual(reason, "")
+
+    def test_absolute_original_with_parent_traversal_outside_is_rejected(self):
+        outside = self.root.parent / "outside_parent_traversal.png"
+        outside.write_bytes(b"outside")
+        self.addCleanup(lambda: outside.exists() and outside.unlink())
+        original = str(self.root / ".." / outside.name)
+
+        source, reason = cache.find_resolvable_source(original, self.model)
+
+        self.assertIsNone(source)
+        self.assertEqual(reason, "absolute_original_path_rejected")
+
+    def test_absolute_original_on_other_drive_is_rejected_by_path_comparison(self):
+        current_drive = self.root.drive.upper()
+        other_drive = "Z:" if current_drive != "Z:" else "Y:"
+        original = other_drive + r"\mmd_tools_other_drive_texture.png"
+
+        source, reason = cache.find_resolvable_source(original, self.model)
+
+        self.assertIsNone(source)
+        self.assertEqual(reason, "absolute_original_path_rejected")
+
+    def test_unc_original_outside_model_parent_is_rejected_when_absolute(self):
+        original = r"\\server\share\mmd_tools_unc_texture.png"
+        if not Path(original).is_absolute():
+            self.skipTest("UNC path is not absolute on this platform")
+
+        source, reason = cache.find_resolvable_source(original, self.model)
+
+        self.assertIsNone(source)
+        self.assertEqual(reason, "absolute_original_path_rejected")
 
     def test_safety_rejects_symlink_when_supported(self):
         link = self.root / "linked.png"
@@ -147,6 +213,32 @@ class TestTexturePathCache(unittest.TestCase):
         self.assertEqual(result.status, "resolved")
         self.assertTrue(result.cached)
         self.assertTrue(Path(result.file_texture_path).exists())
+
+    def test_resolve_texture_to_cache_accepts_absolute_original_under_model_parent(self):
+        result = cache.resolve_texture_to_cache(
+            original_path=str(self.texture),
+            file_texture_path=str(self.texture),
+            model_path=self.model,
+            workspace_root=self.workspace,
+        )
+
+        self.assertEqual(result.status, "resolved")
+        self.assertTrue(result.cached)
+        self.assertTrue(Path(result.cache_path).exists())
+
+    def test_resolve_texture_to_cache_reports_copy_failure(self):
+        with patch.object(cache.shutil, "copy2", side_effect=PermissionError("denied")):
+            result = cache.resolve_texture_to_cache(
+                original_path=self.texture.name,
+                file_texture_path=str(self.root / "????.png"),
+                model_path=self.model,
+                workspace_root=self.workspace,
+            )
+
+        self.assertEqual(result.status, "unrecoverable")
+        self.assertEqual(result.reason, "cache_copy_failed")
+        self.assertFalse(result.cached)
+        self.assertEqual(Path(result.source_path), self.texture)
 
 
 if __name__ == "__main__":

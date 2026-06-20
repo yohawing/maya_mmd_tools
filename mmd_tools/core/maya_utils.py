@@ -191,8 +191,12 @@ def resolve_scene_mmd_textures(workspace_root=None):
             continue
         classification = classify_mmd_texture_file_node(file_node)
         if classification and classification.status == "resolvable":
-            results.append(resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root))
+            resolution = resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
+            if resolution is not None and not getattr(resolution, "file_node", None):
+                resolution.file_node = file_node
+            results.append(resolution)
         elif classification:
+            classification.file_node = file_node
             results.append(classification)
     return results
 

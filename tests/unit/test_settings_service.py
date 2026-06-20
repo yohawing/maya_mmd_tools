@@ -23,6 +23,7 @@ class _FakeSettingsStore:
                     "split_meshes_by_morph_groups": True,
                     "hide_hidden_geometry": True,
                     "auto_classify_transparency": True,
+                    "auto_resolve_textures": True,
                     "disable_backface_culling": False,
                     "uv_set_name": "customUV",
                     "texture_search_path": "/textures",
@@ -185,6 +186,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["split_meshes_by_morph_groups"])
         self.assertFalse(options["hide_hidden_geometry"])
         self.assertFalse(options["auto_classify_transparency"])
+        self.assertTrue(options["auto_resolve_textures"])
         self.assertTrue(options["disable_backface_culling"])
         self.assertEqual(options["uv_set_name"], "map#")
         self.assertEqual(options["texture_search_path"], "")
@@ -206,6 +208,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["split_meshes_by_morph_groups"])
         self.assertTrue(options["hide_hidden_geometry"])
         self.assertTrue(options["auto_classify_transparency"])
+        self.assertTrue(options["auto_resolve_textures"])
         self.assertFalse(options["disable_backface_culling"])
         self.assertEqual(options["uv_set_name"], "customUV")
         self.assertEqual(options["texture_search_path"], "/textures")

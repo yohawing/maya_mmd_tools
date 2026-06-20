@@ -181,9 +181,6 @@ class MaterialTab(BaseTab):
         texture_layout.addWidget(self.texture_path_edit, 0, 1)
         self.texture_browse_btn = QPushButton(self.tr("browse", "buttons"))
         texture_layout.addWidget(self.texture_browse_btn, 0, 2)
-        self.resolve_texture_btn = QPushButton("Fix texture")
-        self.resolve_texture_btn.setEnabled(False)
-        texture_layout.addWidget(self.resolve_texture_btn, 0, 3)
 
         # Sphere Map
         self.sphere_map_label = QLabel(self.tr("sphere_texture_path", "fields"))
@@ -334,7 +331,6 @@ class MaterialTab(BaseTab):
             self.ambient_color_widget,
             self.texture_path_edit,
             self.texture_browse_btn,
-            self.resolve_texture_btn,
             self.sphere_map_path_edit,
             self.sphere_map_browse_btn,
             self.sphere_mode_combo,
@@ -388,8 +384,6 @@ class MaterialTab(BaseTab):
             self.import_path_button.setText(self.tr("browse", "buttons"))
         if hasattr(self, "texture_browse_btn"):
             self.texture_browse_btn.setText(self.tr("browse", "buttons"))
-        if hasattr(self, "resolve_texture_btn"):
-            self.resolve_texture_btn.setText("Fix texture")
         if hasattr(self, "sphere_map_browse_btn"):
             self.sphere_map_browse_btn.setText(self.tr("browse", "buttons"))
         if hasattr(self, "apply_btn"):

@@ -147,6 +147,13 @@ class ImportExportTab(BaseTab):
         )
         model_layout.addWidget(self.auto_classify_transparency_check)
 
+        self.auto_resolve_textures_check = QCheckBox(self.tr("auto_resolve_textures", "checkboxes"))
+        self.auto_resolve_textures_check.setChecked(settings.get("import.model.auto_resolve_textures", True))
+        self.auto_resolve_textures_check.toggled.connect(
+            lambda v: settings.set("import.model.auto_resolve_textures", v)
+        )
+        model_layout.addWidget(self.auto_resolve_textures_check)
+
         self.transparency_threshold_row = QWidget()
         transparency_threshold_layout = QHBoxLayout(self.transparency_threshold_row)
         transparency_threshold_layout.setContentsMargins(0, 0, 0, 0)
@@ -398,6 +405,8 @@ class ImportExportTab(BaseTab):
         # 状態が変更されたら保存
         self.new_file_check.toggled.connect(lambda checked: self.qt_settings.setValue("new_file_check", str(checked)))
         import_button_layout.addWidget(self.import_button)
+        self.fix_texture_path_button = QPushButton(self.tr("fix_texture_path", "texture_issues"))
+        import_button_layout.addWidget(self.fix_texture_path_button)
         import_button_layout.addWidget(self.new_file_check)
         import_button_layout.addStretch()
         model_import_layout.addRow(import_button_layout)
@@ -638,6 +647,8 @@ class ImportExportTab(BaseTab):
         self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
         self.split_by_morph_groups_check.setText(self.tr("split_meshes_by_morph_groups", "checkboxes"))
+        if hasattr(self, "auto_resolve_textures_check"):
+            self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
         self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
         self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
@@ -665,6 +676,8 @@ class ImportExportTab(BaseTab):
         self.vmd_path_button.setText(self.tr("browse", "buttons"))
         self.export_path_button.setText(self.tr("browse", "buttons"))
         self.import_button.setText(self.tr("import_model", "actions"))
+        if hasattr(self, "fix_texture_path_button"):
+            self.fix_texture_path_button.setText(self.tr("fix_texture_path", "texture_issues"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
         self.export_button.setText(self.tr("export", "buttons"))
         if hasattr(self, "vpd_path_button"):

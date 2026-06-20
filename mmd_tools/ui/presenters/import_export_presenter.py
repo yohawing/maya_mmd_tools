@@ -1,10 +1,15 @@
+from maya import cmds
+
 from ..qt_compat import QObject, QFileDialog
 from ...actions.export_model_action import ExportModelAction, ExportModelRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
+from ...core import maya_utils
+from ...core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH, ATTR_MMD_TEXTURE_CACHE_PATH
 from ...core.logger import get_logger
 from ...io.mmd_importer import import_mmd_file
 from ...services.settings_service import SettingsService
+from ..translations.translator import UITranslator
 
 logger = get_logger(__name__)
 
@@ -33,6 +38,8 @@ class ImportExportPresenter(QObject):
         self.view.export_path_button.clicked.connect(self.select_export_file)
         self.view.import_button.clicked.connect(self.import_file)
         self.view.export_button.clicked.connect(self.export_file)
+        if hasattr(self.view, "fix_texture_path_button"):
+            self.view.fix_texture_path_button.clicked.connect(self.fix_texture_paths)
 
         # VMD import signals
         self.view.vmd_path_button.clicked.connect(self.select_vmd_file)
@@ -85,19 +92,100 @@ class ImportExportPresenter(QObject):
     def _maybe_show_texture_issue_dialog(self, profile, file_path):
         """Show post-import texture issues for UI-triggered PMX/PMD imports."""
 
-        issues = profile.get("texture_issues") or profile.get("mesh_converter", {}).get("unresolved_textures") or []
+        issues = self._extract_texture_issues(profile)
         if not issues or not self.settings_service.should_show_texture_issue_dialog():
+            return
+        self._show_texture_issue_dialog(issues, model_path=file_path)
+
+    def _extract_texture_issues(self, profile):
+        """Extract texture issue records from an import profile."""
+
+        profile = profile or {}
+        return profile.get("texture_issues") or profile.get("mesh_converter", {}).get("unresolved_textures") or []
+
+    def _show_texture_issue_dialog(self, issues, model_path=""):
+        """Show the shared texture issue dialog."""
+
+        if not issues:
             return
         try:
             from ..texture_issue_dialog import TextureIssueDialog
 
-            dialog = TextureIssueDialog(issues, model_path=file_path, app_state=self.app_state, parent=self.view)
+            dialog = TextureIssueDialog(issues, model_path=model_path, app_state=self.app_state, parent=self.view)
             if hasattr(dialog, "exec"):
                 dialog.exec()
             else:
                 dialog.exec_()
         except Exception as exc:
             logger.error("Failed to show texture issue dialog: %s", exc, exc_info=True)
+
+    def _material_name_for_file_node(self, file_node):
+        """Return a connected shader/material name, falling back to the file node."""
+
+        try:
+            connections = cmds.listConnections(file_node, destination=True) or []
+            for node in connections:
+                if node:
+                    return node
+        except Exception:
+            logger.debug("Failed to find material connection for file node %s", file_node, exc_info=True)
+        return file_node
+
+    def _texture_resolution_to_issue(self, file_node, resolution):
+        """Convert a texture resolution classification into a dialog issue."""
+
+        material_name = self._material_name_for_file_node(file_node)
+        cache_path = getattr(resolution, "cache_path", "") or ""
+        if not cache_path:
+            try:
+                if cmds.attributeQuery(ATTR_MMD_TEXTURE_CACHE_PATH, node=file_node, exists=True):
+                    cache_path = maya_utils.get_attribute(file_node, ATTR_MMD_TEXTURE_CACHE_PATH) or ""
+            except Exception:
+                logger.debug("Failed to read texture cache path for file node %s", file_node, exc_info=True)
+                cache_path = ""
+        current_path = cache_path or getattr(resolution, "file_texture_path", "") or ""
+        return {
+            "file_node": file_node,
+            "material": material_name,
+            "material_name": material_name,
+            "reason": getattr(resolution, "reason", ""),
+            "original_path": getattr(resolution, "original_path", "") or "",
+            "current_path": current_path,
+            "resolvable": getattr(resolution, "status", "") == "resolvable",
+            "source_path": getattr(resolution, "source_path", "") or "",
+            "source_reason": getattr(resolution, "reason", ""),
+        }
+
+    def _collect_scene_texture_issues(self):
+        """Collect non-ok MMD texture file-node issues from the current scene."""
+
+        issues = []
+        for file_node in cmds.ls(type="file") or []:
+            if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
+                continue
+            classification = maya_utils.classify_mmd_texture_file_node(file_node)
+            if not classification or classification.status == "ok":
+                continue
+            issues.append(self._texture_resolution_to_issue(file_node, classification))
+        return issues
+
+    def fix_texture_paths(self):
+        """Show scene texture issues for explicit user-triggered fixing."""
+
+        try:
+            issues = self._collect_scene_texture_issues()
+        except Exception as exc:
+            logger.error("Failed to scan scene texture issues: %s", exc, exc_info=True)
+            message = UITranslator.instance().translate("status_scan_failed", "texture_issues")
+            self.app_state.emit_status(message)
+            return
+        if issues:
+            # Manual button presses are explicit user actions, so they intentionally
+            # ignore import.model.show_texture_issue_dialog.
+            self._show_texture_issue_dialog(issues, model_path="")
+        else:
+            message = UITranslator.instance().translate("status_no_issues", "texture_issues")
+            self.app_state.emit_status(message)
 
     def _build_export_options(self):
         """PMX/PMD export用の基本オプションを設定から組み立てる。"""

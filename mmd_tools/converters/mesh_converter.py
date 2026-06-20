@@ -12,6 +12,7 @@ from mmd_tools.core.texture_path_cache import (
     classify_unreadable_file_texture_path,
     find_resolvable_source,
     is_unreadable_file_texture_path,
+    resolve_texture_to_cache,
 )
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmx_data import PmxData
@@ -21,6 +22,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
     ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_TEXTURE_CACHE_PATH,
+    ATTR_MMD_TEXTURE_UNRESOLVED,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     GEOMETRY_GROUP,
     ATTR_MMD_FILE_TYPE,
@@ -1530,6 +1533,83 @@ class MeshConverter:
             None,
         )
 
+    def _connect_dx11_secondary_texture(
+        self,
+        shader,
+        material,
+        original_path,
+        full_texture_path,
+        texture_attr,
+        has_texture_attr,
+        node_suffix,
+        warning_label,
+    ):
+        """Connect a readable or resolved secondary texture to a dx11Shader."""
+        if not (
+            full_texture_path
+            and os.path.exists(full_texture_path)
+            and cmds.attributeQuery(texture_attr, node=shader, exists=True)
+        ):
+            if full_texture_path:
+                cmds.warning(f"{warning_label} texture file not found: {full_texture_path}")
+            return
+
+        file_texture_path = full_texture_path
+        unresolved = is_unreadable_file_texture_path(full_texture_path)
+        cache_path = None
+        if unresolved and settings.get("import.model.auto_resolve_textures", True):
+            resolution = resolve_texture_to_cache(
+                original_path=original_path,
+                file_texture_path=full_texture_path,
+                model_path=self.model_filepath,
+                workspace_root=cmds.workspace(q=True, rootDirectory=True),
+            )
+            if resolution.status == "resolved" and resolution.cache_path:
+                file_texture_path = resolution.cache_path
+                cache_path = resolution.cache_path
+                unresolved = False
+
+        file_node = cmds.shadingNode("file", asTexture=True, name=shader + node_suffix)
+        maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
+        maya_utils.mark_mmd_texture_file_node(
+            file_node,
+            original_path,
+            self.model_filepath,
+            unresolved=unresolved,
+        )
+        if cache_path:
+            maya_utils.set_custom_attributes(
+                file_node,
+                {
+                    ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
+                    ATTR_MMD_TEXTURE_UNRESOLVED: False,
+                },
+            )
+        if unresolved:
+            issue = self._record_unresolved_texture_issue(
+                file_node=file_node,
+                shader=shader,
+                material=material,
+                original_path=original_path,
+                current_path=full_texture_path,
+            )
+            cmds.warning(
+                f"{warning_label} texture path needs resolution "
+                f"({issue.get('reason', 'unreadable_path')}): {full_texture_path}"
+            )
+            return
+
+        try:
+            cmds.connectAttr(
+                file_node + ".outColor",
+                shader + "." + texture_attr,
+                force=True,
+            )
+            if cmds.attributeQuery(has_texture_attr, node=shader, exists=True):
+                maya_utils.set_attribute(shader, has_texture_attr, 1, "long")
+        except Exception:
+            cmds.warning(f"Failed to connect {warning_label.lower()} texture to dx11Shader")
+
     def _setup_dx11_shader(self, shader, material, texture_path, all_textures, is_pmd, material_index=None):
         """dx11Shaderを設定"""
 
@@ -1610,17 +1690,60 @@ class MeshConverter:
                 and os.path.exists(full_texture_path)
                 and cmds.attributeQuery("MainTexture", node=shader, exists=True)
             ):
+                file_texture_path = full_texture_path
+                unresolved = is_unreadable_file_texture_path(full_texture_path)
+                cache_path = None
+                if unresolved and settings.get("import.model.auto_resolve_textures", True):
+                    resolution = resolve_texture_to_cache(
+                        original_path=texture_path,
+                        file_texture_path=full_texture_path,
+                        model_path=self.model_filepath,
+                        workspace_root=cmds.workspace(q=True, rootDirectory=True),
+                    )
+                    if resolution.status == "resolved" and resolution.cache_path:
+                        file_texture_path = resolution.cache_path
+                        cache_path = resolution.cache_path
+                        unresolved = False
+
                 # ファイルテクスチャノードを作成
                 file_node = cmds.shadingNode("file", asTexture=True, name=shader + "_texture")
                 # ファイルパスを設定
-                maya_utils.set_attribute(file_node, "fileTextureName", full_texture_path, "string")
+                maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
+                maya_utils.mark_mmd_texture_file_node(
+                    file_node,
+                    texture_path,
+                    self.model_filepath,
+                    unresolved=unresolved,
+                )
+                if cache_path:
+                    maya_utils.set_custom_attributes(
+                        file_node,
+                        {
+                            ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
+                            ATTR_MMD_TEXTURE_UNRESOLVED: False,
+                        },
+                    )
+                if unresolved:
+                    issue = self._record_unresolved_texture_issue(
+                        file_node=file_node,
+                        shader=shader,
+                        material=material,
+                        original_path=texture_path,
+                        current_path=full_texture_path,
+                    )
+                    cmds.warning(
+                        f"Texture path needs resolution ({issue.get('reason', 'unreadable_path')}): "
+                        f"{full_texture_path}"
+                    )
+                    file_node = None
                 # dx11ShaderのMainTextureに接続
-                try:
-                    cmds.connectAttr(file_node + ".outColor", shader + ".MainTexture", force=True)
-                    if cmds.attributeQuery("HasMainTexture", node=shader, exists=True):
-                        maya_utils.set_attribute(shader, "HasMainTexture", 1, "long")
-                except Exception:
-                    cmds.warning("Failed to connect texture to dx11Shader")
+                if file_node:
+                    try:
+                        cmds.connectAttr(file_node + ".outColor", shader + ".MainTexture", force=True)
+                        if cmds.attributeQuery("HasMainTexture", node=shader, exists=True):
+                            maya_utils.set_attribute(shader, "HasMainTexture", 1, "long")
+                    except Exception:
+                        cmds.warning("Failed to connect texture to dx11Shader")
             else:
                 cmds.warning(f"Texture file not found: {full_texture_path}")
 
@@ -1636,36 +1759,41 @@ class MeshConverter:
                     and os.path.exists(full_sphere_path)
                     and cmds.attributeQuery("SphereTexture", node=shader, exists=True)
                 ):
-                    sphere_file_node = cmds.shadingNode("file", asTexture=True, name=shader + "_sphere_texture")
-                    maya_utils.set_attribute(sphere_file_node, "fileTextureName", full_sphere_path, "string")
-                    try:
-                        cmds.connectAttr(
-                            sphere_file_node + ".outColor",
-                            shader + ".SphereTexture",
-                            force=True,
-                        )
-                        if cmds.attributeQuery("HasSphereTexture", node=shader, exists=True):
-                            maya_utils.set_attribute(shader, "HasSphereTexture", 1, "long")
-                    except Exception:
-                        cmds.warning("Failed to connect sphere texture to dx11Shader")
+                    self._connect_dx11_secondary_texture(
+                        shader,
+                        material,
+                        sphere_texture_path,
+                        full_sphere_path,
+                        "SphereTexture",
+                        "HasSphereTexture",
+                        "_sphere_texture",
+                        "Sphere",
+                    )
 
         # Toon texture setting. PMX custom toon uses the regular texture table;
         # shared toon uses bundled toon01.bmp..toon10.bmp assets.
         if not is_pmd:
             full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
             if full_toon_path and os.path.exists(full_toon_path) and cmds.attributeQuery("ToonTexture", node=shader, exists=True):
-                toon_file_node = cmds.shadingNode("file", asTexture=True, name=shader + "_toon_texture")
-                maya_utils.set_attribute(toon_file_node, "fileTextureName", full_toon_path, "string")
-                try:
-                    cmds.connectAttr(
-                        toon_file_node + ".outColor",
-                        shader + ".ToonTexture",
-                        force=True,
-                    )
-                    if cmds.attributeQuery("HasToonTexture", node=shader, exists=True):
-                        maya_utils.set_attribute(shader, "HasToonTexture", 1, "long")
-                except Exception:
-                    cmds.warning("Failed to connect toon texture to dx11Shader")
+                toon_original_path = full_toon_path
+                if (
+                    hasattr(material, "shared_toon_flag")
+                    and hasattr(material, "toon_texture_index")
+                    and int(material.shared_toon_flag) == 0
+                    and all_textures
+                    and 0 <= int(material.toon_texture_index) < len(all_textures)
+                ):
+                    toon_original_path = all_textures[int(material.toon_texture_index)]
+                self._connect_dx11_secondary_texture(
+                    shader,
+                    material,
+                    toon_original_path,
+                    full_toon_path,
+                    "ToonTexture",
+                    "HasToonTexture",
+                    "_toon_texture",
+                    "Toon",
+                )
             elif full_toon_path:
                 cmds.warning(f"Toon texture file not found: {full_toon_path}")
 

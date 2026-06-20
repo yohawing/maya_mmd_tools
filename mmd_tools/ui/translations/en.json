@@ -202,6 +202,7 @@
     "show_advanced_options": "Show Advanced Options",
     "enable_logging": "Enable Logging",
     "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)",
+    "auto_resolve_textures": "Auto-resolve textures (ASCII cache)",
     "split_meshes_by_morph_groups": "[Experimental] Split meshes by morph groups"
   },
   "fields": {
@@ -400,22 +401,27 @@
     "open_folder": "Open folder",
     "close": "Close",
     "dont_show_again": "Don't show again",
-    "status_fixed": "Fixed {count} texture(s)"
+    "status_fixed": "Fixed {count} texture(s)",
+    "fix_texture_path": "Fix Texture Path",
+    "status_no_issues": "No texture path issues found.",
+    "status_scan_failed": "Failed to scan texture path issues."
   },
   "texture_issue_reasons": {
+    "non_ascii_path": "Maya may fail to display this texture path",
     "ansi_incompatible_path": "Unsupported characters in path",
     "missing_file": "File not found",
     "question_mark_path": "Path corrupted on reopen",
     "empty_path": "No texture path",
     "resolved": "Fixed",
     "missing_original_path": "Original path not recorded",
-    "absolute_original_path_rejected": "Original path is absolute (unsafe)",
+    "absolute_original_path_rejected": "Absolute path is outside the model folder",
     "parent_traversal_rejected": "Path escapes the model folder",
     "outside_model_directory_rejected": "File is outside the model folder",
     "extension_rejected": "Unsupported file type",
     "symlink_rejected": "Symbolic link not allowed",
     "source_not_found": "Source file not found",
     "source_not_file": "Source is not a file",
-    "source_not_readable": "Source file is not readable"
+    "source_not_readable": "Source file is not readable",
+    "cache_copy_failed": "Failed to copy texture to cache"
   }
 }

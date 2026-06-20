@@ -22,6 +22,7 @@ from mmd_tools.actions.import_vmd_action import ImportVmdResult  # noqa: E402
 from mmd_tools.ui.presenters.import_export_presenter import (  # noqa: E402
     ImportExportPresenter,
 )
+from mmd_tools.ui.translations.translator import UITranslator  # noqa: E402
 
 
 class _FakeSignal:
@@ -30,7 +31,21 @@ class _FakeSignal:
 
 
 class _FakeButton:
-    clicked = _FakeSignal()
+    def __init__(self):
+        self.clicked = _FakeSignal()
+
+
+class _RecordingSignal:
+    def __init__(self):
+        self.connected = []
+
+    def connect(self, callback):
+        self.connected.append(callback)
+
+
+class _RecordingButton:
+    def __init__(self):
+        self.clicked = _RecordingSignal()
 
 
 class _FakeLineEdit:
@@ -217,7 +232,7 @@ class TestImportExportPresenter(unittest.TestCase):
         view = _FakeView()
         app_state = _FakeAppState()
         presenter = ImportExportPresenter(view, app_state)
-        issue = {"file_node": "file1", "material": "mat1", "reason": "ansi_incompatible_path"}
+        issue = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
 
         def fake_import(_path, options=None):
             options["profile"]["texture_issues"] = [issue]
@@ -253,6 +268,96 @@ class TestImportExportPresenter(unittest.TestCase):
             presenter.import_file()
 
         mock_dialog.assert_not_called()
+
+    def test_connect_signals_connects_fix_texture_path_button_when_present(self):
+        view = _FakeView()
+        view.fix_texture_path_button = _RecordingButton()
+        app_state = _FakeAppState()
+
+        presenter = ImportExportPresenter(view, app_state)
+
+        self.assertEqual(view.fix_texture_path_button.clicked.connected, [presenter.fix_texture_paths])
+
+    def test_fix_texture_paths_shows_dialog_even_when_import_dialog_setting_disabled(self):
+        settings.set("import.model.show_texture_issue_dialog", False)
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+        issue = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
+
+        with patch.object(presenter, "_collect_scene_texture_issues", return_value=[issue]), patch(
+            "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
+        ) as mock_dialog:
+            presenter.fix_texture_paths()
+
+        mock_dialog.assert_called_once_with([issue], model_path="", app_state=app_state, parent=view)
+        mock_dialog.return_value.exec.assert_called_once()
+
+    def test_fix_texture_paths_no_issues_emits_status_and_skips_dialog(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+
+        with patch.object(presenter, "_collect_scene_texture_issues", return_value=[]), patch(
+            "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
+        ) as mock_dialog:
+            presenter.fix_texture_paths()
+
+        mock_dialog.assert_not_called()
+        expected_status = UITranslator.instance().translate("status_no_issues", "texture_issues")
+        self.assertIn(expected_status, app_state.statuses)
+
+    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_utils")
+    @patch("mmd_tools.ui.presenters.import_export_presenter.cmds")
+    def test_collect_scene_texture_issues_filters_and_converts_file_nodes(self, mock_cmds, mock_maya_utils):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+        ok = MagicMock(
+            status="ok",
+            reason="",
+            original_path="ok.png",
+            file_texture_path="ok.png",
+            source_path="ok.png",
+        )
+        resolvable = MagicMock(
+            status="resolvable",
+            reason="non_ascii_path",
+            original_path="モデル/髪.png",
+            file_texture_path="モデル/髪.png",
+            source_path="F:/model/モデル/髪.png",
+        )
+        unrecoverable = MagicMock(
+            status="unrecoverable",
+            reason="missing_file",
+            original_path="missing.png",
+            file_texture_path="missing.png",
+            source_path=None,
+        )
+        mock_cmds.ls.return_value = ["non_mmd_file", "ok_file", "bad_file", "lost_file"]
+        mock_cmds.attributeQuery.side_effect = lambda _attr, node, exists: node != "non_mmd_file"
+        mock_maya_utils.classify_mmd_texture_file_node.side_effect = {
+            "ok_file": ok,
+            "bad_file": resolvable,
+            "lost_file": unrecoverable,
+        }.get
+        mock_cmds.listConnections.side_effect = lambda node, destination=True: {
+            "bad_file": ["mat1"],
+            "lost_file": [],
+        }.get(node, [])
+
+        issues = presenter._collect_scene_texture_issues()
+
+        self.assertEqual(len(issues), 2)
+        self.assertEqual(issues[0]["file_node"], "bad_file")
+        self.assertEqual(issues[0]["material"], "mat1")
+        self.assertEqual(issues[0]["reason"], "non_ascii_path")
+        self.assertTrue(issues[0]["resolvable"])
+        self.assertEqual(issues[0]["source_path"], "F:/model/モデル/髪.png")
+        self.assertEqual(issues[1]["file_node"], "lost_file")
+        self.assertEqual(issues[1]["material"], "lost_file")
+        self.assertEqual(issues[1]["reason"], "missing_file")
+        self.assertFalse(issues[1]["resolvable"])
 
     def test_import_file_model_branch_uses_injected_action_and_updates_ui_state(self):
         recorded_refreshes = []
@@ -664,6 +769,7 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         "import.model.split_meshes_by_morph_groups",
         "import.model.hide_hidden_geometry",
         "import.model.auto_classify_transparency",
+        "import.model.auto_resolve_textures",
         "import.model.disable_backface_culling",
         "import.model.uv_set_name",
         "import.model.texture_search_path",
@@ -782,6 +888,12 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         settings.set("import.model.auto_classify_transparency", True)
         opts = self._run_import()
         self.assertFalse(opts["auto_classify_transparency"])
+
+    def test_normal_mode_preserves_auto_resolve_textures_option(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.model.auto_resolve_textures", False)
+        opts = self._run_import()
+        self.assertFalse(opts["auto_resolve_textures"])
 
     def test_normal_mode_forces_split_meshes_by_morph_groups_false(self):
         settings.set("ui.general.development_mode", False)

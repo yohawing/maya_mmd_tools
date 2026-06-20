@@ -20,6 +20,7 @@ _OPTION_TO_SETTINGS_KEY = {
     "separate_meshes_by_material": "import.model.separate_meshes_by_material",
     "split_meshes_by_morph_groups": "import.model.split_meshes_by_morph_groups",
     "auto_classify_transparency": "import.model.auto_classify_transparency",
+    "auto_resolve_textures": "import.model.auto_resolve_textures",
     "disable_backface_culling": "import.model.disable_backface_culling",
     "uv_set_name": "import.model.uv_set_name",
     "texture_search_path": "import.model.texture_search_path",

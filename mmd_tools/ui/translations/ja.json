@@ -202,6 +202,7 @@
     "show_advanced_options": "詳細オプションを表示",
     "enable_logging": "ログを有効にする",
     "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
+    "auto_resolve_textures": "テクスチャを自動修復（ASCIIキャッシュ）",
     "split_meshes_by_morph_groups": "【実験的】モーフグループでメッシュを分割"
   },
   "fields": {
@@ -400,22 +401,27 @@
     "open_folder": "フォルダを開く",
     "close": "閉じる",
     "dont_show_again": "今後表示しない",
-    "status_fixed": "{count} 件のテクスチャを修復しました"
+    "status_fixed": "{count} 件のテクスチャを修復しました",
+    "fix_texture_path": "テクスチャパスを修正",
+    "status_no_issues": "テクスチャパスの問題は見つかりませんでした。",
+    "status_scan_failed": "テクスチャパスの問題をスキャンできませんでした。"
   },
   "texture_issue_reasons": {
+    "non_ascii_path": "Mayaで表示できない可能性があるテクスチャパスです",
     "ansi_incompatible_path": "パスに使えない文字があります",
     "missing_file": "ファイルが見つかりません",
     "question_mark_path": "再オープンでパスが壊れています",
     "empty_path": "テクスチャパスが空です",
     "resolved": "修復済み",
     "missing_original_path": "元のパスが記録されていません",
-    "absolute_original_path_rejected": "元のパスが絶対パスです（安全でない）",
+    "absolute_original_path_rejected": "絶対パスがモデルフォルダの外にあります",
     "parent_traversal_rejected": "パスがモデルフォルダの外に出ています",
     "outside_model_directory_rejected": "ファイルがモデルフォルダの外にあります",
     "extension_rejected": "対応していないファイル形式です",
     "symlink_rejected": "シンボリックリンクは使用できません",
     "source_not_found": "元ファイルが見つかりません",
     "source_not_file": "元がファイルではありません",
-    "source_not_readable": "元ファイルを読み取れません"
+    "source_not_readable": "元ファイルを読み取れません",
+    "cache_copy_failed": "テクスチャのキャッシュコピーに失敗しました"
   }
 }

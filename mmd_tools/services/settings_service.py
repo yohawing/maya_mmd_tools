@@ -141,6 +141,7 @@ class SettingsService:
             "split_meshes_by_morph_groups": self.get("import.model.split_meshes_by_morph_groups", False),
             "hide_hidden_geometry": self.get("import.model.hide_hidden_geometry", False),
             "auto_classify_transparency": self.get("import.model.auto_classify_transparency", False),
+            "auto_resolve_textures": self.get("import.model.auto_resolve_textures", True),
             "disable_backface_culling": self.get("import.model.disable_backface_culling", True),
             "uv_set_name": self.get("import.model.uv_set_name", "map#"),
             "texture_search_path": self.get("import.model.texture_search_path", ""),

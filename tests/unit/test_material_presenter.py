@@ -67,7 +67,6 @@ class TestMaterialPresenter(unittest.TestCase):
         # ファイルブラウザボタンのモック
         self.mock_view.texture_browse_btn = Mock()
         self.mock_view.sphere_map_browse_btn = Mock()
-        self.mock_view.resolve_texture_btn = Mock()
 
         # モックアプリケーション状態を作成
         self.mock_app_state = Mock()
@@ -366,33 +365,6 @@ class TestMaterialPresenter(unittest.TestCase):
             mock_load.assert_called_once_with("test_material")
             # 変更フラグがリセットされることを確認
             self.assertFalse(self.presenter.has_unsaved_changes)
-
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_update_resolve_texture_button_enabled_when_resolvable(self, mock_maya_utils):
-        """修復可能な file node の場合だけ Resolve texture ボタンが有効になる"""
-        self.presenter.material_data["texture_file_node"] = "file1"
-        resolution = Mock()
-        resolution.status = "resolvable"
-        mock_maya_utils.classify_mmd_texture_file_node.return_value = resolution
-
-        self.presenter._update_resolve_texture_button()
-
-        self.mock_view.resolve_texture_btn.setEnabled.assert_called_with(True)
-
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_resolve_current_texture_updates_texture_path(self, mock_maya_utils):
-        """Resolve texture 実行後に cache パス表示へ更新する"""
-        self.presenter.current_material = "mat1"
-        resolution = Mock()
-        resolution.status = "resolved"
-        resolution.file_texture_path = "workspace/sourceimages/mmd_tools_texture_cache/hash/tex.png"
-        mock_maya_utils.resolve_mmd_material_texture.return_value = resolution
-        mock_maya_utils.classify_mmd_texture_file_node.return_value = None
-
-        self.presenter.resolve_current_texture()
-
-        self.mock_view.texture_path_edit.setText.assert_called_with(resolution.file_texture_path)
-        self.mock_app_state.emit_status.assert_called_with(f"Fixed texture: {resolution.file_texture_path}")
 
 
 if __name__ == "__main__":

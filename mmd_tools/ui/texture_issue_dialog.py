@@ -22,6 +22,57 @@ from .qt_compat import (
 )
 
 
+def update_texture_issues_from_resolution_results(issues, results):
+    """Update dialog issue records from Maya texture-resolution results."""
+
+    result_by_file_node = {}
+    for result in results or []:
+        file_node = getattr(result, "file_node", "")
+        if file_node:
+            result_by_file_node[file_node] = result
+
+    resolved = 0
+    for issue in issues or []:
+        file_node = issue.get("file_node")
+        result = result_by_file_node.get(file_node)
+        if result is None:
+            continue
+        status = getattr(result, "status", "")
+        reason = getattr(result, "reason", "") or status
+        if status == "resolved":
+            current_path = getattr(result, "cache_path", "") or getattr(result, "file_texture_path", "") or ""
+            issue["current_path"] = current_path
+            issue["reason"] = "resolved"
+            issue["source_reason"] = "resolved"
+            issue["resolvable"] = False
+            resolved += 1
+        else:
+            issue["reason"] = reason
+            issue["source_reason"] = reason
+            issue["resolvable"] = status == "resolvable"
+            current_path = getattr(result, "cache_path", "") or getattr(result, "file_texture_path", "") or ""
+            if current_path:
+                issue["current_path"] = current_path
+            source_path = getattr(result, "source_path", "") or ""
+            if source_path:
+                issue["source_path"] = source_path
+    return resolved
+
+
+def mark_texture_resolution_failed(issues, reason="cache_copy_failed"):
+    """Mark currently resolvable dialog issues as failed."""
+
+    updated = 0
+    for issue in issues or []:
+        if not issue.get("resolvable"):
+            continue
+        issue["reason"] = reason
+        issue["source_reason"] = reason
+        issue["resolvable"] = False
+        updated += 1
+    return updated
+
+
 class TextureIssueDialog(QDialog):
     """Show imported texture issues and offer user-triggered resolution."""
 
@@ -142,12 +193,15 @@ class TextureIssueDialog(QDialog):
             self.app_state.emit_status(message)
 
     def resolve_all(self):
-        results = maya_utils.resolve_scene_mmd_textures()
-        resolved = sum(1 for result in results if getattr(result, "status", "") == "resolved")
-        self._emit_status(self.tr("status_fixed").format(count=resolved))
-        if resolved:
-            self.issues = [issue for issue in self.issues if not issue.get("resolvable")]
-        self._populate()
+        resolved = 0
+        try:
+            results = maya_utils.resolve_scene_mmd_textures()
+            resolved = update_texture_issues_from_resolution_results(self.issues, results)
+        except Exception:
+            mark_texture_resolution_failed(self.issues, "cache_copy_failed")
+        finally:
+            self._emit_status(self.tr("status_fixed").format(count=resolved))
+            self._populate()
 
     def open_folder(self):
         issue = self._selected_issue()

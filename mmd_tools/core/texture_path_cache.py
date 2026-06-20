@@ -84,6 +84,18 @@ def is_ansi_incompatible_path(path, encoding=None) -> bool:
     return False
 
 
+def is_non_ascii_path(path) -> bool:
+    """Return True when *path* contains non-ASCII characters."""
+
+    if not path:
+        return False
+    try:
+        os.fspath(path).encode("ascii")
+    except UnicodeEncodeError:
+        return True
+    return False
+
+
 def classify_unreadable_file_texture_path(file_texture_path, encoding=None) -> str:
     """Return the unreadable reason for a file texture path, or an empty string."""
 
@@ -92,6 +104,8 @@ def classify_unreadable_file_texture_path(file_texture_path, encoding=None) -> s
     text = os.fspath(file_texture_path)
     if "?" in text:
         return "question_mark_path"
+    if is_non_ascii_path(text):
+        return "non_ascii_path"
     if is_ansi_incompatible_path(text, encoding=encoding):
         return "ansi_incompatible_path"
     if not Path(text).exists():
@@ -106,13 +120,14 @@ def is_unreadable_file_texture_path(file_texture_path) -> bool:
 
 
 _TEXTURE_ISSUE_DESCRIPTIONS = {
+    "non_ascii_path": "Maya may fail to display this texture path",
     "ansi_incompatible_path": "Unsupported characters in path",
     "missing_file": "File not found",
     "question_mark_path": "Path corrupted on reopen",
     "empty_path": "No texture path",
     "resolved": "Fixed",
     "missing_original_path": "Original path not recorded",
-    "absolute_original_path_rejected": "Original path is absolute (unsafe)",
+    "absolute_original_path_rejected": "Absolute original path is outside the model folder",
     "parent_traversal_rejected": "Path escapes the model folder",
     "outside_model_directory_rejected": "File is outside the model folder",
     "extension_rejected": "Unsupported file type",
@@ -120,6 +135,7 @@ _TEXTURE_ISSUE_DESCRIPTIONS = {
     "source_not_found": "Source file not found",
     "source_not_file": "Source is not a file",
     "source_not_readable": "Source file is not readable",
+    "cache_copy_failed": "Failed to copy texture to cache",
 }
 
 
@@ -143,7 +159,7 @@ def compute_model_hash(model_path) -> str:
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
-    except OSError:
+    except (OSError, shutil.Error):
         digest.update(str(path.resolve(strict=False)).encode("utf-8"))
     return digest.hexdigest()[:16]
 
@@ -184,7 +200,17 @@ def resolve_texture_to_cache(
     if classified.status != "resolvable" or not classified.source_path:
         return classified
 
-    cache_path = copy_texture_to_cache(classified.source_path, workspace_root, model_path)
+    try:
+        cache_path = copy_texture_to_cache(classified.source_path, workspace_root, model_path)
+    except OSError:
+        return TextureResolution(
+            original_path=classified.original_path,
+            source_path=classified.source_path,
+            file_texture_path=classified.file_texture_path,
+            cached=False,
+            status="unrecoverable",
+            reason="cache_copy_failed",
+        )
     return TextureResolution(
         original_path=classified.original_path,
         source_path=classified.source_path,
@@ -201,13 +227,14 @@ def find_resolvable_source(original_path, model_path) -> Tuple[Optional[Path], s
     if not original_path:
         return None, "missing_original_path"
     original_text = os.fspath(original_path)
-    if Path(original_text).is_absolute():
-        return None, "absolute_original_path_rejected"
-    if ".." in Path(original_text).parts:
-        return None, "parent_traversal_rejected"
-
     model_parent = Path(model_path).resolve(strict=False).parent
-    candidate = model_parent / original_text
+    original = Path(original_text)
+    if original.is_absolute():
+        candidate = original
+    else:
+        if ".." in original.parts:
+            return None, "parent_traversal_rejected"
+        candidate = model_parent / original
     return _validate_source(candidate, model_parent)
 
 
@@ -237,6 +264,8 @@ def _validate_source(candidate: Path, model_parent: Path) -> Tuple[Optional[Path
     try:
         candidate.resolve(strict=False).relative_to(model_parent)
     except ValueError:
+        if candidate.is_absolute():
+            return None, "absolute_original_path_rejected"
         return None, "outside_model_directory_rejected"
     if candidate.suffix.lower() not in ALLOWED_TEXTURE_EXTENSIONS:
         return None, "extension_rejected"
