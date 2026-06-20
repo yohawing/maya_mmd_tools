@@ -15,6 +15,7 @@ from mmd_tools.core.texture_path_cache import (
 )
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmx_data.material import PmxDrawFlag
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
@@ -61,6 +62,25 @@ TRANSPARENCY_MODE_OPAQUE = "opaque"
 TRANSPARENCY_MODE_CUTOUT = "cutout"
 TRANSPARENCY_MODE_BLEND = "blend"
 TRANSPARENCY_MODES = (TRANSPARENCY_MODE_OPAQUE, TRANSPARENCY_MODE_CUTOUT, TRANSPARENCY_MODE_BLEND)
+_PMX_DOUBLE_SIDED_DRAW_FLAG = int(getattr(PmxDrawFlag, "DOUBLE_SIDED", 0x01))
+
+
+def _material_is_double_sided(material) -> bool:
+    """Return True when a PMX material has the DOUBLE_SIDED draw flag."""
+    draw_flag = getattr(material, "draw_flag", None)
+    if draw_flag is None:
+        return False
+    try:
+        return bool(int(draw_flag) & _PMX_DOUBLE_SIDED_DRAW_FLAG)
+    except (TypeError, ValueError):
+        return False
+
+
+def _set_mesh_double_sided(mesh_transform_or_shape, enabled: bool) -> None:
+    """Set Maya mesh shape doubleSided from an MMD material draw flag."""
+    mesh_shapes = cmds.listRelatives(mesh_transform_or_shape, shapes=True, type="mesh") or []
+    for shape in mesh_shapes:
+        maya_utils.set_attribute(shape, "doubleSided", 1 if enabled else 0, "bool")
 
 
 def _classify_material_transparency(material, texture_path=None) -> str:
@@ -785,6 +805,10 @@ class MeshConverter:
             maya_utils.assign_material_to_faces(created_mesh, shader, face_selection)
             self._add_profile_time("material_assign_sec", assign_start)
 
+        # A unified shape can contain multiple materials, so per-material
+        # double-sided/single-sided culling cannot be represented by one shape
+        # attribute. Use separate_meshes_by_material for strict MMD draw flags.
+
         # 作成したメッシュをグループに追加
         parent_start = time.perf_counter()
         maya_utils.parent_objects(created_mesh, model_group)
@@ -902,6 +926,7 @@ class MeshConverter:
             self.profile["source_vertex_count"] = len(vertices)
             self.profile["mesh_vertex_slots_estimated"] += len(mesh_vertices)
             self.profile["face_count"] += len(sub_face_counts)
+            _set_mesh_double_sided(created_mesh, _material_is_double_sided(material))
             maya_utils.set_custom_attributes(
                 created_mesh,
                 {
@@ -1161,6 +1186,14 @@ class MeshConverter:
             maya_utils.set_custom_attributes(created_mesh, attrs)
         maya_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
         maya_utils.set_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, source_vertex_indices, "longArray")
+
+        if len(local_material_ranges) == 1:
+            _set_mesh_double_sided(created_mesh, _material_is_double_sided(local_material_ranges[0][1]))
+        else:
+            # A subset with multiple materials is still a combined shape:
+            # per-material culling cannot be represented by one doubleSided
+            # attribute, so leave it to the viewport backface override.
+            pass
 
         for material_index, material, start_face, end_face in local_material_ranges:
             texture_path = None
