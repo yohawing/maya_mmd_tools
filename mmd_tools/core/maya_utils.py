@@ -28,6 +28,12 @@ from .texture_path_cache import (
 
 logger = get_logger(__name__)
 
+DX11_TEXTURE_SLOTS = {
+    "_texture": ("MainTexture", "HasMainTexture"),
+    "_sphere_texture": ("SphereTexture", "HasSphereTexture"),
+    "_toon_texture": ("ToonTexture", "HasToonTexture"),
+}
+
 
 def sanitize_text(name):
     """
@@ -173,6 +179,135 @@ def resolve_mmd_texture_file_node(file_node, workspace_root=None):
     return resolution
 
 
+def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
+    """Bind a Maya file node to one dx11Shader texture slot."""
+
+    destination_attr = f"{shader}.{texture_attr}"
+    try:
+        existing = cmds.listConnections(
+            f"{file_node}.outColor",
+            source=False,
+            destination=True,
+            plugs=True,
+        ) or []
+        if not isinstance(existing, (list, tuple, set)) or destination_attr not in existing:
+            cmds.connectAttr(f"{file_node}.outColor", destination_attr, force=True)
+        if cmds.attributeQuery(has_attr, node=shader, exists=True):
+            set_attribute(shader, has_attr, 1, "long")
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Failed to bind dx11 texture file node '%s' to '%s': %s",
+            file_node,
+            destination_attr,
+            exc,
+        )
+        return False
+
+
+def _dx11_texture_slot_from_attr(attr_name):
+    for texture_attr, has_attr in DX11_TEXTURE_SLOTS.values():
+        if attr_name == texture_attr:
+            return texture_attr, has_attr
+    return None
+
+
+def _connected_dx11_texture_slot(file_node):
+    connections = cmds.listConnections(
+        f"{file_node}.outColor",
+        source=False,
+        destination=True,
+        plugs=True,
+    ) or []
+    if not isinstance(connections, (list, tuple, set)):
+        return None
+    for plug in connections:
+        if "." not in plug:
+            continue
+        shader, attr_name = plug.rsplit(".", 1)
+        slot = _dx11_texture_slot_from_attr(attr_name)
+        if slot and cmds.objExists(shader):
+            return shader, slot[0], slot[1]
+    return None
+
+
+def _infer_dx11_texture_slot_from_file_node(file_node):
+    sorted_slots = sorted(DX11_TEXTURE_SLOTS.items(), key=lambda item: len(item[0]), reverse=True)
+    for suffix, (texture_attr, has_attr) in sorted_slots:
+        if not file_node.endswith(suffix):
+            continue
+        shader = file_node[: -len(suffix)]
+        if cmds.objExists(shader):
+            return shader, texture_attr, has_attr
+    return None
+
+
+def rebind_resolved_mmd_dx11_texture(file_node):
+    """Reconnect one resolved MMD file node to its dx11Shader texture slot."""
+
+    if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
+        return {"status": "skipped", "reason": "not_mmd_texture_file_node"}
+
+    target = _connected_dx11_texture_slot(file_node) or _infer_dx11_texture_slot_from_file_node(file_node)
+    if not target:
+        return {"status": "skipped", "reason": "dx11_texture_slot_not_found"}
+
+    shader, texture_attr, has_attr = target
+    if cmds.nodeType(shader) != "dx11Shader":
+        return {"status": "skipped", "reason": "not_dx11_shader"}
+    if not cmds.attributeQuery(texture_attr, node=shader, exists=True):
+        return {"status": "skipped", "reason": "texture_attr_missing"}
+    if not cmds.attributeQuery(has_attr, node=shader, exists=True):
+        return {"status": "skipped", "reason": "has_attr_missing"}
+
+    if not bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
+        return {
+            "status": "failed",
+            "reason": "connect_failed",
+            "shader": shader,
+            "texture_attr": texture_attr,
+            "has_attr": has_attr,
+        }
+
+    return {
+        "status": "rebound",
+        "reason": "connected",
+        "shader": shader,
+        "texture_attr": texture_attr,
+        "has_attr": has_attr,
+    }
+
+
+def rebind_resolved_scene_mmd_dx11_textures(results):
+    """Rebind resolved scene texture results and annotate each result."""
+
+    rebound = 0
+    skipped = 0
+    failed = 0
+    for result in results:
+        if getattr(result, "status", None) != "resolved":
+            continue
+        file_node = getattr(result, "file_node", None)
+        if not file_node:
+            setattr(result, "rebind_status", "skipped")
+            setattr(result, "rebind_reason", "missing_file_node")
+            skipped += 1
+            continue
+        rebind = rebind_resolved_mmd_dx11_texture(file_node)
+        setattr(result, "rebind_status", rebind["status"])
+        setattr(result, "rebind_reason", rebind["reason"])
+        for key in ("shader", "texture_attr", "has_attr"):
+            if key in rebind:
+                setattr(result, f"rebind_{key}", rebind[key])
+        if rebind["status"] == "rebound":
+            rebound += 1
+        elif rebind["status"] == "failed":
+            failed += 1
+        else:
+            skipped += 1
+    return {"rebound": rebound, "skipped": skipped, "failed": failed}
+
+
 def resolve_mmd_material_texture(material, workspace_root=None):
     """Resolve the selected material's base texture file node, if present."""
 
@@ -198,6 +333,11 @@ def resolve_scene_mmd_textures(workspace_root=None):
         elif classification:
             classification.file_node = file_node
             results.append(classification)
+    rebind_summary = rebind_resolved_scene_mmd_dx11_textures(results)
+    if rebind_summary["rebound"]:
+        # If this is not enough for VP2 in practice, the next fallback is a
+        # same-value .shader/technique re-set to force the dx11 effect reload.
+        cmds.refresh(force=True)
     return results
 
 

@@ -212,6 +212,26 @@ def _resolve_texture_path(texture_dir, texture_path):
     return os.path.normpath(os.path.join(texture_dir, texture_path))
 
 
+def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
+    """Bind a file node to a dx11Shader texture slot."""
+
+    destination_attr = f"{shader}.{texture_attr}"
+    try:
+        existing = cmds.listConnections(
+            f"{file_node}.outColor",
+            source=False,
+            destination=True,
+            plugs=True,
+        ) or []
+        if not isinstance(existing, (list, tuple, set)) or destination_attr not in existing:
+            cmds.connectAttr(f"{file_node}.outColor", destination_attr, force=True)
+        if cmds.attributeQuery(has_attr, node=shader, exists=True):
+            maya_utils.set_attribute(shader, has_attr, 1, "long")
+        return True
+    except Exception:
+        return False
+
+
 def _ensure_mmd_shader_uniform_attributes(shader_node):
     """MMD シェーダーで uniform 属性がない場合に補完する。
 
@@ -1599,15 +1619,7 @@ class MeshConverter:
             )
             return
 
-        try:
-            cmds.connectAttr(
-                file_node + ".outColor",
-                shader + "." + texture_attr,
-                force=True,
-            )
-            if cmds.attributeQuery(has_texture_attr, node=shader, exists=True):
-                maya_utils.set_attribute(shader, has_texture_attr, 1, "long")
-        except Exception:
+        if not bind_dx11_texture_file_node(shader, file_node, texture_attr, has_texture_attr):
             cmds.warning(f"Failed to connect {warning_label.lower()} texture to dx11Shader")
 
     def _setup_dx11_shader(self, shader, material, texture_path, all_textures, is_pmd, material_index=None):
@@ -1738,11 +1750,7 @@ class MeshConverter:
                     file_node = None
                 # dx11ShaderのMainTextureに接続
                 if file_node:
-                    try:
-                        cmds.connectAttr(file_node + ".outColor", shader + ".MainTexture", force=True)
-                        if cmds.attributeQuery("HasMainTexture", node=shader, exists=True):
-                            maya_utils.set_attribute(shader, "HasMainTexture", 1, "long")
-                    except Exception:
+                    if not bind_dx11_texture_file_node(shader, file_node, "MainTexture", "HasMainTexture"):
                         cmds.warning("Failed to connect texture to dx11Shader")
             else:
                 cmds.warning(f"Texture file not found: {full_texture_path}")

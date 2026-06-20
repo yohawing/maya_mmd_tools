@@ -10,7 +10,10 @@ from tests.common.maya_stub import install_maya_stub
 
 install_maya_stub()
 
-from mmd_tools.converters.mesh_converter import MeshConverter  # noqa: E402
+from mmd_tools.converters.mesh_converter import (  # noqa: E402
+    MeshConverter,
+    bind_dx11_texture_file_node,
+)
 from mmd_tools.core.settings import settings  # noqa: E402
 
 
@@ -29,6 +32,70 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
     def tearDown(self):
         settings.set("import.model.auto_resolve_textures", self._saved_auto_resolve)
         self.tmp.cleanup()
+
+    def test_bind_dx11_texture_file_node_connects_main_texture_and_sets_has_flag(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+        ) as mock_set_attribute:
+            mock_cmds.listConnections.return_value = []
+            mock_cmds.attributeQuery.return_value = True
+
+            result = bind_dx11_texture_file_node(
+                "Face_shader",
+                "Face_shader_texture",
+                "MainTexture",
+                "HasMainTexture",
+            )
+
+        self.assertTrue(result)
+        mock_cmds.connectAttr.assert_called_once_with(
+            "Face_shader_texture.outColor",
+            "Face_shader.MainTexture",
+            force=True,
+        )
+        mock_set_attribute.assert_called_once_with("Face_shader", "HasMainTexture", 1, "long")
+
+    def test_bind_dx11_texture_file_node_connects_secondary_slots_and_sets_has_flags(self):
+        cases = [
+            ("Face_shader_sphere_texture", "SphereTexture", "HasSphereTexture"),
+            ("Face_shader_toon_texture", "ToonTexture", "HasToonTexture"),
+        ]
+        for file_node, texture_attr, has_attr in cases:
+            with self.subTest(texture_attr=texture_attr), patch(
+                "mmd_tools.converters.mesh_converter.cmds"
+            ) as mock_cmds, patch(
+                "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            ) as mock_set_attribute:
+                mock_cmds.listConnections.return_value = []
+                mock_cmds.attributeQuery.return_value = True
+
+                result = bind_dx11_texture_file_node("Face_shader", file_node, texture_attr, has_attr)
+
+            self.assertTrue(result)
+            mock_cmds.connectAttr.assert_called_once_with(
+                f"{file_node}.outColor",
+                f"Face_shader.{texture_attr}",
+                force=True,
+            )
+            mock_set_attribute.assert_called_once_with("Face_shader", has_attr, 1, "long")
+
+    def test_bind_dx11_texture_file_node_avoids_duplicate_connection(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+        ) as mock_set_attribute:
+            mock_cmds.listConnections.return_value = ["Face_shader.MainTexture"]
+            mock_cmds.attributeQuery.return_value = True
+
+            result = bind_dx11_texture_file_node(
+                "Face_shader",
+                "Face_shader_texture",
+                "MainTexture",
+                "HasMainTexture",
+            )
+
+        self.assertTrue(result)
+        mock_cmds.connectAttr.assert_not_called()
+        mock_set_attribute.assert_called_once_with("Face_shader", "HasMainTexture", 1, "long")
 
     def test_record_unresolved_texture_issue_dict_shape(self):
         converter = MeshConverter(str(self.model))

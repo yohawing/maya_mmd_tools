@@ -24,6 +24,8 @@ COMPLETION_MARKER = "RESOLVE_E2E_DONE"
 MAYA_START_TIMEOUT = 120
 RESOLVE_TIMEOUT = 600
 LOG_POLL_INTERVAL = 1
+CAPTURE_WIDTH = 1280
+CAPTURE_HEIGHT = 720
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -68,36 +70,119 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
                 nodes.append(file_node)
         return nodes
 
+    def _actual_playblast_path(target: Path):
+        candidates = list(target.parent.glob(target.stem + "*.png"))
+        if target.exists():
+            candidates.append(target)
+        if not candidates:
+            return None
+        return max(candidates, key=lambda path: path.stat().st_mtime)
+
+    def _capture(label):
+        out_dir = Path(log_path).resolve().parent if log_path else Path("build/resolve_e2e").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        target = out_dir / f"{label}.png"
+        for old in target.parent.glob(target.stem + "*.png"):
+            try:
+                old.unlink()
+            except Exception:
+                pass
+        try:
+            cmds.refresh(force=True)
+            result = cmds.playblast(
+                filename=str(target.with_suffix("")),
+                frame=0,
+                format="image",
+                compression="png",
+                offScreen=True,
+                viewer=False,
+                width=CAPTURE_WIDTH,
+                height=CAPTURE_HEIGHT,
+                forceOverwrite=True,
+                showOrnaments=False,
+                percent=100,
+            )
+            actual = _actual_playblast_path(target)
+            payload = {
+                "event": "capture",
+                "phase": label,
+                "requested_path": str(target),
+                "actual_path": str(actual) if actual else "",
+                "playblast_result": result,
+                "size": actual.stat().st_size if actual else 0,
+                "width": CAPTURE_WIDTH,
+                "height": CAPTURE_HEIGHT,
+            }
+        except Exception as exc:
+            payload = {"event": "capture", "phase": label, "error": str(exc)}
+        _emit(payload, log_path)
+        return payload
+
     def _snapshot(label):
         from mmd_tools.core import maya_utils
         from mmd_tools.core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH, ATTR_MMD_TEXTURE_CACHE_PATH
         from mmd_tools.core.texture_path_cache import decode_original_texture_path
 
-        def _dx11_main_texture_state(file_node):
-            connected = cmds.listConnections(
+        def _dx11_texture_state(file_node):
+            slot_attrs = {
+                "MainTexture": "HasMainTexture",
+                "SphereTexture": "HasSphereTexture",
+                "ToonTexture": "HasToonTexture",
+            }
+            connected_plugs = cmds.listConnections(
                 f"{file_node}.outColor",
                 type="dx11Shader",
                 source=False,
                 destination=True,
-                plugs=False,
+                plugs=True,
             ) or []
-            shader = connected[0] if connected else ""
-            if not shader and file_node.endswith("_texture"):
-                candidate = file_node[: -len("_texture")]
-                try:
-                    if cmds.objExists(candidate) and cmds.nodeType(candidate) == "dx11Shader":
-                        shader = candidate
-                except Exception:
-                    pass
-
-            has_main_texture = None
+            shader = ""
+            slots = {}
+            for texture_attr, has_attr in slot_attrs.items():
+                plug = next((item for item in connected_plugs if item.endswith(f".{texture_attr}")), "")
+                if plug and "." in plug:
+                    shader = plug.rsplit(".", 1)[0]
+                has_value = None
+                if shader:
+                    try:
+                        if cmds.attributeQuery(has_attr, node=shader, exists=True):
+                            has_value = cmds.getAttr(f"{shader}.{has_attr}")
+                    except Exception:
+                        pass
+                slots[texture_attr] = {
+                    "connected": bool(plug),
+                    "plug": plug,
+                    "has_attr": has_attr,
+                    "has_value": has_value,
+                }
+            if not shader:
+                suffixes = {
+                    "_sphere_texture": "SphereTexture",
+                    "_toon_texture": "ToonTexture",
+                    "_texture": "MainTexture",
+                }
+                for suffix in sorted(suffixes, key=len, reverse=True):
+                    if not file_node.endswith(suffix):
+                        continue
+                    candidate = file_node[: -len(suffix)]
+                    try:
+                        if cmds.objExists(candidate) and cmds.nodeType(candidate) == "dx11Shader":
+                            shader = candidate
+                            break
+                    except Exception:
+                        pass
             if shader:
                 try:
-                    if cmds.attributeQuery("HasMainTexture", node=shader, exists=True):
-                        has_main_texture = cmds.getAttr(f"{shader}.HasMainTexture")
+                    for texture_attr, has_attr in slot_attrs.items():
+                        if slots[texture_attr]["has_value"] is None and cmds.attributeQuery(
+                            has_attr,
+                            node=shader,
+                            exists=True,
+                        ):
+                            slots[texture_attr]["has_value"] = cmds.getAttr(f"{shader}.{has_attr}")
                 except Exception:
                     pass
-            return bool(connected), shader, has_main_texture
+            return shader, slots
 
         rows = []
         for file_node in _file_nodes_with_mmd_original():
@@ -105,7 +190,7 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
             current = _attr(file_node, "fileTextureName")
             cache_path = _attr(file_node, ATTR_MMD_TEXTURE_CACHE_PATH)
             classification = maya_utils.classify_mmd_texture_file_node(file_node)
-            main_texture_connected, shader, has_main_texture = _dx11_main_texture_state(file_node)
+            shader, slots = _dx11_texture_state(file_node)
             color_space = ""
             try:
                 if cmds.attributeQuery("colorSpace", node=file_node, exists=True):
@@ -122,8 +207,9 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
                     "fileTextureName": current,
                     "cache_path": cache_path,
                     "cache_exists": bool(cache_path and os.path.exists(cache_path)),
-                    "main_texture_connected": main_texture_connected,
-                    "has_main_texture": has_main_texture,
+                    "main_texture_connected": slots["MainTexture"]["connected"],
+                    "has_main_texture": slots["MainTexture"]["has_value"],
+                    "texture_slots": slots,
                     "status": getattr(classification, "status", None),
                     "reason": getattr(classification, "reason", ""),
                 }
@@ -148,9 +234,18 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
 
         settings.set("import.model.create_mmd_shaders", True)
         settings.set("import.model.mmd_shader_backend", "dx11")
+        settings.set("import.model.auto_resolve_textures", False)
 
         root_node = import_mmd_file(str(model_path), options={"import_physics": False})
-        _emit({"event": "imported", "root_node": root_node}, log_path)
+        _emit(
+            {
+                "event": "imported",
+                "phase": "post_hoc_candidate",
+                "auto_resolve": False,
+                "root_node": root_node,
+            },
+            log_path,
+        )
         if not root_node:
             _emit({"event": "summary", "line": "RESOLVE_E2E: resolved=0 failed=1"}, log_path)
             _emit({"event": COMPLETION_MARKER, "exit_code": 1}, log_path)
@@ -175,6 +270,11 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
                         "source_path": getattr(result, "source_path", ""),
                         "file_texture_path": getattr(result, "file_texture_path", ""),
                         "cache_path": getattr(result, "cache_path", ""),
+                        "rebind_status": getattr(result, "rebind_status", ""),
+                        "rebind_reason": getattr(result, "rebind_reason", ""),
+                        "rebind_shader": getattr(result, "rebind_shader", ""),
+                        "rebind_texture_attr": getattr(result, "rebind_texture_attr", ""),
+                        "rebind_has_attr": getattr(result, "rebind_has_attr", ""),
                     }
                     for result in results
                 ],
@@ -184,6 +284,33 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
 
         for row in _snapshot("after"):
             _emit(row, log_path)
+        post_hoc_capture = _capture("post_hoc_resolved")
+
+        cmds.file(new=True, force=True)
+        settings.set("import.model.create_mmd_shaders", True)
+        settings.set("import.model.mmd_shader_backend", "dx11")
+        settings.set("import.model.auto_resolve_textures", True)
+        baseline_root = import_mmd_file(str(model_path), options={"import_physics": False})
+        _emit(
+            {
+                "event": "imported",
+                "phase": "baseline",
+                "auto_resolve": True,
+                "root_node": baseline_root,
+            },
+            log_path,
+        )
+        for row in _snapshot("baseline"):
+            _emit(row, log_path)
+        baseline_capture = _capture("baseline_auto_resolve")
+        _emit(
+            {
+                "event": "comparison_inputs",
+                "post_hoc_capture": post_hoc_capture.get("actual_path", ""),
+                "baseline_capture": baseline_capture.get("actual_path", ""),
+            },
+            log_path,
+        )
 
         summary = f"RESOLVE_E2E: resolved={resolved} failed={failed}"
         _emit({"event": "summary", "line": summary}, log_path)
