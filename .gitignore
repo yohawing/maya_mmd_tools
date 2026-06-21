@@ -22,6 +22,10 @@ dist/
 plug-ins/*
 !plug-ins/.gitkeep
 !plug-ins/*.py
+!plug-ins/*/
+plug-ins/*/__pycache__/
+plug-ins/*/Debug/
+!plug-ins/*/Release/
 
 # IDE specific files
 .idea/
