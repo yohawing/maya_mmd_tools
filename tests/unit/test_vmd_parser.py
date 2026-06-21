@@ -2,16 +2,21 @@ import os
 import tempfile
 
 from mmd_tools.core import mmd_parser
+from mmd_tools.core.exceptions import MMDParseException
 from tests.common.test_base import TestBase
 from tests.common.vmd_mock import VmdMock
 
 
 class TestVmdParser(TestBase):
-    """VMDパーサーのユニットテスト（モックベース）"""
+    """VMDパーサーのユニットテスト。
+
+    bone/morph/IK の基本解析は実フィクスチャ ``tests/data/Lat式用.vmd`` を用いる。
+    camera/light/shadow など実ファイルに含まれないフレームは VmdMock 生成データで補う。
+    """
 
     def setUp(self):
         super().setUp()
-        # 実際のファイルを使用する代わりに、モックデータを使用
+        # bone/morph/IK 系は実フィクスチャを解析して検証する
         self.sample_vmd_path = os.path.join(os.path.dirname(__file__), "..", "data", "Lat式用.vmd")
         self.parsed_data = mmd_parser.parse_mmd_file(self.sample_vmd_path)
 
@@ -205,8 +210,8 @@ class TestVmdParser(TestBase):
             temp_file_path = temp_file.name
 
         try:
-            # パース実行（エラーが発生することを期待）
-            with self.assertRaises(Exception):  # 具体的な例外クラスは実装に依存
+            # パース実行（不正データのため MMDParseException が発生することを期待）
+            with self.assertRaises(MMDParseException):
                 mmd_parser.parse_mmd_file(temp_file_path)
         finally:
             # 一時ファイルを削除

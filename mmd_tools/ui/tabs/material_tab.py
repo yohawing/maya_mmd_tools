@@ -211,6 +211,12 @@ class MaterialTab(BaseTab):
         self.toon_texture_combo.addItems([f"toon{i:02d}.bmp" for i in range(1, 11)])
         texture_layout.addWidget(self.toon_texture_combo, 3, 1, 1, 2)
 
+        self.original_pmx_path_label = QLabel("Original PMX path")
+        texture_layout.addWidget(self.original_pmx_path_label, 4, 0)
+        self.original_pmx_path_edit = QLineEdit()
+        self.original_pmx_path_edit.setReadOnly(True)
+        texture_layout.addWidget(self.original_pmx_path_edit, 4, 1, 1, 2)
+
         self.texture_group.setLayout(texture_layout)
         layout.addWidget(self.texture_group)
 
@@ -253,13 +259,42 @@ class MaterialTab(BaseTab):
         self.edge_size_label = QLabel(self.tr("edge_size", "fields"))
         edge_layout.addWidget(self.edge_size_label, 1, 0)
         self.edge_size_spin = QDoubleSpinBox()
-        self.edge_size_spin.setRange(0.0, 10.0)
-        self.edge_size_spin.setSingleStep(0.1)
+        self.edge_size_spin.setRange(0.0, 2.0)
+        self.edge_size_spin.setSingleStep(0.05)
         self.edge_size_spin.setDecimals(2)
         edge_layout.addWidget(self.edge_size_spin, 1, 1, 1, 2)
 
         self.edge_group.setLayout(edge_layout)
         layout.addWidget(self.edge_group)
+
+        # Viewport Settings
+        self.viewport_group = QGroupBox(self.tr("viewport_settings", "groups"))
+        viewport_layout = QVBoxLayout()
+
+        # Transparency mode (DX11 technique selection: opaque / cutout / blend).
+        # Overrides the importer's heuristic so a misclassified material (e.g. a
+        # sheer skirt drawn opaque) can be forced to blend in the viewport.
+        transparency_mode_layout = QHBoxLayout()
+        self.transparency_mode_label = QLabel(self.tr("transparency_mode", "fields"))
+        self.transparency_mode_combo = QComboBox()
+        self.transparency_mode_combo.addItems(
+            [
+                self.tr("opaque", "transparency_modes"),
+                self.tr("cutout", "transparency_modes"),
+                self.tr("blend", "transparency_modes"),
+            ]
+        )
+        self.shader_outline_check = QCheckBox(self.tr("shader_outline", "rendering_checkboxes"))
+        self.transparency_mode_apply_btn = QPushButton(self.tr("apply_to_selected", "buttons"))
+        transparency_mode_layout.addWidget(self.transparency_mode_label)
+        transparency_mode_layout.addWidget(self.transparency_mode_combo)
+        transparency_mode_layout.addWidget(self.shader_outline_check)
+        transparency_mode_layout.addWidget(self.transparency_mode_apply_btn)
+        transparency_mode_layout.addStretch()
+        viewport_layout.addLayout(transparency_mode_layout)
+
+        self.viewport_group.setLayout(viewport_layout)
+        layout.addWidget(self.viewport_group)
 
         # ストレッチを追加して上に詰める
         layout.addStretch()
@@ -306,6 +341,7 @@ class MaterialTab(BaseTab):
             self.sphere_map_browse_btn,
             self.sphere_mode_combo,
             self.toon_texture_combo,
+            self.original_pmx_path_edit,
             self.both_face_check,
             self.ground_shadow_check,
             self.self_shadow_map_check,
@@ -314,6 +350,9 @@ class MaterialTab(BaseTab):
             self.vertex_color_check,
             self.point_draw_check,
             self.line_draw_check,
+            self.transparency_mode_combo,
+            self.shader_outline_check,
+            self.transparency_mode_apply_btn,
             self.edge_color_widget,
             self.edge_size_spin,
             self.apply_btn,
@@ -340,6 +379,8 @@ class MaterialTab(BaseTab):
             self.texture_group.setTitle(self.tr("textures", "groups"))
         if hasattr(self, "flags_group"):
             self.flags_group.setTitle(self.tr("rendering_flags", "groups"))
+        if hasattr(self, "viewport_group"):
+            self.viewport_group.setTitle(self.tr("viewport_settings", "groups"))
         if hasattr(self, "edge_group"):
             self.edge_group.setTitle(self.tr("edge_properties", "groups"))
 
@@ -380,10 +421,33 @@ class MaterialTab(BaseTab):
             self.sphere_mode_label.setText(self.tr("sphere_mode", "fields"))
         if hasattr(self, "toon_texture_label"):
             self.toon_texture_label.setText(self.tr("toon_texture", "fields"))
+        if hasattr(self, "original_pmx_path_label"):
+            self.original_pmx_path_label.setText("Original PMX path")
         if hasattr(self, "edge_color_label"):
             self.edge_color_label.setText(self.tr("edge_color", "fields"))
         if hasattr(self, "edge_size_label"):
             self.edge_size_label.setText(self.tr("edge_size", "fields"))
+        if hasattr(self, "transparency_mode_label"):
+            self.transparency_mode_label.setText(self.tr("transparency_mode", "fields"))
+        if hasattr(self, "shader_outline_check"):
+            self.shader_outline_check.setText(self.tr("shader_outline", "rendering_checkboxes"))
+        if hasattr(self, "transparency_mode_apply_btn"):
+            self.transparency_mode_apply_btn.setText(self.tr("apply_to_selected", "buttons"))
+
+        # ComboBox items - Transparency modes
+        if hasattr(self, "transparency_mode_combo"):
+            current = self.transparency_mode_combo.currentIndex()
+            self.transparency_mode_combo.blockSignals(True)
+            self.transparency_mode_combo.clear()
+            self.transparency_mode_combo.addItems(
+                [
+                    self.tr("opaque", "transparency_modes"),
+                    self.tr("cutout", "transparency_modes"),
+                    self.tr("blend", "transparency_modes"),
+                ]
+            )
+            self.transparency_mode_combo.setCurrentIndex(max(0, current))
+            self.transparency_mode_combo.blockSignals(False)
 
         # CheckBoxes
         if hasattr(self, "both_face_check"):
@@ -402,6 +466,8 @@ class MaterialTab(BaseTab):
             self.point_draw_check.setText(self.tr("point_drawing", "rendering_checkboxes"))
         if hasattr(self, "line_draw_check"):
             self.line_draw_check.setText(self.tr("line_drawing", "rendering_checkboxes"))
+        if hasattr(self, "shader_outline_check"):
+            self.shader_outline_check.setText(self.tr("shader_outline", "rendering_checkboxes"))
 
         # ComboBox items - Sphere modes
         if hasattr(self, "sphere_mode_combo"):

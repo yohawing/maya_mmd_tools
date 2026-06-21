@@ -1,13 +1,136 @@
 import unittest
 from unittest.mock import Mock
 
-from maya import cmds
+try:
+    from maya import cmds
+    from tests.common.maya_test_base import MayaTestBase
+
+    MAYA_AVAILABLE = True
+except ImportError:
+    cmds = None
+    MayaTestBase = unittest.TestCase
+    MAYA_AVAILABLE = False
 
 from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME_EN, ATTR_MMD_MODEL_NAME
-from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.ui.application_state import ApplicationState
 
 
+class _FakeSceneModelService:
+    def __init__(self):
+        self.models = []
+        self.existing = set()
+        self.selection_model = None
+        self.info = {}
+        self.raise_on_list = False
+
+    def object_exists(self, node):
+        return node in self.existing
+
+    def list_mmd_models(self):
+        if self.raise_on_list:
+            raise RuntimeError("list failed")
+        return list(self.models)
+
+    def resolve_model_from_selection(self, available_models):
+        if self.selection_model in available_models:
+            return self.selection_model
+        return None
+
+    def get_model_info(self, model_root):
+        return self.info.get(model_root, {"root": model_root})
+
+
+class TestApplicationStateWithInjectedService(unittest.TestCase):
+    def test_constructor_accepts_scene_model_service(self):
+        service = _FakeSceneModelService()
+        app_state = ApplicationState(scene_model_service=service)
+
+        self.assertIs(app_state._scene_model_service, service)
+
+    def test_scene_model_service_property_returns_constructor_service(self):
+        service = _FakeSceneModelService()
+        app_state = ApplicationState(scene_model_service=service)
+
+        self.assertIs(app_state.scene_model_service, service)
+        self.assertIsNone(app_state.current_model_root)
+        self.assertEqual(app_state.available_models, [])
+
+    def test_invalid_current_model_emits_empty_string(self):
+        service = _FakeSceneModelService()
+        app_state = ApplicationState(scene_model_service=service)
+        signal_catcher = Mock()
+        app_state.current_model_changed.connect(signal_catcher)
+
+        app_state.current_model_root = "missing_root"
+
+        self.assertIsNone(app_state.current_model_root)
+        signal_catcher.assert_called_once_with("")
+
+    def test_refresh_model_list_prefers_selection_before_first_model(self):
+        service = _FakeSceneModelService()
+        service.models = ["a_root", "b_root"]
+        service.existing = {"a_root", "b_root"}
+        service.selection_model = "b_root"
+        app_state = ApplicationState(scene_model_service=service)
+
+        app_state.refresh_model_list()
+
+        self.assertEqual(app_state.available_models, ["a_root", "b_root"])
+        self.assertEqual(app_state.current_model_root, "b_root")
+
+    def test_refresh_model_list_auto_selects_first_without_selection(self):
+        service = _FakeSceneModelService()
+        service.models = ["a_root", "b_root"]
+        service.existing = {"a_root", "b_root"}
+        app_state = ApplicationState(scene_model_service=service)
+
+        app_state.refresh_model_list()
+
+        self.assertEqual(app_state.current_model_root, "a_root")
+
+    def test_refresh_model_list_clears_current_missing_from_model_list(self):
+        service = _FakeSceneModelService()
+        service.models = ["old_root"]
+        service.existing = {"old_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state.current_model_root = "old_root"
+        service.models = []
+        signal_catcher = Mock()
+        app_state.current_model_changed.connect(signal_catcher)
+
+        app_state.refresh_model_list()
+
+        self.assertIsNone(app_state.current_model_root)
+        signal_catcher.assert_called_with("")
+
+    def test_refresh_model_list_emits_empty_list_on_exception(self):
+        service = _FakeSceneModelService()
+        service.models = ["old_root"]
+        service.existing = {"old_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        app_state.refresh_model_list()
+        service.raise_on_list = True
+        signal_catcher = Mock()
+        app_state.model_list_updated.connect(signal_catcher)
+
+        app_state.refresh_model_list()
+
+        self.assertEqual(app_state.available_models, [])
+        signal_catcher.assert_called_with([])
+
+    def test_get_model_info_uses_service_and_cache(self):
+        service = _FakeSceneModelService()
+        service.existing = {"model_root"}
+        service.info = {"model_root": {"root": "model_root", "vertex_count": 10}}
+        app_state = ApplicationState(scene_model_service=service)
+
+        info = app_state.get_model_info("model_root")
+
+        self.assertEqual(info["vertex_count"], 10)
+        self.assertIs(app_state.get_model_info("model_root"), info)
+
+
+@unittest.skipUnless(MAYA_AVAILABLE, "Maya is not available")
 class TestApplicationState(MayaTestBase):
     """ApplicationStateの単体テスト"""
 

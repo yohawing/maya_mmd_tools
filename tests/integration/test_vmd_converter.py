@@ -138,18 +138,13 @@ class TestVmdConverter(MayaTestBase):
                     animated_joints.append(joint)
                     break
 
-        # 少なくとも1つのジョイントがアニメーションされていることを確認
-        # VMDファイルが存在しアニメーションデータがある場合のみテスト
+        # VMDファイルにボーンフレームがある場合のみアニメーション適用を検証
         if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
-            # アニメーションが設定されたジョイントがない場合はスキップ
-            if len(animated_joints) == 0:
-                self.skipTest("VMDアニメーションの適用に失敗しました")
-            else:
-                self.assertGreater(
-                    len(animated_joints),
-                    0,
-                    "アニメーションが設定されたジョイントがありません",
-                )
+            self.assertGreater(
+                len(animated_joints),
+                0,
+                "VMDにボーンフレームが存在するのにアニメーションが設定されたジョイントがありません",
+            )
 
     def test_get_failed_bones(self):
         """失敗したボーン名の取得テスト"""

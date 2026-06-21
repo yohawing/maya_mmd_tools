@@ -76,8 +76,8 @@ class SettingsTab(BaseTab):
         self.ui_group = QGroupBox(self.tr("ui_settings", "groups"))
         ui_layout = QFormLayout()
 
-        self.show_advanced_options_check = QCheckBox(self.tr("show_advanced_options", "checkboxes"))
-        ui_layout.addRow("", self.show_advanced_options_check)
+        self.development_mode_check = QCheckBox(self.tr("development_mode", "checkboxes"))
+        ui_layout.addRow("", self.development_mode_check)
 
         self.ui_log_level_combo = QComboBox()
         self.ui_log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
@@ -162,7 +162,7 @@ class SettingsTab(BaseTab):
             self.log_file_label.setText(self.tr("log_file", "fields"))
 
         # CheckBoxes
-        if hasattr(self, "show_advanced_options_check"):
-            self.show_advanced_options_check.setText(self.tr("show_advanced_options", "checkboxes"))
+        if hasattr(self, "development_mode_check"):
+            self.development_mode_check.setText(self.tr("development_mode", "checkboxes"))
         if hasattr(self, "logging_enabled_check"):
             self.logging_enabled_check.setText(self.tr("enable_logging", "checkboxes"))

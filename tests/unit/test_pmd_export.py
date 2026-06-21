@@ -3,6 +3,8 @@ PMDエクスポート機能のユニットテスト
 モックデータを使用したラウンドトリップテストを実行
 """
 
+import importlib.machinery
+import importlib.util
 import os
 
 from mmd_tools.core.pmd_data import PmdData
@@ -10,6 +12,18 @@ from mmd_tools.core.pmd_data.vertex import PmdVertex
 from mmd_tools.core.pmd_data.face import PmdFace
 from mmd_tools.core.pmd_data.material import PmdMaterial
 from mmd_tools.core.pmd_data.bone import PmdBone, PmdBoneType
+
+# Load PmdExporter directly without triggering io/__init__.py's maya imports
+_pmd_exporter_path = os.path.join(
+    os.path.dirname(__file__), "..", "..", "mmd_tools", "io", "pmd_exporter.py"
+)
+_loader = importlib.machinery.SourceFileLoader("mmd_tools.io.pmd_exporter", os.path.abspath(_pmd_exporter_path))
+_spec = importlib.util.spec_from_loader(_loader.name, _loader)
+_pmd_exporter_mod = importlib.util.module_from_spec(_spec)
+_loader.exec_module(_pmd_exporter_mod)
+PmdExporter = _pmd_exporter_mod.PmdExporter
+_fan_triangulate = _pmd_exporter_mod._fan_triangulate
+_normalize_bone_weight = _pmd_exporter_mod._normalize_bone_weight
 from tests.common.test_base import TestBase
 from tests.common.pmd_mock import PmdMock
 
@@ -71,9 +85,6 @@ class TestPmdExport(TestBase):
 
     def test_pmd_round_trip_with_full_mock(self):
         """フル機能モックデータを使用したPMDファイルのラウンドトリップテスト"""
-
-        # フル機能モックに問題があるため、一時的にスキップ
-        # self.skipTest("フル機能モックデータに問題があるため一時的にスキップ")
 
         # モックデータを作成
         mock_data = PmdMock.create_full_pmd()
@@ -196,3 +207,339 @@ class TestPmdExport(TestBase):
         self.assertEqual(len(parser2.faces), 1)
         self.assertEqual(len(parser2.materials), 1)
         self.assertEqual(len(parser2.bones), 1)
+
+
+class TestPmdExporterFromDict(TestBase):
+    """PmdExporter.export_pmd_model() をdict入力から呼ぶテスト"""
+
+    def setUp(self):
+        super().setUp()
+        self.exporter = PmdExporter()
+
+    def test_export_triangle_dict_roundtrip(self):
+        """三角形dictをexport -> parse_file で検証"""
+        data = {
+            "model_name": "TriangleTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+        }
+        out_path = os.path.join(self.temp_dir, "triangle.pmd")
+        self.exporter.export_pmd_model(out_path, data)
+
+        pmd = PmdData()
+        pmd.parse_file(out_path)
+
+        self.assertEqual(pmd.header.model_name, "TriangleTest")
+        self.assertEqual(len(pmd.vertices), 3)
+        self.assertEqual(len(pmd.faces), 1)
+        self.assertEqual(len(pmd.materials), 1)
+        # PMD の face_count はインデックス数（面数 * 3）。
+        self.assertEqual(pmd.materials[0].face_count, 3)
+        self.assertEqual(len(pmd.bones), 1)
+
+        # 頂点データの検証
+        v = pmd.vertices[0]
+        self.assertEqual(v.position, (0.0, 0.0, 0.0))
+        self.assertEqual(v.normal, (0.0, 0.0, 1.0))
+        self.assertEqual(v.uv, (0.0, 0.0))
+        self.assertEqual(v.bone_indices, (0, 0))
+        self.assertEqual(v.bone_weight, 100)  # default: 全乗せ
+        self.assertEqual(v.edge_flag, 0)
+
+        # 面の検証
+        self.assertEqual(pmd.faces[0].indices, (0, 1, 2))
+
+        # 自動生成された root ボーンの検証
+        self.assertEqual(pmd.bones[0].name, "root")
+        self.assertEqual(pmd.bones[0].parent_bone_index, -1)
+        self.assertEqual(pmd.bones[0].bone_type, PmdBoneType.ROTATE_AND_MOVE)
+
+    def test_export_quad_triangulation(self):
+        """quad dictをfan triangulate -> export -> parse_file で検証"""
+        data = {
+            "model_name": "QuadTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [1.0, 1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2, 3]],  # quad
+        }
+        out_path = os.path.join(self.temp_dir, "quad.pmd")
+        self.exporter.export_pmd_model(out_path, data)
+
+        pmd = PmdData()
+        pmd.parse_file(out_path)
+
+        self.assertEqual(len(pmd.vertices), 4)
+        self.assertEqual(len(pmd.faces), 2)  # quad -> 2 triangles
+        self.assertEqual(pmd.materials[0].face_count, 6)  # 2 面 * 3
+        self.assertEqual(pmd.faces[0].indices, (0, 1, 2))
+        self.assertEqual(pmd.faces[1].indices, (0, 2, 3))
+
+    def test_export_allows_highest_valid_vertex_index(self):
+        """PMD の unsigned 16bit index 上限 65535 を参照できる。"""
+        vertices = [{"position": [0.0, 0.0, 0.0]} for _ in range(0x10000)]
+        data = {
+            "model_name": "MaxIndex",
+            "vertices": vertices,
+            "faces": [[0xFFFD, 0xFFFE, 0xFFFF]],
+        }
+        out_path = os.path.join(self.temp_dir, "max_index.pmd")
+        self.exporter.export_pmd_model(out_path, data)
+
+        pmd = PmdData()
+        pmd.parse_file(out_path)
+
+        self.assertEqual(len(pmd.vertices), 0x10000)
+        self.assertEqual(pmd.faces[0].indices, (0xFFFD, 0xFFFE, 0xFFFF))
+
+    def test_export_rejects_vertex_count_above_pmd_index_range(self):
+        """65537 頂点以上は PMD の face index で表現できないため拒否する。"""
+        vertices = [{"position": [0.0, 0.0, 0.0]} for _ in range(0x10001)]
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmd_model(
+                os.path.join(self.temp_dir, "too_many_vertices.pmd"),
+                {"vertices": vertices, "faces": [[0, 1, 2]]},
+            )
+
+    def test_export_material_face_count_none_gets_remaining_indices(self):
+        """face_count=None は未指定扱いで残りインデックス数を割り当てる。"""
+        data = {
+            "model_name": "MatNone",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "materials": [
+                {"name": "MatA", "face_count": None},
+                {"name": "MatB", "face_count": 0},
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "mat_none.pmd")
+        self.exporter.export_pmd_model(out_path, data)
+
+        pmd = PmdData()
+        pmd.parse_file(out_path)
+
+        self.assertEqual(len(pmd.materials), 2)
+        self.assertEqual(pmd.materials[0].face_count, 3)
+        self.assertEqual(pmd.materials[1].face_count, 0)
+
+    def test_export_pmx_style_material_toon_minus_one_is_clamped(self):
+        """PMX互換 material の toon_texture_index=-1 は PMD の 0 に正規化する。"""
+        data = {
+            "model_name": "PmxStyleMaterial",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "materials": [
+                {
+                    "name": "MatA",
+                    "toon_texture_index": -1,
+                    "face_count": 3,
+                }
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "toon_minus_one.pmd")
+        self.exporter.export_pmd_model(out_path, data)
+
+        pmd = PmdData()
+        pmd.parse_file(out_path)
+
+        self.assertEqual(pmd.materials[0].toon_texture_index, 0)
+
+    def test_export_custom_material_bone_header_roundtrip(self):
+        """ヘッダ英名・材質・複数ボーンを指定した dict の roundtrip"""
+        data = {
+            "model_name": "CustomModel",
+            "model_name_english": "ModelEN",
+            "comment": "JP comment",
+            "comment_english": "EN comment",
+            "vertices": [
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 0.0],
+                    "bone_indices": [0, 1],
+                    "bone_weights": [0.75, 0.25],
+                },
+                {
+                    "position": [1.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [1.0, 0.0],
+                    "bone_indices": [0, 1],
+                    "bone_weight": 40,
+                },
+                {
+                    "position": [0.0, 1.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 1.0],
+                    "edge_flag": 1,
+                },
+            ],
+            "faces": [[0, 1, 2]],
+            "materials": [
+                {
+                    "name": "MatA",
+                    "diffuse": [1.0, 0.0, 0.0, 1.0],
+                    "specular_power": 12.0,
+                    "specular": [0.1, 0.2, 0.3],
+                    "ambient": [0.4, 0.5, 0.6],
+                    "toon_texture_index": 1,
+                    "edge_flag": 1,
+                    "texture_file_name": "tex.bmp",
+                }
+            ],
+            "bones": [
+                {"name": "root", "name_english": "Root", "position": [0.0, 0.0, 0.0]},
+                {
+                    "name": "arm",
+                    "name_english": "Arm",
+                    "parent_index": 0,
+                    "tail_pos_bone_index": 0,
+                    "bone_type": PmdBoneType.ROTATE_AND_MOVE,
+                    "ik_parent_bone_index": 0,
+                    "position": [1.0, 2.0, 3.0],
+                },
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "custom.pmd")
+        self.exporter.export_pmd_model(out_path, data)
+
+        pmd = PmdData()
+        pmd.parse_file(out_path)
+
+        # ヘッダ
+        self.assertEqual(pmd.header.model_name, "CustomModel")
+        self.assertEqual(pmd.header.model_name_english, "ModelEN")
+        self.assertEqual(pmd.header.comment, "JP comment")
+        self.assertEqual(pmd.header.comment_english, "EN comment")
+
+        # 材質
+        self.assertEqual(len(pmd.materials), 1)
+        mat = pmd.materials[0]
+        self.assertAlmostEqual(mat.diffuse[0], 1.0)
+        self.assertAlmostEqual(mat.diffuse[1], 0.0)
+        self.assertAlmostEqual(mat.specular_power, 12.0)
+        self.assertAlmostEqual(mat.specular[0], 0.1, places=5)
+        self.assertAlmostEqual(mat.ambient[2], 0.6, places=5)
+        self.assertEqual(mat.toon_texture_index, 1)
+        self.assertEqual(mat.edge_flag, 1)
+        self.assertEqual(mat.texture_file_name, "tex.bmp")
+        self.assertEqual(mat.face_count, 3)
+
+        # 頂点の重み
+        self.assertEqual(pmd.vertices[0].bone_indices, (0, 1))
+        self.assertEqual(pmd.vertices[0].bone_weight, 75)  # 0.75 -> 75
+        self.assertEqual(pmd.vertices[1].bone_weight, 40)  # int そのまま
+        self.assertEqual(pmd.vertices[2].edge_flag, 1)
+
+        # ボーン
+        self.assertEqual(len(pmd.bones), 2)
+        self.assertEqual(pmd.bones[0].name, "root")
+        self.assertEqual(pmd.bones[0].name_english, "Root")
+        self.assertEqual(pmd.bones[0].parent_bone_index, -1)
+        self.assertEqual(pmd.bones[1].name, "arm")
+        self.assertEqual(pmd.bones[1].name_english, "Arm")
+        self.assertEqual(pmd.bones[1].parent_bone_index, 0)
+        self.assertEqual(pmd.bones[1].bone_type, PmdBoneType.ROTATE_AND_MOVE)
+        self.assertAlmostEqual(pmd.bones[1].position[0], 1.0)
+        self.assertAlmostEqual(pmd.bones[1].position[1], 2.0)
+        self.assertAlmostEqual(pmd.bones[1].position[2], 3.0)
+
+    def test_export_empty_vertices_raises(self):
+        """vertices空でValueError"""
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmd_model(
+                os.path.join(self.temp_dir, "empty.pmd"),
+                {"vertices": [], "faces": [[0, 1, 2]]},
+            )
+
+    def test_export_empty_faces_raises(self):
+        """faces空でValueError"""
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmd_model(
+                os.path.join(self.temp_dir, "empty.pmd"),
+                {"vertices": [{"position": [0.0, 0.0, 0.0]}], "faces": []},
+            )
+
+    def test_export_face_vertex_index_out_of_range_raises(self):
+        """face の vertex index が頂点数を超える場合は ValueError"""
+        data = {
+            "model_name": "BadFaceIndex",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 3]],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmd_model(
+                os.path.join(self.temp_dir, "bad_face_index.pmd"),
+                data,
+            )
+
+    def test_export_bone_index_out_of_range_raises(self):
+        """vertex の bone index が bone 数を超える場合は ValueError"""
+        data = {
+            "model_name": "BadBoneIndex",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "bone_indices": [2, 0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "root"}],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmd_model(
+                os.path.join(self.temp_dir, "bad_bone_index.pmd"),
+                data,
+            )
+
+    def test_export_empty_bones_raises(self):
+        """bones が指定されているが空の場合は ValueError"""
+        data = {
+            "model_name": "EmptyBones",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmd_model(
+                os.path.join(self.temp_dir, "empty_bones.pmd"),
+                data,
+            )
+
+    def test_fan_triangulate(self):
+        """_fan_triangulate helper"""
+        self.assertEqual(_fan_triangulate([0, 1, 2, 3]), [[0, 1, 2], [0, 2, 3]])
+        self.assertEqual(
+            _fan_triangulate([0, 1, 2, 3, 4]),
+            [[0, 1, 2], [0, 2, 3], [0, 3, 4]],
+        )
+        self.assertEqual(_fan_triangulate([0, 1, 2]), [[0, 1, 2]])
+
+    def test_normalize_bone_weight(self):
+        """_normalize_bone_weight helper"""
+        self.assertEqual(_normalize_bone_weight({"bone_weight": 60}), 60)
+        self.assertEqual(_normalize_bone_weight({"bone_weights": [0.75, 0.25]}), 75)
+        self.assertEqual(_normalize_bone_weight({}), 100)  # default
+        self.assertEqual(_normalize_bone_weight({"bone_weight": 200}), 100)  # clamp
+        self.assertEqual(_normalize_bone_weight({"bone_weight": -10}), 0)  # clamp

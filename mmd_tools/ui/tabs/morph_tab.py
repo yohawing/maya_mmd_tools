@@ -295,9 +295,9 @@ class MorphTab(BaseTab):
         widget = QWidget()
         layout = QVBoxLayout(widget)
 
-        # オフセット数表示
+        # オフセット数表示（オフセットデータ表示は未対応のため未対応ラベルを表示）
         info_layout = QHBoxLayout()
-        self.offset_count_label = QLabel(self.tr("offset_count", "labels") + ": 0")
+        self.offset_count_label = QLabel(self.tr("offset_not_supported", "labels"))
         info_layout.addWidget(self.offset_count_label)
         info_layout.addStretch()
         layout.addLayout(info_layout)
@@ -322,6 +322,10 @@ class MorphTab(BaseTab):
         self.add_offset_btn = QPushButton(self.tr("add", "buttons"))
         self.remove_offset_btn = QPushButton(self.tr("delete", "buttons"))
         self.clear_offsets_btn = QPushButton(self.tr("clear_all", "actions"))
+        # オフセット操作は presenter にシグナル未接続、かつオフセット表示自体が未実装の
+        # ため無効化する（押しても無反応を防ぐ）。実装・接続後に再有効化する。
+        for _offset_btn in (self.add_offset_btn, self.remove_offset_btn, self.clear_offsets_btn):
+            _offset_btn.setEnabled(False)
         toolbar_layout.addWidget(self.add_offset_btn)
         toolbar_layout.addWidget(self.remove_offset_btn)
         toolbar_layout.addWidget(self.clear_offsets_btn)
@@ -484,10 +488,9 @@ class MorphTab(BaseTab):
         if hasattr(self, "multiplier_label"):
             self.multiplier_label.setText(self.tr("multiplier", "fields"))
 
-        # Update offset count label
+        # オフセット表示は未対応のため、件数ではなく未対応ラベルを表示する
         if hasattr(self, "offset_count_label"):
-            count = self.offset_table.rowCount() if hasattr(self, "offset_table") else 0
-            self.offset_count_label.setText(self.tr("offset_count", "labels") + f": {count}")
+            self.offset_count_label.setText(self.tr("offset_not_supported", "labels"))
 
         # CheckBoxes
         if hasattr(self, "invert_check"):

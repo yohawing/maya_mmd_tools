@@ -3,13 +3,29 @@ PMXエクスポート機能のユニットテスト
 モックデータを使用したラウンドトリップテストを実行
 """
 
+import importlib.machinery
+import importlib.util
 import os
 
 from mmd_tools.core.pmx_data import PmxData
+
+# Load PmxExporter directly without triggering io/__init__.py's maya imports
+_pmx_exporter_path = os.path.join(
+    os.path.dirname(__file__), "..", "..", "mmd_tools", "io", "pmx_exporter.py"
+)
+_loader = importlib.machinery.SourceFileLoader("mmd_tools.io.pmx_exporter", os.path.abspath(_pmx_exporter_path))
+_spec = importlib.util.spec_from_loader(_loader.name, _loader)
+_pmx_exporter_mod = importlib.util.module_from_spec(_spec)
+_loader.exec_module(_pmx_exporter_mod)
+PmxExporter = _pmx_exporter_mod.PmxExporter
+_choose_index_size = _pmx_exporter_mod._choose_index_size
+_choose_reference_index_size = _pmx_exporter_mod._choose_reference_index_size
+_fan_triangulate = _pmx_exporter_mod._fan_triangulate
 from mmd_tools.core.pmx_data.vertex import PmxVertex
 from mmd_tools.core.pmx_data.face import PmxFace
 from mmd_tools.core.pmx_data.material import PmxMaterial
-from mmd_tools.core.pmx_data.bone import PmxBone
+from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
 from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
@@ -263,3 +279,1022 @@ class TestPmxExport(TestBase):
         self.assertEqual(len(parser2.faces), 1)
         self.assertEqual(len(parser2.materials), 1)
         self.assertEqual(len(parser2.bones), 1)
+
+
+class TestPmxExporterFromDict(TestBase):
+    """PmxExporter.export_pmx_model() をdict入力から呼ぶテスト"""
+
+    def setUp(self):
+        super().setUp()
+        self.exporter = PmxExporter()
+
+    def test_export_triangle_dict_roundtrip(self):
+        """三角形dictをexport -> parse_file で検証"""
+        data = {
+            "model_name": "TriangleTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+        }
+        out_path = os.path.join(self.temp_dir, "triangle.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(pmx.header.model_name, "TriangleTest")
+        self.assertEqual(pmx.header.version, 2.0)
+        self.assertEqual(len(pmx.vertices), 3)
+        self.assertEqual(len(pmx.faces), 1)
+        self.assertEqual(len(pmx.materials), 1)
+        self.assertEqual(pmx.materials[0].face_count, 3)
+        self.assertEqual(len(pmx.bones), 1)
+        self.assertEqual(len(pmx.display_frames), 2)
+
+        # Verify vertex data
+        v = pmx.vertices[0]
+        self.assertEqual(v.position, (0.0, 0.0, 0.0))
+        self.assertEqual(v.normal, (0.0, 0.0, 1.0))
+        self.assertEqual(v.uv, (0.0, 0.0))
+        self.assertEqual(v.weight_transform_type, 0)  # BDEF1
+        self.assertEqual(v.bone_indices, [0])
+        self.assertAlmostEqual(v.edge_magnification, 1.0)
+
+        # Verify face
+        self.assertEqual(pmx.faces[0].indices, (0, 1, 2))
+
+    def test_export_display_frame_name_roundtrip_matches_header_encoding(self):
+        """dict export でヘッダと同じ encoding_flag で表示枠名を保存できる"""
+        data = {
+            "model_name": "DisplayFrameEncodingTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+        }
+        out_path = os.path.join(self.temp_dir, "display_encoding.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(pmx.header.encoding_flag, 0)
+        self.assertEqual(len(pmx.display_frames), 2)
+        self.assertEqual(pmx.display_frames[1].name, "表情")
+
+    def test_export_roundtrip_keeps_supported_field_values(self):
+        """ヘッダ英名 / 材質英名・flags / 接続位置オフセットを保持する"""
+        data = {
+            "model_name": "TestModel",
+            "model_name_english": "TestModelEnglish",
+            "comment": "JP comment",
+            "comment_english": "EN comment",
+            "vertices": [
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 0.0],
+                    "bone_indices": [0, 0],
+                    "bone_weights": [1.0, 0.0],
+                },
+                {
+                    "position": [1.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [1.0, 0.0],
+                },
+                {
+                    "position": [0.0, 1.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 1.0],
+                },
+            ],
+            "faces": [[0, 1, 2]],
+            "textures": ["material.png"],
+            "materials": [
+                {
+                    "name": "MatA",
+                    "name_english": "MaterialEN",
+                    "diffuse": [1.0, 0.0, 0.0, 1.0],
+                    "draw_flag": 0x12,
+                    "edge_color": [0.1, 0.2, 0.3, 0.4],
+                    "edge_size": 2.5,
+                    "texture_index": 0,
+                    "sphere_mode": 1,
+                    "shared_toon_flag": 1,
+                    "toon_texture_index": 0,
+                    "memo": "unit test",
+                }
+            ],
+            "bones": [
+                {
+                    "name": "root",
+                    "position": [0.0, 0.0, 0.0],
+                    "connect_position_offset": [0.0, 4.999999523162842, 0.0],
+                    "bone_flag": int(PmxBoneFlag.DISPLAY | PmxBoneFlag.OPERATABLE),
+                }
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "supported_fields.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(pmx.header.model_name_english, "TestModelEnglish")
+        self.assertEqual(pmx.header.comment, "JP comment")
+        self.assertEqual(pmx.header.comment_english, "EN comment")
+        self.assertEqual(pmx.materials[0].name_english, "MaterialEN")
+        self.assertEqual(pmx.materials[0].draw_flag, 0x12)
+        self.assertEqual(pmx.materials[0].edge_size, 2.5)
+        self.assertAlmostEqual(pmx.materials[0].edge_color[0], 0.1)
+        self.assertAlmostEqual(pmx.materials[0].edge_color[1], 0.2)
+        self.assertAlmostEqual(pmx.materials[0].edge_color[2], 0.3)
+        self.assertAlmostEqual(pmx.materials[0].edge_color[3], 0.4)
+        self.assertEqual(pmx.materials[0].texture_index, 0)
+        self.assertEqual(pmx.materials[0].sphere_mode, 1)
+        self.assertEqual(pmx.materials[0].shared_toon_flag, 1)
+        self.assertEqual(pmx.materials[0].toon_texture_index, 0)
+        self.assertEqual(pmx.materials[0].memo, "unit test")
+        self.assertEqual(
+            pmx.bones[0].connect_position_offset,
+            (0.0, 4.999999523162842, 0.0),
+        )
+
+    def test_export_quad_triangulation(self):
+        """quad dictをfan triangulate -> export -> parse_file で検証"""
+        data = {
+            "model_name": "QuadTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [1.0, 1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2, 3]],  # quad
+        }
+        out_path = os.path.join(self.temp_dir, "quad.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.vertices), 4)
+        self.assertEqual(len(pmx.faces), 2)  # quad -> 2 triangles
+        self.assertEqual(pmx.materials[0].face_count, 6)
+        self.assertEqual(pmx.faces[0].indices, (0, 1, 2))
+        self.assertEqual(pmx.faces[1].indices, (0, 2, 3))
+
+    def test_export_empty_vertices_raises(self):
+        """vertices空でValueError"""
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "empty.pmx"),
+                {"vertices": [], "faces": [[0, 1, 2]]},
+            )
+
+    def test_export_empty_faces_raises(self):
+        """faces空でValueError"""
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "empty.pmx"),
+                {"vertices": [{"position": [0.0, 0.0, 0.0]}], "faces": []},
+            )
+
+    def test_export_multi_material_face_count(self):
+        """複数マテリアルでface_countが指定されない場合の挙動"""
+        data = {
+            "model_name": "MultiMat",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+                {"position": [1.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2], [1, 3, 2]],
+            "materials": [
+                {"name": "MatA", "diffuse": [1.0, 0.0, 0.0, 1.0]},
+                {"name": "MatB", "diffuse": [0.0, 1.0, 0.0, 1.0]},
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "multimat.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.materials), 2)
+        self.assertEqual(pmx.materials[0].face_count, 6)  # first gets all index count
+        self.assertEqual(pmx.materials[1].face_count, 0)
+
+    def test_export_material_face_count_none_gets_remaining_indices(self):
+        """face_count=None は未指定扱いで残りインデックス数を割り当てる。"""
+        data = {
+            "model_name": "MatNone",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "materials": [
+                {"name": "MatA", "face_count": None},
+                {"name": "MatB", "face_count": 0},
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "mat_none.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.materials), 2)
+        self.assertEqual(pmx.materials[0].face_count, 3)
+        self.assertEqual(pmx.materials[1].face_count, 0)
+
+    def test_export_with_textures(self):
+        """テクスチャ指定あり"""
+        data = {
+            "model_name": "TexTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "textures": ["tex_a.png", "tex_b.png"],
+            "materials": [
+                {"name": "WithTex", "diffuse": [1.0, 1.0, 1.0, 1.0]},
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "tex.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.textures), 2)
+        self.assertEqual(pmx.textures[0], "tex_a.png")
+        self.assertEqual(pmx.textures[1], "tex_b.png")
+
+    def test_choose_index_size(self):
+        """_choose_index_size helper"""
+        self.assertEqual(_choose_index_size(0), 1)
+        self.assertEqual(_choose_index_size(0xFF), 1)
+        self.assertEqual(_choose_index_size(0x100), 2)
+        self.assertEqual(_choose_index_size(0xFFFF), 2)
+        self.assertEqual(_choose_index_size(0x10000), 4)
+
+    def test_choose_reference_index_size(self):
+        """_choose_reference_index_size helper"""
+        self.assertEqual(_choose_reference_index_size(0), 1)
+        self.assertEqual(_choose_reference_index_size(0x7F), 1)
+        self.assertEqual(_choose_reference_index_size(0x80), 2)
+        self.assertEqual(_choose_reference_index_size(0x7FFF), 2)
+        self.assertEqual(_choose_reference_index_size(0x8000), 4)
+
+    def test_export_vertex_index_size_uses_unsigned_cutoff(self):
+        """vertex index size は unsigned cutoff を使う"""
+        vertex_count = 0x100
+        data = {
+            "model_name": "VertexIndexUnsignedCutoff",
+            "vertices": [{"position": [0.0, 0.0, 0.0]} for _ in range(vertex_count)],
+            "faces": [[0, 1, 2]],
+        }
+        out_path = os.path.join(self.temp_dir, "vertex_cutoff.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(pmx.header.vertex_index_size, 2)
+        self.assertEqual(pmx.header.bone_index_size, 1)
+
+    def test_export_reference_index_sizes_use_signed_cutoff(self):
+        """参照 index size は signed cutoff を使う"""
+        count = 0x80
+        data = {
+            "model_name": "ReferenceIndexSignedCutoff",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": f"Bone{i}"} for i in range(count)],
+            "textures": [f"tex_{i}.png" for i in range(count)],
+            "materials": [{"name": f"Mat{i}"} for i in range(count)],
+            "morphs": [{"type": "vertex", "name": f"Morph{i}"} for i in range(count)],
+            "rigid_bodies": [{"name": f"RB{i}"} for i in range(count)],
+        }
+        out_path = os.path.join(self.temp_dir, "reference_cutoff.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(pmx.header.bone_index_size, 2)
+        self.assertEqual(pmx.header.texture_index_size, 2)
+        self.assertEqual(pmx.header.material_index_size, 2)
+        self.assertEqual(pmx.header.morph_index_size, 2)
+        self.assertEqual(pmx.header.rigid_body_index_size, 2)
+
+    def test_fan_triangulate(self):
+        """_fan_triangulate helper"""
+        self.assertEqual(_fan_triangulate([0, 1, 2, 3]), [[0, 1, 2], [0, 2, 3]])
+        self.assertEqual(
+            _fan_triangulate([0, 1, 2, 3, 4]),
+            [[0, 1, 2], [0, 2, 3], [0, 3, 4]],
+        )
+        self.assertEqual(_fan_triangulate([0, 1, 2]), [[0, 1, 2]])
+
+    def test_export_with_edge_magnification(self):
+        """edge_magnification が正しく保存される"""
+        data = {
+            "model_name": "EdgeTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "edge_magnification": 0.5},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+        }
+        out_path = os.path.join(self.temp_dir, "edge.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertAlmostEqual(pmx.vertices[0].edge_magnification, 0.5)
+        self.assertAlmostEqual(pmx.vertices[1].edge_magnification, 1.0)  # default
+
+    # --- Phase 2: bone + skin weight tests ---
+
+    def test_export_two_bones_bdef2_roundtrip(self):
+        """bones 2本 + BDEF2 vertex の export -> parse_file 検証"""
+        data = {
+            "model_name": "BoneBDEF2Test",
+            "vertices": [
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 0.0],
+                    "bone_indices": [0, 1],
+                    "bone_weights": [0.75, 0.25],
+                },
+                {
+                    "position": [1.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [1.0, 0.0],
+                    "bone_indices": [0, 1],
+                    "bone_weights": [0.5],
+                },
+                {
+                    "position": [0.0, 1.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "uv": [0.0, 1.0],
+                    "bone_indices": [0, 1],
+                },
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [
+                {"name": "root", "position": [0.0, 0.0, 0.0]},
+                {"name": "bone1", "position": [5.0, 0.0, 0.0], "parent_index": 0},
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "bone_bdef2.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(pmx.header.model_name, "BoneBDEF2Test")
+        self.assertEqual(len(pmx.bones), 2)
+        self.assertEqual(pmx.header.bone_index_size, 1)  # 2 bones <= 0xFF
+        self.assertEqual(len(pmx.display_frames), 2)
+
+        # Verify bones
+        self.assertEqual(pmx.bones[0].name, "root")
+        self.assertEqual(pmx.bones[0].position, (0.0, 0.0, 0.0))
+        self.assertEqual(pmx.bones[0].parent_bone_index, -1)
+
+        self.assertEqual(pmx.bones[1].name, "bone1")
+        self.assertEqual(pmx.bones[1].position, (5.0, 0.0, 0.0))
+        self.assertEqual(pmx.bones[1].parent_bone_index, 0)
+
+        # Verify BDEF2 vertex
+        v0 = pmx.vertices[0]
+        self.assertEqual(v0.weight_transform_type, 1)  # BDEF2
+        self.assertEqual(v0.bone_indices, [0, 1])
+        self.assertEqual(len(v0.bone_weights), 1)
+        self.assertAlmostEqual(v0.bone_weights[0], 0.75)
+
+        v1 = pmx.vertices[1]
+        self.assertEqual(v1.weight_transform_type, 1)  # BDEF2
+        self.assertEqual(v1.bone_indices, [0, 1])
+        self.assertAlmostEqual(v1.bone_weights[0], 0.5)
+
+        # Vertex without bone_weights defaults to 0.5
+        v2 = pmx.vertices[2]
+        self.assertEqual(v2.weight_transform_type, 1)  # BDEF2
+        self.assertAlmostEqual(v2.bone_weights[0], 0.5)
+
+    def test_export_bdef4_roundtrip(self):
+        """BDEF4 vertex の export -> parse_file 検証"""
+        data = {
+            "model_name": "BDEF4Test",
+            "vertices": [
+                {
+                    "position": [0.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "bone_indices": [0, 1, 2, 3],
+                    "bone_weights": [0.4, 0.3, 0.2, 0.1],
+                },
+                {
+                    "position": [1.0, 0.0, 0.0],
+                    "normal": [0.0, 0.0, 1.0],
+                    "bone_indices": [0, 1, 2, 3],
+                    "bone_weights": [0.5],  # padded with 0
+                },
+            ],
+            "faces": [[0, 1, 0]],  # degenerate face for parsing
+            "bones": [
+                {"name": "b0"},
+                {"name": "b1"},
+                {"name": "b2"},
+                {"name": "b3"},
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "bdef4.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.bones), 4)
+        self.assertEqual(pmx.header.bone_index_size, 1)
+
+        # Verify BDEF4 vertex with full weights
+        v0 = pmx.vertices[0]
+        self.assertEqual(v0.weight_transform_type, 2)  # BDEF4
+        self.assertEqual(v0.bone_indices, [0, 1, 2, 3])
+        self.assertEqual(len(v0.bone_weights), 4)
+        self.assertAlmostEqual(v0.bone_weights[0], 0.4)
+        self.assertAlmostEqual(v0.bone_weights[1], 0.3)
+        self.assertAlmostEqual(v0.bone_weights[2], 0.2)
+        self.assertAlmostEqual(v0.bone_weights[3], 0.1)
+
+        # Verify BDEF4 vertex with padded weights
+        v1 = pmx.vertices[1]
+        self.assertEqual(v1.weight_transform_type, 2)  # BDEF4
+        self.assertAlmostEqual(v1.bone_weights[0], 0.5)
+        self.assertAlmostEqual(v1.bone_weights[1], 0.0)
+        self.assertAlmostEqual(v1.bone_weights[2], 0.0)
+        self.assertAlmostEqual(v1.bone_weights[3], 0.0)
+
+    def test_vertex_unsupported_bone_indices_len_raises(self):
+        """bone_indices 長さが 1/2/4 以外で ValueError"""
+        for bad_len in (0, 3, 5):
+            data = {
+                "model_name": "Bad",
+                "vertices": [
+                    {
+                        "position": [0.0, 0.0, 0.0],
+                        "bone_indices": list(range(bad_len)),
+                    },
+                    {"position": [1.0, 0.0, 0.0]},
+                    {"position": [0.0, 1.0, 0.0]},
+                ],
+                "faces": [[0, 1, 2]],
+            }
+            with self.assertRaises(ValueError):
+                self.exporter.export_pmx_model(
+                    os.path.join(self.temp_dir, f"bad_len_{bad_len}.pmx"),
+                    data,
+                )
+
+    def test_export_empty_bones_raises(self):
+        """bones が指定されているが空の場合は ValueError"""
+        data = {
+            "model_name": "EmptyBones",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "empty_bones.pmx"),
+                data,
+            )
+
+    def test_export_bone_index_out_of_range_raises(self):
+        """vertex の bone index が bone 数を超える場合は ValueError"""
+        data = {
+            "model_name": "BadBoneIndex",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "bone_indices": [2]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "root"}],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_bone_index.pmx"),
+                data,
+            )
+
+    def test_export_face_vertex_index_out_of_range_raises(self):
+        """face の vertex index が頂点数を超える場合は ValueError"""
+        data = {
+            "model_name": "BadFaceIndex",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 3]],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_face_index.pmx"),
+                data,
+            )
+
+    def test_export_bones_not_specified_auto_root(self):
+        """bones 未指定なら既存通り root 1本を自動作成 (Phase1互換)"""
+        data = {
+            "model_name": "AutoRoot",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+        }
+        out_path = os.path.join(self.temp_dir, "autoroot.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.bones), 1)
+        self.assertEqual(pmx.bones[0].name, "root")
+        self.assertEqual(pmx.header.bone_index_size, 1)
+
+    def test_export_vertex_morph_roundtrip(self):
+        """VertexMorph dict の export -> parse_file 検証"""
+        data = {
+            "model_name": "VertexMorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "morphs": [
+                {
+                    "type": "vertex",
+                    "name": "smile",
+                    "name_english": "smile_en",
+                    "panel": 3,
+                    "offsets": [
+                        {"vertex_index": 1, "position_offset": [0.1, 0.2, 0.3]},
+                        {"vertex_index": 2, "position_offset": [-0.1, 0.0, 0.0]},
+                    ],
+                }
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "vertex_morph.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.morphs), 1)
+        morph = pmx.morphs[0]
+        self.assertEqual(morph.name, "smile")
+        self.assertEqual(morph.name_english, "smile_en")
+        self.assertEqual(morph.panel, 3)
+        self.assertEqual(int(morph.morph_type), 1)
+        self.assertEqual(len(morph.offsets), 2)
+        self.assertEqual(morph.offsets[0]["vertex_index"], 1)
+        self.assertAlmostEqual(morph.offsets[0]["position_offset"][0], 0.1)
+        self.assertAlmostEqual(morph.offsets[0]["position_offset"][1], 0.2)
+        self.assertAlmostEqual(morph.offsets[0]["position_offset"][2], 0.3)
+        self.assertEqual(morph.offsets[1]["vertex_index"], 2)
+
+    def test_export_bone_morph_roundtrip(self):
+        """BoneMorph dict の export -> parse_file 検証"""
+        data = {
+            "model_name": "BoneMorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [
+                {"name": "root", "position": [0.0, 0.0, 0.0]},
+                {"name": "bone1", "position": [5.0, 0.0, 0.0], "parent_index": 0},
+            ],
+            "morphs": [
+                {
+                    "type": "bone",
+                    "name": "brow_up",
+                    "name_english": "brow_up",
+                    "panel": 1,
+                    "offsets": [
+                        {
+                            "bone_index": 0,
+                            "translation": [0.0, 0.5, 0.0],
+                            "rotation": [0.0, 0.0, 0.0, 1.0],
+                        },
+                        {
+                            "bone_index": 1,
+                            "translation": [0.0, -0.2, 0.0],
+                        },
+                    ],
+                }
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "bone_morph.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.morphs), 1)
+        morph = pmx.morphs[0]
+        self.assertEqual(morph.name, "brow_up")
+        self.assertEqual(morph.name_english, "brow_up")
+        self.assertEqual(morph.panel, 1)
+        self.assertEqual(int(morph.morph_type), 2)  # BoneMorph
+        self.assertEqual(len(morph.offsets), 2)
+
+        # First offset: explicit bone_index, translation, rotation
+        off0 = morph.offsets[0]
+        self.assertEqual(off0["bone_index"], 0)
+        self.assertAlmostEqual(off0["translation"][0], 0.0)
+        self.assertAlmostEqual(off0["translation"][1], 0.5)
+        self.assertAlmostEqual(off0["translation"][2], 0.0)
+        self.assertAlmostEqual(off0["rotation"][3], 1.0)
+
+        # Second offset: defaults for rotation
+        off1 = morph.offsets[1]
+        self.assertEqual(off1["bone_index"], 1)
+        self.assertAlmostEqual(off1["translation"][1], -0.2)
+        self.assertAlmostEqual(off1["rotation"][0], 0.0)
+        self.assertAlmostEqual(off1["rotation"][1], 0.0)
+        self.assertAlmostEqual(off1["rotation"][2], 0.0)
+        self.assertAlmostEqual(off1["rotation"][3], 1.0)
+
+    def test_export_bone_morph_index_out_of_range_raises(self):
+        """BoneMorph offset の bone_index が範囲外なら ValueError"""
+        data = {
+            "model_name": "BadBoneMorph",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "root"}],
+            "morphs": [
+                {
+                    "type": "bone",
+                    "name": "bad",
+                    "offsets": [{"bone_index": 2}],
+                }
+            ],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_bone_morph.pmx"),
+                data,
+            )
+
+    def test_export_material_morph_roundtrip(self):
+        """MaterialMorph dict の export -> parse_file 検証"""
+        data = {
+            "model_name": "MaterialMorphTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "materials": [
+                {"name": "MatA"},
+                {"name": "MatB"},
+            ],
+            "morphs": [
+                {
+                    "type": "material",
+                    "name": "hide_mat",
+                    "name_english": "hide_mat",
+                    "panel": 4,
+                    "offsets": [
+                        {
+                            "material_index": 0,
+                            "operation_type": 0,
+                            "diffuse": [0.0, 0.0, 0.0, 0.0],
+                            "specular": [0.1, 0.2, 0.3],
+                            "specular_coefficient": 0.5,
+                            "ambient": [0.4, 0.5, 0.6],
+                            "edge_color": [1.0, 0.0, 0.0, 1.0],
+                            "edge_size": 2.0,
+                            "texture_factor": [0.5, 0.5, 0.5, 1.0],
+                            "sphere_texture_factor": [0.0, 0.0, 0.0, 0.0],
+                            "toon_texture_factor": [0.2, 0.2, 0.2, 1.0],
+                        },
+                        {
+                            "material_index": -1,
+                            # all other fields use defaults
+                        },
+                    ],
+                }
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "material_morph.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.morphs), 1)
+        morph = pmx.morphs[0]
+        self.assertEqual(morph.name, "hide_mat")
+        self.assertEqual(morph.name_english, "hide_mat")
+        self.assertEqual(morph.panel, 4)
+        self.assertEqual(int(morph.morph_type), 8)  # MaterialMorph
+        self.assertEqual(len(morph.offsets), 2)
+
+        # First offset: explicit values
+        off0 = morph.offsets[0]
+        self.assertEqual(off0["material_index"], 0)
+        self.assertEqual(off0["operation_type"], 0)
+        self.assertAlmostEqual(off0["diffuse"][0], 0.0)
+        self.assertAlmostEqual(off0["diffuse"][3], 0.0)
+        self.assertAlmostEqual(off0["specular"][1], 0.2)
+        self.assertAlmostEqual(off0["specular_coefficient"], 0.5)
+        self.assertAlmostEqual(off0["ambient"][0], 0.4)
+        self.assertAlmostEqual(off0["edge_color"][0], 1.0)
+        self.assertAlmostEqual(off0["edge_color"][3], 1.0)
+        self.assertAlmostEqual(off0["edge_size"], 2.0)
+        self.assertAlmostEqual(off0["texture_factor"][0], 0.5)
+        self.assertAlmostEqual(off0["sphere_texture_factor"][2], 0.0)
+        self.assertAlmostEqual(off0["toon_texture_factor"][3], 1.0)
+
+        # Second offset: material_index = -1, all defaults
+        off1 = morph.offsets[1]
+        self.assertEqual(off1["material_index"], -1)
+        self.assertEqual(off1["operation_type"], 1)  # default
+        self.assertAlmostEqual(off1["diffuse"][0], 0.0)
+        self.assertAlmostEqual(off1["specular"][0], 0.0)
+        self.assertAlmostEqual(off1["specular_coefficient"], 0.0)
+        self.assertAlmostEqual(off1["ambient"][0], 0.0)
+        self.assertAlmostEqual(off1["edge_color"][0], 0.0)
+        self.assertAlmostEqual(off1["edge_size"], 0.0)
+        self.assertAlmostEqual(off1["texture_factor"][1], 0.0)
+        self.assertAlmostEqual(off1["sphere_texture_factor"][1], 0.0)
+        self.assertAlmostEqual(off1["toon_texture_factor"][1], 0.0)
+
+    def test_export_material_morph_index_out_of_range_raises(self):
+        """MaterialMorph offset の material_index が範囲外なら ValueError"""
+        data = {
+            "model_name": "BadMatMorph",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "materials": [{"name": "MatA"}],
+            "morphs": [
+                {
+                    "type": "material",
+                    "name": "bad",
+                    "offsets": [{"material_index": 3}],
+                }
+            ],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_mat_morph.pmx"),
+                data,
+            )
+
+    def test_export_unsupported_morph_types_raise(self):
+        """UV / Flip / Impulse モーフは文字列・enum・数値いずれの指定でも ValueError"""
+        _base_data = {
+            "model_name": "UnsupportedMorphTypes",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+        }
+
+        unsupported_types = [
+            # string aliases
+            "uv",
+            "flip",
+            "impulse",
+            # PmxMorphType enum values
+            PmxMorphType.UVMorph,
+            PmxMorphType.FlipMorph,
+            PmxMorphType.ImpulseMorph,
+            # numeric equivalents
+            int(PmxMorphType.UVMorph),    # 3
+            int(PmxMorphType.FlipMorph),   # 9
+            int(PmxMorphType.ImpulseMorph),  # 10
+        ]
+
+        for morph_type in unsupported_types:
+            with self.subTest(morph_type=morph_type):
+                data = dict(_base_data)
+                data["morphs"] = [{"type": morph_type, "name": "bad", "offsets": []}]
+                with self.assertRaises(ValueError):
+                    self.exporter.export_pmx_model(
+                        os.path.join(self.temp_dir, f"unsupported_{str(morph_type).replace(' ', '_')}.pmx"),
+                        data,
+                    )
+
+    def test_export_morph_vertex_index_out_of_range_raises(self):
+        """VertexMorph offset の vertex index が範囲外なら ValueError"""
+        data = {
+            "model_name": "BadMorphIndex",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "morphs": [
+                {
+                    "type": "vertex",
+                    "name": "bad",
+                    "offsets": [{"vertex_index": 3, "position_offset": [0.0, 0.0, 0.0]}],
+                }
+            ],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_morph_index.pmx"),
+                data,
+            )
+
+    def test_export_physics_roundtrip(self):
+        """RigidBody / Joint dict の export -> parse_file 検証"""
+        data = {
+            "model_name": "PhysicsExportTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "center", "position": [0.0, 0.0, 0.0]}],
+            "rigid_bodies": [
+                {
+                    "name": "rb",
+                    "name_english": "rb_en",
+                    "related_bone_index": 0,
+                    "group": 2,
+                    "collision_mask": 0xFFFE,
+                    "shape_type": 1,
+                    "size": [1.0, 2.0, 3.0],
+                    "position": [0.5, 1.5, 2.5],
+                    "rotation": [0.1, 0.2, 0.3],
+                    "mass": 4.0,
+                    "velocity_attenuation": 0.4,
+                    "rotation_attenuation": 0.5,
+                    "elasticity": 0.6,
+                    "friction": 0.7,
+                    "physics_mode": 2,
+                }
+            ],
+            "joints": [
+                {
+                    "name": "joint",
+                    "name_english": "joint_en",
+                    "joint_type": 0,
+                    "rigid_body_a_index": 0,
+                    "rigid_body_b_index": -1,
+                    "position": [1.0, 2.0, 3.0],
+                    "rotation": [0.1, 0.2, 0.3],
+                    "translation_limit_min": [-1.0, -2.0, -3.0],
+                    "translation_limit_max": [1.0, 2.0, 3.0],
+                    "rotation_limit_min": [-0.1, -0.2, -0.3],
+                    "rotation_limit_max": [0.1, 0.2, 0.3],
+                    "spring_translation": [0.01, 0.02, 0.03],
+                    "spring_rotation": [0.04, 0.05, 0.06],
+                }
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "physics.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = PmxData()
+        pmx.parse_file(out_path)
+
+        self.assertEqual(len(pmx.rigid_bodies), 1)
+        rigid_body = pmx.rigid_bodies[0]
+        self.assertEqual(rigid_body.name, "rb")
+        self.assertEqual(rigid_body.name_english, "rb_en")
+        self.assertEqual(rigid_body.related_bone_index, 0)
+        self.assertEqual(rigid_body.group, 2)
+        self.assertEqual(rigid_body.collision_mask, 0xFFFE)
+        self.assertEqual(rigid_body.shape_type, 1)
+        self.assertEqual(rigid_body.size, (1.0, 2.0, 3.0))
+        self.assertEqual(rigid_body.position, (0.5, 1.5, 2.5))
+        self.assertAlmostEqual(rigid_body.rotation[0], 0.1)
+        self.assertAlmostEqual(rigid_body.mass, 4.0)
+        self.assertAlmostEqual(rigid_body.velocity_attenuation, 0.4)
+        self.assertAlmostEqual(rigid_body.rotation_attenuation, 0.5)
+        self.assertAlmostEqual(rigid_body.elasticity, 0.6)
+        self.assertAlmostEqual(rigid_body.friction, 0.7)
+        self.assertEqual(rigid_body.physics_mode, 2)
+
+        self.assertEqual(len(pmx.joints), 1)
+        joint = pmx.joints[0]
+        self.assertEqual(joint.name, "joint")
+        self.assertEqual(joint.name_english, "joint_en")
+        self.assertEqual(joint.joint_type, 0)
+        self.assertEqual(joint.rigid_body_a_index, 0)
+        self.assertEqual(joint.rigid_body_b_index, -1)
+        self.assertEqual(joint.position, (1.0, 2.0, 3.0))
+        self.assertAlmostEqual(joint.rotation[0], 0.1)
+        self.assertEqual(joint.translation_limit_min, (-1.0, -2.0, -3.0))
+        self.assertEqual(joint.translation_limit_max, (1.0, 2.0, 3.0))
+        self.assertAlmostEqual(joint.rotation_limit_min[0], -0.1)
+        self.assertAlmostEqual(joint.rotation_limit_max[2], 0.3)
+        self.assertAlmostEqual(joint.spring_translation[1], 0.02)
+        self.assertAlmostEqual(joint.spring_rotation[2], 0.06)
+
+    def test_export_rigid_body_related_bone_index_out_of_range_raises(self):
+        """剛体の related_bone_index が範囲外なら ValueError"""
+        data = {
+            "model_name": "BadRigidBodyBone",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "center"}],
+            "rigid_bodies": [{"name": "bad", "related_bone_index": 1}],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_rigid_body_bone.pmx"),
+                data,
+            )
+
+    def test_export_joint_rigid_body_index_out_of_range_raises(self):
+        """Joint の剛体 index が範囲外なら ValueError"""
+        data = {
+            "model_name": "BadJointRigidBody",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "rigid_bodies": [{"name": "rb"}],
+            "joints": [{"name": "bad_joint", "rigid_body_a_index": 1}],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_joint_rb.pmx"),
+                data,
+            )
+
+    def test_export_joint_without_rigid_body_raises(self):
+        """Joint だけ指定された場合は ValueError"""
+        data = {
+            "model_name": "JointWithoutRigidBody",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "joints": [{"name": "bad_joint"}],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "joint_without_rb.pmx"),
+                data,
+            )

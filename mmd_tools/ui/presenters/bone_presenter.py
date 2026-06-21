@@ -1,5 +1,5 @@
-from maya import cmds
 import math
+from mmd_tools.adapters import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ...core.maya_utils import (
     object_exists,
@@ -39,9 +39,10 @@ logger = get_logger(__name__)
 
 
 class BonePresenter:
-    def __init__(self, view, app_state):
+    def __init__(self, view, app_state, maya_adapter=None):
         self.view = view
         self.app_state = app_state
+        self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.current_bone = None
         self.bone_data = {}  # Store original bone data for reset
         self.bone_list_items = {}  # Map bone name to list item
@@ -104,23 +105,23 @@ class BonePresenter:
         current_model_root = self.app_state.current_model_root
         logger.debug(f"Current model root: {current_model_root}")
 
-        if not current_model_root or not cmds.objExists(current_model_root):
+        if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             logger.warning(f"Model root does not exist: {current_model_root}")
             return
 
         # ジョイントを検索する複数の方法を試す
-        joints = cmds.listRelatives(current_model_root, allDescendents=True, type="joint") or []
+        joints = self.maya_adapter.list_relatives(current_model_root, allDescendents=True, type="joint") or []
         logger.debug(f"Found {len(joints)} joints using listRelatives")
 
         # もしジョイントが見つからない場合、別の方法を試す
         if not joints:
             # ルートノードの子を確認
-            children = cmds.listRelatives(current_model_root, children=True) or []
+            children = self.maya_adapter.list_relatives(current_model_root, children=True) or []
             logger.debug(f"Direct children of root: {children}")
 
             # 全ての子孫を取得してジョイントをフィルタ
-            all_descendants = cmds.listRelatives(current_model_root, allDescendents=True) or []
-            joints = [node for node in all_descendants if cmds.nodeType(node) == "joint"]
+            all_descendants = self.maya_adapter.list_relatives(current_model_root, allDescendents=True) or []
+            joints = [node for node in all_descendants if self.maya_adapter.node_type(node) == "joint"]
             logger.debug(f"Found {len(joints)} joints using nodeType filter from {len(all_descendants)} descendants")
 
         if not joints:
@@ -228,7 +229,7 @@ class BonePresenter:
                 joints_to_select.append(joint)
 
         if joints_to_select:
-            cmds.select(joints_to_select, replace=True)
+            self.maya_adapter.select(joints_to_select, replace=True)
 
     def load_bone_properties(self):
         """選択されたボーンのプロパティをロード"""
@@ -242,11 +243,11 @@ class BonePresenter:
             self.view.bone_name_en_edit.setText(get_attribute(self.current_bone, ATTR_MMD_BONE_NAME_EN))
 
             # 親ボーン
-            parent = cmds.listRelatives(self.current_bone, parent=True, type="joint")
+            parent = self.maya_adapter.list_relatives(self.current_bone, parent=True, type="joint")
             self.view.parent_bone_edit.setText(parent[0] if parent else "")
 
             # 位置
-            pos = cmds.xform(self.current_bone, query=True, translation=True, worldSpace=True)
+            pos = self.maya_adapter.xform(self.current_bone, query=True, translation=True, worldSpace=True)
             self.view.pos_x_spin.setValue(pos[0])
             self.view.pos_y_spin.setValue(pos[1])
             self.view.pos_z_spin.setValue(pos[2])
@@ -502,9 +503,9 @@ class BonePresenter:
     def select_bone_dialog(self, target_type):
         """ボーン選択ダイアログを表示"""
         # 簡易的な実装：現在のMaya選択を使用
-        selected = cmds.ls(selection=True, type="joint")
+        selected = self.maya_adapter.ls(selection=True, type="joint")
         if not selected:
-            self.app_state.emit_status("ジョイントを選択してください")
+            self.app_state.emit_status("Please select a joint")
             return
 
         bone = selected[0]
@@ -520,7 +521,7 @@ class BonePresenter:
         if not parent or not child:
             return False
 
-        descendants = cmds.listRelatives(parent, allDescendents=True, type="joint") or []
+        descendants = self.maya_adapter.list_relatives(parent, allDescendents=True, type="joint") or []
         return child in descendants
 
     def on_ik_enabled_toggled(self, checked):
@@ -558,9 +559,9 @@ class BonePresenter:
 
     def add_ik_link(self):
         """IKリンクを追加"""
-        selected = cmds.ls(selection=True, type="joint")
+        selected = self.maya_adapter.ls(selection=True, type="joint")
         if not selected:
-            self.app_state.emit_status("IKリンクとして追加するジョイントを選択してください")
+            self.app_state.emit_status("Please select a joint to add as an IK link")
             return
 
         bone = selected[0]
@@ -611,7 +612,7 @@ class BonePresenter:
 
     def apply_changes(self):
         """変更を適用"""
-        if not self.current_bone or not cmds.objExists(self.current_bone):
+        if not self.current_bone or not self.maya_adapter.object_exists(self.current_bone):
             return
 
         try:
@@ -629,7 +630,7 @@ class BonePresenter:
                 self.view.pos_y_spin.value(),
                 self.view.pos_z_spin.value(),
             ]
-            cmds.xform(self.current_bone, translation=pos, worldSpace=True)
+            self.maya_adapter.xform(self.current_bone, translation=pos, worldSpace=True)
 
             # 接続先設定
             if self.view.connection_type_combo.currentIndex() == 0:
@@ -742,17 +743,17 @@ class BonePresenter:
                 item.setText(display_text)
 
             logger.info(f"ボーン '{self.current_bone}' の変更を適用しました")
-            self.app_state.emit_status(f"ボーンの変更を適用しました: {self.current_bone}")
+            self.app_state.emit_status(f"Applied bone changes: {self.current_bone}")
 
         except Exception as e:
             logger.error(f"Failed to apply bone changes: {e}", exc_info=True)
-            self.app_state.emit_status(f"ボーンの変更に失敗しました: {str(e)}")
+            self.app_state.emit_status(f"Failed to apply bone changes: {str(e)}")
 
     def reset_changes(self):
         """変更をリセット"""
         if self.current_bone and self.bone_data:
             self.load_bone_properties()
-            self.app_state.emit_status("変更をリセットしました")
+            self.app_state.emit_status("Reset changes")
 
     def _calculate_bone_flags(self):
         """UIの状態からボーンフラグを計算"""
@@ -829,7 +830,7 @@ class BonePresenter:
     def _get_attr_safe(self, node, attr, default):
         """属性を安全に取得"""
         try:
-            if cmds.attributeQuery(attr, node=node, exists=True):
+            if self.maya_adapter.attribute_exists(attr, node):
                 value = get_attribute(node, attr)
                 # IKリンクの場合、JSON文字列をパース
                 if attr == ATTR_MMD_IK_LINKS and isinstance(value, str):
@@ -874,7 +875,7 @@ class BonePresenter:
         ]
 
         for attr_name, attr_type, default in attrs:
-            if not cmds.attributeQuery(attr_name, node=joint, exists=True):
+            if not self.maya_adapter.attribute_exists(attr_name, joint):
                 if attr_type == "double3":
                     # double3アトリビュートを作成
                     defaults = {

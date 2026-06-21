@@ -4,24 +4,75 @@
 
 Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya.
 
+It aims to reproduce MMD rigs and provide a complete workflow for importing, editing, and exporting animations.
+
 This is an alpha early release. Some features may be undeveloped or unstable.
 
-## Supported Features
+## Feature Support Matrix
 
-- PMD/PMX model import
-- VMD animation import for bones, morphs, cameras, and lights
-- Basic UI with Info, Material, Morph, and Bone tabs
-- Japanese/English UI
-- Namespace support
-- Log viewer
+Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-in) · ⛔ Not supported yet
+
+> This is an alpha release. See [Known Limitations](#known-limitations) below for details.
+
+### Import — Model (PMX, PMD)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Mesh / vertices / normals | ✅ | |
+| Materials & textures | ✅ | Auto-applied (texture search path supported) |
+| Maya name resolution | 🔶 | Partial; texture resolution can fail in some cases |
+| Primary UV | ✅ | |
+| Additional UV (UV1–4) | ⛔ | Not supported |
+| Edge / outline flags | ✅ | Shader outline rendering is opt-in from the Material tab |
+| Bones & skeleton | ✅ | |
+| IK | ⛔ | Not supported |
+| Append (grant / 付与) bones | ⛔ | Not supported |
+| Bone local axis | ⛔ | Not supported |
+| Display frames (表示枠) | ⛔ | Not supported |
+| Vertex morph | ✅ | blendShape targets |
+| Bone morph | 🔶 | Driven by motion bake; limited interactive control |
+| Material morph | 🔶 | Driven by motion bake; limited interactive control |
+| Group morph | ⛔ | |
+| UV morph (incl. additional UV) | ⛔ | |
+| Flip morph | ⛔ | |
+| Impulse morph | ⛔ | |
+| Rigid bodies & joints | ⛔ | Not supported |
+| Soft body (PMX 2.1) | ⛔ | Not supported |
+| HumanIK Rig | ⛔ | Not supported (want to support!) |
+| Export | ⛔ | Not supported |
+
+### Animation (VMD)
+
+| Feature | Status | Notes |
+|---|---|---|
+| Bone animation | 🔶 | High-precision bake via [mmd-anim](https://github.com/yohawing/mmd-anim) only (Bézier interpolation, IK, and grant resolved) |
+| Morph animation | 🔶 | Vertex morphs only |
+| Camera animation | ✅ | Creates/keys `mmd_camera` |
+| Light animation | ✅ | Drives the `mmd_light` controller |
+| IK on/off frames | ⛔ | Not supported |
+| Export | ⛔ | Not supported |
+
+### Viewport & Shading
+
+| Feature | Status | Notes |
+|---|---|---|
+| DX11 MMD toon shader (Windows) | 🔶 | Toon shading and transparency. Outline rendering is off by default due to draw-order constraints; it can be enabled per-material from the Material tab, but fidelity is limited. |
+| MMD light controller | ✅ | Single directional-light null |
+| Transparency (opaque / cutout / blend) | ✅ | Manual, plus opt-in auto-classification |
+| GLSL shader (macOS) | ⛔ | Not supported |
 
 ## Known Limitations
 
-- PMD/PMX/VMD export is not implemented.
-- Physics support is incomplete.
-- VMD motion import has an unresolved issue where newly imported motion may not play back correctly. In `0.1.0`, VMD loading/parsing is available, but motion playback should be treated as incomplete.
-- Large models may have performance issues.
-- Some PMX files may fail to import.
+- **Export is not available.** This is an import-only tool for now — PMX/PMD/VMD export is not implemented (the UI states this explicitly).
+- **VPD pose import is not yet available.** The parser exists, but the UI is disabled until it is wired up.
+- **Additional UV / multi-UV is not applied** (read but ignored).
+- **Group, UV, Flip, and Impulse morphs are not supported.** Vertex morphs are fully supported; bone and material morphs are applied through motion bake.
+- **Soft body (PMX 2.1) data is silently ignored.** The rest of the file still imports correctly.
+- **Display frames (表示枠) are read but not reflected in Maya.**
+- **Physics is experimental** and off by default.
+- **Bone local-axis fidelity is approximate** and not fully verified.
+- Large models may have performance issues, and some PMX files may fail to import.
+- The opt-in C++ fast-import path supports mesh, basic materials, basic skeleton/skin, and vertex-morph blendShape targets only (UV / material / bone / group morphs are not handled on that path).
 
 ## System Requirements
 
@@ -29,7 +80,7 @@ This is an alpha early release. Some features may be undeveloped or unstable.
 
 - **Maya**: 2024 or later
 - **OS**: Windows 11 / macOS 15.6
-- **Python**: 3.7 or later, bundled with Maya
+- **Python**: 3.7 or later (bundled with Maya)
 
 ## Installation
 
@@ -67,28 +118,6 @@ MMD_TOOLS_ROOT:= .
 PYTHONPATH +:= .
 ```
 
-Example:
-
-```text
-+ MAYAVERSION:2026 maya_mmd_tools 0.1.0 C:/Tools/maya_mmd_tools
-scripts: .
-plug-ins: plug-ins
-icons: resources/icons
-MMD_TOOLS_ROOT:= .
-PYTHONPATH +:= .
-```
-
-If the path contains spaces, wrap it in quotes.
-
-```text
-+ MAYAVERSION:2026 maya_mmd_tools 0.1.0 "C:/Program Files/maya_mmd_tools"
-scripts: .
-plug-ins: plug-ins
-icons: resources/icons
-MMD_TOOLS_ROOT:= .
-PYTHONPATH +:= .
-```
-
 Copy the edited `maya_mmd_tools.mod` into Maya's `modules` folder.
 
 You do not need to copy `userSetup.py` separately into Maya's scripts folder. The `.mod` file's `scripts: .` setting points Maya to the `userSetup.py` inside the Maya MMD Tools folder.
@@ -107,38 +136,7 @@ You do not need to copy `userSetup.py` separately into Maya's scripts folder. Th
 
 Confirm that `MMD > MMD Tools` appears in Maya's menu bar.
 
-### Check from Script Editor
-
-Run this in Maya Script Editor:
-
-```python
-import mmd_tools
-print(mmd_tools.__version__)
-```
-
-Expected output:
-
-```text
-0.1.0
-```
-
 ## Quick Start
-
-### Import a Model
-
-1. Select `MMD > MMD Tools`.
-2. In the Import/Export tab, choose a PMX or PMD file.
-3. Click `Import Model`.
-
-To import from a script:
-
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-
-import_mmd_file("path/to/your/model.pmx")
-```
-
-After a successful import, a `model_root` group is created in the Outliner, and the model appears in the viewport. Materials and textures are applied automatically when possible.
 
 ### Open the MMD Tools UI
 
@@ -153,122 +151,30 @@ Main tabs:
 - **Morph**: Facial expression/morph controls
 - **Bone**: Bone information
 
+### Import a Model
+
+1. In the Import/Export tab, choose a PMX or PMD file.
+2. Click `Import Model`.
+
+After a successful import, a `model_root` group is created in the Outliner, and the model appears in the viewport. Materials and textures are applied automatically.
+If textures fail to load due to multi-byte characters in the path, enable the automatic texture repair option. Textures will be automatically copied and renamed to loadable names.
+
 ### Import Animation
 
-If you have a VMD file:
-
-1. Select `MMD > MMD Tools`.
-2. In the Import/Export tab, choose a VMD file.
+1. In the Import/Export tab, choose a VMD file.
+2. (Optional) In animation import settings, set VMD FPS (30 or 60; default 30). This changes the Maya scene time unit before import.
 3. Click `Import Animation`.
 4. The animation is applied to the matching model in the scene.
 
-## Model Import
+## Viewport Setup
 
-### Supported Formats
+The shader that reproduces the MMD toon look can be confirmed by enabling the MMD shader creation option together with the `dx11Shader.dll` plugin. The following settings are also applied automatically on import:
 
-- **PMX** (`.pmx`) - Recommended format
-  - PMX 2.0
-  - PMX 2.1
-- **PMD** (`.pmd`) - Legacy format
+- **Rendering space** → `ACEScg` → `scene-linear Rec.709-sRGB`.
+- **View Transform** → `ACES 1.0 SDR-video (sRGB)` → `Un-tone-mapped (sRGB)`.
 
-### Basic Import
-
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-
-import_mmd_file("C:/Models/character.pmx")
-```
-
-To enable namespace support:
-
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-
-options = {"use_namespace": True}
-import_mmd_file("C:/Models/character.pmx", options=options)
-```
-
-### Import Settings
-
-```python
-from mmd_tools.core import settings
-
-# Scale factor. MMD models usually use centimeters.
-settings.set("import.general.scale_factor", 1.0)
-
-# Namespace support for multiple models.
-settings.set("import.general.use_namespace", True)
-
-# Material creation.
-settings.set("import.model.create_mmd_shaders", True)
-
-# Physics import. Experimental in this early release.
-settings.set("import.physics.import_physics", False)
-```
-
-### Imported Scene Structure
-
-```text
-model_root
-├── mesh_root
-│   └── model_mesh
-├── bone_root
-│   ├── センター
-│   ├── 上半身
-│   └── ...
-└── morph_root
-    └── blendShapes
-```
-
-The model receives these custom attributes:
-
-- `mmd_model`: Model identifier
-- `mmd_model_name`: Japanese model name
-- `mmd_model_name_en`: English model name
-- `mmd_comment`: Comment
-
-### Import Multiple Models
-
-Namespace support avoids name conflicts between bones and meshes. If you import the same model multiple times, suffixes are assigned automatically.
-
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-from mmd_tools.core import settings
-
-settings.set("import.general.use_namespace", True)
-
-models = ["character1.pmx", "character2.pmx", "stage.pmx"]
-
-for model_path in models:
-    root_node = import_mmd_file(model_path)
-    print(f"Imported: {root_node}")
-```
-
-### Adjust After Import
-
-```python
-import maya.cmds as cmds
-
-cmds.select("model_root")
-cmds.scale(0.1, 0.1, 0.1)
-cmds.move(0, 0, 100)
-```
-
-## Uninstall
-
-1. Quit Maya.
-2. Delete `modules/maya_mmd_tools.mod`.
-3. Delete the installed Maya MMD Tools folder.
+Both are applied to reproduce the MMD-style color response (sRGB gamma-space input/output).
 
 ## Support
 
 If the problem is not resolved, report it on [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) with the following information:
-
-- Full error message
-- Maya version
-- OS
-- Maya MMD Tools version
-- PMD/PMX/VMD file type used
-- Steps to reproduce
-
-Developer documentation is available at [docs-dev](docs-dev/README.md).

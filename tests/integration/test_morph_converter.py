@@ -1,8 +1,20 @@
+import json
+import os
+
 from maya import cmds
 
+from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils
+from mmd_tools.core.constants import (
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
+)
 from mmd_tools.core.settings import settings
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 
@@ -120,6 +132,437 @@ class TestMorphConverter(MayaTestBase):
             morphs_converted,
             len(vertex_morphs),
             f"変換されたモーフ数({morphs_converted})が頂点モーフ数({len(vertex_morphs)})を超えています",
+        )
+
+    def test_convert_pmx_bone_morph_metadata(self):
+        """PMX BoneMorph が network node として import されることをテストする。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeBoneMorph:
+            name = "ボーン笑い"
+            name_english = "bone_smile"
+            panel = 4
+            morph_type = PmxMorphType.BoneMorph
+            offsets = [
+                {
+                    "bone_index": 3,
+                    "translation": (1.0, 2.0, 3.0),
+                    "rotation": (0.0, 0.0, 0.0, 1.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeBoneMorph()]})()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        bone_nodes = result.get("bone_morph_nodes", [])
+        self.assertEqual(len(bone_nodes), 1)
+
+        morph_node = bone_nodes[0]
+        self.assertTrue(cmds.objExists(morph_node))
+        self.assertTrue(cmds.attributeQuery("weight", node=morph_node, exists=True))
+        self.assertTrue(cmds.getAttr(f"{morph_node}.weight", keyable=True))
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_name"), "ボーン笑い")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_type"), "bone")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offset_count"), 1)
+
+        offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offsets_json"))
+        self.assertEqual(offsets[0]["bone_index"], 3)
+        self.assertEqual(offsets[0]["translation"], [1.0, 2.0, 3.0])
+
+        cmds.delete(mesh_name, morph_node)
+
+    def test_convert_pmx_material_morph_metadata(self):
+        """PMX MaterialMorph が network node として import されることをテストする。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeMaterialMorph:
+            name = "材質点滅"
+            name_english = "material_flash"
+            panel = 4
+            morph_type = PmxMorphType.MaterialMorph
+            offsets = [
+                {
+                    "material_index": 2,
+                    "operation_type": 0,
+                    "diffuse": (0.1, 0.2, 0.3, 0.4),
+                    "specular": (0.5, 0.6, 0.7),
+                    "specular_coefficient": 0.8,
+                    "ambient": (0.9, 1.0, 1.1),
+                    "edge_color": (0.2, 0.3, 0.4, 0.5),
+                    "edge_size": 1.2,
+                    "texture_factor": (1.0, 1.0, 1.0, 1.0),
+                    "sphere_texture_factor": (0.0, 0.0, 0.0, 0.0),
+                    "toon_texture_factor": (0.5, 0.5, 0.5, 0.5),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeMaterialMorph()]})()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        material_nodes = result.get("material_morph_nodes", [])
+        self.assertEqual(len(material_nodes), 1)
+
+        morph_node = material_nodes[0]
+        self.assertTrue(cmds.objExists(morph_node))
+        self.assertTrue(cmds.attributeQuery("weight", node=morph_node, exists=True))
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_name"), "材質点滅")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_type"), "material")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_material_morph_offset_count"), 1)
+
+        offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_material_morph_offsets_json"))
+        self.assertEqual(offsets[0]["material_index"], 2)
+        self.assertEqual(offsets[0]["operation_type"], 0)
+        self.assertEqual(offsets[0]["diffuse"], [0.1, 0.2, 0.3, 0.4])
+
+        cmds.delete(mesh_name, morph_node)
+
+    def test_material_split_mesh_skips_unaffected_vertex_morphs(self):
+        """material split mesh では表示 material に関係しない vertex morph を作らない。"""
+        mesh_a = self._create_test_mesh()
+        mesh_b = self._create_test_mesh()
+        maya_utils.set_custom_attributes(
+            mesh_a,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 0,
+            },
+        )
+        maya_utils.set_custom_attributes(
+            mesh_b,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 1,
+            },
+        )
+
+        class FakeFace:
+            def __init__(self, indices):
+                self.indices = indices
+
+        class FakeMaterial:
+            face_count = 3
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+
+            def __init__(self, name, vertex_index):
+                self.name = name
+                self.offsets = [
+                    {
+                        "vertex_index": vertex_index,
+                        "position_offset": (0.1, 0.0, 0.0),
+                    }
+                ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [FakeFace([0, 1, 2]), FakeFace([0, 2, 3])],
+                "materials": [FakeMaterial(), FakeMaterial()],
+                "morphs": [
+                    FakeVertexMorph("mat0_only", 1),
+                    FakeVertexMorph("mat1_only", 3),
+                ],
+            },
+        )()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, [mesh_a, mesh_b])
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 2)
+        self.assertEqual(result.get("vertex_morphs_skipped_by_material"), 2)
+        self.assertEqual(len(result.get("blend_shape_nodes", [])), 2)
+
+        mesh_a_aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
+        mesh_b_aliases = cmds.aliasAttr(result["blend_shape_nodes"][1], query=True) or []
+        self.assertIn("mat0_only", mesh_a_aliases)
+        self.assertNotIn("mat1_only", mesh_a_aliases)
+        self.assertIn("mat1_only", mesh_b_aliases)
+        self.assertNotIn("mat0_only", mesh_b_aliases)
+
+    def test_compact_material_split_mesh_maps_vertex_morph_source_indices(self):
+        """compact split mesh では PMX source vertex index を local vertex index に写して morph を適用する。"""
+        mesh = maya_utils.create_mesh_with_uvs(
+            "compact_split_mesh",
+            [(0, 0, 0), (1, 0, 0), (1, 1, 0)],
+            [3],
+            [0, 1, 2],
+            [0, 0, 1, 0, 1, 1],
+            [0, 1, 2],
+        )
+        maya_utils.set_custom_attributes(
+            mesh,
+            {
+                "mmd_material_split_mesh": True,
+                "mmd_material_index": 0,
+            },
+        )
+        maya_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 2, 3], "longArray")
+
+        class FakeFace:
+            indices = [0, 2, 3]
+
+        class FakeMaterial:
+            face_count = 3
+
+        class FakeVertexMorph:
+            name = "source2_move"
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            offsets = [
+                {
+                    "vertex_index": 2,
+                    "position_offset": (0.25, 0.0, 0.0),
+                },
+                {
+                    "vertex_index": 1,
+                    "position_offset": (10.0, 0.0, 0.0),
+                },
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [FakeFace()],
+                "materials": [FakeMaterial()],
+                "morphs": [FakeVertexMorph()],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        self.assertTrue(cmds.objExists("source2_move_target"))
+        moved_position = cmds.pointPosition("source2_move_target.vtx[1]", local=True)
+        unchanged_position = cmds.pointPosition("source2_move_target.vtx[0]", local=True)
+        self.assertAlmostEqual(moved_position[0], 1.25, places=5)
+        self.assertAlmostEqual(unchanged_position[0], 0.0, places=5)
+
+    def test_morph_group_split_mesh_filters_vertex_morphs_by_name(self):
+        """morph group split mesh では許可された vertex morph だけ blendShape target を作る。"""
+        mesh = self._create_test_mesh()
+        maya_utils.set_custom_attributes(
+            mesh,
+            {
+                ATTR_MMD_MORPH_GROUP_SPLIT_MESH: True,
+                ATTR_MMD_VERTEX_MORPH_NAMES_JSON: json.dumps(["allowed_morph"]),
+            },
+        )
+        maya_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 1, 2, 3], "longArray")
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+
+            def __init__(self, name, vertex_index):
+                self.name = name
+                self.offsets = [
+                    {
+                        "vertex_index": vertex_index,
+                        "position_offset": (0.1, 0.0, 0.0),
+                    }
+                ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [
+                    FakeVertexMorph("allowed_morph", 1),
+                    FakeVertexMorph("blocked_morph", 2),
+                ],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        self.assertEqual(result.get("vertex_morphs_skipped_by_group"), 1)
+        aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
+        self.assertIn("allowed_morph", aliases)
+        self.assertNotIn("blocked_morph", aliases)
+
+    def test_vertex_morph_stores_raw_name_and_uniquifies_colliding_alias(self):
+        """sanitize が衝突する別モーフでも一意 alias を割り当て、生名を JSON に保存する。
+
+        「にっこり」と「にやり」はどちらも sanitize_text で "grin" に化けるため、
+        従来は aliasAttr 衝突で片方が到達不能になり、辞書逆引きでも取り違えが起きた。
+        """
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            name_english = ""
+
+            def __init__(self, name, vertex_index):
+                self.name = name
+                self.offsets = [
+                    {
+                        "vertex_index": vertex_index,
+                        "position_offset": (0.1, 0.0, 0.0),
+                    }
+                ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [
+                    FakeVertexMorph("にっこり", 1),
+                    FakeVertexMorph("にやり", 2),
+                ],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 2)
+
+        bs_node = result["blend_shape_nodes"][0]
+
+        # alias は衝突しても一意化される（grin / grin_1）
+        alias_names = set((cmds.aliasAttr(bs_node, query=True) or [])[0::2])
+        self.assertEqual(len(alias_names), 2)
+        self.assertIn("grin", alias_names)
+        self.assertIn("grin_1", alias_names)
+
+        # 生のモーフ名が weight index 対応で保存されている（権威キー）
+        self.assertTrue(
+            cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True)
+        )
+        stored = json.loads(cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"))
+        self.assertEqual(stored.get("0"), "にっこり")
+        self.assertEqual(stored.get("1"), "にやり")
+
+    def test_collect_morphs_from_scene_for_export(self):
+        """シーン内の network metadata から exporter 用 morph dict を復元して PMX を再生成する。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeBoneMorph:
+            name = "ボーン笑い"
+            name_english = "bone_smile"
+            panel = 4
+            morph_type = PmxMorphType.BoneMorph
+            offsets = [
+                {
+                    "bone_index": 0,
+                    "translation": (1.0, 2.0, 3.0),
+                    "rotation": (0.0, 0.0, 0.0, 1.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        class FakeMaterialMorph:
+            name = "材質点滅"
+            name_english = "material_flash"
+            panel = 5
+            morph_type = PmxMorphType.MaterialMorph
+            offsets = [
+                {
+                    "material_index": 0,
+                    "operation_type": 0,
+                    "diffuse": (0.1, 0.2, 0.3, 0.4),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"morphs": [FakeBoneMorph(), FakeMaterialMorph()]},
+        )()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 2)
+        self.assertEqual(len(result.get("bone_morph_nodes", [])), 1)
+        self.assertEqual(len(result.get("material_morph_nodes", [])), 1)
+
+        collected_morphs = morph_converter.collect_morphs_from_scene_for_export()
+        self.assertEqual(len(collected_morphs), 2)
+        self.assertTrue(any(m["type"] == "bone" and m["name"] == "ボーン笑い" for m in collected_morphs))
+        self.assertTrue(
+            any(
+                m["type"] == "material"
+                and m["name"] == "材質点滅"
+                and m["offsets"][0]["material_index"] == 0
+                for m in collected_morphs
+            )
+        )
+
+        exporter = PmxExporter()
+        out_pmx = os.path.join(self.temp_dir, "scene_morph_export.pmx")
+        exporter.export_pmx_model(
+            out_pmx,
+            {
+                "model_name": "SceneMorphRoundtrip",
+                "vertices": [
+                    {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                    {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                    {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+                ],
+                "faces": [[0, 1, 2]],
+                "bones": [{"name": "root", "position": [0.0, 0.0, 0.0]}],
+                "materials": [{"name": "material"}],
+                "morphs": collected_morphs,
+            },
+        )
+
+        pmx = PmxData()
+        pmx.parse_file(out_pmx)
+        self.assertEqual(len(pmx.morphs), 2)
+        self.assertTrue(any(int(m.morph_type) == 2 for m in pmx.morphs))
+        self.assertTrue(any(int(m.morph_type) == 8 for m in pmx.morphs))
+
+        cmds.delete(
+            mesh_name,
+            *(result.get("bone_morph_nodes", [])),
+            *(result.get("material_morph_nodes", [])),
         )
 
     def test_simple_blendshape_creation(self):

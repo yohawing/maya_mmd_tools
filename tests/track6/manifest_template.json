@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "description": "Track 6 batch import manifest template. Real local manifests should be generated under build/ and should not be committed.",
+  "models": [
+    "../data/for_unit_test/test_1bone_cube.pmx"
+  ],
+  "motions": [
+    "../data/for_unit_test/test_1bone_cube_motion.vmd"
+  ],
+  "cases": [
+    {
+      "name": "repo_1bone_cube_with_motion",
+      "model": "../data/for_unit_test/test_1bone_cube.pmx",
+      "motion": "../data/for_unit_test/test_1bone_cube_motion.vmd"
+    }
+  ]
+}

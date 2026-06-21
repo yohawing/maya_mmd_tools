@@ -1,4 +1,3 @@
-from maya import cmds
 from mmd_tools.core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
@@ -7,7 +6,6 @@ from mmd_tools.core.constants import (
 )
 from ...core.logger import get_logger
 from ...core.maya_utils import (
-    get_mmd_model_display_name,
     set_custom_attributes,
 )
 
@@ -18,6 +16,7 @@ class InfoPresenter:
     def __init__(self, view, app_state):
         self.view = view
         self.app_state = app_state
+        self.scene_model_service = self.app_state.scene_model_service
         self.is_updating = False  # 更新中フラグ（フィードバックループ防止）
         self.connect_signals()
 
@@ -57,7 +56,7 @@ class InfoPresenter:
 
     def load_model_info(self):
         current_model_root = self.app_state.current_model_root
-        if not current_model_root or not cmds.objExists(current_model_root):
+        if not current_model_root or not self.scene_model_service.object_exists(current_model_root):
             logger.warning("No model selected or model does not exist.")
             # フィールドをクリア
             self.clear_fields()
@@ -71,42 +70,14 @@ class InfoPresenter:
             self.view.comment_en_edit.textChanged.disconnect(self.update_model_info)
 
             # アトリビュートの存在を確認
-            if not cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=current_model_root, exists=True):
+            if not self.scene_model_service.attribute_exists(current_model_root, ATTR_MMD_MODEL_NAME):
                 logger.warning(f"Attribute {ATTR_MMD_MODEL_NAME} not found on {current_model_root}")
 
             # 文字列アトリビュートの値を安全に取得
-            model_name_jp = ""
-            model_name_en = ""
-            comment_jp = ""
-            comment_en = ""
-
-            try:
-                model_name_jp = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_MODEL_NAME}")
-                if model_name_jp is None:
-                    model_name_jp = ""
-            except Exception:
-                model_name_jp = ""
-
-            try:
-                model_name_en = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_MODEL_NAME_EN}")
-                if model_name_en is None:
-                    model_name_en = ""
-            except Exception:
-                model_name_en = ""
-
-            try:
-                comment_jp = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_COMMENT}")
-                if comment_jp is None:
-                    comment_jp = ""
-            except Exception:
-                comment_jp = ""
-
-            try:
-                comment_en = cmds.getAttr(f"{current_model_root}.{ATTR_MMD_COMMENT_EN}")
-                if comment_en is None:
-                    comment_en = ""
-            except Exception:
-                comment_en = ""
+            model_name_jp = self.scene_model_service.get_attr_safe(current_model_root, ATTR_MMD_MODEL_NAME, "")
+            model_name_en = self.scene_model_service.get_attr_safe(current_model_root, ATTR_MMD_MODEL_NAME_EN, "")
+            comment_jp = self.scene_model_service.get_attr_safe(current_model_root, ATTR_MMD_COMMENT, "")
+            comment_en = self.scene_model_service.get_attr_safe(current_model_root, ATTR_MMD_COMMENT_EN, "")
 
             logger.debug(f"Loaded values - JP: '{model_name_jp}', EN: '{model_name_en}'")
 
@@ -136,7 +107,7 @@ class InfoPresenter:
 
     def update_model_info(self):
         current_model_root = self.app_state.current_model_root
-        if not current_model_root or not cmds.objExists(current_model_root):
+        if not current_model_root or not self.scene_model_service.object_exists(current_model_root):
             return
 
         try:
@@ -169,7 +140,7 @@ class InfoPresenter:
         else:
             # コンボボックスにモデルを追加
             for model in models:
-                display_name = get_mmd_model_display_name(model)
+                display_name = self.scene_model_service.get_model_display_name(model)
                 self.view.model_combo.addItem(f"{display_name} ({model})", userData=model)
 
             # 現在のモデルを選択
@@ -200,7 +171,7 @@ class InfoPresenter:
         index = self.view.model_combo.currentIndex()
         root_node = self.view.model_combo.itemData(index)
 
-        if root_node and cmds.objExists(root_node):
+        if root_node and self.scene_model_service.object_exists(root_node):
             # ApplicationStateを更新
             self.app_state.current_model_root = root_node
             logger.info(f"Selected MMD model: {root_node}")

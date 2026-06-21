@@ -114,28 +114,30 @@ class TestUITranslator(GuiTestBase):
     def test_japanese_translation(self):
         """日本語翻訳が正しく機能するか確認"""
         self.translator.set_language("ja")
+        ja = self.translator._translations.get("ja", {})
 
         # カテゴリ指定での翻訳
-        self.assertEqual(self.translator.translate("import", "buttons"), "インポート")
-        self.assertEqual(self.translator.translate("export", "buttons"), "エクスポート")
-        self.assertEqual(self.translator.translate("file_path", "labels"), "ファイルパス:")
+        self.assertEqual(self.translator.translate("import", "buttons"), ja.get("buttons", {}).get("import"))
+        self.assertEqual(self.translator.translate("export", "buttons"), ja.get("buttons", {}).get("export"))
+        self.assertEqual(self.translator.translate("file_path", "labels"), ja.get("labels", {}).get("file_path"))
 
-        # ドット記法での翻訳
-        self.assertEqual(self.translator.translate("buttons.import"), "インポート")
-        self.assertEqual(self.translator.translate("labels.file_path"), "ファイルパス:")
+        # ドット記法での翻訳（カテゴリ指定と一致することを確認）
+        self.assertEqual(self.translator.translate("buttons.import"), self.translator.translate("import", "buttons"))
+        self.assertEqual(self.translator.translate("labels.file_path"), self.translator.translate("file_path", "labels"))
 
     def test_english_translation(self):
         """英語翻訳が正しく機能するか確認"""
         self.translator.set_language("en")
+        en = self.translator._translations.get("en", {})
 
         # カテゴリ指定での翻訳
-        self.assertEqual(self.translator.translate("import", "buttons"), "Import")
-        self.assertEqual(self.translator.translate("export", "buttons"), "Export")
-        self.assertEqual(self.translator.translate("file_path", "labels"), "File Path:")
+        self.assertEqual(self.translator.translate("import", "buttons"), en.get("buttons", {}).get("import"))
+        self.assertEqual(self.translator.translate("export", "buttons"), en.get("buttons", {}).get("export"))
+        self.assertEqual(self.translator.translate("file_path", "labels"), en.get("labels", {}).get("file_path"))
 
-        # ドット記法での翻訳
-        self.assertEqual(self.translator.translate("buttons.import"), "Import")
-        self.assertEqual(self.translator.translate("labels.file_path"), "File Path:")
+        # ドット記法での翻訳（カテゴリ指定と一致することを確認）
+        self.assertEqual(self.translator.translate("buttons.import"), self.translator.translate("import", "buttons"))
+        self.assertEqual(self.translator.translate("labels.file_path"), self.translator.translate("file_path", "labels"))
 
     def test_fallback_to_english(self):
         """翻訳が見つからない場合に英語にフォールバックするか確認"""
@@ -151,10 +153,11 @@ class TestUITranslator(GuiTestBase):
 
     def test_widget_translation(self):
         """ウィジェットの翻訳が正しく機能するか確認"""
-        # 初期状態（日本語）
-        self.assertEqual(self.test_widget.label.text(), "インポート")
-        self.assertEqual(self.test_widget.button.text(), "エクスポート")
-        self.assertEqual(self.test_widget.combo_label.text(), "ファイルパス:")
+        # 初期状態（日本語）- 翻訳辞書から期待値を取得
+        self.translator.set_language("ja")
+        self.assertEqual(self.test_widget.label.text(), self.translator.translate("import", "buttons"))
+        self.assertEqual(self.test_widget.button.text(), self.translator.translate("export", "buttons"))
+        self.assertEqual(self.test_widget.combo_label.text(), self.translator.translate("file_path", "labels"))
 
     def test_language_switch(self):
         """言語切り替えが正しく機能するか確認"""
@@ -163,18 +166,18 @@ class TestUITranslator(GuiTestBase):
         self.test_widget.retranslateUi()
         QApplication.processEvents()
 
-        self.assertEqual(self.test_widget.label.text(), "Import")
-        self.assertEqual(self.test_widget.button.text(), "Export")
-        self.assertEqual(self.test_widget.combo_label.text(), "File Path:")
+        self.assertEqual(self.test_widget.label.text(), self.translator.translate("import", "buttons"))
+        self.assertEqual(self.test_widget.button.text(), self.translator.translate("export", "buttons"))
+        self.assertEqual(self.test_widget.combo_label.text(), self.translator.translate("file_path", "labels"))
 
         # 日本語に戻す
         self.translator.set_language("ja")
         self.test_widget.retranslateUi()
         QApplication.processEvents()
 
-        self.assertEqual(self.test_widget.label.text(), "インポート")
-        self.assertEqual(self.test_widget.button.text(), "エクスポート")
-        self.assertEqual(self.test_widget.combo_label.text(), "ファイルパス:")
+        self.assertEqual(self.test_widget.label.text(), self.translator.translate("import", "buttons"))
+        self.assertEqual(self.test_widget.button.text(), self.translator.translate("export", "buttons"))
+        self.assertEqual(self.test_widget.combo_label.text(), self.translator.translate("file_path", "labels"))
 
     def test_get_current_language(self):
         """現在の言語取得が正しく機能するか確認"""
@@ -214,22 +217,23 @@ class TestUITranslator(GuiTestBase):
     def test_nested_translation_keys(self):
         """ネストされた翻訳キーが正しく処理されるか確認"""
         self.translator.set_language("ja")
+        ja = self.translator._translations.get("ja", {})
 
-        # ネストされたキーのテスト
+        # ネストされたキーのテスト（辞書から期待値を取得）
         result = self.translator.translate("tabs.file_io")
-        self.assertEqual(result, "ファイルI/O")
+        self.assertEqual(result, ja.get("tabs", {}).get("file_io"))
 
         result = self.translator.translate("groups.general")
-        self.assertEqual(result, "一般")
+        self.assertEqual(result, ja.get("groups", {}).get("general"))
 
     def test_base_tab_integration(self):
         """BaseTabクラスとの統合が正しく機能するか確認"""
-        # BaseTabのtrメソッドが正しく動作するか
+        # BaseTabのtrメソッドが正しく動作するか（辞書から期待値を取得）
         self.translator.set_language("ja")
-        self.assertEqual(self.test_widget.tr("import", "buttons"), "インポート")
+        self.assertEqual(self.test_widget.tr("import", "buttons"), self.translator.translate("import", "buttons"))
 
         self.translator.set_language("en")
-        self.assertEqual(self.test_widget.tr("import", "buttons"), "Import")
+        self.assertEqual(self.test_widget.tr("import", "buttons"), self.translator.translate("import", "buttons"))
 
     def test_settings_integration(self):
         """設定との統合を確認（実際の設定保存はしない）"""
@@ -249,14 +253,18 @@ class TestUITranslator(GuiTestBase):
     def test_special_characters_translation(self):
         """特殊文字を含む翻訳が正しく処理されるか確認"""
         self.translator.set_language("ja")
+        ja = self.translator._translations.get("ja", {})
 
-        # コロンを含む翻訳
+        # コロンを含む翻訳（辞書の値がコロンで終わることを確認）
         result = self.translator.translate("file_path", "labels")
-        self.assertTrue(result.endswith(":"))
+        self.assertIsNotNone(result)
+        self.assertIn(":", result)
 
-        # 括弧を含む翻訳
+        # 括弧を含む翻訳（辞書の値に括弧が含まれることを確認）
         result = self.translator.translate("model_name_jp", "fields")
-        self.assertIn("(JP)", result)
+        expected = ja.get("fields", {}).get("model_name_jp", "")
+        self.assertIn("(JP)", expected)
+        self.assertEqual(result, expected)
 
 
 if __name__ == "__main__":

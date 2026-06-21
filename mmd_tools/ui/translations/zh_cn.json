@@ -17,8 +17,7 @@
     "export_settings": "导出设置"
   },
   "menus": {
-    "view": "查看",
-    "log_viewer": "日志查看器"
+    "view": "查看"
   },
   "buttons": {
     "import": "导入",
@@ -36,7 +35,14 @@
     "select": "选择",
     "clear": "清除",
     "save": "保存",
-    "load": "加载"
+    "load": "加载",
+    "apply_to_selected": "应用到所选",
+    "auto_scroll": "自动滚动",
+    "filter": "筛选",
+    "next": "下一个",
+    "previous": "上一个",
+    "search": "搜索",
+    "timestamp": "时间戳"
   },
   "labels": {
     "file_path": "文件路径:",
@@ -71,9 +77,11 @@
     "selected": "已选择:",
     "available": "可使用:",
     "offset_count": "偏移数量",
+    "offset_not_supported": "偏移: 不支持",
     "log_entries": "日志",
     "search_results": "条",
-    "not_found": "未找到"
+    "not_found": "未找到",
+    "namespace_placeholder": "自动生成"
   },
   "tooltips": {
     "import_file": "导入PMD/PMX/VMD文件",
@@ -84,7 +92,8 @@
     "add_item": "添加新项目",
     "remove_item": "移除选中的项目",
     "move_up": "将选中的项目上移",
-    "move_down": "将选中的项目下移"
+    "move_down": "将选中的项目下移",
+    "vpd_not_implemented": "VPD 姿势导入尚未实现"
   },
   "messages": {
     "import_success": "导入完成",
@@ -140,6 +149,7 @@
     "edge_settings": "边缘设置",
     "edge_properties": "边缘属性",
     "rendering_flags": "渲染标记",
+    "viewport_settings": "视口设置",
     "bone_list": "骨骼列表",
     "basic_information": "基本信息",
     "transform_control": "变换控制",
@@ -176,6 +186,7 @@
     "create_physics_joints": "创建物理关节",
     "group_physics_objects": "分组物理对象",
     "add_semi_standard_bones": "添加准标准骨骼",
+    "bake_mode": "Bake模式（无绑定）",
     "translate_names": "翻译名称",
     "import_bone_animation": "导入骨骼动画",
     "import_morph_animation": "导入表情动画",
@@ -186,8 +197,13 @@
     "new_file": "新建文件",
     "enable_ik": "启用IK",
     "invert_value": "反转值",
+    "development_mode": "开发模式",
     "show_advanced_options": "显示高级选项",
-    "enable_logging": "启用日志记录"
+    "enable_logging": "启用日志记录",
+    "auto_classify_transparency": "自动分类透明 (扫描纹理α)",
+    "auto_resolve_textures": "自动修复贴图（ASCII缓存）",
+    "split_meshes_by_morph_groups": "【实验性】按表情组分离网格",
+    "custom_namespace": "自定义命名空间:"
   },
   "fields": {
     "scale_factor": "缩放系数:",
@@ -195,6 +211,7 @@
     "texture_search_path": "贴图搜索路径:",
     "uv_set_name": "UV集名称:",
     "start_frame": "开始帧:",
+    "vmd_fps": "VMD FPS:",
     "format": "格式:",
     "vmd_file": "VMD文件:",
     "target_model": "目标模型:",
@@ -250,7 +267,9 @@
     "language": "语言:",
     "log_level": "日志级别:",
     "log_file": "日志文件:",
-    "export_format": "导出格式:"
+    "export_format": "导出格式:",
+    "transparency_mode": "透明模式:",
+    "transparency_opaque_threshold": "不透明α阈值:"
   },
   "actions": {
     "import_model": "导入模型",
@@ -290,6 +309,7 @@
     "self_shadow_map": "投射自身阴影",
     "self_shadow": "接收自身阴影",
     "edge_drawing": "边缘绘制",
+    "shader_outline": "着色器描边",
     "vertex_color": "顶点颜色",
     "point_drawing": "点绘制",
     "line_drawing": "线绘制"
@@ -362,5 +382,46 @@
   "status": {
     "not_connected": "未连接",
     "connected": "已连接"
+  },
+  "transparency_modes": {
+    "opaque": "不透明",
+    "cutout": "镂空",
+    "blend": "混合"
+  },
+  "texture_issues": {
+    "title": "有些贴图无法显示 ({count})",
+    "intro": "Maya 无法加载这些贴图文件。点击“全部修复”会将每个文件以英文安全的名称复制到本项目的 sourceimages 文件夹并重新链接，以便正常显示。原始文件不会被修改。",
+    "header_material": "材质",
+    "header_problem": "问题",
+    "header_texture": "贴图",
+    "detail_placeholder": "选择一行以查看完整路径。",
+    "detail_original": "原始: {path}",
+    "detail_current": "当前: {path}",
+    "fix_all": "全部修复",
+    "open_folder": "打开文件夹",
+    "close": "关闭",
+    "dont_show_again": "不再显示",
+    "status_fixed": "已修复 {count} 个贴图",
+    "fix_texture_path": "修正贴图路径",
+    "status_no_issues": "未发现贴图路径问题。",
+    "status_scan_failed": "无法扫描贴图路径问题。"
+  },
+  "texture_issue_reasons": {
+    "non_ascii_path": "Maya 可能无法显示此贴图路径",
+    "ansi_incompatible_path": "路径包含无法使用的字符",
+    "missing_file": "找不到文件",
+    "question_mark_path": "重新打开后路径已损坏",
+    "empty_path": "贴图路径为空",
+    "resolved": "已修复",
+    "missing_original_path": "未记录原始路径",
+    "absolute_original_path_rejected": "绝对路径位于模型文件夹之外",
+    "parent_traversal_rejected": "路径超出了模型文件夹",
+    "outside_model_directory_rejected": "文件位于模型文件夹之外",
+    "extension_rejected": "不支持的文件类型",
+    "symlink_rejected": "不允许使用符号链接",
+    "source_not_found": "找不到源文件",
+    "source_not_file": "源不是文件",
+    "source_not_readable": "无法读取源文件",
+    "cache_copy_failed": "无法将贴图复制到缓存"
   }
 }

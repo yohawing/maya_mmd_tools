@@ -1,25 +1,77 @@
 # Maya MMD Tools ユーザードキュメント
 
+[English](../README.md)
+
 Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVMDモーションを読み込むためのツールです。
 
-現在は アルファ版のの早期リリースです。一部の機能が未実装もしくは不安定な場合があります。
+MMDのリグの再現及び、アニメーションのインポート・編集・書き出しの一連の流れを実現することを目的としています。
 
-## 対応機能
+## 機能サポート一覧
 
-- PMD/PMXモデルインポート
-- VMDアニメーションインポート（ボーン、モーフ、カメラ、照明）
-- 基本UI（Info、Material、Morph、Boneタブ）
-- 日本語/英語UI
-- Namespace対応
-- ログビューア
+凡例: ✅ 対応 · 🔶 一部対応／制限あり · 🧪 試験的 · ⛔ 未対応
+
+> 本ツールはアルファ版です。詳細は下記の[既知の制限](#既知の制限)を参照してください。
+
+### インポート — モデル　（PMX,PMD）
+
+| 機能 | 状態 | 備考 |
+|---|---|---|
+| メッシュ／頂点／法線 | ✅ | |
+| マテリアル・テクスチャ | ✅ | 自動適用（テクスチャ検索パス対応） |
+| Maya向け名前解決 | 🔶 | 一部対応。テクスチャの解決に失敗する場合があります |
+| プライマリ UV | ✅ | |
+| 追加 UV（UV1–4） | ⛔ | 非対応 |
+| エッジ／輪郭フラグ | ✅ | シェーダーアウトライン描画はマテリアルタブから opt-in |
+| ボーン・スケルトン | ✅ | |
+| IK | ⛔ | 非対応 |
+| 付与ボーン | ⛔ |　非対応 |
+| ボーンローカル軸 | ⛔ | 非対応 |
+| 表示枠 | ⛔ | 非対応 |
+| 頂点モーフ | ✅ | blendShape ターゲット |
+| ボーンモーフ | 🔶 | モーションベイク経由で適用。対話操作は限定的 |
+| 材質モーフ（Material） | 🔶 | モーションベイク経由で適用。対話操作は限定的 |
+| グループモーフ（Group） | ⛔ | |
+| UVモーフ（追加 UV 含む） | ⛔ | |
+| フリップモーフ（Flip） | ⛔ | |
+| インパルスモーフ（Impulse） | ⛔ | |
+| 剛体・ジョイント | ⛔ | 非対応 |
+| ソフトボディ（PMX 2.1） | ⛔ | 非対応 |
+| HumanIK Rig | ⛔ | 非対応 (対応したい！) |
+| エクスポート | ⛔ | 非対応 |
+
+### アニメーション（VMD）
+
+| 機能 | 状態 | 備考 |
+|---|---|---|
+| ボーンアニメーション | 🔶 | [mmd-anim](https://github.com/yohawing/mmd-anim)による高精度ベイク（ベジェ補間・IK・付与を解決）のみ対応 |
+| モーフアニメーション | 🔶 |　頂点モーフのみ対応 |
+| カメラアニメーション | ✅ | `mmd_camera` を作成・キー設定 |
+| 照明アニメーション | ✅ | `mmd_light` コントローラを駆動 |
+| IK オン／オフフレーム | ⛔ | 非対応 |
+| エクスポート | ⛔ | 非対応 |
+
+
+### ビューポート・シェーディング
+
+| 機能 | 状態 | 備考 |
+|---|---|---|
+| DX11 MMD トゥーンシェーダー（Windows） | 🔶 | トゥーン・透過。輪郭は描画順の都合で既定オフ、マテリアルタブからONにできますが、再現性は低いです。 |
+| MMD ライトコントローラ | ✅ | mmd_lightで調整可能 |
+| 透過（不透明／カットアウト／ブレンド） | ✅ | 手動 OR オプションの自動分類 |
+| GLSL シェーダー（macOS） | ⛔ | 非対応 |
 
 ## 既知の制限
 
-- PMD/PMX/VMDエクスポートは未実装です。
-- 物理演算対応は未完成です。
-- VMDモーションは読み込み後に新しいモーションが正しく再生されない未修正の問題があります。`0.1.0`では、VMDの読み込み・解析は利用できますが、モーション再生は未完成として扱ってください。
-- 大規模モデルでは動作が重くなる場合があります。
-- 一部のPMXファイルで読み込みに失敗する場合があります。
+- **エクスポート不可。** 現状はインポート専用です。PMX/PMD/VMD エクスポートは未実装です（UI に明示）。
+- **VPD ポーズ取込は未提供。** パーサはありますが、UI が無効化されており接続待ちです。
+- **追加 UV／multi-UV は未適用**（読み込むが無視）。
+- **グループ／UV／フリップ／インパルスのモーフは未対応。** 頂点モーフは完全対応、ボーン・材質モーフはモーションベイク経由で適用されます。
+- **ソフトボディ（PMX 2.1）データは黙殺されます。** ファイルの他の部分は正常に読み込めます。
+- **表示枠は読み込むが Maya へ未反映。**
+- **物理演算は試験的**で、既定はオフです。
+- **ボーンローカル軸の精度は近似**で未検証です。
+- 大規模モデルでは動作が重くなる場合があり、一部の PMX ファイルは読み込みに失敗することがあります。
+- opt-in の C++ 高速インポート経路はメッシュ・基本マテリアル・基本スケルトン/スキン・頂点モーフ blendShape のみ対応です（UV／材質／ボーン／グループのモーフは非対応）。
 
 ## システム要件
 
@@ -66,28 +118,6 @@ MMD_TOOLS_ROOT:= .
 PYTHONPATH +:= .
 ```
 
-例:
-
-```text
-+ MAYAVERSION:2026 maya_mmd_tools 0.1.0 C:/Tools/maya_mmd_tools
-scripts: .
-plug-ins: plug-ins
-icons: resources/icons
-MMD_TOOLS_ROOT:= .
-PYTHONPATH +:= .
-```
-
-パスにスペースが含まれる場合は引用符で囲みます。
-
-```text
-+ MAYAVERSION:2026 maya_mmd_tools 0.1.0 "C:/Program Files/maya_mmd_tools"
-scripts: .
-plug-ins: plug-ins
-icons: resources/icons
-MMD_TOOLS_ROOT:= .
-PYTHONPATH +:= .
-```
-
 修正した `maya_mmd_tools.mod` をMayaの `modules` フォルダへコピーします。
 
 `userSetup.py` をMayaの scripts フォルダへ別途コピーする必要はありません。`.mod` の `scripts: .` 設定により、Maya MMD Tools本体フォルダ内の `userSetup.py` が参照されます。
@@ -106,38 +136,7 @@ PYTHONPATH +:= .
 
 Mayaのメニューバーに `MMD > MMD Tools` が追加されていることを確認します。
 
-### コマンドで確認
-
-MayaのScript Editorで以下を実行します。
-
-```python
-import mmd_tools
-print(mmd_tools.__version__)
-```
-
-期待される出力:
-
-```text
-0.1.0
-```
-
 ## クイックスタート
-
-### モデルをインポートする
-
-1. `MMD > MMD Tools` を選択します。
-2. Import/ExportタブでPMXまたはPMDファイルを選択します。
-3. `Import Model` をクリックします。
-
-スクリプトから読み込む場合:
-
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-
-import_mmd_file("path/to/your/model.pmx")
-```
-
-インポートが成功すると、アウトライナーに `model_root` グループが作成され、ビューポートにモデルが表示されます。マテリアルとテクスチャも自動的に適用されます。
 
 ### MMD Tools UIを開く
 
@@ -152,122 +151,31 @@ import_mmd_file("path/to/your/model.pmx")
 - **Morph**: 表情の調整
 - **Bone**: ボーン情報
 
+### モデルをインポートする
+
+1. Import/ExportタブでPMXまたはPMDファイルを選択します。
+2. `Import Model` をクリックします。
+
+インポートが成功すると、アウトライナーに `model_root` グループが作成され、ビューポートにモデルが表示されます。マテリアルとテクスチャも自動的に適用されます。
+テクスチャがマルチバイト文字によって読み込めない場合は、テクスチャを自動修復をONにしてください。自動で読み込める名前のテクスチャに自動でコピー・リネームされます。
+
 ### アニメーションをインポートする
 
-VMDファイルがある場合:
-
-1. `MMD > MMD Tools` を選択します。
-2. Import/ExportタブでVMDファイルを選択します。
+1. Import/ExportタブでVMDファイルを選択します。
+2. （任意）アニメーションのインポート設定で VMD FPS（30 または 60、既定は 30）を指定します。インポート前に Maya シーンの時間単位が変更されます。
 3. `Import Animation` をクリックします。
 4. シーン内の対応するモデルにアニメーションが適用されます。
 
-## モデルのインポート
+## ビューポートの設定
 
-### 対応フォーマット
+MMDのトゥーン表現を再現するシェーダーは、MMDシェーダーの作成オプションと、`dx11Shader.dll`プラグインを有効にすることで確認出来ます。
+また、インポート時に以下の設定が自動で適用されます。
 
-- **PMX形式** (`.pmx`) - 推奨フォーマット
-  - PMX 2.0
-  - PMX 2.1
-- **PMD形式** (`.pmd`) - レガシーフォーマット
+- **レンダリング空間** → `ACEScg`　→ `scene-linear Rec.709-sRGB`。
+- **ビュー変換（View Transform）** `ACES 1.0 SDR-video (sRGB)` → `Un-tone-mapped (sRGB)`
 
-### 基本的なインポート
-
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-
-import_mmd_file("C:/Models/character.pmx")
-```
-
-Namespace機能を有効にして読み込む場合:
-
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-
-options = {"use_namespace": True}
-import_mmd_file("C:/Models/character.pmx", options=options)
-```
-
-### インポート設定
-
-```python
-from mmd_tools.core import settings
-
-# スケール調整（MMDは通常cm単位）
-settings.set("import.general.scale_factor", 1.0)
-
-# Namespace使用（複数モデル対応）
-settings.set("import.general.use_namespace", True)
-
-# マテリアル作成
-settings.set("import.model.create_mmd_shaders", True)
-
-# 物理演算のインポート（早期リリースでは実験的）
-settings.set("import.physics.import_physics", False)
-```
-
-### インポート後の構造
-
-```text
-model_root
-├── mesh_root
-│   └── model_mesh
-├── bone_root
-│   ├── センター
-│   ├── 上半身
-│   └── ...
-└── morph_root
-    └── blendShapes
-```
-
-モデルには以下のカスタムアトリビュートが追加されます。
-
-- `mmd_model`: モデル識別用
-- `mmd_model_name`: モデル名（日本語）
-- `mmd_model_name_en`: モデル名（英語）
-- `mmd_comment`: コメント
-
-### 複数モデルのインポート
-
-Namespace機能を使うと、同じ名前のボーンやメッシュの衝突を避けられます。同じモデルを複数回インポートした場合は、自動的に連番が付与されます。
-
-```python
-from mmd_tools.io.mmd_importer import import_mmd_file
-from mmd_tools.core import settings
-
-settings.set("import.general.use_namespace", True)
-
-models = ["character1.pmx", "character2.pmx", "stage.pmx"]
-
-for model_path in models:
-    root_node = import_mmd_file(model_path)
-    print(f"インポート完了: {root_node}")
-```
-
-### インポート後の調整
-
-```python
-import maya.cmds as cmds
-
-cmds.select("model_root")
-cmds.scale(0.1, 0.1, 0.1)
-cmds.move(0, 0, 100)
-```
-
-## アンインストール
-
-1. Mayaを終了します。
-2. `modules/maya_mmd_tools.mod` を削除します。
-3. インストールしたMaya MMD Toolsフォルダを削除します。
+いずれもMMDらしい色調（sRGBガンマ空間入出力）を再現する目的での適用になります。
 
 ## サポート
 
 問題が解決しない場合は、以下の情報を添えて [GitHub Issues](https://github.com/yohawing/maya_mmd_tools/issues) で報告してください。
-
-- エラーメッセージ全文
-- Mayaバージョン
-- OS
-- Maya MMD Toolsバージョン
-- 使用したPMD/PMX/VMDファイルの種類
-- 再現手順
-
-開発者向けドキュメントは [docs-dev](../docs-dev/README.md) を参照してください。

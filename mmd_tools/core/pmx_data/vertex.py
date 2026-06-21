@@ -65,9 +65,11 @@ class PmxVertex:
                 self.sdef_c = struct.unpack("<fff", f.read(12))
                 self.sdef_r0 = struct.unpack("<fff", f.read(12))
                 self.sdef_r1 = struct.unpack("<fff", f.read(12))
-            elif self.weight_transform_type == 4:  # QDEF (PMX 2.1 only)
-                if version < 2.1:
-                    raise ValueError("QDEF weight transform type is only supported in PMX 2.1 and later.")
+            elif self.weight_transform_type == 4:  # QDEF
+                # Some generated fixture PMX files carry QDEF vertices while
+                # keeping a 2.0 header. QDEF uses the same vertex payload shape
+                # as BDEF4, so parsing can be lenient even though writing keeps
+                # the PMX 2.1 version gate below.
                 for _ in range(4):
                     self.bone_indices.append(struct.unpack(bone_index_format, f.read(self.bone_index_size))[0])
                 for _ in range(4):

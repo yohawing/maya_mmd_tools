@@ -1,11 +1,8 @@
-import logging
-import os
 from maya import cmds
 import maya.OpenMayaUI as mui
 from .qt_compat import (
     QMainWindow,
     QTabWidget,
-    QDockWidget,
     Qt,
     QSettings,
     wrapInstance,
@@ -15,11 +12,9 @@ from .qt_compat import (
     QProgressBar,
     QLabel,
 )
-from ..core.log_handlers import QtLogHandler
-from .components.enhanced_log_viewer import EnhancedLogViewer
 from .components.header_widget import HeaderWidget
 from .application_state import ApplicationState
-from ..core.logger import get_logger
+from ..core.logger import get_logger, install_maya_script_editor_handler
 from .tabs.import_export_tab import ImportExportTab
 from .presenters.import_export_presenter import ImportExportPresenter
 from .tabs.info_tab import InfoTab
@@ -30,8 +25,11 @@ from .tabs.bone_tab import BoneTab
 from .presenters.bone_presenter import BonePresenter
 from .tabs.morph_tab import MorphTab
 from .presenters.morph_presenter import MorphPresenter
-from .tabs.display_pane_tab import DisplayPaneTab
-from .presenters.display_pane_presenter import DisplayPanePresenter
+# NOTE: Display Pane タブはデータソース（mmd_display_panes 属性）を書き出す経路が
+#   未実装で、常に空のデッドタブのためリリースでは非表示にしている。
+#   表示枠インポートを実装する際に下記の addTab とともに復活させる。
+#   from .tabs.display_pane_tab import DisplayPaneTab
+#   from .presenters.display_pane_presenter import DisplayPanePresenter
 from .tabs.physics_tab import PhysicsTab
 from .presenters.physics_presenter import PhysicsPresenter
 from .tabs.settings_tab import SettingsTab
@@ -77,17 +75,6 @@ class MainWindow(QMainWindow):
         # ステータスバー
         self.setup_status_bar()
 
-        # ログビューア（ドッキング可能）
-        self.log_viewer = EnhancedLogViewer()
-        self.log_viewer.setObjectName("logViewer")
-        self.log_dock_widget = QDockWidget("Log", self)
-        self.log_dock_widget.setObjectName("logDockWidget")
-        self.log_dock_widget.setWidget(self.log_viewer)
-        # ドックを外せないように設定（フローティングは禁止、閉じるボタンも無効）
-        self.log_dock_widget.setFeatures(QDockWidget.DockWidgetMovable)
-        self.addDockWidget(Qt.BottomDockWidgetArea, self.log_dock_widget)
-
-        self.load_stylesheet()
         self.setup_logging()
         self.setup_tabs()
         self.restore_settings()
@@ -218,29 +205,9 @@ class MainWindow(QMainWindow):
         else:
             self.setWindowTitle(base_title)
 
-    def load_stylesheet(self):
-        style_path = os.path.join(os.path.dirname(__file__), "stylesheet.qss")
-        try:
-            with open(style_path, "r") as f:
-                self.setStyleSheet(f.read())
-        except FileNotFoundError:
-            # loggerがまだ初期化されていない可能性があるので、printを使用
-            print(f"Warning: Stylesheet not found at {style_path}")
-
     def setup_logging(self):
-        # QtLogHandlerを作成
-        handler = QtLogHandler()
-        handler.message_written.connect(self.log_viewer.append)
-        handler.setLevel(logging.DEBUG)  # すべてのレベルのログを受け取る
-
-        # ルートロガーに追加（すべての子ロガーのメッセージをキャッチ）
-        root_logger = logging.getLogger()
-        root_logger.addHandler(handler)
-        root_logger.setLevel(logging.DEBUG)
-
-        # このモジュール用のロガーを取得してテストメッセージ
-        logger = get_logger(__name__)
-        logger.info("MMD Tools UI initialized.")
+        install_maya_script_editor_handler()
+        get_logger(__name__).info("MMD Tools UI initialized.")
 
     def setup_tabs(self):
         # UITranslatorを取得
@@ -258,6 +225,7 @@ class MainWindow(QMainWindow):
 
         # File I/O Tab
         import_export_tab = ImportExportTab()
+        self.import_export_tab = import_export_tab
         self.import_export_presenter = ImportExportPresenter(import_export_tab, self.app_state)
         self.tab_widget.addTab(import_export_tab, translator.translate("file_io", "tabs"))
 
@@ -281,15 +249,18 @@ class MainWindow(QMainWindow):
         self.morph_presenter = MorphPresenter(morph_tab, self.app_state)
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
 
-        # Display Pane Tab
-        display_pane_tab = DisplayPaneTab()
-        self.display_pane_presenter = DisplayPanePresenter(display_pane_tab, self.app_state)
-        self.tab_widget.addTab(display_pane_tab, translator.translate("display_pane", "tabs"))
+        # Display Pane Tab — 非表示（mmd_display_panes 属性を書く経路が未実装の
+        #   デッドタブ。実装時に DisplayPaneTab/Presenter の import と addTab を復活させる）
 
-        # Physics Tab
-        physics_tab = PhysicsTab()
-        self.physics_presenter = PhysicsPresenter(physics_tab, self.app_state)
-        self.tab_widget.addTab(physics_tab, translator.translate("physics", "tabs"))
+        # Physics Tab — dev mode only (physics import is a dev-only feature)
+        is_dev = settings.get("ui.general.development_mode", False)
+        if is_dev:
+            physics_tab = PhysicsTab()
+            self.physics_presenter = PhysicsPresenter(physics_tab, self.app_state)
+            self.tab_widget.addTab(physics_tab, translator.translate("physics", "tabs"))
+            self.physics_tab = physics_tab
+        else:
+            self.physics_tab = None
 
         # Settings Tab
         settings_tab = SettingsTab()
@@ -303,14 +274,41 @@ class MainWindow(QMainWindow):
             material_tab,
             bone_tab,
             morph_tab,
-            display_pane_tab,
-            physics_tab,
-            settings_tab,
         ]
+        if self.physics_tab is not None:
+            self.tabs.append(self.physics_tab)
+        self.tabs.append(settings_tab)
 
         # logger参照のためにグローバルスコープで取得
         global logger
         logger = get_logger(__name__)
+
+    def refresh_development_mode_visibility(self):
+        """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""
+        from .translations import UITranslator
+        from .. import settings
+
+        if hasattr(self, "import_export_tab"):
+            self.import_export_tab._apply_dev_mode_visibility()
+
+        translator = UITranslator.instance()
+        is_dev = settings.get("ui.general.development_mode", False)
+        physics_index = self.tab_widget.indexOf(self.physics_tab) if self.physics_tab is not None else -1
+
+        if is_dev and self.physics_tab is None:
+            physics_tab = PhysicsTab()
+            self.physics_presenter = PhysicsPresenter(physics_tab, self.app_state)
+            insert_index = max(0, self.tab_widget.count() - 1)
+            self.tab_widget.insertTab(insert_index, physics_tab, translator.translate("physics", "tabs"))
+            self.physics_tab = physics_tab
+            self.tabs.insert(insert_index, physics_tab)
+        elif not is_dev and physics_index >= 0:
+            self.tab_widget.removeTab(physics_index)
+            if self.physics_tab in self.tabs:
+                self.tabs.remove(self.physics_tab)
+            self.physics_tab.deleteLater()
+            self.physics_tab = None
+            self.physics_presenter = None
 
     def retranslate_all_tabs(self):
         """すべてのタブのUIテキストを再翻訳"""
@@ -318,8 +316,12 @@ class MainWindow(QMainWindow):
 
         translator = UITranslator.instance()
 
-        # タブのタイトルを再設定
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "display_pane", "physics", "settings"]
+        # タブのタイトルを実際に追加されたタブに合わせて再設定
+        # display_pane は非表示のため除外。physics は dev mode のみ存在する。
+        tab_keys = ["file_io", "info", "material", "bone", "morph"]
+        if getattr(self, "physics_tab", None) is not None:
+            tab_keys.append("physics")
+        tab_keys.append("settings")
         for i, key in enumerate(tab_keys):
             self.tab_widget.setTabText(i, translator.translate(key, "tabs"))
 
@@ -328,7 +330,6 @@ class MainWindow(QMainWindow):
             if hasattr(tab, "retranslateUi"):
                 tab.retranslateUi()
 
-        # ウィンドウタイトルとドックウィジェットも再翻訳
         self.retranslateUi()
 
     def retranslateUi(self):

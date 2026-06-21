@@ -1,8 +1,12 @@
+import json
+
 from maya import cmds
 
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmd_data import PmdData
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.settings import settings
+from mmd_tools.converters import mesh_converter as mesh_converter_module
 from mmd_tools.converters import MeshConverter
 from mmd_tools.core import maya_utils
 from tests.common.maya_test_base import MayaTestBase
@@ -20,6 +24,9 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
+    ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
 )
 
 
@@ -40,6 +47,8 @@ class TestMeshConverter(MayaTestBase):
 
         # テスト環境ではdx11Shaderを無効にする
         settings.set("import.model.create_mmd_shaders", False)
+        settings.set("import.model.separate_meshes_by_material", False)
+        settings.set("import.model.split_meshes_by_morph_groups", False)
 
         # TestFixtureProviderを初期化
         self.fixture_provider = TestFixtureProvider()
@@ -77,8 +86,6 @@ class TestMeshConverter(MayaTestBase):
         # MeshConverterを作成して変換を実行
         converter = MeshConverter(pmd_file_path)
         mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
-
-        settings.get("import.model.separate_meshes_by_material")
 
         # 結果の検証
         # 1. グループが作成されているか
@@ -175,7 +182,6 @@ class TestMeshConverter(MayaTestBase):
         mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
 
         # メッシュに割り当てられているマテリアルを取得
-        cmds.listRelatives(mesh_name, shapes=True, type="mesh") or []
         assigned_materials = set()
 
         assigned_materials = maya_utils.get_materials_from_mesh(mesh_name)
@@ -313,7 +319,408 @@ class TestMeshConverter(MayaTestBase):
                 else:
                     self.fail(f"{material}に{maya_attr}アトリビュートが存在しません")
 
-    # def test_separated_by_material(self):
-    #     """
-    #     マテリアルごとにメッシュが分割されるオプションが正しく機能するかテストする。
-    #     """
+    def test_convert_pmx_mesh_with_material_split(self):
+        """
+        separate_meshes_by_material=True で PMX メッシュがマテリアルごとに分割されることをテストする。
+        """
+        # 設定を一時的に有効化
+        settings.set("import.model.separate_meshes_by_material", True)
+
+        try:
+            # 複数マテリアルを持つPMX fixtureを使用
+            pmx_file_path = self.fixture_provider.get_pmx_file("Lumine")
+
+            # PMXファイルをパース
+            pmx_data = PmxData()
+            pmx_data = pmx_data.parse_file(pmx_file_path)
+
+            # マテリアル数を記録
+            expected_material_count = len(
+                [m for m in pmx_data.materials if m.face_count > 0]
+            )
+            self.assertGreater(expected_material_count, 1, "split test には複数 material fixture が必要です")
+
+            # ルートグループを作成
+            root_group = cmds.group(empty=True, name="test_pmx_split_root")
+
+            # MeshConverterを作成して変換を実行
+            converter = MeshConverter(pmx_file_path)
+            mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
+
+            # 結果の検証: mesh_name がリストであることを確認
+            self.assertIsInstance(
+                mesh_name,
+                list,
+                f"split mode では mesh_name は list であるべき: {type(mesh_name)}",
+            )
+
+            # material 数と同数の mesh transform が GEOMETRY_GROUP 直下にある
+            self.assertEqual(
+                len(mesh_name),
+                expected_material_count,
+                f"メッシュ数 ({len(mesh_name)}) が material 数 ({expected_material_count}) と一致しません",
+            )
+
+            # 各 mesh に mesh shape / UV / material がある
+            split_vertex_counts = []
+            for mn in mesh_name:
+                self.assertTrue(
+                    cmds.objExists(mn),
+                    f"メッシュ '{mn}' が存在しません",
+                )
+
+                # shape node がある
+                shapes = cmds.listRelatives(mn, shapes=True, type="mesh") or []
+                self.assertGreater(
+                    len(shapes),
+                    0,
+                    f"'{mn}' に mesh shape がありません",
+                )
+
+                # UV がある
+                uv_sets = cmds.polyUVSet(mn, query=True, allUVSets=True)
+                self.assertIsNotNone(uv_sets, f"'{mn}' に UV がありません")
+                self.assertGreaterEqual(
+                    len(uv_sets),
+                    1,
+                    f"'{mn}' に UV セットがありません",
+                )
+
+                # マテリアルが割り当てられている
+                materials = maya_utils.get_materials_from_mesh(mn)
+                self.assertGreater(
+                    len(materials),
+                    0,
+                    f"'{mn}' にマテリアルがありません",
+                )
+
+                self.assertTrue(
+                    cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mn, exists=True),
+                    f"'{mn}' に compact split source index attribute がありません",
+                )
+                source_indices = maya_utils.get_int_array_attribute(mn, ATTR_MMD_SOURCE_VERTEX_INDICES)
+                vertex_count = cmds.polyEvaluate(mn, vertex=True)
+                split_vertex_counts.append(vertex_count)
+                self.assertEqual(
+                    len(source_indices),
+                    vertex_count,
+                    f"'{mn}' の source index 数と local vertex 数が一致しません",
+                )
+
+            self.assertLess(
+                min(split_vertex_counts),
+                len(pmx_data.vertices),
+                "compact split mesh が全頂点保持のままです",
+            )
+
+        finally:
+            # 設定を元に戻す
+            settings.set("import.model.separate_meshes_by_material", False)
+
+    def test_convert_pmx_mesh_with_morph_group_split(self):
+        """split_meshes_by_morph_groups=True で vertex morph 影響 material set ごとの mesh を作る。"""
+        settings.set("import.model.split_meshes_by_morph_groups", True)
+
+        class FakeHeader:
+            def get_name(self):
+                return "MorphGroupModel"
+
+        class FakeVertex:
+            def __init__(self, position, uv):
+                self.position = position
+                self.normal = (0.0, 0.0, 1.0)
+                self.uv = uv
+
+        class FakeFace:
+            def __init__(self, indices):
+                self.indices = indices
+
+        class FakeMaterial:
+            def __init__(self, index, face_count):
+                self.material_index = index
+                self.name = f"mat_{index}"
+                self.name_english = f"mat_{index}_en"
+                self.face_count = face_count
+                self.diffuse = (0.8, 0.7, 0.6, 1.0)
+                self.ambient = (0.1, 0.1, 0.1)
+                self.specular = (0.2, 0.2, 0.2)
+                self.specular_coefficient = 0.5
+                self.texture_index = -1
+                self.sphere_texture_index = -1
+                self.sphere_mode = 0
+                self.toon_texture_index = -1
+                self.shared_toon_flag = 0
+                self.draw_flag = 0
+                self.edge_color = (0.0, 0.0, 0.0, 1.0)
+                self.edge_size = 1.0
+                self.memo = ""
+
+            def get_name(self):
+                return self.name
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+
+            def __init__(self, name, vertex_index):
+                self.name = name
+                self.offsets = [{"vertex_index": vertex_index, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "header": FakeHeader(),
+                "vertices": [
+                    FakeVertex((0.0, 0.0, 0.0), (0.0, 0.0)),
+                    FakeVertex((1.0, 0.0, 0.0), (1.0, 0.0)),
+                    FakeVertex((1.0, 1.0, 0.0), (1.0, 1.0)),
+                    FakeVertex((0.0, 1.0, 0.0), (0.0, 1.0)),
+                    FakeVertex((0.5, 1.5, 0.0), (0.5, 1.0)),
+                ],
+                "faces": [FakeFace([0, 1, 2]), FakeFace([2, 3, 4]), FakeFace([0, 2, 4])],
+                "materials": [FakeMaterial(0, 3), FakeMaterial(1, 3), FakeMaterial(2, 3)],
+                "textures": [],
+                "morphs": [
+                    FakeVertexMorph("mat0_morph", 1),
+                    FakeVertexMorph("mat1_morph", 3),
+                    FakeVertexMorph("mat12_morph", 4),
+                ],
+            },
+        )()
+
+        try:
+            root_group = cmds.group(empty=True, name="test_pmx_morph_group_root")
+            converter = MeshConverter("")
+            _mesh_group, mesh_names = converter.convert_pmx_mesh(fake_data, root_group)
+
+            self.assertIsInstance(mesh_names, list)
+            self.assertEqual(len(mesh_names), 3)
+            self.assertEqual(converter.profile["created_mesh_count"], 3)
+
+            morph_name_sets = []
+            for mesh_name in mesh_names:
+                self.assertTrue(cmds.attributeQuery(ATTR_MMD_MORPH_GROUP_SPLIT_MESH, node=mesh_name, exists=True))
+                self.assertTrue(cmds.getAttr(f"{mesh_name}.{ATTR_MMD_MORPH_GROUP_SPLIT_MESH}"))
+                source_indices = maya_utils.get_int_array_attribute(mesh_name, ATTR_MMD_SOURCE_VERTEX_INDICES)
+                self.assertEqual(len(source_indices), cmds.polyEvaluate(mesh_name, vertex=True))
+                raw_names = cmds.getAttr(f"{mesh_name}.{ATTR_MMD_VERTEX_MORPH_NAMES_JSON}")
+                morph_name_sets.append(tuple(json.loads(raw_names)))
+
+            self.assertIn(("mat0_morph",), morph_name_sets)
+            self.assertIn(("mat1_morph",), morph_name_sets)
+            self.assertIn(("mat12_morph",), morph_name_sets)
+        finally:
+            settings.set("import.model.split_meshes_by_morph_groups", False)
+
+    def test_convert_pmx_mesh_morph_group_split_static_mesh_preserved(self):
+        """split_meshes_by_morph_groups=True で vertex morph に触れない material が static split mesh として保持されることをテスト。"""
+        settings.set("import.model.split_meshes_by_morph_groups", True)
+
+        class FakeHeader:
+            def get_name(self):
+                return "StaticPreserveModel"
+
+        class FakeVertex:
+            def __init__(self, position, uv):
+                self.position = position
+                self.normal = (0.0, 0.0, 1.0)
+                self.uv = uv
+
+        class FakeFace:
+            def __init__(self, indices):
+                self.indices = indices
+
+        class FakeMaterial:
+            def __init__(self, index, face_count):
+                self.material_index = index
+                self.name = f"mat_{index}"
+                self.name_english = f"mat_{index}_en"
+                self.face_count = face_count
+                self.diffuse = (0.8, 0.7, 0.6, 1.0)
+                self.ambient = (0.1, 0.1, 0.1)
+                self.specular = (0.2, 0.2, 0.2)
+                self.specular_coefficient = 0.5
+                self.texture_index = -1
+                self.sphere_texture_index = -1
+                self.sphere_mode = 0
+                self.toon_texture_index = -1
+                self.shared_toon_flag = 0
+                self.draw_flag = 0
+                self.edge_color = (0.0, 0.0, 0.0, 1.0)
+                self.edge_size = 1.0
+                self.memo = ""
+
+            def get_name(self):
+                return self.name
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+
+            def __init__(self, name, vertex_index):
+                self.name = name
+                self.offsets = [{"vertex_index": vertex_index, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        # mat_0 (face_count=3): face [0,1,2] → vertices {0,1,2} — morph に触れる
+        # mat_1 (face_count=3): face [3,4,5] → vertices {3,4,5} — どのモーフにも触れない → static mesh
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "header": FakeHeader(),
+                "vertices": [
+                    FakeVertex((0.0, 0.0, 0.0), (0.0, 0.0)),
+                    FakeVertex((1.0, 0.0, 0.0), (1.0, 0.0)),
+                    FakeVertex((1.0, 1.0, 0.0), (1.0, 1.0)),
+                    FakeVertex((2.0, 0.0, 0.0), (0.0, 0.0)),
+                    FakeVertex((3.0, 0.0, 0.0), (1.0, 0.0)),
+                    FakeVertex((3.0, 1.0, 0.0), (1.0, 1.0)),
+                ],
+                "faces": [FakeFace([0, 1, 2]), FakeFace([3, 4, 5])],
+                "materials": [FakeMaterial(0, 3), FakeMaterial(1, 3)],
+                "textures": [],
+                "morphs": [
+                    FakeVertexMorph("morph_a", 1),  # vertex 1 は mat_0 のみに属する
+                ],
+            },
+        )()
+
+        try:
+            root_group = cmds.group(empty=True, name="test_pmx_morph_static_root")
+            converter = MeshConverter("")
+            _mesh_group, mesh_names = converter.convert_pmx_mesh(fake_data, root_group)
+
+            self.assertIsInstance(mesh_names, list)
+            self.assertEqual(len(mesh_names), 2, "morph group mesh + static mesh の 2 つが作成されるはず")
+
+            static_meshes = []
+            morph_meshes = []
+            for mn in mesh_names:
+                self.assertTrue(
+                    cmds.attributeQuery(ATTR_MMD_MORPH_GROUP_SPLIT_MESH, node=mn, exists=True),
+                    f"'{mn}' に {ATTR_MMD_MORPH_GROUP_SPLIT_MESH} がありません",
+                )
+                self.assertTrue(
+                    cmds.getAttr(f"{mn}.{ATTR_MMD_MORPH_GROUP_SPLIT_MESH}"),
+                    f"'{mn}' の {ATTR_MMD_MORPH_GROUP_SPLIT_MESH} が True ではありません",
+                )
+                raw_names = cmds.getAttr(f"{mn}.{ATTR_MMD_VERTEX_MORPH_NAMES_JSON}")
+                decoded_names = json.loads(raw_names)
+                if decoded_names:
+                    morph_meshes.append((mn, decoded_names))
+                else:
+                    static_meshes.append(mn)
+
+            self.assertEqual(len(static_meshes), 1, "static split mesh が 1 つあるはず")
+            self.assertEqual(len(morph_meshes), 1, "morph group mesh が 1 つあるはず")
+            self.assertEqual(morph_meshes[0][1], ["morph_a"], "morph mesh の morph 名が正しくありません")
+
+            static_mn = static_meshes[0]
+            source_indices = maya_utils.get_int_array_attribute(static_mn, ATTR_MMD_SOURCE_VERTEX_INDICES)
+            vertex_count = cmds.polyEvaluate(static_mn, vertex=True)
+            self.assertEqual(
+                len(source_indices),
+                vertex_count,
+                "static mesh の source index 数と local vertex 数が一致しません",
+            )
+            self.assertEqual(
+                sorted(source_indices),
+                [3, 4, 5],
+                "static mesh の source vertex indices は mat_1 の頂点 {3,4,5} のみであるはず",
+            )
+            self.assertLess(
+                vertex_count,
+                len(fake_data.vertices),
+                "static mesh が全頂点を保持しています（compact split になっていません）",
+            )
+        finally:
+            settings.set("import.model.split_meshes_by_morph_groups", False)
+
+    def test_convert_pmx_mesh_morph_group_split_real_fixture(self):
+        """split_meshes_by_morph_groups=True で実 PMX fixture から morph group 分割の構造的不変条件を検証する。"""
+        pmx_data, pmx_file_path = self.fixture_provider.load_pmx_data("Lumine")
+
+        vertex_morphs = [m for m in pmx_data.morphs if m.morph_type == PmxMorphType.VertexMorph]
+        if not vertex_morphs:
+            self.skipTest("Lumine fixture に vertex morph がないため split test をスキップします")
+
+        settings.set("import.model.split_meshes_by_morph_groups", True)
+        try:
+            root_group = cmds.group(empty=True, name="test_pmx_morph_real_root")
+            converter = MeshConverter(pmx_file_path)
+            _mesh_group, mesh_names = converter.convert_pmx_mesh(pmx_data, root_group)
+
+            self.assertIsInstance(mesh_names, list, "split mode では mesh_names は list であるべき")
+            self.assertGreater(len(mesh_names), 0, "少なくとも 1 つの mesh が作成されるはず")
+
+            all_assigned_morph_names = set()
+            for mn in mesh_names:
+                self.assertTrue(
+                    cmds.attributeQuery(ATTR_MMD_MORPH_GROUP_SPLIT_MESH, node=mn, exists=True),
+                    f"'{mn}' に {ATTR_MMD_MORPH_GROUP_SPLIT_MESH} がありません",
+                )
+                self.assertTrue(
+                    cmds.getAttr(f"{mn}.{ATTR_MMD_MORPH_GROUP_SPLIT_MESH}"),
+                    f"'{mn}' の {ATTR_MMD_MORPH_GROUP_SPLIT_MESH} が True ではありません",
+                )
+
+                self.assertTrue(
+                    cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mn, exists=True),
+                    f"'{mn}' に {ATTR_MMD_SOURCE_VERTEX_INDICES} がありません",
+                )
+                source_indices = maya_utils.get_int_array_attribute(mn, ATTR_MMD_SOURCE_VERTEX_INDICES)
+                vertex_count = cmds.polyEvaluate(mn, vertex=True)
+                self.assertEqual(
+                    len(source_indices),
+                    vertex_count,
+                    f"'{mn}' の source index 数と local vertex 数が一致しません",
+                )
+
+                self.assertTrue(
+                    cmds.attributeQuery(ATTR_MMD_VERTEX_MORPH_NAMES_JSON, node=mn, exists=True),
+                    f"'{mn}' に {ATTR_MMD_VERTEX_MORPH_NAMES_JSON} がありません",
+                )
+                raw = cmds.getAttr(f"{mn}.{ATTR_MMD_VERTEX_MORPH_NAMES_JSON}")
+                assigned = json.loads(raw)
+                self.assertIsInstance(assigned, list, f"'{mn}' の {ATTR_MMD_VERTEX_MORPH_NAMES_JSON} が list ではありません")
+                all_assigned_morph_names.update(assigned)
+
+            self.assertGreater(
+                len(all_assigned_morph_names),
+                0,
+                "どの mesh にも vertex morph 名が割り当てられていません",
+            )
+
+            pmx_morph_names = {m.get_name() for m in vertex_morphs if getattr(m, "offsets", None)}
+            self.assertTrue(
+                pmx_morph_names.issubset(all_assigned_morph_names),
+                f"mesh に割り当てられていない vertex morph があります: {pmx_morph_names - all_assigned_morph_names}",
+            )
+        finally:
+            settings.set("import.model.split_meshes_by_morph_groups", False)
+
+    def test_ensure_mmd_shader_uniform_attributes_fallback_four_component_colors(self):
+        """
+        standalone fallback path で DiffuseColor と EdgeColor が4成分 compound 属性として作成されることを確認する。
+        """
+        shader_node = cmds.createNode("network", name="uniform_fallback_test")
+
+        mesh_converter_module._ensure_mmd_shader_uniform_attributes(shader_node)
+
+        for attr in ("DiffuseColor", "EdgeColor"):
+            self.assertTrue(
+                cmds.attributeQuery(attr, node=shader_node, exists=True),
+                f"{attr} が作成されていません",
+            )
+            children = cmds.attributeQuery(attr, node=shader_node, listChildren=True)
+            self.assertEqual(
+                children,
+                [f"{attr}0", f"{attr}1", f"{attr}2", f"{attr}3"],
+            )
+
+        self.assertTrue(cmds.attributeQuery("SpecularColor", node=shader_node, exists=True))

@@ -113,6 +113,32 @@ class TestImportExportTabGUI(GuiTestBase):
         # クリーンアップ
         tab.deleteLater()
 
+    def test_retranslate_ui_does_not_crash(self):
+        """retranslateUi() が例外なく実行できることを確認する（B-1 回帰防止）。
+
+        以前は存在しない self.joint_name_conversion_check を参照しており、
+        言語切り替え（retranslate_all_tabs）時に AttributeError でクラッシュしていた。
+        """
+        tab = ImportExportTab()
+        try:
+            tab.retranslateUi()  # 例外が出れば test はエラーになる
+        finally:
+            tab.deleteLater()
+
+    def test_export_format_combo_excludes_pmd(self):
+        """エクスポート形式に未実装の 'pmd' が含まれないことを確認する（B-3）。"""
+        tab = ImportExportTab()
+        items = [tab.export_format_combo.itemText(i) for i in range(tab.export_format_combo.count())]
+        self.assertIn("pmx", items)
+        self.assertNotIn("pmd", items)
+        tab.deleteLater()
+
+    def test_vpd_group_disabled(self):
+        """未実装の VPD ポーズインポート UI が無効化されていることを確認する（B-3）。"""
+        tab = ImportExportTab()
+        self.assertFalse(tab.vpd_group.isEnabled())
+        tab.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

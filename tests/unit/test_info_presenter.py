@@ -1,251 +1,311 @@
+"""InfoPresenterのMaya非依存ロジックを検証するテスト。
+
+import 連鎖で maya.cmds と PySide6 が必要になるため、
+``install_headless_ui_stubs()`` でスタブ化してから presenter を import する。
+これにより本テストは mayapy / Qt なしの ``nox -s ci_unit`` で実行できる。
+"""
+
 import unittest
-from unittest.mock import Mock, MagicMock
+from unittest.mock import MagicMock, Mock, patch
 
-from maya import cmds
+from tests.common.maya_stub import install_headless_ui_stubs
 
-from mmd_tools.core.constants import (
+install_headless_ui_stubs()
+
+from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
-    ATTR_MMD_MODEL_NAME_EN,
     ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
 )
-from tests.common.maya_test_base import MayaTestBase
-from mmd_tools.ui.presenters.info_presenter import InfoPresenter
-from mmd_tools.ui.application_state import ApplicationState
+from mmd_tools.ui.presenters.info_presenter import InfoPresenter  # noqa: E402
+
+_MOD = "mmd_tools.ui.presenters.info_presenter"
+TEST_MODEL = "test_mmd_model"
+
+_ATTR_VALUES = {
+    f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}": "テストモデル",
+    f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME_EN}": "Test Model",
+    f"{TEST_MODEL}.{ATTR_MMD_COMMENT}": "テストコメント",
+    f"{TEST_MODEL}.{ATTR_MMD_COMMENT_EN}": "Test Comment",
+}
 
 
-class TestInfoPresenter(MayaTestBase):
-    """InfoPresenterの単体テスト"""
+class _FakeSignal:
+    def __init__(self):
+        self._callbacks = []
 
-    def setUp(self):
-        super().setUp()
+    def connect(self, callback):
+        self._callbacks.append(callback)
 
-        # テスト用MMDモデルを作成
-        self.test_model = self._create_test_mmd_model()
+    def emit(self, *args):
+        for cb in self._callbacks:
+            cb(*args)
 
-        # Viewのモック
-        self.mock_view = self._create_mock_view()
+    def disconnect(self, callback):
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
 
-        # ApplicationState
-        self.app_state = ApplicationState()
-        self.app_state.current_model_root = self.test_model
 
-        # Presenter作成
-        self.presenter = InfoPresenter(self.mock_view, self.app_state)
+class _FakeAppState:
+    def __init__(self, current_model_root=None, scene_model_service=None):
+        self._current_model_root = current_model_root
+        self.scene_model_service = scene_model_service or _FakeSceneModelService()
+        self.current_model_changed = _FakeSignal()
+        self.model_list_updated = _FakeSignal()
+        self._refresh_calls = 0
+        self._select_calls = 0
 
-    def _create_test_mmd_model(self):
-        """テスト用MMDモデルを作成"""
-        root = cmds.group(empty=True, name="test_mmd_model")
-        cmds.addAttr(root, ln="mmd_root", at="bool", dv=True)
-        cmds.addAttr(root, ln=ATTR_MMD_MODEL_NAME, dt="string")
-        cmds.addAttr(root, ln=ATTR_MMD_MODEL_NAME_EN, dt="string")
-        cmds.addAttr(root, ln=ATTR_MMD_COMMENT, dt="string")
-        cmds.addAttr(root, ln=ATTR_MMD_COMMENT_EN, dt="string")
+    @property
+    def current_model_root(self):
+        return self._current_model_root
 
-        # 初期値設定
-        cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "テストモデル", type="string")
-        cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME_EN}", "Test Model", type="string")
-        cmds.setAttr(f"{root}.{ATTR_MMD_COMMENT}", "テストコメント", type="string")
-        cmds.setAttr(f"{root}.{ATTR_MMD_COMMENT_EN}", "Test Comment", type="string")
+    @current_model_root.setter
+    def current_model_root(self, value):
+        self._current_model_root = value
 
-        return root
+    def refresh_model_list(self):
+        self._refresh_calls += 1
 
-    def _create_mock_view(self):
-        """ビューのモックを作成"""
-        view = Mock()
-        view.model_combo = Mock()
-        view.model_combo.currentTextChanged = MagicMock()
-        view.refresh_button = Mock()
-        view.refresh_button.clicked = MagicMock()
-        view.model_name_jp_edit = Mock()
-        view.model_name_en_edit = Mock()
-        view.comment_jp_edit = Mock()
-        view.comment_en_edit = Mock()
-        view.set_fields_enabled = Mock()
+    def select_model_from_maya_selection(self):
+        self._select_calls += 1
 
-        # textChangedシグナルのモック
-        for widget in [
-            view.model_name_jp_edit,
-            view.model_name_en_edit,
-            view.comment_jp_edit,
-            view.comment_en_edit,
-        ]:
-            widget.textChanged = MagicMock()
-            widget.textChanged.disconnect = Mock()
-            widget.textChanged.connect = Mock()
+    def clear_cache(self):
+        pass
 
-        return view
 
-    def test_initialization(self):
-        """初期化のテスト"""
-        # ApplicationStateのシグナルが接続されているか
-        # 注: 実際の接続は内部で行われるため、load_model_infoが呼ばれたかで確認
-        self.mock_view.set_fields_enabled.assert_called_with(True)
+class _FakeSceneModelService:
+    def __init__(self, exists=True, attr_values=None, display_names=None, attr_exists=True):
+        self.exists = exists
+        self.attr_values = attr_values or {}
+        self.display_names = display_names or {}
+        self.attr_exists = attr_exists
 
-    def test_load_model_info(self):
-        """モデル情報読み込みのテスト"""
-        # load_model_infoを明示的に呼び出す
-        self.presenter.load_model_info()
+    def object_exists(self, node):
+        return bool(node and self.exists)
 
-        # setText/setPlainTextが正しい値で呼ばれたか確認
-        self.mock_view.model_name_jp_edit.setText.assert_called_with("テストモデル")
-        self.mock_view.model_name_en_edit.setText.assert_called_with("Test Model")
-        self.mock_view.comment_jp_edit.setPlainText.assert_called_with("テストコメント")
-        self.mock_view.comment_en_edit.setPlainText.assert_called_with("Test Comment")
+    def attribute_exists(self, node, attr):
+        return bool(node and self.attr_exists)
 
-    def test_load_model_info_with_no_model(self):
-        """モデルが選択されていない場合のload_model_info"""
-        # current_model_rootをNoneに設定
-        self.app_state.current_model_root = None
+    def get_attr_safe(self, node, attr, default=None):
+        if not self.attribute_exists(node, attr):
+            return default
+        value = self.attr_values.get(f"{node}.{attr}", default)
+        return value if value is not None else default
 
-        # load_model_info実行
-        self.presenter.load_model_info()
+    def get_model_display_name(self, model_root):
+        return self.display_names.get(model_root, model_root)
 
-        # clearが呼ばれたか確認
-        self.mock_view.model_name_jp_edit.clear.assert_called()
-        self.mock_view.model_name_en_edit.clear.assert_called()
-        self.mock_view.comment_jp_edit.clear.assert_called()
-        self.mock_view.comment_en_edit.clear.assert_called()
 
-    def test_update_model_info(self):
-        """モデル情報更新のテスト"""
-        # モックの戻り値を設定
-        self.mock_view.model_name_jp_edit.text.return_value = "新しい名前"
-        self.mock_view.model_name_en_edit.text.return_value = "New Name"
-        self.mock_view.comment_jp_edit.toPlainText.return_value = "新しいコメント"
-        self.mock_view.comment_en_edit.toPlainText.return_value = "New Comment"
+def _make_mock_view():
+    view = Mock()
+    view.model_combo = Mock()
+    view.model_combo.currentTextChanged = MagicMock()
+    view.model_combo.currentTextChanged.connect = Mock()
+    view.refresh_button = Mock()
+    view.refresh_button.clicked = MagicMock()
+    view.refresh_button.clicked.connect = Mock()
+    view.set_fields_enabled = Mock()
 
-        # 更新実行
-        self.presenter.update_model_info()
+    for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
+        widget = Mock()
+        widget.textChanged = MagicMock()
+        widget.textChanged.disconnect = Mock()
+        widget.textChanged.connect = Mock()
+        setattr(view, attr, widget)
 
-        # Mayaアトリビュートが更新されたか確認
-        jp_name = cmds.getAttr(f"{self.test_model}.{ATTR_MMD_MODEL_NAME}")
-        en_name = cmds.getAttr(f"{self.test_model}.{ATTR_MMD_MODEL_NAME_EN}")
-        jp_comment = cmds.getAttr(f"{self.test_model}.{ATTR_MMD_COMMENT}")
-        en_comment = cmds.getAttr(f"{self.test_model}.{ATTR_MMD_COMMENT_EN}")
+    return view
 
-        self.assertEqual(jp_name, "新しい名前")
-        self.assertEqual(en_name, "New Name")
-        self.assertEqual(jp_comment, "新しいコメント")
-        self.assertEqual(en_comment, "New Comment")
 
-    def test_on_current_model_changed(self):
-        """モデル変更時の処理テスト"""
-        # 新しいモデルを作成（名前を明示的に指定）
-        new_model = cmds.group(empty=True, name="new_test_model")
-        cmds.addAttr(new_model, ln="mmd_root", at="bool", dv=True)
-        cmds.addAttr(new_model, ln=ATTR_MMD_MODEL_NAME, dt="string")
-        cmds.addAttr(new_model, ln=ATTR_MMD_MODEL_NAME_EN, dt="string")
-        cmds.addAttr(new_model, ln=ATTR_MMD_COMMENT, dt="string")
-        cmds.addAttr(new_model, ln=ATTR_MMD_COMMENT_EN, dt="string")
-        cmds.setAttr(f"{new_model}.{ATTR_MMD_MODEL_NAME}", "新モデル", type="string")
+def _make_presenter_with_model(model=TEST_MODEL, attr_values=None):
+    """モデルが選択された状態でプレゼンターを生成するヘルパー。"""
+    values = attr_values if attr_values is not None else {k: "" for k in _ATTR_VALUES}
+    view = _make_mock_view()
+    service = _FakeSceneModelService(attr_values=values)
+    app_state = _FakeAppState(current_model_root=model, scene_model_service=service)
+    presenter = InfoPresenter(view, app_state)
+    return presenter, view, app_state
 
-        # app_stateのcurrent_model_rootを更新してからテスト
-        self.app_state.current_model_root = new_model
 
-        # モデル変更を通知
-        self.presenter.on_current_model_changed(new_model)
+class TestInitialization(unittest.TestCase):
+    def test_enables_fields_when_model_set(self):
+        _, view, _ = _make_presenter_with_model()
+        view.set_fields_enabled.assert_called_with(True)
 
-        # フィールドが有効化されたか
-        self.mock_view.set_fields_enabled.assert_called_with(True)
-
-        # 新しいモデルの情報が読み込まれたか
-        # 任意の回数setTextが呼ばれた中で「新モデル」が含まれているか確認
-        all_calls = [call[0][0] for call in self.mock_view.model_name_jp_edit.setText.call_args_list]
-        self.assertIn("新モデル", all_calls)
-
-    def test_on_current_model_changed_to_none(self):
-        """モデルがNoneに変更された場合のテスト"""
-        # モデルをNoneに変更
-        self.presenter.on_current_model_changed(None)
-
-        # フィールドが無効化されたか
-        self.mock_view.set_fields_enabled.assert_called_with(False)
-
-        # フィールドがクリアされたか
-        self.mock_view.model_name_jp_edit.clear.assert_called()
-
-    def test_update_model_combo(self):
-        """モデルコンボボックス更新のテスト"""
-        # テスト用に複数のモデルを作成
-        model1 = self._create_test_mmd_model()
-        model2 = self._create_test_mmd_model()
-        cmds.rename(model1, "model1")
-        cmds.rename(model2, "model2")
-
-        models = [model1, model2]
-
-        # コンボボックス更新
-        self.presenter.update_model_combo(models)
-
-        # コンボボックスがクリアされたか
-        self.mock_view.model_combo.clear.assert_called()
-
-        # アイテムが追加されたか
-        self.assertEqual(self.mock_view.model_combo.addItem.call_count, 2)
-
-        # フィールドが有効化されたか
-        self.mock_view.set_fields_enabled.assert_called_with(True)
-
-    def test_update_model_combo_with_no_models(self):
-        """モデルがない場合のコンボボックス更新"""
-        # 空のリストで更新
-        self.presenter.update_model_combo([])
-
-        # "No MMD models found"が追加されたか
-        self.mock_view.model_combo.addItem.assert_called_with("No MMD models found")
-
-        # フィールドが無効化されたか
-        self.mock_view.set_fields_enabled.assert_called_with(False)
-
-    def test_on_refresh_clicked(self):
-        """リフレッシュボタンクリック時のテスト"""
-        # リフレッシュ実行
-        self.presenter.on_refresh_clicked()
-
-        # ApplicationStateのrefresh_model_listが呼ばれたか
-        # 注: 実際にrefresh_model_listが実行されるので、
-        # model_list_updatedシグナルが発行されることで確認
-        # ここでは単にエラーが発生しないことを確認
-
-    def test_on_model_selected(self):
-        """コンボボックスでモデル選択時のテスト"""
-        # モックの設定
-        self.mock_view.model_combo.currentIndex.return_value = 0
-        self.mock_view.model_combo.itemData.return_value = self.test_model
-
-        # モデル選択
-        self.presenter.on_model_selected("Test Model (test_mmd_model)")
-
-        # ApplicationStateのcurrent_model_rootが更新されたか
-        self.assertEqual(self.app_state.current_model_root, self.test_model)
-
-    def test_on_model_selected_with_invalid_model(self):
-        """存在しないモデルが選択された場合"""
-        # モックの設定
-        self.mock_view.model_combo.currentIndex.return_value = 0
-        self.mock_view.model_combo.itemData.return_value = "non_existent_model"
-
-        # モデル選択
-        self.presenter.on_model_selected("Non Existent Model")
-
-        # ApplicationStateのcurrent_model_rootがNoneになったか
-        self.assertIsNone(self.app_state.current_model_root)
+    def test_no_fields_enabled_when_no_model(self):
+        view = _make_mock_view()
+        app_state = _FakeAppState(current_model_root=None)
+        InfoPresenter(view, app_state)
+        view.set_fields_enabled.assert_not_called()
 
     def test_signal_connections(self):
-        """シグナル接続の確認"""
-        # 各ウィジェットのシグナルが接続されているか
-        self.mock_view.model_combo.currentTextChanged.connect.assert_called()
-        self.mock_view.refresh_button.clicked.connect.assert_called()
+        _, view, _ = _make_presenter_with_model()
+        view.model_combo.currentTextChanged.connect.assert_called()
+        view.refresh_button.clicked.connect.assert_called()
+        for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
+            getattr(view, attr).textChanged.connect.assert_called()
 
-        # テキスト変更シグナルが接続されているか
-        for widget in [
-            self.mock_view.model_name_jp_edit,
-            self.mock_view.model_name_en_edit,
-            self.mock_view.comment_jp_edit,
-            self.mock_view.comment_en_edit,
-        ]:
-            widget.textChanged.connect.assert_called()
+
+class TestLoadModelInfo(unittest.TestCase):
+    def setUp(self):
+        self.presenter, self.view, self.app_state = _make_presenter_with_model()
+
+    def test_sets_text_fields_from_scene_model_service_attrs(self):
+        self.app_state.scene_model_service.attr_values = _ATTR_VALUES
+        self.presenter.load_model_info()
+
+        self.view.model_name_jp_edit.setText.assert_called_with("テストモデル")
+        self.view.model_name_en_edit.setText.assert_called_with("Test Model")
+        self.view.comment_jp_edit.setPlainText.assert_called_with("テストコメント")
+        self.view.comment_en_edit.setPlainText.assert_called_with("Test Comment")
+
+    def test_clears_fields_when_no_model(self):
+        self.app_state._current_model_root = None
+
+        self.presenter.load_model_info()
+
+        self.view.model_name_jp_edit.clear.assert_called()
+        self.view.model_name_en_edit.clear.assert_called()
+        self.view.comment_jp_edit.clear.assert_called()
+        self.view.comment_en_edit.clear.assert_called()
+
+    def test_clears_fields_when_model_does_not_exist(self):
+        self.app_state.scene_model_service.exists = False
+        self.presenter.load_model_info()
+
+        self.view.model_name_jp_edit.clear.assert_called()
+
+    def test_uses_empty_string_when_attrs_are_missing_or_none(self):
+        self.app_state.scene_model_service.attr_values = {
+            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME}": None,
+            f"{TEST_MODEL}.{ATTR_MMD_MODEL_NAME_EN}": None,
+            f"{TEST_MODEL}.{ATTR_MMD_COMMENT}": None,
+            f"{TEST_MODEL}.{ATTR_MMD_COMMENT_EN}": None,
+        }
+        self.presenter.load_model_info()
+
+        self.view.model_name_jp_edit.setText.assert_called_with("")
+        self.view.model_name_en_edit.setText.assert_called_with("")
+        self.view.comment_jp_edit.setPlainText.assert_called_with("")
+        self.view.comment_en_edit.setPlainText.assert_called_with("")
+
+    def test_uses_empty_string_when_attrs_do_not_exist(self):
+        self.app_state.scene_model_service.attr_exists = False
+        self.presenter.load_model_info()
+
+        self.view.model_name_jp_edit.setText.assert_called_with("")
+        self.view.model_name_en_edit.setText.assert_called_with("")
+        self.view.comment_jp_edit.setPlainText.assert_called_with("")
+        self.view.comment_en_edit.setPlainText.assert_called_with("")
+
+
+class TestUpdateModelInfo(unittest.TestCase):
+    def setUp(self):
+        self.presenter, self.view, self.app_state = _make_presenter_with_model()
+
+    def test_calls_set_custom_attributes_with_view_values(self):
+        self.view.model_name_jp_edit.text.return_value = "新しい名前"
+        self.view.model_name_en_edit.text.return_value = "New Name"
+        self.view.comment_jp_edit.toPlainText.return_value = "新しいコメント"
+        self.view.comment_en_edit.toPlainText.return_value = "New Comment"
+
+        with patch(f"{_MOD}.set_custom_attributes") as mock_set:
+            self.presenter.update_model_info()
+
+        mock_set.assert_called_once_with(
+            TEST_MODEL,
+            {
+                ATTR_MMD_MODEL_NAME: "新しい名前",
+                ATTR_MMD_MODEL_NAME_EN: "New Name",
+                ATTR_MMD_COMMENT: "新しいコメント",
+                ATTR_MMD_COMMENT_EN: "New Comment",
+            },
+        )
+
+    def test_skips_when_no_model(self):
+        self.app_state._current_model_root = None
+
+        with patch(f"{_MOD}.set_custom_attributes") as mock_set:
+            self.presenter.update_model_info()
+
+        mock_set.assert_not_called()
+
+
+class TestCurrentModelChanged(unittest.TestCase):
+    def setUp(self):
+        self.presenter, self.view, self.app_state = _make_presenter_with_model()
+
+    def test_enables_fields_and_loads_info_for_new_model(self):
+        new_model = "new_test_model"
+        self.app_state._current_model_root = new_model
+        self.view.set_fields_enabled.reset_mock()
+        self.view.model_name_jp_edit.setText.reset_mock()
+
+        new_values = {
+            f"{new_model}.{ATTR_MMD_MODEL_NAME}": "新モデル",
+            f"{new_model}.{ATTR_MMD_MODEL_NAME_EN}": "",
+            f"{new_model}.{ATTR_MMD_COMMENT}": "",
+            f"{new_model}.{ATTR_MMD_COMMENT_EN}": "",
+        }
+        self.app_state.scene_model_service.attr_values = new_values
+        self.presenter.on_current_model_changed(new_model)
+
+        self.view.set_fields_enabled.assert_called_with(True)
+        all_calls = [c[0][0] for c in self.view.model_name_jp_edit.setText.call_args_list]
+        self.assertIn("新モデル", all_calls)
+
+    def test_disables_fields_and_clears_for_none(self):
+        self.view.set_fields_enabled.reset_mock()
+        self.presenter.on_current_model_changed(None)
+
+        self.view.set_fields_enabled.assert_called_with(False)
+        self.view.model_name_jp_edit.clear.assert_called()
+
+
+class TestModelCombo(unittest.TestCase):
+    def setUp(self):
+        self.presenter, self.view, self.app_state = _make_presenter_with_model()
+
+    def test_update_combo_adds_item_per_model(self):
+        self.presenter.update_model_combo(["model1", "model2"])
+
+        self.view.model_combo.clear.assert_called()
+        self.assertEqual(self.view.model_combo.addItem.call_count, 2)
+        self.view.set_fields_enabled.assert_called_with(True)
+
+    def test_update_combo_no_models_shows_placeholder(self):
+        self.presenter.update_model_combo([])
+
+        self.view.model_combo.addItem.assert_called_with("No MMD models found")
+        self.view.set_fields_enabled.assert_called_with(False)
+
+
+class TestRefreshAndSelect(unittest.TestCase):
+    def setUp(self):
+        self.presenter, self.view, self.app_state = _make_presenter_with_model()
+
+    def test_refresh_clicked_triggers_app_state_refresh(self):
+        self.presenter.on_refresh_clicked()
+        self.assertEqual(self.app_state._refresh_calls, 1)
+        self.assertEqual(self.app_state._select_calls, 1)
+
+    def test_model_selected_valid_updates_app_state(self):
+        self.view.model_combo.currentIndex.return_value = 0
+        self.view.model_combo.itemData.return_value = TEST_MODEL
+
+        self.app_state.scene_model_service.exists = True
+        self.presenter.on_model_selected("Test Model (test_mmd_model)")
+
+        self.assertEqual(self.app_state.current_model_root, TEST_MODEL)
+
+    def test_model_selected_invalid_sets_none(self):
+        self.view.model_combo.currentIndex.return_value = 0
+        self.view.model_combo.itemData.return_value = "non_existent"
+
+        self.app_state.scene_model_service.exists = False
+        self.presenter.on_model_selected("Non Existent Model")
+
+        self.assertIsNone(self.app_state.current_model_root)
 
 
 if __name__ == "__main__":

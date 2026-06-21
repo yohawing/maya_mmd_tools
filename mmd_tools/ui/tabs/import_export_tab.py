@@ -130,6 +130,47 @@ class ImportExportTab(BaseTab):
         self.separate_meshes_check.toggled.connect(lambda v: settings.set("import.model.separate_meshes_by_material", v))
         model_layout.addWidget(self.separate_meshes_check)
 
+        self.split_by_morph_groups_check = QCheckBox(self.tr("split_meshes_by_morph_groups", "checkboxes"))
+        self.split_by_morph_groups_check.setChecked(settings.get("import.model.split_meshes_by_morph_groups", False))
+        self.split_by_morph_groups_check.toggled.connect(lambda v: settings.set("import.model.split_meshes_by_morph_groups", v))
+        model_layout.addWidget(self.split_by_morph_groups_check)
+
+        # Auto-classify transparency (opt-in): scan each material's used-UV texture
+        # alpha to assign cutout/blend. Off by default -> materials import opaque
+        # and the user assigns blend manually in the Material tab.
+        self.auto_classify_transparency_check = QCheckBox(self.tr("auto_classify_transparency", "checkboxes"))
+        self.auto_classify_transparency_check.setChecked(
+            settings.get("import.model.auto_classify_transparency", False)
+        )
+        self.auto_classify_transparency_check.toggled.connect(
+            lambda v: settings.set("import.model.auto_classify_transparency", v)
+        )
+        model_layout.addWidget(self.auto_classify_transparency_check)
+
+        self.auto_resolve_textures_check = QCheckBox(self.tr("auto_resolve_textures", "checkboxes"))
+        self.auto_resolve_textures_check.setChecked(settings.get("import.model.auto_resolve_textures", True))
+        self.auto_resolve_textures_check.toggled.connect(
+            lambda v: settings.set("import.model.auto_resolve_textures", v)
+        )
+        model_layout.addWidget(self.auto_resolve_textures_check)
+
+        self.transparency_threshold_row = QWidget()
+        transparency_threshold_layout = QHBoxLayout(self.transparency_threshold_row)
+        transparency_threshold_layout.setContentsMargins(0, 0, 0, 0)
+        self.transparency_threshold_label = QLabel(self.tr("transparency_opaque_threshold", "fields"))
+        self.transparency_threshold_spin = QSpinBox()
+        self.transparency_threshold_spin.setRange(0, 255)
+        self.transparency_threshold_spin.setValue(
+            int(settings.get("import.model.transparency_opaque_threshold", 255))
+        )
+        self.transparency_threshold_spin.valueChanged.connect(
+            lambda v: settings.set("import.model.transparency_opaque_threshold", int(v))
+        )
+        transparency_threshold_layout.addWidget(self.transparency_threshold_label)
+        transparency_threshold_layout.addWidget(self.transparency_threshold_spin)
+        transparency_threshold_layout.addStretch()
+        model_layout.addWidget(self.transparency_threshold_row)
+
         self.hide_hidden_geometry_check = QCheckBox(self.tr("hide_hidden_geometry", "checkboxes"))
         self.hide_hidden_geometry_check.setChecked(settings.get("import.model.hide_hidden_geometry", True))
         self.hide_hidden_geometry_check.toggled.connect(lambda v: settings.set("import.model.hide_hidden_geometry", v))
@@ -141,23 +182,27 @@ class ImportExportTab(BaseTab):
         model_layout.addWidget(self.disable_backface_culling_check)
 
         # Texture search path
-        texture_layout = QHBoxLayout()
+        self.texture_row = QWidget()
+        texture_layout = QHBoxLayout(self.texture_row)
+        texture_layout.setContentsMargins(0, 0, 0, 0)
         self.texture_search_label = QLabel(self.tr("texture_search_path", "fields"))
         texture_layout.addWidget(self.texture_search_label)
         self.texture_search_path_edit = QLineEdit(settings.get("import.model.texture_search_path", ""))
         self.texture_search_path_edit.textChanged.connect(lambda v: settings.set("import.model.texture_search_path", v))
         texture_layout.addWidget(self.texture_search_path_edit)
-        model_layout.addLayout(texture_layout)
+        model_layout.addWidget(self.texture_row)
 
         # UV set name
-        uv_layout = QHBoxLayout()
+        self.uv_row = QWidget()
+        uv_layout = QHBoxLayout(self.uv_row)
+        uv_layout.setContentsMargins(0, 0, 0, 0)
         self.uv_set_label = QLabel(self.tr("uv_set_name", "fields"))
         uv_layout.addWidget(self.uv_set_label)
         self.uv_set_name_edit = QLineEdit(settings.get("import.model.uv_set_name", "map#"))
         self.uv_set_name_edit.textChanged.connect(lambda v: settings.set("import.model.uv_set_name", v))
         uv_layout.addWidget(self.uv_set_name_edit)
         uv_layout.addStretch()
-        model_layout.addLayout(uv_layout)
+        model_layout.addWidget(self.uv_row)
 
         self.model_group.setLayout(model_layout)
         model_settings_layout.addWidget(self.model_group)
@@ -203,6 +248,11 @@ class ImportExportTab(BaseTab):
         self.add_semi_standard_bones_check.toggled.connect(lambda v: settings.set("import.rig.add_semi_standard_bones", v))
         other_layout.addWidget(self.add_semi_standard_bones_check)
 
+        self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
+        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
+        self.bake_mode_check.toggled.connect(lambda v: settings.set("import.rig.bake_mode", v))
+        other_layout.addWidget(self.bake_mode_check)
+
         self.translate_names_check = QCheckBox(self.tr("translate_names", "checkboxes"))
         self.translate_names_check.setChecked(settings.get("import.naming.translate_names", True))
         self.translate_names_check.toggled.connect(lambda v: settings.set("import.naming.translate_names", v))
@@ -233,6 +283,28 @@ class ImportExportTab(BaseTab):
         frame_layout.addWidget(self.animation_start_frame)
         frame_layout.addStretch()
         anim_settings_layout.addLayout(frame_layout)
+
+        # VMD FPS (Maya scene time unit for VMD import; VMD has no FPS metadata)
+        fps_layout = QHBoxLayout()
+        self.vmd_fps_label = QLabel(self.tr("vmd_fps", "fields"))
+        fps_layout.addWidget(self.vmd_fps_label)
+        self.vmd_fps_combo = QComboBox()
+        self.vmd_fps_combo.addItems(["30", "60"])
+        vmd_fps_val = settings.get("import.animation.vmd_fps", 30)
+        try:
+            vmd_fps_int = int(vmd_fps_val)
+        except (TypeError, ValueError):
+            vmd_fps_int = 30
+        if vmd_fps_int not in (30, 60):
+            vmd_fps_int = 30
+            settings.set("import.animation.vmd_fps", 30)
+        self.vmd_fps_combo.setCurrentText(str(vmd_fps_int))
+        self.vmd_fps_combo.currentTextChanged.connect(
+            lambda v: settings.set("import.animation.vmd_fps", int(v))
+        )
+        fps_layout.addWidget(self.vmd_fps_combo)
+        fps_layout.addStretch()
+        anim_settings_layout.addLayout(fps_layout)
 
         # Animation type checkboxes
         self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
@@ -279,7 +351,8 @@ class ImportExportTab(BaseTab):
         self.format_label = QLabel(self.tr("format", "fields"))
         format_layout.addWidget(self.format_label)
         self.export_format_combo = QComboBox()
-        self.export_format_combo.addItems(["pmx", "pmd"])
+        # PMD エクスポートは PmdExporter が未実装のため選択肢に出さない（pmx のみ）
+        self.export_format_combo.addItems(["pmx"])
         current_format = settings.get("export.general.export_format", "pmx")
         self.export_format_combo.setCurrentText(current_format)
         self.export_format_combo.currentTextChanged.connect(lambda v: settings.set("export.general.export_format", v))
@@ -295,7 +368,7 @@ class ImportExportTab(BaseTab):
 
         export_settings_layout.addStretch()
         export_settings_tab.setWidget(export_settings_widget)
-        self.left_widget.addTab(export_settings_tab, self.tr("export", "buttons"))
+        # Export subtab is intentionally not added: export is not yet implemented.
 
         # 右側：インポート/エクスポートセクション
         right_scroll = QScrollArea()
@@ -332,6 +405,8 @@ class ImportExportTab(BaseTab):
         # 状態が変更されたら保存
         self.new_file_check.toggled.connect(lambda checked: self.qt_settings.setValue("new_file_check", str(checked)))
         import_button_layout.addWidget(self.import_button)
+        self.fix_texture_path_button = QPushButton(self.tr("fix_texture_path", "texture_issues"))
+        import_button_layout.addWidget(self.fix_texture_path_button)
         import_button_layout.addWidget(self.new_file_check)
         import_button_layout.addStretch()
         model_import_layout.addRow(import_button_layout)
@@ -402,6 +477,10 @@ class ImportExportTab(BaseTab):
         vpd_layout.addRow(self.import_vpd_button)
 
         self.vpd_group.setLayout(vpd_layout)
+        # VPD ポーズインポートは presenter にシグナル未接続で未実装のため、UI を無効化して
+        # 「押しても無反応」を防ぐ。実装してシグナル接続したら再有効化する。
+        self.vpd_group.setEnabled(False)
+        self.vpd_group.setToolTip(self.tr("vpd_not_implemented", "tooltips"))
         right_layout.addWidget(self.vpd_group)
 
         # Export Group
@@ -446,6 +525,38 @@ class ImportExportTab(BaseTab):
         splitter.setStretchFactor(1, 2)
 
         main_layout.addWidget(splitter)
+
+        # Export is not yet implemented: always hide the export surface.
+        self.export_group.setVisible(False)
+        # import_models is always ON in behavior; checkbox removed from UI.
+        self.import_models_check.setVisible(False)
+
+        # Dev-only controls: shown only when development_mode=True.
+        self._dev_only_widgets = [
+            self.separate_meshes_check,
+            self.split_by_morph_groups_check,
+            self.auto_classify_transparency_check,
+            self.transparency_threshold_row,
+            self.hide_hidden_geometry_check,
+            self.disable_backface_culling_check,
+            self.texture_row,
+            self.uv_row,
+            self.import_physics_check,
+            self.create_rigid_bodies_check,
+            self.create_physics_joints_check,
+            self.group_physics_objects_check,
+            self.add_semi_standard_bones_check,
+            self.bake_mode_check,
+            self.translate_names_check,
+            self.resample_curves_check,
+        ]
+        self._apply_dev_mode_visibility()
+
+    def _apply_dev_mode_visibility(self):
+        """dev-only UI controls の表示/非表示を development_mode 設定に合わせる。"""
+        is_dev = settings.get("ui.general.development_mode", False)
+        for widget in self._dev_only_widgets:
+            widget.setVisible(is_dev)
 
     def refresh_model_list(self, restore_selection=False):
         """シーン内のMMDモデルリストを更新"""
@@ -496,6 +607,8 @@ class ImportExportTab(BaseTab):
             self.uv_set_label.setText(self.tr("uv_set_name", "fields"))
         if hasattr(self, "start_frame_label"):
             self.start_frame_label.setText(self.tr("start_frame", "fields"))
+        if hasattr(self, "vmd_fps_label"):
+            self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
         if hasattr(self, "format_label"):
             self.format_label.setText(self.tr("format", "fields"))
         if hasattr(self, "import_path_label"):
@@ -526,14 +639,17 @@ class ImportExportTab(BaseTab):
             self.export_group.setTitle(self.tr("export", "buttons"))
         if hasattr(self, "vpd_group"):
             self.vpd_group.setTitle(self.tr("vpd_import", "buttons"))
+            self.vpd_group.setToolTip(self.tr("vpd_not_implemented", "tooltips"))
 
         # CheckBoxes
         self.use_namespace_check.setText(self.tr("use_namespace", "checkboxes"))
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
         self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
+        self.split_by_morph_groups_check.setText(self.tr("split_meshes_by_morph_groups", "checkboxes"))
+        if hasattr(self, "auto_resolve_textures_check"):
+            self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
         self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
-        self.joint_name_conversion_check.setText(self.tr("joint_name_conversion", "checkboxes"))
         self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
         self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))
@@ -541,6 +657,7 @@ class ImportExportTab(BaseTab):
         self.create_physics_joints_check.setText(self.tr("create_physics_joints", "checkboxes"))
         self.group_physics_objects_check.setText(self.tr("group_physics_objects", "checkboxes"))
         self.add_semi_standard_bones_check.setText(self.tr("add_semi_standard_bones", "checkboxes"))
+        self.bake_mode_check.setText(self.tr("bake_mode", "checkboxes"))
         self.translate_names_check.setText(self.tr("translate_names", "checkboxes"))
         self.import_bone_animation_check.setText(self.tr("import_bone_animation", "checkboxes"))
         self.import_morph_animation_check.setText(self.tr("import_morph_animation", "checkboxes"))
@@ -559,6 +676,8 @@ class ImportExportTab(BaseTab):
         self.vmd_path_button.setText(self.tr("browse", "buttons"))
         self.export_path_button.setText(self.tr("browse", "buttons"))
         self.import_button.setText(self.tr("import_model", "actions"))
+        if hasattr(self, "fix_texture_path_button"):
+            self.fix_texture_path_button.setText(self.tr("fix_texture_path", "texture_issues"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
         self.export_button.setText(self.tr("export", "buttons"))
         if hasattr(self, "vpd_path_button"):
@@ -567,10 +686,9 @@ class ImportExportTab(BaseTab):
             self.import_vpd_button.setText(self.tr("import_pose", "actions"))
 
         # Tab widget texts
-        if hasattr(self, "left_widget") and self.left_widget.count() >= 3:
+        if hasattr(self, "left_widget") and self.left_widget.count() >= 2:
             self.left_widget.setTabText(0, self.tr("model", "groups"))
             self.left_widget.setTabText(1, self.tr("animation", "tabs"))
-            self.left_widget.setTabText(2, self.tr("export", "buttons"))
 
         # Refresh model list to update auto detect text
         self.refresh_model_list()

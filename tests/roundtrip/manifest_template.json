@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "description": "PMX roundtrip manifest template. Real local manifests should be under build/.",
+  "models": [
+    "../data/for_unit_test/test_1bone_cube.pmx",
+    "../data/for_unit_test/test_basic_bone.pmx",
+    "../data/for_unit_test/test_semi_basic_bone.pmx"
+  ],
+  "cases": [
+    {
+      "name": "repo_1bone_cube",
+      "model": "../data/for_unit_test/test_1bone_cube.pmx"
+    },
+    {
+      "name": "repo_basic_bone",
+      "model": "../data/for_unit_test/test_basic_bone.pmx"
+    },
+    {
+      "name": "repo_semi_basic_bone",
+      "model": "../data/for_unit_test/test_semi_basic_bone.pmx"
+    }
+  ]
+}

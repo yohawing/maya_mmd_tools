@@ -17,8 +17,7 @@
     "export_settings": "匯出設定"
   },
   "menus": {
-    "view": "檢視",
-    "log_viewer": "記錄檢視器"
+    "view": "檢視"
   },
   "buttons": {
     "import": "匯入",
@@ -36,7 +35,14 @@
     "select": "選擇",
     "clear": "清除",
     "save": "儲存",
-    "load": "載入"
+    "load": "載入",
+    "apply_to_selected": "套用到所選",
+    "auto_scroll": "自動捲動",
+    "filter": "篩選",
+    "next": "下一個",
+    "previous": "上一個",
+    "search": "搜尋",
+    "timestamp": "時間戳記"
   },
   "labels": {
     "file_path": "檔案路徑:",
@@ -71,9 +77,11 @@
     "selected": "已選擇:",
     "available": "可使用:",
     "offset_count": "偏移數量",
+    "offset_not_supported": "偏移: 不支援",
     "log_entries": "記錄",
     "search_results": "筆",
-    "not_found": "找不到"
+    "not_found": "找不到",
+    "namespace_placeholder": "自動產生"
   },
   "tooltips": {
     "import_file": "匯入PMD/PMX/VMD檔案",
@@ -84,7 +92,8 @@
     "add_item": "新增項目",
     "remove_item": "移除選取的項目",
     "move_up": "將選取的項目上移",
-    "move_down": "將選取的項目下移"
+    "move_down": "將選取的項目下移",
+    "vpd_not_implemented": "VPD 姿勢匯入尚未實作"
   },
   "messages": {
     "import_success": "匯入完成",
@@ -140,6 +149,7 @@
     "edge_settings": "邊緣設定",
     "edge_properties": "邊緣屬性",
     "rendering_flags": "算圖標記",
+    "viewport_settings": "視埠設定",
     "bone_list": "骨骼清單",
     "basic_information": "基本資訊",
     "transform_control": "變換控制",
@@ -176,6 +186,7 @@
     "create_physics_joints": "建立物理關節",
     "group_physics_objects": "群組物理物件",
     "add_semi_standard_bones": "新增準標準骨骼",
+    "bake_mode": "Bake模式（無綁定）",
     "translate_names": "翻譯名稱",
     "import_bone_animation": "匯入骨骼動畫",
     "import_morph_animation": "匯入表情動畫",
@@ -186,8 +197,13 @@
     "new_file": "新建檔案",
     "enable_ik": "啟用IK",
     "invert_value": "反轉值",
+    "development_mode": "開發模式",
     "show_advanced_options": "顯示進階選項",
-    "enable_logging": "啟用記錄"
+    "enable_logging": "啟用記錄",
+    "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
+    "auto_resolve_textures": "自動修復貼圖（ASCII快取）",
+    "split_meshes_by_morph_groups": "【實驗性】依表情群組分離網格",
+    "custom_namespace": "自訂命名空間:"
   },
   "fields": {
     "scale_factor": "縮放係數:",
@@ -195,6 +211,7 @@
     "texture_search_path": "貼圖搜尋路徑:",
     "uv_set_name": "UV集名稱:",
     "start_frame": "開始影格:",
+    "vmd_fps": "VMD FPS:",
     "format": "格式:",
     "vmd_file": "VMD檔案:",
     "target_model": "目標模型:",
@@ -250,7 +267,9 @@
     "language": "語言:",
     "log_level": "記錄層級:",
     "log_file": "記錄檔案:",
-    "export_format": "匯出格式:"
+    "export_format": "匯出格式:",
+    "transparency_mode": "透明模式:",
+    "transparency_opaque_threshold": "不透明α閾值:"
   },
   "actions": {
     "import_model": "匯入模型",
@@ -290,6 +309,7 @@
     "self_shadow_map": "投射自身陰影",
     "self_shadow": "接收自身陰影",
     "edge_drawing": "邊緣繪製",
+    "shader_outline": "著色器描邊",
     "vertex_color": "頂點顏色",
     "point_drawing": "點繪製",
     "line_drawing": "線繪製"
@@ -362,5 +382,46 @@
   "status": {
     "not_connected": "未連接",
     "connected": "已連接"
+  },
+  "transparency_modes": {
+    "opaque": "不透明",
+    "cutout": "鏤空",
+    "blend": "混合"
+  },
+  "texture_issues": {
+    "title": "有些貼圖無法顯示 ({count})",
+    "intro": "Maya 無法載入這些貼圖檔案。按下「全部修復」會將每個檔案以英文安全的名稱複製到本專案的 sourceimages 資料夾並重新連結，以便正常顯示。原始檔案不會被修改。",
+    "header_material": "材質",
+    "header_problem": "問題",
+    "header_texture": "貼圖",
+    "detail_placeholder": "選擇一列以檢視完整路徑。",
+    "detail_original": "原始: {path}",
+    "detail_current": "目前: {path}",
+    "fix_all": "全部修復",
+    "open_folder": "開啟資料夾",
+    "close": "關閉",
+    "dont_show_again": "不再顯示",
+    "status_fixed": "已修復 {count} 個貼圖",
+    "fix_texture_path": "修正貼圖路徑",
+    "status_no_issues": "未發現貼圖路徑問題。",
+    "status_scan_failed": "無法掃描貼圖路徑問題。"
+  },
+  "texture_issue_reasons": {
+    "non_ascii_path": "Maya 可能無法顯示此貼圖路徑",
+    "ansi_incompatible_path": "路徑包含無法使用的字元",
+    "missing_file": "找不到檔案",
+    "question_mark_path": "重新開啟後路徑已損毀",
+    "empty_path": "貼圖路徑為空",
+    "resolved": "已修復",
+    "missing_original_path": "未記錄原始路徑",
+    "absolute_original_path_rejected": "絕對路徑位於模型資料夾之外",
+    "parent_traversal_rejected": "路徑超出了模型資料夾",
+    "outside_model_directory_rejected": "檔案位於模型資料夾之外",
+    "extension_rejected": "不支援的檔案類型",
+    "symlink_rejected": "不允許使用符號連結",
+    "source_not_found": "找不到來源檔案",
+    "source_not_file": "來源不是檔案",
+    "source_not_readable": "無法讀取來源檔案",
+    "cache_copy_failed": "無法將貼圖複製到快取"
   }
 }

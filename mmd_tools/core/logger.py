@@ -12,6 +12,60 @@ from typing import Optional, Dict
 from mmd_tools.core.settings import settings
 
 
+class MayaScriptEditorHandler(logging.Handler):
+    """Maya Script Editor に emit するハンドラ。
+
+    - DEBUG/INFO  → MGlobal.displayInfo
+    - WARNING     → MGlobal.displayWarning
+    - ERROR/CRITICAL → MGlobal.displayError
+
+    ``maya.OpenMaya`` が import できない環境（非Maya）では silent に返るため
+    クラッシュしない。emit 失敗時は標準の handleError() に委ねる。
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            try:
+                import maya.OpenMaya as _om  # noqa: PLC0415
+                MGlobal = _om.MGlobal
+            except ImportError:
+                return
+            if record.levelno >= logging.ERROR:
+                MGlobal.displayError(msg)
+            elif record.levelno >= logging.WARNING:
+                MGlobal.displayWarning(msg)
+            else:
+                MGlobal.displayInfo(msg)
+        except Exception:
+            self.handleError(record)
+
+
+def install_maya_script_editor_handler() -> None:
+    """mmd_tools ロガーに MayaScriptEditorHandler を一度だけ追加する。
+
+    重複呼び出しに対して冪等（既にハンドラが存在する場合は何もしない）。
+    ルートロガーのレベルは変更しない。
+    """
+    mmd_root = logging.getLogger("mmd_tools")
+    marker = "_mmd_tools_maya_script_editor_handler"
+    mmd_root.handlers = [
+        h
+        for h in mmd_root.handlers
+        if getattr(h, marker, False)
+        or not (
+            type(h).__name__ == "MayaScriptEditorHandler"
+            and type(h).__module__ == __name__
+        )
+    ]
+    if any(getattr(h, marker, False) for h in mmd_root.handlers):
+        return
+    handler = MayaScriptEditorHandler()
+    setattr(handler, marker, True)
+    handler.setFormatter(logging.Formatter("[MMD] %(levelname)s: %(message)s"))
+    mmd_root.addHandler(handler)
+
+
 
 def is_maya_environment() -> bool:
     """Maya環境かどうかを判定"""
@@ -140,30 +194,53 @@ class MayaLogger:
             print("警告: ログファイルの作成に失敗しました。ファイルログは無効です。")
             return None
 
+    def _safe_log(self, level: int, message: str, *args, **kwargs) -> None:
+        """
+        ログ出力を安全に行う内部ヘルパー。
+
+        ハンドラ/フィルタ（Qt ブリッジや Maya API 経由のもの）が
+        日本語・特殊文字メッセージや非文字列引数で例外を投げても、
+        その例外を呼び出し元に伝播させない。
+
+        logging 標準の handleError は emit() の失敗しか吸収せず、
+        Filterer.filter() 段で発生する例外（OpenMaya 由来の
+        ``TypeError: Expected a String or Unicode object`` など）は
+        素通りしてしまうため、ここで最終的に握りつぶす。
+
+        Args:
+            level: logging のレベル定数（logging.ERROR 等）
+            message: ログメッセージ
+        """
+        if not settings.get("logging.enabled", True):
+            return
+        try:
+            self._logger.log(level, message, *args, **kwargs)
+        except Exception:
+            # ロギング経路の失敗でアプリ処理を止めないための最終フォールバック。
+            try:
+                print(f"[MMD] {message}")
+            except Exception:
+                pass
+
     def debug(self, message: str, *args, **kwargs):
         """デバッグメッセージを出力"""
-        if settings.get("logging.enabled", True):
-            self._logger.debug(message, *args, **kwargs)
+        self._safe_log(logging.DEBUG, message, *args, **kwargs)
 
     def info(self, message: str, *args, **kwargs):
         """情報メッセージを出力"""
-        if settings.get("logging.enabled", True):
-            self._logger.info(message, *args, **kwargs)
+        self._safe_log(logging.INFO, message, *args, **kwargs)
 
     def warning(self, message: str, *args, **kwargs):
         """警告メッセージを出力"""
-        if settings.get("logging.enabled", True):
-            self._logger.warning(message, *args, **kwargs)
+        self._safe_log(logging.WARNING, message, *args, **kwargs)
 
     def error(self, message: str, *args, **kwargs):
         """エラーメッセージを出力"""
-        if settings.get("logging.enabled", True):
-            self._logger.error(message, *args, **kwargs)
+        self._safe_log(logging.ERROR, message, *args, **kwargs)
 
     def critical(self, message: str, *args, **kwargs):
         """重大なエラーメッセージを出力"""
-        if settings.get("logging.enabled", True):
-            self._logger.critical(message, *args, **kwargs)
+        self._safe_log(logging.CRITICAL, message, *args, **kwargs)
 
     def set_level(self, level: int):
         """ログレベルを設定"""

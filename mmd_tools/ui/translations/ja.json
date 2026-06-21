@@ -17,8 +17,7 @@
     "export_settings": "エクスポート設定"
   },
   "menus": {
-    "view": "表示",
-    "log_viewer": "ログビューア"
+    "view": "表示"
   },
   "buttons": {
     "import": "インポート",
@@ -42,7 +41,8 @@
     "next": "次へ",
     "auto_scroll": "自動スクロール",
     "timestamp": "タイムスタンプ",
-    "filter": "フィルタ"
+    "filter": "フィルタ",
+    "apply_to_selected": "選択に適用"
   },
   "labels": {
     "file_path": "ファイルパス:",
@@ -78,6 +78,7 @@
     "selected": "選択済み:",
     "available": "使用可能:",
     "offset_count": "オフセット数",
+    "offset_not_supported": "オフセット: 未対応",
     "log_entries": "ログ",
     "search_results": "件",
     "not_found": "見つかりません"
@@ -91,7 +92,8 @@
     "add_item": "新しい項目を追加します",
     "remove_item": "選択した項目を削除します",
     "move_up": "選択した項目を上に移動します",
-    "move_down": "選択した項目を下に移動します"
+    "move_down": "選択した項目を下に移動します",
+    "vpd_not_implemented": "VPDポーズインポートは未実装です"
   },
   "messages": {
     "import_success": "インポートが完了しました",
@@ -147,6 +149,7 @@
     "edge_settings": "エッジ設定",
     "edge_properties": "エッジ設定",
     "rendering_flags": "描画フラグ",
+    "viewport_settings": "ビューポート設定",
     "bone_list": "ボーンリスト",
     "basic_information": "基本情報",
     "transform_control": "変形制御",
@@ -184,6 +187,7 @@
     "create_physics_joints": "物理ジョイントを作成",
     "group_physics_objects": "物理オブジェクトをグループ化",
     "add_semi_standard_bones": "準標準ボーンを追加",
+    "bake_mode": "Bake mode（リグなし）",
     "translate_names": "名前を翻訳",
     "import_bone_animation": "ボーンアニメーションをインポート",
     "import_morph_animation": "モーフアニメーションをインポート",
@@ -194,8 +198,12 @@
     "new_file": "新規ファイル",
     "enable_ik": "IKを有効にする",
     "invert_value": "値を反転",
+    "development_mode": "開発モード",
     "show_advanced_options": "詳細オプションを表示",
-    "enable_logging": "ログを有効にする"
+    "enable_logging": "ログを有効にする",
+    "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
+    "auto_resolve_textures": "テクスチャを自動修復（ASCIIキャッシュ）",
+    "split_meshes_by_morph_groups": "【実験的】モーフグループでメッシュを分割"
   },
   "fields": {
     "scale_factor": "スケール係数:",
@@ -203,6 +211,7 @@
     "texture_search_path": "テクスチャ検索パス:",
     "uv_set_name": "UVセット名:",
     "start_frame": "開始フレーム:",
+    "vmd_fps": "VMD FPS:",
     "format": "フォーマット:",
     "vmd_file": "VMDファイル:",
     "target_model": "ターゲットモデル:",
@@ -258,7 +267,9 @@
     "language": "言語:",
     "log_level": "ログレベル:",
     "log_file": "ログファイル:",
-    "export_format": "エクスポート形式:"
+    "export_format": "エクスポート形式:",
+    "transparency_mode": "透過モード:",
+    "transparency_opaque_threshold": "不透明とみなすα閾値:"
   },
   "actions": {
     "import_model": "モデルをインポート",
@@ -298,6 +309,7 @@
     "self_shadow_map": "セルフシャドウマップへの描画",
     "self_shadow": "セルフシャドウ",
     "edge_drawing": "エッジ描画",
+    "shader_outline": "シェーダーアウトライン",
     "vertex_color": "頂点色",
     "point_drawing": "ポイント描画",
     "line_drawing": "ライン描画"
@@ -370,5 +382,46 @@
   "status": {
     "not_connected": "未連携",
     "connected": "連携中"
+  },
+  "transparency_modes": {
+    "opaque": "不透明",
+    "cutout": "カットアウト",
+    "blend": "ブレンド"
+  },
+  "texture_issues": {
+    "title": "表示できないテクスチャがあります ({count})",
+    "intro": "Maya がこれらのテクスチャを読み込めません。「すべて修復」を押すと、各ファイルをこのプロジェクトの sourceimages フォルダへ英数字名でコピーして貼り直し、表示できるようにします。元のファイルは変更しません。",
+    "header_material": "マテリアル",
+    "header_problem": "問題",
+    "header_texture": "テクスチャ",
+    "detail_placeholder": "行を選択すると完全なパスを表示します。",
+    "detail_original": "元: {path}",
+    "detail_current": "現在: {path}",
+    "fix_all": "すべて修復",
+    "open_folder": "フォルダを開く",
+    "close": "閉じる",
+    "dont_show_again": "今後表示しない",
+    "status_fixed": "{count} 件のテクスチャを修復しました",
+    "fix_texture_path": "テクスチャパスを修正",
+    "status_no_issues": "テクスチャパスの問題は見つかりませんでした。",
+    "status_scan_failed": "テクスチャパスの問題をスキャンできませんでした。"
+  },
+  "texture_issue_reasons": {
+    "non_ascii_path": "Mayaで表示できない可能性があるテクスチャパスです",
+    "ansi_incompatible_path": "パスに使えない文字があります",
+    "missing_file": "ファイルが見つかりません",
+    "question_mark_path": "再オープンでパスが壊れています",
+    "empty_path": "テクスチャパスが空です",
+    "resolved": "修復済み",
+    "missing_original_path": "元のパスが記録されていません",
+    "absolute_original_path_rejected": "絶対パスがモデルフォルダの外にあります",
+    "parent_traversal_rejected": "パスがモデルフォルダの外に出ています",
+    "outside_model_directory_rejected": "ファイルがモデルフォルダの外にあります",
+    "extension_rejected": "対応していないファイル形式です",
+    "symlink_rejected": "シンボリックリンクは使用できません",
+    "source_not_found": "元ファイルが見つかりません",
+    "source_not_file": "元がファイルではありません",
+    "source_not_readable": "元ファイルを読み取れません",
+    "cache_copy_failed": "テクスチャのキャッシュコピーに失敗しました"
   }
 }

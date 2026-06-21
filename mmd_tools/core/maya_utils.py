@@ -6,13 +6,75 @@ from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
 
-from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME_EN, ATTR_MMD_MODEL_NAME
+from mmd_tools.core.constants import (
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+    ATTR_MMD_SOURCE_MODEL_PATH,
+    ATTR_MMD_TEXTURE_CACHE_PATH,
+    ATTR_MMD_TEXTURE_UNRESOLVED,
+)
 from mmd_tools.core.settings import settings
 
 from . import utils
 from .logger import get_logger
+from .texture_path_cache import (
+    classify_texture_resolution,
+    decode_original_texture_path,
+    is_unreadable_file_texture_path,
+    resolve_texture_to_cache,
+)
 
 logger = get_logger(__name__)
+
+DX11_TEXTURE_SLOTS = {
+    "_texture": ("MainTexture", "HasMainTexture"),
+    "_sphere_texture": ("SphereTexture", "HasSphereTexture"),
+    "_toon_texture": ("ToonTexture", "HasToonTexture"),
+}
+
+
+def _is_non_bool_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _infer_sequence_attribute_type(attr_value):
+    if not all(_is_non_bool_number(x) for x in attr_value):
+        return type(attr_value).__name__
+    if len(attr_value) == 3:
+        return "double3"
+    if len(attr_value) == 4:
+        return "double4"
+    return "doubleArray"
+
+
+def _add_compound_attribute_with_cmds(object_name, attr_name, attr_type):
+    compound_specs = {
+        "double3": (3, "double"),
+        "long3": (3, "long"),
+        "double4": (4, "double"),
+    }
+    if attr_type not in compound_specs:
+        return
+
+    child_count, child_type = compound_specs[attr_type]
+    try:
+        cmds.addAttr(object_name, ln=attr_name, at=attr_type)
+        for suffix in ("X", "Y", "Z", "W")[:child_count]:
+            cmds.addAttr(object_name, ln=f"{attr_name}{suffix}", at=child_type, p=attr_name)
+    except Exception as e:
+        logger.error(f"Failed to add typed attribute '{attr_name}' to '{object_name}': {e}")
+
+
+def _ensure_compound_attribute_created(object_name, attr_name, attr_type):
+    if attr_type not in {"double3", "long3", "double4"}:
+        return
+    if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
+        _add_compound_attribute_with_cmds(object_name, attr_name, attr_type)
+
+
+def _set_compound_attribute_with_cmds(object_name, attr_name, attr_value, attr_type):
+    cmds.setAttr(f"{object_name}.{attr_name}", *attr_value, type=attr_type)
 
 
 def sanitize_text(name):
@@ -64,7 +126,280 @@ def sanitize_texture_path(texture_path, texture_dir):
     return full_texture_path
 
 
-def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects):
+ATTR_MMD_TEXTURE_SOURCE_KIND = "mmd_texture_source_kind"
+ATTR_MMD_SHARED_TOON_ID = "mmd_shared_toon_id"
+
+
+def mark_mmd_texture_file_node(
+    file_node,
+    original_path,
+    model_path,
+    unresolved=False,
+    source_kind="pmx_texture",
+    shared_toon_id="",
+):
+    """Store MMD texture provenance on a Maya file node."""
+
+    attrs = {
+        ATTR_MMD_ORIGINAL_TEXTURE_PATH: "" if original_path is None else os.fspath(original_path),
+        ATTR_MMD_SOURCE_MODEL_PATH: model_path or "",
+        ATTR_MMD_TEXTURE_UNRESOLVED: bool(unresolved),
+        ATTR_MMD_TEXTURE_SOURCE_KIND: source_kind or "pmx_texture",
+    }
+    if shared_toon_id:
+        attrs[ATTR_MMD_SHARED_TOON_ID] = shared_toon_id
+    set_custom_attributes(file_node, attrs)
+
+
+def get_mmd_original_texture_path(file_node):
+    """Return the original PMX texture path stored on a Maya file node."""
+
+    value = get_attribute(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)
+    return decode_original_texture_path(value)
+
+
+def is_mmd_file_node_unreadable(file_node):
+    """Return whether an MMD file node currently points at an unreadable texture."""
+
+    texture_path = get_attribute(file_node, "fileTextureName")
+    return is_unreadable_file_texture_path(texture_path)
+
+
+def find_material_texture_file_node(material):
+    """Find the base texture file node used by a material, if any."""
+
+    shader_type = cmds.nodeType(material)
+    texture_attrs = []
+    if shader_type == "standardSurface":
+        texture_attrs.append(f"{material}.baseColor")
+    elif shader_type == "dx11Shader":
+        if cmds.attributeQuery("MainTexture", node=material, exists=True):
+            texture_attrs.append(f"{material}.MainTexture")
+        if cmds.attributeQuery("DiffuseTexture", node=material, exists=True):
+            texture_attrs.append(f"{material}.DiffuseTexture")
+    if cmds.attributeQuery("color", node=material, exists=True):
+        texture_attrs.append(f"{material}.color")
+
+    for attr in texture_attrs:
+        connections = cmds.listConnections(attr, type="file", source=True, destination=False) or []
+        if connections:
+            return connections[0]
+    return None
+
+
+def classify_mmd_texture_file_node(file_node):
+    """Classify a Maya MMD file node for on-demand texture resolution."""
+
+    if get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
+        return None
+    original_path = get_mmd_original_texture_path(file_node)
+    model_path = get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
+    file_texture_path = get_attribute(file_node, "fileTextureName") or ""
+    if not model_path:
+        return None
+    return classify_texture_resolution(
+        original_path=original_path,
+        file_texture_path=file_texture_path,
+        model_path=model_path,
+    )
+
+
+def resolve_mmd_texture_file_node(file_node, workspace_root=None):
+    """Resolve one MMD file node into the workspace texture cache."""
+
+    if get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
+        return None
+    if workspace_root is None:
+        workspace_root = cmds.workspace(q=True, rootDirectory=True)
+    original_path = get_mmd_original_texture_path(file_node)
+    model_path = get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
+    file_texture_path = get_attribute(file_node, "fileTextureName") or ""
+    if not model_path:
+        return None
+
+    resolution = resolve_texture_to_cache(
+        original_path=original_path,
+        file_texture_path=file_texture_path,
+        model_path=model_path,
+        workspace_root=workspace_root,
+    )
+    if resolution.status == "resolved" and resolution.cache_path:
+        set_attribute(file_node, "fileTextureName", resolution.cache_path, "string")
+        set_custom_attributes(
+            file_node,
+            {
+                ATTR_MMD_TEXTURE_CACHE_PATH: resolution.cache_path,
+                ATTR_MMD_TEXTURE_UNRESOLVED: False,
+            },
+        )
+    elif resolution.status == "unrecoverable":
+        set_custom_attributes(file_node, {ATTR_MMD_TEXTURE_UNRESOLVED: True})
+    return resolution
+
+
+def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
+    """Bind a Maya file node to one dx11Shader texture slot."""
+
+    destination_attr = f"{shader}.{texture_attr}"
+    try:
+        existing = cmds.listConnections(
+            f"{file_node}.outColor",
+            source=False,
+            destination=True,
+            plugs=True,
+        ) or []
+        if not isinstance(existing, (list, tuple, set)) or destination_attr not in existing:
+            cmds.connectAttr(f"{file_node}.outColor", destination_attr, force=True)
+        if cmds.attributeQuery(has_attr, node=shader, exists=True):
+            set_attribute(shader, has_attr, 1, "long")
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Failed to bind dx11 texture file node '%s' to '%s': %s",
+            file_node,
+            destination_attr,
+            exc,
+        )
+        return False
+
+
+def _dx11_texture_slot_from_attr(attr_name):
+    for texture_attr, has_attr in DX11_TEXTURE_SLOTS.values():
+        if attr_name == texture_attr:
+            return texture_attr, has_attr
+    return None
+
+
+def _connected_dx11_texture_slot(file_node):
+    connections = cmds.listConnections(
+        f"{file_node}.outColor",
+        source=False,
+        destination=True,
+        plugs=True,
+    ) or []
+    if not isinstance(connections, (list, tuple, set)):
+        return None
+    for plug in connections:
+        if "." not in plug:
+            continue
+        shader, attr_name = plug.rsplit(".", 1)
+        slot = _dx11_texture_slot_from_attr(attr_name)
+        if slot and cmds.objExists(shader):
+            return shader, slot[0], slot[1]
+    return None
+
+
+def _infer_dx11_texture_slot_from_file_node(file_node):
+    sorted_slots = sorted(DX11_TEXTURE_SLOTS.items(), key=lambda item: len(item[0]), reverse=True)
+    for suffix, (texture_attr, has_attr) in sorted_slots:
+        if not file_node.endswith(suffix):
+            continue
+        shader = file_node[: -len(suffix)]
+        if cmds.objExists(shader):
+            return shader, texture_attr, has_attr
+    return None
+
+
+def rebind_resolved_mmd_dx11_texture(file_node):
+    """Reconnect one resolved MMD file node to its dx11Shader texture slot."""
+
+    if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
+        return {"status": "skipped", "reason": "not_mmd_texture_file_node"}
+
+    target = _connected_dx11_texture_slot(file_node) or _infer_dx11_texture_slot_from_file_node(file_node)
+    if not target:
+        return {"status": "skipped", "reason": "dx11_texture_slot_not_found"}
+
+    shader, texture_attr, has_attr = target
+    if cmds.nodeType(shader) != "dx11Shader":
+        return {"status": "skipped", "reason": "not_dx11_shader"}
+    if not cmds.attributeQuery(texture_attr, node=shader, exists=True):
+        return {"status": "skipped", "reason": "texture_attr_missing"}
+    if not cmds.attributeQuery(has_attr, node=shader, exists=True):
+        return {"status": "skipped", "reason": "has_attr_missing"}
+
+    if not bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
+        return {
+            "status": "failed",
+            "reason": "connect_failed",
+            "shader": shader,
+            "texture_attr": texture_attr,
+            "has_attr": has_attr,
+        }
+
+    return {
+        "status": "rebound",
+        "reason": "connected",
+        "shader": shader,
+        "texture_attr": texture_attr,
+        "has_attr": has_attr,
+    }
+
+
+def rebind_resolved_scene_mmd_dx11_textures(results):
+    """Rebind resolved scene texture results and annotate each result."""
+
+    rebound = 0
+    skipped = 0
+    failed = 0
+    for result in results:
+        if getattr(result, "status", None) != "resolved":
+            continue
+        file_node = getattr(result, "file_node", None)
+        if not file_node:
+            setattr(result, "rebind_status", "skipped")
+            setattr(result, "rebind_reason", "missing_file_node")
+            skipped += 1
+            continue
+        rebind = rebind_resolved_mmd_dx11_texture(file_node)
+        setattr(result, "rebind_status", rebind["status"])
+        setattr(result, "rebind_reason", rebind["reason"])
+        for key in ("shader", "texture_attr", "has_attr"):
+            if key in rebind:
+                setattr(result, f"rebind_{key}", rebind[key])
+        if rebind["status"] == "rebound":
+            rebound += 1
+        elif rebind["status"] == "failed":
+            failed += 1
+        else:
+            skipped += 1
+    return {"rebound": rebound, "skipped": skipped, "failed": failed}
+
+
+def resolve_mmd_material_texture(material, workspace_root=None):
+    """Resolve the selected material's base texture file node, if present."""
+
+    file_node = find_material_texture_file_node(material)
+    if not file_node:
+        return None
+    return resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
+
+
+def resolve_scene_mmd_textures(workspace_root=None):
+    """Resolve all broken MMD file nodes in the current Maya scene."""
+
+    results = []
+    for file_node in cmds.ls(type="file") or []:
+        if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
+            continue
+        classification = classify_mmd_texture_file_node(file_node)
+        if classification and classification.status == "resolvable":
+            resolution = resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
+            if resolution is not None and not getattr(resolution, "file_node", None):
+                resolution.file_node = file_node
+            results.append(resolution)
+        elif classification:
+            classification.file_node = file_node
+            results.append(classification)
+    rebind_summary = rebind_resolved_scene_mmd_dx11_textures(results)
+    if rebind_summary["rebound"]:
+        # If this is not enough for VP2 in practice, the next fallback is a
+        # same-value .shader/technique re-set to force the dx11 effect reload.
+        cmds.refresh(force=True)
+    return results
+
+
+def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):
     """
     MayaシーンにUV付きのメッシュオブジェクトを作成します。
     OpenMaya APIを使用して高速化。
@@ -76,6 +411,7 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
         face_connects (list[int]): 面を構成する頂点インデックスのリスト。
         uvs (list[float]): UV座標のフラットなリスト (u1, v1, u2, v2, ...)。
         face_uv_connects (list[int]): 各面の各頂点に対応するUVのインデックスリスト。
+        normals (list[tuple[float, float, float]] | None): 頂点法線のリスト。
 
     Returns:
         str: 作成されたメッシュのトランスフォームノード名。
@@ -99,6 +435,23 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     # メッシュを作成
     mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
+
+    if normals:
+        normal_array = om.MVectorArray()
+        normal_face_ids = om.MIntArray()
+        normal_vertex_ids = om.MIntArray()
+        face_id = 0
+        cursor = 0
+        for count in face_counts:
+            for _ in range(count):
+                vertex_id = face_connects[cursor]
+                normal = normals[vertex_id]
+                normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
+                normal_face_ids.append(face_id)
+                normal_vertex_ids.append(vertex_id)
+                cursor += 1
+            face_id += 1
+        mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
 
     # UVセットを作成
     if uvs and face_uv_connects:
@@ -154,7 +507,7 @@ def split_mesh_by_material(mesh_name, materials):
         cmds.hyperShade(assign=material.name)
 
 
-def create_material(name, color, texture_path=None, texture_dir=""):
+def create_material(name, color, texture_path=None, texture_dir="", model_path=None):
     """
     Mayaシーンにマテリアルを作成します。
 
@@ -163,6 +516,7 @@ def create_material(name, color, texture_path=None, texture_dir=""):
         color (tuple[float, float, float, float]): RGBAカラー。
         texture_path (str, optional): テクスチャファイルのパス。
         texture_dir (str, optional): テクスチャファイルが置かれているディレクトリ。
+        model_path (str, optional): 元 PMX/PMD ファイルのパス。
 
     Returns:
         str: 作成されたシェーダーノード名。
@@ -178,20 +532,26 @@ def create_material(name, color, texture_path=None, texture_dir=""):
 
     if texture_path:
         # テクスチャパスを解決
-        full_texture_path = os.path.join(texture_dir, texture_path)
-        if os.path.exists(full_texture_path):
-            file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
-            place_uv_node = cmds.shadingNode(
-                "place2dTexture",
-                asUtility=True,
-                name=sanitized_name + "_place2dTexture",
-            )
-            # 標準的なUV接続
-            cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
-            cmds.connectAttr(file_node + ".outColor", shader + ".color")
+        full_texture_path = os.path.normpath(os.path.join(texture_dir, texture_path))
+        file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
+        place_uv_node = cmds.shadingNode(
+            "place2dTexture",
+            asUtility=True,
+            name=sanitized_name + "_place2dTexture",
+        )
+        # 標準的なUV接続
+        cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
+        cmds.connectAttr(file_node + ".outColor", shader + ".color")
 
-            cmds.setAttr(file_node + ".fileTextureName", full_texture_path, type="string")
-        else:
+        set_attribute(file_node, "fileTextureName", full_texture_path, "string")
+        source_model_path = model_path or os.path.join(texture_dir, "_mmd_tools_legacy_model.pmd")
+        mark_mmd_texture_file_node(
+            file_node,
+            texture_path,
+            source_model_path,
+            unresolved=not os.path.exists(full_texture_path),
+        )
+        if not os.path.exists(full_texture_path):
             cmds.warning(f"Texture file not found: {full_texture_path}")
 
     return shader
@@ -232,15 +592,15 @@ def assign_material_to_faces(mesh_name, shader_node, face_selection):
     sanitized_shader_name = shader_node + "SG"
     sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
 
-    # シェーダーのタイプに応じて適切な接続を行う
     shader_type = cmds.nodeType(shader_node)
 
-    if shader_type == "dx11Shader":
-        # dx11Shaderは直接surfaceShaderに接続
+    if cmds.attributeQuery("outColor", node=shader_node, exists=True):
+        cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
+    elif shader_type == "dx11Shader":
         cmds.connectAttr(shader_node + ".message", f"{sg_name}.surfaceShader", force=True)
     else:
-        # 標準シェーダーは.outColorを使用
-        cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
+        logger.error("Shader node '%s' has no outColor attribute", shader_node)
+        return
 
     # 指定した面をシェーディンググループに割り当て
     cmds.sets(face_selection, edit=True, forceElement=sg_name)
@@ -266,6 +626,9 @@ def set_custom_attributes(object_name, attributes):
     for attr_name, attr_value in attributes.items():
         attr_type = type(attr_value).__name__
         actual_attr_type = attr_type  # 実際に使用する型を保存
+        if attr_type in ["list", "tuple"]:
+            # リストやタプルの場合は型を指定
+            actual_attr_type = _infer_sequence_attribute_type(attr_value)
 
         # アトリビュートが存在しない場合は作成
         if not cmds.attributeQuery(attr_name, node=object_name, exists=True):
@@ -274,18 +637,8 @@ def set_custom_attributes(object_name, attributes):
             elif attr_type in ["str", "bytes"]:
                 add_typed_attribute(object_name, attr_name, attr_type)
             elif attr_type in ["list", "tuple"]:
-                # リストやタプルの場合は型を指定
-                if len(attr_value) == 3 and all(isinstance(x, float) for x in attr_value):
-                    actual_attr_type = "double3"
-                elif len(attr_value) == 3 and all(isinstance(x, int) for x in attr_value):
-                    actual_attr_type = "long3"
-                elif len(attr_value) == 4 and all(isinstance(x, (float, int)) for x in attr_value):
-                    actual_attr_type = "double4"
-                elif all(isinstance(x, float) for x in attr_value):
-                    actual_attr_type = "doubleArray"
-                elif all(isinstance(x, int) for x in attr_value):
-                    actual_attr_type = "longArray"
                 add_typed_attribute(object_name, attr_name, actual_attr_type)
+                _ensure_compound_attribute_created(object_name, attr_name, actual_attr_type)
 
         # 値を設定（既存・新規両方に対応）
         try:
@@ -386,6 +739,34 @@ def add_typed_attribute(object_name, attr_name, attr_type):
         logger.error(f"Failed to add typed attribute '{attr_name}' to '{object_name}': {e}")
 
 
+def _set_string_plug(plug, object_name, attr_name, value):
+    """
+    文字列アトリビュートを日本語・特殊文字でも安全に設定する。
+
+    Maya 2024 on Windows では ``cmds.setAttr(..., type="string")`` が
+    fileTextureName のような既存 string attr に CP932 非対応文字を含む
+    パスを書き込むと ``?`` に置換することがある。OpenMaya API 2.0 の
+    ``MPlug.setString()`` は同じ値を保持できるため、こちらを優先する。
+
+    Args:
+        plug (om.MPlug): 対象プラグ
+        object_name (str): オブジェクト名
+        attr_name (str): アトリビュート名
+        value (str): 設定する文字列
+    """
+    text = "" if value is None else str(value)
+    try:
+        plug.setString(text)
+        try:
+            if plug.asString() == text:
+                return
+        except Exception:
+            return
+    except Exception as exc:
+        logger.debug(f"MPlug.setString による文字列設定に失敗、cmds.setAttr にフォールバックします '{attr_name}': {exc}")
+    cmds.setAttr(f"{object_name}.{attr_name}", text, type="string")
+
+
 def set_attribute(object_name, attr_name, attr_value, attr_type):
     """
     OpenMaya API 2.0を使用してアトリビュート値を設定します。
@@ -422,25 +803,34 @@ def set_attribute(object_name, attr_name, attr_value, attr_type):
         elif attr_type == "double":
             plug.setDouble(attr_value)
         elif attr_type == "str" or attr_type == "string":
-            plug.setString(attr_value)
+            _set_string_plug(plug, object_name, attr_name, attr_value)
         elif attr_type == "bytes":
             # バイトデータは文字列として設定
-            plug.setString(attr_value.decode("utf-8"))
+            _set_string_plug(plug, object_name, attr_name, attr_value.decode("utf-8"))
         elif attr_type == "double3" and len(attr_value) == 3:
             # 3要素のベクトル値
-            for i, value in enumerate(attr_value):
-                child_plug = plug.child(i)
-                child_plug.setDouble(value)
+            try:
+                for i, value in enumerate(attr_value):
+                    child_plug = plug.child(i)
+                    child_plug.setDouble(value)
+            except Exception:
+                _set_compound_attribute_with_cmds(object_name, attr_name, attr_value, attr_type)
         elif attr_type == "long3" and len(attr_value) == 3:
             # 3要素の整数値
-            for i, value in enumerate(attr_value):
-                child_plug = plug.child(i)
-                child_plug.setInt(value)
+            try:
+                for i, value in enumerate(attr_value):
+                    child_plug = plug.child(i)
+                    child_plug.setInt(value)
+            except Exception:
+                _set_compound_attribute_with_cmds(object_name, attr_name, attr_value, attr_type)
         elif attr_type == "double4" and len(attr_value) == 4:
             # 4要素のベクトル値
-            for i, value in enumerate(attr_value):
-                child_plug = plug.child(i)
-                child_plug.setDouble(value)
+            try:
+                for i, value in enumerate(attr_value):
+                    child_plug = plug.child(i)
+                    child_plug.setDouble(value)
+            except Exception:
+                _set_compound_attribute_with_cmds(object_name, attr_name, attr_value, attr_type)
         elif attr_type == "doubleArray":
             double_array_data = om.MFnDoubleArrayData()
             double_array_obj = double_array_data.create()
@@ -544,6 +934,27 @@ def get_attribute(object_name, attr_name):
 
     except Exception:
         # オブジェクトが存在しない、その他のエラー
+        return None
+
+
+def get_int_array_attribute(object_name, attr_name):
+    """OpenMaya typed intArray attribute を Python の int list として取得する。"""
+    try:
+        selection_list = om.MSelectionList()
+        selection_list.add(object_name)
+        node_obj = selection_list.getDependNode(0)
+        depend_fn = om.MFnDependencyNode(node_obj)
+        plug = depend_fn.findPlug(attr_name, False)
+        if plug.isNull:
+            return None
+
+        data_obj = plug.asMObject()
+        if data_obj.isNull() or not data_obj.hasFn(om.MFn.kIntArrayData):
+            return None
+
+        int_array = om.MFnIntArrayData(data_obj).array()
+        return [int(int_array[i]) for i in range(len(int_array))]
+    except Exception:
         return None
 
 
@@ -1388,3 +1799,87 @@ def _list_dg_nodes(node_type, object_filter=None):
     except Exception as e:
         logger.error(f"Failed to list DG nodes: {e}")
         return []
+
+
+def setup_mmd_color_management(
+    rendering_space="scene-linear Rec.709-sRGB",
+    view_transform="Un-tone-mapped (sRGB)",
+):
+    """Color Management を MMD 向けに整える（CM の有効/無効は変更しない）。
+
+    MMD シェーダーは出口で de-gamma して view transform の sRGB encode を相殺し、
+    MMD のガンマ空間ルックを CM ON のまま再現する。これが**厳密に**成立するには:
+
+    - **Rendering space = scene-linear Rec.709-sRGB**: 既定の ACEScg のままだと
+      view transform に AP1→Rec.709 の primaries 変換行列が混ざり、出口 de-gamma
+      （転送関数のみ）では打ち消せず**彩度がズレる**。sRGB プライマリの線形空間に
+      すれば view transform は純ガンマだけになり相殺が厳密になる。
+    - **View transform = Un-tone-mapped (sRGB)**: 既定の ACES filmic はトーンマップで
+      白く眠くなる。純 sRGB encode にする。
+
+    ACES で見たい人は後から戻せる。CM の enable 状態はユーザー設定を尊重。
+
+    Returns:
+        bool: いずれかを設定できたら True。
+    """
+    changed = False
+    try:
+        spaces = cmds.colorManagementPrefs(q=True, renderingSpaceNames=True) or []
+        if rendering_space in spaces:
+            current = cmds.colorManagementPrefs(q=True, renderingSpaceName=True)
+            if current != rendering_space:
+                cmds.colorManagementPrefs(e=True, renderingSpaceName=rendering_space)
+                logger.info("Rendering space を MMD 向けに設定: %s (旧: %s)", rendering_space, current)
+            changed = True
+        else:
+            logger.debug("Rendering space '%s' は利用不可。スキップ", rendering_space)
+    except Exception:
+        logger.debug("Rendering space の設定に失敗", exc_info=True)
+
+    try:
+        transforms = cmds.colorManagementPrefs(q=True, viewTransformNames=True) or []
+        if view_transform in transforms:
+            current = cmds.colorManagementPrefs(q=True, viewTransformName=True)
+            if current != view_transform:
+                cmds.colorManagementPrefs(e=True, viewTransformName=view_transform)
+                logger.info("View Transform を MMD 向けに設定: %s (旧: %s)", view_transform, current)
+            changed = True
+        else:
+            logger.debug("View Transform '%s' は利用不可。スキップ", view_transform)
+    except Exception:
+        logger.debug("View Transform の設定に失敗", exc_info=True)
+
+    return changed
+
+
+# Viewport 2.0 transparency algorithm enum (hardwareRenderingGlobals):
+#   0 Simple / 1 Object Sorting / 2 Weighted Average / 3 Depth Peeling / 5 Alpha Cut
+TRANSPARENCY_ALGORITHM_DEPTH_PEELING = 3
+
+
+def setup_mmd_transparency(algorithm=TRANSPARENCY_ALGORITHM_DEPTH_PEELING):
+    """VP2 の透過アルゴリズムを MMD 向け（Depth Peeling / OIT）に設定する。
+
+    既定の Object Sorting は**オブジェクト/レンダーアイテムを距離順**で並べるため、
+    スカートのように近接した別マテリアルどうしだと並びが逆転する（MMD のマテリアル
+    順にならない）。Depth Peeling は**画素単位の順序非依存合成**なので、距離が近い
+    透過マテリアルでも正しく重なる。グローバル設定なので全ビューポートに効く（性能
+    負荷あり）。設定キー ``import.view.setup_transparency`` で opt-out 可。
+
+    Returns:
+        bool: 設定できたら True。
+    """
+    try:
+        node = "hardwareRenderingGlobals"
+        attr = f"{node}.transparencyAlgorithm"
+        if not cmds.objExists(node) or not cmds.attributeQuery("transparencyAlgorithm", node=node, exists=True):
+            logger.debug("transparencyAlgorithm 属性が利用不可。スキップ")
+            return False
+        current = cmds.getAttr(attr)
+        if current != algorithm:
+            cmds.setAttr(attr, algorithm)
+            logger.info("Transparency algorithm を MMD 向けに設定: %s (旧: %s)", algorithm, current)
+        return True
+    except Exception:
+        logger.debug("Transparency algorithm の設定に失敗", exc_info=True)
+        return False

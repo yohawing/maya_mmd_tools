@@ -3,10 +3,12 @@ from unittest.mock import Mock, patch
 import maya.cmds as cmds
 
 from mmd_tools.converters.bone_converter import BoneConverter
+from mmd_tools.core import maya_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
+    ATTR_MMD_SOURCE_VERTEX_INDICES,
 )
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmd_data.bone import PmdBone
@@ -406,6 +408,64 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(weights[2], (3, 0.2))
         self.assertEqual(weights[3], (4, 0.1))
 
+    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
+    def test_apply_pmx_vertex_weights_uses_source_vertex_indices_for_compact_split(self, mock_apply_weights):
+        """compact material split mesh では local vertex 順に対応する元 PMX vertex の weight を適用する。"""
+        pmx_data = Mock()
+        vertices = []
+        for bone_index in [0, 1, 0, 1]:
+            vertex = Mock()
+            vertex.weight_transform_type = 0
+            vertex.bone_indices = [bone_index, 0, 0, 0]
+            vertices.append(vertex)
+        pmx_data.vertices = vertices
+
+        maya_utils.add_typed_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_utils.set_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [1, 2], "longArray")
+
+        self.converter._apply_pmx_vertex_weights(
+            pmx_data,
+            ["joint_0", "joint_1"],
+            "skinCluster",
+            self.test_mesh,
+        )
+
+        mock_apply_weights.assert_called_once()
+        applied_weights = mock_apply_weights.call_args[0][2]
+        self.assertEqual(applied_weights, [[0.0, 1.0], [1.0, 0.0]])
+
+    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
+    def test_apply_pmd_vertex_weights_with_sentinel_bone2(self, mock_apply_weights):
+        """PMD頂点ウェイト適用でbone2が未使用インデックスの場合を確認"""
+        pmd_data = Mock()
+        vertex = Mock()
+        vertex.bone_indices = [0, 65535]
+        vertex.bone_weight = 100
+        pmd_data.vertices = [vertex]
+
+        with patch.object(self.converter, "logger") as mock_logger:
+            self.converter._apply_pmd_vertex_weights(pmd_data, ["joint_0", "joint_1"], "skinCluster", self.test_mesh)
+
+        mock_apply_weights.assert_called_once()
+        mock_logger.warning.assert_not_called()
+        self.assertEqual(mock_apply_weights.call_args[0][2][0], [1.0, 0.0])
+
+    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
+    def test_apply_pmd_vertex_weights_with_sentinel_bone1(self, mock_apply_weights):
+        """PMD頂点ウェイト適用でbone1が未使用インデックスの場合を確認"""
+        pmd_data = Mock()
+        vertex = Mock()
+        vertex.bone_indices = [65535, 1]
+        vertex.bone_weight = 0
+        pmd_data.vertices = [vertex]
+
+        with patch.object(self.converter, "logger") as mock_logger:
+            self.converter._apply_pmd_vertex_weights(pmd_data, ["joint_0", "joint_1"], "skinCluster", self.test_mesh)
+
+        mock_apply_weights.assert_called_once()
+        mock_logger.warning.assert_not_called()
+        self.assertEqual(mock_apply_weights.call_args[0][2][0], [0.0, 1.0])
+
     @patch("mmd_tools.converters.bone_converter.RigConverter")
     def test_convert_pmx_bones_integration(self, mock_rig_converter_class):
         """PMXボーン変換の統合テスト（実際のMaya環境）"""
@@ -447,6 +507,57 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         # RigConverterが呼ばれたことを確認
         mock_rig_converter.setup_pmx_rig.assert_called_once()
+
+    @patch("mmd_tools.converters.bone_converter.RigConverter")
+    def test_convert_pmx_bones_can_skip_rig_setup(self, mock_rig_converter_class):
+        """runtime bake用にPMXリグ構築をスキップできる"""
+        mock_rig_converter = Mock()
+        mock_rig_converter_class.return_value = mock_rig_converter
+
+        converter = BoneConverter()
+
+        pmx_data = Mock()
+        pmx_data.bones = [
+            self._create_mock_pmx_bone(0, "center"),
+            self._create_mock_pmx_bone(1, "upper_body", parent_index=0),
+        ]
+        pmx_data.vertices = []
+
+        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+            mock_sanitize.side_effect = lambda x: x
+            maya_joints, skin_cluster = converter.convert_pmx_bones(
+                pmx_data,
+                self.test_mesh,
+                self.root_group,
+                setup_rig=False,
+            )
+
+        self.assertEqual(len(maya_joints), 2)
+        self.assertTrue(cmds.objExists(skin_cluster))
+        mock_rig_converter.setup_pmx_rig.assert_not_called()
+
+    def test_create_maya_joints_can_skip_pmx_bone_orientation(self):
+        """runtime bake用にPMXローカル軸のjointOrient適用をスキップできる"""
+        bone = self._create_mock_pmx_bone(
+            0,
+            "local_axis_bone",
+            bone_flag=PmxBoneFlag.LOCAL_AXIS | PmxBoneFlag.AXIS_FIXED,
+        )
+        bone.x_axis_direction = (0.0, 1.0, 0.0)
+        bone.z_axis_direction = (0.0, 0.0, 1.0)
+        bone.axis_direction = (0.0, 1.0, 0.0)
+
+        skeleton_group = cmds.group(empty=True, name="skeleton_no_orient_grp")
+        maya_joints = self.converter._create_maya_joints(
+            [bone],
+            {0: "local_axis_bone"},
+            "pmx",
+            skeleton_group,
+            setup_bone_orientation=False,
+        )
+
+        joint_orient = cmds.getAttr(f"{maya_joints[0]}.jointOrient")[0]
+        self.assertEqual(tuple(round(value, 6) for value in joint_orient), (0.0, 0.0, 0.0))
 
 
 if __name__ == "__main__":

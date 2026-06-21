@@ -40,12 +40,24 @@ ATTR_MMD_EDGE_FLAG = "edge_flag"
 ATTR_MMD_DRAW_FLAGS = "mmd_draw_flags"
 ATTR_MMD_EDGE_COLOR = "mmd_edge_color"
 ATTR_MMD_EDGE_SIZE = "mmd_edge_size"
+ATTR_MMD_SHADER_OUTLINE_ENABLED = "mmd_shader_outline_enabled"
 ATTR_MMD_TEXTURE_INDEX = "mmd_texture_index"
 ATTR_MMD_SPHERE_TEXTURE_INDEX = "mmd_sphtex_index"
 ATTR_MMD_SPHERE_MODE = "mmd_sphere_mode"
 ATTR_MMD_SHARED_TOON_FLAG = "mmd_shared_toon_flag"
 ATTR_MMD_TOON_TEXTURE_INDEX = "mmd_toon_texture_index"
 ATTR_MMD_MATERIAL_INDEX = "mmd_material_index"
+ATTR_MMD_SOURCE_VERTEX_INDICES = "mmd_source_vertex_indices"
+ATTR_MMD_MORPH_GROUP_SPLIT_MESH = "mmd_morph_group_split_mesh"
+ATTR_MMD_VERTEX_MORPH_NAMES_JSON = "mmd_vertex_morph_names_json"
+ATTR_MMD_ORIGINAL_TEXTURE_PATH = "mmd_original_texture_path"
+ATTR_MMD_TEXTURE_UNRESOLVED = "mmd_texture_unresolved"
+ATTR_MMD_TEXTURE_CACHE_PATH = "mmd_texture_cache_path"
+ATTR_MMD_SOURCE_MODEL_PATH = "mmd_source_model_path"
+# blendShape ノードに保存する「weight index → 元モーフ名」対応（JSON 文字列）。
+# 頂点モーフは alias を sanitize_text で生成するため lossy だが、これは VMD/PMX が
+# 参照する生のモーフ名 (PmxMorph.name) を権威キーとして保持し、正確なマッピングを保証する。
+ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON = "mmd_blendshape_morph_names_json"
 
 # ボーンカスタムアトリビュート名（共通）
 ATTR_MMD_BONE_NAME = "mmd_bone_name"  # ボーン名（日本語）

@@ -17,8 +17,7 @@
     "export_settings": "Export"
   },
   "menus": {
-    "view": "View",
-    "log_viewer": "Log Viewer"
+    "view": "View"
   },
   "buttons": {
     "import": "Import",
@@ -42,7 +41,8 @@
     "next": "Next",
     "auto_scroll": "Auto Scroll",
     "timestamp": "Timestamp",
-    "filter": "Filter"
+    "filter": "Filter",
+    "apply_to_selected": "Apply to Selected"
   },
   "labels": {
     "file_path": "File Path:",
@@ -78,6 +78,7 @@
     "selected": "Selected:",
     "available": "Available:",
     "offset_count": "Offset Count",
+    "offset_not_supported": "Offsets: Not supported",
     "log_entries": "Logs",
     "search_results": "results",
     "not_found": "Not found"
@@ -91,7 +92,8 @@
     "add_item": "Add new item",
     "remove_item": "Remove selected item",
     "move_up": "Move selected item up",
-    "move_down": "Move selected item down"
+    "move_down": "Move selected item down",
+    "vpd_not_implemented": "VPD pose import is not implemented yet"
   },
   "messages": {
     "import_success": "Import completed successfully",
@@ -147,6 +149,7 @@
     "edge_settings": "Edge Settings",
     "edge_properties": "Edge Properties",
     "rendering_flags": "Rendering Flags",
+    "viewport_settings": "Viewport Settings",
     "bone_list": "Bone List",
     "basic_information": "Basic Information",
     "transform_control": "Transform Control",
@@ -184,6 +187,7 @@
     "create_physics_joints": "Create Physics Joints",
     "group_physics_objects": "Group Physics Objects",
     "add_semi_standard_bones": "Add Semi-Standard Bones",
+    "bake_mode": "Bake mode (no rig)",
     "translate_names": "Translate Names",
     "import_bone_animation": "Import Bone Animation",
     "import_morph_animation": "Import Morph Animation",
@@ -194,8 +198,12 @@
     "new_file": "New File",
     "enable_ik": "Enable IK",
     "invert_value": "Invert Value",
+    "development_mode": "Development Mode",
     "show_advanced_options": "Show Advanced Options",
-    "enable_logging": "Enable Logging"
+    "enable_logging": "Enable Logging",
+    "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)",
+    "auto_resolve_textures": "Auto-resolve textures (ASCII cache)",
+    "split_meshes_by_morph_groups": "[Experimental] Split meshes by morph groups"
   },
   "fields": {
     "scale_factor": "Scale Factor:",
@@ -203,6 +211,7 @@
     "texture_search_path": "Texture Search Path:",
     "uv_set_name": "UV Set Name:",
     "start_frame": "Start Frame:",
+    "vmd_fps": "VMD FPS:",
     "format": "Format:",
     "vmd_file": "VMD File:",
     "target_model": "Target Model:",
@@ -258,7 +267,9 @@
     "language": "Language:",
     "log_level": "Log Level:",
     "log_file": "Log File:",
-    "export_format": "Export Format:"
+    "export_format": "Export Format:",
+    "transparency_mode": "Transparency Mode:",
+    "transparency_opaque_threshold": "Opaque alpha threshold:"
   },
   "actions": {
     "import_model": "Import Model",
@@ -298,6 +309,7 @@
     "self_shadow_map": "Cast Self Shadow",
     "self_shadow": "Receive Self Shadow",
     "edge_drawing": "Edge Drawing",
+    "shader_outline": "Shader Outline",
     "vertex_color": "Vertex Color",
     "point_drawing": "Point Drawing",
     "line_drawing": "Line Drawing"
@@ -370,5 +382,46 @@
   "status": {
     "not_connected": "Not Connected",
     "connected": "Connected"
+  },
+  "transparency_modes": {
+    "opaque": "Opaque",
+    "cutout": "Cutout",
+    "blend": "Blend"
+  },
+  "texture_issues": {
+    "title": "Some textures can't be displayed ({count})",
+    "intro": "Maya can't load these texture files. \"Fix all\" copies each one into this project's sourceimages folder with an English-safe name and re-links it, so it can be displayed. Your original files are NOT changed.",
+    "header_material": "Material",
+    "header_problem": "Problem",
+    "header_texture": "Texture",
+    "detail_placeholder": "Select a row to see its full path.",
+    "detail_original": "Original: {path}",
+    "detail_current": "Current: {path}",
+    "fix_all": "Fix all",
+    "open_folder": "Open folder",
+    "close": "Close",
+    "dont_show_again": "Don't show again",
+    "status_fixed": "Fixed {count} texture(s)",
+    "fix_texture_path": "Fix Texture Path",
+    "status_no_issues": "No texture path issues found.",
+    "status_scan_failed": "Failed to scan texture path issues."
+  },
+  "texture_issue_reasons": {
+    "non_ascii_path": "Maya may fail to display this texture path",
+    "ansi_incompatible_path": "Unsupported characters in path",
+    "missing_file": "File not found",
+    "question_mark_path": "Path corrupted on reopen",
+    "empty_path": "No texture path",
+    "resolved": "Fixed",
+    "missing_original_path": "Original path not recorded",
+    "absolute_original_path_rejected": "Absolute path is outside the model folder",
+    "parent_traversal_rejected": "Path escapes the model folder",
+    "outside_model_directory_rejected": "File is outside the model folder",
+    "extension_rejected": "Unsupported file type",
+    "symlink_rejected": "Symbolic link not allowed",
+    "source_not_found": "Source file not found",
+    "source_not_file": "Source is not a file",
+    "source_not_readable": "Source file is not readable",
+    "cache_copy_failed": "Failed to copy texture to cache"
   }
 }

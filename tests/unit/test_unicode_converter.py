@@ -188,7 +188,8 @@ class TestUnicodeToAsciiConverter(unittest.TestCase):
         self.assertEqual(self.converter.convert("右腕捩先IK"), "right_arm_twist_end_ik")
         self.assertEqual(self.converter.convert("左肩P"), "left_shoulder_p")
         self.assertEqual(self.converter.convert("右つま先"), "right_toe")
-        # self.assertEqual(self.converter.convert("右つま先ＩＫ"), "right_toe_ik")
+        # BUG: "右つま先ＩＫ" は "right_toe_ik" になるべきだが、現在の実装では正しく変換されない。
+        # 修正されたら unittest.expectedFailure デコレータを外してアサーションを有効化すること。
         self.assertEqual(self.converter.convert("左つま先ＩＫ先"), "left_toe_ik_end")
         self.assertEqual(self.converter.convert("上半身3"), "spine_3")
         self.assertEqual(self.converter.convert("左顔_0_1"), "left_face_0_1")
