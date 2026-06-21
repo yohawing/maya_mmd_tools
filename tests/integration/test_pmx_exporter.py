@@ -5,7 +5,6 @@ collect → export → parse round-trip for a minimum geometry.
 """
 
 import os
-import unittest
 
 from maya import cmds
 
@@ -147,7 +146,7 @@ class TestPmxExporter(MayaTestBase):
             name="quad_mesh",
         )
         transform = result[0]
-        shader = self._assign_shader(transform, shader_name="QuadMat")
+        self._assign_shader(transform, shader_name="QuadMat")
 
         collector = ExportSceneCollector()
         maya_data = collector.collect_from_mesh(transform)

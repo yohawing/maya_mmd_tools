@@ -12,7 +12,6 @@ runtime bake 静的チャンネル判定閾値の純Python 回帰テスト。
 """
 
 import math
-import sys
 import unittest
 
 # Maya スタブを対象 import より先に登録する
