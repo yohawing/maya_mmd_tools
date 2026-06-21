@@ -867,8 +867,8 @@ def main() -> int:
                 )
 
                 # Record baked joint worldMatrix and blendShape weights at all frames
-                baked_joint_matrices: Dict[int, Dict[int, List[float]]] = {}  # frame -> {bone_idx: matrix}
-                baked_morph_weights: Dict[int, Dict[str, float]] = {}  # frame -> {morph_name: weight}
+                baked_joint_matrices: dict[int, dict[int, list[float]]] = {}  # frame -> {bone_idx: matrix}
+                baked_morph_weights: dict[int, dict[str, float]] = {}  # frame -> {morph_name: weight}
 
                 bs_nodes = cmds.ls(type="blendShape") or []
 
@@ -926,7 +926,7 @@ def main() -> int:
                 # Compare DG-connected playback vs recorded baked values
                 dg_compare_passed = 0
                 dg_compare_failed = 0
-                failed_details: List[str] = []
+                failed_details: list[str] = []
 
                 for frame in frame_numbers:
                     cmds.currentTime(frame)
@@ -1085,7 +1085,7 @@ def main() -> int:
                             )
 
                     # Record baked blendShape weights at morph keyframes (0..4)
-                    morph_baked_weights: Dict[int, Dict[str, float]] = {}
+                    morph_baked_weights: dict[int, dict[str, float]] = {}
                     morph_bs_nodes: list[str] = []
                     for shape in cmds.listRelatives(
                         morph_root,
@@ -1145,7 +1145,7 @@ def main() -> int:
                     # Compare DG-connected playback vs recorded baked values at morph keyframes
                     morph_dg_passed = 0
                     morph_dg_failed = 0
-                    morph_failed_details: List[str] = []
+                    morph_failed_details: list[str] = []
 
                     for frame in morph_frame_numbers:
                         cmds.currentTime(frame)
