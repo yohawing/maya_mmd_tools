@@ -448,41 +448,6 @@ class ImportExportTab(BaseTab):
         self.animation_group.setLayout(animation_layout)
         right_layout.addWidget(self.animation_group)
 
-        # VPD Pose Import Group
-        self.vpd_group = QGroupBox(self.tr("vpd_import", "buttons"))
-        vpd_layout = QFormLayout()
-
-        self.vpd_path_edit = QLineEdit()
-        saved_vpd_path = self.qt_settings.value("vpd_path", "")
-        self.vpd_path_edit.setText(saved_vpd_path)
-        self.vpd_path_button = QPushButton(self.tr("browse", "buttons"))
-        vpd_path_layout = QHBoxLayout()
-        vpd_path_layout.addWidget(self.vpd_path_edit)
-        vpd_path_layout.addWidget(self.vpd_path_button)
-        self.vpd_file_label = QLabel(self.tr("vpd_file", "labels"))
-        vpd_layout.addRow(self.vpd_file_label, vpd_path_layout)
-
-        self.vpd_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("vpd_path", text))
-
-        # VPD Options
-        self.vpd_create_keyframe_check = QCheckBox(self.tr("create_keyframe", "checkboxes"))
-        self.vpd_create_keyframe_check.setChecked(True)
-        vpd_layout.addRow(self.vpd_create_keyframe_check)
-
-        self.vpd_apply_to_all_check = QCheckBox(self.tr("apply_to_all_models", "checkboxes"))
-        self.vpd_apply_to_all_check.setChecked(False)
-        vpd_layout.addRow(self.vpd_apply_to_all_check)
-
-        self.import_vpd_button = QPushButton(self.tr("import_pose", "actions"))
-        vpd_layout.addRow(self.import_vpd_button)
-
-        self.vpd_group.setLayout(vpd_layout)
-        # VPD ポーズインポートは presenter にシグナル未接続で未実装のため、UI を無効化して
-        # 「押しても無反応」を防ぐ。実装してシグナル接続したら再有効化する。
-        self.vpd_group.setEnabled(False)
-        self.vpd_group.setToolTip(self.tr("vpd_not_implemented", "tooltips"))
-        right_layout.addWidget(self.vpd_group)
-
         # Export Group
         self.export_group = QGroupBox(self.tr("export", "buttons"))
         export_layout = QFormLayout()
@@ -619,8 +584,7 @@ class ImportExportTab(BaseTab):
             self.target_model_label.setText(self.tr("target_model", "fields"))
         if hasattr(self, "export_path_label"):
             self.export_path_label.setText(self.tr("file_path", "labels"))
-        if hasattr(self, "vpd_file_label"):
-            self.vpd_file_label.setText(self.tr("vpd_file", "labels"))
+
 
         # GroupBoxes
         if hasattr(self, "general_group"):
@@ -637,9 +601,10 @@ class ImportExportTab(BaseTab):
             self.animation_group.setTitle(self.tr("animation_import", "groups"))
         if hasattr(self, "export_group"):
             self.export_group.setTitle(self.tr("export", "buttons"))
-        if hasattr(self, "vpd_group"):
-            self.vpd_group.setTitle(self.tr("vpd_import", "buttons"))
-            self.vpd_group.setToolTip(self.tr("vpd_not_implemented", "tooltips"))
+        if hasattr(self, "history_group"):
+            self.history_group.setTitle(self.tr("file_history", "groups"))
+        if hasattr(self, "clear_history_button"):
+            self.clear_history_button.setText(self.tr("clear_history", "buttons"))
 
         # CheckBoxes
         self.use_namespace_check.setText(self.tr("use_namespace", "checkboxes"))
@@ -666,10 +631,6 @@ class ImportExportTab(BaseTab):
         self.resample_curves_check.setText(self.tr("resample_curves", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
-        if hasattr(self, "vpd_create_keyframe_check"):
-            self.vpd_create_keyframe_check.setText(self.tr("create_keyframe", "checkboxes"))
-        if hasattr(self, "vpd_apply_to_all_check"):
-            self.vpd_apply_to_all_check.setText(self.tr("apply_to_all_models", "checkboxes"))
 
         # Buttons
         self.import_path_button.setText(self.tr("browse", "buttons"))
@@ -680,10 +641,6 @@ class ImportExportTab(BaseTab):
             self.fix_texture_path_button.setText(self.tr("fix_texture_path", "texture_issues"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
         self.export_button.setText(self.tr("export", "buttons"))
-        if hasattr(self, "vpd_path_button"):
-            self.vpd_path_button.setText(self.tr("browse", "buttons"))
-        if hasattr(self, "import_vpd_button"):
-            self.import_vpd_button.setText(self.tr("import_pose", "actions"))
 
         # Tab widget texts
         if hasattr(self, "left_widget") and self.left_widget.count() >= 2:
@@ -729,7 +686,7 @@ class ImportExportTab(BaseTab):
 
     def _setup_unified_history_area(self, layout):
         """統合履歴表示エリアを設定"""
-        history_group = QGroupBox("ファイル履歴")
+        self.history_group = QGroupBox(self.tr("file_history", "groups"))
         history_layout = QVBoxLayout()
 
         # 統合履歴リスト
@@ -742,12 +699,12 @@ class ImportExportTab(BaseTab):
         history_layout.addWidget(self.unified_history_list)
 
         # 履歴クリアボタン
-        clear_history_button = QPushButton("履歴をクリア")
-        clear_history_button.clicked.connect(self._clear_all_history)
-        history_layout.addWidget(clear_history_button)
+        self.clear_history_button = QPushButton(self.tr("clear_history", "buttons"))
+        self.clear_history_button.clicked.connect(self._clear_all_history)
+        history_layout.addWidget(self.clear_history_button)
 
-        history_group.setLayout(history_layout)
-        layout.addWidget(history_group)
+        self.history_group.setLayout(history_layout)
+        layout.addWidget(self.history_group)
 
         # 初期化時に履歴を読み込み
         self.refresh_unified_history()

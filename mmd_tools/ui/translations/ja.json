@@ -42,7 +42,8 @@
     "auto_scroll": "自動スクロール",
     "timestamp": "タイムスタンプ",
     "filter": "フィルタ",
-    "apply_to_selected": "選択に適用"
+    "apply_to_selected": "選択に適用",
+    "clear_history": "履歴をクリア"
   },
   "labels": {
     "file_path": "ファイルパス:",
@@ -142,6 +143,7 @@
     "model_import": "モデルインポート (PMX/PMD)",
     "animation_import": "アニメーションインポート (VMD)",
     "export": "エクスポート",
+    "file_history": "ファイル履歴",
     "model_information": "モデル情報",
     "material_list": "マテリアルリスト",
     "basic_properties": "基本プロパティ",
@@ -269,7 +271,8 @@
     "log_file": "ログファイル:",
     "export_format": "エクスポート形式:",
     "transparency_mode": "透過モード:",
-    "transparency_opaque_threshold": "不透明とみなすα閾値:"
+    "transparency_opaque_threshold": "不透明とみなすα閾値:",
+    "original_pmx_path": "元PMXパス:"
   },
   "actions": {
     "import_model": "モデルをインポート",

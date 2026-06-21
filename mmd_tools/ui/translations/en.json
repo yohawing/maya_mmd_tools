@@ -42,7 +42,8 @@
     "auto_scroll": "Auto Scroll",
     "timestamp": "Timestamp",
     "filter": "Filter",
-    "apply_to_selected": "Apply to Selected"
+    "apply_to_selected": "Apply to Selected",
+    "clear_history": "Clear History"
   },
   "labels": {
     "file_path": "File Path:",
@@ -142,6 +143,7 @@
     "model_import": "Model Import (PMX/PMD)",
     "animation_import": "Animation Import (VMD)",
     "export": "Export",
+    "file_history": "File History",
     "model_information": "Model Information",
     "material_list": "Material List",
     "basic_properties": "Basic Properties",
@@ -269,7 +271,8 @@
     "log_file": "Log File:",
     "export_format": "Export Format:",
     "transparency_mode": "Transparency Mode:",
-    "transparency_opaque_threshold": "Opaque alpha threshold:"
+    "transparency_opaque_threshold": "Opaque alpha threshold:",
+    "original_pmx_path": "Original PMX Path:"
   },
   "actions": {
     "import_model": "Import Model",

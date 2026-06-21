@@ -86,7 +86,8 @@ class TestTextureIssueDialogUpdates(unittest.TestCase):
         self.assertEqual(issues[1]["reason"], "resolved")
 
     def test_resolve_all_catches_exception_updates_reason_and_repopulates(self):
-        dialog = object.__new__(TextureIssueDialog)
+        with patch.object(TextureIssueDialog, "__init__", lambda self, *a, **kw: None):
+            dialog = TextureIssueDialog()
         dialog.issues = [
             {
                 "file_node": "file1",

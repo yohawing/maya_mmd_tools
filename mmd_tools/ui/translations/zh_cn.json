@@ -37,6 +37,7 @@
     "save": "保存",
     "load": "加载",
     "apply_to_selected": "应用到所选",
+    "clear_history": "清除历史",
     "auto_scroll": "自动滚动",
     "filter": "筛选",
     "next": "下一个",
@@ -142,6 +143,7 @@
     "model_import": "模型导入 (PMX/PMD)",
     "animation_import": "动画导入 (VMD)",
     "export": "导出",
+    "file_history": "文件历史",
     "model_information": "模型信息",
     "material_list": "材质列表",
     "basic_properties": "基本属性",
@@ -269,7 +271,8 @@
     "log_file": "日志文件:",
     "export_format": "导出格式:",
     "transparency_mode": "透明模式:",
-    "transparency_opaque_threshold": "不透明α阈值:"
+    "transparency_opaque_threshold": "不透明α阈值:",
+    "original_pmx_path": "原始PMX路径:"
   },
   "actions": {
     "import_model": "导入模型",

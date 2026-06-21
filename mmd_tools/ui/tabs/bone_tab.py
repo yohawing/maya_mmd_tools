@@ -97,8 +97,8 @@ class BoneTab(BaseTab):
         scroll_area.setWidgetResizable(True)
 
         # スクロールエリア内のコンテンツウィジェット
-        content_widget = QWidget()
-        layout = QVBoxLayout(content_widget)
+        self.bone_details_content = QWidget()
+        layout = QVBoxLayout(self.bone_details_content)
         layout.setContentsMargins(5, 5, 5, 5)
 
         # 基本情報セクション
@@ -130,7 +130,7 @@ class BoneTab(BaseTab):
         layout.addStretch()
 
         # スクロールエリアに設定
-        scroll_area.setWidget(content_widget)
+        scroll_area.setWidget(self.bone_details_content)
         main_layout.addWidget(scroll_area)
 
         # ボタンバー
@@ -521,9 +521,7 @@ class BoneTab(BaseTab):
 
     def set_bone_details_enabled(self, enabled):
         """ボーン詳細セクションの有効/無効を設定"""
-        # スクロールエリア内の各グループを有効/無効化
-        # Note: 現在の実装ではQScrollArea内のウィジェットへの参照を直接保持していないため
-        # このメソッドは後で更新が必要
+        self.bone_details_content.setEnabled(enabled)
         self.apply_btn.setEnabled(enabled)
         self.reset_btn.setEnabled(enabled)
 
