@@ -3,7 +3,8 @@
  *
  * MPxCommand: mmdFastLoad
  *
- * Fast PMX mesh loading using the mmd-anim-ffi parsed-model ABI.
+ * Fast PMX mesh loading using the mmd-anim-ffi v0.1.5 typed-buffer ABI
+ * (mmd_runtime_parse_pmx_* / mmd_runtime_pmx_material_split_*).
  *
  * Flags:
  *   -file/-f  <path>   Required. Path to .pmx file.
@@ -11,14 +12,18 @@
  *                      Default: derived from filename.
  *   -scale/-s <double> Optional. Uniform scale factor (default 1.0).
  *   -morphs/-mo <bool> Optional. Create vertex morph blendShape targets.
+ *   -split/-sp <bool>  Optional. Split into one mesh per material
+ *                      (mmd_runtime_pmx_material_split_* ABI) grouped under a
+ *                      single transform. Default: false (single merged mesh).
  *
- * Creates one Maya transform + mesh from PMX geometry (positions, indices, UVs).
+ * Geometry is read from typed byte buffers (positions/uvs/indices); vertex
+ * morphs are read from the non-geometry JSON (morphs[].vertexOffsets[]).
  * Coordinate conversion: x→x, y→y, z→-z (MMD → Maya), V-flip on UV.
  * Polygon winding is reversed (PMX → Maya).
  *
- * Returns [transformName, meshName] as string array result.
- * Supports undo by deleting the created transform node.
- * Depends on mmd-anim-ffi DLL (mmd_runtime.h) for parsed-model ABI.
+ * Returns [transformName, meshName] (single mesh) or [groupName] (split) as a
+ * string array result. Supports undo by deleting the created root node(s).
+ * Depends on mmd-anim-ffi (mmd_runtime.h) for the PMX parse ABI.
  */
 
 #pragma once
@@ -29,6 +34,8 @@
 #include <maya/MString.h>
 #include <maya/MStringArray.h>
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 
 class MmdFastLoad : public MPxCommand {
@@ -47,13 +54,21 @@ public:
 private:
     bool parseArgs(const MArgList& args);
 
+    // Build a single merged mesh from the whole PMX.
+    MStatus loadSingle(const std::string& safeName, const uint8_t* data, size_t len);
+    // Build one mesh per material, grouped under a single transform.
+    MStatus loadSplit(const std::string& safeName, const uint8_t* data, size_t len);
+
     // Parsed from command flags
     std::string filePath_;
     std::string baseName_;
     double scale_ = 1.0;
     bool enableMorphs_ = false;
+    bool enableSplit_ = false;
 
-    // Created node names (for undo)
+    // Created node names (for undo / result)
     MString transformName_;
     MString meshName_;
+    // Top-level root transform(s) to delete on undo (covers split groups too).
+    MStringArray createdRoots_;
 };

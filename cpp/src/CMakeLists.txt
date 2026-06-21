@@ -79,6 +79,9 @@ set(HEADERS
 
 add_library(mmd_tools_cpp SHARED ${SOURCES} ${HEADERS})
 
+# nlohmann/json (vendored, header-only) requires C++17.
+target_compile_features(mmd_tools_cpp PRIVATE cxx_std_17)
+
 target_include_directories(mmd_tools_cpp PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${MAYA_INCLUDE_DIR}
