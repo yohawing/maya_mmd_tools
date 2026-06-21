@@ -245,6 +245,11 @@ def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] 
     return new_technique
 
 
+def _is_degenerate_face(indices):
+    """Return True if a triangle has duplicate vertex indices (zero-area)."""
+    return len(set(indices)) < len(indices)
+
+
 def _resolve_pmx_toon_texture_path(texture_dir, material, all_textures):
     """Resolve a PMX custom/shared toon texture to an absolute file path."""
     if not hasattr(material, "shared_toon_flag") or not hasattr(material, "toon_texture_index"):
@@ -828,6 +833,8 @@ class MeshConverter:
             for j in range(face_offset, face_offset + num_material_faces):
                 face = all_faces[j]
                 reverced_indices = face.indices[::-1]  # PMXの面は逆順なので反転
+                if _is_degenerate_face(reverced_indices):
+                    continue
                 face_connects.extend(reverced_indices)
                 face_counts.append(len(reverced_indices))
                 # UVインデックスは頂点インデックスと同じ
@@ -976,6 +983,8 @@ class MeshConverter:
             for j in range(face_offset, face_offset + num_material_faces):
                 face = all_faces[j]
                 reverced_indices = face.indices[::-1]
+                if _is_degenerate_face(reverced_indices):
+                    continue
                 local_indices = [get_local_vertex_index(index) for index in reverced_indices]
                 sub_face_connects.extend(local_indices)
                 sub_face_counts.append(len(reverced_indices))
@@ -1230,6 +1239,8 @@ class MeshConverter:
             for j in range(source_face_start, source_face_start + num_material_faces):
                 face = all_faces[j]
                 reversed_indices = face.indices[::-1]
+                if _is_degenerate_face(reversed_indices):
+                    continue
                 local_indices = [get_local_vertex_index(index) for index in reversed_indices]
                 face_connects.extend(local_indices)
                 face_counts.append(len(reversed_indices))
