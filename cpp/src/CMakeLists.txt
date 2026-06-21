@@ -36,6 +36,17 @@ if(NOT MAYA_DEVKIT_ROOT)
         if(EXISTS ${_cand})
             set(MAYA_DEVKIT_ROOT ${_cand})
         endif()
+    elseif(APPLE)
+        set(_cand "/Applications/Autodesk/maya${MAYA_VERSION}/Maya.app/Contents")
+        if(EXISTS "${_cand}/include/maya/MFn.h")
+            set(MAYA_DEVKIT_ROOT ${_cand})
+        endif()
+        if(NOT MAYA_DEVKIT_ROOT)
+            set(_cand "$ENV{HOME}/devkitBase")
+            if(EXISTS "${_cand}/include/maya/MFn.h")
+                set(MAYA_DEVKIT_ROOT ${_cand})
+            endif()
+        endif()
     endif()
 endif()
 
@@ -136,14 +147,28 @@ if(WIN32)
 endif()
 
 if(APPLE)
-    target_compile_definitions(mmd_tools_cpp PRIVATE MAC_PLUGIN)
+    target_compile_definitions(mmd_tools_cpp PRIVATE MAC_PLUGIN OSMac_)
+    target_link_directories(mmd_tools_cpp PRIVATE ${MAYA_LIB_DIR})
+    target_link_libraries(mmd_tools_cpp PRIVATE
+        OpenMaya
+        Foundation
+    )
     if(MMD_ANIM_FFI_LIB)
         target_link_libraries(mmd_tools_cpp PRIVATE ${MMD_ANIM_FFI_LIB})
+        add_custom_command(TARGET mmd_tools_cpp POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${MMD_ANIM_FFI_LIB_DIR}/libmmd_anim_ffi.dylib"
+                "$<TARGET_FILE_DIR:mmd_tools_cpp>"
+        )
         message(STATUS "Found mmd-anim-ffi library: ${MMD_ANIM_FFI_LIB}")
     else()
         message(WARNING "mmd-anim-ffi library not found. Build mmd-anim-ffi first.")
     endif()
-    # .bundle 設定など追加必要
+    set_target_properties(mmd_tools_cpp PROPERTIES
+        SUFFIX ".bundle"
+        PREFIX ""
+        LIBRARY_OUTPUT_DIRECTORY "${REPO_ROOT}/plug-ins/${MAYA_VERSION}/$<CONFIG>"
+    )
 endif()
 
 # ------------------------------------------------------------------
@@ -204,7 +229,9 @@ if(APPLE)
     if(MMD_ANIM_FFI_LIB)
         target_link_libraries(mmd_runtime_smoke PRIVATE ${MMD_ANIM_FFI_LIB})
     endif()
-    # RUNTIME_OUTPUT similar if needed for .app-less exe
+    set_target_properties(mmd_runtime_smoke PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${REPO_ROOT}/build/cpp/maya${MAYA_VERSION}/$<CONFIG>"
+    )
 endif()
 
 message(STATUS "maya_mmd_tools C++ configured for Maya ${MAYA_VERSION}")
