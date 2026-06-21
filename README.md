@@ -4,6 +4,8 @@
 
 Maya MMD Tools is a tool for importing MikuMikuDance (MMD) PMD/PMX models and VMD motions into Autodesk Maya.
 
+It aims to reproduce MMD rigs and provide a complete workflow for importing, editing, and exporting animations.
+
 This is an alpha early release. Some features may be undeveloped or unstable.
 
 ## Feature Support Matrix
@@ -36,6 +38,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Impulse morph | ⛔ | |
 | Rigid bodies & joints | ⛔ | Not supported |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
+| HumanIK Rig | ⛔ | Not supported (want to support!) |
 | Export | ⛔ | Not supported |
 
 ### Animation (VMD)
@@ -53,7 +56,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 
 | Feature | Status | Notes |
 |---|---|---|
-| DX11 MMD toon shader (Windows) | ✅ | Toon shading and transparency; outline rendering is off by default and opt-in from the Material tab |
+| DX11 MMD toon shader (Windows) | 🔶 | Toon shading and transparency. Outline rendering is off by default due to draw-order constraints; it can be enabled per-material from the Material tab, but fidelity is limited. |
 | MMD light controller | ✅ | Single directional-light null |
 | Transparency (opaque / cutout / blend) | ✅ | Manual, plus opt-in auto-classification |
 | GLSL shader (macOS) | ⛔ | Not supported |
@@ -154,6 +157,7 @@ Main tabs:
 2. Click `Import Model`.
 
 After a successful import, a `model_root` group is created in the Outliner, and the model appears in the viewport. Materials and textures are applied automatically.
+If textures fail to load due to multi-byte characters in the path, enable the automatic texture repair option. Textures will be automatically copied and renamed to loadable names.
 
 ### Import Animation
 
