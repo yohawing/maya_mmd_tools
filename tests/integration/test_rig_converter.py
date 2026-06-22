@@ -303,11 +303,11 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertAlmostEqual(pos_d[1], 0.0, delta=0.1)
         self.assertAlmostEqual(pos_d[2], 0.0, delta=0.1)
 
-        # 付与ボーン B/C/D の joint に MMD 付与 constraint が設定されていることを確認する。
+        # 付与ボーン B/C/D の joint に MMD 付与設定が構造的に作られていることを確認する。
         # PMXファイル "test_given_bone" には以下のボーンがある想定:
         #   A: 通常ボーン / B: Aから付与 / C: ローカル付与 / D: 多重付与
         # （フレーム単位の厳密な変換値は MMD モーションオラクルでの検証が必要なため、
-        #   ここでは付与関係が constraint として構造的に作られていることを確認する。）
+        #   ここでは付与関係が constraint または native DG ノードとして作られていることを確認する。）
         for grant_bone_name in ["B", "C", "D"]:
             joints = cmds.ls(grant_bone_name, type="joint")
             self.assertTrue(joints, f"付与ボーン {grant_bone_name} が見つかりません")
@@ -318,9 +318,20 @@ class TestRigConverterMaya(unittest.TestCase):
                 if cmds.attributeQuery("mmd_grant_constraint", node=c, exists=True)
                 and cmds.getAttr(f"{c}.mmd_grant_constraint")
             ]
+            native_append_nodes = cmds.listConnections(
+                f"{joints[0]}.rotate",
+                source=True,
+                destination=False,
+                type="mmdAppend",
+            ) or []
+            native_grant_nodes = [
+                n
+                for n in native_append_nodes
+                if cmds.attributeQuery("mmd_grant_node", node=n, exists=True) and cmds.getAttr(f"{n}.mmd_grant_node")
+            ]
             self.assertTrue(
-                grant_marked,
-                f"付与ボーン {grant_bone_name} に MMD 付与 constraint が設定されていません",
+                grant_marked or native_grant_nodes,
+                f"付与ボーン {grant_bone_name} に MMD 付与設定が作られていません",
             )
 
     def test_setup_given_parent_bones_rotation(self):

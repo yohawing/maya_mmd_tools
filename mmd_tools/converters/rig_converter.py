@@ -920,7 +920,21 @@ class RigConverter:
                 # source joint → node.sourceRotate/sourceTranslate
                 cmds.connectAttr(f"{source_joint}.rotate", f"{node}.sourceRotate")
                 if affect_translation:
-                    cmds.connectAttr(f"{source_joint}.translate", f"{node}.sourceTranslate")
+                    source_rest_translate = cmds.getAttr(f"{source_joint}.translate")[0]
+                    source_delta = cmds.createNode(
+                        "plusMinusAverage",
+                        name=f"{node_name}_sourceTranslateDelta",
+                    )
+                    cmds.setAttr(f"{source_delta}.operation", 2)  # subtract
+                    cmds.connectAttr(f"{source_joint}.translate", f"{source_delta}.input3D[0]")
+                    cmds.setAttr(
+                        f"{source_delta}.input3D[1]",
+                        source_rest_translate[0],
+                        source_rest_translate[1],
+                        source_rest_translate[2],
+                        type="double3",
+                    )
+                    cmds.connectAttr(f"{source_delta}.output3D", f"{node}.sourceTranslate")
 
                 if affect_rotation:
                     # Disconnect existing connections to target.rotate if any
@@ -943,6 +957,14 @@ class RigConverter:
                     cmds.connectAttr(f"{node}.outputRotate", f"{target_joint}.rotate")
 
                 if affect_translation:
+                    target_rest_translate = cmds.getAttr(f"{target_joint}.translate")[0]
+                    cmds.setAttr(
+                        f"{node}.baseTranslate",
+                        target_rest_translate[0],
+                        target_rest_translate[1],
+                        target_rest_translate[2],
+                        type="double3",
+                    )
                     for axis in ("X", "Y", "Z"):
                         anim_src = cmds.listConnections(
                             f"{target_joint}.translate{axis}", s=True, d=False, p=True
@@ -1076,7 +1098,7 @@ class RigConverter:
                 cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
 
                 # goal = IK controller joint's WORLD position
-                # (rest_positions in chainJson are absolute world coords)
+                # (rest_positions in chainJson are local parent-relative coords)
                 decomp = cmds.createNode(
                     "decomposeMatrix", name=f"{node_name}_goalDecomp"
                 )
