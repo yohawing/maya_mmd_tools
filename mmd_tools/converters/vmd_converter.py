@@ -178,6 +178,8 @@ class VmdConverter:
         self, vmd_bytes: bytes, pmx_bytes: bytes, pmx_path: str
     ) -> bool:
         """PMX 専用の runtime ベイクを使うか判定（pmx_bytes or .pmx path）。"""
+        return False
+
         if not (HAS_MMD_RUNTIME and is_mmd_runtime_available()):
             return False
 
