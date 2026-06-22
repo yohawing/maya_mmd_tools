@@ -248,10 +248,8 @@ class BoneConverter:
                     self.logger.debug(f"ジョイントのローカル軸を設定: {bone.name}")
                     self._set_bone_local_axis(joint, bone)
 
-                # ジョイントの軸制限を設定
-                if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
-                    self.logger.debug(f"ジョイントの軸制限を設定: {bone.name}")
-                    self._set_bone_axis_limits(joint, bone)
+                # AXIS_FIXED は属性メタデータとして保持し、transformLimits には変換しない。
+                # rotateX/Y の評価時クランプが bake/runtime の付与回転パリティを崩すため。
 
             # セグメントスケール補償を無効化
             maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
