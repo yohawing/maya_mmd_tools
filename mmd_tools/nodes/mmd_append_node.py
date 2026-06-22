@@ -92,6 +92,16 @@ class MmdAppendNode(om.MPxNode):
         self._cached_affect_rot = affect_rot
         self._cached_affect_trans = affect_trans
 
+    @staticmethod
+    def _maya_translate_to_mmd(tx: float, ty: float, tz: float) -> list[float]:
+        """Convert a Maya-space translation offset to MMD-space."""
+        return [float(tx), float(ty), -float(tz)]
+
+    @staticmethod
+    def _mmd_translate_to_maya(translate: list[float]) -> tuple[float, float, float]:
+        """Convert an MMD-space translation offset to Maya-space."""
+        return (float(translate[0]), float(translate[1]), -float(translate[2]))
+
     def compute(self, plug, data):
         is_rot_plug = (
             plug == self.aOutputRotate
@@ -127,8 +137,9 @@ class MmdAppendNode(om.MPxNode):
         src_ty = data.inputValue(self.aSourceTranslateY).asDouble()
         src_tz = data.inputValue(self.aSourceTranslateZ).asDouble()
 
+        source_position_mmd = self._maya_translate_to_mmd(src_tx, src_ty, src_tz)
         result = self._solver.solve(
-            source_position=[src_tx, src_ty, src_tz],
+            source_position=source_position_mmd,
             source_rotation=[src_quat.x, src_quat.y, src_quat.z, src_quat.w],
         )
         if result is None:
@@ -136,6 +147,7 @@ class MmdAppendNode(om.MPxNode):
             return
 
         grant_pos, grant_rot = result
+        grant_tx, grant_ty, grant_tz = self._mmd_translate_to_maya(grant_pos)
         grant_quat = om.MQuaternion(grant_rot[0], grant_rot[1], grant_rot[2], grant_rot[3])
 
         # Compose: output = base * grant_contribution
@@ -157,9 +169,9 @@ class MmdAppendNode(om.MPxNode):
 
         out_trans_handle = data.outputValue(self.aOutputTranslate)
         out_trans_handle.set3Double(
-            base_tx + grant_pos[0],
-            base_ty + grant_pos[1],
-            base_tz + grant_pos[2],
+            base_tx + grant_tx,
+            base_ty + grant_ty,
+            base_tz + grant_tz,
         )
         out_trans_handle.setClean()
 

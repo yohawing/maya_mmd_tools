@@ -945,7 +945,7 @@ class RigConverter:
                         except Exception:
                             pass
                     # Wire: baseRotate from animation (if curves exist),
-                    # then node.outputRotate → joint.rotate
+                    # then node.outputRotate → joint.rotate.
                     for axis in ("X", "Y", "Z"):
                         anim_src = cmds.listConnections(
                             f"{target_joint}.rotate{axis}", s=True, d=False, p=True
@@ -956,24 +956,23 @@ class RigConverter:
 
                     cmds.connectAttr(f"{node}.outputRotate", f"{target_joint}.rotate")
 
-                if affect_translation:
-                    target_rest_translate = cmds.getAttr(f"{target_joint}.translate")[0]
-                    cmds.setAttr(
-                        f"{node}.baseTranslate",
-                        target_rest_translate[0],
-                        target_rest_translate[1],
-                        target_rest_translate[2],
-                        type="double3",
+                target_rest_translate = cmds.getAttr(f"{target_joint}.translate")[0]
+                cmds.setAttr(
+                    f"{node}.baseTranslate",
+                    target_rest_translate[0],
+                    target_rest_translate[1],
+                    target_rest_translate[2],
+                    type="double3",
+                )
+                for axis in ("X", "Y", "Z"):
+                    anim_src = cmds.listConnections(
+                        f"{target_joint}.translate{axis}", s=True, d=False, p=True
                     )
-                    for axis in ("X", "Y", "Z"):
-                        anim_src = cmds.listConnections(
-                            f"{target_joint}.translate{axis}", s=True, d=False, p=True
-                        )
-                        if anim_src:
-                            cmds.disconnectAttr(anim_src[0], f"{target_joint}.translate{axis}")
-                            cmds.connectAttr(anim_src[0], f"{node}.baseTranslate{axis}")
+                    if anim_src:
+                        cmds.disconnectAttr(anim_src[0], f"{target_joint}.translate{axis}")
+                        cmds.connectAttr(anim_src[0], f"{node}.baseTranslate{axis}")
 
-                    cmds.connectAttr(f"{node}.outputTranslate", f"{target_joint}.translate")
+                cmds.connectAttr(f"{node}.outputTranslate", f"{target_joint}.translate")
 
                 if not cmds.attributeQuery("mmd_grant_node", node=node, exists=True):
                     cmds.addAttr(node, longName="mmd_grant_node", attributeType="bool")

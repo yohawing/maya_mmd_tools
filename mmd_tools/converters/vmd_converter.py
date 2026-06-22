@@ -692,24 +692,30 @@ class VmdConverter:
         """シーン内の全 mmdAppend ノードから (target_joint, append_node, source_joint, ratio, attr_map) を収集。"""
         result = {}
         append_nodes = cmds.ls(type="mmdAppend") or []
+
+        def _compound_destinations(src_attr, dst_attr):
+            plugs = cmds.listConnections(src_attr, s=False, d=True, p=True) or []
+            suffix = f".{dst_attr}"
+            return [plug.rsplit(".", 1)[0] for plug in plugs if plug.endswith(suffix)]
+
         for node in append_nodes:
-            out_dsts = cmds.listConnections(f"{node}.outputRotate", s=False, d=True) or []
-            if not out_dsts:
+            rotate_dsts = _compound_destinations(f"{node}.outputRotate", "rotate")
+            translate_dsts = _compound_destinations(f"{node}.outputTranslate", "translate")
+            if not rotate_dsts and not translate_dsts:
                 continue
-            target_joint = out_dsts[0]
+            target_joint = rotate_dsts[0] if rotate_dsts else translate_dsts[0]
             src_joints = cmds.listConnections(f"{node}.sourceRotate", s=True, d=False) or []
             source_joint = src_joints[0] if src_joints else None
             ratio = cmds.getAttr(f"{node}.ratio")
             affect_rot = cmds.getAttr(f"{node}.affectRotation")
-            affect_trans = cmds.getAttr(f"{node}.affectTranslation")
             attr_map = {}
-            if affect_rot:
+            if affect_rot and target_joint in rotate_dsts:
                 attr_map.update({
                     "rotateX": "baseRotateX",
                     "rotateY": "baseRotateY",
                     "rotateZ": "baseRotateZ",
                 })
-            if affect_trans:
+            if target_joint in translate_dsts:
                 attr_map.update({
                     "translateX": "baseTranslateX",
                     "translateY": "baseTranslateY",
@@ -781,61 +787,77 @@ class VmdConverter:
             total_channels += len(channels)
             try:
                 info = append_info.get(joint)
-                if info and info["affect_rotation"] and info["source_joint"]:
-                    source_joint = info["source_joint"]
-                    source_channels = joint_channel_values.get(source_joint, {})
-                    source_static = joint_channel_static.get(source_joint, {})
+                if info and info["attr_map"]:
+                    append_node = info["node"]
+                    attr_map = dict(info["attr_map"])
                     target_static = joint_channel_static.get(joint, {})
-                    n_frames = len(baked_frames)
+                    decomposed_channels = {}
 
-                    def _get_or_expand(ch_dict, st_dict, attr):
-                        arr = ch_dict.get(attr)
-                        if arr is not None:
-                            return arr
-                        state = st_dict.get(attr, {})
-                        if state.get("is_static") and state.get("first") is not None:
-                            expanded = om.MDoubleArray(n_frames, float(state["first"]))
-                            return expanded
-                        return None
+                    if info["affect_rotation"] and info["source_joint"]:
+                        source_joint = info["source_joint"]
+                        source_channels = joint_channel_values.get(source_joint, {})
+                        source_static = joint_channel_static.get(source_joint, {})
+                        n_frames = len(baked_frames)
 
-                    src_rx = _get_or_expand(source_channels, source_static, "rotateX")
-                    src_ry = _get_or_expand(source_channels, source_static, "rotateY")
-                    src_rz = _get_or_expand(source_channels, source_static, "rotateZ")
-                    tgt_rx = _get_or_expand(channels, target_static, "rotateX")
-                    tgt_ry = _get_or_expand(channels, target_static, "rotateY")
-                    tgt_rz = _get_or_expand(channels, target_static, "rotateZ")
+                        def _get_or_expand(ch_dict, st_dict, attr):
+                            arr = ch_dict.get(attr)
+                            if arr is not None:
+                                return arr
+                            state = st_dict.get(attr, {})
+                            if state.get("is_static") and state.get("first") is not None:
+                                expanded = om.MDoubleArray(n_frames, float(state["first"]))
+                                return expanded
+                            return None
 
-                    if (tgt_rx is not None and tgt_ry is not None and tgt_rz is not None
-                            and src_rx is not None and src_ry is not None and src_rz is not None):
-                        own_rx, own_ry, own_rz = self._decompose_append_own_rotation(
-                            tgt_rx, tgt_ry, tgt_rz,
-                            src_rx, src_ry, src_rz,
-                            info["ratio"],
-                        )
-                        append_node = info["node"]
-                        attr_map = info["attr_map"]
-                        redirected_channels = {}
-                        redirected_static = {}
-                        decomposed_attrs = {"baseRotateX", "baseRotateY", "baseRotateZ"}
-                        for attr, values in channels.items():
-                            new_attr = attr_map.get(attr)
-                            if new_attr and attr == "rotateX":
-                                redirected_channels[new_attr] = own_rx
-                            elif new_attr and attr == "rotateY":
-                                redirected_channels[new_attr] = own_ry
-                            elif new_attr and attr == "rotateZ":
-                                redirected_channels[new_attr] = own_rz
-                            elif new_attr:
-                                redirected_channels[new_attr] = values
-                            else:
-                                redirected_channels[attr] = values
-                            state_key = new_attr if new_attr else attr
-                            if state_key in decomposed_attrs:
-                                continue
+                        src_rx = _get_or_expand(source_channels, source_static, "rotateX")
+                        src_ry = _get_or_expand(source_channels, source_static, "rotateY")
+                        src_rz = _get_or_expand(source_channels, source_static, "rotateZ")
+                        tgt_rx = _get_or_expand(channels, target_static, "rotateX")
+                        tgt_ry = _get_or_expand(channels, target_static, "rotateY")
+                        tgt_rz = _get_or_expand(channels, target_static, "rotateZ")
+
+                        if (
+                            tgt_rx is not None
+                            and tgt_ry is not None
+                            and tgt_rz is not None
+                            and src_rx is not None
+                            and src_ry is not None
+                            and src_rz is not None
+                        ):
+                            own_rx, own_ry, own_rz = self._decompose_append_own_rotation(
+                                tgt_rx, tgt_ry, tgt_rz,
+                                src_rx, src_ry, src_rz,
+                                info["ratio"],
+                            )
+                            decomposed_channels = {
+                                "rotateX": own_rx,
+                                "rotateY": own_ry,
+                                "rotateZ": own_rz,
+                            }
+                        else:
+                            attr_map.pop("rotateX", None)
+                            attr_map.pop("rotateY", None)
+                            attr_map.pop("rotateZ", None)
+
+                    redirected_channels = {}
+                    redirected_static = {}
+                    passthrough_channels = {}
+                    passthrough_static = {}
+                    for attr, values in channels.items():
+                        new_attr = attr_map.get(attr)
+                        if new_attr:
+                            redirected_channels[new_attr] = decomposed_channels.get(attr, values)
+                            if attr not in decomposed_channels:
+                                orig_state = target_static.get(attr)
+                                if orig_state:
+                                    redirected_static[new_attr] = orig_state
+                        else:
+                            passthrough_channels[attr] = values
                             orig_state = target_static.get(attr)
                             if orig_state:
-                                redirected_static[state_key] = orig_state
+                                passthrough_static[attr] = orig_state
 
+                    if redirected_channels:
                         keyed, skipped = self._batch_create_and_key_curve_arrays(
                             append_node,
                             redirected_channels,
@@ -845,6 +867,19 @@ class VmdConverter:
                         )
                         keyed_channels += keyed
                         skipped_static_channels += skipped
+
+                    if passthrough_channels:
+                        keyed, skipped = self._batch_create_and_key_curve_arrays(
+                            joint,
+                            passthrough_channels,
+                            passthrough_static,
+                            bake_times,
+                            baked_frames,
+                        )
+                        keyed_channels += keyed
+                        skipped_static_channels += skipped
+
+                    if redirected_channels or passthrough_channels:
                         continue
 
                 keyed, skipped = self._batch_create_and_key_curve_arrays(
