@@ -1,10 +1,14 @@
 """mmdAppend — MMD 付与変形を計算する DG ノード (Python MPxNode prototype).
 
 mmd-anim FFI の MmdAppendSolver を内部で呼び出し、
-source joint の回転/移動から grant contribution を計算して出力する。
+source joint の回転/移動から grant contribution を計算し、
+baseRotate/baseTranslate と合成して出力する。
 
-DG 接続例:
-    source_joint.rotate  → mmdAppend1.sourceRotate
+output = base * slerp(identity, source, ratio)
+
+DG 接続例 (パイプライン統合):
+    animCurve → mmdAppend1.baseRotate     (ボーン自身のアニメ回転)
+    source_joint.rotate → mmdAppend1.sourceRotate (付与元の回転)
     mmdAppend1.outputRotate → target_joint.rotate
 """
 
@@ -27,6 +31,16 @@ class MmdAppendNode(om.MPxNode):
     kClassify = "utility/general"
 
     # attr objects (set in initialize())
+    aBaseRotate = None
+    aBaseRotateX = None
+    aBaseRotateY = None
+    aBaseRotateZ = None
+
+    aBaseTranslate = None
+    aBaseTranslateX = None
+    aBaseTranslateY = None
+    aBaseTranslateZ = None
+
     aSourceRotate = None
     aSourceRotateX = None
     aSourceRotateY = None
@@ -107,35 +121,46 @@ class MmdAppendNode(om.MPxNode):
         src_rx = data.inputValue(self.aSourceRotateX).asDouble()
         src_ry = data.inputValue(self.aSourceRotateY).asDouble()
         src_rz = data.inputValue(self.aSourceRotateZ).asDouble()
+        src_quat = om.MEulerRotation(src_rx, src_ry, src_rz).asQuaternion()
 
-        euler = om.MEulerRotation(src_rx, src_ry, src_rz)
-        quat = euler.asQuaternion()
-
-        # Read source translate
         src_tx = data.inputValue(self.aSourceTranslateX).asDouble()
         src_ty = data.inputValue(self.aSourceTranslateY).asDouble()
         src_tz = data.inputValue(self.aSourceTranslateZ).asDouble()
 
         result = self._solver.solve(
             source_position=[src_tx, src_ty, src_tz],
-            source_rotation=[quat.x, quat.y, quat.z, quat.w],
+            source_rotation=[src_quat.x, src_quat.y, src_quat.z, src_quat.w],
         )
         if result is None:
             data.setClean(plug)
             return
 
-        out_pos, out_rot = result
+        grant_pos, grant_rot = result
+        grant_quat = om.MQuaternion(grant_rot[0], grant_rot[1], grant_rot[2], grant_rot[3])
 
-        out_quat = om.MQuaternion(out_rot[0], out_rot[1], out_rot[2], out_rot[3])
-        out_euler = out_quat.asEulerRotation()
+        # Compose: output = base * grant_contribution
+        base_rx = data.inputValue(self.aBaseRotateX).asDouble()
+        base_ry = data.inputValue(self.aBaseRotateY).asDouble()
+        base_rz = data.inputValue(self.aBaseRotateZ).asDouble()
+        base_quat = om.MEulerRotation(base_rx, base_ry, base_rz).asQuaternion()
 
-        # kAngle output attrs expect radians
+        final_quat = base_quat * grant_quat
+        final_euler = final_quat.asEulerRotation()
+
         out_rot_handle = data.outputValue(self.aOutputRotate)
-        out_rot_handle.set3Double(out_euler.x, out_euler.y, out_euler.z)
+        out_rot_handle.set3Double(final_euler.x, final_euler.y, final_euler.z)
         out_rot_handle.setClean()
 
+        base_tx = data.inputValue(self.aBaseTranslateX).asDouble()
+        base_ty = data.inputValue(self.aBaseTranslateY).asDouble()
+        base_tz = data.inputValue(self.aBaseTranslateZ).asDouble()
+
         out_trans_handle = data.outputValue(self.aOutputTranslate)
-        out_trans_handle.set3Double(out_pos[0], out_pos[1], out_pos[2])
+        out_trans_handle.set3Double(
+            base_tx + grant_pos[0],
+            base_ty + grant_pos[1],
+            base_tz + grant_pos[2],
+        )
         out_trans_handle.setClean()
 
         data.setClean(plug)
@@ -157,13 +182,35 @@ def creator():
 def initialize():
     nAttr = om.MFnNumericAttribute()
     uAttr = om.MFnUnitAttribute()
+    cAttr = om.MFnCompoundAttribute()
+
+    # --- Base Rotate (input, angle) — bone's own animation rotation ---
+    MmdAppendNode.aBaseRotateX = uAttr.create("baseRotateX", "brx", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aBaseRotateY = uAttr.create("baseRotateY", "bry", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aBaseRotateZ = uAttr.create("baseRotateZ", "brz", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aBaseRotate = cAttr.create("baseRotate", "br")
+    cAttr.addChild(MmdAppendNode.aBaseRotateX)
+    cAttr.addChild(MmdAppendNode.aBaseRotateY)
+    cAttr.addChild(MmdAppendNode.aBaseRotateZ)
+    cAttr.keyable = True
+    MmdAppendNode.addAttribute(MmdAppendNode.aBaseRotate)
+
+    # --- Base Translate (input) ---
+    MmdAppendNode.aBaseTranslateX = nAttr.create("baseTranslateX", "btx", om.MFnNumericData.kDouble, 0.0)
+    MmdAppendNode.aBaseTranslateY = nAttr.create("baseTranslateY", "bty", om.MFnNumericData.kDouble, 0.0)
+    MmdAppendNode.aBaseTranslateZ = nAttr.create("baseTranslateZ", "btz", om.MFnNumericData.kDouble, 0.0)
+    MmdAppendNode.aBaseTranslate = cAttr.create("baseTranslate", "bt")
+    cAttr.addChild(MmdAppendNode.aBaseTranslateX)
+    cAttr.addChild(MmdAppendNode.aBaseTranslateY)
+    cAttr.addChild(MmdAppendNode.aBaseTranslateZ)
+    cAttr.keyable = True
+    MmdAppendNode.addAttribute(MmdAppendNode.aBaseTranslate)
 
     # --- Source Rotate (input, angle) ---
     MmdAppendNode.aSourceRotateX = uAttr.create("sourceRotateX", "srx", om.MFnUnitAttribute.kAngle, 0.0)
     MmdAppendNode.aSourceRotateY = uAttr.create("sourceRotateY", "sry", om.MFnUnitAttribute.kAngle, 0.0)
     MmdAppendNode.aSourceRotateZ = uAttr.create("sourceRotateZ", "srz", om.MFnUnitAttribute.kAngle, 0.0)
 
-    cAttr = om.MFnCompoundAttribute()
     MmdAppendNode.aSourceRotate = cAttr.create("sourceRotate", "sr")
     cAttr.addChild(MmdAppendNode.aSourceRotateX)
     cAttr.addChild(MmdAppendNode.aSourceRotateY)
@@ -233,6 +280,15 @@ def initialize():
     MmdAppendNode.addAttribute(MmdAppendNode.aOutputTranslate)
 
     # --- Affect relationships ---
+    for base_attr in (MmdAppendNode.aBaseRotateX, MmdAppendNode.aBaseRotateY, MmdAppendNode.aBaseRotateZ):
+        for out_attr in (MmdAppendNode.aOutputRotateX, MmdAppendNode.aOutputRotateY, MmdAppendNode.aOutputRotateZ):
+            MmdAppendNode.attributeAffects(base_attr, out_attr)
+
+    for base_attr in (MmdAppendNode.aBaseTranslateX, MmdAppendNode.aBaseTranslateY, MmdAppendNode.aBaseTranslateZ):
+        MmdAppendNode.attributeAffects(base_attr, MmdAppendNode.aOutputTranslateX)
+        MmdAppendNode.attributeAffects(base_attr, MmdAppendNode.aOutputTranslateY)
+        MmdAppendNode.attributeAffects(base_attr, MmdAppendNode.aOutputTranslateZ)
+
     MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateX, MmdAppendNode.aOutputRotateX)
     MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateX, MmdAppendNode.aOutputRotateY)
     MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateX, MmdAppendNode.aOutputRotateZ)

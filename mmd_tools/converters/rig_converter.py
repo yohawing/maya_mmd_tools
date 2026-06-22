@@ -87,7 +87,7 @@ class RigConverter:
         maya_joints: List[str],
         bone_map: Dict[int, str],
     ):
-        """native rig builder で IK/付与を構築し、Maya DG コンストレイントも作成する。失敗時は None。"""
+        """native rig builder で IK/付与を構築し、mmdAppend/mmdCcdIk DG ノードを作成する。失敗時は None。"""
         try:
             from mmd_tools.converters.native_rig_builder import NativeRigPrimitives
 
@@ -104,12 +104,12 @@ class RigConverter:
 
             self._store_native_rig_metadata(prims, maya_joints, bone_map)
 
-            constraints = self._create_grant_constraints_from_manifest(prims.manifest, maya_joints)
-            ik_handles = self._create_ik_handles_from_manifest(prims.manifest, maya_joints)
+            append_nodes = self._create_append_nodes_from_manifest(prims.manifest, maya_joints)
+            ik_nodes = self._create_ik_nodes_from_manifest(prims.manifest, maya_joints)
 
             self.logger.info(
-                f"native rig DG connection: {len(constraints)} grant constraints, "
-                f"{len(ik_handles)} IK handles"
+                f"native rig DG nodes: {len(append_nodes)} mmdAppend, "
+                f"{len(ik_nodes)} mmdCcdIk"
             )
 
             return prims
@@ -866,7 +866,243 @@ class RigConverter:
         return sorted_nodes
 
     # ------------------------------------------------------------------
-    # Native rig: manifest → Maya DG constraints
+    # Native rig: manifest → mmdAppend / mmdCcdIk DG nodes
+    # ------------------------------------------------------------------
+
+    def _create_append_nodes_from_manifest(
+        self,
+        manifest,
+        maya_joints: List[str],
+    ) -> List[str]:
+        """マニフェストの付与情報から mmdAppend DG ノードを作成・接続する。"""
+
+        nodes: List[str] = []
+        grants = list(manifest.grants)
+        if not grants:
+            return nodes
+
+        bones = manifest.bones
+        grants.sort(key=lambda g: (
+            bones[g["targetBoneIndex"]].get("transformAfterPhysics", False),
+            bones[g["targetBoneIndex"]].get("deformLayer", 0),
+            g["targetBoneIndex"],
+        ))
+        grants = self._resolve_grant_dependencies_from_manifest(grants)
+
+        for grant in grants:
+            target_idx = grant["targetBoneIndex"]
+            source_idx = grant["sourceBoneIndex"]
+            ratio = grant.get("ratio", 0.0)
+            affect_rotation = grant.get("affectRotation", False)
+            affect_translation = grant.get("affectTranslation", False)
+
+            if target_idx < 0 or target_idx >= len(maya_joints):
+                continue
+            if source_idx < 0 or source_idx >= len(maya_joints):
+                continue
+
+            target_joint = maya_joints[target_idx]
+            source_joint = maya_joints[source_idx]
+            if target_joint == source_joint:
+                continue
+
+            if not maya_utils.object_exists(target_joint) or not maya_utils.object_exists(source_joint):
+                continue
+
+            try:
+                node_name = f"{target_joint}_mmdAppend"
+                node = cmds.createNode("mmdAppend", name=node_name)
+
+                cmds.setAttr(f"{node}.ratio", ratio)
+                cmds.setAttr(f"{node}.affectRotation", affect_rotation)
+                cmds.setAttr(f"{node}.affectTranslation", affect_translation)
+
+                # source joint → node.sourceRotate/sourceTranslate
+                cmds.connectAttr(f"{source_joint}.rotate", f"{node}.sourceRotate")
+                if affect_translation:
+                    cmds.connectAttr(f"{source_joint}.translate", f"{node}.sourceTranslate")
+
+                if affect_rotation:
+                    # Disconnect existing connections to target.rotate if any
+                    existing = cmds.listConnections(f"{target_joint}.rotate", s=True, d=False, p=True) or []
+                    for conn in existing:
+                        try:
+                            cmds.disconnectAttr(conn, f"{target_joint}.rotate")
+                        except Exception:
+                            pass
+                    # Wire: baseRotate from animation (if curves exist),
+                    # then node.outputRotate → joint.rotate
+                    for axis in ("X", "Y", "Z"):
+                        anim_src = cmds.listConnections(
+                            f"{target_joint}.rotate{axis}", s=True, d=False, p=True
+                        )
+                        if anim_src:
+                            cmds.disconnectAttr(anim_src[0], f"{target_joint}.rotate{axis}")
+                            cmds.connectAttr(anim_src[0], f"{node}.baseRotate{axis}")
+
+                    cmds.connectAttr(f"{node}.outputRotate", f"{target_joint}.rotate")
+
+                if affect_translation:
+                    for axis in ("X", "Y", "Z"):
+                        anim_src = cmds.listConnections(
+                            f"{target_joint}.translate{axis}", s=True, d=False, p=True
+                        )
+                        if anim_src:
+                            cmds.disconnectAttr(anim_src[0], f"{target_joint}.translate{axis}")
+                            cmds.connectAttr(anim_src[0], f"{node}.baseTranslate{axis}")
+
+                    cmds.connectAttr(f"{node}.outputTranslate", f"{target_joint}.translate")
+
+                if not cmds.attributeQuery("mmd_grant_node", node=node, exists=True):
+                    cmds.addAttr(node, longName="mmd_grant_node", attributeType="bool")
+                cmds.setAttr(f"{node}.mmd_grant_node", True)
+
+                nodes.append(node)
+                self.logger.info(
+                    f"mmdAppend ノード '{node}': {source_joint} → {target_joint} (ratio={ratio})"
+                )
+            except Exception as e:
+                self.logger.error(f"mmdAppend ノード作成失敗 '{target_joint}': {e}")
+
+        return nodes
+
+    def _create_ik_nodes_from_manifest(
+        self,
+        manifest,
+        maya_joints: List[str],
+    ) -> List[str]:
+        """マニフェストの IK チェーン情報から mmdCcdIk DG ノードを作成・接続する。"""
+        import json as _json
+        from mmd_tools.converters.native_rig_builder import build_ik_mini_chain
+
+        nodes: List[str] = []
+        for chain_def in manifest.ik_chains:
+            controller_idx = chain_def.get("controllerBoneIndex", -1)
+            target_idx = chain_def.get("targetBoneIndex", -1)
+            links = chain_def.get("links", [])
+
+            if not links or controller_idx < 0 or target_idx < 0:
+                continue
+            if controller_idx >= len(maya_joints) or target_idx >= len(maya_joints):
+                continue
+
+            controller_joint = maya_joints[controller_idx]
+            if not maya_utils.object_exists(controller_joint):
+                continue
+
+            result = build_ik_mini_chain(manifest, chain_def)
+            if result is None:
+                self.logger.warning(f"IK mini-chain build failed for controller={controller_idx}")
+                continue
+
+            ik_chain_obj, mapping = result
+
+            pmx_to_slot = mapping["pmx_to_slot"]
+            slot_to_pmx = mapping["slot_to_pmx"]
+            link_slots = mapping["link_slots"]
+            bone_count = len(pmx_to_slot)
+
+            bones_for_json = []
+            for slot in range(bone_count):
+                pmx_idx = slot_to_pmx[slot]
+                bone_data = manifest.bones[pmx_idx]
+                parent_pmx = bone_data.get("parentIndex", -1)
+                parent_slot = pmx_to_slot.get(parent_pmx, -1)
+                rest_pos = bone_data.get("restPosition", [0, 0, 0])
+                flags = 0
+                fixed_axis = bone_data.get("fixedAxis")
+                if fixed_axis is not None:
+                    flags = 0x2000  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS
+                bones_for_json.append({
+                    "parent_slot": parent_slot,
+                    "rest_position": rest_pos,
+                    "flags": flags,
+                    "fixed_axis": fixed_axis or [0, 0, 0],
+                })
+
+            links_for_json = []
+            for lk in links:
+                bone_slot = pmx_to_slot.get(lk["boneIndex"], -1)
+                if bone_slot < 0:
+                    continue
+                links_for_json.append({
+                    "bone_slot": bone_slot,
+                    "has_angle_limit": lk.get("hasAngleLimit", False),
+                    "angle_limit_min": lk.get("angleLimitMin", [0, 0, 0]),
+                    "angle_limit_max": lk.get("angleLimitMax", [0, 0, 0]),
+                })
+
+            target_slot = pmx_to_slot.get(target_idx, 0)
+            chain_json = _json.dumps({
+                "bones": bones_for_json,
+                "targetBoneSlot": target_slot,
+                "links": links_for_json,
+                "iterationCount": chain_def.get("iterationCount", 40),
+                "limitAngle": chain_def.get("limitAngle", 2.0),
+            })
+
+            ik_chain_obj.free()
+
+            try:
+                node_name = f"{controller_joint}_mmdCcdIk"
+                node = cmds.createNode("mmdCcdIk", name=node_name)
+                cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
+
+                # goal = IK controller joint's translate
+                cmds.connectAttr(f"{controller_joint}.translate", f"{node}.goal")
+
+                link_slot_set = set(link_slots)
+
+                # inputRotate: non-link bones only (link bones would create a cycle)
+                for slot in range(bone_count):
+                    if slot in link_slot_set:
+                        continue
+                    pmx_idx = slot_to_pmx[slot]
+                    if pmx_idx < len(maya_joints):
+                        jnt = maya_joints[pmx_idx]
+                        if maya_utils.object_exists(jnt):
+                            cmds.connectAttr(f"{jnt}.rotate", f"{node}.inputRotate[{slot}]")
+
+                # outputRotate → link joint rotations
+                for link_i, link_slot in enumerate(link_slots):
+                    pmx_idx = slot_to_pmx.get(link_slot, -1)
+                    if pmx_idx < 0 or pmx_idx >= len(maya_joints):
+                        continue
+                    link_joint = maya_joints[pmx_idx]
+                    if not maya_utils.object_exists(link_joint):
+                        continue
+
+                    for axis in ("X", "Y", "Z"):
+                        src = cmds.listConnections(
+                            f"{link_joint}.rotate{axis}", s=True, d=False, p=True
+                        )
+                        if src:
+                            try:
+                                cmds.disconnectAttr(src[0], f"{link_joint}.rotate{axis}")
+                            except Exception:
+                                pass
+
+                    cmds.connectAttr(
+                        f"{node}.outputRotate[{link_i}]",
+                        f"{link_joint}.rotate",
+                    )
+
+                if not cmds.attributeQuery("mmd_ik_native_node", node=node, exists=True):
+                    cmds.addAttr(node, longName="mmd_ik_native_node", attributeType="bool")
+                cmds.setAttr(f"{node}.mmd_ik_native_node", True)
+
+                nodes.append(node)
+                self.logger.info(
+                    f"mmdCcdIk ノード '{node}': controller={controller_joint}, "
+                    f"{len(links_for_json)} links"
+                )
+            except Exception as e:
+                self.logger.error(f"mmdCcdIk ノード作成失敗 '{controller_joint}': {e}")
+
+        return nodes
+
+    # ------------------------------------------------------------------
+    # Legacy: manifest → Maya standard constraints (fallback reference)
     # ------------------------------------------------------------------
 
     def _create_grant_constraints_from_manifest(
