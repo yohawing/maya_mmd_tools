@@ -51,7 +51,6 @@ class MmdCcdIkNode(om.MPxNode):
         self._chain_def = None
         self._bone_count = 0
         self._link_count = 0
-        self._rest_positions = []
 
     def _ensure_solver(self, chain_json: str):
         if self._solver is not None and self._chain_def == chain_json:
@@ -78,10 +77,6 @@ class MmdCcdIkNode(om.MPxNode):
 
         self._bone_count = len(bones)
         self._link_count = len(links)
-        self._rest_positions = []
-        for b in bones:
-            pos = b.get("rest_position", [0, 0, 0])
-            self._rest_positions.extend(pos)
 
         solver = MmdIkChain.create(
             bones=bones,
@@ -129,12 +124,15 @@ class MmdCcdIkNode(om.MPxNode):
             data.setClean(plug)
             return
 
+        # Goal: Maya world position → MMD space (Z negate)
         goal_x = data.inputValue(self.aGoalX).asDouble()
         goal_y = data.inputValue(self.aGoalY).asDouble()
-        goal_z = data.inputValue(self.aGoalZ).asDouble()
+        goal_z = -data.inputValue(self.aGoalZ).asDouble()
 
-        positions = list(self._rest_positions)
+        positions = [0.0] * (self._bone_count * 3)
 
+        # Input rotations: Maya euler → MMD quaternion
+        # Z-mirror: q_mmd = (-qx, -qy, qz, qw)
         rotations = []
         input_array = data.inputArrayValue(self.aInputRotate)
         for bone_i in range(self._bone_count):
@@ -150,12 +148,13 @@ class MmdCcdIkNode(om.MPxNode):
 
             euler = om.MEulerRotation(rx, ry, rz)
             q = euler.asQuaternion()
-            rotations.extend([q.x, q.y, q.z, q.w])
+            rotations.extend([-q.x, -q.y, q.z, q.w])
 
+        goal = [goal_x, goal_y, goal_z]
         result = self._solver.solve(
             positions=positions,
             rotations=rotations,
-            goal=[goal_x, goal_y, goal_z],
+            goal=goal,
         )
         if result is None:
             data.setClean(plug)
@@ -163,6 +162,8 @@ class MmdCcdIkNode(om.MPxNode):
 
         out_rots, stats = result
 
+        # Output rotations: MMD quaternion → Maya euler
+        # Z-mirror: q_maya = (-qx, -qy, qz, qw)
         out_array = data.outputArrayValue(self.aOutputRotate)
         builder = out_array.builder()
         for link_i in range(self._link_count):
@@ -171,7 +172,7 @@ class MmdCcdIkNode(om.MPxNode):
             qy = out_rots[offset + 1]
             qz = out_rots[offset + 2]
             qw = out_rots[offset + 3]
-            out_quat = om.MQuaternion(qx, qy, qz, qw)
+            out_quat = om.MQuaternion(-qx, -qy, qz, qw)
             out_euler = out_quat.asEulerRotation()
 
             elem_handle = builder.addElement(link_i)

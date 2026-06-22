@@ -975,6 +975,15 @@ class RigConverter:
         import json as _json
         from mmd_tools.converters.native_rig_builder import build_ik_mini_chain
 
+        # Pass 1: IK 出力で駆動される全 PMX ボーンインデックスを収集（循環回避）
+        ik_driven_pmx_indices: set = set()
+        for chain_def in manifest.ik_chains:
+            target_idx = chain_def.get("targetBoneIndex", -1)
+            if target_idx >= 0:
+                ik_driven_pmx_indices.add(target_idx)
+            for lk in chain_def.get("links", []):
+                ik_driven_pmx_indices.add(lk["boneIndex"])
+
         nodes: List[str] = []
         for chain_def in manifest.ik_chains:
             controller_idx = chain_def.get("controllerBoneIndex", -1)
@@ -1008,16 +1017,19 @@ class RigConverter:
                 bone_data = manifest.bones[pmx_idx]
                 parent_pmx = bone_data.get("parentIndex", -1)
                 parent_slot = pmx_to_slot.get(parent_pmx, -1)
-                rest_pos = bone_data.get("restPosition", [0, 0, 0])
+                # solver は MMD 座標系で動作 — Z-flip しない
+                rp = bone_data.get("restPosition", [0, 0, 0])
                 flags = 0
                 fixed_axis = bone_data.get("fixedAxis")
+                fa = [0, 0, 0]
                 if fixed_axis is not None:
                     flags = 0x2000  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS
+                    fa = list(fixed_axis)
                 bones_for_json.append({
                     "parent_slot": parent_slot,
-                    "rest_position": rest_pos,
+                    "rest_position": list(rp),
                     "flags": flags,
-                    "fixed_axis": fixed_axis or [0, 0, 0],
+                    "fixed_axis": fa,
                 })
 
             links_for_json = []
@@ -1025,11 +1037,13 @@ class RigConverter:
                 bone_slot = pmx_to_slot.get(lk["boneIndex"], -1)
                 if bone_slot < 0:
                     continue
+                lmin = lk.get("angleLimitMin", [0, 0, 0])
+                lmax = lk.get("angleLimitMax", [0, 0, 0])
                 links_for_json.append({
                     "bone_slot": bone_slot,
                     "has_angle_limit": lk.get("hasAngleLimit", False),
-                    "angle_limit_min": lk.get("angleLimitMin", [0, 0, 0]),
-                    "angle_limit_max": lk.get("angleLimitMax", [0, 0, 0]),
+                    "angle_limit_min": list(lmin),
+                    "angle_limit_max": list(lmax),
                 })
 
             target_slot = pmx_to_slot.get(target_idx, 0)
@@ -1048,16 +1062,21 @@ class RigConverter:
                 node = cmds.createNode("mmdCcdIk", name=node_name)
                 cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
 
-                # goal = IK controller joint's translate
-                cmds.connectAttr(f"{controller_joint}.translate", f"{node}.goal")
+                # goal = IK controller joint's WORLD position
+                # (rest_positions in chainJson are absolute world coords)
+                decomp = cmds.createNode(
+                    "decomposeMatrix", name=f"{node_name}_goalDecomp"
+                )
+                cmds.connectAttr(
+                    f"{controller_joint}.worldMatrix[0]", f"{decomp}.inputMatrix"
+                )
+                cmds.connectAttr(f"{decomp}.outputTranslate", f"{node}.goal")
 
-                link_slot_set = set(link_slots)
-
-                # inputRotate: non-link bones only (link bones would create a cycle)
+                # inputRotate: exclude ALL IK-driven bones (link + target across all chains)
                 for slot in range(bone_count):
-                    if slot in link_slot_set:
-                        continue
                     pmx_idx = slot_to_pmx[slot]
+                    if pmx_idx in ik_driven_pmx_indices:
+                        continue
                     if pmx_idx < len(maya_joints):
                         jnt = maya_joints[pmx_idx]
                         if maya_utils.object_exists(jnt):
