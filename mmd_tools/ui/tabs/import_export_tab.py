@@ -339,10 +339,10 @@ class ImportExportTab(BaseTab):
         anim_settings_tab.setWidget(anim_settings_widget)
         self.left_widget.addTab(anim_settings_tab, self.tr("animation", "tabs"))
 
-        # Export Settings Tab
-        export_settings_tab = QScrollArea()
-        export_settings_tab.setWidgetResizable(True)
-        export_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Export Settings Tab (not added to tab widget — export is not yet implemented)
+        self._export_settings_tab = QScrollArea()
+        self._export_settings_tab.setWidgetResizable(True)
+        self._export_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         export_settings_widget = QWidget()
         export_settings_layout = QVBoxLayout(export_settings_widget)
 
@@ -367,7 +367,7 @@ class ImportExportTab(BaseTab):
         export_settings_layout.addWidget(self.apply_scale_check)
 
         export_settings_layout.addStretch()
-        export_settings_tab.setWidget(export_settings_widget)
+        self._export_settings_tab.setWidget(export_settings_widget)
         # Export subtab is intentionally not added: export is not yet implemented.
 
         # 右側：インポート/エクスポートセクション
