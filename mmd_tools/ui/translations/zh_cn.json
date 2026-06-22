@@ -272,7 +272,7 @@
     "export_format": "导出格式:",
     "transparency_mode": "透明模式:",
     "transparency_opaque_threshold": "不透明α阈值:",
-    "original_pmx_path": "原始PMX路径:"
+    "original_texture_path": "原始纹理路径:"
   },
   "actions": {
     "import_model": "导入模型",

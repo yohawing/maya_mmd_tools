@@ -272,7 +272,7 @@
     "export_format": "Export Format:",
     "transparency_mode": "Transparency Mode:",
     "transparency_opaque_threshold": "Opaque alpha threshold:",
-    "original_pmx_path": "Original PMX Path:"
+    "original_texture_path": "Original Texture Path:"
   },
   "actions": {
     "import_model": "Import Model",

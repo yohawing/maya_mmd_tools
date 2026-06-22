@@ -272,7 +272,7 @@
     "export_format": "エクスポート形式:",
     "transparency_mode": "透過モード:",
     "transparency_opaque_threshold": "不透明とみなすα閾値:",
-    "original_pmx_path": "元PMXパス:"
+    "original_texture_path": "元テクスチャパス:"
   },
   "actions": {
     "import_model": "モデルをインポート",

@@ -211,7 +211,7 @@ class MaterialTab(BaseTab):
         self.toon_texture_combo.addItems([f"toon{i:02d}.bmp" for i in range(1, 11)])
         texture_layout.addWidget(self.toon_texture_combo, 3, 1, 1, 2)
 
-        self.original_pmx_path_label = QLabel(self.tr("original_pmx_path", "fields"))
+        self.original_pmx_path_label = QLabel(self.tr("original_texture_path", "fields"))
         texture_layout.addWidget(self.original_pmx_path_label, 4, 0)
         self.original_pmx_path_edit = QLineEdit()
         self.original_pmx_path_edit.setReadOnly(True)
@@ -422,7 +422,7 @@ class MaterialTab(BaseTab):
         if hasattr(self, "toon_texture_label"):
             self.toon_texture_label.setText(self.tr("toon_texture", "fields"))
         if hasattr(self, "original_pmx_path_label"):
-            self.original_pmx_path_label.setText(self.tr("original_pmx_path", "fields"))
+            self.original_pmx_path_label.setText(self.tr("original_texture_path", "fields"))
         if hasattr(self, "edge_color_label"):
             self.edge_color_label.setText(self.tr("edge_color", "fields"))
         if hasattr(self, "edge_size_label"):
