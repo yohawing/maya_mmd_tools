@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import maya.cmds as cmds
 
@@ -87,7 +87,7 @@ class RigConverter:
         maya_joints: List[str],
         bone_map: Dict[int, str],
     ):
-        """native rig builder で IK/付与を構築する。失敗時は None。"""
+        """native rig builder で IK/付与を構築し、Maya DG コンストレイントも作成する。失敗時は None。"""
         try:
             from mmd_tools.converters.native_rig_builder import NativeRigPrimitives
 
@@ -103,6 +103,15 @@ class RigConverter:
                 return None
 
             self._store_native_rig_metadata(prims, maya_joints, bone_map)
+
+            constraints = self._create_grant_constraints_from_manifest(prims.manifest, maya_joints)
+            ik_handles = self._create_ik_handles_from_manifest(prims.manifest, maya_joints)
+
+            self.logger.info(
+                f"native rig DG connection: {len(constraints)} grant constraints, "
+                f"{len(ik_handles)} IK handles"
+            )
+
             return prims
 
         except Exception as e:
@@ -855,3 +864,193 @@ class RigConverter:
                     sorted_nodes.append(node)
 
         return sorted_nodes
+
+    # ------------------------------------------------------------------
+    # Native rig: manifest → Maya DG constraints
+    # ------------------------------------------------------------------
+
+    def _create_grant_constraints_from_manifest(
+        self,
+        manifest,
+        maya_joints: List[str],
+    ) -> List[str]:
+        """マニフェストの付与情報から Maya orientConstraint / pointConstraint を作成する。"""
+        constraints: List[str] = []
+        grant_reference: Optional[str] = None
+
+        grants = list(manifest.grants)
+        if not grants:
+            return constraints
+
+        bones = manifest.bones
+
+        grants.sort(key=lambda g: (
+            bones[g["targetBoneIndex"]].get("transformAfterPhysics", False),
+            bones[g["targetBoneIndex"]].get("deformLayer", 0),
+            g["targetBoneIndex"],
+        ))
+
+        grants = self._resolve_grant_dependencies_from_manifest(grants)
+
+        for grant in grants:
+            target_idx = grant["targetBoneIndex"]
+            source_idx = grant["sourceBoneIndex"]
+            ratio = grant.get("ratio", 0.0)
+            affect_rotation = grant.get("affectRotation", False)
+            affect_translation = grant.get("affectTranslation", False)
+            is_local = grant.get("local", False)
+
+            if target_idx < 0 or target_idx >= len(maya_joints):
+                continue
+            if source_idx < 0 or source_idx >= len(maya_joints):
+                continue
+
+            target_joint = maya_joints[target_idx]
+            source_joint = maya_joints[source_idx]
+
+            if target_joint == source_joint:
+                self.logger.warning(f"付与親が自分自身を指しているため付与をスキップします: {target_joint}")
+                continue
+
+            offset_flag = not is_local
+
+            if affect_rotation:
+                if ratio == -1:
+                    grant_reference = self._get_grant_reference_node(maya_joints, grant_reference)
+                    constraint = cmds.orientConstraint(
+                        [grant_reference, source_joint],
+                        target_joint,
+                        maintainOffset=offset_flag,
+                    )[0]
+                    self._mark_mmd_grant_constraint(constraint)
+                    self._set_constraint_target_weights(constraint, [1.0, 0.0])
+                elif 0 <= ratio < 1:
+                    grant_reference = self._get_grant_reference_node(maya_joints, grant_reference)
+                    constraint = cmds.orientConstraint(
+                        [grant_reference, source_joint],
+                        target_joint,
+                        maintainOffset=offset_flag,
+                    )[0]
+                    self._mark_mmd_grant_constraint(constraint)
+                    self._set_constraint_target_weights(constraint, [1.0 - ratio, ratio])
+                elif ratio == 1:
+                    constraint = cmds.orientConstraint(
+                        source_joint, target_joint, maintainOffset=offset_flag, weight=1.0
+                    )[0]
+                    self._mark_mmd_grant_constraint(constraint)
+                else:
+                    constraint = cmds.orientConstraint(
+                        source_joint, target_joint, maintainOffset=offset_flag, weight=ratio
+                    )[0]
+                    self._mark_mmd_grant_constraint(constraint)
+
+                constraints.append(constraint)
+                self.logger.info(
+                    f"回転付与を設定 ({'ローカル' if is_local else 'グローバル'}付与): "
+                    f"{target_joint} <- {source_joint} (rate={ratio})"
+                )
+
+            if affect_translation:
+                constraint = cmds.pointConstraint(
+                    source_joint, target_joint, maintainOffset=True, weight=ratio
+                )[0]
+                self._mark_mmd_grant_constraint(constraint)
+                constraints.append(constraint)
+                self.logger.info(
+                    f"移動付与を設定 ({'ローカル' if is_local else 'グローバル'}付与): "
+                    f"{target_joint} <- {source_joint} (rate={ratio})"
+                )
+
+        return constraints
+
+    def _resolve_grant_dependencies_from_manifest(
+        self,
+        grants: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """マニフェストの付与リストを多重付与の依存関係を考慮してトポロジカルソートする。"""
+        target_set = {g["targetBoneIndex"] for g in grants}
+        index_to_grant = {g["targetBoneIndex"]: g for g in grants}
+
+        dependencies: Dict[int, List[int]] = {}
+        for g in grants:
+            target = g["targetBoneIndex"]
+            source = g["sourceBoneIndex"]
+            dependencies[target] = []
+            if source in target_set:
+                dependencies[target].append(source)
+
+        sorted_indices = self._topological_sort(dependencies)
+
+        sorted_grants: List[Dict[str, Any]] = []
+        for idx in sorted_indices:
+            if idx in index_to_grant:
+                sorted_grants.append(index_to_grant[idx])
+
+        for g in grants:
+            if g["targetBoneIndex"] not in set(sorted_indices):
+                sorted_grants.append(g)
+
+        return sorted_grants
+
+    def _create_ik_handles_from_manifest(
+        self,
+        manifest,
+        maya_joints: List[str],
+    ) -> List[Dict[str, Any]]:
+        """マニフェストの IK チェーン情報から Maya ikHandle を作成する。"""
+        ik_handles: List[Dict[str, Any]] = []
+
+        for chain in manifest.ik_chains:
+            controller_idx = chain.get("controllerBoneIndex", -1)
+            target_idx = chain.get("targetBoneIndex", -1)
+            links = chain.get("links", [])
+
+            if not links:
+                continue
+            if controller_idx < 0 or controller_idx >= len(maya_joints):
+                continue
+            if target_idx < 0 or target_idx >= len(maya_joints):
+                continue
+
+            root_link_idx = links[-1].get("boneIndex", -1)
+            if root_link_idx < 0 or root_link_idx >= len(maya_joints):
+                continue
+
+            start_joint = maya_joints[root_link_idx]
+            end_joint = maya_joints[target_idx]
+            controller = maya_joints[controller_idx]
+
+            if not maya_utils.object_exists(start_joint) or not maya_utils.object_exists(end_joint):
+                self.logger.warning(
+                    f"IKチェーン '{controller}' の開始または終了ジョイントが見つかりません"
+                )
+                continue
+
+            try:
+                ik_handle, _ = maya_utils.create_ik_handle(
+                    start_joint=start_joint,
+                    end_joint=end_joint,
+                    solver="ikRPsolver",
+                    name=f"{controller}_ikHandle",
+                )
+
+                maya_utils.parent_objects(ik_handle, controller)
+                maya_utils.set_attribute(ik_handle, "v", 0, "bool")
+
+                if not cmds.attributeQuery("mmd_ik_native_handle", node=ik_handle, exists=True):
+                    cmds.addAttr(ik_handle, longName="mmd_ik_native_handle", attributeType="bool")
+                cmds.setAttr(f"{ik_handle}.mmd_ik_native_handle", True)
+
+                ik_handles.append({
+                    "ik_handle": ik_handle,
+                    "controller": controller,
+                    "start_joint": start_joint,
+                    "end_joint": end_joint,
+                    "links": links,
+                })
+                self.logger.info(f"IKハンドル '{ik_handle}' を作成しました（{start_joint} -> {end_joint}）")
+
+            except Exception as e:
+                self.logger.error(f"IKハンドルの作成に失敗しました '{controller}': {e}")
+
+        return ik_handles

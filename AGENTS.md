@@ -71,6 +71,29 @@ uvx nox -s cpp_verify -- --maya 2024 --config Debug --manifest <...>
 - 自動 attach したい場合だけ、一時 `userSetup.mel` で `commandPort :7721` を開き、検証後に削除する。
 - `127.0.0.1:7721` の Listen と、Maya 内の `DirectX11` / `API : DirectX V.11` を確認する。
 
+### E2E テスト (commandPort)
+
+Maya GUI を commandPort 付きで起動し、Python を送り込んでパイプラインを検証する。
+ログファイルの completion marker で完了判定。unit テストが green でも import/rig/render 系の変更は必ず E2E で実機確認すること。
+
+```bash
+# Native rig primitive E2E（IK/付与のネイティブパス検証、port 7724）
+python tests/viewport/e2e_native_rig.py --maya 2026 --model "tests/data/Lumine/Lumine.pmx"
+
+# Viewport snapshot（DX11 レンダリング検証、port 7722）
+python tests/viewport/gui_snapshot.py --maya 2026
+
+# 非ASCII テクスチャ resolve E2E（MMD_E2E_MODEL_PATH 環境変数で指定）
+python tests/viewport/resolve_e2e.py
+```
+
+### Lint
+
+```bash
+rtk ruff check <changed files only>
+```
+pyproject.toml で `fix = true` のため `ruff check` はファイルを自動修正する。lint は触ったファイルのみに限定する。
+
 ## コーディング
 
 - コメントとドキュメンテーションは、コードの可読性を高めるために重要です。関数やクラスの説明を適切に記述してください。
