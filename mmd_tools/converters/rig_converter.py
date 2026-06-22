@@ -975,14 +975,15 @@ class RigConverter:
         import json as _json
         from mmd_tools.converters.native_rig_builder import build_ik_mini_chain
 
-        # Pass 1: IK 出力で駆動される全 PMX ボーンインデックスを収集（循環回避）
-        ik_driven_pmx_indices: set = set()
-        for chain_def in manifest.ik_chains:
-            target_idx = chain_def.get("targetBoneIndex", -1)
-            if target_idx >= 0:
-                ik_driven_pmx_indices.add(target_idx)
-            for lk in chain_def.get("links", []):
-                ik_driven_pmx_indices.add(lk["boneIndex"])
+        # Collect all chains' link bones keyed by controller index.
+        # Downstream chains (higher controller index) must NOT be read by
+        # upstream chains — doing so creates a DG evaluation cycle
+        # (e.g. leg_ik reads left_ankle -> toe_ik reads left_leg -> leg_ik).
+        all_chain_links: list[tuple[int, set[int]]] = []
+        for _cd in manifest.ik_chains:
+            _ctrl = _cd.get("controllerBoneIndex", -1)
+            _lk_set = {lk["boneIndex"] for lk in _cd.get("links", [])}
+            all_chain_links.append((_ctrl, _lk_set))
 
         nodes: List[str] = []
         for chain_def in manifest.ik_chains:
@@ -1011,26 +1012,38 @@ class RigConverter:
             link_slots = mapping["link_slots"]
             bone_count = len(pmx_to_slot)
 
+            # Collect absolute positions first, then convert to local (parent-relative).
+            # The rig primitive solver expects local rest positions.
+            abs_positions = []
             bones_for_json = []
             for slot in range(bone_count):
                 pmx_idx = slot_to_pmx[slot]
                 bone_data = manifest.bones[pmx_idx]
                 parent_pmx = bone_data.get("parentIndex", -1)
                 parent_slot = pmx_to_slot.get(parent_pmx, -1)
-                # solver は MMD 座標系で動作 — Z-flip しない
-                rp = bone_data.get("restPosition", [0, 0, 0])
+                abs_pos = bone_data.get("restPosition", [0, 0, 0])
+                abs_positions.append(abs_pos)
                 flags = 0
                 fixed_axis = bone_data.get("fixedAxis")
                 fa = [0, 0, 0]
                 if fixed_axis is not None:
-                    flags = 0x2000  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS
+                    flags = 0x1  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS (1 << 0)
                     fa = list(fixed_axis)
                 bones_for_json.append({
                     "parent_slot": parent_slot,
-                    "rest_position": list(rp),
+                    "rest_position": None,
                     "flags": flags,
                     "fixed_axis": fa,
                 })
+
+            for slot, bone in enumerate(bones_for_json):
+                abs_pos = abs_positions[slot]
+                parent_slot = bone["parent_slot"]
+                if parent_slot >= 0:
+                    parent_abs = abs_positions[parent_slot]
+                    bone["rest_position"] = [abs_pos[j] - parent_abs[j] for j in range(3)]
+                else:
+                    bone["rest_position"] = list(abs_pos)
 
             links_for_json = []
             for lk in links:
@@ -1072,10 +1085,20 @@ class RigConverter:
                 )
                 cmds.connectAttr(f"{decomp}.outputTranslate", f"{node}.goal")
 
-                # inputRotate: exclude ALL IK-driven bones (link + target across all chains)
+                # inputRotate: exclude own links AND downstream chains' links.
+                # Downstream = higher controllerBoneIndex (evaluated later in MMD).
+                # This prevents DG cycles (leg_ik <-> toe_ik) while still
+                # allowing downstream chains to read upstream results.
+                excluded_bones: set = set()
+                for lk in links:
+                    excluded_bones.add(lk["boneIndex"])
+                for other_ctrl, other_links in all_chain_links:
+                    if other_ctrl > controller_idx:
+                        excluded_bones.update(other_links)
+
                 for slot in range(bone_count):
                     pmx_idx = slot_to_pmx[slot]
-                    if pmx_idx in ik_driven_pmx_indices:
+                    if pmx_idx in excluded_bones:
                         continue
                     if pmx_idx < len(maya_joints):
                         jnt = maya_joints[pmx_idx]

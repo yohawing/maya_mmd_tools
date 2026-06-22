@@ -107,13 +107,17 @@ def build_ik_mini_chain(
     pmx_to_slot = {pmx_idx: slot for slot, pmx_idx in enumerate(sorted_indices)}
     slot_to_pmx = {slot: pmx_idx for pmx_idx, slot in pmx_to_slot.items()}
 
+    # Collect absolute positions first, then convert to local (parent-relative).
+    # The rig primitive solver expects local rest positions.
+    abs_positions = []
     bones_for_chain = []
     for slot, pmx_idx in enumerate(sorted_indices):
         bone_data = all_bones[pmx_idx]
         parent_pmx = bone_data.get("parentIndex", -1)
         parent_slot = pmx_to_slot.get(parent_pmx, -1)
 
-        rest_pos = bone_data.get("restPosition", [0, 0, 0])
+        abs_pos = bone_data.get("restPosition", [0, 0, 0])
+        abs_positions.append(abs_pos)
         flags = 0
         fixed_axis = bone_data.get("fixedAxis")
         if fixed_axis is not None:
@@ -122,10 +126,19 @@ def build_ik_mini_chain(
 
         bones_for_chain.append({
             "parent_slot": parent_slot,
-            "rest_position": rest_pos,
+            "rest_position": None,
             "flags": flags,
             "fixed_axis": fixed_axis or [0, 0, 0],
         })
+
+    for slot, bone in enumerate(bones_for_chain):
+        abs_pos = abs_positions[slot]
+        parent_slot = bone["parent_slot"]
+        if parent_slot >= 0:
+            parent_abs = abs_positions[parent_slot]
+            bone["rest_position"] = [abs_pos[j] - parent_abs[j] for j in range(3)]
+        else:
+            bone["rest_position"] = list(abs_pos)
 
     links_for_chain = []
     link_slots = []

@@ -131,21 +131,23 @@ class MmdCcdIkNode(om.MPxNode):
 
         positions = [0.0] * (self._bone_count * 3)
 
-        # Input rotations: Maya euler → MMD quaternion
-        # Z-mirror: q_mmd = (-qx, -qy, qz, qw)
+        # Input rotations: Maya euler -> MMD quaternion (Z-mirror: q_mmd = (-qx, -qy, qz, qw))
+        # MPlug.asDouble() triggers upstream DG pulls (animCurves, other IK nodes).
+        # Downstream IK links are excluded from inputRotate connections to prevent
+        # evaluation cycles.
         rotations = []
-        input_array = data.inputArrayValue(self.aInputRotate)
+        this_obj = self.thisMObject()
+        fn_dep = om.MFnDependencyNode(this_obj)
+        ir_plug = fn_dep.findPlug("inputRotate", False)
         for bone_i in range(self._bone_count):
             rx = ry = rz = 0.0
             try:
-                input_array.jumpToLogicalElement(bone_i)
-                elem = input_array.inputValue()
-                rx = elem.child(0).asDouble()
-                ry = elem.child(1).asDouble()
-                rz = elem.child(2).asDouble()
+                elem_plug = ir_plug.elementByLogicalIndex(bone_i)
+                rx = elem_plug.child(0).asDouble()
+                ry = elem_plug.child(1).asDouble()
+                rz = elem_plug.child(2).asDouble()
             except Exception:
                 pass
-
             euler = om.MEulerRotation(rx, ry, rz)
             q = euler.asQuaternion()
             rotations.extend([-q.x, -q.y, q.z, q.w])
@@ -222,7 +224,6 @@ def initialize():
     cAttr.addChild(_iry)
     cAttr.addChild(_irz)
     cAttr.array = True
-    cAttr.usesArrayDataBuilder = True
     MmdCcdIkNode.addAttribute(MmdCcdIkNode.aInputRotate)
 
     _orx = uAttr.create("outputRotateElementX", "oerx", om.MFnUnitAttribute.kAngle, 0.0)
