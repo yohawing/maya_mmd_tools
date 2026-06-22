@@ -889,12 +889,14 @@ class RigConverter:
         ))
         grants = self._resolve_grant_dependencies_from_manifest(grants)
 
+        append_nodes_by_target: Dict[str, str] = {}
         for grant in grants:
             target_idx = grant["targetBoneIndex"]
             source_idx = grant["sourceBoneIndex"]
             ratio = grant.get("ratio", 0.0)
             affect_rotation = grant.get("affectRotation", False)
             affect_translation = grant.get("affectTranslation", False)
+            local_append = grant.get("local", False)
 
             if target_idx < 0 or target_idx >= len(maya_joints):
                 continue
@@ -916,25 +918,35 @@ class RigConverter:
                 cmds.setAttr(f"{node}.ratio", ratio)
                 cmds.setAttr(f"{node}.affectRotation", affect_rotation)
                 cmds.setAttr(f"{node}.affectTranslation", affect_translation)
+                if cmds.attributeQuery("localAppend", node=node, exists=True):
+                    cmds.setAttr(f"{node}.localAppend", bool(local_append))
 
-                # source joint → node.sourceRotate/sourceTranslate
-                cmds.connectAttr(f"{source_joint}.rotate", f"{node}.sourceRotate")
+                source_append_node = append_nodes_by_target.get(source_joint)
+
+                # MMD runtime uses the source append contribution for non-local append chains.
+                if affect_rotation and source_append_node and not local_append:
+                    cmds.connectAttr(f"{source_append_node}.appendRotate", f"{node}.sourceRotate")
+                else:
+                    cmds.connectAttr(f"{source_joint}.rotate", f"{node}.sourceRotate")
                 if affect_translation:
-                    source_rest_translate = cmds.getAttr(f"{source_joint}.translate")[0]
-                    source_delta = cmds.createNode(
-                        "plusMinusAverage",
-                        name=f"{node_name}_sourceTranslateDelta",
-                    )
-                    cmds.setAttr(f"{source_delta}.operation", 2)  # subtract
-                    cmds.connectAttr(f"{source_joint}.translate", f"{source_delta}.input3D[0]")
-                    cmds.setAttr(
-                        f"{source_delta}.input3D[1]",
-                        source_rest_translate[0],
-                        source_rest_translate[1],
-                        source_rest_translate[2],
-                        type="double3",
-                    )
-                    cmds.connectAttr(f"{source_delta}.output3D", f"{node}.sourceTranslate")
+                    if source_append_node and not local_append:
+                        cmds.connectAttr(f"{source_append_node}.appendTranslate", f"{node}.sourceTranslate")
+                    else:
+                        source_rest_translate = cmds.getAttr(f"{source_joint}.translate")[0]
+                        source_delta = cmds.createNode(
+                            "plusMinusAverage",
+                            name=f"{node_name}_sourceTranslateDelta",
+                        )
+                        cmds.setAttr(f"{source_delta}.operation", 2)  # subtract
+                        cmds.connectAttr(f"{source_joint}.translate", f"{source_delta}.input3D[0]")
+                        cmds.setAttr(
+                            f"{source_delta}.input3D[1]",
+                            source_rest_translate[0],
+                            source_rest_translate[1],
+                            source_rest_translate[2],
+                            type="double3",
+                        )
+                        cmds.connectAttr(f"{source_delta}.output3D", f"{node}.sourceTranslate")
 
                 if affect_rotation:
                     # Disconnect existing connections to target.rotate if any
@@ -979,6 +991,7 @@ class RigConverter:
                 cmds.setAttr(f"{node}.mmd_grant_node", True)
 
                 nodes.append(node)
+                append_nodes_by_target[target_joint] = node
                 self.logger.info(
                     f"mmdAppend ノード '{node}': {source_joint} → {target_joint} (ratio={ratio})"
                 )

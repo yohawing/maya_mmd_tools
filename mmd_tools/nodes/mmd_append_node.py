@@ -65,6 +65,18 @@ class MmdAppendNode(om.MPxNode):
     aOutputTranslateY = None
     aOutputTranslateZ = None
 
+    aAppendRotate = None
+    aAppendRotateX = None
+    aAppendRotateY = None
+    aAppendRotateZ = None
+
+    aAppendTranslate = None
+    aAppendTranslateX = None
+    aAppendTranslateY = None
+    aAppendTranslateZ = None
+
+    aLocalAppend = None
+
     def __init__(self):
         super().__init__()
         self._solver = None
@@ -108,12 +120,20 @@ class MmdAppendNode(om.MPxNode):
             or plug == self.aOutputRotateX
             or plug == self.aOutputRotateY
             or plug == self.aOutputRotateZ
+            or plug == self.aAppendRotate
+            or plug == self.aAppendRotateX
+            or plug == self.aAppendRotateY
+            or plug == self.aAppendRotateZ
         )
         is_trans_plug = (
             plug == self.aOutputTranslate
             or plug == self.aOutputTranslateX
             or plug == self.aOutputTranslateY
             or plug == self.aOutputTranslateZ
+            or plug == self.aAppendTranslate
+            or plug == self.aAppendTranslateX
+            or plug == self.aAppendTranslateY
+            or plug == self.aAppendTranslateZ
         )
         if not is_rot_plug and not is_trans_plug:
             return None  # let Maya handle unknown plugs
@@ -149,6 +169,15 @@ class MmdAppendNode(om.MPxNode):
         grant_pos, grant_rot = result
         grant_tx, grant_ty, grant_tz = self._mmd_translate_to_maya(grant_pos)
         grant_quat = om.MQuaternion(grant_rot[0], grant_rot[1], grant_rot[2], grant_rot[3])
+        grant_euler = grant_quat.asEulerRotation()
+
+        append_rot_handle = data.outputValue(self.aAppendRotate)
+        append_rot_handle.set3Double(grant_euler.x, grant_euler.y, grant_euler.z)
+        append_rot_handle.setClean()
+
+        append_trans_handle = data.outputValue(self.aAppendTranslate)
+        append_trans_handle.set3Double(grant_tx, grant_ty, grant_tz)
+        append_trans_handle.setClean()
 
         # Compose: output = base * grant_contribution
         base_rx = data.inputValue(self.aBaseRotateX).asDouble()
@@ -253,6 +282,9 @@ def initialize():
     MmdAppendNode.aAffectTranslation = nAttr.create("affectTranslation", "aft", om.MFnNumericData.kBoolean, False)
     MmdAppendNode.addAttribute(MmdAppendNode.aAffectTranslation)
 
+    MmdAppendNode.aLocalAppend = nAttr.create("localAppend", "lap", om.MFnNumericData.kBoolean, False)
+    MmdAppendNode.addAttribute(MmdAppendNode.aLocalAppend)
+
     # --- Output Rotate (angle) ---
     MmdAppendNode.aOutputRotateX = uAttr.create("outputRotateX", "orx", om.MFnUnitAttribute.kAngle, 0.0)
     uAttr.writable = False
@@ -291,44 +323,93 @@ def initialize():
     cAttr.addChild(MmdAppendNode.aOutputTranslateZ)
     MmdAppendNode.addAttribute(MmdAppendNode.aOutputTranslate)
 
+    # --- Append contribution outputs ---
+    MmdAppendNode.aAppendRotateX = uAttr.create("appendRotateX", "arx", om.MFnUnitAttribute.kAngle, 0.0)
+    uAttr.writable = False
+    uAttr.storable = False
+    MmdAppendNode.aAppendRotateY = uAttr.create("appendRotateY", "ary", om.MFnUnitAttribute.kAngle, 0.0)
+    uAttr.writable = False
+    uAttr.storable = False
+    MmdAppendNode.aAppendRotateZ = uAttr.create("appendRotateZ", "arz", om.MFnUnitAttribute.kAngle, 0.0)
+    uAttr.writable = False
+    uAttr.storable = False
+
+    MmdAppendNode.aAppendRotate = cAttr.create("appendRotate", "ar")
+    cAttr.writable = False
+    cAttr.storable = False
+    cAttr.addChild(MmdAppendNode.aAppendRotateX)
+    cAttr.addChild(MmdAppendNode.aAppendRotateY)
+    cAttr.addChild(MmdAppendNode.aAppendRotateZ)
+    MmdAppendNode.addAttribute(MmdAppendNode.aAppendRotate)
+
+    MmdAppendNode.aAppendTranslateX = nAttr.create("appendTranslateX", "atx", om.MFnNumericData.kDouble, 0.0)
+    nAttr.writable = False
+    nAttr.storable = False
+    MmdAppendNode.aAppendTranslateY = nAttr.create("appendTranslateY", "aty", om.MFnNumericData.kDouble, 0.0)
+    nAttr.writable = False
+    nAttr.storable = False
+    MmdAppendNode.aAppendTranslateZ = nAttr.create("appendTranslateZ", "atz", om.MFnNumericData.kDouble, 0.0)
+    nAttr.writable = False
+    nAttr.storable = False
+
+    MmdAppendNode.aAppendTranslate = cAttr.create("appendTranslate", "at")
+    cAttr.writable = False
+    cAttr.storable = False
+    cAttr.addChild(MmdAppendNode.aAppendTranslateX)
+    cAttr.addChild(MmdAppendNode.aAppendTranslateY)
+    cAttr.addChild(MmdAppendNode.aAppendTranslateZ)
+    MmdAppendNode.addAttribute(MmdAppendNode.aAppendTranslate)
+
     # --- Affect relationships ---
+    output_rotate_attrs = (
+        MmdAppendNode.aOutputRotateX,
+        MmdAppendNode.aOutputRotateY,
+        MmdAppendNode.aOutputRotateZ,
+    )
+    append_rotate_attrs = (
+        MmdAppendNode.aAppendRotateX,
+        MmdAppendNode.aAppendRotateY,
+        MmdAppendNode.aAppendRotateZ,
+    )
+    output_translate_attrs = (
+        MmdAppendNode.aOutputTranslateX,
+        MmdAppendNode.aOutputTranslateY,
+        MmdAppendNode.aOutputTranslateZ,
+    )
+    append_translate_attrs = (
+        MmdAppendNode.aAppendTranslateX,
+        MmdAppendNode.aAppendTranslateY,
+        MmdAppendNode.aAppendTranslateZ,
+    )
+
     for base_attr in (MmdAppendNode.aBaseRotateX, MmdAppendNode.aBaseRotateY, MmdAppendNode.aBaseRotateZ):
-        for out_attr in (MmdAppendNode.aOutputRotateX, MmdAppendNode.aOutputRotateY, MmdAppendNode.aOutputRotateZ):
+        for out_attr in output_rotate_attrs:
             MmdAppendNode.attributeAffects(base_attr, out_attr)
 
     for base_attr in (MmdAppendNode.aBaseTranslateX, MmdAppendNode.aBaseTranslateY, MmdAppendNode.aBaseTranslateZ):
-        MmdAppendNode.attributeAffects(base_attr, MmdAppendNode.aOutputTranslateX)
-        MmdAppendNode.attributeAffects(base_attr, MmdAppendNode.aOutputTranslateY)
-        MmdAppendNode.attributeAffects(base_attr, MmdAppendNode.aOutputTranslateZ)
+        for out_attr in output_translate_attrs:
+            MmdAppendNode.attributeAffects(base_attr, out_attr)
 
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateX, MmdAppendNode.aOutputRotateX)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateX, MmdAppendNode.aOutputRotateY)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateX, MmdAppendNode.aOutputRotateZ)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateY, MmdAppendNode.aOutputRotateX)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateY, MmdAppendNode.aOutputRotateY)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateY, MmdAppendNode.aOutputRotateZ)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateZ, MmdAppendNode.aOutputRotateX)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateZ, MmdAppendNode.aOutputRotateY)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceRotateZ, MmdAppendNode.aOutputRotateZ)
+    for source_attr in (MmdAppendNode.aSourceRotateX, MmdAppendNode.aSourceRotateY, MmdAppendNode.aSourceRotateZ):
+        for out_attr in output_rotate_attrs + append_rotate_attrs:
+            MmdAppendNode.attributeAffects(source_attr, out_attr)
 
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceTranslateX, MmdAppendNode.aOutputTranslateX)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceTranslateY, MmdAppendNode.aOutputTranslateY)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aSourceTranslateZ, MmdAppendNode.aOutputTranslateZ)
+    for source_attr in (
+        MmdAppendNode.aSourceTranslateX,
+        MmdAppendNode.aSourceTranslateY,
+        MmdAppendNode.aSourceTranslateZ,
+    ):
+        for out_attr in output_translate_attrs + append_translate_attrs:
+            MmdAppendNode.attributeAffects(source_attr, out_attr)
 
-    MmdAppendNode.attributeAffects(MmdAppendNode.aRatio, MmdAppendNode.aOutputRotateX)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aRatio, MmdAppendNode.aOutputRotateY)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aRatio, MmdAppendNode.aOutputRotateZ)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aRatio, MmdAppendNode.aOutputTranslateX)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aRatio, MmdAppendNode.aOutputTranslateY)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aRatio, MmdAppendNode.aOutputTranslateZ)
+    for out_attr in output_rotate_attrs + append_rotate_attrs + output_translate_attrs + append_translate_attrs:
+        MmdAppendNode.attributeAffects(MmdAppendNode.aRatio, out_attr)
 
-    MmdAppendNode.attributeAffects(MmdAppendNode.aAffectRotation, MmdAppendNode.aOutputRotateX)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aAffectRotation, MmdAppendNode.aOutputRotateY)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aAffectRotation, MmdAppendNode.aOutputRotateZ)
+    for out_attr in output_rotate_attrs + append_rotate_attrs:
+        MmdAppendNode.attributeAffects(MmdAppendNode.aAffectRotation, out_attr)
 
-    MmdAppendNode.attributeAffects(MmdAppendNode.aAffectTranslation, MmdAppendNode.aOutputTranslateX)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aAffectTranslation, MmdAppendNode.aOutputTranslateY)
-    MmdAppendNode.attributeAffects(MmdAppendNode.aAffectTranslation, MmdAppendNode.aOutputTranslateZ)
+    for out_attr in output_translate_attrs + append_translate_attrs:
+        MmdAppendNode.attributeAffects(MmdAppendNode.aAffectTranslation, out_attr)
 
 
 # ── Plugin registration helpers ──────────────────────────────────

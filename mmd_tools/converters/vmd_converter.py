@@ -698,16 +698,37 @@ class VmdConverter:
             suffix = f".{dst_attr}"
             return [plug.rsplit(".", 1)[0] for plug in plugs if plug.endswith(suffix)]
 
+        node_targets = {}
         for node in append_nodes:
             rotate_dsts = _compound_destinations(f"{node}.outputRotate", "rotate")
             translate_dsts = _compound_destinations(f"{node}.outputTranslate", "translate")
             if not rotate_dsts and not translate_dsts:
                 continue
             target_joint = rotate_dsts[0] if rotate_dsts else translate_dsts[0]
-            src_joints = cmds.listConnections(f"{node}.sourceRotate", s=True, d=False) or []
-            source_joint = src_joints[0] if src_joints else None
+            node_targets[node] = target_joint
+
+        for node in append_nodes:
+            target_joint = node_targets.get(node)
+            if not target_joint:
+                continue
+            rotate_dsts = _compound_destinations(f"{node}.outputRotate", "rotate")
+            translate_dsts = _compound_destinations(f"{node}.outputTranslate", "translate")
+            src_plugs = cmds.listConnections(f"{node}.sourceRotate", s=True, d=False, p=True) or []
+            source_joint = None
+            source_append_node = None
+            if src_plugs:
+                src_node = src_plugs[0].rsplit(".", 1)[0]
+                src_attr = src_plugs[0].rsplit(".", 1)[1]
+                if src_attr.startswith("appendRotate"):
+                    source_append_node = src_node
+                    source_joint = node_targets.get(source_append_node)
+                else:
+                    source_joint = src_node
             ratio = cmds.getAttr(f"{node}.ratio")
             affect_rot = cmds.getAttr(f"{node}.affectRotation")
+            local_append = False
+            if cmds.attributeQuery("localAppend", node=node, exists=True):
+                local_append = bool(cmds.getAttr(f"{node}.localAppend"))
             attr_map = {}
             if affect_rot and target_joint in rotate_dsts:
                 attr_map.update({
@@ -724,11 +745,28 @@ class VmdConverter:
             result[target_joint] = {
                 "node": node,
                 "source_joint": source_joint,
+                "source_append_node": source_append_node,
                 "ratio": ratio,
                 "affect_rotation": affect_rot,
+                "local_append": local_append,
                 "attr_map": attr_map,
             }
         return result
+
+    @staticmethod
+    def _get_or_expand_runtime_channel(
+        ch_dict: Dict[str, Optional[om.MDoubleArray]],
+        st_dict: Dict[str, dict],
+        attr: str,
+        n_frames: int,
+    ) -> Optional[om.MDoubleArray]:
+        arr = ch_dict.get(attr)
+        if arr is not None:
+            return arr
+        state = st_dict.get(attr, {})
+        if state.get("is_static") and state.get("first") is not None:
+            return om.MDoubleArray(n_frames, float(state["first"]))
+        return None
 
     @staticmethod
     def _decompose_append_own_rotation(
@@ -748,6 +786,9 @@ class VmdConverter:
         own_rx = om.MDoubleArray(n, 0.0)
         own_ry = om.MDoubleArray(n, 0.0)
         own_rz = om.MDoubleArray(n, 0.0)
+        grant_rx = om.MDoubleArray(n, 0.0)
+        grant_ry = om.MDoubleArray(n, 0.0)
+        grant_rz = om.MDoubleArray(n, 0.0)
         identity = om.MQuaternion()
 
         for i in range(n):
@@ -755,6 +796,10 @@ class VmdConverter:
             src_q = src_euler.asQuaternion()
             grant_q = om.MQuaternion.slerp(identity, src_q, ratio)
             grant_inv = grant_q.conjugate()
+            grant_euler = grant_q.asEulerRotation()
+            grant_rx[i] = grant_euler.x
+            grant_ry[i] = grant_euler.y
+            grant_rz[i] = grant_euler.z
 
             final_euler = om.MEulerRotation(target_rx[i], target_ry[i], target_rz[i])
             final_q = final_euler.asQuaternion()
@@ -765,7 +810,83 @@ class VmdConverter:
             own_ry[i] = own_euler.y
             own_rz[i] = own_euler.z
 
-        return own_rx, own_ry, own_rz
+        return (own_rx, own_ry, own_rz), (grant_rx, grant_ry, grant_rz)
+
+    def _decompose_append_rotations_for_scene(
+        self,
+        joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
+        joint_channel_static: Dict[str, Dict[str, dict]],
+        append_info: Dict[str, dict],
+        n_frames: int,
+    ) -> Dict[str, Dict[str, om.MDoubleArray]]:
+        """append graph の依存に沿って final rotation を own rotation へ分解する。"""
+        resolved: Dict[str, Optional[Dict[str, Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]]] = {}
+        resolving = set()
+
+        def _final_rotation(joint: str) -> Optional[Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]:
+            channels = joint_channel_values.get(joint, {})
+            static = joint_channel_static.get(joint, {})
+            rx = self._get_or_expand_runtime_channel(channels, static, "rotateX", n_frames)
+            ry = self._get_or_expand_runtime_channel(channels, static, "rotateY", n_frames)
+            rz = self._get_or_expand_runtime_channel(channels, static, "rotateZ", n_frames)
+            if rx is None or ry is None or rz is None:
+                return None
+            return rx, ry, rz
+
+        def _resolve(joint: str) -> Optional[Dict[str, Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]]:
+            if joint in resolved:
+                return resolved[joint]
+            if joint in resolving:
+                self.logger.warning(f"append rotation cycle detected at {joint}; using baked rotation fallback")
+                resolved[joint] = None
+                return None
+
+            info = append_info.get(joint)
+            if not info or not info.get("affect_rotation") or not info.get("source_joint"):
+                resolved[joint] = None
+                return None
+
+            final_rotation = _final_rotation(joint)
+            if final_rotation is None:
+                resolved[joint] = None
+                return None
+
+            resolving.add(joint)
+            source_joint = info["source_joint"]
+            source_info = append_info.get(source_joint)
+            source_rotation = _final_rotation(source_joint)
+            source_resolved = _resolve(source_joint) if source_info else None
+            if source_resolved:
+                source_rotation = (
+                    source_resolved["own"]
+                    if info.get("local_append")
+                    else source_resolved["grant"]
+                )
+
+            resolving.remove(joint)
+            if source_rotation is None:
+                resolved[joint] = None
+                return None
+
+            own_rotation, grant_rotation = self._decompose_append_own_rotation(
+                final_rotation[0], final_rotation[1], final_rotation[2],
+                source_rotation[0], source_rotation[1], source_rotation[2],
+                info["ratio"],
+            )
+            resolved[joint] = {"own": own_rotation, "grant": grant_rotation}
+            return resolved[joint]
+
+        decomposed = {}
+        for joint in append_info:
+            state = _resolve(joint)
+            if state:
+                own_rx, own_ry, own_rz = state["own"]
+                decomposed[joint] = {
+                    "rotateX": own_rx,
+                    "rotateY": own_ry,
+                    "rotateZ": own_rz,
+                }
+        return decomposed
 
     def _apply_runtime_channel_arrays_to_scene(
         self,
@@ -782,6 +903,12 @@ class VmdConverter:
         total_channels = 0
 
         append_info = self._collect_append_info()
+        decomposed_rotations = self._decompose_append_rotations_for_scene(
+            joint_channel_values,
+            joint_channel_static,
+            append_info,
+            len(baked_frames),
+        )
 
         for joint, channels in joint_channel_values.items():
             total_channels += len(channels)
@@ -791,53 +918,12 @@ class VmdConverter:
                     append_node = info["node"]
                     attr_map = dict(info["attr_map"])
                     target_static = joint_channel_static.get(joint, {})
-                    decomposed_channels = {}
+                    decomposed_channels = decomposed_rotations.get(joint, {})
 
-                    if info["affect_rotation"] and info["source_joint"]:
-                        source_joint = info["source_joint"]
-                        source_channels = joint_channel_values.get(source_joint, {})
-                        source_static = joint_channel_static.get(source_joint, {})
-                        n_frames = len(baked_frames)
-
-                        def _get_or_expand(ch_dict, st_dict, attr):
-                            arr = ch_dict.get(attr)
-                            if arr is not None:
-                                return arr
-                            state = st_dict.get(attr, {})
-                            if state.get("is_static") and state.get("first") is not None:
-                                expanded = om.MDoubleArray(n_frames, float(state["first"]))
-                                return expanded
-                            return None
-
-                        src_rx = _get_or_expand(source_channels, source_static, "rotateX")
-                        src_ry = _get_or_expand(source_channels, source_static, "rotateY")
-                        src_rz = _get_or_expand(source_channels, source_static, "rotateZ")
-                        tgt_rx = _get_or_expand(channels, target_static, "rotateX")
-                        tgt_ry = _get_or_expand(channels, target_static, "rotateY")
-                        tgt_rz = _get_or_expand(channels, target_static, "rotateZ")
-
-                        if (
-                            tgt_rx is not None
-                            and tgt_ry is not None
-                            and tgt_rz is not None
-                            and src_rx is not None
-                            and src_ry is not None
-                            and src_rz is not None
-                        ):
-                            own_rx, own_ry, own_rz = self._decompose_append_own_rotation(
-                                tgt_rx, tgt_ry, tgt_rz,
-                                src_rx, src_ry, src_rz,
-                                info["ratio"],
-                            )
-                            decomposed_channels = {
-                                "rotateX": own_rx,
-                                "rotateY": own_ry,
-                                "rotateZ": own_rz,
-                            }
-                        else:
-                            attr_map.pop("rotateX", None)
-                            attr_map.pop("rotateY", None)
-                            attr_map.pop("rotateZ", None)
+                    if info["affect_rotation"] and not decomposed_channels:
+                        attr_map.pop("rotateX", None)
+                        attr_map.pop("rotateY", None)
+                        attr_map.pop("rotateZ", None)
 
                     redirected_channels = {}
                     redirected_static = {}
