@@ -1,10 +1,12 @@
-from typing import List, Dict
+from pathlib import Path
+from typing import List, Dict, Optional
 
 import maya.cmds as cmds
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.native.mmd_anim_runtime import is_rig_primitive_available
 from mmd_tools.core.settings import settings
 
 
@@ -28,40 +30,116 @@ class RigConverter:
         maya_joints: List[str],
         bone_map: Dict[int, str],
         skeleton_group: str,
+        pmx_filepath: Optional[str] = None,
     ) -> Dict:
         """
         PMXボーンデータを元にMayaのリグシステムをセットアップする。
+
+        native rig primitive DLL が利用可能で pmx_filepath が渡された場合は
+        mmd-anim の C ソルバーを使用し、それ以外は Python constraint にフォールバック。
 
         Args:
             pmx_data: PMXパーサーデータ
             maya_joints: 作成されたMayaジョイントのリスト
             bone_map: ボーンインデックスからジョイント名へのマッピング
             skeleton_group: スケルトングループ名
+            pmx_filepath: PMX ファイルのパス (native rig builder 用)
 
         Returns:
             dict: セットアップ結果の情報
         """
 
         self.logger.info("PMXリグセットアップを開始")
-        result = {"ik_handles": [], "semi_standard_bones": {}, "constraints": []}
-
-        # IKチェーンを抽出してMayaのIKハンドルを作成
-        # ik_chains = self._extract_ik_chains(pmx_data.bones, bone_map)
-        # if ik_chains:
-        #     self.logger.info(f"{len(ik_chains)}個のIKチェーンを検出しました")
-        #     result["ik_handles"] = self._create_maya_ik_handles(ik_chains)
-        #     self.logger.info(f"{len(result['ik_handles'])}個のIKハンドルを作成しました")
+        result = {
+            "ik_handles": [],
+            "semi_standard_bones": {},
+            "constraints": [],
+            "native_rig": None,
+        }
 
         # 元のボーン名を保存（日本語名での重複チェック用）
         for i, bone in enumerate(pmx_data.bones):
             self.original_bone_names[i] = bone.get_name()
 
-        # 付与ボーンの設定
-        result["constraints"] = self._setup_grant_bones(pmx_data.bones, maya_joints)
-        if result["constraints"]:
-            self.logger.info(f"{len(result['constraints'])}個の付与関係を設定しました")
+        # native rig primitive が利用可能なら使用
+        native_rig = None
+        if pmx_filepath and is_rig_primitive_available():
+            native_rig = self._try_setup_native_rig(pmx_filepath, maya_joints, bone_map)
+
+        if native_rig is not None:
+            result["native_rig"] = native_rig
+            self.logger.info(
+                f"native rig primitives で構築: "
+                f"IK {len(native_rig.ik_chains)} chains, "
+                f"append {len(native_rig.append_solvers)} solvers"
+            )
+        else:
+            # Python constraint フォールバック
+            result["constraints"] = self._setup_grant_bones(pmx_data.bones, maya_joints)
+            if result["constraints"]:
+                self.logger.info(f"{len(result['constraints'])}個の付与関係を設定しました (Python constraint)")
 
         return result
+
+    def _try_setup_native_rig(
+        self,
+        pmx_filepath: str,
+        maya_joints: List[str],
+        bone_map: Dict[int, str],
+    ):
+        """native rig builder で IK/付与を構築する。失敗時は None。"""
+        try:
+            from mmd_tools.converters.native_rig_builder import NativeRigPrimitives
+
+            pmx_path = Path(pmx_filepath)
+            if not pmx_path.exists():
+                self.logger.warning(f"PMX file not found for native rig: {pmx_filepath}")
+                return None
+
+            pmx_bytes = pmx_path.read_bytes()
+            prims = NativeRigPrimitives.from_pmx_bytes(pmx_bytes)
+            if prims is None:
+                self.logger.warning("NativeRigPrimitives.from_pmx_bytes returned None, falling back to Python")
+                return None
+
+            self._store_native_rig_metadata(prims, maya_joints, bone_map)
+            return prims
+
+        except Exception as e:
+            self.logger.warning(f"native rig setup failed, falling back to Python: {e}")
+            return None
+
+    def _store_native_rig_metadata(self, prims, maya_joints, bone_map):
+        """native rig の情報を Maya ジョイントのカスタムアトリビュートに保存する。"""
+        for chain, mapping in prims.ik_chains:
+            ctrl_idx = mapping["controller_pmx_index"]
+            target_idx = mapping["target_pmx_index"]
+            ctrl_joint = bone_map.get(ctrl_idx)
+            target_joint = bone_map.get(target_idx)
+
+            if ctrl_joint and cmds.objExists(ctrl_joint):
+                if not cmds.attributeQuery("mmd_ik_native", node=ctrl_joint, exists=True):
+                    cmds.addAttr(ctrl_joint, longName="mmd_ik_native", attributeType="bool")
+                cmds.setAttr(f"{ctrl_joint}.mmd_ik_native", True)
+
+            if target_joint and cmds.objExists(target_joint):
+                if not cmds.attributeQuery("mmd_ik_target_native", node=target_joint, exists=True):
+                    cmds.addAttr(target_joint, longName="mmd_ik_target_native", attributeType="bool")
+                cmds.setAttr(f"{target_joint}.mmd_ik_target_native", True)
+
+            self.logger.debug(
+                f"IK chain metadata: controller={ctrl_joint}(#{ctrl_idx}), "
+                f"target={target_joint}(#{target_idx}), "
+                f"links={len(mapping.get('link_slots', []))}"
+            )
+
+        for solver, info in prims.append_solvers:
+            target_idx = info["target_pmx_index"]
+            target_joint = bone_map.get(target_idx)
+            if target_joint and cmds.objExists(target_joint):
+                if not cmds.attributeQuery("mmd_append_native", node=target_joint, exists=True):
+                    cmds.addAttr(target_joint, longName="mmd_append_native", attributeType="bool")
+                cmds.setAttr(f"{target_joint}.mmd_append_native", True)
 
     def setup_pmd_rig(
         self,

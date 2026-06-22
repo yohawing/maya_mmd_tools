@@ -33,6 +33,7 @@ from ctypes import (
     Structure,
     c_bool,
     c_float,
+    c_int32,
     c_size_t,
     c_uint8,
     c_uint32,
@@ -96,6 +97,44 @@ class MmdRuntimeFfiByteBuffer(Structure):
     _fields_ = [
         ("data", POINTER(c_uint8)),
         ("len", c_size_t),
+    ]
+
+
+class MmdRuntimeFfiRigBone(Structure):
+    _fields_ = [
+        ("parent_slot", c_int32),
+        ("rest_position_xyz", c_float * 3),
+        ("flags", c_uint32),
+        ("fixed_axis_xyz", c_float * 3),
+    ]
+
+
+MMD_RUNTIME_RIG_BONE_FIXED_AXIS = 1 << 0
+
+
+class MmdRuntimeFfiRigIkLink(Structure):
+    _fields_ = [
+        ("bone_slot", c_uint32),
+        ("has_angle_limit", c_bool),
+        ("angle_limit_min_xyz", c_float * 3),
+        ("angle_limit_max_xyz", c_float * 3),
+    ]
+
+
+class MmdRuntimeFfiIkSolveStats(Structure):
+    _fields_ = [
+        ("executed_iterations", c_uint32),
+        ("link_steps", c_uint32),
+        ("final_distance", c_float),
+        ("break_reason", c_uint32),
+    ]
+
+
+class MmdRuntimeFfiAppendConfig(Structure):
+    _fields_ = [
+        ("ratio", c_float),
+        ("affect_rotation", c_bool),
+        ("affect_translation", c_bool),
     ]
 
 
@@ -206,6 +245,9 @@ def _setup_function_signatures(lib: CDLL) -> None:
     # --- parsed-model ABI (optional, guarded) ---
     _setup_parsed_model_signatures(lib)
 
+    # --- rig primitive ABI (optional, guarded) ---
+    _setup_rig_primitive_signatures(lib)
+
 
 def _setup_parsed_model_signatures(lib: CDLL) -> None:
     """
@@ -276,6 +318,78 @@ def _set_sig(
         return
     func.restype = restype
     func.argtypes = argtypes
+
+
+def _setup_rig_primitive_signatures(lib: CDLL) -> None:
+    try:
+        # --- rig spec ---
+        _set_sig(lib, "mmd_runtime_pmx_rig_spec_create", c_void_p, [POINTER(c_uint8), c_size_t])
+        _set_sig(lib, "mmd_runtime_pmx_rig_spec_free", None, [c_void_p])
+        _set_sig(lib, "mmd_runtime_pmx_rig_spec_manifest_json", MmdRuntimeFfiByteBuffer, [c_void_p])
+
+        # --- IK chain ---
+        _set_sig(
+            lib,
+            "mmd_runtime_ik_chain_create",
+            c_void_p,
+            [
+                POINTER(MmdRuntimeFfiRigBone),  # bones
+                c_size_t,                       # bone_count
+                c_uint32,                       # target_bone_slot
+                POINTER(MmdRuntimeFfiRigIkLink),  # links
+                c_size_t,                       # link_count
+                c_uint32,                       # iteration_count
+                c_float,                        # limit_angle
+            ],
+        )
+        _set_sig(lib, "mmd_runtime_ik_chain_free", None, [c_void_p])
+        _set_sig(
+            lib,
+            "mmd_runtime_ik_chain_solve",
+            c_bool,
+            [
+                c_void_p,                         # chain
+                POINTER(c_float),                 # parent_world_matrix (nullable)
+                POINTER(c_float),                 # local_position_offsets_xyz
+                POINTER(c_float),                 # local_rotations_xyzw
+                POINTER(c_float),                 # goal_position_xyz
+                c_float,                          # tolerance
+                c_uint32,                         # max_iterations_cap
+                POINTER(c_float),                 # out_link_rotations_xyzw
+                c_size_t,                         # out_link_rotation_f32_len
+                POINTER(MmdRuntimeFfiIkSolveStats),  # out_stats (nullable)
+            ],
+        )
+
+        # --- append solver ---
+        _set_sig(
+            lib,
+            "mmd_runtime_append_solver_create",
+            c_void_p,
+            [POINTER(MmdRuntimeFfiAppendConfig)],
+        )
+        _set_sig(lib, "mmd_runtime_append_solver_free", None, [c_void_p])
+        _set_sig(
+            lib,
+            "mmd_runtime_append_solver_solve",
+            c_bool,
+            [
+                c_void_p,          # solver
+                POINTER(c_float),  # source_position_offset_xyz
+                POINTER(c_float),  # source_rotation_xyzw
+                POINTER(c_float),  # out_position_offset_xyz
+                POINTER(c_float),  # out_rotation_xyzw
+            ],
+        )
+    except Exception as exc:
+        logger.debug(f"rig primitive ABI のシグネチャ設定中にエラー: {exc}")
+
+
+def is_rig_primitive_available() -> bool:
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return False
+    return hasattr(lib, "mmd_runtime_ik_chain_create")
 
 
 def is_native_pmx_parser_available() -> bool:
@@ -1452,3 +1566,283 @@ def connect_runtime_node_outputs_to_model(
         )
 
     return result
+
+
+# ------------------------------------------------------------------
+# Rig Primitive ラッパークラス
+# ------------------------------------------------------------------
+
+
+class MmdRigSpec:
+    """PMX バイト列から rig spec を取得し、manifest JSON を返す。"""
+
+    def __init__(self, lib: CDLL, handle: c_void_p):
+        self._lib = lib
+        self._handle = handle
+
+    @classmethod
+    def from_pmx_bytes(cls, pmx_bytes: bytes) -> Optional["MmdRigSpec"]:
+        lib = get_mmd_runtime_library()
+        if lib is None or not pmx_bytes:
+            return None
+        if not hasattr(lib, "mmd_runtime_pmx_rig_spec_create"):
+            return None
+        try:
+            buf = (c_uint8 * len(pmx_bytes)).from_buffer_copy(pmx_bytes)
+            handle = lib.mmd_runtime_pmx_rig_spec_create(buf, len(pmx_bytes))
+            if not handle:
+                return None
+            return cls(lib, handle)
+        except Exception as e:
+            logger.error(f"MmdRigSpec.from_pmx_bytes failed: {e}", exc_info=True)
+            return None
+
+    def manifest_json(self) -> Optional[Dict[str, Any]]:
+        if not self._handle:
+            return None
+        try:
+            buf: MmdRuntimeFfiByteBuffer = self._lib.mmd_runtime_pmx_rig_spec_manifest_json(
+                self._handle
+            )
+            if not buf.data or buf.len == 0:
+                return None
+            raw = ctypes.string_at(buf.data, buf.len)
+            self._lib.mmd_runtime_byte_buffer_free(buf)
+            return json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            logger.error(f"MmdRigSpec.manifest_json failed: {e}", exc_info=True)
+            return None
+
+    def free(self) -> None:
+        if self._handle and self._lib:
+            try:
+                self._lib.mmd_runtime_pmx_rig_spec_free(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+    def __del__(self) -> None:
+        self.free()
+
+
+class MmdIkChain:
+    """mmd-anim IK chain primitive のラッパー。"""
+
+    def __init__(self, lib: CDLL, handle: c_void_p, bone_count: int, link_count: int):
+        self._lib = lib
+        self._handle = handle
+        self.bone_count = bone_count
+        self.link_count = link_count
+
+    @classmethod
+    def create(
+        cls,
+        bones: List[Dict[str, Any]],
+        target_bone_slot: int,
+        links: List[Dict[str, Any]],
+        iteration_count: int,
+        limit_angle: float,
+    ) -> Optional["MmdIkChain"]:
+        """
+        IK チェーンプリミティブを作成する。
+
+        Args:
+            bones: [{"parent_slot": int, "rest_position": [x,y,z], "flags": int, "fixed_axis": [x,y,z]}]
+            target_bone_slot: effector のミニチェーン内スロット
+            links: [{"bone_slot": int, "has_angle_limit": bool, "angle_limit_min": [x,y,z], "angle_limit_max": [x,y,z]}]
+            iteration_count: IK 反復回数
+            limit_angle: 1 反復あたりの角度制限 (rad)
+        """
+        lib = get_mmd_runtime_library()
+        if lib is None or not hasattr(lib, "mmd_runtime_ik_chain_create"):
+            return None
+
+        bone_count = len(bones)
+        link_count = len(links)
+
+        c_bones = (MmdRuntimeFfiRigBone * bone_count)()
+        for i, b in enumerate(bones):
+            c_bones[i].parent_slot = b.get("parent_slot", -1)
+            pos = b.get("rest_position", [0, 0, 0])
+            for j in range(3):
+                c_bones[i].rest_position_xyz[j] = pos[j]
+            c_bones[i].flags = b.get("flags", 0)
+            axis = b.get("fixed_axis", [0, 0, 0])
+            for j in range(3):
+                c_bones[i].fixed_axis_xyz[j] = axis[j]
+
+        c_links = (MmdRuntimeFfiRigIkLink * link_count)()
+        for i, lk in enumerate(links):
+            c_links[i].bone_slot = lk["bone_slot"]
+            c_links[i].has_angle_limit = lk.get("has_angle_limit", False)
+            lmin = lk.get("angle_limit_min", [0, 0, 0])
+            lmax = lk.get("angle_limit_max", [0, 0, 0])
+            for j in range(3):
+                c_links[i].angle_limit_min_xyz[j] = lmin[j]
+                c_links[i].angle_limit_max_xyz[j] = lmax[j]
+
+        try:
+            handle = lib.mmd_runtime_ik_chain_create(
+                c_bones, bone_count,
+                target_bone_slot,
+                c_links, link_count,
+                iteration_count,
+                limit_angle,
+            )
+            if not handle:
+                return None
+            return cls(lib, handle, bone_count, link_count)
+        except Exception as e:
+            logger.error(f"MmdIkChain.create failed: {e}", exc_info=True)
+            return None
+
+    def solve(
+        self,
+        positions: List[float],
+        rotations: List[float],
+        goal: List[float],
+        tolerance: float = 1e-5,
+        max_iterations_cap: int = 0,
+        parent_world_matrix: Optional[List[float]] = None,
+    ) -> Optional[Tuple[List[float], MmdRuntimeFfiIkSolveStats]]:
+        """
+        IK を解く。
+
+        Args:
+            positions: bone_count * 3 の位置オフセット (xyz)
+            rotations: bone_count * 4 のローカル回転 (xyzw)
+            goal: IK ゴール位置 [x, y, z]
+            tolerance: 収束閾値
+            max_iterations_cap: 0 = 無制限
+            parent_world_matrix: 16 floats (column-major) or None
+
+        Returns:
+            (link_count * 4 の solved rotations xyzw, stats) or None
+        """
+        if not self._handle:
+            return None
+
+        c_pos = (c_float * len(positions))(*positions)
+        c_rot = (c_float * len(rotations))(*rotations)
+        c_goal = (c_float * 3)(*goal)
+
+        out_len = self.link_count * 4
+        c_out = (c_float * out_len)()
+        stats = MmdRuntimeFfiIkSolveStats()
+
+        c_parent = None
+        if parent_world_matrix is not None:
+            c_parent = (c_float * 16)(*parent_world_matrix)
+
+        try:
+            ok = self._lib.mmd_runtime_ik_chain_solve(
+                self._handle,
+                c_parent,
+                c_pos,
+                c_rot,
+                c_goal,
+                tolerance,
+                max_iterations_cap,
+                c_out,
+                out_len,
+                ctypes.byref(stats),
+            )
+            if not ok:
+                return None
+            return list(c_out), stats
+        except Exception as e:
+            logger.error(f"MmdIkChain.solve failed: {e}", exc_info=True)
+            return None
+
+    def free(self) -> None:
+        if self._handle and self._lib:
+            try:
+                self._lib.mmd_runtime_ik_chain_free(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+    def __del__(self) -> None:
+        self.free()
+
+
+class MmdAppendSolver:
+    """mmd-anim append (付与変形) primitive のラッパー。"""
+
+    def __init__(self, lib: CDLL, handle: c_void_p):
+        self._lib = lib
+        self._handle = handle
+
+    @classmethod
+    def create(
+        cls,
+        ratio: float,
+        affect_rotation: bool = True,
+        affect_translation: bool = False,
+    ) -> Optional["MmdAppendSolver"]:
+        lib = get_mmd_runtime_library()
+        if lib is None or not hasattr(lib, "mmd_runtime_append_solver_create"):
+            return None
+
+        config = MmdRuntimeFfiAppendConfig()
+        config.ratio = ratio
+        config.affect_rotation = affect_rotation
+        config.affect_translation = affect_translation
+
+        try:
+            handle = lib.mmd_runtime_append_solver_create(ctypes.byref(config))
+            if not handle:
+                return None
+            return cls(lib, handle)
+        except Exception as e:
+            logger.error(f"MmdAppendSolver.create failed: {e}", exc_info=True)
+            return None
+
+    def solve(
+        self,
+        source_position: List[float],
+        source_rotation: List[float],
+    ) -> Optional[Tuple[List[float], List[float]]]:
+        """
+        付与変形を解く。
+
+        Args:
+            source_position: source bone の位置オフセット [x, y, z]
+            source_rotation: source bone の回転 [x, y, z, w]
+
+        Returns:
+            (out_position [x,y,z], out_rotation [x,y,z,w]) or None
+        """
+        if not self._handle:
+            return None
+
+        c_src_pos = (c_float * 3)(*source_position)
+        c_src_rot = (c_float * 4)(*source_rotation)
+        c_out_pos = (c_float * 3)()
+        c_out_rot = (c_float * 4)()
+
+        try:
+            ok = self._lib.mmd_runtime_append_solver_solve(
+                self._handle,
+                c_src_pos,
+                c_src_rot,
+                c_out_pos,
+                c_out_rot,
+            )
+            if not ok:
+                return None
+            return list(c_out_pos), list(c_out_rot)
+        except Exception as e:
+            logger.error(f"MmdAppendSolver.solve failed: {e}", exc_info=True)
+            return None
+
+    def free(self) -> None:
+        if self._handle and self._lib:
+            try:
+                self._lib.mmd_runtime_append_solver_free(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+    def __del__(self) -> None:
+        self.free()

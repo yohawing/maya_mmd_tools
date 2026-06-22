@@ -30,7 +30,10 @@ native バイナリ (mmd_anim_ffi.dll / .dylib) が存在しない場合は
 """
 
 from .mmd_anim_runtime import (
+    MmdAppendSolver,
+    MmdIkChain,
     MmdParsedModel,
+    MmdRigSpec,
     MmdRuntimeClip,
     MmdRuntimeInstance,
     MmdRuntimeModel,
@@ -39,16 +42,21 @@ from .mmd_anim_runtime import (
     get_runtime_matrices_from_node,
     is_mmd_runtime_available,
     is_native_pmx_parser_available,
+    is_rig_primitive_available,
 )
 
 __all__ = [
     "is_mmd_runtime_available",
     "is_native_pmx_parser_available",
+    "is_rig_primitive_available",
     "get_mmd_runtime_library",
     "MmdRuntimeModel",
     "MmdRuntimeClip",
     "MmdRuntimeInstance",
     "MmdParsedModel",
+    "MmdRigSpec",
+    "MmdIkChain",
+    "MmdAppendSolver",
     "create_runtime_node_for_model",
     "get_runtime_matrices_from_node",
 ]

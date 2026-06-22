@@ -68,6 +68,7 @@ class BoneConverter:
         root_group,
         setup_rig=True,
         setup_bone_orientation=True,
+        pmx_filepath: str = None,
     ):
         """
         PMXのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
@@ -104,7 +105,10 @@ class BoneConverter:
         # リグのセットアップはRigConverterに委譲。
         # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
         if setup_rig:
-            self.rig_converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
+            self.rig_converter.setup_pmx_rig(
+                pmx_data, maya_joints, bone_map, skeleton_group,
+                pmx_filepath=pmx_filepath,
+            )
 
         # 複数メッシュ対応: mesh_node がリストの場合、各メッシュに同一 skeleton で skinCluster を適用
         mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])

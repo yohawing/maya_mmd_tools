@@ -120,6 +120,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 root_group,
                 setup_rig=options.get("setup_rig", True),
                 setup_bone_orientation=options.get("setup_bone_orientation", True),
+                pmx_filepath=filepath,
             )
             _record_phase("bone_and_skin_conversion_sec", phase_start)
             logger.debug(
