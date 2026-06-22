@@ -574,6 +574,8 @@ class ImportExportTab(BaseTab):
             self.start_frame_label.setText(self.tr("start_frame", "fields"))
         if hasattr(self, "vmd_fps_label"):
             self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
+        if hasattr(self, "transparency_threshold_label"):
+            self.transparency_threshold_label.setText(self.tr("transparency_opaque_threshold", "fields"))
         if hasattr(self, "format_label"):
             self.format_label.setText(self.tr("format", "fields"))
         if hasattr(self, "import_path_label"):
@@ -608,10 +610,14 @@ class ImportExportTab(BaseTab):
 
         # CheckBoxes
         self.use_namespace_check.setText(self.tr("use_namespace", "checkboxes"))
+        self.custom_namespace_check.setText(self.tr("custom_namespace", "checkboxes"))
+        self.namespace_edit.setPlaceholderText(self.tr("namespace_placeholder", "labels"))
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
         self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
         self.split_by_morph_groups_check.setText(self.tr("split_meshes_by_morph_groups", "checkboxes"))
+        if hasattr(self, "auto_classify_transparency_check"):
+            self.auto_classify_transparency_check.setText(self.tr("auto_classify_transparency", "checkboxes"))
         if hasattr(self, "auto_resolve_textures_check"):
             self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
         self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
