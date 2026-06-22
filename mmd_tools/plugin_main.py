@@ -3,6 +3,8 @@ import maya.api.OpenMaya as om
 from mmd_tools import __version__
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.view import shader_override as mmd_shader
+from mmd_tools.nodes import mmd_append_node
+from mmd_tools.nodes import mmd_ccd_ik_node
 
 
 def maya_useNewAPI():
@@ -58,12 +60,13 @@ def initializePlugin(mobject):
     vendor = "yohawing"
     version = __version__
 
-    # プラグインオブジェクトを作成 (API 2.0)
-    om.MFnPlugin(mobject, vendor, version)
+    plugin_fn = om.MFnPlugin(mobject, vendor, version)
 
     try:
         install_mmd_menu()
-        mmd_shader.initializePlugin(mobject)  # Register shader with API 2.0
+        mmd_shader.initializePlugin(mobject)
+        mmd_append_node.register(plugin_fn)
+        mmd_ccd_ik_node.register(plugin_fn)
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
         raise
@@ -73,12 +76,13 @@ def uninitializePlugin(mobject):
     """
     Plugin exit point.
     """
-    # プラグインオブジェクトを作成 (API 2.0)
-    om.MFnPlugin(mobject)
+    plugin_fn = om.MFnPlugin(mobject)
 
     try:
         uninstall_mmd_menu()
-        mmd_shader.uninitializePlugin(mobject)  # Deregister shader with API 2.0
+        mmd_shader.uninitializePlugin(mobject)
+        mmd_append_node.deregister(plugin_fn)
+        mmd_ccd_ik_node.deregister(plugin_fn)
     except Exception as e:
         om.MGlobal.displayError(f"Plugin uninitialization failed: {str(e)}")
         raise
