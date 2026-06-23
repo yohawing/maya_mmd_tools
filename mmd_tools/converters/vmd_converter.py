@@ -179,6 +179,7 @@ class VmdConverter:
         self, vmd_bytes: bytes, pmx_bytes: bytes, pmx_path: str
     ) -> bool:
         """PMX 専用の runtime ベイクを使うか判定（pmx_bytes or .pmx path）。"""
+        # IK/append routing をレガシーパスと統合するまで一時無効化
         return False
 
         if not (HAS_MMD_RUNTIME and is_mmd_runtime_available()):
@@ -1495,20 +1496,19 @@ class VmdConverter:
             tx = float(bind_pos[0]) + float(vmd_pos[0])
             ty = float(bind_pos[1]) + float(vmd_pos[1])
             tz = float(bind_pos[2]) - float(vmd_pos[2])
-            rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
 
             values = {
                 "translateX": tx,
                 "translateY": ty,
                 "translateZ": tz,
-                "rotateX": rx,
-                "rotateY": ry,
-                "rotateZ": rz,
             }
+            if not skip_rotate:
+                rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+                values["rotateX"] = rx
+                values["rotateY"] = ry
+                values["rotateZ"] = rz
 
             for attr, value in values.items():
-                if skip_rotate and attr.startswith("rotate"):
-                    continue
                 target_node, target_attr = attr_targets.get(attr, (joint, attr))
                 key_args = {
                     "attribute": target_attr,
@@ -1543,24 +1543,49 @@ class VmdConverter:
             except Exception as e:
                 self.logger.warning(f"{joint}へのQuaternion補間適用に失敗: {str(e)}")
 
-    def _convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw):
-        """VMD quaternion を Maya joint.rotate の Euler 角（度）へ変換する。"""
-        q_maya = om.MQuaternion(-float(qx), -float(qy), float(qz), float(qw))
+    def _get_joint_orient_cache(self, joint_name):
+        """joint の jointOrient quaternion と rotateOrder をキャッシュ付きで取得する。"""
+        if not hasattr(self, "_joint_orient_cache"):
+            self._joint_orient_cache = {}
+        cached = self._joint_orient_cache.get(joint_name)
+        if cached is not None:
+            return cached
 
         joint_orient = cmds.getAttr(f"{joint_name}.jointOrient")[0]
-        if any(abs(value) > 1e-8 for value in joint_orient):
-            q_joint_orient = om.MEulerRotation(
+        rotate_order = int(cmds.getAttr(f"{joint_name}.rotateOrder"))
+
+        if any(abs(v) > 1e-8 for v in joint_orient):
+            q_jo = om.MEulerRotation(
                 math.radians(joint_orient[0]),
                 math.radians(joint_orient[1]),
                 math.radians(joint_orient[2]),
             ).asQuaternion()
-            q_rotate = q_maya * q_joint_orient.inverse()
+        else:
+            q_jo = None
+
+        rotate_axis = cmds.getAttr(f"{joint_name}.rotateAxis")[0]
+        if any(abs(v) > 1e-8 for v in rotate_axis):
+            self.logger.warning(
+                f"{joint_name} の rotateAxis が非ゼロです ({rotate_axis})。"
+                "レガシーパスでは rotateAxis 未対応のため回転精度が低下します"
+            )
+
+        result = (q_jo, rotate_order)
+        self._joint_orient_cache[joint_name] = result
+        return result
+
+    def _convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw):
+        """VMD quaternion を Maya joint.rotate の Euler 角（度）へ変換する。"""
+        q_maya = om.MQuaternion(-float(qx), -float(qy), float(qz), float(qw))
+
+        q_jo, rotate_order = self._get_joint_orient_cache(joint_name)
+        if q_jo is not None:
+            q_rotate = q_maya * q_jo.inverse()
         else:
             q_rotate = q_maya
 
-        rotate_order = cmds.getAttr(f"{joint_name}.rotateOrder")
         euler = q_rotate.asEulerRotation()
-        euler.reorderIt(int(rotate_order))
+        euler.reorderIt(rotate_order)
         return (math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z))
 
     def get_parent_world_rotation(self, joint):
