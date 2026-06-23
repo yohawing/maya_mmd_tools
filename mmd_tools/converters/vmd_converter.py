@@ -1390,8 +1390,12 @@ class VmdConverter:
                     self._failed_bones.add(vmd_bone_name)
 
         # アニメーションレイヤーにジョイントを追加
+        # IK link ジョイントは除外 — animLayer が rotate blend node を自動生成し
+        # mmdCcdIk solver の outputRotate 接続を上書きするため
         if self.use_animation_layers and self.anim_layer and animated_joints:
-            self._add_objects_to_layer(animated_joints)
+            ik_link_joints = self._collect_ik_link_joints()
+            layer_joints = [j for j in animated_joints if j not in ik_link_joints]
+            self._add_objects_to_layer(layer_joints)
 
         self.logger.info(f"{success_count}/{total_count}個のボーンアニメーションを変換しました")
         return success_count > 0
@@ -1473,10 +1477,15 @@ class VmdConverter:
             target_node, target_attr = attr_targets.get(attr, (joint, attr))
             keyed_attrs_by_node.setdefault(target_node, []).append(target_attr)
 
-        if self.use_animation_layers and self.anim_layer is not None:
+        # IK link ボーンは animLayer を使わない — animLayer が rotate blend node を
+        # 自動生成し、mmdCcdIk solver の compound rotate 接続を上書きするため
+        use_layer = self.use_animation_layers and self.anim_layer is not None and not skip_rotate
+        if use_layer:
             cmds.animLayer(self.anim_layer, edit=True, selected=True)
             for target_node, target_attrs in keyed_attrs_by_node.items():
                 self._add_attrs_to_anim_layer(target_node, target_attrs)
+        elif self.use_animation_layers and self.anim_layer is not None:
+            cmds.animLayer(self.anim_layer, edit=True, selected=False)
 
         bind_pos = self._bone_bind_poses.get(
             vmd_bone_name,
@@ -1515,7 +1524,7 @@ class VmdConverter:
                     "time": frame_number,
                     "value": float(value),
                 }
-                if self.use_animation_layers and self.anim_layer is not None:
+                if use_layer:
                     key_args["animLayer"] = self.anim_layer
                 cmds.setKeyframe(target_node, **key_args)
 
