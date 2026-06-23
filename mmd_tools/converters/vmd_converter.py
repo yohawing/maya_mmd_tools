@@ -1401,9 +1401,15 @@ class VmdConverter:
         return success_count > 0
 
     @staticmethod
-    def _collect_ik_link_joints() -> set:
-        """mmdCcdIk 出力で rotate が駆動される IK link joint を収集する。"""
-        ik_link_joints = set()
+    def _collect_ik_link_joints() -> dict:
+        """mmdCcdIk 出力で rotate が駆動される IK link joint を収集する。
+
+        Returns:
+            {joint_name: {"solver": solver_node, "slot": bone_slot}} 辞書。
+            bone_slot は chainJson 内の links[i].bone_slot で、solver の
+            inputRotate にキーイングするときのインデックスとして使う。
+        """
+        ik_link_joints: dict = {}
         for node in cmds.ls(type="mmdCcdIk") or []:
             try:
                 raw_chain = cmds.getAttr(f"{node}.chainJson")
@@ -1411,15 +1417,18 @@ class VmdConverter:
             except Exception:
                 continue
 
-            for link_index, _link in enumerate(cfg.get("links", [])):
+            links = cfg.get("links", [])
+            for link_index, link in enumerate(links):
                 dests = cmds.listConnections(
                     f"{node}.outputRotate[{link_index}]",
                     s=False,
                     d=True,
                     p=True,
                 ) or []
+                bone_slot = link.get("bone_slot", link_index)
                 for dest in dests:
-                    ik_link_joints.add(dest.split(".", 1)[0])
+                    jnt = dest.split(".", 1)[0]
+                    ik_link_joints[jnt] = {"solver": node, "slot": bone_slot}
         return ik_link_joints
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
@@ -1429,9 +1438,11 @@ class VmdConverter:
         routes: Dict[str, dict] = {}
 
         for joint in set(self.bone_name_mapping.values()):
+            ik_info = ik_link_joints.get(joint)
             route = {
                 "attr_targets": {},
                 "skip_rotate": joint in ik_link_joints,
+                "ik_solver_rotate": ik_info,
             }
             info = append_info.get(joint)
             if info:
@@ -1440,7 +1451,7 @@ class VmdConverter:
                     if append_node:
                         route["attr_targets"][src_attr] = (append_node, dst_attr)
 
-            if route["attr_targets"] or route["skip_rotate"]:
+            if route["attr_targets"] or route["skip_rotate"] or ik_info:
                 routes[joint] = route
 
         return routes
@@ -1535,6 +1546,32 @@ class VmdConverter:
 
         # # キーフレームを一括設定
         # maya_utils.set_keyframes_batch(curves, frames, generate_values)
+
+        # IK link bone: VMD 回転を solver.inputRotate にキーイング
+        # joint.rotate は solver.outputRotate が駆動するので直接キーできないが、
+        # solver の inputRotate に VMD の事前解決済み回転を渡すことで
+        # CCD IK の base_rotation として使われ、正しい解に収束する
+        ik_info = key_route.get("ik_solver_rotate") if key_route else None
+        if ik_info:
+            solver_node = ik_info["solver"]
+            slot = ik_info["slot"]
+            ir_attrs = [
+                f"inputRotate[{slot}].inputRotateElementX",
+                f"inputRotate[{slot}].inputRotateElementY",
+                f"inputRotate[{slot}].inputRotateElementZ",
+            ]
+            for frame in frames:
+                if hasattr(frame, "frame_number"):
+                    fn = frame.frame_number
+                    rq = frame.rotation
+                else:
+                    fn = frame.get("frame_number", 0)
+                    rq = frame.get("rotation", [0, 0, 0, 1])
+                rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(joint, *rq)
+                # kAngle 複合配列の子属性は setKeyframe で度→ラジアン自動変換が
+                # 効かないため、明示的にラジアンに変換してからキーイングする
+                for attr, val in zip(ir_attrs, [rx, ry, rz]):
+                    cmds.setKeyframe(solver_node, attribute=attr, time=fn, value=math.radians(val))
 
         # Quaternion補間を適用（rotate が joint 自身に直接キーされている場合のみ）
         rotate_redirected = any(

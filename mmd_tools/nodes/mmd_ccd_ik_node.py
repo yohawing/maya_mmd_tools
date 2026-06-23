@@ -179,22 +179,25 @@ class MmdCcdIkNode(om.MPxNode):
                 pass
 
         # Input rotations: Maya euler → MMD quaternion
-        # Non-link bones: q_mmd = z_mirror(q_rotate * q_jointOrient)
-        # IK link bones: excluded from inputRotate → identity
+        # Connected slots (joint.rotate or animCurve): q_mmd = z_mirror(q_rotate * q_jo)
+        # Unconnected slots: identity (no JO correction)
         rotations = []
         ir_plug = fn_dep.findPlug("inputRotate", False)
         for bone_i in range(self._bone_count):
             rx = ry = rz = 0.0
+            connected = False
             try:
                 elem_plug = ir_plug.elementByLogicalIndex(bone_i)
-                rx = elem_plug.child(0).asDouble()
-                ry = elem_plug.child(1).asDouble()
-                rz = elem_plug.child(2).asDouble()
+                connected = elem_plug.isDestination or elem_plug.child(0).isDestination
+                if connected:
+                    rx = elem_plug.child(0).asDouble()
+                    ry = elem_plug.child(1).asDouble()
+                    rz = elem_plug.child(2).asDouble()
             except Exception:
                 pass
             euler = om.MEulerRotation(rx, ry, rz)
             q = euler.asQuaternion()
-            if bone_i not in self._ik_link_slots and bone_i < len(self._bone_joint_orients):
+            if connected and bone_i < len(self._bone_joint_orients):
                 q_jo = self._bone_joint_orients[bone_i]
                 if q_jo is not None:
                     q = q * q_jo
