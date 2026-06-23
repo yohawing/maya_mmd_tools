@@ -1063,11 +1063,21 @@ class RigConverter:
                 if fixed_axis is not None:
                     flags = 0x1  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS (1 << 0)
                     fa = list(fixed_axis)
+                jo_deg = [0.0, 0.0, 0.0]
+                if pmx_idx < len(maya_joints):
+                    jnt = maya_joints[pmx_idx]
+                    if maya_utils.object_exists(jnt):
+                        try:
+                            jo = cmds.getAttr(f"{jnt}.jointOrient")[0]
+                            jo_deg = [jo[0], jo[1], jo[2]]
+                        except Exception:
+                            pass
                 bones_for_json.append({
                     "parent_slot": parent_slot,
                     "rest_position": None,
                     "flags": flags,
                     "fixed_axis": fa,
+                    "joint_orient_deg": jo_deg,
                 })
 
             for slot, bone in enumerate(bones_for_json):
@@ -1138,6 +1148,17 @@ class RigConverter:
                         jnt = maya_joints[pmx_idx]
                         if maya_utils.object_exists(jnt):
                             cmds.connectAttr(f"{jnt}.rotate", f"{node}.inputRotate[{slot}]")
+
+                # inputTranslate: ALL bones for position offset computation
+                for slot in range(bone_count):
+                    pmx_idx = slot_to_pmx[slot]
+                    if pmx_idx < len(maya_joints):
+                        jnt = maya_joints[pmx_idx]
+                        if maya_utils.object_exists(jnt):
+                            cmds.connectAttr(
+                                f"{jnt}.translate",
+                                f"{node}.inputTranslate[{slot}]",
+                            )
 
                 # outputRotate → link joint rotations
                 for link_i, link_slot in enumerate(link_slots):
