@@ -11,10 +11,11 @@ Phase 1 以降:
 from __future__ import annotations
 
 import json
+import math
+import os
 import time
 from typing import Dict, List, Optional, Tuple, Union
 
-import os
 from pathlib import Path
 
 import maya.api.OpenMaya as om
@@ -1358,6 +1359,7 @@ class VmdConverter:
         success_count = 0
         total_count = len(bone_frame_map)
         animated_joints = []  # アニメーションを適用したジョイントのリスト
+        key_routes = self._build_legacy_bone_key_routes()
 
         # 各ボーンのアニメーションを設定
         for vmd_bone_name, frames in bone_frame_map.items():
@@ -1369,7 +1371,12 @@ class VmdConverter:
                     frames.sort(key=lambda x: x.frame_number if hasattr(x, "frame_number") else x.get("frame_number", 0))
 
                     # 位置と回転のキーフレームを設定
-                    self._set_bone_keyframes(maya_joint, frames, vmd_bone_name)
+                    self._set_bone_keyframes(
+                        maya_joint,
+                        frames,
+                        vmd_bone_name,
+                        key_routes.get(maya_joint),
+                    )
                     animated_joints.append(maya_joint)
                     success_count += 1
 
@@ -1388,50 +1395,129 @@ class VmdConverter:
         self.logger.info(f"{success_count}/{total_count}個のボーンアニメーションを変換しました")
         return success_count > 0
 
-    def _set_bone_keyframes(self, joint: str, frames: List, vmd_bone_name: str):
+    @staticmethod
+    def _collect_ik_link_joints() -> set:
+        """mmdCcdIk 出力で rotate が駆動される IK link joint を収集する。"""
+        ik_link_joints = set()
+        for node in cmds.ls(type="mmdCcdIk") or []:
+            try:
+                raw_chain = cmds.getAttr(f"{node}.chainJson")
+                cfg = json.loads(raw_chain) if raw_chain else {}
+            except Exception:
+                continue
+
+            for link_index, _link in enumerate(cfg.get("links", [])):
+                dests = cmds.listConnections(
+                    f"{node}.outputRotate[{link_index}]",
+                    s=False,
+                    d=True,
+                    p=True,
+                ) or []
+                for dest in dests:
+                    ik_link_joints.add(dest.split(".", 1)[0])
+        return ik_link_joints
+
+    def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
+        """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""
+        append_info = self._collect_append_info()
+        ik_link_joints = self._collect_ik_link_joints()
+        routes: Dict[str, dict] = {}
+
+        for joint in set(self.bone_name_mapping.values()):
+            route = {
+                "attr_targets": {},
+                "skip_rotate": joint in ik_link_joints,
+            }
+            info = append_info.get(joint)
+            if info:
+                append_node = info.get("node")
+                for src_attr, dst_attr in info.get("attr_map", {}).items():
+                    if append_node:
+                        route["attr_targets"][src_attr] = (append_node, dst_attr)
+
+            if route["attr_targets"] or route["skip_rotate"]:
+                routes[joint] = route
+
+        return routes
+
+    def _add_attrs_to_anim_layer(self, node: str, attrs: List[str]):
+        """指定属性を現在のアニメーションレイヤーへ追加する。"""
+        if not (self.use_animation_layers and self.anim_layer):
+            return
+        if not cmds.objExists(node):
+            return
+
+        for attr in attrs:
+            if cmds.attributeQuery(attr, node=node, exists=True):
+                cmds.animLayer(self.anim_layer, edit=True, attribute=f"{node}.{attr}")
+
+    def _set_bone_keyframes(self, joint: str, frames: List, vmd_bone_name: str, key_route: Optional[dict] = None):
         """ボーンのキーフレームを設定
 
         Args:
             joint: Mayaジョイント名
             frames: フレームデータのリスト
             vmd_bone_name: VMDボーン名
+            key_route: append / IK rig 接続に応じたキー出力先情報
         """
-        # アニメーションレイヤーが有効な場合、レイヤーを選択
-        if self.use_animation_layers and self.anim_layer:
-            cmds.animLayer(self.anim_layer, edit=True, selected=True)
+        key_route = key_route or {}
+        attr_targets = key_route.get("attr_targets", {})
+        skip_rotate = bool(key_route.get("skip_rotate"))
+        attrs = ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]
 
-        affected_layers = cmds.animLayer([joint], query=True, affectedLayers=True) or []
-        if self.anim_layer not in affected_layers:
-            # オブジェクトをレイヤーに追加
-            cmds.select(joint, replace=True)
-            cmds.animLayer(self.anim_layer, edit=True, addSelectedObjects=True)
+        keyed_attrs_by_node: Dict[str, List[str]] = {}
+        for attr in attrs:
+            if skip_rotate and attr.startswith("rotate"):
+                continue
+            target_node, target_attr = attr_targets.get(attr, (joint, attr))
+            keyed_attrs_by_node.setdefault(target_node, []).append(target_attr)
+
+        if self.use_animation_layers and self.anim_layer is not None:
+            cmds.animLayer(self.anim_layer, edit=True, selected=True)
+            for target_node, target_attrs in keyed_attrs_by_node.items():
+                self._add_attrs_to_anim_layer(target_node, target_attrs)
+
+        bind_pos = self._bone_bind_poses.get(
+            vmd_bone_name,
+            self._bone_bind_poses.get(joint, (0.0, 0.0, 0.0)),
+        )
 
         for frame in frames:
             if hasattr(frame, "frame_number"):
-                pos = om.MVector(frame.position)
+                frame_number = frame.frame_number
+                vmd_pos = frame.position
                 rotation_quat = frame.rotation
             else:
-                pos = om.MVector(frame.get("position", [0, 0, 0]))
+                frame_number = frame.get("frame_number", 0)
+                vmd_pos = frame.get("position", [0, 0, 0])
                 rotation_quat = frame.get("rotation", [0, 0, 0, 1])
 
-            # 属性リストをまとめてループ処理
-            attrs = ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]
+            tx = float(bind_pos[0]) + float(vmd_pos[0])
+            ty = float(bind_pos[1]) + float(vmd_pos[1])
+            tz = float(bind_pos[2]) - float(vmd_pos[2])
+            rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
 
-            # Translateを適用
-            pos.z = -pos.z  # Z軸反転
-            pos += om.MVector(maya_utils.get_attribute(joint, "translate"))
-            maya_utils.set_attribute(joint, "translate", pos, "double3")
+            values = {
+                "translateX": tx,
+                "translateY": ty,
+                "translateZ": tz,
+                "rotateX": rx,
+                "rotateY": ry,
+                "rotateZ": rz,
+            }
 
-            # 回転を適用
-            self.apply_rotation(joint, om.MQuaternion(*rotation_quat))
-
-            for attr in attrs:
-                cmds.setKeyframe(
-                    joint,
-                    attribute=attr,
-                    time=frame.frame_number,
-                    animLayer=self.anim_layer,
-                )
+            for attr, value in values.items():
+                if skip_rotate and attr.startswith("rotate"):
+                    continue
+                target_node, target_attr = attr_targets.get(attr, (joint, attr))
+                key_args = {
+                    "attribute": target_attr,
+                    "time": frame_number,
+                    "value": float(value),
+                }
+                if self.use_animation_layers and self.anim_layer is not None:
+                    key_args["animLayer"] = self.anim_layer
+                cmds.setKeyframe(target_node, **key_args)
 
         # TODO: maya apiを使うなら、キーフレームを先に打って、カーブを作成した後に、一括で設定するとパフォーマンスが向上する。
         # curves = maya_utils.create_animation_curves(
@@ -1442,17 +1528,42 @@ class VmdConverter:
         # maya_utils.set_keyframes_batch(curves, frames, generate_values)
 
         # Quaternion補間を適用
-        if self.use_quaternion_interpolation:
+        if self.use_quaternion_interpolation and not skip_rotate:
             try:
+                rotate_targets = [
+                    attr_targets.get("rotateX", (joint, "rotateX")),
+                    attr_targets.get("rotateY", (joint, "rotateY")),
+                    attr_targets.get("rotateZ", (joint, "rotateZ")),
+                ]
                 # rotationInterpolationコマンドでQuaternion補間に変換
                 cmds.rotationInterpolation(
-                    f"{joint}.rotateX",
-                    f"{joint}.rotateY",
-                    f"{joint}.rotateZ",
+                    f"{rotate_targets[0][0]}.{rotate_targets[0][1]}",
+                    f"{rotate_targets[1][0]}.{rotate_targets[1][1]}",
+                    f"{rotate_targets[2][0]}.{rotate_targets[2][1]}",
                     convert="quaternionSlerp",  # "quaternionSquad"も選択可能（より滑らか）
                 )
             except Exception as e:
                 self.logger.warning(f"{joint}へのQuaternion補間適用に失敗: {str(e)}")
+
+    def _convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw):
+        """VMD quaternion を Maya joint.rotate の Euler 角（度）へ変換する。"""
+        q_maya = om.MQuaternion(-float(qx), -float(qy), float(qz), float(qw))
+
+        joint_orient = cmds.getAttr(f"{joint_name}.jointOrient")[0]
+        if any(abs(value) > 1e-8 for value in joint_orient):
+            q_joint_orient = om.MEulerRotation(
+                math.radians(joint_orient[0]),
+                math.radians(joint_orient[1]),
+                math.radians(joint_orient[2]),
+            ).asQuaternion()
+            q_rotate = q_maya * q_joint_orient.inverse()
+        else:
+            q_rotate = q_maya
+
+        rotate_order = cmds.getAttr(f"{joint_name}.rotateOrder")
+        euler = q_rotate.asEulerRotation()
+        euler.reorderIt(int(rotate_order))
+        return (math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z))
 
     def get_parent_world_rotation(self, joint):
         """Maya API 2.0を使用して親ワールド変換行列から親の回転を取得"""
@@ -1475,34 +1586,15 @@ class VmdConverter:
         return parent_transform_matrix.rotation(asQuaternion=True)
 
     def apply_rotation(self, joint, world_quat):
-        # Z軸反転の変換行列
-        flip_matrix = om.MMatrix([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
-        transform = om.MTransformationMatrix(flip_matrix)
-        flip_quat = transform.rotation(asQuaternion=True)
-        converted_quat = flip_quat.inverse() * world_quat * flip_quat
-
-        # JointOrientをQuaternionとして取得
-        orient_euler = maya_utils.get_attribute(joint, "jointOrient")
-        joint_orient = om.MEulerRotation(orient_euler).asQuaternion()
-
-        # 親のワールド回転を取得（ワールド変換行列から）
-        parent_world_rotation = self.get_parent_world_rotation(joint)
-
-        # 回転の適応
-        local_rotation = (
-            joint_orient.inverse() * parent_world_rotation.inverse() * converted_quat * parent_world_rotation * joint_orient
+        """Deprecated: use _convert_vmd_quat_to_joint_rotate() and key explicit values."""
+        rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(
+            joint,
+            world_quat.x,
+            world_quat.y,
+            world_quat.z,
+            world_quat.w,
         )
-        # 3. ローカル回転をEulerに変換してrotate属性に設定
-        local_euler = local_rotation.asEulerRotation()
-
-        # なぜかはわからないが、QuaternionのZ軸を反転させることはできずに、最後にオイラーにしたものを変換したら出来る。
-        local_euler.z = -local_euler.z  # Z軸反転
-        local_euler = local_euler.inverse()
-
-        # MatrixのZ軸反転と単純にZ軸をInvertするのとでは挙動が違う
-        # local_euler *= flip_euler
-
-        maya_utils.set_attribute(joint, "rotate", local_euler, "double3")
+        cmds.setAttr(f"{joint}.rotate", rx, ry, rz, type="double3")
 
     def get_failed_bones(self) -> set:
         """変換に失敗したボーン名のセットを取得

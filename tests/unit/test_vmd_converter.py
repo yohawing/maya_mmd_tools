@@ -928,6 +928,117 @@ class TestVmdConverter(MayaTestBase):
 
         return {"center": center, "upper_body": upper_body, "head": head}
 
+    def _make_bone_frame(self, bone_name, frame_number, position, rotation=(0.0, 0.0, 0.0, 1.0)):
+        """テスト用 VMD ボーンフレームを作成する。"""
+        from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+
+        frame = VmdBoneFrame()
+        frame.bone_name = bone_name
+        frame.frame_number = frame_number
+        frame.position = position
+        frame.rotation = rotation
+        return frame
+
+    def test_legacy_bone_keyframes_use_bind_pose_without_accumulation(self):
+        """レガシー VMD パスは現在フレーム値ではなく bind pose + VMD offset を key する。"""
+        joint = cmds.joint(name="legacy_bind_pose_joint")
+        cmds.setAttr(f"{joint}.translate", 100.0, 100.0, 100.0, type="double3")
+        self.converter.use_animation_layers = False
+        self.converter._bone_bind_poses["センター"] = (3.0, 4.0, 5.0)
+
+        frames = [
+            self._make_bone_frame("センター", 0, (1.0, 2.0, 3.0)),
+            self._make_bone_frame("センター", 10, (2.0, 3.0, 4.0)),
+        ]
+        self.converter._set_bone_keyframes(joint, frames, "センター")
+
+        cmds.currentTime(0, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 4.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateY"), 6.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateZ"), 2.0, places=6)
+
+        cmds.currentTime(10, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 5.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateY"), 7.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateZ"), 1.0, places=6)
+
+        cmds.delete(joint)
+
+    def test_convert_vmd_quat_to_joint_rotate_removes_joint_orient(self):
+        """VMD quaternion は Z flip 後に jointOrient の逆を掛けて joint.rotate へ変換される。"""
+        joint = cmds.joint(name="legacy_joint_orient_joint")
+        cmds.setAttr(f"{joint}.jointOrient", 0.0, 0.0, 45.0)
+        cmds.setAttr(f"{joint}.rotateOrder", 0)
+
+        rx, ry, rz = self.converter._convert_vmd_quat_to_joint_rotate(
+            joint,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        )
+
+        self.assertAlmostEqual(rx, 0.0, places=6)
+        self.assertAlmostEqual(ry, 0.0, places=6)
+        self.assertAlmostEqual(rz, -45.0, places=6)
+
+        cmds.delete(joint)
+
+    def test_legacy_bone_animation_redirects_append_rotate_to_base_rotate(self):
+        """append target ボーンの rotate は append node の baseRotate に key する。"""
+        joint = cmds.joint(name="legacy_append_target_joint")
+        cmds.select(clear=True)
+        append_node = cmds.createNode("transform", name="legacy_append_route_node")
+        for attr in ("baseRotateX", "baseRotateY", "baseRotateZ"):
+            cmds.addAttr(append_node, longName=attr, attributeType="double", keyable=True)
+
+        self.converter.use_animation_layers = False
+        self.converter.set_bone_name_mapping({"付与先": joint})
+        self.converter._bone_bind_poses["付与先"] = (0.0, 0.0, 0.0)
+        frames = [self._make_bone_frame("付与先", 3, (0.0, 0.0, 0.0))]
+
+        append_info = {
+            joint: {
+                "node": append_node,
+                "attr_map": {
+                    "rotateX": "baseRotateX",
+                    "rotateY": "baseRotateY",
+                    "rotateZ": "baseRotateZ",
+                },
+            }
+        }
+        with patch.object(self.converter, "_collect_append_info", return_value=append_info), patch.object(
+            self.converter,
+            "_collect_ik_link_joints",
+            return_value=set(),
+        ):
+            self.assertTrue(self.converter._convert_bone_animation(frames))
+
+        self.assertIn(3.0, cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True) or [])
+        self.assertIsNone(cmds.keyframe(f"{joint}.rotateX", query=True, timeChange=True))
+
+        cmds.delete(joint, append_node)
+
+    def test_legacy_bone_animation_skips_ik_link_rotate_keys(self):
+        """IK link ボーンは translate のみ key し、solver 駆動 rotate には key しない。"""
+        joint = cmds.joint(name="legacy_ik_link_joint")
+        self.converter.use_animation_layers = False
+        self.converter.set_bone_name_mapping({"ＩＫリンク": joint})
+        self.converter._bone_bind_poses["ＩＫリンク"] = (1.0, 2.0, 3.0)
+        frames = [self._make_bone_frame("ＩＫリンク", 7, (1.0, 0.0, 2.0))]
+
+        with patch.object(self.converter, "_collect_append_info", return_value={}), patch.object(
+            self.converter,
+            "_collect_ik_link_joints",
+            return_value={joint},
+        ):
+            self.assertTrue(self.converter._convert_bone_animation(frames))
+
+        self.assertIn(7.0, cmds.keyframe(f"{joint}.translateX", query=True, timeChange=True) or [])
+        self.assertIsNone(cmds.keyframe(f"{joint}.rotateX", query=True, timeChange=True))
+
+        cmds.delete(joint)
+
     def test_convert_with_fixture_vmd_camera(self):
         """フィクスチャを使用したカメラアニメーション変換テスト"""
         # テスト用VMDファイルを取得
