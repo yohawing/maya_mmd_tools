@@ -426,8 +426,24 @@ class VmdConverter:
                 tm = om.MTransformationMatrix(local_m)
                 t = tm.translation(om.MSpace.kTransform)
                 tx, ty, tz = float(t.x), float(t.y), float(t.z)
-                ro = getattr(self, "_bone_rotate_orders", {}).get(bidx, 0)
-                rx, ry, rz = self._extract_euler_from_matrix(local_m, ro)
+                q_total = tm.rotation(asQuaternion=True)
+                q_jo, ro = self._get_joint_orient_cache(joint)
+                if q_jo is not None:
+                    q_rotate = q_total * q_jo.inverse()
+                else:
+                    q_rotate = q_total
+                order_map = {
+                    0: om.MEulerRotation.kXYZ, 1: om.MEulerRotation.kYZX,
+                    2: om.MEulerRotation.kZXY, 3: om.MEulerRotation.kXZY,
+                    4: om.MEulerRotation.kYXZ, 5: om.MEulerRotation.kZYX,
+                }
+                e = q_rotate.asEulerRotation()
+                order = order_map.get(ro, om.MEulerRotation.kXYZ)
+                if e.order != order:
+                    e.reorderIt(order)
+                rx = math.degrees(e.x)
+                ry = math.degrees(e.y)
+                rz = math.degrees(e.z)
                 locals_map[bidx] = (tx, ty, tz, rx, ry, rz)
             except Exception as e:
                 self.logger.debug(f"local compute fail for bone_idx={bidx}: {e}")

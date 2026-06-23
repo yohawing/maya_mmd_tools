@@ -215,10 +215,8 @@ class MmdCcdIkNode(om.MPxNode):
         out_rots, stats = result
 
         # Output rotations: MMD quaternion → Maya joint.rotate
-        # Bake mode extracts rotation from the FFI local matrix WITHOUT
-        # separating jointOrient.  To match that convention, we Z-mirror the
-        # solver output but do NOT remove JO — Maya's joint pipeline applies
-        # JO on top of rotate, keeping the chain consistent with the Bake path.
+        # Solver returns full MMD rotation; we Z-mirror then factor out
+        # jointOrient so Maya evaluates R * JO = R_mmd correctly.
         out_array = data.outputArrayValue(self.aOutputRotate)
         builder = out_array.builder()
         for link_i in range(self._link_count):
@@ -228,6 +226,10 @@ class MmdCcdIkNode(om.MPxNode):
             qz = out_rots[offset + 2]
             qw = out_rots[offset + 3]
             out_quat = om.MQuaternion(-qx, -qy, qz, qw)
+            if link_i < len(self._link_joint_orients):
+                q_jo = self._link_joint_orients[link_i]
+                if q_jo is not None:
+                    out_quat = out_quat * q_jo.inverse()
             out_euler = out_quat.asEulerRotation()
 
             elem_handle = builder.addElement(link_i)
