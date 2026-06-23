@@ -348,8 +348,8 @@ class TestVmdConverter(MayaTestBase):
         # ここでは convert が例外なく完了し、should_use が正しく動くことを確認
         pass  # 追加の検証は test_convert_light_animation 等で行う
 
-    def test_should_use_mmd_runtime_bake_is_currently_disabled(self):
-        """runtime ベイクは現在無効化されており、PMX 入力でも使用しない"""
+    def test_should_use_mmd_runtime_bake_accepts_pmx_rejects_pmd(self):
+        """runtime ベイクは PMX 入力で有効、PMD 入力では無効"""
         with tempfile.TemporaryDirectory() as temp_dir:
             pmx_path = os.path.join(temp_dir, "model.pmx")
             pmd_path = os.path.join(temp_dir, "model.pmd")
@@ -361,13 +361,13 @@ class TestVmdConverter(MayaTestBase):
                 "is_mmd_runtime_available",
                 return_value=True,
             ):
-                self.assertFalse(
+                self.assertTrue(
                     self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=None, pmx_path=pmx_path)
                 )
                 self.assertFalse(
                     self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=None, pmx_path=pmd_path)
                 )
-                self.assertFalse(
+                self.assertTrue(
                     self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=b"pmx", pmx_path=pmd_path)
                 )
 

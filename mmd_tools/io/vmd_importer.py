@@ -51,7 +51,11 @@ def import_vmd_file(parser, filepath, options=None):
                     target_namespace = NamespaceUtils.get_namespace_from_node(sel)
                     if target_namespace:
                         logger.info(f"ターゲットネームスペース: {target_namespace}")
+                        target_model = sel
                         break
+                if not target_model:
+                    target_model = selected[0]
+                    logger.info(f"ネームスペースなしのターゲットモデル: {target_model}")
             else:
                 logger.warning("ターゲットモデルが指定されていません。")
 
