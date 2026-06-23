@@ -1527,20 +1527,18 @@ class VmdConverter:
         # # キーフレームを一括設定
         # maya_utils.set_keyframes_batch(curves, frames, generate_values)
 
-        # Quaternion補間を適用
-        if self.use_quaternion_interpolation and not skip_rotate:
+        # Quaternion補間を適用（rotate が joint 自身に直接キーされている場合のみ）
+        rotate_redirected = any(
+            attr_targets.get(a, (joint, a))[0] != joint
+            for a in ("rotateX", "rotateY", "rotateZ")
+        )
+        if self.use_quaternion_interpolation and not skip_rotate and not rotate_redirected:
             try:
-                rotate_targets = [
-                    attr_targets.get("rotateX", (joint, "rotateX")),
-                    attr_targets.get("rotateY", (joint, "rotateY")),
-                    attr_targets.get("rotateZ", (joint, "rotateZ")),
-                ]
-                # rotationInterpolationコマンドでQuaternion補間に変換
                 cmds.rotationInterpolation(
-                    f"{rotate_targets[0][0]}.{rotate_targets[0][1]}",
-                    f"{rotate_targets[1][0]}.{rotate_targets[1][1]}",
-                    f"{rotate_targets[2][0]}.{rotate_targets[2][1]}",
-                    convert="quaternionSlerp",  # "quaternionSquad"も選択可能（より滑らか）
+                    f"{joint}.rotateX",
+                    f"{joint}.rotateY",
+                    f"{joint}.rotateZ",
+                    convert="quaternionSlerp",
                 )
             except Exception as e:
                 self.logger.warning(f"{joint}へのQuaternion補間適用に失敗: {str(e)}")
