@@ -10,8 +10,10 @@ import tempfile
 from unittest.mock import patch
 
 import maya.cmds as cmds
+import maya.api.OpenMaya as om
 
 import mmd_tools.converters.vmd_converter as vmd_converter_module
+from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
 from mmd_tools.converters.vmd_converter import VmdConverter
@@ -370,6 +372,35 @@ class TestVmdConverter(MayaTestBase):
                 self.assertTrue(
                     self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=b"pmx", pmx_path=pmd_path)
                 )
+
+    def test_resolve_runtime_bake_sources_uses_vmd_source_file_and_scene_pmx(self):
+        """convert 直呼びでも VmdData.source_file と model root の mmd_source_file から runtime 入力を復元する"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vmd_path = os.path.join(temp_dir, "motion.vmd")
+            pmx_path = os.path.join(temp_dir, "model.pmx")
+            with open(vmd_path, "wb") as file:
+                file.write(b"vmd-bytes")
+            with open(pmx_path, "wb") as file:
+                file.write(b"pmx-bytes")
+
+            root = cmds.group(empty=True, name="runtime_source_model_root")
+            cmds.addAttr(root, longName="mmd_source_file", dataType="string")
+            cmds.setAttr(f"{root}.mmd_source_file", pmx_path, type="string")
+            vmd_data = create_test_vmd_data()
+            vmd_data.source_file = vmd_path
+
+            vmd_bytes, pmx_bytes, resolved_pmx_path = self.converter._resolve_runtime_bake_sources(
+                vmd_data,
+                vmd_bytes=None,
+                pmx_bytes=None,
+                pmx_path=None,
+            )
+
+            self.assertEqual(vmd_bytes, b"vmd-bytes")
+            self.assertIsNone(pmx_bytes)
+            self.assertEqual(resolved_pmx_path, pmx_path)
+
+            cmds.delete(root)
 
     def test_runtime_matrix_coordinate_conversion_identity_and_translation(self):
         """runtime world matrix の座標変換で identity を壊さず Z translation だけ反転する"""
@@ -1010,7 +1041,7 @@ class TestVmdConverter(MayaTestBase):
         with patch.object(self.converter, "_collect_append_info", return_value=append_info), patch.object(
             self.converter,
             "_collect_ik_link_joints",
-            return_value=set(),
+            return_value={},
         ):
             self.assertTrue(self.converter._convert_bone_animation(frames))
 
@@ -1030,7 +1061,7 @@ class TestVmdConverter(MayaTestBase):
         with patch.object(self.converter, "_collect_append_info", return_value={}), patch.object(
             self.converter,
             "_collect_ik_link_joints",
-            return_value={joint},
+            return_value={joint: None},
         ):
             self.assertTrue(self.converter._convert_bone_animation(frames))
 
@@ -1179,6 +1210,289 @@ class TestVmdConverter(MayaTestBase):
             self.assertAlmostEqual(rz, cmds.getAttr(f"{joint}.rotateZ"), places=5)
 
         cmds.delete(parent)
+
+    def test_compute_bone_locals_matches_maya_with_joint_orient(self):
+        """runtime bake は JO 非ゼロのjointでも Maya local rotate を再構成する"""
+        parent = cmds.joint(name="test_parent_jo_bone")
+        cmds.select(clear=True)
+        child = cmds.joint(name="test_child_jo_bone")
+        cmds.parent(child, parent)
+        cmds.select(clear=True)
+
+        cmds.setAttr(f"{parent}.jointOrient", 0.0, 25.0, 10.0)
+        cmds.setAttr(f"{child}.jointOrient", -15.0, 5.0, 35.0)
+        cmds.setAttr(f"{parent}.translate", 1.0, 2.0, -1.5)
+        cmds.setAttr(f"{parent}.rotate", 8.0, -12.0, 20.0)
+        cmds.setAttr(f"{child}.translate", 2.5, -0.75, 1.0)
+        cmds.setAttr(f"{child}.rotate", 30.0, -10.0, 12.0)
+
+        self.converter.bone_index_to_joint = {0: parent, 1: child}
+        self.converter._bone_parent_map = {0: None, 1: 0}
+        self.converter._bone_rotate_orders = {0: 0, 1: 0}
+
+        parent_maya_world = cmds.xform(parent, query=True, worldSpace=True, matrix=True)
+        child_maya_world = cmds.xform(child, query=True, worldSpace=True, matrix=True)
+        parent_mmd_world = self.converter._convert_mmd_world_matrix_to_maya(parent_maya_world)
+        child_mmd_world = self.converter._convert_mmd_world_matrix_to_maya(child_maya_world)
+
+        locals_map = self.converter._compute_all_bone_locals([parent_mmd_world, child_mmd_world])
+        self.assertIn(0, locals_map)
+        self.assertIn(1, locals_map)
+
+        for bidx, joint in ((0, parent), (1, child)):
+            tx, ty, tz, rx, ry, rz = locals_map[bidx]
+            self.assertAlmostEqual(tx, cmds.getAttr(f"{joint}.translateX"), places=5)
+            self.assertAlmostEqual(ty, cmds.getAttr(f"{joint}.translateY"), places=5)
+            self.assertAlmostEqual(tz, cmds.getAttr(f"{joint}.translateZ"), places=5)
+            self.assertAlmostEqual(rx, cmds.getAttr(f"{joint}.rotateX"), places=5)
+            self.assertAlmostEqual(ry, cmds.getAttr(f"{joint}.rotateY"), places=5)
+            self.assertAlmostEqual(rz, cmds.getAttr(f"{joint}.rotateZ"), places=5)
+
+        cmds.delete(parent)
+
+    def test_decompose_append_own_translation_removes_grant_offset(self):
+        """runtime final translate から付与移動分を引いた値を mmdAppend.baseTranslate にキーできる"""
+        final_tx = om.MDoubleArray([2.0, 2.0])
+        final_ty = om.MDoubleArray([2.0, 2.0])
+        final_tz = om.MDoubleArray([-2.0, -2.0])
+        source_tx = om.MDoubleArray([0.0, 1.0])
+        source_ty = om.MDoubleArray([0.0, 0.0])
+        source_tz = om.MDoubleArray([0.0, 0.0])
+
+        own, grant = self.converter._decompose_append_own_translation(
+            final_tx, final_ty, final_tz,
+            source_tx, source_ty, source_tz,
+            ratio=1.0,
+        )
+
+        self.assertAlmostEqual(own[0][0], 2.0, places=6)
+        self.assertAlmostEqual(own[0][1], 1.0, places=6)
+        self.assertAlmostEqual(own[1][1], 2.0, places=6)
+        self.assertAlmostEqual(own[2][1], -2.0, places=6)
+        self.assertAlmostEqual(grant[0][1], 1.0, places=6)
+
+    def test_collect_append_info_finds_source_from_translation_only_grant(self):
+        """移動付与のみの mmdAppend でも sourceTranslate 経由で source joint を特定する"""
+        source = cmds.joint(name="translation_only_source")
+        cmds.select(clear=True)
+        target = cmds.joint(name="translation_only_target")
+        node = cmds.createNode("mmdAppend", name="translation_only_append")
+        delta = cmds.createNode("plusMinusAverage", name="translation_only_source_delta")
+
+        cmds.setAttr(f"{node}.affectRotation", False)
+        cmds.setAttr(f"{node}.affectTranslation", True)
+        cmds.setAttr(f"{delta}.operation", 2)
+        cmds.connectAttr(f"{source}.translate", f"{delta}.input3D[0]")
+        cmds.connectAttr(f"{delta}.output3D", f"{node}.sourceTranslate")
+        cmds.connectAttr(f"{node}.outputTranslate", f"{target}.translate")
+
+        append_info = self.converter._collect_append_info()
+
+        self.assertEqual(append_info[target]["source_joint"], source)
+        self.assertTrue(append_info[target]["affect_translation"])
+        self.assertFalse(append_info[target]["affect_rotation"])
+        self.assertEqual(append_info[target]["attr_map"]["translateX"], "baseTranslateX")
+
+        cmds.delete(source, target, node, delta)
+
+    def test_decompose_local_append_translation_uses_source_delta_not_rest_offset(self):
+        """local 付与移動の連鎖では source の rest offset を grant として扱わない"""
+        driver = cmds.joint(name="append_driver")
+        cmds.setAttr(f"{driver}.translate", 0.0, 0.0, 0.0)
+        cmds.select(clear=True)
+        source = cmds.joint(name="append_source")
+        cmds.setAttr(f"{source}.translate", 5.0, 0.0, 0.0)
+        cmds.select(clear=True)
+        target = cmds.joint(name="append_target")
+        cmds.setAttr(f"{target}.translate", 10.0, 0.0, 0.0)
+
+        source_node = cmds.createNode("network", name="source_append_node")
+        target_node = cmds.createNode("network", name="target_append_node")
+        for node, value in ((source_node, 5.0), (target_node, 10.0)):
+            cmds.addAttr(node, longName="baseTranslate", attributeType="double3")
+            cmds.addAttr(node, longName="baseTranslateX", attributeType="double", parent="baseTranslate")
+            cmds.addAttr(node, longName="baseTranslateY", attributeType="double", parent="baseTranslate")
+            cmds.addAttr(node, longName="baseTranslateZ", attributeType="double", parent="baseTranslate")
+            cmds.setAttr(f"{node}.baseTranslate", value, 0.0, 0.0, type="double3")
+
+        joint_channel_values = {
+            driver: {
+                "translateX": om.MDoubleArray([0.0]),
+                "translateY": om.MDoubleArray([0.0]),
+                "translateZ": om.MDoubleArray([0.0]),
+            },
+            source: {
+                "translateX": om.MDoubleArray([5.0]),
+                "translateY": om.MDoubleArray([0.0]),
+                "translateZ": om.MDoubleArray([0.0]),
+            },
+            target: {
+                "translateX": om.MDoubleArray([10.0]),
+                "translateY": om.MDoubleArray([0.0]),
+                "translateZ": om.MDoubleArray([0.0]),
+            },
+        }
+        append_info = {
+            source: {
+                "node": source_node,
+                "source_joint": driver,
+                "ratio": 1.0,
+                "affect_translation": True,
+                "local_append": False,
+            },
+            target: {
+                "node": target_node,
+                "source_joint": source,
+                "ratio": 1.0,
+                "affect_translation": True,
+                "local_append": True,
+            },
+        }
+
+        decomposed = self.converter._decompose_append_translations_for_scene(
+            joint_channel_values,
+            {},
+            append_info,
+            n_frames=1,
+        )
+
+        self.assertAlmostEqual(decomposed[target]["translateX"][0], 10.0, places=6)
+
+        cmds.delete(driver, source, target, source_node, target_node)
+
+    def test_apply_ik_enabled_animation_defaults_all_ik_on_before_property_keys(self):
+        """IK property frame が一部だけでも未指定 IK と初期区間は default ON で評価する"""
+        left = cmds.createNode("mmdCcdIk", name="left_ik_solver")
+        right = cmds.createNode("mmdCcdIk", name="right_ik_solver")
+        for node, bone_name in ((left, "左足ＩＫ"), (right, "右足ＩＫ")):
+            if not cmds.attributeQuery("mmd_ik_bone_name", node=node, exists=True):
+                cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", bone_name, type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+
+        vmd_data = create_test_vmd_data()
+        frame = VmdIKShowHideFrame()
+        frame.frame_number = 20
+        frame.ik_states = [("左足ＩＫ", 0)]
+        vmd_data.ik_show_hide_frames = [frame]
+
+        self.converter._apply_ik_enabled_animation(vmd_data)
+
+        self.assertEqual(cmds.getAttr(f"{left}.enabled"), False)
+        self.assertEqual(cmds.getAttr(f"{right}.enabled"), True)
+        self.assertIn(0.0, cmds.keyframe(f"{left}.enabled", query=True, timeChange=True) or [])
+        self.assertIn(20.0, cmds.keyframe(f"{left}.enabled", query=True, timeChange=True) or [])
+        self.assertEqual(cmds.keyframe(f"{left}.enabled", query=True, time=(0, 0), valueChange=True), [1.0])
+        self.assertEqual(cmds.keyframe(f"{left}.enabled", query=True, time=(20, 20), valueChange=True), [0.0])
+        self.assertEqual(cmds.keyframe(f"{right}.enabled", query=True, time=(0, 0), valueChange=True), [1.0])
+
+        cmds.delete(left, right)
+
+    def test_apply_ik_enabled_animation_scopes_to_target_namespace(self):
+        """複数リグがあるシーンでは target_namespace の IK node だけに key を打つ"""
+        cmds.namespace(add="ModelA")
+        cmds.namespace(add="ModelB")
+        node_a = cmds.createNode("mmdCcdIk", name="ModelA:left_ik_solver")
+        node_b = cmds.createNode("mmdCcdIk", name="ModelB:left_ik_solver")
+        for node in (node_a, node_b):
+            if not cmds.attributeQuery("mmd_ik_bone_name", node=node, exists=True):
+                cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+
+        vmd_data = create_test_vmd_data()
+        frame = VmdIKShowHideFrame()
+        frame.frame_number = 20
+        frame.ik_states = [("左足ＩＫ", 0)]
+        vmd_data.ik_show_hide_frames = [frame]
+
+        self.converter._apply_ik_enabled_animation(vmd_data, target_namespace="ModelA")
+
+        self.assertIn(0.0, cmds.keyframe(f"{node_a}.enabled", query=True, timeChange=True) or [])
+        self.assertEqual(cmds.keyframe(f"{node_b}.enabled", query=True, timeChange=True), None)
+
+        cmds.delete(node_a, node_b)
+
+    def test_mmd_ccd_ik_disabled_passes_input_rotate_through(self):
+        """IK OFF 時は link joint の FK/VMD 回転を失わないよう inputRotate を outputRotate に通す"""
+        node = cmds.createNode("mmdCcdIk", name="disabled_passthrough_ik_solver")
+        chain = {
+            "bones": [
+                {
+                    "rest_position": [0.0, 0.0, 0.0],
+                    "parent_slot": -1,
+                    "joint_orient_deg": [0.0, 0.0, 0.0],
+                },
+            ],
+            "links": [{"bone_slot": 0}],
+            "targetBoneSlot": 0,
+            "controllerBoneSlot": 0,
+            "iterationCount": 1,
+            "limitAngle": 1.0,
+        }
+        cmds.setAttr(f"{node}.chainJson", json.dumps(chain), type="string")
+        cmds.setAttr(f"{node}.enabled", False)
+        cmds.setAttr(f"{node}.inputRotate[0].inputRotateElementX", 0.25)
+        cmds.setAttr(f"{node}.inputRotate[0].inputRotateElementY", -0.5)
+        cmds.setAttr(f"{node}.inputRotate[0].inputRotateElementZ", 0.75)
+
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementX"),
+            cmds.getAttr(f"{node}.inputRotate[0].inputRotateElementX"),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementY"),
+            cmds.getAttr(f"{node}.inputRotate[0].inputRotateElementY"),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ"),
+            cmds.getAttr(f"{node}.inputRotate[0].inputRotateElementZ"),
+            places=6,
+        )
+
+        cmds.delete(node)
+
+    def test_mmd_ccd_ik_external_goal_connection_overrides_controller_slot_goal(self):
+        """controllerBoneSlot があっても外部 goal 接続は公開入力として尊重する"""
+        node = cmds.createNode("mmdCcdIk", name="external_goal_ik_solver")
+        goal = cmds.spaceLocator(name="external_goal_locator")[0]
+        chain = {
+            "bones": [
+                {
+                    "rest_position": [0.0, 0.0, 0.0],
+                    "parent_slot": -1,
+                    "joint_orient_deg": [0.0, 0.0, 0.0],
+                },
+                {
+                    "rest_position": [1.0, 0.0, 0.0],
+                    "parent_slot": 0,
+                    "joint_orient_deg": [0.0, 0.0, 0.0],
+                },
+            ],
+            "links": [{
+                "bone_slot": 0,
+                "has_angle_limit": False,
+                "angle_limit_min": [0.0, 0.0, 0.0],
+                "angle_limit_max": [0.0, 0.0, 0.0],
+            }],
+            "targetBoneSlot": 1,
+            "controllerBoneSlot": 1,
+            "iterationCount": 40,
+            "limitAngle": 2.0,
+        }
+        cmds.setAttr(f"{node}.chainJson", json.dumps(chain), type="string")
+        cmds.connectAttr(f"{goal}.translate", f"{node}.goal")
+        cmds.setAttr(f"{goal}.translate", 1.0, 0.0, 0.0)
+        rest_z = cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ")
+        cmds.setAttr(f"{goal}.translate", 0.0, 1.0, 0.0)
+        aimed_z = cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ")
+
+        self.assertAlmostEqual(rest_z, 0.0, places=5)
+        self.assertGreater(abs(aimed_z), 45.0)
+
+        cmds.delete(node, goal)
 
     def test_direct_anim_curve_helper_creates_keyed_values(self):
         """_batch_create_and_key_curves が MFnAnimCurve / addKeys 経由で translate/rotate にキーを登録し、Maya 空間値が正しくなる"""

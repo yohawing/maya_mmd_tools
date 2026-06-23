@@ -64,6 +64,33 @@ uvx nox -s cpp_verify -- --maya 2024 --config Debug
 uvx nox -s cpp_verify -- --maya 2024 --config Debug --manifest <...>
 ```
 
+### mmd-anim CLI / oracle 検証
+
+PMX/VMD の runtime 評価、正解データ生成、数値比較には `external/mmd-anim` の `mmd-anim` CLI も使う。
+Maya 実装との差分調査では、目視や rotate 単体ではなく、ボーンの world matrix / world translate、または JO-aware bind inverse を含む mesh oracle を優先する。
+
+```bash
+# PMX / VMD の読み込み概要
+mmd-anim inspect <model.pmx>
+mmd-anim inspect <motion.vmd>
+mmd-anim import <model.pmx> <motion.vmd>
+
+# 指定フレームの PMX+VMD runtime 評価概要
+mmd-anim import <model.pmx> <motion.vmd> --frame <frame>
+
+# PMX rig / bone 詳細
+mmd-anim rig <model.pmx> --bones
+mmd-anim rig <model.pmx> --json --bones
+
+# GoldenOracle / numeric manifest の比較・診断
+mmd-anim verify <oracle.jsonl>
+mmd-anim verify <manifest.json> --mode numeric
+mmd-anim verify <manifest.json> --mode numeric --diagnose <case-name> <frame> <bone-name> [--eval-frame <frame>]
+```
+
+まず `mmd-anim --help` と `mmd-anim <subcommand> --help` を確認する。`--json` はサブコマンドごとに対応状況が違うので、未対応なら通常出力を使う。
+`rtk cargo ...` が使える環境では先頭に `rtk` を付ける。
+
 ### Maya GUI / DX11 viewport 検証メモ
 
 - Codex/PowerShell 直下の `maya.exe` 起動は licensing error で落ちることがある。

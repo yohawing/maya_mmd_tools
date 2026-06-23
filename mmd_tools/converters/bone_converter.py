@@ -102,15 +102,9 @@ class BoneConverter:
             setup_bone_orientation=setup_bone_orientation,
         )
 
-        # リグのセットアップはRigConverterに委譲。
-        # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
-        if setup_rig:
-            self.rig_converter.setup_pmx_rig(
-                pmx_data, maya_joints, bone_map, skeleton_group,
-                pmx_filepath=pmx_filepath,
-            )
-
-        # 複数メッシュ対応: mesh_node がリストの場合、各メッシュに同一 skeleton で skinCluster を適用
+        # skinCluster をリグセットアップの前に作成する。
+        # rig ノード（mmdCcdIk/mmdAppend）接続後は joint.rotate が駆動され
+        # bind pose に R≠0 が含まれてしまうため、R=0 の状態でバインドする。
         mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
         skin_clusters = []
 
@@ -121,6 +115,14 @@ class BoneConverter:
             if sc:
                 self._apply_pmx_vertex_weights(pmx_data, maya_joints, sc, mn)
                 skin_clusters.append(sc)
+
+        # リグのセットアップはRigConverterに委譲。
+        # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
+        if setup_rig:
+            self.rig_converter.setup_pmx_rig(
+                pmx_data, maya_joints, bone_map, skeleton_group,
+                pmx_filepath=pmx_filepath,
+            )
 
         result_cluster = skin_clusters[0] if len(skin_clusters) == 1 else skin_clusters
 
@@ -242,15 +244,6 @@ class BoneConverter:
                 ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
             )
 
-            if format_type == "pmx" and setup_bone_orientation:
-                # ジョイントのローカル軸を設定
-                if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-                    self.logger.debug(f"ジョイントのローカル軸を設定: {bone.name}")
-                    self._set_bone_local_axis(joint, bone)
-
-                # AXIS_FIXED は属性メタデータとして保持し、transformLimits には変換しない。
-                # rotateX/Y の評価時クランプが bake/runtime の付与回転パリティを崩すため。
-
             # セグメントスケール補償を無効化
             maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
 
@@ -287,6 +280,10 @@ class BoneConverter:
                 cmds.parent(root_joint, skeleton_group, absolute=True)
             else:
                 self.logger.error(f"Root joint '{root_joint}' does not exist in scene")
+
+        # parenting 完了後に LOCAL_AXIS ボーンの JO を設定し translate を補正する。
+        # setup_bone_orientation フラグに関わらず常に適用する（Bake/Rig パリティ確保）。
+        self._apply_joint_orient_all(maya_joints, bones, format_type)
 
         return maya_joints
 
@@ -604,6 +601,76 @@ class BoneConverter:
             mesh_node,
             weights,
         )
+
+    def _compute_pmx_world_rotation_matrix(self, bone):
+        """PMX LOCAL_AXIS の軸方向からワールド空間回転行列を計算する。"""
+        x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], -bone.x_axis_direction[2])
+        x_axis.normalize()
+        z_axis = om.MVector(bone.z_axis_direction[0], bone.z_axis_direction[1], -bone.z_axis_direction[2])
+        z_axis.normalize()
+        y_axis = z_axis ^ x_axis
+        y_axis.normalize()
+        return om.MMatrix([
+            [x_axis.x, x_axis.y, x_axis.z, 0],
+            [y_axis.x, y_axis.y, y_axis.z, 0],
+            [z_axis.x, z_axis.y, z_axis.z, 0],
+            [0, 0, 0, 1],
+        ])
+
+    def _apply_joint_orient_all(self, maya_joints, bones, format_type):
+        """LOCAL_AXIS ボーンに JO を設定し、全ボーンの translate を再計算する。
+
+        parenting (cmds.parent absolute=True) 完了後に呼ぶ。
+        トポロジカル順に処理し、Maya の実 worldMatrix を読み取って translate を計算
+        するため、Python/Maya 間の Euler round-trip 誤差が蓄積しない。
+        """
+        if format_type != "pmx":
+            return
+
+        n = len(bones)
+
+        def _extract_rotation_matrix(world_matrix):
+            """4x4 worldMatrix から回転部分(3x3)だけの MMatrix を返す。"""
+            return om.MMatrix([
+                [world_matrix[0], world_matrix[1], world_matrix[2], 0],
+                [world_matrix[4], world_matrix[5], world_matrix[6], 0],
+                [world_matrix[8], world_matrix[9], world_matrix[10], 0],
+                [0, 0, 0, 1],
+            ])
+
+        for i, bone in enumerate(bones):
+            pidx = bone.parent_bone_index
+
+            # --- JO 設定 (LOCAL_AXIS ボーンのみ) ---
+            if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
+                desired_world = self._compute_pmx_world_rotation_matrix(bone)
+                if 0 <= pidx < n:
+                    parent_wm = cmds.getAttr(f"{maya_joints[pidx]}.worldMatrix[0]")
+                    parent_rot = _extract_rotation_matrix(parent_wm)
+                else:
+                    parent_rot = om.MMatrix()
+                jo_mat = desired_world * parent_rot.inverse()
+                jo_euler = om.MTransformationMatrix(jo_mat).rotation(asQuaternion=False)
+                maya_utils.set_attribute(
+                    maya_joints[i], "jointOrient",
+                    (jo_euler.x, jo_euler.y, jo_euler.z), "double3",
+                )
+
+            # --- translate 再計算 (Maya 実 worldMatrix ベース) ---
+            if 0 <= pidx < n:
+                parent_wm_flat = cmds.getAttr(f"{maya_joints[pidx]}.worldMatrix[0]")
+                parent_wm = om.MMatrix(parent_wm_flat)
+                parent_wm_inv = parent_wm.inverse()
+                my_pos = om.MPoint(
+                    bone.position[0], bone.position[1], -bone.position[2],
+                )
+                local_pos = my_pos * parent_wm_inv
+                maya_utils.set_attribute(
+                    maya_joints[i], "translate",
+                    (local_pos.x, local_pos.y, local_pos.z), "double3",
+                )
+
+            maya_utils.set_attribute(maya_joints[i], "rotate", (0, 0, 0), "double3")
 
     def _set_bone_local_axis(self, joint, bone):
         """

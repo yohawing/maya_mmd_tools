@@ -1104,8 +1104,10 @@ class RigConverter:
                 })
 
             target_slot = pmx_to_slot.get(target_idx, 0)
+            controller_slot = pmx_to_slot.get(controller_idx, target_slot)
             chain_json = _json.dumps({
                 "bones": bones_for_json,
+                "controllerBoneSlot": controller_slot,
                 "targetBoneSlot": target_slot,
                 "links": links_for_json,
                 "iterationCount": chain_def.get("iterationCount", 40),
@@ -1118,16 +1120,21 @@ class RigConverter:
                 node_name = f"{controller_joint}_mmdCcdIk"
                 node = cmds.createNode("mmdCcdIk", name=node_name)
                 cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
+                if cmds.attributeQuery("enabled", node=node, exists=True):
+                    cmds.setAttr(f"{node}.enabled", False)
+                try:
+                    ik_bone_name = cmds.getAttr(f"{controller_joint}.mmd_bone_name")
+                    if ik_bone_name and not cmds.attributeQuery("mmd_ik_bone_name", node=node, exists=True):
+                        cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+                    if ik_bone_name:
+                        cmds.setAttr(f"{node}.mmd_ik_bone_name", ik_bone_name, type="string")
+                except Exception:
+                    pass
 
-                # goal = IK controller joint's WORLD position
-                # (rest_positions in chainJson are local parent-relative coords)
-                decomp = cmds.createNode(
-                    "decomposeMatrix", name=f"{node_name}_goalDecomp"
-                )
-                cmds.connectAttr(
-                    f"{controller_joint}.worldMatrix[0]", f"{decomp}.inputMatrix"
-                )
-                cmds.connectAttr(f"{decomp}.outputTranslate", f"{node}.goal")
+                # controllerBoneSlot lets the node reconstruct the controller's
+                # pre-IK world goal without feeding post-solve worldMatrix back
+                # into the solver. Leave the public goal input free for external
+                # IK targets.
 
                 # inputRotate: exclude own links AND downstream chains' links.
                 # Downstream = higher controllerBoneIndex (evaluated later in MMD).

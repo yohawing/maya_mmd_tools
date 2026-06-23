@@ -131,6 +131,16 @@ class VmdConverter:
             if self.use_animation_layers:
                 self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
 
+            self._apply_ik_enabled_animation(vmd_data, target_namespace)
+
+            vmd_bytes, pmx_bytes, pmx_path = self._resolve_runtime_bake_sources(
+                vmd_data,
+                vmd_bytes,
+                pmx_bytes,
+                pmx_path,
+                target_namespace,
+            )
+
             # --- Phase 1: mmd-anim runtime を使った高精度ベイク ---
             if self._should_use_mmd_runtime_bake(vmd_bytes, pmx_bytes, pmx_path):
                 self.logger.info("mmd-anim runtime を使用した高精度ベイクパスで変換します")
@@ -189,6 +199,62 @@ class VmdConverter:
         else:
             has_pmx = bool(pmx_path) and Path(pmx_path).suffix.lower() == ".pmx" and os.path.exists(pmx_path)
         return has_vmd and has_pmx
+
+    def _resolve_runtime_bake_sources(
+        self,
+        vmd_data: VmdData,
+        vmd_bytes: bytes,
+        pmx_bytes: bytes,
+        pmx_path: str,
+        target_namespace: str = None,
+    ) -> Tuple[bytes, bytes, str]:
+        """明示指定がない runtime bake 入力を VMD/scene metadata から復元する。"""
+        resolved_vmd_bytes = vmd_bytes
+        if not resolved_vmd_bytes:
+            vmd_source = getattr(vmd_data, "source_file", None)
+            if vmd_source and os.path.exists(vmd_source):
+                try:
+                    with open(vmd_source, "rb") as file:
+                        resolved_vmd_bytes = file.read()
+                    self.logger.info(f"VMD source_file から runtime bake 用 VMD bytes を復元: {vmd_source}")
+                except Exception as exc:
+                    self.logger.debug(f"VMD source_file の読み込みに失敗: {vmd_source}: {exc}")
+
+        resolved_pmx_path = pmx_path
+        if not pmx_bytes and not resolved_pmx_path:
+            resolved_pmx_path = self._resolve_pmx_path_from_scene(target_namespace)
+
+        return resolved_vmd_bytes, pmx_bytes, resolved_pmx_path
+
+    def _resolve_pmx_path_from_scene(self, target_namespace: str = None) -> Optional[str]:
+        """シーンの MMD model root に保存された PMX source path を探す。"""
+        candidates = []
+        for attr in cmds.ls("*.mmd_source_file", objectsOnly=False) or []:
+            node = attr.rsplit(".", 1)[0]
+            if target_namespace:
+                node_namespace = node.rsplit(":", 1)[0] if ":" in node else ""
+                if node_namespace != target_namespace:
+                    continue
+            try:
+                stored = cmds.getAttr(attr)
+            except Exception:
+                continue
+            if not stored:
+                continue
+            if Path(str(stored)).suffix.lower() != ".pmx":
+                continue
+            if os.path.exists(stored):
+                candidates.append(str(stored))
+
+        if len(candidates) == 1:
+            self.logger.info(f"シーンの mmd_source_file から PMX ソースを復元: {candidates[0]}")
+            return candidates[0]
+        if len(candidates) > 1:
+            self.logger.warning(
+                "runtime bake 用 PMX source が複数見つかったため自動復元をスキップします: "
+                + ", ".join(candidates)
+            )
+        return None
 
     def _convert_using_mmd_runtime(
         self,
@@ -730,17 +796,31 @@ class VmdConverter:
                 continue
             rotate_dsts = _compound_destinations(f"{node}.outputRotate", "rotate")
             translate_dsts = _compound_destinations(f"{node}.outputTranslate", "translate")
-            src_plugs = cmds.listConnections(f"{node}.sourceRotate", s=True, d=False, p=True) or []
+
+            def _source_from_plug(plug: str, append_prefix: str, joint_attr: str):
+                src_node, src_attr = plug.rsplit(".", 1)
+                if src_attr.startswith(append_prefix):
+                    return node_targets.get(src_node), src_node
+                if src_attr.startswith(joint_attr):
+                    return src_node, None
+                if src_attr.startswith("output3D"):
+                    upstream = cmds.listConnections(f"{src_node}.input3D[0]", s=True, d=False, p=True) or []
+                    if upstream:
+                        return _source_from_plug(upstream[0], append_prefix, joint_attr)
+                return None, None
+
             source_joint = None
             source_append_node = None
-            if src_plugs:
-                src_node = src_plugs[0].rsplit(".", 1)[0]
-                src_attr = src_plugs[0].rsplit(".", 1)[1]
-                if src_attr.startswith("appendRotate"):
-                    source_append_node = src_node
-                    source_joint = node_targets.get(source_append_node)
-                else:
-                    source_joint = src_node
+            rotate_src_plugs = cmds.listConnections(f"{node}.sourceRotate", s=True, d=False, p=True) or []
+            if rotate_src_plugs:
+                source_joint, source_append_node = _source_from_plug(rotate_src_plugs[0], "appendRotate", "rotate")
+            translate_src_plugs = cmds.listConnections(f"{node}.sourceTranslate", s=True, d=False, p=True) or []
+            if not source_joint and translate_src_plugs:
+                source_joint, source_append_node = _source_from_plug(
+                    translate_src_plugs[0],
+                    "appendTranslate",
+                    "translate",
+                )
             ratio = cmds.getAttr(f"{node}.ratio")
             affect_rot = cmds.getAttr(f"{node}.affectRotation")
             local_append = False
@@ -753,6 +833,9 @@ class VmdConverter:
                     "rotateY": "baseRotateY",
                     "rotateZ": "baseRotateZ",
                 })
+            affect_translate = False
+            if cmds.attributeQuery("affectTranslation", node=node, exists=True):
+                affect_translate = bool(cmds.getAttr(f"{node}.affectTranslation"))
             if target_joint in translate_dsts:
                 attr_map.update({
                     "translateX": "baseTranslateX",
@@ -765,6 +848,7 @@ class VmdConverter:
                 "source_append_node": source_append_node,
                 "ratio": ratio,
                 "affect_rotation": affect_rot,
+                "affect_translation": affect_translate,
                 "local_append": local_append,
                 "attr_map": attr_map,
             }
@@ -905,6 +989,142 @@ class VmdConverter:
                 }
         return decomposed
 
+    @staticmethod
+    def _decompose_append_own_translation(
+        target_tx: om.MDoubleArray,
+        target_ty: om.MDoubleArray,
+        target_tz: om.MDoubleArray,
+        source_tx: om.MDoubleArray,
+        source_ty: om.MDoubleArray,
+        source_tz: om.MDoubleArray,
+        ratio: float,
+    ):
+        """bake の final translation から grant 寄与を除去し、bone own translation を計算。"""
+        n = len(target_tx)
+        own_tx = om.MDoubleArray(n, 0.0)
+        own_ty = om.MDoubleArray(n, 0.0)
+        own_tz = om.MDoubleArray(n, 0.0)
+        grant_tx = om.MDoubleArray(n, 0.0)
+        grant_ty = om.MDoubleArray(n, 0.0)
+        grant_tz = om.MDoubleArray(n, 0.0)
+
+        for i in range(n):
+            gx = source_tx[i] * ratio
+            gy = source_ty[i] * ratio
+            gz = source_tz[i] * ratio
+            grant_tx[i] = gx
+            grant_ty[i] = gy
+            grant_tz[i] = gz
+            own_tx[i] = target_tx[i] - gx
+            own_ty[i] = target_ty[i] - gy
+            own_tz[i] = target_tz[i] - gz
+
+        return (own_tx, own_ty, own_tz), (grant_tx, grant_ty, grant_tz)
+
+    def _decompose_append_translations_for_scene(
+        self,
+        joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
+        joint_channel_static: Dict[str, Dict[str, dict]],
+        append_info: Dict[str, dict],
+        n_frames: int,
+    ) -> Dict[str, Dict[str, om.MDoubleArray]]:
+        """append graph の依存に沿って final translation を own translation へ分解する。"""
+        resolved: Dict[str, Optional[Dict[str, Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]]] = {}
+        resolving = set()
+
+        def _final_translation(joint: str) -> Optional[Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]:
+            channels = joint_channel_values.get(joint, {})
+            static = joint_channel_static.get(joint, {})
+            tx = self._get_or_expand_runtime_channel(channels, static, "translateX", n_frames)
+            ty = self._get_or_expand_runtime_channel(channels, static, "translateY", n_frames)
+            tz = self._get_or_expand_runtime_channel(channels, static, "translateZ", n_frames)
+            if tx is None or ty is None or tz is None:
+                return None
+            return tx, ty, tz
+
+        def _rest_translation(joint: str) -> Tuple[float, float, float]:
+            info = append_info.get(joint)
+            if info:
+                try:
+                    return tuple(float(v) for v in cmds.getAttr(f"{info['node']}.baseTranslate")[0])
+                except Exception:
+                    pass
+            try:
+                return tuple(float(v) for v in cmds.getAttr(f"{joint}.translate")[0])
+            except Exception:
+                return (0.0, 0.0, 0.0)
+
+        def _subtract_rest(
+            values: Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray],
+            rest: Tuple[float, float, float],
+        ) -> Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]:
+            tx, ty, tz = values
+            out_x = om.MDoubleArray(n_frames, 0.0)
+            out_y = om.MDoubleArray(n_frames, 0.0)
+            out_z = om.MDoubleArray(n_frames, 0.0)
+            for i in range(n_frames):
+                out_x[i] = tx[i] - rest[0]
+                out_y[i] = ty[i] - rest[1]
+                out_z[i] = tz[i] - rest[2]
+            return out_x, out_y, out_z
+
+        def _resolve(joint: str) -> Optional[Dict[str, Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]]:
+            if joint in resolved:
+                return resolved[joint]
+            if joint in resolving:
+                self.logger.warning(f"append translation cycle detected at {joint}; using baked translation fallback")
+                resolved[joint] = None
+                return None
+
+            info = append_info.get(joint)
+            if not info or not info.get("affect_translation") or not info.get("source_joint"):
+                resolved[joint] = None
+                return None
+
+            final_translation = _final_translation(joint)
+            if final_translation is None:
+                resolved[joint] = None
+                return None
+
+            resolving.add(joint)
+            source_joint = info["source_joint"]
+            source_info = append_info.get(source_joint)
+            source_translation = _final_translation(source_joint)
+            source_resolved = _resolve(source_joint) if source_info else None
+            if source_resolved:
+                if info.get("local_append"):
+                    if source_translation is not None:
+                        source_translation = _subtract_rest(source_translation, _rest_translation(source_joint))
+                else:
+                    source_translation = source_resolved["grant"]
+            elif source_translation is not None:
+                source_translation = _subtract_rest(source_translation, _rest_translation(source_joint))
+
+            resolving.remove(joint)
+            if source_translation is None:
+                resolved[joint] = None
+                return None
+
+            own_translation, grant_translation = self._decompose_append_own_translation(
+                final_translation[0], final_translation[1], final_translation[2],
+                source_translation[0], source_translation[1], source_translation[2],
+                info["ratio"],
+            )
+            resolved[joint] = {"own": own_translation, "grant": grant_translation}
+            return resolved[joint]
+
+        decomposed = {}
+        for joint in append_info:
+            state = _resolve(joint)
+            if state:
+                own_tx, own_ty, own_tz = state["own"]
+                decomposed[joint] = {
+                    "translateX": own_tx,
+                    "translateY": own_ty,
+                    "translateZ": own_tz,
+                }
+        return decomposed
+
     def _apply_runtime_channel_arrays_to_scene(
         self,
         joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
@@ -926,6 +1146,12 @@ class VmdConverter:
             append_info,
             len(baked_frames),
         )
+        decomposed_translations = self._decompose_append_translations_for_scene(
+            joint_channel_values,
+            joint_channel_static,
+            append_info,
+            len(baked_frames),
+        )
 
         for joint, channels in joint_channel_values.items():
             total_channels += len(channels)
@@ -935,12 +1161,19 @@ class VmdConverter:
                     append_node = info["node"]
                     attr_map = dict(info["attr_map"])
                     target_static = joint_channel_static.get(joint, {})
-                    decomposed_channels = decomposed_rotations.get(joint, {})
+                    decomposed_rotation_channels = decomposed_rotations.get(joint, {})
+                    decomposed_translation_channels = decomposed_translations.get(joint, {})
+                    decomposed_channels = dict(decomposed_rotation_channels)
+                    decomposed_channels.update(decomposed_translation_channels)
 
-                    if info["affect_rotation"] and not decomposed_channels:
+                    if info["affect_rotation"] and not decomposed_rotation_channels:
                         attr_map.pop("rotateX", None)
                         attr_map.pop("rotateY", None)
                         attr_map.pop("rotateZ", None)
+                    if info["affect_translation"] and not decomposed_translation_channels:
+                        attr_map.pop("translateX", None)
+                        attr_map.pop("translateY", None)
+                        attr_map.pop("translateZ", None)
 
                     redirected_channels = {}
                     redirected_static = {}
@@ -1441,8 +1674,78 @@ class VmdConverter:
                 bone_slot = link.get("bone_slot", link_index)
                 for dest in dests:
                     jnt = dest.split(".", 1)[0]
-                    ik_link_joints[jnt] = {"solver": node, "slot": bone_slot}
+                    info = {"solver": node, "slot": bone_slot}
+                    ik_link_joints[jnt] = info
+                    try:
+                        for long_name in cmds.ls(jnt, long=True) or []:
+                            ik_link_joints[long_name] = info
+                    except Exception:
+                        pass
         return ik_link_joints
+
+    @staticmethod
+    def _node_namespace(node: str) -> str:
+        leaf = node.split("|")[-1]
+        if ":" not in leaf:
+            return ""
+        return leaf.rsplit(":", 1)[0].lstrip(":")
+
+    def _collect_ik_nodes_by_bone_name(self, target_namespace: str = None) -> Dict[str, str]:
+        """mmdCcdIk ノードを PMX IK ボーン名で引けるように収集する。"""
+        nodes: Dict[str, str] = {}
+        for node in cmds.ls(type="mmdCcdIk") or []:
+            if target_namespace and self._node_namespace(node) != target_namespace:
+                continue
+            name = ""
+            if cmds.attributeQuery("mmd_ik_bone_name", node=node, exists=True):
+                try:
+                    name = cmds.getAttr(f"{node}.mmd_ik_bone_name") or ""
+                except Exception:
+                    name = ""
+            if name:
+                nodes[name] = node
+        return nodes
+
+    def _apply_ik_enabled_animation(self, vmd_data: VmdData, target_namespace: str = None) -> None:
+        """VMD の IK 表示/非表示フレームを mmdCcdIk.enabled に反映する。
+
+        PMX import 直後は REST mesh を守るため mmdCcdIk.enabled=False。
+        VMD が適用されるときだけ、VMD property frame に従って有効化する。
+        property frame がないモデルモーションでは、従来互換として全 IK を
+        評価範囲の先頭で有効にする。
+        """
+        ik_nodes = self._collect_ik_nodes_by_bone_name(target_namespace)
+        if not ik_nodes:
+            return
+
+        property_frames = sorted(
+            list(getattr(vmd_data, "ik_show_hide_frames", []) or []),
+            key=lambda f: int(getattr(f, "frame_number", 0)),
+        )
+        if property_frames or getattr(vmd_data, "bone_frames", None):
+            min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
+            for node in ik_nodes.values():
+                cmds.setAttr(f"{node}.enabled", True)
+                cmds.setKeyframe(node, attribute="enabled", time=min_frame, value=1)
+
+        if property_frames:
+            keyed = 0
+            for frame in property_frames:
+                frame_number = int(getattr(frame, "frame_number", 0))
+                for ik_name, show_flag in getattr(frame, "ik_states", []) or []:
+                    node = ik_nodes.get(ik_name)
+                    if not node:
+                        continue
+                    value = bool(show_flag)
+                    cmds.setAttr(f"{node}.enabled", value)
+                    cmds.setKeyframe(node, attribute="enabled", time=frame_number, value=int(value))
+                    keyed += 1
+            if keyed:
+                self.logger.info(f"mmdCcdIk.enabled に VMD IK 状態を {keyed} keys 適用しました")
+            return
+
+        if getattr(vmd_data, "bone_frames", None):
+            self.logger.info(f"VMD IK 状態が無いため mmdCcdIk.enabled を default ON にしました: {len(ik_nodes)} nodes")
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""

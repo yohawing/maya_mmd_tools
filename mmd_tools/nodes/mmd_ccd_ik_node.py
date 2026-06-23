@@ -53,9 +53,12 @@ class MmdCcdIkNode(om.MPxNode):
         self._chain_def = None
         self._bone_count = 0
         self._link_count = 0
+        self._controller_slot = -1
         self._rest_positions = []
+        self._parent_slots = []
         self._bone_joint_orients = []
         self._link_joint_orients = []
+        self._link_slots = []
         self._ik_link_slots = set()
 
     def _ensure_solver(self, chain_json: str):
@@ -77,6 +80,7 @@ class MmdCcdIkNode(om.MPxNode):
 
         bones = cfg.get("bones", [])
         links = cfg.get("links", [])
+        self._controller_slot = int(cfg.get("controllerBoneSlot", -1))
         target_slot = cfg.get("targetBoneSlot", 0)
         iterations = cfg.get("iterationCount", 40)
         limit_angle = cfg.get("limitAngle", 0.0628)
@@ -85,6 +89,7 @@ class MmdCcdIkNode(om.MPxNode):
         self._link_count = len(links)
 
         self._rest_positions = [b.get("rest_position", [0, 0, 0]) for b in bones]
+        self._parent_slots = [int(b.get("parent_slot", -1)) for b in bones]
 
         self._bone_joint_orients = []
         for b in bones:
@@ -100,9 +105,11 @@ class MmdCcdIkNode(om.MPxNode):
                 self._bone_joint_orients.append(None)
 
         self._ik_link_slots = set()
+        self._link_slots = []
         self._link_joint_orients = []
         for lk in links:
             slot = lk["bone_slot"]
+            self._link_slots.append(slot)
             self._ik_link_slots.add(slot)
             jo = self._bone_joint_orients[slot] if slot < len(self._bone_joint_orients) else None
             self._link_joint_orients.append(jo)
@@ -142,13 +149,14 @@ class MmdCcdIkNode(om.MPxNode):
         if not self._is_output_plug(plug):
             return None
 
-        enabled = data.inputValue(self.aEnabled).asBool()
-        if not enabled:
-            data.setClean(plug)
-            return
-
         chain_json = data.inputValue(self.aChainJson).asString()
         self._ensure_solver(chain_json)
+
+        enabled = data.inputValue(self.aEnabled).asBool()
+        if not enabled:
+            self._copy_input_rotate_to_output(data, plug)
+            return
+
         if self._solver is None:
             data.setClean(plug)
             return
@@ -203,6 +211,9 @@ class MmdCcdIkNode(om.MPxNode):
                     q = q * q_jo
             rotations.extend([-q.x, -q.y, q.z, q.w])
 
+        if 0 <= self._controller_slot < self._bone_count and not self._goal_has_input_connection():
+            goal_x, goal_y, goal_z = self._compute_pre_ik_goal(positions, rotations)
+
         result = self._solver.solve(
             positions=positions,
             rotations=rotations,
@@ -238,6 +249,69 @@ class MmdCcdIkNode(om.MPxNode):
         out_array.set(builder)
         out_array.setAllClean()
         data.setClean(plug)
+
+    def _copy_input_rotate_to_output(self, data, plug):
+        """IK disabled state: preserve FK/VMD rotations on IK link joints."""
+        out_array = data.outputArrayValue(self.aOutputRotate)
+        builder = out_array.builder()
+        fn_dep = om.MFnDependencyNode(self.thisMObject())
+        input_plug = fn_dep.findPlug("inputRotate", False)
+
+        for link_i, slot in enumerate(self._link_slots):
+            rx = ry = rz = 0.0
+            try:
+                elem_plug = input_plug.elementByLogicalIndex(slot)
+                rx = elem_plug.child(0).asDouble()
+                ry = elem_plug.child(1).asDouble()
+                rz = elem_plug.child(2).asDouble()
+            except Exception:
+                pass
+
+            elem_handle = builder.addElement(link_i)
+            elem_handle.set3Double(rx, ry, rz)
+
+        out_array.set(builder)
+        out_array.setAllClean()
+        data.setClean(plug)
+
+    def _goal_has_input_connection(self) -> bool:
+        try:
+            goal_plug = om.MFnDependencyNode(self.thisMObject()).findPlug("goal", False)
+            if goal_plug.isDestination:
+                return True
+            for child_index in range(goal_plug.numChildren()):
+                if goal_plug.child(child_index).isDestination:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def _compute_pre_ik_goal(self, positions, rotations):
+        """input pose だけから controller bone の pre-IK world 位置を得る。"""
+        world_mats = [om.MMatrix() for _ in range(self._bone_count)]
+        for bone_i in range(self._bone_count):
+            rest = self._rest_positions[bone_i]
+            local_t = om.MVector(
+                rest[0] + positions[bone_i * 3],
+                rest[1] + positions[bone_i * 3 + 1],
+                rest[2] + positions[bone_i * 3 + 2],
+            )
+            q_off = bone_i * 4
+            quat = om.MQuaternion(
+                rotations[q_off],
+                rotations[q_off + 1],
+                rotations[q_off + 2],
+                rotations[q_off + 3],
+            )
+            local_tfm = om.MTransformationMatrix()
+            local_tfm.setRotation(quat)
+            local_tfm.setTranslation(local_t, om.MSpace.kTransform)
+            local_mat = local_tfm.asMatrix()
+            parent_slot = self._parent_slots[bone_i] if bone_i < len(self._parent_slots) else -1
+            world_mats[bone_i] = local_mat * world_mats[parent_slot] if 0 <= parent_slot < bone_i else local_mat
+
+        goal = om.MTransformationMatrix(world_mats[self._controller_slot]).translation(om.MSpace.kWorld)
+        return goal.x, goal.y, goal.z
 
     def __del__(self):
         if self._solver is not None:

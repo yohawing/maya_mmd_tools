@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import Mock, patch
 import maya.cmds as cmds
+import maya.api.OpenMaya as om
 
 from mmd_tools.converters.bone_converter import BoneConverter
 from mmd_tools.core import maya_utils
@@ -60,6 +61,32 @@ class TestBoneConverterMaya(unittest.TestCase):
         bone.ik_links = []
 
         return bone
+
+    def _pmx_axis_to_maya_vector(self, axis):
+        """PMX軸ベクトルをMaya座標系へ変換する。"""
+        vector = om.MVector(axis[0], axis[1], -axis[2])
+        vector.normalize()
+        return vector
+
+    def _joint_world_axis_rows(self, joint):
+        """jointのworldMatrixからMaya row-vector規約のX/Y/Z軸を返す。"""
+        matrix = cmds.xform(joint, query=True, worldSpace=True, matrix=True)
+        axes = [
+            om.MVector(matrix[0], matrix[1], matrix[2]),
+            om.MVector(matrix[4], matrix[5], matrix[6]),
+            om.MVector(matrix[8], matrix[9], matrix[10]),
+        ]
+        for axis in axes:
+            axis.normalize()
+        return axes
+
+    def _assert_vector_dot_greater(self, actual, expected, threshold=0.999):
+        dot = actual * expected
+        self.assertGreater(
+            dot,
+            threshold,
+            f"axis mismatch: dot={dot:.6f}, actual={actual}, expected={expected}",
+        )
 
     def _create_mock_pmd_bone(
         self,
@@ -536,8 +563,8 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertTrue(cmds.objExists(skin_cluster))
         mock_rig_converter.setup_pmx_rig.assert_not_called()
 
-    def test_create_maya_joints_can_skip_pmx_bone_orientation(self):
-        """runtime bake用にPMXローカル軸のjointOrient適用をスキップできる"""
+    def test_create_maya_joints_applies_local_axis_even_when_orientation_flag_disabled(self):
+        """LOCAL_AXIS ボーンは setup_bone_orientation=False でも JO が設定される"""
         bone = self._create_mock_pmx_bone(
             0,
             "local_axis_bone",
@@ -557,7 +584,45 @@ class TestBoneConverterMaya(unittest.TestCase):
         )
 
         joint_orient = cmds.getAttr(f"{maya_joints[0]}.jointOrient")[0]
-        self.assertEqual(tuple(round(value, 6) for value in joint_orient), (0.0, 0.0, 0.0))
+        jo_magnitude = sum(v * v for v in joint_orient) ** 0.5
+        self.assertGreater(jo_magnitude, 1.0, "LOCAL_AXIS ボーンは常に JO が設定される")
+
+    def test_create_maya_joints_local_axis_matches_world_axes_under_rotated_parent(self):
+        """親が回転済みでも子のLOCAL_AXIS world X/Z軸と位置を維持する"""
+        parent = self._create_mock_pmx_bone(
+            0,
+            "parent_local_axis",
+            position=(0.0, 0.0, 0.0),
+            bone_flag=PmxBoneFlag.LOCAL_AXIS,
+        )
+        parent.x_axis_direction = (0.0, 1.0, 0.0)
+        parent.z_axis_direction = (1.0, 0.0, 0.0)
+
+        child = self._create_mock_pmx_bone(
+            1,
+            "child_local_axis",
+            parent_index=0,
+            position=(2.0, 3.0, 4.0),
+            bone_flag=PmxBoneFlag.LOCAL_AXIS,
+        )
+        child.x_axis_direction = (1.0, 0.0, 0.0)
+        child.z_axis_direction = (0.0, 1.0, 0.0)
+
+        skeleton_group = cmds.group(empty=True, name="skeleton_local_axis_grp")
+        maya_joints = self.converter._create_maya_joints(
+            [parent, child],
+            {0: "parent_local_axis", 1: "child_local_axis"},
+            "pmx",
+            skeleton_group,
+        )
+
+        child_axes = self._joint_world_axis_rows(maya_joints[1])
+        self._assert_vector_dot_greater(child_axes[0], self._pmx_axis_to_maya_vector(child.x_axis_direction))
+        self._assert_vector_dot_greater(child_axes[2], self._pmx_axis_to_maya_vector(child.z_axis_direction))
+
+        child_world_pos = cmds.xform(maya_joints[1], query=True, worldSpace=True, translation=True)
+        for actual, expected in zip(child_world_pos, [2.0, 3.0, -4.0]):
+            self.assertAlmostEqual(actual, expected, places=5)
 
 
 if __name__ == "__main__":

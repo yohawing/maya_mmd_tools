@@ -25,6 +25,7 @@ class VmdData:
         self.light_frames = []
         self.shadow_frames = []
         self.ik_show_hide_frames = []
+        self.source_file = None
 
     def parse_file(self, file_path) -> "VmdData":
         """
@@ -42,6 +43,7 @@ class VmdData:
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"VMD file not found: {file_path}")
+        self.source_file = os.path.abspath(file_path)
 
         with open(file_path, "rb") as f:
             try:

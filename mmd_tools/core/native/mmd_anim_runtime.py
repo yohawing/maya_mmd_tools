@@ -222,6 +222,11 @@ def _setup_function_signatures(lib: CDLL) -> None:
         ]
     except AttributeError:
         logger.debug("mmd-anim runtime does not expose evaluate_clip_frame_with_ik_options")
+    try:
+        lib.mmd_runtime_instance_evaluate_rest_pose.restype = c_bool
+        lib.mmd_runtime_instance_evaluate_rest_pose.argtypes = [c_void_p]
+    except AttributeError:
+        logger.debug("mmd-anim runtime does not expose evaluate_rest_pose")
 
     # 出力取得 (コピー版を優先)
     lib.mmd_runtime_instance_world_matrix_f32_len.restype = c_size_t
@@ -229,6 +234,14 @@ def _setup_function_signatures(lib: CDLL) -> None:
 
     lib.mmd_runtime_instance_copy_world_matrices.restype = c_bool
     lib.mmd_runtime_instance_copy_world_matrices.argtypes = [c_void_p, POINTER(c_float), c_size_t]
+    try:
+        lib.mmd_runtime_instance_skinning_matrix_f32_len.restype = c_size_t
+        lib.mmd_runtime_instance_skinning_matrix_f32_len.argtypes = [c_void_p]
+
+        lib.mmd_runtime_instance_copy_skinning_matrices.restype = c_bool
+        lib.mmd_runtime_instance_copy_skinning_matrices.argtypes = [c_void_p, POINTER(c_float), c_size_t]
+    except AttributeError:
+        logger.debug("mmd-anim runtime does not expose skinning matrix copy ABI")
 
     lib.mmd_runtime_instance_morph_weight_len.restype = c_size_t
     lib.mmd_runtime_instance_morph_weight_len.argtypes = [c_void_p]
@@ -671,6 +684,20 @@ class MmdRuntimeInstance:
             )
             return False
 
+    def evaluate_rest_pose(self) -> bool:
+        """モデルの REST pose を評価します。"""
+        if not self._handle or self._lib is None:
+            return False
+        func = getattr(self._lib, "mmd_runtime_instance_evaluate_rest_pose", None)
+        if func is None:
+            logger.warning("mmd-anim runtime が REST pose 評価 ABI を提供していません")
+            return False
+        try:
+            return bool(func(self._handle))
+        except Exception as e:
+            logger.error("evaluate_rest_pose 失敗: %s", e, exc_info=True)
+            return False
+
     def get_world_matrices(self) -> Optional[List[List[float]]]:
         """
         現在の評価結果のワールド行列 (ボーン数 × 16) を取得します。
@@ -694,6 +721,36 @@ class MmdRuntimeInstance:
             return matrices
         except Exception as e:
             logger.error(f"get_world_matrices 失敗: {e}", exc_info=True)
+            return None
+
+    def get_skinning_matrices(self) -> Optional[List[List[float]]]:
+        """
+        現在の評価結果のスキニング行列 (ボーン数 × 16) を取得します。
+
+        mmd-anim 側で current world matrix と inverse bind matrix を合成済みの
+        行列です。Maya skinCluster との比較では Maya 側の bindPreMatrix と
+        world matrix から oracle を作るため、これは診断用 ABI として扱います。
+        """
+        if not self._handle or self._lib is None:
+            return None
+        len_func = getattr(self._lib, "mmd_runtime_instance_skinning_matrix_f32_len", None)
+        copy_func = getattr(self._lib, "mmd_runtime_instance_copy_skinning_matrices", None)
+        if len_func is None or copy_func is None:
+            return None
+        try:
+            n = len_func(self._handle)
+            if n == 0:
+                return []
+            buf = (c_float * n)()
+            ok = copy_func(self._handle, buf, n)
+            if not ok:
+                return None
+            matrices: List[List[float]] = []
+            for i in range(0, n, 16):
+                matrices.append(list(buf[i : i + 16]))
+            return matrices
+        except Exception as e:
+            logger.error("get_skinning_matrices 失敗: %s", e, exc_info=True)
             return None
 
     def get_morph_weights(self) -> Optional[List[float]]:
