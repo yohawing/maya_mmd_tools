@@ -252,12 +252,6 @@ class ImportExportTab(BaseTab):
         self.add_semi_standard_bones_check.setToolTip(self.tr("add_semi_standard_bones", "tooltips"))
         other_layout.addWidget(self.add_semi_standard_bones_check)
 
-        self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
-        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
-        self.bake_mode_check.toggled.connect(lambda v: settings.set("import.rig.bake_mode", v))
-        self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
-        other_layout.addWidget(self.bake_mode_check)
-
         self.translate_names_check = QCheckBox(self.tr("translate_names", "checkboxes"))
         self.translate_names_check.setChecked(settings.get("import.naming.translate_names", True))
         self.translate_names_check.toggled.connect(lambda v: settings.set("import.naming.translate_names", v))
@@ -265,12 +259,16 @@ class ImportExportTab(BaseTab):
         other_layout.addWidget(self.translate_names_check)
 
         self.other_group.setLayout(other_layout)
-        model_settings_layout.addWidget(self.other_group)
 
-        model_settings_layout.addStretch()
         # Animation Import Settings
         self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
         anim_settings_layout = QVBoxLayout()
+
+        self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
+        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
+        self.bake_mode_check.toggled.connect(lambda v: settings.set("import.rig.bake_mode", v))
+        self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
+        anim_settings_layout.addWidget(self.bake_mode_check)
 
         # Start frame
         frame_layout = QHBoxLayout()
@@ -344,6 +342,9 @@ class ImportExportTab(BaseTab):
 
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
+
+        # Other group at the bottom (dev-only)
+        model_settings_layout.addWidget(self.other_group)
 
         model_settings_layout.addStretch()
 
@@ -519,8 +520,7 @@ class ImportExportTab(BaseTab):
             self.create_physics_joints_check,
             self.group_physics_objects_check,
             self.morph_physics_group,
-            self.add_semi_standard_bones_check,
-            self.translate_names_check,
+            self.other_group,
             self.resample_curves_check,
             self.import_bone_animation_check,
             self.import_morph_animation_check,
