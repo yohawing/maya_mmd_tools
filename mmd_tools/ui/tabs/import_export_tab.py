@@ -511,7 +511,6 @@ class ImportExportTab(BaseTab):
             self.create_physics_joints_check,
             self.group_physics_objects_check,
             self.add_semi_standard_bones_check,
-            self.bake_mode_check,
             self.translate_names_check,
             self.resample_curves_check,
         ]
