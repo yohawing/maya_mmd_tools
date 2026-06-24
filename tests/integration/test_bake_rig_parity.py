@@ -287,12 +287,11 @@ class TestBakeRigBoneParity(MayaTestBase):
     def _import_rig(self):
         return _import_model_with_options(PMX_FILE, VMD_FILE, setup_rig=True, setup_bone_orientation=True)
 
-    def _assert_scene_matches_runtime_oracle(self, label, pmx_path=PMX_FILE, vmd_path=VMD_FILE, frames=FRAMES):
+    def _assert_scene_positions_match_runtime_oracle(self, label, pmx_path=PMX_FILE, vmd_path=VMD_FILE, frames=FRAMES):
         actual = _capture_bone_world_transforms_by_index(frames)
         oracle = _capture_runtime_oracle_world_transforms(pmx_path, vmd_path, frames)
 
         pos_outliers = []
-        rot_outliers = []
         common_bones = set(actual.keys()) & set(oracle.keys())
         self.assertGreater(len(common_bones), 0, "共通ボーンが見つからない")
 
@@ -308,10 +307,6 @@ class TestBakeRigBoneParity(MayaTestBase):
                 if dist > WORLD_POS_THRESHOLD:
                     pos_outliers.append((joint, bone_index, frame, dist))
 
-                angle = _quat_angle_deg(actual_frame["quat"], oracle_frame["quat"])
-                if angle > WORLD_ROT_THRESHOLD_DEG:
-                    rot_outliers.append((joint, bone_index, frame, angle))
-
         failures = []
         if pos_outliers:
             pos_outliers.sort(key=lambda x: -x[3])
@@ -320,19 +315,12 @@ class TestBakeRigBoneParity(MayaTestBase):
                 failures.append(
                     f"  bone[{bone_index}] {joint} @ frame {frame}: {dist:.4f} units"
                 )
-        if rot_outliers:
-            rot_outliers.sort(key=lambda x: -x[3])
-            failures.append(f"{label} world rotation mismatch ({len(rot_outliers)} outliers):")
-            for joint, bone_index, frame, angle in rot_outliers[:20]:
-                failures.append(
-                    f"  bone[{bone_index}] {joint} @ frame {frame}: {angle:.2f} deg"
-                )
 
         if failures:
             self.fail("\n".join(failures))
 
-    def test_runtime_bake_matches_mmd_anim_world_transforms(self):
-        """Bake mode の world transform が mmd-anim runtime oracle と一致する"""
+    def test_runtime_bake_matches_mmd_anim_world_positions(self):
+        """Bake mode の world position が mmd-anim runtime oracle と一致する"""
         for case in ORACLE_CASES:
             with self.subTest(case=case["name"]):
                 try:
@@ -342,7 +330,7 @@ class TestBakeRigBoneParity(MayaTestBase):
                         setup_rig=False,
                         setup_bone_orientation=False,
                     )
-                    self._assert_scene_matches_runtime_oracle(
+                    self._assert_scene_positions_match_runtime_oracle(
                         f"Bake:{case['name']}",
                         case["pmx"],
                         case["vmd"],
@@ -351,8 +339,8 @@ class TestBakeRigBoneParity(MayaTestBase):
                 finally:
                     cmds.file(new=True, force=True)
 
-    def test_rig_mode_matches_mmd_anim_world_transforms(self):
-        """Rig mode の world transform が mmd-anim runtime oracle と一致する"""
+    def test_rig_mode_matches_mmd_anim_world_positions(self):
+        """Rig mode の world position が mmd-anim runtime oracle と一致する"""
         for case in ORACLE_CASES:
             with self.subTest(case=case["name"]):
                 try:
@@ -362,7 +350,7 @@ class TestBakeRigBoneParity(MayaTestBase):
                         setup_rig=True,
                         setup_bone_orientation=True,
                     )
-                    self._assert_scene_matches_runtime_oracle(
+                    self._assert_scene_positions_match_runtime_oracle(
                         f"Rig:{case['name']}",
                         case["pmx"],
                         case["vmd"],

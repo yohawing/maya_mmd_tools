@@ -131,8 +131,6 @@ class VmdConverter:
             if self.use_animation_layers:
                 self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
 
-            self._apply_ik_enabled_animation(vmd_data, target_namespace)
-
             vmd_bytes, pmx_bytes, pmx_path = self._resolve_runtime_bake_sources(
                 vmd_data,
                 vmd_bytes,
@@ -157,6 +155,8 @@ class VmdConverter:
                     self.logger.warning("runtime ベイクに失敗したため、レガシーパスにフォールバックします")
 
             # --- レガシーパス（従来の変換） ---
+            self._apply_ik_enabled_animation(vmd_data, target_namespace)
+
             if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
                 self.logger.info(f"ボーンアニメーション変換を開始（レガシー）: {len(vmd_data.bone_frames)}フレーム")
                 bone_success = self._convert_bone_animation(vmd_data.bone_frames)
@@ -190,6 +190,10 @@ class VmdConverter:
     ) -> bool:
         """PMX 専用の runtime ベイクを使うか判定（pmx_bytes or .pmx path）。"""
         if not (HAS_MMD_RUNTIME and is_mmd_runtime_available()):
+            return False
+
+        if self._has_live_mmd_rig_for_runtime_target():
+            self.logger.info("live MMD rig が接続されているため、VMD import はRig経路を使用します")
             return False
 
         # 少なくとも vmd_bytes と (pmx_bytes または pmx_path) が必要
@@ -317,6 +321,7 @@ class VmdConverter:
                 f"runtime 評価範囲: {min_frame} - {max_frame} (keys={len(bake_frames)})"
             )
             self._disable_mmd_rig_constraints_for_runtime_bake()
+            self._restore_joints_to_bind_pose_for_runtime_bake()
 
             # runtime bake は最終姿勢を毎フレーム直焼きするため、animation layerを使わない。
             # layer経由だと全ボーン全フレームのblend node作成が重く、未登録attribute警告も出る。
@@ -459,6 +464,28 @@ class VmdConverter:
                 pass
         self.logger.debug(f"Built hierarchy map for {len(self._bone_parent_map)} bones for runtime cache")
 
+    def _build_runtime_bind_world_maps(self) -> None:
+        """Build bind-space maps used to convert runtime matrices for JO skinning.
+
+        mmd-anim/public no-JO skinning deforms vertices with
+        ``inverse(B_noJO) * W_mmd``.  A Maya skeleton with jointOrient uses a
+        different bind world matrix, so the joint world matrix must be converted
+        to ``B_maya * inverse(B_noJO) * W_mmd`` before local decomposition.
+        """
+        self._runtime_bind_world_matrices: Dict[int, om.MMatrix] = {}
+        self._runtime_no_orient_bind_world_matrices: Dict[int, om.MMatrix] = {}
+        for bidx, joint in self.bone_index_to_joint.items():
+            try:
+                bind_world = om.MMatrix(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+            except Exception:
+                continue
+            self._runtime_bind_world_matrices[bidx] = bind_world
+            bind_no_orient = om.MMatrix()
+            bind_no_orient[12] = bind_world[12]
+            bind_no_orient[13] = bind_world[13]
+            bind_no_orient[14] = bind_world[14]
+            self._runtime_no_orient_bind_world_matrices[bidx] = bind_no_orient
+
     def _compute_all_bone_locals(
         self, world_matrices: List[List[float]]
     ) -> Dict[int, Tuple[float, float, float, float, float, float]]:
@@ -467,9 +494,14 @@ class VmdConverter:
         親ボーンの変換済みワールド行列の逆行列を掛けてローカル行列を得、ジョイントの
         rotateOrder に適合するオイラー角を抽出する。これにより per-frame の cmds.xform を
         回避しつつ、ベイク結果の等価性を保つ。
+
+        JO 付き skeleton では、runtime world matrix そのものではなく skinning
+        matrix が no-JO MMD 評価と一致するよう bind-space 補正を行う。
         """
         if not world_matrices or not self.bone_index_to_joint:
             return {}
+        if not hasattr(self, "_runtime_bind_world_matrices"):
+            self._build_runtime_bind_world_maps()
         locals_map: Dict[int, Tuple[float, float, float, float, float, float]] = {}
         maya_worlds: Dict[int, om.MMatrix] = {}
         for bidx in self.bone_index_to_joint.keys():
@@ -478,7 +510,13 @@ class VmdConverter:
                 if isinstance(mmd_m, (list, tuple)) and len(mmd_m) == 16:
                     try:
                         maya_flat = self._convert_mmd_world_matrix_to_maya(list(mmd_m))
-                        maya_worlds[bidx] = om.MMatrix(maya_flat)
+                        runtime_world = om.MMatrix(maya_flat)
+                        bind_world = getattr(self, "_runtime_bind_world_matrices", {}).get(bidx)
+                        bind_no_orient = getattr(self, "_runtime_no_orient_bind_world_matrices", {}).get(bidx)
+                        if bind_world is not None and bind_no_orient is not None:
+                            maya_worlds[bidx] = bind_world * bind_no_orient.inverse() * runtime_world
+                        else:
+                            maya_worlds[bidx] = runtime_world
                     except Exception:
                         pass
         for bidx, joint in self.bone_index_to_joint.items():
@@ -850,6 +888,13 @@ class VmdConverter:
                 "affect_rotation": affect_rot,
                 "affect_translation": affect_translate,
                 "local_append": local_append,
+                "source_rotation_is_mmd": bool(source_append_node and not local_append),
+                "source_joint_orient": (
+                    om.MQuaternion()
+                    if source_append_node and not local_append
+                    else VmdConverter._joint_orient_quat_from_joint(source_joint)
+                ),
+                "target_joint_orient": VmdConverter._joint_orient_quat_from_joint(target_joint),
                 "attr_map": attr_map,
             }
         return result
@@ -870,6 +915,21 @@ class VmdConverter:
         return None
 
     @staticmethod
+    def _joint_orient_quat_from_joint(joint: str) -> om.MQuaternion:
+        """Return jointOrient as a quaternion, or identity when unavailable."""
+        try:
+            jo = cmds.getAttr(f"{joint}.jointOrient")[0]
+        except Exception:
+            return om.MQuaternion()
+        if not any(abs(v) > 1e-8 for v in jo):
+            return om.MQuaternion()
+        return om.MEulerRotation(
+            math.radians(float(jo[0])),
+            math.radians(float(jo[1])),
+            math.radians(float(jo[2])),
+        ).asQuaternion()
+
+    @staticmethod
     def _decompose_append_own_rotation(
         target_rx: om.MDoubleArray,
         target_ry: om.MDoubleArray,
@@ -878,10 +938,14 @@ class VmdConverter:
         source_ry: om.MDoubleArray,
         source_rz: om.MDoubleArray,
         ratio: float,
+        target_joint_orient: om.MQuaternion | None = None,
+        source_joint_orient: om.MQuaternion | None = None,
+        source_rotation_is_mmd: bool = False,
     ):
         """bake の final rotation から grant 寄与を除去し、bone own rotation を計算。
 
-        final = own * slerp(I, source, ratio)  →  own = final * inv(grant)
+        mmdAppend composes animation deltas in joint.rotate space. jointOrient is
+        the bind/rest axis and must not contribute to a REST grant.
         """
         n = len(target_rx)
         own_rx = om.MDoubleArray(n, 0.0)
@@ -957,12 +1021,14 @@ class VmdConverter:
             source_info = append_info.get(source_joint)
             source_rotation = _final_rotation(source_joint)
             source_resolved = _resolve(source_joint) if source_info else None
+            source_rotation_is_mmd = bool(info.get("source_rotation_is_mmd", False))
             if source_resolved:
                 source_rotation = (
                     source_resolved["own"]
                     if info.get("local_append")
                     else source_resolved["grant"]
                 )
+                source_rotation_is_mmd = not info.get("local_append")
 
             resolving.remove(joint)
             if source_rotation is None:
@@ -973,6 +1039,9 @@ class VmdConverter:
                 final_rotation[0], final_rotation[1], final_rotation[2],
                 source_rotation[0], source_rotation[1], source_rotation[2],
                 info["ratio"],
+                target_joint_orient=info.get("target_joint_orient"),
+                source_joint_orient=info.get("source_joint_orient"),
+                source_rotation_is_mmd=source_rotation_is_mmd,
             )
             resolved[joint] = {"own": own_rotation, "grant": grant_rotation}
             return resolved[joint]
@@ -1156,11 +1225,11 @@ class VmdConverter:
         for joint, channels in joint_channel_values.items():
             total_channels += len(channels)
             try:
+                target_static = joint_channel_static.get(joint, {})
                 info = append_info.get(joint)
                 if info and info["attr_map"]:
                     append_node = info["node"]
                     attr_map = dict(info["attr_map"])
-                    target_static = joint_channel_static.get(joint, {})
                     decomposed_rotation_channels = decomposed_rotations.get(joint, {})
                     decomposed_translation_channels = decomposed_translations.get(joint, {})
                     decomposed_channels = dict(decomposed_rotation_channels)
@@ -1221,7 +1290,7 @@ class VmdConverter:
                 keyed, skipped = self._batch_create_and_key_curve_arrays(
                     joint,
                     channels,
-                    joint_channel_static.get(joint, {}),
+                    target_static,
                     bake_times,
                     baked_frames,
                 )
@@ -1456,10 +1525,34 @@ class VmdConverter:
                     )
 
     def _disable_mmd_rig_constraints_for_runtime_bake(self):
-        """runtime bake と二重評価になる PMX 付与constraintを無効化する。"""
+        """runtime bake と二重評価になる PMX 付与constraint/IK solverを無効化する。"""
+        mapped_joints = self._runtime_bake_mapped_joint_names()
+        disconnected = 0
+        ik_nodes_for_runtime = set()
+        for node in cmds.ls(type="mmdAppend") or []:
+            if not self._node_has_mapped_destination(
+                node,
+                ("outputRotate", "outputTranslate"),
+                mapped_joints,
+            ):
+                continue
+            disconnected += self._disconnect_node_output_connections(
+                node,
+                ("outputRotate", "outputTranslate"),
+            )
+        for node in cmds.ls(type="mmdCcdIk") or []:
+            if not self._node_has_mapped_destination(node, ("outputRotate",), mapped_joints):
+                continue
+            ik_nodes_for_runtime.add(node)
+            disconnected += self._disconnect_node_output_connections(node, ("outputRotate",))
+        if disconnected:
+            self.logger.info(f"runtime bake 用に {disconnected} 本のlive rig出力接続を解除しました")
+
         constraints = cmds.ls("*.mmd_grant_constraint", objectsOnly=True) or []
         disabled = 0
         for constraint in constraints:
+            if not self._node_has_mapped_destination(constraint, None, mapped_joints):
+                continue
             try:
                 if cmds.attributeQuery("nodeState", node=constraint, exists=True):
                     cmds.setAttr(f"{constraint}.nodeState", 2)
@@ -1472,6 +1565,144 @@ class VmdConverter:
 
         if disabled:
             self.logger.info(f"runtime bake 用に {disabled} 個のMMD付与constraintを無効化しました")
+
+        ik_disabled = 0
+        for node in ik_nodes_for_runtime:
+            try:
+                for plug in cmds.listConnections(f"{node}.enabled", s=True, d=False, p=True) or []:
+                    cmds.disconnectAttr(plug, f"{node}.enabled")
+                cmds.setAttr(f"{node}.enabled", False)
+                ik_disabled += 1
+            except Exception as e:
+                self.logger.debug(f"failed to disable mmdCcdIk solver {node}: {e}")
+
+        if ik_disabled:
+            self.logger.info(f"runtime bake 用に {ik_disabled} 個のmmdCcdIk solverをOFFにしました")
+
+    def _has_live_mmd_rig_for_runtime_target(self) -> bool:
+        """現在の変換対象にlive MMD rig出力が接続されているかを返す。
+
+        Rig mode は mmdAppend / mmdCcdIk をユーザー操作可能なリグとして残す必要がある。
+        runtime bake は final pose を joint に直焼きする Bake mode 用の経路なので、
+        対象jointへlive rig出力がある場合は選ばない。
+        """
+        mapped_joints = self._runtime_bake_mapped_joint_names()
+        if not mapped_joints:
+            return False
+
+        for node in cmds.ls(type="mmdAppend") or []:
+            if self._node_has_mapped_destination(
+                node,
+                ("outputRotate", "outputTranslate"),
+                mapped_joints,
+            ):
+                return True
+
+        for node in cmds.ls(type="mmdCcdIk") or []:
+            if self._node_has_mapped_destination(node, ("outputRotate",), mapped_joints):
+                return True
+
+        for handle in cmds.ls(type="ikHandle") or []:
+            if not cmds.attributeQuery("mmd_ik_native_handle", node=handle, exists=True):
+                continue
+            if self._native_ik_handle_targets_mapped_joint(handle, mapped_joints):
+                return True
+
+        for constraint in cmds.ls("*.mmd_grant_constraint", objectsOnly=True) or []:
+            if self._node_has_mapped_destination(constraint, None, mapped_joints):
+                return True
+
+        return False
+
+    @classmethod
+    def _native_ik_handle_targets_mapped_joint(cls, handle: str, mapped_joints: set[str]) -> bool:
+        if cls._node_has_mapped_destination(handle, None, mapped_joints):
+            return True
+        for joint in cls._native_ik_handle_link_joints(handle):
+            if cls._node_name_in_set(joint, mapped_joints):
+                return True
+        return False
+
+    def _restore_joints_to_bind_pose_for_runtime_bake(self) -> None:
+        """live rig出力切断後に残った値を消し、runtime bake用のbind姿勢へ戻す。"""
+        restored = 0
+        for vmd_bone_name, joint in self.bone_name_mapping.items():
+            if not cmds.objExists(joint):
+                continue
+
+            for attr in self._runtime_joint_attrs():
+                plug = f"{joint}.{attr}"
+                for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
+                    try:
+                        cmds.disconnectAttr(source, plug)
+                    except Exception:
+                        pass
+
+            bind_translate = self._bone_bind_poses.get(vmd_bone_name)
+            try:
+                if bind_translate is not None:
+                    cmds.setAttr(
+                        f"{joint}.translate",
+                        float(bind_translate[0]),
+                        float(bind_translate[1]),
+                        float(bind_translate[2]),
+                    )
+                cmds.setAttr(f"{joint}.rotate", 0.0, 0.0, 0.0)
+                restored += 1
+            except Exception as e:
+                self.logger.debug(f"failed to restore bind pose for runtime bake {joint}: {e}")
+
+        if restored:
+            self.logger.info(f"runtime bake 用に {restored} 個のjointをbind姿勢へ戻しました")
+
+    def _runtime_bake_mapped_joint_names(self) -> set[str]:
+        joints: set[str] = set()
+        for joint in self.bone_name_mapping.values():
+            if not joint or not cmds.objExists(joint):
+                continue
+            joints.add(joint)
+            for long_name in cmds.ls(joint, long=True) or []:
+                joints.add(long_name)
+        return joints
+
+    @classmethod
+    def _node_has_mapped_destination(
+        cls,
+        node: str,
+        attrs: Tuple[str, ...] | None,
+        mapped_joints: set[str],
+    ) -> bool:
+        plugs = [f"{node}.{attr}" for attr in attrs] if attrs else [node]
+        for plug in plugs:
+            for destination in cmds.listConnections(plug, s=False, d=True, p=True) or []:
+                destination_node = destination.split(".", 1)[0]
+                if cls._node_name_in_set(destination_node, mapped_joints):
+                    return True
+        return False
+
+    @staticmethod
+    def _node_name_in_set(node: str, names: set[str]) -> bool:
+        if node in names:
+            return True
+        return any(long_name in names for long_name in cmds.ls(node, long=True) or [])
+
+    @staticmethod
+    def _disconnect_node_output_connections(node: str, attrs: Tuple[str, ...]) -> int:
+        disconnected = 0
+        for attr in attrs:
+            output_plug = f"{node}.{attr}"
+            destinations = cmds.listConnections(output_plug, s=False, d=True, p=True) or []
+            for destination in destinations:
+                sources = cmds.listConnections(destination, s=True, d=False, p=True) or []
+                for source in sources:
+                    if not source.startswith(output_plug):
+                        continue
+                    try:
+                        cmds.disconnectAttr(source, destination)
+                        disconnected += 1
+                    except Exception:
+                        pass
+        return disconnected
 
 
     def _add_objects_to_layer(self, objects: List[str]):
@@ -1684,6 +1915,17 @@ class VmdConverter:
         return ik_link_joints
 
     @staticmethod
+    def _native_ik_handle_link_joints(handle: str) -> List[str]:
+        if not cmds.attributeQuery("mmd_ik_link_joints_json", node=handle, exists=True):
+            return []
+        try:
+            raw = cmds.getAttr(f"{handle}.mmd_ik_link_joints_json") or "[]"
+            links = json.loads(raw)
+        except Exception:
+            return []
+        return [j for j in links if isinstance(j, str) and cmds.objExists(j)]
+
+    @staticmethod
     def _node_namespace(node: str) -> str:
         leaf = node.split("|")[-1]
         if ":" not in leaf:
@@ -1869,8 +2111,10 @@ class VmdConverter:
         # CCD IK の base_rotation として使われ、正しい解に収束する
         ik_info = key_route.get("ik_solver_rotate") if key_route else None
         if ik_info:
-            solver_node = ik_info["solver"]
-            slot = ik_info["slot"]
+            solver_node = ik_info.get("solver")
+            slot = ik_info.get("slot")
+            if not solver_node or slot is None:
+                return
             ir_attrs = [
                 f"inputRotate[{slot}].inputRotateElementX",
                 f"inputRotate[{slot}].inputRotateElementY",
@@ -1940,11 +2184,8 @@ class VmdConverter:
         """VMD quaternion を Maya joint.rotate の Euler 角（度）へ変換する。"""
         q_maya = om.MQuaternion(-float(qx), -float(qy), float(qz), float(qw))
 
-        q_jo, rotate_order = self._get_joint_orient_cache(joint_name)
-        if q_jo is not None:
-            q_rotate = q_maya * q_jo.inverse()
-        else:
-            q_rotate = q_maya
+        _, rotate_order = self._get_joint_orient_cache(joint_name)
+        q_rotate = q_maya
 
         euler = q_rotate.asEulerRotation()
         euler.reorderIt(rotate_order)

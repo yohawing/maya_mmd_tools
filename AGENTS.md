@@ -68,6 +68,8 @@ uvx nox -s cpp_verify -- --maya 2024 --config Debug --manifest <...>
 
 PMX/VMD の runtime 評価、正解データ生成、数値比較には `external/mmd-anim` の `mmd-anim` CLI も使う。
 Maya 実装との差分調査では、目視や rotate 単体ではなく、ボーンの world matrix / world translate、または JO-aware bind inverse を含む mesh oracle を優先する。
+`mmd-anim` と公開版 maya-mmd の出力は JO なし骨を基準にした正解として扱う。JO 付き Maya skeleton と比較するときは raw `worldMatrix` だけを合わせず、
+実メッシュに効く `skinCluster.bindPreMatrix * joint.worldMatrix`、またはそれと等価な world-space mesh vertices を比較する。
 
 ```bash
 # PMX / VMD の読み込み概要

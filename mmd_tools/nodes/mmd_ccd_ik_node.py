@@ -39,6 +39,7 @@ class MmdCcdIkNode(om.MPxNode):
     aGoalX = None
     aGoalY = None
     aGoalZ = None
+    aGoalWorldMatrix = None
 
     aInputRotate = None
     aInputTranslate = None
@@ -132,9 +133,9 @@ class MmdCcdIkNode(om.MPxNode):
         """outputRotate 配列階層のいずれかのプラグか判定。"""
         p = plug
         for _ in range(4):
-            if p == self.aOutputRotate:
-                return True
             try:
+                if p.attribute() == self.aOutputRotate:
+                    return True
                 if p.isElement:
                     p = p.array()
                 elif p.isChild:
@@ -161,9 +162,7 @@ class MmdCcdIkNode(om.MPxNode):
             data.setClean(plug)
             return
 
-        goal_x = data.inputValue(self.aGoalX).asDouble()
-        goal_y = data.inputValue(self.aGoalY).asDouble()
-        goal_z = -data.inputValue(self.aGoalZ).asDouble()
+        goal_x, goal_y, goal_z = self._read_goal(data)
 
         this_obj = self.thisMObject()
         fn_dep = om.MFnDependencyNode(this_obj)
@@ -185,6 +184,16 @@ class MmdCcdIkNode(om.MPxNode):
                     positions[bone_i * 3 + 2] = -tz - rest[2]
             except Exception:
                 pass
+
+        has_world_matrix_goal = self._goal_world_matrix_has_input_connection()
+        use_controller_goal = 0 <= self._controller_slot < self._bone_count and not self._goal_has_input_connection()
+        if (
+            0 <= self._controller_slot < self._bone_count
+            and (use_controller_goal or has_world_matrix_goal)
+            and not self._controller_has_position_offset(positions)
+        ):
+            self._copy_input_rotate_to_output(data, plug)
+            return
 
         # Input rotations: Maya euler → MMD quaternion
         # Connected slots (joint.rotate or animCurve): q_mmd = z_mirror(q_rotate * q_jo)
@@ -211,7 +220,7 @@ class MmdCcdIkNode(om.MPxNode):
                     q = q * q_jo
             rotations.extend([-q.x, -q.y, q.z, q.w])
 
-        if 0 <= self._controller_slot < self._bone_count and not self._goal_has_input_connection():
+        if use_controller_goal:
             goal_x, goal_y, goal_z = self._compute_pre_ik_goal(positions, rotations)
 
         result = self._solver.solve(
@@ -276,15 +285,51 @@ class MmdCcdIkNode(om.MPxNode):
 
     def _goal_has_input_connection(self) -> bool:
         try:
+            matrix_plug = om.MFnDependencyNode(self.thisMObject()).findPlug("goalWorldMatrix", False)
+            if matrix_plug.connectedTo(True, False):
+                return True
             goal_plug = om.MFnDependencyNode(self.thisMObject()).findPlug("goal", False)
-            if goal_plug.isDestination:
+            if goal_plug.connectedTo(True, False):
                 return True
             for child_index in range(goal_plug.numChildren()):
-                if goal_plug.child(child_index).isDestination:
+                if goal_plug.child(child_index).connectedTo(True, False):
                     return True
         except Exception:
             return False
         return False
+
+    def _read_goal(self, data):
+        """Read public goal inputs and convert Maya world Z to MMD world Z."""
+        try:
+            matrix_data = data.inputValue(self.aGoalWorldMatrix).asMatrix()
+            if self._goal_world_matrix_has_input_connection():
+                goal = om.MTransformationMatrix(matrix_data).translation(om.MSpace.kWorld)
+                return goal.x, goal.y, -goal.z
+        except Exception:
+            pass
+        return (
+            data.inputValue(self.aGoalX).asDouble(),
+            data.inputValue(self.aGoalY).asDouble(),
+            -data.inputValue(self.aGoalZ).asDouble(),
+        )
+
+    def _goal_world_matrix_has_input_connection(self) -> bool:
+        try:
+            matrix_plug = om.MFnDependencyNode(self.thisMObject()).findPlug("goalWorldMatrix", False)
+            return bool(matrix_plug.connectedTo(True, False))
+        except Exception:
+            return False
+
+    def _controller_has_position_offset(self, positions) -> bool:
+        """Return True when the IK controller moved from its rest translate."""
+        if not (0 <= self._controller_slot < self._bone_count):
+            return False
+        offset = self._controller_slot * 3
+        return (
+            abs(positions[offset]) > 1e-5
+            or abs(positions[offset + 1]) > 1e-5
+            or abs(positions[offset + 2]) > 1e-5
+        )
 
     def _compute_pre_ik_goal(self, positions, rotations):
         """input pose だけから controller bone の pre-IK world 位置を得る。"""
@@ -345,6 +390,11 @@ def initialize():
     cAttr.keyable = True
     MmdCcdIkNode.addAttribute(MmdCcdIkNode.aGoal)
 
+    mAttr = om.MFnMatrixAttribute()
+    MmdCcdIkNode.aGoalWorldMatrix = mAttr.create("goalWorldMatrix", "gwm")
+    mAttr.storable = False
+    MmdCcdIkNode.addAttribute(MmdCcdIkNode.aGoalWorldMatrix)
+
     _irx = uAttr.create("inputRotateElementX", "ierx", om.MFnUnitAttribute.kAngle, 0.0)
     _iry = uAttr.create("inputRotateElementY", "iery", om.MFnUnitAttribute.kAngle, 0.0)
     _irz = uAttr.create("inputRotateElementZ", "ierz", om.MFnUnitAttribute.kAngle, 0.0)
@@ -389,6 +439,7 @@ def initialize():
 
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aChainJson, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aGoal, MmdCcdIkNode.aOutputRotate)
+    MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aGoalWorldMatrix, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aInputRotate, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aInputTranslate, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aEnabled, MmdCcdIkNode.aOutputRotate)

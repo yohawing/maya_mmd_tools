@@ -926,8 +926,27 @@ class RigConverter:
                 # MMD runtime uses the source append contribution for non-local append chains.
                 if affect_rotation and source_append_node and not local_append:
                     cmds.connectAttr(f"{source_append_node}.appendRotate", f"{node}.sourceRotate")
+                    source_jo = (0.0, 0.0, 0.0)
                 else:
                     cmds.connectAttr(f"{source_joint}.rotate", f"{node}.sourceRotate")
+                    source_jo = cmds.getAttr(f"{source_joint}.jointOrient")[0]
+                if affect_rotation and cmds.attributeQuery("sourceJointOrient", node=node, exists=True):
+                    cmds.setAttr(
+                        f"{node}.sourceJointOrient",
+                        source_jo[0],
+                        source_jo[1],
+                        source_jo[2],
+                        type="double3",
+                    )
+                if affect_rotation and cmds.attributeQuery("targetJointOrient", node=node, exists=True):
+                    target_jo = cmds.getAttr(f"{target_joint}.jointOrient")[0]
+                    cmds.setAttr(
+                        f"{node}.targetJointOrient",
+                        target_jo[0],
+                        target_jo[1],
+                        target_jo[2],
+                        type="double3",
+                    )
                 if affect_translation:
                     if source_append_node and not local_append:
                         cmds.connectAttr(f"{source_append_node}.appendTranslate", f"{node}.sourceTranslate")
@@ -968,23 +987,24 @@ class RigConverter:
 
                     cmds.connectAttr(f"{node}.outputRotate", f"{target_joint}.rotate")
 
-                target_rest_translate = cmds.getAttr(f"{target_joint}.translate")[0]
-                cmds.setAttr(
-                    f"{node}.baseTranslate",
-                    target_rest_translate[0],
-                    target_rest_translate[1],
-                    target_rest_translate[2],
-                    type="double3",
-                )
-                for axis in ("X", "Y", "Z"):
-                    anim_src = cmds.listConnections(
-                        f"{target_joint}.translate{axis}", s=True, d=False, p=True
+                if affect_translation:
+                    target_rest_translate = cmds.getAttr(f"{target_joint}.translate")[0]
+                    cmds.setAttr(
+                        f"{node}.baseTranslate",
+                        target_rest_translate[0],
+                        target_rest_translate[1],
+                        target_rest_translate[2],
+                        type="double3",
                     )
-                    if anim_src:
-                        cmds.disconnectAttr(anim_src[0], f"{target_joint}.translate{axis}")
-                        cmds.connectAttr(anim_src[0], f"{node}.baseTranslate{axis}")
+                    for axis in ("X", "Y", "Z"):
+                        anim_src = cmds.listConnections(
+                            f"{target_joint}.translate{axis}", s=True, d=False, p=True
+                        )
+                        if anim_src:
+                            cmds.disconnectAttr(anim_src[0], f"{target_joint}.translate{axis}")
+                            cmds.connectAttr(anim_src[0], f"{node}.baseTranslate{axis}")
 
-                cmds.connectAttr(f"{node}.outputTranslate", f"{target_joint}.translate")
+                    cmds.connectAttr(f"{node}.outputTranslate", f"{target_joint}.translate")
 
                 if not cmds.attributeQuery("mmd_grant_node", node=node, exists=True):
                     cmds.addAttr(node, longName="mmd_grant_node", attributeType="bool")
@@ -1005,7 +1025,12 @@ class RigConverter:
         manifest,
         maya_joints: List[str],
     ) -> List[str]:
-        """マニフェストの IK チェーン情報から mmdCcdIk DG ノードを作成・接続する。"""
+        """マニフェストの IK チェーン情報から mmdCcdIk DG ノードを作成・接続する。
+
+        足IKのlive操作は Maya 標準 ikRPsolver に任せる。mmdCcdIk は
+        MMD runtime 型のCCD評価に強い一方、JO付き Maya joint の操作用
+        local rotate 空間とは膝の曲がる向きが一致しないモデルがあるため。
+        """
         import json as _json
         from mmd_tools.converters.native_rig_builder import build_ik_mini_chain
 
@@ -1045,6 +1070,12 @@ class RigConverter:
             slot_to_pmx = mapping["slot_to_pmx"]
             link_slots = mapping["link_slots"]
             bone_count = len(pmx_to_slot)
+            use_maya_live_ik = self._should_use_maya_live_ik_handle(
+                controller_joint,
+                target_idx,
+                links,
+                maya_joints,
+            )
 
             # Collect absolute positions first, then convert to local (parent-relative).
             # The rig primitive solver expects local rest positions.
@@ -1131,10 +1162,28 @@ class RigConverter:
                 except Exception:
                     pass
 
-                # controllerBoneSlot lets the node reconstruct the controller's
-                # pre-IK world goal without feeding post-solve worldMatrix back
-                # into the solver. Leave the public goal input free for external
-                # IK targets.
+                # Leave the public goal input unconnected for generated rigs.
+                # mmdCcdIk reconstructs the pre-IK controller position from
+                # controllerBoneSlot + inputTranslate.  External goal connections
+                # remain supported and override that internal controller goal.
+                link_joints = []
+                for link_slot in link_slots:
+                    pmx_idx = slot_to_pmx.get(link_slot, -1)
+                    if 0 <= pmx_idx < len(maya_joints):
+                        link_joint = maya_joints[pmx_idx]
+                        if maya_utils.object_exists(link_joint):
+                            link_joints.append(link_joint)
+                if self._can_connect_live_ik_goal_world_matrix(controller_joint, link_joints):
+                    try:
+                        cmds.connectAttr(
+                            f"{controller_joint}.worldMatrix[0]",
+                            f"{node}.goalWorldMatrix",
+                            force=True,
+                        )
+                    except Exception as exc:
+                        self.logger.debug(
+                            f"failed to connect IK goalWorldMatrix for {node}: {exc}"
+                        )
 
                 # inputRotate: exclude own links AND downstream chains' links.
                 # Downstream = higher controllerBoneIndex (evaluated later in MMD).
@@ -1167,6 +1216,14 @@ class RigConverter:
                                 f"{node}.inputTranslate[{slot}]",
                             )
 
+                if use_maya_live_ik:
+                    self._create_live_ik_handle_from_manifest_chain(
+                        controller_joint,
+                        target_idx,
+                        links,
+                        maya_joints,
+                    )
+
                 # outputRotate → link joint rotations
                 for link_i, link_slot in enumerate(link_slots):
                     pmx_idx = slot_to_pmx.get(link_slot, -1)
@@ -1174,6 +1231,8 @@ class RigConverter:
                         continue
                     link_joint = maya_joints[pmx_idx]
                     if not maya_utils.object_exists(link_joint):
+                        continue
+                    if use_maya_live_ik:
                         continue
 
                     for axis in ("X", "Y", "Z"):
@@ -1194,6 +1253,12 @@ class RigConverter:
                 if not cmds.attributeQuery("mmd_ik_native_node", node=node, exists=True):
                     cmds.addAttr(node, longName="mmd_ik_native_node", attributeType="bool")
                 cmds.setAttr(f"{node}.mmd_ik_native_node", True)
+                if cmds.attributeQuery("enabled", node=node, exists=True):
+                    cmds.setAttr(f"{node}.enabled", True)
+                    try:
+                        cmds.dgdirty(node)
+                    except Exception:
+                        pass
 
                 nodes.append(node)
                 self.logger.info(
@@ -1204,6 +1269,165 @@ class RigConverter:
                 self.logger.error(f"mmdCcdIk ノード作成失敗 '{controller_joint}': {e}")
 
         return nodes
+
+    def _can_connect_live_ik_goal_world_matrix(self, controller_joint: str, link_joints: List[str]) -> bool:
+        """Return True when controller.worldMatrix will not depend on IK output links."""
+        ancestors = set()
+        current = controller_joint
+        while True:
+            parents = cmds.listRelatives(current, parent=True) or []
+            if not parents:
+                break
+            current = parents[0]
+            ancestors.add(current)
+        return not any(link_joint in ancestors for link_joint in link_joints)
+
+    def _should_use_maya_live_ik_handle(
+        self,
+        controller_joint: str,
+        target_idx: int,
+        links: List[Dict[str, Any]],
+        maya_joints: List[str],
+    ) -> bool:
+        """Return True for leg IK chains that need Maya's live RP solver."""
+        if len(links) < 2:
+            return False
+        if not self._is_leg_ik(controller_joint):
+            return False
+        if target_idx < 0 or target_idx >= len(maya_joints):
+            return False
+        root_link_idx = links[-1].get("boneIndex", -1)
+        if root_link_idx < 0 or root_link_idx >= len(maya_joints):
+            return False
+        return True
+
+    def _create_live_ik_handle_from_manifest_chain(
+        self,
+        controller: str,
+        target_idx: int,
+        links: List[Dict[str, Any]],
+        maya_joints: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Create a Maya ikHandle for interactive leg IK and mark its links."""
+        root_link_idx = links[-1].get("boneIndex", -1)
+        if root_link_idx < 0 or root_link_idx >= len(maya_joints):
+            return None
+        if target_idx < 0 or target_idx >= len(maya_joints):
+            return None
+
+        start_joint = maya_joints[root_link_idx]
+        end_joint = maya_joints[target_idx]
+        if not (
+            maya_utils.object_exists(controller)
+            and maya_utils.object_exists(start_joint)
+            and maya_utils.object_exists(end_joint)
+        ):
+            return None
+
+        try:
+            ik_handle, _ = maya_utils.create_ik_handle(
+                start_joint=start_joint,
+                end_joint=end_joint,
+                solver="ikRPsolver",
+                name=f"{controller}_ikHandle",
+            )
+            maya_utils.parent_objects(ik_handle, controller)
+            maya_utils.set_attribute(ik_handle, "v", 0, "bool")
+            maya_utils.set_attribute(ik_handle, "ikBlend", 0.0, "float")
+
+            pole_target = self._create_live_leg_pole_target(
+                controller,
+                ik_handle,
+                start_joint,
+                end_joint,
+            )
+
+            link_joints = []
+            for link in links:
+                idx = link.get("boneIndex", -1)
+                if 0 <= idx < len(maya_joints) and maya_utils.object_exists(maya_joints[idx]):
+                    link_joints.append(maya_joints[idx])
+
+            self._mark_live_ik_handle(ik_handle, controller, link_joints)
+            self._connect_live_ik_blend_to_controller_offset(ik_handle, controller)
+            self.logger.info(
+                f"live IKハンドル '{ik_handle}' を作成しました"
+                f"（{start_joint} -> {end_joint}, pole={pole_target}）"
+            )
+            return {
+                "ik_handle": ik_handle,
+                "controller": controller,
+                "start_joint": start_joint,
+                "end_joint": end_joint,
+                "links": link_joints,
+                "pole_target": pole_target,
+            }
+        except Exception as exc:
+            self.logger.error(f"live IKハンドルの作成に失敗しました '{controller}': {exc}")
+            return None
+
+    def _create_live_leg_pole_target(
+        self,
+        controller: str,
+        ik_handle: str,
+        start_joint: str,
+        end_joint: str,
+    ) -> Optional[str]:
+        """Create a hidden Z+ pole target for MMD leg IK visual bend direction."""
+        try:
+            start_pos = cmds.xform(start_joint, query=True, worldSpace=True, translation=True)
+            end_pos = cmds.xform(end_joint, query=True, worldSpace=True, translation=True)
+            mid_pos = [(start_pos[i] + end_pos[i]) * 0.5 for i in range(3)]
+            pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] + 2.0]
+
+            pole_target = cmds.spaceLocator(name=f"{controller}_poleTarget")[0]
+            cmds.xform(pole_target, worldSpace=True, translation=pole_pos)
+            maya_utils.set_attribute(pole_target, "v", 0, "bool")
+            cmds.poleVectorConstraint(pole_target, ik_handle)
+            return pole_target
+        except Exception as exc:
+            self.logger.error(f"live IK PoleTargetの作成に失敗しました '{controller}': {exc}")
+            return None
+
+    def _connect_live_ik_blend_to_controller_offset(self, ik_handle: str, controller: str) -> None:
+        """Keep the native ikHandle inactive at REST and enable it when moved."""
+        try:
+            rest = cmds.getAttr(f"{controller}.translate")[0]
+            expr = (
+                f"float $dx = abs({controller}.translateX - {float(rest[0]):.12g});\n"
+                f"float $dy = abs({controller}.translateY - {float(rest[1]):.12g});\n"
+                f"float $dz = abs({controller}.translateZ - {float(rest[2]):.12g});\n"
+                f"{ik_handle}.ikBlend = (($dx + $dy + $dz) > 0.00001) ? 1.0 : 0.0;"
+            )
+            cmds.expression(
+                name=f"{ik_handle}_restBlendExpr",
+                string=expr,
+                object=controller,
+                alwaysEvaluate=True,
+                unitConversion="all",
+            )
+        except Exception as exc:
+            self.logger.error(f"live IK blend expression の作成に失敗しました '{ik_handle}': {exc}")
+
+    @staticmethod
+    def _mark_live_ik_handle(ik_handle: str, controller: str, link_joints: List[str]) -> None:
+        import json as _json
+
+        if not cmds.attributeQuery("mmd_ik_native_handle", node=ik_handle, exists=True):
+            cmds.addAttr(ik_handle, longName="mmd_ik_native_handle", attributeType="bool")
+        cmds.setAttr(f"{ik_handle}.mmd_ik_native_handle", True)
+
+        if not cmds.attributeQuery("mmd_ik_controller", node=ik_handle, exists=True):
+            cmds.addAttr(ik_handle, longName="mmd_ik_controller", dataType="string")
+        cmds.setAttr(f"{ik_handle}.mmd_ik_controller", controller, type="string")
+
+        if not cmds.attributeQuery("mmd_ik_link_joints_json", node=ik_handle, exists=True):
+            cmds.addAttr(ik_handle, longName="mmd_ik_link_joints_json", dataType="string")
+        cmds.setAttr(
+            f"{ik_handle}.mmd_ik_link_joints_json",
+            _json.dumps(link_joints, ensure_ascii=False),
+            type="string",
+        )
 
     # ------------------------------------------------------------------
     # Legacy: manifest → Maya standard constraints (fallback reference)

@@ -282,7 +282,7 @@ class BoneConverter:
                 self.logger.error(f"Root joint '{root_joint}' does not exist in scene")
 
         # parenting 完了後に LOCAL_AXIS ボーンの JO を設定し translate を補正する。
-        # setup_bone_orientation フラグに関わらず常に適用する（Bake/Rig パリティ確保）。
+        # Bake/Rig とも JO を持つ skeleton に統一し、VMD/runtime 入力側で JO を補正する。
         self._apply_joint_orient_all(maya_joints, bones, format_type)
 
         return maya_joints

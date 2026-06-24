@@ -92,21 +92,9 @@ def _with_translation(matrix: om.MMatrix, point: tuple[float, float, float]) -> 
 
 
 def _compute_bind_world_matrices(pmx: Any) -> list[om.MMatrix]:
-    from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-
     bind_matrices: list[om.MMatrix] = []
     for bone in pmx.bones:
-        parent_index = int(bone.parent_bone_index)
-        parent_rot = (
-            _rotation_only(bind_matrices[parent_index])
-            if 0 <= parent_index < len(bind_matrices)
-            else om.MMatrix()
-        )
-        if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-            world_rot = _pmx_local_axis_world_matrix(bone)
-        else:
-            world_rot = parent_rot
-        bind_matrices.append(_with_translation(world_rot, _maya_point_from_mmd(tuple(bone.position))))
+        bind_matrices.append(_with_translation(om.MMatrix(), _maya_point_from_mmd(tuple(bone.position))))
     return bind_matrices
 
 

@@ -46,6 +46,16 @@ class MmdAppendNode(om.MPxNode):
     aSourceRotateY = None
     aSourceRotateZ = None
 
+    aSourceJointOrient = None
+    aSourceJointOrientX = None
+    aSourceJointOrientY = None
+    aSourceJointOrientZ = None
+
+    aTargetJointOrient = None
+    aTargetJointOrientX = None
+    aTargetJointOrientY = None
+    aTargetJointOrientZ = None
+
     aSourceTranslate = None
     aSourceTranslateX = None
     aSourceTranslateY = None
@@ -184,7 +194,6 @@ class MmdAppendNode(om.MPxNode):
         base_ry = data.inputValue(self.aBaseRotateY).asDouble()
         base_rz = data.inputValue(self.aBaseRotateZ).asDouble()
         base_quat = om.MEulerRotation(base_rx, base_ry, base_rz).asQuaternion()
-
         final_quat = base_quat * grant_quat
         final_euler = final_quat.asEulerRotation()
 
@@ -258,6 +267,25 @@ def initialize():
     cAttr.addChild(MmdAppendNode.aSourceRotateZ)
     cAttr.keyable = True
     MmdAppendNode.addAttribute(MmdAppendNode.aSourceRotate)
+
+    # --- JointOrient boundaries (input, angle) ---
+    MmdAppendNode.aSourceJointOrientX = uAttr.create("sourceJointOrientX", "sjox", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aSourceJointOrientY = uAttr.create("sourceJointOrientY", "sjoy", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aSourceJointOrientZ = uAttr.create("sourceJointOrientZ", "sjoz", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aSourceJointOrient = cAttr.create("sourceJointOrient", "sjo")
+    cAttr.addChild(MmdAppendNode.aSourceJointOrientX)
+    cAttr.addChild(MmdAppendNode.aSourceJointOrientY)
+    cAttr.addChild(MmdAppendNode.aSourceJointOrientZ)
+    MmdAppendNode.addAttribute(MmdAppendNode.aSourceJointOrient)
+
+    MmdAppendNode.aTargetJointOrientX = uAttr.create("targetJointOrientX", "tjox", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aTargetJointOrientY = uAttr.create("targetJointOrientY", "tjoy", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aTargetJointOrientZ = uAttr.create("targetJointOrientZ", "tjoz", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdAppendNode.aTargetJointOrient = cAttr.create("targetJointOrient", "tjo")
+    cAttr.addChild(MmdAppendNode.aTargetJointOrientX)
+    cAttr.addChild(MmdAppendNode.aTargetJointOrientY)
+    cAttr.addChild(MmdAppendNode.aTargetJointOrientZ)
+    MmdAppendNode.addAttribute(MmdAppendNode.aTargetJointOrient)
 
     # --- Source Translate (input) ---
     MmdAppendNode.aSourceTranslateX = nAttr.create("sourceTranslateX", "stx", om.MFnNumericData.kDouble, 0.0)
@@ -393,6 +421,17 @@ def initialize():
     for source_attr in (MmdAppendNode.aSourceRotateX, MmdAppendNode.aSourceRotateY, MmdAppendNode.aSourceRotateZ):
         for out_attr in output_rotate_attrs + append_rotate_attrs:
             MmdAppendNode.attributeAffects(source_attr, out_attr)
+
+    for jo_attr in (
+        MmdAppendNode.aSourceJointOrientX,
+        MmdAppendNode.aSourceJointOrientY,
+        MmdAppendNode.aSourceJointOrientZ,
+        MmdAppendNode.aTargetJointOrientX,
+        MmdAppendNode.aTargetJointOrientY,
+        MmdAppendNode.aTargetJointOrientZ,
+    ):
+        for out_attr in output_rotate_attrs + append_rotate_attrs:
+            MmdAppendNode.attributeAffects(jo_attr, out_attr)
 
     for source_attr in (
         MmdAppendNode.aSourceTranslateX,
