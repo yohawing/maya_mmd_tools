@@ -4,7 +4,7 @@ Bake モード (setup_rig=False, setup_bone_orientation=False) と
 Rig モード (setup_rig=True, setup_bone_orientation=True) で
 同一 PMX+VMD をインポートし、以下を比較する:
 
-1. ボーンワールド変換 (worldMatrix → quaternion / position)
+1. ボーンワールド位置 (runtime oracle との一致)
 2. メッシュ頂点位置 (MFnMesh.getPoints kWorld)
 
 PMX LOCAL_AXIS の jointOrient は Bake/Rig の両モードで同一に設定される。
@@ -71,32 +71,9 @@ ORACLE_CASES = [
         "frames": FRAMES,
     },
 ]
-VERTEX_CASES = [
-    {
-        "name": "one_bone_cube",
-        "pmx": os.path.join(FOR_UNIT_TEST_DIR, "test_1bone_cube.pmx"),
-        "vmd": os.path.join(FOR_UNIT_TEST_DIR, "test_1bone_cube_motion.vmd"),
-        "frames": [0, 10, 20, 30],
-    },
-    {
-        "name": "mmt_motion",
-        "pmx": PMX_FILE,
-        "vmd": VMD_FILE,
-        "frames": FRAMES,
-    },
-]
-
-WORLD_ROT_THRESHOLD_DEG = 0.5
 WORLD_POS_THRESHOLD = 0.05
 VERTEX_REST_THRESHOLD = 0.05
 VERTEX_ANIM_THRESHOLD = 0.1
-
-
-def _quat_angle_deg(q1, q2):
-    """2 つの MQuaternion 間の角度差 (degrees)"""
-    dot = q1.x * q2.x + q1.y * q2.y + q1.z * q2.z + q1.w * q2.w
-    dot = max(-1.0, min(1.0, abs(dot)))
-    return math.degrees(2.0 * math.acos(dot))
 
 
 def _euclidean(a, b):
@@ -110,27 +87,6 @@ def _get_mesh_vertices_world(mesh_shape):
     dag = sel.getDagPath(0)
     fn_mesh = om.MFnMesh(dag)
     return fn_mesh.getPoints(om.MSpace.kWorld)
-
-
-def _capture_bone_world_transforms(frames):
-    """全 MMD ボーンのワールド変換を各フレームでキャプチャ"""
-    joints = [j for j in cmds.ls(type="joint")
-              if cmds.attributeQuery("mmd_bone_index", node=j, exists=True)]
-    result = {}
-    for frame in frames:
-        cmds.currentTime(frame, edit=True)
-        cmds.refresh(force=True)
-        for jnt in joints:
-            wm = cmds.xform(jnt, query=True, worldSpace=True, matrix=True)
-            mat = om.MMatrix(wm)
-            tfm = om.MTransformationMatrix(mat)
-            quat = tfm.rotation(asQuaternion=True)
-            pos = tfm.translation(om.MSpace.kWorld)
-            result.setdefault(jnt, {})[frame] = {
-                "quat": quat,
-                "pos": (pos.x, pos.y, pos.z),
-            }
-    return result
 
 
 def _capture_bone_world_transforms_by_index(frames):
@@ -281,12 +237,6 @@ class TestBakeRigBoneParity(MayaTestBase):
         self.fixture_provider.cleanup_temp_files()
         super().tearDown()
 
-    def _import_bake(self):
-        return _import_model_with_options(PMX_FILE, VMD_FILE, setup_rig=False, setup_bone_orientation=False)
-
-    def _import_rig(self):
-        return _import_model_with_options(PMX_FILE, VMD_FILE, setup_rig=True, setup_bone_orientation=True)
-
     def _assert_scene_positions_match_runtime_oracle(self, label, pmx_path=PMX_FILE, vmd_path=VMD_FILE, frames=FRAMES):
         actual = _capture_bone_world_transforms_by_index(frames)
         oracle = _capture_runtime_oracle_world_transforms(pmx_path, vmd_path, frames)
@@ -339,58 +289,6 @@ class TestBakeRigBoneParity(MayaTestBase):
                 finally:
                     cmds.file(new=True, force=True)
 
-    @unittest.skip("Sparse VMD import no longer uses runtime dense bake; replace with sparse/live-rig oracle gate")
-    def test_rig_mode_matches_mmd_anim_world_positions(self):
-        """Rig mode の world position が mmd-anim runtime oracle と一致する"""
-        for case in ORACLE_CASES:
-            with self.subTest(case=case["name"]):
-                try:
-                    _import_model_with_options(
-                        case["pmx"],
-                        case["vmd"],
-                        setup_rig=True,
-                        setup_bone_orientation=True,
-                    )
-                    self._assert_scene_positions_match_runtime_oracle(
-                        f"Rig:{case['name']}",
-                        case["pmx"],
-                        case["vmd"],
-                        case["frames"],
-                    )
-                finally:
-                    cmds.file(new=True, force=True)
-
-    @unittest.skip("Bake/Rig final-pose parity is not a valid sparse VMD/live-rig acceptance gate")
-    def test_bone_world_rotation_parity(self):
-        """Bake と Rig のボーンワールド回転が一致する"""
-        self._import_bake()
-        data_a = _capture_bone_world_transforms(FRAMES)
-        cmds.file(new=True, force=True)
-
-        self._import_rig()
-        data_b = _capture_bone_world_transforms(FRAMES)
-
-        outliers = []
-        common_joints = set(data_a.keys()) & set(data_b.keys())
-        self.assertGreater(len(common_joints), 0, "共通ボーンが見つからない")
-
-        for jnt in sorted(common_joints):
-            for frame in FRAMES:
-                fa = data_a[jnt].get(frame)
-                fb = data_b[jnt].get(frame)
-                if not fa or not fb:
-                    continue
-                angle = _quat_angle_deg(fa["quat"], fb["quat"])
-                if angle > WORLD_ROT_THRESHOLD_DEG:
-                    outliers.append((jnt, frame, angle))
-
-        if outliers:
-            outliers.sort(key=lambda x: -x[2])
-            msg_lines = [f"回転パリティ不一致 ({len(outliers)} outliers):"]
-            for jnt, frame, angle in outliers[:20]:
-                msg_lines.append(f"  {jnt} @ frame {frame}: {angle:.2f} deg")
-            self.fail("\n".join(msg_lines))
-
     def test_direct_bake_convert_matches_runtime_world_positions(self):
         """Bake convert() 直呼びは保存済み source から runtime bake に戻り oracle と一致する"""
         settings.set("import.model.create_mmd_shaders", False)
@@ -434,36 +332,6 @@ class TestBakeRigBoneParity(MayaTestBase):
                 )
             self.fail("\n".join(msg_lines))
 
-    @unittest.skip("Bake/Rig final-pose parity is not a valid sparse VMD/live-rig acceptance gate")
-    def test_bone_world_position_parity(self):
-        """Bake と Rig のボーンワールド位置が一致する"""
-        self._import_bake()
-        data_a = _capture_bone_world_transforms(FRAMES)
-        cmds.file(new=True, force=True)
-
-        self._import_rig()
-        data_b = _capture_bone_world_transforms(FRAMES)
-
-        outliers = []
-        common_joints = set(data_a.keys()) & set(data_b.keys())
-        self.assertGreater(len(common_joints), 0, "共通ボーンが見つからない")
-
-        for jnt in sorted(common_joints):
-            for frame in FRAMES:
-                fa = data_a[jnt].get(frame)
-                fb = data_b[jnt].get(frame)
-                if not fa or not fb:
-                    continue
-                dist = _euclidean(fa["pos"], fb["pos"])
-                if dist > WORLD_POS_THRESHOLD:
-                    outliers.append((jnt, frame, dist))
-
-        if outliers:
-            outliers.sort(key=lambda x: -x[2])
-            msg_lines = [f"位置パリティ不一致 ({len(outliers)} outliers):"]
-            for jnt, frame, dist in outliers[:20]:
-                msg_lines.append(f"  {jnt} @ frame {frame}: {dist:.4f} units")
-            self.fail("\n".join(msg_lines))
 
 
 class TestBakeRigVertexParity(MayaTestBase):
@@ -629,21 +497,6 @@ class TestBakeRigVertexParity(MayaTestBase):
             f"{distance:.4f} units (threshold {WORLD_POS_THRESHOLD})",
         )
 
-    @unittest.skip("Bake/Rig animated vertex parity is not a valid sparse VMD/live-rig acceptance gate")
-    def test_bake_vs_rig_orientation_flag_off_vertex_parity(self):
-        """A vs B: アニメーション時も頂点が近い"""
-        for case in VERTEX_CASES:
-            with self.subTest(case=case["name"]):
-                verts_a = self._capture(setup_rig=False, setup_bone_orientation=False, case=case)
-                verts_b = self._capture(setup_rig=True, setup_bone_orientation=False, case=case)
-
-                max_d, mean_d, _ = self._compare_vertex_frames(verts_a, verts_b, "A vs B", case["frames"])
-                self.assertLessEqual(
-                    max_d, VERTEX_ANIM_THRESHOLD,
-                    f"A vs B (Bake vs Rig flag-off, {case['name']}): max vertex dist = {max_d:.4f} "
-                    f"(threshold {VERTEX_ANIM_THRESHOLD})"
-                )
-
     def test_mmt_motion_bake_vs_rig_with_jo_vertex_parity(self):
         """TestModel の標準 VMD は Bake と Rig+JO の deformed mesh が一致する。"""
         case = {
@@ -664,22 +517,6 @@ class TestBakeRigVertexParity(MayaTestBase):
             f"(threshold {VERTEX_ANIM_THRESHOLD})."
         )
 
-    @unittest.skip("Bake/Rig animated vertex parity is not a valid sparse VMD/live-rig acceptance gate")
-    def test_bake_vs_rig_with_jo_vertex_parity(self):
-        """A (Bake) vs C (Rig, JO=on): アニメーション時も頂点が近い"""
-        for case in VERTEX_CASES:
-            with self.subTest(case=case["name"]):
-                verts_a = self._capture(setup_rig=False, setup_bone_orientation=False, case=case)
-                verts_c = self._capture(setup_rig=True, setup_bone_orientation=True, case=case)
-
-                max_d, mean_d, frame_results = self._compare_vertex_frames(verts_a, verts_c, "A vs C", case["frames"])
-
-                self.assertLessEqual(
-                    max_d, VERTEX_ANIM_THRESHOLD,
-                    f"A vs C (Bake vs Rig+JO, {case['name']}): max vertex dist = {max_d:.4f}, "
-                    f"mean = {mean_d:.4f} (threshold {VERTEX_ANIM_THRESHOLD}). "
-                    f"Rig+JO mesh deformation should match Bake."
-                )
 
 
 if __name__ == "__main__":

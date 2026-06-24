@@ -5,6 +5,7 @@ assets. Set MAYA_MMD_TOOLS_REAL_PMX and MAYA_MMD_TOOLS_REAL_VMD to verify a
 real PMX/VMD pair against the same mmd-anim oracle used by fixture tests.
 """
 
+import math
 import os
 import unittest
 
@@ -14,15 +15,21 @@ from tests.common.maya_test_base import MayaTestBase
 from tests.integration.test_bake_rig_parity import (
     VERTEX_ANIM_THRESHOLD,
     WORLD_POS_THRESHOLD,
-    WORLD_ROT_THRESHOLD_DEG,
     _capture_bone_world_transforms_by_index,
     _capture_runtime_oracle_world_transforms,
     _capture_vertex_positions,
     _euclidean,
     _find_mesh_transforms,
     _import_model_with_options,
-    _quat_angle_deg,
 )
+
+WORLD_ROT_THRESHOLD_DEG = 0.5
+
+
+def _quat_angle_deg(q1, q2):
+    dot = q1.x * q2.x + q1.y * q2.y + q1.z * q2.z + q1.w * q2.w
+    dot = max(-1.0, min(1.0, abs(dot)))
+    return math.degrees(2.0 * math.acos(dot))
 
 DEFAULT_FRAMES = (0, 30, 60, 90)
 
