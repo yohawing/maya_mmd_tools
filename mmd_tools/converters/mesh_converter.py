@@ -58,6 +58,8 @@ _ALPHA_CAPABLE_TEXTURE_EXTENSIONS = {".png", ".tga", ".tif", ".tiff", ".dds"}
 _STANDARD_TOON_TEXTURE_DIR = os.path.normpath(
     os.path.join(os.path.dirname(os.path.dirname(__file__)), "shaders", "toon_textures")
 )
+_SHADER_PLUGIN_LOAD_CACHE = {}
+_SHADER_BACKEND_WARNED = set()
 
 
 # DX11 transparency handling modes (drives technique selection).
@@ -82,6 +84,78 @@ _DX11_TECHNIQUE_BY_RENDERING = {
     (TRANSPARENCY_MODE_BLEND, False, True): "MMDTechniqueNoEdgeTranslucentDoubleSided",
 }
 _DX11_RENDERING_BY_TECHNIQUE = {name: key for key, name in _DX11_TECHNIQUE_BY_RENDERING.items()}
+
+
+def _ensure_shader_plugin(plugin_name) -> bool:
+    """Load a Maya shader plugin once and cache whether it is available."""
+    if plugin_name in _SHADER_PLUGIN_LOAD_CACHE:
+        return _SHADER_PLUGIN_LOAD_CACHE[plugin_name]
+
+    try:
+        cmds.loadPlugin(plugin_name, quiet=True)
+    except Exception:
+        LOGGER.debug("Shader plugin '%s' is unavailable", plugin_name, exc_info=True)
+        _SHADER_PLUGIN_LOAD_CACHE[plugin_name] = False
+    else:
+        _SHADER_PLUGIN_LOAD_CACHE[plugin_name] = True
+    return _SHADER_PLUGIN_LOAD_CACHE[plugin_name]
+
+
+def _warn_shader_backend_once(key, message) -> None:
+    """Emit a shader backend warning at most once per Maya Python session."""
+    if key in _SHADER_BACKEND_WARNED:
+        return
+    _SHADER_BACKEND_WARNED.add(key)
+    cmds.warning(message)
+
+
+def _validate_shader_node(shader, expected_node_type):
+    """Return (ok, reason) for a newly-created shader node."""
+    if not shader or not cmds.objExists(shader):
+        return False, "node was not created"
+
+    actual_node_type = cmds.nodeType(shader)
+    if actual_node_type != expected_node_type:
+        return False, f"expected {expected_node_type}, got {actual_node_type}"
+
+    if not cmds.attributeQuery("outColor", node=shader, exists=True):
+        return False, "missing outColor attribute"
+
+    return True, ""
+
+
+def _delete_shader_node(shader) -> None:
+    """Delete a rejected shader node without masking the original fallback path."""
+    if not shader or not cmds.objExists(shader):
+        return
+    try:
+        cmds.delete(shader)
+    except Exception:
+        LOGGER.debug("Failed to delete rejected shader node '%s'", shader, exc_info=True)
+
+
+def _set_shader_attribute_checked(shader, attr_name, attr_value, attr_type) -> bool:
+    """Set a shader attr through maya_utils and verify the attr did not silently fail."""
+    if not cmds.attributeQuery(attr_name, node=shader, exists=True):
+        LOGGER.debug("Shader '%s' has no '%s' attribute", shader, attr_name)
+        return False
+
+    try:
+        maya_utils.set_attribute(shader, attr_name, attr_value, attr_type)
+    except Exception:
+        LOGGER.debug("Failed to set shader attribute '%s.%s'", shader, attr_name, exc_info=True)
+        return False
+
+    try:
+        if not cmds.attributeQuery(attr_name, node=shader, exists=True):
+            return False
+        if attr_type in {"str", "string"}:
+            return cmds.getAttr(f"{shader}.{attr_name}") == attr_value
+    except Exception:
+        LOGGER.debug("Failed to validate shader attribute '%s.%s'", shader, attr_name, exc_info=True)
+        return False
+
+    return True
 
 
 def _material_is_double_sided(material) -> bool:
@@ -1360,9 +1434,31 @@ class MeshConverter:
 
                 for target in backend_order:
                     shader = None
+                    plugin_name = "dx11Shader" if target == "dx11" else "glslShader"
+                    node_type = "dx11Shader" if target == "dx11" else "GLSLShader"
+                    if not _ensure_shader_plugin(plugin_name):
+                        _warn_shader_backend_once(
+                            f"{target}-plugin-unavailable",
+                            f"{node_type} plugin '{plugin_name}' is unavailable. Trying next shader backend.",
+                        )
+                        if backend != "auto":
+                            break
+                        continue
+
                     if target == "dx11":
                         try:
                             shader = cmds.shadingNode("dx11Shader", asShader=True, name=sanitized_name)
+                            ok, reason = _validate_shader_node(shader, "dx11Shader")
+                            if not ok:
+                                _warn_shader_backend_once(
+                                    "dx11-node-invalid",
+                                    f"Rejected dx11Shader node: {reason}. Trying next shader backend.",
+                                )
+                                _delete_shader_node(shader)
+                                if backend != "auto":
+                                    break
+                                continue
+
                             self._setup_dx11_shader(
                                 shader,
                                 material,
@@ -1372,18 +1468,41 @@ class MeshConverter:
                                 material_index,
                                 original_texture_path,
                             )
+                            ok, reason = _validate_shader_node(shader, "dx11Shader")
+                            if not ok:
+                                _warn_shader_backend_once(
+                                    "dx11-node-invalid-after-setup",
+                                    f"Rejected configured dx11Shader node: {reason}. Trying next shader backend.",
+                                )
+                                _delete_shader_node(shader)
+                                if backend != "auto":
+                                    break
+                                continue
                             return shader
-                        except (RuntimeError, Exception) as e:
-                            cmds.warning(f"Failed to create dx11Shader: {e}. Trying next backend.")
-                            if shader and cmds.objExists(shader):
-                                cmds.delete(shader)
+                        except Exception as e:
+                            _warn_shader_backend_once(
+                                "dx11-create-failed",
+                                f"Failed to create dx11Shader: {e}. Trying next shader backend.",
+                            )
+                            _delete_shader_node(shader)
                             if backend != "auto":
                                 break
 
                     if target == "glsl":
                         try:
                             shader = cmds.shadingNode("GLSLShader", asShader=True, name=sanitized_name)
-                            self._setup_glsl_shader(
+                            ok, reason = _validate_shader_node(shader, "GLSLShader")
+                            if not ok:
+                                _warn_shader_backend_once(
+                                    "glsl-node-invalid",
+                                    f"Rejected GLSLShader node: {reason}. Falling back.",
+                                )
+                                _delete_shader_node(shader)
+                                if backend != "auto":
+                                    break
+                                continue
+
+                            setup_ok = self._setup_glsl_shader(
                                 shader,
                                 material,
                                 texture_path,
@@ -1392,16 +1511,32 @@ class MeshConverter:
                                 material_index,
                                 original_texture_path,
                             )
+                            ok, reason = _validate_shader_node(shader, "GLSLShader")
+                            if not setup_ok or not ok:
+                                reason = reason or "shader setup failed"
+                                _warn_shader_backend_once(
+                                    "glsl-setup-failed",
+                                    f"Rejected configured GLSLShader node: {reason}. Falling back.",
+                                )
+                                _delete_shader_node(shader)
+                                if backend != "auto":
+                                    break
+                                continue
                             return shader
-                        except (RuntimeError, Exception) as e:
-                            cmds.warning(f"Failed to create GLSLShader: {e}. Falling back.")
-                            if shader and cmds.objExists(shader):
-                                cmds.delete(shader)
+                        except Exception as e:
+                            _warn_shader_backend_once(
+                                "glsl-create-failed",
+                                f"Failed to create GLSLShader: {e}. Falling back.",
+                            )
+                            _delete_shader_node(shader)
                             if backend != "auto":
                                 break
 
             if backend != "standard":
-                cmds.warning("Falling back to standardSurface for material.")
+                _warn_shader_backend_once(
+                    "standard-fallback",
+                    "Falling back to standardSurface for MMD material creation.",
+                )
 
         # 標準のstandardSurfaceを使用
         shader = cmds.shadingNode("standardSurface", asShader=True, name=sanitized_name)
@@ -1608,7 +1743,7 @@ class MeshConverter:
         material_index=None,
         original_texture_path=None,
     ):
-        """GLSLShader を設定する。"""
+        """GLSLShader を設定し、必須属性の設定に成功したか返す。"""
         shader_ogsfx_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "shaders",
@@ -1616,17 +1751,18 @@ class MeshConverter:
         )
         shader_ogsfx_path = os.path.normpath(shader_ogsfx_path)
 
-        maya_utils.set_attribute(shader, "shader", shader_ogsfx_path, "string")
-        maya_utils.set_attribute(shader, "technique", "Main", "string")
+        setup_ok = True
+        setup_ok &= _set_shader_attribute_checked(shader, "shader", shader_ogsfx_path, "string")
+        setup_ok &= _set_shader_attribute_checked(shader, "technique", "Main", "string")
         _ensure_mmd_shader_uniform_attributes(shader)
 
-        maya_utils.set_attribute(shader, "DiffuseColor", material.diffuse, "double4")
+        setup_ok &= _set_shader_attribute_checked(shader, "DiffuseColor", material.diffuse, "double4")
 
         if hasattr(material, "specular"):
-            maya_utils.set_attribute(shader, "SpecularColor", material.specular[:3], "double3")
+            _set_shader_attribute_checked(shader, "SpecularColor", material.specular[:3], "double3")
 
         if hasattr(material, "ambient"):
-            maya_utils.set_attribute(shader, "AmbientColor", material.ambient[:3], "double3")
+            _set_shader_attribute_checked(shader, "AmbientColor", material.ambient[:3], "double3")
 
         shininess = None
         if hasattr(material, "specular_coefficient"):
@@ -1634,21 +1770,21 @@ class MeshConverter:
         elif hasattr(material, "specular_power"):
             shininess = material.specular_power
         if shininess is not None:
-            maya_utils.set_attribute(shader, "Shininess", shininess, "float")
+            _set_shader_attribute_checked(shader, "Shininess", shininess, "float")
 
         edge_color = [0.0, 0.0, 0.0, 1.0]
         if hasattr(material, "edge_color"):
             edge_color = list(material.edge_color)
             if len(edge_color) == 3:
                 edge_color.append(1.0)
-        maya_utils.set_attribute(shader, "EdgeColor", edge_color, "double4")
-        maya_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
+        setup_ok &= _set_shader_attribute_checked(shader, "EdgeColor", edge_color, "double4")
+        setup_ok &= _set_shader_attribute_checked(shader, "EdgeSize", 0.0, "float")
 
         sphere_mode = getattr(material, "sphere_mode", 0)
-        maya_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
+        setup_ok &= _set_shader_attribute_checked(shader, "SphereMode", int(sphere_mode), "long")
 
         opacity = material.diffuse[3] if hasattr(material, "diffuse") and len(material.diffuse) > 3 else 1.0
-        maya_utils.set_attribute(shader, "Opacity", opacity, "float")
+        setup_ok &= _set_shader_attribute_checked(shader, "Opacity", opacity, "float")
 
         self._apply_custom_attributes(
             shader,
@@ -1659,6 +1795,7 @@ class MeshConverter:
             texture_path,
             None,
         )
+        return setup_ok
 
     def _connect_dx11_secondary_texture(
         self,
