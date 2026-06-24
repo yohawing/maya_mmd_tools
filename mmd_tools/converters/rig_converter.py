@@ -1100,6 +1100,8 @@ class RigConverter:
                     "parent_slot": parent_slot,
                     "rest_position": None,
                     "maya_rest_translate": None,
+                    "maya_bind_world_matrix": None,
+                    "no_orient_bind_world_matrix": None,
                     "flags": flags,
                     "fixed_axis": fa,
                     "joint_orient_deg": jo_deg,
@@ -1121,6 +1123,17 @@ class RigConverter:
                             bone["maya_rest_translate"] = list(cmds.getAttr(f"{jnt}.translate")[0])
                         except Exception:
                             bone["maya_rest_translate"] = list(bone["rest_position"])
+                        try:
+                            bind_world = [float(v) for v in cmds.getAttr(f"{jnt}.worldMatrix[0]")]
+                            no_orient = [0.0] * 16
+                            no_orient[0] = no_orient[5] = no_orient[10] = no_orient[15] = 1.0
+                            no_orient[12] = bind_world[12]
+                            no_orient[13] = bind_world[13]
+                            no_orient[14] = bind_world[14]
+                            bone["maya_bind_world_matrix"] = bind_world
+                            bone["no_orient_bind_world_matrix"] = no_orient
+                        except Exception:
+                            pass
                 if bone["maya_rest_translate"] is None:
                     bone["maya_rest_translate"] = list(bone["rest_position"])
 

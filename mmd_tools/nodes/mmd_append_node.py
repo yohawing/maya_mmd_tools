@@ -162,6 +162,17 @@ class MmdAppendNode(om.MPxNode):
         src_ry = data.inputValue(self.aSourceRotateY).asDouble()
         src_rz = data.inputValue(self.aSourceRotateZ).asDouble()
         src_quat = om.MEulerRotation(src_rx, src_ry, src_rz).asQuaternion()
+        src_jo = om.MEulerRotation(
+            data.inputValue(self.aSourceJointOrientX).asDouble(),
+            data.inputValue(self.aSourceJointOrientY).asDouble(),
+            data.inputValue(self.aSourceJointOrientZ).asDouble(),
+        ).asQuaternion()
+        target_jo = om.MEulerRotation(
+            data.inputValue(self.aTargetJointOrientX).asDouble(),
+            data.inputValue(self.aTargetJointOrientY).asDouble(),
+            data.inputValue(self.aTargetJointOrientZ).asDouble(),
+        ).asQuaternion()
+        source_mmd_quat = src_jo.inverse() * src_quat * src_jo
 
         src_tx = data.inputValue(self.aSourceTranslateX).asDouble()
         src_ty = data.inputValue(self.aSourceTranslateY).asDouble()
@@ -170,7 +181,12 @@ class MmdAppendNode(om.MPxNode):
         source_position_mmd = self._maya_translate_to_mmd(src_tx, src_ty, src_tz)
         result = self._solver.solve(
             source_position=source_position_mmd,
-            source_rotation=[src_quat.x, src_quat.y, src_quat.z, src_quat.w],
+            source_rotation=[
+                source_mmd_quat.x,
+                source_mmd_quat.y,
+                source_mmd_quat.z,
+                source_mmd_quat.w,
+            ],
         )
         if result is None:
             data.setClean(plug)
@@ -180,6 +196,7 @@ class MmdAppendNode(om.MPxNode):
         grant_tx, grant_ty, grant_tz = self._mmd_translate_to_maya(grant_pos)
         grant_quat = om.MQuaternion(grant_rot[0], grant_rot[1], grant_rot[2], grant_rot[3])
         grant_euler = grant_quat.asEulerRotation()
+        target_grant_quat = target_jo * grant_quat * target_jo.inverse()
 
         append_rot_handle = data.outputValue(self.aAppendRotate)
         append_rot_handle.set3Double(grant_euler.x, grant_euler.y, grant_euler.z)
@@ -194,7 +211,7 @@ class MmdAppendNode(om.MPxNode):
         base_ry = data.inputValue(self.aBaseRotateY).asDouble()
         base_rz = data.inputValue(self.aBaseRotateZ).asDouble()
         base_quat = om.MEulerRotation(base_rx, base_ry, base_rz).asQuaternion()
-        final_quat = base_quat * grant_quat
+        final_quat = base_quat * target_grant_quat
         final_euler = final_quat.asEulerRotation()
 
         out_rot_handle = data.outputValue(self.aOutputRotate)

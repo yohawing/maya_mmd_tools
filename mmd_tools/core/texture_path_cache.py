@@ -313,7 +313,14 @@ def copy_texture_to_cache(source_path, workspace_root, model_path, original_path
 
 def _validate_source(candidate: Path, model_parent: Path) -> Tuple[Optional[Path], str]:
     try:
-        candidate.resolve(strict=False).relative_to(model_parent)
+        resolved_candidate = candidate.resolve(strict=False)
+    except OSError:
+        if candidate.is_absolute():
+            return None, "absolute_original_path_rejected"
+        return None, "source_not_found"
+
+    try:
+        resolved_candidate.relative_to(model_parent)
     except ValueError:
         if candidate.is_absolute():
             return None, "absolute_original_path_rejected"

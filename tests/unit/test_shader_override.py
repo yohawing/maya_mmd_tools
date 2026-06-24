@@ -174,6 +174,17 @@ _install_maya_api_stub_for_shader()
 from mmd_tools.view import shader_override  # noqa: E402
 
 
+def _shader_override_uses_test_stub() -> bool:
+    return shader_override.MMDShaderOverride.__mro__[1] is _StubMPxShaderOverride
+
+
+def _skip_without_shader_override_stub():
+    return unittest.skipUnless(
+        _shader_override_uses_test_stub(),
+        "MPxShaderOverride instance construction requires a VP2/Maya GUI object",
+    )
+
+
 class TestShaderModuleConstants(unittest.TestCase):
     def test_node_name_constant(self):
         self.assertEqual(shader_override.SHADER_NODE_NAME, "MMDShader")
@@ -210,6 +221,7 @@ class TestShaderFxPackaging(unittest.TestCase):
             f"Shader .fx file missing (packaging regression): {fx_path}",
         )
 
+    @_skip_without_shader_override_stub()
     def test_override_resolves_shader_path_to_existing_fx(self):
         override = shader_override.MMDShaderOverride(object())
         self.assertTrue(
@@ -222,6 +234,8 @@ class TestShaderOverrideInit(unittest.TestCase):
     """MMDShaderOverride.__init__ の純粋な既定値設定を検証する。"""
 
     def setUp(self):
+        if not _shader_override_uses_test_stub():
+            self.skipTest("MPxShaderOverride instance construction requires a VP2/Maya GUI object")
         self.override = shader_override.MMDShaderOverride(object())
 
     def test_initial_shader_is_none(self):
@@ -243,6 +257,8 @@ class TestShaderOverrideInit(unittest.TestCase):
 
 class TestShaderOverridePureMethods(unittest.TestCase):
     def setUp(self):
+        if not _shader_override_uses_test_stub():
+            self.skipTest("MPxShaderOverride instance construction requires a VP2/Maya GUI object")
         self.override = shader_override.MMDShaderOverride(object())
 
     def test_supported_draw_apis_ors_all_three(self):

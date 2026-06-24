@@ -15,16 +15,15 @@ def import_vmd_file(parser, filepath, options=None):
     """
     VMDファイルをMayaシーンにインポートします。
 
-    mmd-anim runtime が利用可能な場合は、高精度ベイク（Phase 1）を利用できます。
-    その場合、生の VMD バイト列を converter に渡します。
+    Bake mode は mmd-anim final-pose bake、Rig mode は sparse key + live rig として読み込みます。
 
     Args:
         parser (VmdParser または VmdData): VMDファイルを解析したオブジェクト
         filepath (str): インポートするVMDファイルのパス
         options (dict): インポートオプション
             - target_model: 対象モデル
-            - pmx_path: 対応する PMX ファイルのパス（runtime bake 用）
-            - pmx_bytes: 生 PMX バイト（runtime bake 用）
+            - pmx_path: 対応する PMX ファイルのパス
+            - pmx_bytes: 生 PMX バイト
             - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
 
     Returns:
@@ -59,13 +58,15 @@ def import_vmd_file(parser, filepath, options=None):
             else:
                 logger.warning("ターゲットモデルが指定されていません。")
 
-        # mmd-anim runtime bake のために生バイトを読み込む
+        # Bake mode needs raw VMD bytes for mmd-anim final-pose evaluation.
+        # Rig mode still receives these bytes, but VmdConverter rejects runtime
+        # bake when live mmdCcdIk/mmdAppend rig connections are present.
         vmd_bytes = None
         try:
             with open(filepath, "rb") as f:
                 vmd_bytes = f.read()
         except Exception as e:
-            logger.warning(f"VMD 生バイトの読み込みに失敗（runtime bake は使用できません）: {e}")
+            logger.warning(f"VMD 生バイトの読み込みに失敗: {e}")
 
         # PMX ソースの解決（明示指定 > モデルに保存されたソース > ディレクトリ推定）
         pmx_bytes = options.get("pmx_bytes")
@@ -118,8 +119,6 @@ def import_vmd_file(parser, filepath, options=None):
         if success:
             logger.info("VMDファイルのインポートが完了しました")
             if is_mmd_runtime_available():
-                logger.info("mmd-anim runtime を使用した高精度ベイクが有効でした")
-
                 # Phase 2: ライブノードの自動作成オプション
                 if options.get("use_live_runtime", False) and target_model:
                     if not pmx_path or not os.path.exists(pmx_path):

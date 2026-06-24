@@ -351,8 +351,8 @@ class TestVmdConverter(MayaTestBase):
         # ここでは convert が例外なく完了し、should_use が正しく動くことを確認
         pass  # 追加の検証は test_convert_light_animation 等で行う
 
-    def test_should_use_mmd_runtime_bake_accepts_pmx_rejects_pmd(self):
-        """runtime ベイクは PMX 入力で有効、PMD 入力では無効"""
+    def test_should_use_mmd_runtime_bake_accepts_bake_pmx_rejects_pmd(self):
+        """Bake mode は PMX 入力で runtime bake を使い、PMD 入力では無効"""
         with tempfile.TemporaryDirectory() as temp_dir:
             pmx_path = os.path.join(temp_dir, "model.pmx")
             pmd_path = os.path.join(temp_dir, "model.pmd")
@@ -374,8 +374,8 @@ class TestVmdConverter(MayaTestBase):
                     self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=b"pmx", pmx_path=pmd_path)
                 )
 
-    def test_should_use_runtime_path_when_target_has_live_rig(self):
-        """Rig mode は runtime 分解経路を使いつつ live rig 接続を残す"""
+    def test_live_rig_target_uses_sparse_vmd_path(self):
+        """Rig mode でも VMD import は runtime dense bake に逃げない"""
         joint = cmds.joint(name="runtime_live_rig_target_joint")
         ik_node = cmds.createNode("mmdCcdIk", name="runtime_live_rig_ik")
         cmds.connectAttr(f"{ik_node}.outputRotate[0]", f"{joint}.rotate", force=True)
@@ -390,11 +390,12 @@ class TestVmdConverter(MayaTestBase):
                 "is_mmd_runtime_available",
                 return_value=True,
             ):
-                self.assertTrue(
+                self.assertFalse(
                     self.converter._should_use_mmd_runtime_bake(
                         vmd_bytes=b"vmd",
                         pmx_bytes=None,
                         pmx_path=pmx_path,
+                        live_rig_target=True,
                     )
                 )
 
@@ -1122,6 +1123,34 @@ class TestVmdConverter(MayaTestBase):
 
         cmds.delete(joint)
 
+    def test_convert_vmd_quat_to_joint_rotate_matches_no_jo_skinning_delta(self):
+        """非 identity VMD 回転は JO 付き joint.rotate 空間へ共役変換する。"""
+        joint = cmds.joint(name="legacy_joint_orient_motion_joint")
+        cmds.setAttr(f"{joint}.jointOrient", 0.0, 45.0, 0.0)
+        cmds.setAttr(f"{joint}.rotateOrder", 0)
+
+        bind_world = om.MMatrix(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        q_maya = om.MEulerRotation(math.radians(90.0), 0.0, 0.0).asQuaternion()
+        rx, ry, rz = self.converter._convert_vmd_quat_to_joint_rotate(
+            joint,
+            -q_maya.x,
+            -q_maya.y,
+            q_maya.z,
+            q_maya.w,
+        )
+        cmds.setAttr(f"{joint}.rotate", rx, ry, rz, type="double3")
+
+        actual_world = om.MMatrix(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        actual_skinning = bind_world.inverse() * actual_world
+        expected_tfm = om.MTransformationMatrix()
+        expected_tfm.setRotation(q_maya)
+        expected_skinning = expected_tfm.asMatrix()
+
+        for i in range(16):
+            self.assertAlmostEqual(actual_skinning[i], expected_skinning[i], places=5)
+
+        cmds.delete(joint)
+
     def test_legacy_bone_animation_redirects_append_rotate_to_base_rotate(self):
         """append target ボーンの rotate は append node の baseRotate に key する。"""
         joint = cmds.joint(name="legacy_append_target_joint")
@@ -1154,6 +1183,41 @@ class TestVmdConverter(MayaTestBase):
 
         self.assertIn(3.0, cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True) or [])
         self.assertIsNone(cmds.keyframe(f"{joint}.rotateX", query=True, timeChange=True))
+
+        cmds.delete(joint, append_node)
+
+    def test_append_target_is_not_added_to_animation_layer_joint_rotate(self):
+        """append target joint は layer 登録で joint.rotate へ直接キーを作らない。"""
+        joint = cmds.joint(name="legacy_append_layer_target_joint")
+        cmds.select(clear=True)
+        append_node = cmds.createNode("transform", name="legacy_append_layer_route_node")
+        for attr in ("baseRotateX", "baseRotateY", "baseRotateZ"):
+            cmds.addAttr(append_node, longName=attr, attributeType="double", keyable=True)
+
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = cmds.animLayer("legacy_append_layer", override=False, weight=1.0)
+        self.converter.set_bone_name_mapping({"付与先": joint})
+        self.converter._bone_bind_poses["付与先"] = (0.0, 0.0, 0.0)
+        frames = [self._make_bone_frame("付与先", 3, (0.0, 0.0, 0.0))]
+        append_info = {
+            joint: {
+                "node": append_node,
+                "attr_map": {
+                    "rotateX": "baseRotateX",
+                    "rotateY": "baseRotateY",
+                    "rotateZ": "baseRotateZ",
+                },
+            }
+        }
+        with patch.object(self.converter, "_collect_append_info", return_value=append_info), patch.object(
+            self.converter,
+            "_collect_ik_link_joints",
+            return_value={},
+        ):
+            self.assertTrue(self.converter._convert_bone_animation(frames))
+
+        self.assertFalse(cmds.listConnections(f"{joint}.rotateX", s=True, d=False, p=True) or [])
+        self.assertIn(3.0, cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True) or [])
 
         cmds.delete(joint, append_node)
 
@@ -1752,6 +1816,43 @@ class TestVmdConverter(MayaTestBase):
             cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementX"),
             cmds.getAttr(f"{node}.inputRotate[0].inputRotateElementX"),
             places=6,
+        )
+
+        cmds.delete(node, goal)
+
+    def test_mmd_ccd_ik_goal_world_matrix_offset_solves_without_translate_offset(self):
+        """goalWorldMatrix が REST から動いたら controller translate offset なしでも IK を解く"""
+        node = cmds.createNode("mmdCcdIk", name="goal_world_offset_ik_solver")
+        goal = cmds.spaceLocator(name="goal_world_offset_locator")[0]
+        chain = {
+            "bones": [
+                {
+                    "rest_position": [0.0, 0.0, 0.0],
+                    "parent_slot": -1,
+                    "joint_orient_deg": [0.0, 0.0, 0.0],
+                },
+                {
+                    "rest_position": [1.0, 0.0, 0.0],
+                    "parent_slot": 0,
+                    "joint_orient_deg": [0.0, 0.0, 0.0],
+                },
+            ],
+            "links": [{"bone_slot": 0}],
+            "targetBoneSlot": 1,
+            "controllerBoneSlot": 1,
+            "iterationCount": 40,
+            "limitAngle": 2.0,
+        }
+        cmds.setAttr(f"{node}.chainJson", json.dumps(chain), type="string")
+        cmds.setAttr(f"{node}.enabled", True)
+        cmds.setAttr(f"{goal}.translate", 0.0, 1.0, 0.0)
+        cmds.connectAttr(f"{goal}.worldMatrix[0]", f"{node}.goalWorldMatrix")
+        cmds.setAttr(f"{node}.inputTranslate[1].inputTranslateElementX", 1.0)
+        cmds.setAttr(f"{node}.inputRotate[0].inputRotateElementX", 0.25)
+
+        self.assertGreater(
+            abs(cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ")),
+            45.0,
         )
 
         cmds.delete(node, goal)
