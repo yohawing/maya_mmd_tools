@@ -223,7 +223,7 @@
     "show_advanced_options": "Show Advanced Options",
     "enable_logging": "Enable Logging",
     "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)",
-    "auto_resolve_textures": "Auto-resolve textures (ASCII cache)",
+    "auto_resolve_textures": "Auto-resolve textures",
     "split_meshes_by_morph_groups": "[Experimental] Split meshes by morph groups"
   },
   "fields": {

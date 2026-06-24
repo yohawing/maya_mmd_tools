@@ -222,7 +222,7 @@
     "show_advanced_options": "顯示進階選項",
     "enable_logging": "啟用記錄",
     "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
-    "auto_resolve_textures": "自動修復貼圖（ASCII快取）",
+    "auto_resolve_textures": "自動修復貼圖",
     "split_meshes_by_morph_groups": "【實驗性】依表情群組分離網格",
     "custom_namespace": "自訂命名空間:"
   },

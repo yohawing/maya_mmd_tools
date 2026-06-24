@@ -223,7 +223,7 @@
     "show_advanced_options": "詳細オプションを表示",
     "enable_logging": "ログを有効にする",
     "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
-    "auto_resolve_textures": "テクスチャを自動修復（ASCIIキャッシュ）",
+    "auto_resolve_textures": "テクスチャを自動修復",
     "split_meshes_by_morph_groups": "【実験的】モーフグループでメッシュを分割"
   },
   "fields": {
