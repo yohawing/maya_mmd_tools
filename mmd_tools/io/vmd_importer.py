@@ -24,6 +24,7 @@ def import_vmd_file(parser, filepath, options=None):
             - target_model: 対象モデル
             - pmx_path: 対応する PMX ファイルのパス
             - pmx_bytes: 生 PMX バイト
+            - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
             - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
 
     Returns:
@@ -111,6 +112,7 @@ def import_vmd_file(parser, filepath, options=None):
         success = converter.convert(
             parser,
             target_namespace,
+            bake_mode=options.get("bake_mode", False),
             vmd_bytes=vmd_bytes,
             pmx_bytes=pmx_bytes,
             pmx_path=pmx_path,

@@ -203,8 +203,8 @@ class TestImportExportPresenter(unittest.TestCase):
         settings.set("ui.general.development_mode", self._old_dev_mode)
         settings.set("import.model.show_texture_issue_dialog", self._old_texture_dialog)
 
-    def test_import_file_passes_no_rig_options_when_bake_mode_enabled(self):
-        # Dev mode required so the saved bake_mode setting is respected.
+    def test_import_file_leaves_rig_options_unset_when_bake_mode_enabled(self):
+        # bake_mode only controls VMD animation import; model import still builds rig by default.
         settings.set("ui.general.development_mode", True)
         settings.set("import.rig.bake_mode", True)
         view = _FakeView()
@@ -218,8 +218,8 @@ class TestImportExportPresenter(unittest.TestCase):
             presenter.import_file()
 
         options = mock_import.call_args.kwargs["options"]
-        self.assertFalse(options["setup_rig"])
-        self.assertFalse(options["setup_bone_orientation"])
+        self.assertNotIn("setup_rig", options)
+        self.assertNotIn("setup_bone_orientation", options)
 
     def test_import_file_leaves_rig_options_unset_by_default(self):
         # In dev mode with bake_mode=False the rig setup keys must be absent.
@@ -925,13 +925,13 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         opts = self._run_import()
         self.assertFalse(opts["hide_hidden_geometry"])
 
-    def test_normal_mode_bake_mode_forced_true_produces_no_rig_options(self):
-        # In normal mode bake_mode is always True regardless of the saved setting.
+    def test_normal_mode_bake_mode_does_not_disable_model_rig_options(self):
+        # bake_mode is an animation-import setting and must not suppress model rig creation.
         settings.set("ui.general.development_mode", False)
-        settings.set("import.rig.bake_mode", False)
+        settings.set("import.rig.bake_mode", True)
         opts = self._run_import()
-        self.assertFalse(opts.get("setup_rig", True))
-        self.assertFalse(opts.get("setup_bone_orientation", True))
+        self.assertNotIn("setup_rig", opts)
+        self.assertNotIn("setup_bone_orientation", opts)
 
     def test_dev_mode_preserves_non_default_separate_meshes(self):
         settings.set("ui.general.development_mode", True)

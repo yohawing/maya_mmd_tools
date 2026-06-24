@@ -122,6 +122,7 @@ class SettingsService:
             "import_camera_animation": self.get("import.animation.import_camera_animation", True),
             "import_light_animation": self.get("import.animation.import_light_animation", True),
             "resample_curves": self.get("import.animation.resample_curves", False) if is_dev else False,
+            "bake_mode": self.get("import.rig.bake_mode", False),
             "target_model": target_model,
         }
 
@@ -149,10 +150,6 @@ class SettingsService:
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        bake_mode = self.get("import.rig.bake_mode", True) if is_dev else True
-        if bake_mode:
-            opts["setup_rig"] = False
-            opts["setup_bone_orientation"] = False
         opts["use_cpp_fast_load"] = self.get("import.native.use_cpp_fast_load", False)
         opts["cpp_fast_load_mesh_only"] = self.get("import.native.cpp_fast_load_mesh_only", True)
         return opts

@@ -92,6 +92,7 @@ class VmdConverter:
         vmd_data: VmdData,
         target_namespace: str = None,
         layer_name: str = "VMD_Motion",
+        bake_mode: bool = False,
         vmd_bytes: bytes = None,
         pmx_bytes: bytes = None,
         pmx_path: str = None,
@@ -106,6 +107,7 @@ class VmdConverter:
             vmd_data: パース済みのVMDデータ
             target_namespace: 対象となるネームスペース（省略可）
             layer_name: アニメーションレイヤー名
+            bake_mode: True の場合は live rig ではなく runtime final-pose bake を優先する
             vmd_bytes: 生の VMD バイナリ（runtime bake で使用）
             pmx_bytes: 生の PMX バイナリ（runtime bake で使用）
             pmx_path: PMX ファイルパス（pmx_bytes がない場合に読み込みに使用）
@@ -148,7 +150,7 @@ class VmdConverter:
                 target_namespace,
             )
 
-            if self._should_use_mmd_runtime_bake(vmd_bytes, pmx_bytes, pmx_path, live_rig_target):
+            if self._should_use_mmd_runtime_bake(vmd_bytes, pmx_bytes, pmx_path, live_rig_target, bake_mode):
                 self.logger.info("Converting with mmd-anim runtime high-precision bake path")
                 runtime_success = self._convert_using_mmd_runtime(
                     vmd_data=vmd_data,
@@ -215,10 +217,13 @@ class VmdConverter:
         pmx_bytes: bytes,
         pmx_path: str,
         live_rig_target: bool = False,
+        bake_mode: bool = False,
     ) -> bool:
         """Return True for Bake mode final-pose import, False for live Rig mode."""
-        if live_rig_target:
+        if not bake_mode:
             return False
+        if live_rig_target:
+            self.logger.info("Bake mode requested; live MMD rig outputs will be disabled for runtime bake")
         if not (HAS_MMD_RUNTIME and is_mmd_runtime_available()):
             return False
 

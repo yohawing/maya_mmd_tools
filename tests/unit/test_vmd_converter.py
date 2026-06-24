@@ -366,13 +366,28 @@ class TestVmdConverter(MayaTestBase):
                 return_value=True,
             ):
                 self.assertTrue(
-                    self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=None, pmx_path=pmx_path)
+                    self.converter._should_use_mmd_runtime_bake(
+                        vmd_bytes=b"vmd",
+                        pmx_bytes=None,
+                        pmx_path=pmx_path,
+                        bake_mode=True,
+                    )
                 )
                 self.assertFalse(
-                    self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=None, pmx_path=pmd_path)
+                    self.converter._should_use_mmd_runtime_bake(
+                        vmd_bytes=b"vmd",
+                        pmx_bytes=None,
+                        pmx_path=pmd_path,
+                        bake_mode=True,
+                    )
                 )
                 self.assertTrue(
-                    self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=b"pmx", pmx_path=pmd_path)
+                    self.converter._should_use_mmd_runtime_bake(
+                        vmd_bytes=b"vmd",
+                        pmx_bytes=b"pmx",
+                        pmx_path=pmd_path,
+                        bake_mode=True,
+                    )
                 )
 
     def test_live_rig_target_uses_sparse_vmd_path(self):

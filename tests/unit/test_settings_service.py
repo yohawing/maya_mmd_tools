@@ -188,8 +188,8 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertEqual(options["texture_search_path"], "")
         self.assertFalse(options["add_semi_standard_bones"])
         self.assertTrue(options["translate_names"])
-        self.assertFalse(options["setup_rig"])
-        self.assertFalse(options["setup_bone_orientation"])
+        self.assertNotIn("setup_rig", options)
+        self.assertNotIn("setup_bone_orientation", options)
         self.assertTrue(options["use_cpp_fast_load"])
         self.assertFalse(options["cpp_fast_load_mesh_only"])
 
@@ -223,6 +223,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["import_camera_animation"])
         self.assertFalse(options["import_light_animation"])
         self.assertFalse(options["resample_curves"])
+        self.assertFalse(options["bake_mode"])
         self.assertEqual(options["target_model"], "model")
 
     def test_build_vmd_import_options_preserves_resample_curves_in_dev_mode(self):
@@ -231,6 +232,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         options = self.service.build_vmd_import_options()
 
         self.assertTrue(options["resample_curves"])
+        self.assertFalse(options["bake_mode"])
         self.assertIsNone(options["target_model"])
 
     def test_build_export_options_and_texture_dialog_setting(self):
