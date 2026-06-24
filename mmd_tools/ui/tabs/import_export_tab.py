@@ -15,7 +15,6 @@ from ..qt_compat import (
     QScrollArea,
     Qt,
     QSplitter,
-    QTabWidget,
     QListWidget,
     QListWidgetItem,
     QColor,
@@ -42,18 +41,12 @@ class ImportExportTab(BaseTab):
         # スプリッターを作成（横方向）
         splitter = QSplitter(Qt.Horizontal)
 
-        # 左側：設定セクション（タブ化）
+        # 左側：設定セクション（フラット）
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.left_widget = QTabWidget()
-
-        # Model Import Settings Tab
-        model_settings_tab = QScrollArea()
-        model_settings_tab.setWidgetResizable(True)
-        model_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        model_settings_widget = QWidget()
-        model_settings_layout = QVBoxLayout(model_settings_widget)
+        self.left_widget = QWidget()
+        model_settings_layout = QVBoxLayout(self.left_widget)
 
         # Scale factor
         scale_layout = QHBoxLayout()
@@ -262,15 +255,9 @@ class ImportExportTab(BaseTab):
         model_settings_layout.addWidget(self.other_group)
 
         model_settings_layout.addStretch()
-        model_settings_tab.setWidget(model_settings_widget)
-        self.left_widget.addTab(model_settings_tab, self.tr("model", "groups"))
-
-        # Animation Import Settings Tab
-        anim_settings_tab = QScrollArea()
-        anim_settings_tab.setWidgetResizable(True)
-        anim_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        anim_settings_widget = QWidget()
-        anim_settings_layout = QVBoxLayout(anim_settings_widget)
+        # Animation Import Settings
+        self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
+        anim_settings_layout = QVBoxLayout()
 
         # Start frame
         frame_layout = QHBoxLayout()
@@ -335,9 +322,10 @@ class ImportExportTab(BaseTab):
         self.resample_curves_check.toggled.connect(lambda v: settings.set("import.animation.resample_curves", v))
         anim_settings_layout.addWidget(self.resample_curves_check)
 
-        anim_settings_layout.addStretch()
-        anim_settings_tab.setWidget(anim_settings_widget)
-        self.left_widget.addTab(anim_settings_tab, self.tr("animation", "tabs"))
+        self.animation_settings_group.setLayout(anim_settings_layout)
+        model_settings_layout.addWidget(self.animation_settings_group)
+
+        model_settings_layout.addStretch()
 
         # Export Settings Tab (not added to tab widget — export is not yet implemented)
         self._export_settings_tab = QScrollArea()
@@ -648,9 +636,8 @@ class ImportExportTab(BaseTab):
         self.export_button.setText(self.tr("export", "buttons"))
 
         # Tab widget texts
-        if hasattr(self, "left_widget") and self.left_widget.count() >= 2:
-            self.left_widget.setTabText(0, self.tr("model", "groups"))
-            self.left_widget.setTabText(1, self.tr("animation", "tabs"))
+        if hasattr(self, "animation_settings_group"):
+            self.animation_settings_group.setTitle(self.tr("animation", "tabs"))
 
         # Refresh model list to update auto detect text
         self.refresh_model_list()
