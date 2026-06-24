@@ -498,9 +498,14 @@ class ImportExportTab(BaseTab):
             self.create_rigid_bodies_check,
             self.create_physics_joints_check,
             self.group_physics_objects_check,
+            self.morph_physics_group,
             self.add_semi_standard_bones_check,
             self.translate_names_check,
             self.resample_curves_check,
+            self.import_bone_animation_check,
+            self.import_morph_animation_check,
+            self.import_camera_animation_check,
+            self.import_light_animation_check,
         ]
         self._apply_dev_mode_visibility()
 
