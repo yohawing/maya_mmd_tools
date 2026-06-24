@@ -181,8 +181,14 @@ def _capture_vertex_positions(mesh_transforms, frames):
     return result
 
 
-def _import_model_with_options(pmx_path, vmd_path, setup_rig, setup_bone_orientation):
-    """PMX+VMD を指定オプションでインポートし root を返す"""
+def _import_model_with_options(pmx_path, vmd_path, setup_rig, setup_bone_orientation, bake_mode=None):
+    """PMX+VMD を指定オプションでインポートし root を返す。
+
+    bake_mode が None の場合、setup_rig=False なら自動的に True にする。
+    """
+    if bake_mode is None:
+        bake_mode = not setup_rig
+
     settings.set("import.model.create_mmd_shaders", False)
     settings.set("import.rig.add_semi_standard_bones", False)
 
@@ -197,6 +203,7 @@ def _import_model_with_options(pmx_path, vmd_path, setup_rig, setup_bone_orienta
     import_mmd_file(vmd_path, options={
         "target_model": root,
         "pmx_path": pmx_path,
+        "bake_mode": bake_mode,
     })
     return root
 
@@ -303,7 +310,11 @@ class TestBakeRigBoneParity(MayaTestBase):
         vmd_data = VmdData().parse_file(VMD_FILE)
         converter = VmdConverter()
         converter.use_animation_layers = False
-        self.assertTrue(converter.convert(vmd_data, vmd_bytes=None, pmx_bytes=None, pmx_path=None))
+        self.assertTrue(converter.convert(
+            vmd_data,
+            bake_mode=True,
+            pmx_path=PMX_FILE,
+        ))
 
         actual = _capture_bone_world_transforms_by_index(FRAMES)
         oracle = _capture_runtime_oracle_world_transforms(PMX_FILE, VMD_FILE, FRAMES)
