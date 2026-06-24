@@ -2434,37 +2434,6 @@ class VmdConverter:
                 return q_jo * q_maya * q_jo.inverse()
             return q_maya
 
-    def get_parent_world_rotation(self, joint):
-        """Maya API 2.0を使用して親ワールド変換行列から親の回転を取得"""
-        # MSelectionListを使用してMObjectを取得
-        selection_list = om.MSelectionList()
-        selection_list.add(joint)
-        joint_mobject = selection_list.getDagPath(0)
-
-        # MFnTransformを作成
-        fn_transform = om.MFnTransform(joint_mobject)
-
-        # 親のワールド変換行列を取得
-        parent_path = fn_transform.dagPath().pop()
-        if parent_path.length() == 0:
-            return om.MQuaternion(0, 0, 0, 1)
-
-        parent_world_matrix = parent_path.inclusiveMatrix()
-        parent_transform_matrix = om.MTransformationMatrix(parent_world_matrix)
-
-        return parent_transform_matrix.rotation(asQuaternion=True)
-
-    def apply_rotation(self, joint, world_quat):
-        """Deprecated: use _convert_vmd_quat_to_joint_rotate() and key explicit values."""
-        rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(
-            joint,
-            world_quat.x,
-            world_quat.y,
-            world_quat.z,
-            world_quat.w,
-        )
-        cmds.setAttr(f"{joint}.rotate", rx, ry, rz, type="double3")
-
     def get_failed_bones(self) -> set:
         """変換に失敗したボーン名のセットを取得
 
