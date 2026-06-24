@@ -46,7 +46,7 @@ class _FakeSettingsStore:
             },
             "export": {"general": {"export_format": "pmd", "apply_scale": False}},
             "logging": {"enabled": False, "level": "ERROR", "log_file_path": "custom.log"},
-            "ui": {"general": {"development_mode": False, "log_level": "ERROR", "language": "en"}},
+            "ui": {"general": {"development_mode": False, "language": "en"}},
             "internal": {"ignored": True},
         }
         self.saved = 0
@@ -96,18 +96,17 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         self.assertEqual(self.store.saved, 3)
         self.assertEqual(self.store.reset_called, 1)
 
-    def test_set_development_mode_log_levels_sets_both_keys(self):
+    def test_set_development_mode_log_levels_sets_logging_key(self):
         level = self.service.set_development_mode_log_levels(True)
 
         self.assertEqual(level, "INFO")
-        self.assertEqual(self.service.get("ui.general.log_level"), "INFO")
         self.assertEqual(self.service.get("logging.level"), "INFO")
 
         level = self.service.set_development_mode_log_levels(False)
 
         self.assertEqual(level, "WARNING")
-        self.assertEqual(self.service.get("ui.general.log_level"), "WARNING")
         self.assertEqual(self.service.get("logging.level"), "WARNING")
+        self.assertNotIn("log_level", self.store.data["ui"]["general"])
 
     def test_load_and_save_settings_tab_state_preserve_keys(self):
         state = self.service.load_settings_tab_state()
@@ -115,7 +114,6 @@ class TestSettingsServiceDelegation(unittest.TestCase):
             state,
             {
                 "development_mode": False,
-                "ui_log_level": "ERROR",
                 "logging_enabled": False,
                 "logging_level": "ERROR",
                 "log_file_path": "custom.log",
@@ -126,7 +124,6 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         self.service.save_settings_tab_state(
             {
                 "development_mode": True,
-                "ui_log_level": "DEBUG",
                 "logging_enabled": True,
                 "logging_level": "INFO",
                 "log_file_path": "next.log",
@@ -135,7 +132,6 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         )
 
         self.assertTrue(self.service.get("ui.general.development_mode"))
-        self.assertEqual(self.service.get("ui.general.log_level"), "DEBUG")
         self.assertEqual(self.service.get("ui.general.language"), "ja")
         self.assertTrue(self.service.get("logging.enabled"))
         self.assertEqual(self.service.get("logging.level"), "INFO")

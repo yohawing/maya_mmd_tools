@@ -43,7 +43,6 @@ class SettingsPresenter:
 
             # 全般設定
             self.view.development_mode_check.stateChanged.connect(self.on_development_mode_changed)
-            self.view.ui_log_level_combo.currentTextChanged.connect(self.on_setting_changed)
             self.view.logging_enabled_check.stateChanged.connect(self.on_setting_changed)
             self.view.log_level_combo.currentTextChanged.connect(self.on_log_level_changed)
             self.view.log_file_browse_btn.clicked.connect(self.browse_log_file)
@@ -67,10 +66,6 @@ class SettingsPresenter:
             state = self.settings_service.load_settings_tab_state()
             # UI設定
             self.view.development_mode_check.setChecked(state["development_mode"])
-            ui_log_level = state["ui_log_level"]
-            index = self.view.ui_log_level_combo.findText(ui_log_level)
-            if index >= 0:
-                self.view.ui_log_level_combo.setCurrentIndex(index)
 
             # ログ設定
             self.view.logging_enabled_check.setChecked(state["logging_enabled"])
@@ -97,7 +92,7 @@ class SettingsPresenter:
     def on_development_mode_changed(self):
         """Development Mode チェックボックス変更時の処理。
 
-        Dev ON → ui.general.log_level と logging.level を INFO に設定。
+        Dev ON → logging.level を INFO に設定。
         Dev OFF → WARNING に設定。コンボボックス UI も同期する。
         """
         if self._loading:
@@ -108,10 +103,9 @@ class SettingsPresenter:
         level_str = self.settings_service.set_development_mode_log_levels(dev_on)
 
         # コンボボックスの表示を更新
-        for combo in (self.view.ui_log_level_combo, self.view.log_level_combo):
-            idx = combo.findText(level_str)
-            if idx >= 0:
-                combo.setCurrentIndex(idx)
+        idx = self.view.log_level_combo.findText(level_str)
+        if idx >= 0:
+            self.view.log_level_combo.setCurrentIndex(idx)
 
         # ロガーに即座に適用
         level = getattr(logging, level_str, logging.WARNING)
@@ -153,7 +147,6 @@ class SettingsPresenter:
         try:
             state = {
                 "development_mode": self.view.development_mode_check.isChecked(),
-                "ui_log_level": self.view.ui_log_level_combo.currentText(),
                 "logging_enabled": self.view.logging_enabled_check.isChecked(),
                 "logging_level": self.view.log_level_combo.currentText(),
                 "log_file_path": self.view.log_file_path_edit.text(),

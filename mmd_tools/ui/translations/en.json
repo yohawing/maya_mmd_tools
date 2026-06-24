@@ -265,7 +265,6 @@
     "node": "Node:",
     "target_name": "Target Name:",
     "multiplier": "Multiplier:",
-    "ui_log_level": "UI Log Level:",
     "language": "Language:",
     "log_level": "Log Level:",
     "log_file": "Log File:",

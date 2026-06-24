@@ -265,7 +265,6 @@
     "node": "节点:",
     "target_name": "目标名称:",
     "multiplier": "乘数:",
-    "ui_log_level": "界面日志级别:",
     "language": "语言:",
     "log_level": "日志级别:",
     "log_file": "日志文件:",

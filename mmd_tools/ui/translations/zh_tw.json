@@ -265,7 +265,6 @@
     "node": "節點:",
     "target_name": "目標名稱:",
     "multiplier": "乘數:",
-    "ui_log_level": "介面記錄層級:",
     "language": "語言:",
     "log_level": "記錄層級:",
     "log_file": "記錄檔案:",

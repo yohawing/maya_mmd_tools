@@ -79,11 +79,6 @@ class SettingsTab(BaseTab):
         self.development_mode_check = QCheckBox(self.tr("development_mode", "checkboxes"))
         ui_layout.addRow("", self.development_mode_check)
 
-        self.ui_log_level_combo = QComboBox()
-        self.ui_log_level_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
-        self.ui_log_level_label = QLabel(self.tr("ui_log_level", "fields"))
-        ui_layout.addRow(self.ui_log_level_label, self.ui_log_level_combo)
-
         # 言語選択
         self.language_combo = QComboBox()
         # UITranslatorから言語リストを取得
@@ -152,8 +147,6 @@ class SettingsTab(BaseTab):
             self.log_group.setTitle(self.tr("log_settings", "groups"))
 
         # Labels
-        if hasattr(self, "ui_log_level_label"):
-            self.ui_log_level_label.setText(self.tr("ui_log_level", "fields"))
         if hasattr(self, "language_label"):
             self.language_label.setText(self.tr("language", "fields"))
         if hasattr(self, "log_level_label"):
