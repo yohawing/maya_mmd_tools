@@ -201,11 +201,9 @@ class MmdCcdIkNode(om.MPxNode):
         ir_plug = fn_dep.findPlug("inputRotate", False)
         for bone_i in range(self._bone_count):
             rx = ry = rz = 0.0
-            connected = False
             try:
                 elem_plug = ir_plug.elementByLogicalIndex(bone_i)
-                connected = elem_plug.isDestination or elem_plug.child(0).isDestination
-                if connected:
+                if elem_plug.isDestination or elem_plug.child(0).isDestination:
                     rx = elem_plug.child(0).asDouble()
                     ry = elem_plug.child(1).asDouble()
                     rz = elem_plug.child(2).asDouble()
@@ -249,7 +247,7 @@ class MmdCcdIkNode(om.MPxNode):
             data.setClean(plug)
             return
 
-        out_rots, stats = result
+        out_rots, _stats = result
 
         # Output rotations: MMD quaternion → Maya joint.rotate.
         #
@@ -474,10 +472,11 @@ class MmdCcdIkNode(om.MPxNode):
 
     def _goal_has_input_connection(self) -> bool:
         try:
-            matrix_plug = om.MFnDependencyNode(self.thisMObject()).findPlug("goalWorldMatrix", False)
+            fn_dep = om.MFnDependencyNode(self.thisMObject())
+            matrix_plug = fn_dep.findPlug("goalWorldMatrix", False)
             if matrix_plug.connectedTo(True, False):
                 return True
-            goal_plug = om.MFnDependencyNode(self.thisMObject()).findPlug("goal", False)
+            goal_plug = fn_dep.findPlug("goal", False)
             if goal_plug.connectedTo(True, False):
                 return True
             for child_index in range(goal_plug.numChildren()):

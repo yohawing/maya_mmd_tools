@@ -80,11 +80,10 @@ class VmdConverter:
         # 浮動小数ジッタを吸収し、これ未満しか動かないチャンネルはキーを打たず
         # setAttr 一回で固定する（不要な全フレームキーを抑制）。
         # 並進は Maya linear 単位、回転は度で指定（内部比較時にラジアン換算）。
-        import math as _math
         self._static_eps_translate = float(
             settings.get("import.animation.static_channel_epsilon_translate", 1e-4)
         )
-        self._static_eps_rotate = _math.radians(
+        self._static_eps_rotate = math.radians(
             float(settings.get("import.animation.static_channel_epsilon_rotate_deg", 0.01))
         )
 
@@ -634,8 +633,6 @@ class VmdConverter:
             e = q.asEulerRotation()
             if e.order != order:
                 e.reorderIt(order)
-            import math
-
             return (math.degrees(e.x), math.degrees(e.y), math.degrees(e.z))
         except Exception:
             return (0.0, 0.0, 0.0)
@@ -667,8 +664,6 @@ class VmdConverter:
             curves = {}
 
         tangent = oma.MFnAnimCurve.kTangentLinear
-        import math
-
         shared_times = None
         if channel_samples:
             first_samples = next((samples for samples in channel_samples.values() if samples), None)
@@ -747,8 +742,6 @@ class VmdConverter:
         static_state: Dict[str, Dict[str, dict]],
     ):
         """frameごとのlocal姿勢をjoint channel配列へ直接追加する。"""
-        import math
-
         for bidx, (tx, ty, tz, rx, ry, rz) in bone_locals.items():
             joint = self.bone_index_to_joint.get(bidx)
             chans = channel_values.get(joint)
@@ -818,8 +811,6 @@ class VmdConverter:
                     try:
                         value = float(state["first"])
                         if "rotate" in attr:
-                            import math
-
                             value = math.degrees(value)
                         cmds.setAttr(f"{joint_name}.{attr}", value)
                     except Exception:
@@ -860,8 +851,6 @@ class VmdConverter:
                 try:
                     value = float(values[index])
                     if "rotate" in attr:
-                        import math
-
                         value = math.degrees(value)
                     cmds.setKeyframe(joint_name, attribute=attr, time=frame, value=value)
                 except Exception:
@@ -1519,7 +1508,6 @@ class VmdConverter:
         # ジョイント: per-joint でチャンネル別サンプルをまとめ、一括登録
         if self.bone_index_to_joint:
             per_joint_channels: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
-            import math
 
             for fd in runtime_cache:
                 f = fd["frame"]
@@ -1559,8 +1547,6 @@ class VmdConverter:
                                 try:
                                     value = float(samples[0][1])
                                     if "rotate" in attr:
-                                        import math
-
                                         value = math.degrees(value)
                                     cmds.setAttr(f"{jname}.{attr}", value)
                                 except Exception:
@@ -2309,14 +2295,6 @@ class VmdConverter:
                     key_args["animLayer"] = self.anim_layer
                 cmds.setKeyframe(target_node, **key_args)
 
-        # TODO: maya apiを使うなら、キーフレームを先に打って、カーブを作成した後に、一括で設定するとパフォーマンスが向上する。
-        # curves = maya_utils.create_animation_curves(
-        #     joint, attrs, animation_layer=self.animation_layer_name
-        # )
-
-        # # キーフレームを一括設定
-        # maya_utils.set_keyframes_batch(curves, frames, generate_values)
-
         # IK link bone: VMD 回転を solver.inputRotate にキーイング
         # joint.rotate は solver.outputRotate が駆動するので直接キーできないが、
         # solver の inputRotate に VMD の事前解決済み回転を渡すことで
@@ -2546,8 +2524,6 @@ class VmdConverter:
         if not camera_frames:
             return False
 
-        import math
-
         camera_transform = self._get_or_create_camera()
         camera_shapes = cmds.listRelatives(camera_transform, shapes=True, type="camera") or []
         camera_shape = camera_shapes[0] if camera_shapes else None
@@ -2610,8 +2586,6 @@ class VmdConverter:
 
     def _viewing_angle_to_focal_length(self, camera_shape: str, viewing_angle: float) -> float:
         """VMD viewing_angle(deg) を Maya camera focalLength(mm) に変換する。"""
-        import math
-
         clamped_angle = max(1.0, min(179.0, float(viewing_angle)))
         aperture_inch = cmds.getAttr(f"{camera_shape}.horizontalFilmAperture")
         aperture_mm = float(aperture_inch) * 25.4
@@ -2631,8 +2605,6 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        import math
-
         if not light_frames:
             return False
 

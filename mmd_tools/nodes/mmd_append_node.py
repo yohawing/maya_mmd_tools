@@ -23,14 +23,11 @@ def maya_useNewAPI():
     pass
 
 
-# ── Node definition ──────────────────────────────────────────────
-
 class MmdAppendNode(om.MPxNode):
     kTypeName = "mmdAppend"
     kTypeId = om.MTypeId(0x00128001)
     kClassify = "utility/general"
 
-    # attr objects (set in initialize())
     aBaseRotate = None
     aBaseRotateX = None
     aBaseRotateY = None
@@ -239,8 +236,6 @@ class MmdAppendNode(om.MPxNode):
             except Exception:
                 pass
 
-
-# ── Creator / Initializer ────────────────────────────────────────
 
 def creator():
     return MmdAppendNode()
@@ -467,8 +462,6 @@ def initialize():
     for out_attr in output_translate_attrs + append_translate_attrs:
         MmdAppendNode.attributeAffects(MmdAppendNode.aAffectTranslation, out_attr)
 
-
-# ── Plugin registration helpers ──────────────────────────────────
 
 def register(plugin_fn):
     """Call from the host plugin's initializePlugin."""

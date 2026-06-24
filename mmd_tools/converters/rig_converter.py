@@ -308,25 +308,8 @@ class RigConverter:
                 # IKハンドルのアトリビュートを設定
                 maya_utils.set_attribute(ik_handle, "v", 0, "bool")  # 非表示
 
-                # カスタムアトリビュートでMMDのIK情報を保存
-                # maya_utils.set_custom_attributes(
-                #     ik_handle,
-                #     {
-                #         "mmd_ik_loop_count": chain["loop_count"],
-                #         "mmd_ik_unit_angle": chain["unit_angle"],
-                #         "mmd_ik_bone": chain["ik_bone"],  # IKボーン名を追加
-                #     },
-                # )
-
-                # 角度制限の設定
-                # self._set_joint_limits(chain["ik_links"])
-
                 # 足IKの場合、PoleTargetを作成
                 pole_target = None
-                # if self._is_leg_ik(chain["ik_bone"]):
-                #     pole_target = self._create_pole_target_for_leg_ik(
-                #         chain, ik_handle, start_joint, end_joint
-                #     )
 
                 ik_handle_info = {
                     "ik_handle": ik_handle,
