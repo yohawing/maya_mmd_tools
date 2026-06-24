@@ -264,12 +264,6 @@ class ImportExportTab(BaseTab):
         self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
         anim_settings_layout = QVBoxLayout()
 
-        self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
-        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
-        self.bake_mode_check.toggled.connect(lambda v: settings.set("import.rig.bake_mode", v))
-        self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
-        anim_settings_layout.addWidget(self.bake_mode_check)
-
         # Start frame
         frame_layout = QHBoxLayout()
         self.start_frame_label = QLabel(self.tr("start_frame", "fields"))
@@ -305,6 +299,14 @@ class ImportExportTab(BaseTab):
         fps_layout.addWidget(self.vmd_fps_combo)
         fps_layout.addStretch()
         anim_settings_layout.addLayout(fps_layout)
+
+        self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
+        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
+        self.bake_mode_check.toggled.connect(
+            lambda v: settings.set("import.rig.bake_mode", v)
+        )
+        self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
+        anim_settings_layout.addWidget(self.bake_mode_check)
 
         # Animation type checkboxes
         self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
