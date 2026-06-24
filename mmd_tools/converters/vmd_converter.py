@@ -114,8 +114,14 @@ class VmdConverter:
         Returns:
             変換が成功した場合True、失敗した場合False
         """
+        import_start_time = None
         try:
             self.logger.info("VMDアニメーション変換を開始します")
+            try:
+                import_start_time = cmds.currentTime(query=True)
+                cmds.play(state=False)
+            except Exception:
+                import_start_time = None
 
             # 名前マッピングの構築（ボーン名 → Maya joint）
             self._build_name_mappings(target_namespace)
@@ -150,6 +156,7 @@ class VmdConverter:
                 )
                 if runtime_success:
                     self.logger.info("mmd-anim runtime による高精度ベイクが完了しました")
+                    self._restore_import_timeline_state(import_start_time)
                     return True
                 else:
                     self.logger.warning("runtime ベイクに失敗したため、レガシーパスにフォールバックします")
@@ -179,11 +186,26 @@ class VmdConverter:
                 self._convert_light_animation(vmd_data.light_frames)
 
             self.logger.info("VMDアニメーション変換が完了しました")
+            self._restore_import_timeline_state(import_start_time)
             return True
 
         except Exception as e:
+            self._restore_import_timeline_state(import_start_time)
             self.logger.error(f"VMDアニメーション変換中にエラーが発生しました: {str(e)}", exc_info=True)
             return False
+
+    @staticmethod
+    def _restore_import_timeline_state(current_time: Optional[float]) -> None:
+        """Keep VMD import from leaving Maya visibly playing or scrubbed ahead."""
+        if current_time is not None:
+            try:
+                cmds.currentTime(current_time, edit=True)
+            except Exception:
+                pass
+        try:
+            cmds.play(state=False)
+        except Exception:
+            pass
 
     def _should_use_mmd_runtime_bake(
         self, vmd_bytes: bytes, pmx_bytes: bytes, pmx_path: str
@@ -1432,67 +1454,98 @@ class VmdConverter:
     ) -> int:
         """Key mmdCcdIk output offsets so live IK matches runtime final frames."""
         keyed = 0
-        for ik_info, channels, static_state in requests:
-            node = str(ik_info.get("node", ""))
-            link_index = int(ik_info.get("link_index", -1))
-            if not node or link_index < 0 or not cmds.objExists(node):
-                continue
+        current_time = None
+        refresh_suspended = False
+        try:
+            try:
+                current_time = cmds.currentTime(query=True)
+            except Exception:
+                current_time = None
+            try:
+                cmds.play(state=False)
+            except Exception:
+                pass
+            try:
+                cmds.refresh(suspend=True)
+                refresh_suspended = True
+            except Exception:
+                refresh_suspended = False
 
-            n_frames = len(baked_frames)
-            rx = self._get_or_expand_runtime_channel(channels, static_state, "rotateX", n_frames)
-            ry = self._get_or_expand_runtime_channel(channels, static_state, "rotateY", n_frames)
-            rz = self._get_or_expand_runtime_channel(channels, static_state, "rotateZ", n_frames)
-            if rx is None or ry is None or rz is None:
-                continue
+            for ik_info, channels, static_state in requests:
+                node = str(ik_info.get("node", ""))
+                link_index = int(ik_info.get("link_index", -1))
+                if not node or link_index < 0 or not cmds.objExists(node):
+                    continue
 
-            offset_attrs = (
-                f"outputRotateOffset[{link_index}].outputRotateOffsetElementX",
-                f"outputRotateOffset[{link_index}].outputRotateOffsetElementY",
-                f"outputRotateOffset[{link_index}].outputRotateOffsetElementZ",
-            )
-            for attr in offset_attrs:
-                plug = f"{node}.{attr}"
-                for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
+                n_frames = len(baked_frames)
+                rx = self._get_or_expand_runtime_channel(channels, static_state, "rotateX", n_frames)
+                ry = self._get_or_expand_runtime_channel(channels, static_state, "rotateY", n_frames)
+                rz = self._get_or_expand_runtime_channel(channels, static_state, "rotateZ", n_frames)
+                if rx is None or ry is None or rz is None:
+                    continue
+
+                offset_attrs = (
+                    f"outputRotateOffset[{link_index}].outputRotateOffsetElementX",
+                    f"outputRotateOffset[{link_index}].outputRotateOffsetElementY",
+                    f"outputRotateOffset[{link_index}].outputRotateOffsetElementZ",
+                )
+                for attr in offset_attrs:
+                    plug = f"{node}.{attr}"
+                    for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
+                        try:
+                            cmds.disconnectAttr(source, plug)
+                        except Exception:
+                            pass
+
+                offset_samples = []
+                for frame_index, frame in enumerate(baked_frames):
                     try:
-                        cmds.disconnectAttr(source, plug)
-                    except Exception:
-                        pass
-
-            offset_samples = []
-            for frame_index, frame in enumerate(baked_frames):
-                try:
-                    cmds.currentTime(frame, edit=True)
-                    cmds.refresh(force=True)
-                    raw = cmds.getAttr(f"{node}.outputRotate[{link_index}]")[0]
-                    raw_q = om.MEulerRotation(
-                        math.radians(float(raw[0])),
-                        math.radians(float(raw[1])),
-                        math.radians(float(raw[2])),
-                    ).asQuaternion()
-                    desired_q = om.MEulerRotation(
-                        float(rx[frame_index]),
-                        float(ry[frame_index]),
-                        float(rz[frame_index]),
-                    ).asQuaternion()
-                    offset_q = desired_q * raw_q.inverse()
-                    offset_e = offset_q.asEulerRotation()
-                    offset_values = (
-                        math.degrees(offset_e.x),
-                        math.degrees(offset_e.y),
-                        math.degrees(offset_e.z),
-                    )
-                    offset_samples.append((frame, offset_values))
-                except Exception as exc:
-                    self.logger.debug(f"failed to sample live IK output offset for {node}[{link_index}] frame {frame}: {exc}")
-                    break
-            for frame, offset_values in offset_samples:
-                for attr, value in zip(offset_attrs, offset_values):
-                    try:
-                        cmds.setKeyframe(node, attribute=attr, time=frame, value=float(value))
-                        keyed += 1
+                        cmds.currentTime(frame, edit=True)
+                        raw = cmds.getAttr(f"{node}.outputRotate[{link_index}]")[0]
+                        raw_q = om.MEulerRotation(
+                            math.radians(float(raw[0])),
+                            math.radians(float(raw[1])),
+                            math.radians(float(raw[2])),
+                        ).asQuaternion()
+                        desired_q = om.MEulerRotation(
+                            float(rx[frame_index]),
+                            float(ry[frame_index]),
+                            float(rz[frame_index]),
+                        ).asQuaternion()
+                        offset_q = desired_q * raw_q.inverse()
+                        offset_e = offset_q.asEulerRotation()
+                        offset_values = (
+                            math.degrees(offset_e.x),
+                            math.degrees(offset_e.y),
+                            math.degrees(offset_e.z),
+                        )
+                        offset_samples.append((frame, offset_values))
                     except Exception as exc:
-                        self.logger.debug(f"failed to key live IK output offset for {node}[{link_index}] frame {frame}: {exc}")
+                        self.logger.debug(f"failed to sample live IK output offset for {node}[{link_index}] frame {frame}: {exc}")
                         break
+                for frame, offset_values in offset_samples:
+                    for attr, value in zip(offset_attrs, offset_values):
+                        try:
+                            cmds.setKeyframe(node, attribute=attr, time=frame, value=float(value))
+                            keyed += 1
+                        except Exception as exc:
+                            self.logger.debug(f"failed to key live IK output offset for {node}[{link_index}] frame {frame}: {exc}")
+                            break
+        finally:
+            if current_time is not None:
+                try:
+                    cmds.currentTime(current_time, edit=True)
+                except Exception:
+                    pass
+            if refresh_suspended:
+                try:
+                    cmds.refresh(suspend=False)
+                except Exception:
+                    pass
+            try:
+                cmds.play(state=False)
+            except Exception:
+                pass
         if keyed:
             self.logger.info(f"live mmdCcdIk outputRotateOffset に {keyed} keys 適用しました")
         return keyed
