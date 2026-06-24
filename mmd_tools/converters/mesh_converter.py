@@ -720,7 +720,7 @@ class MeshConverter:
                     resolved, triangles, alpha_cache=alpha_cache, opaque_threshold=opaque_threshold
                 )
             except Exception:
-                self.logger.debug("透過分類に失敗 (material %s)", material_index, exc_info=True)
+                self.logger.debug("Failed to classify transparency (material %s)", material_index, exc_info=True)
 
         self._add_profile_time("transparency_classify_sec", classify_start)
 
@@ -872,7 +872,7 @@ class MeshConverter:
 
         # 頂点数がゼロの場合は警告を出して処理を中断
         if not all_vertices or len(all_vertices) == 0:
-            self.logger.warning(f"頂点数がゼロのためメッシュを作成しません: {model_name}")
+            self.logger.warning(f"Mesh has zero vertices; skipping mesh creation: {model_name}")
             return None
 
         # 統合メッシュの名前を設定
@@ -1015,7 +1015,7 @@ class MeshConverter:
             list: 作成されたメッシュノードの名前のリスト
         """
         if not all_vertices or len(all_vertices) == 0:
-            self.logger.warning(f"頂点数がゼロのためメッシュを作成しません: {model_name}")
+            self.logger.warning(f"Mesh has zero vertices; skipping mesh creation: {model_name}")
             return []
 
         # 全頂点座標 (z*= -1)
@@ -1167,7 +1167,7 @@ class MeshConverter:
     ):
         """Create compact PMX meshes grouped by identical vertex morph material sets."""
         if not all_vertices or len(all_vertices) == 0:
-            self.logger.warning(f"頂点数がゼロのためメッシュを作成しません: {model_name}")
+            self.logger.warning(f"Mesh has zero vertices; skipping mesh creation: {model_name}")
             return []
 
         material_vertex_sets = self._build_material_vertex_sets(all_faces, all_materials)

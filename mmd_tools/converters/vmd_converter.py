@@ -115,7 +115,7 @@ class VmdConverter:
         """
         import_start_time = None
         try:
-            self.logger.info("VMDアニメーション変換を開始します")
+            self.logger.info("Starting VMD animation conversion")
             try:
                 import_start_time = cmds.currentTime(query=True)
                 cmds.play(state=False)
@@ -127,7 +127,7 @@ class VmdConverter:
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
-            self.logger.info(f"VMD種別判定: {self._detect_vmd_motion_kind(vmd_data)}")
+            self.logger.info(f"Detected VMD motion kind: {self._detect_vmd_motion_kind(vmd_data)}")
 
             # タイムライン設定
             self._setup_timeline(vmd_data)
@@ -149,7 +149,7 @@ class VmdConverter:
             )
 
             if self._should_use_mmd_runtime_bake(vmd_bytes, pmx_bytes, pmx_path, live_rig_target):
-                self.logger.info("mmd-anim runtime を使用した高精度ベイクパスで変換します")
+                self.logger.info("Converting with mmd-anim runtime high-precision bake path")
                 runtime_success = self._convert_using_mmd_runtime(
                     vmd_data=vmd_data,
                     vmd_bytes=vmd_bytes,
@@ -157,43 +157,43 @@ class VmdConverter:
                     pmx_path=pmx_path,
                 )
                 if runtime_success:
-                    self.logger.info("mmd-anim runtime による高精度ベイクが完了しました")
+                    self.logger.info("mmd-anim runtime high-precision bake completed")
                     self._restore_import_timeline_state(import_start_time)
                     return True
                 else:
-                    self.logger.warning("runtime ベイクに失敗したため、レガシーパスにフォールバックします")
+                    self.logger.warning("Runtime bake failed; falling back to legacy path")
 
             # --- レガシーパス（従来の変換） ---
             self._apply_ik_enabled_animation(vmd_data, target_namespace)
 
             if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
-                self.logger.info(f"ボーンアニメーション変換を開始（レガシー）: {len(vmd_data.bone_frames)}フレーム")
+                self.logger.info(f"Starting bone animation conversion (legacy): {len(vmd_data.bone_frames)} frames")
                 bone_success = self._convert_bone_animation(vmd_data.bone_frames)
                 if not bone_success:
-                    self.logger.warning("ボーンアニメーション変換で一部エラーが発生しました")
+                    self.logger.warning("Some errors occurred during bone animation conversion")
 
             # モーフアニメーション（レガシー）
             if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
-                self.logger.info("モーフアニメーションを変換します（レガシー）")
+                self.logger.info("Converting morph animation (legacy)")
                 self._convert_morph_animation(vmd_data.morph_frames)
 
             # カメラアニメーション（レガシー）
             if hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
-                self.logger.info(f"カメラアニメーションを変換します: {len(vmd_data.camera_frames)}フレーム")
+                self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
                 self._convert_camera_animation(vmd_data.camera_frames)
 
             # ライトアニメーション（レガシー）
             if hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
-                self.logger.info(f"ライトアニメーションを変換します: {len(vmd_data.light_frames)}フレーム")
+                self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
                 self._convert_light_animation(vmd_data.light_frames)
 
-            self.logger.info("VMDアニメーション変換が完了しました")
+            self.logger.info("VMD animation conversion completed")
             self._restore_import_timeline_state(import_start_time)
             return True
 
         except Exception as e:
             self._restore_import_timeline_state(import_start_time)
-            self.logger.error(f"VMDアニメーション変換中にエラーが発生しました: {str(e)}", exc_info=True)
+            self.logger.error(f"Error occurred during VMD animation conversion: {str(e)}", exc_info=True)
             return False
 
     @staticmethod
@@ -245,9 +245,9 @@ class VmdConverter:
                 try:
                     with open(vmd_source, "rb") as file:
                         resolved_vmd_bytes = file.read()
-                    self.logger.info(f"VMD source_file から runtime bake 用 VMD bytes を復元: {vmd_source}")
+                    self.logger.info(f"Restored VMD bytes for runtime bake from VMD source_file: {vmd_source}")
                 except Exception as exc:
-                    self.logger.debug(f"VMD source_file の読み込みに失敗: {vmd_source}: {exc}")
+                    self.logger.debug(f"Failed to read VMD source_file: {vmd_source}: {exc}")
 
         resolved_pmx_path = pmx_path
         if not pmx_bytes and not resolved_pmx_path:
@@ -276,7 +276,7 @@ class VmdConverter:
                 candidates.append(str(stored))
 
         if len(candidates) == 1:
-            self.logger.info(f"シーンの mmd_source_file から PMX ソースを復元: {candidates[0]}")
+            self.logger.info(f"Restored PMX source from scene mmd_source_file: {candidates[0]}")
             return candidates[0]
         if len(candidates) > 1:
             self.logger.warning(
@@ -303,11 +303,11 @@ class VmdConverter:
                 with open(pmx_path, "rb") as f:
                     resolved_pmx_bytes = f.read()
             except Exception as e:
-                self.logger.error(f"PMX ファイルの読み込み失敗: {pmx_path} - {e}")
+                self.logger.error(f"Failed to read PMX file: {pmx_path} - {e}")
                 return False
 
         if not resolved_pmx_bytes:
-            self.logger.error("runtime ベイクに必要な PMX データが取得できませんでした")
+            self.logger.error("Could not get PMX data required for runtime bake")
             return False
 
         # モデル・クリップ・インスタンス作成
@@ -317,22 +317,22 @@ class VmdConverter:
                 pmx_data = PmxData().parse_file(pmx_path)
                 pmx_morph_names = [morph.name for morph in pmx_data.morphs]
             except Exception as e:
-                self.logger.warning(f"runtime morph bake 用 PMX morph 名の取得に失敗: {e}")
+                self.logger.warning(f"Failed to get PMX morph names for runtime morph bake: {e}")
 
         model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
         if model is None:
-            self.logger.error("MmdRuntimeModel の作成に失敗しました")
+            self.logger.error("Failed to create MmdRuntimeModel")
             return False
 
         clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, vmd_bytes)
         if clip is None:
-            self.logger.error("MmdRuntimeClip の作成に失敗しました")
+            self.logger.error("Failed to create MmdRuntimeClip")
             model.free()
             return False
 
         instance = MmdRuntimeInstance.for_model(model)
         if instance is None:
-            self.logger.error("MmdRuntimeInstance の作成に失敗しました")
+            self.logger.error("Failed to create MmdRuntimeInstance")
             clip.free()
             model.free()
             return False
@@ -343,7 +343,7 @@ class VmdConverter:
             min_frame, max_frame = self._get_animation_frame_range(vmd_data)
             bake_frames = self._iter_runtime_bake_frames(min_frame, max_frame)
             self.logger.info(
-                f"runtime 評価範囲: {min_frame} - {max_frame} (keys={len(bake_frames)})"
+                f"Runtime evaluation range: {min_frame} - {max_frame} (keys={len(bake_frames)})"
             )
             self._disable_mmd_rig_constraints_for_runtime_bake()
             self._restore_joints_to_bind_pose_for_runtime_bake()
@@ -401,7 +401,7 @@ class VmdConverter:
 
             eval_elapsed = time.perf_counter() - eval_start
             self.logger.info(
-                f"mmd-anim runtime によるポーズ評価+キャッシュ完了 "
+                f"mmd-anim runtime pose evaluation and cache completed "
                 f"(frames={len(baked_frames)}, elapsed={eval_elapsed:.3f}s)"
             )
 
@@ -418,7 +418,7 @@ class VmdConverter:
                 )
                 apply_elapsed = time.perf_counter() - apply_start
                 self.logger.info(
-                    f"runtime cache キー登録完了 (elapsed={apply_elapsed:.3f}s)"
+                    f"Runtime cache key application completed (elapsed={apply_elapsed:.3f}s)"
                 )
 
             runtime_elapsed = time.perf_counter() - runtime_start
@@ -1380,7 +1380,7 @@ class VmdConverter:
             except Exception as e:
                 self.logger.debug(f"post-apply morph bake error at frame {frame}: {e}")
 
-        self.logger.info(f"runtime cache 適用完了: {len(baked_frames)} フレームをキー登録")
+        self.logger.info(f"Applied runtime cache: keyed {len(baked_frames)} frames")
         return None
 
     @staticmethod
@@ -1574,7 +1574,7 @@ class VmdConverter:
             except Exception as e:
                 self.logger.debug(f"post-apply morph bake error at frame {fd['frame']}: {e}")
 
-        self.logger.info(f"runtime cache 適用完了: {len(runtime_cache)} フレームをキー登録")
+        self.logger.info(f"Applied runtime cache: keyed {len(runtime_cache)} frames")
 
     @staticmethod
     def _is_static_channel(samples: List[Tuple[float, float]], tolerance: float = 1e-10) -> bool:
@@ -1725,7 +1725,7 @@ class VmdConverter:
             ik_nodes_for_runtime.add(node)
             disconnected += self._disconnect_node_output_connections(node, ("outputRotate",))
         if disconnected:
-            self.logger.info(f"runtime bake 用に {disconnected} 本のlive rig出力接続を解除しました")
+            self.logger.info(f"Disconnected {disconnected} live rig output connections for runtime bake")
 
         constraints = cmds.ls("*.mmd_grant_constraint", objectsOnly=True) or []
         disabled = 0
@@ -1743,7 +1743,7 @@ class VmdConverter:
                 self.logger.debug(f"failed to disable MMD grant constraint {constraint}: {e}")
 
         if disabled:
-            self.logger.info(f"runtime bake 用に {disabled} 個のMMD付与constraintを無効化しました")
+            self.logger.info(f"Disabled {disabled} MMD append constraints for runtime bake")
 
         ik_disabled = 0
         for node in ik_nodes_for_runtime:
@@ -1756,7 +1756,7 @@ class VmdConverter:
                 self.logger.debug(f"failed to disable mmdCcdIk solver {node}: {e}")
 
         if ik_disabled:
-            self.logger.info(f"runtime bake 用に {ik_disabled} 個のmmdCcdIk solverをOFFにしました")
+            self.logger.info(f"Turned off {ik_disabled} mmdCcdIk solvers for runtime bake")
 
     def _has_live_mmd_rig_for_runtime_target(self) -> bool:
         """現在の変換対象にlive MMD rig出力が接続されているかを返す。
@@ -1841,7 +1841,7 @@ class VmdConverter:
                 self.logger.debug(f"failed to restore bind pose for runtime bake {joint}: {e}")
 
         if restored:
-            self.logger.info(f"runtime bake 用に {restored} 個のjointをbind姿勢へ戻しました")
+            self.logger.info(f"Restored {restored} joints to bind pose for runtime bake")
 
     def _runtime_bake_mapped_joint_names(self) -> set[str]:
         joints: set[str] = set()
@@ -1927,7 +1927,7 @@ class VmdConverter:
         これにより mmd-anim の world_matrices (PMXボーン順) を Maya ジョイントに
         正しく対応づけられる。
         """
-        self.logger.info("名前マッピングを構築しています")
+        self.logger.info("Building name mapping")
 
         self.bone_name_to_index: Dict[str, int] = {}
         self.bone_index_to_joint: Dict[int, str] = {}
@@ -1956,15 +1956,15 @@ class VmdConverter:
                         except Exception:
                             pass
 
-        self.logger.info(f"{len(self.bone_name_mapping)}個のボーンマッピングを構築しました "
-                         f"(index対応: {len(self.bone_index_to_joint)}個)")
+        self.logger.info(f"Built {len(self.bone_name_mapping)} bone mappings "
+                         f"(index mappings: {len(self.bone_index_to_joint)})")
 
         # モーフ名マッピングの構築 (for accurate runtime morph bake)
         self._build_morph_mappings()  # 元のメソッドは namespace 引数を取らない
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
-        self.logger.info("ボーンの初期位置を記録しています")
+        self.logger.info("Recording initial bone positions")
 
         for vmd_bone_name, maya_joint in self.bone_name_mapping.items():
             try:
@@ -1972,7 +1972,7 @@ class VmdConverter:
                 translate = cmds.getAttr(f"{maya_joint}.translate")[0]
                 self._bone_bind_poses[vmd_bone_name] = translate
             except Exception as e:
-                self.logger.warning(f"{vmd_bone_name}のバインドポーズ取得エラー: {str(e)}")
+                self.logger.warning(f"Failed to get bind pose for {vmd_bone_name}: {str(e)}")
 
     def _setup_timeline(self, vmd_data: VmdData):
         """タイムラインの設定
@@ -1998,7 +1998,7 @@ class VmdConverter:
         if max_frame > 0:
             # タイムラインの範囲を設定
             cmds.playbackOptions(min=0, max=max_frame, animationStartTime=0, animationEndTime=max_frame)
-            self.logger.info(f"タイムライン範囲を設定: 0 - {max_frame}")
+            self.logger.info(f"Set timeline range: 0 - {max_frame}")
 
     def _convert_bone_animation(self, bone_frames: List) -> bool:
         """ボーンアニメーションを変換
@@ -2047,11 +2047,11 @@ class VmdConverter:
                     success_count += 1
 
                 except Exception as e:
-                    self.logger.error(f"ボーン '{vmd_bone_name}' のアニメーション設定中にエラー: {str(e)}")
+                    self.logger.error(f"Error setting animation for bone '{vmd_bone_name}': {str(e)}")
                     self._failed_bones.add(vmd_bone_name)
             else:
                 if vmd_bone_name not in self._failed_bones:
-                    self.logger.info(f"ボーン '{vmd_bone_name}' が見つかりません")
+                    self.logger.info(f"Bone '{vmd_bone_name}' not found")
                     self._failed_bones.add(vmd_bone_name)
 
         # アニメーションレイヤーにジョイントを追加
@@ -2070,7 +2070,7 @@ class VmdConverter:
             ]
             self._add_objects_to_layer(layer_joints)
 
-        self.logger.info(f"{success_count}/{total_count}個のボーンアニメーションを変換しました")
+        self.logger.info(f"Converted {success_count}/{total_count} bone animations")
         return success_count > 0
 
     @staticmethod
@@ -2181,11 +2181,11 @@ class VmdConverter:
                     cmds.setKeyframe(node, attribute="enabled", time=frame_number, value=int(value))
                     keyed += 1
             if keyed:
-                self.logger.info(f"mmdCcdIk.enabled に VMD IK 状態を {keyed} keys 適用しました")
+                self.logger.info(f"Applied {keyed} keys of VMD IK state to mmdCcdIk.enabled")
             return
 
         if default_nodes:
-            self.logger.info(f"VMD IK 状態が無いため active mmdCcdIk.enabled を default ON にしました: {len(default_nodes)} nodes")
+            self.logger.info(f"No VMD IK state found; set active mmdCcdIk.enabled default ON: {len(default_nodes)} nodes")
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""
@@ -2335,7 +2335,7 @@ class VmdConverter:
                     convert="quaternionSlerp",
                 )
             except Exception as e:
-                self.logger.warning(f"{joint}へのQuaternion補間適用に失敗: {str(e)}")
+                self.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
 
     def _get_joint_orient_cache(self, joint_name):
         """joint の jointOrient quaternion と rotateOrder をキャッシュ付きで取得する。"""
@@ -2360,8 +2360,8 @@ class VmdConverter:
         rotate_axis = cmds.getAttr(f"{joint_name}.rotateAxis")[0]
         if any(abs(v) > 1e-8 for v in rotate_axis):
             self.logger.warning(
-                f"{joint_name} の rotateAxis が非ゼロです ({rotate_axis})。"
-                "レガシーパスでは rotateAxis 未対応のため回転精度が低下します"
+                f"{joint_name} has non-zero rotateAxis ({rotate_axis})."
+                "Legacy path does not support rotateAxis; rotation accuracy may be reduced"
             )
 
         result = (q_jo, rotate_order)
@@ -2599,7 +2599,7 @@ class VmdConverter:
 
             if length < 1e-10:
                 self.logger.warning(
-                    f"frame {frame_number}: position がゼロベクトルのため rotation key をスキップします"
+                    f"frame {frame_number}: position is zero vector; skipping rotation key"
                 )
                 continue
 
@@ -2822,7 +2822,7 @@ class VmdConverter:
         if fps in fps_mapping:
             # 定義済みのタイムユニットを使用
             cmds.currentUnit(time=fps_mapping[fps])
-            self.logger.info(f"シーンFPSを{fps} ({fps_mapping[fps]})に設定しました")
+            self.logger.info(f"Set scene FPS to {fps} ({fps_mapping[fps]})")
         else:
-            self.logger.warning(f"指定されたFPS {fps} はサポートされていません。デフォルトの30.0 FPSを使用します")
+            self.logger.warning(f"Specified FPS {fps} is not supported. Using default 30.0 FPS")
             cmds.currentUnit(time="ntsc")  # デフォルトは30fpsのNTSC

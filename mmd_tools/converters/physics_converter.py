@@ -136,7 +136,7 @@ class PhysicsConverter:
 
         self._bullet_available: Optional[bool] = None
 
-        self.logger.info("PhysicsConverter を初期化しました")
+        self.logger.info("Initialized PhysicsConverter")
 
     # ------------------------------------------------------------------
     # 公開エントリポイント
@@ -147,10 +147,10 @@ class PhysicsConverter:
         PMD 物理データを変換。Bullet 優先、不可なら Nucleus fallback。
         Returns: (rigid_body_nodes, constraint_nodes)
         """
-        self.logger.info("PMD 物理データの変換を開始します")
+        self.logger.info("Starting PMD physics data conversion")
         if self._try_load_bullet():
             return self._convert_pmd_physics_bullet(pmd_data, bone_joints, root_group)
-        self.logger.warning("Bullet プラグインが利用できません。Nucleus/nCloth fallback を使用します")
+        self.logger.warning("Bullet plugin is unavailable. Using Nucleus/nCloth fallback")
         return self._convert_pmd_physics_nucleus(pmd_data, bone_joints, root_group)
 
     def convert_pmx_physics(self, pmx_data, bone_joints: Dict[str, str], root_group: str) -> Tuple[List[str], List[str]]:
@@ -158,10 +158,10 @@ class PhysicsConverter:
         PMX 物理データを変換。Bullet 優先、不可なら Nucleus fallback。
         Returns: (rigid_body_nodes, constraint_nodes)
         """
-        self.logger.info("PMX 物理データの変換を開始します")
+        self.logger.info("Starting PMX physics data conversion")
         if self._try_load_bullet():
             return self._convert_pmx_physics_bullet(pmx_data, bone_joints, root_group)
-        self.logger.warning("Bullet プラグインが利用できません。Nucleus/nCloth fallback を使用します")
+        self.logger.warning("Bullet plugin is unavailable. Using Nucleus/nCloth fallback")
         return self._convert_pmx_physics_nucleus(pmx_data, bone_joints, root_group)
 
     def collect_physics_from_scene_for_export(
@@ -214,18 +214,18 @@ class PhysicsConverter:
                 shapes = cmds.listRelatives(rb_transform, shapes=True, type="bulletRigidBodyShape", fullPath=True) or []
                 if not shapes:
                     self.logger.warning(
-                        f"skip rigid body '{rb_transform}': child bulletRigidBodyShape が見つかりません"
+                        f"skip rigid body '{rb_transform}': child bulletRigidBodyShape not found"
                     )
                     continue
 
                 shape = shapes[0]
                 raw_index = _safe_get_attr(f"{rb_transform}.mmd_rigid_body_index", None)
                 if raw_index is None:
-                    self.logger.warning(f"skip rigid body '{rb_transform}': mmd_rigid_body_index が取得できません")
+                    self.logger.warning(f"skip rigid body '{rb_transform}': mmd_rigid_body_index is unavailable")
                     continue
                 rb_index = _safe_to_int(raw_index, -1)
                 if rb_index < 0:
-                    self.logger.warning(f"skip rigid body '{rb_transform}': mmd_rigid_body_index が無効 ({raw_index})")
+                    self.logger.warning(f"skip rigid body '{rb_transform}': mmd_rigid_body_index is invalid ({raw_index})")
                     continue
 
                 rb_name = _safe_get_attr(f"{rb_transform}.mmd_rigid_body_name", None)
@@ -306,7 +306,7 @@ class PhysicsConverter:
                 ) or []
                 if not shapes:
                     self.logger.warning(
-                        f"skip joint '{joint_transform}': child bulletRigidBodyConstraintShape が見つかりません"
+                        f"skip joint '{joint_transform}': child bulletRigidBodyConstraintShape not found"
                     )
                     continue
 
@@ -472,7 +472,7 @@ class PhysicsConverter:
                     self._safe_log_error("PMD joint 作成エラー", joint, e)
 
         self.logger.info(
-            f"PMD Bullet 物理変換完了: Rb={len(self.created_bullet_rigid_bodies)} "
+            f"PMD Bullet physics conversion complete: Rb={len(self.created_bullet_rigid_bodies)} "
             f"Constraint={len(self.created_bullet_constraints)}"
         )
         return (self.created_bullet_rigid_bodies, self.created_bullet_constraints)
@@ -511,7 +511,7 @@ class PhysicsConverter:
                     self._safe_log_error("PMX joint 作成エラー", joint, e)
 
         self.logger.info(
-            f"PMX Bullet 物理変換完了: Rb={len(self.created_bullet_rigid_bodies)} "
+            f"PMX Bullet physics conversion complete: Rb={len(self.created_bullet_rigid_bodies)} "
             f"Constraint={len(self.created_bullet_constraints)}"
         )
         return (self.created_bullet_rigid_bodies, self.created_bullet_constraints)
@@ -579,7 +579,7 @@ class PhysicsConverter:
                     max_val = float(queried_max[0])
         except Exception as exc:
             # 範囲取得に失敗してもクランプ無しで続行する
-            self.logger.debug(f"'{plug}' の有効範囲取得に失敗しました: {exc}")
+            self.logger.debug(f"Failed to get valid range for '{plug}': {exc}")
 
         clamped = _clamp_to_range(clamped, min_val, max_val)
         cmds.setAttr(plug, clamped)
@@ -702,11 +702,11 @@ class PhysicsConverter:
             constraint = cmds.parentConstraint(joint, transform, maintainOffset=True)
             if constraint:
                 self.logger.debug(
-                    f"physics_mode=0 Bullet 剛体 '{transform}' を関連ボーン '{joint}' に追従接続しました"
+                    f"Connected physics_mode=0 Bullet rigid body '{transform}' to follow related bone '{joint}'"
                 )
         except Exception as exc:
             self.logger.warning(
-                f"physics_mode=0 Bullet 剛体 '{transform}' の関連ボーン追従接続をスキップ: {exc}"
+                f"Skipped related-bone follow connection for physics_mode=0 Bullet rigid body '{transform}': {exc}"
             )
 
     def _get_bullet_solver(self) -> Optional[str]:
@@ -719,7 +719,7 @@ class PhysicsConverter:
             self.bullet_solver = BulletUtils.getSolver()
             return self.bullet_solver
         except Exception as exc:
-            self.logger.warning(f"Bullet solver の取得に失敗しました: {exc}")
+            self.logger.warning(f"Failed to get Bullet solver: {exc}")
             return None
 
     def _connect_attr_if_possible(self, source: str, destination: str, next_available: bool = False) -> None:
@@ -734,7 +734,7 @@ class PhysicsConverter:
                 kwargs = {"nextAvailable": True}
             cmds.connectAttr(source, destination, **kwargs)
         except Exception as exc:
-            self.logger.debug(f"Bullet attr 接続をスキップ: {source} -> {destination}: {exc}")
+            self.logger.debug(f"Skipping Bullet attr connection: {source} -> {destination}: {exc}")
 
     def _connect_bullet_rigid_body(self, transform: str, shape: str) -> None:
         """bulletRigidBodyShape を solver と transform に接続する。"""
@@ -784,7 +784,7 @@ class PhysicsConverter:
             idx_a = getattr(joint, "rigid_body_index_a", -1)
             idx_b = getattr(joint, "rigid_body_index_b", -1)
             if idx_a < 0 or idx_b < 0 or idx_a >= len(rigid_bodies) or idx_b >= len(rigid_bodies):
-                self.logger.debug(f"PMD joint '{getattr(joint, 'name', '?')}' の rigid body index が無効です。スキップ")
+                self.logger.debug(f"PMD joint '{getattr(joint, 'name', '?')}' has an invalid rigid body index. Skipping")
                 return None
 
             # PMD 回転リミットは degree 単位
@@ -819,7 +819,7 @@ class PhysicsConverter:
             idx_a = getattr(joint, "rigid_body_a_index", -1)
             idx_b = getattr(joint, "rigid_body_b_index", -1)
             if idx_a < 0 or idx_b < 0 or idx_a >= len(rigid_bodies) or idx_b >= len(rigid_bodies):
-                self.logger.debug(f"PMX joint '{getattr(joint, 'name', '?')}' の rigid body index が無効です。スキップ")
+                self.logger.debug(f"PMX joint '{getattr(joint, 'name', '?')}' has an invalid rigid body index. Skipping")
                 return None
 
             pmx_joint_type = getattr(joint, "joint_type", 0)
@@ -901,11 +901,11 @@ class PhysicsConverter:
         if rb_shape_a and cmds.objExists(rb_shape_a):
             self._connect_attr_if_possible(f"{rb_shape_a}.outRigidBodyData", f"{shape}.rigidBodyA")
         else:
-            self.logger.warning(f"Bullet constraint '{jname}': rigidBodyA の接続先が見つかりません")
+            self.logger.warning(f"Bullet constraint '{jname}': rigidBodyA connection target not found")
         if rb_shape_b and cmds.objExists(rb_shape_b):
             self._connect_attr_if_possible(f"{rb_shape_b}.outRigidBodyData", f"{shape}.rigidBodyB")
         else:
-            self.logger.warning(f"Bullet constraint '{jname}': rigidBodyB の接続先が見つかりません")
+            self.logger.warning(f"Bullet constraint '{jname}': rigidBodyB connection target not found")
 
         solver = self._get_bullet_solver()
         if solver:
@@ -1001,13 +1001,13 @@ class PhysicsConverter:
             elif group_type == PHYSICS_TYPE_RIGID:
                 self._create_rigid_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
             else:
-                self.logger.debug(f"物理タイプ '{group_type}' はスキップされました")
+                self.logger.debug(f"Physics type '{group_type}' was skipped")
 
         if hasattr(data, "joints") and data.joints:
             self._create_constraints(data.joints, data.rigid_bodies, constraints_group)
 
         self.logger.info(
-            f"Nucleus 物理変換完了: nCloth={len(self.created_ncloth_nodes)}, "
+            f"Nucleus physics conversion complete: nCloth={len(self.created_ncloth_nodes)}, "
             f"nRigid={len(self.created_nrigid_nodes)}, "
             f"Constraints={len(self.created_constraint_nodes)}"
         )
@@ -1021,7 +1021,7 @@ class PhysicsConverter:
         if self.nucleus_solver and maya_utils.object_exists(self.nucleus_solver):
             return self.nucleus_solver
         self.nucleus_solver = maya_utils.find_or_create_nucleus_solver("mmd_nucleus")
-        self.logger.info(f"Nucleus ソルバー: {self.nucleus_solver}")
+        self.logger.info(f"Nucleus solver: {self.nucleus_solver}")
         self._configure_nucleus_solver()
         return self.nucleus_solver
 
@@ -1041,7 +1041,7 @@ class PhysicsConverter:
         maya_utils.set_attribute(self.nucleus_solver, "timeScale", self.settings.get("time_scale", 1.0), "double")
         maya_utils.set_attribute(self.nucleus_solver, "gravity", 9.8, "double")
         maya_utils.set_attribute(self.nucleus_solver, "gravityDirection", [0, -1, 0], "double3")
-        self.logger.debug(f"Nucleus ソルバー設定完了: quality={quality}")
+        self.logger.debug(f"Nucleus solver setup complete: quality={quality}")
 
     # ------------------------------------------------------------------
     # 剛体分析 / 種別判定 (既存)
@@ -1088,7 +1088,7 @@ class PhysicsConverter:
                         self.created_ncloth_nodes.append(hair_system)
                         maya_utils.parent_objects(hair_system, rigid_bodies_group)
             except Exception as e:
-                self.logger.error(f"髪物理作成エラー: {rb.name} - {e}")
+                self.logger.error(f"Hair physics creation error: {rb.name} - {e}")
 
     def _create_cloth_physics(self, rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group):
         for rb in rigid_bodies:
@@ -1100,7 +1100,7 @@ class PhysicsConverter:
                         self.created_ncloth_nodes.append(ncloth)
                         maya_utils.parent_objects(ncloth, rigid_bodies_group)
             except Exception as e:
-                self.logger.error(f"布物理作成エラー: {rb.name} - {e}")
+                self.logger.error(f"Cloth physics creation error: {rb.name} - {e}")
 
     def _create_rigid_physics(self, rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group):
         for rb in rigid_bodies:
@@ -1112,10 +1112,10 @@ class PhysicsConverter:
                         self.created_nrigid_nodes.append(nrigid)
                         maya_utils.parent_objects(nrigid, rigid_bodies_group)
             except Exception as e:
-                self.logger.error(f"剛体物理作成エラー: {rb.name} - {e}")
+                self.logger.error(f"Rigid body physics creation error: {rb.name} - {e}")
 
     def _create_constraints(self, joints, rigid_bodies, constraints_group):
-        self.logger.debug(f"コンストレイン作成: {len(joints)} joint(s)")
+        self.logger.debug(f"Creating constraints: {len(joints)} joint(s)")
 
     def _map_physics_parameters(self, mmd_params: Dict) -> Dict:
         ncloth_params = {}
@@ -1184,7 +1184,7 @@ class PhysicsConverter:
             end_pos = [pos[0], pos[1] - 5.0, pos[2]]
             return maya_utils.create_dynamic_curve([pos, end_pos], name=f"{rigid_body.name}_curve")
         except Exception as e:
-            self.logger.error(f"カーブ作成エラー: {e}")
+            self.logger.error(f"Curve creation error: {e}")
             return None
 
     def _create_nhair_system(self, curve: str, rigid_body) -> Optional[str]:
@@ -1204,7 +1204,7 @@ class PhysicsConverter:
                         maya_utils.set_attribute(hair_system, attr, value, attr_type)
                 return hair_system
         except Exception as e:
-            self.logger.error(f"nHair 作成エラー: {e}")
+            self.logger.error(f"nHair creation error: {e}")
             return None
 
     def _create_cloth_proxy(self, rigid_body) -> Optional[str]:
@@ -1218,7 +1218,7 @@ class PhysicsConverter:
             cmds.xform(proxy, ws=True, t=maya_pos)
             return proxy
         except Exception as e:
-            self.logger.error(f"布プロキシ作成エラー: {e}")
+            self.logger.error(f"Cloth proxy creation error: {e}")
             return None
 
     def _create_ncloth(self, mesh: str, rigid_body) -> Optional[str]:
@@ -1238,7 +1238,7 @@ class PhysicsConverter:
                         maya_utils.set_attribute(ncloth_shape, attr, value, attr_type)
                 return ncloth_shape
         except Exception as e:
-            self.logger.error(f"nCloth 作成エラー: {e}")
+            self.logger.error(f"nCloth creation error: {e}")
             return None
 
     def _create_collision_object(self, rigid_body) -> Optional[str]:
@@ -1253,7 +1253,7 @@ class PhysicsConverter:
                 cmds.xform(obj, ws=True, ro=maya_rot)
             return obj
         except Exception as e:
-            self.logger.error(f"コリジョンオブジェクト作成エラー: {e}")
+            self.logger.error(f"Collision object creation error: {e}")
             return None
 
     def _create_nrigid(self, obj: str, rigid_body) -> Optional[str]:
@@ -1267,5 +1267,5 @@ class PhysicsConverter:
                 maya_utils.set_attribute(nrigid, "bounce", rigid_body.elasticity, "double")
                 return nrigid
         except Exception as e:
-            self.logger.error(f"nRigid 作成エラー: {e}")
+            self.logger.error(f"nRigid creation error: {e}")
             return None

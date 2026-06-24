@@ -27,18 +27,18 @@ def parse_mmd_file(file_path):
         FileNotFoundError: ファイルが見つからない場合。
         MMDParseException: ファイルの解析に失敗した場合、またはサポートされていないファイル形式の場合。
     """
-    logger.info(f"MMDファイルの解析を開始: {file_path}")
+    logger.info(f"Starting MMD file parsing: {file_path}")
 
     if not os.path.exists(file_path):
-        logger.error(f"MMDファイルが見つかりません: {file_path}")
+        logger.error(f"MMD file not found: {file_path}")
         raise FileNotFoundError(f"MMD file not found: {file_path}")
 
     # VPDファイルの拡張子チェック
     if file_path.lower().endswith(".vpd"):
-        logger.info("VPDファイルとして解析を開始")
+        logger.info("Starting parse as VPD file")
         parser = VpdData()
         parser.parse_file(file_path)
-        logger.info("VPDファイルの解析が完了しました")
+        logger.info("VPD file parsing completed")
         return parser
 
     # ファイルの最初の数バイトを読み込み、マジックナンバーでファイルタイプを判別する。
@@ -49,27 +49,27 @@ def parse_mmd_file(file_path):
         magic_bytes = f.read(4)  # Read enough bytes to cover PMD/PMX magic
         f.seek(0)  # Reset file pointer
 
-        logger.debug(f"マジックバイト: {magic_bytes}")
+        logger.debug(f"Magic bytes: {magic_bytes}")
 
         if magic_bytes.startswith(b"Pmd"):
-            logger.info("PMDファイルとして解析を開始")
+            logger.info("Starting parse as PMD file")
             parser = PmdData()
             parser.parse_file(file_path)
-            logger.info("PMDファイルの解析が完了しました")
+            logger.info("PMD file parsing completed")
             return parser
         elif magic_bytes.startswith(b"PMX"):
-            logger.info("PMXファイルとして解析を開始")
+            logger.info("Starting parse as PMX file")
             parser = PmxData()
             parser.parse_file(file_path)
-            logger.info("PMXファイルの解析が完了しました")
+            logger.info("PMX file parsing completed")
             return parser
         elif f.read(30).startswith(b"Vocaloid Motion Data"):  # VMD magic is longer
             f.seek(0)  # Reset file pointer again
-            logger.info("VMDファイルとして解析を開始")
+            logger.info("Starting parse as VMD file")
             parser = VmdData()
             parser.parse_file(file_path)
-            logger.info("VMDファイルの解析が完了しました")
+            logger.info("VMD file parsing completed")
             return parser
         else:
-            logger.error(f"サポートされていないMMDファイル形式: {file_path}")
+            logger.error(f"Unsupported MMD file format: {file_path}")
             raise MMDParseException(f"Unsupported MMD file format: {file_path}")

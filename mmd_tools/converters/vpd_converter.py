@@ -38,7 +38,7 @@ class VpdConverter:
         if options is None:
             options = {}
 
-        logger.info("VPDポーズの変換を開始")
+        logger.info("Starting VPD pose conversion")
 
         # ボーン名マッピングを構築
         self._build_name_mappings(target_namespace)
@@ -46,7 +46,7 @@ class VpdConverter:
         # ジョイントのリストを取得
         joints = self._get_target_joints(target_namespace)
         if not joints:
-            logger.warning("ターゲットジョイントが見つかりません")
+            logger.warning("Target joint not found")
             return False
 
         # オプションからレイヤー設定を取得
@@ -73,7 +73,7 @@ class VpdConverter:
         if self.use_animation_layers and self.anim_layer and applied_joints and create_keyframe:
             self._add_objects_to_layer(applied_joints)
 
-        logger.info(f"VPDポーズの変換が完了: {applied_count}/{len(vpd_data.bone_poses)}個のボーンを適用")
+        logger.info(f"VPD pose conversion completed: applied {applied_count}/{len(vpd_data.bone_poses)} bones")
 
         return applied_count > 0
 
@@ -100,7 +100,7 @@ class VpdConverter:
         Args:
             target_namespace (str): ターゲットのネームスペース
         """
-        logger.debug("ボーン名マッピングを構築中")
+        logger.debug("Building bone name mapping")
         self.bone_name_mapping = {}
 
         # ジョイントのリストを取得
@@ -113,9 +113,9 @@ class VpdConverter:
                 original_name = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}")
                 if original_name:
                     self.bone_name_mapping[original_name] = joint
-                    logger.debug(f"ボーンマッピング: {original_name} -> {joint}")
+                    logger.debug(f"Bone mapping: {original_name} -> {joint}")
 
-        logger.info(f"{len(self.bone_name_mapping)}個のボーンマッピングを構築しました")
+        logger.info(f"Built {len(self.bone_name_mapping)} bone mappings")
 
     def _find_maya_joint(self, mmd_bone_name, joints, namespace=None):
         """MMDボーン名に対応するMayaジョイントを探す
@@ -157,7 +157,7 @@ class VpdConverter:
         maya_joint = self._find_maya_joint(bone_pose.bone_name, joints, namespace)
 
         if not maya_joint:
-            logger.debug(f"ボーン '{bone_pose.bone_name}' に対応するジョイントが見つかりません")
+            logger.debug(f"No joint found for bone '{bone_pose.bone_name}'")
             return None
 
         try:
@@ -211,11 +211,11 @@ class VpdConverter:
                         animLayer=self.anim_layer if self.anim_layer else None,
                     )
 
-            logger.debug(f"ボーン '{bone_pose.bone_name}' を '{maya_joint}' に適用")
+            logger.debug(f"Applying bone '{bone_pose.bone_name}' to '{maya_joint}'")
             return maya_joint
 
         except Exception as e:
-            logger.warning(f"ボーン '{bone_pose.bone_name}' の適用に失敗: {e}")
+            logger.warning(f"Failed to apply bone '{bone_pose.bone_name}': {e}")
             return None
 
     def _is_movable_bone(self, bone_name):
@@ -284,11 +284,11 @@ class VpdConverter:
         if layer_name in existing_layers:
             # 既存のレイヤーを使用
             self.anim_layer = layer_name
-            logger.info(f"既存のアニメーションレイヤーを使用: {layer_name}")
+            logger.info(f"Using existing animation layer: {layer_name}")
         else:
             # 新しいレイヤーを作成
             self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
-            logger.info(f"新しいアニメーションレイヤーを作成: {layer_name}")
+            logger.info(f"Created new animation layer: {layer_name}")
 
     def _add_objects_to_layer(self, objects):
         """オブジェクトをアニメーションレイヤーに追加

@@ -763,7 +763,7 @@ def _set_string_plug(plug, object_name, attr_name, value):
         except Exception:
             return
     except Exception as exc:
-        logger.debug(f"MPlug.setString による文字列設定に失敗、cmds.setAttr にフォールバックします '{attr_name}': {exc}")
+        logger.debug(f"MPlug.setString failed to set string; falling back to cmds.setAttr for '{attr_name}': {exc}")
     cmds.setAttr(f"{object_name}.{attr_name}", text, type="string")
 
 
@@ -1829,12 +1829,12 @@ def setup_mmd_color_management(
             current = cmds.colorManagementPrefs(q=True, renderingSpaceName=True)
             if current != rendering_space:
                 cmds.colorManagementPrefs(e=True, renderingSpaceName=rendering_space)
-                logger.info("Rendering space を MMD 向けに設定: %s (旧: %s)", rendering_space, current)
+                logger.info("Set rendering space for MMD: %s (previous: %s)", rendering_space, current)
             changed = True
         else:
-            logger.debug("Rendering space '%s' は利用不可。スキップ", rendering_space)
+            logger.debug("Rendering space '%s' is unavailable. Skipping", rendering_space)
     except Exception:
-        logger.debug("Rendering space の設定に失敗", exc_info=True)
+        logger.debug("Failed to set rendering space", exc_info=True)
 
     try:
         transforms = cmds.colorManagementPrefs(q=True, viewTransformNames=True) or []
@@ -1842,12 +1842,12 @@ def setup_mmd_color_management(
             current = cmds.colorManagementPrefs(q=True, viewTransformName=True)
             if current != view_transform:
                 cmds.colorManagementPrefs(e=True, viewTransformName=view_transform)
-                logger.info("View Transform を MMD 向けに設定: %s (旧: %s)", view_transform, current)
+                logger.info("Set View Transform for MMD: %s (previous: %s)", view_transform, current)
             changed = True
         else:
-            logger.debug("View Transform '%s' は利用不可。スキップ", view_transform)
+            logger.debug("View Transform '%s' is unavailable. Skipping", view_transform)
     except Exception:
-        logger.debug("View Transform の設定に失敗", exc_info=True)
+        logger.debug("Failed to set View Transform", exc_info=True)
 
     return changed
 
@@ -1873,13 +1873,13 @@ def setup_mmd_transparency(algorithm=TRANSPARENCY_ALGORITHM_DEPTH_PEELING):
         node = "hardwareRenderingGlobals"
         attr = f"{node}.transparencyAlgorithm"
         if not cmds.objExists(node) or not cmds.attributeQuery("transparencyAlgorithm", node=node, exists=True):
-            logger.debug("transparencyAlgorithm 属性が利用不可。スキップ")
+            logger.debug("transparencyAlgorithm attribute is unavailable. Skipping")
             return False
         current = cmds.getAttr(attr)
         if current != algorithm:
             cmds.setAttr(attr, algorithm)
-            logger.info("Transparency algorithm を MMD 向けに設定: %s (旧: %s)", algorithm, current)
+            logger.info("Set transparency algorithm for MMD: %s (previous: %s)", algorithm, current)
         return True
     except Exception:
-        logger.debug("Transparency algorithm の設定に失敗", exc_info=True)
+        logger.debug("Failed to set transparency algorithm", exc_info=True)
         return False

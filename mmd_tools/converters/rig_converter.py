@@ -49,7 +49,7 @@ class RigConverter:
             dict: セットアップ結果の情報
         """
 
-        self.logger.info("PMXリグセットアップを開始")
+        self.logger.info("Starting PMX rig setup")
         result = {
             "ik_handles": [],
             "semi_standard_bones": {},
@@ -69,7 +69,7 @@ class RigConverter:
         if native_rig is not None:
             result["native_rig"] = native_rig
             self.logger.info(
-                f"native rig primitives で構築: "
+                f"Built with native rig primitives: "
                 f"IK {len(native_rig.ik_chains)} chains, "
                 f"append {len(native_rig.append_solvers)} solvers"
             )
@@ -77,7 +77,7 @@ class RigConverter:
             # Python constraint フォールバック
             result["constraints"] = self._setup_grant_bones(pmx_data.bones, maya_joints)
             if result["constraints"]:
-                self.logger.info(f"{len(result['constraints'])}個の付与関係を設定しました (Python constraint)")
+                self.logger.info(f"Configured {len(result['constraints'])} append relationships (Python constraint)")
 
         return result
 
@@ -174,9 +174,9 @@ class RigConverter:
         # IKチェーンを抽出してMayaのIKハンドルを作成
         ik_chains = self._extract_ik_chains(pmd_data.bones, bone_map, pmd_data.ik_data)
         if ik_chains:
-            self.logger.info(f"{len(ik_chains)}個のIKチェーンを検出しました")
+            self.logger.info(f"Detected {len(ik_chains)} IK chains")
             result["ik_handles"] = self._create_maya_ik_handles(ik_chains)
-            self.logger.info(f"{len(result['ik_handles'])}個のIKハンドルを作成しました")
+            self.logger.info(f"Created {len(result['ik_handles'])} IK handles")
 
         # 元のボーン名を保存（日本語名での重複チェック用）
         for i, bone in enumerate(pmd_data.bones):
@@ -186,7 +186,7 @@ class RigConverter:
         if settings.get("import.rig.add_semi_standard_bones", False):
             result["semi_standard_bones"] = self._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
             if result["semi_standard_bones"]:
-                self.logger.info(f"{len(result['semi_standard_bones'])}個の準標準ボーンを追加しました")
+                self.logger.info(f"Added {len(result['semi_standard_bones'])} semi-standard bones")
 
         return result
 
@@ -282,7 +282,7 @@ class RigConverter:
         for chain in ik_chains:
             # IKチェーンの最初と最後のジョイントを特定
             if not chain["ik_links"] or not chain["target_bone"]:
-                self.logger.warning(f"IKチェーン '{chain['ik_bone']}' にリンクまたはターゲットがありません")
+                self.logger.warning(f"IK chain '{chain['ik_bone']}' has no links or target")
                 continue
 
             # IKリンクの最後（開始ジョイント）から最初（終了ジョイント）の順序
@@ -290,7 +290,7 @@ class RigConverter:
             end_joint = chain["target_bone"]
 
             if not start_joint or not end_joint:
-                self.logger.warning(f"IKチェーン '{chain['ik_bone']}' の開始または終了ジョイントが見つかりません")
+                self.logger.warning(f"IK chain '{chain['ik_bone']}' start or end joint not found")
                 continue
 
             try:
@@ -321,10 +321,10 @@ class RigConverter:
                 }
 
                 ik_handles.append(ik_handle_info)
-                self.logger.info(f"IKハンドル '{ik_handle}' を作成しました（{start_joint} → {end_joint}）")
+                self.logger.info(f"Created IK handle '{ik_handle}' ({start_joint} -> {end_joint})")
 
             except Exception as e:
-                self.logger.error(f"IKハンドルの作成に失敗しました '{chain['ik_bone']}': {e}")
+                self.logger.error(f"Failed to create IK handle '{chain['ik_bone']}': {e}")
 
         return ik_handles
 
@@ -363,7 +363,7 @@ class RigConverter:
 
             # PoleTargetを太もも（start_joint）の子として配置
             maya_utils.parent_objects(pole_target, start_joint)
-            self.logger.debug(f"PoleTargetを太もも '{start_joint}' の子として配置")
+            self.logger.debug(f"Placed PoleTarget under thigh '{start_joint}'")
 
             # PoleTargetの初期位置を計算
             # 太ももと足首の位置を取得
@@ -388,11 +388,11 @@ class RigConverter:
             maya_utils.set_attribute(pole_target, "localScaleY", 0.5, "double")
             maya_utils.set_attribute(pole_target, "localScaleZ", 0.5, "double")
 
-            self.logger.info(f"PoleTarget '{pole_target}' を作成しました（{chain['ik_bone']}用、方法: {method_used}）")
+            self.logger.info(f"Created PoleTarget '{pole_target}' (for {chain['ik_bone']}, method: {method_used})")
             return pole_target
 
         except Exception as e:
-            self.logger.error(f"PoleTargetの作成に失敗しました '{chain['ik_bone']}': {e}")
+            self.logger.error(f"Failed to create PoleTarget '{chain['ik_bone']}': {e}")
             return None
 
     def _set_joint_limits(self, ik_links):
@@ -450,10 +450,10 @@ class RigConverter:
         if not existing_master:
             master = cmds.group(empty=True, name="master", parent=skeleton_group)
             semi_standard_bones["master"] = master
-            self.logger.info(f"全ての親ボーンを追加: {master}")
+            self.logger.info(f"Added master bone: {master}")
         else:
             master = existing_master
-            self.logger.info(f"既存の全ての親ボーンを使用: {existing_master}")
+            self.logger.info(f"Using existing master bone: {existing_master}")
 
         # スケルトングループ直下のルートジョイントを全ての親の子にする
         if "master" in semi_standard_bones or existing_master:
@@ -491,9 +491,9 @@ class RigConverter:
 
             # センターをグルーブの子にする
             maya_utils.parent_objects(center_joint, groove)
-            self.logger.info(f"グルーブボーンを追加: {groove}")
+            self.logger.info(f"Added groove bone: {groove}")
         elif existing_groove:
-            self.logger.info(f"既存のグルーブボーンを使用: {existing_groove}")
+            self.logger.info(f"Using existing groove bone: {existing_groove}")
 
         # 腰ボーン（下半身と足の間）
         # 既存の腰ボーンを日本語名でチェック
@@ -532,10 +532,10 @@ class RigConverter:
             if right_leg_joint:
                 maya_utils.parent_objects(right_leg_joint, waist)
 
-            self.logger.info(f"腰ボーンを追加: {waist}")
+            self.logger.info(f"Added waist bone: {waist}")
         elif existing_waist:
             # 既存の腰ボーンを使用（新規作成しないので辞書には追加しない）
-            self.logger.info(f"既存の腰ボーンを使用: {existing_waist}")
+            self.logger.info(f"Using existing waist bone: {existing_waist}")
 
         return semi_standard_bones
 
@@ -642,7 +642,7 @@ class RigConverter:
             # 投げるため、warning を出してこのボーンの付与をスキップする。
             grant_parent_index = getattr(bone, "grant_parent_bone_index", -1)
             if 0 <= grant_parent_index < len(maya_joints) and maya_joints[grant_parent_index] == joint:
-                self.logger.warning(f"付与親が自分自身を指しているため付与をスキップします: {joint}")
+                self.logger.warning(f"Append parent points to itself; skipping append: {joint}")
                 continue
 
             # 回転付与
@@ -686,9 +686,9 @@ class RigConverter:
                         self._mark_mmd_grant_constraint(constraint)
 
                     constraints.append(constraint)
-                    given_type = "ローカル付与" if is_local_given else "グローバル付与"
+                    given_type = "local append" if is_local_given else "global append"
                     self.logger.info(
-                        f"回転付与を設定 ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
+                        f"Configured rotation append ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
                     )
 
             # 移動付与
@@ -702,9 +702,9 @@ class RigConverter:
                     self._mark_mmd_grant_constraint(constraint)
 
                     constraints.append(constraint)
-                    given_type = "ローカル付与" if is_local_given else "グローバル付与"
+                    given_type = "local append" if is_local_given else "global append"
                     self.logger.info(
-                        f"移動付与を設定 ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
+                        f"Configured translation append ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
                     )
 
         return constraints
@@ -756,7 +756,7 @@ class RigConverter:
         if not maya_utils.object_exists(reference):
             reference = cmds.group(empty=True, name=reference)
             maya_utils.set_attribute(reference, "visibility", False, "bool")
-            self.logger.info(f"付与回転用の参照ノードを追加: {reference}")
+            self.logger.info(f"Added reference node for rotation append: {reference}")
 
         return reference
 
@@ -840,7 +840,7 @@ class RigConverter:
         # 循環依存がある場合は警告
         if len(sorted_nodes) < len(dependencies):
             remaining = set(dependencies.keys()) - set(sorted_nodes)
-            self.logger.warning(f"循環依存が検出されました: {remaining}")
+            self.logger.warning(f"Cyclic dependency detected: {remaining}")
             # 循環依存のあるノードも含める（元の順序を保持）
             for node in dependencies:
                 if node not in sorted_nodes:
@@ -996,10 +996,10 @@ class RigConverter:
                 nodes.append(node)
                 append_nodes_by_target[target_joint] = node
                 self.logger.info(
-                    f"mmdAppend ノード '{node}': {source_joint} → {target_joint} (ratio={ratio})"
+                    f"mmdAppend node '{node}': {source_joint} -> {target_joint} (ratio={ratio})"
                 )
             except Exception as e:
-                self.logger.error(f"mmdAppend ノード作成失敗 '{target_joint}': {e}")
+                self.logger.error(f"Failed to create mmdAppend node '{target_joint}': {e}")
 
         return nodes
 
@@ -1252,11 +1252,11 @@ class RigConverter:
 
                 nodes.append(node)
                 self.logger.info(
-                    f"mmdCcdIk ノード '{node}': controller={controller_joint}, "
+                    f"mmdCcdIk node '{node}': controller={controller_joint}, "
                     f"{len(links_for_json)} links"
                 )
             except Exception as e:
-                self.logger.error(f"mmdCcdIk ノード作成失敗 '{controller_joint}': {e}")
+                self.logger.error(f"Failed to create mmdCcdIk node '{controller_joint}': {e}")
 
         return nodes
 
@@ -1316,7 +1316,7 @@ class RigConverter:
             source_joint = maya_joints[source_idx]
 
             if target_joint == source_joint:
-                self.logger.warning(f"付与親が自分自身を指しているため付与をスキップします: {target_joint}")
+                self.logger.warning(f"Append parent points to itself; skipping append: {target_joint}")
                 continue
 
             offset_flag = not is_local
@@ -1353,7 +1353,7 @@ class RigConverter:
 
                 constraints.append(constraint)
                 self.logger.info(
-                    f"回転付与を設定 ({'ローカル' if is_local else 'グローバル'}付与): "
+                    f"Configured rotation append ({'local' if is_local else 'global'} append): "
                     f"{target_joint} <- {source_joint} (rate={ratio})"
                 )
 
@@ -1364,7 +1364,7 @@ class RigConverter:
                 self._mark_mmd_grant_constraint(constraint)
                 constraints.append(constraint)
                 self.logger.info(
-                    f"移動付与を設定 ({'ローカル' if is_local else 'グローバル'}付与): "
+                    f"Configured translation append ({'local' if is_local else 'global'} append): "
                     f"{target_joint} <- {source_joint} (rate={ratio})"
                 )
 
@@ -1429,7 +1429,7 @@ class RigConverter:
 
             if not maya_utils.object_exists(start_joint) or not maya_utils.object_exists(end_joint):
                 self.logger.warning(
-                    f"IKチェーン '{controller}' の開始または終了ジョイントが見つかりません"
+                    f"IK chain '{controller}' start or end joint not found"
                 )
                 continue
 
@@ -1455,9 +1455,9 @@ class RigConverter:
                     "end_joint": end_joint,
                     "links": links,
                 })
-                self.logger.info(f"IKハンドル '{ik_handle}' を作成しました（{start_joint} -> {end_joint}）")
+                self.logger.info(f"Created IK handle '{ik_handle}' ({start_joint} -> {end_joint})")
 
             except Exception as e:
-                self.logger.error(f"IKハンドルの作成に失敗しました '{controller}': {e}")
+                self.logger.error(f"Failed to create IK handle '{controller}': {e}")
 
         return ik_handles

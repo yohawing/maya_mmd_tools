@@ -411,7 +411,7 @@ class BoneConverter:
 
         # メッシュノードが存在しない場合はNoneを返す
         if not mesh_node or not cmds.objExists(mesh_node):
-            self.logger.warning(f"メッシュノード '{mesh_node}' が存在しません。スキンクラスターを作成しません。")
+            self.logger.warning(f"Mesh node '{mesh_node}' does not exist. Skin cluster will not be created.")
             return None
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
@@ -519,7 +519,7 @@ class BoneConverter:
             for joint_index, weight in weight_maps:
                 # ボーンインデックスの境界チェック
                 if joint_index >= len(maya_joints):
-                    self.logger.warning(f"無効なボーンインデックス {joint_index}, max={len(maya_joints) - 1}")
+                    self.logger.warning(f"Invalid bone index {joint_index}, max={len(maya_joints) - 1}")
                     continue
                 vertex_weights[joint_index] = weight
 
@@ -585,7 +585,7 @@ class BoneConverter:
                 warning_key = (bone1_index, bone2_index, max_joint_index)
                 if warning_key not in invalid_bone_indices:
                     self.logger.warning(
-                        "無効なボーンインデックス "
+                        "Invalid bone index "
                         f"bone1={bone1_index}, bone2={bone2_index}, max={max_joint_index}"
                     )
                     invalid_bone_indices.add(warning_key)
@@ -594,7 +594,7 @@ class BoneConverter:
 
         # vertexの要素が存在することをチェック
         if not weights:
-            self.logger.warning("頂点ウェイトが空です。メッシュに頂点が存在するか確認してください。")
+            self.logger.warning("Vertex weights are empty. Check whether the mesh has vertices.")
             return
         maya_utils.apply_vertex_weights(
             skin_cluster,

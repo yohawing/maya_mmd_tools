@@ -315,7 +315,7 @@ def _setup_parsed_model_signatures(lib: CDLL) -> None:
         )
         _set_sig(lib, "mmd_runtime_parsed_model_metadata_json", MmdRuntimeFfiByteBuffer, [c_void_p])
     except Exception as exc:
-        logger.debug(f"parsed-model ABI のシグネチャ設定中にエラー: {exc}")
+        logger.debug(f"Error while setting parsed-model ABI signatures: {exc}")
 
 
 def _set_sig(
@@ -327,7 +327,7 @@ def _set_sig(
     """
     func = getattr(lib, name, None)
     if func is None:
-        logger.debug(f"parsed-model ABI シンボル '{name}' は DLL に存在しません")
+        logger.debug(f"parsed-model ABI symbol '{name}' does not exist in the DLL")
         return
     func.restype = restype
     func.argtypes = argtypes
@@ -395,7 +395,7 @@ def _setup_rig_primitive_signatures(lib: CDLL) -> None:
             ],
         )
     except Exception as exc:
-        logger.debug(f"rig primitive ABI のシグネチャ設定中にエラー: {exc}")
+        logger.debug(f"Error while setting rig primitive ABI signatures: {exc}")
 
 
 def is_rig_primitive_available() -> bool:
@@ -432,7 +432,7 @@ def get_mmd_runtime_library() -> Optional[CDLL]:
 
     path = _find_library()
     if path is None:
-        logger.info("mmd-anim runtime library が見つかりませんでした (事前ビルドの配置を確認してください)")
+        logger.info("mmd-anim runtime library was not found (check prebuilt binary placement)")
         _runtime_lib = False
         return None
 
@@ -443,18 +443,18 @@ def get_mmd_runtime_library() -> Optional[CDLL]:
         abi = lib.mmd_runtime_abi_version()
         if abi != MMD_RUNTIME_ABI_VERSION:
             logger.warning(
-                f"mmd-anim runtime ABI バージョンが一致しません: got={abi}, expected={MMD_RUNTIME_ABI_VERSION}"
+                f"mmd-anim runtime ABI version mismatch: got={abi}, expected={MMD_RUNTIME_ABI_VERSION}"
             )
             # 互換性の範囲で続行するか、厳格に拒否するかは将来調整
         else:
-            logger.info(f"mmd-anim runtime library をロードしました: {path} (ABI {abi})")
+            logger.info(f"Loaded mmd-anim runtime library: {path} (ABI {abi})")
 
         _runtime_lib = lib
         _runtime_lib_path = path
         return lib
 
     except Exception as e:
-        logger.error(f"mmd-anim runtime library のロードに失敗しました: {path} - {e}", exc_info=True)
+        logger.error(f"Failed to load mmd-anim runtime library: {path} - {e}", exc_info=True)
         _runtime_lib = False
         return None
 
@@ -499,11 +499,11 @@ class MmdRuntimeModel:
             buf = (c_uint8 * len(pmx_bytes)).from_buffer_copy(pmx_bytes)
             handle = lib.mmd_runtime_model_create_from_pmx_bytes(buf, len(pmx_bytes))
             if not handle:
-                logger.error("mmd_runtime_model_create_from_pmx_bytes が NULL を返しました")
+                logger.error("mmd_runtime_model_create_from_pmx_bytes returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as e:
-            logger.error(f"MmdRuntimeModel.from_pmx_bytes に失敗: {e}", exc_info=True)
+            logger.error(f"MmdRuntimeModel.from_pmx_bytes failed: {e}", exc_info=True)
             return None
 
     @property
@@ -562,11 +562,11 @@ class MmdRuntimeClip:
                 model.handle, buf, len(vmd_bytes)
             )
             if not handle:
-                logger.error("mmd_runtime_clip_create_from_vmd_bytes_for_model が NULL を返しました")
+                logger.error("mmd_runtime_clip_create_from_vmd_bytes_for_model returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as e:
-            logger.error(f"MmdRuntimeClip.from_vmd_bytes_for_model に失敗: {e}", exc_info=True)
+            logger.error(f"MmdRuntimeClip.from_vmd_bytes_for_model failed: {e}", exc_info=True)
             return None
 
     @property
@@ -609,11 +609,11 @@ class MmdRuntimeInstance:
         try:
             handle = lib.mmd_runtime_instance_create_for_model(model.handle)
             if not handle:
-                logger.error("mmd_runtime_instance_create_for_model が NULL を返しました")
+                logger.error("mmd_runtime_instance_create_for_model returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as e:
-            logger.error(f"MmdRuntimeInstance.for_model に失敗: {e}", exc_info=True)
+            logger.error(f"MmdRuntimeInstance.for_model failed: {e}", exc_info=True)
             return None
 
     @property
@@ -638,7 +638,7 @@ class MmdRuntimeInstance:
                 self._lib.mmd_runtime_instance_evaluate_clip_frame(self._handle, clip.handle, c_float(frame))
             )
         except Exception as e:
-            logger.error(f"evaluate_clip_frame 失敗 (frame={frame}): {e}", exc_info=True)
+            logger.error(f"evaluate_clip_frame failed (frame={frame}): {e}", exc_info=True)
             return False
 
     def evaluate_clip_frame_with_ik_options(
@@ -665,7 +665,7 @@ class MmdRuntimeInstance:
             return False
         func = getattr(self._lib, "mmd_runtime_instance_evaluate_clip_frame_with_ik_options", None)
         if func is None:
-            logger.warning("mmd-anim runtime が IK option 評価 ABI を提供していません")
+            logger.warning("mmd-anim runtime does not provide IK option evaluation ABI")
             return False
         try:
             return bool(
@@ -679,7 +679,7 @@ class MmdRuntimeInstance:
             )
         except Exception as e:
             logger.error(
-                f"evaluate_clip_frame_with_ik_options 失敗 (frame={frame}): {e}",
+                f"evaluate_clip_frame_with_ik_options failed (frame={frame}): {e}",
                 exc_info=True,
             )
             return False
@@ -690,12 +690,12 @@ class MmdRuntimeInstance:
             return False
         func = getattr(self._lib, "mmd_runtime_instance_evaluate_rest_pose", None)
         if func is None:
-            logger.warning("mmd-anim runtime が REST pose 評価 ABI を提供していません")
+            logger.warning("mmd-anim runtime does not provide REST pose evaluation ABI")
             return False
         try:
             return bool(func(self._handle))
         except Exception as e:
-            logger.error("evaluate_rest_pose 失敗: %s", e, exc_info=True)
+            logger.error("evaluate_rest_pose failed: %s", e, exc_info=True)
             return False
 
     def get_world_matrices(self) -> Optional[List[List[float]]]:
@@ -720,7 +720,7 @@ class MmdRuntimeInstance:
                 matrices.append(list(buf[i : i + 16]))
             return matrices
         except Exception as e:
-            logger.error(f"get_world_matrices 失敗: {e}", exc_info=True)
+            logger.error(f"get_world_matrices failed: {e}", exc_info=True)
             return None
 
     def get_skinning_matrices(self) -> Optional[List[List[float]]]:
@@ -750,7 +750,7 @@ class MmdRuntimeInstance:
                 matrices.append(list(buf[i : i + 16]))
             return matrices
         except Exception as e:
-            logger.error("get_skinning_matrices 失敗: %s", e, exc_info=True)
+            logger.error("get_skinning_matrices failed: %s", e, exc_info=True)
             return None
 
     def get_morph_weights(self) -> Optional[List[float]]:
@@ -767,7 +767,7 @@ class MmdRuntimeInstance:
                 return None
             return list(buf)
         except Exception as e:
-            logger.error(f"get_morph_weights 失敗: {e}", exc_info=True)
+            logger.error(f"get_morph_weights failed: {e}", exc_info=True)
             return None
 
     def get_ik_enabled(self) -> Optional[List[int]]:
@@ -784,7 +784,7 @@ class MmdRuntimeInstance:
                 return None
             return [int(x) for x in buf]
         except Exception as e:
-            logger.error(f"get_ik_enabled 失敗: {e}", exc_info=True)
+            logger.error(f"get_ik_enabled failed: {e}", exc_info=True)
             return None
 
     def free(self) -> None:
@@ -849,17 +849,17 @@ class MmdParsedModel:
             return None
         func = getattr(lib, "mmd_runtime_parsed_model_create_from_pmx_bytes", None)
         if func is None:
-            logger.debug("parsed-model create シンボルがありません")
+            logger.debug("parsed-model create symbol is unavailable")
             return None
         try:
             buf = (c_uint8 * len(pmx_bytes)).from_buffer_copy(pmx_bytes)
             handle = func(buf, len(pmx_bytes))
             if not handle:
-                logger.error("mmd_runtime_parsed_model_create_from_pmx_bytes が NULL を返しました")
+                logger.error("mmd_runtime_parsed_model_create_from_pmx_bytes returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as e:
-            logger.error(f"MmdParsedModel.from_pmx_bytes に失敗: {e}", exc_info=True)
+            logger.error(f"MmdParsedModel.from_pmx_bytes failed: {e}", exc_info=True)
             return None
 
     # ---- 解放 ----
@@ -966,7 +966,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"positions 読み取り失敗: {e}")
+            logger.error(f"Failed to read positions: {e}")
             return None
 
     @property
@@ -983,7 +983,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"normals 読み取り失敗: {e}")
+            logger.error(f"Failed to read normals: {e}")
             return None
 
     @property
@@ -1000,7 +1000,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 2)).from_address(ptr)
             return [(arr[i * 2], arr[i * 2 + 1]) for i in range(n)]
         except Exception as e:
-            logger.error(f"uvs 読み取り失敗: {e}")
+            logger.error(f"Failed to read uvs: {e}")
             return None
 
     @property
@@ -1017,7 +1017,7 @@ class MmdParsedModel:
             arr = (c_float * n).from_address(ptr)
             return list(arr)
         except Exception as e:
-            logger.error(f"edge_scale 読み取り失敗: {e}")
+            logger.error(f"Failed to read edge_scale: {e}")
             return None
 
     @property
@@ -1034,7 +1034,7 @@ class MmdParsedModel:
             arr = (c_uint32 * n).from_address(ptr)
             return list(arr)
         except Exception as e:
-            logger.error(f"indices 読み取り失敗: {e}")
+            logger.error(f"Failed to read indices: {e}")
             return None
 
     @property
@@ -1051,7 +1051,7 @@ class MmdParsedModel:
             arr = (c_uint32 * (n * 4)).from_address(ptr)
             return [(arr[i * 4], arr[i * 4 + 1], arr[i * 4 + 2], arr[i * 4 + 3]) for i in range(n)]
         except Exception as e:
-            logger.error(f"skin_indices 読み取り失敗: {e}")
+            logger.error(f"Failed to read skin_indices: {e}")
             return None
 
     @property
@@ -1068,7 +1068,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 4)).from_address(ptr)
             return [(arr[i * 4], arr[i * 4 + 1], arr[i * 4 + 2], arr[i * 4 + 3]) for i in range(n)]
         except Exception as e:
-            logger.error(f"skin_weights 読み取り失敗: {e}")
+            logger.error(f"Failed to read skin_weights: {e}")
             return None
 
     @property
@@ -1085,7 +1085,7 @@ class MmdParsedModel:
             arr = (c_uint32 * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"material_groups 読み取り失敗: {e}")
+            logger.error(f"Failed to read material_groups: {e}")
             return None
 
     @property
@@ -1102,7 +1102,7 @@ class MmdParsedModel:
             arr = (c_uint32 * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"vertex_morph_spans 読み取り失敗: {e}")
+            logger.error(f"Failed to read vertex_morph_spans: {e}")
             return None
 
     @property
@@ -1119,7 +1119,7 @@ class MmdParsedModel:
             arr = (c_uint32 * n).from_address(ptr)
             return list(arr)
         except Exception as e:
-            logger.error(f"vertex_morph_vertex_indices 読み取り失敗: {e}")
+            logger.error(f"Failed to read vertex_morph_vertex_indices: {e}")
             return None
 
     @property
@@ -1136,7 +1136,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"vertex_morph_position_offsets 読み取り失敗: {e}")
+            logger.error(f"Failed to read vertex_morph_position_offsets: {e}")
             return None
 
     @property
@@ -1166,7 +1166,7 @@ class MmdParsedModel:
                 free_func(buf)
             return names
         except Exception as e:
-            logger.error(f"vertex_morph_names 読み取り失敗: {e}")
+            logger.error(f"Failed to read vertex_morph_names: {e}")
             return None
 
     @property
@@ -1202,7 +1202,7 @@ class MmdParsedModel:
             free_func(buf)
             return text
         except Exception as e:
-            logger.error(f"metadata_json 読み取り失敗: {e}")
+            logger.error(f"Failed to read metadata_json: {e}")
             # エラーでも可能なら解放を試みる
             self._safe_free_buffer()
             return None

@@ -63,21 +63,21 @@ class PmdData:
             FileNotFoundError: ファイルが見つからない場合。
             MMDParseException: ファイルの解析に失敗した場合。
         """
-        logger.info(f"PMDファイルの解析を開始: {file_path}")
+        logger.info(f"Starting PMD file parsing: {file_path}")
 
         if not os.path.exists(file_path):
-            logger.error(f"PMDファイルが見つかりません: {file_path}")
+            logger.error(f"PMD file not found: {file_path}")
             raise FileNotFoundError(f"PMD file not found: {file_path}")
 
         with open(file_path, "rb") as f:
             try:
                 # Header
-                logger.debug("ヘッダー情報を解析中")
+                logger.debug("Parsing header information")
                 self.header.parse(f)
 
                 # Vertex
                 vertex_count = struct.unpack("<I", f.read(4))[0]
-                logger.debug(f"頂点数: {vertex_count}")
+                logger.debug(f"Vertex count: {vertex_count}")
                 for _ in range(vertex_count):
                     vertex = PmdVertex()
                     vertex.parse(f)
@@ -85,7 +85,7 @@ class PmdData:
 
                 # Face
                 face_count = struct.unpack("<I", f.read(4))[0]
-                logger.debug(f"面数: {face_count // 3}")
+                logger.debug(f"Face count: {face_count // 3}")
                 for _ in range(face_count // 3):
                     face = PmdFace()
                     face.parse(f)
@@ -93,7 +93,7 @@ class PmdData:
 
                 # Material
                 material_count = struct.unpack("<I", f.read(4))[0]
-                logger.debug(f"マテリアル数: {material_count}")
+                logger.debug(f"Material count: {material_count}")
                 for i in range(material_count):
                     material = PmdMaterial(material_index=i)
                     material.parse(f)
@@ -101,7 +101,7 @@ class PmdData:
 
                 # Bone
                 bone_count = struct.unpack("<H", f.read(2))[0]
-                logger.debug(f"ボーン数: {bone_count}")
+                logger.debug(f"Bone count: {bone_count}")
                 for _ in range(bone_count):
                     bone = PmdBone()
                     bone.parse(f)
@@ -109,7 +109,7 @@ class PmdData:
 
                 # IK
                 ik_count = struct.unpack("<H", f.read(2))[0]
-                logger.debug(f"IK数: {ik_count}")
+                logger.debug(f"IK count: {ik_count}")
                 for _ in range(ik_count):
                     ik = PmdIK()
                     ik.parse(f)
@@ -117,14 +117,14 @@ class PmdData:
 
                 # Morph
                 morph_count = struct.unpack("<H", f.read(2))[0]
-                logger.debug(f"モーフ数: {morph_count}")
+                logger.debug(f"Morph count: {morph_count}")
                 for _ in range(morph_count):
                     morph = PmdMorph()
                     morph.parse(f)
                     self.morphs.append(morph)
 
                 # Display Frame
-                logger.debug("表示枠を解析中")
+                logger.debug("Parsing display frames")
                 self.display_frame = PmdDisplayFrame()
                 self.display_frame.parse(f)
                 # display_frame_count = struct.unpack('<B', f.read(1))[0]
@@ -138,10 +138,10 @@ class PmdData:
 
                 try:
                     # English Header
-                    logger.debug("拡張データを解析中")
+                    logger.debug("Parsing extended data")
                     has_english_header = struct.unpack("<B", f.read(1))[0]
                     if has_english_header:
-                        logger.debug("英語ヘッダーを解析中")
+                        logger.debug("Parsing English header")
                         self.header.parse_english(f)
 
                     # English Bone Names
@@ -170,28 +170,28 @@ class PmdData:
 
                     # Physics
                     rigid_body_count = struct.unpack("<I", f.read(4))[0]
-                    logger.debug(f"剛体数: {rigid_body_count}")
+                    logger.debug(f"Rigid body count: {rigid_body_count}")
                     for _ in range(rigid_body_count):
                         rigid_body = PmdRigidBody()
                         rigid_body.parse(f)
                         self.rigid_bodies.append(rigid_body)
 
                     joint_count = struct.unpack("<I", f.read(4))[0]
-                    logger.debug(f"ジョイント数: {joint_count}")
+                    logger.debug(f"Joint count: {joint_count}")
                     for _ in range(joint_count):
                         joint = PmdJoint()
                         joint.parse(f)
                         self.joints.append(joint)
 
                 except Exception:
-                    logger.info("拡張データなし、または拡張データの解析を終了")
+                    logger.info("No extended data, or extended data parsing ended")
                     return self
 
             except struct.error as e:
-                logger.error(f"PMDファイルの解析に失敗しました: {file_path}")
+                logger.error(f"Failed to parse PMD file: {file_path}")
                 raise MMDParseException(f"Failed to parse PMD file: {file_path}") from e
 
-        logger.info("PMDファイルの解析が完了しました")
+        logger.info("PMD file parsing completed")
         return self
 
     def write_file(self, file_path):
@@ -204,73 +204,73 @@ class PmdData:
         Raises:
             IOError: ファイル書き込みに失敗した場合。
         """
-        logger.info(f"PMDファイルの書き込みを開始: {file_path}")
+        logger.info(f"Starting PMD file write: {file_path}")
 
         try:
             with open(file_path, "wb") as f:
                 # Header
-                logger.debug("ヘッダー情報を書き込み中")
+                logger.debug("Writing header information")
                 self.header.write(f)
 
                 # Vertex
                 vertex_count = len(self.vertices)
-                logger.debug(f"頂点数: {vertex_count}")
+                logger.debug(f"Vertex count: {vertex_count}")
                 f.write(struct.pack("<I", vertex_count))
                 for vertex in self.vertices:
                     vertex.write(f)
 
                 # Face
                 face_count = len(self.faces) * 3
-                logger.debug(f"面数: {len(self.faces)}")
+                logger.debug(f"Face count: {len(self.faces)}")
                 f.write(struct.pack("<I", face_count))
                 for face in self.faces:
                     face.write(f)
 
                 # Material
                 material_count = len(self.materials)
-                logger.debug(f"マテリアル数: {material_count}")
+                logger.debug(f"Material count: {material_count}")
                 f.write(struct.pack("<I", material_count))
                 for material in self.materials:
                     material.write(f)
 
                 # Bone
                 bone_count = len(self.bones)
-                logger.debug(f"ボーン数: {bone_count}")
+                logger.debug(f"Bone count: {bone_count}")
                 f.write(struct.pack("<H", bone_count))
                 for bone in self.bones:
                     bone.write(f)
 
                 # IK
                 ik_count = len(self.ik_data)
-                logger.debug(f"IK数: {ik_count}")
+                logger.debug(f"IK count: {ik_count}")
                 f.write(struct.pack("<H", ik_count))
                 for ik in self.ik_data:
                     ik.write(f)
 
                 # Morph
                 morph_count = len(self.morphs)
-                logger.debug(f"モーフ数: {morph_count}")
+                logger.debug(f"Morph count: {morph_count}")
                 f.write(struct.pack("<H", morph_count))
                 for morph in self.morphs:
                     morph.write(f)
 
                 # Morph Display List
                 morph_display_count = sum(len(frame.morphs) for frame in self.display_frames)
-                logger.debug(f"モーフ表示数: {morph_display_count}")
+                logger.debug(f"Morph display count: {morph_display_count}")
                 f.write(struct.pack("<B", morph_display_count))
                 for frame in self.display_frames:
                     frame.write_morphs(f)
 
                 # Display Frame Names
                 display_frame_count = len(self.display_frames)
-                logger.debug(f"表示枠数: {display_frame_count}")
+                logger.debug(f"Display frame count: {display_frame_count}")
                 f.write(struct.pack("<B", display_frame_count))
                 for frame in self.display_frames:
                     frame.write(f)
 
                 # Bone Display List
                 bone_display_count = sum(len(frame.bones) for frame in self.display_frames)
-                logger.debug(f"ボーン表示数: {bone_display_count}")
+                logger.debug(f"Bone display count: {bone_display_count}")
                 f.write(struct.pack("<I", bone_display_count))
                 for frame in self.display_frames:
                     frame.write_bones(f)
@@ -297,25 +297,25 @@ class PmdData:
                         frame.write_english(f)
 
                 # Toon Textures (10個固定、未実装部分は空文字列)
-                logger.debug("トゥーンテクスチャ情報を書き込み中")
+                logger.debug("Writing toon texture information")
                 for i in range(10):
                     f.write(utils.encodePMDString("", 100))
 
                 # Physics
                 rigid_body_count = len(self.rigid_bodies)
-                logger.debug(f"剛体数: {rigid_body_count}")
+                logger.debug(f"Rigid body count: {rigid_body_count}")
                 f.write(struct.pack("<I", rigid_body_count))
                 for rigid_body in self.rigid_bodies:
                     rigid_body.write(f)
 
                 joint_count = len(self.joints)
-                logger.debug(f"ジョイント数: {joint_count}")
+                logger.debug(f"Joint count: {joint_count}")
                 f.write(struct.pack("<I", joint_count))
                 for joint in self.joints:
                     joint.write(f)
 
         except Exception as e:
-            logger.error(f"PMDファイルの書き込みに失敗しました: {file_path}")
+            logger.error(f"Failed to write PMD file: {file_path}")
             raise IOError(f"Failed to write PMD file: {file_path}") from e
 
-        logger.info("PMDファイルの書き込みが完了しました")
+        logger.info("PMD file write completed")
