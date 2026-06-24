@@ -374,8 +374,8 @@ class TestVmdConverter(MayaTestBase):
                     self.converter._should_use_mmd_runtime_bake(vmd_bytes=b"vmd", pmx_bytes=b"pmx", pmx_path=pmd_path)
                 )
 
-    def test_should_not_use_runtime_bake_when_target_has_live_rig(self):
-        """Rig mode の VMD import は live IK/付与リグを壊す runtime bake 経路を使わない"""
+    def test_should_use_runtime_path_when_target_has_live_rig(self):
+        """Rig mode は runtime 分解経路を使いつつ live rig 接続を残す"""
         joint = cmds.joint(name="runtime_live_rig_target_joint")
         ik_node = cmds.createNode("mmdCcdIk", name="runtime_live_rig_ik")
         cmds.connectAttr(f"{ik_node}.outputRotate[0]", f"{joint}.rotate", force=True)
@@ -390,13 +390,58 @@ class TestVmdConverter(MayaTestBase):
                 "is_mmd_runtime_available",
                 return_value=True,
             ):
-                self.assertFalse(
+                self.assertTrue(
                     self.converter._should_use_mmd_runtime_bake(
                         vmd_bytes=b"vmd",
                         pmx_bytes=None,
                         pmx_path=pmx_path,
                     )
                 )
+
+        cmds.delete(ik_node, joint)
+
+    def test_mmd_ik_passthrough_keys_chain_bone_slot(self):
+        """runtime live apply 中は mmdCcdIk output link の入力 slot へ final rotation を焼く"""
+        joint = cmds.joint(name="runtime_live_toe_link")
+        ik_node = cmds.createNode("mmdCcdIk", name="runtime_live_toe_ik")
+        chain_json = {
+            "bones": [{"rest_position": [0, 0, 0], "parent_slot": -1} for _ in range(4)],
+            "controllerBoneSlot": -1,
+            "targetBoneSlot": 0,
+            "links": [{"bone_slot": 3}],
+            "iterationCount": 1,
+            "limitAngle": 0.1,
+        }
+        cmds.setAttr(f"{ik_node}.chainJson", json.dumps(chain_json), type="string")
+        cmds.connectAttr(f"{ik_node}.outputRotate[0]", f"{joint}.rotate", force=True)
+
+        info = self.converter._collect_mmd_ik_passthrough_info()[joint]
+        self.assertEqual(info["link_index"], 0)
+        self.assertEqual(info["input_slot"], 3)
+
+        times = om.MTimeArray()
+        frames = [0, 5]
+        for frame in frames:
+            times.append(om.MTime(float(frame), om.MTime.uiUnit()))
+        channels = {
+            "rotateX": om.MDoubleArray([math.radians(10.0), math.radians(20.0)]),
+            "rotateY": om.MDoubleArray([0.0, 0.0]),
+            "rotateZ": om.MDoubleArray([0.0, 0.0]),
+        }
+        keyed = self.converter._key_mmd_ik_passthrough_rotation(info, channels, {}, times, frames)
+
+        self.assertEqual(keyed, 4)
+        self.assertFalse(cmds.getAttr(f"{ik_node}.enabled"))
+        self.assertEqual(
+            cmds.keyframe(
+                f"{ik_node}.inputRotate[3].inputRotateElementX",
+                query=True,
+                time=(5, 5),
+                valueChange=True,
+            ),
+            [20.0],
+        )
+        self.assertIsNone(cmds.keyframe(f"{ik_node}.inputRotate[0].inputRotateElementX", query=True))
 
         cmds.delete(ik_node, joint)
 
@@ -1313,6 +1358,35 @@ class TestVmdConverter(MayaTestBase):
             self.assertAlmostEqual(actual_skinning[i], expected_skinning[i], places=5)
 
         cmds.delete(joint)
+
+    def test_runtime_bind_world_maps_use_recorded_bind_pose_not_current_pose(self):
+        """live rig が動いた状態でも runtime bind 補正は記録済み bind pose を使う"""
+        root = cmds.joint(name="runtime_pose_root")
+        cmds.setAttr(f"{root}.translate", 1.0, 2.0, 3.0)
+        child = cmds.joint(name="runtime_pose_child")
+        cmds.setAttr(f"{child}.translate", 0.0, 4.0, 0.0)
+        cmds.setAttr(f"{child}.jointOrient", 0.0, 0.0, 30.0)
+
+        self.converter.bone_name_mapping = {"root": root, "child": child}
+        self.converter.bone_name_to_index = {"root": 0, "child": 1}
+        self.converter.bone_index_to_joint = {0: root, 1: child}
+        self.converter._record_bind_poses()
+        self.converter._build_bone_hierarchy_and_order_maps()
+        self.converter._build_runtime_bind_world_maps()
+        bind_child_before = self.converter._runtime_bind_world_matrices[1]
+
+        cmds.setAttr(f"{root}.rotate", 0.0, 45.0, 0.0)
+        cmds.setAttr(f"{child}.translate", 3.0, 4.0, 5.0)
+        delattr(self.converter, "_runtime_bind_world_matrices")
+        delattr(self.converter, "_runtime_no_orient_bind_world_matrices")
+
+        self.converter._build_runtime_bind_world_maps()
+        bind_child_after = self.converter._runtime_bind_world_matrices[1]
+
+        for i in range(16):
+            self.assertAlmostEqual(bind_child_after[i], bind_child_before[i], places=6)
+
+        cmds.delete(root)
 
     def test_decompose_append_own_translation_removes_grant_offset(self):
         """runtime final translate から付与移動分を引いた値を mmdAppend.baseTranslate にキーできる"""

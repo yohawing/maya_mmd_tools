@@ -192,17 +192,16 @@ class VmdConverter:
         if not (HAS_MMD_RUNTIME and is_mmd_runtime_available()):
             return False
 
-        if self._has_live_mmd_rig_for_runtime_target():
-            self.logger.info("live MMD rig が接続されているため、VMD import はRig経路を使用します")
-            return False
-
         # 少なくとも vmd_bytes と (pmx_bytes または pmx_path) が必要
         has_vmd = bool(vmd_bytes)
         if bool(pmx_bytes):
             has_pmx = True
         else:
             has_pmx = bool(pmx_path) and Path(pmx_path).suffix.lower() == ".pmx" and os.path.exists(pmx_path)
-        return has_vmd and has_pmx
+        if not (has_vmd and has_pmx):
+            return False
+
+        return True
 
     def _resolve_runtime_bake_sources(
         self,
@@ -320,8 +319,16 @@ class VmdConverter:
             self.logger.info(
                 f"runtime 評価範囲: {min_frame} - {max_frame} (keys={len(bake_frames)})"
             )
-            self._disable_mmd_rig_constraints_for_runtime_bake()
-            self._restore_joints_to_bind_pose_for_runtime_bake()
+            live_rig_target = self._has_live_mmd_rig_for_runtime_target()
+            if live_rig_target:
+                self.logger.info(
+                    "live MMD rig が接続されているため、runtime final pose をlive rig入力へ分解します"
+                )
+                self._runtime_live_active_ik_nodes = self._collect_active_ik_nodes_from_vmd(vmd_data)
+            else:
+                self._runtime_live_active_ik_nodes = set()
+                self._disable_mmd_rig_constraints_for_runtime_bake()
+                self._restore_joints_to_bind_pose_for_runtime_bake()
 
             # runtime bake は最終姿勢を毎フレーム直焼きするため、animation layerを使わない。
             # layer経由だと全ボーン全フレームのblend node作成が重く、未登録attribute警告も出る。
@@ -383,14 +390,26 @@ class VmdConverter:
             # キャッシュから一括でキーフレーム登録（Maya Python API 2.0 優先）
             if baked_frames:
                 apply_start = time.perf_counter()
-                self._apply_runtime_channel_arrays_to_scene(
+                live_ik_offset_requests = self._apply_runtime_channel_arrays_to_scene(
                     joint_channel_values,
                     joint_channel_static,
                     bake_times,
                     baked_frames,
                     morph_cache,
                     pmx_morph_names,
+                    live_rig_target=live_rig_target,
                 )
+                if live_rig_target:
+                    self._apply_ik_enabled_animation(vmd_data)
+                    self._key_live_ik_input_rotations_from_vmd(
+                        getattr(vmd_data, "bone_frames", []) or []
+                    )
+                    if live_ik_offset_requests:
+                        self._key_live_ik_output_offsets(
+                            live_ik_offset_requests,
+                            bake_times,
+                            baked_frames,
+                        )
                 apply_elapsed = time.perf_counter() - apply_start
                 self.logger.info(
                     f"runtime cache キー登録完了 (elapsed={apply_elapsed:.3f}s)"
@@ -406,6 +425,8 @@ class VmdConverter:
             instance.free()
             clip.free()
             model.free()
+            if hasattr(self, "_runtime_live_active_ik_nodes"):
+                delattr(self, "_runtime_live_active_ik_nodes")
 
     def _get_animation_frame_range(self, vmd_data: VmdData):
         """VMDデータからアニメーションのフレーム範囲を取得"""
@@ -474,10 +495,46 @@ class VmdConverter:
         """
         self._runtime_bind_world_matrices: Dict[int, om.MMatrix] = {}
         self._runtime_no_orient_bind_world_matrices: Dict[int, om.MMatrix] = {}
+        if not hasattr(self, "_bone_parent_map") or len(getattr(self, "_bone_parent_map", {})) == 0:
+            self._build_bone_hierarchy_and_order_maps()
+
+        index_to_bone_name = {idx: name for name, idx in self.bone_name_to_index.items()}
+        resolved_bind_worlds: Dict[int, om.MMatrix] = {}
+
+        def _bind_translate(bidx: int, joint: str) -> Tuple[float, float, float]:
+            bone_name = index_to_bone_name.get(bidx)
+            value = self._bone_bind_poses.get(bone_name) if bone_name else None
+            if value is None:
+                try:
+                    value = cmds.getAttr(f"{joint}.translate")[0]
+                except Exception:
+                    value = (0.0, 0.0, 0.0)
+            return float(value[0]), float(value[1]), float(value[2])
+
+        def _resolve_bind_world(bidx: int) -> Optional[om.MMatrix]:
+            if bidx in resolved_bind_worlds:
+                return resolved_bind_worlds[bidx]
+            joint = self.bone_index_to_joint.get(bidx)
+            if not joint or not cmds.objExists(joint):
+                return None
+
+            tx, ty, tz = _bind_translate(bidx, joint)
+            tm = om.MTransformationMatrix()
+            tm.setTranslation(om.MVector(tx, ty, tz), om.MSpace.kTransform)
+            q_jo, _ro = self._get_joint_orient_cache(joint)
+            if q_jo is not None:
+                tm.setRotation(q_jo)
+            local_bind = tm.asMatrix()
+
+            parent_idx = getattr(self, "_bone_parent_map", {}).get(bidx)
+            parent_world = _resolve_bind_world(parent_idx) if parent_idx is not None else None
+            bind_world = local_bind * parent_world if parent_world is not None else local_bind
+            resolved_bind_worlds[bidx] = bind_world
+            return bind_world
+
         for bidx, joint in self.bone_index_to_joint.items():
-            try:
-                bind_world = om.MMatrix(cmds.getAttr(f"{joint}.worldMatrix[0]"))
-            except Exception:
+            bind_world = _resolve_bind_world(bidx)
+            if bind_world is None:
                 continue
             self._runtime_bind_world_matrices[bidx] = bind_world
             bind_no_orient = om.MMatrix()
@@ -1202,13 +1259,16 @@ class VmdConverter:
         baked_frames: List[int],
         morph_cache: List[Tuple[int, list]],
         pmx_morph_names: List[str],
-    ):
+        live_rig_target: bool = False,
+    ) -> List[Tuple[Dict[str, Union[str, int]], Dict[str, Optional[om.MDoubleArray]], Dict[str, dict]]]:
         """API配列へ収集済みのruntime bake結果をMaya sceneへ一括適用する。"""
         keyed_channels = 0
         skipped_static_channels = 0
         total_channels = 0
 
         append_info = self._collect_append_info()
+        ik_passthrough_info = self._collect_mmd_ik_passthrough_info()
+        live_ik_offset_requests = []
         decomposed_rotations = self._decompose_append_rotations_for_scene(
             joint_channel_values,
             joint_channel_static,
@@ -1225,6 +1285,56 @@ class VmdConverter:
         for joint, channels in joint_channel_values.items():
             total_channels += len(channels)
             try:
+                ik_info = ik_passthrough_info.get(joint)
+                if ik_info:
+                    channels = dict(channels)
+                    if live_rig_target:
+                        active_ik_nodes = getattr(self, "_runtime_live_active_ik_nodes", set())
+                        if str(ik_info.get("node", "")) in active_ik_nodes:
+                            live_ik_offset_requests.append((
+                                dict(ik_info),
+                                dict(channels),
+                                dict(joint_channel_static.get(joint, {})),
+                            ))
+                            # Keep active IK links live. Their rotate channels
+                            # are driven by outputRotate from the moving IK
+                            # controller, and VMD pre-IK rotations are keyed
+                            # into inputRotate later.
+                            for attr in ("rotateX", "rotateY", "rotateZ"):
+                                channels.pop(attr, None)
+                        else:
+                            # Downstream/inactive IK nodes must still preserve
+                            # JO-aware runtime compensation.  Feed final
+                            # rotations into inputRotate and leave enabled as-is;
+                            # the node pass-throughs when its controller has no
+                            # translate offset.
+                            redirected = self._key_mmd_ik_passthrough_rotation(
+                                ik_info,
+                                channels,
+                                joint_channel_static.get(joint, {}),
+                                bake_times,
+                                baked_frames,
+                                disable_solver=False,
+                            )
+                            if redirected:
+                                keyed_channels += redirected
+                                for attr in ("rotateX", "rotateY", "rotateZ"):
+                                    channels.pop(attr, None)
+                    else:
+                        redirected = self._key_mmd_ik_passthrough_rotation(
+                            ik_info,
+                            channels,
+                            joint_channel_static.get(joint, {}),
+                            bake_times,
+                            baked_frames,
+                        )
+                        if redirected:
+                            keyed_channels += redirected
+                            for attr in ("rotateX", "rotateY", "rotateZ"):
+                                channels.pop(attr, None)
+                    if not channels:
+                        continue
+
                 target_static = joint_channel_static.get(joint, {})
                 info = append_info.get(joint)
                 if info and info["attr_map"]:
@@ -1312,6 +1422,266 @@ class VmdConverter:
                 self.logger.debug(f"post-apply morph bake error at frame {frame}: {e}")
 
         self.logger.info(f"runtime cache 適用完了: {len(baked_frames)} フレームをキー登録")
+        return live_ik_offset_requests
+
+    def _key_live_ik_output_offsets(
+        self,
+        requests: List[Tuple[Dict[str, Union[str, int]], Dict[str, Optional[om.MDoubleArray]], Dict[str, dict]]],
+        bake_times: om.MTimeArray,
+        baked_frames: List[int],
+    ) -> int:
+        """Key mmdCcdIk output offsets so live IK matches runtime final frames."""
+        keyed = 0
+        for ik_info, channels, static_state in requests:
+            node = str(ik_info.get("node", ""))
+            link_index = int(ik_info.get("link_index", -1))
+            if not node or link_index < 0 or not cmds.objExists(node):
+                continue
+
+            n_frames = len(baked_frames)
+            rx = self._get_or_expand_runtime_channel(channels, static_state, "rotateX", n_frames)
+            ry = self._get_or_expand_runtime_channel(channels, static_state, "rotateY", n_frames)
+            rz = self._get_or_expand_runtime_channel(channels, static_state, "rotateZ", n_frames)
+            if rx is None or ry is None or rz is None:
+                continue
+
+            offset_attrs = (
+                f"outputRotateOffset[{link_index}].outputRotateOffsetElementX",
+                f"outputRotateOffset[{link_index}].outputRotateOffsetElementY",
+                f"outputRotateOffset[{link_index}].outputRotateOffsetElementZ",
+            )
+            for attr in offset_attrs:
+                plug = f"{node}.{attr}"
+                for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
+                    try:
+                        cmds.disconnectAttr(source, plug)
+                    except Exception:
+                        pass
+
+            offset_samples = []
+            for frame_index, frame in enumerate(baked_frames):
+                try:
+                    cmds.currentTime(frame, edit=True)
+                    cmds.refresh(force=True)
+                    raw = cmds.getAttr(f"{node}.outputRotate[{link_index}]")[0]
+                    raw_q = om.MEulerRotation(
+                        math.radians(float(raw[0])),
+                        math.radians(float(raw[1])),
+                        math.radians(float(raw[2])),
+                    ).asQuaternion()
+                    desired_q = om.MEulerRotation(
+                        float(rx[frame_index]),
+                        float(ry[frame_index]),
+                        float(rz[frame_index]),
+                    ).asQuaternion()
+                    offset_q = desired_q * raw_q.inverse()
+                    offset_e = offset_q.asEulerRotation()
+                    offset_values = (
+                        math.degrees(offset_e.x),
+                        math.degrees(offset_e.y),
+                        math.degrees(offset_e.z),
+                    )
+                    offset_samples.append((frame, offset_values))
+                except Exception as exc:
+                    self.logger.debug(f"failed to sample live IK output offset for {node}[{link_index}] frame {frame}: {exc}")
+                    break
+            for frame, offset_values in offset_samples:
+                for attr, value in zip(offset_attrs, offset_values):
+                    try:
+                        cmds.setKeyframe(node, attribute=attr, time=frame, value=float(value))
+                        keyed += 1
+                    except Exception as exc:
+                        self.logger.debug(f"failed to key live IK output offset for {node}[{link_index}] frame {frame}: {exc}")
+                        break
+        if keyed:
+            self.logger.info(f"live mmdCcdIk outputRotateOffset に {keyed} keys 適用しました")
+        return keyed
+
+    @staticmethod
+    def _collect_mmd_ik_passthrough_info() -> Dict[str, Dict[str, Union[str, int]]]:
+        """Return joints driven by mmdCcdIk outputRotate and their link indices.
+
+        During runtime-live VMD apply the final pose already includes MMD IK.
+        For IK-driven joints, write the final rotation into the IK node input
+        and key ``enabled`` off so the existing output connection simply passes
+        the keyed rotation through.
+        """
+        result: Dict[str, Dict[str, Union[str, int]]] = {}
+        for node in cmds.ls(type="mmdCcdIk") or []:
+            link_slots = []
+            try:
+                cfg = json.loads(cmds.getAttr(f"{node}.chainJson") or "{}")
+                link_slots = [int(link.get("bone_slot", -1)) for link in cfg.get("links", [])]
+            except Exception:
+                link_slots = []
+            for dest in cmds.listConnections(f"{node}.outputRotate", s=False, d=True, p=True) or []:
+                if not dest.endswith(".rotate"):
+                    continue
+                joint = dest.rsplit(".", 1)[0]
+                source_plugs = cmds.listConnections(dest, s=True, d=False, p=True) or []
+                link_index = None
+                prefix = f"{node}.outputRotate["
+                for source in source_plugs:
+                    if source.startswith(prefix):
+                        try:
+                            link_index = int(source[len(prefix):].split("]", 1)[0])
+                        except (TypeError, ValueError):
+                            link_index = None
+                        break
+                if link_index is None:
+                    continue
+                input_slot = link_slots[link_index] if link_index < len(link_slots) else link_index
+                info = {"node": node, "link_index": link_index, "input_slot": input_slot}
+                result[joint] = info
+                short_name = joint.rsplit("|", 1)[-1]
+                result[short_name] = info
+                for long_name in cmds.ls(joint, long=True) or []:
+                    result[long_name] = info
+        return result
+
+    def _key_mmd_ik_passthrough_rotation(
+        self,
+        ik_info: Dict[str, Union[str, int]],
+        channels: Dict[str, Optional[om.MDoubleArray]],
+        static_state: Dict[str, dict],
+        bake_times: om.MTimeArray,
+        baked_frames: List[int],
+        disable_solver: bool = True,
+    ) -> int:
+        """Key mmdCcdIk inputRotate/output pass-through for runtime-live apply."""
+        node = str(ik_info.get("node", ""))
+        input_slot = int(ik_info.get("input_slot", -1))
+        if not node or input_slot < 0 or not cmds.objExists(node):
+            return 0
+
+        n_frames = len(baked_frames)
+        rx = self._get_or_expand_runtime_channel(channels, static_state, "rotateX", n_frames)
+        ry = self._get_or_expand_runtime_channel(channels, static_state, "rotateY", n_frames)
+        rz = self._get_or_expand_runtime_channel(channels, static_state, "rotateZ", n_frames)
+        if rx is None or ry is None or rz is None:
+            return 0
+        if len(rx) != len(baked_frames) or len(ry) != len(baked_frames) or len(rz) != len(baked_frames):
+            return 0
+
+        for axis_attr in (
+            f"inputRotate[{input_slot}].inputRotateElementX",
+            f"inputRotate[{input_slot}].inputRotateElementY",
+            f"inputRotate[{input_slot}].inputRotateElementZ",
+        ):
+            plug = f"{node}.{axis_attr}"
+            for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
+                try:
+                    cmds.disconnectAttr(source, plug)
+                except Exception:
+                    pass
+
+        keyed = 0
+        axis_values = (
+            ("inputRotateElementX", rx),
+            ("inputRotateElementY", ry),
+            ("inputRotateElementZ", rz),
+        )
+        for child_attr, values in axis_values:
+            plug = f"{node}.inputRotate[{input_slot}].{child_attr}"
+            for index, frame in enumerate(baked_frames):
+                try:
+                    # cmds.setKeyframe on this angle plug expects the current UI angle unit.
+                    cmds.setKeyframe(plug, time=frame, value=math.degrees(float(values[index])))
+                except Exception as exc:
+                    self.logger.debug(f"failed to key {plug} at frame {frame}: {exc}")
+                    break
+            else:
+                keyed += 1
+
+        if disable_solver:
+            try:
+                for source in cmds.listConnections(f"{node}.enabled", s=True, d=False, p=True) or []:
+                    try:
+                        cmds.disconnectAttr(source, f"{node}.enabled")
+                    except Exception:
+                        pass
+                cmds.setAttr(f"{node}.enabled", False)
+                for frame in baked_frames:
+                    cmds.setKeyframe(node, attribute="enabled", time=frame, value=0.0)
+                keyed += 1
+            except Exception as exc:
+                self.logger.debug(f"failed to key {node}.enabled off for runtime live apply: {exc}")
+
+        return keyed
+
+    def _key_live_ik_input_rotations_from_vmd(self, bone_frames: List) -> int:
+        """Key VMD pre-IK rotations into live mmdCcdIk inputRotate slots.
+
+        Runtime final pose already contains solved IK, but writing that final
+        rotation into the connected link joint would turn Rig import into a bake.
+        For live rigs, keep ``mmdCcdIk.enabled`` active and feed the solver the
+        original VMD link rotation as its base input.
+        """
+        if not bone_frames:
+            return 0
+
+        ik_link_joints = self._collect_ik_link_joints()
+        if not ik_link_joints:
+            return 0
+
+        frames_by_joint: Dict[str, List] = {}
+        for frame in bone_frames:
+            bone_name = frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", "")
+            joint = self.bone_name_mapping.get(bone_name)
+            if not joint or joint not in ik_link_joints:
+                continue
+            frames_by_joint.setdefault(joint, []).append(frame)
+
+        keyed = 0
+        active_nodes = getattr(self, "_runtime_live_active_ik_nodes", None)
+        for joint, frames in frames_by_joint.items():
+            info = ik_link_joints.get(joint)
+            if not info:
+                continue
+            solver_node = info.get("solver")
+            slot = info.get("slot")
+            if not solver_node or slot is None or not cmds.objExists(solver_node):
+                continue
+            if active_nodes is not None and str(solver_node) not in active_nodes:
+                continue
+
+            for axis_attr in (
+                f"inputRotate[{slot}].inputRotateElementX",
+                f"inputRotate[{slot}].inputRotateElementY",
+                f"inputRotate[{slot}].inputRotateElementZ",
+            ):
+                plug = f"{solver_node}.{axis_attr}"
+                for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
+                    try:
+                        cmds.disconnectAttr(source, plug)
+                    except Exception:
+                        pass
+
+            frames.sort(key=lambda x: x.frame_number if hasattr(x, "frame_number") else x.get("frame_number", 0))
+            for frame in frames:
+                if hasattr(frame, "frame_number"):
+                    frame_number = frame.frame_number
+                    rotation_quat = frame.rotation
+                else:
+                    frame_number = frame.get("frame_number", 0)
+                    rotation_quat = frame.get("rotation", [0, 0, 0, 1])
+                rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+                for child_attr, value in (
+                    ("inputRotateElementX", rx),
+                    ("inputRotateElementY", ry),
+                    ("inputRotateElementZ", rz),
+                ):
+                    cmds.setKeyframe(
+                        solver_node,
+                        attribute=f"inputRotate[{slot}].{child_attr}",
+                        time=frame_number,
+                        value=float(value),
+                    )
+                    keyed += 1
+
+        if keyed:
+            self.logger.info(f"live mmdCcdIk inputRotate に VMD pre-IK rotation を {keyed} keys 適用しました")
+        return keyed
 
     def _apply_runtime_cache_to_scene(
         self, runtime_cache: List[dict], pmx_morph_names: List[str]
@@ -1948,6 +2318,57 @@ class VmdConverter:
                 nodes[name] = node
         return nodes
 
+    def _collect_active_ik_nodes_from_vmd(self, vmd_data: VmdData, target_namespace: str = None) -> set[str]:
+        """Return mmdCcdIk nodes whose controller world target is animated."""
+        nodes_by_bone_name = self._collect_ik_nodes_by_bone_name(target_namespace)
+        if not nodes_by_bone_name:
+            return set()
+
+        animated_bone_names: set[str] = set()
+        for frame in getattr(vmd_data, "bone_frames", []) or []:
+            bone_name = frame.bone_name if hasattr(frame, "bone_name") else frame.get("bone_name", "")
+            position = frame.position if hasattr(frame, "position") else frame.get("position", [0, 0, 0])
+            rotation = frame.rotation if hasattr(frame, "rotation") else frame.get("rotation", [0, 0, 0, 1])
+            try:
+                has_position = any(abs(float(v)) > 1e-8 for v in position)
+                has_rotation = any(
+                    abs(float(v) - (1.0 if index == 3 else 0.0)) > 1e-8
+                    for index, v in enumerate(rotation)
+                )
+            except Exception:
+                has_position = True
+                has_rotation = True
+            if has_position or has_rotation:
+                animated_bone_names.add(bone_name)
+
+        def _joint_bone_name(joint: str) -> str:
+            if joint and cmds.objExists(joint) and cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
+                try:
+                    return cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}") or ""
+                except Exception:
+                    return ""
+            return ""
+
+        active: set[str] = set()
+        ik_controller_bone_names = set(nodes_by_bone_name.keys())
+        for ik_bone_name, node in nodes_by_bone_name.items():
+            controller_joint = self.bone_name_mapping.get(ik_bone_name)
+            if not controller_joint or not cmds.objExists(controller_joint):
+                continue
+            current = controller_joint
+            first = True
+            while current and cmds.objExists(current):
+                bone_name = _joint_bone_name(current)
+                if not first and bone_name in ik_controller_bone_names:
+                    break
+                if bone_name in animated_bone_names:
+                    active.add(node)
+                    break
+                parents = cmds.listRelatives(current, parent=True) or []
+                current = parents[0] if parents else ""
+                first = False
+        return active
+
     def _apply_ik_enabled_animation(self, vmd_data: VmdData, target_namespace: str = None) -> None:
         """VMD の IK 表示/非表示フレームを mmdCcdIk.enabled に反映する。
 
@@ -1964,11 +2385,27 @@ class VmdConverter:
             list(getattr(vmd_data, "ik_show_hide_frames", []) or []),
             key=lambda f: int(getattr(f, "frame_number", 0)),
         )
-        if property_frames or getattr(vmd_data, "bone_frames", None):
+        active_nodes = getattr(self, "_runtime_live_active_ik_nodes", None)
+        default_nodes = (
+            {node for node in ik_nodes.values() if active_nodes is None or node in active_nodes}
+            if getattr(vmd_data, "bone_frames", None)
+            else set()
+        )
+
+        if property_frames or default_nodes:
             min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
-            for node in ik_nodes.values():
+            for node in (ik_nodes.values() if property_frames else default_nodes):
                 cmds.setAttr(f"{node}.enabled", True)
                 cmds.setKeyframe(node, attribute="enabled", time=min_frame, value=1)
+            if active_nodes is not None and not property_frames:
+                for node in set(ik_nodes.values()) - set(default_nodes):
+                    cmds.setAttr(f"{node}.enabled", False)
+                    cmds.setKeyframe(node, attribute="enabled", time=min_frame, value=0)
+        elif active_nodes is not None and getattr(vmd_data, "bone_frames", None):
+            min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
+            for node in ik_nodes.values():
+                cmds.setAttr(f"{node}.enabled", False)
+                cmds.setKeyframe(node, attribute="enabled", time=min_frame, value=0)
 
         if property_frames:
             keyed = 0
@@ -1986,8 +2423,8 @@ class VmdConverter:
                 self.logger.info(f"mmdCcdIk.enabled に VMD IK 状態を {keyed} keys 適用しました")
             return
 
-        if getattr(vmd_data, "bone_frames", None):
-            self.logger.info(f"VMD IK 状態が無いため mmdCcdIk.enabled を default ON にしました: {len(ik_nodes)} nodes")
+        if default_nodes:
+            self.logger.info(f"VMD IK 状態が無いため active mmdCcdIk.enabled を default ON にしました: {len(default_nodes)} nodes")
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""

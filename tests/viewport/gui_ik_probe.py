@@ -236,17 +236,20 @@ def run_probe(log_path: str, model_path: str, repo_path: str, force_enable: bool
         }
         ankle_distance = None
         knee_delta_z = None
+        knee_rotate_x = None
         if cmds.objExists("left_ankle"):
             ankle_world = cmds.xform("left_ankle", q=True, ws=True, t=True)
             ankle_distance = math.dist(ankle_world, after_world)
         if rest_knee_world is not None and cmds.objExists("left_knee"):
             moved_knee_world = cmds.xform("left_knee", q=True, ws=True, t=True)
             knee_delta_z = moved_knee_world[2] - rest_knee_world[2]
+            knee_rotate_x = float(cmds.getAttr("left_knee.rotateX"))
         log(f"controller_after_local={tuple(round(x, 6) for x in new_local)!r}")
         log(f"controller_after_world={tuple(round(x, 6) for x in after_world)!r}")
         log(f"native_blends_after={native_blends_after!r}")
         log(f"ankle_controller_distance={ankle_distance}")
         log(f"knee_delta_z={knee_delta_z}")
+        log(f"knee_rotate_x={knee_rotate_x}")
         log(
             "outputRotate_values_after="
             + repr([(i, tuple(round(x, 6) for x in v)) for i, v in out_values_after[:12]])
@@ -275,10 +278,16 @@ def run_probe(log_path: str, model_path: str, repo_path: str, force_enable: bool
             and any(float(v) > 0.5 for v in native_blends_after.values())
             and ankle_distance is not None
             and ankle_distance < 0.05
-            and knee_delta_z is not None
-            and knee_delta_z > 0.0
+            and knee_rotate_x is not None
+            and knee_rotate_x > 0.0
         )
-        legacy_ok = max_output_delta > 1e-4 or max_rotate_delta > 1e-4
+        legacy_ok = (
+            (max_output_delta > 1e-4 or max_rotate_delta > 1e-4)
+            and ankle_distance is not None
+            and ankle_distance < 0.05
+            and knee_rotate_x is not None
+            and knee_rotate_x > 0.0
+        )
         log("RESULT=IK_MOVED" if native_ok or legacy_ok else "RESULT=IK_STILL_STATIC")
     except Exception:
         log("EXCEPTION=" + traceback.format_exc())

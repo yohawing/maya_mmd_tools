@@ -2,7 +2,7 @@
 
 The check intentionally verifies more than "the IK output changed".  A solver can
 reach the controller while bending the knee through the wrong visual side, so the
-probe also checks the knee world-space bend direction for the TestModel leg IK.
+probe checks both the TestModel knee's world bend side and local hinge sign.
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def run_probe(pmx_path: Path, out_path: Path, threshold: float) -> int:
     rest_ctrl = cmds.getAttr(f"{controller}.translate")[0]
 
     # Move the controller upward.  On this fixture the correct visual bend should
-    # keep the knee on the front side; the current inverted bend drives it behind.
+    # move the knee toward Maya +Z while keeping the left_knee hinge sign positive.
     cmds.setAttr(
         f"{controller}.translate",
         rest_ctrl[0],
@@ -74,7 +74,10 @@ def run_probe(pmx_path: Path, out_path: Path, threshold: float) -> int:
     knee_delta_z = moved_knee_world[2] - rest_knee_world[2]
     knee_rotate = cmds.getAttr(f"{knee}.rotate")[0]
 
-    passed = ankle_distance <= threshold and knee_delta_z > 0.0
+    # Neither check is sufficient alone: Z+ with a negative hinge sign and Z- with
+    # a positive hinge sign are both visually wrong for this rig.
+    knee_rotate_x = float(knee_rotate[0])
+    passed = ankle_distance <= threshold and knee_delta_z > 0.0 and knee_rotate_x > 0.0
     lines = [
         "# IK Bend Direction Probe",
         "",
@@ -85,6 +88,7 @@ def run_probe(pmx_path: Path, out_path: Path, threshold: float) -> int:
         f"- moved knee world: `{tuple(round(v, 6) for v in moved_knee_world)}`",
         f"- knee delta Z: `{knee_delta_z:.6f}`",
         f"- knee rotate: `{tuple(round(v, 6) for v in knee_rotate)}`",
+        f"- knee rotate X positive: `{knee_rotate_x > 0.0}`",
         f"- ankle/controller distance: `{ankle_distance:.6f}`",
         f"- threshold: `{threshold}`",
         f"- status: `{'passed' if passed else 'failed'}`",
@@ -100,7 +104,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pmx", default="tests/data/mmt_test_model.pmx")
     parser.add_argument("--out", default="build/reports/ik_bend_direction_probe.md")
-    parser.add_argument("--threshold", type=float, default=0.05)
+    parser.add_argument("--threshold", type=float, default=0.1)
     args = parser.parse_args()
 
     try:

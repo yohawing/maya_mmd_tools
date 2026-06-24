@@ -43,6 +43,7 @@ class MmdCcdIkNode(om.MPxNode):
 
     aInputRotate = None
     aInputTranslate = None
+    aOutputRotateOffset = None
 
     aOutputRotate = None
 
@@ -56,6 +57,7 @@ class MmdCcdIkNode(om.MPxNode):
         self._link_count = 0
         self._controller_slot = -1
         self._rest_positions = []
+        self._maya_rest_translates = []
         self._parent_slots = []
         self._bone_joint_orients = []
         self._link_joint_orients = []
@@ -90,6 +92,10 @@ class MmdCcdIkNode(om.MPxNode):
         self._link_count = len(links)
 
         self._rest_positions = [b.get("rest_position", [0, 0, 0]) for b in bones]
+        self._maya_rest_translates = [
+            b.get("maya_rest_translate", b.get("rest_position", [0, 0, 0]))
+            for b in bones
+        ]
         self._parent_slots = [int(b.get("parent_slot", -1)) for b in bones]
 
         self._bone_joint_orients = []
@@ -167,8 +173,11 @@ class MmdCcdIkNode(om.MPxNode):
         this_obj = self.thisMObject()
         fn_dep = om.MFnDependencyNode(this_obj)
 
-        # Position offsets: Maya joint.translate → MMD local offset
-        # offset_mmd = [tx, ty, -tz] - rest_position_mmd
+        # Position offsets: Maya joint.translate → MMD local offset.
+        # With jointOrient, Maya joint.translate is the parent-space REST vector
+        # after orientation compensation, not the PMX local rest vector.  The IK
+        # solver already owns PMX rest positions through chainJson, so pass only
+        # the animated translate delta measured from the Maya REST translate.
         positions = [0.0] * (self._bone_count * 3)
         it_plug = fn_dep.findPlug("inputTranslate", False)
         for bone_i in range(self._bone_count):
@@ -178,10 +187,10 @@ class MmdCcdIkNode(om.MPxNode):
                     tx = elem.child(0).asDouble()
                     ty = elem.child(1).asDouble()
                     tz = elem.child(2).asDouble()
-                    rest = self._rest_positions[bone_i]
-                    positions[bone_i * 3] = tx - rest[0]
-                    positions[bone_i * 3 + 1] = ty - rest[1]
-                    positions[bone_i * 3 + 2] = -tz - rest[2]
+                    maya_rest = self._maya_rest_translates[bone_i]
+                    positions[bone_i * 3] = tx - maya_rest[0]
+                    positions[bone_i * 3 + 1] = ty - maya_rest[1]
+                    positions[bone_i * 3 + 2] = -(tz - maya_rest[2])
             except Exception:
                 pass
 
@@ -190,14 +199,15 @@ class MmdCcdIkNode(om.MPxNode):
         if (
             0 <= self._controller_slot < self._bone_count
             and (use_controller_goal or has_world_matrix_goal)
-            and not self._controller_has_position_offset(positions)
+            and not self._controller_branch_has_position_offset(positions)
         ):
             self._copy_input_rotate_to_output(data, plug)
             return
 
-        # Input rotations: Maya euler → MMD quaternion
-        # Connected slots (joint.rotate or animCurve): q_mmd = z_mirror(q_rotate * q_jo)
-        # Unconnected slots: identity (no JO correction)
+        # Input rotations: Maya euler → MMD quaternion.
+        # The mini-chain rest positions are in PMX/MMD local space.  jointOrient
+        # is Maya-side bind orientation, not an MMD pose rotation; feeding it as
+        # pose would make REST ancestors rotate inside the IK solver.
         rotations = []
         ir_plug = fn_dep.findPlug("inputRotate", False)
         for bone_i in range(self._bone_count):
@@ -214,10 +224,6 @@ class MmdCcdIkNode(om.MPxNode):
                 pass
             euler = om.MEulerRotation(rx, ry, rz)
             q = euler.asQuaternion()
-            if connected and bone_i < len(self._bone_joint_orients):
-                q_jo = self._bone_joint_orients[bone_i]
-                if q_jo is not None:
-                    q = q * q_jo
             rotations.extend([-q.x, -q.y, q.z, q.w])
 
         if use_controller_goal:
@@ -234,9 +240,11 @@ class MmdCcdIkNode(om.MPxNode):
 
         out_rots, stats = result
 
-        # Output rotations: MMD quaternion → Maya joint.rotate
-        # Solver returns full MMD rotation; we Z-mirror then factor out
-        # jointOrient so Maya evaluates R * JO = R_mmd correctly.
+        # Output rotations: MMD quaternion → Maya joint.rotate.
+        # The generated JO skeleton already has compensated joint.translate
+        # values, while the mini-chain solver runs in PMX/MMD rest space.  Treat
+        # solver rotations as pose rotations and do not factor jointOrient into
+        # or out of the IK solve.
         out_array = data.outputArrayValue(self.aOutputRotate)
         builder = out_array.builder()
         for link_i in range(self._link_count):
@@ -246,10 +254,9 @@ class MmdCcdIkNode(om.MPxNode):
             qz = out_rots[offset + 2]
             qw = out_rots[offset + 3]
             out_quat = om.MQuaternion(-qx, -qy, qz, qw)
-            if link_i < len(self._link_joint_orients):
-                q_jo = self._link_joint_orients[link_i]
-                if q_jo is not None:
-                    out_quat = out_quat * q_jo.inverse()
+            offset_quat = self._read_output_offset_quat(fn_dep, link_i)
+            if offset_quat is not None:
+                out_quat = offset_quat * out_quat
             out_euler = out_quat.asEulerRotation()
 
             elem_handle = builder.addElement(link_i)
@@ -258,6 +265,18 @@ class MmdCcdIkNode(om.MPxNode):
         out_array.set(builder)
         out_array.setAllClean()
         data.setClean(plug)
+
+    def _read_output_offset_quat(self, fn_dep, link_i: int):
+        try:
+            plug = fn_dep.findPlug("outputRotateOffset", False).elementByLogicalIndex(link_i)
+            rx = plug.child(0).asDouble()
+            ry = plug.child(1).asDouble()
+            rz = plug.child(2).asDouble()
+        except Exception:
+            return None
+        if abs(rx) <= 1e-12 and abs(ry) <= 1e-12 and abs(rz) <= 1e-12:
+            return None
+        return om.MEulerRotation(rx, ry, rz).asQuaternion()
 
     def _copy_input_rotate_to_output(self, data, plug):
         """IK disabled state: preserve FK/VMD rotations on IK link joints."""
@@ -320,16 +339,23 @@ class MmdCcdIkNode(om.MPxNode):
         except Exception:
             return False
 
-    def _controller_has_position_offset(self, positions) -> bool:
-        """Return True when the IK controller moved from its rest translate."""
+    def _controller_branch_has_position_offset(self, positions) -> bool:
+        """Return True when the IK controller or its parents moved from rest."""
         if not (0 <= self._controller_slot < self._bone_count):
             return False
-        offset = self._controller_slot * 3
-        return (
-            abs(positions[offset]) > 1e-5
-            or abs(positions[offset + 1]) > 1e-5
-            or abs(positions[offset + 2]) > 1e-5
-        )
+        slot = self._controller_slot
+        visited = set()
+        while 0 <= slot < self._bone_count and slot not in visited:
+            visited.add(slot)
+            offset = slot * 3
+            if (
+                abs(positions[offset]) > 1e-5
+                or abs(positions[offset + 1]) > 1e-5
+                or abs(positions[offset + 2]) > 1e-5
+            ):
+                return True
+            slot = self._parent_slots[slot] if slot < len(self._parent_slots) else -1
+        return False
 
     def _compute_pre_ik_goal(self, positions, rotations):
         """input pose だけから controller bone の pre-IK world 位置を得る。"""
@@ -415,6 +441,17 @@ def initialize():
     cAttr.array = True
     MmdCcdIkNode.addAttribute(MmdCcdIkNode.aInputTranslate)
 
+    _oox = uAttr.create("outputRotateOffsetElementX", "oorx", om.MFnUnitAttribute.kAngle, 0.0)
+    _ooy = uAttr.create("outputRotateOffsetElementY", "oory", om.MFnUnitAttribute.kAngle, 0.0)
+    _ooz = uAttr.create("outputRotateOffsetElementZ", "oorz", om.MFnUnitAttribute.kAngle, 0.0)
+    MmdCcdIkNode.aOutputRotateOffset = cAttr.create("outputRotateOffset", "oro")
+    cAttr.addChild(_oox)
+    cAttr.addChild(_ooy)
+    cAttr.addChild(_ooz)
+    cAttr.array = True
+    cAttr.keyable = True
+    MmdCcdIkNode.addAttribute(MmdCcdIkNode.aOutputRotateOffset)
+
     _orx = uAttr.create("outputRotateElementX", "oerx", om.MFnUnitAttribute.kAngle, 0.0)
     uAttr.writable = False
     uAttr.storable = False
@@ -442,6 +479,7 @@ def initialize():
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aGoalWorldMatrix, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aInputRotate, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aInputTranslate, MmdCcdIkNode.aOutputRotate)
+    MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aOutputRotateOffset, MmdCcdIkNode.aOutputRotate)
     MmdCcdIkNode.attributeAffects(MmdCcdIkNode.aEnabled, MmdCcdIkNode.aOutputRotate)
 
 

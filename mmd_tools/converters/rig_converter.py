@@ -1027,9 +1027,8 @@ class RigConverter:
     ) -> List[str]:
         """マニフェストの IK チェーン情報から mmdCcdIk DG ノードを作成・接続する。
 
-        足IKのlive操作は Maya 標準 ikRPsolver に任せる。mmdCcdIk は
-        MMD runtime 型のCCD評価に強い一方、JO付き Maya joint の操作用
-        local rotate 空間とは膝の曲がる向きが一致しないモデルがあるため。
+        Rig import 直後の手動 IK 操作も mmdCcdIk で扱う。VMD import 時は
+        runtime final pose を inputRotate に焼き、mmdCcdIk を pass-through にする。
         """
         import json as _json
         from mmd_tools.converters.native_rig_builder import build_ik_mini_chain
@@ -1070,12 +1069,6 @@ class RigConverter:
             slot_to_pmx = mapping["slot_to_pmx"]
             link_slots = mapping["link_slots"]
             bone_count = len(pmx_to_slot)
-            use_maya_live_ik = self._should_use_maya_live_ik_handle(
-                controller_joint,
-                target_idx,
-                links,
-                maya_joints,
-            )
 
             # Collect absolute positions first, then convert to local (parent-relative).
             # The rig primitive solver expects local rest positions.
@@ -1106,6 +1099,7 @@ class RigConverter:
                 bones_for_json.append({
                     "parent_slot": parent_slot,
                     "rest_position": None,
+                    "maya_rest_translate": None,
                     "flags": flags,
                     "fixed_axis": fa,
                     "joint_orient_deg": jo_deg,
@@ -1119,6 +1113,16 @@ class RigConverter:
                     bone["rest_position"] = [abs_pos[j] - parent_abs[j] for j in range(3)]
                 else:
                     bone["rest_position"] = list(abs_pos)
+                pmx_idx = slot_to_pmx[slot]
+                if pmx_idx < len(maya_joints):
+                    jnt = maya_joints[pmx_idx]
+                    if maya_utils.object_exists(jnt):
+                        try:
+                            bone["maya_rest_translate"] = list(cmds.getAttr(f"{jnt}.translate")[0])
+                        except Exception:
+                            bone["maya_rest_translate"] = list(bone["rest_position"])
+                if bone["maya_rest_translate"] is None:
+                    bone["maya_rest_translate"] = list(bone["rest_position"])
 
             links_for_json = []
             for lk in links:
@@ -1216,14 +1220,6 @@ class RigConverter:
                                 f"{node}.inputTranslate[{slot}]",
                             )
 
-                if use_maya_live_ik:
-                    self._create_live_ik_handle_from_manifest_chain(
-                        controller_joint,
-                        target_idx,
-                        links,
-                        maya_joints,
-                    )
-
                 # outputRotate → link joint rotations
                 for link_i, link_slot in enumerate(link_slots):
                     pmx_idx = slot_to_pmx.get(link_slot, -1)
@@ -1231,8 +1227,6 @@ class RigConverter:
                         continue
                     link_joint = maya_joints[pmx_idx]
                     if not maya_utils.object_exists(link_joint):
-                        continue
-                    if use_maya_live_ik:
                         continue
 
                     for axis in ("X", "Y", "Z"):
@@ -1281,153 +1275,6 @@ class RigConverter:
             current = parents[0]
             ancestors.add(current)
         return not any(link_joint in ancestors for link_joint in link_joints)
-
-    def _should_use_maya_live_ik_handle(
-        self,
-        controller_joint: str,
-        target_idx: int,
-        links: List[Dict[str, Any]],
-        maya_joints: List[str],
-    ) -> bool:
-        """Return True for leg IK chains that need Maya's live RP solver."""
-        if len(links) < 2:
-            return False
-        if not self._is_leg_ik(controller_joint):
-            return False
-        if target_idx < 0 or target_idx >= len(maya_joints):
-            return False
-        root_link_idx = links[-1].get("boneIndex", -1)
-        if root_link_idx < 0 or root_link_idx >= len(maya_joints):
-            return False
-        return True
-
-    def _create_live_ik_handle_from_manifest_chain(
-        self,
-        controller: str,
-        target_idx: int,
-        links: List[Dict[str, Any]],
-        maya_joints: List[str],
-    ) -> Optional[Dict[str, Any]]:
-        """Create a Maya ikHandle for interactive leg IK and mark its links."""
-        root_link_idx = links[-1].get("boneIndex", -1)
-        if root_link_idx < 0 or root_link_idx >= len(maya_joints):
-            return None
-        if target_idx < 0 or target_idx >= len(maya_joints):
-            return None
-
-        start_joint = maya_joints[root_link_idx]
-        end_joint = maya_joints[target_idx]
-        if not (
-            maya_utils.object_exists(controller)
-            and maya_utils.object_exists(start_joint)
-            and maya_utils.object_exists(end_joint)
-        ):
-            return None
-
-        try:
-            ik_handle, _ = maya_utils.create_ik_handle(
-                start_joint=start_joint,
-                end_joint=end_joint,
-                solver="ikRPsolver",
-                name=f"{controller}_ikHandle",
-            )
-            maya_utils.parent_objects(ik_handle, controller)
-            maya_utils.set_attribute(ik_handle, "v", 0, "bool")
-            maya_utils.set_attribute(ik_handle, "ikBlend", 0.0, "float")
-
-            pole_target = self._create_live_leg_pole_target(
-                controller,
-                ik_handle,
-                start_joint,
-                end_joint,
-            )
-
-            link_joints = []
-            for link in links:
-                idx = link.get("boneIndex", -1)
-                if 0 <= idx < len(maya_joints) and maya_utils.object_exists(maya_joints[idx]):
-                    link_joints.append(maya_joints[idx])
-
-            self._mark_live_ik_handle(ik_handle, controller, link_joints)
-            self._connect_live_ik_blend_to_controller_offset(ik_handle, controller)
-            self.logger.info(
-                f"live IKハンドル '{ik_handle}' を作成しました"
-                f"（{start_joint} -> {end_joint}, pole={pole_target}）"
-            )
-            return {
-                "ik_handle": ik_handle,
-                "controller": controller,
-                "start_joint": start_joint,
-                "end_joint": end_joint,
-                "links": link_joints,
-                "pole_target": pole_target,
-            }
-        except Exception as exc:
-            self.logger.error(f"live IKハンドルの作成に失敗しました '{controller}': {exc}")
-            return None
-
-    def _create_live_leg_pole_target(
-        self,
-        controller: str,
-        ik_handle: str,
-        start_joint: str,
-        end_joint: str,
-    ) -> Optional[str]:
-        """Create a hidden Z+ pole target for MMD leg IK visual bend direction."""
-        try:
-            start_pos = cmds.xform(start_joint, query=True, worldSpace=True, translation=True)
-            end_pos = cmds.xform(end_joint, query=True, worldSpace=True, translation=True)
-            mid_pos = [(start_pos[i] + end_pos[i]) * 0.5 for i in range(3)]
-            pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] + 2.0]
-
-            pole_target = cmds.spaceLocator(name=f"{controller}_poleTarget")[0]
-            cmds.xform(pole_target, worldSpace=True, translation=pole_pos)
-            maya_utils.set_attribute(pole_target, "v", 0, "bool")
-            cmds.poleVectorConstraint(pole_target, ik_handle)
-            return pole_target
-        except Exception as exc:
-            self.logger.error(f"live IK PoleTargetの作成に失敗しました '{controller}': {exc}")
-            return None
-
-    def _connect_live_ik_blend_to_controller_offset(self, ik_handle: str, controller: str) -> None:
-        """Keep the native ikHandle inactive at REST and enable it when moved."""
-        try:
-            rest = cmds.getAttr(f"{controller}.translate")[0]
-            expr = (
-                f"float $dx = abs({controller}.translateX - {float(rest[0]):.12g});\n"
-                f"float $dy = abs({controller}.translateY - {float(rest[1]):.12g});\n"
-                f"float $dz = abs({controller}.translateZ - {float(rest[2]):.12g});\n"
-                f"{ik_handle}.ikBlend = (($dx + $dy + $dz) > 0.00001) ? 1.0 : 0.0;"
-            )
-            cmds.expression(
-                name=f"{ik_handle}_restBlendExpr",
-                string=expr,
-                object=controller,
-                alwaysEvaluate=True,
-                unitConversion="all",
-            )
-        except Exception as exc:
-            self.logger.error(f"live IK blend expression の作成に失敗しました '{ik_handle}': {exc}")
-
-    @staticmethod
-    def _mark_live_ik_handle(ik_handle: str, controller: str, link_joints: List[str]) -> None:
-        import json as _json
-
-        if not cmds.attributeQuery("mmd_ik_native_handle", node=ik_handle, exists=True):
-            cmds.addAttr(ik_handle, longName="mmd_ik_native_handle", attributeType="bool")
-        cmds.setAttr(f"{ik_handle}.mmd_ik_native_handle", True)
-
-        if not cmds.attributeQuery("mmd_ik_controller", node=ik_handle, exists=True):
-            cmds.addAttr(ik_handle, longName="mmd_ik_controller", dataType="string")
-        cmds.setAttr(f"{ik_handle}.mmd_ik_controller", controller, type="string")
-
-        if not cmds.attributeQuery("mmd_ik_link_joints_json", node=ik_handle, exists=True):
-            cmds.addAttr(ik_handle, longName="mmd_ik_link_joints_json", dataType="string")
-        cmds.setAttr(
-            f"{ik_handle}.mmd_ik_link_joints_json",
-            _json.dumps(link_joints, ensure_ascii=False),
-            type="string",
-        )
 
     # ------------------------------------------------------------------
     # Legacy: manifest → Maya standard constraints (fallback reference)
