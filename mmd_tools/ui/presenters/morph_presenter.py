@@ -322,7 +322,7 @@ class MorphPresenter:
         # 現在のスライダーもリセット
         self.view.morph_slider.setValue(0)
         self.app_state.emit_status(f"Reset {reset_count} morph(s)")
-        logger.info(f"全モーフリセット完了: {reset_count}個のモーフをリセット")
+        logger.info(f"Reset all morphs complete: reset {reset_count} morph(s)")
 
     def on_morph_type_changed(self, index):
         """モーフタイプが変更されたときの処理"""
@@ -353,7 +353,7 @@ class MorphPresenter:
             # グループコンボボックスにも追加
             self.view.group_combo.addItem(group_name)
 
-            logger.info(f"グループを追加しました: {group_name}")
+            logger.info(f"Added group: {group_name}")
             self.app_state.emit_status(f"Added group: {group_name}")
 
     def remove_group(self):
@@ -397,7 +397,7 @@ class MorphPresenter:
         # UIを更新
         self.load_morph_details(self.current_morph)
 
-        logger.info(f"モーフを連携しました: {self.current_morph} -> {blend_shape_node}.{target_name}")
+        logger.info(f"Connected morph: {self.current_morph} -> {blend_shape_node}.{target_name}")
         self.app_state.emit_status(f"Connected morph: {self.current_morph}")
 
     def disconnect_blend_shape(self):
@@ -413,7 +413,7 @@ class MorphPresenter:
 
     def auto_connect_blend_shapes(self):
         """ブレンドシェイプを自動連携"""
-        logger.info("自動連携を開始します")
+        logger.info("Starting auto-connect")
 
         connected_count = 0
         current_model_root = self.app_state.current_model_root
@@ -459,7 +459,7 @@ class MorphPresenter:
                             data["blend_shape_node"] = bs_node
                             data["blend_shape_target"] = target_name
                             connected_count += 1
-                            logger.info(f"自動連携成功: {morph_name} -> {bs_node}.{target_name}")
+                            logger.info(f"Auto-connect succeeded: {morph_name} -> {bs_node}.{target_name}")
                             break
 
                     if data.get("blend_shape_node"):
@@ -474,7 +474,7 @@ class MorphPresenter:
 
         # 結果を通知
         self.app_state.emit_status(f"Auto-connected {connected_count} morph(s)")
-        logger.info(f"自動連携完了: {connected_count}個のモーフを連携")
+        logger.info(f"Auto-connect complete: connected {connected_count} morph(s)")
 
     def select_blend_shape_node(self):
         """ブレンドシェイプノードを選択"""
@@ -514,7 +514,7 @@ class MorphPresenter:
         # グループを再整理
         self._organize_morphs_by_group()
 
-        logger.info(f"モーフ '{self.current_morph}' の変更を適用しました")
+        logger.info(f"Applied changes to morph '{self.current_morph}'")
         self.app_state.emit_status(f"Applied morph changes: {self.current_morph}")
 
     def _save_mmd_morph_data(self, model_root):
@@ -526,7 +526,7 @@ class MorphPresenter:
         """変更をリセット"""
         if self.current_morph:
             self.load_morph_details(self.current_morph)
-            logger.info(f"モーフ '{self.current_morph}' の変更をリセットしました")
+            logger.info(f"Reset changes to morph '{self.current_morph}'")
 
     def save_preset(self):
         """現在のモーフ値をプリセットとして保存"""
@@ -581,7 +581,7 @@ class MorphPresenter:
             if self.view.preset_combo.findText(preset_name) == -1:
                 self.view.preset_combo.addItem(preset_name)
 
-            logger.info(f"プリセット '{preset_name}' を保存しました")
+            logger.info(f"Saved preset '{preset_name}'")
             self.app_state.emit_status(f"Saved preset '{preset_name}'")
 
     def load_preset(self):
@@ -631,11 +631,11 @@ class MorphPresenter:
             if self.current_morph and self.current_morph in preset_data:
                 self.view.morph_slider.setValue(int(preset_data[self.current_morph] * 100))
 
-            logger.info(f"プリセット '{preset_name}' を適用しました ({applied_count}個のモーフ)")
+            logger.info(f"Applied preset '{preset_name}' ({applied_count} morph(s))")
             self.app_state.emit_status(f"Applied preset '{preset_name}'")
 
         except Exception as e:
-            logger.error(f"プリセットの読み込みに失敗しました: {str(e)}")
+            logger.error(f"Failed to load preset: {str(e)}")
             self.app_state.emit_status("Failed to load preset", "error")
 
     def delete_preset(self):
@@ -675,7 +675,7 @@ class MorphPresenter:
                 if index != -1:
                     self.view.preset_combo.removeItem(index)
 
-                logger.info(f"プリセット '{preset_name}' を削除しました")
+                logger.info(f"Deleted preset '{preset_name}'")
                 self.app_state.emit_status(f"Deleted preset '{preset_name}'")
         except Exception:
             pass

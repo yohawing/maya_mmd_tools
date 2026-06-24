@@ -132,7 +132,7 @@ class SettingsPresenter:
 
             level = getattr(logging, new_level, logging.INFO)
             logger.set_level(level)
-            logger.info(f"ログレベルを {new_level} に変更しました")
+            logger.info(f"Changed log level to {new_level}")
             # 設定も同時に保存
             self.on_setting_changed()
 
@@ -163,7 +163,7 @@ class SettingsPresenter:
 
             self.settings_service.save_settings_tab_state(state)
             self._refresh_development_mode_visibility()
-            logger.info("設定を保存しました")
+            logger.info("Settings saved")
             self.app_state.emit_status("Settings saved")
 
         except Exception as e:
@@ -201,7 +201,7 @@ class SettingsPresenter:
             try:
                 self.settings_service.write_settings_json(file_path)
 
-                logger.info(f"設定をエクスポートしました: {file_path}")
+                logger.info(f"Exported settings: {file_path}")
                 self.app_state.emit_status("Settings exported")
 
             except Exception as e:
@@ -220,7 +220,7 @@ class SettingsPresenter:
                 self.load_settings()
                 self._refresh_development_mode_visibility()
 
-                logger.info(f"設定をインポートしました: {file_path}")
+                logger.info(f"Imported settings: {file_path}")
                 self.app_state.emit_status("Settings imported")
 
             except Exception as e:

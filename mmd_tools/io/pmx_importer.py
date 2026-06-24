@@ -48,9 +48,9 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
         if profile is not None:
             phase_timings[name] = round(time.perf_counter() - start, 6)
 
-    logger.info("PMXファイルのインポートを開始: %s", filepath)
+    logger.info("Starting PMX file import: %s", filepath)
 
-    logger.debug("スケールファクター: %f", scale)
+    logger.debug("Scale factor: %f", scale)
 
     # Namespace処理
     use_namespace = options.get("use_namespace", False)
@@ -77,7 +77,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
         with NamespaceUtils.namespace_context(namespace):
             # ルートグループを作成
             root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
-            logger.debug("ルートグループ作成: %s", root_group)
+            logger.debug("Created root group: %s", root_group)
 
             # Add attributes to root node
             maya_utils.set_custom_attributes(
@@ -93,7 +93,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             )
 
             # メッシュを変換
-            logger.info("メッシュを変換中...")
+            logger.info("Converting mesh...")
             mesh_converter = MeshConverter(filepath)
             phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
@@ -101,17 +101,17 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
 
             # mesh_name が list かどうかで分岐
             mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
-            logger.debug("メッシュ変換完了: グループ=%s, 名前=%s", mesh_group, mesh_name)
+            logger.debug("Mesh conversion complete: group=%s, name=%s", mesh_group, mesh_name)
 
-            logger.info("モーフを変換中...")
+            logger.info("Converting morphs...")
             morph_converter = MorphConverter()
             phase_start = time.perf_counter()
             morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
             _record_phase("morph_conversion_sec", phase_start)
-            logger.debug("モーフ変換完了")
+            logger.debug("Morph conversion complete")
 
             # ボーンを変換
-            logger.info("ボーンを変換中...")
+            logger.info("Converting bones...")
             bone_converter = BoneConverter()
             phase_start = time.perf_counter()
             maya_joints, skin_cluster = bone_converter.convert_pmx_bones(
@@ -124,7 +124,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             )
             _record_phase("bone_and_skin_conversion_sec", phase_start)
             logger.debug(
-                "ボーン変換完了: %d個のジョイント, %d個のメッシュ",
+                "Bone conversion complete: %d joints, %d meshes",
                 len(maya_joints) if maya_joints else 0,
                 len(mesh_names),
             )
@@ -135,7 +135,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 settings.get("import.physics.import_physics", True),
             )
             if import_physics:
-                logger.info("物理を変換中...")
+                logger.info("Converting physics...")
                 physics_converter = PhysicsConverter()
 
                 # ボーン名とMayaジョイント名のマッピングを作成
@@ -149,12 +149,12 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                     )
                     _record_phase("physics_conversion_sec", phase_start)
                     logger.debug(
-                        "物理変換完了: nCloth=%d, Constraints=%d",
+                        "Physics conversion complete: nCloth=%d, Constraints=%d",
                         len(ncloth_nodes),
                         len(constraint_nodes),
                     )
                 else:
-                    logger.debug("物理データが存在しません")
+                    logger.debug("No physics data found")
 
             # MMD ライトコントローラ（操作可能なヌル）を作成（get-or-create）。
             # シェーダーへの結線は dx11 uniform 生成（refresh）後に行うため、
@@ -166,11 +166,11 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
 
                     light_ctrl = create_mmd_light_controller()
                 except Exception:
-                    logger.debug("MMD ライトコントローラ作成に失敗", exc_info=True)
+                    logger.debug("Failed to create MMD light controller", exc_info=True)
 
             # スケールを適用
             if root_group and scale != 1.0:
-                logger.info("スケールを適用中: %f", scale)
+                logger.info("Applying scale: %f", scale)
                 cmds.setAttr(root_group + ".scaleX", scale)
                 cmds.setAttr(root_group + ".scaleY", scale)
                 cmds.setAttr(root_group + ".scaleZ", scale)
@@ -202,7 +202,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
 
                     wire_dx11_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)
                 except Exception:
-                    logger.debug("MMD ライト結線に失敗", exc_info=True)
+                    logger.debug("Failed to wire MMD light", exc_info=True)
 
             # Color Management を MMD 向けに整える（CM の enable は触らない）。
             if settings.get("import.view.setup_color_management", True):
@@ -234,14 +234,14 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                     "%d texture(s) could not be loaded. Use Resolve textures to repair them.",
                     mesh_converter.unresolved_texture_count,
                 )
-        logger.info("PMXファイルのインポートが完了しました: %s", os.path.basename(filepath))
+        logger.info("PMX file import completed: %s", os.path.basename(filepath))
         return root_group  # ルートノードの名前を返す
 
     except Exception as e:
-        logger.error("PMXファイルのインポートに失敗しました: %s - %s", filepath, str(e))
+        logger.error("Failed to import PMX file: %s - %s", filepath, str(e))
         import traceback
 
-        logger.debug("エラーの詳細:\n%s", traceback.format_exc())
+        logger.debug("Error details:\n%s", traceback.format_exc())
 
         # エラー時のnamespaceクリーンアップ
         if namespace:

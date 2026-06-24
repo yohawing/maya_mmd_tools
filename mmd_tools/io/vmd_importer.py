@@ -32,7 +32,7 @@ def import_vmd_file(parser, filepath, options=None):
     if options is None:
         options = {}
     logger = get_logger("vmd_importer")
-    logger.info(f"VMDファイルのインポートを開始: {filepath}")
+    logger.info(f"Starting VMD file import: {filepath}")
 
     try:
         # オプションからターゲットモデルを取得
@@ -42,21 +42,21 @@ def import_vmd_file(parser, filepath, options=None):
         if target_model:
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
             if target_namespace:
-                logger.info(f"ターゲットネームスペース: {target_namespace}")
+                logger.info(f"Target namespace: {target_namespace}")
         else:
             selected = cmds.ls(selection=True)
             if selected:
                 for sel in selected:
                     target_namespace = NamespaceUtils.get_namespace_from_node(sel)
                     if target_namespace:
-                        logger.info(f"ターゲットネームスペース: {target_namespace}")
+                        logger.info(f"Target namespace: {target_namespace}")
                         target_model = sel
                         break
                 if not target_model:
                     target_model = selected[0]
-                    logger.info(f"ネームスペースなしのターゲットモデル: {target_model}")
+                    logger.info(f"Target model without namespace: {target_model}")
             else:
-                logger.warning("ターゲットモデルが指定されていません。")
+                logger.warning("Target model is not specified.")
 
         # Bake mode needs raw VMD bytes for mmd-anim final-pose evaluation.
         # Rig mode still receives these bytes, but VmdConverter rejects runtime
@@ -66,7 +66,7 @@ def import_vmd_file(parser, filepath, options=None):
             with open(filepath, "rb") as f:
                 vmd_bytes = f.read()
         except Exception as e:
-            logger.warning(f"VMD 生バイトの読み込みに失敗: {e}")
+            logger.warning(f"Failed to read raw VMD bytes: {e}")
 
         # PMX ソースの解決（明示指定 > モデルに保存されたソース > ディレクトリ推定）
         pmx_bytes = options.get("pmx_bytes")
@@ -79,7 +79,7 @@ def import_vmd_file(parser, filepath, options=None):
                     stored = cmds.getAttr(f"{target_model}.mmd_source_file")
                     if stored and os.path.exists(stored):
                         pmx_path = stored
-                        logger.info(f"モデルから PMX ソースを復元: {pmx_path}")
+                        logger.info(f"Restored PMX source from model: {pmx_path}")
             except Exception:
                 pass
 
@@ -90,7 +90,7 @@ def import_vmd_file(parser, filepath, options=None):
                 candidates = [f for f in os.listdir(vmd_dir) if f.lower().endswith((".pmx", ".pmd"))] if os.path.isdir(vmd_dir) else []
                 if candidates:
                     pmx_path = os.path.join(vmd_dir, candidates[0])
-                    logger.info(f"PMX ソースを自動推定: {pmx_path} （明示指定を推奨）")
+                    logger.info(f"Auto-detected PMX source: {pmx_path} (explicit path recommended)")
             except Exception:
                 pass
 
@@ -117,13 +117,13 @@ def import_vmd_file(parser, filepath, options=None):
         )
 
         if success:
-            logger.info("VMDファイルのインポートが完了しました")
+            logger.info("VMD file import completed")
             if is_mmd_runtime_available():
                 # Phase 2: ライブノードの自動作成オプション
                 if options.get("use_live_runtime", False) and target_model:
                     if not pmx_path or not os.path.exists(pmx_path):
                         logger.warning(
-                            "ライブランタイムノード作成をスキップ: PMX ファイル path が解決できません"
+                            "Skipping live runtime node creation: PMX file path could not be resolved"
                         )
                     else:
                         try:
@@ -132,19 +132,19 @@ def import_vmd_file(parser, filepath, options=None):
                                 create_runtime_node_for_model,
                             )
                             node = create_runtime_node_for_model(target_model, pmx_path, filepath)
-                            logger.info(f"ライブランタイムノードを作成: {node}")
+                            logger.info(f"Created live runtime node: {node}")
                             dg_result = connect_runtime_node_outputs_to_model(node, target_model, pmx_path=pmx_path)
                             logger.info(
-                                "ライブランタイムDG接続: bones=%d morphs=%d skipped=%d warnings=%d",
+                                "Live runtime DG connection: bones=%d morphs=%d skipped=%d warnings=%d",
                                 len(dg_result.get("connected_bones", [])),
                                 len(dg_result.get("connected_morphs", [])),
                                 len(dg_result.get("skipped", [])),
                                 len(dg_result.get("warnings", [])),
                             )
                             for warning in dg_result.get("warnings", []):
-                                logger.warning(f"ライブランタイムDG接続警告: {warning}")
+                                logger.warning(f"Live runtime DG connection warning: {warning}")
                         except Exception as e:
-                            logger.warning(f"ライブノード作成に失敗: {e}")
+                            logger.warning(f"Failed to create live node: {e}")
 
             cmds.inViewMessage(
                 amg=f"VMD animation imported successfully from: {filepath}",
@@ -154,7 +154,7 @@ def import_vmd_file(parser, filepath, options=None):
                 fadeOutTime=500,
             )
         else:
-            cmds.warning("VMDファイルのインポートに失敗しました")
+            cmds.warning("Failed to import VMD file")
 
         return success
 
