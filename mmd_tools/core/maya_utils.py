@@ -1371,6 +1371,47 @@ def matrix_to_euler(matrix):
     return [math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z)]
 
 
+def _parse_array_attribute_part(attr_part):
+    if not attr_part.endswith("]") or "[" not in attr_part:
+        return attr_part, None
+    attr_name, _, index_text = attr_part[:-1].partition("[")
+    try:
+        return attr_name, int(index_text)
+    except ValueError:
+        return attr_part, None
+
+
+def _find_plug(fn_depend, attr):
+    """Find a simple, array element, or compound-array child plug."""
+    try:
+        return fn_depend.findPlug(attr, False)
+    except Exception:
+        pass
+
+    plug = None
+    for part in attr.split("."):
+        attr_name, logical_index = _parse_array_attribute_part(part)
+        if plug is None:
+            plug = fn_depend.findPlug(attr_name, False)
+        else:
+            child = None
+            for child_index in range(plug.numChildren()):
+                candidate = plug.child(child_index)
+                if candidate.partialName(useLongNames=True) == attr_name:
+                    child = candidate
+                    break
+            if child is None:
+                raise AttributeError(f"Attribute child '{attr_name}' not found")
+            plug = child
+
+        if logical_index is not None:
+            plug = plug.elementByLogicalIndex(logical_index)
+
+    if plug is None:
+        raise AttributeError(f"Attribute '{attr}' not found")
+    return plug
+
+
 def create_animation_curves(
     node_name,
     attributes,
@@ -1443,7 +1484,7 @@ def create_animation_curves(
         else:
             # 通常のアニメーションカーブ作成
             curve = oma.MFnAnimCurve()
-            plug = fn_depend.findPlug(attr, False)
+            plug = _find_plug(fn_depend, attr)
             curve.create(plug)
             curves[attr] = curve
 

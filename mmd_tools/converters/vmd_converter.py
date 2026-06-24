@@ -864,6 +864,65 @@ class VmdConverter:
 
         return keyed, skipped_static
 
+    def _batch_key_scalar_channels(
+        self,
+        node_name: str,
+        channel_samples: Dict[str, List[Tuple[float, float]]],
+        animation_layer: Optional[str] = None,
+    ) -> bool:
+        """Maya UI 値の scalar channel を MFnAnimCurve.addKeys で一括キーイングする。"""
+        if not cmds.objExists(node_name) or not channel_samples:
+            return False
+
+        attrs = [attr for attr, samples in channel_samples.items() if samples]
+        if not attrs:
+            return False
+
+        curves: Dict[str, oma.MFnAnimCurve] = {}
+        try:
+            curves = maya_utils.create_animation_curves(
+                node_name,
+                attrs,
+                tangent_type=oma.MFnAnimCurve.kTangentLinear,
+                animation_layer=animation_layer,
+            )
+        except Exception as exc:
+            self.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
+
+        tangent = oma.MFnAnimCurve.kTangentLinear
+        success_any = False
+        for attr in attrs:
+            samples = channel_samples[attr]
+            curve = curves.get(attr)
+            if curve:
+                try:
+                    times = om.MTimeArray()
+                    values = om.MDoubleArray()
+                    for frame, value in samples:
+                        times.append(om.MTime(float(frame), om.MTime.uiUnit()))
+                        values.append(float(value))
+                    curve.addKeys(times, values, tangent, tangent, False)
+                    success_any = True
+                    continue
+                except Exception as exc:
+                    self.logger.debug(f"addKeys failed for {node_name}.{attr}, fallback: {exc}")
+
+            for frame, value in samples:
+                try:
+                    key_args = {
+                        "attribute": attr,
+                        "time": frame,
+                        "value": float(value),
+                    }
+                    if animation_layer:
+                        key_args["animLayer"] = animation_layer
+                    cmds.setKeyframe(node_name, **key_args)
+                    success_any = True
+                except Exception as exc:
+                    self.logger.debug(f"setKeyframe fallback failed for {node_name}.{attr} at {frame}: {exc}")
+
+        return success_any
+
     @staticmethod
     def _collect_append_info():
         """シーン内の全 mmdAppend ノードから (target_joint, append_node, source_joint, ratio, attr_map) を収集。"""
@@ -1379,11 +1438,7 @@ class VmdConverter:
             f"total={total_channels}"
         )
 
-        for frame, morph_weights in morph_cache:
-            try:
-                self._bake_morph_weights_from_runtime(frame, morph_weights, pmx_morph_names)
-            except Exception as e:
-                self.logger.debug(f"post-apply morph bake error at frame {frame}: {e}")
+        self._bake_morph_weight_cache_from_runtime(morph_cache, pmx_morph_names)
 
         self.logger.info(f"Applied runtime cache: keyed {len(baked_frames)} frames")
         return None
@@ -1570,14 +1625,11 @@ class VmdConverter:
                 f"total={total_channels}"
             )
 
-        # モーフ: 評価ループの外で後処理（cmds ではあるが、キャッシュ適用フェーズ）
-        for fd in runtime_cache:
-            try:
-                self._bake_morph_weights_from_runtime(
-                    fd["frame"], fd.get("morph_weights", []), pmx_morph_names
-                )
-            except Exception as e:
-                self.logger.debug(f"post-apply morph bake error at frame {fd['frame']}: {e}")
+        morph_cache = [
+            (int(fd["frame"]), list(fd.get("morph_weights", [])))
+            for fd in runtime_cache
+        ]
+        self._bake_morph_weight_cache_from_runtime(morph_cache, pmx_morph_names)
 
         self.logger.info(f"Applied runtime cache: keyed {len(runtime_cache)} frames")
 
@@ -1707,6 +1759,61 @@ class VmdConverter:
                     self.logger.debug(
                         f"runtime morph bake error for {morph_name} at frame {frame}: {e}"
                     )
+
+    def _bake_morph_weight_cache_from_runtime(
+        self,
+        morph_cache: List[Tuple[int, list]],
+        pmx_morph_names: List[str] = None,
+    ) -> None:
+        """runtime 評価済み morph weight cache を blendShape/network weight へ一括キーイングする。"""
+        if not morph_cache:
+            return
+
+        pmx_morph_names = pmx_morph_names or []
+        samples_by_node: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
+        keyed_morphs = set()
+        for frame, morph_weights in morph_cache:
+            for index, weight in enumerate(morph_weights):
+                if index >= len(pmx_morph_names):
+                    continue
+                morph_name = pmx_morph_names[index]
+                mappings = self._iter_morph_mappings(self.morph_name_mapping.get(morph_name))
+                if not mappings:
+                    continue
+                keyed_morphs.add(morph_name)
+                for morph_node, weight_attr, _ in mappings:
+                    node_samples = samples_by_node.setdefault(morph_node, {})
+                    node_samples.setdefault(weight_attr, []).append((float(frame), float(weight)))
+
+        if not samples_by_node:
+            return
+
+        keyed_nodes = 0
+        for morph_node, channel_samples in samples_by_node.items():
+            try:
+                if self._batch_key_scalar_channels(morph_node, channel_samples):
+                    keyed_nodes += 1
+                    continue
+            except Exception as exc:
+                self.logger.debug(f"runtime morph batch keying failed for {morph_node}, fallback: {exc}")
+
+            for weight_attr, samples in channel_samples.items():
+                for frame, weight in samples:
+                    try:
+                        cmds.setKeyframe(
+                            morph_node,
+                            attribute=weight_attr,
+                            time=frame,
+                            value=float(weight),
+                        )
+                    except Exception as exc:
+                        self.logger.debug(
+                            f"runtime morph fallback keying failed for {morph_node}.{weight_attr} at {frame}: {exc}"
+                        )
+
+        self.logger.info(
+            f"runtime morph batch keying: nodes={keyed_nodes}/{len(samples_by_node)}, morphs={len(keyed_morphs)}"
+        )
 
     def _disable_mmd_rig_constraints_for_runtime_bake(self):
         """runtime bake と二重評価になる PMX 付与constraint/IK solverを無効化する。"""
@@ -2264,6 +2371,54 @@ class VmdConverter:
             self._bone_bind_poses.get(joint, (0.0, 0.0, 0.0)),
         )
 
+        batch_simple_bone = (
+            not attr_targets
+            and not skip_rotate
+            and not key_route.get("ik_solver_rotate")
+            and not use_layer
+        )
+        if batch_simple_bone:
+            channel_samples = {attr: [] for attr in attrs}
+            for frame in frames:
+                if hasattr(frame, "frame_number"):
+                    frame_number = frame.frame_number
+                    vmd_pos = frame.position
+                    rotation_quat = frame.rotation
+                else:
+                    frame_number = frame.get("frame_number", 0)
+                    vmd_pos = frame.get("position", [0, 0, 0])
+                    rotation_quat = frame.get("rotation", [0, 0, 0, 1])
+
+                tx = float(bind_pos[0]) + float(vmd_pos[0])
+                ty = float(bind_pos[1]) + float(vmd_pos[1])
+                tz = float(bind_pos[2]) - float(vmd_pos[2])
+                rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
+                values = {
+                    "translateX": tx,
+                    "translateY": ty,
+                    "translateZ": tz,
+                    "rotateX": rx,
+                    "rotateY": ry,
+                    "rotateZ": rz,
+                }
+                for attr, value in values.items():
+                    channel_samples[attr].append((float(frame_number), float(value)))
+
+            if self._batch_key_scalar_channels(joint, channel_samples):
+                if self.use_quaternion_interpolation:
+                    try:
+                        cmds.rotationInterpolation(
+                            f"{joint}.rotateX",
+                            f"{joint}.rotateY",
+                            f"{joint}.rotateZ",
+                            convert="quaternionSlerp",
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
+                return
+
+            self.logger.debug(f"legacy bone batch keying produced no keys for {joint}; using setKeyframe fallback")
+
         for frame in frames:
             if hasattr(frame, "frame_number"):
                 frame_number = frame.frame_number
@@ -2656,10 +2811,16 @@ class VmdConverter:
                 continue
 
             for morph_node, weight_attr, _ in mappings:
+                samples = []
                 for frame in frames:
                     frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
                     value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
-                    cmds.setKeyframe(morph_node, attribute=weight_attr, time=frame_number, value=value)
+                    samples.append((float(frame_number), float(value)))
+                if not self._batch_key_scalar_channels(morph_node, {weight_attr: samples}):
+                    for frame in frames:
+                        frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+                        value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
+                        cmds.setKeyframe(morph_node, attribute=weight_attr, time=frame_number, value=value)
 
             success_count += 1
 
