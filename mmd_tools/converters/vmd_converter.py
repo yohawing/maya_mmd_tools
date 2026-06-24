@@ -2335,6 +2335,168 @@ class VmdConverter:
             if cmds.attributeQuery(attr, node=node, exists=True):
                 cmds.animLayer(self.anim_layer, edit=True, attribute=f"{node}.{attr}")
 
+    @staticmethod
+    def _parse_vmd_interpolation(interpolation_bytes):
+        """VMD bone interpolation bytes をチャンネル別 Bezier 制御点へ変換する。
+
+        Returns:
+            dict: translate_x/y/z と rotation をキーに持つ、正規化済み
+                (x1, y1, x2, y2) タプルの辞書。データ不足時は空辞書。
+        """
+        if not interpolation_bytes or len(interpolation_bytes) < 16:
+            return {}
+
+        data = bytes(interpolation_bytes[:16])
+
+        def _norm(value):
+            return max(0.0, min(127.0, float(value))) / 127.0
+
+        channels = ("translate_x", "translate_y", "translate_z", "rotation")
+        parsed = {}
+        for index, channel in enumerate(channels):
+            parsed[channel] = (
+                _norm(data[index]),
+                _norm(data[4 + index]),
+                _norm(data[8 + index]),
+                _norm(data[12 + index]),
+            )
+        return parsed
+
+    @staticmethod
+    def _vmd_interp_channel_for_attr(attr: str) -> Optional[str]:
+        """Maya attribute 名に対応する VMD interpolation channel 名を返す。"""
+        if attr == "translateX":
+            return "translate_x"
+        if attr == "translateY":
+            return "translate_y"
+        if attr == "translateZ":
+            return "translate_z"
+        if attr.startswith("rotate") or "inputRotateElement" in attr:
+            return "rotation"
+        return None
+
+    @staticmethod
+    def _is_linear_vmd_interp(points: Tuple[float, float, float, float]) -> bool:
+        """VMD Bezier 制御点が線形指定かどうかを判定する。"""
+        x1, y1, x2, y2 = points
+        return abs(x1 - y1) < 1e-9 and abs(x2 - y2) < 1e-9
+
+    @staticmethod
+    def _get_frame_number(frame) -> float:
+        """VMD frame object / dict から frame_number を取得する。"""
+        if hasattr(frame, "frame_number"):
+            return float(frame.frame_number)
+        return float(frame.get("frame_number", 0))
+
+    @staticmethod
+    def _get_frame_interpolation(frame):
+        """VMD frame object / dict から interpolation bytes を取得する。"""
+        if hasattr(frame, "interpolation"):
+            return frame.interpolation
+        return frame.get("interpolation", b"")
+
+    def _query_key_value(self, plug: str, frame_number: float) -> Optional[float]:
+        """指定 plug/frame のキー値を取得する。取得できない場合は None。"""
+        try:
+            values = cmds.keyframe(
+                plug,
+                query=True,
+                time=(frame_number, frame_number),
+                valueChange=True,
+            )
+        except Exception as exc:
+            self.logger.debug(f"Failed to query key value for {plug} at {frame_number}: {exc}")
+            return None
+        if not values:
+            return None
+        return float(values[0])
+
+    def _apply_vmd_bezier_tangents(self, joint: str, frames: List, attrs, channel_interp_map: Dict[str, str]):
+        """VMD Bezier 補間を Maya weighted tangent として適用する。
+
+        Args:
+            joint: デフォルトのキー対象ノード。
+            frames: フレーム番号でソート済みの VMD bone frames。
+            attrs: source attr 名のリスト、または source attr から
+                (target_node, target_attr) への辞書。
+            channel_interp_map: source attr から VMD interpolation channel 名への対応。
+        """
+        if len(frames) < 2:
+            return
+
+        if isinstance(attrs, dict):
+            attr_targets = attrs
+            source_attrs = list(attrs.keys())
+        else:
+            attr_targets = {attr: (joint, attr) for attr in attrs}
+            source_attrs = list(attrs)
+
+        for frame_index in range(len(frames) - 1):
+            frame = frames[frame_index]
+            next_frame = frames[frame_index + 1]
+            frame_number = self._get_frame_number(frame)
+            next_frame_number = self._get_frame_number(next_frame)
+            dt = next_frame_number - frame_number
+            if dt <= 0.0:
+                continue
+
+            # VMD の補間バイト列は到着キー側に保存されるため、
+            # 区間 frame -> next_frame では next_frame.interpolation を使う。
+            interpolation = self._parse_vmd_interpolation(self._get_frame_interpolation(next_frame))
+            if not interpolation:
+                continue
+
+            for source_attr in source_attrs:
+                channel_name = channel_interp_map.get(source_attr)
+                if not channel_name:
+                    continue
+                points = interpolation.get(channel_name)
+                if not points or self._is_linear_vmd_interp(points):
+                    continue
+
+                target_node, target_attr = attr_targets.get(source_attr, (joint, source_attr))
+                plug = f"{target_node}.{target_attr}"
+                value = self._query_key_value(plug, frame_number)
+                next_value = self._query_key_value(plug, next_frame_number)
+                if value is None or next_value is None:
+                    continue
+
+                x1, y1, x2, y2 = points
+                dv = next_value - value
+                out_dx = dt * x1
+                out_dy = dv * y1
+                in_dx = dt * (1.0 - x2)
+                in_dy = dv * (1.0 - y2)
+                out_angle = math.degrees(math.atan2(out_dy, out_dx))
+                in_angle = math.degrees(math.atan2(in_dy, in_dx))
+                out_weight = math.sqrt((out_dx * out_dx) + (out_dy * out_dy)) / (3.0 * dt)
+                in_weight = math.sqrt((in_dx * in_dx) + (in_dy * in_dy)) / (3.0 * dt)
+
+                try:
+                    cmds.keyTangent(
+                        plug,
+                        edit=True,
+                        time=(frame_number, frame_number),
+                        weightedTangents=True,
+                        outTangentType="fixed",
+                        outAngle=out_angle,
+                        outWeight=out_weight,
+                    )
+                    cmds.keyTangent(
+                        plug,
+                        edit=True,
+                        time=(next_frame_number, next_frame_number),
+                        weightedTangents=True,
+                        inTangentType="fixed",
+                        inAngle=in_angle,
+                        inWeight=in_weight,
+                    )
+                except Exception as exc:
+                    self.logger.debug(
+                        f"Failed to apply VMD Bezier tangent for {plug} "
+                        f"{frame_number}->{next_frame_number}: {exc}"
+                    )
+
     def _set_bone_keyframes(self, joint: str, frames: List, vmd_bone_name: str, key_route: Optional[dict] = None):
         """ボーンのキーフレームを設定
 
@@ -2348,6 +2510,11 @@ class VmdConverter:
         attr_targets = key_route.get("attr_targets", {})
         skip_rotate = bool(key_route.get("skip_rotate"))
         attrs = ["translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"]
+        channel_interp_map = {
+            attr: self._vmd_interp_channel_for_attr(attr)
+            for attr in attrs
+            if self._vmd_interp_channel_for_attr(attr)
+        }
 
         keyed_attrs_by_node: Dict[str, List[str]] = {}
         for attr in attrs:
@@ -2415,6 +2582,7 @@ class VmdConverter:
                         )
                     except Exception as e:
                         self.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
+                self._apply_vmd_bezier_tangents(joint, frames, attrs, channel_interp_map)
                 return
 
             self.logger.debug(f"legacy bone batch keying produced no keys for {joint}; using setKeyframe fallback")
@@ -2496,6 +2664,21 @@ class VmdConverter:
                 )
             except Exception as e:
                 self.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
+
+        tangent_targets = {
+            attr: attr_targets.get(attr, (joint, attr))
+            for attr in attrs
+            if not (skip_rotate and attr.startswith("rotate"))
+        }
+        self._apply_vmd_bezier_tangents(joint, frames, tangent_targets, channel_interp_map)
+
+        if ik_info and solver_node and slot is not None:
+            solver_tangent_targets = {
+                "rotateX": (solver_node, f"inputRotate[{slot}].inputRotateElementX"),
+                "rotateY": (solver_node, f"inputRotate[{slot}].inputRotateElementY"),
+                "rotateZ": (solver_node, f"inputRotate[{slot}].inputRotateElementZ"),
+            }
+            self._apply_vmd_bezier_tangents(joint, frames, solver_tangent_targets, channel_interp_map)
 
     def _get_joint_orient_cache(self, joint_name):
         """joint の jointOrient quaternion と rotateOrder をキャッシュ付きで取得する。"""
