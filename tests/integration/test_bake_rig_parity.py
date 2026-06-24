@@ -522,6 +522,30 @@ class TestBakeRigVertexParity(MayaTestBase):
         overall_mean = overall_sum / overall_count if overall_count else 0.0
         return overall_max, overall_mean, frame_results
 
+    def _capture_bone_world_position(self, setup_rig, setup_bone_orientation, bone_names, frame):
+        root = _import_model_with_options(PMX_FILE, VMD_FILE, setup_rig, setup_bone_orientation)
+        self.assertIsNotNone(root, "PMX/VMD import failed")
+
+        target_joint = None
+        for joint in cmds.ls(type="joint") or []:
+            if cmds.attributeQuery("mmd_bone_name", node=joint, exists=True):
+                bone_name = cmds.getAttr(f"{joint}.mmd_bone_name")
+                if bone_name in bone_names:
+                    target_joint = joint
+                    break
+            if any(name in joint for name in bone_names):
+                target_joint = joint
+                break
+
+        self.assertIsNotNone(target_joint, f"{bone_names} の joint が見つかりません")
+
+        cmds.currentTime(frame, edit=True)
+        cmds.refresh(force=True)
+        matrix = om.MMatrix(cmds.xform(target_joint, query=True, worldSpace=True, matrix=True))
+        position = om.MTransformationMatrix(matrix).translation(om.MSpace.kWorld)
+        cmds.file(new=True, force=True)
+        return position.x, position.y, position.z
+
     def test_rest_pose_bake_vs_rig_orientation_flag_off(self):
         """REST ポーズ (frame 0): A vs B で頂点が一致する"""
         rest_frames = [0]
@@ -577,6 +601,32 @@ class TestBakeRigVertexParity(MayaTestBase):
             max_d, VERTEX_REST_THRESHOLD,
             f"REST ポーズ A vs C: max vertex dist = {max_d:.4f} (threshold {VERTEX_REST_THRESHOLD}). "
             f"Rig+JO bind pose should match Bake."
+        )
+
+    def test_ik_knee_world_position_bake_vs_rig_parity(self):
+        """IK link pre-rotation を含む左ひざ位置が Bake と Rig+JO で一致する。"""
+        bone_names = {"左ひざ", "左膝"}
+        frame = 10
+
+        bake_pos = self._capture_bone_world_position(
+            setup_rig=False,
+            setup_bone_orientation=False,
+            bone_names=bone_names,
+            frame=frame,
+        )
+        rig_pos = self._capture_bone_world_position(
+            setup_rig=True,
+            setup_bone_orientation=True,
+            bone_names=bone_names,
+            frame=frame,
+        )
+
+        distance = _euclidean(bake_pos, rig_pos)
+        self.assertLessEqual(
+            distance,
+            WORLD_POS_THRESHOLD,
+            f"左ひざ frame {frame} の Bake/Rig+JO world position 差が大きすぎます: "
+            f"{distance:.4f} units (threshold {WORLD_POS_THRESHOLD})",
         )
 
     @unittest.skip("Bake/Rig animated vertex parity is not a valid sparse VMD/live-rig acceptance gate")

@@ -18,6 +18,7 @@ from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.io.mmd_importer import import_mmd_file
 from tests.common.test_fixture_provider import TestFixtureProvider
 
 
@@ -445,6 +446,64 @@ class TestVmdConverter(MayaTestBase):
         self.assertIsNone(cmds.keyframe(f"{ik_node}.inputRotate[0].inputRotateElementX", query=True))
 
         cmds.delete(ik_node, joint)
+
+    def test_ik_link_input_rotate_stores_correct_radian_values(self):
+        """Rig+JO の IK link pre-rotation が solver.inputRotate に正しい角度単位で保存される"""
+        pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        vmd_path = self.fixture_provider.get_vmd_file("mmt_test_model_test_motion")
+
+        root = import_mmd_file(
+            pmx_path,
+            options={"setup_rig": True, "setup_bone_orientation": True},
+        )
+        self.assertIsNotNone(root, "PMX import failed")
+        self.assertTrue(
+            import_mmd_file(vmd_path, options={"target_model": root, "pmx_path": pmx_path}),
+            "VMD import failed",
+        )
+
+        solver_node = None
+        for node in cmds.ls(type="mmdCcdIk") or []:
+            if not cmds.attributeQuery("mmd_ik_bone_name", node=node, exists=True):
+                continue
+            ik_name = cmds.getAttr(f"{node}.mmd_ik_bone_name") or ""
+            if "左足" in ik_name and "つま先" not in ik_name:
+                solver_node = node
+                break
+
+        self.assertIsNotNone(solver_node, "左足 IK の mmdCcdIk solver が見つかりません")
+
+        chain = json.loads(cmds.getAttr(f"{solver_node}.chainJson") or "{}")
+        slots = [int(link["bone_slot"]) for link in chain.get("links", [])]
+        self.assertGreater(len(slots), 0, "左足 IK の chainJson に links がありません")
+
+        selection = om.MSelectionList()
+        selection.add(solver_node)
+        fn_dep = om.MFnDependencyNode(selection.getDependNode(0))
+        input_rotate = fn_dep.findPlug("inputRotate", False)
+
+        cmds.currentTime(10, edit=True)
+
+        non_zero_radians = []
+        for slot in slots:
+            elem = input_rotate.elementByLogicalIndex(slot)
+            for axis_index, axis in enumerate("XYZ"):
+                attr = f"{solver_node}.inputRotate[{slot}].inputRotateElement{axis}"
+                ui_degrees = cmds.getAttr(attr)
+                plug_radians = elem.child(axis_index).asDouble()
+                self.assertAlmostEqual(
+                    plug_radians,
+                    math.radians(ui_degrees),
+                    delta=1e-6,
+                    msg=f"{attr} の getAttr 度数値と MPlug ラジアン値が一致しません",
+                )
+                non_zero_radians.append(abs(plug_radians))
+
+        self.assertGreater(
+            max(non_zero_radians),
+            0.01,
+            "IK link inputRotate がほぼゼロで、二重ラジアン変換の再発が疑われます",
+        )
 
     def test_resolve_runtime_bake_sources_uses_vmd_source_file_and_scene_pmx(self):
         """convert 直呼びでも VmdData.source_file と model root の mmd_source_file から runtime 入力を復元する"""
