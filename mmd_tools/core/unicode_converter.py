@@ -97,10 +97,10 @@ class UnicodeToAsciiConverter:
 
                 self._build_reverse_map()
 
-                self.logger.info(f"Loaded dictionary file: {dictionary_path}")
-                self.logger.info(f"Dictionary entry count: {len(self.unicode_to_ascii)}")
+                self.logger.debug(f"Loaded dictionary file: {dictionary_path}")
+                self.logger.debug(f"Dictionary entry count: {len(self.unicode_to_ascii)}")
                 if self.exact_match:
-                    self.logger.info(f"Exact-match entry count: {len(self.exact_match)}")
+                    self.logger.debug(f"Exact-match entry count: {len(self.exact_match)}")
             else:
                 self._load_default_dictionary()
                 self.logger.warning(f"Dictionary file not found: {dictionary_path}")

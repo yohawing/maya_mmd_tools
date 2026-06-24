@@ -447,7 +447,7 @@ def get_mmd_runtime_library() -> Optional[CDLL]:
             )
             # 互換性の範囲で続行するか、厳格に拒否するかは将来調整
         else:
-            logger.info(f"Loaded mmd-anim runtime library: {path} (ABI {abi})")
+            logger.debug(f"Loaded mmd-anim runtime library: {path} (ABI {abi})")
 
         _runtime_lib = lib
         _runtime_lib_path = path
