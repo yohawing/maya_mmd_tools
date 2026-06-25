@@ -1026,17 +1026,23 @@ def apply_vertex_weights(
     for ii in range(influence_count):
         influence_indices[ii] = ii
 
-    # ウェイト配列を作成（頂点数 × 影響数）
-    weight_array = om.MDoubleArray(vertex_count * influence_count, 0.0)
-    # 各頂点のウェイトを設定
-    for vertex_index in range(vertex_count):
-        for influence_index in range(influence_count):
-            array_index = vertex_index * influence_count + influence_index
-
-            # influence_indexがweightsの範囲外の場合は0.0を設定
-            in_range = vertex_index < len(weights) and influence_index < len(weights[vertex_index])
-            weight_value = weights[vertex_index][influence_index] if in_range else 0.0
-            weight_array[array_index] = weight_value
+    # flat list を構築して MDoubleArray に一括変換（per-element 代入より桁違いに速い）
+    zero_row = [0.0] * influence_count
+    n_weights = len(weights)
+    flat = []
+    flat_extend = flat.extend
+    for vi in range(vertex_count):
+        if vi < n_weights:
+            row = weights[vi]
+            row_len = len(row)
+            if row_len >= influence_count:
+                flat_extend(row[:influence_count])
+            else:
+                flat_extend(row)
+                flat_extend(zero_row[:influence_count - row_len])
+        else:
+            flat_extend(zero_row)
+    weight_array = om.MDoubleArray(flat)
 
     # 一括で設定
     skin_fn.setWeights(shape_dag_path, vertex_component_obj, influence_indices, weight_array, False)

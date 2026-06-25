@@ -315,11 +315,15 @@ class TestMorphConverter(MayaTestBase):
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(result.get("morphs_converted"), 1)
-        self.assertTrue(cmds.objExists("source2_move_target"))
-        moved_position = cmds.pointPosition("source2_move_target.vtx[1]", local=True)
-        unchanged_position = cmds.pointPosition("source2_move_target.vtx[0]", local=True)
+        # テンプレートメッシュは削除される — blendShape 経由でデルタを検証
+        bs_node = result["results"][0]["blend_shape_node"]
+        alias = result["results"][0]["alias"]
+        cmds.setAttr(f"{bs_node}.{alias}", 1.0)
+        moved_position = cmds.pointPosition(f"{mesh}.vtx[1]", local=True)
+        unchanged_position = cmds.pointPosition(f"{mesh}.vtx[0]", local=True)
         self.assertAlmostEqual(moved_position[0], 1.25, places=5)
         self.assertAlmostEqual(unchanged_position[0], 0.0, places=5)
+        cmds.setAttr(f"{bs_node}.{alias}", 0.0)
 
     def test_morph_group_split_mesh_filters_vertex_morphs_by_name(self):
         """morph group split mesh では許可された vertex morph だけ blendShape target を作る。"""
