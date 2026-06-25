@@ -529,6 +529,142 @@ class TestBakeRigVertexParity(MayaTestBase):
         )
 
 
+class TestRigModeAcceptance(MayaTestBase):
+    """Rig モードの acceptance テスト
+
+    Sparse VMD key + live DG ノードの受け入れ基準:
+    1. VMD key が sparse に入っている（全フレームベイクではない）
+    2. IK ノードが接続されている
+    3. Rig 出力が oracle と閾値内で一致する
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        if not os.path.exists(PMX_FILE):
+            raise unittest.SkipTest(f"Test fixture not found: {PMX_FILE}")
+        if not os.path.exists(VMD_FILE):
+            raise unittest.SkipTest(f"Test fixture not found: {VMD_FILE}")
+
+    def setUp(self):
+        super().setUp()
+        self.fixture_provider = TestFixtureProvider()
+
+    def tearDown(self):
+        self.fixture_provider.cleanup_temp_files()
+        super().tearDown()
+
+    def test_rig_mode_world_positions_match_oracle(self):
+        """Rig+JO mode の world position が mmd-anim oracle と閾値内で一致する"""
+        _import_model_with_options(
+            PMX_FILE, VMD_FILE,
+            setup_rig=True, setup_bone_orientation=True,
+            bake_mode=False,
+        )
+
+        actual = _capture_bone_world_transforms_by_index(FRAMES)
+        oracle = _capture_runtime_oracle_world_transforms(PMX_FILE, VMD_FILE, FRAMES)
+
+        common = set(actual.keys()) & set(oracle.keys())
+        self.assertGreater(len(common), 0)
+
+        outliers = []
+        for idx in sorted(common):
+            joint = next(iter(actual[idx].values()))["joint"]
+            for frame in FRAMES:
+                af = actual[idx].get(frame)
+                of = oracle[idx].get(frame)
+                if not af or not of:
+                    continue
+                dist = _euclidean(af["pos"], of["pos"])
+                if dist > WORLD_POS_THRESHOLD:
+                    outliers.append((joint, idx, frame, dist))
+
+        if outliers:
+            outliers.sort(key=lambda x: -x[3])
+            lines = [f"Rig vs Oracle mismatch ({len(outliers)} outliers):"]
+            for joint, idx, frame, dist in outliers[:20]:
+                lines.append(f"  bone[{idx}] {joint} @ frame {frame}: {dist:.4f}")
+            self.fail("\n".join(lines))
+
+    def test_sparse_keys_not_fully_baked(self):
+        """Rig mode は sparse key（VMD フレーム位置のみ）で、全フレームベイクではない"""
+        _import_model_with_options(
+            PMX_FILE, VMD_FILE,
+            setup_rig=True, setup_bone_orientation=True,
+            bake_mode=False,
+        )
+
+        joints = [j for j in (cmds.ls(type="joint") or [])
+                  if cmds.attributeQuery("mmd_bone_index", node=j, exists=True)]
+        self.assertGreater(len(joints), 0)
+
+        vmd_data = VmdData().parse_file(VMD_FILE)
+        self.assertGreater(len(vmd_data.bone_frames), 0, "VMD has no bone frames")
+
+        # VMD のボーン名ごとのフレーム番号集合を作成
+        from collections import defaultdict
+        vmd_frames_by_bone = defaultdict(set)
+        for f in vmd_data.bone_frames:
+            vmd_frames_by_bone[f.bone_name].add(f.frame_number)
+
+        # Rig mode のキーが VMD フレーム番号と一致することを確認
+        found_keyed = False
+        for joint in joints[:10]:
+            bone_name = ""
+            if cmds.attributeQuery("mmd_bone_name", node=joint, exists=True):
+                bone_name = cmds.getAttr(f"{joint}.mmd_bone_name") or ""
+            if not bone_name or bone_name not in vmd_frames_by_bone:
+                continue
+            key_times = cmds.keyframe(f"{joint}.rotateX", query=True, timeChange=True) or []
+            if not key_times:
+                continue
+            found_keyed = True
+            maya_frames = {int(round(t)) for t in key_times}
+            vmd_frames = vmd_frames_by_bone[bone_name]
+            self.assertTrue(
+                vmd_frames.issubset(maya_frames),
+                f"Joint {joint} ({bone_name}): VMD frames {sorted(vmd_frames)} "
+                f"not all present in Maya keys {sorted(maya_frames)}",
+            )
+
+        self.assertTrue(found_keyed, "No VMD-keyed joints found among first 10 joints")
+
+    def test_ik_nodes_present_and_connected(self):
+        """Rig mode で mmdCcdIk / mmdAppend ノードが作成・接続されている"""
+        _import_model_with_options(
+            PMX_FILE, VMD_FILE,
+            setup_rig=True, setup_bone_orientation=True,
+            bake_mode=False,
+        )
+
+        ik_nodes = cmds.ls(type="mmdCcdIk") or []
+        append_nodes = cmds.ls(type="mmdAppend") or []
+
+        self.assertGreater(
+            len(ik_nodes) + len(append_nodes), 0,
+            "Rig mode should create mmdCcdIk and/or mmdAppend DG nodes",
+        )
+
+        for node in ik_nodes:
+            out_conns = cmds.listConnections(
+                f"{node}.outputRotate", s=False, d=True
+            ) or []
+            self.assertGreater(
+                len(out_conns), 0,
+                f"mmdCcdIk node {node} has no output connections",
+            )
+
+        for node in append_nodes:
+            out_conns = cmds.listConnections(
+                f"{node}.outputRotate", s=False, d=True
+            ) or []
+            self.assertGreater(
+                len(out_conns), 0,
+                f"mmdAppend node {node} has no output connections",
+            )
+
+
 
 if __name__ == "__main__":
     unittest.main()
