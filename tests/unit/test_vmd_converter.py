@@ -1317,24 +1317,18 @@ class TestVmdConverter(MayaTestBase):
 
     def test_convert_with_fixture_vmd_camera(self):
         """フィクスチャを使用したカメラアニメーション変換テスト"""
-        # テスト用VMDファイルを取得
         try:
-            vmd_path = self.fixture_provider.get_vmd_file()
+            vmd_path = self.fixture_provider.get_vmd_file("test_camera_light")
         except FileNotFoundError:
-            self.skipTest("テスト用VMDファイルが見つかりません")
+            self.skipTest("カメラ/照明テスト用VMDが見つかりません")
 
-        # VMDファイルをパース
         from mmd_tools.core.vmd_data import VmdData
 
         parser = VmdData()
         parser.parse_file(vmd_path)
 
-        # カメラアニメーション変換
-        if hasattr(parser, "camera_frames") and parser.camera_frames:
-            result = self.converter._convert_camera_animation(parser.camera_frames)
-            self.assertTrue(result, "カメラアニメーション変換に失敗しました")
-        else:
-            self.skipTest("VMDファイルにカメラアニメーションが含まれていません")
+        result = self.converter._convert_camera_animation(parser.camera_frames)
+        self.assertTrue(result, "カメラアニメーション変換に失敗しました")
 
         # MMDカメラが作成されたことを確認
         from mmd_tools.core.constants import ATTR_MMD_CAMERA

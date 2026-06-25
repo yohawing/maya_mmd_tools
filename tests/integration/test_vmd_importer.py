@@ -271,23 +271,14 @@ class TestVmdImporter(MayaTestBase):
 
     def test_vmd_camera_animation_import(self):
         """VMDファイルからカメラアニメーションをインポートするテスト"""
-        # テスト用スケルトンを作成（カメラアニメーションでも必要な場合がある）
         self._create_test_skeleton()
 
-        # VMDファイルのパスを取得
-        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
+        vmd_path = os.path.join(self.test_data_dir, "test_camera_light.vmd")
+        if not os.path.exists(vmd_path):
+            self.skipTest("カメラ/照明テスト用VMDが見つかりません")
 
-        if not vmd_files:
-            self.skipTest("テスト用VMDファイルが見つかりません")
-
-        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
-
-        # VMDファイルをパースしてカメラデータがあるか確認
         parser = VmdData()
         parser.parse_file(vmd_path)
-
-        if not hasattr(parser, "camera_frames") or not parser.camera_frames:
-            self.skipTest("テストVMDファイルにカメラアニメーションが含まれていません")
 
         # VMDファイルをインポート
         result = import_mmd_file(vmd_path)
@@ -330,23 +321,14 @@ class TestVmdImporter(MayaTestBase):
 
     def test_vmd_light_animation_import(self):
         """VMDファイルから照明アニメーションをインポートするテスト"""
-        # テスト用スケルトンを作成
         self._create_test_skeleton()
 
-        # VMDファイルのパスを取得
-        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
+        vmd_path = os.path.join(self.test_data_dir, "test_camera_light.vmd")
+        if not os.path.exists(vmd_path):
+            self.skipTest("カメラ/照明テスト用VMDが見つかりません")
 
-        if not vmd_files:
-            self.skipTest("テスト用VMDファイルが見つかりません")
-
-        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
-
-        # VMDファイルをパースして照明データがあるか確認
         parser = VmdData()
         parser.parse_file(vmd_path)
-
-        if not hasattr(parser, "light_frames") or not parser.light_frames:
-            self.skipTest("テストVMDファイルに照明アニメーションが含まれていません")
 
         # VMDファイルをインポート
         result = import_mmd_file(vmd_path)
