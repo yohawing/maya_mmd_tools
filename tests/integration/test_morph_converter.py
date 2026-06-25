@@ -54,7 +54,7 @@ class TestMorphConverter(MayaTestBase):
     def test_convert_pmx_morphs(self):
         """PMXモーフがMayaに正しく変換されることをテストする。"""
         # TestFixtureProviderからPMXファイルパスを取得
-        pmx_data, pmx_file_path = self.fixture_provider.load_pmx_data("mmt_test_model")
+        pmx_data, pmx_file_path = self.fixture_provider.load_pmx_data("test_morph_model")
 
         # モーフデータが存在することを確認
         self.assertIsNotNone(pmx_data.morphs, "PMXデータにモーフがありません")

@@ -61,4 +61,5 @@ docs-dev/
 !/tests/data/mmt_test_model_ik_test_motion.vmd
 !/tests/data/joint_orient_test.vmd
 !/tests/data/test_camera_light.vmd
+!/tests/data/test_morph_model.pmx
 mmd_tools/shaders/MayaToonOutline.fx
