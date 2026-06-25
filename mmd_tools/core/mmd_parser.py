@@ -13,6 +13,17 @@ from .vpd_data import VpdData
 logger = get_logger("mmd_tools.core.mmd_parser")
 
 
+def _try_native_pmx_parse(file_path: str):
+    """ネイティブ DLL での PMX パースを試みる。失敗時は None。"""
+    try:
+        from .native.native_pmx_parser import parse_pmx_native
+
+        return parse_pmx_native(file_path)
+    except Exception as exc:
+        logger.debug("Native PMX parser unavailable: %s", exc)
+        return None
+
+
 def parse_mmd_file(file_path):
     """
     MMDファイル（PMD, PMX, VMD, VPD）を解析し、解析されたデータオブジェクトを返す。
@@ -59,6 +70,10 @@ def parse_mmd_file(file_path):
             return parser
         elif magic_bytes.startswith(b"PMX"):
             logger.info("Starting parse as PMX file")
+            native_result = _try_native_pmx_parse(file_path)
+            if native_result is not None:
+                logger.info("PMX file parsing completed (native)")
+                return native_result
             parser = PmxData()
             parser.parse_file(file_path)
             logger.info("PMX file parsing completed")
