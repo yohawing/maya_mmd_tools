@@ -121,7 +121,7 @@ class MorphConverter:
             allowed_vertex_morph_names = self._get_mesh_vertex_morph_name_filter(mn)
             template_ctx = {}
             try:
-                for morph in pmx_data.morphs:
+                for morph_index, morph in enumerate(pmx_data.morphs):
                     try:
                         if morph.morph_type == PmxMorphType.VertexMorph:
                             morph_name = morph.get_name()
@@ -154,7 +154,7 @@ class MorphConverter:
                                 self.logger.info(f"Successfully converted morph: {morph.name}")
                         elif morph.morph_type == PmxMorphType.BoneMorph and morph.name not in converted_bone_morphs:
                             self.logger.debug(f"Converting bone morph metadata: {morph.name}")
-                            result = self._convert_bone_morph_pmx(morph)
+                            result = self._convert_bone_morph_pmx(morph, morph_index)
                             if result["success"]:
                                 converted_bone_morphs.add(morph.name)
                                 results.append(result)
@@ -464,7 +464,7 @@ class MorphConverter:
             "alias": alias,
         }
 
-    def _convert_bone_morph_pmx(self, morph) -> Dict[str, Any]:
+    def _convert_bone_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXボーンモーフをMayaのnetwork nodeとしてインポートする。
 
         ここでは joint 変形へは接続せず、VMD morph frame がキー化できる
@@ -508,6 +508,7 @@ class MorphConverter:
                 "mmd_morph_name": str(morph_name),
                 "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
                 "mmd_morph_type": "bone",
+                "mmd_morph_index": int(morph_index),
                 "mmd_morph_panel": int(getattr(morph, "panel", 0)),
                 "mmd_bone_morph_offset_count": len(offsets),
                 "mmd_bone_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),

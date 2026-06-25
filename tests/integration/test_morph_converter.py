@@ -127,6 +127,7 @@ class TestMorphConverter(MayaTestBase):
         self.assertTrue(cmds.getAttr(f"{morph_node}.weight", keyable=True))
         self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_name"), "ボーン笑い")
         self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_type"), "bone")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_index"), 0)
         self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offset_count"), 1)
 
         offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offsets_json"))
