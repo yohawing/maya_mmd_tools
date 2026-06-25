@@ -563,7 +563,6 @@ class MorphConverter:
         raw_name = self._raw_morph_name(morph)
         morph_name = maya_utils.sanitize_text(morph.get_name())
 
-        # テンプレート使い回し: 初回のみ duplicate、以降は base_points へリセット
         if template_ctx is not None:
             if "target_mesh" not in template_ctx:
                 target_mesh = cmds.duplicate(mesh_node)[0]
@@ -574,29 +573,33 @@ class MorphConverter:
                 dag = sel.getDagPath(0)
                 mesh_fn = om.MFnMesh(dag)
                 template_ctx["target_mesh"] = target_mesh
+                template_ctx["dag_path"] = dag
+                template_ctx["mesh_fn"] = mesh_fn
                 template_ctx["base_points"] = mesh_fn.getPoints(om.MSpace.kObject)
                 template_ctx["source_to_local"] = self._get_mesh_source_vertex_map(mesh_node)
-            else:
-                sel = om.MSelectionList()
-                sel.add(template_ctx["target_mesh"])
-                dag = sel.getDagPath(0)
-                mesh_fn = om.MFnMesh(dag)
-                mesh_fn.setPoints(template_ctx["base_points"], om.MSpace.kObject)
+                template_ctx["blend_shape_node"] = maya_utils.find_or_create_blendshape_node(mesh_node)
+                template_ctx["next_target_index"] = 0
+
+            # base_points から Python コピー → オフセット適用 → 1回の setPoints
+            # リセット用 setPoints + getPoints を完全に排除
+            target_points = self._compute_target_points(
+                template_ctx["base_points"], morph, template_ctx["source_to_local"],
+            )
+            template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
 
             target_mesh = template_ctx["target_mesh"]
-            source_to_local = template_ctx["source_to_local"]
+            blend_shape_node = template_ctx["blend_shape_node"]
+            target_index = template_ctx["next_target_index"]
+            template_ctx["next_target_index"] = target_index + 1
         else:
             target_mesh = cmds.duplicate(mesh_node)[0]
             target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
             maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
             source_to_local = self._get_mesh_source_vertex_map(mesh_node)
-
-        self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
-
-        blend_shape_node = maya_utils.find_or_create_blendshape_node(mesh_node)
-
-        target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
-        target_index = len(target_count) if target_count else 0
+            self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
+            blend_shape_node = maya_utils.find_or_create_blendshape_node(mesh_node)
+            target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
+            target_index = len(target_count) if target_count else 0
 
         cmds.blendShape(
             blend_shape_node,
@@ -615,6 +618,32 @@ class MorphConverter:
             "target_index": target_index,
             "alias": alias,
         }
+
+    @staticmethod
+    def _compute_target_points(
+        base_points: om.MPointArray,
+        morph,
+        source_to_local: Optional[Dict[int, int]],
+    ) -> om.MPointArray:
+        """base_points + morph offsets → 新しい MPointArray を返す（メッシュ操作なし）。"""
+        points = om.MPointArray(base_points)
+        n_points = len(points)
+        if not hasattr(morph, "offsets"):
+            return points
+        for offset in morph.offsets:
+            if "vertex_index" not in offset or "position_offset" not in offset:
+                continue
+            src_vi = int(offset["vertex_index"])
+            if source_to_local is not None:
+                vi = source_to_local.get(src_vi)
+                if vi is None:
+                    continue
+            else:
+                vi = src_vi
+            if vi < n_points:
+                pos = offset["position_offset"]
+                points[vi] += om.MVector(pos[0], pos[1], pos[2])
+        return points
 
     @staticmethod
     def cleanup_vertex_morph_template(template_ctx: Dict[str, Any]) -> None:
