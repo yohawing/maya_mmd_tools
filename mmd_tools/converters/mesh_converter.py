@@ -595,6 +595,7 @@ class MeshConverter:
         """
         self.logger = get_logger(__name__)
         self.created_shaders = []
+        self.has_dx11_shaders = False
         self.unresolved_texture_count = 0
         self.unresolved_textures = []
         self.model_filepath = pmx_filepath
@@ -620,6 +621,15 @@ class MeshConverter:
     def _add_profile_time(self, key: str, start: float) -> None:
         """Accumulate timing in the converter profile."""
         self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
+
+    def _record_created_shader(self, shader: str) -> None:
+        """Record a created shader and whether it is a real dx11Shader node."""
+        self.created_shaders.append(shader)
+        try:
+            if shader and cmds.objExists(shader) and cmds.nodeType(shader) == "dx11Shader":
+                self.has_dx11_shaders = True
+        except Exception:
+            pass
 
     def _record_unresolved_texture_issue(
         self,
@@ -962,7 +972,7 @@ class MeshConverter:
                 original_texture_path=raw_texture_path,
             )
             self._add_profile_time("material_create_sec", material_start)
-            self.created_shaders.append(shader)
+            self._record_created_shader(shader)
             self.profile["material_count_processed"] += 1
 
             # 面の範囲を選択してマテリアルを割り当て
@@ -1130,7 +1140,7 @@ class MeshConverter:
                 original_texture_path=raw_texture_path,
             )
             self._add_profile_time("material_create_sec", material_start)
-            self.created_shaders.append(shader)
+            self._record_created_shader(shader)
             self.profile["material_count_processed"] += 1
 
             # 全 face にマテリアルを割り当て
@@ -1382,7 +1392,7 @@ class MeshConverter:
                 original_texture_path=raw_texture_path,
             )
             self._add_profile_time("material_create_sec", material_start)
-            self.created_shaders.append(shader)
+            self._record_created_shader(shader)
             self.profile["material_count_processed"] += 1
 
             assign_start = time.perf_counter()

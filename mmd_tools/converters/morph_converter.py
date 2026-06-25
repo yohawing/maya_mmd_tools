@@ -6,6 +6,7 @@ Mayaのブレンドシェイプシステムに変換する機能を提供しま�
 """
 
 import json
+import time
 from typing import Any, Dict, List, Optional, Set, Union
 
 from maya import cmds
@@ -31,6 +32,11 @@ class MorphConverter:
 
         self.settings = settings.get("import.morph", {})
         self.logger = get_logger(__name__)
+        self.profile = {}
+
+    def _add_profile_time(self, key: str, start: float) -> None:
+        """Accumulate timing in the converter profile."""
+        self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
     def convert_pmd_morphs(self, pmd_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
         """
@@ -168,6 +174,7 @@ class MorphConverter:
                     except Exception as e:
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
             finally:
+                self._flush_vertex_morph_name_mapping(template_ctx)
                 self.cleanup_vertex_morph_template(template_ctx)
 
         return {
@@ -352,6 +359,45 @@ class MorphConverter:
         while f"{base_alias}_{index}" in existing:
             index += 1
         return f"{base_alias}_{index}"
+
+    @staticmethod
+    def _unique_blendshape_alias_from_existing(base_alias: str, existing: Set[str]) -> str:
+        """既に取得済みの alias 集合から一意な alias を返す。"""
+        if base_alias not in existing:
+            return base_alias
+        index = 1
+        while f"{base_alias}_{index}" in existing:
+            index += 1
+        return f"{base_alias}_{index}"
+
+    def _load_blendshape_morph_names(self, blend_shape_node: str) -> Dict[str, str]:
+        """blendShape ノードの weight index → 生モーフ名 JSON を読み込む。"""
+        if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape_node, exists=True):
+            cmds.addAttr(blend_shape_node, longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, dataType="string")
+            return {}
+        try:
+            raw = cmds.getAttr(f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items()}
+        except (TypeError, ValueError):
+            pass
+        return {}
+
+    def _flush_vertex_morph_name_mapping(self, template_ctx: Dict[str, Any]) -> None:
+        """vertex morph ループで蓄積した morph name mapping を一括保存する。"""
+        blend_shape_node = template_ctx.get("blend_shape_node")
+        names = template_ctx.get("morph_name_mapping")
+        if not template_ctx.get("morph_name_mapping_dirty") or not blend_shape_node or not names:
+            return
+        start = time.perf_counter()
+        cmds.setAttr(
+            f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
+            json.dumps(names, ensure_ascii=False, separators=(",", ":")),
+            type="string",
+        )
+        self._add_profile_time("morph_name_store_sec", start)
+        template_ctx["morph_name_mapping_dirty"] = False
 
     def _store_blendshape_morph_name(self, blend_shape_node: str, target_index: int, raw_name: str) -> None:
         """blendShape ノードに weight index → 生モーフ名 の対応を JSON で保存する。"""
@@ -579,13 +625,22 @@ class MorphConverter:
                 template_ctx["source_to_local"] = self._get_mesh_source_vertex_map(mesh_node)
                 template_ctx["blend_shape_node"] = maya_utils.find_or_create_blendshape_node(mesh_node)
                 template_ctx["next_target_index"] = 0
+                template_ctx["existing_aliases"] = self._existing_blendshape_aliases(
+                    template_ctx["blend_shape_node"],
+                )
+                template_ctx["morph_name_mapping"] = self._load_blendshape_morph_names(
+                    template_ctx["blend_shape_node"],
+                )
+                template_ctx["morph_name_mapping_dirty"] = False
 
             # base_points から Python コピー → オフセット適用 → 1回の setPoints
             # リセット用 setPoints + getPoints を完全に排除
+            target_points_start = time.perf_counter()
             target_points = self._compute_target_points(
                 template_ctx["base_points"], morph, template_ctx["source_to_local"],
             )
             template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
+            self._add_profile_time("target_points_sec", target_points_start)
 
             target_mesh = template_ctx["target_mesh"]
             blend_shape_node = template_ctx["blend_shape_node"]
@@ -596,20 +651,40 @@ class MorphConverter:
             target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
             maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
             source_to_local = self._get_mesh_source_vertex_map(mesh_node)
+            target_points_start = time.perf_counter()
             self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
+            self._add_profile_time("target_points_sec", target_points_start)
             blend_shape_node = maya_utils.find_or_create_blendshape_node(mesh_node)
             target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
             target_index = len(target_count) if target_count else 0
 
+        blendshape_add_start = time.perf_counter()
         cmds.blendShape(
             blend_shape_node,
             edit=True,
             target=(mesh_node, target_index, target_mesh, 1.0),
         )
+        self._add_profile_time("blendshape_add_sec", blendshape_add_start)
 
-        alias = self._unique_blendshape_alias(blend_shape_node, morph_name)
+        existing_aliases = template_ctx.get("existing_aliases") if template_ctx is not None else None
+        if existing_aliases is not None:
+            alias = self._unique_blendshape_alias_from_existing(morph_name, existing_aliases)
+        else:
+            alias = self._unique_blendshape_alias(blend_shape_node, morph_name)
+        alias_start = time.perf_counter()
         cmds.aliasAttr(alias, f"{blend_shape_node}.w[{target_index}]")
-        self._store_blendshape_morph_name(blend_shape_node, target_index, raw_name)
+        self._add_profile_time("alias_sec", alias_start)
+        if existing_aliases is not None:
+            existing_aliases.add(alias)
+
+        if template_ctx is not None and "morph_name_mapping" in template_ctx:
+            if raw_name:
+                template_ctx["morph_name_mapping"][str(target_index)] = str(raw_name)
+                template_ctx["morph_name_mapping_dirty"] = True
+        else:
+            morph_name_store_start = time.perf_counter()
+            self._store_blendshape_morph_name(blend_shape_node, target_index, raw_name)
+            self._add_profile_time("morph_name_store_sec", morph_name_store_start)
 
         return {
             "success": True,

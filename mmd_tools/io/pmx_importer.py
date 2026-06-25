@@ -178,15 +178,16 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
 
             cmds.select(root_group)
             try:
-                try:
-                    # dx11Shader generates effect attrs such as DiffuseColorRGB
-                    # only after VP2 evaluates the .fx file.  Force that once
-                    # before copying MMD custom attrs into generated uniforms.
-                    phase_start = time.perf_counter()
-                    cmds.refresh(force=True)
-                    _record_phase("refresh_sec", phase_start)
-                except Exception:
-                    pass
+                if mesh_converter.has_dx11_shaders:
+                    try:
+                        # dx11Shader generates effect attrs such as DiffuseColorRGB
+                        # only after VP2 evaluates the .fx file.  Force that once
+                        # before copying MMD custom attrs into generated uniforms.
+                        phase_start = time.perf_counter()
+                        cmds.refresh(force=True)
+                        _record_phase("refresh_sec", phase_start)
+                    except Exception:
+                        pass
                 phase_start = time.perf_counter()
                 synced_dx11 = sync_dx11_generated_uniforms(mesh_converter.created_shaders)
                 _record_phase("dx11_uniform_sync_sec", phase_start)
@@ -213,6 +214,8 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             if profile is not None:
                 profile["phase_timings"] = phase_timings
                 profile["mesh_converter"] = dict(mesh_converter.profile)
+                profile["morph_converter"] = dict(morph_converter.profile)
+                profile["bone_converter"] = dict(bone_converter.profile)
                 profile["texture_issues"] = list(mesh_converter.unresolved_textures)
                 profile["morph_result"] = {
                     "morphs_converted": morph_result.get("morphs_converted"),
@@ -229,6 +232,10 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                         0,
                     ),
                 }
+                logger.info("PMX import phase timings: %s", profile["phase_timings"])
+                logger.info("Mesh converter profile: %s", profile["mesh_converter"])
+                logger.info("Morph converter profile: %s", profile["morph_converter"])
+                logger.info("Bone converter profile: %s", profile["bone_converter"])
             if mesh_converter.unresolved_texture_count:
                 logger.warning(
                     "%d texture(s) could not be loaded. Use Resolve textures to repair them.",

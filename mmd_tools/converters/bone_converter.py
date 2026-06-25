@@ -1,4 +1,5 @@
 import math
+import time
 from typing import List, Tuple, Union
 
 import maya.cmds as cmds
@@ -60,6 +61,11 @@ class BoneConverter:
         """
         self.logger = get_logger(__name__)
         self.rig_converter = RigConverter()
+        self.profile = {}
+
+    def _add_profile_time(self, key: str, start: float) -> None:
+        """Accumulate timing in the converter profile."""
+        self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
     def convert_pmx_bones(
         self,
@@ -227,6 +233,7 @@ class BoneConverter:
 
         # まず、すべてのジョイントを親なしで作成
         for i, bone in enumerate(bones):
+            joint_create_start = time.perf_counter()
             # bone_mapから既にユニークな名前を取得
             joint_name = bone_map[i]
 
@@ -246,8 +253,11 @@ class BoneConverter:
 
             # セグメントスケール補償を無効化
             maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
+            self._add_profile_time("joint_create_sec", joint_create_start)
 
+            joint_attr_start = time.perf_counter()
             self._set_extra_attributes(i, joint, bone, format_type)
+            self._add_profile_time("joint_attr_sec", joint_attr_start)
             maya_joints.append(joint)
 
         # 次に、親子関係を設定
@@ -415,6 +425,7 @@ class BoneConverter:
             return None
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
+        skin_cluster_create_start = time.perf_counter()
         skin_cluster = cmds.skinCluster(
             maya_joints,
             mesh_node,
@@ -423,6 +434,7 @@ class BoneConverter:
             maximumInfluences=max_influence,  # PMXは最大4つのボーンに制限されているため
             name="skinCluster",
         )[0]
+        self._add_profile_time("skin_cluster_create_sec", skin_cluster_create_start)
 
         return skin_cluster
 
@@ -499,7 +511,7 @@ class BoneConverter:
             skin_cluster (str): スキンクラスターの名前。
             mesh_node (str): メッシュノードの名前。
         """
-
+        weight_pack_start = time.perf_counter()
         weights = []
         source_vertex_indices = self._get_mesh_source_vertex_indices(mesh_node)
         vertices = pmx_data.vertices
@@ -524,12 +536,11 @@ class BoneConverter:
                 vertex_weights[joint_index] = weight
 
             weights.append(vertex_weights)
+        self._add_profile_time("weight_pack_sec", weight_pack_start)
 
-        maya_utils.apply_vertex_weights(
-            skin_cluster,
-            mesh_node,
-            weights,
-        )
+        set_weights_start = time.perf_counter()
+        maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
+        self._add_profile_time("set_weights_sec", set_weights_start)
 
     def _get_mesh_source_vertex_indices(self, mesh_node):
         """compact material split mesh の元 PMX vertex index 配列を取得する。"""
@@ -556,6 +567,7 @@ class BoneConverter:
 
         max_joint_index = len(maya_joints) - 1
         invalid_bone_indices = set()
+        weight_pack_start = time.perf_counter()
         weights = []
         for vertex in pmd_data.vertices:
             # ボーンの数でリストを初期化
@@ -591,16 +603,15 @@ class BoneConverter:
                     invalid_bone_indices.add(warning_key)
 
             weights.append(vertex_weights)
+        self._add_profile_time("weight_pack_sec", weight_pack_start)
 
         # vertexの要素が存在することをチェック
         if not weights:
             self.logger.warning("Vertex weights are empty. Check whether the mesh has vertices.")
             return
-        maya_utils.apply_vertex_weights(
-            skin_cluster,
-            mesh_node,
-            weights,
-        )
+        set_weights_start = time.perf_counter()
+        maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
+        self._add_profile_time("set_weights_sec", set_weights_start)
 
     def _compute_pmx_world_rotation_matrix(self, bone):
         """PMX LOCAL_AXIS の軸方向からワールド空間回転行列を計算する。"""
