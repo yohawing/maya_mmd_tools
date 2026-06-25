@@ -192,7 +192,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
         # material morph runtime graph を構築（shader ↔ evaluator 接続）
-        build_result = build_material_morph_graph(root)
+        build_material_morph_graph(root)
 
         return root, mesh, shader, material_nodes
 
