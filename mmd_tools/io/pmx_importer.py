@@ -111,6 +111,15 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             _record_phase("morph_conversion_sec", phase_start)
             logger.debug("Morph conversion complete")
 
+            # network morph ノードをモデルルートに message 接続で紐付ける
+            for morph_node in (
+                morph_result.get("bone_morph_nodes", [])
+                + morph_result.get("material_morph_nodes", [])
+            ):
+                if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):
+                    cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
+                cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root", force=True)
+
             # ボーンを変換
             logger.info("Converting bones...")
             bone_converter = BoneConverter()

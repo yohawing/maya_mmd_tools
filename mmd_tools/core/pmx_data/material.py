@@ -47,8 +47,8 @@ class PmxSharedToonFlag(enum.IntEnum):
     Toonテクスチャの共有方法を示す。
     """
 
-    SHARED = 0  # 共有Toon
-    NOT_SHARED = 1  # 個別Toon
+    NOT_SHARED = 0  # 個別Toon（テクスチャテーブル参照）
+    SHARED = 1  # 共有Toon（toon01～toon10）
 
 
 class PmxMaterial:
@@ -77,7 +77,7 @@ class PmxMaterial:
         self.texture_index = -1
         self.sphere_texture_index = -1
         self.sphere_mode = PmxSphereMode.DISABLED
-        self.shared_toon_flag = PmxSharedToonFlag.SHARED
+        self.shared_toon_flag = PmxSharedToonFlag.NOT_SHARED
         self.toon_texture_index = -1
         self.memo = ""
         self.face_count = 0

@@ -95,7 +95,7 @@ class MorphPresenter:
         self._load_blend_shapes(current_model_root, allow_metadata_entries=allow_metadata_entries)
 
         # bone/material morph の network node を検索
-        self._load_network_morphs(allow_metadata_entries=allow_metadata_entries)
+        self._load_network_morphs(current_model_root, allow_metadata_entries=allow_metadata_entries)
 
         # グループごとにモーフを整理
         self._organize_morphs_by_group()
@@ -186,12 +186,20 @@ class MorphPresenter:
                 continue
         return mapping
 
-    def _load_network_morphs(self, allow_metadata_entries=True):
+    def _load_network_morphs(self, model_root=None, allow_metadata_entries=True):
         """bone/material morph の network node metadata を一覧用に読む。"""
         network_nodes = self.maya_adapter.ls(type="network") or []
         for morph_node in network_nodes:
             if not self.maya_adapter.attribute_exists("mmd_morph_type", morph_node):
                 continue
+
+            # model root が指定され、ノードに mmd_model_root 接続がある場合はスコープチェック
+            if model_root and self.maya_adapter.attribute_exists("mmd_model_root", morph_node):
+                connected_roots = self.maya_adapter.list_connections(
+                    f"{morph_node}.mmd_model_root"
+                ) or []
+                if model_root not in connected_roots:
+                    continue
 
             morph_type = self._get_attr_safe(morph_node, "mmd_morph_type", "")
             if morph_type not in {"bone", "material"}:

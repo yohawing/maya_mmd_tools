@@ -2589,6 +2589,7 @@ class VmdConverter:
             if self._batch_key_scalar_channels(joint, channel_samples):
                 if self.use_quaternion_interpolation:
                     try:
+                        cmds.scriptEditorInfo(suppressWarnings=True)
                         cmds.rotationInterpolation(
                             f"{joint}.rotateX",
                             f"{joint}.rotateY",
@@ -2597,7 +2598,12 @@ class VmdConverter:
                         )
                     except Exception as e:
                         self.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
-                self._apply_vmd_bezier_tangents(joint, frames, attrs, channel_interp_map)
+                    finally:
+                        cmds.scriptEditorInfo(suppressWarnings=False)
+                tangent_attrs = attrs
+                if self.use_quaternion_interpolation:
+                    tangent_attrs = [a for a in attrs if not a.startswith("rotate")]
+                self._apply_vmd_bezier_tangents(joint, frames, tangent_attrs, channel_interp_map)
                 return
 
             self.logger.debug(f"legacy bone batch keying produced no keys for {joint}; using setKeyframe fallback")
@@ -2671,6 +2677,7 @@ class VmdConverter:
         )
         if self.use_quaternion_interpolation and not skip_rotate and not rotate_redirected:
             try:
+                cmds.scriptEditorInfo(suppressWarnings=True)
                 cmds.rotationInterpolation(
                     f"{joint}.rotateX",
                     f"{joint}.rotateY",
@@ -2679,11 +2686,16 @@ class VmdConverter:
                 )
             except Exception as e:
                 self.logger.warning(f"Failed to apply quaternion interpolation to {joint}: {str(e)}")
+            finally:
+                cmds.scriptEditorInfo(suppressWarnings=False)
 
+        skip_rotate_tangent = skip_rotate or (
+            self.use_quaternion_interpolation and not rotate_redirected
+        )
         tangent_targets = {
             attr: attr_targets.get(attr, (joint, attr))
             for attr in attrs
-            if not (skip_rotate and attr.startswith("rotate"))
+            if not (skip_rotate_tangent and attr.startswith("rotate"))
         }
         self._apply_vmd_bezier_tangents(joint, frames, tangent_targets, channel_interp_map)
 

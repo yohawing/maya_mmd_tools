@@ -455,7 +455,7 @@ def _build_materials(
                 m.shared_toon_flag = PmxSharedToonFlag.NOT_SHARED
                 m.toon_texture_index = _tex_index(toon_path, tex_map, tex_list)
             else:
-                m.shared_toon_flag = PmxSharedToonFlag.SHARED
+                m.shared_toon_flag = PmxSharedToonFlag.NOT_SHARED
                 m.toon_texture_index = -1
 
         m.memo = mj.get("memo", "")
