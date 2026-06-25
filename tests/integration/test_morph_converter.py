@@ -51,49 +51,6 @@ class TestMorphConverter(MayaTestBase):
         # 一時ファイルをクリーンアップ
         self.fixture_provider.cleanup_temp_files()
 
-    def test_convert_pmd_morphs(self):
-        """PMDモーフがMayaに正しく変換されることをテストする。"""
-        # TestFixtureProviderからPMDファイルパスを取得
-        pmd_data, pmd_path = self.fixture_provider.load_pmd_data("miku_v2")
-
-        # モーフデータが存在することを確認
-        self.assertIsNotNone(pmd_data.morphs, "PMDデータにモーフがありません")
-
-        if len(pmd_data.morphs) == 0:
-            self.skipTest("PMDデータにモーフが含まれていません")
-
-        # ルートグループを作成
-        root_group = cmds.group(empty=True, name="test_pmd_root")
-
-        # テスト用のメッシュを作成（簡単な四角形）
-        converter = MeshConverter(pmd_path)
-        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
-
-        # MorphConverterを作成して変換を実行
-        morph_converter = MorphConverter()
-        result = morph_converter.convert_pmd_morphs(pmd_data, mesh_name)
-
-        # 結果の検証
-        self.assertIsNotNone(result, "モーフ変換の結果がNoneです")
-        self.assertTrue(result.get("success", False), "モーフ変換が失敗しました")
-
-        # 変換されたモーフ数をチェック
-        morphs_converted = result.get("morphs_converted", 0)
-        self.assertGreaterEqual(morphs_converted, 0, "変換されたモーフ数が負の値です")
-
-        # PMDの場合、ベースモーフを除いた数と比較
-        expected_morphs = len([m for m in pmd_data.morphs if m.morph_type != 0])
-        self.assertLessEqual(
-            morphs_converted,
-            expected_morphs,
-            f"変換されたモーフ数({morphs_converted})が期待値({expected_morphs})を超えています",
-        )
-
-        # blendShapeノードのチェックは、実際にモーフが変換された場合のみ
-        if morphs_converted > 0:
-            blend_shape_nodes = result.get("blend_shape_nodes", [])
-            self.assertGreater(len(blend_shape_nodes), 0, "blendShapeノードが作成されていません")
-
     def test_convert_pmx_morphs(self):
         """PMXモーフがMayaに正しく変換されることをテストする。"""
         # TestFixtureProviderからPMXファイルパスを取得

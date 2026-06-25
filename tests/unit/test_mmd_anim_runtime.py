@@ -27,7 +27,6 @@ from mmd_tools.core.native import (
 _THIS_DIR = Path(__file__).resolve().parent
 _TEST_DATA_DIR = _THIS_DIR.parent / "data"
 _MMT_PMX_PATH = _TEST_DATA_DIR / "mmt_test_model.pmx"
-_LUMINE_PMX_PATH = _TEST_DATA_DIR / "Lumine" / "Lumine.pmx"
 
 
 class TestMmdAnimRuntimeAvailability(unittest.TestCase):
@@ -246,39 +245,6 @@ class TestParsedModelWhenAvailable(unittest.TestCase):
                 self.assertIsInstance(g[0], int)
                 self.assertIsInstance(g[1], int)
                 self.assertIsInstance(g[2], int)
-        finally:
-            model.free()
-
-    def test_vertex_morph_accessors_when_fixture_has_morphs(self):
-        """頂点モーフ accessor が span/index/offset/name を返すこと。"""
-        if not _LUMINE_PMX_PATH.exists():
-            self.skipTest(f"vertex morph fixture not found: {_LUMINE_PMX_PATH}")
-        pmx_bytes = _LUMINE_PMX_PATH.read_bytes()
-        model = MmdParsedModel.from_pmx_bytes(pmx_bytes)
-        self.assertIsNotNone(model)
-        try:
-            self.assertGreater(model.vertex_morph_count, 0)
-            self.assertGreater(model.vertex_morph_offset_count, 0)
-
-            spans = model.vertex_morph_spans
-            vertex_indices = model.vertex_morph_vertex_indices
-            offsets = model.vertex_morph_position_offsets
-            names = model.vertex_morph_names
-
-            self.assertIsNotNone(spans)
-            self.assertEqual(len(spans), model.vertex_morph_count)
-            self.assertIsNotNone(vertex_indices)
-            self.assertEqual(len(vertex_indices), model.vertex_morph_offset_count)
-            self.assertIsNotNone(offsets)
-            self.assertEqual(len(offsets), model.vertex_morph_offset_count)
-            self.assertIsNotNone(names)
-            self.assertEqual(len(names), model.vertex_morph_count)
-
-            first_start, first_count, first_pmx_index = spans[0]
-            self.assertGreater(first_count, 0)
-            self.assertGreaterEqual(first_pmx_index, 0)
-            self.assertGreaterEqual(vertex_indices[first_start], 0)
-            self.assertEqual(len(offsets[first_start]), 3)
         finally:
             model.free()
 

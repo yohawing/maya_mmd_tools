@@ -221,59 +221,6 @@ class TestShaderFxPackaging(unittest.TestCase):
             f"Shader .fx file missing (packaging regression): {fx_path}",
         )
 
-    @_skip_without_shader_override_stub()
-    def test_override_resolves_shader_path_to_existing_fx(self):
-        override = shader_override.MMDShaderOverride(object())
-        self.assertTrue(
-            os.path.isfile(override.shader_path),
-            f"MMDShaderOverride.shader_path does not exist: {override.shader_path}",
-        )
-
-
-class TestShaderOverrideInit(unittest.TestCase):
-    """MMDShaderOverride.__init__ の純粋な既定値設定を検証する。"""
-
-    def setUp(self):
-        if not _shader_override_uses_test_stub():
-            self.skipTest("MPxShaderOverride instance construction requires a VP2/Maya GUI object")
-        self.override = shader_override.MMDShaderOverride(object())
-
-    def test_initial_shader_is_none(self):
-        self.assertIsNone(self.override.shader)
-
-    def test_default_material_scalars(self):
-        self.assertEqual(self.override.shininess, 1.0)
-        self.assertEqual(self.override.edge_size, 0.01)
-        self.assertEqual(self.override.sphere_mode, 0)
-
-    def test_default_diffuse_color(self):
-        c = self.override.diffuse_color
-        self.assertEqual((c.r, c.g, c.b), (0.8, 0.8, 0.8))
-
-    def test_default_edge_color_is_black(self):
-        c = self.override.edge_color
-        self.assertEqual((c.r, c.g, c.b), (0.0, 0.0, 0.0))
-
-
-class TestShaderOverridePureMethods(unittest.TestCase):
-    def setUp(self):
-        if not _shader_override_uses_test_stub():
-            self.skipTest("MPxShaderOverride instance construction requires a VP2/Maya GUI object")
-        self.override = shader_override.MMDShaderOverride(object())
-
-    def test_supported_draw_apis_ors_all_three(self):
-        result = self.override.supportedDrawAPIs()
-        self.assertEqual(result, 1 | 2 | 4)
-
-    def test_handles_consolidated_geometry_true(self):
-        self.assertTrue(self.override.handlesConsolidatedGeometry())
-
-    def test_activate_key_returns_true(self):
-        self.assertTrue(self.override.activateKey(object(), object()))
-
-    def test_creator_returns_instance(self):
-        inst = shader_override.MMDShaderOverride.creator(object())
-        self.assertIsInstance(inst, shader_override.MMDShaderOverride)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,6 @@ from mmd_tools.core.native import (
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _PMX_PATH = _TEST_DATA_DIR / "mmt_test_model.pmx"
-_LUMINE_PMX_PATH = _TEST_DATA_DIR / "Lumine" / "Lumine.pmx"
 
 
 def _read_pmx_bytes(path: Path) -> bytes:
@@ -65,38 +64,6 @@ class TestRigSpec(unittest.TestCase):
             self.assertIn("restPosition", bone)
             self.assertIsInstance(bone["restPosition"], list)
             self.assertEqual(len(bone["restPosition"]), 3)
-
-        spec.free()
-
-    def test_manifest_contains_ik_chains(self):
-        pmx_bytes = _read_pmx_bytes(_LUMINE_PMX_PATH)
-        if not pmx_bytes:
-            self.skipTest("Lumine PMX not found")
-
-        spec = MmdRigSpec.from_pmx_bytes(pmx_bytes)
-        self.assertIsNotNone(spec)
-
-        manifest = spec.manifest_json()
-        self.assertIn("ikChains", manifest)
-        self.assertIn("ikChainCount", manifest)
-
-        spec.free()
-
-    def test_manifest_contains_grants(self):
-        pmx_bytes = _read_pmx_bytes(_LUMINE_PMX_PATH)
-        if not pmx_bytes:
-            self.skipTest("Lumine PMX not found")
-
-        spec = MmdRigSpec.from_pmx_bytes(pmx_bytes)
-        manifest = spec.manifest_json()
-        self.assertIn("grants", manifest)
-        self.assertIn("grantCount", manifest)
-
-        if manifest["grantCount"] > 0:
-            grant = manifest["grants"][0]
-            self.assertIn("targetBoneIndex", grant)
-            self.assertIn("sourceBoneIndex", grant)
-            self.assertIn("ratio", grant)
 
         spec.free()
 

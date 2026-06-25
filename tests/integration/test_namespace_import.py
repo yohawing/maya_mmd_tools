@@ -22,10 +22,7 @@ class TestNamespaceImport(unittest.TestCase):
         """テストクラスのセットアップ"""
         # テストデータのパスを設定
         cls.test_data_dir = os.path.join(os.path.dirname(__file__), "..", "data")
-        # 実在するリポジトリ同梱フィクスチャを使う（旧 simple_cube.pmx/simple_model.pmd は
-        # 未配置で honest-skip になっていた）。
         cls.pmx_file = os.path.join(cls.test_data_dir, "mmt_test_model.pmx")
-        cls.pmd_file = os.path.join(cls.test_data_dir, "miku_v2.pmd")
 
     def setUp(self):
         """各テストの前処理"""

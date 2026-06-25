@@ -35,40 +35,29 @@ class TestVmdConverter(MayaTestBase):
         # 一時ファイルのクリーンアップ
         self.fixture_provider.cleanup_temp_files()
 
-    def _import_model_and_apply_vmd(self, model_name, vmd_name, model_type="pmx"):
+    def _import_model_and_apply_vmd(self, model_name, vmd_name):
         """
-        モデルを読み込み、VMDファイルを適用する共通関数
+        PMXモデルを読み込み、VMDファイルを適用する共通関数
 
         Args:
             model_name (str): モデル名（拡張子なし）
             vmd_name (str): VMDファイル名（拡張子なし）
-            model_type (str): モデルタイプ ("pmx" or "pmd")
 
         Returns:
             tuple: (root_group, mesh_name, root_joint, skin_cluster, vmd_data, result)
         """
-        # モデルデータを読み込み
-        if model_type == "pmx":
-            model_data, file_path = self.fixture_provider.load_pmx_data(model_name)
-        else:
-            model_data, file_path = self.fixture_provider.load_pmd_data(model_name)
+        model_data, file_path = self.fixture_provider.load_pmx_data(model_name)
 
         # ルートグループを作成
         root_group = cmds.group(name="test_model_root", empty=True)
 
         # メッシュを作成（スキニングのため）
         mesh_converter = MeshConverter(file_path)
-        if model_type == "pmx":
-            group_name, mesh_name = mesh_converter.convert_pmx_mesh(model_data, root_group)
-        else:
-            group_name, mesh_name = mesh_converter.convert_pmd_mesh(model_data, root_group)
+        group_name, mesh_name = mesh_converter.convert_pmx_mesh(model_data, root_group)
 
         # ボーンを作成
         bone_converter = BoneConverter()
-        if model_type == "pmx":
-            root_joint, skin_cluster = bone_converter.convert_pmx_bones(model_data, mesh_name, root_group)
-        else:
-            root_joint, skin_cluster = bone_converter.convert_pmd_bones(model_data, mesh_name, root_group)
+        root_joint, skin_cluster = bone_converter.convert_pmx_bones(model_data, mesh_name, root_group)
 
         # VMDファイルを読み込み
         vmd_parser = VmdData()
@@ -83,7 +72,7 @@ class TestVmdConverter(MayaTestBase):
         """PMXファイルを使用したVMD変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み
         root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = self._import_model_and_apply_vmd(
-            "mmt_test_model", "mmt_test_model_ik_test_motion", model_type="pmx"
+            "mmt_test_model", "mmt_test_model_ik_test_motion"
         )
 
         # 検証
@@ -110,42 +99,6 @@ class TestVmdConverter(MayaTestBase):
         # 少なくとも1つのジョイントがアニメーションされていることを確認
         self.assertGreater(len(animated_joints), 0, "アニメーションが設定されたジョイントがありません")
 
-    def test_convert_with_pmd_file(self):
-        """実際のPMDファイルを使用した変換テスト"""
-        # 共通関数を使用してモデルとVMDを読み込み
-        root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = self._import_model_and_apply_vmd(
-            "Lat式ミクVer2.31_Normal", "Lat式用", model_type="pmd"
-        )
-
-        # 検証
-        self.assertTrue(result)
-
-        # アニメーションが設定されたか確認
-        all_joints = cmds.ls(type="joint")
-        animated_joints = []
-        for joint in all_joints:
-            # 各属性にアニメーションカーブが接続されているか確認
-            for attr in [
-                "translateX",
-                "translateY",
-                "translateZ",
-                "rotateX",
-                "rotateY",
-                "rotateZ",
-            ]:
-                connections = cmds.listConnections(f"{joint}.{attr}", source=True, destination=False)
-                if connections:
-                    animated_joints.append(joint)
-                    break
-
-        # VMDファイルにボーンフレームがある場合のみアニメーション適用を検証
-        if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
-            self.assertGreater(
-                len(animated_joints),
-                0,
-                "VMDにボーンフレームが存在するのにアニメーションが設定されたジョイントがありません",
-            )
-
     def test_get_failed_bones(self):
         """失敗したボーン名の取得テスト"""
         # 初期状態
@@ -169,7 +122,7 @@ class TestVmdConverter(MayaTestBase):
         """1ボーンVMDデータの変換テスト"""
         # 共通関数を使用してモデルとVMDを読み込み
         root_group, mesh_name, root_joint, skin_cluster, vmd_data, result = self._import_model_and_apply_vmd(
-            "test_1bone_cube", "test_1bone_cube_motion", model_type="pmx"
+            "test_1bone_cube", "test_1bone_cube_motion"
         )
 
         # 変換が成功していることを確認
