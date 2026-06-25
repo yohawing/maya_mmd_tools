@@ -642,7 +642,9 @@ class MorphConverter:
             template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
             self._add_profile_time("target_points_sec", target_points_start)
 
-            target_mesh = template_ctx["target_mesh"]
+            target_mesh = cmds.duplicate(template_ctx["target_mesh"])[0]
+            target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
+            maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
             blend_shape_node = template_ctx["blend_shape_node"]
             target_index = template_ctx["next_target_index"]
             template_ctx["next_target_index"] = target_index + 1
@@ -659,12 +661,19 @@ class MorphConverter:
             target_index = len(target_count) if target_count else 0
 
         blendshape_add_start = time.perf_counter()
-        cmds.blendShape(
-            blend_shape_node,
-            edit=True,
-            target=(mesh_node, target_index, target_mesh, 1.0),
-        )
+        try:
+            cmds.blendShape(
+                blend_shape_node,
+                edit=True,
+                target=(mesh_node, target_index, target_mesh, 1.0),
+            )
+        except Exception:
+            if target_mesh and cmds.objExists(target_mesh):
+                cmds.delete(target_mesh)
+            raise
         self._add_profile_time("blendshape_add_sec", blendshape_add_start)
+        if target_mesh and cmds.objExists(target_mesh):
+            cmds.delete(target_mesh)
 
         existing_aliases = template_ctx.get("existing_aliases") if template_ctx is not None else None
         if existing_aliases is not None:
@@ -717,8 +726,13 @@ class MorphConverter:
                 vi = src_vi
             if vi < n_points:
                 pos = offset["position_offset"]
-                points[vi] += om.MVector(pos[0], pos[1], pos[2])
+                points[vi] += MorphConverter._pmx_vertex_offset_to_maya_vector(pos)
         return points
+
+    @staticmethod
+    def _pmx_vertex_offset_to_maya_vector(position_offset) -> om.MVector:
+        """Return a PMX vertex morph offset converted into Maya mesh space."""
+        return om.MVector(position_offset[0], position_offset[1], -position_offset[2])
 
     @staticmethod
     def cleanup_vertex_morph_template(template_ctx: Dict[str, Any]) -> None:
@@ -774,7 +788,7 @@ class MorphConverter:
                         vertex_index = source_vertex_index
                     offset_pos = offset["position_offset"]
                     if vertex_index < len(points):
-                        points[vertex_index] += om.MVector(offset_pos[0], offset_pos[1], offset_pos[2])
+                        points[vertex_index] += self._pmx_vertex_offset_to_maya_vector(offset_pos)
 
         # 変更された頂点位置を設定
         mesh_fn.setPoints(points, om.MSpace.kObject)

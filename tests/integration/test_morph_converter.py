@@ -435,6 +435,104 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(stored.get("0"), "にっこり")
         self.assertEqual(stored.get("1"), "にやり")
 
+    def test_vertex_morph_targets_keep_independent_offsets(self):
+        """複数 vertex morph target が最後の target geometry に潰れないことを確認する。"""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            name_english = ""
+
+            def __init__(self, name, vertex_index, position_offset):
+                self.name = name
+                self.offsets = [
+                    {
+                        "vertex_index": vertex_index,
+                        "position_offset": position_offset,
+                    }
+                ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [
+                    FakeVertexMorph("move_vertex_1", 1, (0.25, 0.0, 0.0)),
+                    FakeVertexMorph("move_vertex_2", 2, (0.0, 0.5, 0.0)),
+                ],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 2)
+        bs_node = result["blend_shape_nodes"][0]
+        alias_a = result["results"][0]["alias"]
+        alias_b = result["results"][1]["alias"]
+
+        cmds.setAttr(f"{bs_node}.{alias_a}", 1.0)
+        cmds.setAttr(f"{bs_node}.{alias_b}", 0.0)
+        vertex_1_with_a = cmds.pointPosition(f"{mesh}.vtx[1]", local=True)
+        vertex_2_with_a = cmds.pointPosition(f"{mesh}.vtx[2]", local=True)
+        self.assertAlmostEqual(vertex_1_with_a[0], 1.25, places=5)
+        self.assertAlmostEqual(vertex_2_with_a[1], 1.0, places=5)
+
+        cmds.setAttr(f"{bs_node}.{alias_a}", 0.0)
+        cmds.setAttr(f"{bs_node}.{alias_b}", 1.0)
+        vertex_1_with_b = cmds.pointPosition(f"{mesh}.vtx[1]", local=True)
+        vertex_2_with_b = cmds.pointPosition(f"{mesh}.vtx[2]", local=True)
+        self.assertAlmostEqual(vertex_1_with_b[0], 1.0, places=5)
+        self.assertAlmostEqual(vertex_2_with_b[1], 1.5, places=5)
+
+    def test_vertex_morph_z_offset_is_flipped_to_maya_space(self):
+        """PMX vertex morph の z offset は Maya mesh space では反転される。"""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "move_z"
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            name_english = ""
+            offsets = [
+                {
+                    "vertex_index": 1,
+                    "position_offset": (0.0, 0.0, 2.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [FakeVertexMorph()],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        bs_node = result["blend_shape_nodes"][0]
+        alias = result["results"][0]["alias"]
+
+        cmds.setAttr(f"{bs_node}.{alias}", 1.0)
+        moved_position = cmds.pointPosition(f"{mesh}.vtx[1]", local=True)
+        self.assertAlmostEqual(moved_position[0], 1.0, places=5)
+        self.assertAlmostEqual(moved_position[1], 0.0, places=5)
+        self.assertAlmostEqual(moved_position[2], -2.0, places=5)
+
     def test_collect_morphs_from_scene_for_export(self):
         """シーン内の network metadata から exporter 用 morph dict を復元して PMX を再生成する。"""
         mesh_name = self._create_test_mesh()
