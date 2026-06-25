@@ -377,9 +377,94 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertIn(("alias_attr", "faceBlendShape", {"query": True}), adapter.calls)
         self.assertEqual(presenter.blend_shape_node, "faceBlendShape")
         self.assertEqual(presenter.morph_data["smile"]["blend_shape_node"], "faceBlendShape")
-        self.assertEqual(presenter.morph_data["blink"]["group"], "その他")
-        self.assertEqual([item.text() for item in view.morph_list.items], ["blink", "smile"])
+        self.assertNotIn("blink", presenter.morph_data)
+        self.assertEqual([item.text() for item in view.morph_list.items], ["smile"])
         self.assertEqual(view.preset_combo.items, ["なし", "笑顔", "ウィンク", "驚き", "悲しみ", "custom_pose"])
+
+    def test_load_morphs_falls_back_to_blendshape_raw_names_and_split_targets(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update({TEST_MODEL, "faceBlendShapeA", "faceBlendShapeB"})
+        mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
+        adapter.relatives[(TEST_MODEL, mesh_kwargs)] = ["faceShapeA", "faceShapeB"]
+        adapter.history["faceShapeA"] = ["faceBlendShapeA"]
+        adapter.history["faceShapeB"] = ["faceBlendShapeB"]
+        adapter.ls_results[((("faceBlendShapeA",),), (("type", "blendShape"),))] = ["faceBlendShapeA"]
+        adapter.ls_results[((("faceBlendShapeB",),), (("type", "blendShape"),))] = ["faceBlendShapeB"]
+        adapter.attr_exists.update(
+            {
+                ("faceBlendShapeA", "mmd_blendshape_morph_names_json"),
+                ("faceBlendShapeB", "mmd_blendshape_morph_names_json"),
+            }
+        )
+        adapter.attr_values.update(
+            {
+                "faceBlendShapeA.mmd_blendshape_morph_names_json": json.dumps({"0": "笑顔"}, ensure_ascii=False),
+                "faceBlendShapeB.mmd_blendshape_morph_names_json": json.dumps({"0": "笑顔"}, ensure_ascii=False),
+                "faceBlendShapeA.smile_alias": 0.4,
+                "faceBlendShapeB.smile_alias_split": 0.4,
+            }
+        )
+        adapter.aliases["faceBlendShapeA"] = ["smile_alias", "weight[0]"]
+        adapter.aliases["faceBlendShapeB"] = ["smile_alias_split", "weight[0]"]
+        presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
+
+        presenter.load_morphs()
+        presenter.current_morph = "笑顔"
+        presenter.on_morph_slider_changed(65)
+
+        self.assertEqual([item.text() for item in view.morph_list.items], ["笑顔"])
+        self.assertEqual(presenter.morph_data["笑顔"]["name_jp"], "笑顔")
+        self.assertEqual(
+            presenter.morph_data["笑顔"]["blend_shape_targets"],
+            [
+                {"node": "faceBlendShapeA", "target": "smile_alias", "weight_attr": "weight[0]"},
+                {"node": "faceBlendShapeB", "target": "smile_alias_split", "weight_attr": "weight[0]"},
+            ],
+        )
+        self.assertIn(("set_attr", "faceBlendShapeA.smile_alias", 0.65), adapter.calls)
+        self.assertIn(("set_attr", "faceBlendShapeB.smile_alias_split", 0.65), adapter.calls)
+
+    def test_load_morphs_falls_back_to_network_morph_nodes_for_display(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update({TEST_MODEL, "boneSmileNode", "materialFlashNode"})
+        mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
+        adapter.relatives[(TEST_MODEL, mesh_kwargs)] = []
+        adapter.ls_results[((), (("type", "network"),))] = ["boneSmileNode", "materialFlashNode", "plainNetwork"]
+        adapter.attr_exists.update(
+            {
+                ("boneSmileNode", "mmd_morph_type"),
+                ("boneSmileNode", "mmd_morph_name"),
+                ("boneSmileNode", "mmd_morph_name_en"),
+                ("materialFlashNode", "mmd_morph_type"),
+                ("materialFlashNode", "mmd_morph_name"),
+                ("plainNetwork", "mmd_morph_type"),
+            }
+        )
+        adapter.attr_values.update(
+            {
+                "boneSmileNode.mmd_morph_type": "bone",
+                "boneSmileNode.mmd_morph_name": "ボーン笑い",
+                "boneSmileNode.mmd_morph_name_en": "bone_smile",
+                "boneSmileNode.weight": 0.25,
+                "materialFlashNode.mmd_morph_type": "material",
+                "materialFlashNode.mmd_morph_name": "材質点滅",
+                "materialFlashNode.weight": 0.0,
+                "plainNetwork.mmd_morph_type": "other",
+            }
+        )
+        presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
+
+        presenter.load_morphs()
+        presenter.on_morph_selected(_FakeItem("ボーン笑い"), None)
+
+        self.assertEqual([item.text() for item in view.morph_list.items], ["ボーン笑い", "材質点滅"])
+        self.assertEqual(presenter.morph_data["ボーン笑い"]["type"], 10)
+        self.assertEqual(presenter.morph_data["ボーン笑い"]["name_en"], "bone_smile")
+        self.assertEqual(presenter.morph_data["材質点滅"]["type"], 11)
+        self.assertEqual(view.blend_shape_edit._text, "boneSmileNode")
+        self.assertEqual(view.target_name_edit._text, "weight")
+        self.assertEqual(view.connection_status_label.text, "Metadata only")
+        self.assertEqual(view.morph_slider.set_value_calls, [25])
 
     def test_organize_and_filter_morphs_by_group_are_pure_logic(self):
         presenter, view, _, _ = _make_presenter()
