@@ -6,6 +6,7 @@ from mmd_tools.view import shader_override as mmd_shader
 from mmd_tools.nodes import mmd_append_node
 from mmd_tools.nodes import mmd_bone_morph_accum_node
 from mmd_tools.nodes import mmd_ccd_ik_node
+from mmd_tools.nodes import mmd_material_morph_eval_node
 
 
 def maya_useNewAPI():
@@ -67,6 +68,7 @@ def initializePlugin(mobject):
         install_mmd_menu()
         mmd_shader.initializePlugin(mobject)
         mmd_bone_morph_accum_node.register(plugin_fn)
+        mmd_material_morph_eval_node.register(plugin_fn)
         mmd_append_node.register(plugin_fn)
         mmd_ccd_ik_node.register(plugin_fn)
     except Exception as e:
@@ -85,6 +87,7 @@ def uninitializePlugin(mobject):
         mmd_shader.uninitializePlugin(mobject)
         mmd_ccd_ik_node.deregister(plugin_fn)
         mmd_append_node.deregister(plugin_fn)
+        mmd_material_morph_eval_node.deregister(plugin_fn)
         mmd_bone_morph_accum_node.deregister(plugin_fn)
     except Exception as e:
         om.MGlobal.displayError(f"Plugin uninitialization failed: {str(e)}")

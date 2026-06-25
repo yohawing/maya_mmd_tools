@@ -11,6 +11,7 @@ from mmd_tools.core import maya_utils
 from .. import settings
 from ..converters import BoneConverter, MeshConverter, MorphConverter, PhysicsConverter
 from ..converters.bone_morph_runtime import build_bone_morph_graph
+from ..converters.material_morph_runtime import build_material_morph_graph
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core.logger import get_logger
 from ..core.utils import create_bone_joint_mapping
@@ -144,6 +145,12 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             bone_morph_runtime_result = build_bone_morph_graph(root_group)
             _record_phase("bone_morph_runtime_sec", phase_start)
             logger.debug("Bone morph runtime graph result: %s", bone_morph_runtime_result)
+
+            logger.info("Building material morph runtime graph...")
+            phase_start = time.perf_counter()
+            material_morph_runtime_result = build_material_morph_graph(root_group)
+            _record_phase("material_morph_runtime_sec", phase_start)
+            logger.debug("Material morph runtime graph result: %s", material_morph_runtime_result)
 
             # 呼び出しオプションを優先し、未指定時はグローバル設定に従う。
             import_physics = options.get(

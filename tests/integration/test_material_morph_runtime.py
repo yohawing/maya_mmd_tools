@@ -4,13 +4,17 @@ material morph network node が shader パラメータに接続され、
 weight 変更がマテリアル外観に反映されることを検証する。
 """
 
-import json
 
 from maya import cmds
 
-from mmd_tools.converters import MorphConverter, MeshConverter
+from mmd_tools.converters import MorphConverter
+from mmd_tools.converters.material_morph_runtime import build_material_morph_graph
 from mmd_tools.core import maya_utils
-from mmd_tools.core.constants import SCENE_ROOT_SUFFIX, ATTR_MMD_MODEL_NAME
+from mmd_tools.core.constants import (
+    SCENE_ROOT_SUFFIX,
+    ATTR_MMD_MODEL_NAME,
+    ATTR_MMD_MATERIAL_INDEX,
+)
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from tests.common.maya_test_base import MayaTestBase
 
@@ -156,6 +160,11 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         # 初期 diffuse を白に
         cmds.setAttr(f"{shader}.color", 1.0, 1.0, 1.0, type="double3")
 
+        # shader に mmd_material_index を設定（graph builder がマッチングに使う）
+        if not cmds.attributeQuery(ATTR_MMD_MATERIAL_INDEX, node=shader, exists=True):
+            cmds.addAttr(shader, longName=ATTR_MMD_MATERIAL_INDEX, attributeType="long")
+        cmds.setAttr(f"{shader}.{ATTR_MMD_MATERIAL_INDEX}", 0)
+
         # material morph: diffuse に赤を加算 (operation_type=1)
         morph = _make_material_morph("赤フラッシュ", [
             {
@@ -181,6 +190,9 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):
                 cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
+
+        # material morph runtime graph を構築（shader ↔ evaluator 接続）
+        build_result = build_material_morph_graph(root)
 
         return root, mesh, shader, material_nodes
 
