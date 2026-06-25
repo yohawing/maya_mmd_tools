@@ -4,6 +4,7 @@ from typing import List, Tuple, Union
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -300,21 +301,14 @@ class BoneConverter:
     def _set_extra_attributes(self, i, joint, bone, format_type):
         # フォーマットに応じたカスタム属性を設定
         if format_type == "pmx":
-            # 共通アトリビュートを設定
             attrs = {
                 ATTR_MMD_BONE_NAME: bone.name,
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
                 ATTR_MMD_BONE_FLAGS: bone.bone_flag,
                 ATTR_MMD_DEFORM_LAYER: bone.deform_layer if hasattr(bone, "deform_layer") else 0,
+                ATTR_MMD_BONE_INDEX: i,
+                ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
             }
-
-            # 詳細アトリビュート
-            attrs.update(
-                {
-                    ATTR_MMD_BONE_INDEX: i,
-                    ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
-                }
-            )
 
             # 接続先ボーンの属性を設定
             if not bone.get_flag(PmxBoneFlag.CONNECT_BONE):
@@ -383,27 +377,22 @@ class BoneConverter:
             if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
                 attrs[ATTR_MMD_CONNECT_BONE_INDEX] = bone.connect_bone_index
 
-            maya_utils.set_custom_attributes(joint, attrs)
         elif format_type == "pmd":
-            # 共通アトリビュートを設定
             attrs = {
                 ATTR_MMD_BONE_NAME: bone.name,
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
                 # PMDはフラグを持たないのでデフォルト値を設定
                 ATTR_MMD_BONE_FLAGS: 0x0005,  # 回転可能 + 表示
                 ATTR_MMD_DEFORM_LAYER: 0,
+                ATTR_MMD_BONE_INDEX: i,
+                ATTR_MMD_BONE_TYPE: bone.bone_type.name,  # Enumの名前（文字列）を取得
+                ATTR_MMD_TAIL_POS_INDEX: bone.tail_pos_bone_index,
+                ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
             }
+        else:
+            return
 
-            # 詳細アトリビュート
-            attrs.update(
-                {
-                    ATTR_MMD_BONE_INDEX: i,
-                    ATTR_MMD_BONE_TYPE: bone.bone_type.name,  # Enumの名前（文字列）を取得
-                    ATTR_MMD_TAIL_POS_INDEX: bone.tail_pos_bone_index,
-                    ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
-                }
-            )
-            maya_utils.set_custom_attributes(joint, attrs)
+        maya_utils.set_custom_attributes(joint, attrs)
 
     def _create_skin_cluster(self, maya_joints, mesh_node, max_influence=4):
         """
@@ -501,6 +490,49 @@ class BoneConverter:
         """QDEFの重み情報を取得する。"""
         return self._get_bdef4_weights(vertex)
 
+    def _apply_flat_vertex_weights(self, skin_cluster, mesh_node, flat_weights, influence_count):
+        """Apply already-packed vertex weights directly through MFnSkinCluster."""
+        selection_list = om.MSelectionList()
+        selection_list.add(skin_cluster)
+        skin_cluster_obj = selection_list.getDependNode(0)
+        skin_fn = oma.MFnSkinCluster(skin_cluster_obj)
+
+        influence_paths = skin_fn.influenceObjects()
+        actual_influence_count = len(influence_paths)
+        if actual_influence_count != influence_count:
+            raise ValueError(
+                "SkinCluster influence count mismatch: "
+                f"packed={influence_count}, actual={actual_influence_count}"
+            )
+
+        mesh_selection_list = om.MSelectionList()
+        mesh_selection_list.add(mesh_node)
+        shape_dag_path = mesh_selection_list.getDagPath(0)
+        mesh_fn = om.MFnMesh(shape_dag_path)
+        vertex_count = mesh_fn.numVertices
+        expected_weight_count = vertex_count * influence_count
+        if len(flat_weights) != expected_weight_count:
+            raise ValueError(
+                "Flat skin weight count mismatch: "
+                f"packed={len(flat_weights)}, expected={expected_weight_count}"
+            )
+
+        vertex_component = om.MFnSingleIndexedComponent()
+        vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
+        vertex_component.addElements(list(range(vertex_count)))
+
+        influence_indices = om.MIntArray(influence_count, 0)
+        for influence_index in range(influence_count):
+            influence_indices[influence_index] = influence_index
+
+        skin_fn.setWeights(
+            shape_dag_path,
+            vertex_component_obj,
+            influence_indices,
+            om.MDoubleArray(flat_weights),
+            False,
+        )
+
     def _apply_pmx_vertex_weights(self, pmx_data, maya_joints, skin_cluster, mesh_node):
         """
         PMX頂点ウェイトをスキンクラスターに適用する。
@@ -512,34 +544,47 @@ class BoneConverter:
             mesh_node (str): メッシュノードの名前。
         """
         weight_pack_start = time.perf_counter()
-        weights = []
+        joint_count = len(maya_joints)
+        flat_weights = []
+        flat_extend = flat_weights.extend
+        zero_row = [0.0] * joint_count
         source_vertex_indices = self._get_mesh_source_vertex_indices(mesh_node)
         vertices = pmx_data.vertices
         vertex_indices = source_vertex_indices if source_vertex_indices is not None else range(len(vertices))
 
         for source_vertex_index in vertex_indices:
             if source_vertex_index < 0 or source_vertex_index >= len(vertices):
-                weights.append([0.0] * len(maya_joints))
+                flat_extend(zero_row)
                 continue
 
+            row_start = len(flat_weights)
+            flat_extend(zero_row)
             vertex = vertices[source_vertex_index]
             # PMX頂点の重み情報を取得
             weight_maps = self._get_pmx_vertex_weights(vertex)
-            # ボーンの数でリストを初期化
-            vertex_weights = [0.0] * len(maya_joints)
 
             for joint_index, weight in weight_maps:
                 # ボーンインデックスの境界チェック
-                if joint_index >= len(maya_joints):
-                    self.logger.warning(f"Invalid bone index {joint_index}, max={len(maya_joints) - 1}")
+                if joint_index < 0 or joint_index >= joint_count:
+                    self.logger.warning(f"Invalid bone index {joint_index}, max={joint_count - 1}")
                     continue
-                vertex_weights[joint_index] = weight
-
-            weights.append(vertex_weights)
+                flat_weights[row_start + joint_index] = weight
         self._add_profile_time("weight_pack_sec", weight_pack_start)
 
         set_weights_start = time.perf_counter()
-        maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
+        try:
+            self._apply_flat_vertex_weights(skin_cluster, mesh_node, flat_weights, joint_count)
+        except Exception as exc:
+            self.logger.warning(
+                "Direct skin weight application failed for '%s'; falling back to apply_vertex_weights(): %s",
+                mesh_node,
+                exc,
+            )
+            weights = [
+                flat_weights[row_start : row_start + joint_count]
+                for row_start in range(0, len(flat_weights), joint_count)
+            ]
+            maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
         self._add_profile_time("set_weights_sec", set_weights_start)
 
     def _get_mesh_source_vertex_indices(self, mesh_node):

@@ -436,7 +436,14 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
     # メッシュを作成
     mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
 
-    if normals:
+    if normals and len(normals) == len(vertices):
+        normal_array = om.MVectorArray()
+        normal_vertex_ids = om.MIntArray()
+        for vertex_id, normal in enumerate(normals):
+            normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
+            normal_vertex_ids.append(vertex_id)
+        mesh_fn.setVertexNormals(normal_array, normal_vertex_ids)
+    elif normals:
         normal_array = om.MVectorArray()
         normal_face_ids = om.MIntArray()
         normal_vertex_ids = om.MIntArray()
@@ -445,7 +452,7 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
         for count in face_counts:
             for _ in range(count):
                 vertex_id = face_connects[cursor]
-                normal = normals[vertex_id]
+                normal = normals[cursor]
                 normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
                 normal_face_ids.append(face_id)
                 normal_vertex_ids.append(vertex_id)
