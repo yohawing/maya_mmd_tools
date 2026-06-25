@@ -1506,38 +1506,44 @@ class VmdConverter:
         rz = self._get_or_expand_runtime_channel(channels, static_state, "rotateZ", n_frames)
         if rx is None or ry is None or rz is None:
             return 0
-        if len(rx) != len(baked_frames) or len(ry) != len(baked_frames) or len(rz) != len(baked_frames):
+        if len(rx) != n_frames or len(ry) != n_frames or len(rz) != n_frames:
             return 0
 
-        for axis_attr in (
+        axis_attrs = (
             f"inputRotate[{input_slot}].inputRotateElementX",
             f"inputRotate[{input_slot}].inputRotateElementY",
             f"inputRotate[{input_slot}].inputRotateElementZ",
-        ):
-            plug = f"{node}.{axis_attr}"
-            for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
+        )
+        for axis_attr in axis_attrs:
+            plug_path = f"{node}.{axis_attr}"
+            for source in cmds.listConnections(plug_path, s=True, d=False, p=True) or []:
                 try:
-                    cmds.disconnectAttr(source, plug)
+                    cmds.disconnectAttr(source, plug_path)
                 except Exception:
                     pass
 
+        tangent = oma.MFnAnimCurve.kTangentLinear
         keyed = 0
-        axis_values = (
-            ("inputRotateElementX", rx),
-            ("inputRotateElementY", ry),
-            ("inputRotateElementZ", rz),
-        )
-        for child_attr, values in axis_values:
-            plug = f"{node}.inputRotate[{input_slot}].{child_attr}"
-            for index, frame in enumerate(baked_frames):
-                try:
-                    # cmds.setKeyframe on this angle plug expects the current UI angle unit.
-                    cmds.setKeyframe(plug, time=frame, value=math.degrees(float(values[index])))
-                except Exception as exc:
-                    self.logger.debug(f"failed to key {plug} at frame {frame}: {exc}")
-                    break
-            else:
+        for axis_attr, values in zip(axis_attrs, (rx, ry, rz)):
+            plug_path = f"{node}.{axis_attr}"
+            try:
+                sel = om.MSelectionList()
+                sel.add(plug_path)
+                plug = sel.getPlug(0)
+                curve = oma.MFnAnimCurve()
+                curve.create(plug)
+                curve.addKeys(bake_times, values, tangent, tangent, False)
                 keyed += 1
+            except Exception as exc:
+                self.logger.debug(f"addKeys failed for {plug_path}, fallback: {exc}")
+                for index, frame in enumerate(baked_frames):
+                    try:
+                        cmds.setKeyframe(plug_path, time=frame, value=math.degrees(float(values[index])))
+                    except Exception as exc2:
+                        self.logger.debug(f"failed to key {plug_path} at frame {frame}: {exc2}")
+                        break
+                else:
+                    keyed += 1
 
         if disable_solver:
             try:
@@ -1547,8 +1553,17 @@ class VmdConverter:
                     except Exception:
                         pass
                 cmds.setAttr(f"{node}.enabled", False)
-                for frame in baked_frames:
-                    cmds.setKeyframe(node, attribute="enabled", time=frame, value=0.0)
+                try:
+                    sel = om.MSelectionList()
+                    sel.add(f"{node}.enabled")
+                    plug = sel.getPlug(0)
+                    curve = oma.MFnAnimCurve()
+                    curve.create(plug)
+                    en_values = om.MDoubleArray([0.0] * n_frames)
+                    curve.addKeys(bake_times, en_values, tangent, tangent, False)
+                except Exception:
+                    for frame in baked_frames:
+                        cmds.setKeyframe(node, attribute="enabled", time=frame, value=0.0)
                 keyed += 1
             except Exception as exc:
                 self.logger.debug(f"failed to key {node}.enabled off for runtime live apply: {exc}")
