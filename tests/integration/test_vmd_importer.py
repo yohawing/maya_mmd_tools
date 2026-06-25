@@ -386,12 +386,6 @@ class TestVmdImporter(MayaTestBase):
 
         self.assertTrue(has_color_animation, "照明の色アニメーションが設定されていません")
 
-    def test_vmd_morph_animation_import(self):
-        """VMDファイルからモーフアニメーションをインポートするテスト"""
-
-        # TODO: テスト用モデルの準備が出来たら実装します。
-        self.skipTest("モーフアニメーションのテストは未実装です")
-
     def test_vmd_import_with_animation_layers(self):
         """アニメーションレイヤーを使用したVMDインポートのテスト"""
         # テスト用スケルトンを作成
@@ -485,8 +479,3 @@ class TestVmdImporter(MayaTestBase):
             weight = cmds.animLayer(vmd_layer, query=True, weight=True)
             self.assertEqual(weight, 1.0, "アニメーションレイヤーのウェイトが正しくありません")
 
-    def test_fixture_vmd_namespace_support(self):
-        """フィクスチャを使用したネームスペース対応テスト"""
-
-        # TODO: ネームスペース対応後にテストを実装
-        self.skipTest("ネームスペース対応後にテストを実装します")
