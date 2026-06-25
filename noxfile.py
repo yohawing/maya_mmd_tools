@@ -898,3 +898,42 @@ def golden_oracle(session: nox.Session) -> None:
         )
 
     session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)
+
+
+@nox.session(venv_backend="none")
+def local_parity(session: nox.Session) -> None:
+    """Run Bake-vs-Rig mesh parity on local (non-committed) PMX/VMD assets.
+
+    Non-ASCII asset paths are transparently aliased via Windows junctions
+    so that mayapy batch mode can store them in Maya string attributes
+    without codepage corruption.
+
+    Examples:
+        uvx nox -s local_parity -- --maya 2024
+        uvx nox -s local_parity -- --maya 2024 --case alicia_weekender
+        uvx nox -s local_parity -- --maya 2024 --skip-fbx
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in ("--case", "--frame") and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in ("--skip-fbx",):
+            passthrough.append(args[i])
+            i += 1
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        str(ROOT / "tests" / "viewport" / "local_asset_motion_compare.py"),
+        *passthrough,
+        external=True,
+    )

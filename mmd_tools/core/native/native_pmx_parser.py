@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import ctypes
 import json
-from ctypes import POINTER, Structure, c_float, c_size_t, c_uint8, c_uint32, c_void_p
+from ctypes import POINTER, c_float, c_size_t, c_uint8, c_uint32, c_void_p
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.native.mmd_anim_runtime import MmdRuntimeFfiByteBuffer as _ByteBuffer
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
@@ -35,8 +36,9 @@ from mmd_tools.core.pmx_data.rigid_body import PmxRigidBody
 logger = get_logger(__name__)
 
 
-class _ByteBuffer(Structure):
-    _fields_ = [("data", POINTER(c_uint8)), ("len", c_size_t)]
+
+# _ByteBuffer is imported from mmd_anim_runtime.MmdRuntimeFfiByteBuffer
+# to avoid dual ctypes Structure definitions conflicting on argtypes.
 
 
 _SKINNING_MODE_MAP = {

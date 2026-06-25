@@ -29,6 +29,120 @@ import maya.standalone
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+# ---------------------------------------------------------------------------
+# Path staging — alias non-ASCII paths via Windows junctions / hard-links
+# so that Maya string attributes (mmd_source_file etc.) stay within codepage.
+# ---------------------------------------------------------------------------
+
+def _is_ascii_safe(p: str) -> bool:
+    try:
+        p.encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+class _PathStaging:
+    """Create ASCII-safe junctions (dirs) and hard-links (files) for non-ASCII
+    asset paths.  PMX directories get a junction so relative texture paths still
+    resolve.  Individual VMD files get a hard-link with an ASCII name."""
+
+    def __init__(self, staging_root: Path) -> None:
+        self._root = staging_root.resolve()
+        self._junctions: list[Path] = []
+        self._hardlinks: list[Path] = []
+        self._dir_map: dict[str, Path] = {}
+
+    def setup(self) -> None:
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._cleanup_orphans()
+
+    def _cleanup_orphans(self) -> None:
+        """Remove junctions/links left behind by a previous crashed run."""
+        import subprocess
+        if not self._root.exists():
+            return
+        for child in self._root.iterdir():
+            try:
+                if child.is_dir():
+                    subprocess.run(
+                        ["cmd", "/c", "rmdir", str(child)],
+                        check=False, capture_output=True,
+                    )
+                else:
+                    child.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def resolve(self, path: Path) -> Path:
+        p = path.resolve()
+        if _is_ascii_safe(str(p)):
+            return p
+
+        if p.is_dir():
+            return self._junction_for(p)
+
+        if _is_ascii_safe(p.name):
+            safe_dir = self._junction_for(p.parent)
+            return safe_dir / p.name
+
+        import hashlib
+        import shutil
+        h = hashlib.sha256(str(p).encode("utf-8")).hexdigest()[:16]
+        safe_file = self._root / (h + p.suffix)
+        if not safe_file.exists():
+            shutil.copy2(str(p), str(safe_file))
+            self._hardlinks.append(safe_file)
+        return safe_file
+
+    def _junction_for(self, directory: Path) -> Path:
+        key = str(directory)
+        if key in self._dir_map:
+            return self._dir_map[key]
+
+        if _is_ascii_safe(key):
+            self._dir_map[key] = directory
+            return directory
+
+        import hashlib
+        import subprocess
+        h = hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+        junction = self._root / f"d_{h}"
+        if not junction.exists():
+            subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(junction), str(directory)],
+                check=True,
+                capture_output=True,
+            )
+            self._junctions.append(junction)
+        self._dir_map[key] = junction
+        return junction
+
+    def cleanup(self) -> None:
+        import subprocess
+        for hl in self._hardlinks:
+            try:
+                hl.unlink(missing_ok=True)
+            except OSError:
+                pass
+        self._hardlinks.clear()
+
+        for jn in reversed(self._junctions):
+            try:
+                if jn.exists():
+                    subprocess.run(
+                        ["cmd", "/c", "rmdir", str(jn)],
+                        check=False,
+                        capture_output=True,
+                    )
+            except OSError:
+                pass
+        self._junctions.clear()
+        self._dir_map.clear()
+
+
 DEFAULT_CASES = [
     {
         "name": "alicia_weekender",
@@ -40,6 +154,42 @@ DEFAULT_CASES = [
         "name": "aria_weekender",
         "pmx": r"F:\MMD\pmx\aria\aria.pmx",
         "vmd": r"F:\MMD\vmd\110_weekender_girl\weekender_girl\wg_motion.vmd",
+        "frames": [0, 60, 120],
+    },
+    {
+        "name": "lumine_weekender",
+        "pmx": r"F:\MMD\pmx\【女主角_荧】_by_原神\Lumine.pmx",
+        "vmd": r"F:\MMD\vmd\110_weekender_girl\weekender_girl\wg_motion.vmd",
+        "frames": [0, 60, 120],
+    },
+    {
+        "name": "alicia_rabbithole",
+        "pmx": r"F:\MMD\pmx\Alicia\Alicia\MMD\Alicia_solid.pmx",
+        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
+        "frames": [0, 60, 120],
+    },
+    {
+        "name": "aria_rabbithole",
+        "pmx": r"F:\MMD\pmx\aria\aria.pmx",
+        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
+        "frames": [0, 60, 120],
+    },
+    {
+        "name": "lumine_rabbithole",
+        "pmx": r"F:\MMD\pmx\【女主角_荧】_by_原神\Lumine.pmx",
+        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
+        "frames": [0, 60, 120],
+    },
+    {
+        "name": "alicia_addiction",
+        "pmx": r"F:\MMD\pmx\Alicia\Alicia\MMD\Alicia_solid.pmx",
+        "vmd": r"F:\MMD\vmd\124_[A]ddiction_モーション\[A]ddiction_モーション\[A]ddiction_Tda式.vmd",
+        "frames": [0, 60, 120],
+    },
+    {
+        "name": "aria_addiction",
+        "pmx": r"F:\MMD\pmx\aria\aria.pmx",
+        "vmd": r"F:\MMD\vmd\124_[A]ddiction_モーション\[A]ddiction_モーション\[A]ddiction_Tda式.vmd",
         "frames": [0, 60, 120],
     },
 ]
@@ -252,7 +402,12 @@ def _import_fbx(fbx_path: Path) -> None:
     mel.eval(f'FBXImport -f "{fbx_path.as_posix()}";')
 
 
-def _run_case(case: dict[str, Any], args: argparse.Namespace, report_dir: Path) -> dict[str, Any]:
+def _run_case(
+    case: dict[str, Any],
+    args: argparse.Namespace,
+    report_dir: Path,
+    stage: "_PathStaging | None" = None,
+) -> dict[str, Any]:
     name = case["name"]
     pmx_path = Path(case["pmx"])
     vmd_path = Path(case["vmd"])
@@ -269,6 +424,12 @@ def _run_case(case: dict[str, Any], args: argparse.Namespace, report_dir: Path) 
         result["pmx_exists"] = pmx_path.exists()
         result["vmd_exists"] = vmd_path.exists()
         return result
+
+    if stage:
+        pmx_path = stage.resolve(pmx_path)
+        vmd_path = stage.resolve(vmd_path)
+        result["staged_pmx"] = str(pmx_path)
+        result["staged_vmd"] = str(vmd_path)
 
     root = _import_pmx_vmd(pmx_path, vmd_path, setup_rig=False, setup_bone_orientation=False)
     bake_vertices = _capture_vertices(root, frames)
@@ -360,19 +521,34 @@ def main() -> int:
         "cases": [],
     }
 
-    for case in cases:
-        try:
-            result = _run_case(case, args, report_dir)
-        except Exception as exc:
-            result = {
-                "name": case["name"],
-                "pmx": case["pmx"],
-                "vmd": case["vmd"],
-                "status": "failed",
-                "error": str(exc),
-                "traceback": traceback.format_exc(),
-            }
-        report["cases"].append(result)
+    staging_root = ROOT / "build" / "staging"
+    stage: _PathStaging | None = None
+    needs_staging = any(
+        not _is_ascii_safe(case["pmx"]) or not _is_ascii_safe(case["vmd"])
+        for case in cases
+    )
+    if needs_staging:
+        stage = _PathStaging(staging_root)
+        stage.setup()
+        print(f"Path staging active: {staging_root}")
+
+    try:
+        for case in cases:
+            try:
+                result = _run_case(case, args, report_dir, stage=stage)
+            except Exception as exc:
+                result = {
+                    "name": case["name"],
+                    "pmx": case["pmx"],
+                    "vmd": case["vmd"],
+                    "status": "failed",
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                }
+            report["cases"].append(result)
+    finally:
+        if stage:
+            stage.cleanup()
 
     if any(case.get("status") == "failed" for case in report["cases"]):
         report["status"] = "failed"
