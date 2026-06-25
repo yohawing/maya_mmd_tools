@@ -70,24 +70,24 @@ def _get_attr_if_exists(cmds_module: Any, node: str, attr: str) -> Any:
 
 
 def _convert_maya_world_matrix_to_mmd(maya_matrix: List[float]) -> List[float]:
-    """Convert Maya worldMatrix (cmds.xform ws matrix) to MMD coordinate convention.
+    """Convert Maya worldMatrix (xform -ws -m, row-major) to MMD oracle column-major.
 
-    MMD (Z forward) <-> Maya (Z backward) differs by sign flip on Z.
-    The transform is S * R * S on 3x3 (S=diag(1,1,-1)) and t * S on translation.
-    Since S == S^{-1}, applying the same operation converts Maya->MMD (inverse of MMD->Maya).
-    This makes the JSONL worldMatrix match GoldenOracle's MMD coordinate convention.
+    Maya returns row-major (p*M convention); the oracle stores column-major
+    (matching glam::Mat4::to_cols_array). The Z-axis sign flip S=diag(1,1,-1)
+    converts Maya→MMD coordinate system: rotation gets S*R*S, translation
+    gets S*T.
     """
     if len(maya_matrix) != 16:
         return [float(v) for v in maya_matrix]
     signs = (1.0, 1.0, -1.0)
-    mmd_matrix = [float(v) for v in maya_matrix]
+    mmd = [0.0] * 16
     for row in range(3):
         for col in range(3):
-            idx = row * 4 + col
-            mmd_matrix[idx] = float(maya_matrix[idx]) * signs[row] * signs[col]
-    for col in range(3):
-        mmd_matrix[12 + col] = float(maya_matrix[12 + col]) * signs[col]
-    return mmd_matrix
+            mmd[col * 4 + row] = float(maya_matrix[row * 4 + col]) * signs[row] * signs[col]
+    for i in range(3):
+        mmd[12 + i] = float(maya_matrix[12 + i]) * signs[i]
+    mmd[15] = 1.0
+    return mmd
 
 
 def _collect_bones(cmds_module: Any) -> List[Dict[str, Any]]:
@@ -198,6 +198,8 @@ def _make_record(
     return {
         "schemaVersion": 1,
         "source": {
+            "mmdVersion": "maya_mmd_tools",
+            "dumperVersion": "1.0.0",
             "backend": "maya_mmd_tools.maya-bake",
             "model": str(pmx_path),
             "motion": str(vmd_path),
@@ -255,8 +257,8 @@ def dump_maya_bake_oracle(
     manifest = _load_json(manifest_path)
     case = _find_case(manifest, case_name)
     assets = case.get("assets", {})
-    pmx_path = Path(assets["model"])
-    vmd_path = Path(assets["motion"])
+    pmx_path = _resolve_manifest_path(manifest_path, assets["model"])
+    vmd_path = _resolve_manifest_path(manifest_path, assets["motion"])
     frames = [int(frame) for frame in case.get("frames", [])]
     if not frames:
         raise ValueError(f"case has no frames: {case_name}")
@@ -286,7 +288,7 @@ def dump_maya_bake_oracle(
 
     vmd_data = VmdData()
     vmd_data.parse_file(str(vmd_path))
-    if not import_vmd_file(vmd_data, str(vmd_path), options={"target_model": target_model, "pmx_path": str(pmx_path)}):
+    if not import_vmd_file(vmd_data, str(vmd_path), options={"target_model": target_model, "pmx_path": str(pmx_path), "bake_mode": True}):
         raise RuntimeError(f"failed to import VMD into Maya: {vmd_path}")
 
     with output_path.open("w", encoding="utf-8", newline="\n") as f:

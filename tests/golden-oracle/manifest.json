@@ -1,0 +1,55 @@
+{
+  "description": "GoldenOracle numeric manifest — Maya bake vs mmd-anim runtime parity gate",
+  "defaults": {
+    "compare": {
+      "epsilon": 0.003
+    },
+    "focus": {
+      "bones": [
+        "左足ＩＫ", "右足ＩＫ", "左つま先ＩＫ", "右つま先ＩＫ",
+        "左足", "右足", "左ひざ", "右ひざ",
+        "上半身", "下半身", "首", "頭",
+        "左腕", "右腕", "左ひじ", "右ひじ",
+        "左手首", "右手首"
+      ]
+    }
+  },
+  "cases": [
+    {
+      "name": "mmt-test-model-motion",
+      "kind": "motion-numeric",
+      "assets": {
+        "model": "../data/mmt_test_model.pmx",
+        "motion": "../data/mmt_test_model_test_motion.vmd"
+      },
+      "oracle": {
+        "path": "oracle/mmt-test-model-motion.oracle.jsonl"
+      },
+      "frames": [0, 10, 20, 30, 40, 50, 60]
+    },
+    {
+      "name": "mmt-test-model-ik-motion",
+      "kind": "motion-numeric",
+      "assets": {
+        "model": "../data/mmt_test_model.pmx",
+        "motion": "../data/mmt_test_model_ik_test_motion.vmd"
+      },
+      "oracle": {
+        "path": "oracle/mmt-test-model-ik-motion.oracle.jsonl"
+      },
+      "frames": [0, 5, 10]
+    },
+    {
+      "name": "1bone-cube",
+      "kind": "motion-numeric",
+      "assets": {
+        "model": "../data/for_unit_test/test_1bone_cube.pmx",
+        "motion": "../data/for_unit_test/test_1bone_cube_motion.vmd"
+      },
+      "oracle": {
+        "path": "oracle/1bone-cube.oracle.jsonl"
+      },
+      "frames": [0, 5, 10]
+    }
+  ]
+}

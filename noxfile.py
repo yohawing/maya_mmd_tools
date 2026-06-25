@@ -867,3 +867,34 @@ def cpp_verify(session: nox.Session) -> None:
         env=env,
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def golden_oracle(session: nox.Session) -> None:
+    """Verify mmd-anim runtime against GoldenOracle numeric manifest.
+
+    Runs ``mmd-anim verify <manifest> --mode numeric`` which compares the
+    committed oracle JSONL against a fresh mmd-anim runtime evaluation.
+    Any regression beyond the manifest epsilon causes session failure.
+
+    Examples:
+        uvx nox -s golden_oracle
+        uvx nox -s golden_oracle -- --manifest tests/golden-oracle/manifest.json
+    """
+    manifest = _option(
+        session.posargs, "--manifest",
+        str(ROOT / "tests/golden-oracle/manifest.json"),
+    )
+    mmd_anim = ROOT / "external" / "mmd-anim" / "target" / "release" / "mmd-anim"
+    if platform.system() == "Windows":
+        mmd_anim = mmd_anim.with_suffix(".exe")
+
+    if not mmd_anim.exists():
+        session.log("mmd-anim release binary not found; building via cargo...")
+        session.run(
+            "cargo", "build", "-p", "mmd-anim-cli",
+            "--manifest-path", "external/mmd-anim/Cargo.toml",
+            "--release", external=True,
+        )
+
+    session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)
