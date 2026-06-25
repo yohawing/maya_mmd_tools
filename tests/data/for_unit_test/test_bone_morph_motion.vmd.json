@@ -1,0 +1,26 @@
+{
+  "metadata": {
+    "format": "vmd",
+    "modelName": "bone_morph_test",
+    "maxFrame": 30,
+    "counts": {
+      "bones": 0,
+      "morphs": 4,
+      "cameras": 0,
+      "lights": 0,
+      "selfShadows": 0,
+      "properties": 0
+    }
+  },
+  "boneFrames": [],
+  "morphFrames": [
+    { "morphName": "move_arm", "frame": 0, "weight": 0.0 },
+    { "morphName": "move_arm", "frame": 30, "weight": 1.0 },
+    { "morphName": "rotate_arm", "frame": 0, "weight": 0.0 },
+    { "morphName": "rotate_arm", "frame": 30, "weight": 1.0 }
+  ],
+  "cameraFrames": [],
+  "lightFrames": [],
+  "selfShadowFrames": [],
+  "propertyFrames": []
+}

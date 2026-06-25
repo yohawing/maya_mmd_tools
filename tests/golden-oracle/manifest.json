@@ -40,6 +40,18 @@
       "frames": [0, 5, 10]
     },
     {
+      "name": "bone-morph-translate-rotate",
+      "kind": "motion-numeric",
+      "assets": {
+        "model": "../data/for_unit_test/test_bone_morph.pmx",
+        "motion": "../data/for_unit_test/test_bone_morph_motion.vmd"
+      },
+      "oracle": {
+        "path": "oracle/bone-morph-translate-rotate.oracle.jsonl"
+      },
+      "frames": [0, 15, 30]
+    },
+    {
       "name": "1bone-cube",
       "kind": "motion-numeric",
       "assets": {
