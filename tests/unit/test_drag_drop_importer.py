@@ -21,6 +21,24 @@ class _FakeSettingsService:
         return {"kind": "vmd", "target_model": target_model}
 
 
+class _FakeSceneModelService:
+    def __init__(self, *, parent_root=None, models=None):
+        self.parent_root = parent_root
+        self.models = list(models or [])
+
+    def get_parent_mmd_root(self, _node):
+        return self.parent_root
+
+    def object_exists(self, node):
+        return bool(node)
+
+    def attribute_exists(self, _node, attr):
+        return attr in ("mmd_model_name", "mmd_model_name_en")
+
+    def list_mmd_models(self):
+        return list(self.models)
+
+
 class TestDragDropImporter(unittest.TestCase):
     def test_path_from_drop_url_decodes_file_url(self):
         if os.name == "nt":
@@ -129,6 +147,18 @@ class TestDragDropImporter(unittest.TestCase):
         importer.assert_not_called()
         display_warning.assert_called_once()
         self.assertIn("before dropping VMD", display_warning.call_args.args[0])
+
+    def test_selected_model_root_uses_scene_model_service_parent_api(self):
+        service = _FakeSceneModelService(parent_root="|model_root")
+        with patch.object(drag_drop_importer, "SceneModelService", return_value=service):
+            with patch.object(drag_drop_importer.cmds, "ls", return_value=["|model_root|joint1"]):
+                self.assertEqual(drag_drop_importer._selected_model_root(), "|model_root")
+
+    def test_selected_model_root_falls_back_to_first_mmd_model(self):
+        service = _FakeSceneModelService(models=["|first_model", "|second_model"])
+        with patch.object(drag_drop_importer, "SceneModelService", return_value=service):
+            with patch.object(drag_drop_importer.cmds, "ls", return_value=[]):
+                self.assertEqual(drag_drop_importer._selected_model_root(), "|first_model")
 
 
 if __name__ == "__main__":

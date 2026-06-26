@@ -89,16 +89,16 @@ def supported_mmd_files(paths: Iterable[str]) -> List[str]:
 def _selected_model_root() -> Optional[str]:
     service = SceneModelService()
     for node in cmds.ls(selection=True, long=True) or []:
-        root = service.find_parent_model_root(node) or node
+        root = service.get_parent_mmd_root(node) or node
         if (
-            cmds.objExists(root)
+            service.object_exists(root)
             and (
-                cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=root, exists=True)
-                or cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=root, exists=True)
+                service.attribute_exists(root, ATTR_MMD_MODEL_NAME)
+                or service.attribute_exists(root, ATTR_MMD_MODEL_NAME_EN)
             )
         ):
             return root
-    models = service.list_model_roots()
+    models = service.list_mmd_models()
     return models[0] if models else None
 
 
