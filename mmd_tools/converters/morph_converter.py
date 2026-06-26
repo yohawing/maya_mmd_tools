@@ -165,7 +165,7 @@ class MorphConverter:
                             and morph.name not in converted_material_morphs
                         ):
                             self.logger.debug(f"Converting material morph metadata: {morph.name}")
-                            result = self._convert_material_morph_pmx(morph)
+                            result = self._convert_material_morph_pmx(morph, morph_index)
                             if result["success"]:
                                 converted_material_morphs.add(morph.name)
                                 results.append(result)
@@ -523,7 +523,7 @@ class MorphConverter:
             "offset_count": len(offsets),
         }
 
-    def _convert_material_morph_pmx(self, morph) -> Dict[str, Any]:
+    def _convert_material_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXマテリアルモーフをMayaのnetwork nodeとしてインポートする。
 
         shader parameter へは接続せず、VMD morph frame がキー化できる
@@ -579,6 +579,7 @@ class MorphConverter:
                 "mmd_morph_name": str(morph_name),
                 "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
                 "mmd_morph_type": "material",
+                "mmd_morph_index": int(morph_index),
                 "mmd_morph_panel": int(getattr(morph, "panel", 0)),
                 "mmd_material_morph_offset_count": len(offsets),
                 "mmd_material_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),

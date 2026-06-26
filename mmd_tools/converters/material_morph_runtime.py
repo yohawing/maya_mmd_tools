@@ -118,6 +118,12 @@ def _iter_material_morph_nodes(root_group: str) -> Iterable[str]:
             continue
         if not cmds.attributeQuery("mmd_material_morph_offsets_json", node=node, exists=True):
             continue
+        # model root スコープフィルタ — 複数モデルが namespace なしで
+        # ロードされた場合の cross-model morph bleed を防止する
+        if cmds.attributeQuery("mmd_model_root", node=node, exists=True):
+            connected = cmds.listConnections(f"{node}.mmd_model_root") or []
+            if root_group not in connected:
+                continue
         yield node
 
 
@@ -255,11 +261,39 @@ def _refresh_contributions(node: str, contributions: List[Dict[str, Any]]) -> No
         _connect_if_needed(f"{contribution['morph_node']}.weight", f"{prefix}.weight", force=True)
 
 
+def _get_diffuse_attr_name(shader: str) -> str:
+    """Return the diffuse colour attribute name for *shader*.
+
+    Different shader types expose diffuse colour under different names:
+    - ``lambert`` / ``phong`` / ``blinn`` → ``color``
+    - ``standardSurface`` → ``baseColor``
+    - ``dx11Shader`` / ``GLSLShader`` → ``DiffuseColorRGB`` or ``DiffuseColor``
+      (generated uniforms; the exact name depends on the .fx file)
+
+    Falls back to ``color`` for unknown shader types.
+    """
+    node_type = cmds.nodeType(shader)
+    if node_type == "standardSurface":
+        return "baseColor"
+    if node_type in ("dx11Shader", "GLSLShader"):
+        for candidate in ("DiffuseColorRGB", "DiffuseColor"):
+            if cmds.attributeQuery(candidate, node=shader, exists=True):
+                return candidate
+    # lambert, phong, blinn, etc.
+    return "color"
+
+
+def _has_per_channel_children(shader: str, attr_name: str) -> bool:
+    """Return True if ``shader.attrNameR`` (per-channel sub-attr) exists."""
+    return cmds.attributeQuery(f"{attr_name}R", node=shader, exists=True)
+
+
 def _reroute_shader_color(shader: str, node: str) -> None:
-    """Intercept shader.color through the evaluator node."""
+    """Intercept shader diffuse colour through the evaluator node."""
+    diffuse_name = _get_diffuse_attr_name(shader)
     output_attr = f"{node}.outputDiffuse"
     base_attr = f"{node}.baseDiffuse"
-    shader_attr = f"{shader}.color"
+    shader_attr = f"{shader}.{diffuse_name}"
 
     if _is_connected(output_attr, shader_attr):
         return
@@ -281,18 +315,22 @@ def _reroute_shader_color(shader: str, node: str) -> None:
             pass
         _connect_if_needed(source, base_attr, force=True)
 
-    for axis in ("R", "G", "B"):
-        shader_axis = f"{shader}.color{axis}"
-        base_axis = f"{base_attr}{axis[-1].lower()}"
-        output_axis = f"{output_attr}{axis[-1].lower()}"
-        for source in cmds.listConnections(shader_axis, s=True, d=False, p=True) or []:
-            if _same_source(source, output_axis):
-                continue
-            try:
-                cmds.disconnectAttr(source, shader_axis)
-            except Exception:
-                pass
-            _connect_if_needed(source, base_axis, force=True)
+    # Per-channel rerouting (lambert.colorR/G/B, standardSurface.baseColorR/G/B).
+    # dx11Shader/GLSLShader generated uniforms are flat double3 attrs without
+    # per-channel children, so skip for those.
+    if _has_per_channel_children(shader, diffuse_name):
+        for axis in ("R", "G", "B"):
+            shader_axis = f"{shader}.{diffuse_name}{axis}"
+            base_axis = f"{base_attr}{axis[-1].lower()}"
+            output_axis = f"{output_attr}{axis[-1].lower()}"
+            for source in cmds.listConnections(shader_axis, s=True, d=False, p=True) or []:
+                if _same_source(source, output_axis):
+                    continue
+                try:
+                    cmds.disconnectAttr(source, shader_axis)
+                except Exception:
+                    pass
+                _connect_if_needed(source, base_axis, force=True)
 
     _connect_if_needed(output_attr, shader_attr, force=True)
 
