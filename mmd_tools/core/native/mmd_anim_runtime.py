@@ -8,11 +8,12 @@ PMX モデルと VMD モーションの忠実なランタイム評価を提供�
 - PMX バイト列からのモデル構築
 - VMD バイト列 + モデルからのクリップ構築
 - 任意フレーム (float) での評価
+- 連続フレーム範囲の batch 評価 (対応 DLL のみ)
 - ワールド行列、スキニング行列、モーフウェイト、IK 状態の取得
 
 注意:
 - 物理演算は mmd-anim 側で提供されません (ホスト側で別途対応)。
-- 事前ビルドされた mmd_anim_ffi.dll (Windows) / .dylib (macOS) が必要です。
+- 事前ビルドされた mmd_runtime_ffi.dll / mmd_anim_ffi.dll (Windows) / .dylib (macOS) が必要です。
 - ライブラリが見つからない場合、すべての公開 API は安全に失敗 (None / False) します。
 
 ファイルヘッダ / コーディング規約:
@@ -40,7 +41,7 @@ from ctypes import (
     c_void_p,
 )
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from mmd_tools.core.logger import get_logger
 
@@ -53,11 +54,16 @@ MMD_RUNTIME_ABI_VERSION = 1
 
 # ライブラリ名候補
 if platform.system() == "Windows":
-    _LIB_NAMES = ["mmd_anim_ffi.dll"]
+    _LIB_NAMES = ["mmd_runtime_ffi.dll", "mmd_anim_ffi.dll"]
 elif platform.system() == "Darwin":
-    _LIB_NAMES = ["libmmd_anim_ffi.dylib", "mmd_anim_ffi.dylib"]
+    _LIB_NAMES = [
+        "libmmd_runtime_ffi.dylib",
+        "mmd_runtime_ffi.dylib",
+        "libmmd_anim_ffi.dylib",
+        "mmd_anim_ffi.dylib",
+    ]
 else:
-    _LIB_NAMES = ["libmmd_anim_ffi.so", "mmd_anim_ffi.so"]
+    _LIB_NAMES = ["libmmd_runtime_ffi.so", "mmd_runtime_ffi.so", "libmmd_anim_ffi.so", "mmd_anim_ffi.so"]
 
 # 検索パス候補 (相対はパッケージ位置基準)
 _THIS_FILE = Path(__file__).resolve()
@@ -98,6 +104,21 @@ class MmdRuntimeFfiByteBuffer(Structure):
         ("data", POINTER(c_uint8)),
         ("len", c_size_t),
     ]
+
+
+class MmdRuntimeBatchEvaluation(NamedTuple):
+    """連続フレーム batch 評価結果。
+
+    `world_matrices` は `[frame][bone][16]`、`morph_weights` は
+    `[frame][morph]` の flat ctypes buffer です。Python list へ変換せず
+    Maya 側の bake 処理が直接参照できるよう、buffer 自体を保持します。
+    """
+
+    frame_count: int
+    bone_count: int
+    morph_count: int
+    world_matrices: Any
+    morph_weights: Any
 
 
 class MmdRuntimeFfiRigBone(Structure):
@@ -234,6 +255,35 @@ def _setup_function_signatures(lib: CDLL) -> None:
 
     lib.mmd_runtime_instance_copy_world_matrices.restype = c_bool
     lib.mmd_runtime_instance_copy_world_matrices.argtypes = [c_void_p, POINTER(c_float), c_size_t]
+    _set_sig(
+        lib,
+        "mmd_runtime_instance_clip_frame_batch_world_matrix_f32_len",
+        c_size_t,
+        [c_void_p, c_size_t],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_instance_clip_frame_batch_morph_weight_f32_len",
+        c_size_t,
+        [c_void_p, c_size_t],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_instance_evaluate_clip_frame_batch",
+        c_bool,
+        [
+            c_void_p,
+            c_void_p,
+            c_float,
+            c_float,
+            c_size_t,
+            c_uint32,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+        ],
+    )
     try:
         lib.mmd_runtime_instance_skinning_matrix_f32_len.restype = c_size_t
         lib.mmd_runtime_instance_skinning_matrix_f32_len.argtypes = [c_void_p]
@@ -683,6 +733,88 @@ class MmdRuntimeInstance:
                 exc_info=True,
             )
             return False
+
+    def evaluate_clip_frame_batch(
+        self,
+        clip: MmdRuntimeClip,
+        start_frame: float,
+        frame_step: float,
+        frame_count: int,
+        *,
+        worker_count: int = 0,
+    ) -> Optional[MmdRuntimeBatchEvaluation]:
+        """連続フレーム範囲を 1 回の ABI 呼び出しで評価します。
+
+        Args:
+            clip: 評価対象の MmdRuntimeClip。
+            start_frame: 最初のフレーム番号。
+            frame_step: 次フレームまでの増分。
+            frame_count: 評価するフレーム数。
+            worker_count: Rust 側 worker 数。0 の場合は DLL 側の既定値。
+
+        Returns:
+            成功時は flat ctypes buffer を保持した MmdRuntimeBatchEvaluation。
+            DLL が batch ABI を持たない場合や評価失敗時は None。
+        """
+        if not self._handle or not clip or not clip.handle or self._lib is None:
+            return None
+        if frame_count < 0:
+            return None
+        world_len_func = getattr(
+            self._lib,
+            "mmd_runtime_instance_clip_frame_batch_world_matrix_f32_len",
+            None,
+        )
+        morph_len_func = getattr(
+            self._lib,
+            "mmd_runtime_instance_clip_frame_batch_morph_weight_f32_len",
+            None,
+        )
+        eval_func = getattr(self._lib, "mmd_runtime_instance_evaluate_clip_frame_batch", None)
+        if world_len_func is None or morph_len_func is None or eval_func is None:
+            logger.debug("mmd-anim runtime does not provide batch clip evaluation ABI")
+            return None
+        try:
+            frame_count_size = c_size_t(int(frame_count))
+            world_len = int(world_len_func(self._handle, frame_count_size))
+            morph_len = int(morph_len_func(self._handle, frame_count_size))
+            if frame_count == 0:
+                return MmdRuntimeBatchEvaluation(0, 0, 0, (c_float * 0)(), (c_float * 0)())
+            if world_len == 0:
+                logger.error("batch world matrix output length is zero for non-empty frame range")
+                return None
+            world_buf = (c_float * world_len)()
+            morph_buf = (c_float * morph_len)()
+            ok = eval_func(
+                self._handle,
+                clip.handle,
+                c_float(start_frame),
+                c_float(frame_step),
+                frame_count_size,
+                c_uint32(max(0, int(worker_count))),
+                world_buf,
+                c_size_t(world_len),
+                morph_buf,
+                c_size_t(morph_len),
+            )
+            if not ok:
+                return None
+            bone_count = world_len // (int(frame_count) * 16)
+            morph_count = morph_len // int(frame_count) if morph_len else 0
+            return MmdRuntimeBatchEvaluation(
+                int(frame_count),
+                bone_count,
+                morph_count,
+                world_buf,
+                morph_buf,
+            )
+        except Exception as e:
+            logger.error(
+                "evaluate_clip_frame_batch failed "
+                f"(start={start_frame}, step={frame_step}, count={frame_count}): {e}",
+                exc_info=True,
+            )
+            return None
 
     def evaluate_rest_pose(self) -> bool:
         """モデルの REST pose を評価します。"""

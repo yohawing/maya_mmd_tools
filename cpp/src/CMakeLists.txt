@@ -98,16 +98,31 @@ endif()
 set(MMD_ANIM_FFI_LIB_DIR "${REPO_ROOT}/external/mmd-anim/target/release" CACHE PATH "Path to mmd-anim-ffi import library")
 if(WIN32)
     find_library(MMD_ANIM_FFI_LIB
-        NAMES mmd_anim_ffi mmd_anim_ffi.dll
+        NAMES mmd_runtime_ffi mmd_runtime_ffi.dll mmd_anim_ffi mmd_anim_ffi.dll
         PATHS "${MMD_ANIM_FFI_LIB_DIR}"
         NO_DEFAULT_PATH
     )
 elseif(APPLE)
     find_library(MMD_ANIM_FFI_LIB
-        NAMES mmd_anim_ffi libmmd_anim_ffi
+        NAMES mmd_runtime_ffi libmmd_runtime_ffi mmd_anim_ffi libmmd_anim_ffi
         PATHS "${MMD_ANIM_FFI_LIB_DIR}"
         NO_DEFAULT_PATH
     )
+endif()
+
+set(MMD_ANIM_FFI_RUNTIME_LIB "")
+if(WIN32)
+    foreach(_mmd_ffi_dll IN ITEMS "mmd_runtime_ffi.dll" "mmd_anim_ffi.dll")
+        if(EXISTS "${MMD_ANIM_FFI_LIB_DIR}/${_mmd_ffi_dll}" AND NOT MMD_ANIM_FFI_RUNTIME_LIB)
+            set(MMD_ANIM_FFI_RUNTIME_LIB "${MMD_ANIM_FFI_LIB_DIR}/${_mmd_ffi_dll}")
+        endif()
+    endforeach()
+elseif(APPLE)
+    foreach(_mmd_ffi_dylib IN ITEMS "libmmd_runtime_ffi.dylib" "mmd_runtime_ffi.dylib" "libmmd_anim_ffi.dylib" "mmd_anim_ffi.dylib")
+        if(EXISTS "${MMD_ANIM_FFI_LIB_DIR}/${_mmd_ffi_dylib}" AND NOT MMD_ANIM_FFI_RUNTIME_LIB)
+            set(MMD_ANIM_FFI_RUNTIME_LIB "${MMD_ANIM_FFI_LIB_DIR}/${_mmd_ffi_dylib}")
+        endif()
+    endforeach()
 endif()
 
 # ------------------------------------------------------------------
@@ -134,11 +149,13 @@ if(WIN32)
     )
     if(MMD_ANIM_FFI_LIB)
         target_link_libraries(mmd_tools_cpp PRIVATE ${MMD_ANIM_FFI_LIB})
-        add_custom_command(TARGET mmd_tools_cpp POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MMD_ANIM_FFI_LIB_DIR}/mmd_anim_ffi.dll"
-                "$<TARGET_FILE_DIR:mmd_tools_cpp>"
-        )
+        if(MMD_ANIM_FFI_RUNTIME_LIB)
+            add_custom_command(TARGET mmd_tools_cpp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${MMD_ANIM_FFI_RUNTIME_LIB}"
+                    "$<TARGET_FILE_DIR:mmd_tools_cpp>"
+            )
+        endif()
         message(STATUS "Found mmd-anim-ffi import library: ${MMD_ANIM_FFI_LIB}")
     else()
         message(WARNING "mmd-anim-ffi import library not found. Build mmd-anim-ffi first.")
@@ -158,11 +175,13 @@ if(APPLE)
     )
     if(MMD_ANIM_FFI_LIB)
         target_link_libraries(mmd_tools_cpp PRIVATE ${MMD_ANIM_FFI_LIB})
-        add_custom_command(TARGET mmd_tools_cpp POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MMD_ANIM_FFI_LIB_DIR}/libmmd_anim_ffi.dylib"
-                "$<TARGET_FILE_DIR:mmd_tools_cpp>"
-        )
+        if(MMD_ANIM_FFI_RUNTIME_LIB)
+            add_custom_command(TARGET mmd_tools_cpp POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${MMD_ANIM_FFI_RUNTIME_LIB}"
+                    "$<TARGET_FILE_DIR:mmd_tools_cpp>"
+            )
+        endif()
         message(STATUS "Found mmd-anim-ffi library: ${MMD_ANIM_FFI_LIB}")
     else()
         message(WARNING "mmd-anim-ffi library not found. Build mmd-anim-ffi first.")
@@ -207,12 +226,14 @@ endif()
 if(WIN32)
     if(MMD_ANIM_FFI_LIB)
         target_link_libraries(mmd_runtime_smoke PRIVATE ${MMD_ANIM_FFI_LIB})
-        add_custom_command(TARGET mmd_runtime_smoke POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${MMD_ANIM_FFI_LIB_DIR}/mmd_anim_ffi.dll"
-                "$<TARGET_FILE_DIR:mmd_runtime_smoke>"
-        )
-        message(STATUS "mmd_runtime_smoke: will copy mmd-anim-ffi.dll next to exe")
+        if(MMD_ANIM_FFI_RUNTIME_LIB)
+            add_custom_command(TARGET mmd_runtime_smoke POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${MMD_ANIM_FFI_RUNTIME_LIB}"
+                    "$<TARGET_FILE_DIR:mmd_runtime_smoke>"
+            )
+            message(STATUS "mmd_runtime_smoke: will copy ${MMD_ANIM_FFI_RUNTIME_LIB} next to exe")
+        endif()
     else()
         message(WARNING "mmd-anim-ffi import library not found for mmd_runtime_smoke.")
     endif()

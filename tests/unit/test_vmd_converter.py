@@ -4,6 +4,7 @@ VmdConverterクラスの基本的な機能をテスト。
 Maya環境内で実行されるが、シーン操作を伴わないテストを行う。
 """
 
+import ctypes
 import json
 import math
 import os
@@ -351,6 +352,81 @@ class TestVmdConverter(MayaTestBase):
         # runtime bake インフラの確認のみ (キーフレーム検証は別テストに依存しないよう削除)
         # ここでは convert が例外なく完了し、should_use が正しく動くことを確認
         pass  # 追加の検証は test_convert_light_animation 等で行う
+
+    def test_runtime_bake_uses_batch_evaluation_when_available(self):
+        """batch ABI がある runtime では per-frame 評価へ落ちずに cache を構築する。"""
+        class Frame:
+            frame_number = 2
+
+        class VmdDataLike:
+            bone_frames = [Frame()]
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class BatchResult:
+            frame_count = 3
+            bone_count = 0
+            morph_count = 0
+            world_matrices = (ctypes.c_float * 0)()
+            morph_weights = (ctypes.c_float * 0)()
+
+        class FakeInstance:
+            last = None
+
+            def __init__(self):
+                self.batch_calls = []
+                self.per_frame_calls = []
+
+            @classmethod
+            def for_model(cls, _model):
+                cls.last = cls()
+                return cls.last
+
+            def evaluate_clip_frame_batch(self, _clip, start_frame, frame_step, frame_count, *, worker_count=0):
+                self.batch_calls.append((start_frame, frame_step, frame_count, worker_count))
+                return BatchResult
+
+            def evaluate_clip_frame(self, _clip, frame):
+                self.per_frame_calls.append(frame)
+                return False
+
+            def free(self):
+                pass
+
+        self.converter.bone_index_to_joint = {}
+        self.converter.bone_name_to_index = {}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance):
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                pmx_path="",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(FakeInstance.last.batch_calls, [(0.0, 1.0, 3, 0)])
+        self.assertEqual(FakeInstance.last.per_frame_calls, [])
 
     def test_should_use_mmd_runtime_bake_accepts_bake_pmx_rejects_pmd(self):
         """Bake mode は PMX 入力で runtime bake を使い、PMD 入力では無効"""
@@ -1355,6 +1431,23 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(self.converter._iter_runtime_bake_frames(0, 5), [0, 1, 2, 3, 4, 5])
         self.assertEqual(self.converter._iter_runtime_bake_frames(10, 10), [10])
         self.assertEqual(self.converter._iter_runtime_bake_frames(5, 3), [])
+
+    def test_runtime_batch_buffer_helpers_unpack_flat_frame_data(self):
+        """batch ABI の flat buffer から指定フレーム分だけ取り出せることを確認する。"""
+        class BatchResult:
+            frame_count = 2
+            bone_count = 2
+            morph_count = 3
+            world_matrices = (ctypes.c_float * 64)(*range(64))
+            morph_weights = (ctypes.c_float * 6)(0.0, 0.1, 0.2, 0.3, 0.4, 0.5)
+
+        matrices = self.converter._runtime_batch_world_matrices_for_frame(BatchResult, 1)
+        morphs = self.converter._runtime_batch_morph_weights_for_frame(BatchResult, 1)
+
+        self.assertEqual(len(matrices), 2)
+        self.assertEqual(matrices[0], [float(value) for value in range(32, 48)])
+        self.assertEqual(matrices[1], [float(value) for value in range(48, 64)])
+        self.assertListAlmostEqual(morphs, [0.3, 0.4, 0.5], places=6)
 
     def test_compute_bone_locals_matches_xform_for_root_and_child(self):
         """_compute_all_bone_locals が xform(ws) 後の .translate / .rotate と等価な値を返すことを確認（キャッシュの正確性）"""
