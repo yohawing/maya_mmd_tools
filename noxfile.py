@@ -937,3 +937,36 @@ def local_parity(session: nox.Session) -> None:
         *passthrough,
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def runtime_bake_bench(session: nox.Session) -> None:
+    """Measure the Maya runtime-bake import path.
+
+    Examples:
+        uvx nox -s runtime_bake_bench -- --maya 2024
+        uvx nox -s runtime_bake_bench -- --maya 2024 --repeat 3
+        uvx nox -s runtime_bake_bench -- --maya 2024 --case lumine_rabbithole
+        uvx nox -s runtime_bake_bench -- --maya 2024 --case eunice_rabbithole
+        uvx nox -s runtime_bake_bench -- --pmx tests/data/mmt_test_model.pmx --vmd tests/data/mmt_test_model_test_motion.vmd
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in ("--case", "--pmx", "--vmd", "--out", "--log", "--repeat") and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        str(ROOT / "tests" / "viewport" / "runtime_bake_benchmark.py"),
+        *passthrough,
+        external=True,
+    )
