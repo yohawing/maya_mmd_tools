@@ -1,4 +1,5 @@
 import os
+from unittest.mock import patch
 
 from mmd_tools.core import mmd_parser
 from mmd_tools.core.pmd_data.material import PmdMaterial
@@ -33,6 +34,21 @@ class TestPmxParser(TestBase):
         self.assertIsNotNone(self.parsed_data, msg="パース結果がNoneです")
         # 型のチェック
         self.assertIsInstance(self.parsed_data, PmxData, msg="パース結果の型が不正です")
+
+    def test_native_pmx_parse_can_be_disabled_by_call_site(self):
+        """警告回避が必要な呼び出し元では native PMX parse を明示的に無効化できる。"""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MMD_TOOLS_ENABLE_NATIVE_PMX_PARSE", None)
+            self.assertIsNone(mmd_parser._try_native_pmx_parse(self.pmx_file_path, use_native_pmx_parse=False))
+
+    def test_native_pmx_parse_env_flag(self):
+        """native PMX parse は通常有効で、環境変数で明示的に切り替えられる。"""
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(mmd_parser._native_pmx_parse_enabled())
+        with patch.dict(os.environ, {"MMD_TOOLS_ENABLE_NATIVE_PMX_PARSE": "1"}, clear=True):
+            self.assertTrue(mmd_parser._native_pmx_parse_enabled())
+        with patch.dict(os.environ, {"MMD_TOOLS_ENABLE_NATIVE_PMX_PARSE": "0"}, clear=True):
+            self.assertFalse(mmd_parser._native_pmx_parse_enabled())
 
     def test_parse_pmx_header_success(self):
         """PMXヘッダが正しく解析されることをテストする。"""

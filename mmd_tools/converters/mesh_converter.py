@@ -503,30 +503,32 @@ def _set_dx11_color_uniform(shader_node, attr_name, values):
 
     rgb_attr = f"{attr_name}RGB"
     if cmds.attributeQuery(rgb_attr, node=shader_node, exists=True):
+        rgb_plug = "{}.{}".format(shader_node, rgb_attr)
         try:
-            cmds.setAttr(f"{shader_node}.{rgb_attr}", rgb[0], rgb[1], rgb[2], type="double3")
+            cmds.setAttr(rgb_plug, rgb[0], rgb[1], rgb[2], type="double3")
         except Exception:
             LOGGER.warning(
-                "Failed to set dx11Shader RGB uniform '%s.%s'",
-                shader_node,
-                rgb_attr,
+                "Failed to set dx11Shader RGB uniform '%s'",
+                rgb_plug,
                 exc_info=True,
             )
 
     for suffix, value in zip(("R", "G", "B"), rgb):
         child_attr = f"{attr_name}{suffix}"
         if cmds.attributeQuery(child_attr, node=shader_node, exists=True):
+            child_plug = "{}.{}".format(shader_node, child_attr)
             try:
-                cmds.setAttr(f"{shader_node}.{child_attr}", value)
+                cmds.setAttr(child_plug, value)
             except Exception:
-                LOGGER.debug("Failed to set dx11Shader child uniform '%s.%s'", shader_node, child_attr, exc_info=True)
+                LOGGER.debug("Failed to set dx11Shader child uniform '%s'", child_plug, exc_info=True)
 
     alpha_attr = f"{attr_name}A"
     if alpha is not None and cmds.attributeQuery(alpha_attr, node=shader_node, exists=True):
+        alpha_plug = "{}.{}".format(shader_node, alpha_attr)
         try:
-            cmds.setAttr(f"{shader_node}.{alpha_attr}", alpha)
+            cmds.setAttr(alpha_plug, alpha)
         except Exception:
-            LOGGER.debug("Failed to set dx11Shader alpha uniform '%s.%s'", shader_node, alpha_attr, exc_info=True)
+            LOGGER.debug("Failed to set dx11Shader alpha uniform '%s'", alpha_plug, exc_info=True)
 
 
 def sync_dx11_generated_uniforms(shader_nodes=None):

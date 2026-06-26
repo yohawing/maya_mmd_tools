@@ -10,6 +10,7 @@ from mmd_tools.core import maya_utils
 from .. import settings
 from ..core.logger import get_logger
 from ..converters import MeshConverter, BoneConverter, MorphConverter, PhysicsConverter
+from ..converters.light_converter import create_mmd_light_controller, wire_dx11_shaders_to_mmd_light
 from ..core.utils import create_bone_joint_mapping
 from ..core.constants import (
     ATTR_MMD_COMMENT,
@@ -145,8 +146,6 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
             light_ctrl = None
             if settings.get("import.light.create_controller", True):
                 try:
-                    from ..converters.light_converter import create_mmd_light_controller
-
                     light_ctrl = create_mmd_light_controller()
                 except Exception:
                     logger.debug("Failed to create MMD light controller", exc_info=True)
@@ -168,7 +167,6 @@ def import_pmd_file(parser, filepath, scale=1.0, options=None):
                     except Exception:
                         pass
                     from ..converters.mesh_converter import sync_dx11_generated_uniforms
-                    from ..converters.light_converter import wire_dx11_shaders_to_mmd_light
 
                     sync_dx11_generated_uniforms(mesh_converter.created_shaders)
                     wire_dx11_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)

@@ -190,28 +190,77 @@ class _MmdDropEventFilter:
                 return False
 
         self._filter = EventFilter()
-        self._window = None
+        self._targets = []
+        self._accept_drop_states = []
 
     def install(self) -> bool:
         window = _maya_main_window()
         if window is None:
             return False
-        self._window = window
+        targets = self._drop_targets(window)
+        if not targets:
+            return False
         try:
-            window.setAcceptDrops(True)
-            window.installEventFilter(self._filter)
+            for target in targets:
+                self._install_on_target(target)
             return True
         except Exception as exc:
             logger.warning("Failed to install MMD drag-and-drop importer: %s", exc)
             return False
 
     def uninstall(self) -> None:
-        if self._window is not None:
+        for target in self._targets:
             try:
-                self._window.removeEventFilter(self._filter)
+                target.removeEventFilter(self._filter)
             except Exception:
                 pass
-        self._window = None
+        for target, previous in reversed(self._accept_drop_states):
+            try:
+                target.setAcceptDrops(previous)
+            except Exception:
+                pass
+        self._targets = []
+        self._accept_drop_states = []
+
+    def _drop_targets(self, window):
+        try:
+            from mmd_tools.ui.qt_compat import QApplication, QWidget
+
+            app = QApplication.instance()
+            targets = []
+            if app is not None:
+                targets.append(app)
+            targets.append(window)
+            try:
+                targets.extend(window.findChildren(QWidget) or [])
+            except Exception:
+                pass
+
+            result = []
+            seen = set()
+            for target in targets:
+                if target is None:
+                    continue
+                key = id(target)
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append(target)
+            return result
+        except Exception as exc:
+            logger.debug("Failed to enumerate Maya drop targets: %s", exc, exc_info=True)
+            return [window]
+
+    def _install_on_target(self, target) -> None:
+        if hasattr(target, "setAcceptDrops"):
+            try:
+                previous = bool(target.acceptDrops()) if hasattr(target, "acceptDrops") else False
+                self._accept_drop_states.append((target, previous))
+                target.setAcceptDrops(True)
+            except Exception:
+                pass
+        target.installEventFilter(self._filter)
+        self._targets.append(target)
 
 
 def _qt_core():

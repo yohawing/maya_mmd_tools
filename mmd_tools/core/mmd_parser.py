@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 
 from .exceptions import MMDParseException
 from .logger import get_logger
@@ -13,8 +14,20 @@ from .vpd_data import VpdData
 logger = get_logger("mmd_tools.core.mmd_parser")
 
 
-def _try_native_pmx_parse(file_path: str):
+def _native_pmx_parse_enabled(use_native_pmx_parse: Optional[bool] = None) -> bool:
+    """Return whether the optional native PMX parser should be attempted."""
+    if use_native_pmx_parse is False:
+        return False
+    env_value = os.environ.get("MMD_TOOLS_ENABLE_NATIVE_PMX_PARSE")
+    if env_value is not None:
+        return env_value.lower() in {"1", "true", "yes", "on"}
+    return True
+
+
+def _try_native_pmx_parse(file_path: str, use_native_pmx_parse: Optional[bool] = None):
     """ネイティブ DLL での PMX パースを試みる。失敗時は None。"""
+    if not _native_pmx_parse_enabled(use_native_pmx_parse):
+        return None
     try:
         from .native.native_pmx_parser import parse_pmx_native
 
@@ -24,7 +37,7 @@ def _try_native_pmx_parse(file_path: str):
         return None
 
 
-def parse_mmd_file(file_path):
+def parse_mmd_file(file_path, use_native_pmx_parse: Optional[bool] = None):
     """
     MMDファイル（PMD, PMX, VMD, VPD）を解析し、解析されたデータオブジェクトを返す。
 
@@ -70,7 +83,7 @@ def parse_mmd_file(file_path):
             return parser
         elif magic_bytes.startswith(b"PMX"):
             logger.info("Starting parse as PMX file")
-            native_result = _try_native_pmx_parse(file_path)
+            native_result = _try_native_pmx_parse(file_path, use_native_pmx_parse)
             if native_result is not None:
                 logger.info("PMX file parsing completed (native)")
                 return native_result

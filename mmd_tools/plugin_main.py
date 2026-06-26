@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from maya import cmds
 import maya.api.OpenMaya as om
 from mmd_tools import __version__
@@ -13,8 +11,6 @@ from mmd_tools.nodes import mmd_append_node
 from mmd_tools.nodes import mmd_bone_morph_accum_node
 from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
-
-_FILE_TRANSLATOR_PLUGIN = Path(__file__).resolve().parents[1] / "plug-ins" / "mmd_tools_file_translator.py"
 
 
 def maya_useNewAPI():
@@ -63,26 +59,6 @@ def uninstall_mmd_menu():
         cmds.deleteUI("MMD", menu=True)
 
 
-def load_mmd_file_translator():
-    """Load the API 1.0 file translator plug-in used by File > Import."""
-    plugin_path = str(_FILE_TRANSLATOR_PLUGIN)
-    try:
-        if not cmds.pluginInfo(plugin_path, query=True, loaded=True):
-            cmds.loadPlugin(plugin_path, quiet=True)
-    except Exception as exc:
-        om.MGlobal.displayWarning(f"Failed to load MMD file translator plug-in: {exc}")
-
-
-def unload_mmd_file_translator():
-    """Unload the API 1.0 file translator plug-in if it is loaded."""
-    plugin_path = str(_FILE_TRANSLATOR_PLUGIN)
-    try:
-        if cmds.pluginInfo(plugin_path, query=True, loaded=True):
-            cmds.unloadPlugin(plugin_path, force=True)
-    except Exception as exc:
-        om.MGlobal.displayWarning(f"Failed to unload MMD file translator plug-in: {exc}")
-
-
 def initializePlugin(mobject):
     """
     Plugin entry point.
@@ -95,7 +71,6 @@ def initializePlugin(mobject):
     try:
         install_mmd_menu()
         install_drag_drop_importer()
-        load_mmd_file_translator()
         mmd_shader.initializePlugin(mobject)
         mmd_bone_morph_accum_node.register(plugin_fn)
         mmd_material_morph_eval_node.register(plugin_fn)
@@ -115,7 +90,6 @@ def uninitializePlugin(mobject):
     try:
         uninstall_mmd_menu()
         uninstall_drag_drop_importer()
-        unload_mmd_file_translator()
         mmd_shader.uninitializePlugin(mobject)
         mmd_ccd_ik_node.deregister(plugin_fn)
         mmd_append_node.deregister(plugin_fn)

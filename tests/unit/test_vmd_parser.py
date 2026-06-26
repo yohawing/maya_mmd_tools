@@ -200,6 +200,31 @@ class TestVmdParser(TestBase):
             if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
 
+    def test_parse_vmd_without_trailing_shadow_and_ik_sections(self):
+        """self-shadow/IK セクションが省略された VMD も読み込めることを確認する。"""
+        mock_vmd_data = VmdMock.create_custom_vmd(
+            model_name="TestModel",
+            bone_frame_count=0,
+            morph_frame_count=0,
+            light_frame_count=1,
+        )
+        # VMD variants in the wild may end immediately after the light section.
+        mock_vmd_data = mock_vmd_data[:-8]
+
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".vmd", delete=False) as temp_file:
+            temp_file.write(mock_vmd_data)
+            temp_file_path = temp_file.name
+
+        try:
+            parsed_data = mmd_parser.parse_mmd_file(temp_file_path)
+        finally:
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+
+        self.assertEqual(len(parsed_data.light_frames), 1)
+        self.assertEqual(parsed_data.shadow_frames, [])
+        self.assertEqual(parsed_data.ik_show_hide_frames, [])
+
     def test_parse_vmd_ik_show_hide_frames(self):
         """VMD IK表示/非表示フレームが正しく解析されることをテストする。"""
         # Noneでないことを確認

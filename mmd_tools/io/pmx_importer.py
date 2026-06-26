@@ -11,6 +11,7 @@ from mmd_tools.core import maya_utils
 from .. import settings
 from ..converters import BoneConverter, MeshConverter, MorphConverter, PhysicsConverter
 from ..converters.bone_morph_runtime import build_bone_morph_graph
+from ..converters.light_converter import create_mmd_light_controller, wire_dx11_shaders_to_mmd_light
 from ..converters.material_morph_runtime import build_material_morph_graph
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core.logger import get_logger
@@ -185,8 +186,6 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             light_ctrl = None
             if settings.get("import.light.create_controller", True):
                 try:
-                    from ..converters.light_converter import create_mmd_light_controller
-
                     light_ctrl = create_mmd_light_controller()
                 except Exception:
                     logger.debug("Failed to create MMD light controller", exc_info=True)
@@ -222,8 +221,6 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             # MMD ライトコントローラを各 dx11Shader に結線（uniform 生成後）。
             if light_ctrl:
                 try:
-                    from ..converters.light_converter import wire_dx11_shaders_to_mmd_light
-
                     wire_dx11_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)
                 except Exception:
                     logger.debug("Failed to wire MMD light", exc_info=True)

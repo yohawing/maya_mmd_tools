@@ -12,6 +12,15 @@ from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
 from mmd_tools.core.exceptions import MMDParseException
 
 
+def _read_optional_uint32(f):
+    data = f.read(4)
+    if not data:
+        return None
+    if len(data) != 4:
+        raise struct.error("unpack requires a buffer of 4 bytes")
+    return struct.unpack("<I", data)[0]
+
+
 class VmdData:
     """
     VMDファイルを解析し、そのデータをPythonオブジェクトとして保持するクラス。
@@ -79,16 +88,18 @@ class VmdData:
                     self.light_frames.append(frame)
 
                 # Shadow Frames
-                num_shadow_frames = struct.unpack("<I", f.read(4))[0]
-                for _ in range(num_shadow_frames):
-                    frame = VmdShadowFrame()
-                    frame.parse(f.read(VmdShadowFrame.size()))
-                    self.shadow_frames.append(frame)
+                # Some VMDs end after the light section and omit self-shadow and IK sections.
+                num_shadow_frames = _read_optional_uint32(f)
+                if num_shadow_frames is not None:
+                    for _ in range(num_shadow_frames):
+                        frame = VmdShadowFrame()
+                        frame.parse(f.read(VmdShadowFrame.size()))
+                        self.shadow_frames.append(frame)
 
                 # IK Show/Hide Frames
                 # VMD 2.0ではIK表示/非表示フレームは存在しない場合があるため、ファイルの終端チェックを行う
-                if f.tell() < os.fstat(f.fileno()).st_size:
-                    num_ik_show_hide_frames = struct.unpack("<I", f.read(4))[0]
+                num_ik_show_hide_frames = _read_optional_uint32(f)
+                if num_ik_show_hide_frames is not None:
                     for _ in range(num_ik_show_hide_frames):
                         frame = VmdIKShowHideFrame()
                         # IK表示/非表示フレームは可変長なので、個別に読み込む
