@@ -136,6 +136,50 @@ class TestMorphConverter(MayaTestBase):
 
         cmds.delete(mesh_name, morph_node)
 
+    def test_convert_pmx_group_morph_metadata(self):
+        """PMX GroupMorph が network node として import されることをテストする。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeGroupMorph:
+            name = "グループ笑い"
+            name_english = "group_smile"
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [
+                {
+                    "morph_index": 3,
+                    "morph_rate": 0.25,
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeGroupMorph()]})()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        group_nodes = result.get("group_morph_nodes", [])
+        self.assertEqual(len(group_nodes), 1)
+
+        morph_node = group_nodes[0]
+        self.assertTrue(cmds.objExists(morph_node))
+        self.assertTrue(cmds.attributeQuery("weight", node=morph_node, exists=True))
+        self.assertTrue(cmds.getAttr(f"{morph_node}.weight", keyable=True))
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_name"), "グループ笑い")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_type"), "group")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_index"), 0)
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_group_morph_offset_count"), 1)
+
+        offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_group_morph_offsets_json"))
+        self.assertEqual(offsets[0]["morph_index"], 3)
+        self.assertEqual(offsets[0]["morph_rate"], 0.25)
+
+        cmds.delete(mesh_name, morph_node)
+
     def test_convert_pmx_material_morph_metadata(self):
         """PMX MaterialMorph が network node として import されることをテストする。"""
         mesh_name = self._create_test_mesh()

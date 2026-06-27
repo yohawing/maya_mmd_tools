@@ -1,14 +1,16 @@
 """Action boundary for PMX/PMD model export execution."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional
 
 from ..core.logger import get_logger
+from ..io.pmd_exporter import PmdExporter
+from ..io.pmx_exporter import PmxExporter
 
 logger = get_logger(__name__)
 
-_EXPORT_NOT_IMPLEMENTED_WARNING = "PMX export is not implemented yet (scene data collection missing)"
-_EXPORT_NOT_IMPLEMENTED_STATUS = "PMX export is not implemented yet (scene data collection is unsupported)"
+_DEFAULT_COLLECTOR = object()
 
 
 @dataclass
@@ -29,15 +31,75 @@ class ExportModelResult:
     error: Optional[Exception] = None
 
 
-class ExportModelAction:
-    """Represent the Maya-side PMX/PMD model export boundary.
+def _default_collect_model_data(options: Dict[str, Any]) -> dict:
+    """Collect minimum PMX/PMD-compatible model data from the requested mesh."""
+    from maya import cmds
 
-    Scene data collection is not implemented yet, so this action deliberately
-    does not call an exporter. It preserves the current honest UI behavior while
-    providing the future insertion point for scene collection and export.
-    """
+    from ..converters.export_scene_collector import ExportSceneCollector
+
+    collector = ExportSceneCollector()
+    if (
+        options.get("target_model")
+        or options.get("model_root")
+        or options.get("target_mesh")
+        or options.get("export_mesh")
+        or options.get("mesh")
+    ):
+        return collector.collect(options)
+
+    target = None
+    if target is None:
+        selection = cmds.ls(selection=True, long=True) or []
+        target = selection[0] if selection else None
+    if target is None:
+        raise ValueError("Model export requires model_data, target_model, target_mesh, or a selected mesh")
+    return collector.collect({"target_mesh": target})
+
+
+class ExportModelAction:
+    """Execute PMX/PMD model export from collected or scene-collected data."""
+
+    def __init__(
+        self,
+        pmx_exporter: Optional[PmxExporter] = None,
+        pmd_exporter: Optional[PmdExporter] = None,
+        collector: Optional[Callable[[Dict[str, Any]], dict]] = _DEFAULT_COLLECTOR,
+    ):
+        self._pmx_exporter = pmx_exporter or PmxExporter()
+        self._pmd_exporter = pmd_exporter or PmdExporter()
+        if collector is _DEFAULT_COLLECTOR:
+            self._collector = _default_collect_model_data
+        else:
+            self._collector = collector
 
     def execute(self, request: ExportModelRequest) -> ExportModelResult:
-        """Report the current unsupported export state without exporting."""
-        logger.warning(_EXPORT_NOT_IMPLEMENTED_WARNING)
-        return ExportModelResult(status_message=_EXPORT_NOT_IMPLEMENTED_STATUS)
+        """Export a PMX/PMD model and return a small result object."""
+        try:
+            export_format = (request.options.get("export_format") or "").lower()
+            if not export_format:
+                export_format = Path(request.file_path).suffix.lower().lstrip(".") or "pmx"
+
+            model_data = request.options.get("model_data")
+            if model_data is None:
+                model_data = request.options.get("maya_data")
+            if model_data is None:
+                if self._collector is None:
+                    raise ValueError("Model export requires model_data or a collector")
+                model_data = self._collector(request.options)
+
+            if export_format == "pmx":
+                self._pmx_exporter.export_pmx_model(request.file_path, model_data)
+            elif export_format == "pmd":
+                self._pmd_exporter.export_pmd_model(request.file_path, model_data)
+            else:
+                raise ValueError(f"Unsupported model export format: {export_format}")
+
+            logger.info("Exported %s model: %s", export_format.upper(), request.file_path)
+            return ExportModelResult(
+                exported_path=request.file_path,
+                succeeded=True,
+                status_message=f"Export complete: {request.file_path}",
+            )
+        except Exception as exc:
+            logger.error("Model export failed: %s", exc, exc_info=True)
+            return ExportModelResult(status_message=f"Export failed: {exc}", error=exc)

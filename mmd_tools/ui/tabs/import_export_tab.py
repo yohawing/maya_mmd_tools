@@ -26,6 +26,19 @@ import os
 import json
 
 
+def _format_target_model_label(model_root):
+    """VMD import target combo に表示するモデル名を返す。"""
+    display_name = get_mmd_model_display_name(model_root)
+    if ":" not in model_root:
+        return display_name
+
+    namespace = model_root.rsplit(":", 1)[0]
+    if "|" in namespace:
+        namespace = namespace.split("|")[-1]
+    root_name = model_root.rsplit(":", 1)[-1]
+    return f"{display_name} [{namespace}:{root_name}]"
+
+
 class ImportExportTab(BaseTab):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -258,6 +271,14 @@ class ImportExportTab(BaseTab):
         self.translate_names_check.setToolTip(self.tr("translate_names", "tooltips"))
         other_layout.addWidget(self.translate_names_check)
 
+        self.use_cpp_rig_nodes_check = QCheckBox(self.tr("use_cpp_rig_nodes", "checkboxes"))
+        self.use_cpp_rig_nodes_check.setChecked(settings.get("import.native.use_cpp_rig_nodes", False))
+        self.use_cpp_rig_nodes_check.toggled.connect(
+            lambda v: settings.set("import.native.use_cpp_rig_nodes", v)
+        )
+        self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
+        other_layout.addWidget(self.use_cpp_rig_nodes_check)
+
         self.other_group.setLayout(other_layout)
 
         # Animation Import Settings
@@ -300,6 +321,21 @@ class ImportExportTab(BaseTab):
         fps_layout.addStretch()
         anim_settings_layout.addLayout(fps_layout)
 
+        # Motion scale
+        motion_scale_layout = QHBoxLayout()
+        self.motion_scale_label = QLabel(self.tr("motion_scale", "fields"))
+        motion_scale_layout.addWidget(self.motion_scale_label)
+        self.motion_scale_spin = QDoubleSpinBox()
+        self.motion_scale_spin.setRange(0.001, 1000.0)
+        self.motion_scale_spin.setDecimals(3)
+        self.motion_scale_spin.setSingleStep(0.1)
+        self.motion_scale_spin.setValue(settings.get("import.animation.motion_scale", 1.0))
+        self.motion_scale_spin.valueChanged.connect(lambda v: settings.set("import.animation.motion_scale", v))
+        self.motion_scale_spin.setToolTip(self.tr("motion_scale", "tooltips"))
+        motion_scale_layout.addWidget(self.motion_scale_spin)
+        motion_scale_layout.addStretch()
+        anim_settings_layout.addLayout(motion_scale_layout)
+
         self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
         self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
         self.bake_mode_check.toggled.connect(
@@ -307,6 +343,14 @@ class ImportExportTab(BaseTab):
         )
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
         anim_settings_layout.addWidget(self.bake_mode_check)
+
+        self.clear_existing_motion_check = QCheckBox(self.tr("clear_existing_motion", "checkboxes"))
+        self.clear_existing_motion_check.setChecked(settings.get("import.animation.clear_existing_motion", False))
+        self.clear_existing_motion_check.toggled.connect(
+            lambda v: settings.set("import.animation.clear_existing_motion", v)
+        )
+        self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
+        anim_settings_layout.addWidget(self.clear_existing_motion_check)
 
         # Animation type checkboxes
         self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
@@ -350,7 +394,7 @@ class ImportExportTab(BaseTab):
 
         model_settings_layout.addStretch()
 
-        # Export Settings Tab (not added to tab widget — export is not yet implemented)
+        # Export Settings
         self._export_settings_tab = QScrollArea()
         self._export_settings_tab.setWidgetResizable(True)
         self._export_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -362,11 +406,11 @@ class ImportExportTab(BaseTab):
         self.format_label = QLabel(self.tr("format", "fields"))
         format_layout.addWidget(self.format_label)
         self.export_format_combo = QComboBox()
-        # PMD エクスポートは PmdExporter が未実装のため選択肢に出さない（pmx のみ）
-        self.export_format_combo.addItems(["pmx"])
+        # PMD エクスポートは PmdExporter が未実装のため選択肢に出さない。
+        self.export_format_combo.addItems(["pmx", "vmd"])
         current_format = settings.get("export.general.export_format", "pmx")
         self.export_format_combo.setCurrentText(current_format)
-        self.export_format_combo.currentTextChanged.connect(lambda v: settings.set("export.general.export_format", v))
+        self.export_format_combo.currentTextChanged.connect(self._on_export_format_changed)
         format_layout.addWidget(self.export_format_combo)
         format_layout.addStretch()
         export_settings_layout.addLayout(format_layout)
@@ -379,7 +423,7 @@ class ImportExportTab(BaseTab):
 
         export_settings_layout.addStretch()
         self._export_settings_tab.setWidget(export_settings_widget)
-        # Export subtab is intentionally not added: export is not yet implemented.
+        model_settings_layout.addWidget(self._export_settings_tab)
 
         # 右側：インポート/エクスポートセクション
         right_scroll = QScrollArea()
@@ -502,8 +546,7 @@ class ImportExportTab(BaseTab):
 
         main_layout.addWidget(splitter)
 
-        # Export is not yet implemented: always hide the export surface.
-        self.export_group.setVisible(False)
+        self._apply_export_visibility()
         # import_models is always ON in behavior; checkbox removed from UI.
         self.import_models_check.setVisible(False)
 
@@ -523,6 +566,7 @@ class ImportExportTab(BaseTab):
             self.group_physics_objects_check,
             self.morph_physics_group,
             self.other_group,
+            self.use_cpp_rig_nodes_check,
             self.resample_curves_check,
             self.import_bone_animation_check,
             self.import_morph_animation_check,
@@ -537,6 +581,16 @@ class ImportExportTab(BaseTab):
         for widget in self._dev_only_widgets:
             widget.setVisible(is_dev)
 
+    def _on_export_format_changed(self, export_format):
+        """エクスポート形式を保存し、利用可能な export UI だけを表示する。"""
+        settings.set("export.general.export_format", export_format)
+        self._apply_export_visibility()
+
+    def _apply_export_visibility(self):
+        """VMD export 実装済みのときだけ export 操作群を表示する。"""
+        if hasattr(self, "export_group"):
+            self.export_group.setVisible(settings.get("export.general.export_format", "pmx") == "vmd")
+
     def refresh_model_list(self, restore_selection=False):
         """シーン内のMMDモデルリストを更新"""
         # 現在の選択を保持
@@ -548,8 +602,7 @@ class ImportExportTab(BaseTab):
         try:
             models = find_all_mmd_models()
             for model in models:
-                display_name = get_mmd_model_display_name(model)
-                self.target_model_combo.addItem(display_name, userData=model)
+                self.target_model_combo.addItem(_format_target_model_label(model), userData=model)
         except Exception:
             pass
 
@@ -588,6 +641,8 @@ class ImportExportTab(BaseTab):
             self.start_frame_label.setText(self.tr("start_frame", "fields"))
         if hasattr(self, "vmd_fps_label"):
             self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
+        if hasattr(self, "motion_scale_label"):
+            self.motion_scale_label.setText(self.tr("motion_scale", "fields"))
         if hasattr(self, "transparency_threshold_label"):
             self.transparency_threshold_label.setText(self.tr("transparency_opaque_threshold", "fields"))
         if hasattr(self, "format_label"):
@@ -643,6 +698,8 @@ class ImportExportTab(BaseTab):
         self.group_physics_objects_check.setText(self.tr("group_physics_objects", "checkboxes"))
         self.add_semi_standard_bones_check.setText(self.tr("add_semi_standard_bones", "checkboxes"))
         self.bake_mode_check.setText(self.tr("bake_mode", "checkboxes"))
+        self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
+        self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
         self.translate_names_check.setText(self.tr("translate_names", "checkboxes"))
         self.import_bone_animation_check.setText(self.tr("import_bone_animation", "checkboxes"))
         self.import_morph_animation_check.setText(self.tr("import_morph_animation", "checkboxes"))
@@ -665,9 +722,12 @@ class ImportExportTab(BaseTab):
         self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
         self.add_semi_standard_bones_check.setToolTip(self.tr("add_semi_standard_bones", "tooltips"))
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
+        self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
+        self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         self.translate_names_check.setToolTip(self.tr("translate_names", "tooltips"))
         self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
         self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))
+        self.motion_scale_spin.setToolTip(self.tr("motion_scale", "tooltips"))
         self.import_bone_animation_check.setToolTip(self.tr("import_bone_animation", "tooltips"))
         self.import_morph_animation_check.setToolTip(self.tr("import_morph_animation", "tooltips"))
         self.import_camera_animation_check.setToolTip(self.tr("import_camera_animation", "tooltips"))

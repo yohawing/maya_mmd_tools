@@ -121,6 +121,8 @@ class SettingsService:
             "import_morph_animation": self.get("import.animation.import_morph_animation", True),
             "import_camera_animation": self.get("import.animation.import_camera_animation", True),
             "import_light_animation": self.get("import.animation.import_light_animation", True),
+            "motion_scale": self.get("import.animation.motion_scale", 1.0),
+            "clear_existing_motion": self.get("import.animation.clear_existing_motion", False),
             "resample_curves": self.get("import.animation.resample_curves", False) if is_dev else False,
             "bake_mode": self.get("import.rig.bake_mode", False),
             "target_model": target_model,
@@ -152,6 +154,7 @@ class SettingsService:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
         opts["use_cpp_fast_load"] = self.get("import.native.use_cpp_fast_load", False)
         opts["cpp_fast_load_mesh_only"] = self.get("import.native.cpp_fast_load_mesh_only", True)
+        opts["use_cpp_rig_nodes"] = self.get("import.native.use_cpp_rig_nodes", False)
         return opts
 
     def should_show_texture_issue_dialog(self):

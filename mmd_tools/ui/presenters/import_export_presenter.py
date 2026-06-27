@@ -1,5 +1,6 @@
 from ..qt_compat import QObject, QFileDialog
 from ...actions.export_model_action import ExportModelAction, ExportModelRequest
+from ...actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
@@ -20,6 +21,7 @@ class ImportExportPresenter(QObject):
         import_model_action=None,
         import_vmd_action=None,
         export_model_action=None,
+        export_vmd_action=None,
         settings_service=None,
         maya_adapter=None,
     ):
@@ -29,6 +31,7 @@ class ImportExportPresenter(QObject):
         self.import_model_action = import_model_action or ImportModelAction()
         self.import_vmd_action = import_vmd_action or ImportVmdAction()
         self.export_model_action = export_model_action or ExportModelAction()
+        self.export_vmd_action = export_vmd_action or ExportVmdAction()
         self.settings_service = settings_service or SettingsService()
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.connect_signals()
@@ -56,7 +59,14 @@ class ImportExportPresenter(QObject):
             self.view.import_path_edit.setText(file_path)
 
     def select_export_file(self):
-        file_path, _ = QFileDialog.getSaveFileName(self.view, "Save PMX File", "", "PMX Files (*.pmx);;All Files (*)")
+        export_format = self.settings_service.get("export.general.export_format", "pmx")
+        if export_format == "vmd":
+            title = "Save VMD File"
+            filter_text = "VMD Files (*.vmd);;All Files (*)"
+        else:
+            title = "Save PMX File"
+            filter_text = "PMX Files (*.pmx);;All Files (*)"
+        file_path, _ = QFileDialog.getSaveFileName(self.view, title, "", filter_text)
         if file_path:
             self.view.export_path_edit.setText(file_path)
 
@@ -269,11 +279,20 @@ class ImportExportPresenter(QObject):
         export_options = self._build_export_options()
         logger.debug(f"Export options: {export_options}")
 
-        request = ExportModelRequest(file_path=file_path, options=export_options)
-        result = self.export_model_action.execute(request)
+        if export_options.get("export_format") == "vmd":
+            request = ExportVmdRequest(file_path=file_path, options=export_options)
+            result = self.export_vmd_action.execute(request)
+        else:
+            request = ExportModelRequest(file_path=file_path, options=export_options)
+            result = self.export_model_action.execute(request)
         if result.error:
             logger.error(f"Export failed: {result.error}")
             self.app_state.emit_status(f"Export error: {str(result.error)}")
+            return
+        if getattr(result, "succeeded", False):
+            if hasattr(self.view, "add_export_path_to_history"):
+                self.view.add_export_path_to_history(file_path)
+            self.app_state.emit_status(f"Export complete: {file_path}")
             return
         if result.status_message:
             self.app_state.emit_status(result.status_message)

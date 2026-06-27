@@ -1,19 +1,31 @@
 """Minimum scene-data collector for PMX export.
 
-Collects a single polygon mesh from the Maya scene and returns a dict
+Collects one or more polygon meshes from the Maya scene and returns a dict
 compatible with ``PmxExporter.export_pmx_model``.
 
 Coordinate conventions
 ----------------------
-This collector preserves Maya world-space coordinates without any basis
-conversion (no Z-flip, no scale change).  Full MMD-basis conversion
-(Z *= -1, skinCluster extraction) is out of scope for this minimum slice
-and must be added in a later collector pass.
+This collector exports Maya world-space geometry back into MMD basis by
+flipping Z for positions/normals and reversing face winding. Scale
+normalization is out of scope for this minimum slice and must be added in a
+later collector pass.
 """
+
+import json
 
 from maya import cmds
 
-from mmd_tools.core.constants import ATTR_MMD_MATERIAL_NAME, ATTR_MMD_MODEL_NAME
+from mmd_tools.converters.morph_converter import MorphConverter
+from mmd_tools.converters.physics_converter import PhysicsConverter
+from mmd_tools.core.constants import (
+    ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
+    ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_MODEL_NAME,
+)
 
 
 def _get_mesh_shape(node: str) -> str:
@@ -34,6 +46,257 @@ def _get_mesh_shape(node: str) -> str:
     if not shapes:
         raise ValueError(f"No mesh shape found under '{node}'")
     return shapes[0]
+
+
+def _get_model_name(node: str) -> str:
+    """Return the MMD model name on *node*, falling back to its short DAG name."""
+    if cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=node, exists=True):
+        val = cmds.getAttr(f"{node}.{ATTR_MMD_MODEL_NAME}")
+        if val:
+            return val
+    return node.rsplit("|", 1)[-1]
+
+
+def _get_attr(node: str, attr: str, default=None):
+    """Return attr value if it exists, otherwise *default*."""
+    if cmds.attributeQuery(attr, node=node, exists=True):
+        value = cmds.getAttr(f"{node}.{attr}")
+        if value is not None:
+            return value
+    return default
+
+
+def _maya_to_mmd_vector(values) -> list[float]:
+    """Convert a Maya XYZ vector to MMD basis by flipping Z."""
+    return [float(values[0]), float(values[1]), -float(values[2])]
+
+
+def _list_export_mesh_shapes(root: str) -> list:
+    """Return non-intermediate mesh shapes under *root* in deterministic DAG order."""
+    if cmds.nodeType(root) == "mesh":
+        shapes = [root]
+    else:
+        direct_shapes = cmds.listRelatives(root, shapes=True, type="mesh", fullPath=True) or []
+        child_shapes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
+        shapes = direct_shapes + child_shapes
+
+    unique_shapes = []
+    seen = set()
+    for shape in sorted(shapes):
+        if shape in seen:
+            continue
+        seen.add(shape)
+        try:
+            if cmds.getAttr(f"{shape}.intermediateObject"):
+                continue
+        except Exception:
+            pass
+        unique_shapes.append(shape)
+    return unique_shapes
+
+
+def _find_skin_cluster(shape: str) -> str | None:
+    """Return the first skinCluster in the mesh history, if any."""
+    history = cmds.listHistory(shape, pruneDagObjects=True) or []
+    for node in history:
+        if cmds.nodeType(node) == "skinCluster":
+            return node
+    return None
+
+
+def _find_blend_shapes(shape: str) -> list[str]:
+    """Return blendShape nodes in the mesh history."""
+    history = cmds.listHistory(shape, pruneDagObjects=True) or []
+    return [node for node in history if cmds.nodeType(node) == "blendShape"]
+
+
+def _collect_skin_bones(skin_cluster: str) -> tuple[list[dict], dict[str, int]]:
+    """Collect exporter bone dicts from skinCluster influences."""
+    influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+
+    def sort_key(joint):
+        stored_index = _get_attr(joint, ATTR_MMD_BONE_INDEX)
+        if stored_index is None:
+            return (1, joint)
+        return (0, int(stored_index))
+
+    ordered = sorted(influences, key=sort_key)
+    export_index_by_joint = {joint: index for index, joint in enumerate(ordered)}
+    stored_to_export = {}
+    for joint, index in export_index_by_joint.items():
+        stored_index = _get_attr(joint, ATTR_MMD_BONE_INDEX)
+        if stored_index is not None:
+            stored_to_export[int(stored_index)] = index
+
+    bones = []
+    for joint in ordered:
+        parent_index = -1
+        stored_parent = _get_attr(joint, ATTR_MMD_BONE_PARENT_INDEX)
+        if stored_parent is not None:
+            parent_index = stored_to_export.get(int(stored_parent), -1)
+        else:
+            parent = (cmds.listRelatives(joint, parent=True, type="joint") or [None])[0]
+            if parent in export_index_by_joint:
+                parent_index = export_index_by_joint[parent]
+
+        position = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+        bones.append({
+            "name": _get_attr(joint, ATTR_MMD_BONE_NAME, joint.rsplit("|", 1)[-1]),
+            "name_english": _get_attr(joint, ATTR_MMD_BONE_NAME_EN, ""),
+            "position": _maya_to_mmd_vector(position),
+            "parent_index": parent_index,
+            "source_joint": joint,
+        })
+    return bones, export_index_by_joint
+
+
+def _collect_vertex_skin_weights(skin_cluster: str, shape: str, vertex_count: int, export_index_by_joint: dict[str, int]) -> list:
+    """Collect per-vertex exporter skinning fields from a skinCluster."""
+    influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
+    influence_export_indices = [export_index_by_joint[joint] for joint in influences]
+    vertex_weights = []
+    for vertex_index in range(vertex_count):
+        weights = cmds.skinPercent(
+            skin_cluster,
+            f"{shape}.vtx[{vertex_index}]",
+            query=True,
+            value=True,
+        ) or []
+        pairs = [
+            (bone_index, float(weight))
+            for bone_index, weight in zip(influence_export_indices, weights)
+            if float(weight) > 1e-8
+        ]
+        if not pairs:
+            pairs = [(0, 1.0)]
+        pairs.sort(key=lambda pair: pair[1], reverse=True)
+        pairs = pairs[:4]
+        total = sum(weight for _bone_index, weight in pairs)
+        if total > 0.0:
+            pairs = [(bone_index, weight / total) for bone_index, weight in pairs]
+        if len(pairs) == 3:
+            pairs.append((pairs[-1][0], 0.0))
+        vertex_weights.append({
+            "bone_indices": [bone_index for bone_index, _weight in pairs],
+            "bone_weights": [weight for _bone_index, weight in pairs],
+        })
+    return vertex_weights
+
+
+def _blendshape_aliases_by_index(blend_shape: str) -> dict[int, str]:
+    """Return target index -> alias name for a blendShape node."""
+    aliases = {}
+    flat = cmds.aliasAttr(blend_shape, query=True) or []
+    for alias, attr in zip(flat[0::2], flat[1::2]):
+        if "[" not in attr or "]" not in attr:
+            continue
+        try:
+            index = int(attr.rsplit("[", 1)[1].split("]", 1)[0])
+        except ValueError:
+            continue
+        aliases[index] = alias
+    return aliases
+
+
+def _blendshape_stored_names(blend_shape: str) -> dict[int, str]:
+    """Return target index -> raw PMX morph name stored by MorphConverter."""
+    if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape, exists=True):
+        return {}
+    try:
+        raw = cmds.getAttr(f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    names = {}
+    for key, value in parsed.items():
+        try:
+            names[int(key)] = str(value)
+        except (TypeError, ValueError):
+            continue
+    return names
+
+
+def _blendshape_target_indices(blend_shape: str) -> list[int]:
+    """Return deterministic target indices from aliases, stored names, and weight plugs."""
+    indices = set(_blendshape_aliases_by_index(blend_shape))
+    indices.update(_blendshape_stored_names(blend_shape))
+    try:
+        indices.update(int(index) for index in (cmds.getAttr(f"{blend_shape}.w", multiIndices=True) or []))
+    except Exception:
+        pass
+    return sorted(indices)
+
+
+def _mesh_local_positions(shape: str, vertex_count: int) -> list[list[float]]:
+    """Return mesh vertex positions in local mesh space."""
+    return [
+        [float(v) for v in cmds.pointPosition(f"{shape}.vtx[{vertex_index}]", local=True)]
+        for vertex_index in range(vertex_count)
+    ]
+
+
+def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
+    """Collect PMX VertexMorph dicts from blendShape targets on *shape*.
+
+    The importer applies PMX vertex offsets in Maya mesh space by negating Z.
+    Export inverts that local target delta back to PMX offset space.
+    """
+    vertex_count = int(cmds.polyEvaluate(shape, vertex=True))
+    morphs = []
+
+    for blend_shape in _find_blend_shapes(shape):
+        target_indices = _blendshape_target_indices(blend_shape)
+        if not target_indices:
+            continue
+
+        aliases = _blendshape_aliases_by_index(blend_shape)
+        stored_names = _blendshape_stored_names(blend_shape)
+        saved_weights = {}
+        saved_envelope = None
+        try:
+            if cmds.attributeQuery("envelope", node=blend_shape, exists=True):
+                saved_envelope = cmds.getAttr(f"{blend_shape}.envelope")
+                cmds.setAttr(f"{blend_shape}.envelope", 1.0)
+            for index in target_indices:
+                plug = f"{blend_shape}.w[{index}]"
+                saved_weights[index] = cmds.getAttr(plug)
+                cmds.setAttr(plug, 0.0)
+
+            base_positions = _mesh_local_positions(shape, vertex_count)
+            for target_index in target_indices:
+                cmds.setAttr(f"{blend_shape}.w[{target_index}]", 1.0)
+                target_positions = _mesh_local_positions(shape, vertex_count)
+                cmds.setAttr(f"{blend_shape}.w[{target_index}]", 0.0)
+
+                offsets = []
+                for vertex_index, (base, target) in enumerate(zip(base_positions, target_positions)):
+                    delta = [target[axis] - base[axis] for axis in range(3)]
+                    if all(abs(value) <= 1e-8 for value in delta):
+                        continue
+                    offsets.append({
+                        "vertex_index": vertex_index + vertex_offset,
+                        "position_offset": [delta[0], delta[1], -delta[2]],
+                    })
+                if not offsets:
+                    continue
+
+                morph_name = stored_names.get(target_index) or aliases.get(target_index) or f"VertexMorph{target_index}"
+                morphs.append({
+                    "type": "vertex",
+                    "name": morph_name,
+                    "name_english": morph_name,
+                    "panel": 4,
+                    "offsets": offsets,
+                })
+        finally:
+            for index, weight in saved_weights.items():
+                cmds.setAttr(f"{blend_shape}.w[{index}]", weight)
+            if saved_envelope is not None:
+                cmds.setAttr(f"{blend_shape}.envelope", saved_envelope)
+
+    return morphs
 
 
 def _make_material_dict(mat_name: str) -> dict:
@@ -101,7 +364,7 @@ def _collect_materials_per_face(shape: str, fn) -> tuple:
 
     if len(shading_groups_obj) == 0:
         # No shaders on this mesh — return one default material for all faces.
-        faces = [list(fn.getPolygonVertices(i)) for i in range(num_polys)]
+        faces = [list(reversed(fn.getPolygonVertices(i))) for i in range(num_polys)]
         mat = _make_material_dict("Default")
         mat["face_count"] = sum(max(0, len(f) - 2) * 3 for f in faces)
         return [mat], faces
@@ -138,6 +401,7 @@ def _collect_materials_per_face(shape: str, fn) -> tuple:
         group_faces = [list(fn.getPolygonVertices(i)) for i in poly_ids]
         mat_name = "Default" if sg_key == "__unassigned__" else _resolve_shader_name(sg_key)
         mat = _make_material_dict(mat_name)
+        group_faces = [list(reversed(face)) for face in group_faces]
         mat["face_count"] = sum(max(0, len(f) - 2) * 3 for f in group_faces)
         materials.append(mat)
         faces.extend(group_faces)
@@ -146,13 +410,14 @@ def _collect_materials_per_face(shape: str, fn) -> tuple:
 
 
 class ExportSceneCollector:
-    """Collect minimum PMX-compatible data from a single Maya polygon mesh.
+    """Collect minimum PMX-compatible data from Maya polygon meshes.
 
     This is a *minimum* collector: it captures per-vertex positions, normals,
-    UVs (first-occurrence per vertex), polygon connectivity, and per-face
-    material assignment.  It does **not** perform skinCluster extraction,
-    blend-shape collection, or MMD-basis coordinate conversion — those belong
-    to later collector slices.
+    UVs (first-occurrence per vertex), polygon connectivity, per-face
+    material assignment, skinCluster weights, vertex blendShape morphs, and
+    root-level bone/material morph metadata.  It converts positions, normals,
+    and face winding back to MMD basis; scale normalization belongs to a later
+    collector slice.
 
     Example::
 
@@ -161,6 +426,22 @@ class ExportSceneCollector:
         exporter = PmxExporter()
         exporter.export_pmx_model("/tmp/out.pmx", maya_data)
     """
+
+    def collect(self, options: dict) -> dict:
+        """Collect model data from common export options.
+
+        ``target_model`` / ``model_root`` collect all descendant meshes.
+        ``target_mesh`` / ``export_mesh`` / ``mesh`` collect a single mesh.
+        """
+        model_root = options.get("target_model") or options.get("model_root")
+        if model_root:
+            return self.collect_from_model_root(model_root)
+
+        target_mesh = options.get("target_mesh") or options.get("export_mesh") or options.get("mesh")
+        if target_mesh:
+            return self.collect_from_mesh(target_mesh)
+
+        raise ValueError("ExportSceneCollector requires target_model, model_root, or target_mesh")
 
     def collect_from_mesh(self, transform_or_shape: str) -> dict:
         """Collect scene data from a single polygon mesh transform or shape.
@@ -194,11 +475,7 @@ class ExportSceneCollector:
         parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
         transform = parents[0] if parents else shape
 
-        model_name = transform
-        if cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=transform, exists=True):
-            val = cmds.getAttr(f"{transform}.{ATTR_MMD_MODEL_NAME}")
-            if val:
-                model_name = val
+        model_name = _get_model_name(transform)
 
         # Build MFnMesh handle
         sel = om.MSelectionList()
@@ -207,6 +484,13 @@ class ExportSceneCollector:
         fn = om.MFnMesh(dag)
 
         vertex_count = fn.numVertices
+        skin_cluster = _find_skin_cluster(shape)
+        bones = None
+        skin_weights = None
+        if skin_cluster:
+            bones, export_index_by_joint = _collect_skin_bones(skin_cluster)
+            skin_weights = _collect_vertex_skin_weights(skin_cluster, shape, vertex_count, export_index_by_joint)
+
         points = fn.getPoints(om.MSpace.kWorld)
         # Angle-weighted=False gives evenly-weighted per-vertex normals.
         vertex_normals = fn.getVertexNormals(False, om.MSpace.kWorld)
@@ -231,10 +515,11 @@ class ExportSceneCollector:
             n = vertex_normals[i]
             uv = vertex_uvs[i]
             vertices.append({
-                "position": [p.x, p.y, p.z],
-                "normal": [n.x, n.y, n.z],
+                "position": _maya_to_mmd_vector([p.x, p.y, p.z]),
+                "normal": _maya_to_mmd_vector([n.x, n.y, n.z]),
                 "uv": [uv[0], uv[1]],
-                "bone_indices": [0],
+                "bone_indices": skin_weights[i]["bone_indices"] if skin_weights else [0],
+                "bone_weights": skin_weights[i]["bone_weights"] if skin_weights else [],
             })
 
         # Collect per-face material assignments and group faces contiguously.
@@ -245,6 +530,82 @@ class ExportSceneCollector:
             "vertices": vertices,
             "faces": faces,
             "materials": materials,
-            # None → PmxExporter auto-creates a default root bone at origin
-            "bones": None,
+            # None → exporters auto-create a default root bone at origin
+            "bones": bones,
+            "morphs": _collect_vertex_morphs(shape),
+        }
+
+    def collect_from_model_root(self, root: str) -> dict:
+        """Collect and merge all polygon meshes below an MMD model root.
+
+        This keeps the same minimum-slice limitations as ``collect_from_mesh``:
+        world-space geometry is converted back to MMD basis, but scale
+        normalization is still out of scope.
+        """
+        shapes = _list_export_mesh_shapes(root)
+        if not shapes:
+            raise ValueError(f"No mesh shapes found under model root '{root}'")
+
+        merged_vertices = []
+        merged_faces = []
+        merged_materials = []
+        merged_bones = []
+        vertex_morphs_by_name = {}
+        global_bone_by_key = {}
+        vertex_offset = 0
+
+        for shape in shapes:
+            mesh_data = self.collect_from_mesh(shape)
+            local_bones = mesh_data["bones"] or []
+            bone_index_map = {}
+            for local_index, bone in enumerate(local_bones):
+                key = bone.get("source_joint") or f"{bone.get('name')}:{bone.get('name_english')}:{bone.get('position')}"
+                if key not in global_bone_by_key:
+                    global_bone_by_key[key] = len(merged_bones)
+                    merged_bones.append(dict(bone))
+                bone_index_map[local_index] = global_bone_by_key[key]
+            for local_index, bone in enumerate(local_bones):
+                parent_index = bone.get("parent_index", -1)
+                merged_bones[bone_index_map[local_index]]["parent_index"] = bone_index_map.get(parent_index, -1)
+
+            mesh_vertices = []
+            for vertex in mesh_data["vertices"]:
+                merged_vertex = dict(vertex)
+                if local_bones:
+                    merged_vertex["bone_indices"] = [
+                        bone_index_map[index] for index in vertex.get("bone_indices", [0])
+                    ]
+                mesh_vertices.append(merged_vertex)
+
+            merged_vertices.extend(mesh_vertices)
+            for face in mesh_data["faces"]:
+                merged_faces.append([index + vertex_offset for index in face])
+            merged_materials.extend(mesh_data["materials"])
+            for morph in mesh_data.get("morphs", []):
+                key = (morph.get("type"), morph.get("name"))
+                if key not in vertex_morphs_by_name:
+                    vertex_morphs_by_name[key] = dict(morph)
+                    vertex_morphs_by_name[key]["offsets"] = []
+                vertex_morphs_by_name[key]["offsets"].extend(
+                    {
+                        **offset,
+                        "vertex_index": int(offset["vertex_index"]) + vertex_offset,
+                    }
+                    for offset in morph.get("offsets", [])
+                )
+            vertex_offset += len(mesh_vertices)
+
+        morphs = list(vertex_morphs_by_name.values())
+        morphs.extend(MorphConverter().collect_morphs_from_scene_for_export())
+        physics = PhysicsConverter().collect_physics_from_scene_for_export(root)
+
+        return {
+            "model_name": _get_model_name(root),
+            "vertices": merged_vertices,
+            "faces": merged_faces,
+            "materials": merged_materials,
+            "bones": merged_bones or None,
+            "morphs": morphs,
+            "rigid_bodies": physics.get("rigid_bodies", []),
+            "joints": physics.get("joints", []),
         }

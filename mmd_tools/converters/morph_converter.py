@@ -104,8 +104,10 @@ class MorphConverter:
         results = []
         blend_shape_nodes = []
         bone_morph_nodes = []
+        group_morph_nodes = []
         material_morph_nodes = []
         converted_bone_morphs = set()
+        converted_group_morphs = set()
         converted_material_morphs = set()
         material_vertex_sets = self._build_pmx_material_vertex_sets(pmx_data)
         skipped_vertex_morphs_by_material = 0
@@ -160,6 +162,14 @@ class MorphConverter:
                                 results.append(result)
                                 bone_morph_nodes.append(result["morph_node"])
                                 self.logger.info(f"Successfully imported bone morph metadata: {morph.name}")
+                        elif morph.morph_type == PmxMorphType.GroupMorph and morph.name not in converted_group_morphs:
+                            self.logger.debug(f"Converting group morph metadata: {morph.name}")
+                            result = self._convert_group_morph_pmx(morph, morph_index)
+                            if result["success"]:
+                                converted_group_morphs.add(morph.name)
+                                results.append(result)
+                                group_morph_nodes.append(result["morph_node"])
+                                self.logger.info(f"Successfully imported group morph metadata: {morph.name}")
                         elif (
                             morph.morph_type == PmxMorphType.MaterialMorph
                             and morph.name not in converted_material_morphs
@@ -183,10 +193,65 @@ class MorphConverter:
             "total_morphs": len(pmx_data.morphs),
             "blend_shape_nodes": blend_shape_nodes,
             "bone_morph_nodes": bone_morph_nodes,
+            "group_morph_nodes": group_morph_nodes,
             "material_morph_nodes": material_morph_nodes,
             "vertex_morphs_skipped_by_material": skipped_vertex_morphs_by_material,
             "vertex_morphs_skipped_by_group": skipped_vertex_morphs_by_group,
             "results": results,
+        }
+
+    def _convert_group_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
+        """PMXグループモーフをMayaのnetwork nodeとしてインポートする。"""
+        morph_name = morph.get_name()
+        safe_name = maya_utils.sanitize_text(morph_name)
+        node_name = f"{safe_name}_groupMorph"
+
+        if cmds.objExists(node_name):
+            morph_node = node_name
+        else:
+            morph_node = cmds.createNode("network", name=node_name)
+
+        if not cmds.attributeQuery("weight", node=morph_node, exists=True):
+            cmds.addAttr(
+                morph_node,
+                longName="weight",
+                attributeType="double",
+                minValue=0.0,
+                maxValue=1.0,
+                defaultValue=0.0,
+                keyable=True,
+            )
+
+        offsets = []
+        for offset in getattr(morph, "offsets", []):
+            if "morph_index" not in offset:
+                continue
+            offsets.append(
+                {
+                    "morph_index": int(offset["morph_index"]),
+                    "morph_rate": float(offset.get("morph_rate", 0.0)),
+                }
+            )
+
+        maya_utils.set_custom_attributes(
+            morph_node,
+            {
+                "mmd_morph_name": str(morph_name),
+                "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
+                "mmd_morph_type": "group",
+                "mmd_morph_index": int(morph_index),
+                "mmd_morph_panel": int(getattr(morph, "panel", 0)),
+                "mmd_group_morph_offset_count": len(offsets),
+                "mmd_group_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
+            },
+        )
+
+        return {
+            "success": True,
+            "morph_name": morph_name,
+            "morph_node": morph_node,
+            "morph_type": "group",
+            "offset_count": len(offsets),
         }
 
     def _build_pmx_material_vertex_sets(self, pmx_data) -> Dict[int, Set[int]]:

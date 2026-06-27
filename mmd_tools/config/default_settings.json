@@ -43,6 +43,8 @@
       "import_morph_animation": true,
       "animation_start_frame": 1,
       "vmd_fps": 30,
+      "motion_scale": 1.0,
+      "clear_existing_motion": false,
       "resample_curves": false,
       "import_camera_animation": true,
       "import_light_animation": true,
@@ -53,7 +55,8 @@
     "native": {
       "_comment": "Settings for the compiled C++ fast import path",
       "use_cpp_fast_load": false,
-      "cpp_fast_load_mesh_only": true
+      "cpp_fast_load_mesh_only": true,
+      "use_cpp_rig_nodes": false
     },
     "naming": {
       "_comment": "Settings that control how objects are named in Maya",
