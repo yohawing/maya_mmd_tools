@@ -32,6 +32,7 @@ from mmd_tools.core.pmx_data.material import (
 )
 from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
 from mmd_tools.core.pmx_data.rigid_body import PmxRigidBody
+from mmd_tools.core.pmx_data.vertex import PmxVertex
 
 logger = get_logger(__name__)
 
@@ -120,7 +121,8 @@ def _parse_pmx_bytes(lib: Any, pmx_bytes: bytes) -> Optional[PmxData]:
     buffers: list[_ByteBuffer] = []
 
     try:
-        call = lambda name: _call_buffer(lib, name, buf_in, n, buffers)
+        def call(name: str) -> _ByteBuffer:
+            return _call_buffer(lib, name, buf_in, n, buffers)
 
         json_buf = call("non_geometry_json")
         pos_buf = call("positions_buffer")
@@ -311,8 +313,6 @@ def _build_vertices(
     skin_i, skin_w, modes,
     sdef_c, sdef_r0, sdef_r1,
 ) -> List[PmxVertex]:
-    from mmd_tools.core.pmx_data.vertex import PmxVertex
-
     vertices = []
     for i in range(count):
         v = PmxVertex.__new__(PmxVertex)
