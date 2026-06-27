@@ -379,6 +379,12 @@ def maya_smoke(session: nox.Session) -> None:
     }
     session.run(
         str(mayapy),
+        "tests/cpp/smoke_python_rig_fallback.py",
+        env=env,
+        external=True,
+    )
+    session.run(
+        str(mayapy),
         "tests/cpp/smoke_runtime_node.py",
         env=env,
         external=True,
@@ -426,6 +432,52 @@ def maya_viewport_capture(session: nox.Session) -> None:
     session.run(
         str(mayapy),
         "tests/viewport/smoke_viewport_capture.py",
+        "--out",
+        str(out_path),
+        "--frame",
+        frame,
+        "--width",
+        width,
+        "--height",
+        height,
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def maya_shader_override_smoke(session: nox.Session) -> None:
+    """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
+
+    Loads the Python plug-in with shader override registration enabled, creates a
+    custom ``MMDShader`` node, assigns it to a cube, and verifies an offscreen
+    Viewport 2.0 PNG capture is produced.
+
+    Examples:
+        uvx nox -s maya_shader_override_smoke -- --maya 2024
+        uvx nox -s maya_shader_override_smoke -- --maya 2024 --out build/captures/shader_override_smoke.png
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    out = _option(session.posargs, "--out", str(ROOT / "build/captures/shader_override_smoke.png"))
+    out_path = Path(out)
+    if not out_path.is_absolute():
+        out_path = (ROOT / out_path).resolve()
+    frame = _option(session.posargs, "--frame", "1")
+    width = _option(session.posargs, "--width", "640")
+    height = _option(session.posargs, "--height", "480")
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    env = {
+        **os.environ,
+        "MAYA_VERSION": version,
+        "PYTHONPATH": str(ROOT),
+    }
+    session.run(
+        str(mayapy),
+        "tests/viewport/smoke_shader_override.py",
         "--out",
         str(out_path),
         "--frame",
