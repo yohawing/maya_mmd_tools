@@ -121,6 +121,14 @@ class MmdRuntimeBatchEvaluation(NamedTuple):
     morph_weights: Any
 
 
+class MmdRuntimeLocalChannelBatch(NamedTuple):
+    """Batch local channel result from native Maya local decomposition."""
+
+    frame_count: int
+    bone_count: int
+    local_channels: Any
+
+
 class MmdRuntimeFfiRigBone(Structure):
     _fields_ = [
         ("parent_slot", c_int32),
@@ -224,6 +232,12 @@ def _setup_function_signatures(lib: CDLL) -> None:
     # クリップ作成
     lib.mmd_runtime_clip_create_from_vmd_bytes_for_model.restype = c_void_p
     lib.mmd_runtime_clip_create_from_vmd_bytes_for_model.argtypes = [c_void_p, POINTER(c_uint8), c_size_t]
+    _set_sig(
+        lib,
+        "mmd_runtime_clip_frame_range",
+        c_bool,
+        [c_void_p, POINTER(c_uint32), POINTER(c_uint32)],
+    )
 
     # インスタンス
     lib.mmd_runtime_instance_create_for_model.restype = c_void_p
@@ -279,6 +293,51 @@ def _setup_function_signatures(lib: CDLL) -> None:
             c_size_t,
             c_uint32,
             POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+        ],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_compute_maya_local_channels",
+        c_bool,
+        [
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_int32),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_uint8),
+            c_size_t,
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+        ],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_compute_maya_local_channels_batch",
+        c_bool,
+        [
+            POINTER(c_float),
+            c_size_t,
+            c_size_t,
+            POINTER(c_int32),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_uint8),
+            c_size_t,
             c_size_t,
             POINTER(c_float),
             c_size_t,
@@ -514,6 +573,154 @@ def is_mmd_runtime_available() -> bool:
     return get_mmd_runtime_library() is not None
 
 
+def compute_maya_local_channels(
+    world_matrices: List[float],
+    parent_indices: List[int],
+    bind_world_matrices: List[float],
+    bind_no_orient_matrices: List[float],
+    joint_orient_quats: List[float],
+    rotate_orders: List[int],
+) -> Optional[List[Tuple[float, float, float, float, float, float]]]:
+    """mmd-anim FFI で world matrix から Maya local channel を計算する。
+
+    Args:
+        world_matrices: `[bone][16]` の flat float 配列。
+        parent_indices: `[bone]`、root は `-1`。
+        bind_world_matrices: `[bone][16]` の Maya bind world matrix。
+        bind_no_orient_matrices: `[bone][16]` の no-JO bind matrix。
+        joint_orient_quats: `[bone][x,y,z,w]`。
+        rotate_orders: `[bone]` の Maya rotateOrder enum。
+
+    Returns:
+        `[bone] -> (tx, ty, tz, rx, ry, rz)`。DLL またはシンボル未対応時は None。
+    """
+    bone_count = len(parent_indices)
+    if bone_count == 0:
+        return []
+    if (
+        len(world_matrices) < bone_count * 16
+        or len(bind_world_matrices) < bone_count * 16
+        or len(bind_no_orient_matrices) < bone_count * 16
+        or len(joint_orient_quats) < bone_count * 4
+        or len(rotate_orders) < bone_count
+    ):
+        return None
+
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return None
+    func = getattr(lib, "mmd_runtime_compute_maya_local_channels", None)
+    if func is None:
+        return None
+
+    try:
+        world_buf = (c_float * (bone_count * 16))(*[float(v) for v in world_matrices[: bone_count * 16]])
+        parent_buf = (c_int32 * bone_count)(*[int(v) for v in parent_indices[:bone_count]])
+        bind_buf = (c_float * (bone_count * 16))(*[float(v) for v in bind_world_matrices[: bone_count * 16]])
+        no_orient_buf = (c_float * (bone_count * 16))(
+            *[float(v) for v in bind_no_orient_matrices[: bone_count * 16]]
+        )
+        jo_buf = (c_float * (bone_count * 4))(*[float(v) for v in joint_orient_quats[: bone_count * 4]])
+        ro_buf = (c_uint8 * bone_count)(*[int(v) & 0xFF for v in rotate_orders[:bone_count]])
+        out_buf = (c_float * (bone_count * 6))()
+        ok = func(
+            world_buf,
+            len(world_buf),
+            parent_buf,
+            len(parent_buf),
+            bind_buf,
+            len(bind_buf),
+            no_orient_buf,
+            len(no_orient_buf),
+            jo_buf,
+            len(jo_buf),
+            ro_buf,
+            len(ro_buf),
+            bone_count,
+            out_buf,
+            len(out_buf),
+        )
+        if not ok:
+            return None
+        result = []
+        for index in range(bone_count):
+            start = index * 6
+            result.append(tuple(float(out_buf[start + offset]) for offset in range(6)))
+        return result
+    except Exception as exc:
+        logger.debug("compute_maya_local_channels failed: %s", exc, exc_info=True)
+        return None
+
+
+def compute_maya_local_channels_batch(
+    world_matrices: Any,
+    frame_count: int,
+    bone_count: int,
+    parent_indices: List[int],
+    bind_world_matrices: List[float],
+    bind_no_orient_matrices: List[float],
+    joint_orient_quats: List[float],
+    rotate_orders: List[int],
+) -> Optional[MmdRuntimeLocalChannelBatch]:
+    """mmd-anim FFI で `[frame][bone][16]` を Maya local channel batch へ変換する。"""
+    frame_count = int(frame_count)
+    bone_count = int(bone_count)
+    if frame_count <= 0 or bone_count <= 0:
+        return MmdRuntimeLocalChannelBatch(0, bone_count, (c_float * 0)())
+    if (
+        len(parent_indices) < bone_count
+        or len(bind_world_matrices) < bone_count * 16
+        or len(bind_no_orient_matrices) < bone_count * 16
+        or len(joint_orient_quats) < bone_count * 4
+        or len(rotate_orders) < bone_count
+    ):
+        return None
+
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return None
+    func = getattr(lib, "mmd_runtime_compute_maya_local_channels_batch", None)
+    if func is None:
+        return None
+
+    world_len = frame_count * bone_count * 16
+    try:
+        if len(world_matrices) < world_len:
+            return None
+        parent_buf = (c_int32 * bone_count)(*[int(v) for v in parent_indices[:bone_count]])
+        bind_buf = (c_float * (bone_count * 16))(*[float(v) for v in bind_world_matrices[: bone_count * 16]])
+        no_orient_buf = (c_float * (bone_count * 16))(
+            *[float(v) for v in bind_no_orient_matrices[: bone_count * 16]]
+        )
+        jo_buf = (c_float * (bone_count * 4))(*[float(v) for v in joint_orient_quats[: bone_count * 4]])
+        ro_buf = (c_uint8 * bone_count)(*[int(v) & 0xFF for v in rotate_orders[:bone_count]])
+        out_buf = (c_float * (frame_count * bone_count * 6))()
+        ok = func(
+            world_matrices,
+            world_len,
+            frame_count,
+            parent_buf,
+            len(parent_buf),
+            bind_buf,
+            len(bind_buf),
+            no_orient_buf,
+            len(no_orient_buf),
+            jo_buf,
+            len(jo_buf),
+            ro_buf,
+            len(ro_buf),
+            bone_count,
+            out_buf,
+            len(out_buf),
+        )
+        if not ok:
+            return None
+        return MmdRuntimeLocalChannelBatch(frame_count, bone_count, out_buf)
+    except Exception as exc:
+        logger.debug("compute_maya_local_channels_batch failed: %s", exc, exc_info=True)
+        return None
+
+
 # ------------------------------------------------------------------
 # Python ラッパークラス
 # ------------------------------------------------------------------
@@ -630,6 +837,21 @@ class MmdRuntimeClip:
             except Exception:
                 pass
             self._handle = None
+
+    def frame_range(self) -> Optional[Tuple[int, int]]:
+        """Return the first/last VMD frame numbers stored in this runtime clip."""
+        func = getattr(self._lib, "mmd_runtime_clip_frame_range", None)
+        if func is None or not self._handle:
+            return None
+        try:
+            first = c_uint32(0)
+            last = c_uint32(0)
+            if not func(self._handle, ctypes.byref(first), ctypes.byref(last)):
+                return None
+            return int(first.value), int(last.value)
+        except Exception as e:
+            logger.error(f"MmdRuntimeClip.frame_range failed: {e}", exc_info=True)
+            return None
 
     def __del__(self):
         self.free()
@@ -1641,14 +1863,31 @@ def connect_runtime_node_outputs_to_model(
     if pmx_path:
         try:
             from mmd_tools.core.maya_utils import sanitize_text
+            from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
+            from mmd_tools.core.pmx_data.morph import PmxMorphType
 
             pmx_bytes = Path(pmx_path).read_bytes()
             parsed = MmdParsedModel.from_pmx_bytes(pmx_bytes)
+            pmx_morph_names = []
+            pmx_morph_spans = []
             if parsed is not None and parsed.vertex_morph_count > 0:
                 pmx_morph_names = parsed.vertex_morph_names or []
                 # Get vertex_morph_spans to map vertex-morph-index to global PMX morph index
                 pmx_morph_spans = parsed.vertex_morph_spans or []
                 parsed.free()
+            elif parsed is not None:
+                parsed.free()
+
+            if not pmx_morph_names:
+                pmx_data = parse_pmx_native(pmx_path)
+                if pmx_data is not None:
+                    for pmx_index, morph in enumerate(getattr(pmx_data, "morphs", []) or []):
+                        if getattr(morph, "morph_type", None) != PmxMorphType.VertexMorph:
+                            continue
+                        pmx_morph_spans.append((0, 0, pmx_index))
+                        pmx_morph_names.append(getattr(morph, "name", "") or "")
+
+            if pmx_morph_names:
 
                 # Build a mapping: vertex_morph_index to global_pmx_morph_index
                 # Each span entry is (start, count, pmx_morph_index)

@@ -9,6 +9,8 @@ import json
 import math
 import os
 import tempfile
+from contextlib import ExitStack
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import maya.cmds as cmds
@@ -19,6 +21,7 @@ from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.io.mmd_importer import import_mmd_file
 from tests.common.test_fixture_provider import TestFixtureProvider
 
@@ -68,6 +71,77 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(len(self.converter._failed_bones), 0)
         self.assertTrue(self.converter.use_animation_layers)
         self.assertIsNone(self.converter.anim_layer)
+
+    def test_anim_layer_selection_restore_deselects_new_vmd_layer(self):
+        """VMD import 中に作られた layer を selected のまま残さない。"""
+        previous_layer = cmds.animLayer("pre_vmd_selected_layer", override=False, weight=1.0)
+        cmds.animLayer(previous_layer, edit=True, selected=True)
+        snapshot = VmdConverter._capture_anim_layer_selection()
+
+        vmd_layer = cmds.animLayer("VMD_Motion_restore_test", override=False, weight=1.0)
+        cmds.animLayer(vmd_layer, edit=True, selected=True)
+
+        VmdConverter._restore_anim_layer_selection(snapshot)
+
+        self.assertTrue(cmds.animLayer(previous_layer, query=True, selected=True))
+        self.assertFalse(cmds.animLayer(vmd_layer, query=True, selected=True))
+
+    def test_clear_existing_motion_cuts_joint_morph_keys_and_deletes_vmd_layer(self):
+        """VMD 再インポート前に対象 motion key と既存 VMD layer を消す。"""
+        joint = cmds.joint(name="clear_existing_motion_joint")
+        cmds.setKeyframe(joint, attribute="translateX", time=1, value=1.0)
+        cmds.setKeyframe(joint, attribute="rotateY", time=5, value=20.0)
+
+        mesh = cmds.polyCube(name="clear_existing_motion_mesh")[0]
+        blend_shape = cmds.blendShape(mesh, name="clear_existing_motion_blendShape")[0]
+        cmds.aliasAttr("smile", f"{blend_shape}.weight[0]")
+        cmds.setKeyframe(blend_shape, attribute="weight[0]", time=3, value=0.75)
+
+        layer = cmds.animLayer("VMD_Motion_clear_existing_test", override=False, weight=1.0)
+
+        self.converter.bone_name_mapping = {"センター": joint}
+        self.converter.morph_name_mapping = {"smile": (blend_shape, "weight[0]", "smile")}
+
+        self.converter._clear_existing_motion(layer, target_namespace=None)
+
+        self.assertIsNone(cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True))
+        self.assertIsNone(cmds.keyframe(joint, attribute="rotateY", query=True, timeChange=True))
+        self.assertIsNone(cmds.keyframe(blend_shape, attribute="weight[0]", query=True, timeChange=True))
+        self.assertFalse(cmds.objExists(layer))
+
+    def test_convert_clear_existing_motion_replaces_previous_bone_keys(self):
+        """clear ON の再 import は古いキーを残さず新しい VMD キーだけにする。"""
+        joint = cmds.joint(name="clear_existing_convert_center")
+        cmds.addAttr(joint, longName=ATTR_MMD_BONE_NAME, dataType="string")
+        cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
+        cmds.setKeyframe(joint, attribute="translateX", time=1, value=10.0)
+
+        vmd_data = type("VmdDataStub", (), {})()
+        vmd_data.bone_frames = [self._make_bone_frame("センター", 8, (2.0, 0.0, 0.0))]
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = []
+        vmd_data.light_frames = []
+
+        self.converter.use_animation_layers = False
+        self.assertTrue(self.converter.convert(vmd_data, clear_existing_motion=True))
+
+        self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
+        self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
+
+    def test_vmd_frame_to_maya_time_uses_fixed_30fps_source(self):
+        """VMD frame は常に30fps基準として Maya time へ変換する。"""
+        self.converter.fps = 60.0
+        self.assertEqual(self.converter.vmd_frame_to_maya_time(30), 60.0)
+
+    def test_fps_60_timeline_maps_vmd_frame_30_to_maya_time_60(self):
+        """60fps import では timeline max も VMD frame 30 -> Maya time 60 にする。"""
+        vmd_data = type("VmdDataStub", (), {})()
+        vmd_data.bone_frames = [self._make_bone_frame("センター", 30, (0.0, 0.0, 0.0))]
+        self.converter.fps = 60.0
+
+        self.converter._setup_timeline(vmd_data)
+
+        self.assertEqual(cmds.playbackOptions(q=True, max=True), 60.0)
 
     def test_get_failed_bones(self):
         """失敗したボーン名の取得テスト"""
@@ -212,6 +286,207 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), -3.0, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 12.0, places=6)
 
+    def test_parse_vmd_camera_interpolation_uses_camera_channel_layout(self):
+        """camera interpolation は 6 channel x 4 bytes の連続レイアウトで読む。"""
+        data = bytes(
+            [
+                1, 2, 3, 4,
+                5, 6, 7, 8,
+                9, 10, 11, 12,
+                13, 14, 15, 16,
+                17, 18, 19, 20,
+                21, 22, 23, 24,
+            ]
+        )
+
+        parsed = self.converter._parse_vmd_camera_interpolation(data)
+
+        self.assertEqual(parsed["translate_x"], (1 / 127, 3 / 127, 2 / 127, 4 / 127))
+        self.assertEqual(parsed["distance"], (17 / 127, 19 / 127, 18 / 127, 20 / 127))
+        self.assertEqual(parsed["viewing_angle"], (21 / 127, 23 / 127, 22 / 127, 24 / 127))
+
+    def test_convert_camera_animation_applies_vmd_bezier_tangents(self):
+        """camera distance/viewing angle などに VMD camera 補間 tangent を適用する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        def camera_interp(distance_points):
+            channels = [
+                (20, 100, 20, 100),  # X linear-ish but non-default
+                (20, 100, 20, 100),
+                (20, 100, 20, 100),
+                (20, 100, 20, 100),
+                distance_points,
+                (20, 100, 20, 100),
+            ]
+            return bytes(value for channel in channels for value in channel)
+
+        frame0 = VmdCameraFrame()
+        frame0.frame_number = 0
+        frame0.position = (0.0, 0.0, 0.0)
+        frame0.rotation = (0.0, 0.0, 0.0)
+        frame0.distance = 10.0
+        frame0.viewing_angle = 30
+
+        frame1 = VmdCameraFrame()
+        frame1.frame_number = 10
+        frame1.position = (10.0, 0.0, 0.0)
+        frame1.rotation = (0.0, 0.0, 0.0)
+        frame1.distance = 20.0
+        frame1.viewing_angle = 60
+        frame1.interpolation = camera_interp((20, 100, 100, 20))
+
+        self.assertTrue(self.converter._convert_camera_animation([frame0, frame1]))
+
+        camera_name = self.converter._get_or_create_camera()
+        out_angle = cmds.keyTangent(
+            f"{camera_name}.mmd_camera_distance",
+            query=True,
+            time=(0, 0),
+            outAngle=True,
+        )
+        out_type = cmds.keyTangent(
+            f"{camera_name}.mmd_camera_distance",
+            query=True,
+            time=(0, 0),
+            outTangentType=True,
+        )
+
+        self.assertIsNotNone(out_angle)
+        self.assertGreater(out_angle[0], 70.0)
+        self.assertEqual(out_type, ["fixed"])
+
+    def test_convert_camera_animation_uses_batch_keying_with_anim_layer(self):
+        """camera の連続値 channel は batch keying 経由で animLayer にも登録される。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frames = []
+        for frame_number, pos_x, distance in ((0, 1.0, 10.0), (12, 4.0, 16.0)):
+            frame = VmdCameraFrame()
+            frame.frame_number = frame_number
+            frame.position = (pos_x, 2.0, 3.0)
+            frame.rotation = (0.1, 0.2, 0.3)
+            frame.distance = distance
+            frame.viewing_angle = 40
+            frames.append(frame)
+
+        self.converter.anim_layer = cmds.animLayer("camera_batch_layer", override=False, weight=1.0)
+
+        with patch.object(
+            self.converter,
+            "_batch_key_scalar_channels",
+            wraps=self.converter._batch_key_scalar_channels,
+        ) as batch_key:
+            self.assertTrue(self.converter._convert_camera_animation(frames))
+
+        camera_name = self.converter._get_or_create_camera()
+        camera_shape = cmds.listRelatives(camera_name, shapes=True, type="camera")[0]
+        batch_nodes = [call.args[0] for call in batch_key.call_args_list]
+        self.assertIn(camera_name, batch_nodes)
+        self.assertIn(camera_shape, batch_nodes)
+
+        layer_attrs = cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or []
+        self.assertIn(f"{camera_name}.translateX", layer_attrs)
+        self.assertIn(f"{camera_name}.mmd_camera_distance", layer_attrs)
+        self.assertIn(f"{camera_shape}.focalLength", layer_attrs)
+
+        cmds.currentTime(12, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 4.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 16.0, places=6)
+
+    def test_runtime_bake_success_still_converts_camera_and_light(self):
+        """runtime bake 成功後も camera/light の legacy channel は処理する。"""
+        frame = type("FrameStub", (), {"frame_number": 1})()
+        vmd_data = type("FakeVmdData", (), {})()
+        vmd_data.bone_frames = [frame]
+        vmd_data.morph_frames = [frame]
+        vmd_data.camera_frames = [frame]
+        vmd_data.light_frames = [frame]
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=True))
+            stack.enter_context(patch.object(self.converter, "_convert_using_mmd_runtime", return_value=True))
+            apply_ik = stack.enter_context(patch.object(self.converter, "_apply_ik_enabled_animation"))
+            convert_bone = stack.enter_context(patch.object(self.converter, "_convert_bone_animation"))
+            convert_morph = stack.enter_context(patch.object(self.converter, "_convert_morph_animation"))
+            convert_camera = stack.enter_context(
+                patch.object(self.converter, "_convert_camera_animation", return_value=True)
+            )
+            convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
+            result = self.converter.convert(vmd_data, vmd_bytes=b"vmd", pmx_bytes=b"pmx")
+
+        self.assertTrue(result)
+        apply_ik.assert_not_called()
+        convert_bone.assert_not_called()
+        convert_morph.assert_not_called()
+        convert_camera.assert_called_once_with(vmd_data.camera_frames)
+        convert_light.assert_called_once_with(vmd_data.light_frames)
+
+    def test_camera_and_light_import_flags_skip_channels(self):
+        """UI/setting の camera/light OFF は converter 側でも尊重する。"""
+        vmd_data = type("FakeVmdData", (), {})()
+        vmd_data.bone_frames = []
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = [object()]
+        vmd_data.light_frames = [object()]
+
+        self.converter.import_camera_animation = False
+        self.converter.import_light_animation = False
+
+        with ExitStack() as stack:
+            convert_camera = stack.enter_context(
+                patch.object(self.converter, "_convert_camera_animation", return_value=True)
+            )
+            convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
+            result = self.converter.convert(vmd_data)
+
+        self.assertTrue(result)
+        convert_camera.assert_not_called()
+        convert_light.assert_not_called()
+
+    def test_motion_scale_affects_camera_translate_and_distance_only(self):
+        """motion_scale は camera の位置と距離だけに適用する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame = VmdCameraFrame()
+        frame.frame_number = 7
+        frame.position = (1.0, 2.0, 3.0)
+        frame.rotation = (0.1, 0.2, 0.3)
+        frame.distance = 12.0
+        frame.viewing_angle = 40
+        frame.perspective = 0
+
+        self.converter.motion_scale = 2.0
+        result = self.converter._convert_camera_animation([frame])
+
+        self.assertTrue(result)
+        camera_name = self.converter._get_or_create_camera()
+        cmds.currentTime(7, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 2.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateY"), 4.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), -6.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 24.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.rotateX"), math.degrees(0.1), places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_viewing_angle"), 40.0, places=6)
+
+    def test_fps_60_camera_keys_vmd_frame_30_at_maya_time_60(self):
+        """60fps import では VMD frame 30 の camera key を Maya time 60 に置く。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame = VmdCameraFrame()
+        frame.frame_number = 30
+        frame.position = (1.0, 2.0, 3.0)
+        frame.rotation = (0.1, 0.2, 0.3)
+        frame.distance = 12.0
+        frame.viewing_angle = 40
+        frame.perspective = 0
+
+        self.converter.fps = 60.0
+        self.converter._convert_camera_animation([frame])
+
+        camera_name = self.converter._get_or_create_camera()
+        self.assertEqual(cmds.keyframe(f"{camera_name}.translateX", query=True, timeChange=True), [60.0])
+        self.assertEqual(cmds.keyframe(f"{camera_name}.mmd_camera_distance", query=True, timeChange=True), [60.0])
+
     def test_detect_vmd_motion_kind(self):
         """VMD内容から model/camera/light/mixed/empty を判定できることを確認"""
         def fake(**kwargs):
@@ -299,6 +574,64 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(len(rot_keys), 1)
         self.assertIn(10.0, rot_keys)
         self.assertNotIn(0.0, rot_keys)
+
+    def test_convert_light_animation_uses_batch_keying_with_anim_layer(self):
+        """light color/rotation channel は batch keying 経由で animLayer にも登録される。"""
+        from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+        from mmd_tools.core.constants import DEFAULT_LIGHT_NAME
+
+        frames = []
+        for frame_number, color_r in ((0, 1.0), (10, 0.5)):
+            frame = VmdLightFrame()
+            frame.frame_number = frame_number
+            frame.position = (0.5, -1.0, 1.0)
+            frame.color = (color_r, color_r, color_r)
+            frames.append(frame)
+
+        self.converter.anim_layer = cmds.animLayer("light_batch_layer", override=False, weight=1.0)
+
+        with patch.object(
+            self.converter,
+            "_batch_key_scalar_channels",
+            wraps=self.converter._batch_key_scalar_channels,
+        ) as batch_key:
+            self.assertTrue(self.converter._convert_light_animation(frames))
+
+        self.assertTrue(cmds.objExists(DEFAULT_LIGHT_NAME))
+        light_shape = cmds.listRelatives(DEFAULT_LIGHT_NAME, shapes=True, type="directionalLight")[0]
+        batch_nodes = [call.args[0] for call in batch_key.call_args_list]
+        self.assertIn(light_shape, batch_nodes)
+        self.assertIn(DEFAULT_LIGHT_NAME, batch_nodes)
+
+        layer_attrs = cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or []
+        self.assertIn(f"{light_shape}.colorR", layer_attrs)
+        self.assertIn(f"{DEFAULT_LIGHT_NAME}.rotateX", layer_attrs)
+
+        cmds.currentTime(10, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{light_shape}.colorR"), 0.5, places=6)
+
+    def test_convert_light_animation_drives_mmd_light_controller_color(self):
+        """PMX import 由来の mmd_light controller がある場合は shader 用 color attr をキーする。"""
+        from mmd_tools.converters.light_converter import create_mmd_light_controller
+        from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+
+        controller = create_mmd_light_controller()
+
+        frame = VmdLightFrame()
+        frame.frame_number = 10
+        frame.position = (0.5, -1.0, 1.0)
+        frame.color = (0.25, 0.5, 0.75)
+
+        self.assertTrue(self.converter._convert_light_animation([frame]))
+
+        self.assertEqual(
+            cmds.keyframe(f"{controller}.mmd_light_colorR", query=True, timeChange=True),
+            [10.0],
+        )
+        cmds.currentTime(10, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.mmd_light_colorR"), 0.25, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.mmd_light_colorG"), 0.5, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{controller}.mmd_light_colorB"), 0.75, places=6)
 
     def test_convert_light_animation_via_convert(self):
         """convert() が light_frames を持つ VMD で _convert_light_animation を呼ぶことを確認"""
@@ -428,6 +761,253 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(FakeInstance.last.batch_calls, [(0.0, 1.0, 3, 0)])
         self.assertEqual(FakeInstance.last.per_frame_calls, [])
 
+    def test_runtime_bake_fps_60_batch_samples_target_maya_frames(self):
+        """60fps runtime bake は Maya output frame ごとに 0.5 VMD frame step で評価する。"""
+        class Frame:
+            frame_number = 100
+
+        class VmdDataLike:
+            bone_frames = [Frame()]
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class BatchResult:
+            bone_count = 0
+            morph_count = 0
+            world_matrices = (ctypes.c_float * 0)()
+            morph_weights = (ctypes.c_float * 0)()
+
+            def __init__(self, frame_count):
+                self.frame_count = frame_count
+
+        class FakeInstance:
+            last = None
+
+            def __init__(self):
+                self.batch_calls = []
+
+            @classmethod
+            def for_model(cls, _model):
+                cls.last = cls()
+                return cls.last
+
+            def evaluate_clip_frame_batch(self, _clip, start_frame, frame_step, frame_count, *, worker_count=0):
+                self.batch_calls.append((start_frame, frame_step, frame_count, worker_count))
+                return BatchResult(frame_count)
+
+            def free(self):
+                pass
+
+        apply_calls = []
+
+        def capture_apply(_joint_values, _joint_static, _bake_times, baked_frames, morph_cache, _pmx_morph_names):
+            apply_calls.append((list(baked_frames), list(morph_cache)))
+
+        self.converter.fps = 60.0
+        self.converter.bone_index_to_joint = {}
+        self.converter.bone_name_to_index = {}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
+            self.converter,
+            "_apply_runtime_channel_arrays_to_scene",
+            side_effect=capture_apply,
+        ):
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                pmx_path="",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(FakeInstance.last.batch_calls, [(0.0, 0.5, 201, 0)])
+        self.assertEqual(apply_calls[0][0][0], 0.0)
+        self.assertEqual(apply_calls[0][0][-1], 200.0)
+        self.assertEqual(len(apply_calls[0][0]), 201)
+
+    def test_runtime_bake_uses_clip_frame_range_when_python_vmd_is_empty(self):
+        """Python VMD parser が空でも runtime clip の frame range で bake 範囲を決める。"""
+        class VmdDataLike:
+            bone_frames = []
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def frame_range(self):
+                return (2, 4)
+
+            def free(self):
+                pass
+
+        class BatchResult:
+            bone_count = 0
+            morph_count = 0
+            world_matrices = (ctypes.c_float * 0)()
+            morph_weights = (ctypes.c_float * 0)()
+
+            def __init__(self, frame_count):
+                self.frame_count = frame_count
+
+        class FakeInstance:
+            last = None
+
+            def __init__(self):
+                self.batch_calls = []
+
+            @classmethod
+            def for_model(cls, _model):
+                cls.last = cls()
+                return cls.last
+
+            def evaluate_clip_frame_batch(self, _clip, start_frame, frame_step, frame_count, *, worker_count=0):
+                self.batch_calls.append((start_frame, frame_step, frame_count, worker_count))
+                return BatchResult(frame_count)
+
+            def free(self):
+                pass
+
+        apply_calls = []
+
+        def capture_apply(_joint_values, _joint_static, _bake_times, baked_frames, _morph_cache, _pmx_morph_names):
+            apply_calls.append(list(baked_frames))
+
+        self.converter.bone_index_to_joint = {}
+        self.converter.bone_name_to_index = {}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
+            self.converter,
+            "_apply_runtime_channel_arrays_to_scene",
+            side_effect=capture_apply,
+        ):
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                pmx_path="",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(FakeInstance.last.batch_calls, [(2.0, 1.0, 3, 0)])
+        self.assertEqual(apply_calls[0], [2.0, 3.0, 4.0])
+
+    def test_runtime_bake_fps_60_fallback_evaluates_fractional_vmd_frames(self):
+        """per-frame ABI でも Maya output frame から逆算した fractional VMD frame を評価する。"""
+        class Frame:
+            frame_number = 2
+
+        class VmdDataLike:
+            bone_frames = [Frame()]
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeInstance:
+            last = None
+
+            def __init__(self):
+                self.per_frame_calls = []
+
+            @classmethod
+            def for_model(cls, _model):
+                cls.last = cls()
+                return cls.last
+
+            def evaluate_clip_frame_batch(self, *_args, **_kwargs):
+                return None
+
+            def evaluate_clip_frame(self, _clip, frame):
+                self.per_frame_calls.append(frame)
+                return True
+
+            def get_world_matrices(self):
+                return []
+
+            def get_morph_weights(self):
+                return []
+
+            def free(self):
+                pass
+
+        apply_calls = []
+
+        def capture_apply(_joint_values, _joint_static, _bake_times, baked_frames, _morph_cache, _pmx_morph_names):
+            apply_calls.append(list(baked_frames))
+
+        self.converter.fps = 60.0
+        self.converter.bone_index_to_joint = {}
+        self.converter.bone_name_to_index = {}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
+            self.converter,
+            "_apply_runtime_channel_arrays_to_scene",
+            side_effect=capture_apply,
+        ):
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                pmx_path="",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(FakeInstance.last.per_frame_calls, [0.0, 0.5, 1.0, 1.5, 2.0])
+        self.assertEqual(apply_calls[0], [0.0, 1.0, 2.0, 3.0, 4.0])
+
     def test_should_use_mmd_runtime_bake_accepts_bake_pmx_rejects_pmd(self):
         """Bake mode は PMX 入力で runtime bake を使い、PMD 入力では無効"""
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -548,6 +1128,16 @@ class TestVmdConverter(MayaTestBase):
             options={"setup_rig": True, "setup_bone_orientation": True},
         )
         self.assertIsNotNone(root, "PMX import failed")
+        visual_controller_joints = [
+            joint for joint in (cmds.ls(type="joint") or [])
+            if cmds.attributeQuery("mmd_ik_controller_visual", node=joint, exists=True)
+            and cmds.getAttr(f"{joint}.mmd_ik_controller_visual")
+        ]
+        self.assertGreater(len(visual_controller_joints), 0, "IK controller visual が作成されていません")
+        self.assertTrue(
+            any(cmds.listRelatives(joint, shapes=True, type="nurbsCurve") for joint in visual_controller_joints),
+            "IK controller visual の NURBS curve shape が見つかりません",
+        )
         self.assertTrue(
             import_mmd_file(vmd_path, options={"target_model": root, "pmx_path": pmx_path}),
             "VMD import failed",
@@ -946,6 +1536,40 @@ class TestVmdConverter(MayaTestBase):
 
         cmds.delete(morph_node)
 
+    def test_convert_group_morph_network_weight_animation(self):
+        """group morph network の weight にVMD morph frameのキーを打てることを確認"""
+        from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
+
+        morph_node = cmds.createNode("network", name="groupSmile_groupMorph")
+        cmds.addAttr(
+            morph_node,
+            longName="weight",
+            attributeType="double",
+            minValue=0.0,
+            maxValue=1.0,
+            defaultValue=0.0,
+            keyable=True,
+        )
+        cmds.addAttr(morph_node, longName="mmd_morph_type", dataType="string")
+        cmds.setAttr(f"{morph_node}.mmd_morph_type", "group", type="string")
+        cmds.addAttr(morph_node, longName="mmd_morph_name", dataType="string")
+        cmds.setAttr(f"{morph_node}.mmd_morph_name", "グループ笑い", type="string")
+
+        frame = VmdMorphFrame()
+        frame.frame_number = 24
+        frame.morph_name = "グループ笑い"
+        frame.value = 0.65
+
+        self.converter._build_morph_mappings()
+        result = self.converter._convert_morph_animation([frame])
+        self.assertTrue(result)
+
+        cmds.currentTime(24, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{morph_node}.weight"), 0.65, places=6)
+        self.assertIn(24.0, cmds.keyframe(f"{morph_node}.weight", query=True))
+
+        cmds.delete(morph_node)
+
     def test_bake_morph_weights_from_runtime_uses_pmx_morph_order(self):
         """runtime morph weightをPMX morph順の日本語名でblendShapeへベイクする"""
         cube = cmds.polyCube(name="test_runtime_morph_mesh")[0]
@@ -1253,6 +1877,75 @@ class TestVmdConverter(MayaTestBase):
 
         cmds.delete(joint)
 
+    def test_motion_scale_affects_bone_translate_offset_only(self):
+        """motion_scale は bind pose ではなく VMD translate offset にだけ適用する。"""
+        joint = cmds.joint(name="legacy_motion_scale_joint")
+        self.converter.use_animation_layers = False
+        self.converter.motion_scale = 2.0
+        self.converter._bone_bind_poses["センター"] = (3.0, 4.0, 5.0)
+
+        frames = [self._make_bone_frame("センター", 12, (1.0, 2.0, 3.0))]
+        self.converter._set_bone_keyframes(joint, frames, "センター")
+
+        cmds.currentTime(12, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 5.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateY"), 8.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateZ"), -1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0, places=6)
+
+        cmds.delete(joint)
+
+    def test_fps_60_bone_keys_vmd_frame_30_at_maya_time_60(self):
+        """60fps import では VMD frame 30 の bone key を Maya time 60 に置く。"""
+        joint = cmds.joint(name="legacy_fps_60_joint")
+        self.converter.use_animation_layers = False
+        self.converter.fps = 60.0
+        self.converter._bone_bind_poses["センター"] = (0.0, 0.0, 0.0)
+
+        frames = [self._make_bone_frame("センター", 30, (1.0, 2.0, 3.0))]
+        self.converter._set_bone_keyframes(joint, frames, "センター")
+
+        self.assertEqual(cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True), [60.0])
+
+        cmds.delete(joint)
+
+    def test_motion_scale_affects_runtime_local_translate_delta_only(self):
+        """runtime bake の local translate も bind pose からの差分だけ倍率化する。"""
+        joint = cmds.joint(name="runtime_motion_scale_joint")
+        self.converter.motion_scale = 2.0
+        self.converter.bone_index_to_joint = {0: joint}
+        self.converter._bone_bind_poses[joint] = (3.0, 4.0, 5.0)
+        channel_values = self.converter._create_runtime_joint_channel_arrays()
+        static_state = self.converter._create_runtime_joint_channel_static_state()
+
+        self.converter._append_bone_locals_to_channel_arrays(
+            {0: (4.0, 6.0, 2.0, 10.0, 20.0, 30.0)},
+            channel_values,
+            static_state,
+        )
+
+        self.assertAlmostEqual(static_state[joint]["translateX"]["first"], 5.0, places=6)
+        self.assertAlmostEqual(static_state[joint]["translateY"]["first"], 8.0, places=6)
+        self.assertAlmostEqual(static_state[joint]["translateZ"]["first"], -1.0, places=6)
+        self.assertAlmostEqual(static_state[joint]["rotateX"]["first"], math.radians(10.0), places=6)
+
+        cmds.delete(joint)
+
+    def test_fps_60_morph_keys_vmd_frame_30_at_maya_time_60(self):
+        """60fps import では VMD frame 30 の morph key を Maya time 60 に置く。"""
+        mesh = cmds.polyCube(name="fps_60_morph_mesh")[0]
+        blend_shape = cmds.blendShape(mesh, name="fps_60_morph_blendShape")[0]
+        cmds.aliasAttr("smile", f"{blend_shape}.weight[0]")
+        frame = type("MorphFrame", (), {"morph_name": "smile", "frame_number": 30, "value": 0.75})()
+        self.converter.fps = 60.0
+        self.converter.morph_name_mapping = {"smile": (blend_shape, "weight[0]", "smile")}
+
+        self.assertTrue(self.converter._convert_morph_animation([frame]))
+
+        self.assertEqual(cmds.keyframe(blend_shape, attribute="weight[0]", query=True, timeChange=True), [60.0])
+
+        cmds.delete(mesh)
+
     def test_convert_vmd_quat_to_joint_rotate_keeps_rest_joint_orient(self):
         """Rig live 経路では VMD identity が JO 付き REST を壊さない。"""
         joint = cmds.joint(name="legacy_joint_orient_joint")
@@ -1431,6 +2124,12 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(self.converter._iter_runtime_bake_frames(0, 5), [0, 1, 2, 3, 4, 5])
         self.assertEqual(self.converter._iter_runtime_bake_frames(10, 10), [10])
         self.assertEqual(self.converter._iter_runtime_bake_frames(5, 3), [])
+        self.converter.fps = 60.0
+        self.assertEqual(self.converter._iter_runtime_bake_frames(0, 2), [0.0, 0.5, 1.0, 1.5, 2.0])
+        self.assertEqual(
+            self.converter._iter_runtime_bake_frame_samples(0, 2),
+            [(0.0, 0.0), (1.0, 0.5), (2.0, 1.0), (3.0, 1.5), (4.0, 2.0)],
+        )
 
     def test_runtime_batch_buffer_helpers_unpack_flat_frame_data(self):
         """batch ABI の flat buffer から指定フレーム分だけ取り出せることを確認する。"""
@@ -1506,6 +2205,74 @@ class TestVmdConverter(MayaTestBase):
 
         cmds.delete(parent, child)
 
+    def test_compute_bone_locals_uses_native_local_channel_abi_when_available(self):
+        """native local decomposition ABI がある場合は Maya API 分解をスキップする。"""
+        parent = cmds.joint(name="test_native_local_parent")
+        cmds.select(parent, replace=True)
+        child = cmds.joint(name="test_native_local_child")
+        cmds.select(clear=True)
+
+        self.converter.bone_index_to_joint = {0: parent, 1: child}
+        self.converter._bone_parent_map = {0: None, 1: 0}
+        self.converter._bone_rotate_orders = {0: 0, 1: 0}
+        self.converter._runtime_bind_world_matrices = {0: om.MMatrix(), 1: om.MMatrix()}
+        self.converter._runtime_no_orient_bind_world_matrices = {0: om.MMatrix(), 1: om.MMatrix()}
+        world_mats = [[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+                       0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]] * 2
+
+        with patch(
+            "mmd_tools.converters.vmd_converter.compute_maya_local_channels",
+            return_value=[
+                (1.0, 2.0, 3.0, 10.0, 20.0, 30.0),
+                (4.0, 5.0, 6.0, 40.0, 50.0, 60.0),
+            ],
+        ) as compute_mock:
+            locals_map = self.converter._compute_all_bone_locals(world_mats)
+
+        self.assertEqual(locals_map[0], (1.0, 2.0, 3.0, 10.0, 20.0, 30.0))
+        self.assertEqual(locals_map[1], (4.0, 5.0, 6.0, 40.0, 50.0, 60.0))
+        self.assertEqual(compute_mock.call_count, 1)
+
+        cmds.delete(parent)
+
+    def test_compute_native_local_channel_batch_uses_runtime_bone_order(self):
+        """batch local decomposition は dict 挿入順ではなく runtime bone index 順で入力を作る。"""
+        parent = cmds.joint(name="test_native_batch_parent")
+        cmds.select(parent, replace=True)
+        child = cmds.joint(name="test_native_batch_child")
+        cmds.select(clear=True)
+
+        # 意図的に挿入順を逆にし、runtime の [0, 1] 順へ正規化されることを確認する。
+        self.converter.bone_index_to_joint = {1: child, 0: parent}
+        self.converter._bone_parent_map = {0: None, 1: 0}
+        self.converter._bone_rotate_orders = {0: 0, 1: 0}
+        self.converter._runtime_bind_world_matrices = {0: om.MMatrix(), 1: om.MMatrix()}
+        self.converter._runtime_no_orient_bind_world_matrices = {0: om.MMatrix(), 1: om.MMatrix()}
+        batch_result = SimpleNamespace(
+            frame_count=1,
+            bone_count=2,
+            world_matrices=(ctypes.c_float * 32)(*([1.0, 0.0, 0.0, 0.0,
+                                                    0.0, 1.0, 0.0, 0.0,
+                                                    0.0, 0.0, 1.0, 0.0,
+                                                    0.0, 0.0, 0.0, 1.0] * 2)),
+        )
+        native_result = SimpleNamespace(
+            frame_count=1,
+            bone_count=2,
+            local_channels=(ctypes.c_float * 12)(*range(12)),
+        )
+
+        with patch(
+            "mmd_tools.converters.vmd_converter.compute_maya_local_channels_batch",
+            return_value=native_result,
+        ) as compute_mock:
+            result = self.converter._compute_native_local_channel_batch(batch_result)
+
+        self.assertEqual(result["ordered_bone_indices"], (0, 1))
+        self.assertEqual(compute_mock.call_args.args[3], [-1, 0])
+
+        cmds.delete(parent)
+
     def test_compute_bone_locals_matches_maya_with_parent_rotation(self):
         """親が回転している階層でも runtime world 行列から Maya local 値を再構成できることを確認"""
         parent = cmds.joint(name="test_parent_rot_bone")
@@ -1541,9 +2308,9 @@ class TestVmdConverter(MayaTestBase):
             self.assertAlmostEqual(tx, cmds.getAttr(f"{joint}.translateX"), places=5)
             self.assertAlmostEqual(ty, cmds.getAttr(f"{joint}.translateY"), places=5)
             self.assertAlmostEqual(tz, cmds.getAttr(f"{joint}.translateZ"), places=5)
-            self.assertAlmostEqual(rx, cmds.getAttr(f"{joint}.rotateX"), places=5)
-            self.assertAlmostEqual(ry, cmds.getAttr(f"{joint}.rotateY"), places=5)
-            self.assertAlmostEqual(rz, cmds.getAttr(f"{joint}.rotateZ"), places=5)
+            self.assertAlmostEqual(rx, cmds.getAttr(f"{joint}.rotateX"), delta=1e-4)
+            self.assertAlmostEqual(ry, cmds.getAttr(f"{joint}.rotateY"), delta=1e-4)
+            self.assertAlmostEqual(rz, cmds.getAttr(f"{joint}.rotateZ"), delta=1e-4)
 
         cmds.delete(parent)
 

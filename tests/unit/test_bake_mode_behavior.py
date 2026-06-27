@@ -17,6 +17,7 @@ install_headless_ui_stubs()
 import mmd_tools.converters.vmd_converter as vmd_converter_module  # noqa: E402
 from mmd_tools.converters.vmd_converter import VmdConverter  # noqa: E402
 from mmd_tools.core.settings import settings  # noqa: E402
+from mmd_tools.io.mmd_importer import import_mmd_file  # noqa: E402
 from mmd_tools.io.pmx_importer import import_pmx_file  # noqa: E402
 from mmd_tools.io.vmd_importer import import_vmd_file  # noqa: E402
 from mmd_tools.services.settings_service import SettingsService  # noqa: E402
@@ -161,6 +162,31 @@ class TestBakeModeBehavior(unittest.TestCase):
                     bake_mode=True,
                 )
             )
+
+    def test_vmd_bake_import_falls_back_to_raw_bytes_when_python_parse_fails(self):
+        """bake mode の VMD は Python parser 失敗時も raw bytes runtime path に渡す。"""
+        options = {
+            "bake_mode": True,
+            "target_model": "model_root",
+            "pmx_bytes": b"pmx",
+        }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            vmd_path = Path(temp_dir) / "truncated.vmd"
+            vmd_path.write_bytes(b"Vocaloid Motion Data 0002\x00")
+
+            with patch("mmd_tools.io.mmd_importer.parse_mmd_file", side_effect=ValueError("truncated")), patch(
+                "mmd_tools.io.mmd_importer.vmd_importer.import_vmd_file",
+                return_value=True,
+            ) as import_vmd:
+                result = import_mmd_file(str(vmd_path), options=options)
+
+        self.assertTrue(result)
+        parser_arg, filepath_arg, options_arg = import_vmd.call_args.args
+        self.assertEqual(filepath_arg, str(vmd_path))
+        self.assertIs(options_arg, options)
+        self.assertEqual(parser_arg.bone_frames, [])
+        self.assertEqual(Path(parser_arg.source_file), vmd_path.resolve())
 
 
 if __name__ == "__main__":

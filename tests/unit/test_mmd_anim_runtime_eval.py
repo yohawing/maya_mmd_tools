@@ -34,6 +34,8 @@ from mmd_tools.core.native.mmd_anim_runtime import (
     MmdRuntimeInstance,
     MmdRuntimeModel,
     MmdRuntimeFfiByteBuffer,
+    compute_maya_local_channels,
+    compute_maya_local_channels_batch,
 )
 
 
@@ -58,6 +60,8 @@ class _FakeRuntimeLib:
         ik_enabled=None,
         batch_world_matrices=None,
         batch_morph_weights=None,
+        local_channels=None,
+        local_channels_batch=None,
         evaluate_result=True,
         with_ik_options=True,
     ):
@@ -70,6 +74,8 @@ class _FakeRuntimeLib:
         self._batch_morph = (
             list(batch_morph_weights) if batch_morph_weights is not None else None
         )
+        self._local_channels = list(local_channels) if local_channels is not None else None
+        self._local_channels_batch = list(local_channels_batch) if local_channels_batch is not None else None
         self._evaluate_result = evaluate_result
         self._provide_ik_options = with_ik_options
         # 呼び出し記録 (引数検証用)
@@ -151,6 +157,66 @@ class _FakeRuntimeLib:
         if self._batch_morph is not None:
             for i in range(min(int(out_morph_len.value), len(self._batch_morph))):
                 out_morph[i] = self._batch_morph[i]
+        return True
+
+    def mmd_runtime_compute_maya_local_channels(
+        self,
+        world_matrices,
+        world_matrices_len,
+        parent_indices,
+        parent_indices_len,
+        bind_world_matrices,
+        bind_world_matrices_len,
+        bind_no_orient_matrices,
+        bind_no_orient_matrices_len,
+        joint_orient_xyzw,
+        joint_orient_xyzw_len,
+        rotate_orders,
+        rotate_orders_len,
+        bone_count,
+        out_local_channels,
+        out_local_channels_len,
+    ):
+        if self._local_channels is None:
+            return False
+        bone_count_value = int(getattr(bone_count, "value", bone_count))
+        out_len_value = int(getattr(out_local_channels_len, "value", out_local_channels_len))
+        required = bone_count_value * 6
+        if out_len_value < required:
+            return False
+        for i in range(min(required, len(self._local_channels))):
+            out_local_channels[i] = self._local_channels[i]
+        return True
+
+    def mmd_runtime_compute_maya_local_channels_batch(
+        self,
+        world_matrices,
+        world_matrices_len,
+        frame_count,
+        parent_indices,
+        parent_indices_len,
+        bind_world_matrices,
+        bind_world_matrices_len,
+        bind_no_orient_matrices,
+        bind_no_orient_matrices_len,
+        joint_orient_xyzw,
+        joint_orient_xyzw_len,
+        rotate_orders,
+        rotate_orders_len,
+        bone_count,
+        out_local_channels,
+        out_local_channels_len,
+    ):
+        if self._local_channels_batch is None:
+            return False
+        frame_count_value = int(getattr(frame_count, "value", frame_count))
+        bone_count_value = int(getattr(bone_count, "value", bone_count))
+        out_len_value = int(getattr(out_local_channels_len, "value", out_local_channels_len))
+        required = frame_count_value * bone_count_value * 6
+        if out_len_value < required:
+            return False
+        for i in range(min(required, len(self._local_channels_batch))):
+            out_local_channels[i] = self._local_channels_batch[i]
         return True
 
     # --- morph weights ---
@@ -356,6 +422,100 @@ class TestEvaluateClipFrameBatch(unittest.TestCase):
         lib = _FakeRuntimeLib(batch_world_matrices=[0.0] * 16, batch_morph_weights=[])
         inst = _make_instance(lib)
         self.assertIsNone(inst.evaluate_clip_frame_batch(_make_clip(), 0.0, 1.0, -1))
+
+
+class TestComputeMayaLocalChannels(unittest.TestCase):
+    def test_returns_bone_channel_tuples_from_native_buffer(self):
+        lib = _FakeRuntimeLib(
+            local_channels=[
+                1.0, 2.0, 3.0, 10.0, 20.0, 30.0,
+                4.0, 5.0, 6.0, 40.0, 50.0, 60.0,
+            ],
+        )
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = compute_maya_local_channels(
+                world_matrices=[0.0] * 32,
+                parent_indices=[-1, 0],
+                bind_world_matrices=[0.0] * 32,
+                bind_no_orient_matrices=[0.0] * 32,
+                joint_orient_quats=[0.0, 0.0, 0.0, 1.0] * 2,
+                rotate_orders=[0, 2],
+            )
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], (1.0, 2.0, 3.0, 10.0, 20.0, 30.0))
+        self.assertEqual(result[1], (4.0, 5.0, 6.0, 40.0, 50.0, 60.0))
+
+    def test_returns_none_when_symbol_missing_or_lengths_invalid(self):
+        lib = _FakeRuntimeLib(local_channels=[0.0] * 6)
+        lib.mmd_runtime_compute_maya_local_channels = None
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertIsNone(
+                compute_maya_local_channels(
+                    world_matrices=[0.0] * 16,
+                    parent_indices=[-1],
+                    bind_world_matrices=[0.0] * 16,
+                    bind_no_orient_matrices=[0.0] * 16,
+                    joint_orient_quats=[0.0, 0.0, 0.0, 1.0],
+                    rotate_orders=[0],
+                )
+            )
+
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=_FakeRuntimeLib()):
+            self.assertIsNone(
+                compute_maya_local_channels(
+                    world_matrices=[0.0] * 15,
+                    parent_indices=[-1],
+                    bind_world_matrices=[0.0] * 16,
+                    bind_no_orient_matrices=[0.0] * 16,
+                    joint_orient_quats=[0.0, 0.0, 0.0, 1.0],
+                    rotate_orders=[0],
+                )
+            )
+
+
+class TestComputeMayaLocalChannelsBatch(unittest.TestCase):
+    def test_returns_ctypes_batch_buffer(self):
+        values = [
+            1.0, 2.0, 3.0, 10.0, 20.0, 30.0,
+            4.0, 5.0, 6.0, 40.0, 50.0, 60.0,
+            7.0, 8.0, 9.0, 70.0, 80.0, 90.0,
+            10.0, 11.0, 12.0, 100.0, 110.0, 120.0,
+        ]
+        lib = _FakeRuntimeLib(local_channels_batch=values)
+        world = (c_float * (2 * 2 * 16))(*([0.0] * (2 * 2 * 16)))
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = compute_maya_local_channels_batch(
+                world_matrices=world,
+                frame_count=2,
+                bone_count=2,
+                parent_indices=[-1, 0],
+                bind_world_matrices=[0.0] * 32,
+                bind_no_orient_matrices=[0.0] * 32,
+                joint_orient_quats=[0.0, 0.0, 0.0, 1.0] * 2,
+                rotate_orders=[0, 0],
+            )
+
+        self.assertEqual(result.frame_count, 2)
+        self.assertEqual(result.bone_count, 2)
+        self.assertEqual(list(result.local_channels), values)
+
+    def test_returns_none_when_batch_symbol_fails(self):
+        lib = _FakeRuntimeLib(local_channels_batch=None)
+        world = (c_float * 16)(*([0.0] * 16))
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertIsNone(
+                compute_maya_local_channels_batch(
+                    world_matrices=world,
+                    frame_count=1,
+                    bone_count=1,
+                    parent_indices=[-1],
+                    bind_world_matrices=[0.0] * 16,
+                    bind_no_orient_matrices=[0.0] * 16,
+                    joint_orient_quats=[0.0, 0.0, 0.0, 1.0],
+                    rotate_orders=[0],
+                )
+            )
 
 
 # ----------------------------------------------------------------------

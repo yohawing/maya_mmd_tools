@@ -55,6 +55,29 @@ class TestBoneMorphRuntime(MayaTestBase):
         )
         return node
 
+    def _create_group_morph_node(self, name, morph_index, offsets):
+        node = cmds.createNode("network", name=name)
+        cmds.addAttr(
+            node,
+            longName="weight",
+            attributeType="double",
+            minValue=0.0,
+            maxValue=1.0,
+            defaultValue=0.0,
+            keyable=True,
+        )
+        cmds.addAttr(node, longName="mmd_morph_type", dataType="string")
+        cmds.addAttr(node, longName="mmd_morph_index", attributeType="long")
+        cmds.addAttr(node, longName="mmd_group_morph_offsets_json", dataType="string")
+        cmds.setAttr(f"{node}.mmd_morph_type", "group", type="string")
+        cmds.setAttr(f"{node}.mmd_morph_index", morph_index)
+        cmds.setAttr(
+            f"{node}.mmd_group_morph_offsets_json",
+            json.dumps(offsets, separators=(",", ":")),
+            type="string",
+        )
+        return node
+
     def test_weight_drives_translate_offsets_and_adds_multiple_morphs(self):
         """weight=0 preserves base translate; multiple weighted offsets add."""
         self._require_accumulator_node()
@@ -91,6 +114,29 @@ class TestBoneMorphRuntime(MayaTestBase):
         self.assertEqual(again["created"], 0)
         self.assertEqual(again["reused"], 1)
         self.assertEqual(len(cmds.ls(type="mmdBoneMorphAccum") or []), 1)
+
+    def test_group_morph_weight_drives_referenced_bone_morph_offset(self):
+        """Group morph references to bone morphs are weighted by group rate."""
+        self._require_accumulator_node()
+        root, joint = self._create_indexed_joint()
+
+        self._create_bone_morph_node(
+            "move_target_boneMorph",
+            3,
+            [{"bone_index": 0, "translation": [4.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
+        )
+        group_morph = self._create_group_morph_node(
+            "move_group_groupMorph",
+            4,
+            [{"morph_index": 3, "morph_rate": 0.25}],
+        )
+
+        result = build_bone_morph_graph(root)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["contributions"], 2)
+
+        cmds.setAttr(f"{group_morph}.weight", 0.5)
+        self.assertListAlmostEqual(cmds.getAttr(f"{joint}.translate")[0], (0.5, 0.0, 0.0), places=5)
 
     def test_rotation_offset_uses_quaternion_slerp(self):
         """PMX quaternion is converted to Maya space and slerped by weight."""

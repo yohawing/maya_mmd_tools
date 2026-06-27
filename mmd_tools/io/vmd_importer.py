@@ -109,10 +109,14 @@ def import_vmd_file(parser, filepath, options=None):
                 logger.warning(f"Invalid vmd_fps={vmd_fps} (only 30 or 60 allowed), falling back to 30")
                 vmd_fps = 30
         converter.fps = float(vmd_fps)
+        converter.motion_scale = float(options.get("motion_scale", 1.0))
+        converter.import_camera_animation = bool(options.get("import_camera_animation", True))
+        converter.import_light_animation = bool(options.get("import_light_animation", True))
         success = converter.convert(
             parser,
             target_namespace,
             bake_mode=options.get("bake_mode", False),
+            clear_existing_motion=options.get("clear_existing_motion", False),
             vmd_bytes=vmd_bytes,
             pmx_bytes=pmx_bytes,
             pmx_path=pmx_path,

@@ -33,12 +33,54 @@ class TestVmdImporter(MayaTestBase):
         with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
             converter = converter_class.return_value
             converter.convert.return_value = True
-            result = import_vmd_file(object(), vmd_path, {"target_model": target_model})
+            result = import_vmd_file(
+                object(),
+                vmd_path,
+                {"target_model": target_model, "clear_existing_motion": True},
+            )
 
         self.assertTrue(result)
+        self.assertEqual(converter.motion_scale, 1.0)
         kwargs = converter.convert.call_args.kwargs
         self.assertEqual(kwargs["pmx_path"], pmx_path)
         self.assertEqual(kwargs["vmd_bytes"], b"Vocaloid Motion Data 0002\x00")
+        self.assertTrue(kwargs["clear_existing_motion"])
+
+    def test_motion_scale_option_is_applied_to_converter(self):
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = True
+            result = import_vmd_file(object(), vmd_path, {"motion_scale": 2.5})
+
+        self.assertTrue(result)
+        self.assertEqual(converter.motion_scale, 2.5)
+
+    def test_camera_light_import_options_are_applied_to_converter(self):
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = True
+            result = import_vmd_file(
+                object(),
+                vmd_path,
+                {
+                    "import_camera_animation": False,
+                    "import_light_animation": False,
+                },
+            )
+
+        self.assertTrue(result)
+        self.assertFalse(converter.import_camera_animation)
+        self.assertFalse(converter.import_light_animation)
 
 
 if __name__ == "__main__":

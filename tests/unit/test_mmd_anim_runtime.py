@@ -23,10 +23,13 @@ from mmd_tools.core.native import (
     MmdRuntimeModel,
     get_mmd_runtime_library,
 )
+from mmd_tools.core.native.native_pmx_parser import is_native_parser_available, parse_pmx_native
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 
 _THIS_DIR = Path(__file__).resolve().parent
 _TEST_DATA_DIR = _THIS_DIR.parent / "data"
 _MMT_PMX_PATH = _TEST_DATA_DIR / "mmt_test_model.pmx"
+_MORPH_PMX_PATH = _TEST_DATA_DIR / "test_morph_model.pmx"
 
 
 class TestMmdAnimRuntimeAvailability(unittest.TestCase):
@@ -66,6 +69,39 @@ class TestMmdAnimRuntimeAvailability(unittest.TestCase):
 
         instance = MmdRuntimeInstance.for_model(None)
         self.assertIsNone(instance)
+
+    def test_runtime_clip_frame_range_uses_optional_ffi_symbol(self):
+        """clip の frame range は optional ABI があれば安全に取得できる。"""
+        calls = []
+
+        def frame_range(_handle, out_first, out_last):
+            calls.append(True)
+            out_first._obj.value = 3
+            out_last._obj.value = 8
+            return True
+
+        class FakeLib:
+            mmd_runtime_clip_frame_range = staticmethod(frame_range)
+
+            @staticmethod
+            def mmd_runtime_clip_free(_handle):
+                pass
+
+        clip = MmdRuntimeClip(FakeLib(), 123)
+
+        self.assertEqual(clip.frame_range(), (3, 8))
+        self.assertEqual(calls, [True])
+
+    def test_runtime_clip_frame_range_returns_none_without_symbol(self):
+        """古い DLL で frame range ABI がなくても例外にしない。"""
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_clip_free(_handle):
+                pass
+
+        clip = MmdRuntimeClip(FakeLib(), 123)
+
+        self.assertIsNone(clip.frame_range())
 
     # ---- parsed-model の unavailable-path テスト ----
 
@@ -159,6 +195,37 @@ class TestMmdAnimRuntimeWhenAvailable(unittest.TestCase):
     def test_basic_lifecycle_does_not_crash(self):
         """モデル→クリップ→インスタンス→評価→解放の一連の流れでクラッシュしないこと。"""
         self.assertTrue(is_mmd_runtime_available())
+
+
+class TestNativePmxParserMorphAccessors(unittest.TestCase):
+    """buffer-based native PMX parser の vertex morph metadata を固定する。"""
+
+    @classmethod
+    def setUpClass(cls):
+        if not is_native_parser_available():
+            raise unittest.SkipTest("buffer-based native PMX parser symbols are not available in this environment")
+        if not _MORPH_PMX_PATH.exists():
+            raise unittest.SkipTest(f"test morph model not found: {_MORPH_PMX_PATH}")
+
+    def test_vertex_morph_metadata_from_test_morph_model(self):
+        """test_morph_model.pmx の vertex morph 名と offset が native parser で読める。"""
+        pmx_data = parse_pmx_native(str(_MORPH_PMX_PATH))
+        self.assertIsNotNone(pmx_data)
+
+        vertex_morphs = [
+            morph
+            for morph in pmx_data.morphs
+            if morph.morph_type == PmxMorphType.VertexMorph
+        ]
+        self.assertEqual([morph.name_english for morph in vertex_morphs], ["smile", "angry"])
+        self.assertEqual([len(morph.offsets) for morph in vertex_morphs], [4, 4])
+
+        smile_offsets = vertex_morphs[0].offsets
+        angry_offsets = vertex_morphs[1].offsets
+        self.assertEqual([offset["vertex_index"] for offset in smile_offsets], [2, 3, 6, 7])
+        self.assertEqual([offset["position_offset"] for offset in smile_offsets], [(0.0, 2.0, 0.0)] * 4)
+        self.assertEqual([offset["vertex_index"] for offset in angry_offsets], [0, 1, 4, 5])
+        self.assertEqual([offset["position_offset"] for offset in angry_offsets], [(0.0, -1.0, 0.0)] * 4)
 
 
 class TestParsedModelWhenAvailable(unittest.TestCase):

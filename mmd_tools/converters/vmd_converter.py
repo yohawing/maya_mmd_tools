@@ -44,6 +44,8 @@ try:
         MmdRuntimeModel,
         MmdRuntimeClip,
         MmdRuntimeInstance,
+        compute_maya_local_channels,
+        compute_maya_local_channels_batch,
     )
     HAS_MMD_RUNTIME = True
 except Exception:
@@ -51,6 +53,42 @@ except Exception:
     def is_mmd_runtime_available():
         return False
     MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = None  # type: ignore
+    compute_maya_local_channels = None  # type: ignore
+    compute_maya_local_channels_batch = None  # type: ignore
+
+
+MMD_APPEND_NODE_TYPES = ("mmdAppend", "mmdAppendNode")
+MMD_CCD_IK_NODE_TYPES = ("mmdCcdIk", "mmdCcdIkNode")
+
+
+def _ls_nodes_of_types(node_types: Tuple[str, ...]) -> List[str]:
+    """List Maya nodes for all available type names, ignoring unavailable types."""
+    nodes: List[str] = []
+    seen = set()
+    try:
+        available_types = set(cmds.allNodeTypes() or [])
+    except Exception:
+        available_types = set()
+    for node_type in node_types:
+        if available_types and node_type not in available_types:
+            continue
+        try:
+            typed_nodes = cmds.ls(type=node_type) or []
+        except Exception:
+            typed_nodes = []
+        for node in typed_nodes:
+            if node not in seen:
+                nodes.append(node)
+                seen.add(node)
+    return nodes
+
+
+def _ls_mmd_append_nodes() -> List[str]:
+    return _ls_nodes_of_types(MMD_APPEND_NODE_TYPES)
+
+
+def _ls_mmd_ccd_ik_nodes() -> List[str]:
+    return _ls_nodes_of_types(MMD_CCD_IK_NODE_TYPES)
 
 
 
@@ -70,11 +108,14 @@ class VmdConverter:
         # VMDモーフ名 -> [(node, attr, 元名), ...]
         # 単一 mapping の既存コード互換を保つため、値は list / tuple のいずれも許容。
         self.fps = 30.0  # デフォルトのFPS (VMD import setting)
+        self.motion_scale = float(settings.get("import.animation.motion_scale", 1.0))
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
         self._bone_bind_poses: Dict[str, Tuple[float, float, float]] = {}  # ボーンの初期位置
         self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
         self.anim_layer = None  # 現在のアニメーションレイヤー名
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
+        self.import_camera_animation = True
+        self.import_light_animation = True
 
         # runtime bake: 静的チャンネル判定の閾値。ワールド行列→ローカル分解で乗る
         # 浮動小数ジッタを吸収し、これ未満しか動かないチャンネルはキーを打たず
@@ -93,6 +134,7 @@ class VmdConverter:
         target_namespace: str = None,
         layer_name: str = "VMD_Motion",
         bake_mode: bool = False,
+        clear_existing_motion: bool = False,
         vmd_bytes: bytes = None,
         pmx_bytes: bytes = None,
         pmx_path: str = None,
@@ -108,6 +150,7 @@ class VmdConverter:
             target_namespace: 対象となるネームスペース（省略可）
             layer_name: アニメーションレイヤー名
             bake_mode: True の場合は live rig ではなく runtime final-pose bake を優先する
+            clear_existing_motion: True の場合は既存の VMD motion keys/layer を削除してから読み込む
             vmd_bytes: 生の VMD バイナリ（runtime bake で使用）
             pmx_bytes: 生の PMX バイナリ（runtime bake で使用）
             pmx_path: PMX ファイルパス（pmx_bytes がない場合に読み込みに使用）
@@ -116,6 +159,7 @@ class VmdConverter:
             変換が成功した場合True、失敗した場合False
         """
         import_start_time = None
+        anim_layer_selection = None
         try:
             self.logger.info("Starting VMD animation conversion")
             try:
@@ -123,9 +167,13 @@ class VmdConverter:
                 cmds.play(state=False)
             except Exception:
                 import_start_time = None
+            if self.use_animation_layers:
+                anim_layer_selection = self._capture_anim_layer_selection()
 
             # 名前マッピングの構築（ボーン名 → Maya joint）
             self._build_name_mappings(target_namespace)
+            if clear_existing_motion:
+                self._clear_existing_motion(layer_name, target_namespace)
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
@@ -150,6 +198,7 @@ class VmdConverter:
                 target_namespace,
             )
 
+            runtime_success = False
             if self._should_use_mmd_runtime_bake(vmd_bytes, pmx_bytes, pmx_path, live_rig_target, bake_mode):
                 self.logger.info("Converting with mmd-anim runtime high-precision bake path")
                 runtime_success = self._convert_using_mmd_runtime(
@@ -160,32 +209,31 @@ class VmdConverter:
                 )
                 if runtime_success:
                     self.logger.info("mmd-anim runtime high-precision bake completed")
-                    self._restore_import_timeline_state(import_start_time)
-                    return True
                 else:
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
 
-            # --- レガシーパス（従来の変換） ---
-            self._apply_ik_enabled_animation(vmd_data, target_namespace)
+            if not runtime_success:
+                # --- レガシーパス（従来の変換） ---
+                self._apply_ik_enabled_animation(vmd_data, target_namespace)
 
-            if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
-                self.logger.info(f"Starting bone animation conversion (legacy): {len(vmd_data.bone_frames)} frames")
-                bone_success = self._convert_bone_animation(vmd_data.bone_frames)
-                if not bone_success:
-                    self.logger.warning("Some errors occurred during bone animation conversion")
+                if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
+                    self.logger.info(f"Starting bone animation conversion (legacy): {len(vmd_data.bone_frames)} frames")
+                    bone_success = self._convert_bone_animation(vmd_data.bone_frames)
+                    if not bone_success:
+                        self.logger.warning("Some errors occurred during bone animation conversion")
 
-            # モーフアニメーション（レガシー）
-            if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
-                self.logger.info("Converting morph animation (legacy)")
-                self._convert_morph_animation(vmd_data.morph_frames)
+                # モーフアニメーション（レガシー）
+                if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
+                    self.logger.info("Converting morph animation (legacy)")
+                    self._convert_morph_animation(vmd_data.morph_frames)
 
             # カメラアニメーション（レガシー）
-            if hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
+            if self.import_camera_animation and hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
                 self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
                 self._convert_camera_animation(vmd_data.camera_frames)
 
             # ライトアニメーション（レガシー）
-            if hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
+            if self.import_light_animation and hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
                 self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
                 self._convert_light_animation(vmd_data.light_frames)
 
@@ -197,6 +245,8 @@ class VmdConverter:
             self._restore_import_timeline_state(import_start_time)
             self.logger.error(f"Error occurred during VMD animation conversion: {str(e)}", exc_info=True)
             return False
+        finally:
+            self._restore_anim_layer_selection(anim_layer_selection)
 
     @staticmethod
     def _restore_import_timeline_state(current_time: Optional[float]) -> None:
@@ -210,6 +260,125 @@ class VmdConverter:
             cmds.play(state=False)
         except Exception:
             pass
+
+    def vmd_frame_to_maya_time(self, frame_number: float) -> float:
+        """Convert VMD's fixed 30fps frame number to the target Maya time unit."""
+        return float(frame_number) * (float(self.fps) / 30.0)
+
+    def maya_time_to_vmd_frame(self, maya_time: float) -> float:
+        """Convert target Maya output time back to VMD's fixed 30fps frame number."""
+        return float(maya_time) * (30.0 / float(self.fps))
+
+    @staticmethod
+    def _capture_anim_layer_selection() -> Dict[str, bool]:
+        """VMD import 前の animLayer selected 状態を取得する。"""
+        try:
+            layers = cmds.ls(type="animLayer") or []
+        except Exception:
+            return {}
+
+        selection = {}
+        for layer in layers:
+            try:
+                selection[layer] = bool(cmds.animLayer(layer, query=True, selected=True))
+            except Exception:
+                pass
+        return selection
+
+    @staticmethod
+    def _restore_anim_layer_selection(selection: Optional[Dict[str, bool]]) -> None:
+        """VMD import 中に変わった animLayer selected 状態を元に戻す。"""
+        if selection is None:
+            return
+        try:
+            layers = cmds.ls(type="animLayer") or []
+        except Exception:
+            return
+
+        for layer in layers:
+            try:
+                cmds.animLayer(layer, edit=True, selected=selection.get(layer, False))
+            except Exception:
+                pass
+
+    def _clear_existing_motion(self, layer_name: str, target_namespace: Optional[str] = None) -> None:
+        """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
+        cleared = 0
+
+        for joint in set(self.bone_name_mapping.values()):
+            cleared += self._cut_keyable_attrs(
+                joint,
+                ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
+            )
+
+        for target_joint, info in self._collect_append_info().items():
+            append_node = info.get("node")
+            if append_node and (
+                self._node_matches_target_namespace(target_joint, target_namespace)
+                or self._node_matches_target_namespace(append_node, target_namespace)
+            ):
+                cleared += self._cut_keyable_attrs(
+                    append_node,
+                    (
+                        "baseTranslateX",
+                        "baseTranslateY",
+                        "baseTranslateZ",
+                        "baseRotateX",
+                        "baseRotateY",
+                        "baseRotateZ",
+                    ),
+                )
+
+        for ik_node in _ls_mmd_ccd_ik_nodes():
+            if self._node_matches_target_namespace(ik_node, target_namespace):
+                cleared += self._cut_keyable_attrs(ik_node, ("enabled", "inputRotate"))
+
+        morph_nodes = set()
+        for mapping_entry in self.morph_name_mapping.values():
+            for morph_node, weight_attr, _morph_name in self._iter_morph_mappings(mapping_entry):
+                if self._node_matches_target_namespace(morph_node, target_namespace):
+                    cleared += self._cut_keyable_attrs(morph_node, (weight_attr,))
+                    morph_nodes.add(morph_node)
+
+        if cmds.objExists(layer_name):
+            try:
+                cmds.delete(layer_name)
+                cleared += 1
+            except Exception as exc:
+                self.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
+
+        self.logger.info(
+            "Cleared existing VMD motion: keys_or_layers=%d joints=%d morph_nodes=%d",
+            cleared,
+            len(set(self.bone_name_mapping.values())),
+            len(morph_nodes),
+        )
+
+    @staticmethod
+    def _node_matches_target_namespace(node: str, target_namespace: Optional[str]) -> bool:
+        """target_namespace が指定されている場合、その namespace 内の node だけを対象にする。"""
+        if not target_namespace:
+            return True
+        short_name = node.split("|")[-1]
+        return short_name.startswith(f"{target_namespace}:")
+
+    @staticmethod
+    def _cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
+        """存在する attr の key を削除し、削除を試みた attr 数を返す。"""
+        if not node or not cmds.objExists(node):
+            return 0
+
+        cleared = 0
+        for attr in attrs:
+            attr_name = attr.split("[", 1)[0]
+            if not cmds.attributeQuery(attr_name, node=node, exists=True):
+                continue
+            try:
+                cmds.cutKey(node, attribute=attr)
+                cleared += 1
+            except Exception:
+                pass
+        return cleared
 
     def _should_use_mmd_runtime_bake(
         self,
@@ -344,14 +513,24 @@ class VmdConverter:
 
         try:
             runtime_start = time.perf_counter()
-            # フレーム範囲の決定
+            # フレーム範囲の決定。Python VMD parser が空/失敗でも、
+            # bake mode は runtime clip の raw bytes から範囲を復元できる。
             min_frame, max_frame = self._get_animation_frame_range(vmd_data)
-            bake_frames = self._iter_runtime_bake_frames(min_frame, max_frame)
+            if max_frame <= min_frame:
+                clip_frame_range = clip.frame_range() if hasattr(clip, "frame_range") else None
+                if clip_frame_range is not None:
+                    min_frame, max_frame = clip_frame_range
+                    max_time = self.vmd_frame_to_maya_time(max_frame)
+                    cmds.playbackOptions(min=0, max=max_time, animationStartTime=0, animationEndTime=max_time)
+            bake_samples = self._iter_runtime_bake_frame_samples(min_frame, max_frame)
             self.logger.info(
-                f"Runtime evaluation range: {min_frame} - {max_frame} (keys={len(bake_frames)})"
+                f"Runtime evaluation range: {min_frame} - {max_frame} "
+                f"(keys={len(bake_samples)}, fps={self.fps:g})"
             )
             self._disable_mmd_rig_constraints_for_runtime_bake()
             self._restore_joints_to_bind_pose_for_runtime_bake()
+            if self.bone_index_to_joint:
+                self._build_runtime_bind_world_maps()
 
             # runtime bake は最終姿勢を毎フレーム直焼きするため、animation layerを使わない。
             # layer経由だと全ボーン全フレームのblend node作成が重く、未登録attribute警告も出る。
@@ -360,11 +539,11 @@ class VmdConverter:
             refresh_suspended = False
 
             # キャッシュ収集: 評価結果を API 配列へ直接保持（cmds.xform / setKeyframe を内側ループから排除）
-            baked_frames: List[int] = []
+            baked_frames: List[float] = []
             bake_times = om.MTimeArray()
             joint_channel_values = self._create_runtime_joint_channel_arrays()
             joint_channel_static = self._create_runtime_joint_channel_static_state()
-            morph_cache: List[Tuple[int, list]] = []
+            morph_cache: List[Tuple[float, list]] = []
             eval_start = time.perf_counter()
             batch_mode = False
             eval_copy_elapsed = 0.0
@@ -381,13 +560,19 @@ class VmdConverter:
                     refresh_suspended = False
 
                 batch_result = None
-                if bake_frames:
+                if bake_samples:
                     batch_start = time.perf_counter()
+                    batch_vmd_frames = [sample[1] for sample in bake_samples]
+                    frame_step = (
+                        float(batch_vmd_frames[1]) - float(batch_vmd_frames[0])
+                        if len(batch_vmd_frames) > 1
+                        else 1.0
+                    )
                     batch_result = instance.evaluate_clip_frame_batch(
                         clip,
-                        float(bake_frames[0]),
-                        1.0,
-                        len(bake_frames),
+                        float(batch_vmd_frames[0]),
+                        frame_step,
+                        len(bake_samples),
                         worker_count=0,
                     )
                     eval_copy_elapsed += time.perf_counter() - batch_start
@@ -399,11 +584,17 @@ class VmdConverter:
                         f"(frames={batch_result.frame_count}, bones={batch_result.bone_count}, "
                         f"morphs={batch_result.morph_count})"
                     )
-                    for frame_index, frame in enumerate(bake_frames):
-                        unpack_start = time.perf_counter()
-                        world_matrices = self._runtime_batch_world_matrices_for_frame(
-                            batch_result, frame_index
+                    local_start = time.perf_counter()
+                    native_local_batch = self._compute_native_local_channel_batch(batch_result)
+                    local_elapsed += time.perf_counter() - local_start
+                    if native_local_batch is not None:
+                        self.logger.info(
+                            "Using native batch local decomposition "
+                            f"(frames={native_local_batch['frame_count']}, "
+                            f"bones={native_local_batch['bone_count']})"
                         )
+                    for frame_index, (maya_time, _vmd_frame) in enumerate(bake_samples):
+                        unpack_start = time.perf_counter()
                         morph_weights = self._runtime_batch_morph_weights_for_frame(
                             batch_result, frame_index
                         )
@@ -414,25 +605,34 @@ class VmdConverter:
                             if not hasattr(self, "_bone_parent_map") or len(getattr(self, "_bone_parent_map", {})) == 0:
                                 self._build_bone_hierarchy_and_order_maps()
                             local_start = time.perf_counter()
-                            bone_locals = self._compute_all_bone_locals(world_matrices)
+                            if native_local_batch is not None:
+                                bone_locals = self._native_local_channel_batch_for_frame(
+                                    native_local_batch,
+                                    frame_index,
+                                )
+                            else:
+                                world_matrices = self._runtime_batch_world_matrices_for_frame(
+                                    batch_result, frame_index
+                                )
+                                bone_locals = self._compute_all_bone_locals(world_matrices)
                             local_elapsed += time.perf_counter() - local_start
 
                         append_start = time.perf_counter()
-                        baked_frames.append(int(frame))
-                        bake_times.append(om.MTime(float(frame), om.MTime.uiUnit()))
+                        baked_frames.append(float(maya_time))
+                        bake_times.append(om.MTime(float(maya_time), om.MTime.uiUnit()))
                         self._append_bone_locals_to_channel_arrays(
                             bone_locals, joint_channel_values, joint_channel_static
                         )
-                        morph_cache.append((int(frame), morph_weights))
+                        morph_cache.append((float(maya_time), morph_weights))
                         append_elapsed += time.perf_counter() - append_start
                 else:
-                    if bake_frames:
+                    if bake_samples:
                         self.logger.info(
                             "mmd-anim runtime batch evaluation unavailable; using per-frame ABI"
                         )
-                    for frame in bake_frames:
+                    for maya_time, vmd_frame in bake_samples:
                         eval_copy_start = time.perf_counter()
-                        if not instance.evaluate_clip_frame(clip, float(frame)):
+                        if not instance.evaluate_clip_frame(clip, float(vmd_frame)):
                             eval_copy_elapsed += time.perf_counter() - eval_copy_start
                             continue
 
@@ -451,12 +651,12 @@ class VmdConverter:
                             local_elapsed += time.perf_counter() - local_start
 
                         append_start = time.perf_counter()
-                        baked_frames.append(int(frame))
-                        bake_times.append(om.MTime(float(frame), om.MTime.uiUnit()))
+                        baked_frames.append(float(maya_time))
+                        bake_times.append(om.MTime(float(maya_time), om.MTime.uiUnit()))
                         self._append_bone_locals_to_channel_arrays(
                             bone_locals, joint_channel_values, joint_channel_static
                         )
-                        morph_cache.append((int(frame), list(morph_weights)))
+                        morph_cache.append((float(maya_time), list(morph_weights)))
                         append_elapsed += time.perf_counter() - append_start
             finally:
                 if refresh_suspended:
@@ -527,13 +727,27 @@ class VmdConverter:
                 max_f = max(max_f, fn)
         return int(min_f), int(max_f)
 
-    def _iter_runtime_bake_frames(self, min_frame: int, max_frame: int) -> List[int]:
-        """runtime bakeで評価/キー作成する全フレーム列を返す。"""
-        min_frame = int(min_frame)
-        max_frame = int(max_frame)
+    def _iter_runtime_bake_frame_samples(self, min_frame: int, max_frame: int) -> List[Tuple[float, float]]:
+        """Return (Maya output time, VMD evaluation frame) samples for runtime bake."""
         if max_frame < min_frame:
             return []
-        return list(range(min_frame, max_frame + 1))
+        min_time = self.vmd_frame_to_maya_time(min_frame)
+        max_time = self.vmd_frame_to_maya_time(max_frame)
+        min_maya_frame = int(math.ceil(min_time - 1e-9))
+        max_maya_frame = int(math.floor(max_time + 1e-9))
+        if max_maya_frame < min_maya_frame:
+            return []
+        return [
+            (float(maya_time), self.maya_time_to_vmd_frame(float(maya_time)))
+            for maya_time in range(min_maya_frame, max_maya_frame + 1)
+        ]
+
+    def _iter_runtime_bake_frames(self, min_frame: int, max_frame: int) -> List[float]:
+        """runtime bakeで評価する VMD フレーム列を返す。"""
+        return [
+            vmd_frame
+            for _maya_time, vmd_frame in self._iter_runtime_bake_frame_samples(min_frame, max_frame)
+        ]
 
     @staticmethod
     def _runtime_batch_world_matrices_for_frame(batch_result, frame_index: int) -> List[List[float]]:
@@ -604,6 +818,7 @@ class VmdConverter:
         """
         self._runtime_bind_world_matrices: Dict[int, om.MMatrix] = {}
         self._runtime_no_orient_bind_world_matrices: Dict[int, om.MMatrix] = {}
+        self._native_local_decompose_inputs = None
         if not hasattr(self, "_bone_parent_map") or len(getattr(self, "_bone_parent_map", {})) == 0:
             self._build_bone_hierarchy_and_order_maps()
 
@@ -668,6 +883,9 @@ class VmdConverter:
             return {}
         if not hasattr(self, "_runtime_bind_world_matrices"):
             self._build_runtime_bind_world_maps()
+        native_locals = self._compute_all_bone_locals_native(world_matrices)
+        if native_locals is not None:
+            return native_locals
         locals_map: Dict[int, Tuple[float, float, float, float, float, float]] = {}
         maya_worlds: Dict[int, om.MMatrix] = {}
         for bidx in self.bone_index_to_joint.keys():
@@ -718,6 +936,137 @@ class VmdConverter:
             except Exception as e:
                 self.logger.debug(f"local compute fail for bone_idx={bidx}: {e}")
         return locals_map
+
+    def _compute_all_bone_locals_native(
+        self,
+        world_matrices: List[List[float]],
+    ) -> Optional[Dict[int, Tuple[float, float, float, float, float, float]]]:
+        """Use mmd-anim FFI to decompose runtime world matrices when available."""
+        if compute_maya_local_channels is None:
+            return None
+
+        ordered_bone_indices = [
+            bidx
+            for bidx in self.bone_index_to_joint.keys()
+            if bidx < len(world_matrices)
+            and isinstance(world_matrices[bidx], (list, tuple))
+            and len(world_matrices[bidx]) == 16
+        ]
+        if not ordered_bone_indices:
+            return None
+
+        static_inputs = self._get_native_local_decompose_static_inputs(ordered_bone_indices)
+        if static_inputs is None:
+            return None
+
+        world_flat = []
+        for bidx in ordered_bone_indices:
+            world_flat.extend(float(value) for value in world_matrices[bidx])
+
+        native_values = compute_maya_local_channels(
+            world_flat,
+            static_inputs["parent_indices"],
+            static_inputs["bind_flat"],
+            static_inputs["no_orient_flat"],
+            static_inputs["joint_orient_flat"],
+            static_inputs["rotate_orders"],
+        )
+        if native_values is None or len(native_values) != len(ordered_bone_indices):
+            return None
+        return {
+            bidx: tuple(native_values[slot])
+            for slot, bidx in enumerate(ordered_bone_indices)
+        }
+
+    def _compute_native_local_channel_batch(self, batch_result):
+        """Compute native local channels for an entire runtime batch when possible."""
+        if compute_maya_local_channels_batch is None:
+            return None
+        bone_count = int(getattr(batch_result, "bone_count", 0))
+        ordered_bone_indices = list(range(bone_count))
+        if not ordered_bone_indices or any(bidx not in self.bone_index_to_joint for bidx in ordered_bone_indices):
+            return None
+        static_inputs = self._get_native_local_decompose_static_inputs(ordered_bone_indices)
+        if static_inputs is None:
+            return None
+        native_batch = compute_maya_local_channels_batch(
+            batch_result.world_matrices,
+            int(batch_result.frame_count),
+            int(batch_result.bone_count),
+            static_inputs["parent_indices"],
+            static_inputs["bind_flat"],
+            static_inputs["no_orient_flat"],
+            static_inputs["joint_orient_flat"],
+            static_inputs["rotate_orders"],
+        )
+        if native_batch is None:
+            return None
+        return {
+            "ordered_bone_indices": tuple(ordered_bone_indices),
+            "frame_count": int(native_batch.frame_count),
+            "bone_count": int(native_batch.bone_count),
+            "local_channels": native_batch.local_channels,
+        }
+
+    @staticmethod
+    def _native_local_channel_batch_for_frame(
+        native_batch,
+        frame_index: int,
+    ) -> Dict[int, Tuple[float, float, float, float, float, float]]:
+        """Extract one frame of local channel tuples from native batch output."""
+        ordered_bone_indices = native_batch["ordered_bone_indices"]
+        bone_count = native_batch["bone_count"]
+        channels = native_batch["local_channels"]
+        frame_start = int(frame_index) * bone_count * 6
+        return {
+            bidx: tuple(float(channels[frame_start + slot * 6 + offset]) for offset in range(6))
+            for slot, bidx in enumerate(ordered_bone_indices)
+        }
+
+    def _get_native_local_decompose_static_inputs(self, ordered_bone_indices: List[int]) -> Optional[Dict[str, list]]:
+        """Return cached static inputs for native runtime local decomposition."""
+        cached = getattr(self, "_native_local_decompose_inputs", None)
+        if cached and cached.get("ordered_bone_indices") == tuple(ordered_bone_indices):
+            return cached
+
+        parent_lookup = {bidx: slot for slot, bidx in enumerate(ordered_bone_indices)}
+        parent_indices = []
+        bind_flat = []
+        no_orient_flat = []
+        joint_orient_flat = []
+        rotate_orders = []
+        for bidx in ordered_bone_indices:
+            joint = self.bone_index_to_joint.get(bidx)
+            bind_world = getattr(self, "_runtime_bind_world_matrices", {}).get(bidx)
+            bind_no_orient = getattr(self, "_runtime_no_orient_bind_world_matrices", {}).get(bidx)
+            if not joint or bind_world is None or bind_no_orient is None:
+                return None
+
+            parent_bidx = getattr(self, "_bone_parent_map", {}).get(bidx)
+            parent_indices.append(parent_lookup.get(parent_bidx, -1))
+            bind_flat.extend(float(bind_world[index]) for index in range(16))
+            no_orient_flat.extend(float(bind_no_orient[index]) for index in range(16))
+
+            q_jo, ro = self._get_joint_orient_cache(joint)
+            if q_jo is None:
+                joint_orient_flat.extend((0.0, 0.0, 0.0, 1.0))
+            else:
+                joint_orient_flat.extend((float(q_jo.x), float(q_jo.y), float(q_jo.z), float(q_jo.w)))
+            rotate_orders.append(int(ro))
+
+        if any(order != 0 for order in rotate_orders):
+            return None
+
+        cached = {
+            "ordered_bone_indices": tuple(ordered_bone_indices),
+            "parent_indices": parent_indices,
+            "bind_flat": bind_flat,
+            "no_orient_flat": no_orient_flat,
+            "joint_orient_flat": joint_orient_flat,
+            "rotate_orders": rotate_orders,
+        }
+        self._native_local_decompose_inputs = cached
+        return cached
 
     @staticmethod
     def _extract_euler_from_matrix(m: om.MMatrix, rotate_order: int) -> Tuple[float, float, float]:
@@ -854,6 +1203,7 @@ class VmdConverter:
             if not chans or not states:
                 continue
 
+            tx, ty, tz = self._scale_motion_translate_from_bind(joint, tx, ty, tz)
             values = {
                 "translateX": float(tx),
                 "translateY": float(ty),
@@ -900,7 +1250,7 @@ class VmdConverter:
         channel_values: Dict[str, Optional[om.MDoubleArray]],
         static_state: Dict[str, dict],
         times: om.MTimeArray,
-        frame_numbers: List[int],
+        frame_numbers: List[float],
     ) -> Tuple[int, int]:
         """MDoubleArrayへ収集済みのchannel値をMFnAnimCurve.addKeysで一括登録する。"""
         if not cmds.objExists(joint_name) or not channel_values:
@@ -1000,7 +1350,8 @@ class VmdConverter:
                     values = om.MDoubleArray()
                     for frame, value in samples:
                         times.append(om.MTime(float(frame), om.MTime.uiUnit()))
-                        values.append(float(value))
+                        api_value = math.radians(float(value)) if "rotate" in attr else float(value)
+                        values.append(api_value)
                     curve.addKeys(times, values, tangent, tangent, False)
                     success_any = True
                     continue
@@ -1024,10 +1375,30 @@ class VmdConverter:
         return success_any
 
     @staticmethod
+    def _samples_as_anim_layer_deltas(node_name: str, channel_samples: Dict[str, List[Tuple[float, float]]]):
+        """Convert absolute channel samples to additive animLayer deltas."""
+        adjusted = {}
+        for attr, samples in channel_samples.items():
+            if not samples:
+                adjusted[attr] = samples
+                continue
+            try:
+                base_value = cmds.getAttr(f"{node_name}.{attr}")
+                if isinstance(base_value, (list, tuple)):
+                    base_value = base_value[0]
+                if isinstance(base_value, (list, tuple)):
+                    base_value = base_value[0]
+                base_value = float(base_value)
+            except Exception:
+                base_value = 0.0
+            adjusted[attr] = [(frame, float(value) - base_value) for frame, value in samples]
+        return adjusted
+
+    @staticmethod
     def _collect_append_info():
         """シーン内の全 mmdAppend ノードから (target_joint, append_node, source_joint, ratio, attr_map) を収集。"""
         result = {}
-        append_nodes = cmds.ls(type="mmdAppend") or []
+        append_nodes = _ls_mmd_append_nodes()
 
         def _compound_destinations(src_attr, dst_attr):
             plugs = cmds.listConnections(src_attr, s=False, d=True, p=True) or []
@@ -1414,8 +1785,8 @@ class VmdConverter:
         joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
         joint_channel_static: Dict[str, Dict[str, dict]],
         bake_times: om.MTimeArray,
-        baked_frames: List[int],
-        morph_cache: List[Tuple[int, list]],
+        baked_frames: List[float],
+        morph_cache: List[Tuple[float, list]],
         pmx_morph_names: List[str],
     ) -> None:
         """API配列へ収集済みのruntime bake結果をMaya sceneへ一括適用する。"""
@@ -1553,7 +1924,7 @@ class VmdConverter:
         the keyed rotation through.
         """
         result: Dict[str, Dict[str, Union[str, int]]] = {}
-        for node in cmds.ls(type="mmdCcdIk") or []:
+        for node in _ls_mmd_ccd_ik_nodes():
             link_slots = []
             try:
                 cfg = json.loads(cmds.getAttr(f"{node}.chainJson") or "{}")
@@ -1591,7 +1962,7 @@ class VmdConverter:
         channels: Dict[str, Optional[om.MDoubleArray]],
         static_state: Dict[str, dict],
         bake_times: om.MTimeArray,
-        baked_frames: List[int],
+        baked_frames: List[float],
         disable_solver: bool = True,
     ) -> int:
         """Key mmdCcdIk inputRotate/output pass-through for runtime-live apply."""
@@ -1690,6 +2061,7 @@ class VmdConverter:
                     jname = self.bone_index_to_joint.get(bidx)
                     if not jname:
                         continue
+                    tx, ty, tz = self._scale_motion_translate_from_bind(jname, tx, ty, tz)
                     if jname not in per_joint_channels:
                         per_joint_channels[jname] = {
                             "translateX": [],
@@ -1747,6 +2119,24 @@ class VmdConverter:
         self._bake_morph_weight_cache_from_runtime(morph_cache, pmx_morph_names)
 
         self.logger.info(f"Applied runtime cache: keyed {len(runtime_cache)} frames")
+
+    def _scale_motion_translate_from_bind(
+        self,
+        joint: str,
+        tx: float,
+        ty: float,
+        tz: float,
+    ) -> Tuple[float, float, float]:
+        """Scale a local translate sample as bind pose plus motion delta."""
+        if self.motion_scale == 1.0:
+            return float(tx), float(ty), float(tz)
+        bind = self._bone_bind_poses.get(joint, (0.0, 0.0, 0.0))
+        bx, by, bz = float(bind[0]), float(bind[1]), float(bind[2])
+        return (
+            bx + (float(tx) - bx) * self.motion_scale,
+            by + (float(ty) - by) * self.motion_scale,
+            bz + (float(tz) - bz) * self.motion_scale,
+        )
 
     @staticmethod
     def _is_static_channel(samples: List[Tuple[float, float]], tolerance: float = 1e-10) -> bool:
@@ -1877,7 +2267,7 @@ class VmdConverter:
 
     def _bake_morph_weight_cache_from_runtime(
         self,
-        morph_cache: List[Tuple[int, list]],
+        morph_cache: List[Tuple[float, list]],
         pmx_morph_names: List[str] = None,
     ) -> None:
         """runtime 評価済み morph weight cache を blendShape/network weight へ一括キーイングする。"""
@@ -1935,7 +2325,7 @@ class VmdConverter:
         mapped_joints = self._runtime_bake_mapped_joint_names()
         disconnected = 0
         ik_nodes_for_runtime = set()
-        for node in cmds.ls(type="mmdAppend") or []:
+        for node in _ls_mmd_append_nodes():
             if not self._node_has_mapped_destination(
                 node,
                 ("outputRotate", "outputTranslate"),
@@ -1946,7 +2336,7 @@ class VmdConverter:
                 node,
                 ("outputRotate", "outputTranslate"),
             )
-        for node in cmds.ls(type="mmdCcdIk") or []:
+        for node in _ls_mmd_ccd_ik_nodes():
             if not self._node_has_mapped_destination(node, ("outputRotate",), mapped_joints):
                 continue
             ik_nodes_for_runtime.add(node)
@@ -1992,13 +2382,6 @@ class VmdConverter:
         runtime bake は final pose を joint に直焼きする Bake mode 用の経路なので、
         対象jointへlive rig出力がある場合は選ばない。
         """
-        def _nodes_of_type(node_type: str) -> List[str]:
-            try:
-                return cmds.ls(type=node_type) or []
-            except Exception as e:
-                self.logger.debug(f"failed to list {node_type} nodes: {e}")
-                return []
-
         def _output_rotate_connected_to_joint(node: str) -> bool:
             try:
                 destinations = cmds.listConnections(f"{node}.outputRotate", s=False, d=True, p=True) or []
@@ -2022,10 +2405,9 @@ class VmdConverter:
                     self.logger.debug(f"failed to inspect destination node type {destination_node}: {e}")
             return False
 
-        for node_type in ("mmdCcdIk", "mmdAppend"):
-            for node in _nodes_of_type(node_type):
-                if _output_rotate_connected_to_joint(node):
-                    return True
+        for node in _ls_mmd_ccd_ik_nodes() + _ls_mmd_append_nodes():
+            if _output_rotate_connected_to_joint(node):
+                return True
 
         return False
 
@@ -2224,8 +2606,9 @@ class VmdConverter:
 
         if max_frame > 0:
             # タイムラインの範囲を設定
-            cmds.playbackOptions(min=0, max=max_frame, animationStartTime=0, animationEndTime=max_frame)
-            self.logger.info(f"Set timeline range: 0 - {max_frame}")
+            max_time = self.vmd_frame_to_maya_time(max_frame)
+            cmds.playbackOptions(min=0, max=max_time, animationStartTime=0, animationEndTime=max_time)
+            self.logger.info(f"Set timeline range: 0 - {max_time}")
 
     def _convert_bone_animation(self, bone_frames: List) -> bool:
         """ボーンアニメーションを変換
@@ -2310,7 +2693,7 @@ class VmdConverter:
             inputRotate にキーイングするときのインデックスとして使う。
         """
         ik_link_joints: dict = {}
-        for node in cmds.ls(type="mmdCcdIk") or []:
+        for node in _ls_mmd_ccd_ik_nodes():
             try:
                 raw_chain = cmds.getAttr(f"{node}.chainJson")
                 cfg = json.loads(raw_chain) if raw_chain else {}
@@ -2358,7 +2741,7 @@ class VmdConverter:
     def _collect_ik_nodes_by_bone_name(self, target_namespace: str = None) -> Dict[str, str]:
         """mmdCcdIk ノードを PMX IK ボーン名で引けるように収集する。"""
         nodes: Dict[str, str] = {}
-        for node in cmds.ls(type="mmdCcdIk") or []:
+        for node in _ls_mmd_ccd_ik_nodes():
             if target_namespace and self._node_namespace(node) != target_namespace:
                 continue
             name = ""
@@ -2391,9 +2774,10 @@ class VmdConverter:
 
         if property_frames or default_nodes:
             min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
+            min_time = self.vmd_frame_to_maya_time(min_frame)
             for node in (ik_nodes.values() if property_frames else default_nodes):
                 cmds.setAttr(f"{node}.enabled", True)
-                cmds.setKeyframe(node, attribute="enabled", time=min_frame, value=1)
+                cmds.setKeyframe(node, attribute="enabled", time=min_time, value=1)
 
         if property_frames:
             keyed = 0
@@ -2405,7 +2789,12 @@ class VmdConverter:
                         continue
                     value = bool(show_flag)
                     cmds.setAttr(f"{node}.enabled", value)
-                    cmds.setKeyframe(node, attribute="enabled", time=frame_number, value=int(value))
+                    cmds.setKeyframe(
+                        node,
+                        attribute="enabled",
+                        time=self.vmd_frame_to_maya_time(frame_number),
+                        value=int(value),
+                    )
                     keyed += 1
             if keyed:
                 self.logger.info(f"Applied {keyed} keys of VMD IK state to mmdCcdIk.enabled")
@@ -2491,6 +2880,36 @@ class VmdConverter:
         return None
 
     @staticmethod
+    def _parse_vmd_camera_interpolation(interpolation_bytes):
+        """VMD camera interpolation bytes をチャンネル別 Bezier 制御点へ変換する。"""
+        if not interpolation_bytes or len(interpolation_bytes) < 24:
+            return {}
+
+        data = bytes(interpolation_bytes[:24])
+
+        def _norm(value):
+            return max(0.0, min(127.0, float(value))) / 127.0
+
+        channels = (
+            "translate_x",
+            "translate_y",
+            "translate_z",
+            "rotation",
+            "distance",
+            "viewing_angle",
+        )
+        parsed = {}
+        for index, channel in enumerate(channels):
+            offset = index * 4
+            parsed[channel] = (
+                _norm(data[offset]),
+                _norm(data[offset + 2]),
+                _norm(data[offset + 1]),
+                _norm(data[offset + 3]),
+            )
+        return parsed
+
+    @staticmethod
     def _is_linear_vmd_interp(points: Tuple[float, float, float, float]) -> bool:
         """VMD Bezier 制御点が線形指定かどうかを判定する。"""
         x1, y1, x2, y2 = points
@@ -2526,7 +2945,14 @@ class VmdConverter:
             return None
         return float(values[0])
 
-    def _apply_vmd_bezier_tangents(self, joint: str, frames: List, attrs, channel_interp_map: Dict[str, str]):
+    def _apply_vmd_bezier_tangents(
+        self,
+        joint: str,
+        frames: List,
+        attrs,
+        channel_interp_map: Dict[str, str],
+        interpolation_parser=None,
+    ):
         """VMD Bezier 補間を Maya weighted tangent として適用する。
 
         Args:
@@ -2551,13 +2977,16 @@ class VmdConverter:
             next_frame = frames[frame_index + 1]
             frame_number = self._get_frame_number(frame)
             next_frame_number = self._get_frame_number(next_frame)
-            dt = next_frame_number - frame_number
+            frame_time = self.vmd_frame_to_maya_time(frame_number)
+            next_frame_time = self.vmd_frame_to_maya_time(next_frame_number)
+            dt = next_frame_time - frame_time
             if dt <= 0.0:
                 continue
 
             # VMD の補間バイト列は到着キー側に保存されるため、
             # 区間 frame -> next_frame では next_frame.interpolation を使う。
-            interpolation = self._parse_vmd_interpolation(self._get_frame_interpolation(next_frame))
+            parse_interpolation = interpolation_parser or self._parse_vmd_interpolation
+            interpolation = parse_interpolation(self._get_frame_interpolation(next_frame))
             if not interpolation:
                 continue
 
@@ -2571,8 +3000,8 @@ class VmdConverter:
 
                 target_node, target_attr = attr_targets.get(source_attr, (joint, source_attr))
                 plug = f"{target_node}.{target_attr}"
-                value = self._query_key_value(plug, frame_number)
-                next_value = self._query_key_value(plug, next_frame_number)
+                value = self._query_key_value(plug, frame_time)
+                next_value = self._query_key_value(plug, next_frame_time)
                 if value is None or next_value is None:
                     continue
 
@@ -2591,20 +3020,40 @@ class VmdConverter:
                     cmds.keyTangent(
                         plug,
                         edit=True,
-                        time=(frame_number, frame_number),
+                        time=(frame_time, frame_time),
                         weightedTangents=True,
-                        outTangentType="fixed",
-                        outAngle=out_angle,
-                        outWeight=out_weight,
                     )
                     cmds.keyTangent(
                         plug,
                         edit=True,
-                        time=(next_frame_number, next_frame_number),
+                        time=(frame_time, frame_time),
+                        ott="fixed",
+                    )
+                    cmds.keyTangent(
+                        plug,
+                        edit=True,
+                        time=(frame_time, frame_time),
+                        oa=out_angle,
+                        ow=out_weight,
+                    )
+                    cmds.keyTangent(
+                        plug,
+                        edit=True,
+                        time=(next_frame_time, next_frame_time),
                         weightedTangents=True,
-                        inTangentType="fixed",
-                        inAngle=in_angle,
-                        inWeight=in_weight,
+                    )
+                    cmds.keyTangent(
+                        plug,
+                        edit=True,
+                        time=(next_frame_time, next_frame_time),
+                        itt="fixed",
+                    )
+                    cmds.keyTangent(
+                        plug,
+                        edit=True,
+                        time=(next_frame_time, next_frame_time),
+                        ia=in_angle,
+                        iw=in_weight,
                     )
                 except Exception as exc:
                     self.logger.debug(
@@ -2670,10 +3119,11 @@ class VmdConverter:
                     frame_number = frame.get("frame_number", 0)
                     vmd_pos = frame.get("position", [0, 0, 0])
                     rotation_quat = frame.get("rotation", [0, 0, 0, 1])
+                maya_time = self.vmd_frame_to_maya_time(frame_number)
 
-                tx = float(bind_pos[0]) + float(vmd_pos[0])
-                ty = float(bind_pos[1]) + float(vmd_pos[1])
-                tz = float(bind_pos[2]) - float(vmd_pos[2])
+                tx = float(bind_pos[0]) + float(vmd_pos[0]) * self.motion_scale
+                ty = float(bind_pos[1]) + float(vmd_pos[1]) * self.motion_scale
+                tz = float(bind_pos[2]) - float(vmd_pos[2]) * self.motion_scale
                 rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(joint, *rotation_quat)
                 values = {
                     "translateX": tx,
@@ -2684,7 +3134,7 @@ class VmdConverter:
                     "rotateZ": rz,
                 }
                 for attr, value in values.items():
-                    channel_samples[attr].append((float(frame_number), float(value)))
+                    channel_samples[attr].append((maya_time, float(value)))
 
             if self._batch_key_scalar_channels(joint, channel_samples):
                 if self.use_quaternion_interpolation:
@@ -2717,10 +3167,11 @@ class VmdConverter:
                 frame_number = frame.get("frame_number", 0)
                 vmd_pos = frame.get("position", [0, 0, 0])
                 rotation_quat = frame.get("rotation", [0, 0, 0, 1])
+            maya_time = self.vmd_frame_to_maya_time(frame_number)
 
-            tx = float(bind_pos[0]) + float(vmd_pos[0])
-            ty = float(bind_pos[1]) + float(vmd_pos[1])
-            tz = float(bind_pos[2]) - float(vmd_pos[2])
+            tx = float(bind_pos[0]) + float(vmd_pos[0]) * self.motion_scale
+            ty = float(bind_pos[1]) + float(vmd_pos[1]) * self.motion_scale
+            tz = float(bind_pos[2]) - float(vmd_pos[2]) * self.motion_scale
 
             values = {
                 "translateX": tx,
@@ -2737,7 +3188,7 @@ class VmdConverter:
                 target_node, target_attr = attr_targets.get(attr, (joint, attr))
                 key_args = {
                     "attribute": target_attr,
-                    "time": frame_number,
+                    "time": maya_time,
                     "value": float(value),
                 }
                 if use_layer:
@@ -2766,9 +3217,10 @@ class VmdConverter:
                 else:
                     fn = frame.get("frame_number", 0)
                     rq = frame.get("rotation", [0, 0, 0, 1])
+                maya_time = self.vmd_frame_to_maya_time(fn)
                 rx, ry, rz = self._convert_vmd_quat_to_joint_rotate(joint, *rq)
                 for attr, val in zip(ir_attrs, [rx, ry, rz]):
-                    cmds.setKeyframe(f"{solver_node}.{attr}", time=fn, value=val)
+                    cmds.setKeyframe(f"{solver_node}.{attr}", time=maya_time, value=val)
 
         # Quaternion補間を適用（rotate が joint 自身に直接キーされている場合のみ）
         rotate_redirected = any(
@@ -2976,34 +3428,108 @@ class VmdConverter:
                 cmds.addAttr(camera_transform, longName=attr_name, attributeType=attr_type, keyable=True)
                 cmds.setAttr(f"{camera_transform}.{attr_name}", default_value)
 
+        camera_samples = {
+            "translateX": [],
+            "translateY": [],
+            "translateZ": [],
+            "rotateX": [],
+            "rotateY": [],
+            "rotateZ": [],
+            "mmd_camera_distance": [],
+            "mmd_camera_viewing_angle": [],
+        }
+        camera_shape_samples = {"focalLength": []}
+        perspective_samples = []
+        orthographic_samples = []
+
         for frame in camera_frames:
             frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+            maya_time = self.vmd_frame_to_maya_time(frame_number)
             position = frame.position if hasattr(frame, "position") else frame.get("position", (0, 0, 0))
             rotation = frame.rotation if hasattr(frame, "rotation") else frame.get("rotation", (0, 0, 0))
             distance = frame.distance if hasattr(frame, "distance") else frame.get("distance", 0.0)
             viewing_angle = frame.viewing_angle if hasattr(frame, "viewing_angle") else frame.get("viewing_angle", 45)
             perspective = frame.perspective if hasattr(frame, "perspective") else frame.get("perspective", 0)
 
-            cmds.setKeyframe(camera_transform, attribute="translateX", time=frame_number, value=position[0])
-            cmds.setKeyframe(camera_transform, attribute="translateY", time=frame_number, value=position[1])
-            cmds.setKeyframe(camera_transform, attribute="translateZ", time=frame_number, value=-position[2])
-            cmds.setKeyframe(camera_transform, attribute="rotateX", time=frame_number, value=math.degrees(rotation[0]))
-            cmds.setKeyframe(camera_transform, attribute="rotateY", time=frame_number, value=math.degrees(rotation[1]))
-            cmds.setKeyframe(camera_transform, attribute="rotateZ", time=frame_number, value=-math.degrees(rotation[2]))
-            cmds.setKeyframe(camera_transform, attribute="mmd_camera_distance", time=frame_number, value=distance)
-            cmds.setKeyframe(
-                camera_transform,
-                attribute="mmd_camera_viewing_angle",
-                time=frame_number,
-                value=float(viewing_angle),
-            )
-            cmds.setKeyframe(camera_transform, attribute="mmd_camera_perspective", time=frame_number, value=int(perspective))
+            camera_samples["translateX"].append((maya_time, position[0] * self.motion_scale))
+            camera_samples["translateY"].append((maya_time, position[1] * self.motion_scale))
+            camera_samples["translateZ"].append((maya_time, -position[2] * self.motion_scale))
+            camera_samples["rotateX"].append((maya_time, math.degrees(rotation[0])))
+            camera_samples["rotateY"].append((maya_time, math.degrees(rotation[1])))
+            camera_samples["rotateZ"].append((maya_time, -math.degrees(rotation[2])))
+            camera_samples["mmd_camera_distance"].append((maya_time, distance * self.motion_scale))
+            camera_samples["mmd_camera_viewing_angle"].append((maya_time, float(viewing_angle)))
+            perspective_samples.append((maya_time, int(perspective)))
 
             if camera_shape:
                 focal_length = self._viewing_angle_to_focal_length(camera_shape, float(viewing_angle))
-                cmds.setKeyframe(camera_shape, attribute="focalLength", time=frame_number, value=focal_length)
+                camera_shape_samples["focalLength"].append((maya_time, focal_length))
                 if cmds.attributeQuery("orthographic", node=camera_shape, exists=True):
-                    cmds.setKeyframe(camera_shape, attribute="orthographic", time=frame_number, value=bool(perspective))
+                    orthographic_samples.append((maya_time, bool(perspective)))
+
+        animation_layer = self.anim_layer if self.use_animation_layers and self.anim_layer else None
+        if animation_layer:
+            self._add_attrs_to_anim_layer(camera_transform, list(camera_samples) + ["mmd_camera_perspective"])
+            if camera_shape:
+                self._add_attrs_to_anim_layer(camera_shape, list(camera_shape_samples) + ["orthographic"])
+            camera_samples = self._samples_as_anim_layer_deltas(camera_transform, camera_samples)
+            if camera_shape:
+                camera_shape_samples = self._samples_as_anim_layer_deltas(camera_shape, camera_shape_samples)
+
+        self._batch_key_scalar_channels(camera_transform, camera_samples, animation_layer=animation_layer)
+        if camera_shape:
+            self._batch_key_scalar_channels(camera_shape, camera_shape_samples, animation_layer=animation_layer)
+
+        for maya_time, perspective in perspective_samples:
+            key_args = {
+                "attribute": "mmd_camera_perspective",
+                "time": maya_time,
+                "value": int(perspective),
+            }
+            if animation_layer:
+                key_args["animLayer"] = animation_layer
+            cmds.setKeyframe(camera_transform, **key_args)
+        if camera_shape:
+            for maya_time, orthographic in orthographic_samples:
+                key_args = {
+                    "attribute": "orthographic",
+                    "time": maya_time,
+                    "value": bool(orthographic),
+                }
+                if animation_layer:
+                    key_args["animLayer"] = animation_layer
+                cmds.setKeyframe(camera_shape, **key_args)
+
+        camera_tangent_targets = {
+            "translateX": (camera_transform, "translateX"),
+            "translateY": (camera_transform, "translateY"),
+            "translateZ": (camera_transform, "translateZ"),
+            "rotateX": (camera_transform, "rotateX"),
+            "rotateY": (camera_transform, "rotateY"),
+            "rotateZ": (camera_transform, "rotateZ"),
+            "mmd_camera_distance": (camera_transform, "mmd_camera_distance"),
+            "mmd_camera_viewing_angle": (camera_transform, "mmd_camera_viewing_angle"),
+        }
+        if camera_shape:
+            camera_tangent_targets["focalLength"] = (camera_shape, "focalLength")
+        camera_channel_map = {
+            "translateX": "translate_x",
+            "translateY": "translate_y",
+            "translateZ": "translate_z",
+            "rotateX": "rotation",
+            "rotateY": "rotation",
+            "rotateZ": "rotation",
+            "mmd_camera_distance": "distance",
+            "mmd_camera_viewing_angle": "viewing_angle",
+            "focalLength": "viewing_angle",
+        }
+        self._apply_vmd_bezier_tangents(
+            camera_transform,
+            sorted(camera_frames, key=self._get_frame_number),
+            camera_tangent_targets,
+            camera_channel_map,
+            interpolation_parser=self._parse_vmd_camera_interpolation,
+        )
 
         return True
 
@@ -3053,15 +3579,27 @@ class VmdConverter:
             return False
         light_shape = light_shapes[0]
 
+        if cmds.attributeQuery("mmd_light_color", node=light_transform, exists=True):
+            light_color_node = light_transform
+            light_color_samples = {
+                "mmd_light_colorR": [],
+                "mmd_light_colorG": [],
+                "mmd_light_colorB": [],
+            }
+        else:
+            light_color_node = light_shape
+            light_color_samples = {"colorR": [], "colorG": [], "colorB": []}
+        light_rotate_samples = {"rotateX": [], "rotateY": [], "rotateZ": []}
+
         for frame in light_frames:
             frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
+            maya_time = self.vmd_frame_to_maya_time(frame_number)
             color = frame.color if hasattr(frame, "color") else frame.get("color", (1, 1, 1))
             position = frame.position if hasattr(frame, "position") else frame.get("position", (0.0, -1.0, 0.0))
 
             # color keyframe（常に設定）
-            cmds.setKeyframe(light_shape, attribute="colorR", time=frame_number, value=color[0])
-            cmds.setKeyframe(light_shape, attribute="colorG", time=frame_number, value=color[1])
-            cmds.setKeyframe(light_shape, attribute="colorB", time=frame_number, value=color[2])
+            for attr, value in zip(light_color_samples, color):
+                light_color_samples[attr].append((maya_time, value))
 
             # 方向ベクトル: VMD (x, y, z) → Maya (x, y, -z)
             dx, dy, dz = float(position[0]), float(position[1]), -float(position[2])
@@ -3088,9 +3626,19 @@ class VmdConverter:
                 # cos(rx) ≈ 0 → 真上/真下向き, 任意の ry で可
                 ry = 0.0
 
-            cmds.setKeyframe(light_transform, attribute="rotateX", time=frame_number, value=math.degrees(rx))
-            cmds.setKeyframe(light_transform, attribute="rotateY", time=frame_number, value=math.degrees(ry))
-            cmds.setKeyframe(light_transform, attribute="rotateZ", time=frame_number, value=0.0)
+            light_rotate_samples["rotateX"].append((maya_time, math.degrees(rx)))
+            light_rotate_samples["rotateY"].append((maya_time, math.degrees(ry)))
+            light_rotate_samples["rotateZ"].append((maya_time, 0.0))
+
+        animation_layer = self.anim_layer if self.use_animation_layers and self.anim_layer else None
+        if animation_layer:
+            self._add_attrs_to_anim_layer(light_color_node, list(light_color_samples))
+            self._add_attrs_to_anim_layer(light_transform, list(light_rotate_samples))
+            light_color_samples = self._samples_as_anim_layer_deltas(light_color_node, light_color_samples)
+            light_rotate_samples = self._samples_as_anim_layer_deltas(light_transform, light_rotate_samples)
+
+        self._batch_key_scalar_channels(light_color_node, light_color_samples, animation_layer=animation_layer)
+        self._batch_key_scalar_channels(light_transform, light_rotate_samples, animation_layer=animation_layer)
 
         return True
 
@@ -3125,12 +3673,17 @@ class VmdConverter:
                 for frame in frames:
                     frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
                     value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
-                    samples.append((float(frame_number), float(value)))
+                    samples.append((self.vmd_frame_to_maya_time(frame_number), float(value)))
                 if not self._batch_key_scalar_channels(morph_node, {weight_attr: samples}):
                     for frame in frames:
                         frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
                         value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
-                        cmds.setKeyframe(morph_node, attribute=weight_attr, time=frame_number, value=value)
+                        cmds.setKeyframe(
+                            morph_node,
+                            attribute=weight_attr,
+                            time=self.vmd_frame_to_maya_time(frame_number),
+                            value=value,
+                        )
 
             success_count += 1
 
@@ -3198,7 +3751,7 @@ class VmdConverter:
         return result
 
     def _build_morph_mappings(self):
-        """シーン内のblendShapeとbone morph networkからモーフ名マッピングを構築"""
+        """シーン内のblendShapeとmetadata networkからモーフ名マッピングを構築"""
         self.morph_name_mapping = {}
 
         blend_shapes = cmds.ls(type="blendShape") or []
@@ -3226,7 +3779,7 @@ class VmdConverter:
             if not cmds.attributeQuery("mmd_morph_type", node=morph_node, exists=True):
                 continue
             morph_type = cmds.getAttr(f"{morph_node}.mmd_morph_type")
-            if morph_type not in {"bone", "material"}:
+            if morph_type not in {"bone", "group", "material"}:
                 continue
             if not cmds.attributeQuery("weight", node=morph_node, exists=True):
                 continue
@@ -3240,7 +3793,7 @@ class VmdConverter:
             mapping = (morph_node, "weight", original_name)
             self._register_morph_mapping(original_name, mapping)
             safe_name = morph_node
-            for suffix in ("_boneMorph", "_materialMorph"):
+            for suffix in ("_boneMorph", "_groupMorph", "_materialMorph"):
                 if safe_name.endswith(suffix):
                     safe_name = safe_name[: -len(suffix)]
                     break
