@@ -145,52 +145,10 @@ class _PathStaging:
 
 DEFAULT_CASES = [
     {
-        "name": "alicia_weekender",
-        "pmx": r"F:\MMD\pmx\Alicia\Alicia\MMD\Alicia_solid.pmx",
-        "vmd": r"F:\MMD\vmd\110_weekender_girl\weekender_girl\wg_motion.vmd",
-        "frames": [0, 60, 120],
-    },
-    {
-        "name": "aria_weekender",
-        "pmx": r"F:\MMD\pmx\aria\aria.pmx",
-        "vmd": r"F:\MMD\vmd\110_weekender_girl\weekender_girl\wg_motion.vmd",
-        "frames": [0, 60, 120],
-    },
-    {
-        "name": "lumine_weekender",
-        "pmx": r"F:\MMD\pmx\【女主角_荧】_by_原神\Lumine.pmx",
-        "vmd": r"F:\MMD\vmd\110_weekender_girl\weekender_girl\wg_motion.vmd",
-        "frames": [0, 60, 120],
-    },
-    {
-        "name": "alicia_rabbithole",
-        "pmx": r"F:\MMD\pmx\Alicia\Alicia\MMD\Alicia_solid.pmx",
-        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
-        "frames": [0, 60, 120],
-    },
-    {
-        "name": "aria_rabbithole",
-        "pmx": r"F:\MMD\pmx\aria\aria.pmx",
-        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
-        "frames": [0, 60, 120],
-    },
-    {
-        "name": "lumine_rabbithole",
-        "pmx": r"F:\MMD\pmx\【女主角_荧】_by_原神\Lumine.pmx",
-        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
-        "frames": [0, 60, 120],
-    },
-    {
-        "name": "alicia_addiction",
-        "pmx": r"F:\MMD\pmx\Alicia\Alicia\MMD\Alicia_solid.pmx",
-        "vmd": r"F:\MMD\vmd\124_[A]ddiction_モーション\[A]ddiction_モーション\[A]ddiction_Tda式.vmd",
-        "frames": [0, 60, 120],
-    },
-    {
-        "name": "aria_addiction",
-        "pmx": r"F:\MMD\pmx\aria\aria.pmx",
-        "vmd": r"F:\MMD\vmd\124_[A]ddiction_モーション\[A]ddiction_モーション\[A]ddiction_Tda式.vmd",
-        "frames": [0, 60, 120],
+        "name": "mmt_short",
+        "pmx": "tests/data/mmt_test_model.pmx",
+        "vmd": "tests/data/mmt_test_model_test_motion.vmd",
+        "frames": [0, 30, 60],
     },
 ]
 

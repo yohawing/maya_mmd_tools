@@ -21,7 +21,7 @@ ATTR_MMD_BONE_NAME = "mmd_bone_name"
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pmx", default="tests/data/mmt_test_model.pmx")
-    parser.add_argument("--vmd", default="build/local_assets/addiction_tda.vmd")
+    parser.add_argument("--vmd", default="tests/data/mmt_test_model_test_motion.vmd")
     parser.add_argument("--out", default="build/reports/bake_rig_skinning_compare.json")
     parser.add_argument("--frame", action="append", type=int, default=[0])
     return parser.parse_args()

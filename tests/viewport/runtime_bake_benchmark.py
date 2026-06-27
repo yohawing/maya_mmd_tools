@@ -28,42 +28,6 @@ BENCH_CASES = {
         "pmx": "tests/data/mmt_test_model.pmx",
         "vmd": "tests/data/mmt_test_model_test_motion.vmd",
     },
-    "alicia_weekender": {
-        "pmx": r"F:\MMD\pmx\Alicia\Alicia\MMD\Alicia_solid.pmx",
-        "vmd": r"F:\MMD\vmd\110_weekender_girl\weekender_girl\wg_motion.vmd",
-    },
-    "aria_weekender": {
-        "pmx": r"F:\MMD\pmx\aria\aria.pmx",
-        "vmd": r"F:\MMD\vmd\110_weekender_girl\weekender_girl\wg_motion.vmd",
-    },
-    "lumine_weekender": {
-        "pmx": r"F:\MMD\pmx\【女主角_荧】_by_原神\Lumine.pmx",
-        "vmd": r"F:\MMD\vmd\110_weekender_girl\weekender_girl\wg_motion.vmd",
-    },
-    "alicia_rabbithole": {
-        "pmx": r"F:\MMD\pmx\Alicia\Alicia\MMD\Alicia_solid.pmx",
-        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
-    },
-    "aria_rabbithole": {
-        "pmx": r"F:\MMD\pmx\aria\aria.pmx",
-        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
-    },
-    "lumine_rabbithole": {
-        "pmx": r"F:\MMD\pmx\【女主角_荧】_by_原神\Lumine.pmx",
-        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
-    },
-    "eunice_rabbithole": {
-        "pmx": r"F:\MMD\pmx\Eunice231103WB\Eunice15WB.pmx",
-        "vmd": r"F:\MMD\vmd\ラビットホール\ラビットホール.vmd",
-    },
-    "alicia_addiction": {
-        "pmx": r"F:\MMD\pmx\Alicia\Alicia\MMD\Alicia_solid.pmx",
-        "vmd": r"F:\MMD\vmd\124_[A]ddiction_モーション\[A]ddiction_モーション\[A]ddiction_Tda式.vmd",
-    },
-    "aria_addiction": {
-        "pmx": r"F:\MMD\pmx\aria\aria.pmx",
-        "vmd": r"F:\MMD\vmd\124_[A]ddiction_モーション\[A]ddiction_モーション\[A]ddiction_Tda式.vmd",
-    },
 }
 
 

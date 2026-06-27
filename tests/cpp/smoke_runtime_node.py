@@ -20,7 +20,7 @@ APPEND_NODE_TYPE = "mmdAppendNode"
 CCDIK_NODE_TYPE = "mmdCcdIkNode"
 FAST_LOAD_MODEL = ROOT / "tests" / "data" / "mmt_test_model.pmx"
 FAST_IMPORT_SKIN_MODEL = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
-FAST_LOAD_MORPH_MODEL = ROOT / "tests" / "data" / "Lumine" / "Lumine.pmx"
+FAST_LOAD_MORPH_MODEL = ROOT / "tests" / "data" / "test_morph_model.pmx"
 TRACK4_VMD_MOTION = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube_motion.vmd"
 
 

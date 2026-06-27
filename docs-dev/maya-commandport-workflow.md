@@ -105,7 +105,7 @@ from mmd_tools.io.mmd_importer import import_mmd_file
 cmds.file(new=True, force=True)
 settings.set("import.model.create_mmd_shaders", True)
 settings.set("import.model.mmd_shader_backend", "dx11")
-root = import_mmd_file(r"F:\Develop\maya_mmd_tools\tests\data\Lumine\Lumine.pmx")
+root = import_mmd_file(r"F:\Develop\maya_mmd_tools\tests\data\mmt_test_model.pmx")
 ```
 
 standard fallback で比較したい場合は以下にします。
