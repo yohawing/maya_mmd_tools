@@ -106,7 +106,7 @@ Maya 側リグと runtime bake の二重評価を避けます。
 - Phase 2（ライブノード）の C++ スケルトンと Python 連携は実装済みで、基本的な評価フローが通る
 - Codex review で指摘された主要バグ（行列扱い、フレーム範囲計算、CMake パス、テスト依存）はすべて修正済み
 - ユニットテストは概ねパス（Maya 環境依存の部分を除く）
-- 事前ビルドの mmd_anim_ffi.dll が必要（開発時は `external/mmd-anim/target/release/`、配布時は `native/win64` などに配置）
+- 事前ビルドの mmd_runtime_ffi.dll が必要（開発時は `external/mmd-anim/target/release/`、配布時は `native/win64` などに配置）
 - `external/mmd-anim` は submodule なので、DLL を得るには `cargo build -p mmd-anim-ffi --release` が必要
 
 ## 残課題と次のステップ

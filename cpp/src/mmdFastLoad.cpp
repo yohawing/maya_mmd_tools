@@ -3,7 +3,7 @@
  *
  * Implementation of the mmdFastLoad command.
  *
- * Reads a PMX file and builds Maya mesh(es) using the mmd-anim-ffi v0.1.5
+ * Reads a PMX file and builds Maya mesh(es) using the mmd-anim-ffi
  * typed-buffer ABI:
  *   - Geometry  : mmd_runtime_parse_pmx_positions/uvs/indices_buffer
  *   - Materials : split via mmd_runtime_pmx_material_split_* (one mesh / material)

@@ -1,7 +1,7 @@
 # mmd-anim Runtime Native Components
 
 このディレクトリは **mmd-anim** (https://github.com/yohawing/mmd-anim) が提供する
-C ABI 共有ライブラリ (`mmd_anim_ffi`) を配置するための場所です。
+C ABI 共有ライブラリ (`mmd_runtime_ffi`) を配置するための場所です。
 
 ## 目的
 
@@ -17,11 +17,11 @@ C ABI 共有ライブラリ (`mmd_anim_ffi`) を配置するための場所で�
 mmd_tools/native/
 ├── README.md               # このファイル
 ├── win64/
-│   └── mmd_anim_ffi.dll    # ← ここに Windows 用事前ビルドを置く (必須)
+│   └── mmd_runtime_ffi.dll # ← ここに Windows 用事前ビルドを置く (必須)
 ├── macos/
-│   └── libmmd_anim_ffi.dylib (または mmd_anim_ffi.dylib)
+│   └── libmmd_runtime_ffi.dylib (または mmd_runtime_ffi.dylib)
 └── linux/
-    └── libmmd_anim_ffi.so
+    └── libmmd_runtime_ffi.so
 ```
 
 Python ラッパー (`mmd_tools/core/native/mmd_anim_runtime.py`) は上記パスを優先的に検索します。
@@ -30,7 +30,7 @@ Python ラッパー (`mmd_tools/core/native/mmd_anim_runtime.py`) は上記パ�
 ## 事前ビルドバイナリの入手方法 (ユーザーは Rust 不要)
 
 ### 推奨 (将来のリリース時)
-- 公式リリース ZIP に `mmd_anim_ffi.dll` が同梱される予定です。
+- 公式リリース ZIP に `mmd_runtime_ffi.dll` が同梱される予定です。
 - インストール後、 `mmd_tools/native/win64/` 以下に DLL が存在していれば自動で利用されます。
 
 ### 開発者 / メンテナが自分でビルドする場合
@@ -45,13 +45,13 @@ Python ラッパー (`mmd_tools/core/native/mmd_anim_runtime.py`) は上記パ�
    cargo build -p mmd-anim-ffi --release
 
    # 成果物例
-   # target/release/mmd_anim_ffi.dll
+   # target/release/mmd_runtime_ffi.dll
    ```
 
-4. 生成された `mmd_anim_ffi.dll` を `maya_mmd_tools/mmd_tools/native/win64/` にコピー。
+4. 生成された `mmd_runtime_ffi.dll` を `maya_mmd_tools/mmd_tools/native/win64/` にコピー。
 
    ```powershell
-   copy target\release\mmd_anim_ffi.dll ..\..\mmd_tools\native\win64\
+   copy target\release\mmd_runtime_ffi.dll ..\..\mmd_tools\native\win64\
    ```
 
 macOS / Linux も同様 (`cargo build -p mmd-anim-ffi --release`)。

@@ -53,7 +53,7 @@ CHANGELOG.md に `[X.Y.Z]` セクションを追加。
 
 ## ステップ 3: C++ ビルド (ローカル)
 
-### 3a. Rust FFI ライブラリ (`mmd_anim_ffi`)
+### 3a. Rust FFI ライブラリ (`mmd_runtime_ffi`)
 
 各プラットフォームで `cargo build` を実行し、成果物を `mmd_tools/native/` にコピー。
 
@@ -63,7 +63,7 @@ CHANGELOG.md に `[X.Y.Z]` セクションを追加。
 cd external/mmd-anim
 cargo build -p mmd-anim-ffi --release
 
-copy target\release\mmd_anim_ffi.dll ..\..\mmd_tools\native\win64\
+copy target\release\mmd_runtime_ffi.dll ..\..\mmd_tools\native\win64\
 ```
 
 #### macOS (arm64 / x86_64)
@@ -72,7 +72,7 @@ copy target\release\mmd_anim_ffi.dll ..\..\mmd_tools\native\win64\
 cd external/mmd-anim
 cargo build -p mmd-anim-ffi --release
 
-cp target/release/libmmd_anim_ffi.dylib ../../mmd_tools/native/macos/
+cp target/release/libmmd_runtime_ffi.dylib ../../mmd_tools/native/macos/
 ```
 
 #### Linux (x86_64) — 必要な場合のみ
@@ -81,7 +81,7 @@ cp target/release/libmmd_anim_ffi.dylib ../../mmd_tools/native/macos/
 cd external/mmd-anim
 cargo build -p mmd-anim-ffi --release
 
-cp target/release/libmmd_anim_ffi.so ../../mmd_tools/native/linux/
+cp target/release/libmmd_runtime_ffi.so ../../mmd_tools/native/linux/
 ```
 
 ### 3b. Maya C++ プラグイン (`mmd_tools_cpp`)
@@ -102,7 +102,7 @@ cmake -S cpp/src -B build/cpp/maya${MAYA_VER} `
 cmake --build build/cpp/maya${MAYA_VER} --config Release
 ```
 
-成果物: `plug-ins/{MAYA_VER}/Release/mmd_tools_cpp.mll` + `mmd_anim_ffi.dll`
+成果物: `plug-ins/{MAYA_VER}/Release/mmd_tools_cpp.mll` + `mmd_runtime_ffi.dll`
 
 #### macOS — Maya 2024 / 2025 / 2026 / 2027
 
@@ -123,8 +123,8 @@ cmake --build build/cpp/maya${MAYA_VER} --config Release
 リリース ZIP に含めるべきファイル一覧:
 
 ```
-mmd_tools/native/win64/mmd_anim_ffi.dll
-mmd_tools/native/macos/libmmd_anim_ffi.dylib
+mmd_tools/native/win64/mmd_runtime_ffi.dll
+mmd_tools/native/macos/libmmd_runtime_ffi.dylib
 
 plug-ins/2024/Release/mmd_tools_cpp.mll   (Windows)
 plug-ins/2024/Release/mmd_tools_cpp.bundle (macOS)
@@ -209,7 +209,7 @@ git push origin develop
 
 | 成果物 | ビルドツール | Windows 出力 | macOS 出力 |
 |---|---|---|---|
-| `mmd_anim_ffi` | `cargo build -p mmd-anim-ffi --release` | `mmd_anim_ffi.dll` | `libmmd_anim_ffi.dylib` |
+| `mmd_runtime_ffi` | `cargo build -p mmd-anim-ffi --release` | `mmd_runtime_ffi.dll` | `libmmd_runtime_ffi.dylib` |
 | `mmd_tools_cpp` | CMake + MSVC / Xcode | `mmd_tools_cpp.mll` | `mmd_tools_cpp.bundle` |
 
 | Maya バージョン | ビルドターゲット | 備考 |

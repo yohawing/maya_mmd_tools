@@ -21,7 +21,7 @@
 
 `CMakeLists.txt` の先頭コメントを参照。Maya 2024/2025/2026 対応を想定。
 
-事前ビルドの `mmd_anim_ffi.dll` は `mmd_tools/native/win64/` などに置く。
+事前ビルドの `mmd_runtime_ffi.dll` は `mmd_tools/native/win64/` などに置く。
 
 ## 次のステップ (Phase 2 残り)
 

@@ -3,7 +3,7 @@
  *
  * MPxCommand: mmdFastLoad
  *
- * Fast PMX mesh loading using the mmd-anim-ffi v0.1.5 typed-buffer ABI
+ * Fast PMX mesh loading using the mmd-anim-ffi typed-buffer ABI
  * (mmd_runtime_parse_pmx_* / mmd_runtime_pmx_material_split_*).
  *
  * Flags:

@@ -34,7 +34,7 @@ mmd_tools Python レイヤー
             └── mmd_anim_runtime.py          ← ctypes ラッパー (Phase 0 で実装)
                     │
                     ▼  (オプショナル)
-            mmd_anim_ffi.dll / .dylib        ← mmd-anim-ffi (事前ビルド同梱)
+            mmd_runtime_ffi.dll / .dylib     ← mmd-anim-ffi (事前ビルド同梱)
                     │
                     ▼
             Rust mmd-anim-runtime コア (評価エンジン)
@@ -57,7 +57,7 @@ mmd_tools Python レイヤー
 
 3. **事前ビルド優先**
    - 開発者・ユーザーに cargo / Rust ツールチェーンを要求しない。
-   - リリース時には `mmd_tools/native/win64/mmd_anim_ffi.dll` などを同梱。
+   - リリース時には `mmd_tools/native/win64/mmd_runtime_ffi.dll` などを同梱。
 
 4. **C++ との分離**
    - 最初は Python + ctypes で PoC とベイクを実現。
@@ -93,7 +93,7 @@ python -c "from mmd_tools.core.native import is_mmd_runtime_available; print(is_
 
 ### ネイティブライブラリを自分で用意する場合
 `mmd-anim` は `external/mmd-anim` に Git submodule として配置します。
-submodule はソースを取得するだけなので、`git submodule update` だけでは `mmd_anim_ffi.dll` は生成されません。
+submodule はソースを取得するだけなので、`git submodule update` だけでは `mmd_runtime_ffi.dll` は生成されません。
 
 開発時は submodule 内で `mmd-anim-ffi` をビルドし、Python wrapper が `external/mmd-anim/target/release/` の成果物を直接ロードする運用を基本とします。
 配布時だけ、生成済み DLL を `mmd_tools/native/win64/` にコピーして同梱します。
@@ -115,11 +115,11 @@ Python wrapper (`mmd_tools/core/native/mmd_anim_runtime.py`) の検索優先順�
 - `external/mmd-anim/target/release/` の開発用ビルド成果物
 - カレントディレクトリ、`plug-ins`
 
-このため、開発中は `external/mmd-anim/target/release/mmd_anim_ffi.dll` が存在すればコピーなしでロードできます。
+このため、開発中は `external/mmd-anim/target/release/mmd_runtime_ffi.dll` が存在すればコピーなしでロードできます。
 リリースパッケージではユーザーに Rust を要求しないため、次のように native ディレクトリへコピーしてから配布します。
 
 ```powershell
-copy external\mmd-anim\target\release\mmd_anim_ffi.dll mmd_tools\native\win64\
+copy external\mmd-anim\target\release\mmd_runtime_ffi.dll mmd_tools\native\win64\
 ```
 
 ロード確認は Maya 2024 の `mayapy` で行います。
@@ -132,7 +132,7 @@ copy external\mmd-anim\target\release\mmd_anim_ffi.dll mmd_tools\native\win64\
 
 ```text
 True
-F:\Develop\maya_mmd_tools\external\mmd-anim\target\release\mmd_anim_ffi.dll
+F:\Develop\maya_mmd_tools\external\mmd-anim\target\release\mmd_runtime_ffi.dll
 1
 ```
 
@@ -143,7 +143,7 @@ C++ ライブ評価ノードは Python wrapper と同じ検索パスを必ずし
 
 ### C++ プラグインをビルドする場合 (Phase 2 以降)
 - `cpp/src/CMakeLists.txt` を用いて Maya バージョン別の .mll を生成。
-- mmd-anim-ffi.dll とリンク (または動的ロード)。
+- mmd_runtime_ffi.dll とリンク (または動的ロード)。
 
 ## テスト戦略
 

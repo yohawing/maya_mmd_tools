@@ -1,4 +1,4 @@
-mmd_anim_ffi.dll をこのディレクトリに配置してください。
+mmd_runtime_ffi.dll をこのディレクトリに配置してください。
 
 ビルド手順は親ディレクトリの README.md を参照。
 

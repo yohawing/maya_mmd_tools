@@ -187,5 +187,5 @@ uvx nox --list
   refactored to lazy-import maya, the `ci_unit` probe will automatically
   pick them up without any noxfile change.
 - The `tests/unit/test_mmd_anim_runtime.py` runtime path is conditionally
-  enabled when `mmd_anim_ffi.dll` is present; CI without the native lib
+  enabled when `mmd_runtime_ffi.dll` is present; CI without the native lib
   still passes (tests degrade gracefully).
