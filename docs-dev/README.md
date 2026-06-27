@@ -2,7 +2,7 @@
 
 このディレクトリには、Maya MMD Toolsの開発者向けドキュメントを置いています。
 
-現在は `0.1.0` リリースに向けて構成を絞り込み、設計、ファイル仕様、テスト、リリース作業に必要な文書だけを残しています。
+現在は設計、ファイル仕様、テスト、実機検証に必要な文書を中心に置いています。リリース手順とバージョン方針はルートの [RELEASE.md](../RELEASE.md) に集約しています。
 
 ## ドキュメント構成
 
@@ -24,11 +24,6 @@
 - [testing-overview.md](testing-overview.md) - テスト戦略、実行方法、Maya環境でのテスト構成
 - [testing-mock.md](testing-mock.md) - PMD/PMX/VMDモックとテストデータ設計
 - [maya-commandport-workflow.md](maya-commandport-workflow.md) - Maya GUI / DX11 検証用の commandPort 接続手順
-
-### リリース
-
-- [release-process.md](release-process.md) - `0.1.0` リリースチェックリストと手順
-- [release-versioning.md](release-versioning.md) - `0.x` 系の単純なバージョニング方針
 
 ## 開発者向けクイックスタート
 
@@ -63,12 +58,13 @@ python tests/run_gui_tests.py
 ## ドキュメント更新方針
 
 - 実装範囲が変わった場合は、関連する `docs-dev/` 文書も更新します。
-- ユーザー向けの手順は [../docs/README.md](../docs/README.md) に集約します。
-- リリース方針やバージョン方針を変えた場合は、[release-process.md](release-process.md) と [release-versioning.md](release-versioning.md) を同時に確認します。
+- ユーザー向けの手順は [../README.md](../README.md) と [../docs/README_ja.md](../docs/README_ja.md) に集約します。
+- リリース方針やバージョン方針を変えた場合は、[../RELEASE.md](../RELEASE.md) を更新します。
 - ドキュメントの見出しには番号を付けません。セクションを入れ替えやすくするためです。
 
 ## 関連リンク
 
 - [日本語ドキュメント](../docs/README_ja.md)
 - [プロジェクトREADME](../README.md)
+- [リリース手順](../RELEASE.md)
 - [開発エージェント向け指示](../AGENTS.md)
