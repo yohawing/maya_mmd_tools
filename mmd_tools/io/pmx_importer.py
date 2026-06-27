@@ -16,6 +16,7 @@ from ..converters.material_morph_runtime import build_material_morph_graph
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core.logger import get_logger
 from ..core.utils import create_bone_joint_mapping
+from .import_scale import apply_import_scale
 from ..core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
@@ -191,12 +192,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                     logger.debug("Failed to create MMD light controller", exc_info=True)
 
             # スケールを適用
-            if root_group and scale != 1.0:
-                logger.info("Applying scale: %f", scale)
-                cmds.setAttr(root_group + ".scaleX", scale)
-                cmds.setAttr(root_group + ".scaleY", scale)
-                cmds.setAttr(root_group + ".scaleZ", scale)
-                cmds.makeIdentity(root_group, apply=True, scale=True)
+            apply_import_scale(root_group, scale, logger)
 
             cmds.select(root_group)
             try:

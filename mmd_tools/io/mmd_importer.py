@@ -7,6 +7,7 @@ from pathlib import Path
 
 from mmd_tools.core import settings
 from mmd_tools.core.mmd_parser import parse_mmd_file
+from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io import pmd_importer, pmx_importer, vmd_importer
 from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
@@ -68,6 +69,11 @@ def import_mmd_file(filepath, scale=None, options=None):
     if options is None:
         options = {}
     suffix = Path(filepath).suffix.lower()
+    import_scale = (
+        scale
+        if scale is not None
+        else options.get("scale", settings.get("import.general.scale_factor", 1.0))
+    )
 
     # --- C++ fast import path (opt-in, PMX only) -------------------------
     if suffix == ".pmx":
@@ -81,11 +87,6 @@ def import_mmd_file(filepath, scale=None, options=None):
                 settings.get("import.native.cpp_fast_load_mesh_only", True),
             )
             base_name = options.get("custom_namespace") or Path(filepath).stem
-            import_scale = (
-                scale
-                if scale is not None
-                else options.get("scale", settings.get("import.general.scale_factor", 1.0))
-            )
             include_morphs = options.get(
                 "import_morphs",
                 settings.get("import.morph.import_morphs", True),
@@ -116,7 +117,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                 return pmx_importer.import_pmx_file(
                     parsed_data,
                     filepath,
-                    settings.get("import.general.scale_factor", 1.0),
+                    import_scale,
                     options,
                 )
 
@@ -125,7 +126,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                 return pmd_importer.import_pmd_file(
                     parsed_data,
                     filepath,
-                    settings.get("import.general.scale_factor", 1.0),
+                    import_scale,
                     options,
                 )
 
@@ -137,6 +138,14 @@ def import_mmd_file(filepath, scale=None, options=None):
             return None
 
     except Exception as e:
+        if suffix == ".vmd" and options.get("bake_mode", False):
+            logger.warning(
+                "VMD parser failed in bake mode; attempting runtime bake from raw bytes: %s",
+                e,
+            )
+            vmd_data = VmdData()
+            vmd_data.source_file = str(Path(filepath).resolve())
+            return vmd_importer.import_vmd_file(vmd_data, filepath, options)
         logger.error(f"Failed to import {filepath}: {e}")
         import traceback
 
