@@ -19,37 +19,29 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Feature | Status | Notes |
 |---|---|---|
 | Mesh / vertices / normals | ✅ | |
-| Materials & textures | ✅ | Auto-applied (texture search path supported) |
-| Maya name resolution | 🔶 | Partial; texture resolution can fail in some cases |
+| Materials & textures | 🔶 | MMD toon shading through the DX11 shader. Semi-transparent material fidelity is limited by draw-order constraints. Japanese/Chinese texture paths are copied/renamed to safe fallback paths when needed. |
+| Maya name resolution | ✅ | Names are converted to ASCII-safe Maya names |
 | Primary UV | ✅ | |
 | Additional UV (UV1–4) | ⛔ | Not supported |
-| Edge / outline flags | ✅ | Shader outline rendering is opt-in from the Material tab |
-| Bones & skeleton | ✅ | |
-| IK | ⛔ | Not supported |
-| Append (grant / 付与) bones | ⛔ | Not supported |
-| Bone local axis | ⛔ | Not supported |
-| Display frames (表示枠) | ⛔ | Not supported |
-| Vertex morph | ✅ | blendShape targets |
-| Bone morph | 🔶 | Driven by motion bake; limited interactive control |
-| Material morph | 🔶 | Driven by motion bake; limited interactive control |
-| Group morph | ⛔ | |
-| UV morph (incl. additional UV) | ⛔ | |
-| Flip morph | ⛔ | |
-| Impulse morph | ⛔ | |
+| Edge / outline flags | 🔶 | Can be enabled as an option, but draw-order limitations remain |
+| Bones & skeleton | 🔶 | Some complex models still have known issues |
+| Rig (IK / grant / local axis) | ✅ | Supported |
+| Display frames (表示枠) | ⛔ | Not supported yet; planned as control rig or AnimPicker data |
+| Morphs (vertex / bone / material / group / UV) | 🔶 | Partially supported |
 | Rigid bodies & joints | ⛔ | Not supported |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
-| HumanIK Rig | ⛔ | Not supported (want to support!) |
+| HumanIK | ⛔ | Not supported |
 | Export | ⛔ | Not supported |
 
 ### Animation (VMD)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Bone animation | 🔶 | High-precision bake via [mmd-anim](https://github.com/yohawing/mmd-anim) only (Bézier interpolation, IK, and grant resolved) |
-| Morph animation | 🔶 | Vertex morphs only |
+| Bone animation | 🔶 | Normally plays through the MMD rig. Bake mode uses high-precision [mmd-anim](https://github.com/yohawing/mmd-anim) evaluation. |
+| Morph animation | ✅ | Vertex and bone morphs are supported. Material morphs are partially supported. |
 | Camera animation | ✅ | Creates/keys `mmd_camera` |
 | Light animation | ✅ | Drives the `mmd_light` controller |
-| IK on/off frames | ⛔ | Not supported |
+| IK on/off frames | 🔶 | Supported for import/bake. Runtime bake applies the state to the baked pose; rig mode keys `mmdCcdIk.enabled`. |
 | Export | ⛔ | Not supported |
 
 ### Viewport & Shading
@@ -87,40 +79,35 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 ### Download
 
 1. Download the latest release from the [GitHub Releases page](https://github.com/yohawing/maya_mmd_tools/releases).
-2. Extract the ZIP file anywhere you like.
+2. Extract the ZIP file to a temporary folder.
 
-### Place the `.mod` File
+### Drag and Drop Install
 
-You can place the Maya MMD Tools folder anywhere. Only `maya_mmd_tools.mod` needs to be placed in Maya's `modules` folder.
+1. Start Maya.
+2. Drag `drag_drop_install.py` from the extracted folder into the Maya viewport.
+3. Confirm the install dialog.
+4. Restart Maya.
 
-On Windows, open:
+The installer copies all Maya MMD Tools files into Maya's user modules folder, then writes a `maya_mmd_tools.mod` file next to that copy. The module file contains entries for the Maya versions bundled in the ZIP, so installing from one Maya version also prepares the same copy for the other bundled versions.
+After confirming that Maya starts with the plugin, you can delete the temporary extracted folder.
 
-```text
-C:\Users\<User Name>\Documents\maya\modules
-```
-
-On macOS, open:
-
-```text
-~/Documents/maya/modules
-```
-
-Create the folder if it does not exist.
-
-Next, open `maya_mmd_tools.mod` from the extracted folder in a text editor, and change the end of the first line to the folder path of Maya MMD Tools. Replace the `2026` part with the Maya version you use.
+On Windows, the installed copy is placed under:
 
 ```text
-+ MAYAVERSION:2026 maya_mmd_tools 0.1.0 <extracted folder path>
-scripts: .
-plug-ins: plug-ins
-icons: resources/icons
-MMD_TOOLS_ROOT:= .
-PYTHONPATH +:= .
+C:\Users\<User Name>\Documents\maya\modules\maya_mmd_tools
 ```
 
-Copy the edited `maya_mmd_tools.mod` into Maya's `modules` folder.
+On macOS, the installed copy is placed under:
 
-You do not need to copy `userSetup.py` separately into Maya's scripts folder. The `.mod` file's `scripts: .` setting points Maya to the `userSetup.py` inside the Maya MMD Tools folder.
+```text
+~/Documents/maya/modules/maya_mmd_tools
+```
+
+The generated module file is written next to that folder:
+
+```text
+C:\Users\<User Name>\Documents\maya\modules\maya_mmd_tools.mod
+```
 
 ### Enable the Plugin
 
@@ -165,6 +152,15 @@ If textures fail to load due to multi-byte characters in the path, enable the au
 2. (Optional) In animation import settings, set VMD FPS (30 or 60; default 30). This changes the Maya scene time unit before import.
 3. Click `Import Animation`.
 4. The animation is applied to the matching model in the scene.
+
+### Drag and Drop Import
+
+You can also import MMD files by dragging them into the Maya viewport.
+
+- Drop a PMX or PMD file to import a model.
+- Drop a PMX/PMD file together with a VMD file to import the model first and then apply the motion.
+- Drop a VMD file after a model is already loaded to apply the motion to the selected or existing MMD model.
+- Dropping a VMD file before loading a model shows a warning and does not import the motion.
 
 ## Viewport Setup
 
