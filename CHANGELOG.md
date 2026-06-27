@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-27
+
+### Added
+- Native MMD runtime/import pipeline based on `mmd-anim` v0.1.7, including native PMX parsing, runtime FFI loading, and refreshed C++ plug-ins for Maya 2024-2027.
+- Rig mode runtime path with JO-aware space handling, native rig construction, append/IK DG nodes, and Bake/Rig parity test coverage.
+- VMD runtime/bake improvements including batched frame evaluation, Bezier tangent application, IK on/off frame handling, morph key batching, and camera/light fixtures.
+- Runtime morph infrastructure for vertex, bone, and material morphs, including DG graph builders and oracle-backed regression fixtures.
+- Drag-and-drop installer and import workflow, including Maya `modules` installation, generated `.mod` files for bundled Maya versions, and VMD-only drop warnings before a model is loaded.
+- File menu import routing for supported MMD import entry points.
+- GoldenOracle/numeric manifests, Nox verification sessions, and tracked TestModel smoke fixtures.
+
+### Changed
+- Release ZIP documentation is limited to the public English README and Japanese README; local release/TODO/developer docs are ignored and not packaged.
+- Native runtime artifacts now use `mmd_runtime_ffi.dll` on Windows while keeping compatibility with legacy `mmd_anim_ffi` library names where needed.
+- C++ fast-import smoke defaults no longer depend on local Lumine/Addiction assets.
+- Import UI and README guidance now favor drag-and-drop install/import and normal UI import paths.
+- Windows Release and macOS universal plug-in artifacts were rebuilt for Maya 2024, 2025, 2026, and 2027.
+
+### Fixed
+- Stabilized MMD import entry points and model-root resolution for VMD import.
+- Fixed material morph runtime shader attribute detection and model-root filtering.
+- Fixed vertex morph Z-flip/template reuse behavior and reduced stale morph node issues.
+- Reduced quaternion warning spam and toon texture enum noise.
+- Improved PMX import performance through native parsing, flat skin weights, batched joint attributes, morph conversion optimizations, and per-vertex normal handling.
+
+### Removed
+- Removed tracked local-only developer documents (`docs-dev/`, `AGENTS.md`) and stale internal README files from the public repository surface.
+- Removed local-asset hardcoded defaults from smoke/viewport scripts.
+- Removed stale skipped tests and dead legacy manifest IK/grant constraint methods.
+
+### Known Issues
+- The opt-in C++ fast-import `mesh_only=False` path still does not create joints/skinCluster in `maya_smoke`; full joint/skinCluster creation is deferred to a future C++ fast path task.
+- Rig mode remains experimental for complex Bake/Rig mesh parity cases.
+
 ## [0.2.0] - 2026-06-21
 
 ### Added

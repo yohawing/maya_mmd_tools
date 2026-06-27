@@ -6,7 +6,7 @@ import sys
 
 # パッケージのメタデータ
 __name__ = "mmd_tools"
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "MMD Tools Team"
 
 # コアモジュールを直接アクセス可能にする
