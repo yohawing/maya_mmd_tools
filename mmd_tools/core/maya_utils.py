@@ -774,6 +774,26 @@ def _set_string_plug(plug, object_name, attr_name, value):
     cmds.setAttr(f"{object_name}.{attr_name}", text, type="string")
 
 
+_FBX_UTF8_AS_CP932_MARKERS = ("繧", "繝", "縺", "荳", "譁", "蜷", "髮", "驥")
+
+
+def repair_fbx_mojibake_string(value):
+    """Repair UTF-8 text imported by FBX as CP932 mojibake when detectable."""
+    if not isinstance(value, str) or not value:
+        return value
+    if not any(marker in value for marker in _FBX_UTF8_AS_CP932_MARKERS):
+        return value
+    try:
+        repaired = value.encode("cp932").decode("utf-8")
+    except UnicodeError:
+        return value
+    if repaired == value:
+        return value
+    if any("\u3040" <= ch <= "\u30ff" or "\u4e00" <= ch <= "\u9fff" for ch in repaired):
+        return repaired
+    return value
+
+
 def set_attribute(object_name, attr_name, attr_value, attr_type):
     """
     OpenMaya API 2.0を使用してアトリビュート値を設定します。
@@ -926,7 +946,10 @@ def get_attribute(object_name, attr_name):
             attr_type = attr_fn.attrType()
 
             if attr_type == om.MFnData.kString:
-                return plug.asString()
+                value = plug.asString()
+                if attr_name.startswith("mmd_"):
+                    return repair_fbx_mojibake_string(value)
+                return value
 
         # その他の場合、型を推測して取得
         # まずdoubleとして取得を試みる

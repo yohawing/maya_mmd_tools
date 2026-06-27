@@ -215,6 +215,24 @@ class TestMayaUtils(MayaTestBase):
             else:
                 self.assertEqual(attr_value, value)
 
+    def test_repair_fbx_mojibake_string_restores_utf8_as_cp932_text(self):
+        """FBX round-trip で UTF-8 が CP932 として読まれた MMD 名を復元する。"""
+        mojibake = "センター".encode("utf-8").decode("cp932")
+        self.assertEqual(maya_utils.repair_fbx_mojibake_string(mojibake), "センター")
+        self.assertEqual(maya_utils.repair_fbx_mojibake_string("Test Model EN"), "Test Model EN")
+
+    def test_get_attribute_repairs_mmd_string_mojibake_only_for_mmd_attrs(self):
+        """mmd_* string attr だけ FBX mojibake 補正を適用する。"""
+        node = cmds.createNode("transform", name="test_fbx_mojibake_attr")
+        mojibake = "センター".encode("utf-8").decode("cp932")
+        cmds.addAttr(node, longName="mmd_bone_name", dataType="string")
+        cmds.addAttr(node, longName="plain_name", dataType="string")
+        cmds.setAttr(f"{node}.mmd_bone_name", mojibake, type="string")
+        cmds.setAttr(f"{node}.plain_name", mojibake, type="string")
+
+        self.assertEqual(maya_utils.get_attribute(node, "mmd_bone_name"), "センター")
+        self.assertEqual(maya_utils.get_attribute(node, "plain_name"), mojibake)
+
     def test_get_custom_attributes(self):
         """カスタムアトリビュートを取得できるか"""
         mesh_name = "test_mesh_for_get_custom_attr"

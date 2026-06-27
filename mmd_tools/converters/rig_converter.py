@@ -10,6 +10,29 @@ from mmd_tools.core.native.mmd_anim_runtime import is_rig_primitive_available
 from mmd_tools.core.settings import settings
 
 
+def _node_type_available(node_type: str) -> bool:
+    """Return True when Maya can create the requested DG node type."""
+    try:
+        probe = cmds.createNode(node_type, name=f"{node_type}_availability_probe#")
+        cmds.delete(probe)
+        return True
+    except Exception:
+        return False
+
+
+def _prefer_cpp_rig_nodes() -> bool:
+    """Use C++ rig prototype nodes only when explicitly enabled and loaded."""
+    if not settings.get("import.native.use_cpp_rig_nodes", False):
+        return False
+    try:
+        loaded_plugins = set(cmds.pluginInfo(query=True, listPlugins=True) or [])
+    except Exception:
+        loaded_plugins = set()
+    if "mmd_tools_cpp" not in loaded_plugins:
+        return False
+    return _node_type_available("mmdAppendNode") and _node_type_available("mmdCcdIkNode")
+
+
 class RigConverter:
     """
     Mayaジョイントに対してMMDのリグシステムをセットアップするクラス。
@@ -23,6 +46,13 @@ class RigConverter:
         """
         self.logger = get_logger(__name__)
         self.original_bone_names = {}  # ボーンインデックスから元の日本語名へのマッピング
+        self._use_cpp_rig_nodes = _prefer_cpp_rig_nodes()
+
+    def _append_node_type(self) -> str:
+        return "mmdAppendNode" if self._use_cpp_rig_nodes else "mmdAppend"
+
+    def _ccd_ik_node_type(self) -> str:
+        return "mmdCcdIkNode" if self._use_cpp_rig_nodes else "mmdCcdIk"
 
     def setup_pmx_rig(
         self,
@@ -896,7 +926,7 @@ class RigConverter:
 
             try:
                 node_name = f"{target_joint}_mmdAppend"
-                node = cmds.createNode("mmdAppend", name=node_name)
+                node = cmds.createNode(self._append_node_type(), name=node_name)
 
                 cmds.setAttr(f"{node}.ratio", ratio)
                 cmds.setAttr(f"{node}.affectRotation", affect_rotation)
@@ -996,7 +1026,7 @@ class RigConverter:
                 nodes.append(node)
                 append_nodes_by_target[target_joint] = node
                 self.logger.info(
-                    f"mmdAppend node '{node}': {source_joint} -> {target_joint} (ratio={ratio})"
+                    f"{self._append_node_type()} node '{node}': {source_joint} -> {target_joint} (ratio={ratio})"
                 )
             except Exception as e:
                 self.logger.error(f"Failed to create mmdAppend node '{target_joint}': {e}")
@@ -1149,8 +1179,9 @@ class RigConverter:
 
             try:
                 node_name = f"{controller_joint}_mmdCcdIk"
-                node = cmds.createNode("mmdCcdIk", name=node_name)
+                node = cmds.createNode(self._ccd_ik_node_type(), name=node_name)
                 cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
+                self._attach_ik_controller_shape(controller_joint)
                 if cmds.attributeQuery("enabled", node=node, exists=True):
                     cmds.setAttr(f"{node}.enabled", False)
                 try:
@@ -1252,13 +1283,77 @@ class RigConverter:
 
                 nodes.append(node)
                 self.logger.info(
-                    f"mmdCcdIk node '{node}': controller={controller_joint}, "
+                    f"{self._ccd_ik_node_type()} node '{node}': controller={controller_joint}, "
                     f"{len(links_for_json)} links"
                 )
             except Exception as e:
                 self.logger.error(f"Failed to create mmdCcdIk node '{controller_joint}': {e}")
 
         return nodes
+
+    def _attach_ik_controller_shape(self, controller_joint: str) -> Optional[str]:
+        """Attach a lightweight NURBS control shape to the IK controller joint.
+
+        The controller joint already drives generated ``mmdCcdIk`` goals in Rig
+        mode.  To avoid adding constraints or evaluation cycles, this method only
+        parents a curve shape under that joint transform so the existing joint is
+        easier to select in the viewport.
+        """
+        if not controller_joint or not maya_utils.object_exists(controller_joint):
+            return None
+        if cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
+            return None
+
+        try:
+            radius = 0.6
+            children = cmds.listRelatives(controller_joint, children=True, type="joint") or []
+            if children:
+                child_positions = [
+                    cmds.xform(child, query=True, worldSpace=True, translation=True)
+                    for child in children
+                ]
+                own_pos = cmds.xform(controller_joint, query=True, worldSpace=True, translation=True)
+                distances = [
+                    sum((child_pos[i] - own_pos[i]) ** 2 for i in range(3)) ** 0.5
+                    for child_pos in child_positions
+                ]
+                if distances:
+                    radius = max(0.2, min(2.0, min(distances) * 0.25))
+
+            ctrl_name = f"{controller_joint}_ctrlShape#"
+            curve_transform = cmds.circle(
+                name=f"{controller_joint}_ctrl#",
+                normal=(0.0, 1.0, 0.0),
+                radius=radius,
+                constructionHistory=False,
+            )[0]
+            curve_shape = (cmds.listRelatives(curve_transform, shapes=True, fullPath=True) or [None])[0]
+            if not curve_shape:
+                cmds.delete(curve_transform)
+                return None
+            curve_shape = cmds.rename(curve_shape, ctrl_name)
+            curve_shape_short = curve_shape.rsplit("|", 1)[-1]
+            cmds.parent(curve_shape, controller_joint, shape=True, relative=True)
+            cmds.delete(curve_transform)
+            shapes = cmds.listRelatives(controller_joint, shapes=True, fullPath=True) or []
+            attached = next((shape for shape in shapes if shape.endswith(curve_shape_short)), None)
+            if attached is None and shapes:
+                attached = shapes[-1]
+
+            if attached:
+                try:
+                    cmds.setAttr(f"{attached}.overrideEnabled", True)
+                    cmds.setAttr(f"{attached}.overrideColor", 17)  # yellow
+                except Exception:
+                    pass
+
+            if not cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
+                cmds.addAttr(controller_joint, longName="mmd_ik_controller_visual", attributeType="bool")
+            cmds.setAttr(f"{controller_joint}.mmd_ik_controller_visual", True)
+            return attached
+        except Exception as exc:
+            self.logger.debug(f"failed to attach IK controller shape for {controller_joint}: {exc}")
+            return None
 
     def _can_connect_live_ik_goal_world_matrix(self, controller_joint: str, link_joints: List[str]) -> bool:
         """Return True when controller.worldMatrix will not depend on IK output links."""
@@ -1301,4 +1396,3 @@ class RigConverter:
                 sorted_grants.append(g)
 
         return sorted_grants
-

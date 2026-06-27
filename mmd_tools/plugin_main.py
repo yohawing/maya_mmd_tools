@@ -1,3 +1,5 @@
+import os
+
 from maya import cmds
 import maya.api.OpenMaya as om
 from mmd_tools import __version__
@@ -71,7 +73,8 @@ def initializePlugin(mobject):
     try:
         install_mmd_menu()
         install_drag_drop_importer()
-        mmd_shader.initializePlugin(mobject)
+        if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
+            mmd_shader.initializePlugin(mobject)
         mmd_bone_morph_accum_node.register(plugin_fn)
         mmd_material_morph_eval_node.register(plugin_fn)
         mmd_append_node.register(plugin_fn)
@@ -90,7 +93,8 @@ def uninitializePlugin(mobject):
     try:
         uninstall_mmd_menu()
         uninstall_drag_drop_importer()
-        mmd_shader.uninitializePlugin(mobject)
+        if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
+            mmd_shader.uninitializePlugin(mobject)
         mmd_ccd_ik_node.deregister(plugin_fn)
         mmd_append_node.deregister(plugin_fn)
         mmd_material_morph_eval_node.deregister(plugin_fn)

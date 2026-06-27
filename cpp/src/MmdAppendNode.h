@@ -17,6 +17,7 @@
 #include <maya/MPxNode.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnCompoundAttribute.h>
+#include <maya/MFnUnitAttribute.h>
 #include <maya/MTypeId.h>
 
 class MmdAppendNode : public MPxNode {
@@ -65,6 +66,43 @@ public:
     // enableRotate(bool)
     static MObject aEnableRotate;
 
+    // Python mmdAppend name-compatible schema inputs. These are kept alongside
+    // the prototype Phase B attrs until angle-unit and compute parity are ready.
+    static MObject aBaseTranslate;
+    static MObject aBaseTranslateX;
+    static MObject aBaseTranslateY;
+    static MObject aBaseTranslateZ;
+
+    static MObject aBaseRotate;
+    static MObject aBaseRotateX;
+    static MObject aBaseRotateY;
+    static MObject aBaseRotateZ;
+
+    static MObject aSourceTranslate;
+    static MObject aSourceTranslateX;
+    static MObject aSourceTranslateY;
+    static MObject aSourceTranslateZ;
+
+    static MObject aSourceRotate;
+    static MObject aSourceRotateX;
+    static MObject aSourceRotateY;
+    static MObject aSourceRotateZ;
+
+    static MObject aSourceJointOrient;
+    static MObject aSourceJointOrientX;
+    static MObject aSourceJointOrientY;
+    static MObject aSourceJointOrientZ;
+
+    static MObject aTargetJointOrient;
+    static MObject aTargetJointOrientX;
+    static MObject aTargetJointOrientY;
+    static MObject aTargetJointOrientZ;
+
+    static MObject aRatio;
+    static MObject aAffectRotation;
+    static MObject aAffectTranslation;
+    static MObject aLocalAppend;
+
     // --- 出力 ---
     // outputTranslate(double3)
     static MObject aOutputTranslate;
@@ -78,6 +116,16 @@ public:
     static MObject aOutputRotateY;
     static MObject aOutputRotateZ;
 
+    static MObject aAppendTranslate;
+    static MObject aAppendTranslateX;
+    static MObject aAppendTranslateY;
+    static MObject aAppendTranslateZ;
+
+    static MObject aAppendRotate;
+    static MObject aAppendRotateX;
+    static MObject aAppendRotateY;
+    static MObject aAppendRotateZ;
+
 private:
     // double3 compound 作成のヘルパー
     static MObject createDouble3Attribute(
@@ -87,4 +135,24 @@ private:
         MObject& childY,
         MObject& childZ,
         double defaultVal = 0.0);
+
+    static MObject createAngle3Attribute(
+        const MString& longName,
+        const MString& shortName,
+        MObject& childX,
+        MObject& childY,
+        MObject& childZ,
+        double defaultVal = 0.0);
+
+    static void markDouble3Output(
+        MObject& compound,
+        MObject& childX,
+        MObject& childY,
+        MObject& childZ);
+
+    static void markAngle3Output(
+        MObject& compound,
+        MObject& childX,
+        MObject& childY,
+        MObject& childZ);
 };

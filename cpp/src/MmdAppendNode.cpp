@@ -17,6 +17,11 @@
 #include <maya/MDataHandle.h>
 #include <maya/MPlug.h>
 #include <maya/MGlobal.h>
+#include <maya/MAngle.h>
+#include <maya/MEulerRotation.h>
+#include <maya/MQuaternion.h>
+
+#include "mmd_runtime.h"
 
 #include <cmath>
 
@@ -68,6 +73,22 @@ struct Quat {
         );
     }
 
+    Quat inverse() const {
+        double norm = w*w + x*x + y*y + z*z;
+        if (norm <= 1e-12) {
+            return Quat();
+        }
+        return Quat(w / norm, -x / norm, -y / norm, -z / norm);
+    }
+
+    Quat normalized() const {
+        double norm = std::sqrt(w*w + x*x + y*y + z*z);
+        if (norm <= 1e-12) {
+            return Quat();
+        }
+        return Quat(w / norm, x / norm, y / norm, z / norm);
+    }
+
     static Quat slerp(const Quat& from, const Quat& to, double t) {
         double dot = from.w*to.w + from.x*to.x + from.y*to.y + from.z*to.z;
         Quat toAdj = to;
@@ -103,6 +124,80 @@ struct Quat {
     }
 };
 
+bool isNearlyZero(double value) {
+    return std::abs(value) < 1e-12;
+}
+
+bool isVectorNonZero(const double* values) {
+    return !isNearlyZero(values[0]) || !isNearlyZero(values[1]) || !isNearlyZero(values[2]);
+}
+
+void setDouble3Outputs(
+    MDataBlock& data,
+    const MPlug& plug,
+    const MObject& compound,
+    const MObject& childX,
+    const MObject& childY,
+    const MObject& childZ,
+    double outX,
+    double outY,
+    double outZ)
+{
+    MStatus status;
+    if (plug == compound || plug.isCompound()) {
+        MDataHandle outHandle = data.outputValue(compound, &status);
+        outHandle.set(outX, outY, outZ);
+        outHandle.setClean();
+    }
+    if (plug == childX || plug.parent() == compound) {
+        MDataHandle hX = data.outputValue(childX, &status);
+        hX.set(outX);
+        hX.setClean();
+    }
+    if (plug == childY || plug.parent() == compound) {
+        MDataHandle hY = data.outputValue(childY, &status);
+        hY.set(outY);
+        hY.setClean();
+    }
+    if (plug == childZ || plug.parent() == compound) {
+        MDataHandle hZ = data.outputValue(childZ, &status);
+        hZ.set(outZ);
+        hZ.setClean();
+    }
+}
+
+void setAngle3OutputsDegrees(
+    MDataBlock& data,
+    const MPlug& plug,
+    const MObject& compound,
+    const MObject& childX,
+    const MObject& childY,
+    const MObject& childZ,
+    double outXDeg,
+    double outYDeg,
+    double outZDeg)
+{
+    MStatus status;
+    const double outXRad = outXDeg * kPi / 180.0;
+    const double outYRad = outYDeg * kPi / 180.0;
+    const double outZRad = outZDeg * kPi / 180.0;
+    if (plug == childX || plug == compound || plug.isCompound() || plug.parent() == compound) {
+        MDataHandle hX = data.outputValue(childX, &status);
+        hX.setMAngle(MAngle(outXRad, MAngle::kRadians));
+        hX.setClean();
+    }
+    if (plug == childY || plug == compound || plug.isCompound() || plug.parent() == compound) {
+        MDataHandle hY = data.outputValue(childY, &status);
+        hY.setMAngle(MAngle(outYRad, MAngle::kRadians));
+        hY.setClean();
+    }
+    if (plug == childZ || plug == compound || plug.isCompound() || plug.parent() == compound) {
+        MDataHandle hZ = data.outputValue(childZ, &status);
+        hZ.setMAngle(MAngle(outZRad, MAngle::kRadians));
+        hZ.setClean();
+    }
+}
+
 
 const MTypeId MmdAppendNode::id(0x00123457); // 仮 ID (0x00123456 の次)
 
@@ -135,6 +230,42 @@ MObject MmdAppendNode::aGrantRate;
 MObject MmdAppendNode::aEnableTranslate;
 MObject MmdAppendNode::aEnableRotate;
 
+// --- Python-compatible schema inputs ---
+MObject MmdAppendNode::aBaseTranslate;
+MObject MmdAppendNode::aBaseTranslateX;
+MObject MmdAppendNode::aBaseTranslateY;
+MObject MmdAppendNode::aBaseTranslateZ;
+
+MObject MmdAppendNode::aBaseRotate;
+MObject MmdAppendNode::aBaseRotateX;
+MObject MmdAppendNode::aBaseRotateY;
+MObject MmdAppendNode::aBaseRotateZ;
+
+MObject MmdAppendNode::aSourceTranslate;
+MObject MmdAppendNode::aSourceTranslateX;
+MObject MmdAppendNode::aSourceTranslateY;
+MObject MmdAppendNode::aSourceTranslateZ;
+
+MObject MmdAppendNode::aSourceRotate;
+MObject MmdAppendNode::aSourceRotateX;
+MObject MmdAppendNode::aSourceRotateY;
+MObject MmdAppendNode::aSourceRotateZ;
+
+MObject MmdAppendNode::aSourceJointOrient;
+MObject MmdAppendNode::aSourceJointOrientX;
+MObject MmdAppendNode::aSourceJointOrientY;
+MObject MmdAppendNode::aSourceJointOrientZ;
+
+MObject MmdAppendNode::aTargetJointOrient;
+MObject MmdAppendNode::aTargetJointOrientX;
+MObject MmdAppendNode::aTargetJointOrientY;
+MObject MmdAppendNode::aTargetJointOrientZ;
+
+MObject MmdAppendNode::aRatio;
+MObject MmdAppendNode::aAffectRotation;
+MObject MmdAppendNode::aAffectTranslation;
+MObject MmdAppendNode::aLocalAppend;
+
 // --- 出力: outputTranslate ---
 MObject MmdAppendNode::aOutputTranslate;
 MObject MmdAppendNode::aOutputTranslateX;
@@ -146,6 +277,16 @@ MObject MmdAppendNode::aOutputRotate;
 MObject MmdAppendNode::aOutputRotateX;
 MObject MmdAppendNode::aOutputRotateY;
 MObject MmdAppendNode::aOutputRotateZ;
+
+MObject MmdAppendNode::aAppendTranslate;
+MObject MmdAppendNode::aAppendTranslateX;
+MObject MmdAppendNode::aAppendTranslateY;
+MObject MmdAppendNode::aAppendTranslateZ;
+
+MObject MmdAppendNode::aAppendRotate;
+MObject MmdAppendNode::aAppendRotateX;
+MObject MmdAppendNode::aAppendRotateY;
+MObject MmdAppendNode::aAppendRotateZ;
 
 MmdAppendNode::MmdAppendNode() = default;
 MmdAppendNode::~MmdAppendNode() = default;
@@ -194,6 +335,99 @@ MObject MmdAppendNode::createDouble3Attribute(
     cAttr.setReadable(true);
 
     return compound;
+}
+
+MObject MmdAppendNode::createAngle3Attribute(
+    const MString& longName,
+    const MString& shortName,
+    MObject& childX,
+    MObject& childY,
+    MObject& childZ,
+    double defaultVal)
+{
+    MStatus status;
+    MFnUnitAttribute uAttr;
+    MFnCompoundAttribute cAttr;
+
+    childX = uAttr.create(longName + "X", shortName + "x", MFnUnitAttribute::kAngle, defaultVal, &status);
+    uAttr.setStorable(true);
+    uAttr.setKeyable(true);
+    uAttr.setWritable(true);
+    uAttr.setReadable(true);
+
+    childY = uAttr.create(longName + "Y", shortName + "y", MFnUnitAttribute::kAngle, defaultVal, &status);
+    uAttr.setStorable(true);
+    uAttr.setKeyable(true);
+    uAttr.setWritable(true);
+    uAttr.setReadable(true);
+
+    childZ = uAttr.create(longName + "Z", shortName + "z", MFnUnitAttribute::kAngle, defaultVal, &status);
+    uAttr.setStorable(true);
+    uAttr.setKeyable(true);
+    uAttr.setWritable(true);
+    uAttr.setReadable(true);
+
+    MObject compound = cAttr.create(longName, shortName, &status);
+    cAttr.addChild(childX);
+    cAttr.addChild(childY);
+    cAttr.addChild(childZ);
+    cAttr.setStorable(true);
+    cAttr.setKeyable(true);
+    cAttr.setWritable(true);
+    cAttr.setReadable(true);
+
+    return compound;
+}
+
+void MmdAppendNode::markDouble3Output(
+    MObject& compound,
+    MObject& childX,
+    MObject& childY,
+    MObject& childZ)
+{
+    MStatus status;
+    MFnCompoundAttribute cAttr(compound, &status);
+    cAttr.setWritable(false);
+    cAttr.setReadable(true);
+    cAttr.setStorable(false);
+    cAttr.setKeyable(false);
+    MFnNumericAttribute nChild;
+    nChild.setObject(childX);
+    nChild.setWritable(false);
+    nChild.setKeyable(false);
+    nChild.setObject(childY);
+    nChild.setWritable(false);
+    nChild.setKeyable(false);
+    nChild.setObject(childZ);
+    nChild.setWritable(false);
+    nChild.setKeyable(false);
+}
+
+void MmdAppendNode::markAngle3Output(
+    MObject& compound,
+    MObject& childX,
+    MObject& childY,
+    MObject& childZ)
+{
+    MStatus status;
+    MFnCompoundAttribute cAttr(compound, &status);
+    cAttr.setWritable(false);
+    cAttr.setReadable(true);
+    cAttr.setStorable(false);
+    cAttr.setKeyable(false);
+    MFnUnitAttribute uChild;
+    uChild.setObject(childX);
+    uChild.setWritable(false);
+    uChild.setKeyable(false);
+    uChild.setStorable(false);
+    uChild.setObject(childY);
+    uChild.setWritable(false);
+    uChild.setKeyable(false);
+    uChild.setStorable(false);
+    uChild.setObject(childZ);
+    uChild.setWritable(false);
+    uChild.setKeyable(false);
+    uChild.setStorable(false);
 }
 
 MStatus MmdAppendNode::initialize() {
@@ -248,52 +482,89 @@ MStatus MmdAppendNode::initialize() {
     nAttr.setReadable(false);
     addAttribute(aEnableRotate);
 
+    aBaseTranslate = createDouble3Attribute(
+        "baseTranslate", "bt",
+        aBaseTranslateX, aBaseTranslateY, aBaseTranslateZ, 0.0);
+    addAttribute(aBaseTranslate);
+
+    aBaseRotate = createAngle3Attribute(
+        "baseRotate", "br",
+        aBaseRotateX, aBaseRotateY, aBaseRotateZ, 0.0);
+    addAttribute(aBaseRotate);
+
+    aSourceTranslate = createDouble3Attribute(
+        "sourceTranslate", "st",
+        aSourceTranslateX, aSourceTranslateY, aSourceTranslateZ, 0.0);
+    addAttribute(aSourceTranslate);
+
+    aSourceRotate = createAngle3Attribute(
+        "sourceRotate", "sr",
+        aSourceRotateX, aSourceRotateY, aSourceRotateZ, 0.0);
+    addAttribute(aSourceRotate);
+
+    aSourceJointOrient = createAngle3Attribute(
+        "sourceJointOrient", "sjo",
+        aSourceJointOrientX, aSourceJointOrientY, aSourceJointOrientZ, 0.0);
+    addAttribute(aSourceJointOrient);
+
+    aTargetJointOrient = createAngle3Attribute(
+        "targetJointOrient", "tjo",
+        aTargetJointOrientX, aTargetJointOrientY, aTargetJointOrientZ, 0.0);
+    addAttribute(aTargetJointOrient);
+
+    aRatio = nAttr.create("ratio", "rat", MFnNumericData::kFloat, 1.0, &status);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(true);
+    nAttr.setWritable(true);
+    nAttr.setReadable(false);
+    addAttribute(aRatio);
+
+    aAffectRotation = nAttr.create("affectRotation", "afr", MFnNumericData::kBoolean, true, &status);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(true);
+    nAttr.setWritable(true);
+    nAttr.setReadable(false);
+    addAttribute(aAffectRotation);
+
+    aAffectTranslation = nAttr.create("affectTranslation", "aft", MFnNumericData::kBoolean, false, &status);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(true);
+    nAttr.setWritable(true);
+    nAttr.setReadable(false);
+    addAttribute(aAffectTranslation);
+
+    aLocalAppend = nAttr.create("localAppend", "lap", MFnNumericData::kBoolean, false, &status);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(true);
+    nAttr.setWritable(true);
+    nAttr.setReadable(false);
+    addAttribute(aLocalAppend);
+
     // --- 出力: outputTranslate(double3) ---
     aOutputTranslate = createDouble3Attribute(
         "outputTranslate", "ot",
         aOutputTranslateX, aOutputTranslateY, aOutputTranslateZ, 0.0);
-    // 出力属性: writable=false, readable=true
-    {
-        MFnCompoundAttribute cAttr(aOutputTranslate, &status);
-        cAttr.setWritable(false);
-        cAttr.setReadable(true);
-        cAttr.setStorable(false);
-        cAttr.setKeyable(false);
-        MFnNumericAttribute nChild;
-        nChild.setObject(aOutputTranslateX);
-        nChild.setWritable(false);
-        nChild.setKeyable(false);
-        nChild.setObject(aOutputTranslateY);
-        nChild.setWritable(false);
-        nChild.setKeyable(false);
-        nChild.setObject(aOutputTranslateZ);
-        nChild.setWritable(false);
-        nChild.setKeyable(false);
-    }
+    markDouble3Output(aOutputTranslate, aOutputTranslateX, aOutputTranslateY, aOutputTranslateZ);
     addAttribute(aOutputTranslate);
 
     // --- 出力: outputRotate(double3) ---
-    aOutputRotate = createDouble3Attribute(
+    aOutputRotate = createAngle3Attribute(
         "outputRotate", "or",
         aOutputRotateX, aOutputRotateY, aOutputRotateZ, 0.0);
-    {
-        MFnCompoundAttribute cAttr(aOutputRotate, &status);
-        cAttr.setWritable(false);
-        cAttr.setReadable(true);
-        cAttr.setStorable(false);
-        cAttr.setKeyable(false);
-        MFnNumericAttribute nChild;
-        nChild.setObject(aOutputRotateX);
-        nChild.setWritable(false);
-        nChild.setKeyable(false);
-        nChild.setObject(aOutputRotateY);
-        nChild.setWritable(false);
-        nChild.setKeyable(false);
-        nChild.setObject(aOutputRotateZ);
-        nChild.setWritable(false);
-        nChild.setKeyable(false);
-    }
+    markAngle3Output(aOutputRotate, aOutputRotateX, aOutputRotateY, aOutputRotateZ);
     addAttribute(aOutputRotate);
+
+    aAppendTranslate = createDouble3Attribute(
+        "appendTranslate", "at",
+        aAppendTranslateX, aAppendTranslateY, aAppendTranslateZ, 0.0);
+    markDouble3Output(aAppendTranslate, aAppendTranslateX, aAppendTranslateY, aAppendTranslateZ);
+    addAttribute(aAppendTranslate);
+
+    aAppendRotate = createAngle3Attribute(
+        "appendRotate", "ar",
+        aAppendRotateX, aAppendRotateY, aAppendRotateZ, 0.0);
+    markAngle3Output(aAppendRotate, aAppendRotateX, aAppendRotateY, aAppendRotateZ);
+    addAttribute(aAppendRotate);
 
     // --- attributeAffects ---
     // すべての入力を output に接続
@@ -326,6 +597,32 @@ MStatus MmdAppendNode::initialize() {
     attributeAffects(aEnableRotate, aOutputRotateY);
     attributeAffects(aEnableRotate, aOutputRotateZ);
 
+    for (MObject input : {
+             aBaseTranslateX, aBaseTranslateY, aBaseTranslateZ,
+             aSourceTranslateX, aSourceTranslateY, aSourceTranslateZ,
+             aRatio, aAffectTranslation, aLocalAppend}) {
+        attributeAffects(input, aOutputTranslateX);
+        attributeAffects(input, aOutputTranslateY);
+        attributeAffects(input, aOutputTranslateZ);
+        attributeAffects(input, aAppendTranslateX);
+        attributeAffects(input, aAppendTranslateY);
+        attributeAffects(input, aAppendTranslateZ);
+    }
+
+    for (MObject input : {
+             aBaseRotateX, aBaseRotateY, aBaseRotateZ,
+             aSourceRotateX, aSourceRotateY, aSourceRotateZ,
+             aSourceJointOrientX, aSourceJointOrientY, aSourceJointOrientZ,
+             aTargetJointOrientX, aTargetJointOrientY, aTargetJointOrientZ,
+             aRatio, aAffectRotation, aLocalAppend}) {
+        attributeAffects(input, aOutputRotateX);
+        attributeAffects(input, aOutputRotateY);
+        attributeAffects(input, aOutputRotateZ);
+        attributeAffects(input, aAppendRotateX);
+        attributeAffects(input, aAppendRotateY);
+        attributeAffects(input, aAppendRotateZ);
+    }
+
     return MS::kSuccess;
 }
 
@@ -341,9 +638,145 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
                      plug == aOutputRotateX ||
                      plug == aOutputRotateY ||
                      plug == aOutputRotateZ);
+    bool isAppendTranslate = (plug == aAppendTranslate ||
+                              plug == aAppendTranslateX ||
+                              plug == aAppendTranslateY ||
+                              plug == aAppendTranslateZ);
+    bool isAppendRotate = (plug == aAppendRotate ||
+                           plug == aAppendRotateX ||
+                           plug == aAppendRotateY ||
+                           plug == aAppendRotateZ);
 
-    if (!isTranslate && !isRotate) {
+    if (!isTranslate && !isRotate && !isAppendTranslate && !isAppendRotate) {
         return MS::kUnknownParameter;
+    }
+
+    const double* baseT = data.inputValue(aBaseTranslate).asDouble3();
+    const double* sourceT = data.inputValue(aSourceTranslate).asDouble3();
+    const double* baseR = data.inputValue(aBaseRotate).asDouble3();
+    const double* sourceR = data.inputValue(aSourceRotate).asDouble3();
+    const double* sourceJo = data.inputValue(aSourceJointOrient).asDouble3();
+    const double* targetJo = data.inputValue(aTargetJointOrient).asDouble3();
+    float ratio = data.inputValue(aRatio, &status).asFloat();
+    bool affectRot = data.inputValue(aAffectRotation, &status).asBool();
+    bool affectTrans = data.inputValue(aAffectTranslation, &status).asBool();
+    bool compatInputsActive = isAppendTranslate || isAppendRotate ||
+                              isVectorNonZero(baseT) || isVectorNonZero(sourceT) ||
+                              isVectorNonZero(baseR) || isVectorNonZero(sourceR) ||
+                              isVectorNonZero(sourceJo) || isVectorNonZero(targetJo) ||
+                              std::abs(ratio - 1.0f) > 1e-6f ||
+                              affectTrans || !affectRot;
+
+    if (compatInputsActive) {
+        const double srcRx = data.inputValue(aSourceRotateX).asAngle().asRadians();
+        const double srcRy = data.inputValue(aSourceRotateY).asAngle().asRadians();
+        const double srcRz = data.inputValue(aSourceRotateZ).asAngle().asRadians();
+        const double srcJoX = data.inputValue(aSourceJointOrientX).asAngle().asRadians();
+        const double srcJoY = data.inputValue(aSourceJointOrientY).asAngle().asRadians();
+        const double srcJoZ = data.inputValue(aSourceJointOrientZ).asAngle().asRadians();
+        const double tgtJoX = data.inputValue(aTargetJointOrientX).asAngle().asRadians();
+        const double tgtJoY = data.inputValue(aTargetJointOrientY).asAngle().asRadians();
+        const double tgtJoZ = data.inputValue(aTargetJointOrientZ).asAngle().asRadians();
+        const double baseRx = data.inputValue(aBaseRotateX).asAngle().asRadians();
+        const double baseRy = data.inputValue(aBaseRotateY).asAngle().asRadians();
+        const double baseRz = data.inputValue(aBaseRotateZ).asAngle().asRadians();
+
+        MQuaternion sourceQuat = MEulerRotation(srcRx, srcRy, srcRz).asQuaternion();
+        MQuaternion sourceJoQuat = MEulerRotation(srcJoX, srcJoY, srcJoZ).asQuaternion();
+        MQuaternion sourceMmdQuat = sourceJoQuat.inverse() * sourceQuat * sourceJoQuat;
+        sourceMmdQuat.normalizeIt();
+
+        float sourcePosition[3] = {
+            static_cast<float>(data.inputValue(aSourceTranslateX).asDouble()),
+            static_cast<float>(data.inputValue(aSourceTranslateY).asDouble()),
+            static_cast<float>(-data.inputValue(aSourceTranslateZ).asDouble()),
+        };
+        float sourceRotation[4] = {
+            static_cast<float>(sourceMmdQuat.x),
+            static_cast<float>(sourceMmdQuat.y),
+            static_cast<float>(sourceMmdQuat.z),
+            static_cast<float>(sourceMmdQuat.w),
+        };
+        float outPosition[3] = {0.0f, 0.0f, 0.0f};
+        float outRotation[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        mmd_runtime_ffi_append_config_t config{
+            ratio,
+            affectRot,
+            affectTrans,
+        };
+        mmd_runtime_append_solver_t* solver = mmd_runtime_append_solver_create(&config);
+        if (solver == nullptr) {
+            return MS::kFailure;
+        }
+        bool ok = mmd_runtime_append_solver_solve(
+            solver,
+            sourcePosition,
+            sourceRotation,
+            outPosition,
+            outRotation);
+        mmd_runtime_append_solver_free(solver);
+        if (!ok) {
+            return MS::kFailure;
+        }
+
+        const double grantTx = static_cast<double>(outPosition[0]);
+        const double grantTy = static_cast<double>(outPosition[1]);
+        const double grantTz = -static_cast<double>(outPosition[2]);
+        MQuaternion grantQuat(
+            static_cast<double>(outRotation[0]),
+            static_cast<double>(outRotation[1]),
+            static_cast<double>(outRotation[2]),
+            static_cast<double>(outRotation[3]));
+        MEulerRotation appendEuler = grantQuat.asEulerRotation();
+        double appendRx = appendEuler.x * 180.0 / kPi;
+        double appendRy = appendEuler.y * 180.0 / kPi;
+        double appendRz = appendEuler.z * 180.0 / kPi;
+
+        MQuaternion targetJoQuat = MEulerRotation(tgtJoX, tgtJoY, tgtJoZ).asQuaternion();
+        MQuaternion targetGrantQuat = targetJoQuat * grantQuat * targetJoQuat.inverse();
+        targetGrantQuat.normalizeIt();
+        MQuaternion baseQuat = MEulerRotation(baseRx, baseRy, baseRz).asQuaternion();
+        MQuaternion finalQuat = baseQuat * targetGrantQuat;
+        finalQuat.normalizeIt();
+        MEulerRotation finalEuler = finalQuat.asEulerRotation();
+        double outRx = finalEuler.x * 180.0 / kPi;
+        double outRy = finalEuler.y * 180.0 / kPi;
+        double outRz = finalEuler.z * 180.0 / kPi;
+
+        if (isAppendTranslate) {
+            setDouble3Outputs(
+                data, plug, aAppendTranslate,
+                aAppendTranslateX, aAppendTranslateY, aAppendTranslateZ,
+                grantTx, grantTy, grantTz);
+            data.setClean(plug);
+            return MS::kSuccess;
+        }
+        if (isAppendRotate) {
+            setAngle3OutputsDegrees(
+                data, plug, aAppendRotate,
+                aAppendRotateX, aAppendRotateY, aAppendRotateZ,
+                appendRx, appendRy, appendRz);
+            data.setClean(plug);
+            return MS::kSuccess;
+        }
+        if (isTranslate) {
+            setDouble3Outputs(
+                data, plug, aOutputTranslate,
+                aOutputTranslateX, aOutputTranslateY, aOutputTranslateZ,
+                data.inputValue(aBaseTranslateX).asDouble() + grantTx,
+                data.inputValue(aBaseTranslateY).asDouble() + grantTy,
+                data.inputValue(aBaseTranslateZ).asDouble() + grantTz);
+            data.setClean(plug);
+            return MS::kSuccess;
+        }
+        if (isRotate) {
+            setAngle3OutputsDegrees(
+                data, plug, aOutputRotate,
+                aOutputRotateX, aOutputRotateY, aOutputRotateZ,
+                outRx, outRy, outRz);
+            data.setClean(plug);
+            return MS::kSuccess;
+        }
     }
 
     // 入力値を取得
@@ -421,27 +854,10 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
             outZ = inR[2];
         }
 
-        MDataHandle outHandle;
-        if (plug == aOutputRotate || plug.isCompound()) {
-            outHandle = data.outputValue(aOutputRotate, &status);
-            outHandle.set(outX, outY, outZ);
-            outHandle.setClean();
-        }
-        if (plug == aOutputRotateX || plug.parent() == aOutputRotate) {
-            MDataHandle hX = data.outputValue(aOutputRotateX, &status);
-            hX.set(outX);
-            hX.setClean();
-        }
-        if (plug == aOutputRotateY || plug.parent() == aOutputRotate) {
-            MDataHandle hY = data.outputValue(aOutputRotateY, &status);
-            hY.set(outY);
-            hY.setClean();
-        }
-        if (plug == aOutputRotateZ || plug.parent() == aOutputRotate) {
-            MDataHandle hZ = data.outputValue(aOutputRotateZ, &status);
-            hZ.set(outZ);
-            hZ.setClean();
-        }
+        setAngle3OutputsDegrees(
+            data, plug, aOutputRotate,
+            aOutputRotateX, aOutputRotateY, aOutputRotateZ,
+            outX, outY, outZ);
 
         data.setClean(plug);
         return MS::kSuccess;
