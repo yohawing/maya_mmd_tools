@@ -27,7 +27,7 @@ def import_vpd_file(parser, filepath, options=None):
     if options is None:
         options = {}
 
-    logger.info(f"VPDファイルのインポートを開始: {filepath}")
+    logger.info(f"Starting VPD file import: {filepath}")
 
     try:
         # オプションからターゲットモデルを取得
@@ -40,7 +40,7 @@ def import_vpd_file(parser, filepath, options=None):
             # ターゲットモデルからネームスペースを取得
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
             if target_namespace:
-                logger.info(f"ターゲットネームスペース: {target_namespace}")
+                logger.info(f"Target namespace: {target_namespace}")
         else:
             # 選択されているオブジェクトからターゲットを取得
             selected = cmds.ls(selection=True)
@@ -50,14 +50,14 @@ def import_vpd_file(parser, filepath, options=None):
                     if cmds.nodeType(sel) == "joint" or cmds.nodeType(sel) == "transform":
                         target_namespace = NamespaceUtils.get_namespace_from_node(sel)
                         if target_namespace:
-                            logger.info(f"選択オブジェクトからターゲットネームスペースを取得: {target_namespace}")
+                            logger.info(f"Target namespace from selected object: {target_namespace}")
                             break
 
             if not target_namespace and not apply_to_all:
                 # ネームスペースが見つからない場合は、選択されたジョイントに直接適用を試みる
                 selected_joints = cmds.ls(selection=True, type="joint")
                 if not selected_joints:
-                    logger.warning("ターゲットモデルが指定されていません。モデルのジョイントを選択してください。")
+                    logger.warning("Target model is not specified. Select model joints.")
                     cmds.warning("Please select target model joints to apply the pose.")
                     return False
 
@@ -69,7 +69,7 @@ def import_vpd_file(parser, filepath, options=None):
 
         if apply_to_all:
             # 全てのモデルに適用
-            logger.info("全てのモデルにポーズを適用します")
+            logger.info("Applying pose to all models")
             namespaces = NamespaceUtils.get_all_namespaces()
             success_count = 0
 
@@ -89,7 +89,7 @@ def import_vpd_file(parser, filepath, options=None):
 
             success = success_count > 0
             if success:
-                logger.info(f"{success_count}個のモデルにポーズを適用しました")
+                logger.info(f"Applied pose to {success_count} model(s)")
         else:
             # 特定のモデルに適用
             success = converter.convert(parser, target_namespace, options)
@@ -98,7 +98,7 @@ def import_vpd_file(parser, filepath, options=None):
                 _create_keyframes_for_namespace(target_namespace, current_frame)
 
         if success:
-            logger.info("VPDファイルのインポートが完了しました")
+            logger.info("VPD file import completed")
 
             # ビューポートにメッセージを表示
             cmds.inViewMessage(
@@ -109,13 +109,13 @@ def import_vpd_file(parser, filepath, options=None):
                 fadeOutTime=500,
             )
         else:
-            logger.warning("VPDファイルのインポートに失敗しました")
+            logger.warning("VPD file import failed")
             cmds.warning(f"Failed to apply VPD pose from: {filepath}")
 
         return success
 
     except Exception as e:
-        logger.error(f"VPDファイルのインポートに失敗: {e}")
+        logger.error(f"Failed to import VPD file: {e}")
         cmds.error(f"Failed to import VPD file {filepath}: {e}")
         import traceback
 
@@ -149,7 +149,7 @@ def _create_keyframes_for_namespace(namespace, frame):
             cmds.setKeyframe(joint, attribute="translateY", time=frame)
             cmds.setKeyframe(joint, attribute="translateZ", time=frame)
 
-    logger.debug(f"フレーム {frame} に {len(joints)} 個のジョイントのキーフレームを作成")
+    logger.debug(f"Created keyframes for {len(joints)} joints at frame {frame}")
 
 
 def _is_movable_joint(joint_name):

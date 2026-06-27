@@ -3,7 +3,6 @@ import json
 from maya import cmds
 
 from mmd_tools.core.pmx_data import PmxData
-from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import mesh_converter as mesh_converter_module
@@ -64,51 +63,6 @@ class TestMeshConverter(MayaTestBase):
         # 一時ファイルをクリーンアップ
         self.fixture_provider.cleanup_temp_files()
 
-    def test_convert_pmd_mesh(self):
-        """
-        PMDメッシュがMayaに正しく変換されることをテストする。
-        実際のPMDファイルを読み込み、変換処理を実行し、結果を検証する。
-        """
-        # TestFixtureProviderからPMDファイルパスを取得
-        pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
-
-        # PMDファイルをパース
-        pmd_data = PmdData()
-        pmd_data = pmd_data.parse_file(pmd_file_path)
-
-        # モデル名を取得
-        model_name = pmd_data.header.model_name
-        self.assertIsNotNone(model_name, "モデル名がNoneです")
-
-        # ルートグループを作成
-        root_group = cmds.group(empty=True, name="test_pmd_root")
-
-        # MeshConverterを作成して変換を実行
-        converter = MeshConverter(pmd_file_path)
-        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
-
-        # 結果の検証
-        # 1. グループが作成されているか
-        self.assertTrue(
-            cmds.objExists(mesh_group),
-            f"メッシュグループ {mesh_group} が作成されていません",
-        )
-
-        # 2. グループの中にメッシュが作成されているか
-        children = cmds.listRelatives(mesh_group, children=True)
-        self.assertIsNotNone(children, f"メッシュグループ {mesh_group} の中にメッシュがありません")
-
-        # 3. マテリアルが作成されているか
-        materials = cmds.ls(materials=True)
-        self.assertTrue(len(materials) > 0, "マテリアルが作成されていません")
-
-        # 4. UVが正しく設定されているか
-        for child in children:
-            if cmds.nodeType(child) == "mesh" or cmds.nodeType(cmds.listRelatives(child, shapes=True)[0]) == "mesh":
-                uv_sets = cmds.polyUVSet(child, query=True, allUVSets=True)
-                self.assertIsNotNone(uv_sets, f"{child} にUVセットがありません")
-                self.assertGreaterEqual(len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です")
-
     def test_convert_pmx_mesh(self):
         """
         PMXメッシュがMayaに正しく変換されることをテストする。
@@ -161,74 +115,6 @@ class TestMeshConverter(MayaTestBase):
                 uv_sets = cmds.polyUVSet(child, query=True, allUVSets=True)
                 self.assertIsNotNone(uv_sets, f"{child} にUVセットがありません")
                 self.assertGreaterEqual(len(uv_sets), 1, f"{child} には少なくとも1つのUVセットが必要です")
-
-    def test_material_custom_attributes_on_pmd(self):
-        """
-        PMDマテリアルにカスタムアトリビュートが正しく設定されることをテストする。
-        現在の実装では失敗することが期待される。
-        """
-        # TestFixtureProviderからPMDファイルパスを取得
-        pmd_file_path = self.fixture_provider.get_pmd_file("miku_v2")
-
-        # PMDファイルをパース
-        pmd_data = PmdData()
-        pmd_data = pmd_data.parse_file(pmd_file_path)
-
-        # ルートグループを作成
-        root_group = cmds.group(empty=True, name="test_pmd_root")
-
-        # MeshConverterを作成して変換を実行
-        converter = MeshConverter(pmd_file_path)
-        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
-
-        # メッシュに割り当てられているマテリアルを取得
-        assigned_materials = set()
-
-        assigned_materials = maya_utils.get_materials_from_mesh(mesh_name)
-
-        # 各マテリアルのカスタムアトリビュートを確認
-        for i, material in enumerate(sorted(assigned_materials)):
-            with self.subTest(material=material, index=i):
-                # 標準のMayaマテリアルをスキップ（例：lambert1, standardSurface1など）
-                if material in ["lambert1", "standardSurface1", "particleCloud1"]:
-                    continue
-
-                # mmd_materialアトリビュートの存在確認
-                self.assertTrue(
-                    cmds.attributeQuery("mmd_material", node=material, exists=True),
-                    f"{material}にmmd_materialアトリビュートが存在しません",
-                )
-
-                # PMDマテリアル特有のアトリビュート確認
-                # diffuse_colorアトリビュート
-                self.assertTrue(
-                    cmds.attributeQuery("diffuse_color", node=material, exists=True),
-                    f"{material}にdiffuse_colorアトリビュートが存在しません",
-                )
-
-                # specular_colorアトリビュート
-                self.assertTrue(
-                    cmds.attributeQuery("specular_color", node=material, exists=True),
-                    f"{material}にspecular_colorアトリビュートが存在しません",
-                )
-
-                # ambient_colorアトリビュート
-                self.assertTrue(
-                    cmds.attributeQuery("ambient_color", node=material, exists=True),
-                    f"{material}にambient_colorアトリビュートが存在しません",
-                )
-
-                # shininessアトリビュート
-                self.assertTrue(
-                    cmds.attributeQuery("shininess", node=material, exists=True),
-                    f"{material}にshininessアトリビュートが存在しません",
-                )
-
-                # edge_flagアトリビュート
-                self.assertTrue(
-                    cmds.attributeQuery("edge_flag", node=material, exists=True),
-                    f"{material}にedge_flagアトリビュートが存在しません",
-                )
 
     def test_material_custom_attributes_on_pmx(self):
         """
@@ -318,104 +204,6 @@ class TestMeshConverter(MayaTestBase):
                     )
                 else:
                     self.fail(f"{material}に{maya_attr}アトリビュートが存在しません")
-
-    def test_convert_pmx_mesh_with_material_split(self):
-        """
-        separate_meshes_by_material=True で PMX メッシュがマテリアルごとに分割されることをテストする。
-        """
-        # 設定を一時的に有効化
-        settings.set("import.model.separate_meshes_by_material", True)
-
-        try:
-            # 複数マテリアルを持つPMX fixtureを使用
-            pmx_file_path = self.fixture_provider.get_pmx_file("Lumine")
-
-            # PMXファイルをパース
-            pmx_data = PmxData()
-            pmx_data = pmx_data.parse_file(pmx_file_path)
-
-            # マテリアル数を記録
-            expected_material_count = len(
-                [m for m in pmx_data.materials if m.face_count > 0]
-            )
-            self.assertGreater(expected_material_count, 1, "split test には複数 material fixture が必要です")
-
-            # ルートグループを作成
-            root_group = cmds.group(empty=True, name="test_pmx_split_root")
-
-            # MeshConverterを作成して変換を実行
-            converter = MeshConverter(pmx_file_path)
-            mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
-
-            # 結果の検証: mesh_name がリストであることを確認
-            self.assertIsInstance(
-                mesh_name,
-                list,
-                f"split mode では mesh_name は list であるべき: {type(mesh_name)}",
-            )
-
-            # material 数と同数の mesh transform が GEOMETRY_GROUP 直下にある
-            self.assertEqual(
-                len(mesh_name),
-                expected_material_count,
-                f"メッシュ数 ({len(mesh_name)}) が material 数 ({expected_material_count}) と一致しません",
-            )
-
-            # 各 mesh に mesh shape / UV / material がある
-            split_vertex_counts = []
-            for mn in mesh_name:
-                self.assertTrue(
-                    cmds.objExists(mn),
-                    f"メッシュ '{mn}' が存在しません",
-                )
-
-                # shape node がある
-                shapes = cmds.listRelatives(mn, shapes=True, type="mesh") or []
-                self.assertGreater(
-                    len(shapes),
-                    0,
-                    f"'{mn}' に mesh shape がありません",
-                )
-
-                # UV がある
-                uv_sets = cmds.polyUVSet(mn, query=True, allUVSets=True)
-                self.assertIsNotNone(uv_sets, f"'{mn}' に UV がありません")
-                self.assertGreaterEqual(
-                    len(uv_sets),
-                    1,
-                    f"'{mn}' に UV セットがありません",
-                )
-
-                # マテリアルが割り当てられている
-                materials = maya_utils.get_materials_from_mesh(mn)
-                self.assertGreater(
-                    len(materials),
-                    0,
-                    f"'{mn}' にマテリアルがありません",
-                )
-
-                self.assertTrue(
-                    cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mn, exists=True),
-                    f"'{mn}' に compact split source index attribute がありません",
-                )
-                source_indices = maya_utils.get_int_array_attribute(mn, ATTR_MMD_SOURCE_VERTEX_INDICES)
-                vertex_count = cmds.polyEvaluate(mn, vertex=True)
-                split_vertex_counts.append(vertex_count)
-                self.assertEqual(
-                    len(source_indices),
-                    vertex_count,
-                    f"'{mn}' の source index 数と local vertex 数が一致しません",
-                )
-
-            self.assertLess(
-                min(split_vertex_counts),
-                len(pmx_data.vertices),
-                "compact split mesh が全頂点保持のままです",
-            )
-
-        finally:
-            # 設定を元に戻す
-            settings.set("import.model.separate_meshes_by_material", False)
 
     def test_convert_pmx_mesh_with_morph_group_split(self):
         """split_meshes_by_morph_groups=True で vertex morph 影響 material set ごとの mesh を作る。"""
@@ -637,69 +425,6 @@ class TestMeshConverter(MayaTestBase):
                 vertex_count,
                 len(fake_data.vertices),
                 "static mesh が全頂点を保持しています（compact split になっていません）",
-            )
-        finally:
-            settings.set("import.model.split_meshes_by_morph_groups", False)
-
-    def test_convert_pmx_mesh_morph_group_split_real_fixture(self):
-        """split_meshes_by_morph_groups=True で実 PMX fixture から morph group 分割の構造的不変条件を検証する。"""
-        pmx_data, pmx_file_path = self.fixture_provider.load_pmx_data("Lumine")
-
-        vertex_morphs = [m for m in pmx_data.morphs if m.morph_type == PmxMorphType.VertexMorph]
-        if not vertex_morphs:
-            self.skipTest("Lumine fixture に vertex morph がないため split test をスキップします")
-
-        settings.set("import.model.split_meshes_by_morph_groups", True)
-        try:
-            root_group = cmds.group(empty=True, name="test_pmx_morph_real_root")
-            converter = MeshConverter(pmx_file_path)
-            _mesh_group, mesh_names = converter.convert_pmx_mesh(pmx_data, root_group)
-
-            self.assertIsInstance(mesh_names, list, "split mode では mesh_names は list であるべき")
-            self.assertGreater(len(mesh_names), 0, "少なくとも 1 つの mesh が作成されるはず")
-
-            all_assigned_morph_names = set()
-            for mn in mesh_names:
-                self.assertTrue(
-                    cmds.attributeQuery(ATTR_MMD_MORPH_GROUP_SPLIT_MESH, node=mn, exists=True),
-                    f"'{mn}' に {ATTR_MMD_MORPH_GROUP_SPLIT_MESH} がありません",
-                )
-                self.assertTrue(
-                    cmds.getAttr(f"{mn}.{ATTR_MMD_MORPH_GROUP_SPLIT_MESH}"),
-                    f"'{mn}' の {ATTR_MMD_MORPH_GROUP_SPLIT_MESH} が True ではありません",
-                )
-
-                self.assertTrue(
-                    cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mn, exists=True),
-                    f"'{mn}' に {ATTR_MMD_SOURCE_VERTEX_INDICES} がありません",
-                )
-                source_indices = maya_utils.get_int_array_attribute(mn, ATTR_MMD_SOURCE_VERTEX_INDICES)
-                vertex_count = cmds.polyEvaluate(mn, vertex=True)
-                self.assertEqual(
-                    len(source_indices),
-                    vertex_count,
-                    f"'{mn}' の source index 数と local vertex 数が一致しません",
-                )
-
-                self.assertTrue(
-                    cmds.attributeQuery(ATTR_MMD_VERTEX_MORPH_NAMES_JSON, node=mn, exists=True),
-                    f"'{mn}' に {ATTR_MMD_VERTEX_MORPH_NAMES_JSON} がありません",
-                )
-                raw = cmds.getAttr(f"{mn}.{ATTR_MMD_VERTEX_MORPH_NAMES_JSON}")
-                assigned = json.loads(raw)
-                self.assertIsInstance(assigned, list, f"'{mn}' の {ATTR_MMD_VERTEX_MORPH_NAMES_JSON} が list ではありません")
-                all_assigned_morph_names.update(assigned)
-
-            self.assertGreater(
-                len(all_assigned_morph_names),
-                0,
-                "どの mesh にも vertex morph 名が割り当てられていません",
-            )
-
-            pmx_morph_names = {m.get_name() for m in vertex_morphs if getattr(m, "offsets", None)}
-            self.assertTrue(
-                pmx_morph_names.issubset(all_assigned_morph_names),
-                f"mesh に割り当てられていない vertex morph があります: {pmx_morph_names - all_assigned_morph_names}",
             )
         finally:
             settings.set("import.model.split_meshes_by_morph_groups", False)

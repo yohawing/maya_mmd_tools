@@ -170,7 +170,6 @@ def run_snapshot(
                 lshape = cmds.directionalLight(name="snapLight", intensity=1.0, rgb=(1, 1, 1))
                 lx = cmds.listRelatives(lshape, parent=True)[0]
                 ld = list(light_dir)
-                ldl = math.sqrt(sum(x * x for x in ld)) or 1.0
                 cmds.setAttr(f"{lx}.rotateX", math.degrees(math.atan2(-ld[1], math.sqrt(ld[0] ** 2 + ld[2] ** 2))))
                 cmds.setAttr(f"{lx}.rotateY", math.degrees(math.atan2(ld[0], ld[2])))
                 _log(f"light: {lx}")

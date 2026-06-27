@@ -36,10 +36,10 @@ class VpdData:
             FileNotFoundError: ファイルが見つからない場合
             MMDParseException: ファイルの解析に失敗した場合
         """
-        logger.info(f"VPDファイルの解析を開始: {file_path}")
+        logger.info(f"Starting VPD file parsing: {file_path}")
 
         if not os.path.exists(file_path):
-            logger.error(f"VPDファイルが見つかりません: {file_path}")
+            logger.error(f"VPD file not found: {file_path}")
             raise FileNotFoundError(f"VPD file not found: {file_path}")
 
         try:
@@ -52,13 +52,13 @@ class VpdData:
                 with open(file_path, "r", encoding="utf-8") as f:
                     content = f.read()
             except UnicodeDecodeError:
-                logger.error(f"VPDファイルのエンコーディングを判別できません: {file_path}")
+                logger.error(f"Could not detect VPD file encoding: {file_path}")
                 raise MMDParseException(f"Failed to decode VPD file: {file_path}")
 
         # 解析処理
         self._parse_content(content)
 
-        logger.info(f"VPDファイルの解析が完了: {len(self.bone_poses)}個のボーンポーズ")
+        logger.info(f"VPD file parsing completed: {len(self.bone_poses)} bone poses")
 
     def _parse_content(self, content):
         """VPDファイルの内容を解析する
@@ -170,7 +170,7 @@ class VpdData:
         Raises:
             IOError: ファイルの書き込みに失敗した場合
         """
-        logger.info(f"VPDファイルの書き出しを開始: {file_path}")
+        logger.info(f"Starting VPD file export: {file_path}")
 
         try:
             with open(file_path, "w", encoding="shift-jis") as f:
@@ -186,10 +186,10 @@ class VpdData:
                 for bone_pose in self.bone_poses:
                     f.write(bone_pose.to_vpd_format())
 
-            logger.info(f"VPDファイルの書き出しが完了: {file_path}")
+            logger.info(f"VPD file export completed: {file_path}")
 
         except Exception as e:
-            logger.error(f"VPDファイルの書き出しに失敗: {e}")
+            logger.error(f"Failed to export VPD file: {e}")
             raise IOError(f"Failed to write VPD file: {e}")
 
     def __repr__(self):

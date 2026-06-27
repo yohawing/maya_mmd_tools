@@ -4,6 +4,7 @@
 
 import os
 import tempfile
+import unittest
 from typing import List, Dict
 
 from mmd_tools.core.pmx_data import PmxData
@@ -72,7 +73,7 @@ class TestFixtureProvider:
         """
         pmd_files = self._file_cache.get("pmd", {})
         if not pmd_files:
-            raise FileNotFoundError("No PMD files found")
+            raise unittest.SkipTest("No PMD files found")
 
         if name is None:
             return next(iter(pmd_files.values()))
@@ -80,7 +81,7 @@ class TestFixtureProvider:
         if name in pmd_files:
             return pmd_files[name]
 
-        raise FileNotFoundError(f"PMD file '{name}' not found")
+        raise unittest.SkipTest(f"PMD file '{name}' not found")
 
     def get_pmx_file(self, name: str = None) -> str:
         """PMXファイルのパスを取得
@@ -96,7 +97,7 @@ class TestFixtureProvider:
         """
         pmx_files = self._file_cache.get("pmx", {})
         if not pmx_files:
-            raise FileNotFoundError("No PMX files found")
+            raise unittest.SkipTest("No PMX files found")
 
         if name is None:
             return next(iter(pmx_files.values()))
@@ -104,7 +105,7 @@ class TestFixtureProvider:
         if name in pmx_files:
             return pmx_files[name]
 
-        raise FileNotFoundError(f"PMX file '{name}' not found")
+        raise unittest.SkipTest(f"PMX file '{name}' not found")
 
     def get_vmd_file(self, name: str = None) -> str:
         """VMDファイルのパスを取得

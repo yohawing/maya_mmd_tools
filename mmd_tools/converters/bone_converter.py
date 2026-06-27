@@ -1,8 +1,10 @@
 import math
+import time
 from typing import List, Tuple, Union
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
@@ -60,6 +62,11 @@ class BoneConverter:
         """
         self.logger = get_logger(__name__)
         self.rig_converter = RigConverter()
+        self.profile = {}
+
+    def _add_profile_time(self, key: str, start: float) -> None:
+        """Accumulate timing in the converter profile."""
+        self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
     def convert_pmx_bones(
         self,
@@ -68,6 +75,7 @@ class BoneConverter:
         root_group,
         setup_rig=True,
         setup_bone_orientation=True,
+        pmx_filepath: str = None,
     ):
         """
         PMXのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
@@ -101,12 +109,9 @@ class BoneConverter:
             setup_bone_orientation=setup_bone_orientation,
         )
 
-        # リグのセットアップはRigConverterに委譲。
-        # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
-        if setup_rig:
-            self.rig_converter.setup_pmx_rig(pmx_data, maya_joints, bone_map, skeleton_group)
-
-        # 複数メッシュ対応: mesh_node がリストの場合、各メッシュに同一 skeleton で skinCluster を適用
+        # skinCluster をリグセットアップの前に作成する。
+        # rig ノード（mmdCcdIk/mmdAppend）接続後は joint.rotate が駆動され
+        # bind pose に R≠0 が含まれてしまうため、R=0 の状態でバインドする。
         mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
         skin_clusters = []
 
@@ -117,6 +122,14 @@ class BoneConverter:
             if sc:
                 self._apply_pmx_vertex_weights(pmx_data, maya_joints, sc, mn)
                 skin_clusters.append(sc)
+
+        # リグのセットアップはRigConverterに委譲。
+        # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
+        if setup_rig:
+            self.rig_converter.setup_pmx_rig(
+                pmx_data, maya_joints, bone_map, skeleton_group,
+                pmx_filepath=pmx_filepath,
+            )
 
         result_cluster = skin_clusters[0] if len(skin_clusters) == 1 else skin_clusters
 
@@ -221,6 +234,7 @@ class BoneConverter:
 
         # まず、すべてのジョイントを親なしで作成
         for i, bone in enumerate(bones):
+            joint_create_start = time.perf_counter()
             # bone_mapから既にユニークな名前を取得
             joint_name = bone_map[i]
 
@@ -238,21 +252,13 @@ class BoneConverter:
                 ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
             )
 
-            if format_type == "pmx" and setup_bone_orientation:
-                # ジョイントのローカル軸を設定
-                if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-                    self.logger.debug(f"ジョイントのローカル軸を設定: {bone.name}")
-                    self._set_bone_local_axis(joint, bone)
-
-                # ジョイントの軸制限を設定
-                if bone.get_flag(PmxBoneFlag.AXIS_FIXED):
-                    self.logger.debug(f"ジョイントの軸制限を設定: {bone.name}")
-                    self._set_bone_axis_limits(joint, bone)
-
             # セグメントスケール補償を無効化
             maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
+            self._add_profile_time("joint_create_sec", joint_create_start)
 
+            joint_attr_start = time.perf_counter()
             self._set_extra_attributes(i, joint, bone, format_type)
+            self._add_profile_time("joint_attr_sec", joint_attr_start)
             maya_joints.append(joint)
 
         # 次に、親子関係を設定
@@ -286,26 +292,23 @@ class BoneConverter:
             else:
                 self.logger.error(f"Root joint '{root_joint}' does not exist in scene")
 
+        # parenting 完了後に LOCAL_AXIS ボーンの JO を設定し translate を補正する。
+        # Bake/Rig とも JO を持つ skeleton に統一し、VMD/runtime 入力側で JO を補正する。
+        self._apply_joint_orient_all(maya_joints, bones, format_type)
+
         return maya_joints
 
     def _set_extra_attributes(self, i, joint, bone, format_type):
         # フォーマットに応じたカスタム属性を設定
         if format_type == "pmx":
-            # 共通アトリビュートを設定
             attrs = {
                 ATTR_MMD_BONE_NAME: bone.name,
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
                 ATTR_MMD_BONE_FLAGS: bone.bone_flag,
                 ATTR_MMD_DEFORM_LAYER: bone.deform_layer if hasattr(bone, "deform_layer") else 0,
+                ATTR_MMD_BONE_INDEX: i,
+                ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
             }
-
-            # 詳細アトリビュート
-            attrs.update(
-                {
-                    ATTR_MMD_BONE_INDEX: i,
-                    ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
-                }
-            )
 
             # 接続先ボーンの属性を設定
             if not bone.get_flag(PmxBoneFlag.CONNECT_BONE):
@@ -374,27 +377,22 @@ class BoneConverter:
             if bone.get_flag(PmxBoneFlag.CONNECT_BONE):
                 attrs[ATTR_MMD_CONNECT_BONE_INDEX] = bone.connect_bone_index
 
-            maya_utils.set_custom_attributes(joint, attrs)
         elif format_type == "pmd":
-            # 共通アトリビュートを設定
             attrs = {
                 ATTR_MMD_BONE_NAME: bone.name,
                 ATTR_MMD_BONE_NAME_EN: bone.name_english,
                 # PMDはフラグを持たないのでデフォルト値を設定
                 ATTR_MMD_BONE_FLAGS: 0x0005,  # 回転可能 + 表示
                 ATTR_MMD_DEFORM_LAYER: 0,
+                ATTR_MMD_BONE_INDEX: i,
+                ATTR_MMD_BONE_TYPE: bone.bone_type.name,  # Enumの名前（文字列）を取得
+                ATTR_MMD_TAIL_POS_INDEX: bone.tail_pos_bone_index,
+                ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
             }
+        else:
+            return
 
-            # 詳細アトリビュート
-            attrs.update(
-                {
-                    ATTR_MMD_BONE_INDEX: i,
-                    ATTR_MMD_BONE_TYPE: bone.bone_type.name,  # Enumの名前（文字列）を取得
-                    ATTR_MMD_TAIL_POS_INDEX: bone.tail_pos_bone_index,
-                    ATTR_MMD_BONE_PARENT_INDEX: bone.parent_bone_index,
-                }
-            )
-            maya_utils.set_custom_attributes(joint, attrs)
+        maya_utils.set_custom_attributes(joint, attrs)
 
     def _create_skin_cluster(self, maya_joints, mesh_node, max_influence=4):
         """
@@ -412,10 +410,11 @@ class BoneConverter:
 
         # メッシュノードが存在しない場合はNoneを返す
         if not mesh_node or not cmds.objExists(mesh_node):
-            self.logger.warning(f"メッシュノード '{mesh_node}' が存在しません。スキンクラスターを作成しません。")
+            self.logger.warning(f"Mesh node '{mesh_node}' does not exist. Skin cluster will not be created.")
             return None
 
         # skin_cluster = skin_cluster_result[0] if skin_cluster_result else None
+        skin_cluster_create_start = time.perf_counter()
         skin_cluster = cmds.skinCluster(
             maya_joints,
             mesh_node,
@@ -424,6 +423,7 @@ class BoneConverter:
             maximumInfluences=max_influence,  # PMXは最大4つのボーンに制限されているため
             name="skinCluster",
         )[0]
+        self._add_profile_time("skin_cluster_create_sec", skin_cluster_create_start)
 
         return skin_cluster
 
@@ -490,6 +490,49 @@ class BoneConverter:
         """QDEFの重み情報を取得する。"""
         return self._get_bdef4_weights(vertex)
 
+    def _apply_flat_vertex_weights(self, skin_cluster, mesh_node, flat_weights, influence_count):
+        """Apply already-packed vertex weights directly through MFnSkinCluster."""
+        selection_list = om.MSelectionList()
+        selection_list.add(skin_cluster)
+        skin_cluster_obj = selection_list.getDependNode(0)
+        skin_fn = oma.MFnSkinCluster(skin_cluster_obj)
+
+        influence_paths = skin_fn.influenceObjects()
+        actual_influence_count = len(influence_paths)
+        if actual_influence_count != influence_count:
+            raise ValueError(
+                "SkinCluster influence count mismatch: "
+                f"packed={influence_count}, actual={actual_influence_count}"
+            )
+
+        mesh_selection_list = om.MSelectionList()
+        mesh_selection_list.add(mesh_node)
+        shape_dag_path = mesh_selection_list.getDagPath(0)
+        mesh_fn = om.MFnMesh(shape_dag_path)
+        vertex_count = mesh_fn.numVertices
+        expected_weight_count = vertex_count * influence_count
+        if len(flat_weights) != expected_weight_count:
+            raise ValueError(
+                "Flat skin weight count mismatch: "
+                f"packed={len(flat_weights)}, expected={expected_weight_count}"
+            )
+
+        vertex_component = om.MFnSingleIndexedComponent()
+        vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
+        vertex_component.addElements(list(range(vertex_count)))
+
+        influence_indices = om.MIntArray(influence_count, 0)
+        for influence_index in range(influence_count):
+            influence_indices[influence_index] = influence_index
+
+        skin_fn.setWeights(
+            shape_dag_path,
+            vertex_component_obj,
+            influence_indices,
+            om.MDoubleArray(flat_weights),
+            False,
+        )
+
     def _apply_pmx_vertex_weights(self, pmx_data, maya_joints, skin_cluster, mesh_node):
         """
         PMX頂点ウェイトをスキンクラスターに適用する。
@@ -500,37 +543,49 @@ class BoneConverter:
             skin_cluster (str): スキンクラスターの名前。
             mesh_node (str): メッシュノードの名前。
         """
-
-        weights = []
+        weight_pack_start = time.perf_counter()
+        joint_count = len(maya_joints)
+        flat_weights = []
+        flat_extend = flat_weights.extend
+        zero_row = [0.0] * joint_count
         source_vertex_indices = self._get_mesh_source_vertex_indices(mesh_node)
         vertices = pmx_data.vertices
         vertex_indices = source_vertex_indices if source_vertex_indices is not None else range(len(vertices))
 
         for source_vertex_index in vertex_indices:
             if source_vertex_index < 0 or source_vertex_index >= len(vertices):
-                weights.append([0.0] * len(maya_joints))
+                flat_extend(zero_row)
                 continue
 
+            row_start = len(flat_weights)
+            flat_extend(zero_row)
             vertex = vertices[source_vertex_index]
             # PMX頂点の重み情報を取得
             weight_maps = self._get_pmx_vertex_weights(vertex)
-            # ボーンの数でリストを初期化
-            vertex_weights = [0.0] * len(maya_joints)
 
             for joint_index, weight in weight_maps:
                 # ボーンインデックスの境界チェック
-                if joint_index >= len(maya_joints):
-                    self.logger.warning(f"無効なボーンインデックス {joint_index}, max={len(maya_joints) - 1}")
+                if joint_index < 0 or joint_index >= joint_count:
+                    self.logger.warning(f"Invalid bone index {joint_index}, max={joint_count - 1}")
                     continue
-                vertex_weights[joint_index] = weight
+                flat_weights[row_start + joint_index] = weight
+        self._add_profile_time("weight_pack_sec", weight_pack_start)
 
-            weights.append(vertex_weights)
-
-        maya_utils.apply_vertex_weights(
-            skin_cluster,
-            mesh_node,
-            weights,
-        )
+        set_weights_start = time.perf_counter()
+        try:
+            self._apply_flat_vertex_weights(skin_cluster, mesh_node, flat_weights, joint_count)
+        except Exception as exc:
+            self.logger.warning(
+                "Direct skin weight application failed for '%s'; falling back to apply_vertex_weights(): %s",
+                mesh_node,
+                exc,
+            )
+            weights = [
+                flat_weights[row_start : row_start + joint_count]
+                for row_start in range(0, len(flat_weights), joint_count)
+            ]
+            maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
+        self._add_profile_time("set_weights_sec", set_weights_start)
 
     def _get_mesh_source_vertex_indices(self, mesh_node):
         """compact material split mesh の元 PMX vertex index 配列を取得する。"""
@@ -557,6 +612,7 @@ class BoneConverter:
 
         max_joint_index = len(maya_joints) - 1
         invalid_bone_indices = set()
+        weight_pack_start = time.perf_counter()
         weights = []
         for vertex in pmd_data.vertices:
             # ボーンの数でリストを初期化
@@ -586,22 +642,91 @@ class BoneConverter:
                 warning_key = (bone1_index, bone2_index, max_joint_index)
                 if warning_key not in invalid_bone_indices:
                     self.logger.warning(
-                        "無効なボーンインデックス "
+                        "Invalid bone index "
                         f"bone1={bone1_index}, bone2={bone2_index}, max={max_joint_index}"
                     )
                     invalid_bone_indices.add(warning_key)
 
             weights.append(vertex_weights)
+        self._add_profile_time("weight_pack_sec", weight_pack_start)
 
         # vertexの要素が存在することをチェック
         if not weights:
-            self.logger.warning("頂点ウェイトが空です。メッシュに頂点が存在するか確認してください。")
+            self.logger.warning("Vertex weights are empty. Check whether the mesh has vertices.")
             return
-        maya_utils.apply_vertex_weights(
-            skin_cluster,
-            mesh_node,
-            weights,
-        )
+        set_weights_start = time.perf_counter()
+        maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
+        self._add_profile_time("set_weights_sec", set_weights_start)
+
+    def _compute_pmx_world_rotation_matrix(self, bone):
+        """PMX LOCAL_AXIS の軸方向からワールド空間回転行列を計算する。"""
+        x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], -bone.x_axis_direction[2])
+        x_axis.normalize()
+        z_axis = om.MVector(bone.z_axis_direction[0], bone.z_axis_direction[1], -bone.z_axis_direction[2])
+        z_axis.normalize()
+        y_axis = z_axis ^ x_axis
+        y_axis.normalize()
+        return om.MMatrix([
+            [x_axis.x, x_axis.y, x_axis.z, 0],
+            [y_axis.x, y_axis.y, y_axis.z, 0],
+            [z_axis.x, z_axis.y, z_axis.z, 0],
+            [0, 0, 0, 1],
+        ])
+
+    def _apply_joint_orient_all(self, maya_joints, bones, format_type):
+        """LOCAL_AXIS ボーンに JO を設定し、全ボーンの translate を再計算する。
+
+        parenting (cmds.parent absolute=True) 完了後に呼ぶ。
+        トポロジカル順に処理し、Maya の実 worldMatrix を読み取って translate を計算
+        するため、Python/Maya 間の Euler round-trip 誤差が蓄積しない。
+        """
+        if format_type != "pmx":
+            return
+
+        n = len(bones)
+
+        def _extract_rotation_matrix(world_matrix):
+            """4x4 worldMatrix から回転部分(3x3)だけの MMatrix を返す。"""
+            return om.MMatrix([
+                [world_matrix[0], world_matrix[1], world_matrix[2], 0],
+                [world_matrix[4], world_matrix[5], world_matrix[6], 0],
+                [world_matrix[8], world_matrix[9], world_matrix[10], 0],
+                [0, 0, 0, 1],
+            ])
+
+        for i, bone in enumerate(bones):
+            pidx = bone.parent_bone_index
+
+            # --- JO 設定 (LOCAL_AXIS ボーンのみ) ---
+            if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
+                desired_world = self._compute_pmx_world_rotation_matrix(bone)
+                if 0 <= pidx < n:
+                    parent_wm = cmds.getAttr(f"{maya_joints[pidx]}.worldMatrix[0]")
+                    parent_rot = _extract_rotation_matrix(parent_wm)
+                else:
+                    parent_rot = om.MMatrix()
+                jo_mat = desired_world * parent_rot.inverse()
+                jo_euler = om.MTransformationMatrix(jo_mat).rotation(asQuaternion=False)
+                maya_utils.set_attribute(
+                    maya_joints[i], "jointOrient",
+                    (jo_euler.x, jo_euler.y, jo_euler.z), "double3",
+                )
+
+            # --- translate 再計算 (Maya 実 worldMatrix ベース) ---
+            if 0 <= pidx < n:
+                parent_wm_flat = cmds.getAttr(f"{maya_joints[pidx]}.worldMatrix[0]")
+                parent_wm = om.MMatrix(parent_wm_flat)
+                parent_wm_inv = parent_wm.inverse()
+                my_pos = om.MPoint(
+                    bone.position[0], bone.position[1], -bone.position[2],
+                )
+                local_pos = my_pos * parent_wm_inv
+                maya_utils.set_attribute(
+                    maya_joints[i], "translate",
+                    (local_pos.x, local_pos.y, local_pos.z), "double3",
+                )
+
+            maya_utils.set_attribute(maya_joints[i], "rotate", (0, 0, 0), "double3")
 
     def _set_bone_local_axis(self, joint, bone):
         """

@@ -57,7 +57,7 @@ class UITranslator:
         translations_dir = self._get_translations_dir()
 
         if not os.path.exists(translations_dir):
-            logger.warning(f"翻訳ディレクトリが見つかりません: {translations_dir}")
+            logger.warning(f"Translation directory not found: {translations_dir}")
             return
 
         for lang_code in self.SUPPORTED_LANGUAGES:
@@ -69,12 +69,12 @@ class UITranslator:
                 try:
                     with open(filepath, "r", encoding="utf-8") as f:
                         self._translations[lang_code] = json.load(f)
-                    logger.debug(f"翻訳ファイルを読み込みました: {filename}")
+                    logger.debug(f"Loaded translation file: {filename}")
                 except Exception as e:
-                    logger.error(f"翻訳ファイルの読み込みに失敗しました {filename}: {e}")
+                    logger.error(f"Failed to load translation file {filename}: {e}")
                     self._translations[lang_code] = {}
             else:
-                logger.warning(f"翻訳ファイルが見つかりません: {filepath}")
+                logger.warning(f"Translation file not found: {filepath}")
                 self._translations[lang_code] = {}
 
     def set_language(self, language: str):
@@ -85,9 +85,9 @@ class UITranslator:
         """
         if language in self.SUPPORTED_LANGUAGES:
             self._current_language = language
-            logger.info(f"言語を {self.SUPPORTED_LANGUAGES[language]} に設定しました")
+            logger.info(f"Language set to {self.SUPPORTED_LANGUAGES[language]}")
         else:
-            logger.warning(f"サポートされていない言語です: {language}")
+            logger.warning(f"Unsupported language: {language}")
 
     def get_language(self) -> str:
         """現在の言語コードを取得"""
@@ -153,7 +153,7 @@ class UITranslator:
                     return data
 
         # 最終フォールバック: キーをそのまま返す
-        logger.warning(f"翻訳が見つかりません: {key} (category: {category})")
+        logger.warning(f"Translation not found: {key} (category: {category})")
         return key
 
     def get_supported_languages(self) -> Dict[str, str]:
@@ -168,4 +168,4 @@ class UITranslator:
         """翻訳ファイルを再読み込み"""
         self._translations.clear()
         self._load_translations()
-        logger.info("翻訳ファイルを再読み込みしました")
+        logger.info("Reloaded translation files")

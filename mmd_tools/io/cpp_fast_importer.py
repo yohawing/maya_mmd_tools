@@ -22,9 +22,11 @@ from typing import Optional
 
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
-from mmd_tools.core.native import MmdParsedModel
 
 logger = get_logger(__name__)
+
+# Kept as a module attribute so tests can patch it without importing native code.
+MmdParsedModel = None
 
 # ---------------------------------------------------------------------------
 # Candidate discovery  (mirrors tests/cpp/smoke_runtime_node.py)
@@ -33,6 +35,16 @@ logger = get_logger(__name__)
 ROOT = Path(__file__).resolve().parents[2]  # project root
 
 _PLUGIN_EXTENSIONS = [".mll", ".bundle", ".so"]
+
+
+def _mmd_parsed_model_class():
+    """Resolve the native parsed-model wrapper only when the fast path needs it."""
+    global MmdParsedModel
+    if MmdParsedModel is None:
+        from mmd_tools.core.native import MmdParsedModel as _MmdParsedModel
+
+        MmdParsedModel = _MmdParsedModel
+    return MmdParsedModel
 
 
 def _candidate_plugin_paths() -> list[Path]:
@@ -196,7 +208,8 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
     """Assign standardSurface materials using mmd-anim parsed metadata."""
     try:
         pmx_bytes = Path(filepath).read_bytes()
-        parsed = MmdParsedModel.from_pmx_bytes(pmx_bytes)
+        parsed_model_cls = _mmd_parsed_model_class()
+        parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
         if parsed is None:
             logger.info("Native parsed-model metadata unavailable; skipping fast material assignment")
             return
@@ -281,7 +294,8 @@ def _apply_fast_skeleton_skin(
     for falling back to the mesh-only result.
     """
     pmx_bytes = Path(filepath).read_bytes()
-    parsed = MmdParsedModel.from_pmx_bytes(pmx_bytes)
+    parsed_model_cls = _mmd_parsed_model_class()
+    parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
     if parsed is None:
         logger.info("Native parsed-model unavailable; skipping skeleton/skin")
         return

@@ -4,6 +4,7 @@ This script is a report-only capture that:
 - Runs under mayapy (standalone, no GUI required)
 - Initializes Maya standalone
 - Imports a PMX model via mmd_tools.io.mmd_importer.import_mmd_file()
+- Optionally applies a VMD motion before the requested frame is captured
 - Computes the model's world-space bounding box and frames the camera
   to show the entire model with margin (~70% fill)
 - Sets up a fixed camera and directional light using GoldenOracle-derived defaults
@@ -39,6 +40,7 @@ Launched by the `maya_static_render` Nox session (or directly via mayapy ...).
 
 Usage (direct):
     mayapy tests/viewport/static_render_capture.py --out build/captures/static_render_1bone_cube.png --model tests/data/for_unit_test/test_1bone_cube.pmx --frame 0 --width 1024 --height 1024
+    mayapy tests/viewport/static_render_capture.py --out out.png --model model.pmx --motion motion.vmd --frame 60
     mayapy tests/viewport/static_render_capture.py --out out.png --model model.pmx --shader --view-transform "ACES 1.0 SDR-video (sRGB)" --display sRGB --rendering-space ACEScg
 """
 
@@ -80,6 +82,11 @@ def _parse_args() -> argparse.Namespace:
         "--model",
         default="tests/data/for_unit_test/test_1bone_cube.pmx",
         help="PMX model file to import. Default: tests/data/for_unit_test/test_1bone_cube.pmx",
+    )
+    parser.add_argument(
+        "--motion",
+        default="",
+        help="Optional VMD motion file to apply before capture.",
     )
     parser.add_argument(
         "--frame",
@@ -143,6 +150,11 @@ def _parse_args() -> argparse.Namespace:
         "--allow-blank",
         action="store_true",
         help="Diagnostic mode: write diagnostics and exit 0 even if the PNG is blank.",
+    )
+    parser.add_argument(
+        "--bright",
+        action="store_true",
+        help="Use brighter lambert and fill lighting for human-readable mesh screenshots.",
     )
     return parser.parse_args()
 
@@ -757,6 +769,7 @@ def main() -> int:
 
     out_path = Path(args.out).resolve()
     model_path = Path(args.model).resolve()
+    motion_path = Path(args.motion).resolve() if args.motion else None
     frame = args.frame
     width = args.width
     height = args.height
@@ -878,6 +891,18 @@ def main() -> int:
         if root_node is None:
             raise RuntimeError(f"Failed to import PMX model: {model_path}")
         print(f"Imported PMX model, root node: {root_node}")
+        if motion_path:
+            if not motion_path.exists():
+                raise FileNotFoundError(f"VMD motion file not found: {motion_path}")
+            cmds.select(root_node, replace=True)
+            motion_result = import_mmd_file(
+                str(motion_path),
+                options={
+                    "target_model": root_node,
+                    "pmx_path": str(model_path),
+                },
+            )
+            print(f"Applied VMD motion: {motion_path} -> {motion_result}")
 
         # Re-read what actually happened (the importer may have fallen back
         # internally despite create_mmd_shaders=True).
@@ -971,7 +996,12 @@ def main() -> int:
             meshes = cmds.listRelatives(root_node, allDescendents=True, type="mesh")
             if meshes:
                 debug_shader = cmds.shadingNode("lambert", asShader=True, name="viewportDebug_lambert")
-                cmds.setAttr(f"{debug_shader}.color", 0.6, 0.7, 0.9, type="double3")
+                if args.bright:
+                    cmds.setAttr(f"{debug_shader}.color", 0.85, 0.9, 1.0, type="double3")
+                    cmds.setAttr(f"{debug_shader}.ambientColor", 0.35, 0.35, 0.35, type="double3")
+                    cmds.setAttr(f"{debug_shader}.diffuse", 1.0)
+                else:
+                    cmds.setAttr(f"{debug_shader}.color", 0.6, 0.7, 0.9, type="double3")
                 sgs_seen: set[str] = set()
                 for m in meshes:
                     cmds.setAttr(f"{m}.displayColors", 0)
@@ -1006,7 +1036,7 @@ def main() -> int:
         # ---------------------------------------------------------------
         light_shape = cmds.directionalLight(
             name="staticRenderLight",
-            intensity=1.0,
+            intensity=2.0 if args.bright else 1.0,
             rgb=GOLDEN_LIGHT_COLOR,
         )
         light_xform = cmds.listRelatives(light_shape, parent=True)[0]
@@ -1022,6 +1052,12 @@ def main() -> int:
         cmds.setAttr(f"{light_xform}.rotateX", light_euler[0])
         cmds.setAttr(f"{light_xform}.rotateY", light_euler[1])
         cmds.setAttr(f"{light_xform}.rotateZ", light_euler[2])
+        if args.bright:
+            fill_shape = cmds.ambientLight(name="staticRenderFill", intensity=0.8, rgb=(1.0, 1.0, 1.0))
+            fill_xform = cmds.listRelatives(fill_shape, parent=True)[0]
+            cmds.setAttr(f"{fill_xform}.translateX", model_center[0])
+            cmds.setAttr(f"{fill_xform}.translateY", model_center[1] + model_radius)
+            cmds.setAttr(f"{fill_xform}.translateZ", model_center[2] + model_radius)
 
         # ---------------------------------------------------------------
         # 5. Background

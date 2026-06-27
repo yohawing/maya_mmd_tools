@@ -436,7 +436,14 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
     # メッシュを作成
     mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
 
-    if normals:
+    if normals and len(normals) == len(vertices):
+        normal_array = om.MVectorArray()
+        normal_vertex_ids = om.MIntArray()
+        for vertex_id, normal in enumerate(normals):
+            normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
+            normal_vertex_ids.append(vertex_id)
+        mesh_fn.setVertexNormals(normal_array, normal_vertex_ids)
+    elif normals:
         normal_array = om.MVectorArray()
         normal_face_ids = om.MIntArray()
         normal_vertex_ids = om.MIntArray()
@@ -445,7 +452,7 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
         for count in face_counts:
             for _ in range(count):
                 vertex_id = face_connects[cursor]
-                normal = normals[vertex_id]
+                normal = normals[cursor]
                 normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
                 normal_face_ids.append(face_id)
                 normal_vertex_ids.append(vertex_id)
@@ -763,7 +770,7 @@ def _set_string_plug(plug, object_name, attr_name, value):
         except Exception:
             return
     except Exception as exc:
-        logger.debug(f"MPlug.setString による文字列設定に失敗、cmds.setAttr にフォールバックします '{attr_name}': {exc}")
+        logger.debug(f"MPlug.setString failed to set string; falling back to cmds.setAttr for '{attr_name}': {exc}")
     cmds.setAttr(f"{object_name}.{attr_name}", text, type="string")
 
 
@@ -1026,17 +1033,23 @@ def apply_vertex_weights(
     for ii in range(influence_count):
         influence_indices[ii] = ii
 
-    # ウェイト配列を作成（頂点数 × 影響数）
-    weight_array = om.MDoubleArray(vertex_count * influence_count, 0.0)
-    # 各頂点のウェイトを設定
-    for vertex_index in range(vertex_count):
-        for influence_index in range(influence_count):
-            array_index = vertex_index * influence_count + influence_index
-
-            # influence_indexがweightsの範囲外の場合は0.0を設定
-            in_range = vertex_index < len(weights) and influence_index < len(weights[vertex_index])
-            weight_value = weights[vertex_index][influence_index] if in_range else 0.0
-            weight_array[array_index] = weight_value
+    # flat list を構築して MDoubleArray に一括変換（per-element 代入より桁違いに速い）
+    zero_row = [0.0] * influence_count
+    n_weights = len(weights)
+    flat = []
+    flat_extend = flat.extend
+    for vi in range(vertex_count):
+        if vi < n_weights:
+            row = weights[vi]
+            row_len = len(row)
+            if row_len >= influence_count:
+                flat_extend(row[:influence_count])
+            else:
+                flat_extend(row)
+                flat_extend(zero_row[:influence_count - row_len])
+        else:
+            flat_extend(zero_row)
+    weight_array = om.MDoubleArray(flat)
 
     # 一括で設定
     skin_fn.setWeights(shape_dag_path, vertex_component_obj, influence_indices, weight_array, False)
@@ -1371,6 +1384,47 @@ def matrix_to_euler(matrix):
     return [math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z)]
 
 
+def _parse_array_attribute_part(attr_part):
+    if not attr_part.endswith("]") or "[" not in attr_part:
+        return attr_part, None
+    attr_name, _, index_text = attr_part[:-1].partition("[")
+    try:
+        return attr_name, int(index_text)
+    except ValueError:
+        return attr_part, None
+
+
+def _find_plug(fn_depend, attr):
+    """Find a simple, array element, or compound-array child plug."""
+    try:
+        return fn_depend.findPlug(attr, False)
+    except Exception:
+        pass
+
+    plug = None
+    for part in attr.split("."):
+        attr_name, logical_index = _parse_array_attribute_part(part)
+        if plug is None:
+            plug = fn_depend.findPlug(attr_name, False)
+        else:
+            child = None
+            for child_index in range(plug.numChildren()):
+                candidate = plug.child(child_index)
+                if candidate.partialName(useLongNames=True) == attr_name:
+                    child = candidate
+                    break
+            if child is None:
+                raise AttributeError(f"Attribute child '{attr_name}' not found")
+            plug = child
+
+        if logical_index is not None:
+            plug = plug.elementByLogicalIndex(logical_index)
+
+    if plug is None:
+        raise AttributeError(f"Attribute '{attr}' not found")
+    return plug
+
+
 def create_animation_curves(
     node_name,
     attributes,
@@ -1443,7 +1497,7 @@ def create_animation_curves(
         else:
             # 通常のアニメーションカーブ作成
             curve = oma.MFnAnimCurve()
-            plug = fn_depend.findPlug(attr, False)
+            plug = _find_plug(fn_depend, attr)
             curve.create(plug)
             curves[attr] = curve
 
@@ -1829,12 +1883,12 @@ def setup_mmd_color_management(
             current = cmds.colorManagementPrefs(q=True, renderingSpaceName=True)
             if current != rendering_space:
                 cmds.colorManagementPrefs(e=True, renderingSpaceName=rendering_space)
-                logger.info("Rendering space を MMD 向けに設定: %s (旧: %s)", rendering_space, current)
+                logger.info("Set rendering space for MMD: %s (previous: %s)", rendering_space, current)
             changed = True
         else:
-            logger.debug("Rendering space '%s' は利用不可。スキップ", rendering_space)
+            logger.debug("Rendering space '%s' is unavailable. Skipping", rendering_space)
     except Exception:
-        logger.debug("Rendering space の設定に失敗", exc_info=True)
+        logger.debug("Failed to set rendering space", exc_info=True)
 
     try:
         transforms = cmds.colorManagementPrefs(q=True, viewTransformNames=True) or []
@@ -1842,12 +1896,12 @@ def setup_mmd_color_management(
             current = cmds.colorManagementPrefs(q=True, viewTransformName=True)
             if current != view_transform:
                 cmds.colorManagementPrefs(e=True, viewTransformName=view_transform)
-                logger.info("View Transform を MMD 向けに設定: %s (旧: %s)", view_transform, current)
+                logger.info("Set View Transform for MMD: %s (previous: %s)", view_transform, current)
             changed = True
         else:
-            logger.debug("View Transform '%s' は利用不可。スキップ", view_transform)
+            logger.debug("View Transform '%s' is unavailable. Skipping", view_transform)
     except Exception:
-        logger.debug("View Transform の設定に失敗", exc_info=True)
+        logger.debug("Failed to set View Transform", exc_info=True)
 
     return changed
 
@@ -1873,13 +1927,13 @@ def setup_mmd_transparency(algorithm=TRANSPARENCY_ALGORITHM_DEPTH_PEELING):
         node = "hardwareRenderingGlobals"
         attr = f"{node}.transparencyAlgorithm"
         if not cmds.objExists(node) or not cmds.attributeQuery("transparencyAlgorithm", node=node, exists=True):
-            logger.debug("transparencyAlgorithm 属性が利用不可。スキップ")
+            logger.debug("transparencyAlgorithm attribute is unavailable. Skipping")
             return False
         current = cmds.getAttr(attr)
         if current != algorithm:
             cmds.setAttr(attr, algorithm)
-            logger.info("Transparency algorithm を MMD 向けに設定: %s (旧: %s)", algorithm, current)
+            logger.info("Set transparency algorithm for MMD: %s (previous: %s)", algorithm, current)
         return True
     except Exception:
-        logger.debug("Transparency algorithm の設定に失敗", exc_info=True)
+        logger.debug("Failed to set transparency algorithm", exc_info=True)
         return False

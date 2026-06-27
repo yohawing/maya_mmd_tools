@@ -1,7 +1,6 @@
 """SettingsPresenter の純 Python ロジックテスト (Maya / Qt 非依存)。
 
-Development Mode チェックボックス変更時に両ログレベル (ui.general.log_level と
-logging.level) が決定論的に設定される動作を検証する。
+Development Mode チェックボックス変更時に logging.level が決定論的に設定される動作を検証する。
 """
 
 import sys
@@ -98,7 +97,6 @@ class _FakeButton:
 class _FakeView:
     def __init__(self):
         self.development_mode_check = _FakeCheckBox(False)
-        self.ui_log_level_combo = _FakeComboBox()
         self.log_level_combo = _FakeComboBox()
         self.logging_enabled_check = _FakeCheckBox(True)
         self.log_file_path_edit = _FakeLineEdit("logs/mmd_tools.log")
@@ -147,23 +145,21 @@ class TestDevelopmentModeLogLevels(unittest.TestCase):
         _reset_singleton()
 
     def test_dev_mode_on_sets_info_level(self):
-        """Development Mode を ON にすると両ログレベルが INFO になる。"""
+        """Development Mode を ON にすると logging.level が INFO になる。"""
         from mmd_tools.core.settings import settings
 
         self.view.development_mode_check.setChecked(True)
         self.presenter.on_development_mode_changed()
 
-        self.assertEqual(settings.get("ui.general.log_level"), "INFO")
         self.assertEqual(settings.get("logging.level"), "INFO")
 
     def test_dev_mode_off_sets_warning_level(self):
-        """Development Mode を OFF にすると両ログレベルが WARNING になる。"""
+        """Development Mode を OFF にすると logging.level が WARNING になる。"""
         from mmd_tools.core.settings import settings
 
         self.view.development_mode_check.setChecked(False)
         self.presenter.on_development_mode_changed()
 
-        self.assertEqual(settings.get("ui.general.log_level"), "WARNING")
         self.assertEqual(settings.get("logging.level"), "WARNING")
 
     def test_dev_mode_on_updates_combo_to_info(self):
@@ -171,7 +167,6 @@ class TestDevelopmentModeLogLevels(unittest.TestCase):
         self.view.development_mode_check.setChecked(True)
         self.presenter.on_development_mode_changed()
 
-        self.assertEqual(self.view.ui_log_level_combo.currentText(), "INFO")
         self.assertEqual(self.view.log_level_combo.currentText(), "INFO")
 
     def test_dev_mode_off_updates_combo_to_warning(self):
@@ -182,14 +177,12 @@ class TestDevelopmentModeLogLevels(unittest.TestCase):
         self.view.development_mode_check.setChecked(False)
         self.presenter.on_development_mode_changed()
 
-        self.assertEqual(self.view.ui_log_level_combo.currentText(), "WARNING")
         self.assertEqual(self.view.log_level_combo.currentText(), "WARNING")
 
     def test_no_change_during_loading(self):
         """_loading フラグが立っている間は on_development_mode_changed が無視される。"""
         from mmd_tools.core.settings import settings
 
-        settings.set("ui.general.log_level", "DEBUG")
         settings.set("logging.level", "DEBUG")
 
         self.presenter._loading = True
@@ -198,7 +191,6 @@ class TestDevelopmentModeLogLevels(unittest.TestCase):
         self.presenter._loading = False
 
         # _loading 中なので変更されない
-        self.assertEqual(settings.get("ui.general.log_level"), "DEBUG")
         self.assertEqual(settings.get("logging.level"), "DEBUG")
 
 
@@ -215,7 +207,7 @@ class TestLoadSettings(unittest.TestCase):
         _reset_singleton()
 
     def test_default_logging_level_is_warning(self):
-        """default_settings.json で logging.level と ui.general.log_level が WARNING に設定されている。"""
+        """default_settings.json で logging.level が WARNING に設定されている。"""
         import json
         import os
         config_path = os.path.join(
@@ -225,7 +217,7 @@ class TestLoadSettings(unittest.TestCase):
         with open(config_path) as f:
             defaults = json.load(f)
         self.assertEqual(defaults["logging"]["level"], "WARNING")
-        self.assertEqual(defaults["ui"]["general"]["log_level"], "WARNING")
+        self.assertNotIn("log_level", defaults["ui"]["general"])
 
     def test_development_mode_default_is_false(self):
         """デフォルト設定では development_mode が False (チェックなし) になる。"""

@@ -8,11 +8,12 @@ PMX モデルと VMD モーションの忠実なランタイム評価を提供�
 - PMX バイト列からのモデル構築
 - VMD バイト列 + モデルからのクリップ構築
 - 任意フレーム (float) での評価
+- 連続フレーム範囲の batch 評価 (対応 DLL のみ)
 - ワールド行列、スキニング行列、モーフウェイト、IK 状態の取得
 
 注意:
 - 物理演算は mmd-anim 側で提供されません (ホスト側で別途対応)。
-- 事前ビルドされた mmd_anim_ffi.dll (Windows) / .dylib (macOS) が必要です。
+- 事前ビルドされた mmd_runtime_ffi.dll / mmd_anim_ffi.dll (Windows) / .dylib (macOS) が必要です。
 - ライブラリが見つからない場合、すべての公開 API は安全に失敗 (None / False) します。
 
 ファイルヘッダ / コーディング規約:
@@ -33,13 +34,14 @@ from ctypes import (
     Structure,
     c_bool,
     c_float,
+    c_int32,
     c_size_t,
     c_uint8,
     c_uint32,
     c_void_p,
 )
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from mmd_tools.core.logger import get_logger
 
@@ -52,11 +54,16 @@ MMD_RUNTIME_ABI_VERSION = 1
 
 # ライブラリ名候補
 if platform.system() == "Windows":
-    _LIB_NAMES = ["mmd_anim_ffi.dll"]
+    _LIB_NAMES = ["mmd_runtime_ffi.dll", "mmd_anim_ffi.dll"]
 elif platform.system() == "Darwin":
-    _LIB_NAMES = ["libmmd_anim_ffi.dylib", "mmd_anim_ffi.dylib"]
+    _LIB_NAMES = [
+        "libmmd_runtime_ffi.dylib",
+        "mmd_runtime_ffi.dylib",
+        "libmmd_anim_ffi.dylib",
+        "mmd_anim_ffi.dylib",
+    ]
 else:
-    _LIB_NAMES = ["libmmd_anim_ffi.so", "mmd_anim_ffi.so"]
+    _LIB_NAMES = ["libmmd_runtime_ffi.so", "mmd_runtime_ffi.so", "libmmd_anim_ffi.so", "mmd_anim_ffi.so"]
 
 # 検索パス候補 (相対はパッケージ位置基準)
 _THIS_FILE = Path(__file__).resolve()
@@ -96,6 +103,59 @@ class MmdRuntimeFfiByteBuffer(Structure):
     _fields_ = [
         ("data", POINTER(c_uint8)),
         ("len", c_size_t),
+    ]
+
+
+class MmdRuntimeBatchEvaluation(NamedTuple):
+    """連続フレーム batch 評価結果。
+
+    `world_matrices` は `[frame][bone][16]`、`morph_weights` は
+    `[frame][morph]` の flat ctypes buffer です。Python list へ変換せず
+    Maya 側の bake 処理が直接参照できるよう、buffer 自体を保持します。
+    """
+
+    frame_count: int
+    bone_count: int
+    morph_count: int
+    world_matrices: Any
+    morph_weights: Any
+
+
+class MmdRuntimeFfiRigBone(Structure):
+    _fields_ = [
+        ("parent_slot", c_int32),
+        ("rest_position_xyz", c_float * 3),
+        ("flags", c_uint32),
+        ("fixed_axis_xyz", c_float * 3),
+    ]
+
+
+MMD_RUNTIME_RIG_BONE_FIXED_AXIS = 1 << 0
+
+
+class MmdRuntimeFfiRigIkLink(Structure):
+    _fields_ = [
+        ("bone_slot", c_uint32),
+        ("has_angle_limit", c_bool),
+        ("angle_limit_min_xyz", c_float * 3),
+        ("angle_limit_max_xyz", c_float * 3),
+    ]
+
+
+class MmdRuntimeFfiIkSolveStats(Structure):
+    _fields_ = [
+        ("executed_iterations", c_uint32),
+        ("link_steps", c_uint32),
+        ("final_distance", c_float),
+        ("break_reason", c_uint32),
+    ]
+
+
+class MmdRuntimeFfiAppendConfig(Structure):
+    _fields_ = [
+        ("ratio", c_float),
+        ("affect_rotation", c_bool),
+        ("affect_translation", c_bool),
     ]
 
 
@@ -183,6 +243,11 @@ def _setup_function_signatures(lib: CDLL) -> None:
         ]
     except AttributeError:
         logger.debug("mmd-anim runtime does not expose evaluate_clip_frame_with_ik_options")
+    try:
+        lib.mmd_runtime_instance_evaluate_rest_pose.restype = c_bool
+        lib.mmd_runtime_instance_evaluate_rest_pose.argtypes = [c_void_p]
+    except AttributeError:
+        logger.debug("mmd-anim runtime does not expose evaluate_rest_pose")
 
     # 出力取得 (コピー版を優先)
     lib.mmd_runtime_instance_world_matrix_f32_len.restype = c_size_t
@@ -190,6 +255,43 @@ def _setup_function_signatures(lib: CDLL) -> None:
 
     lib.mmd_runtime_instance_copy_world_matrices.restype = c_bool
     lib.mmd_runtime_instance_copy_world_matrices.argtypes = [c_void_p, POINTER(c_float), c_size_t]
+    _set_sig(
+        lib,
+        "mmd_runtime_instance_clip_frame_batch_world_matrix_f32_len",
+        c_size_t,
+        [c_void_p, c_size_t],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_instance_clip_frame_batch_morph_weight_f32_len",
+        c_size_t,
+        [c_void_p, c_size_t],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_instance_evaluate_clip_frame_batch",
+        c_bool,
+        [
+            c_void_p,
+            c_void_p,
+            c_float,
+            c_float,
+            c_size_t,
+            c_uint32,
+            POINTER(c_float),
+            c_size_t,
+            POINTER(c_float),
+            c_size_t,
+        ],
+    )
+    try:
+        lib.mmd_runtime_instance_skinning_matrix_f32_len.restype = c_size_t
+        lib.mmd_runtime_instance_skinning_matrix_f32_len.argtypes = [c_void_p]
+
+        lib.mmd_runtime_instance_copy_skinning_matrices.restype = c_bool
+        lib.mmd_runtime_instance_copy_skinning_matrices.argtypes = [c_void_p, POINTER(c_float), c_size_t]
+    except AttributeError:
+        logger.debug("mmd-anim runtime does not expose skinning matrix copy ABI")
 
     lib.mmd_runtime_instance_morph_weight_len.restype = c_size_t
     lib.mmd_runtime_instance_morph_weight_len.argtypes = [c_void_p]
@@ -205,6 +307,9 @@ def _setup_function_signatures(lib: CDLL) -> None:
 
     # --- parsed-model ABI (optional, guarded) ---
     _setup_parsed_model_signatures(lib)
+
+    # --- rig primitive ABI (optional, guarded) ---
+    _setup_rig_primitive_signatures(lib)
 
 
 def _setup_parsed_model_signatures(lib: CDLL) -> None:
@@ -260,7 +365,7 @@ def _setup_parsed_model_signatures(lib: CDLL) -> None:
         )
         _set_sig(lib, "mmd_runtime_parsed_model_metadata_json", MmdRuntimeFfiByteBuffer, [c_void_p])
     except Exception as exc:
-        logger.debug(f"parsed-model ABI のシグネチャ設定中にエラー: {exc}")
+        logger.debug(f"Error while setting parsed-model ABI signatures: {exc}")
 
 
 def _set_sig(
@@ -272,10 +377,82 @@ def _set_sig(
     """
     func = getattr(lib, name, None)
     if func is None:
-        logger.debug(f"parsed-model ABI シンボル '{name}' は DLL に存在しません")
+        logger.debug(f"parsed-model ABI symbol '{name}' does not exist in the DLL")
         return
     func.restype = restype
     func.argtypes = argtypes
+
+
+def _setup_rig_primitive_signatures(lib: CDLL) -> None:
+    try:
+        # --- rig spec ---
+        _set_sig(lib, "mmd_runtime_pmx_rig_spec_create", c_void_p, [POINTER(c_uint8), c_size_t])
+        _set_sig(lib, "mmd_runtime_pmx_rig_spec_free", None, [c_void_p])
+        _set_sig(lib, "mmd_runtime_pmx_rig_spec_manifest_json", MmdRuntimeFfiByteBuffer, [c_void_p])
+
+        # --- IK chain ---
+        _set_sig(
+            lib,
+            "mmd_runtime_ik_chain_create",
+            c_void_p,
+            [
+                POINTER(MmdRuntimeFfiRigBone),  # bones
+                c_size_t,                       # bone_count
+                c_uint32,                       # target_bone_slot
+                POINTER(MmdRuntimeFfiRigIkLink),  # links
+                c_size_t,                       # link_count
+                c_uint32,                       # iteration_count
+                c_float,                        # limit_angle
+            ],
+        )
+        _set_sig(lib, "mmd_runtime_ik_chain_free", None, [c_void_p])
+        _set_sig(
+            lib,
+            "mmd_runtime_ik_chain_solve",
+            c_bool,
+            [
+                c_void_p,                         # chain
+                POINTER(c_float),                 # parent_world_matrix (nullable)
+                POINTER(c_float),                 # local_position_offsets_xyz
+                POINTER(c_float),                 # local_rotations_xyzw
+                POINTER(c_float),                 # goal_position_xyz
+                c_float,                          # tolerance
+                c_uint32,                         # max_iterations_cap
+                POINTER(c_float),                 # out_link_rotations_xyzw
+                c_size_t,                         # out_link_rotation_f32_len
+                POINTER(MmdRuntimeFfiIkSolveStats),  # out_stats (nullable)
+            ],
+        )
+
+        # --- append solver ---
+        _set_sig(
+            lib,
+            "mmd_runtime_append_solver_create",
+            c_void_p,
+            [POINTER(MmdRuntimeFfiAppendConfig)],
+        )
+        _set_sig(lib, "mmd_runtime_append_solver_free", None, [c_void_p])
+        _set_sig(
+            lib,
+            "mmd_runtime_append_solver_solve",
+            c_bool,
+            [
+                c_void_p,          # solver
+                POINTER(c_float),  # source_position_offset_xyz
+                POINTER(c_float),  # source_rotation_xyzw
+                POINTER(c_float),  # out_position_offset_xyz
+                POINTER(c_float),  # out_rotation_xyzw
+            ],
+        )
+    except Exception as exc:
+        logger.debug(f"Error while setting rig primitive ABI signatures: {exc}")
+
+
+def is_rig_primitive_available() -> bool:
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return False
+    return hasattr(lib, "mmd_runtime_ik_chain_create")
 
 
 def is_native_pmx_parser_available() -> bool:
@@ -305,7 +482,7 @@ def get_mmd_runtime_library() -> Optional[CDLL]:
 
     path = _find_library()
     if path is None:
-        logger.info("mmd-anim runtime library が見つかりませんでした (事前ビルドの配置を確認してください)")
+        logger.info("mmd-anim runtime library was not found (check prebuilt binary placement)")
         _runtime_lib = False
         return None
 
@@ -316,18 +493,18 @@ def get_mmd_runtime_library() -> Optional[CDLL]:
         abi = lib.mmd_runtime_abi_version()
         if abi != MMD_RUNTIME_ABI_VERSION:
             logger.warning(
-                f"mmd-anim runtime ABI バージョンが一致しません: got={abi}, expected={MMD_RUNTIME_ABI_VERSION}"
+                f"mmd-anim runtime ABI version mismatch: got={abi}, expected={MMD_RUNTIME_ABI_VERSION}"
             )
             # 互換性の範囲で続行するか、厳格に拒否するかは将来調整
         else:
-            logger.info(f"mmd-anim runtime library をロードしました: {path} (ABI {abi})")
+            logger.debug(f"Loaded mmd-anim runtime library: {path} (ABI {abi})")
 
         _runtime_lib = lib
         _runtime_lib_path = path
         return lib
 
     except Exception as e:
-        logger.error(f"mmd-anim runtime library のロードに失敗しました: {path} - {e}", exc_info=True)
+        logger.error(f"Failed to load mmd-anim runtime library: {path} - {e}", exc_info=True)
         _runtime_lib = False
         return None
 
@@ -372,11 +549,11 @@ class MmdRuntimeModel:
             buf = (c_uint8 * len(pmx_bytes)).from_buffer_copy(pmx_bytes)
             handle = lib.mmd_runtime_model_create_from_pmx_bytes(buf, len(pmx_bytes))
             if not handle:
-                logger.error("mmd_runtime_model_create_from_pmx_bytes が NULL を返しました")
+                logger.error("mmd_runtime_model_create_from_pmx_bytes returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as e:
-            logger.error(f"MmdRuntimeModel.from_pmx_bytes に失敗: {e}", exc_info=True)
+            logger.error(f"MmdRuntimeModel.from_pmx_bytes failed: {e}", exc_info=True)
             return None
 
     @property
@@ -435,11 +612,11 @@ class MmdRuntimeClip:
                 model.handle, buf, len(vmd_bytes)
             )
             if not handle:
-                logger.error("mmd_runtime_clip_create_from_vmd_bytes_for_model が NULL を返しました")
+                logger.error("mmd_runtime_clip_create_from_vmd_bytes_for_model returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as e:
-            logger.error(f"MmdRuntimeClip.from_vmd_bytes_for_model に失敗: {e}", exc_info=True)
+            logger.error(f"MmdRuntimeClip.from_vmd_bytes_for_model failed: {e}", exc_info=True)
             return None
 
     @property
@@ -482,11 +659,11 @@ class MmdRuntimeInstance:
         try:
             handle = lib.mmd_runtime_instance_create_for_model(model.handle)
             if not handle:
-                logger.error("mmd_runtime_instance_create_for_model が NULL を返しました")
+                logger.error("mmd_runtime_instance_create_for_model returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as e:
-            logger.error(f"MmdRuntimeInstance.for_model に失敗: {e}", exc_info=True)
+            logger.error(f"MmdRuntimeInstance.for_model failed: {e}", exc_info=True)
             return None
 
     @property
@@ -511,7 +688,7 @@ class MmdRuntimeInstance:
                 self._lib.mmd_runtime_instance_evaluate_clip_frame(self._handle, clip.handle, c_float(frame))
             )
         except Exception as e:
-            logger.error(f"evaluate_clip_frame 失敗 (frame={frame}): {e}", exc_info=True)
+            logger.error(f"evaluate_clip_frame failed (frame={frame}): {e}", exc_info=True)
             return False
 
     def evaluate_clip_frame_with_ik_options(
@@ -538,7 +715,7 @@ class MmdRuntimeInstance:
             return False
         func = getattr(self._lib, "mmd_runtime_instance_evaluate_clip_frame_with_ik_options", None)
         if func is None:
-            logger.warning("mmd-anim runtime が IK option 評価 ABI を提供していません")
+            logger.warning("mmd-anim runtime does not provide IK option evaluation ABI")
             return False
         try:
             return bool(
@@ -552,9 +729,105 @@ class MmdRuntimeInstance:
             )
         except Exception as e:
             logger.error(
-                f"evaluate_clip_frame_with_ik_options 失敗 (frame={frame}): {e}",
+                f"evaluate_clip_frame_with_ik_options failed (frame={frame}): {e}",
                 exc_info=True,
             )
+            return False
+
+    def evaluate_clip_frame_batch(
+        self,
+        clip: MmdRuntimeClip,
+        start_frame: float,
+        frame_step: float,
+        frame_count: int,
+        *,
+        worker_count: int = 0,
+    ) -> Optional[MmdRuntimeBatchEvaluation]:
+        """連続フレーム範囲を 1 回の ABI 呼び出しで評価します。
+
+        Args:
+            clip: 評価対象の MmdRuntimeClip。
+            start_frame: 最初のフレーム番号。
+            frame_step: 次フレームまでの増分。
+            frame_count: 評価するフレーム数。
+            worker_count: Rust 側 worker 数。0 の場合は DLL 側の既定値。
+
+        Returns:
+            成功時は flat ctypes buffer を保持した MmdRuntimeBatchEvaluation。
+            DLL が batch ABI を持たない場合や評価失敗時は None。
+        """
+        if not self._handle or not clip or not clip.handle or self._lib is None:
+            return None
+        if frame_count < 0:
+            return None
+        world_len_func = getattr(
+            self._lib,
+            "mmd_runtime_instance_clip_frame_batch_world_matrix_f32_len",
+            None,
+        )
+        morph_len_func = getattr(
+            self._lib,
+            "mmd_runtime_instance_clip_frame_batch_morph_weight_f32_len",
+            None,
+        )
+        eval_func = getattr(self._lib, "mmd_runtime_instance_evaluate_clip_frame_batch", None)
+        if world_len_func is None or morph_len_func is None or eval_func is None:
+            logger.debug("mmd-anim runtime does not provide batch clip evaluation ABI")
+            return None
+        try:
+            frame_count_size = c_size_t(int(frame_count))
+            world_len = int(world_len_func(self._handle, frame_count_size))
+            morph_len = int(morph_len_func(self._handle, frame_count_size))
+            if frame_count == 0:
+                return MmdRuntimeBatchEvaluation(0, 0, 0, (c_float * 0)(), (c_float * 0)())
+            if world_len == 0:
+                logger.error("batch world matrix output length is zero for non-empty frame range")
+                return None
+            world_buf = (c_float * world_len)()
+            morph_buf = (c_float * morph_len)()
+            ok = eval_func(
+                self._handle,
+                clip.handle,
+                c_float(start_frame),
+                c_float(frame_step),
+                frame_count_size,
+                c_uint32(max(0, int(worker_count))),
+                world_buf,
+                c_size_t(world_len),
+                morph_buf,
+                c_size_t(morph_len),
+            )
+            if not ok:
+                return None
+            bone_count = world_len // (int(frame_count) * 16)
+            morph_count = morph_len // int(frame_count) if morph_len else 0
+            return MmdRuntimeBatchEvaluation(
+                int(frame_count),
+                bone_count,
+                morph_count,
+                world_buf,
+                morph_buf,
+            )
+        except Exception as e:
+            logger.error(
+                "evaluate_clip_frame_batch failed "
+                f"(start={start_frame}, step={frame_step}, count={frame_count}): {e}",
+                exc_info=True,
+            )
+            return None
+
+    def evaluate_rest_pose(self) -> bool:
+        """モデルの REST pose を評価します。"""
+        if not self._handle or self._lib is None:
+            return False
+        func = getattr(self._lib, "mmd_runtime_instance_evaluate_rest_pose", None)
+        if func is None:
+            logger.warning("mmd-anim runtime does not provide REST pose evaluation ABI")
+            return False
+        try:
+            return bool(func(self._handle))
+        except Exception as e:
+            logger.error("evaluate_rest_pose failed: %s", e, exc_info=True)
             return False
 
     def get_world_matrices(self) -> Optional[List[List[float]]]:
@@ -579,7 +852,37 @@ class MmdRuntimeInstance:
                 matrices.append(list(buf[i : i + 16]))
             return matrices
         except Exception as e:
-            logger.error(f"get_world_matrices 失敗: {e}", exc_info=True)
+            logger.error(f"get_world_matrices failed: {e}", exc_info=True)
+            return None
+
+    def get_skinning_matrices(self) -> Optional[List[List[float]]]:
+        """
+        現在の評価結果のスキニング行列 (ボーン数 × 16) を取得します。
+
+        mmd-anim 側で current world matrix と inverse bind matrix を合成済みの
+        行列です。Maya skinCluster との比較では Maya 側の bindPreMatrix と
+        world matrix から oracle を作るため、これは診断用 ABI として扱います。
+        """
+        if not self._handle or self._lib is None:
+            return None
+        len_func = getattr(self._lib, "mmd_runtime_instance_skinning_matrix_f32_len", None)
+        copy_func = getattr(self._lib, "mmd_runtime_instance_copy_skinning_matrices", None)
+        if len_func is None or copy_func is None:
+            return None
+        try:
+            n = len_func(self._handle)
+            if n == 0:
+                return []
+            buf = (c_float * n)()
+            ok = copy_func(self._handle, buf, n)
+            if not ok:
+                return None
+            matrices: List[List[float]] = []
+            for i in range(0, n, 16):
+                matrices.append(list(buf[i : i + 16]))
+            return matrices
+        except Exception as e:
+            logger.error("get_skinning_matrices failed: %s", e, exc_info=True)
             return None
 
     def get_morph_weights(self) -> Optional[List[float]]:
@@ -596,7 +899,7 @@ class MmdRuntimeInstance:
                 return None
             return list(buf)
         except Exception as e:
-            logger.error(f"get_morph_weights 失敗: {e}", exc_info=True)
+            logger.error(f"get_morph_weights failed: {e}", exc_info=True)
             return None
 
     def get_ik_enabled(self) -> Optional[List[int]]:
@@ -613,7 +916,7 @@ class MmdRuntimeInstance:
                 return None
             return [int(x) for x in buf]
         except Exception as e:
-            logger.error(f"get_ik_enabled 失敗: {e}", exc_info=True)
+            logger.error(f"get_ik_enabled failed: {e}", exc_info=True)
             return None
 
     def free(self) -> None:
@@ -678,17 +981,17 @@ class MmdParsedModel:
             return None
         func = getattr(lib, "mmd_runtime_parsed_model_create_from_pmx_bytes", None)
         if func is None:
-            logger.debug("parsed-model create シンボルがありません")
+            logger.debug("parsed-model create symbol is unavailable")
             return None
         try:
             buf = (c_uint8 * len(pmx_bytes)).from_buffer_copy(pmx_bytes)
             handle = func(buf, len(pmx_bytes))
             if not handle:
-                logger.error("mmd_runtime_parsed_model_create_from_pmx_bytes が NULL を返しました")
+                logger.error("mmd_runtime_parsed_model_create_from_pmx_bytes returned NULL")
                 return None
             return cls(lib, handle)
         except Exception as e:
-            logger.error(f"MmdParsedModel.from_pmx_bytes に失敗: {e}", exc_info=True)
+            logger.error(f"MmdParsedModel.from_pmx_bytes failed: {e}", exc_info=True)
             return None
 
     # ---- 解放 ----
@@ -795,7 +1098,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"positions 読み取り失敗: {e}")
+            logger.error(f"Failed to read positions: {e}")
             return None
 
     @property
@@ -812,7 +1115,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"normals 読み取り失敗: {e}")
+            logger.error(f"Failed to read normals: {e}")
             return None
 
     @property
@@ -829,7 +1132,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 2)).from_address(ptr)
             return [(arr[i * 2], arr[i * 2 + 1]) for i in range(n)]
         except Exception as e:
-            logger.error(f"uvs 読み取り失敗: {e}")
+            logger.error(f"Failed to read uvs: {e}")
             return None
 
     @property
@@ -846,7 +1149,7 @@ class MmdParsedModel:
             arr = (c_float * n).from_address(ptr)
             return list(arr)
         except Exception as e:
-            logger.error(f"edge_scale 読み取り失敗: {e}")
+            logger.error(f"Failed to read edge_scale: {e}")
             return None
 
     @property
@@ -863,7 +1166,7 @@ class MmdParsedModel:
             arr = (c_uint32 * n).from_address(ptr)
             return list(arr)
         except Exception as e:
-            logger.error(f"indices 読み取り失敗: {e}")
+            logger.error(f"Failed to read indices: {e}")
             return None
 
     @property
@@ -880,7 +1183,7 @@ class MmdParsedModel:
             arr = (c_uint32 * (n * 4)).from_address(ptr)
             return [(arr[i * 4], arr[i * 4 + 1], arr[i * 4 + 2], arr[i * 4 + 3]) for i in range(n)]
         except Exception as e:
-            logger.error(f"skin_indices 読み取り失敗: {e}")
+            logger.error(f"Failed to read skin_indices: {e}")
             return None
 
     @property
@@ -897,7 +1200,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 4)).from_address(ptr)
             return [(arr[i * 4], arr[i * 4 + 1], arr[i * 4 + 2], arr[i * 4 + 3]) for i in range(n)]
         except Exception as e:
-            logger.error(f"skin_weights 読み取り失敗: {e}")
+            logger.error(f"Failed to read skin_weights: {e}")
             return None
 
     @property
@@ -914,7 +1217,7 @@ class MmdParsedModel:
             arr = (c_uint32 * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"material_groups 読み取り失敗: {e}")
+            logger.error(f"Failed to read material_groups: {e}")
             return None
 
     @property
@@ -931,7 +1234,7 @@ class MmdParsedModel:
             arr = (c_uint32 * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"vertex_morph_spans 読み取り失敗: {e}")
+            logger.error(f"Failed to read vertex_morph_spans: {e}")
             return None
 
     @property
@@ -948,7 +1251,7 @@ class MmdParsedModel:
             arr = (c_uint32 * n).from_address(ptr)
             return list(arr)
         except Exception as e:
-            logger.error(f"vertex_morph_vertex_indices 読み取り失敗: {e}")
+            logger.error(f"Failed to read vertex_morph_vertex_indices: {e}")
             return None
 
     @property
@@ -965,7 +1268,7 @@ class MmdParsedModel:
             arr = (c_float * (n * 3)).from_address(ptr)
             return [(arr[i * 3], arr[i * 3 + 1], arr[i * 3 + 2]) for i in range(n)]
         except Exception as e:
-            logger.error(f"vertex_morph_position_offsets 読み取り失敗: {e}")
+            logger.error(f"Failed to read vertex_morph_position_offsets: {e}")
             return None
 
     @property
@@ -995,7 +1298,7 @@ class MmdParsedModel:
                 free_func(buf)
             return names
         except Exception as e:
-            logger.error(f"vertex_morph_names 読み取り失敗: {e}")
+            logger.error(f"Failed to read vertex_morph_names: {e}")
             return None
 
     @property
@@ -1031,7 +1334,7 @@ class MmdParsedModel:
             free_func(buf)
             return text
         except Exception as e:
-            logger.error(f"metadata_json 読み取り失敗: {e}")
+            logger.error(f"Failed to read metadata_json: {e}")
             # エラーでも可能なら解放を試みる
             self._safe_free_buffer()
             return None
@@ -1452,3 +1755,283 @@ def connect_runtime_node_outputs_to_model(
         )
 
     return result
+
+
+# ------------------------------------------------------------------
+# Rig Primitive ラッパークラス
+# ------------------------------------------------------------------
+
+
+class MmdRigSpec:
+    """PMX バイト列から rig spec を取得し、manifest JSON を返す。"""
+
+    def __init__(self, lib: CDLL, handle: c_void_p):
+        self._lib = lib
+        self._handle = handle
+
+    @classmethod
+    def from_pmx_bytes(cls, pmx_bytes: bytes) -> Optional["MmdRigSpec"]:
+        lib = get_mmd_runtime_library()
+        if lib is None or not pmx_bytes:
+            return None
+        if not hasattr(lib, "mmd_runtime_pmx_rig_spec_create"):
+            return None
+        try:
+            buf = (c_uint8 * len(pmx_bytes)).from_buffer_copy(pmx_bytes)
+            handle = lib.mmd_runtime_pmx_rig_spec_create(buf, len(pmx_bytes))
+            if not handle:
+                return None
+            return cls(lib, handle)
+        except Exception as e:
+            logger.error(f"MmdRigSpec.from_pmx_bytes failed: {e}", exc_info=True)
+            return None
+
+    def manifest_json(self) -> Optional[Dict[str, Any]]:
+        if not self._handle:
+            return None
+        try:
+            buf: MmdRuntimeFfiByteBuffer = self._lib.mmd_runtime_pmx_rig_spec_manifest_json(
+                self._handle
+            )
+            if not buf.data or buf.len == 0:
+                return None
+            raw = ctypes.string_at(buf.data, buf.len)
+            self._lib.mmd_runtime_byte_buffer_free(buf)
+            return json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            logger.error(f"MmdRigSpec.manifest_json failed: {e}", exc_info=True)
+            return None
+
+    def free(self) -> None:
+        if self._handle and self._lib:
+            try:
+                self._lib.mmd_runtime_pmx_rig_spec_free(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+    def __del__(self) -> None:
+        self.free()
+
+
+class MmdIkChain:
+    """mmd-anim IK chain primitive のラッパー。"""
+
+    def __init__(self, lib: CDLL, handle: c_void_p, bone_count: int, link_count: int):
+        self._lib = lib
+        self._handle = handle
+        self.bone_count = bone_count
+        self.link_count = link_count
+
+    @classmethod
+    def create(
+        cls,
+        bones: List[Dict[str, Any]],
+        target_bone_slot: int,
+        links: List[Dict[str, Any]],
+        iteration_count: int,
+        limit_angle: float,
+    ) -> Optional["MmdIkChain"]:
+        """
+        IK チェーンプリミティブを作成する。
+
+        Args:
+            bones: [{"parent_slot": int, "rest_position": [x,y,z], "flags": int, "fixed_axis": [x,y,z]}]
+            target_bone_slot: effector のミニチェーン内スロット
+            links: [{"bone_slot": int, "has_angle_limit": bool, "angle_limit_min": [x,y,z], "angle_limit_max": [x,y,z]}]
+            iteration_count: IK 反復回数
+            limit_angle: 1 反復あたりの角度制限 (rad)
+        """
+        lib = get_mmd_runtime_library()
+        if lib is None or not hasattr(lib, "mmd_runtime_ik_chain_create"):
+            return None
+
+        bone_count = len(bones)
+        link_count = len(links)
+
+        c_bones = (MmdRuntimeFfiRigBone * bone_count)()
+        for i, b in enumerate(bones):
+            c_bones[i].parent_slot = b.get("parent_slot", -1)
+            pos = b.get("rest_position", [0, 0, 0])
+            for j in range(3):
+                c_bones[i].rest_position_xyz[j] = pos[j]
+            c_bones[i].flags = b.get("flags", 0)
+            axis = b.get("fixed_axis", [0, 0, 0])
+            for j in range(3):
+                c_bones[i].fixed_axis_xyz[j] = axis[j]
+
+        c_links = (MmdRuntimeFfiRigIkLink * link_count)()
+        for i, lk in enumerate(links):
+            c_links[i].bone_slot = lk["bone_slot"]
+            c_links[i].has_angle_limit = lk.get("has_angle_limit", False)
+            lmin = lk.get("angle_limit_min", [0, 0, 0])
+            lmax = lk.get("angle_limit_max", [0, 0, 0])
+            for j in range(3):
+                c_links[i].angle_limit_min_xyz[j] = lmin[j]
+                c_links[i].angle_limit_max_xyz[j] = lmax[j]
+
+        try:
+            handle = lib.mmd_runtime_ik_chain_create(
+                c_bones, bone_count,
+                target_bone_slot,
+                c_links, link_count,
+                iteration_count,
+                limit_angle,
+            )
+            if not handle:
+                return None
+            return cls(lib, handle, bone_count, link_count)
+        except Exception as e:
+            logger.error(f"MmdIkChain.create failed: {e}", exc_info=True)
+            return None
+
+    def solve(
+        self,
+        positions: List[float],
+        rotations: List[float],
+        goal: List[float],
+        tolerance: float = 1e-5,
+        max_iterations_cap: int = 0,
+        parent_world_matrix: Optional[List[float]] = None,
+    ) -> Optional[Tuple[List[float], MmdRuntimeFfiIkSolveStats]]:
+        """
+        IK を解く。
+
+        Args:
+            positions: bone_count * 3 の位置オフセット (xyz)
+            rotations: bone_count * 4 のローカル回転 (xyzw)
+            goal: IK ゴール位置 [x, y, z]
+            tolerance: 収束閾値
+            max_iterations_cap: 0 = 無制限
+            parent_world_matrix: 16 floats (column-major) or None
+
+        Returns:
+            (link_count * 4 の solved rotations xyzw, stats) or None
+        """
+        if not self._handle:
+            return None
+
+        c_pos = (c_float * len(positions))(*positions)
+        c_rot = (c_float * len(rotations))(*rotations)
+        c_goal = (c_float * 3)(*goal)
+
+        out_len = self.link_count * 4
+        c_out = (c_float * out_len)()
+        stats = MmdRuntimeFfiIkSolveStats()
+
+        c_parent = None
+        if parent_world_matrix is not None:
+            c_parent = (c_float * 16)(*parent_world_matrix)
+
+        try:
+            ok = self._lib.mmd_runtime_ik_chain_solve(
+                self._handle,
+                c_parent,
+                c_pos,
+                c_rot,
+                c_goal,
+                tolerance,
+                max_iterations_cap,
+                c_out,
+                out_len,
+                ctypes.byref(stats),
+            )
+            if not ok:
+                return None
+            return list(c_out), stats
+        except Exception as e:
+            logger.error(f"MmdIkChain.solve failed: {e}", exc_info=True)
+            return None
+
+    def free(self) -> None:
+        if self._handle and self._lib:
+            try:
+                self._lib.mmd_runtime_ik_chain_free(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+    def __del__(self) -> None:
+        self.free()
+
+
+class MmdAppendSolver:
+    """mmd-anim append (付与変形) primitive のラッパー。"""
+
+    def __init__(self, lib: CDLL, handle: c_void_p):
+        self._lib = lib
+        self._handle = handle
+
+    @classmethod
+    def create(
+        cls,
+        ratio: float,
+        affect_rotation: bool = True,
+        affect_translation: bool = False,
+    ) -> Optional["MmdAppendSolver"]:
+        lib = get_mmd_runtime_library()
+        if lib is None or not hasattr(lib, "mmd_runtime_append_solver_create"):
+            return None
+
+        config = MmdRuntimeFfiAppendConfig()
+        config.ratio = ratio
+        config.affect_rotation = affect_rotation
+        config.affect_translation = affect_translation
+
+        try:
+            handle = lib.mmd_runtime_append_solver_create(ctypes.byref(config))
+            if not handle:
+                return None
+            return cls(lib, handle)
+        except Exception as e:
+            logger.error(f"MmdAppendSolver.create failed: {e}", exc_info=True)
+            return None
+
+    def solve(
+        self,
+        source_position: List[float],
+        source_rotation: List[float],
+    ) -> Optional[Tuple[List[float], List[float]]]:
+        """
+        付与変形を解く。
+
+        Args:
+            source_position: source bone の位置オフセット [x, y, z]
+            source_rotation: source bone の回転 [x, y, z, w]
+
+        Returns:
+            (out_position [x,y,z], out_rotation [x,y,z,w]) or None
+        """
+        if not self._handle:
+            return None
+
+        c_src_pos = (c_float * 3)(*source_position)
+        c_src_rot = (c_float * 4)(*source_rotation)
+        c_out_pos = (c_float * 3)()
+        c_out_rot = (c_float * 4)()
+
+        try:
+            ok = self._lib.mmd_runtime_append_solver_solve(
+                self._handle,
+                c_src_pos,
+                c_src_rot,
+                c_out_pos,
+                c_out_rot,
+            )
+            if not ok:
+                return None
+            return list(c_out_pos), list(c_out_rot)
+        except Exception as e:
+            logger.error(f"MmdAppendSolver.solve failed: {e}", exc_info=True)
+            return None
+
+    def free(self) -> None:
+        if self._handle and self._lib:
+            try:
+                self._lib.mmd_runtime_append_solver_free(self._handle)
+            except Exception:
+                pass
+            self._handle = None
+
+    def __del__(self) -> None:
+        self.free()

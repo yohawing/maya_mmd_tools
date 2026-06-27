@@ -60,9 +60,8 @@ class SettingsService:
         return self.get("ui.general.development_mode", False)
 
     def set_development_mode_log_levels(self, enabled):
-        """Set UI and logging levels for Development Mode and return the level."""
+        """Set the logging level for Development Mode and return the level."""
         level_str = "INFO" if enabled else "WARNING"
-        self.set("ui.general.log_level", level_str)
         self.set("logging.level", level_str)
         return level_str
 
@@ -70,9 +69,8 @@ class SettingsService:
         """Return settings needed by the Settings tab view."""
         return {
             "development_mode": self.get("ui.general.development_mode", False),
-            "ui_log_level": self.get("ui.general.log_level", "WARNING"),
             "logging_enabled": self.get("logging.enabled", True),
-            "logging_level": self.get("logging.level", "DEBUG"),
+            "logging_level": self.get("logging.level", "WARNING"),
             "log_file_path": self.get("logging.log_file_path", "logs/mmd_tools.log"),
             "language": self.get("ui.general.language", "ja"),
         }
@@ -80,7 +78,6 @@ class SettingsService:
     def save_settings_tab_state(self, state):
         """Persist settings supplied by the Settings tab presenter."""
         self.set("ui.general.development_mode", state["development_mode"])
-        self.set("ui.general.log_level", state["ui_log_level"])
         if "language" in state:
             self.set("ui.general.language", state["language"])
         self.set("logging.enabled", state["logging_enabled"])
@@ -125,6 +122,7 @@ class SettingsService:
             "import_camera_animation": self.get("import.animation.import_camera_animation", True),
             "import_light_animation": self.get("import.animation.import_light_animation", True),
             "resample_curves": self.get("import.animation.resample_curves", False) if is_dev else False,
+            "bake_mode": self.get("import.rig.bake_mode", False),
             "target_model": target_model,
         }
 
@@ -152,10 +150,6 @@ class SettingsService:
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        bake_mode = self.get("import.rig.bake_mode", True) if is_dev else True
-        if bake_mode:
-            opts["setup_rig"] = False
-            opts["setup_bone_orientation"] = False
         opts["use_cpp_fast_load"] = self.get("import.native.use_cpp_fast_load", False)
         opts["cpp_fast_load_mesh_only"] = self.get("import.native.cpp_fast_load_mesh_only", True)
         return opts

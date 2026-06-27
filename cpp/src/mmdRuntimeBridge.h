@@ -9,7 +9,7 @@
  * - 主要 API の C++ ラッパー (from_pmx_bytes, evaluate, get matrices など)
  * - エラー処理の簡素化
  *
- * 注意: 事前ビルドの mmd_anim_ffi.dll をロード/リンクする必要あり。
+ * 注意: 事前ビルドの mmd_runtime_ffi.dll / mmd_anim_ffi.dll をロード/リンクする必要あり。
  * 現在はヘッダインクルード + 遅延ロード想定。
  */
 

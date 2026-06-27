@@ -733,7 +733,7 @@ class MaterialPresenter:
                     break
 
             self.has_unsaved_changes = False
-            logger.info(f"材質 '{self.current_material}' の変更を適用しました")
+            logger.info(f"Applied changes to material '{self.current_material}'")
             self.app_state.emit_status(f"Applied material changes: {self.current_material}")
 
         except Exception as e:
@@ -917,7 +917,7 @@ class MaterialPresenter:
         # Reload original properties
         self.load_material_properties(self.current_material)
         self.has_unsaved_changes = False
-        logger.info(f"材質 '{self.current_material}' の変更をリセットしました")
+        logger.info(f"Reset changes to material '{self.current_material}'")
         self.app_state.emit_status(f"Reset material changes: {self.current_material}")
 
     def _on_value_changed(self, value=None):

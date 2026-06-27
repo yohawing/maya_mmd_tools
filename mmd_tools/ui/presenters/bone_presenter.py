@@ -742,7 +742,7 @@ class BonePresenter:
                     display_text += f" [{name_en}]"
                 item.setText(display_text)
 
-            logger.info(f"ボーン '{self.current_bone}' の変更を適用しました")
+            logger.info(f"Applied changes to bone '{self.current_bone}'")
             self.app_state.emit_status(f"Applied bone changes: {self.current_bone}")
 
         except Exception as e:

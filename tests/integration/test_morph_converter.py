@@ -51,53 +51,10 @@ class TestMorphConverter(MayaTestBase):
         # 一時ファイルをクリーンアップ
         self.fixture_provider.cleanup_temp_files()
 
-    def test_convert_pmd_morphs(self):
-        """PMDモーフがMayaに正しく変換されることをテストする。"""
-        # TestFixtureProviderからPMDファイルパスを取得
-        pmd_data, pmd_path = self.fixture_provider.load_pmd_data("miku_v2")
-
-        # モーフデータが存在することを確認
-        self.assertIsNotNone(pmd_data.morphs, "PMDデータにモーフがありません")
-
-        if len(pmd_data.morphs) == 0:
-            self.skipTest("PMDデータにモーフが含まれていません")
-
-        # ルートグループを作成
-        root_group = cmds.group(empty=True, name="test_pmd_root")
-
-        # テスト用のメッシュを作成（簡単な四角形）
-        converter = MeshConverter(pmd_path)
-        mesh_group, mesh_name = converter.convert_pmd_mesh(pmd_data, root_group)
-
-        # MorphConverterを作成して変換を実行
-        morph_converter = MorphConverter()
-        result = morph_converter.convert_pmd_morphs(pmd_data, mesh_name)
-
-        # 結果の検証
-        self.assertIsNotNone(result, "モーフ変換の結果がNoneです")
-        self.assertTrue(result.get("success", False), "モーフ変換が失敗しました")
-
-        # 変換されたモーフ数をチェック
-        morphs_converted = result.get("morphs_converted", 0)
-        self.assertGreaterEqual(morphs_converted, 0, "変換されたモーフ数が負の値です")
-
-        # PMDの場合、ベースモーフを除いた数と比較
-        expected_morphs = len([m for m in pmd_data.morphs if m.morph_type != 0])
-        self.assertLessEqual(
-            morphs_converted,
-            expected_morphs,
-            f"変換されたモーフ数({morphs_converted})が期待値({expected_morphs})を超えています",
-        )
-
-        # blendShapeノードのチェックは、実際にモーフが変換された場合のみ
-        if morphs_converted > 0:
-            blend_shape_nodes = result.get("blend_shape_nodes", [])
-            self.assertGreater(len(blend_shape_nodes), 0, "blendShapeノードが作成されていません")
-
     def test_convert_pmx_morphs(self):
         """PMXモーフがMayaに正しく変換されることをテストする。"""
         # TestFixtureProviderからPMXファイルパスを取得
-        pmx_data, pmx_file_path = self.fixture_provider.load_pmx_data("mmt_test_model")
+        pmx_data, pmx_file_path = self.fixture_provider.load_pmx_data("test_morph_model")
 
         # モーフデータが存在することを確認
         self.assertIsNotNone(pmx_data.morphs, "PMXデータにモーフがありません")
@@ -170,6 +127,7 @@ class TestMorphConverter(MayaTestBase):
         self.assertTrue(cmds.getAttr(f"{morph_node}.weight", keyable=True))
         self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_name"), "ボーン笑い")
         self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_type"), "bone")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_index"), 0)
         self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offset_count"), 1)
 
         offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offsets_json"))
@@ -358,11 +316,15 @@ class TestMorphConverter(MayaTestBase):
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(result.get("morphs_converted"), 1)
-        self.assertTrue(cmds.objExists("source2_move_target"))
-        moved_position = cmds.pointPosition("source2_move_target.vtx[1]", local=True)
-        unchanged_position = cmds.pointPosition("source2_move_target.vtx[0]", local=True)
+        # テンプレートメッシュは削除される — blendShape 経由でデルタを検証
+        bs_node = result["results"][0]["blend_shape_node"]
+        alias = result["results"][0]["alias"]
+        cmds.setAttr(f"{bs_node}.{alias}", 1.0)
+        moved_position = cmds.pointPosition(f"{mesh}.vtx[1]", local=True)
+        unchanged_position = cmds.pointPosition(f"{mesh}.vtx[0]", local=True)
         self.assertAlmostEqual(moved_position[0], 1.25, places=5)
         self.assertAlmostEqual(unchanged_position[0], 0.0, places=5)
+        cmds.setAttr(f"{bs_node}.{alias}", 0.0)
 
     def test_morph_group_split_mesh_filters_vertex_morphs_by_name(self):
         """morph group split mesh では許可された vertex morph だけ blendShape target を作る。"""
@@ -473,6 +435,104 @@ class TestMorphConverter(MayaTestBase):
         stored = json.loads(cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"))
         self.assertEqual(stored.get("0"), "にっこり")
         self.assertEqual(stored.get("1"), "にやり")
+
+    def test_vertex_morph_targets_keep_independent_offsets(self):
+        """複数 vertex morph target が最後の target geometry に潰れないことを確認する。"""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            name_english = ""
+
+            def __init__(self, name, vertex_index, position_offset):
+                self.name = name
+                self.offsets = [
+                    {
+                        "vertex_index": vertex_index,
+                        "position_offset": position_offset,
+                    }
+                ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [
+                    FakeVertexMorph("move_vertex_1", 1, (0.25, 0.0, 0.0)),
+                    FakeVertexMorph("move_vertex_2", 2, (0.0, 0.5, 0.0)),
+                ],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 2)
+        bs_node = result["blend_shape_nodes"][0]
+        alias_a = result["results"][0]["alias"]
+        alias_b = result["results"][1]["alias"]
+
+        cmds.setAttr(f"{bs_node}.{alias_a}", 1.0)
+        cmds.setAttr(f"{bs_node}.{alias_b}", 0.0)
+        vertex_1_with_a = cmds.pointPosition(f"{mesh}.vtx[1]", local=True)
+        vertex_2_with_a = cmds.pointPosition(f"{mesh}.vtx[2]", local=True)
+        self.assertAlmostEqual(vertex_1_with_a[0], 1.25, places=5)
+        self.assertAlmostEqual(vertex_2_with_a[1], 1.0, places=5)
+
+        cmds.setAttr(f"{bs_node}.{alias_a}", 0.0)
+        cmds.setAttr(f"{bs_node}.{alias_b}", 1.0)
+        vertex_1_with_b = cmds.pointPosition(f"{mesh}.vtx[1]", local=True)
+        vertex_2_with_b = cmds.pointPosition(f"{mesh}.vtx[2]", local=True)
+        self.assertAlmostEqual(vertex_1_with_b[0], 1.0, places=5)
+        self.assertAlmostEqual(vertex_2_with_b[1], 1.5, places=5)
+
+    def test_vertex_morph_z_offset_is_flipped_to_maya_space(self):
+        """PMX vertex morph の z offset は Maya mesh space では反転される。"""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "move_z"
+            morph_type = PmxMorphType.VertexMorph
+            panel = 1
+            name_english = ""
+            offsets = [
+                {
+                    "vertex_index": 1,
+                    "position_offset": (0.0, 0.0, 2.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [FakeVertexMorph()],
+            },
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        bs_node = result["blend_shape_nodes"][0]
+        alias = result["results"][0]["alias"]
+
+        cmds.setAttr(f"{bs_node}.{alias}", 1.0)
+        moved_position = cmds.pointPosition(f"{mesh}.vtx[1]", local=True)
+        self.assertAlmostEqual(moved_position[0], 1.0, places=5)
+        self.assertAlmostEqual(moved_position[1], 0.0, places=5)
+        self.assertAlmostEqual(moved_position[2], -2.0, places=5)
 
     def test_collect_morphs_from_scene_for_export(self):
         """シーン内の network metadata から exporter 用 morph dict を復元して PMX を再生成する。"""

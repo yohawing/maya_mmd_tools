@@ -27,3 +27,6 @@ dev = [
 line-length = 128
 indent-width = 4
 fix = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["E402"]

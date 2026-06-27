@@ -29,6 +29,7 @@ from unittest import mock
 import mmd_tools.core.native.mmd_anim_runtime as rt
 from mmd_tools.core.native.mmd_anim_runtime import (
     MmdParsedModel,
+    MmdRuntimeBatchEvaluation,
     MmdRuntimeClip,
     MmdRuntimeInstance,
     MmdRuntimeModel,
@@ -49,16 +50,32 @@ class _FakeRuntimeLib:
     フォールバックも検証できる。
     """
 
-    def __init__(self, *, world_matrices=None, morph_weights=None, ik_enabled=None,
-                 evaluate_result=True, with_ik_options=True):
+    def __init__(
+        self,
+        *,
+        world_matrices=None,
+        morph_weights=None,
+        ik_enabled=None,
+        batch_world_matrices=None,
+        batch_morph_weights=None,
+        evaluate_result=True,
+        with_ik_options=True,
+    ):
         self._world = list(world_matrices) if world_matrices is not None else None
         self._morph = list(morph_weights) if morph_weights is not None else None
         self._ik = list(ik_enabled) if ik_enabled is not None else None
+        self._batch_world = (
+            list(batch_world_matrices) if batch_world_matrices is not None else None
+        )
+        self._batch_morph = (
+            list(batch_morph_weights) if batch_morph_weights is not None else None
+        )
         self._evaluate_result = evaluate_result
         self._provide_ik_options = with_ik_options
         # 呼び出し記録 (引数検証用)
         self.evaluate_calls = []
         self.ik_option_calls = []
+        self.batch_calls = []
 
     # --- 評価 ---
     def mmd_runtime_instance_evaluate_clip_frame(self, instance_handle, clip_handle, frame):
@@ -91,6 +108,49 @@ class _FakeRuntimeLib:
             return False
         for i in range(min(n, len(self._world))):
             out_buf[i] = self._world[i]
+        return True
+
+    # --- batch evaluation ---
+    def mmd_runtime_instance_clip_frame_batch_world_matrix_f32_len(self, handle, frame_count):
+        if self._batch_world is None:
+            return 0
+        return len(self._batch_world)
+
+    def mmd_runtime_instance_clip_frame_batch_morph_weight_f32_len(self, handle, frame_count):
+        if self._batch_morph is None:
+            return 0
+        return len(self._batch_morph)
+
+    def mmd_runtime_instance_evaluate_clip_frame_batch(
+        self,
+        instance_handle,
+        clip_handle,
+        start_frame,
+        frame_step,
+        frame_count,
+        worker_count,
+        out_world,
+        out_world_len,
+        out_morph,
+        out_morph_len,
+    ):
+        self.batch_calls.append(
+            (
+                instance_handle,
+                clip_handle,
+                float(start_frame.value),
+                float(frame_step.value),
+                int(frame_count.value),
+                int(worker_count.value),
+            )
+        )
+        if not self._evaluate_result or self._batch_world is None:
+            return False
+        for i in range(min(int(out_world_len.value), len(self._batch_world))):
+            out_world[i] = self._batch_world[i]
+        if self._batch_morph is not None:
+            for i in range(min(int(out_morph_len.value), len(self._batch_morph))):
+                out_morph[i] = self._batch_morph[i]
         return True
 
     # --- morph weights ---
@@ -226,6 +286,76 @@ class TestEvaluateClipFrameWithIkOptions(unittest.TestCase):
         self.assertFalse(
             inst.evaluate_clip_frame_with_ik_options(_make_clip(), 0.0)
         )
+
+
+class TestEvaluateClipFrameBatch(unittest.TestCase):
+    def test_returns_flat_buffers_and_counts(self):
+        world = [float(i) for i in range(2 * 2 * 16)]
+        morph = [0.0, 0.5, 1.0, 0.25]
+        lib = _FakeRuntimeLib(
+            batch_world_matrices=world,
+            batch_morph_weights=morph,
+        )
+        inst = _make_instance(lib)
+        result = inst.evaluate_clip_frame_batch(
+            _make_clip(),
+            0.0,
+            30.0,
+            2,
+            worker_count=3,
+        )
+
+        self.assertIsInstance(result, MmdRuntimeBatchEvaluation)
+        self.assertEqual(result.frame_count, 2)
+        self.assertEqual(result.bone_count, 2)
+        self.assertEqual(result.morph_count, 2)
+        self.assertEqual(list(result.world_matrices), world)
+        self.assertEqual(list(result.morph_weights), morph)
+        self.assertEqual(len(lib.batch_calls), 1)
+        _, _, start, step, count, workers = lib.batch_calls[0]
+        self.assertAlmostEqual(start, 0.0, places=4)
+        self.assertAlmostEqual(step, 30.0, places=4)
+        self.assertEqual(count, 2)
+        self.assertEqual(workers, 3)
+
+    def test_worker_count_is_clamped_to_non_negative(self):
+        lib = _FakeRuntimeLib(
+            batch_world_matrices=[0.0] * 16,
+            batch_morph_weights=[],
+        )
+        inst = _make_instance(lib)
+        self.assertIsNotNone(
+            inst.evaluate_clip_frame_batch(_make_clip(), 0.0, 1.0, 1, worker_count=-10)
+        )
+        self.assertEqual(lib.batch_calls[0][-1], 0)
+
+    def test_returns_empty_result_for_zero_frames(self):
+        lib = _FakeRuntimeLib(batch_world_matrices=[], batch_morph_weights=[])
+        inst = _make_instance(lib)
+        result = inst.evaluate_clip_frame_batch(_make_clip(), 0.0, 1.0, 0)
+        self.assertEqual(result.frame_count, 0)
+        self.assertEqual(len(result.world_matrices), 0)
+        self.assertEqual(len(result.morph_weights), 0)
+
+    def test_returns_none_when_batch_symbol_missing(self):
+        lib = _FakeRuntimeLib(batch_world_matrices=[0.0] * 16, batch_morph_weights=[])
+        lib.mmd_runtime_instance_evaluate_clip_frame_batch = None
+        inst = _make_instance(lib)
+        self.assertIsNone(inst.evaluate_clip_frame_batch(_make_clip(), 0.0, 1.0, 1))
+
+    def test_returns_none_when_native_reports_failure(self):
+        lib = _FakeRuntimeLib(
+            batch_world_matrices=[0.0] * 16,
+            batch_morph_weights=[],
+            evaluate_result=False,
+        )
+        inst = _make_instance(lib)
+        self.assertIsNone(inst.evaluate_clip_frame_batch(_make_clip(), 0.0, 1.0, 1))
+
+    def test_returns_none_for_negative_frame_count(self):
+        lib = _FakeRuntimeLib(batch_world_matrices=[0.0] * 16, batch_morph_weights=[])
+        inst = _make_instance(lib)
+        self.assertIsNone(inst.evaluate_clip_frame_batch(_make_clip(), 0.0, 1.0, -1))
 
 
 # ----------------------------------------------------------------------

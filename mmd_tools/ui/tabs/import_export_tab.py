@@ -15,7 +15,6 @@ from ..qt_compat import (
     QScrollArea,
     Qt,
     QSplitter,
-    QTabWidget,
     QListWidget,
     QListWidgetItem,
     QColor,
@@ -42,18 +41,12 @@ class ImportExportTab(BaseTab):
         # スプリッターを作成（横方向）
         splitter = QSplitter(Qt.Horizontal)
 
-        # 左側：設定セクション（タブ化）
+        # 左側：設定セクション（フラット）
         left_scroll = QScrollArea()
         left_scroll.setWidgetResizable(True)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.left_widget = QTabWidget()
-
-        # Model Import Settings Tab
-        model_settings_tab = QScrollArea()
-        model_settings_tab.setWidgetResizable(True)
-        model_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        model_settings_widget = QWidget()
-        model_settings_layout = QVBoxLayout(model_settings_widget)
+        self.left_widget = QWidget()
+        model_settings_layout = QVBoxLayout(self.left_widget)
 
         # Scale factor
         scale_layout = QHBoxLayout()
@@ -64,6 +57,7 @@ class ImportExportTab(BaseTab):
         self.scale_spin.setDecimals(3)
         self.scale_spin.setValue(settings.get("import.general.scale_factor", 1.0))
         self.scale_spin.valueChanged.connect(lambda v: settings.set("import.general.scale_factor", v))
+        self.scale_spin.setToolTip(self.tr("scale_factor", "tooltips"))
         scale_layout.addWidget(self.scale_spin)
         scale_layout.addStretch()
         model_settings_layout.addLayout(scale_layout)
@@ -75,6 +69,7 @@ class ImportExportTab(BaseTab):
         self.use_namespace_check = QCheckBox(self.tr("use_namespace", "checkboxes"))
         self.use_namespace_check.setChecked(settings.get("import.general.use_namespace", False))
         self.use_namespace_check.toggled.connect(lambda v: settings.set("import.general.use_namespace", v))
+        self.use_namespace_check.setToolTip(self.tr("use_namespace", "tooltips"))
         general_layout.addWidget(self.use_namespace_check)
 
         # Namespace名を手動で指定するオプション
@@ -123,16 +118,19 @@ class ImportExportTab(BaseTab):
         self.create_mmd_shaders_check = QCheckBox(self.tr("create_mmd_shaders", "checkboxes"))
         self.create_mmd_shaders_check.setChecked(settings.get("import.model.create_mmd_shaders", True))
         self.create_mmd_shaders_check.toggled.connect(lambda v: settings.set("import.model.create_mmd_shaders", v))
+        self.create_mmd_shaders_check.setToolTip(self.tr("create_mmd_shaders", "tooltips"))
         model_layout.addWidget(self.create_mmd_shaders_check)
 
         self.separate_meshes_check = QCheckBox(self.tr("separate_meshes", "checkboxes"))
         self.separate_meshes_check.setChecked(settings.get("import.model.separate_meshes_by_material", False))
         self.separate_meshes_check.toggled.connect(lambda v: settings.set("import.model.separate_meshes_by_material", v))
+        self.separate_meshes_check.setToolTip(self.tr("separate_meshes", "tooltips"))
         model_layout.addWidget(self.separate_meshes_check)
 
         self.split_by_morph_groups_check = QCheckBox(self.tr("split_meshes_by_morph_groups", "checkboxes"))
         self.split_by_morph_groups_check.setChecked(settings.get("import.model.split_meshes_by_morph_groups", False))
         self.split_by_morph_groups_check.toggled.connect(lambda v: settings.set("import.model.split_meshes_by_morph_groups", v))
+        self.split_by_morph_groups_check.setToolTip(self.tr("split_by_morph_groups", "tooltips"))
         model_layout.addWidget(self.split_by_morph_groups_check)
 
         # Auto-classify transparency (opt-in): scan each material's used-UV texture
@@ -145,6 +143,7 @@ class ImportExportTab(BaseTab):
         self.auto_classify_transparency_check.toggled.connect(
             lambda v: settings.set("import.model.auto_classify_transparency", v)
         )
+        self.auto_classify_transparency_check.setToolTip(self.tr("auto_classify_transparency", "tooltips"))
         model_layout.addWidget(self.auto_classify_transparency_check)
 
         self.auto_resolve_textures_check = QCheckBox(self.tr("auto_resolve_textures", "checkboxes"))
@@ -152,6 +151,7 @@ class ImportExportTab(BaseTab):
         self.auto_resolve_textures_check.toggled.connect(
             lambda v: settings.set("import.model.auto_resolve_textures", v)
         )
+        self.auto_resolve_textures_check.setToolTip(self.tr("auto_resolve_textures", "tooltips"))
         model_layout.addWidget(self.auto_resolve_textures_check)
 
         self.transparency_threshold_row = QWidget()
@@ -174,11 +174,13 @@ class ImportExportTab(BaseTab):
         self.hide_hidden_geometry_check = QCheckBox(self.tr("hide_hidden_geometry", "checkboxes"))
         self.hide_hidden_geometry_check.setChecked(settings.get("import.model.hide_hidden_geometry", True))
         self.hide_hidden_geometry_check.toggled.connect(lambda v: settings.set("import.model.hide_hidden_geometry", v))
+        self.hide_hidden_geometry_check.setToolTip(self.tr("hide_hidden_geometry", "tooltips"))
         model_layout.addWidget(self.hide_hidden_geometry_check)
 
         self.disable_backface_culling_check = QCheckBox(self.tr("disable_backface_culling", "checkboxes"))
         self.disable_backface_culling_check.setChecked(settings.get("import.model.disable_backface_culling", True))
         self.disable_backface_culling_check.toggled.connect(lambda v: settings.set("import.model.disable_backface_culling", v))
+        self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))
         model_layout.addWidget(self.disable_backface_culling_check)
 
         # Texture search path
@@ -219,6 +221,7 @@ class ImportExportTab(BaseTab):
         self.import_physics_check = QCheckBox(self.tr("import_physics", "checkboxes"))
         self.import_physics_check.setChecked(settings.get("import.physics.import_physics", False))
         self.import_physics_check.toggled.connect(lambda v: settings.set("import.physics.import_physics", v))
+        self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
         morph_physics_layout.addWidget(self.import_physics_check)
 
         self.create_rigid_bodies_check = QCheckBox(self.tr("create_rigid_bodies", "checkboxes"))
@@ -246,31 +249,20 @@ class ImportExportTab(BaseTab):
         self.add_semi_standard_bones_check = QCheckBox(self.tr("add_semi_standard_bones", "checkboxes"))
         self.add_semi_standard_bones_check.setChecked(settings.get("import.rig.add_semi_standard_bones", False))
         self.add_semi_standard_bones_check.toggled.connect(lambda v: settings.set("import.rig.add_semi_standard_bones", v))
+        self.add_semi_standard_bones_check.setToolTip(self.tr("add_semi_standard_bones", "tooltips"))
         other_layout.addWidget(self.add_semi_standard_bones_check)
-
-        self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
-        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
-        self.bake_mode_check.toggled.connect(lambda v: settings.set("import.rig.bake_mode", v))
-        other_layout.addWidget(self.bake_mode_check)
 
         self.translate_names_check = QCheckBox(self.tr("translate_names", "checkboxes"))
         self.translate_names_check.setChecked(settings.get("import.naming.translate_names", True))
         self.translate_names_check.toggled.connect(lambda v: settings.set("import.naming.translate_names", v))
+        self.translate_names_check.setToolTip(self.tr("translate_names", "tooltips"))
         other_layout.addWidget(self.translate_names_check)
 
         self.other_group.setLayout(other_layout)
-        model_settings_layout.addWidget(self.other_group)
 
-        model_settings_layout.addStretch()
-        model_settings_tab.setWidget(model_settings_widget)
-        self.left_widget.addTab(model_settings_tab, self.tr("model", "groups"))
-
-        # Animation Import Settings Tab
-        anim_settings_tab = QScrollArea()
-        anim_settings_tab.setWidgetResizable(True)
-        anim_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        anim_settings_widget = QWidget()
-        anim_settings_layout = QVBoxLayout(anim_settings_widget)
+        # Animation Import Settings
+        self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
+        anim_settings_layout = QVBoxLayout()
 
         # Start frame
         frame_layout = QHBoxLayout()
@@ -280,6 +272,7 @@ class ImportExportTab(BaseTab):
         self.animation_start_frame.setRange(0, 10000)
         self.animation_start_frame.setValue(settings.get("import.animation.animation_start_frame", 1))
         self.animation_start_frame.valueChanged.connect(lambda v: settings.set("import.animation.animation_start_frame", v))
+        self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
         frame_layout.addWidget(self.animation_start_frame)
         frame_layout.addStretch()
         anim_settings_layout.addLayout(frame_layout)
@@ -302,19 +295,30 @@ class ImportExportTab(BaseTab):
         self.vmd_fps_combo.currentTextChanged.connect(
             lambda v: settings.set("import.animation.vmd_fps", int(v))
         )
+        self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))
         fps_layout.addWidget(self.vmd_fps_combo)
         fps_layout.addStretch()
         anim_settings_layout.addLayout(fps_layout)
+
+        self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
+        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
+        self.bake_mode_check.toggled.connect(
+            lambda v: settings.set("import.rig.bake_mode", v)
+        )
+        self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
+        anim_settings_layout.addWidget(self.bake_mode_check)
 
         # Animation type checkboxes
         self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
         self.import_bone_animation_check.setChecked(settings.get("import.animation.import_animations", True))
         self.import_bone_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_animations", v))
+        self.import_bone_animation_check.setToolTip(self.tr("import_bone_animation", "tooltips"))
         anim_settings_layout.addWidget(self.import_bone_animation_check)
 
         self.import_morph_animation_check = QCheckBox(self.tr("import_morph_animation", "checkboxes"))
         self.import_morph_animation_check.setChecked(settings.get("import.animation.import_morph_animation", True))
         self.import_morph_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_morph_animation", v))
+        self.import_morph_animation_check.setToolTip(self.tr("import_morph_animation", "tooltips"))
         anim_settings_layout.addWidget(self.import_morph_animation_check)
 
         self.import_camera_animation_check = QCheckBox(self.tr("import_camera_animation", "checkboxes"))
@@ -322,27 +326,34 @@ class ImportExportTab(BaseTab):
         self.import_camera_animation_check.toggled.connect(
             lambda v: settings.set("import.animation.import_camera_animation", v)
         )
+        self.import_camera_animation_check.setToolTip(self.tr("import_camera_animation", "tooltips"))
         anim_settings_layout.addWidget(self.import_camera_animation_check)
 
         self.import_light_animation_check = QCheckBox(self.tr("import_light_animation", "checkboxes"))
         self.import_light_animation_check.setChecked(settings.get("import.animation.import_light_animation", True))
         self.import_light_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_light_animation", v))
+        self.import_light_animation_check.setToolTip(self.tr("import_light_animation", "tooltips"))
         anim_settings_layout.addWidget(self.import_light_animation_check)
 
         # Resample curves
         self.resample_curves_check = QCheckBox(self.tr("resample_curves", "checkboxes"))
         self.resample_curves_check.setChecked(settings.get("import.animation.resample_curves", False))
         self.resample_curves_check.toggled.connect(lambda v: settings.set("import.animation.resample_curves", v))
+        self.resample_curves_check.setToolTip(self.tr("resample_curves", "tooltips"))
         anim_settings_layout.addWidget(self.resample_curves_check)
 
-        anim_settings_layout.addStretch()
-        anim_settings_tab.setWidget(anim_settings_widget)
-        self.left_widget.addTab(anim_settings_tab, self.tr("animation", "tabs"))
+        self.animation_settings_group.setLayout(anim_settings_layout)
+        model_settings_layout.addWidget(self.animation_settings_group)
 
-        # Export Settings Tab
-        export_settings_tab = QScrollArea()
-        export_settings_tab.setWidgetResizable(True)
-        export_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Other group at the bottom (dev-only)
+        model_settings_layout.addWidget(self.other_group)
+
+        model_settings_layout.addStretch()
+
+        # Export Settings Tab (not added to tab widget — export is not yet implemented)
+        self._export_settings_tab = QScrollArea()
+        self._export_settings_tab.setWidgetResizable(True)
+        self._export_settings_tab.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         export_settings_widget = QWidget()
         export_settings_layout = QVBoxLayout(export_settings_widget)
 
@@ -367,7 +378,7 @@ class ImportExportTab(BaseTab):
         export_settings_layout.addWidget(self.apply_scale_check)
 
         export_settings_layout.addStretch()
-        export_settings_tab.setWidget(export_settings_widget)
+        self._export_settings_tab.setWidget(export_settings_widget)
         # Export subtab is intentionally not added: export is not yet implemented.
 
         # 右側：インポート/エクスポートセクション
@@ -448,41 +459,6 @@ class ImportExportTab(BaseTab):
         self.animation_group.setLayout(animation_layout)
         right_layout.addWidget(self.animation_group)
 
-        # VPD Pose Import Group
-        self.vpd_group = QGroupBox(self.tr("vpd_import", "buttons"))
-        vpd_layout = QFormLayout()
-
-        self.vpd_path_edit = QLineEdit()
-        saved_vpd_path = self.qt_settings.value("vpd_path", "")
-        self.vpd_path_edit.setText(saved_vpd_path)
-        self.vpd_path_button = QPushButton(self.tr("browse", "buttons"))
-        vpd_path_layout = QHBoxLayout()
-        vpd_path_layout.addWidget(self.vpd_path_edit)
-        vpd_path_layout.addWidget(self.vpd_path_button)
-        self.vpd_file_label = QLabel(self.tr("vpd_file", "labels"))
-        vpd_layout.addRow(self.vpd_file_label, vpd_path_layout)
-
-        self.vpd_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("vpd_path", text))
-
-        # VPD Options
-        self.vpd_create_keyframe_check = QCheckBox(self.tr("create_keyframe", "checkboxes"))
-        self.vpd_create_keyframe_check.setChecked(True)
-        vpd_layout.addRow(self.vpd_create_keyframe_check)
-
-        self.vpd_apply_to_all_check = QCheckBox(self.tr("apply_to_all_models", "checkboxes"))
-        self.vpd_apply_to_all_check.setChecked(False)
-        vpd_layout.addRow(self.vpd_apply_to_all_check)
-
-        self.import_vpd_button = QPushButton(self.tr("import_pose", "actions"))
-        vpd_layout.addRow(self.import_vpd_button)
-
-        self.vpd_group.setLayout(vpd_layout)
-        # VPD ポーズインポートは presenter にシグナル未接続で未実装のため、UI を無効化して
-        # 「押しても無反応」を防ぐ。実装してシグナル接続したら再有効化する。
-        self.vpd_group.setEnabled(False)
-        self.vpd_group.setToolTip(self.tr("vpd_not_implemented", "tooltips"))
-        right_layout.addWidget(self.vpd_group)
-
         # Export Group
         self.export_group = QGroupBox(self.tr("export", "buttons"))
         export_layout = QFormLayout()
@@ -545,10 +521,13 @@ class ImportExportTab(BaseTab):
             self.create_rigid_bodies_check,
             self.create_physics_joints_check,
             self.group_physics_objects_check,
-            self.add_semi_standard_bones_check,
-            self.bake_mode_check,
-            self.translate_names_check,
+            self.morph_physics_group,
+            self.other_group,
             self.resample_curves_check,
+            self.import_bone_animation_check,
+            self.import_morph_animation_check,
+            self.import_camera_animation_check,
+            self.import_light_animation_check,
         ]
         self._apply_dev_mode_visibility()
 
@@ -609,6 +588,8 @@ class ImportExportTab(BaseTab):
             self.start_frame_label.setText(self.tr("start_frame", "fields"))
         if hasattr(self, "vmd_fps_label"):
             self.vmd_fps_label.setText(self.tr("vmd_fps", "fields"))
+        if hasattr(self, "transparency_threshold_label"):
+            self.transparency_threshold_label.setText(self.tr("transparency_opaque_threshold", "fields"))
         if hasattr(self, "format_label"):
             self.format_label.setText(self.tr("format", "fields"))
         if hasattr(self, "import_path_label"):
@@ -619,8 +600,7 @@ class ImportExportTab(BaseTab):
             self.target_model_label.setText(self.tr("target_model", "fields"))
         if hasattr(self, "export_path_label"):
             self.export_path_label.setText(self.tr("file_path", "labels"))
-        if hasattr(self, "vpd_file_label"):
-            self.vpd_file_label.setText(self.tr("vpd_file", "labels"))
+
 
         # GroupBoxes
         if hasattr(self, "general_group"):
@@ -637,16 +617,21 @@ class ImportExportTab(BaseTab):
             self.animation_group.setTitle(self.tr("animation_import", "groups"))
         if hasattr(self, "export_group"):
             self.export_group.setTitle(self.tr("export", "buttons"))
-        if hasattr(self, "vpd_group"):
-            self.vpd_group.setTitle(self.tr("vpd_import", "buttons"))
-            self.vpd_group.setToolTip(self.tr("vpd_not_implemented", "tooltips"))
+        if hasattr(self, "history_group"):
+            self.history_group.setTitle(self.tr("file_history", "groups"))
+        if hasattr(self, "clear_history_button"):
+            self.clear_history_button.setText(self.tr("clear_history", "buttons"))
 
         # CheckBoxes
         self.use_namespace_check.setText(self.tr("use_namespace", "checkboxes"))
+        self.custom_namespace_check.setText(self.tr("custom_namespace", "checkboxes"))
+        self.namespace_edit.setPlaceholderText(self.tr("namespace_placeholder", "labels"))
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
         self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
         self.split_by_morph_groups_check.setText(self.tr("split_meshes_by_morph_groups", "checkboxes"))
+        if hasattr(self, "auto_classify_transparency_check"):
+            self.auto_classify_transparency_check.setText(self.tr("auto_classify_transparency", "checkboxes"))
         if hasattr(self, "auto_resolve_textures_check"):
             self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
         self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
@@ -666,10 +651,28 @@ class ImportExportTab(BaseTab):
         self.resample_curves_check.setText(self.tr("resample_curves", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
-        if hasattr(self, "vpd_create_keyframe_check"):
-            self.vpd_create_keyframe_check.setText(self.tr("create_keyframe", "checkboxes"))
-        if hasattr(self, "vpd_apply_to_all_check"):
-            self.vpd_apply_to_all_check.setText(self.tr("apply_to_all_models", "checkboxes"))
+
+        # Tooltips
+        self.scale_spin.setToolTip(self.tr("scale_factor", "tooltips"))
+        self.use_namespace_check.setToolTip(self.tr("use_namespace", "tooltips"))
+        self.create_mmd_shaders_check.setToolTip(self.tr("create_mmd_shaders", "tooltips"))
+        self.separate_meshes_check.setToolTip(self.tr("separate_meshes", "tooltips"))
+        self.split_by_morph_groups_check.setToolTip(self.tr("split_by_morph_groups", "tooltips"))
+        self.auto_classify_transparency_check.setToolTip(self.tr("auto_classify_transparency", "tooltips"))
+        self.auto_resolve_textures_check.setToolTip(self.tr("auto_resolve_textures", "tooltips"))
+        self.hide_hidden_geometry_check.setToolTip(self.tr("hide_hidden_geometry", "tooltips"))
+        self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))
+        self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
+        self.add_semi_standard_bones_check.setToolTip(self.tr("add_semi_standard_bones", "tooltips"))
+        self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
+        self.translate_names_check.setToolTip(self.tr("translate_names", "tooltips"))
+        self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
+        self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))
+        self.import_bone_animation_check.setToolTip(self.tr("import_bone_animation", "tooltips"))
+        self.import_morph_animation_check.setToolTip(self.tr("import_morph_animation", "tooltips"))
+        self.import_camera_animation_check.setToolTip(self.tr("import_camera_animation", "tooltips"))
+        self.import_light_animation_check.setToolTip(self.tr("import_light_animation", "tooltips"))
+        self.resample_curves_check.setToolTip(self.tr("resample_curves", "tooltips"))
 
         # Buttons
         self.import_path_button.setText(self.tr("browse", "buttons"))
@@ -680,15 +683,10 @@ class ImportExportTab(BaseTab):
             self.fix_texture_path_button.setText(self.tr("fix_texture_path", "texture_issues"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
         self.export_button.setText(self.tr("export", "buttons"))
-        if hasattr(self, "vpd_path_button"):
-            self.vpd_path_button.setText(self.tr("browse", "buttons"))
-        if hasattr(self, "import_vpd_button"):
-            self.import_vpd_button.setText(self.tr("import_pose", "actions"))
 
         # Tab widget texts
-        if hasattr(self, "left_widget") and self.left_widget.count() >= 2:
-            self.left_widget.setTabText(0, self.tr("model", "groups"))
-            self.left_widget.setTabText(1, self.tr("animation", "tabs"))
+        if hasattr(self, "animation_settings_group"):
+            self.animation_settings_group.setTitle(self.tr("animation", "tabs"))
 
         # Refresh model list to update auto detect text
         self.refresh_model_list()
@@ -729,7 +727,7 @@ class ImportExportTab(BaseTab):
 
     def _setup_unified_history_area(self, layout):
         """統合履歴表示エリアを設定"""
-        history_group = QGroupBox("ファイル履歴")
+        self.history_group = QGroupBox(self.tr("file_history", "groups"))
         history_layout = QVBoxLayout()
 
         # 統合履歴リスト
@@ -742,12 +740,12 @@ class ImportExportTab(BaseTab):
         history_layout.addWidget(self.unified_history_list)
 
         # 履歴クリアボタン
-        clear_history_button = QPushButton("履歴をクリア")
-        clear_history_button.clicked.connect(self._clear_all_history)
-        history_layout.addWidget(clear_history_button)
+        self.clear_history_button = QPushButton(self.tr("clear_history", "buttons"))
+        self.clear_history_button.clicked.connect(self._clear_all_history)
+        history_layout.addWidget(self.clear_history_button)
 
-        history_group.setLayout(history_layout)
-        layout.addWidget(history_group)
+        self.history_group.setLayout(history_layout)
+        layout.addWidget(self.history_group)
 
         # 初期化時に履歴を読み込み
         self.refresh_unified_history()

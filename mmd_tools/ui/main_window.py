@@ -35,6 +35,8 @@ from .presenters.physics_presenter import PhysicsPresenter
 from .tabs.settings_tab import SettingsTab
 from .presenters.settings_presenter import SettingsPresenter
 
+logger = get_logger(__name__)
+
 
 class MainWindow(QMainWindow):
     """Mayaと統合されたメインウィンドウ"""
@@ -278,10 +280,6 @@ class MainWindow(QMainWindow):
         if self.physics_tab is not None:
             self.tabs.append(self.physics_tab)
         self.tabs.append(settings_tab)
-
-        # logger参照のためにグローバルスコープで取得
-        global logger
-        logger = get_logger(__name__)
 
     def refresh_development_mode_visibility(self):
         """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""

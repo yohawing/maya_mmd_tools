@@ -43,6 +43,9 @@ bool RuntimeBridge::loadFfiIfNeeded() {
     // 事前ビルド DLL を探す (native/win64 などからコピー想定)
     // 簡易: カレント or プラグイン隣
     const char* candidates[] = {
+        "mmd_runtime_ffi.dll",
+        "..\\..\\mmd_tools\\native\\win64\\mmd_runtime_ffi.dll",
+        "plug-ins\\mmd_runtime_ffi.dll",
         "mmd_anim_ffi.dll",
         "..\\..\\mmd_tools\\native\\win64\\mmd_anim_ffi.dll",
         "plug-ins\\mmd_anim_ffi.dll"
@@ -52,7 +55,7 @@ bool RuntimeBridge::loadFfiIfNeeded() {
         if (g_ffiModule) break;
     }
     if (!g_ffiModule) {
-        std::cerr << "[mmd] Failed to load mmd_anim_ffi.dll\n";
+        std::cerr << "[mmd] Failed to load mmd_runtime_ffi.dll or mmd_anim_ffi.dll\n";
         return false;
     }
 #endif

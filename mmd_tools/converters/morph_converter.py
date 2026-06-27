@@ -6,6 +6,7 @@ Mayaのブレンドシェイプシステムに変換する機能を提供しま�
 """
 
 import json
+import time
 from typing import Any, Dict, List, Optional, Set, Union
 
 from maya import cmds
@@ -31,6 +32,11 @@ class MorphConverter:
 
         self.settings = settings.get("import.morph", {})
         self.logger = get_logger(__name__)
+        self.profile = {}
+
+    def _add_profile_time(self, key: str, start: float) -> None:
+        """Accumulate timing in the converter profile."""
+        self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
     def convert_pmd_morphs(self, pmd_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
         """
@@ -113,60 +119,63 @@ class MorphConverter:
                 else None
             )
             allowed_vertex_morph_names = self._get_mesh_vertex_morph_name_filter(mn)
-            for morph in pmx_data.morphs:
-                try:
-                    if morph.morph_type == PmxMorphType.VertexMorph:
-                        morph_name = morph.get_name()
-                        if allowed_vertex_morph_names is not None and morph_name not in allowed_vertex_morph_names:
-                            skipped_vertex_morphs_by_group += 1
-                            self.logger.debug(
-                                "Skipping vertex morph %s for morph group split mesh %s",
-                                morph_name,
-                                mn,
-                            )
-                            continue
-                        if visible_vertex_indices is not None and not self._vertex_morph_affects_vertices(
-                            morph,
-                            visible_vertex_indices,
+            template_ctx = {}
+            try:
+                for morph_index, morph in enumerate(pmx_data.morphs):
+                    try:
+                        if morph.morph_type == PmxMorphType.VertexMorph:
+                            morph_name = morph.get_name()
+                            if allowed_vertex_morph_names is not None and morph_name not in allowed_vertex_morph_names:
+                                skipped_vertex_morphs_by_group += 1
+                                self.logger.debug(
+                                    "Skipping vertex morph %s for morph group split mesh %s",
+                                    morph_name,
+                                    mn,
+                                )
+                                continue
+                            if visible_vertex_indices is not None and not self._vertex_morph_affects_vertices(
+                                morph,
+                                visible_vertex_indices,
+                            ):
+                                skipped_vertex_morphs_by_material += 1
+                                self.logger.debug(
+                                    "Skipping vertex morph %s for material split mesh %s (material_index=%s)",
+                                    morph.get_name(),
+                                    mn,
+                                    mesh_material_index,
+                                )
+                                continue
+                            self.logger.debug(f"Converting vertex morph: {morph.name}")
+                            result = self._convert_vertex_morph_pmx(morph, mn, template_ctx=template_ctx)
+                            if result["success"]:
+                                results.append(result)
+                                if result["blend_shape_node"] not in blend_shape_nodes:
+                                    blend_shape_nodes.append(result["blend_shape_node"])
+                                self.logger.info(f"Successfully converted morph: {morph.name}")
+                        elif morph.morph_type == PmxMorphType.BoneMorph and morph.name not in converted_bone_morphs:
+                            self.logger.debug(f"Converting bone morph metadata: {morph.name}")
+                            result = self._convert_bone_morph_pmx(morph, morph_index)
+                            if result["success"]:
+                                converted_bone_morphs.add(morph.name)
+                                results.append(result)
+                                bone_morph_nodes.append(result["morph_node"])
+                                self.logger.info(f"Successfully imported bone morph metadata: {morph.name}")
+                        elif (
+                            morph.morph_type == PmxMorphType.MaterialMorph
+                            and morph.name not in converted_material_morphs
                         ):
-                            skipped_vertex_morphs_by_material += 1
-                            self.logger.debug(
-                                "Skipping vertex morph %s for material split mesh %s (material_index=%s)",
-                                morph.get_name(),
-                                mn,
-                                mesh_material_index,
-                            )
-                            continue
-                        self.logger.debug(f"Converting vertex morph: {morph.name}")
-                        result = self._convert_vertex_morph_pmx(morph, mn)
-                        if result["success"]:
-                            results.append(result)
-                            if result["blend_shape_node"] not in blend_shape_nodes:
-                                blend_shape_nodes.append(result["blend_shape_node"])
-                            self.logger.info(f"Successfully converted morph: {morph.name}")
-                    elif morph.morph_type == PmxMorphType.BoneMorph and morph.name not in converted_bone_morphs:
-                        self.logger.debug(f"Converting bone morph metadata: {morph.name}")
-                        result = self._convert_bone_morph_pmx(morph)
-                        if result["success"]:
-                            converted_bone_morphs.add(morph.name)
-                            results.append(result)
-                            bone_morph_nodes.append(result["morph_node"])
-                            self.logger.info(f"Successfully imported bone morph metadata: {morph.name}")
-                    elif (
-                        morph.morph_type == PmxMorphType.MaterialMorph
-                        and morph.name not in converted_material_morphs
-                    ):
-                        self.logger.debug(f"Converting material morph metadata: {morph.name}")
-                        result = self._convert_material_morph_pmx(morph)
-                        if result["success"]:
-                            converted_material_morphs.add(morph.name)
-                            results.append(result)
-                            material_morph_nodes.append(result["morph_node"])
-                            self.logger.info(f"Successfully imported material morph metadata: {morph.name}")
-                except Exception as e:
-                    # エラーをログに記録して次のモーフへ
-                    self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
-                    pass
+                            self.logger.debug(f"Converting material morph metadata: {morph.name}")
+                            result = self._convert_material_morph_pmx(morph, morph_index)
+                            if result["success"]:
+                                converted_material_morphs.add(morph.name)
+                                results.append(result)
+                                material_morph_nodes.append(result["morph_node"])
+                                self.logger.info(f"Successfully imported material morph metadata: {morph.name}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
+            finally:
+                self._flush_vertex_morph_name_mapping(template_ctx)
+                self.cleanup_vertex_morph_template(template_ctx)
 
         return {
             "success": True,
@@ -351,6 +360,45 @@ class MorphConverter:
             index += 1
         return f"{base_alias}_{index}"
 
+    @staticmethod
+    def _unique_blendshape_alias_from_existing(base_alias: str, existing: Set[str]) -> str:
+        """既に取得済みの alias 集合から一意な alias を返す。"""
+        if base_alias not in existing:
+            return base_alias
+        index = 1
+        while f"{base_alias}_{index}" in existing:
+            index += 1
+        return f"{base_alias}_{index}"
+
+    def _load_blendshape_morph_names(self, blend_shape_node: str) -> Dict[str, str]:
+        """blendShape ノードの weight index → 生モーフ名 JSON を読み込む。"""
+        if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape_node, exists=True):
+            cmds.addAttr(blend_shape_node, longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, dataType="string")
+            return {}
+        try:
+            raw = cmds.getAttr(f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items()}
+        except (TypeError, ValueError):
+            pass
+        return {}
+
+    def _flush_vertex_morph_name_mapping(self, template_ctx: Dict[str, Any]) -> None:
+        """vertex morph ループで蓄積した morph name mapping を一括保存する。"""
+        blend_shape_node = template_ctx.get("blend_shape_node")
+        names = template_ctx.get("morph_name_mapping")
+        if not template_ctx.get("morph_name_mapping_dirty") or not blend_shape_node or not names:
+            return
+        start = time.perf_counter()
+        cmds.setAttr(
+            f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
+            json.dumps(names, ensure_ascii=False, separators=(",", ":")),
+            type="string",
+        )
+        self._add_profile_time("morph_name_store_sec", start)
+        template_ctx["morph_name_mapping_dirty"] = False
+
     def _store_blendshape_morph_name(self, blend_shape_node: str, target_index: int, raw_name: str) -> None:
         """blendShape ノードに weight index → 生モーフ名 の対応を JSON で保存する。"""
         if not raw_name:
@@ -416,7 +464,7 @@ class MorphConverter:
             "alias": alias,
         }
 
-    def _convert_bone_morph_pmx(self, morph) -> Dict[str, Any]:
+    def _convert_bone_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXボーンモーフをMayaのnetwork nodeとしてインポートする。
 
         ここでは joint 変形へは接続せず、VMD morph frame がキー化できる
@@ -460,6 +508,7 @@ class MorphConverter:
                 "mmd_morph_name": str(morph_name),
                 "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
                 "mmd_morph_type": "bone",
+                "mmd_morph_index": int(morph_index),
                 "mmd_morph_panel": int(getattr(morph, "panel", 0)),
                 "mmd_bone_morph_offset_count": len(offsets),
                 "mmd_bone_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
@@ -474,7 +523,7 @@ class MorphConverter:
             "offset_count": len(offsets),
         }
 
-    def _convert_material_morph_pmx(self, morph) -> Dict[str, Any]:
+    def _convert_material_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXマテリアルモーフをMayaのnetwork nodeとしてインポートする。
 
         shader parameter へは接続せず、VMD morph frame がキー化できる
@@ -530,6 +579,7 @@ class MorphConverter:
                 "mmd_morph_name": str(morph_name),
                 "mmd_morph_name_en": str(getattr(morph, "name_english", "")),
                 "mmd_morph_type": "material",
+                "mmd_morph_index": int(morph_index),
                 "mmd_morph_panel": int(getattr(morph, "panel", 0)),
                 "mmd_material_morph_offset_count": len(offsets),
                 "mmd_material_morph_offsets_json": json.dumps(offsets, ensure_ascii=False, separators=(",", ":")),
@@ -549,41 +599,103 @@ class MorphConverter:
         """JSON metadata 用に数値列を float list へ正規化する。"""
         return [float(v) for v in values]
 
-    def _convert_vertex_morph_pmx(self, morph, mesh_node: str) -> Dict[str, Any]:
-        """PMX頂点モーフの変換"""
-        # モーフ名をMaya互換に変換
+    def _convert_vertex_morph_pmx(
+        self, morph, mesh_node: str, *, template_ctx: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """PMX頂点モーフの変換
+
+        template_ctx を渡すと、メッシュ複製を使い回して高速化する。
+        初回呼び出し時に template_ctx へ内部状態を書き込むので、
+        呼び出し元は空 dict を渡してループ終了後に cleanup_vertex_morph_template() を呼ぶこと。
+        """
         raw_name = self._raw_morph_name(morph)
         morph_name = maya_utils.sanitize_text(morph.get_name())
-        source_to_local = self._get_mesh_source_vertex_map(mesh_node)
 
-        # メッシュを複製してターゲットを作成
-        target_mesh = cmds.duplicate(mesh_node)[0]
-        target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
+        if template_ctx is not None:
+            if "target_mesh" not in template_ctx:
+                target_mesh = cmds.duplicate(mesh_node)[0]
+                target_mesh = cmds.rename(target_mesh, "_morph_template")
+                maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
+                sel = om.MSelectionList()
+                sel.add(target_mesh)
+                dag = sel.getDagPath(0)
+                mesh_fn = om.MFnMesh(dag)
+                template_ctx["target_mesh"] = target_mesh
+                template_ctx["dag_path"] = dag
+                template_ctx["mesh_fn"] = mesh_fn
+                template_ctx["base_points"] = mesh_fn.getPoints(om.MSpace.kObject)
+                template_ctx["source_to_local"] = self._get_mesh_source_vertex_map(mesh_node)
+                template_ctx["blend_shape_node"] = maya_utils.find_or_create_blendshape_node(mesh_node)
+                template_ctx["next_target_index"] = 0
+                template_ctx["existing_aliases"] = self._existing_blendshape_aliases(
+                    template_ctx["blend_shape_node"],
+                )
+                template_ctx["morph_name_mapping"] = self._load_blendshape_morph_names(
+                    template_ctx["blend_shape_node"],
+                )
+                template_ctx["morph_name_mapping_dirty"] = False
 
-        # ターゲットメッシュを非表示
-        maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
+            # base_points から Python コピー → オフセット適用 → 1回の setPoints
+            # リセット用 setPoints + getPoints を完全に排除
+            target_points_start = time.perf_counter()
+            target_points = self._compute_target_points(
+                template_ctx["base_points"], morph, template_ctx["source_to_local"],
+            )
+            template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
+            self._add_profile_time("target_points_sec", target_points_start)
 
-        # 頂点オフセットを適用
-        self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
+            target_mesh = cmds.duplicate(template_ctx["target_mesh"])[0]
+            target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
+            maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
+            blend_shape_node = template_ctx["blend_shape_node"]
+            target_index = template_ctx["next_target_index"]
+            template_ctx["next_target_index"] = target_index + 1
+        else:
+            target_mesh = cmds.duplicate(mesh_node)[0]
+            target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
+            maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
+            source_to_local = self._get_mesh_source_vertex_map(mesh_node)
+            target_points_start = time.perf_counter()
+            self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
+            self._add_profile_time("target_points_sec", target_points_start)
+            blend_shape_node = maya_utils.find_or_create_blendshape_node(mesh_node)
+            target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
+            target_index = len(target_count) if target_count else 0
 
-        # blendShapeノードを取得または作成
-        blend_shape_node = maya_utils.find_or_create_blendshape_node(mesh_node)
+        blendshape_add_start = time.perf_counter()
+        try:
+            cmds.blendShape(
+                blend_shape_node,
+                edit=True,
+                target=(mesh_node, target_index, target_mesh, 1.0),
+            )
+        except Exception:
+            if target_mesh and cmds.objExists(target_mesh):
+                cmds.delete(target_mesh)
+            raise
+        self._add_profile_time("blendshape_add_sec", blendshape_add_start)
+        if target_mesh and cmds.objExists(target_mesh):
+            cmds.delete(target_mesh)
 
-        # 現在のターゲット数を取得
-        target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
-        target_index = len(target_count) if target_count else 0
-
-        # blendShapeにターゲットを追加
-        cmds.blendShape(
-            blend_shape_node,
-            edit=True,
-            target=(mesh_node, target_index, target_mesh, 1.0),
-        )
-
-        # ターゲットの名前を設定（衝突時は一意化）。生名は別途保存し正確なマッピングを保証する。
-        alias = self._unique_blendshape_alias(blend_shape_node, morph_name)
+        existing_aliases = template_ctx.get("existing_aliases") if template_ctx is not None else None
+        if existing_aliases is not None:
+            alias = self._unique_blendshape_alias_from_existing(morph_name, existing_aliases)
+        else:
+            alias = self._unique_blendshape_alias(blend_shape_node, morph_name)
+        alias_start = time.perf_counter()
         cmds.aliasAttr(alias, f"{blend_shape_node}.w[{target_index}]")
-        self._store_blendshape_morph_name(blend_shape_node, target_index, raw_name)
+        self._add_profile_time("alias_sec", alias_start)
+        if existing_aliases is not None:
+            existing_aliases.add(alias)
+
+        if template_ctx is not None and "morph_name_mapping" in template_ctx:
+            if raw_name:
+                template_ctx["morph_name_mapping"][str(target_index)] = str(raw_name)
+                template_ctx["morph_name_mapping_dirty"] = True
+        else:
+            morph_name_store_start = time.perf_counter()
+            self._store_blendshape_morph_name(blend_shape_node, target_index, raw_name)
+            self._add_profile_time("morph_name_store_sec", morph_name_store_start)
 
         return {
             "success": True,
@@ -592,6 +704,44 @@ class MorphConverter:
             "target_index": target_index,
             "alias": alias,
         }
+
+    @staticmethod
+    def _compute_target_points(
+        base_points: om.MPointArray,
+        morph,
+        source_to_local: Optional[Dict[int, int]],
+    ) -> om.MPointArray:
+        """base_points + morph offsets → 新しい MPointArray を返す（メッシュ操作なし）。"""
+        points = om.MPointArray(base_points)
+        n_points = len(points)
+        if not hasattr(morph, "offsets"):
+            return points
+        for offset in morph.offsets:
+            if "vertex_index" not in offset or "position_offset" not in offset:
+                continue
+            src_vi = int(offset["vertex_index"])
+            if source_to_local is not None:
+                vi = source_to_local.get(src_vi)
+                if vi is None:
+                    continue
+            else:
+                vi = src_vi
+            if vi < n_points:
+                pos = offset["position_offset"]
+                points[vi] += MorphConverter._pmx_vertex_offset_to_maya_vector(pos)
+        return points
+
+    @staticmethod
+    def _pmx_vertex_offset_to_maya_vector(position_offset) -> om.MVector:
+        """Return a PMX vertex morph offset converted into Maya mesh space."""
+        return om.MVector(position_offset[0], position_offset[1], -position_offset[2])
+
+    @staticmethod
+    def cleanup_vertex_morph_template(template_ctx: Dict[str, Any]) -> None:
+        """テンプレートメッシュを削除する。"""
+        target = template_ctx.get("target_mesh")
+        if target and cmds.objExists(target):
+            cmds.delete(target)
 
     def _apply_vertex_offsets_pmd(self, mesh_node: str, morph):
         """PMDの頂点オフセットを適用"""
@@ -640,7 +790,7 @@ class MorphConverter:
                         vertex_index = source_vertex_index
                     offset_pos = offset["position_offset"]
                     if vertex_index < len(points):
-                        points[vertex_index] += om.MVector(offset_pos[0], offset_pos[1], offset_pos[2])
+                        points[vertex_index] += self._pmx_vertex_offset_to_maya_vector(offset_pos)
 
         # 変更された頂点位置を設定
         mesh_fn.setPoints(points, om.MSpace.kObject)

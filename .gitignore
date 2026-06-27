@@ -22,6 +22,10 @@ dist/
 plug-ins/*
 !plug-ins/.gitkeep
 !plug-ins/*.py
+!plug-ins/*/
+plug-ins/*/__pycache__/
+plug-ins/*/Debug/
+!plug-ins/*/Release/
 
 # IDE specific files
 .idea/
@@ -42,6 +46,10 @@ stubs/
 KIRO.md
 .mcp.json
 CLAUDE.md
+AGENTS.md
+docs-dev/
+docs/*
+!docs/README_ja.md
 
 # TestData
 /tests/data/*
@@ -51,4 +59,9 @@ CLAUDE.md
 !/tests/data/for_unit_test/*.pmd
 !/tests/data/for_unit_test/*.vmd
 !/tests/data/mmt_test_model.pmx
+!/tests/data/mmt_test_model_test_motion.vmd
+!/tests/data/mmt_test_model_ik_test_motion.vmd
+!/tests/data/joint_orient_test.vmd
+!/tests/data/test_camera_light.vmd
+!/tests/data/test_morph_model.pmx
 mmd_tools/shaders/MayaToonOutline.fx

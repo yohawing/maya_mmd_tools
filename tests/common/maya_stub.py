@@ -34,6 +34,8 @@ _STUBBED_MODULE_NAMES = (
     "maya",
     "maya.cmds",
     "maya.mel",
+    "maya.OpenMaya",
+    "maya.OpenMayaMPx",
     "maya.api",
     "maya.api.OpenMaya",
     "maya.api.OpenMayaAnim",
@@ -81,6 +83,24 @@ def install_maya_stub() -> bool:
     maya = ModuleType("maya")
     maya.cmds = MagicMock(name="maya.cmds")
     maya.mel = MagicMock(name="maya.mel")
+    maya.OpenMaya = MagicMock(name="maya.OpenMaya")
+
+    class _StubMPxFileTranslator:
+        kImportAccessMode = 0
+        kOpenAccessMode = 1
+        kReferenceAccessMode = 2
+        kIsMyFileType = 0
+        kCouldBeMyFileType = 1
+        kNotMyFileType = 2
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    open_maya_mpx = ModuleType("maya.OpenMayaMPx")
+    open_maya_mpx.MPxFileTranslator = _StubMPxFileTranslator
+    open_maya_mpx.MFnPlugin = MagicMock(name="maya.OpenMayaMPx.MFnPlugin")
+    open_maya_mpx.asMPxPtr = MagicMock(name="maya.OpenMayaMPx.asMPxPtr", side_effect=lambda value: value)
+    maya.OpenMayaMPx = open_maya_mpx
 
     api = ModuleType("maya.api")
     api.OpenMaya = MagicMock(name="maya.api.OpenMaya")
@@ -92,6 +112,8 @@ def install_maya_stub() -> bool:
     sys.modules["maya"] = maya
     sys.modules["maya.cmds"] = maya.cmds
     sys.modules["maya.mel"] = maya.mel
+    sys.modules["maya.OpenMaya"] = maya.OpenMaya
+    sys.modules["maya.OpenMayaMPx"] = maya.OpenMayaMPx
     sys.modules["maya.api"] = api
     sys.modules["maya.api.OpenMaya"] = api.OpenMaya
     sys.modules["maya.api.OpenMayaAnim"] = api.OpenMayaAnim

@@ -97,19 +97,19 @@ class UnicodeToAsciiConverter:
 
                 self._build_reverse_map()
 
-                self.logger.info(f"辞書ファイルを読み込みました: {dictionary_path}")
-                self.logger.info(f"辞書エントリ数: {len(self.unicode_to_ascii)}")
+                self.logger.debug(f"Loaded dictionary file: {dictionary_path}")
+                self.logger.debug(f"Dictionary entry count: {len(self.unicode_to_ascii)}")
                 if self.exact_match:
-                    self.logger.info(f"完全一致エントリ数: {len(self.exact_match)}")
+                    self.logger.debug(f"Exact-match entry count: {len(self.exact_match)}")
             else:
                 self._load_default_dictionary()
-                self.logger.warning(f"辞書ファイルが見つかりません: {dictionary_path}")
-                self.logger.info("デフォルト辞書を使用します")
+                self.logger.warning(f"Dictionary file not found: {dictionary_path}")
+                self.logger.info("Using default dictionary")
 
         except Exception as e:
             self._load_default_dictionary()
-            self.logger.error(f"辞書ファイルの読み込みに失敗しました: {e}")
-            self.logger.info("デフォルト辞書を使用します")
+            self.logger.error(f"Failed to load dictionary file: {e}")
+            self.logger.info("Using default dictionary")
 
     def _process_list_dictionary(self, dictionary_list: List[List[str]]):
         """
@@ -666,7 +666,7 @@ class UnicodeToAsciiConverter:
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
 
-        self.logger.info(f"辞書を出力しました: {file_path}")
+        self.logger.info(f"Exported dictionary: {file_path}")
 
     def reload_dictionary(self, dictionary_path: Optional[str] = None):
         """

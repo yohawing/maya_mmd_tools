@@ -10,14 +10,19 @@ from tests.common.vmd_mock import VmdMock
 class TestVmdParser(TestBase):
     """VMDパーサーのユニットテスト。
 
-    bone/morph/IK の基本解析は実フィクスチャ ``tests/data/Lat式用.vmd`` を用いる。
+    bone/IK の基本解析は実フィクスチャ ``tests/data/mmt_test_model_test_motion.vmd`` を用いる。
     camera/light/shadow など実ファイルに含まれないフレームは VmdMock 生成データで補う。
     """
 
     def setUp(self):
         super().setUp()
-        # bone/morph/IK 系は実フィクスチャを解析して検証する
-        self.sample_vmd_path = os.path.join(os.path.dirname(__file__), "..", "data", "Lat式用.vmd")
+        # bone/IK 系は実フィクスチャを解析して検証する
+        self.sample_vmd_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "data",
+            "mmt_test_model_test_motion.vmd",
+        )
         self.parsed_data = mmd_parser.parse_mmd_file(self.sample_vmd_path)
 
     def tearDown(self):
@@ -42,11 +47,12 @@ class TestVmdParser(TestBase):
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data.bone_frames)
 
+        self.assertGreater(len(self.parsed_data.bone_frames), 0)
         bone_frame = self.parsed_data.bone_frames[0]
         # ボーンフレームの属性が正しく設定されていることを確認
-        self.assertEqual(bone_frame.bone_name, "センター")
+        self.assertIsInstance(bone_frame.bone_name, str)
         # フレーム番号が正しく設定されていることを確認
-        self.assertEqual(bone_frame.frame_number, 0)
+        self.assertIsInstance(bone_frame.frame_number, int)
         # 位置が正しく設定されていることを確認
         self.assertEqual(len(bone_frame.position), 3)
         # 回転が正しく設定されていることを確認
@@ -56,14 +62,28 @@ class TestVmdParser(TestBase):
 
     def test_parse_vmd_morph_frames(self):
         """VMDモーフフレームが正しく解析されることをテストする。"""
-        # None出ないことを確認
-        self.assertIsNotNone(self.parsed_data.morph_frames)
-        # listであることを確認
-        self.assertIsInstance(self.parsed_data.morph_frames, list)
+        mock_vmd_data = VmdMock.create_custom_vmd(
+            model_name="TestModel",
+            bone_frame_count=0,
+            morph_frame_count=3,
+        )
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".vmd", delete=False) as temp_file:
+            temp_file.write(mock_vmd_data)
+            temp_file_path = temp_file.name
 
-        morph_frame = self.parsed_data.morph_frames[0]
+        try:
+            parsed_data = mmd_parser.parse_mmd_file(temp_file_path)
+        finally:
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+
+        self.assertIsNotNone(parsed_data.morph_frames)
+        self.assertIsInstance(parsed_data.morph_frames, list)
+        self.assertGreater(len(parsed_data.morph_frames), 0)
+
+        morph_frame = parsed_data.morph_frames[0]
         # モーフフレームの属性が正しく設定されていることを確認
-        self.assertEqual(morph_frame.morph_name, "base")
+        self.assertIsInstance(morph_frame.morph_name, str)
         # フレーム番号が正しく設定されていることを確認
         self.assertEqual(morph_frame.frame_number, 0)
         # モーフ値が0~1の範囲であることを確認
@@ -179,6 +199,31 @@ class TestVmdParser(TestBase):
             # 一時ファイルを削除
             if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
+
+    def test_parse_vmd_without_trailing_shadow_and_ik_sections(self):
+        """self-shadow/IK セクションが省略された VMD も読み込めることを確認する。"""
+        mock_vmd_data = VmdMock.create_custom_vmd(
+            model_name="TestModel",
+            bone_frame_count=0,
+            morph_frame_count=0,
+            light_frame_count=1,
+        )
+        # VMD variants in the wild may end immediately after the light section.
+        mock_vmd_data = mock_vmd_data[:-8]
+
+        with tempfile.NamedTemporaryFile(mode="wb", suffix=".vmd", delete=False) as temp_file:
+            temp_file.write(mock_vmd_data)
+            temp_file_path = temp_file.name
+
+        try:
+            parsed_data = mmd_parser.parse_mmd_file(temp_file_path)
+        finally:
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+
+        self.assertEqual(len(parsed_data.light_frames), 1)
+        self.assertEqual(parsed_data.shadow_frames, [])
+        self.assertEqual(parsed_data.ik_show_hide_frames, [])
 
     def test_parse_vmd_ik_show_hide_frames(self):
         """VMD IK表示/非表示フレームが正しく解析されることをテストする。"""

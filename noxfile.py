@@ -867,3 +867,106 @@ def cpp_verify(session: nox.Session) -> None:
         env=env,
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def golden_oracle(session: nox.Session) -> None:
+    """Verify mmd-anim runtime against GoldenOracle numeric manifest.
+
+    Runs ``mmd-anim verify <manifest> --mode numeric`` which compares the
+    committed oracle JSONL against a fresh mmd-anim runtime evaluation.
+    Any regression beyond the manifest epsilon causes session failure.
+
+    Examples:
+        uvx nox -s golden_oracle
+        uvx nox -s golden_oracle -- --manifest tests/golden-oracle/manifest.json
+    """
+    manifest = _option(
+        session.posargs, "--manifest",
+        str(ROOT / "tests/golden-oracle/manifest.json"),
+    )
+    mmd_anim = ROOT / "external" / "mmd-anim" / "target" / "release" / "mmd-anim"
+    if platform.system() == "Windows":
+        mmd_anim = mmd_anim.with_suffix(".exe")
+
+    if not mmd_anim.exists():
+        session.log("mmd-anim release binary not found; building via cargo...")
+        session.run(
+            "cargo", "build", "-p", "mmd-anim-cli",
+            "--manifest-path", "external/mmd-anim/Cargo.toml",
+            "--release", external=True,
+        )
+
+    session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)
+
+
+@nox.session(venv_backend="none")
+def local_parity(session: nox.Session) -> None:
+    """Run Bake-vs-Rig mesh parity on local (non-committed) PMX/VMD assets.
+
+    Non-ASCII asset paths are transparently aliased via Windows junctions
+    so that mayapy batch mode can store them in Maya string attributes
+    without codepage corruption.
+
+    Examples:
+        uvx nox -s local_parity -- --maya 2024
+        uvx nox -s local_parity -- --maya 2024 --case alicia_weekender
+        uvx nox -s local_parity -- --maya 2024 --skip-fbx
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in ("--case", "--frame") and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in ("--skip-fbx",):
+            passthrough.append(args[i])
+            i += 1
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        str(ROOT / "tests" / "viewport" / "local_asset_motion_compare.py"),
+        *passthrough,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def runtime_bake_bench(session: nox.Session) -> None:
+    """Measure the Maya runtime-bake import path.
+
+    Examples:
+        uvx nox -s runtime_bake_bench -- --maya 2024
+        uvx nox -s runtime_bake_bench -- --maya 2024 --repeat 3
+        uvx nox -s runtime_bake_bench -- --maya 2024 --case lumine_rabbithole
+        uvx nox -s runtime_bake_bench -- --maya 2024 --case eunice_rabbithole
+        uvx nox -s runtime_bake_bench -- --pmx tests/data/mmt_test_model.pmx --vmd tests/data/mmt_test_model_test_motion.vmd
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in ("--case", "--pmx", "--vmd", "--out", "--log", "--repeat") and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        str(ROOT / "tests" / "viewport" / "runtime_bake_benchmark.py"),
+        *passthrough,
+        external=True,
+    )

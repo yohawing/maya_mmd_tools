@@ -110,26 +110,24 @@ class TestMayaBakeOracleDumper(unittest.TestCase):
         self.assertEqual(record["models"][0]["bones"][0]["name"], "bone")
         self.assertEqual(record["models"][0]["morphs"][0]["weight"], 0.5)
 
-    def test_convert_maya_world_matrix_to_mmd_is_involutory_and_flips_z(self):
-        """Pure (Maya-indep) verification of the sign-flip convention.
+    def test_convert_maya_world_matrix_to_mmd_column_major_z_flip(self):
+        """Verify row-major→column-major transpose + Z sign flip.
 
-        Applying Maya->MMD twice recovers original (S^2 = I). tz is sign-flipped.
-        Identity matrix is fixed point.
+        Identity is a fixed point. Translation Z is sign-flipped.
+        Off-diagonal rotation elements are transposed and Z-flipped.
         """
-        ident = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        ident = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1.0]
         self.assertEqual(_convert_maya_world_matrix_to_mmd(ident), ident)
 
-        maya_tz5 = [1.0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 5.0, 1]
+        maya_tz5 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 5.0, 1.0]
         mmd = _convert_maya_world_matrix_to_mmd(maya_tz5)
         self.assertEqual(mmd[14], -5.0)
-        back = _convert_maya_world_matrix_to_mmd(mmd)
-        self.assertAlmostEqual(back[14], 5.0, places=6)
 
-        # rot element example: m[2] (row0,col2) gets * (1 * -1) = sign flip in Maya->MMD
+        # Row-major M[0][2]=7 (index 2) → column-major [col2,row0] = index 8, Z-flipped
         maya_m02 = [0, 0, 7.0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]
         mmd_m02 = _convert_maya_world_matrix_to_mmd(maya_m02)
-        self.assertEqual(mmd_m02[2], -7.0)
-        self.assertEqual(_convert_maya_world_matrix_to_mmd(mmd_m02)[2], 7.0)
+        self.assertEqual(mmd_m02[8], -7.0)
+        self.assertEqual(mmd_m02[2], 0.0)
 
     def test_collect_morphs_in_pmx_order_uses_pmx_indices_and_names(self):
         """Verify PMX-order output + name-based weight lookup from Maya aliases.

@@ -303,7 +303,7 @@ def _check_png_not_blank(png_path: Path, threshold: int = 10) -> dict:
         raise ValueError(f"Expected IHDR chunk, got {raw[12:16]!r}")
     ihdr = raw[16 : 16 + ihdr_len]
     img_w = struct.unpack_from(">I", ihdr, 0)[0]
-    img_h = struct.unpack_from(">I", ihdr, 4)[0]
+    _ = struct.unpack_from(">I", ihdr, 4)[0]  # img_h (unused)
     bit_depth = ihdr[8]
     color_type = ihdr[9]
 

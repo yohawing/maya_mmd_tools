@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -54,8 +56,9 @@ jobs:
 
           cp -R mmd_tools "${package_root}/"
           cp -R plug-ins "${package_root}/"
-          cp -R docs "${package_root}/"
-          cp README.md LICENSE CHANGELOG.md maya_mmd_tools.mod userSetup.py pyproject.toml "${package_root}/"
+          mkdir -p "${package_root}/docs"
+          cp docs/README_ja.md "${package_root}/docs/"
+          cp README.md LICENSE drag_drop_install.py maya_mmd_tools.mod userSetup.py pyproject.toml "${package_root}/"
 
           for optional_dir in config resources shaders examples; do
             if [[ -d "${optional_dir}" ]]; then

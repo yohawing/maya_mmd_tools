@@ -1,14 +1,18 @@
 /**
  * mmdFastLoad.cpp
  *
- * Implementation of mmdFastLoad command.
+ * Implementation of the mmdFastLoad command.
  *
- * Reads a PMX file, uses mmd-anim-ffi parsed-model ABI to extract
- * vertex positions, UVs, and indices, then creates a Maya mesh with
- * coordinate conversions matching the Python importer:
+ * Reads a PMX file and builds Maya mesh(es) using the mmd-anim-ffi
+ * typed-buffer ABI:
+ *   - Geometry  : mmd_runtime_parse_pmx_positions/uvs/indices_buffer
+ *   - Materials : split via mmd_runtime_pmx_material_split_* (one mesh / material)
+ *   - Morphs    : mmd_runtime_parse_pmx_non_geometry_json -> morphs[].vertexOffsets
+ *
+ * Coordinate conversions match the Python importer:
  *   - Position: (x, y, -z) * scale
- *   - UV: V flipped (1.0 - v)
- *   - Winding: reversed (PMX CCW → Maya CW)
+ *   - UV:       V flipped (1.0 - v)
+ *   - Winding:  reversed (PMX CCW -> Maya CW)
  */
 
 #include "mmdFastLoad.h"
@@ -29,12 +33,20 @@
 // mmd-anim-ffi C ABI header (path set by CMake)
 #include "mmd_runtime.h"
 
+// Header-only JSON parser (vendored). Used to read the non-geometry JSON
+// (vertex morphs) and the material-split manifest.
+#include "third_party/json.hpp"
+
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <fstream>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+using nlohmann::json;
 
 // -----------------------------------------------------------------------
 // Construction / destruction
@@ -68,6 +80,9 @@ MSyntax MmdFastLoad::newSyntax()
     // -morphs / -mo <bool> (optional, default false)
     syntax.addFlag("-mo", "-morphs", MSyntax::kBoolean);
 
+    // -split / -sp <bool> (optional, default false)
+    syntax.addFlag("-sp", "-split", MSyntax::kBoolean);
+
     syntax.enableEdit(false);
 
     return syntax;
@@ -80,7 +95,6 @@ MSyntax MmdFastLoad::newSyntax()
 bool MmdFastLoad::parseArgs(const MArgList& args)
 {
     MArgDatabase argData(newSyntax(), args);
-    MStatus      status;
 
     if (!argData.isFlagSet("-f")) {
         MGlobal::displayError("[mmdFastLoad] Required flag missing: -file/-f <path>");
@@ -99,6 +113,10 @@ bool MmdFastLoad::parseArgs(const MArgList& args)
 
     if (argData.isFlagSet("-mo")) {
         enableMorphs_ = argData.flagArgumentBool("-mo", 0);
+    }
+
+    if (argData.isFlagSet("-sp")) {
+        enableSplit_ = argData.flagArgumentBool("-sp", 0);
     }
 
     if (scale_ <= 0.0) {
@@ -188,90 +206,248 @@ std::vector<uint8_t> readBinaryFile(const std::string& path)
     return buf;
 }
 
-std::string byteBufferToStringAndFree(mmd_runtime_ffi_byte_buffer_t buffer)
+// --- Byte-buffer adapters (own the buffer; free before returning) ---------
+
+std::vector<float> bufferToFloatsAndFree(mmd_runtime_ffi_byte_buffer_t buffer)
 {
-    std::string out;
-    if (buffer.data && buffer.len > 0) {
-        out.assign(reinterpret_cast<const char*>(buffer.data), buffer.len);
+    std::vector<float> out;
+    if (buffer.data && buffer.len >= sizeof(float)) {
+        const size_t count = buffer.len / sizeof(float);
+        out.resize(count);
+        std::memcpy(out.data(), buffer.data, count * sizeof(float));
     }
     mmd_runtime_byte_buffer_free(buffer);
     return out;
 }
 
-unsigned int createVertexMorphBlendShapes(
-    mmd_runtime_parsed_model_t* model,
-    const MString& baseTransformName,
-    const MPointArray& basePoints,
-    const MIntArray& polygonCounts,
-    const MIntArray& polygonConnects,
-    double scale)
+std::vector<uint32_t> bufferToU32AndFree(mmd_runtime_ffi_byte_buffer_t buffer)
 {
-    const size_t morphCount = mmd_runtime_parsed_model_vertex_morph_count(model);
-    const size_t offsetCount = mmd_runtime_parsed_model_vertex_morph_offset_count(model);
-    if (morphCount == 0 || offsetCount == 0) {
-        return 0;
+    std::vector<uint32_t> out;
+    if (buffer.data && buffer.len >= sizeof(uint32_t)) {
+        const size_t count = buffer.len / sizeof(uint32_t);
+        out.resize(count);
+        std::memcpy(out.data(), buffer.data, count * sizeof(uint32_t));
+    }
+    mmd_runtime_byte_buffer_free(buffer);
+    return out;
+}
+
+json parseJsonBufferAndFree(mmd_runtime_ffi_byte_buffer_t buffer)
+{
+    json result;
+    if (buffer.data && buffer.len > 0) {
+        const char* begin = reinterpret_cast<const char*>(buffer.data);
+        result = json::parse(begin, begin + buffer.len, nullptr, /*allow_exceptions=*/false);
+    }
+    mmd_runtime_byte_buffer_free(buffer);
+    return result;
+}
+
+// --- Mesh construction ----------------------------------------------------
+
+struct BuiltMesh {
+    bool         ok = false;
+    MString      transformName;
+    MString      meshName;
+    MPointArray  points;           // Maya-space base points (for morph targets)
+    MIntArray    polygonCounts;
+    MIntArray    polygonConnects;
+};
+
+/**
+ * Build a single Maya mesh from flat PMX geometry buffers.
+ *   positions : flat f32, length = vertCount * 3   (PMX space)
+ *   uvs       : flat f32, length = vertCount * 2   (may be empty)
+ *   indices   : flat u32, triangle list            (PMX CCW winding)
+ * The new transform is renamed to desiredTransformName (uniqued by Maya).
+ */
+BuiltMesh buildMesh(const std::vector<float>&    positions,
+                    const std::vector<float>&    uvs,
+                    const std::vector<uint32_t>& indices,
+                    double                       scale,
+                    const MString&               desiredTransformName)
+{
+    BuiltMesh result;
+
+    const size_t vertCount  = positions.size() / 3;
+    const size_t indexCount = indices.size();
+    if (vertCount == 0 || indexCount == 0) {
+        return result;
     }
 
-    const uint32_t* spans = mmd_runtime_parsed_model_vertex_morph_spans(model);
-    const uint32_t* vertexIndices =
-        mmd_runtime_parsed_model_vertex_morph_vertex_indices(model);
-    const float* offsets = mmd_runtime_parsed_model_vertex_morph_position_offsets(model);
-    if (!spans || !vertexIndices || !offsets) {
-        MGlobal::displayWarning("[mmdFastLoad] Vertex morph FFI accessors returned null.");
+    // ---- Points: (x, y, -z) * scale ----
+    result.points.setLength(static_cast<unsigned int>(vertCount));
+    for (size_t i = 0; i < vertCount; ++i) {
+        result.points[static_cast<unsigned int>(i)] = MPoint(
+            positions[i * 3]     * scale,
+            positions[i * 3 + 1] * scale,
+           -positions[i * 3 + 2] * scale);
+    }
+
+    // ---- Triangles with reversed winding (PMX CCW -> Maya CW) ----
+    const unsigned int triCount = static_cast<unsigned int>(indexCount / 3);
+    result.polygonCounts = MIntArray(triCount, 3);
+    result.polygonConnects.setLength(static_cast<unsigned int>(triCount * 3));
+    for (unsigned int t = 0; t < triCount; ++t) {
+        const unsigned int base = t * 3;
+        result.polygonConnects[base]     = static_cast<int>(indices[base + 2]);
+        result.polygonConnects[base + 1] = static_cast<int>(indices[base + 1]);
+        result.polygonConnects[base + 2] = static_cast<int>(indices[base]);
+    }
+
+    MFnMesh meshFn;
+    MStatus status;
+    MObject meshObj = meshFn.create(
+        static_cast<int>(vertCount),
+        static_cast<int>(triCount),
+        result.points,
+        result.polygonCounts,
+        result.polygonConnects,
+        MObject::kNullObj,
+        &status);
+    if (!status) {
+        return result;
+    }
+
+    MDagPath dagPath;
+    MDagPath::getAPathTo(meshObj, dagPath);
+    MFnTransform transformFn(dagPath.transform());
+    transformFn.setName(desiredTransformName);
+
+    // ---- UVs (V-flip) ----
+    if (uvs.size() >= vertCount * 2) {
+        MString uvSetName("map1");
+        meshFn.createUVSet(uvSetName);
+
+        MFloatArray uArr(static_cast<unsigned int>(vertCount));
+        MFloatArray vArr(static_cast<unsigned int>(vertCount));
+        for (size_t i = 0; i < vertCount; ++i) {
+            uArr[static_cast<unsigned int>(i)] = uvs[i * 2];
+            vArr[static_cast<unsigned int>(i)] = 1.0f - uvs[i * 2 + 1];
+        }
+        meshFn.setUVs(uArr, vArr, &uvSetName);
+
+        MIntArray uvCounts(triCount, 3);
+        MIntArray uvConnects;
+        uvConnects.setLength(static_cast<unsigned int>(triCount * 3));
+        for (unsigned int t = 0; t < triCount; ++t) {
+            const unsigned int base = t * 3;
+            uvConnects[base]     = static_cast<int>(indices[base + 2]);
+            uvConnects[base + 1] = static_cast<int>(indices[base + 1]);
+            uvConnects[base + 2] = static_cast<int>(indices[base]);
+        }
+        meshFn.assignUVs(uvCounts, uvConnects, &uvSetName);
+    }
+
+    result.ok            = true;
+    result.transformName = transformFn.name();
+    result.meshName      = meshFn.name();
+    return result;
+}
+
+/**
+ * Create vertex-morph blendShape targets on baseTransformName from the parsed
+ * morph list (non-geometry JSON `morphs` array).
+ *
+ * globalToLocal: when non-null, a morph offset's PMX `vertexIndex` is looked up
+ * in this map and remapped to a local mesh vertex (material-split case). Offsets
+ * not present in the map are ignored, so each submesh only gets the morphs that
+ * actually move its vertices. When null, vertexIndex is used directly.
+ */
+unsigned int buildVertexMorphBlendShapes(
+    const json&                                       morphs,
+    const MString&                                    baseTransformName,
+    const MPointArray&                                basePoints,
+    const MIntArray&                                  polygonCounts,
+    const MIntArray&                                  polygonConnects,
+    double                                            scale,
+    const std::unordered_map<uint32_t, uint32_t>*     globalToLocal)
+{
+    if (!morphs.is_array() || morphs.empty()) {
         return 0;
     }
 
     const std::string baseName(baseTransformName.asChar());
-    const std::string blendShapeName = sanitizeName(baseName + "_vertexMorphs");
-    MStringArray commandResult;
-    MStatus status = MGlobal::executeCommand(
-        MString(("blendShape -name " + quoteMelName(blendShapeName) + " " +
-                 quoteMelName(baseTransformName)).c_str()),
-        commandResult,
-        false,
-        false);
-    if (!status || commandResult.length() == 0) {
-        MGlobal::displayWarning("[mmdFastLoad] Failed to create vertex morph blendShape.");
-        return 0;
-    }
-    const std::string blendShapeNode(commandResult[0].asChar());
-
     std::set<std::string> usedNames;
-    usedNames.insert(blendShapeName);
+
+    std::string blendShapeNode;   // created lazily on first attached target
     unsigned int created = 0;
 
-    for (size_t morphIndex = 0; morphIndex < morphCount; ++morphIndex) {
-        const size_t spanBase = morphIndex * 3;
-        const uint32_t start = spans[spanBase];
-        const uint32_t count = spans[spanBase + 1];
-        if (count == 0 || static_cast<size_t>(start) + count > offsetCount) {
+    for (const json& morph : morphs) {
+        if (!morph.is_object()) {
+            continue;
+        }
+        if (morph.value("type", std::string()) != "vertex") {
+            continue;
+        }
+        auto offsetsIt = morph.find("vertexOffsets");
+        if (offsetsIt == morph.end() || !offsetsIt->is_array() || offsetsIt->empty()) {
             continue;
         }
 
-        std::string rawName = byteBufferToStringAndFree(
-            mmd_runtime_parsed_model_vertex_morph_name(model, morphIndex));
+        // Apply offsets onto a copy of the base points.
+        MPointArray targetPoints(basePoints);
+        bool touched = false;
+        for (const json& off : *offsetsIt) {
+            if (!off.is_object()) {
+                continue;
+            }
+            const uint32_t pmxVertex = off.value("vertexIndex", 0u);
+            uint32_t localVertex = pmxVertex;
+            if (globalToLocal) {
+                auto it = globalToLocal->find(pmxVertex);
+                if (it == globalToLocal->end()) {
+                    continue;
+                }
+                localVertex = it->second;
+            }
+            if (localVertex >= targetPoints.length()) {
+                continue;
+            }
+            auto posIt = off.find("position");
+            if (posIt == off.end() || !posIt->is_array() || posIt->size() < 3) {
+                continue;
+            }
+            const double dx = (*posIt)[0].get<double>();
+            const double dy = (*posIt)[1].get<double>();
+            const double dz = (*posIt)[2].get<double>();
+            targetPoints[localVertex].x += dx * scale;
+            targetPoints[localVertex].y += dy * scale;
+            targetPoints[localVertex].z += -dz * scale;
+            touched = true;
+        }
+        if (!touched) {
+            continue;   // morph does not affect this mesh
+        }
+
+        // Lazily create the blendShape deformer on the first real target.
+        if (blendShapeNode.empty()) {
+            const std::string blendShapeName =
+                uniqueName(baseName + "_vertexMorphs", usedNames);
+            MStringArray cmdResult;
+            MStatus status = MGlobal::executeCommand(
+                MString(("blendShape -name " + quoteMelName(blendShapeName) + " " +
+                         quoteMelName(baseTransformName)).c_str()),
+                cmdResult, false, false);
+            if (!status || cmdResult.length() == 0) {
+                MGlobal::displayWarning(
+                    "[mmdFastLoad] Failed to create vertex morph blendShape.");
+                return created;
+            }
+            blendShapeNode = cmdResult[0].asChar();
+        }
+
+        std::string rawName = morph.value("name", std::string());
         if (rawName.empty()) {
-            rawName = "morph_" + std::to_string(morphIndex);
+            rawName = "morph_" + std::to_string(created);
         }
         const std::string morphName = uniqueName(rawName, usedNames);
         const std::string targetTransformName =
             uniqueName(baseName + "_" + morphName + "_target", usedNames);
 
-        MPointArray targetPoints(basePoints);
-        for (uint32_t i = 0; i < count; ++i) {
-            const uint32_t offsetIndex = start + i;
-            const uint32_t vertexIndex = vertexIndices[offsetIndex];
-            if (vertexIndex >= targetPoints.length()) {
-                continue;
-            }
-            targetPoints[vertexIndex].x += offsets[offsetIndex * 3] * scale;
-            targetPoints[vertexIndex].y += offsets[offsetIndex * 3 + 1] * scale;
-            targetPoints[vertexIndex].z += -offsets[offsetIndex * 3 + 2] * scale;
-        }
-
-        MFnMesh targetMeshFn;
-        MStatus createStatus;
-        MObject targetMeshObj = targetMeshFn.create(
+        MFnMesh  targetMeshFn;
+        MStatus  createStatus;
+        MObject  targetMeshObj = targetMeshFn.create(
             static_cast<int>(targetPoints.length()),
             static_cast<int>(polygonCounts.length()),
             targetPoints,
@@ -294,19 +470,17 @@ unsigned int createVertexMorphBlendShapes(
         const std::string targetName(targetTransformFn.name().asChar());
         MGlobal::executeCommand(
             MString(("setAttr " + quoteMelName(targetName + ".visibility") + " 0").c_str()),
-            false,
-            false);
+            false, false);
         MGlobal::executeCommand(
             MString(("parent " + quoteMelName(targetName) + " " +
                      quoteMelName(baseTransformName)).c_str()),
-            false,
-            false);
+            false, false);
 
         const std::string editCmd =
             "blendShape -edit -target " + quoteMelName(baseTransformName) + " " +
             std::to_string(created) + " " + quoteMelName(targetName) + " 1.0 " +
             quoteMelName(blendShapeNode);
-        status = MGlobal::executeCommand(MString(editCmd.c_str()), false, false);
+        MStatus status = MGlobal::executeCommand(MString(editCmd.c_str()), false, false);
         if (!status) {
             MGlobal::displayWarning(
                 MString("[mmdFastLoad] Failed to attach morph target: ") +
@@ -318,8 +492,7 @@ unsigned int createVertexMorphBlendShapes(
             MString(("aliasAttr " + quoteMelName(morphName) + " " +
                      quoteMelName(blendShapeNode + ".w[" + std::to_string(created) + "]"))
                         .c_str()),
-            false,
-            false);
+            false, false);
         ++created;
     }
 
@@ -356,9 +529,9 @@ MStatus MmdFastLoad::redoIt()
     // Clear any stale undo state
     transformName_.clear();
     meshName_.clear();
+    createdRoots_.clear();
 
-    // ---- Sanitize base name ----
-    std::string safeName = sanitizeName(baseName_);
+    const std::string safeName = sanitizeName(baseName_);
 
     // ---- Read PMX file ----
     std::vector<uint8_t> pmxBytes = readBinaryFile(filePath_);
@@ -367,147 +540,58 @@ MStatus MmdFastLoad::redoIt()
             MString("[mmdFastLoad] Could not read file: ") + filePath_.c_str());
         return MS::kFailure;
     }
+    const uint8_t* data = pmxBytes.data();
+    const size_t   len  = pmxBytes.size();
 
-    // ---- Parse via mmd-anim-ffi parsed-model ABI ----
-    mmd_runtime_parsed_model_t* model =
-        mmd_runtime_parsed_model_create_from_pmx_bytes(pmxBytes.data(),
-                                                        pmxBytes.size());
-    if (!model) {
+    return enableSplit_ ? loadSplit(safeName, data, len)
+                        : loadSingle(safeName, data, len);
+}
+
+MStatus MmdFastLoad::loadSingle(const std::string& safeName,
+                                const uint8_t* data, size_t len)
+{
+    // ---- Geometry from typed buffers ----
+    std::vector<float>    positions = bufferToFloatsAndFree(
+        mmd_runtime_parse_pmx_positions_buffer(data, len));
+    std::vector<float>    uvs = bufferToFloatsAndFree(
+        mmd_runtime_parse_pmx_uvs_buffer(data, len));
+    std::vector<uint32_t> indices = bufferToU32AndFree(
+        mmd_runtime_parse_pmx_indices_buffer(data, len));
+
+    if (positions.empty() || indices.empty()) {
         MGlobal::displayError(
-            "[mmdFastLoad] mmd_runtime_parsed_model_create_from_pmx_bytes "
-            "returned NULL.\n"
-            "  Ensure mmd_anim_ffi.dll is available and the PMX file is valid.");
+            "[mmdFastLoad] PMX parse returned no geometry.\n"
+            "  Ensure the mmd-anim FFI library is available and the PMX is valid.");
         return MS::kFailure;
     }
 
-    // ---- Extract geometry ----
-    const size_t vertCount  = mmd_runtime_parsed_model_vertex_count(model);
-    const size_t indexCount = mmd_runtime_parsed_model_index_count(model);
-
-    if (vertCount == 0 || indexCount == 0) {
-        MGlobal::displayError(
-            "[mmdFastLoad] PMX model has no vertices or no indices.");
-        mmd_runtime_parsed_model_free(model);
-        return MS::kFailure;
-    }
-
-    const float*    posPtr   = mmd_runtime_parsed_model_positions(model);
-    const float*    uvPtr    = mmd_runtime_parsed_model_uvs(model);
-    const uint32_t* idxPtr   = mmd_runtime_parsed_model_indices(model);
-
-    if (!posPtr || !idxPtr) {
-        MGlobal::displayError(
-            "[mmdFastLoad] FFI returned null geometry pointers.");
-        mmd_runtime_parsed_model_free(model);
-        return MS::kFailure;
-    }
-
-    // ---- Build MPointArray with Maya coordinate conversion ----
-    //   MMD:   (x, y, z)
-    //   Maya:  (x, y, -z)   * scale
-    MPointArray mayaPoints;
-    mayaPoints.setLength(static_cast<unsigned int>(vertCount));
-    for (size_t i = 0; i < vertCount; ++i) {
-        mayaPoints[static_cast<unsigned int>(i)] = MPoint(
-            posPtr[i * 3]     * static_cast<float>(scale_),
-            posPtr[i * 3 + 1] * static_cast<float>(scale_),
-           -posPtr[i * 3 + 2] * static_cast<float>(scale_));
-    }
-
-    // ---- Build triangle polygon counts / connects (reversed winding) ----
-    //   PMX winding (CCW)  →  Maya winding (CW)  = reverse order
-    const unsigned int triCount = static_cast<unsigned int>(indexCount / 3);
-
-    MIntArray polygonCounts(triCount, 3);  // all triangles
-
-    MIntArray polygonConnects;
-    polygonConnects.setLength(static_cast<unsigned int>(indexCount));
-    for (unsigned int t = 0; t < triCount; ++t) {
-        const unsigned int base = t * 3;
-        polygonConnects[base]     = static_cast<int>(idxPtr[base + 2]);
-        polygonConnects[base + 1] = static_cast<int>(idxPtr[base + 1]);
-        polygonConnects[base + 2] = static_cast<int>(idxPtr[base]);
-    }
-
-    // ---- Create mesh ----
-    MFnMesh meshFn;
-    MStatus status;
-    MObject meshObj = meshFn.create(
-        static_cast<int>(vertCount),
-        static_cast<int>(triCount),
-        mayaPoints,
-        polygonCounts,
-        polygonConnects,
-        MObject::kNullObj,
-        &status);
-
-    if (!status) {
+    BuiltMesh mesh = buildMesh(positions, uvs, indices, scale_,
+                               MString((safeName + "_fast").c_str()));
+    if (!mesh.ok) {
         MGlobal::displayError("[mmdFastLoad] MFnMesh::create failed.");
-        mmd_runtime_parsed_model_free(model);
         return MS::kFailure;
     }
 
-    // ---- Get transform and name it ----
-    MDagPath dagPath;
-    MDagPath::getAPathTo(meshObj, dagPath);
-    MObject  transformObj = dagPath.transform();
-    MFnTransform transformFn(transformObj);
-
-    MString tName(safeName.c_str());
-    tName += "_fast";
-    transformFn.setName(tName);
-
-    // ---- Set UV set (V-flip matching Python importer) ----
-    if (uvPtr) {
-        MString uvSetName("map1");
-        meshFn.createUVSet(uvSetName);
-
-        MFloatArray uArr(static_cast<unsigned int>(vertCount));
-        MFloatArray vArr(static_cast<unsigned int>(vertCount));
-        for (size_t i = 0; i < vertCount; ++i) {
-            uArr[static_cast<unsigned int>(i)] = uvPtr[i * 2];
-            vArr[static_cast<unsigned int>(i)] = 1.0f - uvPtr[i * 2 + 1];
-        }
-
-        meshFn.setUVs(uArr, vArr, &uvSetName);
-
-        MIntArray uvCounts(triCount, 3);
-        MIntArray uvConnects;
-        uvConnects.setLength(static_cast<unsigned int>(indexCount));
-        for (unsigned int t = 0; t < triCount; ++t) {
-            const unsigned int base = t * 3;
-            uvConnects[base]     = static_cast<int>(idxPtr[base + 2]);
-            uvConnects[base + 1] = static_cast<int>(idxPtr[base + 1]);
-            uvConnects[base + 2] = static_cast<int>(idxPtr[base]);
-        }
-
-        meshFn.assignUVs(uvCounts, uvConnects, &uvSetName);
-    }
-
-    // ---- Free parsed model (no longer needed) ----
+    // ---- Vertex morphs (non-geometry JSON) ----
     if (enableMorphs_) {
-        const unsigned int morphTargets = createVertexMorphBlendShapes(
-            model,
-            transformFn.name(),
-            mayaPoints,
-            polygonCounts,
-            polygonConnects,
-            scale_);
-        if (morphTargets > 0) {
-            MGlobal::displayInfo(
-                MString("[mmdFastLoad] Created vertex morph blendShape targets: ") +
-                std::to_string(morphTargets).c_str());
+        json nonGeo = parseJsonBufferAndFree(
+            mmd_runtime_parse_pmx_non_geometry_json(data, len));
+        if (nonGeo.is_object() && nonGeo.contains("morphs")) {
+            const unsigned int created = buildVertexMorphBlendShapes(
+                nonGeo["morphs"], mesh.transformName, mesh.points,
+                mesh.polygonCounts, mesh.polygonConnects, scale_, nullptr);
+            if (created > 0) {
+                MGlobal::displayInfo(
+                    MString("[mmdFastLoad] Created vertex morph targets: ") +
+                    std::to_string(created).c_str());
+            }
         }
     }
 
-    // ---- Free parsed model (no longer needed) ----
-    mmd_runtime_parsed_model_free(model);
+    transformName_ = mesh.transformName;
+    meshName_      = mesh.meshName;
+    createdRoots_.append(mesh.transformName);
 
-    // ---- Record created node names for undo ----
-    transformName_ = transformFn.name();
-    meshName_      = meshFn.name();
-
-    // ---- Return [transformName, meshName] as result ----
     MStringArray result;
     result.append(transformName_);
     result.append(meshName_);
@@ -516,37 +600,163 @@ MStatus MmdFastLoad::redoIt()
     MGlobal::displayInfo(
         MString("[mmdFastLoad] Created mesh: ") + transformName_ +
         " (" + meshName_ + ")");
+    return MS::kSuccess;
+}
 
+MStatus MmdFastLoad::loadSplit(const std::string& safeName,
+                               const uint8_t* data, size_t len)
+{
+    mmd_runtime_pmx_material_split_t* split =
+        mmd_runtime_pmx_material_split_create(data, len, /*flags=*/0u);
+    if (!split) {
+        MGlobal::displayError(
+            "[mmdFastLoad] mmd_runtime_pmx_material_split_create returned NULL.");
+        return MS::kFailure;
+    }
+
+    const size_t meshCount = mmd_runtime_pmx_material_split_mesh_count(split);
+    if (meshCount == 0) {
+        MGlobal::displayError("[mmdFastLoad] Material split produced no meshes.");
+        mmd_runtime_pmx_material_split_free(split);
+        return MS::kFailure;
+    }
+
+    // Manifest (per-mesh material index + original vertex indices).
+    json manifest = parseJsonBufferAndFree(
+        mmd_runtime_pmx_material_split_manifest_json(split));
+
+    // Non-geometry JSON: material names (always) + morphs (if requested).
+    json nonGeo = parseJsonBufferAndFree(
+        mmd_runtime_parse_pmx_non_geometry_json(data, len));
+    const json* materials = (nonGeo.is_object() && nonGeo.contains("materials") &&
+                             nonGeo["materials"].is_array())
+                                ? &nonGeo["materials"] : nullptr;
+    const json* morphs = (enableMorphs_ && nonGeo.is_object() &&
+                          nonGeo.contains("morphs") && nonGeo["morphs"].is_array())
+                             ? &nonGeo["morphs"] : nullptr;
+    const json* manifestMeshes = (manifest.is_object() && manifest.contains("meshes") &&
+                                  manifest["meshes"].is_array())
+                                     ? &manifest["meshes"] : nullptr;
+
+    // ---- Root group transform ----
+    MStringArray groupResult;
+    MStatus status = MGlobal::executeCommand(
+        MString(("group -empty -name " + quoteMelName(safeName + "_fast")).c_str()),
+        groupResult, false, false);
+    if (!status || groupResult.length() == 0) {
+        MGlobal::displayError("[mmdFastLoad] Failed to create split group.");
+        mmd_runtime_pmx_material_split_free(split);
+        return MS::kFailure;
+    }
+    const MString groupName = groupResult[0];
+
+    std::set<std::string> usedNames;
+    usedNames.insert(groupName.asChar());
+    unsigned int totalMorphs = 0;
+
+    for (size_t i = 0; i < meshCount; ++i) {
+        std::vector<float>    positions = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_positions_buffer(split, i));
+        std::vector<float>    uvs = bufferToFloatsAndFree(
+            mmd_runtime_pmx_material_split_uvs_buffer(split, i));
+        std::vector<uint32_t> indices = bufferToU32AndFree(
+            mmd_runtime_pmx_material_split_indices_buffer(split, i));
+        if (positions.empty() || indices.empty()) {
+            continue;
+        }
+
+        // Resolve a friendly material name for this submesh.
+        std::string matName = "material_" + std::to_string(i);
+        size_t originalMaterialIndex = i;
+        if (manifestMeshes && i < manifestMeshes->size()) {
+            originalMaterialIndex =
+                (*manifestMeshes)[i].value("originalMaterialIndex", i);
+        }
+        if (materials && originalMaterialIndex < materials->size()) {
+            const std::string n =
+                (*materials)[originalMaterialIndex].value("name", std::string());
+            if (!n.empty()) {
+                matName = n;
+            }
+        }
+        const std::string meshNodeName =
+            uniqueName(safeName + "_" + matName, usedNames);
+
+        BuiltMesh mesh = buildMesh(positions, uvs, indices, scale_,
+                                   MString(meshNodeName.c_str()));
+        if (!mesh.ok) {
+            MGlobal::displayWarning(
+                MString("[mmdFastLoad] Failed to build submesh: ") +
+                meshNodeName.c_str());
+            continue;
+        }
+
+        MGlobal::executeCommand(
+            MString(("parent " + quoteMelName(mesh.transformName) + " " +
+                     quoteMelName(groupName)).c_str()),
+            false, false);
+
+        // Per-submesh vertex morphs: remap global PMX vertex -> local index.
+        if (morphs && manifestMeshes && i < manifestMeshes->size()) {
+            const json& mm = (*manifestMeshes)[i];
+            auto ovIt = mm.find("originalVertexIndices");
+            if (ovIt != mm.end() && ovIt->is_array()) {
+                std::unordered_map<uint32_t, uint32_t> globalToLocal;
+                globalToLocal.reserve(ovIt->size());
+                uint32_t local = 0;
+                for (const json& g : *ovIt) {
+                    globalToLocal.emplace(g.get<uint32_t>(), local);
+                    ++local;
+                }
+                totalMorphs += buildVertexMorphBlendShapes(
+                    *morphs, mesh.transformName, mesh.points,
+                    mesh.polygonCounts, mesh.polygonConnects, scale_,
+                    &globalToLocal);
+            }
+        }
+    }
+
+    mmd_runtime_pmx_material_split_free(split);
+
+    transformName_ = groupName;
+    meshName_.clear();
+    createdRoots_.append(groupName);
+
+    MStringArray result;
+    result.append(groupName);
+    setResult(result);
+
+    MGlobal::displayInfo(
+        MString("[mmdFastLoad] Created material-split group: ") + groupName +
+        " (" + std::to_string(meshCount).c_str() + " meshes" +
+        (totalMorphs > 0
+             ? MString(", ") + std::to_string(totalMorphs).c_str() + " morph targets"
+             : MString("")) +
+        ")");
     return MS::kSuccess;
 }
 
 MStatus MmdFastLoad::undoIt()
 {
-    if (transformName_.length() == 0) {
+    if (createdRoots_.length() == 0) {
         return MS::kSuccess;  // nothing to undo
     }
 
-    MSelectionList sel;
-    sel.add(transformName_);
-    if (sel.length() == 0) {
-        MGlobal::displayWarning(
-            MString("[mmdFastLoad] undo: transform not found: ") +
-            transformName_);
-        transformName_.clear();
-        meshName_.clear();
-        return MS::kSuccess;
-    }
-
-    MObject node;
-    sel.getDependNode(0, node);
-
     MDGModifier dgMod;
-    dgMod.deleteNode(node);
+    for (unsigned int i = 0; i < createdRoots_.length(); ++i) {
+        MSelectionList sel;
+        if (!sel.add(createdRoots_[i]) || sel.length() == 0) {
+            continue;
+        }
+        MObject node;
+        sel.getDependNode(0, node);
+        dgMod.deleteNode(node);
+    }
     dgMod.doIt();
 
     transformName_.clear();
     meshName_.clear();
-
+    createdRoots_.clear();
     return MS::kSuccess;
 }
 

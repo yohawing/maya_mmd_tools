@@ -76,7 +76,7 @@ def create_mmd_light_controller() -> str:
     """MMD ライトコントローラを get-or-create し、transform 名を返す。"""
     existing = find_mmd_light()
     if existing:
-        logger.debug("既存の MMD ライトコントローラを再利用: %s", existing)
+        logger.debug("Reusing existing MMD light controller: %s", existing)
         return existing
 
     # 操作ハンドルとなるヌル。
@@ -102,7 +102,7 @@ def create_mmd_light_controller() -> str:
     try:
         cmds.connectAttr(f"{ctrl}.mmd_light_color", f"{light_shape}.color", force=True)
     except Exception:
-        logger.debug("mmd_light_color の接続に失敗", exc_info=True)
+        logger.debug("Failed to connect mmd_light_color", exc_info=True)
 
     # MMD 既定方向へ向ける（進行方向を Maya 空間 (-x, y, -z) に変換して -Z を合わせる）。
     rx, ry, rz = _direction_to_euler(
@@ -114,7 +114,7 @@ def create_mmd_light_controller() -> str:
     # 平行光源なので位置はシェーディングに無関係。掴みやすいようモデル上方へ。
     cmds.setAttr(f"{ctrl}.translateY", 30.0)
 
-    logger.info("MMD ライトコントローラを作成: %s (rx=%.1f, ry=%.1f)", ctrl, rx, ry)
+    logger.info("Created MMD light controller: %s (rx=%.1f, ry=%.1f)", ctrl, rx, ry)
     return ctrl
 
 
@@ -142,7 +142,7 @@ def set_mmd_light_direction(direction, color=None) -> str:
         try:
             cmds.setAttr(f"{ctrl}.mmd_light_color", float(color[0]), float(color[1]), float(color[2]), type="float3")
         except Exception:
-            logger.debug("mmd_light_color の設定に失敗", exc_info=True)
+            logger.debug("Failed to set mmd_light_color", exc_info=True)
     return ctrl
 
 
@@ -191,13 +191,13 @@ def wire_dx11_shaders_to_mmd_light(shaders, ctrl: str = None) -> int:
     if ctrl is None:
         ctrl = find_mmd_light()
     if not ctrl or not cmds.objExists(ctrl):
-        logger.debug("MMD ライトが無いため結線をスキップ")
+        logger.debug("No MMD light found; skipping wiring")
         return 0
 
     try:
         vp = _get_or_create_light_direction_node(ctrl)
     except Exception:
-        logger.debug("ライト方向ノードの作成に失敗", exc_info=True)
+        logger.debug("Failed to create light direction node", exc_info=True)
         return 0
 
     wired = 0
@@ -211,8 +211,8 @@ def wire_dx11_shaders_to_mmd_light(shaders, ctrl: str = None) -> int:
                 cmds.connectAttr(f"{ctrl}.mmd_light_color", f"{shader}.MMDLightColor", force=True)
             wired += 1
         except Exception:
-            logger.debug("ライト結線に失敗: %s", shader, exc_info=True)
+            logger.debug("Failed to wire light: %s", shader, exc_info=True)
 
     if wired:
-        logger.info("MMD ライトを %d 個の dx11Shader に結線", wired)
+        logger.info("Wired MMD light to %d dx11Shader nodes", wired)
     return wired
