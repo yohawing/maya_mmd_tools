@@ -36,6 +36,13 @@ from ..core.logger import get_logger
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
 from ..core.vmd_data import VmdData
+from .vmd_bone_interpolation import (
+    get_frame_interpolation,
+    get_frame_number,
+    is_linear_vmd_interp,
+    parse_vmd_interpolation,
+    vmd_interp_channel_for_attr,
+)
 from .vmd_camera_animation import convert_camera_animation, parse_vmd_camera_interpolation, viewing_angle_to_focal_length
 from .vmd_light_animation import convert_light_animation
 from .vmd_morph_animation import convert_morph_animation
@@ -2617,37 +2624,12 @@ class VmdConverter:
             dict: translate_x/y/z と rotation をキーに持つ、正規化済み
                 (x1, y1, x2, y2) タプルの辞書。データ不足時は空辞書。
         """
-        if not interpolation_bytes or len(interpolation_bytes) < 16:
-            return {}
-
-        data = bytes(interpolation_bytes[:16])
-
-        def _norm(value):
-            return max(0.0, min(127.0, float(value))) / 127.0
-
-        channels = ("translate_x", "translate_y", "translate_z", "rotation")
-        parsed = {}
-        for index, channel in enumerate(channels):
-            parsed[channel] = (
-                _norm(data[index]),
-                _norm(data[4 + index]),
-                _norm(data[8 + index]),
-                _norm(data[12 + index]),
-            )
-        return parsed
+        return parse_vmd_interpolation(interpolation_bytes)
 
     @staticmethod
     def _vmd_interp_channel_for_attr(attr: str) -> Optional[str]:
         """Maya attribute 名に対応する VMD interpolation channel 名を返す。"""
-        if attr == "translateX":
-            return "translate_x"
-        if attr == "translateY":
-            return "translate_y"
-        if attr == "translateZ":
-            return "translate_z"
-        if attr.startswith("rotate") or "inputRotateElement" in attr:
-            return "rotation"
-        return None
+        return vmd_interp_channel_for_attr(attr)
 
     @staticmethod
     def _parse_vmd_camera_interpolation(interpolation_bytes):
@@ -2657,22 +2639,17 @@ class VmdConverter:
     @staticmethod
     def _is_linear_vmd_interp(points: Tuple[float, float, float, float]) -> bool:
         """VMD Bezier 制御点が線形指定かどうかを判定する。"""
-        x1, y1, x2, y2 = points
-        return abs(x1 - y1) < 1e-9 and abs(x2 - y2) < 1e-9
+        return is_linear_vmd_interp(points)
 
     @staticmethod
     def _get_frame_number(frame) -> float:
         """VMD frame object / dict から frame_number を取得する。"""
-        if hasattr(frame, "frame_number"):
-            return float(frame.frame_number)
-        return float(frame.get("frame_number", 0))
+        return get_frame_number(frame)
 
     @staticmethod
     def _get_frame_interpolation(frame):
         """VMD frame object / dict から interpolation bytes を取得する。"""
-        if hasattr(frame, "interpolation"):
-            return frame.interpolation
-        return frame.get("interpolation", b"")
+        return get_frame_interpolation(frame)
 
     def _query_key_value(self, plug: str, frame_number: float) -> Optional[float]:
         """指定 plug/frame のキー値を取得する。取得できない場合は None。"""
