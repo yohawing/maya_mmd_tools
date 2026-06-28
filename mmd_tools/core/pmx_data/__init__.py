@@ -1,19 +1,6 @@
-import os
 import struct
 
-from mmd_tools.core import utils
-
-from ..exceptions import MMDParseException
-from .bone import PmxBone
-from .display_frame import PmxDisplayFrame
-from .face import PmxFace
 from .header import PmxHeader, PmxEncoding
-from .joint import PmxJoint
-from .material import PmxMaterial
-from .morph import PmxMorph
-from .rigid_body import PmxRigidBody
-from .soft_body import PmxSoftBody
-from .vertex import PmxVertex
 
 
 class PmxData:
@@ -35,119 +22,22 @@ class PmxData:
         self.textures = []
         self.toon_textures = []
 
-    def parse_file(self, file_path) -> "PmxData":
-        """
-        指定されたPMXファイルを読み込み、各セクションを解析してデータを格納する。
+    def parse_file(self, file_path: str) -> "PmxData":
+        """Legacy Python PMX parser compatibility entry point.
+
+        PMX import code should use ``mmd_tools.core.mmd_parser.parse_pmx_file``
+        so native parser policy is enforced in one place. This method remains
+        only for old callers that intentionally opt in to the Python reader.
 
         Args:
-            file_path (str): 解析するPMXファイルのパス。
+            file_path: 解析するPMXファイルのパス。
 
         Returns:
-            PmxParser: メソッドチェーニングをサポートするための自身のインスタンス。
-        Raises:
-            FileNotFoundError: ファイルが見つからない場合。
-            MMDParseException: ファイルの解析に失敗した場合。
+            メソッドチェーニングをサポートするための自身のインスタンス。
         """
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(f"PMX file not found: {file_path}")
+        from .legacy_parser import parse_pmx_file_legacy
 
-        with open(file_path, "rb") as f:
-            try:
-                # Header
-                self.header.parse(f)
-
-                # Get sizes from header
-                encoding_flag = self.header.encoding
-                encoding_text = utils.get_pmx_encoding_string(encoding_flag)
-                vertex_size = self.header.vertex_index_size
-                texture_size = self.header.texture_index_size
-                material_size = self.header.material_index_size
-                bone_size = self.header.bone_index_size
-                morph_size = self.header.morph_index_size
-                rigid_body_size = self.header.rigid_body_index_size
-
-                # Vertex
-                vertex_count = struct.unpack("<I", f.read(4))[0]
-                for _ in range(vertex_count):
-                    vertex = PmxVertex(bone_size, self.header.additional_uv)
-                    vertex.parse(f, self.header.version)
-                    self.vertices.append(vertex)
-
-                # Face
-                face_count = struct.unpack("<I", f.read(4))[0]
-                for _ in range(face_count // 3):
-                    face = PmxFace(vertex_size)
-                    face.parse(f)
-                    self.faces.append(face)
-
-                # Textures
-                texture_count = struct.unpack("<I", f.read(4))[0]
-                for _ in range(texture_count):
-                    texture_path_length = struct.unpack("<I", f.read(4))[0]
-                    texture_path = f.read(texture_path_length).decode(encoding_text)
-                    self.textures.append(texture_path)
-
-                # Material
-                material_count = struct.unpack("<I", f.read(4))[0]
-                for i in range(material_count):
-                    material = PmxMaterial(texture_size, encoding_flag, material_index=i)
-                    material.parse(f)
-                    self.materials.append(material)
-
-                # Bone
-                bone_count = struct.unpack("<I", f.read(4))[0]
-                for _ in range(bone_count):
-                    bone = PmxBone(bone_size, encoding_flag)
-                    bone.parse(f)
-                    self.bones.append(bone)
-
-                # Morph
-                morph_count = struct.unpack("<I", f.read(4))[0]
-                for i in range(morph_count):
-                    morph = PmxMorph(
-                        vertex_size,
-                        material_size,
-                        bone_size,
-                        morph_size,
-                        rigid_body_size,
-                        encoding_flag,
-                    )
-                    morph.parse(f)
-                    self.morphs.append(morph)
-
-                # Display Frame
-                display_frame_count = struct.unpack("<I", f.read(4))[0]
-                for _ in range(display_frame_count):
-                    display_frame = PmxDisplayFrame(bone_size, morph_size, encoding_flag)
-                    display_frame.parse(f)
-                    self.display_frames.append(display_frame)
-
-                # Rigid Body
-                rigid_body_count = struct.unpack("<I", f.read(4))[0]
-                for _ in range(rigid_body_count):
-                    rigid_body = PmxRigidBody(bone_size, encoding_flag)
-                    rigid_body.parse(f)
-                    self.rigid_bodies.append(rigid_body)
-
-                # Joint
-                joint_count = struct.unpack("<I", f.read(4))[0]
-                for _ in range(joint_count):
-                    joint = PmxJoint(rigid_body_size, encoding_flag)
-                    joint.parse(f)
-                    self.joints.append(joint)
-
-                # SoftBody (Optional, PMX 2.1 only)
-                if self.header.version >= 2.1:
-                    soft_body_count = struct.unpack("<I", f.read(4))[0]
-                    for _ in range(soft_body_count):
-                        soft_body = PmxSoftBody(encoding_flag)
-                        soft_body.parse(f)
-                        # self.soft_bodies.append(soft_body) # Need to add soft_bodies list to __init__
-
-            except struct.error as e:
-                raise MMDParseException(f"Failed to parse PMX file: {file_path}") from e
-
-        return self
+        return parse_pmx_file_legacy(file_path, target=self)
 
     def write_file(self, file_path):
         """

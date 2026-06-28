@@ -7,6 +7,7 @@ from .logger import get_logger
 # Import specific parsers
 from .pmd_data import PmdData
 from .pmx_data import PmxData
+from .pmx_data.legacy_parser import parse_pmx_file_legacy
 from .vmd_data import VmdData
 from .vpd_data import VpdData
 
@@ -84,8 +85,7 @@ def parse_pmx_file(
         logger.info("PMX file parsing completed (native)")
         return native_result
 
-    parser = PmxData()
-    parser.parse_file(file_path)
+    parser = parse_pmx_file_legacy(file_path)
     logger.info("PMX file parsing completed")
     return parser
 

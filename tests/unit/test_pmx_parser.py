@@ -85,6 +85,16 @@ class TestPmxParser(TestBase):
             )
         self.assertIsInstance(parsed_data, PmxData)
 
+    def test_parse_pmx_file_fallback_uses_legacy_helper_not_pmx_data_method(self):
+        """PMX専用入口の legacy fallback は PmxData.parse_file へ戻さない。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            with patch.object(PmxData, "parse_file", side_effect=AssertionError("legacy method should not be used")):
+                parsed_data = mmd_parser.parse_pmx_file(
+                    self.pmx_file_path,
+                    require_native_pmx_parse=False,
+                )
+        self.assertIsInstance(parsed_data, PmxData)
+
     def test_parse_pmx_file_rejects_non_pmx_magic(self):
         """PMX専用入口は PMX 以外の magic を受け付けない。"""
         invalid_path = os.path.join(self.temp_dir, "not_pmx.vmd")
