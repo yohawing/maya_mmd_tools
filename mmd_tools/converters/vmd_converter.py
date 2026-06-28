@@ -20,10 +20,7 @@ from typing import Dict, List, Optional, Tuple, Union
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
-from ..core import maya_utils
 from ..core.constants import (
-    ATTR_MMD_BONE_NAME,
-    ATTR_MMD_BONE_INDEX,
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     DEFAULT_CAMERA_NAME,
@@ -69,6 +66,7 @@ from .vmd_morph_mapping import (
     read_blendshape_morph_names,
     register_morph_mapping,
 )
+from .vmd_name_mapping import build_name_mappings
 from .vmd_runtime_rig_helper import (
     _ls_mmd_append_nodes,
     _ls_mmd_ccd_ik_nodes,
@@ -1621,40 +1619,7 @@ class VmdConverter:
         これにより mmd-anim の world_matrices (PMXボーン順) を Maya ジョイントに
         正しく対応づけられる。
         """
-        self.logger.info("Building name mapping")
-
-        self.bone_name_to_index: Dict[str, int] = {}
-        self.bone_index_to_joint: Dict[int, str] = {}
-
-        # シーン内のジョイントを検索
-        if target_namespace:
-            joints = maya_utils.list_objects(object_filter=f"{target_namespace}:*", type="joint")
-        else:
-            joints = maya_utils.list_objects(type="joint")
-
-        # カスタム属性から元のボーン名とインデックスを取得
-        for joint in joints:
-            if cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
-                original_name = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}")
-                if original_name:
-                    self.bone_name_mapping[original_name] = joint
-
-                    # bone index も取得（モデルインポート時に設定済み）
-                    if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True):
-                        try:
-                            idx = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}")
-                            if idx is not None:
-                                idx = int(idx)
-                                self.bone_name_to_index[original_name] = idx
-                                self.bone_index_to_joint[idx] = joint
-                        except Exception:
-                            pass
-
-        self.logger.info(f"Built {len(self.bone_name_mapping)} bone mappings "
-                         f"(index mappings: {len(self.bone_index_to_joint)})")
-
-        # モーフ名マッピングの構築 (for accurate runtime morph bake)
-        self._build_morph_mappings()  # 元のメソッドは namespace 引数を取らない
+        build_name_mappings(self, target_namespace)
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
