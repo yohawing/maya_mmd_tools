@@ -111,6 +111,7 @@ from .vmd_runtime_sources import (
     resolve_runtime_bake_sources,
     should_use_mmd_runtime_bake,
 )
+from .vmd_runtime_world_bake import bake_bone_poses_from_world_matrices, convert_mmd_world_matrix_to_maya
 from .vmd_scene_keying import (
     batch_create_and_key_curve_arrays,
     batch_create_and_key_curves,
@@ -1169,50 +1170,7 @@ class VmdConverter:
         index 順にすることで、同一フレーム内の複数ボーン xform(ws) 時に親のワールドが先に確定し、
         子のローカル分解が正しい親基準で行われる。左手捩などツイストボーンの回転再現に重要。
         """
-        if not world_matrices or not self.bone_index_to_joint:
-            # フォールバック: 最低限キーフレームだけ打つ（評価自体は runtime で済んでいる）
-            for vmd_bone_name, maya_joint in self.bone_name_mapping.items():
-                if cmds.objExists(maya_joint):
-                    try:
-                        for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
-                            key_args = {
-                                "attribute": attr,
-                                "time": frame,
-                            }
-                            if self.anim_layer:
-                                key_args["animLayer"] = self.anim_layer
-                            cmds.setKeyframe(maya_joint, **key_args)
-                    except Exception:
-                        pass
-            return
-
-        # PMXボーンindex昇順で適用（親→子）。bone_name_mapping の挿入順(DAG DFS順やその他)に依存せず、
-        # 常に低index(親)を先に xform して子の world 解決を正しくする。
-        for bone_idx in sorted(self.bone_index_to_joint.keys()):
-            maya_joint = self.bone_index_to_joint[bone_idx]
-            if not cmds.objExists(maya_joint):
-                continue
-            if bone_idx >= len(world_matrices):
-                continue
-
-            mmd_mat = world_matrices[bone_idx]  # List[float] of 16, column-major from mmd-anim
-
-            # 簡易 Z flip for MMD (Z forward) -> Maya (Z backward)
-            try:
-                maya_world = self._convert_mmd_world_matrix_to_maya(mmd_mat)
-                cmds.xform(maya_joint, worldSpace=True, matrix=maya_world)
-
-                # 適用後のローカル値をキーフレーム
-                for attr in ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"):
-                    key_args = {
-                        "attribute": attr,
-                        "time": frame,
-                    }
-                    if self.anim_layer:
-                        key_args["animLayer"] = self.anim_layer
-                    cmds.setKeyframe(maya_joint, **key_args)
-            except Exception as e:
-                self.logger.debug(f"world matrix bake error for {maya_joint} at frame {frame}: {e}")
+        bake_bone_poses_from_world_matrices(self, frame, world_matrices, model_bone_count)
 
     @staticmethod
     def _convert_mmd_world_matrix_to_maya(mmd_matrix: list) -> list:
@@ -1225,21 +1183,7 @@ class VmdConverter:
 
         これにより identity は identity のまま保たれ、Z translation だけが反転する。
         """
-        if len(mmd_matrix) != 16:
-            raise ValueError("mmd_matrix must contain 16 values")
-
-        signs = (1.0, 1.0, -1.0)
-        maya_matrix = [float(v) for v in mmd_matrix]
-
-        for row in range(3):
-            for col in range(3):
-                idx = row * 4 + col
-                maya_matrix[idx] = float(mmd_matrix[idx]) * signs[row] * signs[col]
-
-        for col in range(3):
-            maya_matrix[12 + col] = float(mmd_matrix[12 + col]) * signs[col]
-
-        return maya_matrix
+        return convert_mmd_world_matrix_to_maya(mmd_matrix)
 
     def _bake_morph_weights_from_runtime(
         self,
