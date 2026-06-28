@@ -5,74 +5,22 @@ Verifies that ``import_mmd_file`` correctly routes through / around the
 ``cpp_fast_load_mesh_only`` options.  Also tests the skeleton/skin creation
 path inside ``_apply_fast_skeleton_skin``.
 
-NOTE: Maya/PyMel is unavailable in CI, so we pre-seed ``sys.modules``
-with real ``types.ModuleType`` stubs so the package import chain resolves.
+NOTE: Maya/PyMel is unavailable in CI, so the shared Maya stub is installed
+before importing the modules under test.
 """
 
 from __future__ import annotations
 
 import json
-import sys
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
-class _StubModule(types.ModuleType):
-    """A module proxy that returns a MagicMock for any missing attribute."""
-
-    def __getattr__(self, name):
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return MagicMock()
+from tests.common.maya_stub import install_maya_stub
 
 
-# ── Pre-seed maya submodule tree ────────────────────────────────────────
-# Use ModuleType so Python's import machinery can find submodules.
-def _seed_maya_modules():
-    try:
-        import maya.cmds  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-
-    maya_mod = types.ModuleType("maya")
-    maya_mod.__package__ = "maya"
-    maya_mod.__path__ = ["maya"]
-    maya_mod.__file__ = "<maya stub>"
-    sys.modules["maya"] = maya_mod
-
-    maya_cmds = types.ModuleType("maya.cmds")
-    maya_cmds.__package__ = "maya.cmds"
-    maya_cmds.__file__ = "<maya.cmds stub>"
-    maya_cmds.optionVar = MagicMock()
-    maya_cmds.optionVar.exists = MagicMock(return_value=False)
-    sys.modules["maya.cmds"] = maya_cmds
-
-    maya_api = types.ModuleType("maya.api")
-    maya_api.__package__ = "maya.api"
-    maya_api.__path__ = ["maya/api"]
-    maya_api.__file__ = "<maya.api stub>"
-    sys.modules["maya.api"] = maya_api
-
-    for sub in ("OpenMaya", "OpenMayaAnim", "OpenMayaRender"):
-        full_name = f"maya.api.{sub}"
-        mod = _StubModule(full_name)
-        mod.__package__ = full_name
-        mod.__file__ = f"<{full_name} stub>"
-        sys.modules[full_name] = mod
-
-    for sub_name in ("maya.mel", "maya.standalone", "maya.OpenMayaUI"):
-        if sub_name not in sys.modules:
-            mod = types.ModuleType(sub_name)
-            mod.__package__ = sub_name
-            mod.__file__ = f"<{sub_name} stub>"
-            sys.modules[sub_name] = mod
-
-
-_seed_maya_modules()
+install_maya_stub()
 
 # Now safe to import the module under test
 from mmd_tools.io.mmd_importer import import_mmd_file
