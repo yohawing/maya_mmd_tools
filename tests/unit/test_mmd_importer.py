@@ -1,13 +1,14 @@
-"""_scoped_settings_override のユニットテスト（純Python、Maya不要）。"""
+"""MMD import entry point option handling tests (pure Python, Maya-free)."""
 
 import unittest
+from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
 from mmd_tools.core.settings import settings  # noqa: E402
-from mmd_tools.io.mmd_importer import _scoped_settings_override  # noqa: E402
+from mmd_tools.io.mmd_importer import _scoped_settings_override, import_mmd_file  # noqa: E402
 
 _ALL_KEYS = (
     "import.model.separate_meshes_by_material",
@@ -113,6 +114,110 @@ class TestScopedSettingsOverride(unittest.TestCase):
         options = {"nonexistent_key": "value", "another_unknown": 42}
         with _scoped_settings_override(options):
             pass  # should not raise
+
+
+class TestImportMmdFileScalePrecedence(unittest.TestCase):
+    def setUp(self):
+        self._saved_scale = settings.get("import.general.scale_factor")
+
+    def tearDown(self):
+        settings.set("import.general.scale_factor", self._saved_scale)
+
+    def _assert_model_import_scale(self, extension, importer_patch, expected_scale, **kwargs):
+        parsed_data = object()
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch(importer_patch, return_value="model_root") as import_model:
+                result = import_mmd_file(f"model{extension}", **kwargs)
+
+        self.assertEqual(result, "model_root")
+        self.assertEqual(import_model.call_args.args[0], parsed_data)
+        self.assertEqual(import_model.call_args.args[2], expected_scale)
+
+    def test_explicit_scale_argument_overrides_options_and_settings_for_pmx(self):
+        settings.set("import.general.scale_factor", 3.0)
+
+        self._assert_model_import_scale(
+            ".pmx",
+            "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+            2.0,
+            scale=2.0,
+            options={"scale": 4.0},
+        )
+
+    def test_explicit_scale_argument_overrides_options_and_settings_for_pmd(self):
+        settings.set("import.general.scale_factor", 3.0)
+
+        self._assert_model_import_scale(
+            ".pmd",
+            "mmd_tools.io.mmd_importer.pmd_importer.import_pmd_file",
+            2.0,
+            scale=2.0,
+            options={"scale": 4.0},
+        )
+
+    def test_options_scale_overrides_settings_for_model_imports(self):
+        settings.set("import.general.scale_factor", 3.0)
+
+        for extension, importer_patch in (
+            (".pmx", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
+            (".pmd", "mmd_tools.io.mmd_importer.pmd_importer.import_pmd_file"),
+        ):
+            with self.subTest(extension=extension):
+                self._assert_model_import_scale(
+                    extension,
+                    importer_patch,
+                    4.0,
+                    options={"scale": 4.0},
+                )
+
+    def test_settings_scale_is_used_when_no_explicit_scale_is_given(self):
+        settings.set("import.general.scale_factor", 3.0)
+
+        for extension, importer_patch in (
+            (".pmx", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
+            (".pmd", "mmd_tools.io.mmd_importer.pmd_importer.import_pmd_file"),
+        ):
+            with self.subTest(extension=extension):
+                self._assert_model_import_scale(
+                    extension,
+                    importer_patch,
+                    3.0,
+                    options={},
+                )
+
+    def test_pmx_import_forwards_required_native_parse_option(self):
+        parsed_data = object()
+        options = {"require_native_pmx_parse": True}
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data) as parse_file:
+            with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root"):
+                result = import_mmd_file("model.pmx", options=options)
+
+        self.assertEqual(result, "model_root")
+        parse_file.assert_called_once_with(
+            "model.pmx",
+            use_native_pmx_parse=None,
+            require_native_pmx_parse=True,
+        )
+
+    def test_pmx_import_requires_native_parse_by_default(self):
+        parsed_data = object()
+        self._saved_require_native = settings.get("import.native.require_native_pmx_parse")
+        settings.set("import.native.require_native_pmx_parse", True)
+        try:
+            with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data) as parse_file:
+                with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root"):
+                    result = import_mmd_file("model.pmx", options={})
+        finally:
+            settings.set("import.native.require_native_pmx_parse", self._saved_require_native)
+
+        self.assertEqual(result, "model_root")
+        parse_file.assert_called_once_with(
+            "model.pmx",
+            use_native_pmx_parse=None,
+            require_native_pmx_parse=True,
+        )
 
 
 if __name__ == "__main__":

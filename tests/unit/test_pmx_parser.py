@@ -41,6 +41,41 @@ class TestPmxParser(TestBase):
             os.environ.pop("MMD_TOOLS_ENABLE_NATIVE_PMX_PARSE", None)
             self.assertIsNone(mmd_parser._try_native_pmx_parse(self.pmx_file_path, use_native_pmx_parse=False))
 
+    def test_required_native_pmx_parse_rejects_disabled_parser(self):
+        """native PMX parse 必須モードでは無効化を Python parser fallback で隠さない。"""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MMD_TOOLS_ENABLE_NATIVE_PMX_PARSE", None)
+            with self.assertRaises(mmd_parser.MMDParseException):
+                mmd_parser._try_native_pmx_parse(
+                    self.pmx_file_path,
+                    use_native_pmx_parse=False,
+                    require_native_pmx_parse=True,
+                )
+
+    def test_required_native_pmx_parse_rejects_unavailable_parser(self):
+        """native PMX parse 必須モードでは None 戻り値を parse 失敗として扱う。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            with self.assertRaises(mmd_parser.MMDParseException):
+                mmd_parser.parse_mmd_file(
+                    self.pmx_file_path,
+                    require_native_pmx_parse=True,
+                )
+
+    def test_pmx_parse_requires_native_parser_by_default(self):
+        """PMX parse は既定で Python parser fallback を許可しない。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            with self.assertRaises(mmd_parser.MMDParseException):
+                mmd_parser.parse_mmd_file(self.pmx_file_path)
+
+    def test_legacy_python_pmx_parser_requires_explicit_opt_out(self):
+        """移行用の legacy Python PMX parser は明示 opt-out 時だけ使える。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            parsed_data = mmd_parser.parse_mmd_file(
+                self.pmx_file_path,
+                require_native_pmx_parse=False,
+            )
+        self.assertIsInstance(parsed_data, PmxData)
+
     def test_native_pmx_parse_env_flag(self):
         """native PMX parse は通常有効で、環境変数で明示的に切り替えられる。"""
         with patch.dict(os.environ, {}, clear=True):

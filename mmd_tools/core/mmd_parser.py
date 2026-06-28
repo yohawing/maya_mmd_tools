@@ -24,25 +24,48 @@ def _native_pmx_parse_enabled(use_native_pmx_parse: Optional[bool] = None) -> bo
     return True
 
 
-def _try_native_pmx_parse(file_path: str, use_native_pmx_parse: Optional[bool] = None):
-    """ネイティブ DLL での PMX パースを試みる。失敗時は None。"""
+def _try_native_pmx_parse(
+    file_path: str,
+    use_native_pmx_parse: Optional[bool] = None,
+    require_native_pmx_parse: bool = False,
+):
+    """ネイティブ DLL での PMX パースを試みる。
+
+    Args:
+        file_path: 解析する PMX ファイルのパス。
+        use_native_pmx_parse: False の場合は native parser を試行しない。
+        require_native_pmx_parse: True の場合は native parser が使えない／失敗した時点で例外にする。
+    """
     if not _native_pmx_parse_enabled(use_native_pmx_parse):
+        if require_native_pmx_parse:
+            raise MMDParseException("Native PMX parser is required but disabled")
         return None
     try:
         from .native.native_pmx_parser import parse_pmx_native
 
-        return parse_pmx_native(file_path)
+        result = parse_pmx_native(file_path)
     except Exception as exc:
         logger.debug("Native PMX parser unavailable: %s", exc)
+        if require_native_pmx_parse:
+            raise MMDParseException(f"Native PMX parser failed: {exc}") from exc
         return None
+    if result is None and require_native_pmx_parse:
+        raise MMDParseException("Native PMX parser is required but unavailable or failed")
+    return result
 
 
-def parse_mmd_file(file_path, use_native_pmx_parse: Optional[bool] = None):
+def parse_mmd_file(
+    file_path,
+    use_native_pmx_parse: Optional[bool] = None,
+    require_native_pmx_parse: bool = True,
+):
     """
     MMDファイル（PMD, PMX, VMD, VPD）を解析し、解析されたデータオブジェクトを返す。
 
     Args:
         file_path (str): 解析するMMDファイルのパス。
+        use_native_pmx_parse: PMX で native parser を試行するかどうか。
+        require_native_pmx_parse: PMX で Python parser fallback を禁止するかどうか。既定は True。
 
     Returns:
         PmdData or PmxData or VmdData or VpdData: 解析されたMMDデータを含むパーサーオブジェクト。
@@ -83,7 +106,11 @@ def parse_mmd_file(file_path, use_native_pmx_parse: Optional[bool] = None):
             return parser
         elif magic_bytes.startswith(b"PMX"):
             logger.info("Starting parse as PMX file")
-            native_result = _try_native_pmx_parse(file_path, use_native_pmx_parse)
+            native_result = _try_native_pmx_parse(
+                file_path,
+                use_native_pmx_parse,
+                require_native_pmx_parse=require_native_pmx_parse,
+            )
             if native_result is not None:
                 logger.info("PMX file parsing completed (native)")
                 return native_result

@@ -33,7 +33,7 @@ from ..core.constants import (
     DEFAULT_LIGHT_NAME,
 )
 from ..core.logger import get_logger
-from ..core.pmx_data import PmxData
+from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
 from ..core.vmd_data import VmdData
 
@@ -488,8 +488,9 @@ class VmdConverter:
         pmx_morph_names = []
         if pmx_path and os.path.exists(pmx_path):
             try:
-                pmx_data = PmxData().parse_file(pmx_path)
-                pmx_morph_names = [morph.name for morph in pmx_data.morphs]
+                pmx_data = parse_pmx_native(pmx_path)
+                if pmx_data is not None:
+                    pmx_morph_names = [morph.name for morph in pmx_data.morphs]
             except Exception as e:
                 self.logger.warning(f"Failed to get PMX morph names for runtime morph bake: {e}")
 

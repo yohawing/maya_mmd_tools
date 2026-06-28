@@ -108,6 +108,10 @@ def import_mmd_file(filepath, scale=None, options=None):
         parsed_data = parse_mmd_file(
             filepath,
             use_native_pmx_parse=options.get("use_native_pmx_parse"),
+            require_native_pmx_parse=options.get(
+                "require_native_pmx_parse",
+                settings.get("import.native.require_native_pmx_parse", False),
+            ),
         )
 
         # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
