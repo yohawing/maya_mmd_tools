@@ -37,6 +37,7 @@ from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
 from ..core.vmd_data import VmdData
 from .vmd_camera_animation import convert_camera_animation, parse_vmd_camera_interpolation, viewing_angle_to_focal_length
+from .vmd_light_animation import convert_light_animation
 
 # mmd-anim runtime (Phase 1+)
 try:
@@ -3441,77 +3442,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        if not light_frames:
-            return False
-
-        light_transform = self._get_or_create_light()
-        light_shapes = cmds.listRelatives(light_transform, shapes=True, type="directionalLight") or []
-        if not light_shapes:
-            return False
-        light_shape = light_shapes[0]
-
-        if cmds.attributeQuery("mmd_light_color", node=light_transform, exists=True):
-            light_color_node = light_transform
-            light_color_samples = {
-                "mmd_light_colorR": [],
-                "mmd_light_colorG": [],
-                "mmd_light_colorB": [],
-            }
-        else:
-            light_color_node = light_shape
-            light_color_samples = {"colorR": [], "colorG": [], "colorB": []}
-        light_rotate_samples = {"rotateX": [], "rotateY": [], "rotateZ": []}
-
-        for frame in light_frames:
-            frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
-            maya_time = self.vmd_frame_to_maya_time(frame_number)
-            color = frame.color if hasattr(frame, "color") else frame.get("color", (1, 1, 1))
-            position = frame.position if hasattr(frame, "position") else frame.get("position", (0.0, -1.0, 0.0))
-
-            # color keyframe（常に設定）
-            for attr, value in zip(light_color_samples, color):
-                light_color_samples[attr].append((maya_time, value))
-
-            # 方向ベクトル: VMD (x, y, z) → Maya (x, y, -z)
-            dx, dy, dz = float(position[0]), float(position[1]), -float(position[2])
-            length = math.sqrt(dx * dx + dy * dy + dz * dz)
-
-            if length < 1e-10:
-                self.logger.warning(
-                    f"frame {frame_number}: position is zero vector; skipping rotation key"
-                )
-                continue
-
-            # 正規化
-            dx /= length
-            dy /= length
-            dz /= length
-
-            # Euler 角を算出: Ry * Rx * (0, 0, -1) = (dx, dy, dz)
-            # dx = -sin(ry)*cos(rx), dy = sin(rx), dz = -cos(ry)*cos(rx)
-            rx = math.asin(dy)  # -pi/2 .. pi/2
-            cos_rx = math.cos(rx)
-            if abs(cos_rx) > 1e-10:
-                ry = math.atan2(-dx / cos_rx, -dz / cos_rx)
-            else:
-                # cos(rx) ≈ 0 → 真上/真下向き, 任意の ry で可
-                ry = 0.0
-
-            light_rotate_samples["rotateX"].append((maya_time, math.degrees(rx)))
-            light_rotate_samples["rotateY"].append((maya_time, math.degrees(ry)))
-            light_rotate_samples["rotateZ"].append((maya_time, 0.0))
-
-        animation_layer = self.anim_layer if self.use_animation_layers and self.anim_layer else None
-        if animation_layer:
-            self._add_attrs_to_anim_layer(light_color_node, list(light_color_samples))
-            self._add_attrs_to_anim_layer(light_transform, list(light_rotate_samples))
-            light_color_samples = self._samples_as_anim_layer_deltas(light_color_node, light_color_samples)
-            light_rotate_samples = self._samples_as_anim_layer_deltas(light_transform, light_rotate_samples)
-
-        self._batch_key_scalar_channels(light_color_node, light_color_samples, animation_layer=animation_layer)
-        self._batch_key_scalar_channels(light_transform, light_rotate_samples, animation_layer=animation_layer)
-
-        return True
+        return convert_light_animation(self, light_frames)
 
     def _convert_morph_animation(self, morph_frames: List) -> bool:
         """モーフアニメーションを変換
