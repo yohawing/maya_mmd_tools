@@ -39,7 +39,6 @@ from .mmd_anim_runtime import (
     MmdRuntimeModel,
     create_runtime_node_for_model,
     get_mmd_runtime_library,
-    get_runtime_matrices_from_node,
     is_mmd_runtime_available,
     is_native_pmx_parser_available,
     is_rig_primitive_available,
@@ -61,5 +60,4 @@ __all__ = [
     "MmdIkChain",
     "MmdAppendSolver",
     "create_runtime_node_for_model",
-    "get_runtime_matrices_from_node",
 ]

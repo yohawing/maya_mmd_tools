@@ -1653,15 +1653,6 @@ def create_runtime_node_for_model(model_root: str, pmx_path: str, vmd_path: str 
     return node
 
 
-def get_runtime_matrices_from_node(node: str) -> list:
-    """ノードから現在の world matrices を取得 (float flat list)"""
-    import maya.cmds as cmds
-    try:
-        return cmds.getAttr(f"{node}.worldMatrices[*]") or []
-    except Exception:
-        return []
-
-
 def connect_runtime_node_outputs_to_model(
     node: str,
     model_root: str,
