@@ -70,7 +70,7 @@ def import_vpd_file(parser, filepath, options=None):
         if apply_to_all:
             # 全てのモデルに適用
             logger.info("Applying pose to all models")
-            namespaces = NamespaceUtils.get_all_namespaces()
+            namespaces = NamespaceUtils.list_model_namespaces()
             success_count = 0
 
             for ns in namespaces:

@@ -3,11 +3,15 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from mmd_tools.core.exceptions import MMDParseException
 from mmd_tools.core.vpd_data import VpdData
 from mmd_tools.core.vpd_data.bone_pose import BonePose
 from mmd_tools.core.vpd_data.header import VpdHeader
+from mmd_tools.converters.vpd_converter import VpdConverter
+from mmd_tools.io import vpd_importer
 
 
 class TestVpdHeader(unittest.TestCase):
@@ -206,6 +210,116 @@ Bone0{センター
 
         with self.assertRaises(MMDParseException):
             self.vpd_data.parse_file(str(test_file))
+
+
+class TestVpdConverter(unittest.TestCase):
+    """VPD pose converter behavior that does not require a live Maya scene."""
+
+    def setUp(self):
+        self.converter = VpdConverter()
+
+    def test_get_target_joints_uses_namespace_pattern(self):
+        with patch("mmd_tools.converters.vpd_converter.cmds.ls", return_value=["model:センター"]) as ls:
+            joints = self.converter._get_target_joints("model")
+
+        self.assertEqual(joints, ["model:センター"])
+        ls.assert_called_once_with("model:*", type="joint")
+
+    def test_find_maya_joint_uses_mmd_bone_attribute_mapping_first(self):
+        self.converter.bone_name_mapping = {"センター": "model:center_joint"}
+
+        joint = self.converter._find_maya_joint("センター", ["model:センター", "model:center_joint"])
+
+        self.assertEqual(joint, "model:center_joint")
+
+    def test_find_maya_joint_falls_back_to_namespaced_joint_basename(self):
+        joint = self.converter._find_maya_joint("上半身", ["model:センター", "model:上半身"])
+
+        self.assertEqual(joint, "model:上半身")
+
+    def test_find_maya_joint_returns_none_when_unmatched(self):
+        joint = self.converter._find_maya_joint("左腕", ["model:センター"])
+
+        self.assertIsNone(joint)
+
+    def test_convert_position_flips_z_axis(self):
+        self.assertEqual(self.converter._convert_position_mmd_to_maya([1.0, 2.0, -3.0]), [1.0, 2.0, 3.0])
+
+    def test_convert_rotation_flips_z_axis(self):
+        self.assertEqual(self.converter._convert_rotation_mmd_to_maya([10.0, 20.0, -30.0]), [10.0, 20.0, 30.0])
+
+    def test_is_movable_bone_accepts_center_and_master_names(self):
+        for bone_name in ["センター", "center", "Center", "全ての親", "master", "Master"]:
+            with self.subTest(bone_name=bone_name):
+                self.assertTrue(self.converter._is_movable_bone(bone_name))
+
+    def test_convert_returns_false_without_target_joints(self):
+        vpd_data = SimpleNamespace(bone_poses=[])
+
+        with patch.object(self.converter, "_build_name_mappings") as build_mappings:
+            with patch.object(self.converter, "_get_target_joints", return_value=[]):
+                result = self.converter.convert(vpd_data, "model")
+
+        self.assertFalse(result)
+        build_mappings.assert_called_once_with("model")
+
+
+class TestVpdImporter(unittest.TestCase):
+    """VPD importer selection and namespace dispatch behavior."""
+
+    def test_is_movable_joint_matches_base_name_keywords(self):
+        self.assertTrue(vpd_importer._is_movable_joint("model:Center"))
+        self.assertTrue(vpd_importer._is_movable_joint("root_joint"))
+        self.assertFalse(vpd_importer._is_movable_joint("model:左腕"))
+
+    def test_import_uses_target_model_namespace(self):
+        parser = SimpleNamespace(bone_poses=[])
+
+        with patch("mmd_tools.io.vpd_importer.NamespaceUtils.get_namespace_from_node", return_value="model"):
+            with patch("mmd_tools.io.vpd_importer.cmds.currentTime", return_value=12):
+                with patch("mmd_tools.io.vpd_importer._create_keyframes_for_namespace") as create_keyframes:
+                    with patch("mmd_tools.io.vpd_importer.cmds.inViewMessage") as in_view_message:
+                        with patch("mmd_tools.io.vpd_importer.VpdConverter") as converter_class:
+                            converter = converter_class.return_value
+                            converter.convert.return_value = True
+
+                            result = vpd_importer.import_vpd_file(
+                                parser,
+                                "pose.vpd",
+                                {"target_model": "model:root", "create_keyframe": True},
+                            )
+
+        self.assertTrue(result)
+        converter.convert.assert_called_once_with(parser, "model", {"target_model": "model:root", "create_keyframe": True})
+        create_keyframes.assert_called_once_with("model", 12)
+        in_view_message.assert_called_once()
+
+    def test_import_warns_when_no_target_selection(self):
+        parser = SimpleNamespace(bone_poses=[])
+
+        with patch("mmd_tools.io.vpd_importer.cmds.ls", return_value=[]):
+            with patch("mmd_tools.io.vpd_importer.cmds.warning") as warning:
+                result = vpd_importer.import_vpd_file(parser, "pose.vpd", {})
+
+        self.assertFalse(result)
+        warning.assert_called_once_with("Please select target model joints to apply the pose.")
+
+    def test_import_apply_to_all_tries_namespaces_and_skips_root_namespace(self):
+        parser = SimpleNamespace(bone_poses=[])
+        options = {"apply_to_all": True, "create_keyframe": False}
+
+        with patch("mmd_tools.io.vpd_importer.NamespaceUtils.list_model_namespaces", return_value=["model_a", "model_b"]):
+            with patch("mmd_tools.io.vpd_importer.cmds.currentTime", return_value=1):
+                with patch("mmd_tools.io.vpd_importer.cmds.inViewMessage"):
+                    with patch("mmd_tools.io.vpd_importer.VpdConverter") as converter_class:
+                        converter = converter_class.return_value
+                        converter.convert.side_effect = [False, True]
+
+                        result = vpd_importer.import_vpd_file(parser, "pose.vpd", options)
+
+        self.assertTrue(result)
+        self.assertEqual(converter.convert.call_args_list[0].args, (parser, "model_a", options))
+        self.assertEqual(converter.convert.call_args_list[1].args, (parser, "model_b", options))
 
 
 if __name__ == "__main__":
