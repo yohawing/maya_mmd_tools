@@ -89,6 +89,7 @@ from .vmd_runtime_channels import (
     create_runtime_joint_channel_static_state,
     runtime_joint_attrs,
 )
+from .vmd_runtime_morph_bake import bake_morph_weight_cache_from_runtime, bake_morph_weights_from_runtime
 from .vmd_runtime_sampling import (
     iter_runtime_bake_frame_samples,
     iter_runtime_bake_frames,
@@ -1467,30 +1468,7 @@ class VmdConverter:
         pmx_morph_names: List[str] = None,
     ):
         """runtime から得た PMX morph 順のウェイトを Maya blendShape にベイク"""
-        if not morph_weights:
-            return
-
-        pmx_morph_names = pmx_morph_names or []
-        for index, weight in enumerate(morph_weights):
-            if index >= len(pmx_morph_names):
-                continue
-            morph_name = pmx_morph_names[index]
-            mappings = self._iter_morph_mappings(self.morph_name_mapping.get(morph_name))
-            if not mappings:
-                continue
-
-            for morph_node, weight_attr, _ in mappings:
-                try:
-                    cmds.setKeyframe(
-                        morph_node,
-                        attribute=weight_attr,
-                        time=frame,
-                        value=float(weight),
-                    )
-                except Exception as e:
-                    self.logger.debug(
-                        f"runtime morph bake error for {morph_name} at frame {frame}: {e}"
-                    )
+        bake_morph_weights_from_runtime(self, frame, morph_weights, pmx_morph_names)
 
     def _bake_morph_weight_cache_from_runtime(
         self,
@@ -1498,54 +1476,7 @@ class VmdConverter:
         pmx_morph_names: List[str] = None,
     ) -> None:
         """runtime 評価済み morph weight cache を blendShape/network weight へ一括キーイングする。"""
-        if not morph_cache:
-            return
-
-        pmx_morph_names = pmx_morph_names or []
-        samples_by_node: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
-        keyed_morphs = set()
-        for frame, morph_weights in morph_cache:
-            for index, weight in enumerate(morph_weights):
-                if index >= len(pmx_morph_names):
-                    continue
-                morph_name = pmx_morph_names[index]
-                mappings = self._iter_morph_mappings(self.morph_name_mapping.get(morph_name))
-                if not mappings:
-                    continue
-                keyed_morphs.add(morph_name)
-                for morph_node, weight_attr, _ in mappings:
-                    node_samples = samples_by_node.setdefault(morph_node, {})
-                    node_samples.setdefault(weight_attr, []).append((float(frame), float(weight)))
-
-        if not samples_by_node:
-            return
-
-        keyed_nodes = 0
-        for morph_node, channel_samples in samples_by_node.items():
-            try:
-                if self._batch_key_scalar_channels(morph_node, channel_samples):
-                    keyed_nodes += 1
-                    continue
-            except Exception as exc:
-                self.logger.debug(f"runtime morph batch keying failed for {morph_node}, fallback: {exc}")
-
-            for weight_attr, samples in channel_samples.items():
-                for frame, weight in samples:
-                    try:
-                        cmds.setKeyframe(
-                            morph_node,
-                            attribute=weight_attr,
-                            time=frame,
-                            value=float(weight),
-                        )
-                    except Exception as exc:
-                        self.logger.debug(
-                            f"runtime morph fallback keying failed for {morph_node}.{weight_attr} at {frame}: {exc}"
-                        )
-
-        self.logger.info(
-            f"runtime morph batch keying: nodes={keyed_nodes}/{len(samples_by_node)}, morphs={len(keyed_morphs)}"
-        )
+        bake_morph_weight_cache_from_runtime(self, morph_cache, pmx_morph_names)
 
     def _disable_mmd_rig_constraints_for_runtime_bake(self):
         """runtime bake と二重評価になる PMX 付与constraint/IK solverを無効化する。"""
