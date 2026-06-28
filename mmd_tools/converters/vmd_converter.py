@@ -120,6 +120,7 @@ from .vmd_scene_keying import (
     batch_key_scalar_channels,
     samples_as_anim_layer_deltas,
 )
+from .vmd_timeline import set_scene_fps, setup_timeline
 
 # mmd-anim runtime (Phase 1+)
 try:
@@ -1201,26 +1202,7 @@ class VmdConverter:
         Args:
             vmd_data: パース済みのVMDデータ
         """
-        # FPSを設定
-        self._set_scene_fps(self.fps)
-
-        # 最大フレーム番号を取得
-        max_frame = 0
-
-        # ボーンフレームから最大フレーム取得
-        if hasattr(vmd_data, "bone_frames"):
-            for frame_data in vmd_data.bone_frames:
-                # VmdBoneFrameオブジェクトの場合は属性アクセス、辞書の場合はget
-                if hasattr(frame_data, "frame_number"):
-                    max_frame = max(max_frame, frame_data.frame_number)
-                else:
-                    max_frame = max(max_frame, frame_data.get("frame_number", 0))
-
-        if max_frame > 0:
-            # タイムラインの範囲を設定
-            max_time = self.vmd_frame_to_maya_time(max_frame)
-            cmds.playbackOptions(min=0, max=max_time, animationStartTime=0, animationEndTime=max_time)
-            self.logger.info(f"Set timeline range: 0 - {max_time}")
+        setup_timeline(self, vmd_data)
 
     def _convert_bone_animation(self, bone_frames: List) -> bool:
         """ボーンアニメーションを変換
@@ -1580,21 +1562,4 @@ class VmdConverter:
         Args:
             fps: 設定するFPS値
         """
-        # FPSとタイムユニットのマッピング
-        fps_mapping = {
-            15.0: "game",
-            24.0: "film",
-            25.0: "pal",
-            30.0: "ntsc",
-            48.0: "show",
-            50.0: "palf",
-            60.0: "ntscf",
-        }
-
-        if fps in fps_mapping:
-            # 定義済みのタイムユニットを使用
-            cmds.currentUnit(time=fps_mapping[fps])
-            self.logger.info(f"Set scene FPS to {fps} ({fps_mapping[fps]})")
-        else:
-            self.logger.warning(f"Specified FPS {fps} is not supported. Using default 30.0 FPS")
-            cmds.currentUnit(time="ntsc")  # デフォルトは30fpsのNTSC
+        set_scene_fps(fps, self.logger)
