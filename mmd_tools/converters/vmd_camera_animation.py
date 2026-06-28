@@ -5,6 +5,8 @@ from typing import Dict, Tuple
 
 import maya.cmds as cmds
 
+from ..core.constants import ATTR_MMD_CAMERA, DEFAULT_CAMERA_NAME
+
 
 def parse_vmd_camera_interpolation(interpolation_bytes) -> Dict[str, Tuple[float, float, float, float]]:
     """Convert VMD camera interpolation bytes into channel Bezier control points."""
@@ -42,6 +44,18 @@ def viewing_angle_to_focal_length(camera_shape: str, viewing_angle: float) -> fl
     aperture_inch = cmds.getAttr(f"{camera_shape}.horizontalFilmAperture")
     aperture_mm = float(aperture_inch) * 25.4
     return aperture_mm / (2.0 * math.tan(math.radians(clamped_angle) / 2.0))
+
+
+def get_or_create_camera() -> str:
+    """Return the MMD camera transform, creating one if needed."""
+    existing = cmds.ls(f"*.{ATTR_MMD_CAMERA}", objectsOnly=True)
+    if existing:
+        return existing[0]
+
+    camera_transform, _ = cmds.camera(name=DEFAULT_CAMERA_NAME)
+    cmds.addAttr(camera_transform, longName=ATTR_MMD_CAMERA, attributeType="bool")
+    cmds.setAttr(f"{camera_transform}.{ATTR_MMD_CAMERA}", True)
+    return camera_transform
 
 
 def convert_camera_animation(converter, camera_frames) -> bool:

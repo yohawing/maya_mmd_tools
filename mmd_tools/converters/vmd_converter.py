@@ -19,12 +19,6 @@ from typing import Dict, List, Optional, Tuple, Union
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
-from ..core.constants import (
-    ATTR_MMD_CAMERA,
-    ATTR_MMD_LIGHT,
-    DEFAULT_CAMERA_NAME,
-    DEFAULT_LIGHT_NAME,
-)
 from ..core.logger import get_logger
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
@@ -47,7 +41,12 @@ from .vmd_bone_interpolation import (
     parse_vmd_interpolation,
     vmd_interp_channel_for_attr,
 )
-from .vmd_camera_animation import convert_camera_animation, parse_vmd_camera_interpolation, viewing_angle_to_focal_length
+from .vmd_camera_animation import (
+    convert_camera_animation,
+    get_or_create_camera,
+    parse_vmd_camera_interpolation,
+    viewing_angle_to_focal_length,
+)
 from .vmd_import_state import (
     capture_anim_layer_selection,
     clear_existing_motion,
@@ -70,7 +69,7 @@ from .vmd_legacy_bone_routes import (
     collect_ik_link_joints,
     native_ik_handle_link_joints,
 )
-from .vmd_light_animation import convert_light_animation
+from .vmd_light_animation import convert_light_animation, get_or_create_light
 from .vmd_morph_animation import convert_morph_animation
 from .vmd_morph_mapping import (
     build_morph_mappings,
@@ -1356,14 +1355,7 @@ class VmdConverter:
         Returns:
             カメラのトランスフォーム名
         """
-        existing = cmds.ls(f"*.{ATTR_MMD_CAMERA}", objectsOnly=True)
-        if existing:
-            return existing[0]
-
-        camera_transform, _ = cmds.camera(name=DEFAULT_CAMERA_NAME)
-        cmds.addAttr(camera_transform, longName=ATTR_MMD_CAMERA, attributeType="bool")
-        cmds.setAttr(f"{camera_transform}.{ATTR_MMD_CAMERA}", True)
-        return camera_transform
+        return get_or_create_camera()
 
     def _get_or_create_light(self) -> str:
         """MMD照明を取得または作成する
@@ -1371,15 +1363,7 @@ class VmdConverter:
         Returns:
             照明のトランスフォーム名
         """
-        existing = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True)
-        if existing:
-            return existing[0]
-
-        light_shape = cmds.directionalLight(name=DEFAULT_LIGHT_NAME)
-        light_transform = cmds.listRelatives(light_shape, parent=True)[0]
-        cmds.addAttr(light_transform, longName=ATTR_MMD_LIGHT, attributeType="bool")
-        cmds.setAttr(f"{light_transform}.{ATTR_MMD_LIGHT}", True)
-        return light_transform
+        return get_or_create_light()
 
     def _convert_camera_animation(self, camera_frames: List) -> bool:
         """カメラアニメーションを変換

@@ -4,6 +4,21 @@ import math
 
 import maya.cmds as cmds
 
+from ..core.constants import ATTR_MMD_LIGHT, DEFAULT_LIGHT_NAME
+
+
+def get_or_create_light() -> str:
+    """Return the MMD directional light transform, creating one if needed."""
+    existing = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True)
+    if existing:
+        return existing[0]
+
+    light_shape = cmds.directionalLight(name=DEFAULT_LIGHT_NAME)
+    light_transform = cmds.listRelatives(light_shape, parent=True)[0]
+    cmds.addAttr(light_transform, longName=ATTR_MMD_LIGHT, attributeType="bool")
+    cmds.setAttr(f"{light_transform}.{ATTR_MMD_LIGHT}", True)
+    return light_transform
+
 
 def convert_light_animation(converter, light_frames) -> bool:
     """Convert VMD light frames using the converter's shared Maya helpers."""
