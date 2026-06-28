@@ -8,7 +8,7 @@ from pathlib import Path
 from mmd_tools.core import settings
 from mmd_tools.core.mmd_parser import parse_mmd_file
 from mmd_tools.core.vmd_data import VmdData
-from mmd_tools.io import pmd_importer, pmx_importer, vmd_importer
+from mmd_tools.io import pmd_importer, pmx_importer, vmd_importer  # noqa: F401
 from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
 
@@ -127,7 +127,7 @@ def import_mmd_file(filepath, scale=None, options=None):
 
         elif suffix == ".pmd":
             with _scoped_settings_override(options):
-                return pmd_importer.import_pmd_file(
+                return pmx_importer.import_pmx_file(
                     parsed_data,
                     filepath,
                     import_scale,

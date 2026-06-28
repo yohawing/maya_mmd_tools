@@ -2,8 +2,11 @@ import io
 import os
 
 from mmd_tools.core import mmd_parser
+from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.display_frame import PmdDisplayFrame
 from mmd_tools.core.pmd_data.face import PmdFace
+from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmx_data.face import PmxFace
 from tests.common.test_base import TestBase
 from tests.common.pmd_mock import PmdMock
 
@@ -21,19 +24,26 @@ class TestPmdParser(TestBase):
 
         # ファイルを解析
         self.parsed_data = mmd_parser.parse_mmd_file(self.pmd_file_path)
+        self.legacy_pmd_data = PmdData().parse_file(self.pmd_file_path)
 
     def test_parse_pmd_header_success(self):
         """PMDヘッダが正しく解析されることをテストする。"""
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data)
+        self.assertIsInstance(self.parsed_data, PmxData)
         # ヘッダの属性が正しく設定されていることを確認
-        self.assertEqual(self.parsed_data.header.magic, b"Pmd")
-        # ヘッダのバージョンが1.0であることを確認
-        self.assertAlmostEqual(self.parsed_data.header.version, 1.0)
+        self.assertEqual(self.parsed_data.header.magic, b"PMX ")
+        # 汎用 parser は PMD を PMX に変換してから返す
+        self.assertAlmostEqual(self.parsed_data.header.version, 2.0)
         # モデル名とコメントが正しく設定されていることを確認
         self.assertIsInstance(self.parsed_data.header.model_name, str)
         # commentが文字列であることを確認
         self.assertIsInstance(self.parsed_data.header.comment, str)
+
+    def test_legacy_pmd_data_parse_file_still_parses_pmd_header(self):
+        """PMD writer/export 検証用の legacy PmdData reader は PMD のまま使える。"""
+        self.assertEqual(self.legacy_pmd_data.header.magic, b"Pmd")
+        self.assertAlmostEqual(self.legacy_pmd_data.header.version, 1.0)
 
     def test_parse_pmd_vertices(self):
         """PMD頂点データが正しく解析されることをテストする。"""
@@ -52,8 +62,11 @@ class TestPmdParser(TestBase):
         # 面リストが空でないことを確認
         self.assertGreater(len(self.parsed_data.faces), 0)
         face = self.parsed_data.faces[0]
-        self.assertIsInstance(face, PmdFace)
+        self.assertIsInstance(face, PmxFace)
         self.assertEqual(len(face.indices), 3)
+
+        legacy_face = self.legacy_pmd_data.faces[0]
+        self.assertIsInstance(legacy_face, PmdFace)
 
     def test_parse_pmd_materials(self):
         """PMD材質データが正しく解析されることをテストする。"""
@@ -75,13 +88,13 @@ class TestPmdParser(TestBase):
         self.assertIsInstance(bone.name, str)
 
     def test_parse_pmd_ik_data(self):
-        """PMD IKデータが正しく解析されることをテストする。"""
+        """PMD IKデータがPMXボーンIKへ変換されることをテストする。"""
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data)
-        # create_full_pmd には2つのIKが含まれる
-        self.assertGreater(len(self.parsed_data.ik_data), 0)
-        ik = self.parsed_data.ik_data[0]
-        self.assertIsInstance(ik.ik_bone_index, int)
+        ik_bones = [bone for bone in self.parsed_data.bones if bone.ik_links]
+        self.assertGreater(len(ik_bones), 0)
+        self.assertIsInstance(ik_bones[0].ik_target_bone_index, int)
+        self.assertGreater(len(self.legacy_pmd_data.ik_data), 0)
 
     def test_parse_pmd_morphs(self):
         """PMDモーフデータが正しく解析されることをテストする。"""
@@ -99,7 +112,8 @@ class TestPmdParser(TestBase):
         # 解析結果がNoneでないことを確認
         self.assertIsNotNone(self.parsed_data)
         # 表示枠リストが空でないことを確認
-        self.assertIsNotNone(self.parsed_data.display_frame)
+        self.assertGreater(len(self.parsed_data.display_frames), 0)
+        self.assertIsNotNone(self.legacy_pmd_data.display_frame)
 
     def test_parse_pmd_rigid_bodies(self):
         """PMD剛体データが正しく解析されることをテストする。"""

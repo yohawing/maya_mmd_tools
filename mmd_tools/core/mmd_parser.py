@@ -1,4 +1,5 @@
 import os
+import tempfile
 from typing import Optional
 
 from .exceptions import MMDParseException
@@ -6,6 +7,7 @@ from .logger import get_logger
 
 # Import specific parsers
 from .pmd_data import PmdData
+from .pmd_to_pmx import convert_pmd_to_pmx_data
 from .pmx_data import PmxData
 from .pmx_data.legacy_parser import parse_pmx_file_legacy
 from .vmd_data import VmdData
@@ -90,6 +92,27 @@ def parse_pmx_file(
     return parser
 
 
+def parse_pmd_file_as_pmx(
+    file_path: str,
+    use_native_pmx_parse: Optional[bool] = None,
+    require_native_pmx_parse: bool = True,
+) -> PmxData:
+    """Parse PMD through a temporary PMX and the PMX parser policy path."""
+    parser = PmdData()
+    parser.parse_file(file_path)
+    pmx_data = convert_pmd_to_pmx_data(parser)
+    with tempfile.TemporaryDirectory(prefix="maya_mmd_tools_pmd_as_pmx_") as temp_dir:
+        pmx_path = os.path.join(temp_dir, os.path.basename(file_path) + ".pmx")
+        pmx_data.write_file(pmx_path)
+        parsed_pmx = parse_pmx_file(
+            pmx_path,
+            use_native_pmx_parse=use_native_pmx_parse,
+            require_native_pmx_parse=require_native_pmx_parse,
+        )
+    logger.info("PMD file parsing completed via PMX conversion")
+    return parsed_pmx
+
+
 def parse_mmd_file(
     file_path,
     use_native_pmx_parse: Optional[bool] = None,
@@ -104,7 +127,7 @@ def parse_mmd_file(
         require_native_pmx_parse: PMX で Python parser fallback を禁止するかどうか。既定は True。
 
     Returns:
-        PmdData or PmxData or VmdData or VpdData: 解析されたMMDデータを含むパーサーオブジェクト。
+        PmxData or VmdData or VpdData: 解析されたMMDデータを含むパーサーオブジェクト。
 
     Raises:
         FileNotFoundError: ファイルが見つからない場合。
@@ -136,10 +159,11 @@ def parse_mmd_file(
 
         if magic_bytes.startswith(b"Pmd"):
             logger.info("Starting parse as PMD file")
-            parser = PmdData()
-            parser.parse_file(file_path)
-            logger.info("PMD file parsing completed")
-            return parser
+            return parse_pmd_file_as_pmx(
+                file_path,
+                use_native_pmx_parse=use_native_pmx_parse,
+                require_native_pmx_parse=require_native_pmx_parse,
+            )
         elif magic_bytes.startswith(b"PMX"):
             logger.info("Starting parse as PMX file")
             return parse_pmx_file(
