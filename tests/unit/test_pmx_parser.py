@@ -1,10 +1,14 @@
 import os
+import struct
+from io import BytesIO
 from unittest.mock import patch
 
 from mmd_tools.core import mmd_parser
+from mmd_tools.core import utils
 from mmd_tools.core.pmd_data.material import PmdMaterial
 from mmd_tools.core.pmx_data.header import PmxEncoding
 from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmx_data.soft_body import PmxSoftBody, _UNSUPPORTED_DETAIL_SIZE
 from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
 
@@ -425,3 +429,52 @@ class TestPmxParser(TestBase):
         # 注: 現在の実装ではSoftBodyのパーサーはプレースホルダーであり、詳細な解析は行われない。
         # そのため、リストがNoneでないことのみを確認する。
         self.assertIsNotNone(self.parsed_data.soft_bodies, msg="ソフトボディリストがNoneです")
+
+    def test_soft_body_header_roundtrip_preserves_section_boundary(self):
+        """SoftBody は未対応詳細を保持しつつ anchor/pin まで読み書きできる。"""
+        detail = bytes(range(_UNSUPPORTED_DETAIL_SIZE))
+        record = bytearray()
+        record.extend(utils.encodePMXString("布", PmxEncoding.UTF16LE))
+        record.extend(utils.encodePMXString("cloth", PmxEncoding.UTF16LE))
+        record.extend(struct.pack("<B", 0))  # kind: tri mesh
+        record.extend(struct.pack("<b", 0))  # material index
+        record.extend(struct.pack("<B", 3))  # collision group
+        record.extend(struct.pack("<H", 0x00F0))  # collision mask
+        record.extend(struct.pack("<B", 0x07))  # flags
+        record.extend(struct.pack("<i", 4))  # bending constraints distance
+        record.extend(struct.pack("<i", 2))  # cluster count
+        record.extend(struct.pack("<f", 12.5))  # total mass
+        record.extend(struct.pack("<f", 0.25))  # collision margin
+        record.extend(detail)
+        record.extend(struct.pack("<I", 1))  # anchor count
+        record.extend(struct.pack("<bBB", 0, 5, 1))  # rigid body, vertex, near mode
+        record.extend(struct.pack("<I", 2))  # pin count
+        record.extend(struct.pack("<BB", 6, 7))
+
+        soft_body = PmxSoftBody(
+            material_index_size=1,
+            rigid_body_index_size=1,
+            vertex_index_size=1,
+            encoding_flag=PmxEncoding.UTF16LE,
+        )
+        stream = BytesIO(bytes(record) + b"next")
+
+        soft_body.parse(stream)
+
+        self.assertEqual(soft_body.name, "布")
+        self.assertEqual(soft_body.name_english, "cloth")
+        self.assertEqual(soft_body.material_index, 0)
+        self.assertEqual(soft_body.collision_group, 3)
+        self.assertEqual(soft_body.collision_mask, 0x00F0)
+        self.assertEqual(soft_body.flags, 0x07)
+        self.assertEqual(soft_body.bending_constraints_distance, 4)
+        self.assertEqual(soft_body.cluster_count, 2)
+        self.assertAlmostEqual(soft_body.total_mass, 12.5)
+        self.assertAlmostEqual(soft_body.collision_margin, 0.25)
+        self.assertEqual(soft_body.anchors, [(0, 5, 1)])
+        self.assertEqual(soft_body.pins, [6, 7])
+        self.assertEqual(stream.read(), b"next")
+
+        out = BytesIO()
+        soft_body.write(out)
+        self.assertEqual(out.getvalue(), bytes(record))

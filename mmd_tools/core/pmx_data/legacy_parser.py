@@ -124,9 +124,14 @@ def parse_pmx_file_legacy(file_path: str, target: Optional["PmxData"] = None) ->
             if target.header.version >= 2.1:
                 soft_body_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(soft_body_count):
-                    soft_body = PmxSoftBody(encoding_flag)
+                    soft_body = PmxSoftBody(
+                        material_size,
+                        rigid_body_size,
+                        vertex_size,
+                        encoding_flag,
+                    )
                     soft_body.parse(f)
-                    # Legacy reader keeps PMX soft body parsing as no-op data.
+                    target.soft_bodies.append(soft_body)
 
         except struct.error as e:
             raise MMDParseException(f"Failed to parse PMX file: {file_path}") from e
