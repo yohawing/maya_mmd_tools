@@ -37,6 +37,7 @@ from .vmd_append_decomposition import (
     get_or_expand_runtime_channel,
     joint_orient_quat_from_joint,
 )
+from .vmd_anim_layer import add_existing_attrs_to_anim_layer, add_transform_attrs_to_anim_layer
 from .vmd_bezier_tangent import apply_vmd_bezier_tangents, query_key_value
 from .vmd_bone_animation import convert_bone_animation, set_bone_keyframes
 from .vmd_bone_interpolation import (
@@ -1170,25 +1171,7 @@ class VmdConverter:
         Args:
             objects: 追加するオブジェクトのリスト
         """
-        if not self.anim_layer:
-            return
-
-        # オブジェクトをレイヤーに追加
-        for obj in objects:
-            if cmds.objExists(obj):
-                # 各属性をレイヤーに追加
-                attrs = [
-                    "translateX",
-                    "translateY",
-                    "translateZ",
-                    "rotateX",
-                    "rotateY",
-                    "rotateZ",
-                ]
-                for attr in attrs:
-                    attr_path = f"{obj}.{attr}"
-                    if cmds.attributeQuery(attr, node=obj, exists=True):
-                        cmds.animLayer(self.anim_layer, edit=True, attribute=attr_path)
+        add_transform_attrs_to_anim_layer(self.anim_layer, objects)
 
     def _build_name_mappings(self, target_namespace: str = None):
         """ボーン名とモーフ名のマッピングを構築
@@ -1291,12 +1274,7 @@ class VmdConverter:
         """指定属性を現在のアニメーションレイヤーへ追加する。"""
         if not (self.use_animation_layers and self.anim_layer):
             return
-        if not cmds.objExists(node):
-            return
-
-        for attr in attrs:
-            if cmds.attributeQuery(attr, node=node, exists=True):
-                cmds.animLayer(self.anim_layer, edit=True, attribute=f"{node}.{attr}")
+        add_existing_attrs_to_anim_layer(self.anim_layer, node, attrs)
 
     @staticmethod
     def _parse_vmd_interpolation(interpolation_bytes):

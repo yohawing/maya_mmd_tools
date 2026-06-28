@@ -10,6 +10,7 @@ from mmd_tools.core.logger import get_logger
 from mmd_tools.core.maya_utils import get_attribute
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.vpd_data.bone_pose import BonePose
+from mmd_tools.converters.vmd_anim_layer import add_transform_attrs_to_anim_layer
 
 logger = get_logger(__name__)
 
@@ -306,25 +307,7 @@ class VpdConverter:
         Args:
             objects (list): 追加するオブジェクトのリスト
         """
-        if not self.anim_layer:
-            return
-
-        # オブジェクトをレイヤーに追加
-        for obj in objects:
-            if cmds.objExists(obj):
-                # 各属性をレイヤーに追加
-                attrs = [
-                    "translateX",
-                    "translateY",
-                    "translateZ",
-                    "rotateX",
-                    "rotateY",
-                    "rotateZ",
-                ]
-                for attr in attrs:
-                    attr_path = f"{obj}.{attr}"
-                    if cmds.attributeQuery(attr, node=obj, exists=True):
-                        cmds.animLayer(self.anim_layer, edit=True, attribute=attr_path)
+        add_transform_attrs_to_anim_layer(self.anim_layer, objects)
 
     def _apply_joint_orient_correction(self, rotation: Sequence[float], joint_orient: Sequence[float]) -> List[float]:
         """JointOrientを考慮した回転の補正
