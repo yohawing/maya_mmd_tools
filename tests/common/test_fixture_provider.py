@@ -69,7 +69,7 @@ class TestFixtureProvider:
             str: ファイルパス
 
         Raises:
-            FileNotFoundError: ファイルが見つからない場合
+            unittest.SkipTest: テスト用ファイルが見つからない場合
         """
         pmd_files = self._file_cache.get("pmd", {})
         if not pmd_files:
@@ -93,7 +93,7 @@ class TestFixtureProvider:
             str: ファイルパス
 
         Raises:
-            FileNotFoundError: ファイルが見つからない場合
+            unittest.SkipTest: テスト用ファイルが見つからない場合
         """
         pmx_files = self._file_cache.get("pmx", {})
         if not pmx_files:
@@ -117,11 +117,11 @@ class TestFixtureProvider:
             str: ファイルパス
 
         Raises:
-            FileNotFoundError: ファイルが見つからない場合
+            unittest.SkipTest: テスト用ファイルが見つからない場合
         """
         vmd_files = self._file_cache.get("vmd", {})
         if not vmd_files:
-            raise FileNotFoundError("No VMD files found")
+            raise unittest.SkipTest("No VMD files found")
 
         if name is None:
             return next(iter(vmd_files.values()))
@@ -129,7 +129,7 @@ class TestFixtureProvider:
         if name in vmd_files:
             return vmd_files[name]
 
-        raise FileNotFoundError(f"VMD file '{name}' not found")
+        raise unittest.SkipTest(f"VMD file '{name}' not found")
 
     def get_texture_file(self, model_name: str, texture_name: str) -> str:
         """テクスチャファイルのパスを取得
