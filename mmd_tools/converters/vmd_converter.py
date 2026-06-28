@@ -36,6 +36,7 @@ from ..core.logger import get_logger
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
 from ..core.vmd_data import VmdData
+from .vmd_bezier_tangent import apply_vmd_bezier_tangents, query_key_value
 from .vmd_bone_animation import convert_bone_animation, set_bone_keyframes
 from .vmd_bone_interpolation import (
     get_frame_interpolation,
@@ -2592,19 +2593,7 @@ class VmdConverter:
 
     def _query_key_value(self, plug: str, frame_number: float) -> Optional[float]:
         """指定 plug/frame のキー値を取得する。取得できない場合は None。"""
-        try:
-            values = cmds.keyframe(
-                plug,
-                query=True,
-                time=(frame_number, frame_number),
-                valueChange=True,
-            )
-        except Exception as exc:
-            self.logger.debug(f"Failed to query key value for {plug} at {frame_number}: {exc}")
-            return None
-        if not values:
-            return None
-        return float(values[0])
+        return query_key_value(self.logger, plug, frame_number)
 
     def _apply_vmd_bezier_tangents(
         self,
@@ -2614,113 +2603,15 @@ class VmdConverter:
         channel_interp_map: Dict[str, str],
         interpolation_parser=None,
     ):
-        """VMD Bezier 補間を Maya weighted tangent として適用する。
-
-        Args:
-            joint: デフォルトのキー対象ノード。
-            frames: フレーム番号でソート済みの VMD bone frames。
-            attrs: source attr 名のリスト、または source attr から
-                (target_node, target_attr) への辞書。
-            channel_interp_map: source attr から VMD interpolation channel 名への対応。
-        """
-        if len(frames) < 2:
-            return
-
-        if isinstance(attrs, dict):
-            attr_targets = attrs
-            source_attrs = list(attrs.keys())
-        else:
-            attr_targets = {attr: (joint, attr) for attr in attrs}
-            source_attrs = list(attrs)
-
-        for frame_index in range(len(frames) - 1):
-            frame = frames[frame_index]
-            next_frame = frames[frame_index + 1]
-            frame_number = self._get_frame_number(frame)
-            next_frame_number = self._get_frame_number(next_frame)
-            frame_time = self.vmd_frame_to_maya_time(frame_number)
-            next_frame_time = self.vmd_frame_to_maya_time(next_frame_number)
-            dt = next_frame_time - frame_time
-            if dt <= 0.0:
-                continue
-
-            # VMD の補間バイト列は到着キー側に保存されるため、
-            # 区間 frame -> next_frame では next_frame.interpolation を使う。
-            parse_interpolation = interpolation_parser or self._parse_vmd_interpolation
-            interpolation = parse_interpolation(self._get_frame_interpolation(next_frame))
-            if not interpolation:
-                continue
-
-            for source_attr in source_attrs:
-                channel_name = channel_interp_map.get(source_attr)
-                if not channel_name:
-                    continue
-                points = interpolation.get(channel_name)
-                if not points or self._is_linear_vmd_interp(points):
-                    continue
-
-                target_node, target_attr = attr_targets.get(source_attr, (joint, source_attr))
-                plug = f"{target_node}.{target_attr}"
-                value = self._query_key_value(plug, frame_time)
-                next_value = self._query_key_value(plug, next_frame_time)
-                if value is None or next_value is None:
-                    continue
-
-                x1, y1, x2, y2 = points
-                dv = next_value - value
-                out_dx = dt * x1
-                out_dy = dv * y1
-                in_dx = dt * (1.0 - x2)
-                in_dy = dv * (1.0 - y2)
-                out_angle = math.degrees(math.atan2(out_dy, out_dx))
-                in_angle = math.degrees(math.atan2(in_dy, in_dx))
-                out_weight = math.sqrt((out_dx * out_dx) + (out_dy * out_dy)) / (3.0 * dt)
-                in_weight = math.sqrt((in_dx * in_dx) + (in_dy * in_dy)) / (3.0 * dt)
-
-                try:
-                    cmds.keyTangent(
-                        plug,
-                        edit=True,
-                        time=(frame_time, frame_time),
-                        weightedTangents=True,
-                    )
-                    cmds.keyTangent(
-                        plug,
-                        edit=True,
-                        time=(frame_time, frame_time),
-                        ott="fixed",
-                    )
-                    cmds.keyTangent(
-                        plug,
-                        edit=True,
-                        time=(frame_time, frame_time),
-                        oa=out_angle,
-                        ow=out_weight,
-                    )
-                    cmds.keyTangent(
-                        plug,
-                        edit=True,
-                        time=(next_frame_time, next_frame_time),
-                        weightedTangents=True,
-                    )
-                    cmds.keyTangent(
-                        plug,
-                        edit=True,
-                        time=(next_frame_time, next_frame_time),
-                        itt="fixed",
-                    )
-                    cmds.keyTangent(
-                        plug,
-                        edit=True,
-                        time=(next_frame_time, next_frame_time),
-                        ia=in_angle,
-                        iw=in_weight,
-                    )
-                except Exception as exc:
-                    self.logger.debug(
-                        f"Failed to apply VMD Bezier tangent for {plug} "
-                        f"{frame_number}->{next_frame_number}: {exc}"
-                    )
+        """VMD Bezier 補間を Maya weighted tangent として適用する。"""
+        apply_vmd_bezier_tangents(
+            self,
+            joint,
+            frames,
+            attrs,
+            channel_interp_map,
+            interpolation_parser=interpolation_parser,
+        )
 
     def _set_bone_keyframes(self, joint: str, frames: List, vmd_bone_name: str, key_route: Optional[dict] = None):
         """ボーンのキーフレームを設定
