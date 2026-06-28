@@ -51,6 +51,13 @@ from .vmd_runtime_rig_helper import (
     restore_joints_to_bind_pose_for_runtime_bake,
     runtime_bake_mapped_joint_names,
 )
+from .vmd_runtime_sampling import (
+    iter_runtime_bake_frame_samples,
+    iter_runtime_bake_frames,
+    native_local_channel_batch_for_frame,
+    runtime_batch_morph_weights_for_frame,
+    runtime_batch_world_matrices_for_frame,
+)
 
 # mmd-anim runtime (Phase 1+)
 try:
@@ -726,55 +733,21 @@ class VmdConverter:
 
     def _iter_runtime_bake_frame_samples(self, min_frame: int, max_frame: int) -> List[Tuple[float, float]]:
         """Return (Maya output time, VMD evaluation frame) samples for runtime bake."""
-        if max_frame < min_frame:
-            return []
-        min_time = self.vmd_frame_to_maya_time(min_frame)
-        max_time = self.vmd_frame_to_maya_time(max_frame)
-        min_maya_frame = int(math.ceil(min_time - 1e-9))
-        max_maya_frame = int(math.floor(max_time + 1e-9))
-        if max_maya_frame < min_maya_frame:
-            return []
-        return [
-            (float(maya_time), self.maya_time_to_vmd_frame(float(maya_time)))
-            for maya_time in range(min_maya_frame, max_maya_frame + 1)
-        ]
+        return iter_runtime_bake_frame_samples(min_frame, max_frame, self.fps)
 
     def _iter_runtime_bake_frames(self, min_frame: int, max_frame: int) -> List[float]:
         """runtime bakeで評価する VMD フレーム列を返す。"""
-        return [
-            vmd_frame
-            for _maya_time, vmd_frame in self._iter_runtime_bake_frame_samples(min_frame, max_frame)
-        ]
+        return iter_runtime_bake_frames(min_frame, max_frame, self.fps)
 
     @staticmethod
     def _runtime_batch_world_matrices_for_frame(batch_result, frame_index: int) -> List[List[float]]:
         """batch 評価の flat buffer から指定フレームの PMX bone world matrices を返す。"""
-        bone_count = int(getattr(batch_result, "bone_count", 0) or 0)
-        frame_count = int(getattr(batch_result, "frame_count", 0) or 0)
-        if frame_index < 0 or frame_index >= frame_count or bone_count <= 0:
-            return []
-        buffer = getattr(batch_result, "world_matrices", None)
-        if buffer is None:
-            return []
-        frame_offset = frame_index * bone_count * 16
-        matrices: List[List[float]] = []
-        for bone_index in range(bone_count):
-            start = frame_offset + bone_index * 16
-            matrices.append([float(buffer[start + column]) for column in range(16)])
-        return matrices
+        return runtime_batch_world_matrices_for_frame(batch_result, frame_index)
 
     @staticmethod
     def _runtime_batch_morph_weights_for_frame(batch_result, frame_index: int) -> List[float]:
         """batch 評価の flat buffer から指定フレームの PMX morph weights を返す。"""
-        morph_count = int(getattr(batch_result, "morph_count", 0) or 0)
-        frame_count = int(getattr(batch_result, "frame_count", 0) or 0)
-        if frame_index < 0 or frame_index >= frame_count or morph_count <= 0:
-            return []
-        buffer = getattr(batch_result, "morph_weights", None)
-        if buffer is None:
-            return []
-        frame_offset = frame_index * morph_count
-        return [float(buffer[frame_offset + index]) for index in range(morph_count)]
+        return runtime_batch_morph_weights_for_frame(batch_result, frame_index)
 
     def _build_bone_hierarchy_and_order_maps(self):
         """runtime bake キャッシュ計算用に、ボーン親子関係と rotateOrder を事前収集する。
@@ -1011,14 +984,7 @@ class VmdConverter:
         frame_index: int,
     ) -> Dict[int, Tuple[float, float, float, float, float, float]]:
         """Extract one frame of local channel tuples from native batch output."""
-        ordered_bone_indices = native_batch["ordered_bone_indices"]
-        bone_count = native_batch["bone_count"]
-        channels = native_batch["local_channels"]
-        frame_start = int(frame_index) * bone_count * 6
-        return {
-            bidx: tuple(float(channels[frame_start + slot * 6 + offset]) for offset in range(6))
-            for slot, bidx in enumerate(ordered_bone_indices)
-        }
+        return native_local_channel_batch_for_frame(native_batch, frame_index)
 
     def _get_native_local_decompose_static_inputs(self, ordered_bone_indices: List[int]) -> Optional[Dict[str, list]]:
         """Return cached static inputs for native runtime local decomposition."""
