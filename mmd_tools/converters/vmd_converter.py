@@ -24,7 +24,6 @@ import maya.cmds as cmds
 
 from ..core import maya_utils
 from ..core.constants import (
-    ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_CAMERA,
@@ -48,6 +47,13 @@ from .vmd_bone_interpolation import (
 from .vmd_camera_animation import convert_camera_animation, parse_vmd_camera_interpolation, viewing_angle_to_focal_length
 from .vmd_light_animation import convert_light_animation
 from .vmd_morph_animation import convert_morph_animation
+from .vmd_morph_mapping import (
+    build_morph_mappings,
+    get_original_morph_name_candidates,
+    iter_morph_mappings,
+    read_blendshape_morph_names,
+    register_morph_mapping,
+)
 from .vmd_runtime_rig_helper import (
     _ls_mmd_append_nodes,
     _ls_mmd_ccd_ik_nodes,
@@ -2657,41 +2663,10 @@ class VmdConverter:
 
     @staticmethod
     def _iter_morph_mappings(mapping_entry):
-        if isinstance(mapping_entry, list):
-            mappings = mapping_entry
-        elif mapping_entry:
-            mappings = [mapping_entry]
-        else:
-            return []
-
-        normalized_mappings = []
-        for entry in mappings:
-            if not isinstance(entry, tuple) or len(entry) != 3:
-                continue
-
-            morph_node, weight_ref, morph_name = entry
-            if isinstance(weight_ref, int):
-                weight_ref = f"weight[{weight_ref}]"
-            normalized_mappings.append((morph_node, weight_ref, morph_name))
-
-        return normalized_mappings
+        return iter_morph_mappings(mapping_entry)
 
     def _register_morph_mapping(self, morph_name: str, mapping: Tuple[str, str, str]) -> None:
-        existing = self.morph_name_mapping.get(morph_name)
-        if existing is None:
-            self.morph_name_mapping[morph_name] = [mapping]
-            return
-
-        if isinstance(existing, tuple):
-            if existing == mapping:
-                return
-            self.morph_name_mapping[morph_name] = [existing, mapping]
-            return
-
-        for existing_mapping in existing:
-            if existing_mapping == mapping:
-                return
-        existing.append(mapping)
+        register_morph_mapping(self, morph_name, mapping)
 
     def _read_blendshape_morph_names(self, blend_shape_node: str) -> Dict[int, str]:
         """blendShape に保存された weight index → 生モーフ名 (PmxMorph.name) を読み出す。
@@ -2699,75 +2674,11 @@ class VmdConverter:
         import 時に MorphConverter が保存した権威マップ。lossy な alias 逆引きに頼らず、
         VMD/PMX が参照する生名で正確にマッピングするために使う。
         """
-        result: Dict[int, str] = {}
-        if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape_node, exists=True):
-            return result
-        try:
-            raw = cmds.getAttr(f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
-            parsed = json.loads(raw)
-        except (TypeError, ValueError):
-            return result
-        if not isinstance(parsed, dict):
-            return result
-        for key, value in parsed.items():
-            try:
-                result[int(key)] = str(value)
-            except (TypeError, ValueError):
-                continue
-        return result
+        return read_blendshape_morph_names(blend_shape_node)
 
     def _build_morph_mappings(self):
         """シーン内のblendShapeとmetadata networkからモーフ名マッピングを構築"""
-        self.morph_name_mapping = {}
-
-        blend_shapes = cmds.ls(type="blendShape") or []
-        for bs_node in blend_shapes:
-            stored_names = self._read_blendshape_morph_names(bs_node)
-            weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
-            for i in range(weight_count):
-                alias = cmds.aliasAttr(f"{bs_node}.weight[{i}]", query=True)
-                mapping = (bs_node, f"weight[{i}]", alias or f"weight[{i}]")
-                if alias:
-                    self._register_morph_mapping(alias, mapping)
-
-                original_name = stored_names.get(i)
-                if original_name:
-                    # import 時に保存した生のモーフ名（権威キー）。VMD/PMX の参照名と一致する。
-                    self._register_morph_mapping(original_name, mapping)
-                elif alias:
-                    # レガシーシーン（生名未保存）のフォールバック: 辞書逆引き。
-                    # 同一 alias に複数モーフが化ける衝突があり lossy なため、
-                    # 保存済み生名がある blendShape では使わない。
-                    for candidate in self._get_original_morph_name_candidates(alias):
-                        self._register_morph_mapping(candidate, mapping)
-
-        for morph_node in cmds.ls(type="network") or []:
-            if not cmds.attributeQuery("mmd_morph_type", node=morph_node, exists=True):
-                continue
-            morph_type = cmds.getAttr(f"{morph_node}.mmd_morph_type")
-            if morph_type not in {"bone", "group", "material"}:
-                continue
-            if not cmds.attributeQuery("weight", node=morph_node, exists=True):
-                continue
-
-            original_name = ""
-            if cmds.attributeQuery("mmd_morph_name", node=morph_node, exists=True):
-                original_name = cmds.getAttr(f"{morph_node}.mmd_morph_name") or ""
-            if not original_name:
-                continue
-
-            mapping = (morph_node, "weight", original_name)
-            self._register_morph_mapping(original_name, mapping)
-            safe_name = morph_node
-            for suffix in ("_boneMorph", "_groupMorph", "_materialMorph"):
-                if safe_name.endswith(suffix):
-                    safe_name = safe_name[: -len(suffix)]
-                    break
-            self._register_morph_mapping(safe_name, mapping)
-            if cmds.attributeQuery("mmd_morph_name_en", node=morph_node, exists=True):
-                english_name = cmds.getAttr(f"{morph_node}.mmd_morph_name_en") or ""
-                if english_name:
-                    self._register_morph_mapping(english_name, mapping)
+        build_morph_mappings(self)
 
     def _get_original_morph_name_candidates(self, alias: str) -> List[str]:
         """Maya aliasからVMD/PMX側の元モーフ名候補を取得する。
@@ -2776,26 +2687,7 @@ class VmdConverter:
         VMD morph frame は日本語名のまま来る。そのため alias と辞書逆引き名の
         両方を mapping key として登録する。
         """
-        candidates = []
-        if not alias:
-            return candidates
-
-        try:
-            from mmd_tools.core.unicode_converter import get_converter
-
-            converter = get_converter()
-            for source_map in (converter.unicode_to_ascii, converter.exact_match):
-                for original_name, converted_name in source_map.items():
-                    if converted_name == alias:
-                        candidates.append(original_name)
-        except Exception:
-            pass
-
-        unique_candidates = []
-        for candidate in candidates:
-            if candidate and candidate not in unique_candidates:
-                unique_candidates.append(candidate)
-        return unique_candidates
+        return get_original_morph_name_candidates(alias)
 
     def _set_scene_fps(self, fps: float):
         """シーンのFPSを設定
