@@ -36,6 +36,7 @@ from ..core.logger import get_logger
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
 from ..core.vmd_data import VmdData
+from .vmd_bone_animation import convert_bone_animation
 from .vmd_bone_interpolation import (
     get_frame_interpolation,
     get_frame_number,
@@ -2396,69 +2397,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        # ボーンごとにフレームデータをグループ化
-        bone_frame_map: Dict[str, List] = {}
-
-        for frame in bone_frames:
-            # VmdBoneFrameオブジェクトの場合は属性アクセス、辞書の場合はget
-            if hasattr(frame, "bone_name"):
-                bone_name = frame.bone_name
-            else:
-                bone_name = frame.get("bone_name", "")
-            if bone_name not in bone_frame_map:
-                bone_frame_map[bone_name] = []
-            bone_frame_map[bone_name].append(frame)
-
-        success_count = 0
-        total_count = len(bone_frame_map)
-        animated_joints = []  # アニメーションを適用したジョイントのリスト
-        key_routes = self._build_legacy_bone_key_routes()
-
-        # 各ボーンのアニメーションを設定
-        for vmd_bone_name, frames in bone_frame_map.items():
-            if vmd_bone_name in self.bone_name_mapping:
-                maya_joint = self.bone_name_mapping[vmd_bone_name]
-
-                try:
-                    # フレームをフレーム番号でソート
-                    frames.sort(key=lambda x: x.frame_number if hasattr(x, "frame_number") else x.get("frame_number", 0))
-
-                    # 位置と回転のキーフレームを設定
-                    self._set_bone_keyframes(
-                        maya_joint,
-                        frames,
-                        vmd_bone_name,
-                        key_routes.get(maya_joint),
-                    )
-                    animated_joints.append(maya_joint)
-                    success_count += 1
-
-                except Exception as e:
-                    self.logger.error(f"Error setting animation for bone '{vmd_bone_name}': {str(e)}")
-                    self._failed_bones.add(vmd_bone_name)
-            else:
-                if vmd_bone_name not in self._failed_bones:
-                    self.logger.info(f"Bone '{vmd_bone_name}' not found")
-                    self._failed_bones.add(vmd_bone_name)
-
-        # アニメーションレイヤーにジョイントを追加
-        # IK link ジョイントは除外 — animLayer が rotate blend node を自動生成し
-        # mmdCcdIk solver の outputRotate 接続を上書きするため
-        if self.use_animation_layers and self.anim_layer and animated_joints:
-            ik_link_joints = self._collect_ik_link_joints()
-            append_target_joints = {
-                joint
-                for joint, route in key_routes.items()
-                if route.get("attr_targets")
-            }
-            layer_joints = [
-                j for j in animated_joints
-                if j not in ik_link_joints and j not in append_target_joints
-            ]
-            self._add_objects_to_layer(layer_joints)
-
-        self.logger.info(f"Converted {success_count}/{total_count} bone animations")
-        return success_count > 0
+        return convert_bone_animation(self, bone_frames)
 
     @staticmethod
     def _collect_ik_link_joints() -> dict:
