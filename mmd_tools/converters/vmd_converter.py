@@ -45,6 +45,14 @@ from .vmd_bone_interpolation import (
     vmd_interp_channel_for_attr,
 )
 from .vmd_camera_animation import convert_camera_animation, parse_vmd_camera_interpolation, viewing_angle_to_focal_length
+from .vmd_import_state import (
+    capture_anim_layer_selection,
+    clear_existing_motion,
+    cut_keyable_attrs,
+    node_matches_target_namespace,
+    restore_anim_layer_selection,
+    restore_import_timeline_state,
+)
 from .vmd_light_animation import convert_light_animation
 from .vmd_morph_animation import convert_morph_animation
 from .vmd_morph_mapping import (
@@ -265,15 +273,7 @@ class VmdConverter:
     @staticmethod
     def _restore_import_timeline_state(current_time: Optional[float]) -> None:
         """Keep VMD import from leaving Maya visibly playing or scrubbed ahead."""
-        if current_time is not None:
-            try:
-                cmds.currentTime(current_time, edit=True)
-            except Exception:
-                pass
-        try:
-            cmds.play(state=False)
-        except Exception:
-            pass
+        restore_import_timeline_state(current_time)
 
     def vmd_frame_to_maya_time(self, frame_number: float) -> float:
         """Convert VMD's fixed 30fps frame number to the target Maya time unit."""
@@ -286,113 +286,26 @@ class VmdConverter:
     @staticmethod
     def _capture_anim_layer_selection() -> Dict[str, bool]:
         """VMD import 前の animLayer selected 状態を取得する。"""
-        try:
-            layers = cmds.ls(type="animLayer") or []
-        except Exception:
-            return {}
-
-        selection = {}
-        for layer in layers:
-            try:
-                selection[layer] = bool(cmds.animLayer(layer, query=True, selected=True))
-            except Exception:
-                pass
-        return selection
+        return capture_anim_layer_selection()
 
     @staticmethod
     def _restore_anim_layer_selection(selection: Optional[Dict[str, bool]]) -> None:
         """VMD import 中に変わった animLayer selected 状態を元に戻す。"""
-        if selection is None:
-            return
-        try:
-            layers = cmds.ls(type="animLayer") or []
-        except Exception:
-            return
-
-        for layer in layers:
-            try:
-                cmds.animLayer(layer, edit=True, selected=selection.get(layer, False))
-            except Exception:
-                pass
+        restore_anim_layer_selection(selection)
 
     def _clear_existing_motion(self, layer_name: str, target_namespace: Optional[str] = None) -> None:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
-        cleared = 0
-
-        for joint in set(self.bone_name_mapping.values()):
-            cleared += self._cut_keyable_attrs(
-                joint,
-                ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
-            )
-
-        for target_joint, info in self._collect_append_info().items():
-            append_node = info.get("node")
-            if append_node and (
-                self._node_matches_target_namespace(target_joint, target_namespace)
-                or self._node_matches_target_namespace(append_node, target_namespace)
-            ):
-                cleared += self._cut_keyable_attrs(
-                    append_node,
-                    (
-                        "baseTranslateX",
-                        "baseTranslateY",
-                        "baseTranslateZ",
-                        "baseRotateX",
-                        "baseRotateY",
-                        "baseRotateZ",
-                    ),
-                )
-
-        for ik_node in _ls_mmd_ccd_ik_nodes():
-            if self._node_matches_target_namespace(ik_node, target_namespace):
-                cleared += self._cut_keyable_attrs(ik_node, ("enabled", "inputRotate"))
-
-        morph_nodes = set()
-        for mapping_entry in self.morph_name_mapping.values():
-            for morph_node, weight_attr, _morph_name in self._iter_morph_mappings(mapping_entry):
-                if self._node_matches_target_namespace(morph_node, target_namespace):
-                    cleared += self._cut_keyable_attrs(morph_node, (weight_attr,))
-                    morph_nodes.add(morph_node)
-
-        if cmds.objExists(layer_name):
-            try:
-                cmds.delete(layer_name)
-                cleared += 1
-            except Exception as exc:
-                self.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
-
-        self.logger.info(
-            "Cleared existing VMD motion: keys_or_layers=%d joints=%d morph_nodes=%d",
-            cleared,
-            len(set(self.bone_name_mapping.values())),
-            len(morph_nodes),
-        )
+        clear_existing_motion(self, layer_name, target_namespace)
 
     @staticmethod
     def _node_matches_target_namespace(node: str, target_namespace: Optional[str]) -> bool:
         """target_namespace が指定されている場合、その namespace 内の node だけを対象にする。"""
-        if not target_namespace:
-            return True
-        short_name = node.split("|")[-1]
-        return short_name.startswith(f"{target_namespace}:")
+        return node_matches_target_namespace(node, target_namespace)
 
     @staticmethod
     def _cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
         """存在する attr の key を削除し、削除を試みた attr 数を返す。"""
-        if not node or not cmds.objExists(node):
-            return 0
-
-        cleared = 0
-        for attr in attrs:
-            attr_name = attr.split("[", 1)[0]
-            if not cmds.attributeQuery(attr_name, node=node, exists=True):
-                continue
-            try:
-                cmds.cutKey(node, attribute=attr)
-                cleared += 1
-            except Exception:
-                pass
-        return cleared
+        return cut_keyable_attrs(node, attrs)
 
     def _should_use_mmd_runtime_bake(
         self,
