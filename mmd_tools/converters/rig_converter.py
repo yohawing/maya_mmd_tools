@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 
 import maya.cmds as cmds
 
+from mmd_tools.config.bone_aliases import get_bone_aliases, get_original_bone_name_aliases
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
@@ -472,7 +473,7 @@ class RigConverter:
 
         # 全ての親
         # 既存の「全ての親」ボーンを日本語名でチェック
-        existing_master = self._find_joint_by_japanese_name(["全ての親", "マスター"])
+        existing_master = self._find_joint_by_japanese_name(get_original_bone_name_aliases("全ての親"))
         # 英語名でもチェック
         if not existing_master and maya_utils.object_exists("master"):
             existing_master = "master"
@@ -499,12 +500,12 @@ class RigConverter:
 
         # グルーブ
         # 既存のグルーブボーンを日本語名でチェック
-        existing_groove = self._find_joint_by_japanese_name(["グルーブ"])
+        existing_groove = self._find_joint_by_japanese_name(get_original_bone_name_aliases("グルーブ"))
         # 英語名でもチェック
         if not existing_groove and maya_utils.object_exists("groove"):
             existing_groove = "groove"
 
-        center_joint = self._find_joint_by_name(maya_joints, ["center", "センター", "centre"])
+        center_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("センター"))
 
         if not existing_groove and center_joint:
             # センターの位置を取得
@@ -527,13 +528,13 @@ class RigConverter:
 
         # 腰ボーン（下半身と足の間）
         # 既存の腰ボーンを日本語名でチェック
-        existing_waist = self._find_joint_by_japanese_name(["腰"])
+        existing_waist = self._find_joint_by_japanese_name(get_original_bone_name_aliases("腰"))
         # 英語名でもチェック
         if not existing_waist:
-            existing_waist = self._find_joint_by_name(maya_joints, ["waist", "腰", "koshi"])
+            existing_waist = self._find_joint_by_name(maya_joints, get_bone_aliases("腰"))
 
-        lower_body_joint = self._find_joint_by_name(maya_joints, ["lower_body", "下半身", "lowerbody"])
-        left_leg_joint = self._find_joint_by_name(maya_joints, ["left_leg", "左足", "leftleg", "left_thigh", "左もも"])
+        lower_body_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("下半身"))
+        left_leg_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("左足"))
 
         if not existing_waist and lower_body_joint and left_leg_joint:
             # 下半身と左足の中間位置を計算
@@ -555,7 +556,7 @@ class RigConverter:
             maya_utils.parent_objects(waist, lower_body_joint)
 
             # 左右の足を腰の子にする
-            right_leg_joint = self._find_joint_by_name(maya_joints, ["right_leg", "右足", "rightleg", "right_thigh", "右もも"])
+            right_leg_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("右足"))
 
             # 左足を腰の子にする（既に存在確認済み）
             maya_utils.parent_objects(left_leg_joint, waist)
