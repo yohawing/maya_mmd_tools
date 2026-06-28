@@ -38,6 +38,7 @@ from ..core.settings import settings
 from ..core.vmd_data import VmdData
 from .vmd_camera_animation import convert_camera_animation, parse_vmd_camera_interpolation, viewing_angle_to_focal_length
 from .vmd_light_animation import convert_light_animation
+from .vmd_morph_animation import convert_morph_animation
 
 # mmd-anim runtime (Phase 1+)
 try:
@@ -3453,43 +3454,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        if not morph_frames:
-            return False
-
-        success_count = 0
-        morph_frame_map: Dict[str, List] = {}
-
-        for frame in morph_frames:
-            morph_name = frame.morph_name if hasattr(frame, "morph_name") else frame.get("morph_name", "")
-            if morph_name not in morph_frame_map:
-                morph_frame_map[morph_name] = []
-            morph_frame_map[morph_name].append(frame)
-
-        for morph_name, frames in morph_frame_map.items():
-            mappings = self._iter_morph_mappings(self.morph_name_mapping.get(morph_name))
-            if not mappings:
-                continue
-
-            for morph_node, weight_attr, _ in mappings:
-                samples = []
-                for frame in frames:
-                    frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
-                    value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
-                    samples.append((self.vmd_frame_to_maya_time(frame_number), float(value)))
-                if not self._batch_key_scalar_channels(morph_node, {weight_attr: samples}):
-                    for frame in frames:
-                        frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
-                        value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
-                        cmds.setKeyframe(
-                            morph_node,
-                            attribute=weight_attr,
-                            time=self.vmd_frame_to_maya_time(frame_number),
-                            value=value,
-                        )
-
-            success_count += 1
-
-        return success_count > 0
+        return convert_morph_animation(self, morph_frames)
 
     @staticmethod
     def _iter_morph_mappings(mapping_entry):
