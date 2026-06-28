@@ -17,6 +17,7 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 
 import mmd_tools.converters.vmd_converter as vmd_converter_module
+from mmd_tools.converters.vmd_camera_animation import parse_vmd_camera_interpolation
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
@@ -300,6 +301,7 @@ class TestVmdConverter(MayaTestBase):
         )
 
         parsed = self.converter._parse_vmd_camera_interpolation(data)
+        self.assertEqual(parsed, parse_vmd_camera_interpolation(data))
 
         self.assertEqual(parsed["translate_x"], (1 / 127, 3 / 127, 2 / 127, 4 / 127))
         self.assertEqual(parsed["distance"], (17 / 127, 19 / 127, 18 / 127, 20 / 127))

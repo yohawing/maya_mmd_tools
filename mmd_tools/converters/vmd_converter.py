@@ -36,6 +36,7 @@ from ..core.logger import get_logger
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
 from ..core.vmd_data import VmdData
+from .vmd_camera_animation import parse_vmd_camera_interpolation, viewing_angle_to_focal_length
 
 # mmd-anim runtime (Phase 1+)
 try:
@@ -2899,32 +2900,7 @@ class VmdConverter:
     @staticmethod
     def _parse_vmd_camera_interpolation(interpolation_bytes):
         """VMD camera interpolation bytes をチャンネル別 Bezier 制御点へ変換する。"""
-        if not interpolation_bytes or len(interpolation_bytes) < 24:
-            return {}
-
-        data = bytes(interpolation_bytes[:24])
-
-        def _norm(value):
-            return max(0.0, min(127.0, float(value))) / 127.0
-
-        channels = (
-            "translate_x",
-            "translate_y",
-            "translate_z",
-            "rotation",
-            "distance",
-            "viewing_angle",
-        )
-        parsed = {}
-        for index, channel in enumerate(channels):
-            offset = index * 4
-            parsed[channel] = (
-                _norm(data[offset]),
-                _norm(data[offset + 2]),
-                _norm(data[offset + 1]),
-                _norm(data[offset + 3]),
-            )
-        return parsed
+        return parse_vmd_camera_interpolation(interpolation_bytes)
 
     @staticmethod
     def _is_linear_vmd_interp(points: Tuple[float, float, float, float]) -> bool:
@@ -3568,10 +3544,7 @@ class VmdConverter:
 
     def _viewing_angle_to_focal_length(self, camera_shape: str, viewing_angle: float) -> float:
         """VMD viewing_angle(deg) を Maya camera focalLength(mm) に変換する。"""
-        clamped_angle = max(1.0, min(179.0, float(viewing_angle)))
-        aperture_inch = cmds.getAttr(f"{camera_shape}.horizontalFilmAperture")
-        aperture_mm = float(aperture_inch) * 25.4
-        return aperture_mm / (2.0 * math.tan(math.radians(clamped_angle) / 2.0))
+        return viewing_angle_to_focal_length(camera_shape, viewing_angle)
 
     def _convert_light_animation(self, light_frames: List) -> bool:
         """照明アニメーションを変換
