@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 import maya.api.OpenMaya as om
+import maya.cmds as cmds
 
 
 def apply_runtime_channel_arrays_to_scene(
@@ -139,3 +140,39 @@ def apply_runtime_channel_arrays_to_scene(
     converter._bake_morph_weight_cache_from_runtime(morph_cache, pmx_morph_names)
 
     converter.logger.info(f"Applied runtime cache: keyed {len(baked_frames)} frames")
+
+
+def apply_runtime_channel_arrays_to_scene_with_undo_disabled(
+    converter,
+    joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
+    joint_channel_static: Dict[str, Dict[str, dict]],
+    bake_times: om.MTimeArray,
+    baked_frames: List[float],
+    morph_cache: List[Tuple[float, list]],
+    pmx_morph_names: List[str],
+) -> None:
+    """Apply runtime channels while suppressing Maya undo recording."""
+    undo_was_enabled = True
+    try:
+        undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
+    except Exception:
+        undo_was_enabled = True
+    try:
+        cmds.undoInfo(stateWithoutFlush=False)
+    except Exception:
+        pass
+    try:
+        converter._apply_runtime_channel_arrays_to_scene(
+            joint_channel_values,
+            joint_channel_static,
+            bake_times,
+            baked_frames,
+            morph_cache,
+            pmx_morph_names,
+        )
+    finally:
+        if undo_was_enabled:
+            try:
+                cmds.undoInfo(stateWithoutFlush=True)
+            except Exception:
+                pass

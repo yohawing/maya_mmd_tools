@@ -113,7 +113,10 @@ from .vmd_runtime_sampling import (
     runtime_batch_morph_weights_for_frame,
     runtime_batch_world_matrices_for_frame,
 )
-from .vmd_runtime_scene_apply import apply_runtime_channel_arrays_to_scene
+from .vmd_runtime_scene_apply import (
+    apply_runtime_channel_arrays_to_scene,
+    apply_runtime_channel_arrays_to_scene_with_undo_disabled,
+)
 from .vmd_runtime_sources import (
     resolve_pmx_path_from_scene,
     resolve_runtime_bake_sources,
@@ -589,30 +592,15 @@ class VmdConverter:
             # キャッシュから一括でキーフレーム登録（Maya Python API 2.0 優先）
             if baked_frames:
                 apply_start = time.perf_counter()
-                undo_was_enabled = True
-                try:
-                    undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
-                except Exception:
-                    undo_was_enabled = True
-                try:
-                    cmds.undoInfo(stateWithoutFlush=False)
-                except Exception:
-                    pass
-                try:
-                    self._apply_runtime_channel_arrays_to_scene(
-                        joint_channel_values,
-                        joint_channel_static,
-                        bake_times,
-                        baked_frames,
-                        morph_cache,
-                        pmx_morph_names,
-                    )
-                finally:
-                    if undo_was_enabled:
-                        try:
-                            cmds.undoInfo(stateWithoutFlush=True)
-                        except Exception:
-                            pass
+                apply_runtime_channel_arrays_to_scene_with_undo_disabled(
+                    self,
+                    joint_channel_values,
+                    joint_channel_static,
+                    bake_times,
+                    baked_frames,
+                    morph_cache,
+                    pmx_morph_names,
+                )
                 apply_elapsed = time.perf_counter() - apply_start
                 self.logger.info(
                     f"Runtime cache key application completed (elapsed={apply_elapsed:.3f}s)"
