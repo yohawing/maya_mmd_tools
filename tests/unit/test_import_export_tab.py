@@ -1,11 +1,15 @@
 """ImportExportTab の Maya 非依存 helper と model combo 更新を検証する。"""
 
+import json
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
+from mmd_tools.ui.import_export_view_state import ImportExportViewState  # noqa: E402
 from mmd_tools.ui.tabs import import_export_tab  # noqa: E402
 
 
@@ -35,11 +39,11 @@ class _FakeComboBox:
         return False
 
 
-class _FakeSettings:
+class _FakeViewState:
     def __init__(self, value):
         self._value = value
 
-    def value(self, _key, _default):
+    def get(self, _key, _default=None):
         return self._value
 
 
@@ -80,7 +84,7 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
     def _make_tab(self, current_index=0, saved_index=0):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         tab.target_model_combo = _FakeComboBox(current_index=current_index)
-        tab.qt_settings = _FakeSettings(saved_index)
+        tab.view_state = _FakeViewState(saved_index)
         tab.tr = lambda key, _category: f"<{key}>"
         return tab
 
@@ -195,6 +199,57 @@ class TestImportExportTabExportVisibility(unittest.TestCase):
 
         self.assertEqual(import_export_tab.settings.get("export.general.export_format"), "vmd")
         self.assertTrue(tab.export_group.visible)
+
+
+class _FakeQSettings:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def value(self, key, default=None):
+        return self.values.get(key, default)
+
+    def setValue(self, key, value):
+        self.values[key] = value
+
+
+class TestImportExportViewState(unittest.TestCase):
+    def test_load_history_filters_missing_paths_and_invalid_json(self):
+        with TemporaryDirectory() as temp_dir:
+            existing_path = str(Path(temp_dir) / "model.pmx")
+            missing_path = str(Path(temp_dir) / "missing.pmx")
+            Path(existing_path).write_text("", encoding="utf-8")
+            store = _FakeQSettings(
+                {
+                    "history": json.dumps([existing_path, missing_path, None, 123]),
+                    "invalid": "{",
+                }
+            )
+            view_state = ImportExportViewState(store)
+
+            self.assertEqual(view_state.load_history("history"), [existing_path])
+            self.assertEqual(view_state.load_history("invalid"), [])
+
+    def test_save_history_deduplicates_existing_file_paths(self):
+        with TemporaryDirectory() as temp_dir:
+            first_path = str(Path(temp_dir) / "first.pmx")
+            second_path = str(Path(temp_dir) / "second.pmx")
+            Path(first_path).write_text("", encoding="utf-8")
+            Path(second_path).write_text("", encoding="utf-8")
+            store = _FakeQSettings({"history": json.dumps([first_path, second_path])})
+            view_state = ImportExportViewState(store)
+
+            view_state.save_history("history", second_path)
+
+            self.assertEqual(view_state.load_history("history"), [second_path, first_path])
+
+    def test_clear_histories_writes_empty_json_arrays(self):
+        store = _FakeQSettings({"a": "[1]", "b": "[2]"})
+        view_state = ImportExportViewState(store)
+
+        view_state.clear_histories(("a", "b"))
+
+        self.assertEqual(store.values["a"], "[]")
+        self.assertEqual(store.values["b"], "[]")
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ from ..qt_compat import (
     QLineEdit,
     QPushButton,
     QCheckBox,
-    QSettings,
     QComboBox,
     QSpinBox,
     QDoubleSpinBox,
@@ -20,9 +19,9 @@ from ..qt_compat import (
     QColor,
 )
 from ..base_tab import BaseTab
+from ..import_export_view_state import ImportExportViewState
 from ...core.settings import settings
 import os
-import json
 
 
 def _format_target_model_label(model_root, display_name):
@@ -39,12 +38,11 @@ def _format_target_model_label(model_root, display_name):
 
 
 class ImportExportTab(BaseTab):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, view_state=None):
         super().__init__(parent)
         self.setObjectName("ImportExportTab")
 
-        # Initialize settings for file paths only
-        self.qt_settings = QSettings("maya_mmd_tools", "ImportExportTab")
+        self.view_state = view_state or ImportExportViewState()
 
         # メインレイアウト
         main_layout = QHBoxLayout(self)
@@ -90,23 +88,21 @@ class ImportExportTab(BaseTab):
 
         self.custom_namespace_check = QCheckBox(self.tr("custom_namespace", "checkboxes"))
         # カスタムnamespaceチェックボックスの状態を読み込み
-        saved_custom_namespace = self.qt_settings.value("custom_namespace_check", "false")
-        self.custom_namespace_check.setChecked(saved_custom_namespace.lower() == "true")
+        saved_custom_namespace = self.view_state.get("custom_namespace_check", "false")
+        self.custom_namespace_check.setChecked(str(saved_custom_namespace).lower() == "true")
         self.custom_namespace_check.setEnabled(self.use_namespace_check.isChecked())
         # 状態が変更されたら保存
-        self.custom_namespace_check.toggled.connect(
-            lambda checked: self.qt_settings.setValue("custom_namespace_check", str(checked))
-        )
+        self.custom_namespace_check.toggled.connect(lambda checked: self.view_state.set("custom_namespace_check", str(checked)))
         namespace_layout.addWidget(self.custom_namespace_check)
 
         self.namespace_edit = QLineEdit()
         self.namespace_edit.setPlaceholderText(self.tr("namespace_placeholder", "labels"))
         # namespace名を読み込み
-        saved_namespace = self.qt_settings.value("custom_namespace_name", "")
+        saved_namespace = self.view_state.get("custom_namespace_name", "")
         self.namespace_edit.setText(saved_namespace)
         self.namespace_edit.setEnabled(self.custom_namespace_check.isChecked())
         # テキストが変更されたら保存
-        self.namespace_edit.textChanged.connect(lambda text: self.qt_settings.setValue("custom_namespace_name", text))
+        self.namespace_edit.textChanged.connect(lambda text: self.view_state.set("custom_namespace_name", text))
         namespace_layout.addWidget(self.namespace_edit)
 
         # シグナル接続
@@ -437,7 +433,7 @@ class ImportExportTab(BaseTab):
 
         # File path row
         self.import_path_edit = QLineEdit()
-        saved_import_path = self.qt_settings.value("import_path", "")
+        saved_import_path = self.view_state.get("import_path", "")
         self.import_path_edit.setText(saved_import_path)
         self.import_path_button = QPushButton(self.tr("browse", "buttons"))
         import_path_layout = QHBoxLayout()
@@ -447,17 +443,17 @@ class ImportExportTab(BaseTab):
         model_import_layout.addRow(self.import_path_label, import_path_layout)
 
         # Connect signal to save path when changed
-        self.import_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("import_path", text))
+        self.import_path_edit.textChanged.connect(lambda text: self.view_state.set("import_path", text))
 
         # Import button with new file checkbox
         import_button_layout = QHBoxLayout()
         self.import_button = QPushButton(self.tr("import_model", "actions"))
         self.new_file_check = QCheckBox(self.tr("new_file", "checkboxes"))
         # NewFileチェックボックスの状態を読み込み
-        saved_new_file = self.qt_settings.value("new_file_check", "false")
-        self.new_file_check.setChecked(saved_new_file.lower() == "true")
+        saved_new_file = self.view_state.get("new_file_check", "false")
+        self.new_file_check.setChecked(str(saved_new_file).lower() == "true")
         # 状態が変更されたら保存
-        self.new_file_check.toggled.connect(lambda checked: self.qt_settings.setValue("new_file_check", str(checked)))
+        self.new_file_check.toggled.connect(lambda checked: self.view_state.set("new_file_check", str(checked)))
         import_button_layout.addWidget(self.import_button)
         self.fix_texture_path_button = QPushButton(self.tr("fix_texture_path", "texture_issues"))
         import_button_layout.addWidget(self.fix_texture_path_button)
@@ -474,7 +470,7 @@ class ImportExportTab(BaseTab):
 
         # VMD file path
         self.vmd_path_edit = QLineEdit()
-        saved_vmd_path = self.qt_settings.value("vmd_path", "")
+        saved_vmd_path = self.view_state.get("vmd_path", "")
         self.vmd_path_edit.setText(saved_vmd_path)
         self.vmd_path_button = QPushButton(self.tr("browse", "buttons"))
         vmd_path_layout = QHBoxLayout()
@@ -483,7 +479,7 @@ class ImportExportTab(BaseTab):
         self.vmd_file_label = QLabel(self.tr("vmd_file", "fields"))
         animation_layout.addRow(self.vmd_file_label, vmd_path_layout)
 
-        self.vmd_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("vmd_path", text))
+        self.vmd_path_edit.textChanged.connect(lambda text: self.view_state.set("vmd_path", text))
 
         # Target model selection
         self.target_model_combo = QComboBox()
@@ -491,7 +487,7 @@ class ImportExportTab(BaseTab):
         self.refresh_model_list(restore_selection=True)
         # 選択が変更されたら保存
         self.target_model_combo.currentIndexChanged.connect(
-            lambda index: self.qt_settings.setValue("target_model_index", str(index))
+            lambda index: self.view_state.set("target_model_index", str(index))
         )
         self.target_model_label = QLabel(self.tr("target_model", "fields"))
         animation_layout.addRow(self.target_model_label, self.target_model_combo)
@@ -507,7 +503,7 @@ class ImportExportTab(BaseTab):
         export_layout = QFormLayout()
 
         self.export_path_edit = QLineEdit()
-        saved_export_path = self.qt_settings.value("export_path", "")
+        saved_export_path = self.view_state.get("export_path", "")
         self.export_path_edit.setText(saved_export_path)
         self.export_path_button = QPushButton(self.tr("browse", "buttons"))
         export_path_layout = QHBoxLayout()
@@ -516,7 +512,7 @@ class ImportExportTab(BaseTab):
         self.export_path_label = QLabel(self.tr("file_path", "labels"))
         export_layout.addRow(self.export_path_label, export_path_layout)
 
-        self.export_path_edit.textChanged.connect(lambda text: self.qt_settings.setValue("export_path", text))
+        self.export_path_edit.textChanged.connect(lambda text: self.view_state.set("export_path", text))
 
         self.export_button = QPushButton(self.tr("export", "buttons"))
         export_layout.addRow(self.export_button)
@@ -596,7 +592,7 @@ class ImportExportTab(BaseTab):
         current_index = self.target_model_combo.currentIndex() if not restore_selection else -1
         saved_index = None
         if restore_selection:
-            saved_target_model = self.qt_settings.value("target_model_index", 0)
+            saved_target_model = self.view_state.get("target_model_index", 0)
             try:
                 saved_index = int(saved_target_model)
             except Exception:
@@ -765,37 +761,11 @@ class ImportExportTab(BaseTab):
 
     def _load_history(self, key, max_items=10):
         """履歴を読み込み"""
-        history_json = self.qt_settings.value(key, "[]")
-        try:
-            history = json.loads(history_json)
-            # 存在するファイルのみフィルタリング
-            valid_history = []
-            for path in history:
-                if os.path.exists(path):
-                    valid_history.append(path)
-            return valid_history[:max_items]
-        except Exception:
-            return []
+        return self.view_state.load_history(key, max_items)
 
     def _save_history(self, key, new_path, max_items=10):
         """履歴を保存"""
-        if not new_path or not os.path.exists(new_path):
-            return
-
-        history = self._load_history(key, max_items)
-
-        # 既存のパスを削除
-        if new_path in history:
-            history.remove(new_path)
-
-        # 先頭に追加
-        history.insert(0, new_path)
-
-        # 最大数を制限
-        history = history[:max_items]
-
-        # JSONとして保存
-        self.qt_settings.setValue(key, json.dumps(history))
+        self.view_state.save_history(key, new_path, max_items)
 
     def _setup_unified_history_area(self, layout):
         """統合履歴表示エリアを設定"""
@@ -836,9 +806,7 @@ class ImportExportTab(BaseTab):
 
     def _clear_all_history(self):
         """すべての履歴をクリア"""
-        self.qt_settings.setValue("import_path_history", "[]")
-        self.qt_settings.setValue("vmd_path_history", "[]")
-        self.qt_settings.setValue("export_path_history", "[]")
+        self.view_state.clear_histories(("import_path_history", "vmd_path_history", "export_path_history"))
         self.refresh_unified_history()
 
     def refresh_unified_history(self):
