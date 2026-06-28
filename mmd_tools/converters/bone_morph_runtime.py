@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -10,6 +9,10 @@ from maya import cmds
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
 from mmd_tools.core.logger import get_logger
+from mmd_tools.converters.morph_runtime_common import (
+    get_morph_order,
+    parse_morph_offsets_json,
+)
 
 
 logger = get_logger(__name__)
@@ -242,34 +245,15 @@ def _collect_morph_nodes_by_index(morph_nodes: Iterable[str]) -> Dict[int, str]:
 
 
 def _parse_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
-    try:
-        raw = cmds.getAttr(f"{morph_node}.mmd_bone_morph_offsets_json") or "[]"
-        offsets = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(offsets, list):
-        return None
-    return offsets
+    return parse_morph_offsets_json(morph_node, "mmd_bone_morph_offsets_json")
 
 
 def _parse_group_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
-    try:
-        raw = cmds.getAttr(f"{morph_node}.mmd_group_morph_offsets_json") or "[]"
-        offsets = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(offsets, list):
-        return None
-    return offsets
+    return parse_morph_offsets_json(morph_node, "mmd_group_morph_offsets_json")
 
 
 def _get_morph_order(morph_node: str) -> int:
-    if cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
-        try:
-            return int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
-        except Exception:
-            pass
-    return 0
+    return get_morph_order(morph_node)
 
 
 def _offset_to_contribution(
