@@ -19,7 +19,7 @@ class MayaScriptEditorHandler(logging.Handler):
     - WARNING     → MGlobal.displayWarning
     - ERROR/CRITICAL → MGlobal.displayError
 
-    ``maya.OpenMaya`` が import できない環境（非Maya）では silent に返るため
+    ``maya.api.OpenMaya`` が import できない環境（非Maya）では silent に返るため
     クラッシュしない。emit 失敗時は標準の handleError() に委ねる。
     """
 
@@ -27,7 +27,7 @@ class MayaScriptEditorHandler(logging.Handler):
         try:
             msg = self.format(record)
             try:
-                import maya.OpenMaya as _om  # noqa: PLC0415
+                import maya.api.OpenMaya as _om  # noqa: PLC0415
                 MGlobal = _om.MGlobal
             except ImportError:
                 return

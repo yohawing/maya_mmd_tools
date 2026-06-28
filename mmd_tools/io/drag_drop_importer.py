@@ -12,7 +12,7 @@ from typing import Callable, Iterable, List, Optional
 from urllib.parse import unquote, urlparse
 
 from maya import cmds
-import maya.OpenMaya as om1
+import maya.api.OpenMaya as om
 
 from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN
 from mmd_tools.core.logger import get_logger
@@ -30,21 +30,21 @@ _DROP_FILTER = None
 
 def _display_info(message: str) -> None:
     try:
-        om1.MGlobal.displayInfo(message)
+        om.MGlobal.displayInfo(message)
     except Exception:
         logger.info(message)
 
 
 def _display_warning(message: str) -> None:
     try:
-        om1.MGlobal.displayWarning(message)
+        om.MGlobal.displayWarning(message)
     except Exception:
         logger.warning(message)
 
 
 def _display_error(message: str) -> None:
     try:
-        om1.MGlobal.displayError(message)
+        om.MGlobal.displayError(message)
     except Exception:
         logger.error(message)
 
