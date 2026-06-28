@@ -39,6 +39,18 @@ from ..core.vmd_data import VmdData
 from .vmd_camera_animation import convert_camera_animation, parse_vmd_camera_interpolation, viewing_angle_to_focal_length
 from .vmd_light_animation import convert_light_animation
 from .vmd_morph_animation import convert_morph_animation
+from .vmd_runtime_rig_helper import (
+    _ls_mmd_append_nodes,
+    _ls_mmd_ccd_ik_nodes,
+    disable_mmd_rig_constraints_for_runtime_bake,
+    disconnect_node_output_connections,
+    has_live_mmd_rig_for_runtime_target,
+    native_ik_handle_targets_mapped_joint,
+    node_has_mapped_destination,
+    node_name_in_set,
+    restore_joints_to_bind_pose_for_runtime_bake,
+    runtime_bake_mapped_joint_names,
+)
 
 # mmd-anim runtime (Phase 1+)
 try:
@@ -58,41 +70,6 @@ except Exception:
     MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = None  # type: ignore
     compute_maya_local_channels = None  # type: ignore
     compute_maya_local_channels_batch = None  # type: ignore
-
-
-MMD_APPEND_NODE_TYPES = ("mmdAppend", "mmdAppendNode")
-MMD_CCD_IK_NODE_TYPES = ("mmdCcdIk", "mmdCcdIkNode")
-
-
-def _ls_nodes_of_types(node_types: Tuple[str, ...]) -> List[str]:
-    """List Maya nodes for all available type names, ignoring unavailable types."""
-    nodes: List[str] = []
-    seen = set()
-    try:
-        available_types = set(cmds.allNodeTypes() or [])
-    except Exception:
-        available_types = set()
-    for node_type in node_types:
-        if available_types and node_type not in available_types:
-            continue
-        try:
-            typed_nodes = cmds.ls(type=node_type) or []
-        except Exception:
-            typed_nodes = []
-        for node in typed_nodes:
-            if node not in seen:
-                nodes.append(node)
-                seen.add(node)
-    return nodes
-
-
-def _ls_mmd_append_nodes() -> List[str]:
-    return _ls_nodes_of_types(MMD_APPEND_NODE_TYPES)
-
-
-def _ls_mmd_ccd_ik_nodes() -> List[str]:
-    return _ls_nodes_of_types(MMD_CCD_IK_NODE_TYPES)
-
 
 
 class VmdConverter:
@@ -2342,58 +2319,7 @@ class VmdConverter:
 
     def _disable_mmd_rig_constraints_for_runtime_bake(self):
         """runtime bake と二重評価になる PMX 付与constraint/IK solverを無効化する。"""
-        mapped_joints = self._runtime_bake_mapped_joint_names()
-        disconnected = 0
-        ik_nodes_for_runtime = set()
-        for node in _ls_mmd_append_nodes():
-            if not self._node_has_mapped_destination(
-                node,
-                ("outputRotate", "outputTranslate"),
-                mapped_joints,
-            ):
-                continue
-            disconnected += self._disconnect_node_output_connections(
-                node,
-                ("outputRotate", "outputTranslate"),
-            )
-        for node in _ls_mmd_ccd_ik_nodes():
-            if not self._node_has_mapped_destination(node, ("outputRotate",), mapped_joints):
-                continue
-            ik_nodes_for_runtime.add(node)
-            disconnected += self._disconnect_node_output_connections(node, ("outputRotate",))
-        if disconnected:
-            self.logger.info(f"Disconnected {disconnected} live rig output connections for runtime bake")
-
-        constraints = cmds.ls("*.mmd_grant_constraint", objectsOnly=True) or []
-        disabled = 0
-        for constraint in constraints:
-            if not self._node_has_mapped_destination(constraint, None, mapped_joints):
-                continue
-            try:
-                if cmds.attributeQuery("nodeState", node=constraint, exists=True):
-                    cmds.setAttr(f"{constraint}.nodeState", 2)
-                    disabled += 1
-                elif cmds.attributeQuery("envelope", node=constraint, exists=True):
-                    cmds.setAttr(f"{constraint}.envelope", 0)
-                    disabled += 1
-            except Exception as e:
-                self.logger.debug(f"failed to disable MMD grant constraint {constraint}: {e}")
-
-        if disabled:
-            self.logger.info(f"Disabled {disabled} MMD append constraints for runtime bake")
-
-        ik_disabled = 0
-        for node in ik_nodes_for_runtime:
-            try:
-                for plug in cmds.listConnections(f"{node}.enabled", s=True, d=False, p=True) or []:
-                    cmds.disconnectAttr(plug, f"{node}.enabled")
-                cmds.setAttr(f"{node}.enabled", False)
-                ik_disabled += 1
-            except Exception as e:
-                self.logger.debug(f"failed to disable mmdCcdIk solver {node}: {e}")
-
-        if ik_disabled:
-            self.logger.info(f"Turned off {ik_disabled} mmdCcdIk solvers for runtime bake")
+        disable_mmd_rig_constraints_for_runtime_bake(self)
 
     def _has_live_mmd_rig_for_runtime_target(self) -> bool:
         """現在の変換対象にlive MMD rig出力が接続されているかを返す。
@@ -2402,85 +2328,18 @@ class VmdConverter:
         runtime bake は final pose を joint に直焼きする Bake mode 用の経路なので、
         対象jointへlive rig出力がある場合は選ばない。
         """
-        def _output_rotate_connected_to_joint(node: str) -> bool:
-            try:
-                destinations = cmds.listConnections(f"{node}.outputRotate", s=False, d=True, p=True) or []
-            except Exception as e:
-                self.logger.debug(f"failed to inspect {node}.outputRotate connections: {e}")
-                return False
-
-            for destination in destinations:
-                destination_node, _, destination_attr = destination.rpartition(".")
-                if not destination_node or destination_attr not in {
-                    "rotate",
-                    "rotateX",
-                    "rotateY",
-                    "rotateZ",
-                }:
-                    continue
-                try:
-                    if cmds.nodeType(destination_node) == "joint":
-                        return True
-                except Exception as e:
-                    self.logger.debug(f"failed to inspect destination node type {destination_node}: {e}")
-            return False
-
-        for node in _ls_mmd_ccd_ik_nodes() + _ls_mmd_append_nodes():
-            if _output_rotate_connected_to_joint(node):
-                return True
-
-        return False
+        return has_live_mmd_rig_for_runtime_target(self.logger)
 
     @classmethod
     def _native_ik_handle_targets_mapped_joint(cls, handle: str, mapped_joints: set[str]) -> bool:
-        if cls._node_has_mapped_destination(handle, None, mapped_joints):
-            return True
-        for joint in cls._native_ik_handle_link_joints(handle):
-            if cls._node_name_in_set(joint, mapped_joints):
-                return True
-        return False
+        return native_ik_handle_targets_mapped_joint(handle, mapped_joints, cls._native_ik_handle_link_joints)
 
     def _restore_joints_to_bind_pose_for_runtime_bake(self) -> None:
         """live rig出力切断後に残った値を消し、runtime bake用のbind姿勢へ戻す。"""
-        restored = 0
-        for vmd_bone_name, joint in self.bone_name_mapping.items():
-            if not cmds.objExists(joint):
-                continue
-
-            for attr in self._runtime_joint_attrs():
-                plug = f"{joint}.{attr}"
-                for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
-                    try:
-                        cmds.disconnectAttr(source, plug)
-                    except Exception:
-                        pass
-
-            bind_translate = self._bone_bind_poses.get(vmd_bone_name)
-            try:
-                if bind_translate is not None:
-                    cmds.setAttr(
-                        f"{joint}.translate",
-                        float(bind_translate[0]),
-                        float(bind_translate[1]),
-                        float(bind_translate[2]),
-                    )
-                cmds.setAttr(f"{joint}.rotate", 0.0, 0.0, 0.0)
-                restored += 1
-            except Exception as e:
-                self.logger.debug(f"failed to restore bind pose for runtime bake {joint}: {e}")
-
-        if restored:
-            self.logger.info(f"Restored {restored} joints to bind pose for runtime bake")
+        restore_joints_to_bind_pose_for_runtime_bake(self)
 
     def _runtime_bake_mapped_joint_names(self) -> set[str]:
-        joints: set[str] = set()
-        for joint in self.bone_name_mapping.values():
-            if not joint or not cmds.objExists(joint):
-                continue
-            joints.add(joint)
-            for long_name in cmds.ls(joint, long=True) or []:
-                joints.add(long_name)
-        return joints
+        return runtime_bake_mapped_joint_names(self.bone_name_mapping)
 
     @classmethod
     def _node_has_mapped_destination(
@@ -2489,37 +2348,15 @@ class VmdConverter:
         attrs: Tuple[str, ...] | None,
         mapped_joints: set[str],
     ) -> bool:
-        plugs = [f"{node}.{attr}" for attr in attrs] if attrs else [node]
-        for plug in plugs:
-            for destination in cmds.listConnections(plug, s=False, d=True, p=True) or []:
-                destination_node = destination.split(".", 1)[0]
-                if cls._node_name_in_set(destination_node, mapped_joints):
-                    return True
-        return False
+        return node_has_mapped_destination(node, attrs, mapped_joints)
 
     @staticmethod
     def _node_name_in_set(node: str, names: set[str]) -> bool:
-        if node in names:
-            return True
-        return any(long_name in names for long_name in cmds.ls(node, long=True) or [])
+        return node_name_in_set(node, names)
 
     @staticmethod
     def _disconnect_node_output_connections(node: str, attrs: Tuple[str, ...]) -> int:
-        disconnected = 0
-        for attr in attrs:
-            output_plug = f"{node}.{attr}"
-            destinations = cmds.listConnections(output_plug, s=False, d=True, p=True) or []
-            for destination in destinations:
-                sources = cmds.listConnections(destination, s=True, d=False, p=True) or []
-                for source in sources:
-                    if not source.startswith(output_plug):
-                        continue
-                    try:
-                        cmds.disconnectAttr(source, destination)
-                        disconnected += 1
-                    except Exception:
-                        pass
-        return disconnected
+        return disconnect_node_output_connections(node, attrs)
 
 
     def _add_objects_to_layer(self, objects: List[str]):
