@@ -70,6 +70,7 @@ from .vmd_legacy_bone_routes import (
     native_ik_handle_link_joints,
 )
 from .vmd_light_animation import convert_light_animation, get_or_create_light
+from .vmd_motion_kind import detect_vmd_motion_kind
 from .vmd_morph_animation import convert_morph_animation
 from .vmd_morph_mapping import (
     build_morph_mappings,
@@ -1378,19 +1379,7 @@ class VmdConverter:
 
     def _detect_vmd_motion_kind(self, vmd_data: VmdData) -> str:
         """VMD内容から大まかなモーション種別を判定する。"""
-        has_model = bool(getattr(vmd_data, "bone_frames", [])) or bool(getattr(vmd_data, "morph_frames", []))
-        has_camera = bool(getattr(vmd_data, "camera_frames", []))
-        has_light = bool(getattr(vmd_data, "light_frames", []))
-
-        if has_model and (has_camera or has_light):
-            return "mixed"
-        if has_camera:
-            return "camera"
-        if has_light:
-            return "light"
-        if has_model:
-            return "model"
-        return "empty"
+        return detect_vmd_motion_kind(vmd_data)
 
     def _viewing_angle_to_focal_length(self, camera_shape: str, viewing_angle: float) -> float:
         """VMD viewing_angle(deg) を Maya camera focalLength(mm) に変換する。"""
