@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mmd_tools.tools.pmx_dumper import PmxDumper
 from mmd_tools.tools.vmd_dumper import VmdDumper
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.vmd_data import VmdData
 
 
@@ -90,8 +90,7 @@ def main():
     try:
         if file_type == "pmx":
             # PMXファイルを処理
-            pmx_parser = PmxData()
-            pmx_parser.parse_file(args.mmd_file)
+            pmx_parser = parse_pmx_file(args.mmd_file)
             dumper = PmxDumper(pmx_parser)
 
             # セクションの検証

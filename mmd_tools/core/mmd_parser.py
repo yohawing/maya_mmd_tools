@@ -54,6 +54,42 @@ def _try_native_pmx_parse(
     return result
 
 
+def parse_pmx_file(
+    file_path: str,
+    use_native_pmx_parse: Optional[bool] = None,
+    require_native_pmx_parse: bool = False,
+) -> PmxData:
+    """Parse a PMX file for tools that need structured PMX data.
+
+    This keeps PMX inspection/roundtrip tooling off the generic import parser
+    dispatch path. Callers that implement import policy should pass
+    ``require_native_pmx_parse=True`` explicitly.
+    """
+    if not os.path.exists(file_path):
+        logger.error(f"PMX file not found: {file_path}")
+        raise FileNotFoundError(f"PMX file not found: {file_path}")
+
+    with open(file_path, "rb") as f:
+        magic_bytes = f.read(4)
+    if not magic_bytes.startswith(b"PMX"):
+        logger.error(f"Unsupported PMX file format: {file_path}")
+        raise MMDParseException(f"Unsupported PMX file format: {file_path}")
+
+    native_result = _try_native_pmx_parse(
+        file_path,
+        use_native_pmx_parse,
+        require_native_pmx_parse=require_native_pmx_parse,
+    )
+    if native_result is not None:
+        logger.info("PMX file parsing completed (native)")
+        return native_result
+
+    parser = PmxData()
+    parser.parse_file(file_path)
+    logger.info("PMX file parsing completed")
+    return parser
+
+
 def parse_mmd_file(
     file_path,
     use_native_pmx_parse: Optional[bool] = None,
@@ -106,18 +142,11 @@ def parse_mmd_file(
             return parser
         elif magic_bytes.startswith(b"PMX"):
             logger.info("Starting parse as PMX file")
-            native_result = _try_native_pmx_parse(
+            return parse_pmx_file(
                 file_path,
                 use_native_pmx_parse,
                 require_native_pmx_parse=require_native_pmx_parse,
             )
-            if native_result is not None:
-                logger.info("PMX file parsing completed (native)")
-                return native_result
-            parser = PmxData()
-            parser.parse_file(file_path)
-            logger.info("PMX file parsing completed")
-            return parser
         elif f.read(30).startswith(b"Vocaloid Motion Data"):  # VMD magic is longer
             f.seek(0)  # Reset file pointer again
             logger.info("Starting parse as VMD file")

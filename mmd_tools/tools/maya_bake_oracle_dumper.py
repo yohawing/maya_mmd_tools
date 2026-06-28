@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_BONE_NAME
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.vmd_data import VmdData
 
 
@@ -272,8 +272,7 @@ def dump_maya_bake_oracle(
 
     cmds.file(new=True, force=True)
 
-    pmx_data = PmxData()
-    pmx_data.parse_file(str(pmx_path))
+    pmx_data = parse_pmx_file(str(pmx_path))
     pmx_morph_names = [getattr(m, "name", "") for m in getattr(pmx_data, "morphs", [])]
     target_model = import_pmx_file(
         pmx_data,

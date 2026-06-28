@@ -76,6 +76,24 @@ class TestPmxParser(TestBase):
             )
         self.assertIsInstance(parsed_data, PmxData)
 
+    def test_parse_pmx_file_uses_pmx_specific_entry_point(self):
+        """PMX専用入口は import parser dispatch なしで構造化PMXを返す。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            parsed_data = mmd_parser.parse_pmx_file(
+                self.pmx_file_path,
+                require_native_pmx_parse=False,
+            )
+        self.assertIsInstance(parsed_data, PmxData)
+
+    def test_parse_pmx_file_rejects_non_pmx_magic(self):
+        """PMX専用入口は PMX 以外の magic を受け付けない。"""
+        invalid_path = os.path.join(self.temp_dir, "not_pmx.vmd")
+        with open(invalid_path, "wb") as f:
+            f.write(b"Vocaloid Motion Data file")
+
+        with self.assertRaises(mmd_parser.MMDParseException):
+            mmd_parser.parse_pmx_file(invalid_path)
+
     def test_native_pmx_parse_env_flag(self):
         """native PMX parse は通常有効で、環境変数で明示的に切り替えられる。"""
         with patch.dict(os.environ, {}, clear=True):

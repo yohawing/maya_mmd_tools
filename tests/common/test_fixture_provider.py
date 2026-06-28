@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from typing import List, Dict
 
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.pmd_data import PmdData
 
@@ -245,8 +245,7 @@ class TestFixtureProvider:
         if cache_key not in self._data_cache:
             # 実際のパーサーを使用してデータをロード
 
-            pmx_parser = PmxData()
-            pmx_data = pmx_parser.parse_file(file_path)
+            pmx_data = parse_pmx_file(file_path)
             self._data_cache[cache_key] = (pmx_data, file_path)
 
         return self._data_cache[cache_key]

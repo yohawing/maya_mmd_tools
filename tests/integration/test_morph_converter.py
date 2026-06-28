@@ -3,7 +3,7 @@ import os
 
 from maya import cmds
 
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils
@@ -657,8 +657,11 @@ class TestMorphConverter(MayaTestBase):
             },
         )
 
-        pmx = PmxData()
-        pmx.parse_file(out_pmx)
+        pmx = parse_pmx_file(
+            out_pmx,
+            use_native_pmx_parse=False,
+            require_native_pmx_parse=False,
+        )
         self.assertEqual(len(pmx.morphs), 2)
         self.assertTrue(any(int(m.morph_type) == 2 for m in pmx.morphs))
         self.assertTrue(any(int(m.morph_type) == 8 for m in pmx.morphs))

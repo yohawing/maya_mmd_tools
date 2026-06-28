@@ -2,7 +2,7 @@ import json
 
 from maya import cmds
 
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import mesh_converter as mesh_converter_module
@@ -72,8 +72,7 @@ class TestMeshConverter(MayaTestBase):
         pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
-        pmx_data = PmxData()
-        pmx_data = pmx_data.parse_file(pmx_file_path)
+        pmx_data = parse_pmx_file(pmx_file_path)
 
         # モデル名を取得
         model_name = pmx_data.header.model_name
@@ -125,8 +124,7 @@ class TestMeshConverter(MayaTestBase):
         pmx_file_path = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
-        pmx_data = PmxData()
-        pmx_data = pmx_data.parse_file(pmx_file_path)
+        pmx_data = parse_pmx_file(pmx_file_path)
 
         # ルートグループを作成
         root_group = cmds.group(empty=True, name="test_pmx_root")

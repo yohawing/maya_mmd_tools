@@ -21,9 +21,18 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.core.pmd_data import PmdData
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from tests.common.maya_test_base import MayaTestBase
+
+
+def _parse_pmx(path):
+    """Read exporter output with the legacy PMX reader for writer roundtrip checks."""
+    return parse_pmx_file(
+        path,
+        use_native_pmx_parse=False,
+        require_native_pmx_parse=False,
+    )
 
 
 class TestPmxExporter(MayaTestBase):
@@ -311,8 +320,7 @@ class TestPmxExporter(MayaTestBase):
         output_path = self.get_temp_filename("basis_triangle.pmx")
         PmxExporter().export_pmx_model(output_path, maya_data)
 
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual(pmx.faces[0].indices, (2, 1, 0))
         self.assertAlmostEqual(pmx.vertices[0].position[2], -2.0)
@@ -332,8 +340,7 @@ class TestPmxExporter(MayaTestBase):
 
         self.assertTrue(os.path.exists(output_path), "PMX file was not written")
 
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         # Vertex / face counts
         self.assertEqual(len(pmx.vertices), 3)
@@ -364,8 +371,7 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual(result.exported_path, output_path)
         self.assertTrue(os.path.exists(output_path), "PMX file was not written")
 
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
         self.assertEqual(len(pmx.vertices), 3)
         self.assertEqual(len(pmx.faces), 1)
         self.assertEqual(pmx.materials[0].name, shader)
@@ -411,8 +417,7 @@ class TestPmxExporter(MayaTestBase):
         )
 
         self.assertTrue(result.succeeded)
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual(pmx.header.model_name, "MergedExport")
         self.assertEqual(len(pmx.vertices), 6)
@@ -457,8 +462,7 @@ class TestPmxExporter(MayaTestBase):
         )
 
         self.assertTrue(result.succeeded)
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual(len(pmx.morphs), 3)
         vertex_morph = next(m for m in pmx.morphs if m.name == "頂点にこり")
@@ -485,8 +489,7 @@ class TestPmxExporter(MayaTestBase):
         )
 
         self.assertTrue(result.succeeded)
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual([rb.name for rb in pmx.rigid_bodies], ["physics_rb_a", "physics_rb_b"])
         self.assertEqual([rb.related_bone_index for rb in pmx.rigid_bodies], [0, 0])
@@ -509,8 +512,7 @@ class TestPmxExporter(MayaTestBase):
         )
 
         self.assertTrue(result.succeeded)
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual([bone.name for bone in pmx.bones], ["センター", "上半身"])
         self.assertEqual([bone.parent_bone_index for bone in pmx.bones], [-1, 0])
@@ -569,8 +571,7 @@ class TestPmxExporter(MayaTestBase):
         exporter = PmxExporter()
         exporter.export_pmx_model(output_path, maya_data)
 
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual(len(pmx.faces), 2)  # 2 triangles after fan-triangulation
         self.assertEqual(pmx.materials[0].face_count, 6)
@@ -614,8 +615,7 @@ class TestPmxExporter(MayaTestBase):
 
         self.assertTrue(os.path.exists(output_path), "PMX file was not written")
 
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual(len(pmx.materials), 2)
         pmx_mat_names = {m.name for m in pmx.materials}

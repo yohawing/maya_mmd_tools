@@ -7,6 +7,7 @@ import sys
 from typing import List, Optional, TextIO
 
 from mmd_tools.core import utils
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data import PmxData
 
 
@@ -411,8 +412,7 @@ def main():
 
     try:
         # PMXファイルを解析
-        pmx_parser = PmxData()
-        pmx_parser.parse_file(args.pmx_file)
+        pmx_parser = parse_pmx_file(args.pmx_file)
 
         # ダンパーを作成
         dumper = PmxDumper(pmx_parser)

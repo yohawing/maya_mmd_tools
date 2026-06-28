@@ -18,7 +18,7 @@ from mmd_tools.core.native.mmd_anim_runtime import (
     MmdRuntimeModel,
     is_mmd_runtime_available,
 )
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.pmx_importer import import_pmx_file
 from tests.common.maya_test_base import MayaTestBase
@@ -101,8 +101,7 @@ class TestBoneMorphOracle(MayaTestBase):
 
         oracle = _get_runtime_oracle(PMX_FILE, VMD_FILE, FRAMES)
 
-        pmx_data = PmxData()
-        pmx_data.parse_file(PMX_FILE)
+        pmx_data = parse_pmx_file(PMX_FILE)
         root = import_pmx_file(pmx_data, PMX_FILE, scale=1.0)
         self.assertTrue(root, "PMX import failed")
 

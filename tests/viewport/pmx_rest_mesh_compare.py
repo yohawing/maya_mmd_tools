@@ -59,9 +59,9 @@ def _import_pmx(pmx_path: Path, setup_rig: bool, setup_bone_orientation: bool) -
 
 
 def _pmx_positions(pmx_path: Path) -> list[tuple[float, float, float]]:
-    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.mmd_parser import parse_pmx_file
 
-    pmx = PmxData().parse_file(str(pmx_path))
+    pmx = parse_pmx_file(str(pmx_path))
     return [(v.position[0], v.position[1], -v.position[2]) for v in pmx.vertices]
 
 

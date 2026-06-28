@@ -9,7 +9,7 @@ import unittest
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.tools.pmx_dumper import PmxDumper
 from tests.common.pmx_mock import PmxMock
 
@@ -28,8 +28,7 @@ class TestPmxDumper(unittest.TestCase):
             self.test_pmx_path = f.name
 
         # PMXファイルを読み込む
-        self.pmx_parser = PmxData()
-        self.pmx_parser.parse_file(self.test_pmx_path)
+        self.pmx_parser = parse_pmx_file(self.test_pmx_path)
         self.dumper = PmxDumper(self.pmx_parser)
 
     def tearDown(self):
