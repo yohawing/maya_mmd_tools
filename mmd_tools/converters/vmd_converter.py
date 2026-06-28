@@ -73,6 +73,12 @@ from .vmd_runtime_sampling import (
     runtime_batch_morph_weights_for_frame,
     runtime_batch_world_matrices_for_frame,
 )
+from .vmd_scene_keying import (
+    batch_create_and_key_curve_arrays,
+    batch_create_and_key_curves,
+    batch_key_scalar_channels,
+    samples_as_anim_layer_deltas,
+)
 
 # mmd-anim runtime (Phase 1+)
 try:
@@ -1080,66 +1086,7 @@ class VmdConverter:
         translate は Maya linear unit の値をそのまま渡す。
         API が使えない/失敗したチャンネルは cmds.setKeyframe にフォールバックして等価動作を維持。
         """
-        if not cmds.objExists(joint_name) or not channel_samples:
-            return False
-        attrs = list(channel_samples.keys())
-        curves: Dict[str, oma.MFnAnimCurve] = {}
-        try:
-            curves = maya_utils.create_animation_curves(
-                joint_name,
-                attrs,
-                tangent_type=oma.MFnAnimCurve.kTangentLinear,
-                animation_layer=None,
-            )
-        except Exception as e:
-            self.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
-            curves = {}
-
-        tangent = oma.MFnAnimCurve.kTangentLinear
-        shared_times = None
-        if channel_samples:
-            first_samples = next((samples for samples in channel_samples.values() if samples), None)
-            if first_samples:
-                try:
-                    shared_times = om.MTimeArray()
-                    for frame, _ in first_samples:
-                        shared_times.append(om.MTime(float(frame), om.MTime.uiUnit()))
-                except Exception:
-                    shared_times = None
-
-        success_any = False
-        for attr, samples in channel_samples.items():
-            if not samples:
-                continue
-            used_api = False
-            if attr in curves:
-                curve = curves[attr]
-                try:
-                    times = shared_times
-                    vals = om.MDoubleArray()
-                    for frame, val in samples:
-                        vals.append(float(val))
-                    if times is None or len(times) != len(vals):
-                        times = om.MTimeArray()
-                        for frame, _ in samples:
-                            times.append(om.MTime(float(frame), om.MTime.uiUnit()))
-                    curve.addKeys(times, vals, tangent, tangent, False)
-                    used_api = True
-                    success_any = True
-                    continue
-                except Exception as e:
-                    self.logger.debug(f"addKeys failed for {joint_name}.{attr}, fallback: {e}")
-            # Fallback (cmds) - 値の単位に注意: 回転は度
-            for frame, val in samples:
-                try:
-                    cmd_val = math.degrees(val) if "rotate" in attr else val
-                    cmds.setKeyframe(joint_name, attribute=attr, time=frame, value=cmd_val)
-                    success_any = True
-                except Exception:
-                    pass
-            if not used_api:
-                self.logger.debug(f"Used cmds.setKeyframe fallback for {joint_name}.{attr}")
-        return success_any
+        return batch_create_and_key_curves(self, joint_name, channel_samples)
 
     @staticmethod
     def _runtime_joint_attrs() -> Tuple[str, str, str, str, str, str]:
@@ -1172,66 +1119,14 @@ class VmdConverter:
         frame_numbers: List[float],
     ) -> Tuple[int, int]:
         """MDoubleArrayへ収集済みのchannel値をMFnAnimCurve.addKeysで一括登録する。"""
-        if not cmds.objExists(joint_name) or not channel_values:
-            return 0, 0
-
-        dynamic_attrs = []
-        skipped_static = 0
-        for attr, values in channel_values.items():
-            state = static_state.get(attr, {})
-            if state.get("is_static", False):
-                skipped_static += 1
-                if state.get("first") is not None:
-                    try:
-                        value = float(state["first"])
-                        if "rotate" in attr:
-                            value = math.degrees(value)
-                        cmds.setAttr(f"{joint_name}.{attr}", value)
-                    except Exception:
-                        pass
-                continue
-            if values is None or len(values) != len(times):
-                continue
-            dynamic_attrs.append(attr)
-
-        if not dynamic_attrs:
-            return 0, skipped_static
-
-        try:
-            curves = maya_utils.create_animation_curves(
-                joint_name,
-                dynamic_attrs,
-                tangent_type=oma.MFnAnimCurve.kTangentLinear,
-                animation_layer=None,
-            )
-        except Exception as e:
-            self.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
-            curves = {}
-
-        tangent = oma.MFnAnimCurve.kTangentLinear
-        keyed = 0
-        for attr in dynamic_attrs:
-            values = channel_values[attr]
-            curve = curves.get(attr)
-            if curve:
-                try:
-                    curve.addKeys(times, values, tangent, tangent, False)
-                    keyed += 1
-                    continue
-                except Exception as e:
-                    self.logger.debug(f"addKeys failed for {joint_name}.{attr}, fallback: {e}")
-
-            for index, frame in enumerate(frame_numbers):
-                try:
-                    value = float(values[index])
-                    if "rotate" in attr:
-                        value = math.degrees(value)
-                    cmds.setKeyframe(joint_name, attribute=attr, time=frame, value=value)
-                except Exception:
-                    pass
-            keyed += 1
-
-        return keyed, skipped_static
+        return batch_create_and_key_curve_arrays(
+            self,
+            joint_name,
+            channel_values,
+            static_state,
+            times,
+            frame_numbers,
+        )
 
     def _batch_key_scalar_channels(
         self,
@@ -1240,78 +1135,12 @@ class VmdConverter:
         animation_layer: Optional[str] = None,
     ) -> bool:
         """Maya UI 値の scalar channel を MFnAnimCurve.addKeys で一括キーイングする。"""
-        if not cmds.objExists(node_name) or not channel_samples:
-            return False
-
-        attrs = [attr for attr, samples in channel_samples.items() if samples]
-        if not attrs:
-            return False
-
-        curves: Dict[str, oma.MFnAnimCurve] = {}
-        try:
-            curves = maya_utils.create_animation_curves(
-                node_name,
-                attrs,
-                tangent_type=oma.MFnAnimCurve.kTangentLinear,
-                animation_layer=animation_layer,
-            )
-        except Exception as exc:
-            self.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
-
-        tangent = oma.MFnAnimCurve.kTangentLinear
-        success_any = False
-        for attr in attrs:
-            samples = channel_samples[attr]
-            curve = curves.get(attr)
-            if curve:
-                try:
-                    times = om.MTimeArray()
-                    values = om.MDoubleArray()
-                    for frame, value in samples:
-                        times.append(om.MTime(float(frame), om.MTime.uiUnit()))
-                        api_value = math.radians(float(value)) if "rotate" in attr else float(value)
-                        values.append(api_value)
-                    curve.addKeys(times, values, tangent, tangent, False)
-                    success_any = True
-                    continue
-                except Exception as exc:
-                    self.logger.debug(f"addKeys failed for {node_name}.{attr}, fallback: {exc}")
-
-            for frame, value in samples:
-                try:
-                    key_args = {
-                        "attribute": attr,
-                        "time": frame,
-                        "value": float(value),
-                    }
-                    if animation_layer:
-                        key_args["animLayer"] = animation_layer
-                    cmds.setKeyframe(node_name, **key_args)
-                    success_any = True
-                except Exception as exc:
-                    self.logger.debug(f"setKeyframe fallback failed for {node_name}.{attr} at {frame}: {exc}")
-
-        return success_any
+        return batch_key_scalar_channels(self, node_name, channel_samples, animation_layer=animation_layer)
 
     @staticmethod
     def _samples_as_anim_layer_deltas(node_name: str, channel_samples: Dict[str, List[Tuple[float, float]]]):
         """Convert absolute channel samples to additive animLayer deltas."""
-        adjusted = {}
-        for attr, samples in channel_samples.items():
-            if not samples:
-                adjusted[attr] = samples
-                continue
-            try:
-                base_value = cmds.getAttr(f"{node_name}.{attr}")
-                if isinstance(base_value, (list, tuple)):
-                    base_value = base_value[0]
-                if isinstance(base_value, (list, tuple)):
-                    base_value = base_value[0]
-                base_value = float(base_value)
-            except Exception:
-                base_value = 0.0
-            adjusted[attr] = [(frame, float(value) - base_value) for frame, value in samples]
-        return adjusted
+        return samples_as_anim_layer_deltas(node_name, channel_samples)
 
     @staticmethod
     def _collect_append_info():
