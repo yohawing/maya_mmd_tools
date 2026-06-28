@@ -14,7 +14,7 @@ from tests.common.maya_stub import install_maya_stub, _is_real_maya_present
 
 _real_maya = _is_real_maya_present()
 if not _real_maya:
-    install_maya_stub()
+    install_maya_stub(profile="headless")
 
 
 def _module_uses_real_maya(module):
