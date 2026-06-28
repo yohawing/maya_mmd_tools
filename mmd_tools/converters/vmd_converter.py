@@ -10,7 +10,6 @@ Phase 1 以降:
 
 from __future__ import annotations
 
-import json
 import math
 import os
 import time
@@ -58,6 +57,11 @@ from .vmd_import_state import (
 )
 from .vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nodes_by_bone_name, node_namespace
 from .vmd_ik_passthrough import collect_mmd_ik_passthrough_info, key_mmd_ik_passthrough_rotation
+from .vmd_legacy_bone_routes import (
+    build_legacy_bone_key_routes,
+    collect_ik_link_joints,
+    native_ik_handle_link_joints,
+)
 from .vmd_light_animation import convert_light_animation
 from .vmd_morph_animation import convert_morph_animation
 from .vmd_morph_mapping import (
@@ -70,7 +74,6 @@ from .vmd_morph_mapping import (
 from .vmd_name_mapping import build_name_mappings
 from .vmd_runtime_rig_helper import (
     _ls_mmd_append_nodes,
-    _ls_mmd_ccd_ik_nodes,
     disable_mmd_rig_constraints_for_runtime_bake,
     disconnect_node_output_connections,
     has_live_mmd_rig_for_runtime_target,
@@ -1681,44 +1684,11 @@ class VmdConverter:
             bone_slot は chainJson 内の links[i].bone_slot で、solver の
             inputRotate にキーイングするときのインデックスとして使う。
         """
-        ik_link_joints: dict = {}
-        for node in _ls_mmd_ccd_ik_nodes():
-            try:
-                raw_chain = cmds.getAttr(f"{node}.chainJson")
-                cfg = json.loads(raw_chain) if raw_chain else {}
-            except Exception:
-                continue
-
-            links = cfg.get("links", [])
-            for link_index, link in enumerate(links):
-                dests = cmds.listConnections(
-                    f"{node}.outputRotate[{link_index}]",
-                    s=False,
-                    d=True,
-                    p=True,
-                ) or []
-                bone_slot = link.get("bone_slot", link_index)
-                for dest in dests:
-                    jnt = dest.split(".", 1)[0]
-                    info = {"solver": node, "slot": bone_slot}
-                    ik_link_joints[jnt] = info
-                    try:
-                        for long_name in cmds.ls(jnt, long=True) or []:
-                            ik_link_joints[long_name] = info
-                    except Exception:
-                        pass
-        return ik_link_joints
+        return collect_ik_link_joints()
 
     @staticmethod
     def _native_ik_handle_link_joints(handle: str) -> List[str]:
-        if not cmds.attributeQuery("mmd_ik_link_joints_json", node=handle, exists=True):
-            return []
-        try:
-            raw = cmds.getAttr(f"{handle}.mmd_ik_link_joints_json") or "[]"
-            links = json.loads(raw)
-        except Exception:
-            return []
-        return [j for j in links if isinstance(j, str) and cmds.objExists(j)]
+        return native_ik_handle_link_joints(handle)
 
     @staticmethod
     def _node_namespace(node: str) -> str:
@@ -1740,28 +1710,7 @@ class VmdConverter:
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""
-        append_info = self._collect_append_info()
-        ik_link_joints = self._collect_ik_link_joints()
-        routes: Dict[str, dict] = {}
-
-        for joint in set(self.bone_name_mapping.values()):
-            ik_info = ik_link_joints.get(joint)
-            route = {
-                "attr_targets": {},
-                "skip_rotate": joint in ik_link_joints,
-                "ik_solver_rotate": ik_info,
-            }
-            info = append_info.get(joint)
-            if info:
-                append_node = info.get("node")
-                for src_attr, dst_attr in info.get("attr_map", {}).items():
-                    if append_node:
-                        route["attr_targets"][src_attr] = (append_node, dst_attr)
-
-            if route["attr_targets"] or route["skip_rotate"] or ik_info:
-                routes[joint] = route
-
-        return routes
+        return build_legacy_bone_key_routes(self)
 
     def _add_attrs_to_anim_layer(self, node: str, attrs: List[str]):
         """指定属性を現在のアニメーションレイヤーへ追加する。"""
