@@ -89,6 +89,7 @@ from .vmd_runtime_channels import (
     create_runtime_joint_channel_static_state,
     runtime_joint_attrs,
 )
+from .vmd_runtime_cache_apply import apply_runtime_cache_to_scene, is_static_channel, scale_motion_translate_from_bind
 from .vmd_runtime_local_decompose import (
     build_bone_hierarchy_and_order_maps,
     build_runtime_bind_world_maps,
@@ -1057,77 +1058,7 @@ class VmdConverter:
 
         モーフは既存パスで後処理（評価ループ外）。これにより内側ループの cmds.xform/setKeyframe を排除。
         """
-        if not runtime_cache:
-            return
-
-        # ジョイント: per-joint でチャンネル別サンプルをまとめ、一括登録
-        if self.bone_index_to_joint:
-            per_joint_channels: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
-
-            for fd in runtime_cache:
-                f = fd["frame"]
-                for bidx, (tx, ty, tz, rx, ry, rz) in fd.get("bone_locals", {}).items():
-                    jname = self.bone_index_to_joint.get(bidx)
-                    if not jname:
-                        continue
-                    tx, ty, tz = self._scale_motion_translate_from_bind(jname, tx, ty, tz)
-                    if jname not in per_joint_channels:
-                        per_joint_channels[jname] = {
-                            "translateX": [],
-                            "translateY": [],
-                            "translateZ": [],
-                            "rotateX": [],
-                            "rotateY": [],
-                            "rotateZ": [],
-                        }
-                    chans = per_joint_channels[jname]
-                    chans["translateX"].append((f, tx))
-                    chans["translateY"].append((f, ty))
-                    chans["translateZ"].append((f, tz))
-                    # 回転サンプルは addKeys のためラジアンで保持
-                    chans["rotateX"].append((f, math.radians(rx)))
-                    chans["rotateY"].append((f, math.radians(ry)))
-                    chans["rotateZ"].append((f, math.radians(rz)))
-
-            total_channels = 0
-            keyed_channels = 0
-            skipped_static_channels = 0
-            for jname, chans in per_joint_channels.items():
-                try:
-                    dynamic_chans = {}
-                    for attr, samples in chans.items():
-                        total_channels += 1
-                        if self._is_static_channel(samples):
-                            skipped_static_channels += 1
-                            if samples:
-                                try:
-                                    value = float(samples[0][1])
-                                    if "rotate" in attr:
-                                        value = math.degrees(value)
-                                    cmds.setAttr(f"{jname}.{attr}", value)
-                                except Exception:
-                                    pass
-                            continue
-                        dynamic_chans[attr] = samples
-
-                    if dynamic_chans:
-                        keyed_channels += len(dynamic_chans)
-                        self._batch_create_and_key_curves(jname, dynamic_chans)
-                except Exception as e:
-                    self.logger.debug(f"batch keying error for {jname} (will have used fallbacks): {e}")
-            self.logger.info(
-                "runtime joint channel pruning: "
-                f"keyed={keyed_channels}, skipped_static={skipped_static_channels}, "
-                f"total={total_channels}"
-            )
-
-        morph_cache = [
-            (int(fd["frame"]), list(fd.get("morph_weights", [])))
-            for fd in runtime_cache
-        ]
-        self._bake_morph_weight_cache_from_runtime(morph_cache, pmx_morph_names)
-
-        self.logger.info(f"Applied runtime cache: keyed {len(runtime_cache)} frames")
+        apply_runtime_cache_to_scene(self, runtime_cache, pmx_morph_names)
 
     def _scale_motion_translate_from_bind(
         self,
@@ -1137,23 +1068,12 @@ class VmdConverter:
         tz: float,
     ) -> Tuple[float, float, float]:
         """Scale a local translate sample as bind pose plus motion delta."""
-        if self.motion_scale == 1.0:
-            return float(tx), float(ty), float(tz)
-        bind = self._bone_bind_poses.get(joint, (0.0, 0.0, 0.0))
-        bx, by, bz = float(bind[0]), float(bind[1]), float(bind[2])
-        return (
-            bx + (float(tx) - bx) * self.motion_scale,
-            by + (float(ty) - by) * self.motion_scale,
-            bz + (float(tz) - bz) * self.motion_scale,
-        )
+        return scale_motion_translate_from_bind(self, joint, tx, ty, tz)
 
     @staticmethod
     def _is_static_channel(samples: List[Tuple[float, float]], tolerance: float = 1e-10) -> bool:
         """全サンプル値が同一なら True を返す。"""
-        if len(samples) <= 1:
-            return True
-        first = float(samples[0][1])
-        return all(abs(float(value) - first) <= tolerance for _, value in samples[1:])
+        return is_static_channel(samples, tolerance)
 
     def _bake_bone_poses_from_world_matrices(
         self, frame: int, world_matrices: list, model_bone_count: int
