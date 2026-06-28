@@ -51,6 +51,12 @@ from .vmd_runtime_rig_helper import (
     restore_joints_to_bind_pose_for_runtime_bake,
     runtime_bake_mapped_joint_names,
 )
+from .vmd_runtime_channels import (
+    append_bone_locals_to_channel_arrays,
+    create_runtime_joint_channel_arrays,
+    create_runtime_joint_channel_static_state,
+    runtime_joint_attrs,
+)
 from .vmd_runtime_sampling import (
     iter_runtime_bake_frame_samples,
     iter_runtime_bake_frames,
@@ -1129,28 +1135,15 @@ class VmdConverter:
     @staticmethod
     def _runtime_joint_attrs() -> Tuple[str, str, str, str, str, str]:
         """runtime bakeでキー登録するjoint channel一覧を返す。"""
-        return ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+        return runtime_joint_attrs()
 
     def _create_runtime_joint_channel_arrays(self) -> Dict[str, Dict[str, Optional[om.MDoubleArray]]]:
         """runtime bake用にjoint channelごとの値配列を作成する。"""
-        values: Dict[str, Dict[str, Optional[om.MDoubleArray]]] = {}
-        for joint in self.bone_index_to_joint.values():
-            if not cmds.objExists(joint):
-                continue
-            values[joint] = {attr: None for attr in self._runtime_joint_attrs()}
-        return values
+        return create_runtime_joint_channel_arrays(self.bone_index_to_joint)
 
     def _create_runtime_joint_channel_static_state(self) -> Dict[str, Dict[str, dict]]:
         """静的channel判定用の状態を作成する。"""
-        states: Dict[str, Dict[str, dict]] = {}
-        for joint in self.bone_index_to_joint.values():
-            if not cmds.objExists(joint):
-                continue
-            states[joint] = {
-                attr: {"first": None, "is_static": True, "count": 0}
-                for attr in self._runtime_joint_attrs()
-            }
-        return states
+        return create_runtime_joint_channel_static_state(self.bone_index_to_joint)
 
     def _append_bone_locals_to_channel_arrays(
         self,
@@ -1159,53 +1152,7 @@ class VmdConverter:
         static_state: Dict[str, Dict[str, dict]],
     ):
         """frameごとのlocal姿勢をjoint channel配列へ直接追加する。"""
-        for bidx, (tx, ty, tz, rx, ry, rz) in bone_locals.items():
-            joint = self.bone_index_to_joint.get(bidx)
-            chans = channel_values.get(joint)
-            states = static_state.get(joint)
-            if not chans or not states:
-                continue
-
-            tx, ty, tz = self._scale_motion_translate_from_bind(joint, tx, ty, tz)
-            values = {
-                "translateX": float(tx),
-                "translateY": float(ty),
-                "translateZ": float(tz),
-                "rotateX": math.radians(float(rx)),
-                "rotateY": math.radians(float(ry)),
-                "rotateZ": math.radians(float(rz)),
-            }
-            for attr, value in values.items():
-                state = states[attr]
-                first = state["first"]
-                if first is None:
-                    state["first"] = value
-                    state["count"] = 1
-                    continue
-
-                eps = (
-                    self._static_eps_rotate
-                    if attr.startswith("rotate")
-                    else self._static_eps_translate
-                )
-                if state["is_static"]:
-                    if abs(float(value) - float(first)) <= eps:
-                        state["count"] += 1
-                        continue
-
-                    array = om.MDoubleArray()
-                    for _ in range(int(state["count"])):
-                        array.append(float(first))
-                    array.append(float(value))
-                    chans[attr] = array
-                    state["is_static"] = False
-                    state["count"] += 1
-                    continue
-
-                array = chans[attr]
-                if array is not None:
-                    array.append(float(value))
-                state["count"] += 1
+        append_bone_locals_to_channel_arrays(self, bone_locals, channel_values, static_state)
 
     def _batch_create_and_key_curve_arrays(
         self,
