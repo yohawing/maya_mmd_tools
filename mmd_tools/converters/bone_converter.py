@@ -177,8 +177,6 @@ class BoneConverter:
         # リグのセットアップはRigConverterに委譲
         self.rig_converter.setup_pmd_rig(pmd_data, maya_joints, bone_map, skeleton_group)
 
-        # TODO: ボーンのローカル軸を正確に再現する。
-
         return maya_joints, result_cluster
 
     def _create_bone_mapping(self, bones):
