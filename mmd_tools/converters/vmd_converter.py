@@ -56,6 +56,7 @@ from .vmd_import_state import (
     restore_anim_layer_selection,
     restore_import_timeline_state,
 )
+from .vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nodes_by_bone_name, node_namespace
 from .vmd_ik_passthrough import collect_mmd_ik_passthrough_info, key_mmd_ik_passthrough_rotation
 from .vmd_light_animation import convert_light_animation
 from .vmd_morph_animation import convert_morph_animation
@@ -1721,26 +1722,11 @@ class VmdConverter:
 
     @staticmethod
     def _node_namespace(node: str) -> str:
-        leaf = node.split("|")[-1]
-        if ":" not in leaf:
-            return ""
-        return leaf.rsplit(":", 1)[0].lstrip(":")
+        return node_namespace(node)
 
     def _collect_ik_nodes_by_bone_name(self, target_namespace: str = None) -> Dict[str, str]:
         """mmdCcdIk ノードを PMX IK ボーン名で引けるように収集する。"""
-        nodes: Dict[str, str] = {}
-        for node in _ls_mmd_ccd_ik_nodes():
-            if target_namespace and self._node_namespace(node) != target_namespace:
-                continue
-            name = ""
-            if cmds.attributeQuery("mmd_ik_bone_name", node=node, exists=True):
-                try:
-                    name = cmds.getAttr(f"{node}.mmd_ik_bone_name") or ""
-                except Exception:
-                    name = ""
-            if name:
-                nodes[name] = node
-        return nodes
+        return collect_ik_nodes_by_bone_name(self, target_namespace)
 
     def _apply_ik_enabled_animation(self, vmd_data: VmdData, target_namespace: str = None) -> None:
         """VMD の IK 表示/非表示フレームを mmdCcdIk.enabled に反映する。
@@ -1750,46 +1736,7 @@ class VmdConverter:
         property frame がないモデルモーションでは、従来互換として全 IK を
         評価範囲の先頭で有効にする。
         """
-        ik_nodes = self._collect_ik_nodes_by_bone_name(target_namespace)
-        if not ik_nodes:
-            return
-
-        property_frames = sorted(
-            list(getattr(vmd_data, "ik_show_hide_frames", []) or []),
-            key=lambda f: int(getattr(f, "frame_number", 0)),
-        )
-        default_nodes = set(ik_nodes.values()) if getattr(vmd_data, "bone_frames", None) else set()
-
-        if property_frames or default_nodes:
-            min_frame, _max_frame = self._get_animation_frame_range(vmd_data)
-            min_time = self.vmd_frame_to_maya_time(min_frame)
-            for node in (ik_nodes.values() if property_frames else default_nodes):
-                cmds.setAttr(f"{node}.enabled", True)
-                cmds.setKeyframe(node, attribute="enabled", time=min_time, value=1)
-
-        if property_frames:
-            keyed = 0
-            for frame in property_frames:
-                frame_number = int(getattr(frame, "frame_number", 0))
-                for ik_name, show_flag in getattr(frame, "ik_states", []) or []:
-                    node = ik_nodes.get(ik_name)
-                    if not node:
-                        continue
-                    value = bool(show_flag)
-                    cmds.setAttr(f"{node}.enabled", value)
-                    cmds.setKeyframe(
-                        node,
-                        attribute="enabled",
-                        time=self.vmd_frame_to_maya_time(frame_number),
-                        value=int(value),
-                    )
-                    keyed += 1
-            if keyed:
-                self.logger.info(f"Applied {keyed} keys of VMD IK state to mmdCcdIk.enabled")
-            return
-
-        if default_nodes:
-            self.logger.info(f"No VMD IK state found; set active mmdCcdIk.enabled default ON: {len(default_nodes)} nodes")
+        apply_ik_enabled_animation(self, vmd_data, target_namespace)
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""
