@@ -2,7 +2,7 @@
 
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import maya.cmds as cmds
 
@@ -89,3 +89,31 @@ def resolve_pmx_path_from_scene(converter, target_namespace: str = None) -> Opti
             + ", ".join(candidates)
         )
     return None
+
+
+def resolve_runtime_pmx_bytes_and_morph_names(
+    pmx_bytes: bytes,
+    pmx_path: str,
+    logger,
+    parse_pmx: Callable,
+) -> Tuple[Optional[bytes], List[str]]:
+    """Resolve PMX bytes and best-effort PMX morph names for runtime bake."""
+    resolved_pmx_bytes = pmx_bytes
+    if not resolved_pmx_bytes and pmx_path and os.path.exists(pmx_path):
+        try:
+            with open(pmx_path, "rb") as file:
+                resolved_pmx_bytes = file.read()
+        except Exception as exc:
+            logger.error(f"Failed to read PMX file: {pmx_path} - {exc}")
+            return None, []
+
+    pmx_morph_names = []
+    if pmx_path and os.path.exists(pmx_path):
+        try:
+            pmx_data = parse_pmx(pmx_path)
+            if pmx_data is not None:
+                pmx_morph_names = [morph.name for morph in pmx_data.morphs]
+        except Exception as exc:
+            logger.warning(f"Failed to get PMX morph names for runtime morph bake: {exc}")
+
+    return resolved_pmx_bytes, pmx_morph_names

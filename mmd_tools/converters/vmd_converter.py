@@ -11,7 +11,6 @@ Phase 1 以降:
 from __future__ import annotations
 
 import math
-import os
 import time
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -118,6 +117,7 @@ from .vmd_runtime_scene_apply import apply_runtime_channel_arrays_to_scene
 from .vmd_runtime_sources import (
     resolve_pmx_path_from_scene,
     resolve_runtime_bake_sources,
+    resolve_runtime_pmx_bytes_and_morph_names,
     should_use_mmd_runtime_bake,
 )
 from .vmd_runtime_world_bake import bake_bone_poses_from_world_matrices, convert_mmd_world_matrix_to_maya
@@ -388,30 +388,17 @@ class VmdConverter:
         mmd-anim runtime を使って全フレームを評価し、正確なポーズをベイクする。
         付与変形・IK・MMDベジェ補間はすべて runtime 側で解決済み。
         """
-        # PMX バイトを解決
-        resolved_pmx_bytes = pmx_bytes
-        if not resolved_pmx_bytes and pmx_path and os.path.exists(pmx_path):
-            try:
-                with open(pmx_path, "rb") as f:
-                    resolved_pmx_bytes = f.read()
-            except Exception as e:
-                self.logger.error(f"Failed to read PMX file: {pmx_path} - {e}")
-                return False
-
+        resolved_pmx_bytes, pmx_morph_names = resolve_runtime_pmx_bytes_and_morph_names(
+            pmx_bytes,
+            pmx_path,
+            self.logger,
+            parse_pmx_native,
+        )
         if not resolved_pmx_bytes:
             self.logger.error("Could not get PMX data required for runtime bake")
             return False
 
         # モデル・クリップ・インスタンス作成
-        pmx_morph_names = []
-        if pmx_path and os.path.exists(pmx_path):
-            try:
-                pmx_data = parse_pmx_native(pmx_path)
-                if pmx_data is not None:
-                    pmx_morph_names = [morph.name for morph in pmx_data.morphs]
-            except Exception as e:
-                self.logger.warning(f"Failed to get PMX morph names for runtime morph bake: {e}")
-
         model = MmdRuntimeModel.from_pmx_bytes(resolved_pmx_bytes)
         if model is None:
             self.logger.error("Failed to create MmdRuntimeModel")
