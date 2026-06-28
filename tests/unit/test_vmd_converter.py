@@ -820,6 +820,14 @@ class TestVmdConverter(MayaTestBase):
         def capture_apply(_joint_values, _joint_static, _bake_times, baked_frames, morph_cache, _pmx_morph_names):
             apply_calls.append((list(baked_frames), list(morph_cache)))
 
+        undo_calls = []
+
+        def fake_undo_info(**kwargs):
+            undo_calls.append(kwargs)
+            if kwargs == {"q": True, "state": True}:
+                return True
+            return None
+
         self.converter.fps = 60.0
         self.converter.bone_index_to_joint = {}
         self.converter.bone_name_to_index = {}
@@ -831,6 +839,10 @@ class TestVmdConverter(MayaTestBase):
             self.converter,
             "_apply_runtime_channel_arrays_to_scene",
             side_effect=capture_apply,
+        ), patch.object(
+            vmd_converter_module.cmds,
+            "undoInfo",
+            side_effect=fake_undo_info,
         ):
             result = self.converter._convert_using_mmd_runtime(
                 VmdDataLike(),
@@ -844,6 +856,14 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(apply_calls[0][0][0], 0.0)
         self.assertEqual(apply_calls[0][0][-1], 200.0)
         self.assertEqual(len(apply_calls[0][0]), 201)
+        self.assertEqual(
+            undo_calls,
+            [
+                {"q": True, "state": True},
+                {"stateWithoutFlush": False},
+                {"stateWithoutFlush": True},
+            ],
+        )
 
     def test_runtime_bake_uses_clip_frame_range_when_python_vmd_is_empty(self):
         """Python VMD parser が空でも runtime clip の frame range で bake 範囲を決める。"""

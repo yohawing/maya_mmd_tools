@@ -76,6 +76,22 @@ class TestNamespaceUtils(unittest.TestCase):
         expected_calls = [call(exists="TestModel"), call(exists="TestModel_2")]
         self.assertEqual(mock_namespace.call_args_list, expected_calls)
 
+    @patch("mmd_tools.core.namespace_utils._MAX_NAMESPACE_SUFFIX_ATTEMPTS", 3)
+    @patch("maya.cmds.namespace")
+    def test_ensure_unique_namespace_raises_after_suffix_limit(self, mock_namespace):
+        """namespace衝突探索が無限に回らないことを確認する。"""
+        mock_namespace.return_value = True
+
+        with self.assertRaisesRegex(RuntimeError, "Could not find unique namespace"):
+            NamespaceUtils.ensure_unique_namespace("TestModel")
+
+        expected_calls = [
+            call(exists="TestModel"),
+            call(exists="TestModel_2"),
+            call(exists="TestModel_3"),
+        ]
+        self.assertEqual(mock_namespace.call_args_list, expected_calls)
+
     @patch("maya.cmds.namespace")
     def test_create_namespace_success(self, mock_namespace):
         """namespace作成成功のテスト"""

@@ -14,14 +14,60 @@ from mmd_tools.nodes import mmd_bone_morph_accum_node
 from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
 
+_main_window = None
+
 
 def maya_useNewAPI():
     """Tell Maya to use the Python API 2.0"""
     pass
 
 
+def _delete_qt_widget(widget):
+    """Close and schedule deletion for a Qt widget without letting cleanup fail plugin flow."""
+    if widget is None:
+        return
+    try:
+        widget.close()
+    except Exception:
+        pass
+    try:
+        widget.setParent(None)
+    except Exception:
+        pass
+    try:
+        widget.deleteLater()
+    except Exception:
+        pass
+
+
+def close_main_window():
+    """Close the Python-owned MMD Tools window and stale Qt instances."""
+    global _main_window
+
+    _delete_qt_widget(_main_window)
+    _main_window = None
+
+    try:
+        from mmd_tools.ui.qt_compat import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            for widget in list(app.allWidgets()):
+                try:
+                    if widget.objectName() == MainWindow.WINDOW_NAME:
+                        _delete_qt_widget(widget)
+                except Exception:
+                    pass
+            app.processEvents()
+    except Exception:
+        pass
+
+
 def open_main_window(dockable=False):
     """Open the main MMD Tools window."""
+    global _main_window
+
+    close_main_window()
 
     # 既存のウィンドウを削除
     if cmds.window(MainWindow.WINDOW_NAME, exists=True):
@@ -35,6 +81,7 @@ def open_main_window(dockable=False):
     # 新しいインスタンスを作成して表示
     main_window = MainWindow()
     main_window.show_window(dockable=dockable)
+    _main_window = main_window
 
 
 def install_mmd_menu():
@@ -91,6 +138,7 @@ def uninitializePlugin(mobject):
     plugin_fn = om.MFnPlugin(mobject)
 
     try:
+        close_main_window()
         uninstall_mmd_menu()
         uninstall_drag_drop_importer()
         if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":

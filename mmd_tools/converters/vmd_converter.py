@@ -684,14 +684,30 @@ class VmdConverter:
             # キャッシュから一括でキーフレーム登録（Maya Python API 2.0 優先）
             if baked_frames:
                 apply_start = time.perf_counter()
-                self._apply_runtime_channel_arrays_to_scene(
-                    joint_channel_values,
-                    joint_channel_static,
-                    bake_times,
-                    baked_frames,
-                    morph_cache,
-                    pmx_morph_names,
-                )
+                undo_was_enabled = True
+                try:
+                    undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
+                except Exception:
+                    undo_was_enabled = True
+                try:
+                    cmds.undoInfo(stateWithoutFlush=False)
+                except Exception:
+                    pass
+                try:
+                    self._apply_runtime_channel_arrays_to_scene(
+                        joint_channel_values,
+                        joint_channel_static,
+                        bake_times,
+                        baked_frames,
+                        morph_cache,
+                        pmx_morph_names,
+                    )
+                finally:
+                    if undo_was_enabled:
+                        try:
+                            cmds.undoInfo(stateWithoutFlush=True)
+                        except Exception:
+                            pass
                 apply_elapsed = time.perf_counter() - apply_start
                 self.logger.info(
                     f"Runtime cache key application completed (elapsed={apply_elapsed:.3f}s)"

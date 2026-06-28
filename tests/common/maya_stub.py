@@ -44,6 +44,37 @@ _STUBBED_MODULE_NAMES = (
 )
 
 
+def _configure_cmds_defaults(cmds: MagicMock) -> None:
+    """Headless-safe defaults for common Maya query commands.
+
+    Bare ``MagicMock`` results are truthy and record every chained call.  Code
+    that probes Maya state in a loop, such as namespace collision checks, can
+    otherwise grow memory abruptly in pure Python tests.
+    """
+
+    def _namespace(*_args, **kwargs):
+        if "exists" in kwargs:
+            return False
+        if "set" in kwargs or "add" in kwargs or "removeNamespace" in kwargs:
+            return None
+        return None
+
+    def _namespace_info(*_args, **kwargs):
+        if kwargs.get("currentNamespace"):
+            return ":"
+        if kwargs.get("listOnlyNamespaces"):
+            return []
+        return None
+
+    cmds.namespace.side_effect = _namespace
+    cmds.namespaceInfo.side_effect = _namespace_info
+    cmds.ls.return_value = []
+    cmds.listRelatives.return_value = []
+    cmds.listConnections.return_value = []
+    cmds.objExists.return_value = False
+    cmds.attributeQuery.return_value = False
+
+
 def _is_real_maya_present() -> bool:
     """本物の Maya 環境 (mayapy) で動いているかを判定する。
 
@@ -82,6 +113,7 @@ def install_maya_stub() -> bool:
 
     maya = ModuleType("maya")
     maya.cmds = MagicMock(name="maya.cmds")
+    _configure_cmds_defaults(maya.cmds)
     maya.mel = MagicMock(name="maya.mel")
     maya.OpenMaya = MagicMock(name="maya.OpenMaya")
 
