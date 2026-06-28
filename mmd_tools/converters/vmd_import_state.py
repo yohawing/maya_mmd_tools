@@ -1,10 +1,13 @@
 """Import state and cleanup helpers for VMD conversion."""
 
+import json
 from typing import Dict, Optional, Tuple
 
 import maya.cmds as cmds
 
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
+
+_ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
 
 
 def restore_import_timeline_state(current_time: Optional[float]) -> None:
@@ -56,7 +59,9 @@ def clear_existing_motion(converter, layer_name: str, target_namespace: Optional
     """Delete existing VMD motion keys/layer for the target model."""
     cleared = 0
 
-    for joint in set(converter.bone_name_mapping.values()):
+    mapped_joints = set(converter.bone_name_mapping.values())
+    fallback_translates = _capture_fallback_rest_translates(mapped_joints)
+    for joint in mapped_joints:
         cleared += cut_keyable_attrs(
             joint,
             ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
@@ -98,12 +103,108 @@ def clear_existing_motion(converter, layer_name: str, target_namespace: Optional
         except Exception as exc:
             converter.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
 
+    # cutKey はアニメーション曲線を削除するが joint の attribute 値はポーズのまま残る。
+    # 後続の _record_bind_poses が正しい rest position を取得できるよう dagPose で復元する。
+    _restore_joints_to_rest(mapped_joints, fallback_translates, converter.logger)
+
     converter.logger.info(
         "Cleared existing VMD motion: keys_or_layers=%d joints=%d morph_nodes=%d",
         cleared,
-        len(set(converter.bone_name_mapping.values())),
+        len(mapped_joints),
         len(morph_nodes),
     )
+
+
+def _capture_fallback_rest_translates(joints) -> Dict[str, Tuple[float, float, float]]:
+    """Capture translate fallback values before motion keys are removed."""
+    fallback_translates = {}
+    for joint in joints:
+        if not cmds.objExists(joint):
+            continue
+        stored = get_stored_bind_translate(joint)
+        if stored is not None:
+            fallback_translates[joint] = stored
+            continue
+        try:
+            fallback_translates[joint] = tuple(cmds.getAttr(f"{joint}.translate")[0])
+        except Exception:
+            pass
+    return fallback_translates
+
+
+def _restore_joints_to_rest(joints, fallback_translates: Dict[str, Tuple[float, float, float]], logger) -> None:
+    """Restore joints to their bind pose after animation keys have been removed.
+
+    Uses dagPose -restore -bindPose first; if that fails (no bind pose node),
+    falls back to the translate values captured before keys were removed.
+    """
+    if not joints:
+        return
+
+    # Try dagPose restore on the first joint to find and apply the bind pose
+    dag_pose_restored = False
+    for joint in joints:
+        if not cmds.objExists(joint):
+            continue
+        bind_poses = cmds.dagPose(joint, query=True, bindPose=True) or []
+        if bind_poses:
+            try:
+                cmds.dagPose(bind_poses[0], restore=True)
+                dag_pose_restored = True
+            except Exception as exc:
+                logger.debug(f"dagPose restore failed: {exc}")
+            break
+
+    if dag_pose_restored:
+        return
+
+    # Fallback: zero out rotate and restore stored bind translate when available.
+    restored = 0
+    for joint in joints:
+        if not cmds.objExists(joint):
+            continue
+        try:
+            cmds.setAttr(f"{joint}.rotate", 0.0, 0.0, 0.0)
+            translate = fallback_translates.get(joint)
+            if translate is not None:
+                cmds.setAttr(f"{joint}.translate", translate[0], translate[1], translate[2])
+            restored += 1
+        except Exception:
+            pass
+    if restored:
+        logger.debug(f"Fallback: restored {restored} joints from snapshots (no dagPose)")
+
+
+def store_bind_translate(joint: str, translate: Tuple[float, float, float]) -> None:
+    """Persist a joint bind translate for future clear/reimport fallback."""
+    if not joint or not cmds.objExists(joint):
+        return
+    try:
+        if not cmds.attributeQuery(_ATTR_VMD_BIND_TRANSLATE, node=joint, exists=True):
+            cmds.addAttr(joint, longName=_ATTR_VMD_BIND_TRANSLATE, dataType="string")
+        cmds.setAttr(
+            f"{joint}.{_ATTR_VMD_BIND_TRANSLATE}",
+            json.dumps([float(translate[0]), float(translate[1]), float(translate[2])]),
+            type="string",
+        )
+    except Exception:
+        pass
+
+
+def get_stored_bind_translate(joint: str) -> Optional[Tuple[float, float, float]]:
+    """Read a persisted VMD bind translate from a joint when available."""
+    if not joint or not cmds.objExists(joint):
+        return None
+    try:
+        if not cmds.attributeQuery(_ATTR_VMD_BIND_TRANSLATE, node=joint, exists=True):
+            return None
+        raw_value = cmds.getAttr(f"{joint}.{_ATTR_VMD_BIND_TRANSLATE}")
+        values = json.loads(raw_value)
+        if not isinstance(values, list) or len(values) != 3:
+            return None
+        return (float(values[0]), float(values[1]), float(values[2]))
+    except Exception:
+        return None
 
 
 def node_matches_target_namespace(node: str, target_namespace: Optional[str]) -> bool:

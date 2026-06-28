@@ -109,6 +109,28 @@ class TestVmdConverter(MayaTestBase):
         self.assertIsNone(cmds.keyframe(joint, attribute="rotateY", query=True, timeChange=True))
         self.assertIsNone(cmds.keyframe(blend_shape, attribute="weight[0]", query=True, timeChange=True))
         self.assertFalse(cmds.objExists(layer))
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateY"), 0.0, places=4)
+
+    def test_clear_existing_motion_restores_bind_pose_for_accurate_reimport(self):
+        """cutKey 後にジョイントが rest position に戻り、後続の bind pose 記録が正確になる。"""
+        joint = cmds.joint(name="clear_restore_bind_joint")
+        cmds.setAttr(f"{joint}.translateX", 3.0)
+        rest_tx = cmds.getAttr(f"{joint}.translateX")
+
+        self.converter.bone_name_mapping = {"test_bone": joint}
+        self.converter._record_bind_poses()
+
+        cmds.setKeyframe(joint, attribute="translateX", time=1, value=rest_tx + 5.0)
+        cmds.setKeyframe(joint, attribute="rotateX", time=1, value=45.0)
+        cmds.currentTime(1, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), rest_tx + 5.0, places=4)
+
+        self.converter.morph_name_mapping = {}
+        layer = cmds.animLayer("VMD_Motion_restore_test", override=False, weight=1.0)
+        self.converter._clear_existing_motion(layer, target_namespace=None)
+
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0, places=4)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), rest_tx, places=4)
 
     def test_convert_clear_existing_motion_replaces_previous_bone_keys(self):
         """clear ON の再 import は古いキーを残さず新しい VMD キーだけにする。"""

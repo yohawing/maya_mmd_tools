@@ -55,9 +55,16 @@ from .vmd_import_state import (
     node_matches_target_namespace,
     restore_anim_layer_selection,
     restore_import_timeline_state,
+    store_bind_translate,
 )
 from .vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nodes_by_bone_name, node_namespace
 from .vmd_ik_passthrough import collect_mmd_ik_passthrough_info, key_mmd_ik_passthrough_rotation
+from .vmd_joint_rotation import (
+    convert_vmd_quat_to_bind_space_rotate,
+    convert_vmd_quat_to_joint_rotate,
+    extract_euler_from_matrix,
+    get_joint_orient_cache,
+)
 from .vmd_legacy_bone_routes import (
     build_legacy_bone_key_routes,
     collect_ik_link_joints,
@@ -731,24 +738,7 @@ class VmdConverter:
     def _extract_euler_from_matrix(m: om.MMatrix, rotate_order: int) -> Tuple[float, float, float]:
         """MMatrix から、指定した Maya rotateOrder (0=xyz ... 5=zyx) に対応するオイラー角(度)を抽出。
         """
-        try:
-            tm = om.MTransformationMatrix(m)
-            q = tm.rotation(asQuaternion=True)
-            order_map = {
-                0: om.MEulerRotation.kXYZ,
-                1: om.MEulerRotation.kYZX,
-                2: om.MEulerRotation.kZXY,
-                3: om.MEulerRotation.kXZY,
-                4: om.MEulerRotation.kYXZ,
-                5: om.MEulerRotation.kZYX,
-            }
-            order = order_map.get(rotate_order, om.MEulerRotation.kXYZ)
-            e = q.asEulerRotation()
-            if e.order != order:
-                e.reorderIt(order)
-            return (math.degrees(e.x), math.degrees(e.y), math.degrees(e.z))
-        except Exception:
-            return (0.0, 0.0, 0.0)
+        return extract_euler_from_matrix(m, rotate_order)
 
     def _batch_create_and_key_curves(
         self,
@@ -1193,6 +1183,7 @@ class VmdConverter:
                 # 現在のtranslate値を取得（これがバインドポーズ）
                 translate = cmds.getAttr(f"{maya_joint}.translate")[0]
                 self._bone_bind_poses[vmd_bone_name] = translate
+                store_bind_translate(maya_joint, translate)
             except Exception as e:
                 self.logger.warning(f"Failed to get bind pose for {vmd_bone_name}: {str(e)}")
 
@@ -1328,45 +1319,11 @@ class VmdConverter:
 
     def _get_joint_orient_cache(self, joint_name):
         """joint の jointOrient quaternion と rotateOrder をキャッシュ付きで取得する。"""
-        if not hasattr(self, "_joint_orient_cache"):
-            self._joint_orient_cache = {}
-        cached = self._joint_orient_cache.get(joint_name)
-        if cached is not None:
-            return cached
-
-        joint_orient = cmds.getAttr(f"{joint_name}.jointOrient")[0]
-        rotate_order = int(cmds.getAttr(f"{joint_name}.rotateOrder"))
-
-        if any(abs(v) > 1e-8 for v in joint_orient):
-            q_jo = om.MEulerRotation(
-                math.radians(joint_orient[0]),
-                math.radians(joint_orient[1]),
-                math.radians(joint_orient[2]),
-            ).asQuaternion()
-        else:
-            q_jo = None
-
-        rotate_axis = cmds.getAttr(f"{joint_name}.rotateAxis")[0]
-        if any(abs(v) > 1e-8 for v in rotate_axis):
-            self.logger.warning(
-                f"{joint_name} has non-zero rotateAxis ({rotate_axis})."
-                "Legacy path does not support rotateAxis; rotation accuracy may be reduced"
-            )
-
-        result = (q_jo, rotate_order)
-        self._joint_orient_cache[joint_name] = result
-        return result
+        return get_joint_orient_cache(self, joint_name)
 
     def _convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw):
         """VMD quaternion を Maya joint.rotate の Euler 角（度）へ変換する。"""
-        q_maya = om.MQuaternion(-float(qx), -float(qy), float(qz), float(qw))
-
-        q_jo, rotate_order = self._get_joint_orient_cache(joint_name)
-        q_rotate = self._convert_vmd_quat_to_bind_space_rotate(joint_name, q_maya, q_jo)
-
-        euler = q_rotate.asEulerRotation()
-        euler.reorderIt(rotate_order)
-        return (math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z))
+        return convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw)
 
     def _convert_vmd_quat_to_bind_space_rotate(
         self,
@@ -1375,53 +1332,7 @@ class VmdConverter:
         q_jo: Optional[om.MQuaternion],
     ) -> om.MQuaternion:
         """Convert a sparse VMD local rotation into this joint's JO-aware rotate space."""
-        bone_index = None
-        for idx, joint in getattr(self, "bone_index_to_joint", {}).items():
-            if joint == joint_name:
-                bone_index = idx
-                break
-        if bone_index is None:
-            if q_jo is not None:
-                return q_jo * q_maya * q_jo.inverse()
-            return q_maya
-
-        if not hasattr(self, "_runtime_bind_world_matrices"):
-            try:
-                self._build_runtime_bind_world_maps()
-            except Exception:
-                pass
-
-        bind_world = getattr(self, "_runtime_bind_world_matrices", {}).get(bone_index)
-        bind_no_orient = getattr(self, "_runtime_no_orient_bind_world_matrices", {}).get(bone_index)
-        if bind_world is None or bind_no_orient is None:
-            if q_jo is not None:
-                return q_jo * q_maya * q_jo.inverse()
-            return q_maya
-
-        parent_index = getattr(self, "_bone_parent_map", {}).get(bone_index)
-        parent_bind_world = getattr(self, "_runtime_bind_world_matrices", {}).get(parent_index, om.MMatrix())
-        parent_bind_no_orient = getattr(self, "_runtime_no_orient_bind_world_matrices", {}).get(parent_index, om.MMatrix())
-
-        try:
-            no_orient_local = bind_no_orient * parent_bind_no_orient.inverse()
-            local_translation = om.MTransformationMatrix(no_orient_local).translation(om.MSpace.kTransform)
-            local_tfm = om.MTransformationMatrix()
-            local_tfm.setTranslation(local_translation, om.MSpace.kTransform)
-            local_tfm.setRotation(q_maya)
-            local_no_orient = local_tfm.asMatrix()
-            local_total = (
-                bind_world
-                * bind_no_orient.inverse()
-                * local_no_orient
-                * parent_bind_no_orient
-                * parent_bind_world.inverse()
-            )
-            q_total = om.MTransformationMatrix(local_total).rotation(asQuaternion=True)
-            return q_total * q_jo.inverse() if q_jo is not None else q_total
-        except Exception:
-            if q_jo is not None:
-                return q_jo * q_maya * q_jo.inverse()
-            return q_maya
+        return convert_vmd_quat_to_bind_space_rotate(self, joint_name, q_maya, q_jo)
 
     def get_failed_bones(self) -> set:
         """変換に失敗したボーン名のセットを取得
