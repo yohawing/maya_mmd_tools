@@ -12,16 +12,16 @@ class VpdHeader:
         bone_count (int): ボーンの総数
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """VpdHeaderの初期化"""
-        self.signature = "Vocaloid Pose Data file"
-        self.parent_file = ""  # 親ファイル名
-        self.bone_count = 0  # 総ボーン数
+        self.signature: str = "Vocaloid Pose Data file"
+        self.parent_file: str = ""  # 親ファイル名
+        self.bone_count: int = 0  # 総ボーン数
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """文字列表現を返す"""
         return f"VpdHeader(signature='{self.signature}', parent_file='{self.parent_file}', bone_count={self.bone_count})"
 
-    def __str__(self):
+    def __str__(self) -> str:
         """読みやすい文字列表現を返す"""
         return f"VPD Header:\n  Signature: {self.signature}\n  Parent File: {self.parent_file}\n  Bone Count: {self.bone_count}"

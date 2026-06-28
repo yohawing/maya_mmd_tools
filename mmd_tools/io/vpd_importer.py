@@ -1,6 +1,8 @@
 """VPDファイルのインポート機能を提供するモジュール"""
 
 import os
+from typing import Any, Dict, Optional
+
 import maya.cmds as cmds
 
 from mmd_tools.core.logger import get_logger
@@ -10,7 +12,7 @@ from mmd_tools.converters.vpd_converter import VpdConverter
 logger = get_logger(__name__)
 
 
-def import_vpd_file(parser, filepath, options=None):
+def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]] = None) -> bool:
     """VPDファイルをMayaシーンにインポートしてポーズを適用
 
     Args:
@@ -123,7 +125,7 @@ def import_vpd_file(parser, filepath, options=None):
         return False
 
 
-def _create_keyframes_for_namespace(namespace, frame):
+def _create_keyframes_for_namespace(namespace: Optional[str], frame: float) -> None:
     """指定されたネームスペースのジョイントにキーフレームを作成
 
     Args:
@@ -152,7 +154,7 @@ def _create_keyframes_for_namespace(namespace, frame):
     logger.debug(f"Created keyframes for {len(joints)} joints at frame {frame}")
 
 
-def _is_movable_joint(joint_name):
+def _is_movable_joint(joint_name: str) -> bool:
     """移動可能なジョイントかどうかを判定
 
     Args:

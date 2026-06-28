@@ -2,6 +2,8 @@
 
 import os
 import re
+from typing import List
+
 from mmd_tools.core.logger import get_logger
 
 from mmd_tools.core.exceptions import MMDParseException
@@ -21,12 +23,12 @@ class VpdData:
         bone_poses (List[BonePose]): ボーンポーズのリスト
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """VpdDataの初期化"""
-        self.header = VpdHeader()
-        self.bone_poses = []
+        self.header: VpdHeader = VpdHeader()
+        self.bone_poses: List[BonePose] = []
 
-    def parse_file(self, file_path):
+    def parse_file(self, file_path: str) -> None:
         """VPDファイルを解析する
 
         Args:
@@ -60,7 +62,7 @@ class VpdData:
 
         logger.info(f"VPD file parsing completed: {len(self.bone_poses)} bone poses")
 
-    def _parse_content(self, content):
+    def _parse_content(self, content: str) -> None:
         """VPDファイルの内容を解析する
 
         Args:
@@ -161,7 +163,7 @@ class VpdData:
         if self.header.bone_count == 0:
             self.header.bone_count = len(self.bone_poses)
 
-    def write_file(self, file_path):
+    def write_file(self, file_path: str) -> None:
         """VPDファイルを書き出す
 
         Args:
@@ -192,11 +194,11 @@ class VpdData:
             logger.error(f"Failed to export VPD file: {e}")
             raise IOError(f"Failed to write VPD file: {e}")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """文字列表現を返す"""
         return f"VpdData(header={self.header}, bone_poses={len(self.bone_poses)} bones)"
 
-    def __str__(self):
+    def __str__(self) -> str:
         """読みやすい文字列表現を返す"""
         result = str(self.header) + "\n"
         result += f"Bone Poses: {len(self.bone_poses)} bones\n"
