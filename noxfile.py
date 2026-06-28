@@ -17,8 +17,14 @@ from pathlib import Path
 
 import nox
 
-
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tests.common.maya_location import maya_location as _maya_location  # noqa: E402
+from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
+
+
 DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_CMAKE_CONFIG = "Debug"
 
@@ -54,25 +60,6 @@ def _require_build_path(session: nox.Session, value: str, option_name: str) -> P
     return path
 
 
-def _maya_location(version: str) -> Path:
-    """Return Maya installation root for the current platform."""
-    version_env = os.environ.get(f"MAYA_LOCATION_{version}")
-    if version_env:
-        return Path(version_env)
-
-    common_env = os.environ.get("MAYA_LOCATION")
-    if common_env:
-        return Path(common_env)
-
-    system = platform.system()
-    if system == "Windows":
-        return Path(f"C:/Program Files/Autodesk/Maya{version}")
-    if system == "Darwin":
-        return Path(f"/Applications/Autodesk/maya{version}/Maya.app/Contents")
-
-    return Path(f"/usr/autodesk/maya{version}")
-
-
 def _maya_devkit_root(version: str) -> Path:
     """Return the Maya devkit root, allowing environment overrides."""
     version_env = os.environ.get(f"MAYA_DEVKIT_ROOT_{version}")
@@ -84,14 +71,6 @@ def _maya_devkit_root(version: str) -> Path:
         return Path(common_env)
 
     return _maya_location(version) / "devkit"
-
-
-def _mayapy(version: str) -> Path:
-    """Return mayapy executable path for the current platform."""
-    executable = _maya_location(version) / "bin" / "mayapy"
-    if platform.system() == "Windows":
-        executable = executable.with_suffix(".exe")
-    return executable
 
 
 def _cpp_build_dir(version: str) -> Path:
