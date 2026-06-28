@@ -21,14 +21,13 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from ...core.settings import settings
-from ...core.maya_utils import find_all_mmd_models, get_mmd_model_display_name
 import os
 import json
 
 
-def _format_target_model_label(model_root):
+def _format_target_model_label(model_root, display_name):
     """VMD import target combo に表示するモデル名を返す。"""
-    display_name = get_mmd_model_display_name(model_root)
+    display_name = display_name or model_root
     if ":" not in model_root:
         return display_name
 
@@ -591,32 +590,45 @@ class ImportExportTab(BaseTab):
         if hasattr(self, "export_group"):
             self.export_group.setVisible(settings.get("export.general.export_format", "pmx") == "vmd")
 
-    def refresh_model_list(self, restore_selection=False):
-        """シーン内のMMDモデルリストを更新"""
+    def set_target_model_items(self, model_items, restore_selection=False):
+        """Presenter から渡されたモデル候補で target combo を更新する。"""
         # 現在の選択を保持
         current_index = self.target_model_combo.currentIndex() if not restore_selection else -1
-
-        self.target_model_combo.clear()
-        self.target_model_combo.addItem(self.tr("auto_detect", "actions"))
-
-        try:
-            models = find_all_mmd_models()
-            for model in models:
-                self.target_model_combo.addItem(_format_target_model_label(model), userData=model)
-        except Exception:
-            pass
-
-        # 保存された選択または現在の選択を復元
+        saved_index = None
         if restore_selection:
             saved_target_model = self.qt_settings.value("target_model_index", 0)
             try:
-                index = int(saved_target_model)
-                if 0 <= index < self.target_model_combo.count():
-                    self.target_model_combo.setCurrentIndex(index)
+                saved_index = int(saved_target_model)
             except Exception:
-                pass
-        elif 0 <= current_index < self.target_model_combo.count():
-            self.target_model_combo.setCurrentIndex(current_index)
+                saved_index = None
+
+        previous_signal_state = None
+        if hasattr(self.target_model_combo, "blockSignals"):
+            previous_signal_state = self.target_model_combo.blockSignals(True)
+        try:
+            self.target_model_combo.clear()
+            self.target_model_combo.addItem(self.tr("auto_detect", "actions"))
+
+            for model_root, display_name in model_items:
+                self.target_model_combo.addItem(_format_target_model_label(model_root, display_name), userData=model_root)
+
+            # 保存された選択または現在の選択を復元
+            if restore_selection:
+                if saved_index is not None and 0 <= saved_index < self.target_model_combo.count():
+                    self.target_model_combo.setCurrentIndex(saved_index)
+            elif 0 <= current_index < self.target_model_combo.count():
+                self.target_model_combo.setCurrentIndex(current_index)
+        finally:
+            if previous_signal_state is not None:
+                self.target_model_combo.blockSignals(previous_signal_state)
+
+    def refresh_model_list(self, restore_selection=False):
+        """シーン内のMMDモデルリストを更新"""
+        presenter = getattr(self, "presenter", None)
+        if presenter is not None:
+            presenter.refresh_model_list(restore_selection=restore_selection)
+            return
+        self.set_target_model_items([], restore_selection=restore_selection)
 
     def get_custom_namespace(self):
         """カスタムnamespace名を取得"""

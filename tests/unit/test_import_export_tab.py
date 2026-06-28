@@ -1,7 +1,6 @@
 """ImportExportTab の Maya 非依存 helper と model combo 更新を検証する。"""
 
 import unittest
-from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -14,6 +13,7 @@ class _FakeComboBox:
     def __init__(self, current_index=0):
         self._current_index = current_index
         self.items = []
+        self.blocked_states = []
 
     def currentIndex(self):
         return self._current_index
@@ -29,6 +29,10 @@ class _FakeComboBox:
 
     def setCurrentIndex(self, index):
         self._current_index = index
+
+    def blockSignals(self, blocked):
+        self.blocked_states.append(blocked)
+        return False
 
 
 class _FakeSettings:
@@ -47,22 +51,27 @@ class _FakeWidget:
         self.visible = visible
 
 
+class _FakePresenter:
+    def __init__(self):
+        self.calls = []
+
+    def refresh_model_list(self, restore_selection=False):
+        self.calls.append(restore_selection)
+
+
 class TestImportExportTabModelLabels(unittest.TestCase):
     def test_format_target_model_label_uses_display_name_without_namespace(self):
-        with patch.object(import_export_tab, "get_mmd_model_display_name", return_value="Miku"):
-            label = import_export_tab._format_target_model_label("miku_root")
+        label = import_export_tab._format_target_model_label("miku_root", "Miku")
 
         self.assertEqual(label, "Miku")
 
     def test_format_target_model_label_adds_namespace_and_root(self):
-        with patch.object(import_export_tab, "get_mmd_model_display_name", return_value="Miku"):
-            label = import_export_tab._format_target_model_label("ModelA:miku_root")
+        label = import_export_tab._format_target_model_label("ModelA:miku_root", "Miku")
 
         self.assertEqual(label, "Miku [ModelA:miku_root]")
 
     def test_format_target_model_label_handles_dag_paths(self):
-        with patch.object(import_export_tab, "get_mmd_model_display_name", return_value="Miku"):
-            label = import_export_tab._format_target_model_label("|group|ModelA:miku_root")
+        label = import_export_tab._format_target_model_label("|group|ModelA:miku_root", "Miku")
 
         self.assertEqual(label, "Miku [ModelA:miku_root]")
 
@@ -75,39 +84,30 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
         tab.tr = lambda key, _category: f"<{key}>"
         return tab
 
-    def test_refresh_model_list_adds_auto_detect_first(self):
+    def test_set_target_model_items_adds_auto_detect_first(self):
         tab = self._make_tab()
 
-        with patch.object(import_export_tab, "find_all_mmd_models", return_value=[]):
-            import_export_tab.ImportExportTab.refresh_model_list(tab)
+        import_export_tab.ImportExportTab.set_target_model_items(tab, [])
 
         self.assertEqual(tab.target_model_combo.items, [("<auto_detect>", None)])
 
-    def test_refresh_model_list_shows_namespace_label_but_keeps_model_userdata(self):
+    def test_set_target_model_items_shows_namespace_label_but_keeps_model_userdata(self):
         tab = self._make_tab()
 
-        with patch.object(
-            import_export_tab, "find_all_mmd_models", return_value=["ModelA:miku_root"]
-        ), patch.object(import_export_tab, "get_mmd_model_display_name", return_value="Miku"):
-            import_export_tab.ImportExportTab.refresh_model_list(tab)
+        import_export_tab.ImportExportTab.set_target_model_items(tab, [("ModelA:miku_root", "Miku")])
 
         self.assertEqual(
             tab.target_model_combo.items,
             [("<auto_detect>", None), ("Miku [ModelA:miku_root]", "ModelA:miku_root")],
         )
 
-    def test_refresh_model_list_distinguishes_same_display_name_by_namespace(self):
+    def test_set_target_model_items_distinguishes_same_display_name_by_namespace(self):
         tab = self._make_tab()
 
-        def display_name(_model):
-            return "Miku"
-
-        with patch.object(
-            import_export_tab,
-            "find_all_mmd_models",
-            return_value=["ModelA:miku_root", "ModelB:miku_root"],
-        ), patch.object(import_export_tab, "get_mmd_model_display_name", side_effect=display_name):
-            import_export_tab.ImportExportTab.refresh_model_list(tab)
+        import_export_tab.ImportExportTab.set_target_model_items(
+            tab,
+            [("ModelA:miku_root", "Miku"), ("ModelB:miku_root", "Miku")],
+        )
 
         self.assertEqual(
             tab.target_model_combo.items,
@@ -118,23 +118,25 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
             ],
         )
 
-    def test_refresh_model_list_restores_saved_index(self):
+    def test_set_target_model_items_restores_saved_index(self):
         tab = self._make_tab(current_index=0, saved_index=1)
 
-        with patch.object(
-            import_export_tab, "find_all_mmd_models", return_value=["ModelA:miku_root"]
-        ), patch.object(import_export_tab, "get_mmd_model_display_name", return_value="Miku"):
-            import_export_tab.ImportExportTab.refresh_model_list(tab, restore_selection=True)
+        import_export_tab.ImportExportTab.set_target_model_items(
+            tab,
+            [("ModelA:miku_root", "Miku")],
+            restore_selection=True,
+        )
 
         self.assertEqual(tab.target_model_combo.currentIndex(), 1)
+        self.assertEqual(tab.target_model_combo.blocked_states, [True, False])
 
-    def test_refresh_model_list_handles_exception_gracefully(self):
+    def test_refresh_model_list_delegates_to_presenter(self):
         tab = self._make_tab()
+        tab.presenter = _FakePresenter()
 
-        with patch.object(import_export_tab, "find_all_mmd_models", side_effect=RuntimeError("boom")):
-            import_export_tab.ImportExportTab.refresh_model_list(tab)
+        import_export_tab.ImportExportTab.refresh_model_list(tab, restore_selection=True)
 
-        self.assertEqual(tab.target_model_combo.items, [("<auto_detect>", None)])
+        self.assertEqual(tab.presenter.calls, [True])
 
 
 class TestImportExportTabDevModeVisibility(unittest.TestCase):

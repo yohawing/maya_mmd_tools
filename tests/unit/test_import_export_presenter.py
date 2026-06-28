@@ -95,12 +95,18 @@ class _FakeView:
         self.target_model_combo = _FakeComboBox()
         self.new_file_check = _FakeCheckBox(False)
         self.export_history = []
+        self.model_items = None
+        self.restore_selection = None
 
     def get_custom_namespace(self):
         return None
 
     def refresh_model_list(self):
         pass
+
+    def set_target_model_items(self, model_items, restore_selection=False):
+        self.model_items = list(model_items)
+        self.restore_selection = restore_selection
 
     def add_import_path_to_history(self, _path):
         pass
@@ -113,10 +119,11 @@ class _FakeView:
 
 
 class _FakeAppState:
-    def __init__(self):
+    def __init__(self, scene_model_service=None):
         self.current_model_root = None
         self.statuses = []
         self.progress = []
+        self.scene_model_service = scene_model_service
 
     def emit_status(self, message):
         self.statuses.append(message)
@@ -126,6 +133,21 @@ class _FakeAppState:
 
     def refresh_model_list(self):
         pass
+
+
+class _FakeSceneModelService:
+    def __init__(self, models=None, display_names=None, error=None):
+        self.models = models or []
+        self.display_names = display_names or {}
+        self.error = error
+
+    def list_mmd_models(self):
+        if self.error:
+            raise self.error
+        return list(self.models)
+
+    def get_model_display_name(self, model_root):
+        return self.display_names.get(model_root, model_root)
 
 
 class _FakeMayaAdapter:
@@ -324,6 +346,28 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertEqual(view.fix_texture_path_button.clicked.connected, [presenter.fix_texture_paths])
 
+    def test_refresh_model_list_uses_scene_model_service_display_names(self):
+        view = _FakeView()
+        scene_service = _FakeSceneModelService(
+            models=["ModelA:miku_root"],
+            display_names={"ModelA:miku_root": "Miku"},
+        )
+        app_state = _FakeAppState(scene_model_service=scene_service)
+
+        ImportExportPresenter(view, app_state)
+
+        self.assertEqual(view.model_items, [("ModelA:miku_root", "Miku")])
+        self.assertTrue(view.restore_selection)
+
+    def test_refresh_model_list_handles_scene_service_failure(self):
+        view = _FakeView()
+        app_state = _FakeAppState(scene_model_service=_FakeSceneModelService(error=RuntimeError("boom")))
+
+        presenter = ImportExportPresenter(view, app_state)
+        presenter.refresh_model_list()
+
+        self.assertEqual(view.model_items, [])
+
     def test_fix_texture_paths_shows_dialog_even_when_import_dialog_setting_disabled(self):
         settings.set("import.model.show_texture_issue_dialog", False)
         view = _FakeView()
@@ -451,13 +495,9 @@ class TestImportExportPresenter(unittest.TestCase):
         mock_maya_utils.get_attribute.assert_not_called()
 
     def test_import_file_model_branch_uses_injected_action_and_updates_ui_state(self):
-        recorded_refreshes = []
         recorded_history = []
 
         class _RecordingView(_FakeView):
-            def refresh_model_list(self):
-                recorded_refreshes.append("refresh")
-
             def add_import_path_to_history(self, path):
                 recorded_history.append(path)
 
@@ -480,7 +520,7 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(app_state.current_model_root, "model_root")
         self.assertIn("Import complete: model_root", app_state.statuses)
         self.assertIn(100, app_state.progress)
-        self.assertEqual(recorded_refreshes, ["refresh"])
+        self.assertEqual(view.model_items, [])
         self.assertEqual(recorded_history, ["model.pmx"])
 
     def test_import_file_vmd_branch_does_not_use_model_action(self):

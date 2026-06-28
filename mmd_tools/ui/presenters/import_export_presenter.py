@@ -34,7 +34,9 @@ class ImportExportPresenter(QObject):
         self.export_vmd_action = export_vmd_action or ExportVmdAction()
         self.settings_service = settings_service or SettingsService()
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self.view.presenter = self
         self.connect_signals()
+        self.refresh_model_list(restore_selection=True)
 
     def connect_signals(self):
         self.view.import_path_button.clicked.connect(self.select_import_file)
@@ -91,6 +93,25 @@ class ImportExportPresenter(QObject):
         if target_model is None:
             target_model = self._get_vmd_target_model()
         return self.settings_service.build_vmd_import_options(target_model)
+
+    def refresh_model_list(self, restore_selection=False):
+        """VMD import target model candidates を Presenter 経由で更新する。"""
+        if not hasattr(self.view, "set_target_model_items"):
+            return
+        scene_model_service = getattr(self.app_state, "scene_model_service", None)
+        if scene_model_service is None:
+            self.view.set_target_model_items([], restore_selection=restore_selection)
+            return
+
+        try:
+            model_items = [
+                (model_root, scene_model_service.get_model_display_name(model_root))
+                for model_root in scene_model_service.list_mmd_models()
+            ]
+        except Exception:
+            logger.debug("Failed to refresh VMD target model list", exc_info=True)
+            model_items = []
+        self.view.set_target_model_items(model_items, restore_selection=restore_selection)
 
     def _build_pmx_import_options(self):
         """PMX/PMD import用のオプションを組み立てる。
@@ -256,7 +277,7 @@ class ImportExportPresenter(QObject):
                 self.app_state.emit_status(f"Import complete: {root_node}")
                 self.app_state.emit_progress(100)
                 # モデルリストを更新
-                self.view.refresh_model_list()
+                self.refresh_model_list()
                 # 成功したパスを履歴に追加
                 self.view.add_import_path_to_history(file_path)
                 if not is_vmd:
