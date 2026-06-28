@@ -47,6 +47,17 @@ class _FakeViewState:
         return self._value
 
 
+class _FakeSettingsService:
+    def __init__(self, values=None):
+        self.values = dict(values or {})
+
+    def get(self, key, default=None):
+        return self.values.get(key, default)
+
+    def set(self, key, value):
+        self.values[key] = value
+
+
 class _FakeWidget:
     def __init__(self):
         self.visible = None
@@ -144,42 +155,31 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
 
 
 class TestImportExportTabDevModeVisibility(unittest.TestCase):
-    def setUp(self):
-        self._old_dev_mode = import_export_tab.settings.get("ui.general.development_mode", False)
-
-    def tearDown(self):
-        import_export_tab.settings.set("ui.general.development_mode", self._old_dev_mode)
-
     def test_dev_only_cpp_rig_node_control_follows_development_mode(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         cpp_rig_nodes_check = _FakeWidget()
         tab._dev_only_widgets = [cpp_rig_nodes_check]
+        tab.settings_service = _FakeSettingsService({"ui.general.development_mode": False})
 
-        import_export_tab.settings.set("ui.general.development_mode", False)
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
         self.assertFalse(cpp_rig_nodes_check.visible)
 
-        import_export_tab.settings.set("ui.general.development_mode", True)
+        tab.settings_service.set("ui.general.development_mode", True)
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
         self.assertTrue(cpp_rig_nodes_check.visible)
 
 
 class TestImportExportTabExportVisibility(unittest.TestCase):
-    def setUp(self):
-        self._old_export_format = import_export_tab.settings.get("export.general.export_format", "pmx")
-
-    def tearDown(self):
-        import_export_tab.settings.set("export.general.export_format", self._old_export_format)
-
     def _make_tab(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         tab.export_group = _FakeWidget()
+        tab.settings_service = _FakeSettingsService()
         return tab
 
     def test_export_group_is_hidden_for_pmx_format(self):
         tab = self._make_tab()
 
-        import_export_tab.settings.set("export.general.export_format", "pmx")
+        tab.settings_service.set("export.general.export_format", "pmx")
         import_export_tab.ImportExportTab._apply_export_visibility(tab)
 
         self.assertFalse(tab.export_group.visible)
@@ -187,7 +187,7 @@ class TestImportExportTabExportVisibility(unittest.TestCase):
     def test_export_group_is_shown_for_vmd_format(self):
         tab = self._make_tab()
 
-        import_export_tab.settings.set("export.general.export_format", "vmd")
+        tab.settings_service.set("export.general.export_format", "vmd")
         import_export_tab.ImportExportTab._apply_export_visibility(tab)
 
         self.assertTrue(tab.export_group.visible)
@@ -197,7 +197,7 @@ class TestImportExportTabExportVisibility(unittest.TestCase):
 
         import_export_tab.ImportExportTab._on_export_format_changed(tab, "vmd")
 
-        self.assertEqual(import_export_tab.settings.get("export.general.export_format"), "vmd")
+        self.assertEqual(tab.settings_service.get("export.general.export_format"), "vmd")
         self.assertTrue(tab.export_group.visible)
 
 

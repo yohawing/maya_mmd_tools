@@ -20,7 +20,7 @@ from ..qt_compat import (
 )
 from ..base_tab import BaseTab
 from ..import_export_view_state import ImportExportViewState
-from ...core.settings import settings
+from ...services.settings_service import SettingsService
 import os
 
 
@@ -38,11 +38,12 @@ def _format_target_model_label(model_root, display_name):
 
 
 class ImportExportTab(BaseTab):
-    def __init__(self, parent=None, view_state=None):
+    def __init__(self, parent=None, view_state=None, settings_service=None):
         super().__init__(parent)
         self.setObjectName("ImportExportTab")
 
         self.view_state = view_state or ImportExportViewState()
+        self.settings_service = settings_service or SettingsService()
 
         # メインレイアウト
         main_layout = QHBoxLayout(self)
@@ -65,8 +66,8 @@ class ImportExportTab(BaseTab):
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setRange(0.001, 1000.0)
         self.scale_spin.setDecimals(3)
-        self.scale_spin.setValue(settings.get("import.general.scale_factor", 1.0))
-        self.scale_spin.valueChanged.connect(lambda v: settings.set("import.general.scale_factor", v))
+        self.scale_spin.setValue(self.settings_service.get("import.general.scale_factor", 1.0))
+        self.scale_spin.valueChanged.connect(lambda v: self.settings_service.set("import.general.scale_factor", v))
         self.scale_spin.setToolTip(self.tr("scale_factor", "tooltips"))
         scale_layout.addWidget(self.scale_spin)
         scale_layout.addStretch()
@@ -77,8 +78,8 @@ class ImportExportTab(BaseTab):
         general_layout = QVBoxLayout()
 
         self.use_namespace_check = QCheckBox(self.tr("use_namespace", "checkboxes"))
-        self.use_namespace_check.setChecked(settings.get("import.general.use_namespace", False))
-        self.use_namespace_check.toggled.connect(lambda v: settings.set("import.general.use_namespace", v))
+        self.use_namespace_check.setChecked(self.settings_service.get("import.general.use_namespace", False))
+        self.use_namespace_check.toggled.connect(lambda v: self.settings_service.set("import.general.use_namespace", v))
         self.use_namespace_check.setToolTip(self.tr("use_namespace", "tooltips"))
         general_layout.addWidget(self.use_namespace_check)
 
@@ -119,25 +120,25 @@ class ImportExportTab(BaseTab):
         model_layout = QVBoxLayout()
 
         self.import_models_check = QCheckBox(self.tr("import_models", "checkboxes"))
-        self.import_models_check.setChecked(settings.get("import.model.import_models", True))
-        self.import_models_check.toggled.connect(lambda v: settings.set("import.model.import_models", v))
+        self.import_models_check.setChecked(self.settings_service.get("import.model.import_models", True))
+        self.import_models_check.toggled.connect(lambda v: self.settings_service.set("import.model.import_models", v))
         model_layout.addWidget(self.import_models_check)
 
         self.create_mmd_shaders_check = QCheckBox(self.tr("create_mmd_shaders", "checkboxes"))
-        self.create_mmd_shaders_check.setChecked(settings.get("import.model.create_mmd_shaders", True))
-        self.create_mmd_shaders_check.toggled.connect(lambda v: settings.set("import.model.create_mmd_shaders", v))
+        self.create_mmd_shaders_check.setChecked(self.settings_service.get("import.model.create_mmd_shaders", True))
+        self.create_mmd_shaders_check.toggled.connect(lambda v: self.settings_service.set("import.model.create_mmd_shaders", v))
         self.create_mmd_shaders_check.setToolTip(self.tr("create_mmd_shaders", "tooltips"))
         model_layout.addWidget(self.create_mmd_shaders_check)
 
         self.separate_meshes_check = QCheckBox(self.tr("separate_meshes", "checkboxes"))
-        self.separate_meshes_check.setChecked(settings.get("import.model.separate_meshes_by_material", False))
-        self.separate_meshes_check.toggled.connect(lambda v: settings.set("import.model.separate_meshes_by_material", v))
+        self.separate_meshes_check.setChecked(self.settings_service.get("import.model.separate_meshes_by_material", False))
+        self.separate_meshes_check.toggled.connect(lambda v: self.settings_service.set("import.model.separate_meshes_by_material", v))
         self.separate_meshes_check.setToolTip(self.tr("separate_meshes", "tooltips"))
         model_layout.addWidget(self.separate_meshes_check)
 
         self.split_by_morph_groups_check = QCheckBox(self.tr("split_meshes_by_morph_groups", "checkboxes"))
-        self.split_by_morph_groups_check.setChecked(settings.get("import.model.split_meshes_by_morph_groups", False))
-        self.split_by_morph_groups_check.toggled.connect(lambda v: settings.set("import.model.split_meshes_by_morph_groups", v))
+        self.split_by_morph_groups_check.setChecked(self.settings_service.get("import.model.split_meshes_by_morph_groups", False))
+        self.split_by_morph_groups_check.toggled.connect(lambda v: self.settings_service.set("import.model.split_meshes_by_morph_groups", v))
         self.split_by_morph_groups_check.setToolTip(self.tr("split_by_morph_groups", "tooltips"))
         model_layout.addWidget(self.split_by_morph_groups_check)
 
@@ -146,18 +147,18 @@ class ImportExportTab(BaseTab):
         # and the user assigns blend manually in the Material tab.
         self.auto_classify_transparency_check = QCheckBox(self.tr("auto_classify_transparency", "checkboxes"))
         self.auto_classify_transparency_check.setChecked(
-            settings.get("import.model.auto_classify_transparency", False)
+            self.settings_service.get("import.model.auto_classify_transparency", False)
         )
         self.auto_classify_transparency_check.toggled.connect(
-            lambda v: settings.set("import.model.auto_classify_transparency", v)
+            lambda v: self.settings_service.set("import.model.auto_classify_transparency", v)
         )
         self.auto_classify_transparency_check.setToolTip(self.tr("auto_classify_transparency", "tooltips"))
         model_layout.addWidget(self.auto_classify_transparency_check)
 
         self.auto_resolve_textures_check = QCheckBox(self.tr("auto_resolve_textures", "checkboxes"))
-        self.auto_resolve_textures_check.setChecked(settings.get("import.model.auto_resolve_textures", True))
+        self.auto_resolve_textures_check.setChecked(self.settings_service.get("import.model.auto_resolve_textures", True))
         self.auto_resolve_textures_check.toggled.connect(
-            lambda v: settings.set("import.model.auto_resolve_textures", v)
+            lambda v: self.settings_service.set("import.model.auto_resolve_textures", v)
         )
         self.auto_resolve_textures_check.setToolTip(self.tr("auto_resolve_textures", "tooltips"))
         model_layout.addWidget(self.auto_resolve_textures_check)
@@ -169,10 +170,10 @@ class ImportExportTab(BaseTab):
         self.transparency_threshold_spin = QSpinBox()
         self.transparency_threshold_spin.setRange(0, 255)
         self.transparency_threshold_spin.setValue(
-            int(settings.get("import.model.transparency_opaque_threshold", 255))
+            int(self.settings_service.get("import.model.transparency_opaque_threshold", 255))
         )
         self.transparency_threshold_spin.valueChanged.connect(
-            lambda v: settings.set("import.model.transparency_opaque_threshold", int(v))
+            lambda v: self.settings_service.set("import.model.transparency_opaque_threshold", int(v))
         )
         transparency_threshold_layout.addWidget(self.transparency_threshold_label)
         transparency_threshold_layout.addWidget(self.transparency_threshold_spin)
@@ -180,14 +181,14 @@ class ImportExportTab(BaseTab):
         model_layout.addWidget(self.transparency_threshold_row)
 
         self.hide_hidden_geometry_check = QCheckBox(self.tr("hide_hidden_geometry", "checkboxes"))
-        self.hide_hidden_geometry_check.setChecked(settings.get("import.model.hide_hidden_geometry", True))
-        self.hide_hidden_geometry_check.toggled.connect(lambda v: settings.set("import.model.hide_hidden_geometry", v))
+        self.hide_hidden_geometry_check.setChecked(self.settings_service.get("import.model.hide_hidden_geometry", True))
+        self.hide_hidden_geometry_check.toggled.connect(lambda v: self.settings_service.set("import.model.hide_hidden_geometry", v))
         self.hide_hidden_geometry_check.setToolTip(self.tr("hide_hidden_geometry", "tooltips"))
         model_layout.addWidget(self.hide_hidden_geometry_check)
 
         self.disable_backface_culling_check = QCheckBox(self.tr("disable_backface_culling", "checkboxes"))
-        self.disable_backface_culling_check.setChecked(settings.get("import.model.disable_backface_culling", True))
-        self.disable_backface_culling_check.toggled.connect(lambda v: settings.set("import.model.disable_backface_culling", v))
+        self.disable_backface_culling_check.setChecked(self.settings_service.get("import.model.disable_backface_culling", True))
+        self.disable_backface_culling_check.toggled.connect(lambda v: self.settings_service.set("import.model.disable_backface_culling", v))
         self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))
         model_layout.addWidget(self.disable_backface_culling_check)
 
@@ -197,8 +198,8 @@ class ImportExportTab(BaseTab):
         texture_layout.setContentsMargins(0, 0, 0, 0)
         self.texture_search_label = QLabel(self.tr("texture_search_path", "fields"))
         texture_layout.addWidget(self.texture_search_label)
-        self.texture_search_path_edit = QLineEdit(settings.get("import.model.texture_search_path", ""))
-        self.texture_search_path_edit.textChanged.connect(lambda v: settings.set("import.model.texture_search_path", v))
+        self.texture_search_path_edit = QLineEdit(self.settings_service.get("import.model.texture_search_path", ""))
+        self.texture_search_path_edit.textChanged.connect(lambda v: self.settings_service.set("import.model.texture_search_path", v))
         texture_layout.addWidget(self.texture_search_path_edit)
         model_layout.addWidget(self.texture_row)
 
@@ -208,8 +209,8 @@ class ImportExportTab(BaseTab):
         uv_layout.setContentsMargins(0, 0, 0, 0)
         self.uv_set_label = QLabel(self.tr("uv_set_name", "fields"))
         uv_layout.addWidget(self.uv_set_label)
-        self.uv_set_name_edit = QLineEdit(settings.get("import.model.uv_set_name", "map#"))
-        self.uv_set_name_edit.textChanged.connect(lambda v: settings.set("import.model.uv_set_name", v))
+        self.uv_set_name_edit = QLineEdit(self.settings_service.get("import.model.uv_set_name", "map#"))
+        self.uv_set_name_edit.textChanged.connect(lambda v: self.settings_service.set("import.model.uv_set_name", v))
         uv_layout.addWidget(self.uv_set_name_edit)
         uv_layout.addStretch()
         model_layout.addWidget(self.uv_row)
@@ -222,29 +223,29 @@ class ImportExportTab(BaseTab):
         morph_physics_layout = QVBoxLayout()
 
         self.import_morphs_check = QCheckBox(self.tr("import_morphs", "checkboxes"))
-        self.import_morphs_check.setChecked(settings.get("import.morph.import_morphs", True))
-        self.import_morphs_check.toggled.connect(lambda v: settings.set("import.morph.import_morphs", v))
+        self.import_morphs_check.setChecked(self.settings_service.get("import.morph.import_morphs", True))
+        self.import_morphs_check.toggled.connect(lambda v: self.settings_service.set("import.morph.import_morphs", v))
         morph_physics_layout.addWidget(self.import_morphs_check)
 
         self.import_physics_check = QCheckBox(self.tr("import_physics", "checkboxes"))
-        self.import_physics_check.setChecked(settings.get("import.physics.import_physics", False))
-        self.import_physics_check.toggled.connect(lambda v: settings.set("import.physics.import_physics", v))
+        self.import_physics_check.setChecked(self.settings_service.get("import.physics.import_physics", False))
+        self.import_physics_check.toggled.connect(lambda v: self.settings_service.set("import.physics.import_physics", v))
         self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
         morph_physics_layout.addWidget(self.import_physics_check)
 
         self.create_rigid_bodies_check = QCheckBox(self.tr("create_rigid_bodies", "checkboxes"))
-        self.create_rigid_bodies_check.setChecked(settings.get("import.physics.create_rigid_bodies", True))
-        self.create_rigid_bodies_check.toggled.connect(lambda v: settings.set("import.physics.create_rigid_bodies", v))
+        self.create_rigid_bodies_check.setChecked(self.settings_service.get("import.physics.create_rigid_bodies", True))
+        self.create_rigid_bodies_check.toggled.connect(lambda v: self.settings_service.set("import.physics.create_rigid_bodies", v))
         morph_physics_layout.addWidget(self.create_rigid_bodies_check)
 
         self.create_physics_joints_check = QCheckBox(self.tr("create_physics_joints", "checkboxes"))
-        self.create_physics_joints_check.setChecked(settings.get("import.physics.create_physics_joints", True))
-        self.create_physics_joints_check.toggled.connect(lambda v: settings.set("import.physics.create_physics_joints", v))
+        self.create_physics_joints_check.setChecked(self.settings_service.get("import.physics.create_physics_joints", True))
+        self.create_physics_joints_check.toggled.connect(lambda v: self.settings_service.set("import.physics.create_physics_joints", v))
         morph_physics_layout.addWidget(self.create_physics_joints_check)
 
         self.group_physics_objects_check = QCheckBox(self.tr("group_physics_objects", "checkboxes"))
-        self.group_physics_objects_check.setChecked(settings.get("import.physics.group_physics_objects", True))
-        self.group_physics_objects_check.toggled.connect(lambda v: settings.set("import.physics.group_physics_objects", v))
+        self.group_physics_objects_check.setChecked(self.settings_service.get("import.physics.group_physics_objects", True))
+        self.group_physics_objects_check.toggled.connect(lambda v: self.settings_service.set("import.physics.group_physics_objects", v))
         morph_physics_layout.addWidget(self.group_physics_objects_check)
 
         self.morph_physics_group.setLayout(morph_physics_layout)
@@ -255,21 +256,21 @@ class ImportExportTab(BaseTab):
         other_layout = QVBoxLayout()
 
         self.add_semi_standard_bones_check = QCheckBox(self.tr("add_semi_standard_bones", "checkboxes"))
-        self.add_semi_standard_bones_check.setChecked(settings.get("import.rig.add_semi_standard_bones", False))
-        self.add_semi_standard_bones_check.toggled.connect(lambda v: settings.set("import.rig.add_semi_standard_bones", v))
+        self.add_semi_standard_bones_check.setChecked(self.settings_service.get("import.rig.add_semi_standard_bones", False))
+        self.add_semi_standard_bones_check.toggled.connect(lambda v: self.settings_service.set("import.rig.add_semi_standard_bones", v))
         self.add_semi_standard_bones_check.setToolTip(self.tr("add_semi_standard_bones", "tooltips"))
         other_layout.addWidget(self.add_semi_standard_bones_check)
 
         self.translate_names_check = QCheckBox(self.tr("translate_names", "checkboxes"))
-        self.translate_names_check.setChecked(settings.get("import.naming.translate_names", True))
-        self.translate_names_check.toggled.connect(lambda v: settings.set("import.naming.translate_names", v))
+        self.translate_names_check.setChecked(self.settings_service.get("import.naming.translate_names", True))
+        self.translate_names_check.toggled.connect(lambda v: self.settings_service.set("import.naming.translate_names", v))
         self.translate_names_check.setToolTip(self.tr("translate_names", "tooltips"))
         other_layout.addWidget(self.translate_names_check)
 
         self.use_cpp_rig_nodes_check = QCheckBox(self.tr("use_cpp_rig_nodes", "checkboxes"))
-        self.use_cpp_rig_nodes_check.setChecked(settings.get("import.native.use_cpp_rig_nodes", False))
+        self.use_cpp_rig_nodes_check.setChecked(self.settings_service.get("import.native.use_cpp_rig_nodes", False))
         self.use_cpp_rig_nodes_check.toggled.connect(
-            lambda v: settings.set("import.native.use_cpp_rig_nodes", v)
+            lambda v: self.settings_service.set("import.native.use_cpp_rig_nodes", v)
         )
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         other_layout.addWidget(self.use_cpp_rig_nodes_check)
@@ -286,8 +287,8 @@ class ImportExportTab(BaseTab):
         frame_layout.addWidget(self.start_frame_label)
         self.animation_start_frame = QSpinBox()
         self.animation_start_frame.setRange(0, 10000)
-        self.animation_start_frame.setValue(settings.get("import.animation.animation_start_frame", 1))
-        self.animation_start_frame.valueChanged.connect(lambda v: settings.set("import.animation.animation_start_frame", v))
+        self.animation_start_frame.setValue(self.settings_service.get("import.animation.animation_start_frame", 1))
+        self.animation_start_frame.valueChanged.connect(lambda v: self.settings_service.set("import.animation.animation_start_frame", v))
         self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
         frame_layout.addWidget(self.animation_start_frame)
         frame_layout.addStretch()
@@ -299,17 +300,17 @@ class ImportExportTab(BaseTab):
         fps_layout.addWidget(self.vmd_fps_label)
         self.vmd_fps_combo = QComboBox()
         self.vmd_fps_combo.addItems(["30", "60"])
-        vmd_fps_val = settings.get("import.animation.vmd_fps", 30)
+        vmd_fps_val = self.settings_service.get("import.animation.vmd_fps", 30)
         try:
             vmd_fps_int = int(vmd_fps_val)
         except (TypeError, ValueError):
             vmd_fps_int = 30
         if vmd_fps_int not in (30, 60):
             vmd_fps_int = 30
-            settings.set("import.animation.vmd_fps", 30)
+            self.settings_service.set("import.animation.vmd_fps", 30)
         self.vmd_fps_combo.setCurrentText(str(vmd_fps_int))
         self.vmd_fps_combo.currentTextChanged.connect(
-            lambda v: settings.set("import.animation.vmd_fps", int(v))
+            lambda v: self.settings_service.set("import.animation.vmd_fps", int(v))
         )
         self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))
         fps_layout.addWidget(self.vmd_fps_combo)
@@ -324,60 +325,60 @@ class ImportExportTab(BaseTab):
         self.motion_scale_spin.setRange(0.001, 1000.0)
         self.motion_scale_spin.setDecimals(3)
         self.motion_scale_spin.setSingleStep(0.1)
-        self.motion_scale_spin.setValue(settings.get("import.animation.motion_scale", 1.0))
-        self.motion_scale_spin.valueChanged.connect(lambda v: settings.set("import.animation.motion_scale", v))
+        self.motion_scale_spin.setValue(self.settings_service.get("import.animation.motion_scale", 1.0))
+        self.motion_scale_spin.valueChanged.connect(lambda v: self.settings_service.set("import.animation.motion_scale", v))
         self.motion_scale_spin.setToolTip(self.tr("motion_scale", "tooltips"))
         motion_scale_layout.addWidget(self.motion_scale_spin)
         motion_scale_layout.addStretch()
         anim_settings_layout.addLayout(motion_scale_layout)
 
         self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
-        self.bake_mode_check.setChecked(settings.get("import.rig.bake_mode", False))
+        self.bake_mode_check.setChecked(self.settings_service.get("import.rig.bake_mode", False))
         self.bake_mode_check.toggled.connect(
-            lambda v: settings.set("import.rig.bake_mode", v)
+            lambda v: self.settings_service.set("import.rig.bake_mode", v)
         )
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
         anim_settings_layout.addWidget(self.bake_mode_check)
 
         self.clear_existing_motion_check = QCheckBox(self.tr("clear_existing_motion", "checkboxes"))
-        self.clear_existing_motion_check.setChecked(settings.get("import.animation.clear_existing_motion", False))
+        self.clear_existing_motion_check.setChecked(self.settings_service.get("import.animation.clear_existing_motion", False))
         self.clear_existing_motion_check.toggled.connect(
-            lambda v: settings.set("import.animation.clear_existing_motion", v)
+            lambda v: self.settings_service.set("import.animation.clear_existing_motion", v)
         )
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         anim_settings_layout.addWidget(self.clear_existing_motion_check)
 
         # Animation type checkboxes
         self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
-        self.import_bone_animation_check.setChecked(settings.get("import.animation.import_animations", True))
-        self.import_bone_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_animations", v))
+        self.import_bone_animation_check.setChecked(self.settings_service.get("import.animation.import_animations", True))
+        self.import_bone_animation_check.toggled.connect(lambda v: self.settings_service.set("import.animation.import_animations", v))
         self.import_bone_animation_check.setToolTip(self.tr("import_bone_animation", "tooltips"))
         anim_settings_layout.addWidget(self.import_bone_animation_check)
 
         self.import_morph_animation_check = QCheckBox(self.tr("import_morph_animation", "checkboxes"))
-        self.import_morph_animation_check.setChecked(settings.get("import.animation.import_morph_animation", True))
-        self.import_morph_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_morph_animation", v))
+        self.import_morph_animation_check.setChecked(self.settings_service.get("import.animation.import_morph_animation", True))
+        self.import_morph_animation_check.toggled.connect(lambda v: self.settings_service.set("import.animation.import_morph_animation", v))
         self.import_morph_animation_check.setToolTip(self.tr("import_morph_animation", "tooltips"))
         anim_settings_layout.addWidget(self.import_morph_animation_check)
 
         self.import_camera_animation_check = QCheckBox(self.tr("import_camera_animation", "checkboxes"))
-        self.import_camera_animation_check.setChecked(settings.get("import.animation.import_camera_animation", True))
+        self.import_camera_animation_check.setChecked(self.settings_service.get("import.animation.import_camera_animation", True))
         self.import_camera_animation_check.toggled.connect(
-            lambda v: settings.set("import.animation.import_camera_animation", v)
+            lambda v: self.settings_service.set("import.animation.import_camera_animation", v)
         )
         self.import_camera_animation_check.setToolTip(self.tr("import_camera_animation", "tooltips"))
         anim_settings_layout.addWidget(self.import_camera_animation_check)
 
         self.import_light_animation_check = QCheckBox(self.tr("import_light_animation", "checkboxes"))
-        self.import_light_animation_check.setChecked(settings.get("import.animation.import_light_animation", True))
-        self.import_light_animation_check.toggled.connect(lambda v: settings.set("import.animation.import_light_animation", v))
+        self.import_light_animation_check.setChecked(self.settings_service.get("import.animation.import_light_animation", True))
+        self.import_light_animation_check.toggled.connect(lambda v: self.settings_service.set("import.animation.import_light_animation", v))
         self.import_light_animation_check.setToolTip(self.tr("import_light_animation", "tooltips"))
         anim_settings_layout.addWidget(self.import_light_animation_check)
 
         # Resample curves
         self.resample_curves_check = QCheckBox(self.tr("resample_curves", "checkboxes"))
-        self.resample_curves_check.setChecked(settings.get("import.animation.resample_curves", False))
-        self.resample_curves_check.toggled.connect(lambda v: settings.set("import.animation.resample_curves", v))
+        self.resample_curves_check.setChecked(self.settings_service.get("import.animation.resample_curves", False))
+        self.resample_curves_check.toggled.connect(lambda v: self.settings_service.set("import.animation.resample_curves", v))
         self.resample_curves_check.setToolTip(self.tr("resample_curves", "tooltips"))
         anim_settings_layout.addWidget(self.resample_curves_check)
 
@@ -403,7 +404,7 @@ class ImportExportTab(BaseTab):
         self.export_format_combo = QComboBox()
         # PMD エクスポートは PmdExporter が未実装のため選択肢に出さない。
         self.export_format_combo.addItems(["pmx", "vmd"])
-        current_format = settings.get("export.general.export_format", "pmx")
+        current_format = self.settings_service.get("export.general.export_format", "pmx")
         self.export_format_combo.setCurrentText(current_format)
         self.export_format_combo.currentTextChanged.connect(self._on_export_format_changed)
         format_layout.addWidget(self.export_format_combo)
@@ -412,8 +413,8 @@ class ImportExportTab(BaseTab):
 
         # Apply scale checkbox
         self.apply_scale_check = QCheckBox(self.tr("apply_scale", "checkboxes"))
-        self.apply_scale_check.setChecked(settings.get("export.general.apply_scale", True))
-        self.apply_scale_check.toggled.connect(lambda v: settings.set("export.general.apply_scale", v))
+        self.apply_scale_check.setChecked(self.settings_service.get("export.general.apply_scale", True))
+        self.apply_scale_check.toggled.connect(lambda v: self.settings_service.set("export.general.apply_scale", v))
         export_settings_layout.addWidget(self.apply_scale_check)
 
         export_settings_layout.addStretch()
@@ -572,19 +573,19 @@ class ImportExportTab(BaseTab):
 
     def _apply_dev_mode_visibility(self):
         """dev-only UI controls の表示/非表示を development_mode 設定に合わせる。"""
-        is_dev = settings.get("ui.general.development_mode", False)
+        is_dev = self.settings_service.get("ui.general.development_mode", False)
         for widget in self._dev_only_widgets:
             widget.setVisible(is_dev)
 
     def _on_export_format_changed(self, export_format):
         """エクスポート形式を保存し、利用可能な export UI だけを表示する。"""
-        settings.set("export.general.export_format", export_format)
+        self.settings_service.set("export.general.export_format", export_format)
         self._apply_export_visibility()
 
     def _apply_export_visibility(self):
         """VMD export 実装済みのときだけ export 操作群を表示する。"""
         if hasattr(self, "export_group"):
-            self.export_group.setVisible(settings.get("export.general.export_format", "pmx") == "vmd")
+            self.export_group.setVisible(self.settings_service.get("export.general.export_format", "pmx") == "vmd")
 
     def set_target_model_items(self, model_items, restore_selection=False):
         """Presenter から渡されたモデル候補で target combo を更新する。"""
@@ -870,3 +871,4 @@ class ImportExportTab(BaseTab):
         self._save_history("export_path_history", path)
         # 履歴リストを更新
         self.refresh_unified_history()
+
