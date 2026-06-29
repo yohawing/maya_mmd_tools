@@ -10,6 +10,25 @@ import maya.cmds as cmds
 from ..core import maya_utils
 
 
+def _layer_base_value(node_name: str, attr: str) -> float:
+    """Return the current base value in the units expected by API anim curves."""
+    try:
+        value = cmds.getAttr(f"{node_name}.{attr}")
+        if isinstance(value, (list, tuple)):
+            value = value[0]
+        if isinstance(value, (list, tuple)):
+            value = value[0]
+        value = float(value)
+    except Exception:
+        return 0.0
+    return math.radians(value) if "rotate" in attr else value
+
+
+def _as_layer_delta(node_name: str, attr: str, value: float) -> float:
+    """Convert an absolute sample to an additive animation-layer delta."""
+    return float(value) - _layer_base_value(node_name, attr)
+
+
 def batch_create_and_key_curves(
     converter,
     joint_name: str,
@@ -20,12 +39,13 @@ def batch_create_and_key_curves(
         return False
     attrs = list(channel_samples.keys())
     curves: Dict[str, oma.MFnAnimCurve] = {}
+    animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
     try:
         curves = maya_utils.create_animation_curves(
             joint_name,
             attrs,
             tangent_type=oma.MFnAnimCurve.kTangentLinear,
-            animation_layer=None,
+            animation_layer=animation_layer,
         )
     except Exception as e:
         converter.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
@@ -54,7 +74,8 @@ def batch_create_and_key_curves(
                 times = shared_times
                 vals = om.MDoubleArray()
                 for frame, val in samples:
-                    vals.append(float(val))
+                    value = _as_layer_delta(joint_name, attr, val) if animation_layer else float(val)
+                    vals.append(value)
                 if times is None or len(times) != len(vals):
                     times = om.MTimeArray()
                     for frame, _ in samples:
@@ -67,8 +88,12 @@ def batch_create_and_key_curves(
                 converter.logger.debug(f"addKeys failed for {joint_name}.{attr}, fallback: {e}")
         for frame, val in samples:
             try:
-                cmd_val = math.degrees(val) if "rotate" in attr else val
-                cmds.setKeyframe(joint_name, attribute=attr, time=frame, value=cmd_val)
+                value = _as_layer_delta(joint_name, attr, val) if animation_layer else float(val)
+                cmd_val = math.degrees(value) if "rotate" in attr else value
+                key_args = {"attribute": attr, "time": frame, "value": cmd_val}
+                if animation_layer:
+                    key_args["animLayer"] = animation_layer
+                cmds.setKeyframe(joint_name, **key_args)
                 success_any = True
             except Exception:
                 pass
@@ -91,18 +116,27 @@ def batch_create_and_key_curve_arrays(
 
     dynamic_attrs = []
     skipped_static = 0
+    animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
+    layer_static_values: Dict[str, om.MDoubleArray] = {}
     for attr, values in channel_values.items():
         state = static_state.get(attr, {})
         if state.get("is_static", False):
-            skipped_static += 1
             if state.get("first") is not None:
-                try:
-                    value = float(state["first"])
-                    if "rotate" in attr:
-                        value = math.degrees(value)
-                    cmds.setAttr(f"{joint_name}.{attr}", value)
-                except Exception:
-                    pass
+                if animation_layer:
+                    layer_static_values[attr] = om.MDoubleArray(
+                        len(times),
+                        _as_layer_delta(joint_name, attr, float(state["first"])),
+                    )
+                    dynamic_attrs.append(attr)
+                else:
+                    skipped_static += 1
+                    try:
+                        value = float(state["first"])
+                        if "rotate" in attr:
+                            value = math.degrees(value)
+                        cmds.setAttr(f"{joint_name}.{attr}", value)
+                    except Exception:
+                        pass
             continue
         if values is None or len(values) != len(times):
             continue
@@ -116,7 +150,7 @@ def batch_create_and_key_curve_arrays(
             joint_name,
             dynamic_attrs,
             tangent_type=oma.MFnAnimCurve.kTangentLinear,
-            animation_layer=None,
+            animation_layer=animation_layer,
         )
     except Exception as e:
         converter.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
@@ -125,11 +159,18 @@ def batch_create_and_key_curve_arrays(
     tangent = oma.MFnAnimCurve.kTangentLinear
     keyed = 0
     for attr in dynamic_attrs:
-        values = channel_values[attr]
+        values = layer_static_values.get(attr) or channel_values[attr]
         curve = curves.get(attr)
         if curve:
             try:
-                curve.addKeys(times, values, tangent, tangent, False)
+                if animation_layer and attr not in layer_static_values:
+                    layer_values = om.MDoubleArray()
+                    for index in range(len(values)):
+                        layer_values.append(_as_layer_delta(joint_name, attr, values[index]))
+                    values_to_key = layer_values
+                else:
+                    values_to_key = values
+                curve.addKeys(times, values_to_key, tangent, tangent, False)
                 keyed += 1
                 continue
             except Exception as e:
@@ -138,9 +179,14 @@ def batch_create_and_key_curve_arrays(
         for index, frame in enumerate(frame_numbers):
             try:
                 value = float(values[index])
+                if animation_layer and attr not in layer_static_values:
+                    value = _as_layer_delta(joint_name, attr, value)
                 if "rotate" in attr:
                     value = math.degrees(value)
-                cmds.setKeyframe(joint_name, attribute=attr, time=frame, value=value)
+                key_args = {"attribute": attr, "time": frame, "value": value}
+                if animation_layer:
+                    key_args["animLayer"] = animation_layer
+                cmds.setKeyframe(joint_name, **key_args)
             except Exception:
                 pass
         keyed += 1

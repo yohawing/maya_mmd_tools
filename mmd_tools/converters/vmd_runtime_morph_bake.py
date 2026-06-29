@@ -68,22 +68,34 @@ def bake_morph_weight_cache_from_runtime(
 
     keyed_nodes = 0
     for morph_node, channel_samples in samples_by_node.items():
+        animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
+        samples_to_key = (
+            converter._samples_as_anim_layer_deltas(morph_node, channel_samples)
+            if animation_layer
+            else channel_samples
+        )
         try:
-            if converter._batch_key_scalar_channels(morph_node, channel_samples):
+            if converter._batch_key_scalar_channels(
+                morph_node,
+                samples_to_key,
+                animation_layer=animation_layer,
+            ):
                 keyed_nodes += 1
                 continue
         except Exception as exc:
             converter.logger.debug(f"runtime morph batch keying failed for {morph_node}, fallback: {exc}")
 
-        for weight_attr, samples in channel_samples.items():
+        for weight_attr, samples in samples_to_key.items():
             for frame, weight in samples:
                 try:
-                    cmds.setKeyframe(
-                        morph_node,
-                        attribute=weight_attr,
-                        time=frame,
-                        value=float(weight),
-                    )
+                    key_args = {
+                        "attribute": weight_attr,
+                        "time": frame,
+                        "value": float(weight),
+                    }
+                    if animation_layer:
+                        key_args["animLayer"] = animation_layer
+                    cmds.setKeyframe(morph_node, **key_args)
                 except Exception as exc:
                     converter.logger.debug(
                         f"runtime morph fallback keying failed for {morph_node}.{weight_attr} at {frame}: {exc}"

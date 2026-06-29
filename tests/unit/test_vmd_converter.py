@@ -2983,3 +2983,117 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 30.0, places=5)
 
         cmds.delete(joint)
+
+    def test_runtime_array_keying_uses_anim_layer_deltas(self):
+        """runtime bake の joint array keying は既存値を壊さず animLayer に差分値を入れる。"""
+        joint = cmds.joint(name="test_runtime_layer_delta_joint")
+        cmds.setAttr(f"{joint}.translateX", 10.0)
+        cmds.setAttr(f"{joint}.rotateX", 30.0)
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = "runtime_delta_layer"
+
+        captured = {}
+        create_calls = []
+
+        class FakeCurve:
+            def __init__(self, attr):
+                self.attr = attr
+
+            def addKeys(self, _times, values, *_args):
+                captured[self.attr] = [float(values[i]) for i in range(len(values))]
+
+        def fake_create(_node, attrs, tangent_type=None, animation_layer=None):
+            create_calls.append((list(attrs), animation_layer))
+            return {attr: FakeCurve(attr) for attr in attrs}
+
+        times = om.MTimeArray()
+        for frame in (1.0, 2.0):
+            times.append(om.MTime(frame, om.MTime.uiUnit()))
+        channel_values = {
+            "translateX": om.MDoubleArray([11.0, 12.0]),
+            "rotateX": om.MDoubleArray([math.radians(40.0), math.radians(50.0)]),
+        }
+
+        with patch("mmd_tools.converters.vmd_scene_keying.maya_utils.create_animation_curves", side_effect=fake_create):
+            keyed, skipped = self.converter._batch_create_and_key_curve_arrays(
+                joint,
+                channel_values,
+                {"translateX": {}, "rotateX": {}},
+                times,
+                [1.0, 2.0],
+            )
+
+        self.assertEqual((keyed, skipped), (2, 0))
+        self.assertEqual(create_calls[0][1], "runtime_delta_layer")
+        self.assertListAlmostEqual(captured["translateX"], [1.0, 2.0], places=6)
+        self.assertListAlmostEqual(captured["rotateX"], [math.radians(10.0), math.radians(20.0)], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 10.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 30.0, places=6)
+
+        cmds.delete(joint)
+
+    def test_runtime_static_array_keying_uses_anim_layer_constant_delta(self):
+        """runtime bake の静的 channel は animLayer 使用時に base setAttr ではなく定数差分キーになる。"""
+        joint = cmds.joint(name="test_runtime_layer_static_joint")
+        cmds.setAttr(f"{joint}.translateY", 10.0)
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = "runtime_static_layer"
+
+        captured = {}
+
+        class FakeCurve:
+            def __init__(self, attr):
+                self.attr = attr
+
+            def addKeys(self, _times, values, *_args):
+                captured[self.attr] = [float(values[i]) for i in range(len(values))]
+
+        times = om.MTimeArray()
+        for frame in (1.0, 2.0):
+            times.append(om.MTime(frame, om.MTime.uiUnit()))
+
+        with patch(
+            "mmd_tools.converters.vmd_scene_keying.maya_utils.create_animation_curves",
+            return_value={"translateY": FakeCurve("translateY")},
+        ):
+            keyed, skipped = self.converter._batch_create_and_key_curve_arrays(
+                joint,
+                {"translateY": None},
+                {"translateY": {"is_static": True, "first": 15.0}},
+                times,
+                [1.0, 2.0],
+            )
+
+        self.assertEqual((keyed, skipped), (1, 0))
+        self.assertListAlmostEqual(captured["translateY"], [5.0, 5.0], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateY"), 10.0, places=6)
+
+        cmds.delete(joint)
+
+    def test_runtime_morph_cache_uses_anim_layer_deltas(self):
+        """runtime morph cache は既存 weight に対する差分を animLayer へ渡す。"""
+        node = cmds.createNode("transform", name="test_runtime_morph_layer_node")
+        cmds.addAttr(node, longName="weight", attributeType="double", keyable=True)
+        cmds.setAttr(f"{node}.weight", 0.25)
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = "runtime_morph_layer"
+        self.converter.morph_name_mapping = {"笑い": object()}
+
+        captured = []
+
+        def fake_key_scalar(node_name, channel_samples, animation_layer=None):
+            captured.append((node_name, channel_samples, animation_layer))
+            return True
+
+        with patch.object(self.converter, "_iter_morph_mappings", return_value=[(node, "weight", "")]), patch.object(
+            self.converter,
+            "_batch_key_scalar_channels",
+            side_effect=fake_key_scalar,
+        ):
+            self.converter._bake_morph_weight_cache_from_runtime([(3.0, [0.75])], ["笑い"])
+
+        self.assertEqual(captured[0][0], node)
+        self.assertEqual(captured[0][2], "runtime_morph_layer")
+        self.assertEqual(captured[0][1], {"weight": [(3.0, 0.5)]})
+
+        cmds.delete(node)
