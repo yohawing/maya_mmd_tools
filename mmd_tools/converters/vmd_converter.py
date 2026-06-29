@@ -97,6 +97,7 @@ from .vmd_runtime_channels import (
     runtime_joint_attrs,
 )
 from .vmd_runtime_cache_apply import apply_runtime_cache_to_scene, is_static_channel, scale_motion_translate_from_bind
+from .vmd_runtime_cache_collect import collect_runtime_bake_cache
 from .vmd_runtime_local_decompose import (
     build_bone_hierarchy_and_order_maps,
     build_runtime_bind_world_maps,
@@ -441,164 +442,31 @@ class VmdConverter:
             if self.bone_index_to_joint:
                 self._build_runtime_bind_world_maps()
 
-            # runtime bake は最終姿勢を毎フレーム直焼きするため、animation layerを使わない。
-            # layer経由だと全ボーン全フレームのblend node作成が重く、未登録attribute警告も出る。
-            runtime_anim_layer = self.anim_layer
-            self.anim_layer = None
-            refresh_suspended = False
-
             # キャッシュ収集: 評価結果を API 配列へ直接保持（cmds.xform / setKeyframe を内側ループから排除）
-            baked_frames: List[float] = []
-            bake_times = om.MTimeArray()
-            joint_channel_values = self._create_runtime_joint_channel_arrays()
-            joint_channel_static = self._create_runtime_joint_channel_static_state()
-            morph_cache: List[Tuple[float, list]] = []
-            eval_start = time.perf_counter()
-            batch_mode = False
-            eval_copy_elapsed = 0.0
-            batch_unpack_elapsed = 0.0
-            local_elapsed = 0.0
-            append_elapsed = 0.0
-
-            # 各フレームを評価してキャッシュ（Mayaコマンドを呼ばず高速に）
-            try:
-                try:
-                    cmds.refresh(suspend=True)
-                    refresh_suspended = True
-                except Exception:
-                    refresh_suspended = False
-
-                batch_result = None
-                if bake_samples:
-                    batch_start = time.perf_counter()
-                    batch_vmd_frames = [sample[1] for sample in bake_samples]
-                    frame_step = (
-                        float(batch_vmd_frames[1]) - float(batch_vmd_frames[0])
-                        if len(batch_vmd_frames) > 1
-                        else 1.0
-                    )
-                    batch_result = instance.evaluate_clip_frame_batch(
-                        clip,
-                        float(batch_vmd_frames[0]),
-                        frame_step,
-                        len(bake_samples),
-                        worker_count=0,
-                    )
-                    eval_copy_elapsed += time.perf_counter() - batch_start
-
-                if batch_result is not None:
-                    batch_mode = True
-                    self.logger.info(
-                        "Using mmd-anim runtime batch evaluation "
-                        f"(frames={batch_result.frame_count}, bones={batch_result.bone_count}, "
-                        f"morphs={batch_result.morph_count})"
-                    )
-                    local_start = time.perf_counter()
-                    native_local_batch = self._compute_native_local_channel_batch(batch_result)
-                    local_elapsed += time.perf_counter() - local_start
-                    if native_local_batch is not None:
-                        self.logger.info(
-                            "Using native batch local decomposition "
-                            f"(frames={native_local_batch['frame_count']}, "
-                            f"bones={native_local_batch['bone_count']})"
-                        )
-                    for frame_index, (maya_time, _vmd_frame) in enumerate(bake_samples):
-                        unpack_start = time.perf_counter()
-                        morph_weights = self._runtime_batch_morph_weights_for_frame(
-                            batch_result, frame_index
-                        )
-                        batch_unpack_elapsed += time.perf_counter() - unpack_start
-
-                        bone_locals: Dict[int, Tuple[float, float, float, float, float, float]] = {}
-                        if self.bone_index_to_joint:
-                            if not hasattr(self, "_bone_parent_map") or len(getattr(self, "_bone_parent_map", {})) == 0:
-                                self._build_bone_hierarchy_and_order_maps()
-                            local_start = time.perf_counter()
-                            if native_local_batch is not None:
-                                bone_locals = self._native_local_channel_batch_for_frame(
-                                    native_local_batch,
-                                    frame_index,
-                                )
-                            else:
-                                world_matrices = self._runtime_batch_world_matrices_for_frame(
-                                    batch_result, frame_index
-                                )
-                                bone_locals = self._compute_all_bone_locals(world_matrices)
-                            local_elapsed += time.perf_counter() - local_start
-
-                        append_start = time.perf_counter()
-                        baked_frames.append(float(maya_time))
-                        bake_times.append(om.MTime(float(maya_time), om.MTime.uiUnit()))
-                        self._append_bone_locals_to_channel_arrays(
-                            bone_locals, joint_channel_values, joint_channel_static
-                        )
-                        morph_cache.append((float(maya_time), morph_weights))
-                        append_elapsed += time.perf_counter() - append_start
-                else:
-                    if bake_samples:
-                        self.logger.info(
-                            "mmd-anim runtime batch evaluation unavailable; using per-frame ABI"
-                        )
-                    for maya_time, vmd_frame in bake_samples:
-                        eval_copy_start = time.perf_counter()
-                        if not instance.evaluate_clip_frame(clip, float(vmd_frame)):
-                            eval_copy_elapsed += time.perf_counter() - eval_copy_start
-                            continue
-
-                        # ワールド行列・モーフウェイトを取得（ボーン順）
-                        world_matrices = instance.get_world_matrices() or []
-                        morph_weights = instance.get_morph_weights() or []
-                        eval_copy_elapsed += time.perf_counter() - eval_copy_start
-
-                        # ローカルポーズをメモリ内で計算（親子階層を考慮した t/r ）
-                        bone_locals: Dict[int, Tuple[float, float, float, float, float, float]] = {}
-                        if self.bone_index_to_joint:
-                            if not hasattr(self, "_bone_parent_map") or len(getattr(self, "_bone_parent_map", {})) == 0:
-                                self._build_bone_hierarchy_and_order_maps()
-                            local_start = time.perf_counter()
-                            bone_locals = self._compute_all_bone_locals(world_matrices)
-                            local_elapsed += time.perf_counter() - local_start
-
-                        append_start = time.perf_counter()
-                        baked_frames.append(float(maya_time))
-                        bake_times.append(om.MTime(float(maya_time), om.MTime.uiUnit()))
-                        self._append_bone_locals_to_channel_arrays(
-                            bone_locals, joint_channel_values, joint_channel_static
-                        )
-                        morph_cache.append((float(maya_time), list(morph_weights)))
-                        append_elapsed += time.perf_counter() - append_start
-            finally:
-                if refresh_suspended:
-                    try:
-                        cmds.refresh(suspend=False)
-                    except Exception:
-                        pass
-                self.anim_layer = runtime_anim_layer
-
-            eval_elapsed = time.perf_counter() - eval_start
+            runtime_cache = collect_runtime_bake_cache(self, instance, clip, bake_samples)
             self.logger.info(
                 f"mmd-anim runtime pose evaluation and cache completed "
-                f"(frames={len(baked_frames)}, elapsed={eval_elapsed:.3f}s)"
+                f"(frames={len(runtime_cache.baked_frames)}, elapsed={runtime_cache.eval_elapsed:.3f}s)"
             )
             self.logger.info(
                 "runtime bake cache timings: "
-                f"mode={'batch' if batch_mode else 'per-frame'}, "
-                f"eval_copy={eval_copy_elapsed:.3f}s, "
-                f"batch_unpack={batch_unpack_elapsed:.3f}s, "
-                f"local_decompose={local_elapsed:.3f}s, "
-                f"append={append_elapsed:.3f}s"
+                f"mode={'batch' if runtime_cache.batch_mode else 'per-frame'}, "
+                f"eval_copy={runtime_cache.eval_copy_elapsed:.3f}s, "
+                f"batch_unpack={runtime_cache.batch_unpack_elapsed:.3f}s, "
+                f"local_decompose={runtime_cache.local_elapsed:.3f}s, "
+                f"append={runtime_cache.append_elapsed:.3f}s"
             )
 
             # キャッシュから一括でキーフレーム登録（Maya Python API 2.0 優先）
-            if baked_frames:
+            if runtime_cache.baked_frames:
                 apply_start = time.perf_counter()
                 apply_runtime_channel_arrays_to_scene_with_undo_disabled(
                     self,
-                    joint_channel_values,
-                    joint_channel_static,
-                    bake_times,
-                    baked_frames,
-                    morph_cache,
+                    runtime_cache.joint_channel_values,
+                    runtime_cache.joint_channel_static,
+                    runtime_cache.bake_times,
+                    runtime_cache.baked_frames,
+                    runtime_cache.morph_cache,
                     pmx_morph_names,
                 )
                 apply_elapsed = time.perf_counter() - apply_start

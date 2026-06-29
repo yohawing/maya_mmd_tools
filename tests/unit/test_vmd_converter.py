@@ -18,6 +18,7 @@ import maya.api.OpenMaya as om
 
 import mmd_tools.converters.vmd_converter as vmd_converter_module
 from mmd_tools.converters.vmd_camera_animation import parse_vmd_camera_interpolation
+from mmd_tools.converters.vmd_runtime_cache_collect import collect_runtime_bake_cache
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
@@ -2191,6 +2192,88 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(matrices[0], [float(value) for value in range(32, 48)])
         self.assertEqual(matrices[1], [float(value) for value in range(48, 64)])
         self.assertListAlmostEqual(morphs, [0.3, 0.4, 0.5], places=6)
+
+    def test_collect_runtime_bake_cache_uses_batch_eval_and_restores_state(self):
+        """抽出済み cache collector が batch 評価結果を保持し、状態を復元する。"""
+        appended = []
+        refresh_calls = []
+
+        class BatchResult:
+            frame_count = 2
+            bone_count = 0
+            morph_count = 2
+
+        converter = SimpleNamespace(
+            anim_layer="runtime_layer",
+            bone_index_to_joint={},
+            logger=SimpleNamespace(info=lambda *_args, **_kwargs: None),
+            _create_runtime_joint_channel_arrays=lambda: {},
+            _create_runtime_joint_channel_static_state=lambda: {},
+            _compute_native_local_channel_batch=lambda _batch_result: None,
+            _runtime_batch_morph_weights_for_frame=lambda _batch_result, frame_index: [frame_index, frame_index + 0.5],
+            _append_bone_locals_to_channel_arrays=lambda bone_locals, values, static: appended.append(
+                (bone_locals, values, static)
+            ),
+        )
+        instance = SimpleNamespace(
+            evaluate_clip_frame_batch=lambda clip, start, step, count, worker_count=0: BatchResult()
+        )
+
+        def fake_refresh(*_args, **kwargs):
+            refresh_calls.append(kwargs.get("suspend"))
+
+        with patch("mmd_tools.converters.vmd_runtime_cache_collect.cmds.refresh", side_effect=fake_refresh):
+            cache = collect_runtime_bake_cache(converter, instance, clip=object(), bake_samples=[(1.0, 0.0), (2.0, 1.0)])
+
+        self.assertTrue(cache.batch_mode)
+        self.assertEqual(cache.baked_frames, [1.0, 2.0])
+        self.assertEqual(cache.morph_cache, [(1.0, [0, 0.5]), (2.0, [1, 1.5])])
+        self.assertEqual(len(cache.bake_times), 2)
+        self.assertEqual(appended, [({}, {}, {}), ({}, {}, {})])
+        self.assertEqual(refresh_calls, [True, False])
+        self.assertEqual(converter.anim_layer, "runtime_layer")
+
+    def test_collect_runtime_bake_cache_falls_back_to_per_frame_eval(self):
+        """batch が使えない場合も per-frame ABI で成功フレームだけ cache する。"""
+        appended = []
+        evaluated = []
+
+        converter = SimpleNamespace(
+            anim_layer="runtime_layer",
+            bone_index_to_joint={},
+            logger=SimpleNamespace(info=lambda *_args, **_kwargs: None),
+            _create_runtime_joint_channel_arrays=lambda: {},
+            _create_runtime_joint_channel_static_state=lambda: {},
+            _append_bone_locals_to_channel_arrays=lambda bone_locals, values, static: appended.append(
+                (bone_locals, values, static)
+            ),
+        )
+
+        def evaluate_clip_frame(_clip, frame):
+            evaluated.append(frame)
+            return frame != 1.0
+
+        instance = SimpleNamespace(
+            evaluate_clip_frame_batch=lambda *_args, **_kwargs: None,
+            evaluate_clip_frame=evaluate_clip_frame,
+            get_world_matrices=lambda: [],
+            get_morph_weights=lambda: [0.25, 0.75],
+        )
+
+        with patch("mmd_tools.converters.vmd_runtime_cache_collect.cmds.refresh"):
+            cache = collect_runtime_bake_cache(
+                converter,
+                instance,
+                clip=object(),
+                bake_samples=[(10.0, 0.0), (11.0, 1.0), (12.0, 2.0)],
+            )
+
+        self.assertFalse(cache.batch_mode)
+        self.assertEqual(evaluated, [0.0, 1.0, 2.0])
+        self.assertEqual(cache.baked_frames, [10.0, 12.0])
+        self.assertEqual(cache.morph_cache, [(10.0, [0.25, 0.75]), (12.0, [0.25, 0.75])])
+        self.assertEqual(appended, [({}, {}, {}), ({}, {}, {})])
+        self.assertEqual(converter.anim_layer, "runtime_layer")
 
     def test_compute_bone_locals_matches_xform_for_root_and_child(self):
         """_compute_all_bone_locals が xform(ws) 後の .translate / .rotate と等価な値を返すことを確認（キャッシュの正確性）"""
