@@ -4,6 +4,7 @@
 """
 
 from ...core.logger import get_logger
+from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from ..qt_compat import (
     QWidget,
     QHBoxLayout,
@@ -40,7 +41,7 @@ class HeaderWidget(QWidget):
 
         # モデル選択コンボボックス
         self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(250)
+        configure_model_combo_width(self.model_combo)
         main_layout.addWidget(self.model_combo)
 
         # リフレッシュボタン
@@ -77,7 +78,7 @@ class HeaderWidget(QWidget):
         self.model_combo.clear()
 
         if not models:
-            self.model_combo.addItem("-- モデルが見つかりません --")
+            add_combo_item_with_tooltip(self.model_combo, "-- モデルが見つかりません --")
         else:
             for model in models:
                 info = self.app_state.get_model_info(model)
@@ -86,12 +87,13 @@ class HeaderWidget(QWidget):
                     namespace = info.get("namespace")
                     if namespace:
                         # namespace付きの場合
-                        self.model_combo.addItem(f"{display_name} [{namespace}:{model.split(':')[-1]}]", userData=model)
+                        label = f"{display_name} [{namespace}:{model.split(':')[-1]}]"
                     else:
                         # namespaceなしの場合
-                        self.model_combo.addItem(f"{display_name} [{model}]", userData=model)
+                        label = f"{display_name} [{model}]"
+                    add_combo_item_with_tooltip(self.model_combo, label, user_data=model)
                 else:
-                    self.model_combo.addItem(model, userData=model)
+                    add_combo_item_with_tooltip(self.model_combo, model, user_data=model)
 
             # 現在のモデルを選択
             if current_model in models:

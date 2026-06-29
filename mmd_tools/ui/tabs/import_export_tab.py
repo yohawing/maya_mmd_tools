@@ -19,6 +19,7 @@ from ..qt_compat import (
     QColor,
 )
 from ..base_tab import BaseTab
+from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from ..import_export_view_state import ImportExportViewState
 from ...services.settings_service import SettingsService
 import os
@@ -484,6 +485,7 @@ class ImportExportTab(BaseTab):
 
         # Target model selection
         self.target_model_combo = QComboBox()
+        configure_model_combo_width(self.target_model_combo)
         # モデルリストを更新してから保存された選択を復元
         self.refresh_model_list(restore_selection=True)
         # 選択が変更されたら保存
@@ -604,10 +606,14 @@ class ImportExportTab(BaseTab):
             previous_signal_state = self.target_model_combo.blockSignals(True)
         try:
             self.target_model_combo.clear()
-            self.target_model_combo.addItem(self.tr("auto_detect", "actions"))
+            add_combo_item_with_tooltip(self.target_model_combo, self.tr("auto_detect", "actions"))
 
             for model_root, display_name in model_items:
-                self.target_model_combo.addItem(_format_target_model_label(model_root, display_name), userData=model_root)
+                add_combo_item_with_tooltip(
+                    self.target_model_combo,
+                    _format_target_model_label(model_root, display_name),
+                    user_data=model_root,
+                )
 
             # 保存された選択または現在の選択を復元
             if restore_selection:
