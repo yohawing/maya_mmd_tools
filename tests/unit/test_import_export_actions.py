@@ -63,6 +63,28 @@ class _ImportActionContract:
         self.assertEqual(calls, [(self.file_path, options)])
         self.assertIs(calls[0][1], options)
 
+    def test_execute_forwards_progress_callback_when_present(self):
+        calls = []
+        options = dict(self.options)
+
+        def progress_callback(_value):
+            pass
+
+        def importer(file_path, options=None, progress_callback=None):
+            calls.append((file_path, options, progress_callback))
+            return self.root_node
+
+        action = self.action_cls(importer=importer, new_scene=lambda: None)
+        request = self.request_cls(
+            self.file_path,
+            options,
+            progress_callback=progress_callback,
+        )
+        result = action.execute(request)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(calls, [(self.file_path, options, progress_callback)])
+
     def test_execute_calls_new_scene_before_import_when_requested(self):
         calls = []
 

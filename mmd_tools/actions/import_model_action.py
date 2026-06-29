@@ -14,6 +14,7 @@ class ImportModelRequest:
     file_path: str
     options: Dict[str, Any]
     create_new_scene: bool = False
+    progress_callback: Optional[Callable[[int], None]] = None
 
 
 @dataclass
@@ -44,7 +45,10 @@ class ImportModelAction:
             if request.create_new_scene:
                 self._new_scene()
             importer = self._importer or import_mmd_file
-            root_node = importer(request.file_path, options=request.options)
+            kwargs = {"options": request.options}
+            if request.progress_callback is not None:
+                kwargs["progress_callback"] = request.progress_callback
+            root_node = importer(request.file_path, **kwargs)
         except Exception as exc:
             return ImportModelResult(error=exc)
         return ImportModelResult(root_node=root_node, succeeded=bool(root_node))

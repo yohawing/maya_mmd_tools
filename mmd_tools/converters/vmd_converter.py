@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 
 import maya.api.OpenMaya as om
@@ -199,6 +199,7 @@ class VmdConverter:
         vmd_bytes: bytes = None,
         pmx_bytes: bytes = None,
         pmx_path: str = None,
+        progress_callback: Optional[Callable[[int], None]] = None,
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
@@ -215,12 +216,21 @@ class VmdConverter:
             vmd_bytes: 生の VMD バイナリ（runtime bake で使用）
             pmx_bytes: 生の PMX バイナリ（runtime bake で使用）
             pmx_path: PMX ファイルパス（pmx_bytes がない場合に読み込みに使用）
+            progress_callback: フェーズ進捗通知コールバック
 
         Returns:
             変換が成功した場合True、失敗した場合False
         """
         import_start_time = None
         anim_layer_selection = None
+
+        def _emit_progress(value: int) -> None:
+            if progress_callback is not None:
+                try:
+                    progress_callback(value)
+                except Exception:
+                    self.logger.debug("Progress callback failed", exc_info=True)
+
         try:
             self.logger.info("Starting VMD animation conversion")
             try:
@@ -233,6 +243,7 @@ class VmdConverter:
 
             # 名前マッピングの構築（ボーン名 → Maya joint）
             self._build_name_mappings(target_namespace)
+            _emit_progress(40)
             if clear_existing_motion:
                 self._clear_existing_motion(layer_name, target_namespace)
 
@@ -242,6 +253,7 @@ class VmdConverter:
 
             # タイムライン設定
             self._setup_timeline(vmd_data)
+            _emit_progress(48)
 
             # アニメーションレイヤーの作成
             if self.use_animation_layers:
@@ -258,6 +270,7 @@ class VmdConverter:
                 pmx_path,
                 target_namespace,
             )
+            _emit_progress(55)
 
             runtime_success = False
             if self._should_use_mmd_runtime_bake(vmd_bytes, pmx_bytes, pmx_path, live_rig_target, bake_mode):
@@ -270,33 +283,39 @@ class VmdConverter:
                 )
                 if runtime_success:
                     self.logger.info("mmd-anim runtime high-precision bake completed")
+                    _emit_progress(82)
                 else:
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
 
             if not runtime_success:
                 # --- レガシーパス（従来の変換） ---
                 self._apply_ik_enabled_animation(vmd_data, target_namespace)
+                _emit_progress(60)
 
                 if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
                     self.logger.info(f"Starting bone animation conversion (legacy): {len(vmd_data.bone_frames)} frames")
                     bone_success = self._convert_bone_animation(vmd_data.bone_frames)
                     if not bone_success:
                         self.logger.warning("Some errors occurred during bone animation conversion")
+                _emit_progress(72)
 
                 # モーフアニメーション（レガシー）
                 if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
                     self.logger.info("Converting morph animation (legacy)")
                     self._convert_morph_animation(vmd_data.morph_frames)
+                _emit_progress(82)
 
             # カメラアニメーション（レガシー）
             if self.import_camera_animation and hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
                 self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
                 self._convert_camera_animation(vmd_data.camera_frames)
+            _emit_progress(88)
 
             # ライトアニメーション（レガシー）
             if self.import_light_animation and hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
                 self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
                 self._convert_light_animation(vmd_data.light_frames)
+            _emit_progress(94)
 
             self.logger.info("VMD animation conversion completed")
             self._restore_import_timeline_state(import_start_time)

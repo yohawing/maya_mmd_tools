@@ -219,6 +219,46 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
             require_native_pmx_parse=True,
         )
 
+    def test_progress_callback_is_forwarded_to_model_importer(self):
+        parsed_data = object()
+        progress = []
+        progress_callback = progress.append
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root") as importer:
+                result = import_mmd_file("model.pmx", options={}, progress_callback=progress_callback)
+
+        self.assertEqual(result, "model_root")
+        self.assertIs(importer.call_args.kwargs["progress_callback"], progress_callback)
+        self.assertIn(5, progress)
+        self.assertIn(12, progress)
+
+    def test_progress_callback_is_forwarded_to_vmd_importer(self):
+        parsed_data = object()
+        progress = []
+        progress_callback = progress.append
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch("mmd_tools.io.mmd_importer.vmd_importer.import_vmd_file", return_value=True) as importer:
+                result = import_mmd_file("motion.vmd", options={}, progress_callback=progress_callback)
+
+        self.assertTrue(result)
+        self.assertIs(importer.call_args.kwargs["progress_callback"], progress_callback)
+        self.assertIn(5, progress)
+        self.assertIn(12, progress)
+
+    def test_progress_callback_error_does_not_abort_import(self):
+        parsed_data = object()
+
+        def broken_progress(_value):
+            raise RuntimeError("progress sink failed")
+
+        with patch("mmd_tools.io.mmd_importer.parse_mmd_file", return_value=parsed_data):
+            with patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file", return_value="model_root"):
+                result = import_mmd_file("model.pmx", options={}, progress_callback=broken_progress)
+
+        self.assertEqual(result, "model_root")
+
 
 if __name__ == "__main__":
     unittest.main()

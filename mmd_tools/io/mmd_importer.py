@@ -51,7 +51,7 @@ def _scoped_settings_override(options):
             settings.set(settings_key, original_value)
 
 
-def import_mmd_file(filepath, scale=None, options=None):
+def import_mmd_file(filepath, scale=None, options=None, progress_callback=None):
     """
     MMDファイルを解析し、Mayaシーンにインポートします。
     ファイルタイプに応じて適切なインポーターを呼び出します。
@@ -60,6 +60,7 @@ def import_mmd_file(filepath, scale=None, options=None):
         filepath (str): インポートするMMDファイルのパス。
         scale (float): インポート時のスケール値。(互換性のために残している)
         options (dict): インポートオプション。scaleを含むことができる。
+        progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
         str: インポートされたモデルのルートノード名。失敗時はNone。
@@ -68,6 +69,15 @@ def import_mmd_file(filepath, scale=None, options=None):
     # デフォルトオプション
     if options is None:
         options = {}
+
+    def _emit_progress(value: int) -> None:
+        if progress_callback is not None:
+            try:
+                progress_callback(value)
+            except Exception:
+                logger.debug("Progress callback failed", exc_info=True)
+
+    _emit_progress(5)
     suffix = Path(filepath).suffix.lower()
     import_scale = (
         scale
@@ -82,6 +92,7 @@ def import_mmd_file(filepath, scale=None, options=None):
             settings.get("import.native.use_cpp_fast_load", False),
         )
         if use_fast:
+            _emit_progress(10)
             mesh_only = options.get(
                 "cpp_fast_load_mesh_only",
                 settings.get("import.native.cpp_fast_load_mesh_only", True),
@@ -99,6 +110,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                 include_morphs=include_morphs,
             )
             if fast_root is not None:
+                _emit_progress(90)
                 logger.info("C++ fast import succeeded: %s", fast_root)
                 return fast_root
             logger.info("C++ fast import failed/excluded – falling back to Python parser")
@@ -113,6 +125,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                 settings.get("import.native.require_native_pmx_parse", False),
             ),
         )
+        _emit_progress(12)
 
         # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、
         # ファイル拡張子でインポーターを選ぶ。
@@ -123,6 +136,7 @@ def import_mmd_file(filepath, scale=None, options=None):
                     filepath,
                     import_scale,
                     options,
+                    progress_callback=progress_callback,
                 )
 
         elif suffix == ".pmd":
@@ -132,10 +146,16 @@ def import_mmd_file(filepath, scale=None, options=None):
                     filepath,
                     import_scale,
                     options,
+                    progress_callback=progress_callback,
                 )
 
         elif suffix == ".vmd":
-            return vmd_importer.import_vmd_file(parsed_data, filepath, options)
+            return vmd_importer.import_vmd_file(
+                parsed_data,
+                filepath,
+                options,
+                progress_callback=progress_callback,
+            )
 
         else:
             logger.warning(f"Unsupported data type returned from parser: {type(parsed_data)}")
@@ -149,7 +169,12 @@ def import_mmd_file(filepath, scale=None, options=None):
             )
             vmd_data = VmdData()
             vmd_data.source_file = str(Path(filepath).resolve())
-            return vmd_importer.import_vmd_file(vmd_data, filepath, options)
+            return vmd_importer.import_vmd_file(
+                vmd_data,
+                filepath,
+                options,
+                progress_callback=progress_callback,
+            )
         logger.error(f"Failed to import {filepath}: {e}")
         import traceback
 

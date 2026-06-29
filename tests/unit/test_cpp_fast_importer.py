@@ -94,7 +94,13 @@ class TestCppFastImportRouting(unittest.TestCase):
         )
 
         mock_fast.assert_not_called()
-        mock_import_pmx.assert_called_once_with(parsed, "model.pmx", 3.0, {"scale": 2.0, "use_cpp_fast_load": False})
+        mock_import_pmx.assert_called_once_with(
+            parsed,
+            "model.pmx",
+            3.0,
+            {"scale": 2.0, "use_cpp_fast_load": False},
+            progress_callback=None,
+        )
         self.assertEqual(result, "python_root")
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
@@ -118,7 +124,13 @@ class TestCppFastImportRouting(unittest.TestCase):
         )
 
         mock_fast.assert_not_called()
-        mock_import_pmx.assert_called_once_with(parsed, "model.pmd", 2.5, {"scale": 2.5, "use_cpp_fast_load": True})
+        mock_import_pmx.assert_called_once_with(
+            parsed,
+            "model.pmd",
+            2.5,
+            {"scale": 2.5, "use_cpp_fast_load": True},
+            progress_callback=None,
+        )
         self.assertEqual(result, "pmd_root")
 
     # ------------------------------------------------------------------
@@ -137,10 +149,12 @@ class TestCppFastImportRouting(unittest.TestCase):
         """When use_cpp_fast_load is True and fast_import succeeds,
         parse_mmd_file / import_pmx_file must NOT be called."""
         mock_fast.return_value = "cpp_root"
+        progress = []
 
         result = import_mmd_file(
             "model.pmx",
             options={"scale": 1.0, "use_cpp_fast_load": True},
+            progress_callback=progress.append,
         )
 
         mock_fast.assert_called_once_with(
@@ -153,6 +167,7 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
+        self.assertEqual(progress, [5, 10, 90])
 
     # ------------------------------------------------------------------
     # Scenario 3: option enabled + fast import fails → fallback
@@ -172,16 +187,19 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_fast.return_value = None
         mock_parse.return_value = object()
         mock_import_pmx.return_value = "fallback_root"
+        progress = []
 
         result = import_mmd_file(
             "model.pmx",
             options={"scale": 1.0, "use_cpp_fast_load": True},
+            progress_callback=progress.append,
         )
 
         mock_fast.assert_called_once()
         mock_parse.assert_called_once()
         mock_import_pmx.assert_called_once()
         self.assertEqual(result, "fallback_root")
+        self.assertEqual(progress, [5, 10, 12])
 
     # ------------------------------------------------------------------
     # Scenario 4: mesh_only=False → fast import receives mesh_only=False

@@ -30,7 +30,7 @@ from ..core.namespace_utils import NamespaceUtils
 logger = get_logger("mmd_tools.io.pmx_importer")
 
 
-def import_pmx_file(parser, filepath, scale=1.0, options=None):
+def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback=None):
     """
     PMXファイルをMayaシーンにインポートします。
 
@@ -39,6 +39,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
         filepath (str): インポートするPMXファイルのパス
         scale (float): スケール値（互換性のため）
         options (dict): インポートオプション
+        progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
         bool: インポートが成功したかどうか
@@ -51,6 +52,13 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
     def _record_phase(name: str, start: float) -> None:
         if profile is not None:
             phase_timings[name] = round(time.perf_counter() - start, 6)
+
+    def _emit_progress(value: int) -> None:
+        if progress_callback is not None:
+            try:
+                progress_callback(value)
+            except Exception:
+                logger.debug("Progress callback failed", exc_info=True)
 
     logger.info("Starting PMX file import: %s", filepath)
 
@@ -79,6 +87,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
     try:
         # namespace context内でモデルを構築
         with NamespaceUtils.namespace_context(namespace):
+            _emit_progress(15)
             # ルートグループを作成
             root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
             logger.debug("Created root group: %s", root_group)
@@ -102,6 +111,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
             _record_phase("mesh_conversion_sec", phase_start)
+            _emit_progress(35)
 
             # mesh_name が list かどうかで分岐
             mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
@@ -112,6 +122,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             phase_start = time.perf_counter()
             morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
             _record_phase("morph_conversion_sec", phase_start)
+            _emit_progress(50)
             logger.debug("Morph conversion complete")
 
             # network morph ノードをモデルルートに message 接続で紐付ける
@@ -136,6 +147,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                 pmx_filepath=filepath,
             )
             _record_phase("bone_and_skin_conversion_sec", phase_start)
+            _emit_progress(70)
             logger.debug(
                 "Bone conversion complete: %d joints, %d meshes",
                 len(maya_joints) if maya_joints else 0,
@@ -152,6 +164,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             phase_start = time.perf_counter()
             material_morph_runtime_result = build_material_morph_graph(root_group)
             _record_phase("material_morph_runtime_sec", phase_start)
+            _emit_progress(78)
             logger.debug("Material morph runtime graph result: %s", material_morph_runtime_result)
 
             # 呼び出しオプションを優先し、未指定時はグローバル設定に従う。
@@ -173,6 +186,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
                         parser, bone_joint_mapping, root_group
                     )
                     _record_phase("physics_conversion_sec", phase_start)
+                    _emit_progress(86)
                     logger.debug(
                         "Physics conversion complete: nCloth=%d, Constraints=%d",
                         len(ncloth_nodes),
@@ -193,6 +207,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
 
             # スケールを適用
             apply_import_scale(root_group, scale, logger)
+            _emit_progress(92)
 
             cmds.select(root_group)
             try:
@@ -227,6 +242,7 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None):
             # 透過アルゴリズムを Depth Peeling(OIT) にして近接透過マテリアルの順序を解決。
             if settings.get("import.view.setup_transparency", True):
                 maya_utils.setup_mmd_transparency()
+            _emit_progress(96)
             if profile is not None:
                 profile["phase_timings"] = phase_timings
                 profile["mesh_converter"] = dict(mesh_converter.profile)

@@ -302,7 +302,8 @@ class TestImportExportPresenter(unittest.TestCase):
         presenter = ImportExportPresenter(view, app_state)
         issue = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
 
-        def fake_import(_path, options=None):
+        def fake_import(_path, options=None, progress_callback=None):
+            self.assertEqual(progress_callback, app_state.emit_progress)
             options["profile"]["texture_issues"] = [issue]
             return "model_root"
 
@@ -325,7 +326,8 @@ class TestImportExportPresenter(unittest.TestCase):
         app_state = _FakeAppState()
         presenter = ImportExportPresenter(view, app_state)
 
-        def fake_import(_path, options=None):
+        def fake_import(_path, options=None, progress_callback=None):
+            self.assertEqual(progress_callback, app_state.emit_progress)
             options["profile"]["texture_issues"] = [{"file_node": "file1"}]
             return "model_root"
 
@@ -517,6 +519,7 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(action.requests[0].file_path, "model.pmx")
         self.assertIn("profile", action.requests[0].options)
         self.assertFalse(action.requests[0].create_new_scene)
+        self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
         self.assertEqual(app_state.current_model_root, "model_root")
         self.assertIn("Import complete: model_root", app_state.statuses)
         self.assertIn(100, app_state.progress)
@@ -539,6 +542,7 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertEqual(len(action.requests), 1)
         self.assertEqual(action.requests[0].file_path, "motion.vmd")
+        self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
 
     def test_import_file_vmd_branch_passes_create_new_scene_to_action(self):
         view = _FakeView()
@@ -552,6 +556,7 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertEqual(len(action.requests), 1)
         self.assertTrue(action.requests[0].create_new_scene)
+        self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
 
     def test_import_vmd_auto_detect_uses_current_model_root(self):
         view = _FakeView()
@@ -772,6 +777,7 @@ class TestVmdImportOptions(unittest.TestCase):
         self.assertEqual(len(action.requests), 1)
         self.assertEqual(action.requests[0].file_path, "dance.vmd")
         self.assertFalse(action.requests[0].create_new_scene)
+        self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
         self.assertEqual(recorded, ["dance.vmd"])
         self.assertIn(100, app_state.progress)
 

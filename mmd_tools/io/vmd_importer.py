@@ -11,7 +11,7 @@ from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
 
 
-def import_vmd_file(parser, filepath, options=None):
+def import_vmd_file(parser, filepath, options=None, progress_callback=None):
     """
     VMDファイルをMayaシーンにインポートします。
 
@@ -26,16 +26,26 @@ def import_vmd_file(parser, filepath, options=None):
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
             - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
+        progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
         bool: インポートが成功したかどうか
     """
     if options is None:
         options = {}
+
+    def _emit_progress(value: int) -> None:
+        if progress_callback is not None:
+            try:
+                progress_callback(value)
+            except Exception:
+                logger.debug("Progress callback failed", exc_info=True)
+
     logger = get_logger("vmd_importer")
     logger.info(f"Starting VMD file import: {filepath}")
 
     try:
+        _emit_progress(15)
         # オプションからターゲットモデルを取得
         target_namespace = None
         target_model = options.get("target_model")
@@ -66,6 +76,7 @@ def import_vmd_file(parser, filepath, options=None):
         try:
             with open(filepath, "rb") as f:
                 vmd_bytes = f.read()
+            _emit_progress(25)
         except Exception as e:
             logger.warning(f"Failed to read raw VMD bytes: {e}")
 
@@ -94,6 +105,7 @@ def import_vmd_file(parser, filepath, options=None):
                     logger.info(f"Auto-detected PMX source: {pmx_path} (explicit path recommended)")
             except Exception:
                 pass
+        _emit_progress(35)
 
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()
@@ -120,6 +132,7 @@ def import_vmd_file(parser, filepath, options=None):
             vmd_bytes=vmd_bytes,
             pmx_bytes=pmx_bytes,
             pmx_path=pmx_path,
+            progress_callback=progress_callback,
         )
 
         if success:

@@ -82,6 +82,30 @@ class TestVmdImporter(MayaTestBase):
         self.assertFalse(converter.import_camera_animation)
         self.assertFalse(converter.import_light_animation)
 
+    def test_progress_callback_is_forwarded_to_converter(self):
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+        progress = []
+        progress_callback = progress.append
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = True
+            result = import_vmd_file(
+                object(),
+                vmd_path,
+                {},
+                progress_callback=progress_callback,
+            )
+
+        self.assertTrue(result)
+        self.assertIs(converter.convert.call_args.kwargs["progress_callback"], progress_callback)
+        self.assertIn(15, progress)
+        self.assertIn(25, progress)
+        self.assertIn(35, progress)
+
 
 if __name__ == "__main__":
     unittest.main()

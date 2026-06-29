@@ -250,6 +250,7 @@ class ImportExportPresenter(QObject):
                     file_path=file_path,
                     options=import_options,
                     create_new_scene=create_new_scene,
+                    progress_callback=self.app_state.emit_progress,
                 )
                 result = self.import_vmd_action.execute(request)
                 if result.error:
@@ -262,6 +263,7 @@ class ImportExportPresenter(QObject):
                     file_path=file_path,
                     options=import_options,
                     create_new_scene=create_new_scene,
+                    progress_callback=self.app_state.emit_progress,
                 )
                 result = self.import_model_action.execute(request)
                 if result.error:
@@ -343,6 +345,7 @@ class ImportExportPresenter(QObject):
                 file_path=file_path,
                 options=animation_options,
                 create_new_scene=False,
+                progress_callback=self.app_state.emit_progress,
             )
             result = self.import_vmd_action.execute(request)
             if result.error:
