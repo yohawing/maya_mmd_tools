@@ -87,7 +87,7 @@
   "tooltips": {
     "import_file": "PMD/PMX/VMDファイルをインポートします",
     "export_file": "選択したオブジェクトをPMXファイルとしてエクスポートします",
-    "scale_factor": "インポート時のスケール倍率を指定します",
+    "import_scale": "インポート時のスケールを指定します",
     "browse_file": "ファイルを選択します",
     "refresh_list": "リストを更新します",
     "add_item": "新しい項目を追加します",
@@ -232,7 +232,7 @@
     "split_meshes_by_morph_groups": "【実験的】モーフグループでメッシュを分割"
   },
   "fields": {
-    "scale_factor": "スケール係数:",
+    "import_scale": "インポートスケール:",
     "root_bone_name": "ルートボーン名:",
     "texture_search_path": "テクスチャ検索パス:",
     "uv_set_name": "UVセット名:",

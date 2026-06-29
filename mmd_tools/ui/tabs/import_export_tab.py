@@ -59,16 +59,16 @@ class ImportExportTab(BaseTab):
         self.left_widget = QWidget()
         model_settings_layout = QVBoxLayout(self.left_widget)
 
-        # Scale factor
+        # Import scale
         scale_layout = QHBoxLayout()
-        self.scale_label = QLabel(self.tr("scale_factor", "fields"))
+        self.scale_label = QLabel(self.tr("import_scale", "fields"))
         scale_layout.addWidget(self.scale_label)
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setRange(0.001, 1000.0)
         self.scale_spin.setDecimals(3)
         self.scale_spin.setValue(self.settings_service.get("import.general.scale_factor", 1.0))
         self.scale_spin.valueChanged.connect(lambda v: self.settings_service.set("import.general.scale_factor", v))
-        self.scale_spin.setToolTip(self.tr("scale_factor", "tooltips"))
+        self.scale_spin.setToolTip(self.tr("import_scale", "tooltips"))
         scale_layout.addWidget(self.scale_spin)
         scale_layout.addStretch()
         model_settings_layout.addLayout(scale_layout)
@@ -641,7 +641,7 @@ class ImportExportTab(BaseTab):
         """言語切り替え時にUIを再翻訳"""
         # Labels
         if hasattr(self, "scale_label"):
-            self.scale_label.setText(self.tr("scale_factor", "fields"))
+            self.scale_label.setText(self.tr("import_scale", "fields"))
         if hasattr(self, "texture_search_label"):
             self.texture_search_label.setText(self.tr("texture_search_path", "fields"))
         if hasattr(self, "uv_set_label"):
@@ -719,7 +719,7 @@ class ImportExportTab(BaseTab):
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
 
         # Tooltips
-        self.scale_spin.setToolTip(self.tr("scale_factor", "tooltips"))
+        self.scale_spin.setToolTip(self.tr("import_scale", "tooltips"))
         self.use_namespace_check.setToolTip(self.tr("use_namespace", "tooltips"))
         self.create_mmd_shaders_check.setToolTip(self.tr("create_mmd_shaders", "tooltips"))
         self.separate_meshes_check.setToolTip(self.tr("separate_meshes", "tooltips"))

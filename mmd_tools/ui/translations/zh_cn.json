@@ -87,7 +87,7 @@
   "tooltips": {
     "import_file": "导入PMD/PMX/VMD文件",
     "export_file": "将选中的对象导出为PMX文件",
-    "scale_factor": "指定导入时的缩放倍率",
+    "import_scale": "指定导入缩放",
     "browse_file": "选择文件",
     "refresh_list": "刷新列表",
     "add_item": "添加新项目",
@@ -227,7 +227,7 @@
     "custom_namespace": "自定义命名空间:"
   },
   "fields": {
-    "scale_factor": "缩放系数:",
+    "import_scale": "导入缩放:",
     "root_bone_name": "根骨骼名称:",
     "texture_search_path": "贴图搜索路径:",
     "uv_set_name": "UV集名称:",

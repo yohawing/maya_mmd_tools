@@ -87,7 +87,7 @@
   "tooltips": {
     "import_file": "Import PMD/PMX/VMD files",
     "export_file": "Export selected objects as PMX file",
-    "scale_factor": "Specify the scale factor for import",
+    "import_scale": "Specify the import scale",
     "browse_file": "Select a file",
     "refresh_list": "Refresh the list",
     "add_item": "Add new item",
@@ -232,7 +232,7 @@
     "split_meshes_by_morph_groups": "[Experimental] Split meshes by morph groups"
   },
   "fields": {
-    "scale_factor": "Scale Factor:",
+    "import_scale": "Import Scale:",
     "root_bone_name": "Root Bone Name:",
     "texture_search_path": "Texture Search Path:",
     "uv_set_name": "UV Set Name:",
