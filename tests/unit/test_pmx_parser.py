@@ -478,3 +478,55 @@ class TestPmxParser(TestBase):
         out = BytesIO()
         soft_body.write(out)
         self.assertEqual(out.getvalue(), bytes(record))
+
+    def test_pmx_data_write_file_preserves_soft_body_section(self):
+        """PmxData.write_file 経由でも PMX 2.1 SoftBody セクションを保持する。"""
+        pmx_data = PmxData()
+        pmx_data.header.version = 2.1
+        pmx_data.header.encoding = PmxEncoding.UTF16LE
+        pmx_data.header.vertex_index_size = 1
+        pmx_data.header.texture_index_size = 1
+        pmx_data.header.material_index_size = 1
+        pmx_data.header.bone_index_size = 1
+        pmx_data.header.morph_index_size = 1
+        pmx_data.header.rigid_body_index_size = 1
+
+        soft_body = PmxSoftBody(
+            material_index_size=1,
+            rigid_body_index_size=1,
+            vertex_index_size=1,
+            encoding_flag=PmxEncoding.UTF16LE,
+        )
+        soft_body.name = "布"
+        soft_body.name_english = "cloth"
+        soft_body.kind = 0
+        soft_body.material_index = -1
+        soft_body.collision_group = 3
+        soft_body.collision_mask = 0x00F0
+        soft_body.flags = 0x07
+        soft_body.bending_constraints_distance = 4
+        soft_body.cluster_count = 2
+        soft_body.total_mass = 12.5
+        soft_body.collision_margin = 0.25
+        soft_body._unsupported_detail = bytes(range(_UNSUPPORTED_DETAIL_SIZE))
+        soft_body.anchors = [(0, 5, 1)]
+        soft_body.pins = [6, 7]
+        pmx_data.soft_bodies = [soft_body]
+
+        out_path = os.path.join(self.temp_dir, "soft_body_roundtrip.pmx")
+        pmx_data.write_file(out_path)
+
+        parsed = PmxData().parse_file(out_path)
+
+        self.assertEqual(len(parsed.soft_bodies), 1)
+        parsed_soft_body = parsed.soft_bodies[0]
+        self.assertEqual(parsed_soft_body.name, "布")
+        self.assertEqual(parsed_soft_body.name_english, "cloth")
+        self.assertEqual(parsed_soft_body.collision_group, 3)
+        self.assertEqual(parsed_soft_body.collision_mask, 0x00F0)
+        self.assertEqual(parsed_soft_body.flags, 0x07)
+        self.assertAlmostEqual(parsed_soft_body.total_mass, 12.5)
+        self.assertAlmostEqual(parsed_soft_body.collision_margin, 0.25)
+        self.assertEqual(parsed_soft_body._unsupported_detail, bytes(range(_UNSUPPORTED_DETAIL_SIZE)))
+        self.assertEqual(parsed_soft_body.anchors, [(0, 5, 1)])
+        self.assertEqual(parsed_soft_body.pins, [6, 7])

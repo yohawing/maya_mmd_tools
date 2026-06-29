@@ -10,6 +10,7 @@ from ..exceptions import MMDParseException
 from .bone import PmxBone
 from .display_frame import PmxDisplayFrame
 from .face import PmxFace
+from .header import is_pmx_21_or_later
 from .joint import PmxJoint
 from .material import PmxMaterial
 from .morph import PmxMorph
@@ -121,7 +122,7 @@ def parse_pmx_file_legacy(file_path: str, target: Optional["PmxData"] = None) ->
                 joint.parse(f)
                 target.joints.append(joint)
 
-            if target.header.version >= 2.1:
+            if is_pmx_21_or_later(target.header.version):
                 soft_body_count = struct.unpack("<I", f.read(4))[0]
                 for _ in range(soft_body_count):
                     soft_body = PmxSoftBody(

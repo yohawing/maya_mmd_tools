@@ -23,6 +23,10 @@ if str(ROOT) not in sys.path:
 
 from tests.common.maya_location import maya_location as _maya_location  # noqa: E402
 from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
+from tests.common.maya_location import convert_path_options_for_maya_process as _convert_maya_path_options  # noqa: E402
+from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
+from tests.common.maya_location import pythonpath_for_maya_process as _maya_pythonpath  # noqa: E402
+from tests.common.maya_location import resolve_path_for_maya_process as _resolve_maya_path  # noqa: E402
 
 
 DEFAULT_MAYA_VERSION = "2024"
@@ -58,6 +62,36 @@ def _require_build_path(session: nox.Session, value: str, option_name: str) -> P
     if path != build_root and build_root not in path.parents:
         session.error(f"{option_name} must resolve under {build_root}: {path}")
     return path
+
+
+def _mayapy_env(mayapy: Path, preserve_pythonpath: bool = False, **extra: str) -> dict[str, str]:
+    """Return environment values with repo paths suitable for mayapy."""
+    env = {
+        **os.environ,
+        "PYTHONPATH": _maya_pythonpath(
+            mayapy,
+            ROOT,
+            os.environ.get("PYTHONPATH"),
+            preserve_existing=preserve_pythonpath,
+        ),
+    }
+    env.update(extra)
+    return env
+
+
+def _mayapy_script(mayapy: Path, relative_script: str) -> str:
+    """Return an absolute script path suitable for the resolved mayapy."""
+    return _maya_process_path(mayapy, ROOT / relative_script)
+
+
+def _mayapy_arg_path(mayapy: Path, value: str | Path) -> str:
+    """Return a path argument suitable for the resolved mayapy."""
+    return _resolve_maya_path(mayapy, ROOT, value)
+
+
+def _convert_mayapy_path_options(mayapy: Path, args: list[str], path_options: set[str]) -> list[str]:
+    """Convert values following path-like options for a mayapy child process."""
+    return _convert_maya_path_options(mayapy, ROOT, args, path_options)
 
 
 def _maya_devkit_root(version: str) -> Path:
@@ -350,21 +384,16 @@ def maya_smoke(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "MMD_TOOLS_CPP_CONFIG": config,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
     session.run(
         str(mayapy),
-        "tests/cpp/smoke_python_rig_fallback.py",
+        _mayapy_script(mayapy, "tests/cpp/smoke_python_rig_fallback.py"),
         env=env,
         external=True,
     )
     session.run(
         str(mayapy),
-        "tests/cpp/smoke_runtime_node.py",
+        _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
         env=env,
         external=True,
     )
@@ -391,9 +420,6 @@ def maya_viewport_capture(session: nox.Session) -> None:
     """
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     out = _option(session.posargs, "--out", str(ROOT / "build/captures/viewport_smoke.png"))
-    out_path = Path(out)
-    if not out_path.is_absolute():
-        out_path = (ROOT / out_path).resolve()
     frame = _option(session.posargs, "--frame", "1")
     width = _option(session.posargs, "--width", "640")
     height = _option(session.posargs, "--height", "480")
@@ -402,17 +428,16 @@ def maya_viewport_capture(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
         # Intentionally no MMD_TOOLS_CPP_* or plugin env; this smoke is plugin-free.
-    }
+    )
     session.run(
         str(mayapy),
-        "tests/viewport/smoke_viewport_capture.py",
+        _mayapy_script(mayapy, "tests/viewport/smoke_viewport_capture.py"),
         "--out",
-        str(out_path),
+        _mayapy_arg_path(mayapy, out),
         "--frame",
         frame,
         "--width",
@@ -438,9 +463,6 @@ def maya_shader_override_smoke(session: nox.Session) -> None:
     """
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     out = _option(session.posargs, "--out", str(ROOT / "build/captures/shader_override_smoke.png"))
-    out_path = Path(out)
-    if not out_path.is_absolute():
-        out_path = (ROOT / out_path).resolve()
     frame = _option(session.posargs, "--frame", "1")
     width = _option(session.posargs, "--width", "640")
     height = _option(session.posargs, "--height", "480")
@@ -449,16 +471,12 @@ def maya_shader_override_smoke(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
     session.run(
         str(mayapy),
-        "tests/viewport/smoke_shader_override.py",
+        _mayapy_script(mayapy, "tests/viewport/smoke_shader_override.py"),
         "--out",
-        str(out_path),
+        _mayapy_arg_path(mayapy, out),
         "--frame",
         frame,
         "--width",
@@ -511,9 +529,6 @@ def maya_static_render(session: nox.Session) -> None:
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     model = _option(session.posargs, "--model", str(ROOT / "tests/data/for_unit_test/test_1bone_cube.pmx"))
     out = _option(session.posargs, "--out", str(ROOT / "build/captures/static_render_1bone_cube.png"))
-    out_path = Path(out)
-    if not out_path.is_absolute():
-        out_path = (ROOT / out_path).resolve()
     frame = _option(session.posargs, "--frame", "0")
     width = _option(session.posargs, "--width", "1024")
     height = _option(session.posargs, "--height", "1024")
@@ -528,22 +543,19 @@ def maya_static_render(session: nox.Session) -> None:
     display = _option(session.posargs, "--display", "sRGB")
     rendering_space = _option(session.posargs, "--rendering-space", "ACEScg")
     diagnostics_out = _option(session.posargs, "--diagnostics-out", "")
-    diagnostics_args: list[str] = []
-    if diagnostics_out:
-        diagnostics_path = _require_build_path(session, diagnostics_out, "--diagnostics-out")
-        diagnostics_args.extend(["--diagnostics-out", str(diagnostics_path)])
-    if _has_flag(session.posargs, "--allow-blank"):
-        diagnostics_args.append("--allow-blank")
 
     mayapy = _mayapy(version)
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
-    }
+    diagnostics_args: list[str] = []
+    if diagnostics_out:
+        diagnostics_path = _require_build_path(session, diagnostics_out, "--diagnostics-out")
+        diagnostics_args.extend(["--diagnostics-out", _mayapy_arg_path(mayapy, diagnostics_path)])
+    if _has_flag(session.posargs, "--allow-blank"):
+        diagnostics_args.append("--allow-blank")
+
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
     vp2_device_map = {
         "gl": "VirtualDeviceGL",
         "glcore": "VirtualDeviceGLCore",
@@ -554,12 +566,12 @@ def maya_static_render(session: nox.Session) -> None:
 
     cmd = [
         str(mayapy),
-        "tests/viewport/static_render_capture.py",
+        _mayapy_script(mayapy, "tests/viewport/static_render_capture.py"),
         shader_flag,
         "--out",
-        str(out_path),
+        _mayapy_arg_path(mayapy, out),
         "--model",
-        model,
+        _mayapy_arg_path(mayapy, model),
         "--frame",
         frame,
         "--width",
@@ -678,15 +690,15 @@ def maya_batch_import(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
     session.run(
         str(mayapy),
-        "tests/track6/track6_runner.py",
-        *runner_args,
+        _mayapy_script(mayapy, "tests/track6/track6_runner.py"),
+        *_convert_mayapy_path_options(
+            mayapy,
+            runner_args,
+            {"--manifest", "--out-dir", "--scan-root", "--write-manifest"},
+        ),
         env=env,
         external=True,
     )
@@ -736,15 +748,11 @@ def pmx_roundtrip(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
     session.run(
         str(mayapy),
-        "tests/roundtrip/pmx_roundtrip_runner.py",
-        *runner_args,
+        _mayapy_script(mayapy, "tests/roundtrip/pmx_roundtrip_runner.py"),
+        *_convert_mayapy_path_options(mayapy, runner_args, {"--manifest", "--out-dir"}),
         env=env,
         external=True,
     )
@@ -886,15 +894,10 @@ def cpp_verify(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "MMD_TOOLS_CPP_CONFIG": config,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
     session.run(
         str(mayapy),
-        "tests/cpp/smoke_runtime_node.py",
+        _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
         env=env,
         external=True,
     )
@@ -932,6 +935,64 @@ def golden_oracle(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def local_camera_motion_oracle(session: nox.Session) -> None:
+    """Run local-only GoldenOracle camera-motion checks against Maya camera import.
+
+    The default manifest path points outside this repository and is expected to
+    exist only on the developer machine. This session is not part of CI.
+
+    Examples:
+        uvx nox -s local_camera_motion_oracle -- --maya 2024 --case camera-edge-generated-vmd
+        uvx nox -s local_camera_motion_oracle -- --mode sparse --limit 2
+        uvx nox -s local_camera_motion_oracle -- --current-epsilon 0.0005 --case camera-edge-generated-vmd
+        uvx nox -s local_camera_motion_oracle -- --current-report-only --case camera-shake-it-nanoem
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    value_options = {
+        "--manifest",
+        "--case",
+        "--limit",
+        "--mode",
+        "--max-current-frames",
+        "--epsilon",
+        "--current-epsilon",
+        "--out",
+    }
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in {"--all-frames", "--current-report-only"}:
+            passthrough.append(args[i])
+            i += 1
+            continue
+        passthrough.append(args[i])
+        i += 1
+
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
+        "--repo-root",
+        _maya_process_path(mayapy, ROOT),
+        *_convert_mayapy_path_options(
+            mayapy,
+            passthrough,
+            {"--manifest", "--out"},
+        ),
+        env=_mayapy_env(mayapy),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def local_parity(session: nox.Session) -> None:
     """Run Bake-vs-Rig mesh parity on local (non-committed) PMX/VMD assets.
 
@@ -953,7 +1014,7 @@ def local_parity(session: nox.Session) -> None:
         if args[i] == "--maya" and i + 1 < len(args):
             i += 2
             continue
-        if args[i] in ("--case", "--frame") and i + 1 < len(args):
+        if args[i] in ("--case", "--frame", "--out") and i + 1 < len(args):
             passthrough.extend([args[i], args[i + 1]])
             i += 2
             continue
@@ -964,8 +1025,9 @@ def local_parity(session: nox.Session) -> None:
         i += 1
     session.run(
         str(mayapy),
-        str(ROOT / "tests" / "viewport" / "local_asset_motion_compare.py"),
-        *passthrough,
+        _mayapy_script(mayapy, "tests/viewport/local_asset_motion_compare.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--out"}),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
         external=True,
     )
 
@@ -997,7 +1059,8 @@ def runtime_bake_bench(session: nox.Session) -> None:
         i += 1
     session.run(
         str(mayapy),
-        str(ROOT / "tests" / "viewport" / "runtime_bake_benchmark.py"),
-        *passthrough,
+        _mayapy_script(mayapy, "tests/viewport/runtime_bake_benchmark.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--vmd", "--out", "--log"}),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
         external=True,
     )

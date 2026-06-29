@@ -21,7 +21,7 @@ from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
 from mmd_tools.core.pmx_data.face import PmxFace
-from mmd_tools.core.pmx_data.header import PmxEncoding, PmxHeader
+from mmd_tools.core.pmx_data.header import PmxEncoding, PmxHeader, is_pmx_21_or_later
 from mmd_tools.core.pmx_data.ik_link import PmxIKLink
 from mmd_tools.core.pmx_data.joint import PmxJoint
 from mmd_tools.core.pmx_data.material import (
@@ -117,10 +117,33 @@ def parse_pmx_native(file_path: str) -> Optional[PmxData]:
         return None
 
     try:
-        return _parse_pmx_bytes(lib, pmx_bytes)
+        pmx = _parse_pmx_bytes(lib, pmx_bytes)
+        if pmx is not None:
+            _preserve_soft_bodies_from_legacy(file_path, pmx)
+        return pmx
     except Exception as exc:
         logger.info("Native PMX parse failed, will fallback: %s", exc)
         return None
+
+
+def _preserve_soft_bodies_from_legacy(file_path: str, pmx: PmxData) -> bool:
+    """Copy PMX 2.1 soft bodies into native parse results for writer roundtrip."""
+    if not is_pmx_21_or_later(pmx.header.version) or getattr(pmx, "soft_bodies", None):
+        return True
+
+    # mmd-anim native metadata does not expose PMX 2.1 soft bodies yet. Preserve
+    # them via the legacy reader so native import/export roundtrips do not drop
+    # the trailing section.
+    try:
+        from mmd_tools.core.pmx_data.legacy_parser import parse_pmx_file_legacy
+
+        legacy_pmx = parse_pmx_file_legacy(file_path)
+    except Exception as exc:
+        logger.warning("Failed to preserve PMX soft bodies from legacy parser: %s", exc)
+        return False
+
+    pmx.soft_bodies = list(getattr(legacy_pmx, "soft_bodies", []) or [])
+    return True
 
 
 def _parse_pmx_bytes(lib: Any, pmx_bytes: bytes) -> Optional[PmxData]:

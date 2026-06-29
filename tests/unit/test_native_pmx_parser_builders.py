@@ -1,22 +1,167 @@
 """Native PMX parser JSON-to-PmxData builder contract tests."""
 
 from ctypes import c_float, c_uint32
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from mmd_tools.core.native.native_pmx_parser import (
     _build_joints,
     _build_morphs,
     _build_rigid_bodies,
     _build_vertices,
+    _preserve_soft_bodies_from_legacy,
+    parse_pmx_native,
 )
+from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmx_data.header import PmxEncoding
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.pmx_data.soft_body import PmxSoftBody, _UNSUPPORTED_DETAIL_SIZE
 
 
 def _rounded_uvs(uvs):
     return [tuple(round(component, 6) for component in uv) for uv in uvs]
 
 
+def _make_minimal_pmx21_data():
+    pmx_data = PmxData()
+    pmx_data.header.version = 2.1
+    pmx_data.header.encoding = PmxEncoding.UTF16LE
+    pmx_data.header.vertex_index_size = 1
+    pmx_data.header.texture_index_size = 1
+    pmx_data.header.material_index_size = 1
+    pmx_data.header.bone_index_size = 1
+    pmx_data.header.morph_index_size = 1
+    pmx_data.header.rigid_body_index_size = 1
+    return pmx_data
+
+
+def _make_test_soft_body():
+    soft_body = PmxSoftBody(
+        material_index_size=1,
+        rigid_body_index_size=1,
+        vertex_index_size=1,
+        encoding_flag=PmxEncoding.UTF16LE,
+    )
+    soft_body.name = "布"
+    soft_body.name_english = "cloth"
+    soft_body.kind = 0
+    soft_body.material_index = -1
+    soft_body.collision_group = 3
+    soft_body.collision_mask = 0x00F0
+    soft_body.flags = 0x07
+    soft_body.bending_constraints_distance = 4
+    soft_body.cluster_count = 2
+    soft_body.total_mass = 12.5
+    soft_body.collision_margin = 0.25
+    soft_body._unsupported_detail = bytes(range(_UNSUPPORTED_DETAIL_SIZE))
+    soft_body.anchors = [(0, 5, 1)]
+    soft_body.pins = [6, 7]
+    return soft_body
+
+
 class TestNativePmxParserBuilders(unittest.TestCase):
+    def test_parse_pmx_native_preserves_soft_bodies_after_native_build(self):
+        native_pmx = PmxData()
+        lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())
+
+        with patch("mmd_tools.core.native.mmd_anim_runtime.get_mmd_runtime_library", return_value=lib), patch(
+            "mmd_tools.core.native.native_pmx_parser.Path.read_bytes", return_value=b"pmx"
+        ), patch(
+            "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes", return_value=native_pmx
+        ) as parse_bytes, patch(
+            "mmd_tools.core.native.native_pmx_parser._preserve_soft_bodies_from_legacy"
+        ) as preserve:
+            result = parse_pmx_native("cloth.pmx")
+
+        self.assertIs(result, native_pmx)
+        parse_bytes.assert_called_once_with(lib, b"pmx")
+        preserve.assert_called_once_with("cloth.pmx", native_pmx)
+
+    def test_parse_pmx_native_keeps_native_result_when_soft_body_preservation_fails(self):
+        native_pmx = _make_minimal_pmx21_data()
+        lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())
+
+        with patch("mmd_tools.core.native.mmd_anim_runtime.get_mmd_runtime_library", return_value=lib), patch(
+            "mmd_tools.core.native.native_pmx_parser.Path.read_bytes", return_value=b"pmx"
+        ), patch(
+            "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes", return_value=native_pmx
+        ), patch(
+            "mmd_tools.core.native.native_pmx_parser._preserve_soft_bodies_from_legacy", return_value=False
+        ):
+            self.assertIs(parse_pmx_native("cloth.pmx"), native_pmx)
+
+    def test_parse_pmx_native_soft_body_copy_survives_write_reparse(self):
+        native_pmx = _make_minimal_pmx21_data()
+        legacy_pmx = _make_minimal_pmx21_data()
+        legacy_pmx.soft_bodies = [_make_test_soft_body()]
+        lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())
+
+        with patch("mmd_tools.core.native.mmd_anim_runtime.get_mmd_runtime_library", return_value=lib), patch(
+            "mmd_tools.core.native.native_pmx_parser.Path.read_bytes", return_value=b"pmx"
+        ), patch(
+            "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes", return_value=native_pmx
+        ), patch(
+            "mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy", return_value=legacy_pmx
+        ):
+            parsed_native = parse_pmx_native("cloth.pmx")
+
+        self.assertIs(parsed_native, native_pmx)
+        with TemporaryDirectory() as temp_dir:
+            out_path = Path(temp_dir) / "roundtrip.pmx"
+            parsed_native.write_file(str(out_path))
+            reparsed = PmxData().parse_file(str(out_path))
+
+        self.assertEqual(len(reparsed.soft_bodies), 1)
+        reparsed_soft_body = reparsed.soft_bodies[0]
+        self.assertEqual(reparsed_soft_body.name, "布")
+        self.assertAlmostEqual(reparsed_soft_body.total_mass, 12.5)
+        self.assertAlmostEqual(reparsed_soft_body.collision_margin, 0.25)
+        self.assertEqual(reparsed_soft_body._unsupported_detail, bytes(range(_UNSUPPORTED_DETAIL_SIZE)))
+        self.assertEqual(reparsed_soft_body.anchors, [(0, 5, 1)])
+        self.assertEqual(reparsed_soft_body.pins, [6, 7])
+
+    def test_preserve_soft_bodies_from_legacy_for_pmx21_native_result(self):
+        native_pmx = _make_minimal_pmx21_data()
+        legacy_pmx = _make_minimal_pmx21_data()
+        soft_body = _make_test_soft_body()
+        legacy_pmx.soft_bodies = [soft_body]
+
+        with patch(
+            "mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy",
+            return_value=legacy_pmx,
+        ) as parse_legacy:
+            result = _preserve_soft_bodies_from_legacy("cloth.pmx", native_pmx)
+
+        self.assertTrue(result)
+        parse_legacy.assert_called_once_with("cloth.pmx")
+        self.assertEqual(native_pmx.soft_bodies, [soft_body])
+
+    def test_preserve_soft_bodies_from_legacy_does_not_overwrite_existing_native_data(self):
+        native_pmx = PmxData()
+        native_pmx.header.version = 2.1
+        native_soft_body = object()
+        native_pmx.soft_bodies = [native_soft_body]
+
+        with patch("mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy") as parse_legacy:
+            result = _preserve_soft_bodies_from_legacy("cloth.pmx", native_pmx)
+
+        self.assertTrue(result)
+        parse_legacy.assert_not_called()
+        self.assertEqual(native_pmx.soft_bodies, [native_soft_body])
+
+    def test_preserve_soft_bodies_from_legacy_skips_pmx20(self):
+        native_pmx = PmxData()
+        native_pmx.header.version = 2.0
+
+        with patch("mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy") as parse_legacy:
+            result = _preserve_soft_bodies_from_legacy("model.pmx", native_pmx)
+
+        self.assertTrue(result)
+        parse_legacy.assert_not_called()
+
     def test_build_vertices_preserves_additional_uv_channels(self):
         positions = (c_float * 6)(0.0, 1.0, 2.0, 3.0, 4.0, 5.0)
         normals = (c_float * 6)(0.0, 0.0, 1.0, 0.0, 1.0, 0.0)

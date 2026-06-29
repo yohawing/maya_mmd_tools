@@ -1,6 +1,6 @@
 import struct
 
-from .header import PmxHeader, PmxEncoding
+from .header import PmxHeader, PmxEncoding, is_pmx_21_or_later
 
 
 class PmxData:
@@ -116,7 +116,7 @@ class PmxData:
                     joint.write(f)
 
                 # SoftBody (Optional, PMX 2.1 only)
-                if self.header.version >= 2.1:
+                if is_pmx_21_or_later(self.header.version):
                     soft_body_count = len(self.soft_bodies)
                     f.write(struct.pack("<I", soft_body_count))
                     for soft_body in self.soft_bodies:
