@@ -8,6 +8,8 @@ from typing import Dict, Optional, Tuple
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from .vmd_runtime_rig_helper import _ls_mmd_append_nodes
+
 
 def get_or_expand_runtime_channel(
     ch_dict: Dict[str, Optional[om.MDoubleArray]],
@@ -38,6 +40,97 @@ def joint_orient_quat_from_joint(joint: str) -> om.MQuaternion:
         math.radians(float(jo[1])),
         math.radians(float(jo[2])),
     ).asQuaternion()
+
+
+def collect_append_info() -> Dict[str, dict]:
+    """Collect mmdAppend dependency metadata keyed by target joint."""
+    result = {}
+    append_nodes = _ls_mmd_append_nodes()
+
+    def _compound_destinations(src_attr, dst_attr):
+        plugs = cmds.listConnections(src_attr, s=False, d=True, p=True) or []
+        suffix = f".{dst_attr}"
+        return [plug.rsplit(".", 1)[0] for plug in plugs if plug.endswith(suffix)]
+
+    node_targets = {}
+    for node in append_nodes:
+        rotate_dsts = _compound_destinations(f"{node}.outputRotate", "rotate")
+        translate_dsts = _compound_destinations(f"{node}.outputTranslate", "translate")
+        if not rotate_dsts and not translate_dsts:
+            continue
+        target_joint = rotate_dsts[0] if rotate_dsts else translate_dsts[0]
+        node_targets[node] = target_joint
+
+    for node in append_nodes:
+        target_joint = node_targets.get(node)
+        if not target_joint:
+            continue
+        rotate_dsts = _compound_destinations(f"{node}.outputRotate", "rotate")
+        translate_dsts = _compound_destinations(f"{node}.outputTranslate", "translate")
+
+        def _source_from_plug(plug: str, append_prefix: str, joint_attr: str):
+            src_node, src_attr = plug.rsplit(".", 1)
+            if src_attr.startswith(append_prefix):
+                return node_targets.get(src_node), src_node
+            if src_attr.startswith(joint_attr):
+                return src_node, None
+            if src_attr.startswith("output3D"):
+                upstream = cmds.listConnections(f"{src_node}.input3D[0]", s=True, d=False, p=True) or []
+                if upstream:
+                    return _source_from_plug(upstream[0], append_prefix, joint_attr)
+            return None, None
+
+        source_joint = None
+        source_append_node = None
+        rotate_src_plugs = cmds.listConnections(f"{node}.sourceRotate", s=True, d=False, p=True) or []
+        if rotate_src_plugs:
+            source_joint, source_append_node = _source_from_plug(rotate_src_plugs[0], "appendRotate", "rotate")
+        translate_src_plugs = cmds.listConnections(f"{node}.sourceTranslate", s=True, d=False, p=True) or []
+        if not source_joint and translate_src_plugs:
+            source_joint, source_append_node = _source_from_plug(
+                translate_src_plugs[0],
+                "appendTranslate",
+                "translate",
+            )
+        ratio = cmds.getAttr(f"{node}.ratio")
+        affect_rot = cmds.getAttr(f"{node}.affectRotation")
+        local_append = False
+        if cmds.attributeQuery("localAppend", node=node, exists=True):
+            local_append = bool(cmds.getAttr(f"{node}.localAppend"))
+        attr_map = {}
+        if affect_rot and target_joint in rotate_dsts:
+            attr_map.update({
+                "rotateX": "baseRotateX",
+                "rotateY": "baseRotateY",
+                "rotateZ": "baseRotateZ",
+            })
+        affect_translate = False
+        if cmds.attributeQuery("affectTranslation", node=node, exists=True):
+            affect_translate = bool(cmds.getAttr(f"{node}.affectTranslation"))
+        if target_joint in translate_dsts:
+            attr_map.update({
+                "translateX": "baseTranslateX",
+                "translateY": "baseTranslateY",
+                "translateZ": "baseTranslateZ",
+            })
+        result[target_joint] = {
+            "node": node,
+            "source_joint": source_joint,
+            "source_append_node": source_append_node,
+            "ratio": ratio,
+            "affect_rotation": affect_rot,
+            "affect_translation": affect_translate,
+            "local_append": local_append,
+            "source_rotation_is_mmd": bool(source_append_node and not local_append),
+            "source_joint_orient": (
+                om.MQuaternion()
+                if source_append_node and not local_append
+                else joint_orient_quat_from_joint(source_joint)
+            ),
+            "target_joint_orient": joint_orient_quat_from_joint(target_joint),
+            "attr_map": attr_map,
+        }
+    return result
 
 
 def decompose_append_own_rotation(
