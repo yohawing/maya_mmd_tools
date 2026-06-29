@@ -21,6 +21,7 @@ import mmd_tools.converters.vmd_camera_animation as vmd_camera_animation_module
 import mmd_tools.converters.vmd_light_animation as vmd_light_animation_module
 from mmd_tools.converters.vmd_camera_animation import maya_camera_eye_from_vmd_state, parse_vmd_camera_interpolation
 from mmd_tools.converters.vmd_runtime_cache_collect import collect_runtime_bake_cache
+from mmd_tools.converters.vmd_runtime_scene_apply import apply_runtime_channel_arrays_to_scene_with_undo_disabled
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
@@ -474,6 +475,36 @@ class TestVmdConverter(MayaTestBase):
         self.assertTrue(result)
         convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=b"vmd")
         convert_light.assert_called_once_with(vmd_data.light_frames, vmd_bytes=b"vmd")
+
+    def test_convert_suppresses_undo_and_refresh_for_full_import(self):
+        """VMD import 全体で undo 記録と viewport refresh を抑制して復元する。"""
+        vmd_data = type("FakeVmdData", (), {})()
+        vmd_data.bone_frames = []
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = []
+        vmd_data.light_frames = []
+        undo_calls = []
+        refresh_calls = []
+
+        def fake_undo_info(*_args, **kwargs):
+            undo_calls.append(kwargs)
+            if kwargs.get("q") and kwargs.get("state"):
+                return True
+            return None
+
+        def fake_refresh(*_args, **kwargs):
+            refresh_calls.append(kwargs.get("suspend"))
+
+        with patch("mmd_tools.converters.vmd_converter.cmds.undoInfo", side_effect=fake_undo_info), patch(
+            "mmd_tools.converters.vmd_converter.cmds.refresh",
+            side_effect=fake_refresh,
+        ):
+            self.assertTrue(self.converter.convert(vmd_data))
+
+        self.assertEqual(refresh_calls, [True, False])
+        self.assertIn({"stateWithoutFlush": False}, undo_calls)
+        self.assertIn({"stateWithoutFlush": True}, undo_calls)
+        self.assertFalse(self.converter._vmd_import_refresh_suspended)
 
     def test_camera_and_light_import_flags_skip_channels(self):
         """UI/setting の camera/light OFF は converter 側でも尊重する。"""
@@ -2159,6 +2190,39 @@ class TestVmdConverter(MayaTestBase):
 
         cmds.delete(joint)
 
+    def test_legacy_bone_anim_layer_simple_path_uses_batch_keying(self):
+        """通常ボーンの animLayer keying は per-frame setKeyframe ではなく batch helper を使う。"""
+        joint = cmds.joint(name="legacy_layer_batch_joint")
+        cmds.setAttr(f"{joint}.translateX", 10.0)
+        cmds.select(clear=True)
+
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = cmds.animLayer("legacy_bone_batch_layer", override=False, weight=1.0)
+        self.converter.set_bone_name_mapping({"センター": joint})
+        self.converter._bone_bind_poses["センター"] = (10.0, 0.0, 0.0)
+        frames = [
+            self._make_bone_frame("センター", 0, (0.0, 0.0, 0.0)),
+            self._make_bone_frame("センター", 5, (2.0, 0.0, 0.0)),
+        ]
+
+        with patch.object(
+            self.converter,
+            "_batch_key_scalar_channels",
+            wraps=self.converter._batch_key_scalar_channels,
+        ) as batch_key:
+            self.assertTrue(self.converter._convert_bone_animation(frames))
+
+        joint_batch_calls = [call for call in batch_key.call_args_list if call.args[0] == joint]
+        self.assertEqual(len(joint_batch_calls), 1)
+        self.assertEqual(joint_batch_calls[0].kwargs.get("animation_layer"), self.converter.anim_layer)
+
+        layer_attrs = cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or []
+        self.assertIn(f"{joint}.translateX", layer_attrs)
+        cmds.currentTime(5, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 12.0, places=6)
+
+        cmds.delete(joint)
+
     def test_legacy_bone_animation_redirects_append_rotate_to_base_rotate(self):
         """append target ボーンの rotate は append node の baseRotate に key する。"""
         joint = cmds.joint(name="legacy_append_target_joint")
@@ -2353,6 +2417,85 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(refresh_calls, [True, False])
         self.assertEqual(converter.anim_layer, "runtime_layer")
 
+    def test_collect_runtime_bake_cache_keeps_outer_refresh_suspend_active(self):
+        """convert 全体の refresh suspend 中は collector が refresh を戻さない。"""
+        converter = SimpleNamespace(
+            anim_layer="runtime_layer",
+            _vmd_import_refresh_suspended=True,
+            bone_index_to_joint={},
+            logger=SimpleNamespace(info=lambda *_args, **_kwargs: None),
+            _create_runtime_joint_channel_arrays=lambda: {},
+            _create_runtime_joint_channel_static_state=lambda: {},
+        )
+        instance = SimpleNamespace(evaluate_clip_frame_batch=lambda *_args, **_kwargs: None)
+
+        with patch("mmd_tools.converters.vmd_runtime_cache_collect.cmds.refresh") as refresh:
+            cache = collect_runtime_bake_cache(converter, instance, clip=object(), bake_samples=[])
+
+        refresh.assert_not_called()
+        self.assertEqual(cache.baked_frames, [])
+        self.assertEqual(converter.anim_layer, "runtime_layer")
+
+    def test_runtime_scene_apply_suspends_refresh_when_called_standalone(self):
+        """runtime apply 単体呼び出しでは undo と refresh を抑制して復元する。"""
+        applied = []
+        undo_calls = []
+        refresh_calls = []
+        converter = SimpleNamespace(
+            _vmd_import_refresh_suspended=False,
+            _apply_runtime_channel_arrays_to_scene=lambda *_args: applied.append(True),
+        )
+
+        def fake_undo_info(*_args, **kwargs):
+            undo_calls.append(kwargs)
+            if kwargs.get("q") and kwargs.get("state"):
+                return True
+            return None
+
+        def fake_refresh(*_args, **kwargs):
+            refresh_calls.append(kwargs.get("suspend"))
+
+        with patch("mmd_tools.converters.vmd_runtime_scene_apply.cmds.undoInfo", side_effect=fake_undo_info), patch(
+            "mmd_tools.converters.vmd_runtime_scene_apply.cmds.refresh",
+            side_effect=fake_refresh,
+        ):
+            apply_runtime_channel_arrays_to_scene_with_undo_disabled(
+                converter,
+                {},
+                {},
+                om.MTimeArray(),
+                [],
+                [],
+                [],
+            )
+
+        self.assertEqual(applied, [True])
+        self.assertEqual(refresh_calls, [True, False])
+        self.assertIn({"stateWithoutFlush": False}, undo_calls)
+        self.assertIn({"stateWithoutFlush": True}, undo_calls)
+
+    def test_runtime_scene_apply_keeps_outer_refresh_suspend_active(self):
+        """convert 全体の refresh suspend 中は runtime apply が refresh を戻さない。"""
+        converter = SimpleNamespace(
+            _vmd_import_refresh_suspended=True,
+            _apply_runtime_channel_arrays_to_scene=lambda *_args: None,
+        )
+
+        with patch("mmd_tools.converters.vmd_runtime_scene_apply.cmds.undoInfo", return_value=False), patch(
+            "mmd_tools.converters.vmd_runtime_scene_apply.cmds.refresh"
+        ) as refresh:
+            apply_runtime_channel_arrays_to_scene_with_undo_disabled(
+                converter,
+                {},
+                {},
+                om.MTimeArray(),
+                [],
+                [],
+                [],
+            )
+
+        refresh.assert_not_called()
+
     def test_collect_runtime_bake_cache_falls_back_to_per_frame_eval(self):
         """batch が使えない場合も per-frame ABI で成功フレームだけ cache する。"""
         appended = []
@@ -2519,6 +2662,50 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(compute_mock.call_args.args[3], [-1, 0])
 
         cmds.delete(parent)
+
+    def test_compute_native_local_channel_batch_matches_bind_space_with_joint_orient(self):
+        """batch local decomposition は JO 付き bind 補正後の skinning matrix と一致する。"""
+        joint = cmds.joint(name="test_native_batch_bind_space_jo_bone")
+        cmds.select(clear=True)
+        cmds.setAttr(f"{joint}.jointOrient", 0.0, 0.0, 45.0)
+        cmds.setAttr(f"{joint}.rotate", 0.0, 0.0, 0.0)
+        cmds.setAttr(f"{joint}.rotateOrder", 0)
+
+        bind_world = om.MMatrix(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        bind_no_orient = om.MMatrix()
+        self.converter.bone_index_to_joint = {0: joint}
+        self.converter._bone_parent_map = {0: None}
+        self.converter._bone_rotate_orders = {0: 0}
+        self.converter._runtime_bind_world_matrices = {0: bind_world}
+        self.converter._runtime_no_orient_bind_world_matrices = {0: bind_no_orient}
+
+        runtime_world_tm = om.MTransformationMatrix()
+        runtime_world_tm.setTranslation(om.MVector(1.0, 2.0, -0.5), om.MSpace.kTransform)
+        runtime_world_tm.setRotation(om.MEulerRotation(0.0, 0.0, math.radians(90.0)))
+        runtime_world = runtime_world_tm.asMatrix()
+        runtime_mmd = self.converter._convert_mmd_world_matrix_to_maya(list(runtime_world))
+        batch_result = SimpleNamespace(
+            frame_count=1,
+            bone_count=1,
+            world_matrices=(ctypes.c_float * 16)(*runtime_mmd),
+        )
+
+        native_batch = self.converter._compute_native_local_channel_batch(batch_result)
+        if native_batch is None:
+            self.skipTest("mmd-anim native batch local channel ABI is unavailable")
+        locals_map = self.converter._native_local_channel_batch_for_frame(native_batch, 0)
+        self.assertIn(0, locals_map)
+        tx, ty, tz, rx, ry, rz = locals_map[0]
+        cmds.setAttr(f"{joint}.translate", tx, ty, tz, type="double3")
+        cmds.setAttr(f"{joint}.rotate", rx, ry, rz, type="double3")
+
+        corrected_world = om.MMatrix(cmds.getAttr(f"{joint}.worldMatrix[0]"))
+        actual_skinning = bind_world.inverse() * corrected_world
+        expected_skinning = bind_no_orient.inverse() * runtime_world
+        for i in range(16):
+            self.assertAlmostEqual(actual_skinning[i], expected_skinning[i], places=5)
+
+        cmds.delete(joint)
 
     def test_compute_bone_locals_matches_maya_with_parent_rotation(self):
         """親が回転している階層でも runtime world 行列から Maya local 値を再構成できることを確認"""
@@ -3215,5 +3402,55 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(captured[0][0], node)
         self.assertEqual(captured[0][2], "runtime_morph_layer")
         self.assertEqual(captured[0][1], {"weight": [(3.0, 0.5)]})
+
+        cmds.delete(node)
+
+    def test_runtime_morph_cache_keys_blendshape_weight_on_anim_layer(self):
+        """runtime morph cache は animLayer 上でも blendShape weight[0] に key を打てる。"""
+        base = cmds.polyCube(name="runtime_morph_layer_base")[0]
+        target = cmds.duplicate(base, name="runtime_morph_layer_target")[0]
+        blend_shape = cmds.blendShape(target, base, name="runtime_morph_layer_blendShape")[0]
+        cmds.aliasAttr("smile", f"{blend_shape}.weight[0]")
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = cmds.animLayer("runtime_morph_blendshape_layer", override=False, weight=1.0)
+        self.converter.morph_name_mapping = {"笑い": (blend_shape, "weight[0]", "smile")}
+
+        self.converter._bake_morph_weight_cache_from_runtime(
+            [(0.0, [0.25]), (5.0, [0.75])],
+            ["笑い"],
+        )
+
+        layer_attrs = cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or []
+        self.assertIn(f"{blend_shape}.smile", layer_attrs)
+        self.assertEqual(cmds.keyframe(blend_shape, attribute="weight[0]", query=True, timeChange=True), [0.0, 5.0])
+        cmds.currentTime(5, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{blend_shape}.weight[0]"), 0.75, places=6)
+
+    def test_runtime_morph_cache_resolves_mappings_once_per_pmx_morph(self):
+        """runtime morph cache は frame ごとに morph mapping を再探索しない。"""
+        node = cmds.createNode("transform", name="test_runtime_morph_target_cache_node")
+        cmds.addAttr(node, longName="weight", attributeType="double", keyable=True)
+        self.converter.morph_name_mapping = {"笑い": object()}
+
+        captured = []
+
+        def fake_key_scalar(node_name, channel_samples, animation_layer=None):
+            captured.append((node_name, channel_samples, animation_layer))
+            return True
+
+        with patch.object(self.converter, "_iter_morph_mappings", return_value=[(node, "weight", "")]) as iter_mappings:
+            with patch.object(
+                self.converter,
+                "_batch_key_scalar_channels",
+                side_effect=fake_key_scalar,
+            ):
+                self.converter._bake_morph_weight_cache_from_runtime(
+                    [(1.0, [0.1]), (2.0, [0.2]), (3.0, [0.3])],
+                    ["笑い"],
+                )
+
+        iter_mappings.assert_called_once()
+        self.assertEqual(captured[0][0], node)
+        self.assertEqual(captured[0][1], {"weight": [(1.0, 0.1), (2.0, 0.2), (3.0, 0.3)]})
 
         cmds.delete(node)

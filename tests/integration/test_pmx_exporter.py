@@ -5,6 +5,7 @@ collect → export → parse round-trip for a minimum geometry.
 """
 
 import os
+from unittest.mock import patch
 
 from maya import cmds
 
@@ -360,12 +361,16 @@ class TestPmxExporter(MayaTestBase):
         shader = self._assign_shader(transform, shader_name="ActionTriMat")
         output_path = self.get_temp_filename("action_triangle.pmx")
 
-        result = ExportModelAction().execute(
-            ExportModelRequest(
-                file_path=output_path,
-                options={"export_format": "pmx", "target_mesh": transform},
+        with patch(
+            "mmd_tools.converters.export_scene_collector.cmds.skinPercent",
+            side_effect=AssertionError("export skin collection must use bulk API"),
+        ):
+            result = ExportModelAction().execute(
+                ExportModelRequest(
+                    file_path=output_path,
+                    options={"export_format": "pmx", "target_mesh": transform},
+                )
             )
-        )
 
         self.assertTrue(result.succeeded)
         self.assertEqual(result.exported_path, output_path)
@@ -454,12 +459,16 @@ class TestPmxExporter(MayaTestBase):
         self._create_scene_morph_metadata(mesh_a)
         output_path = self.get_temp_filename("morph_metadata_model.pmx")
 
-        result = ExportModelAction().execute(
-            ExportModelRequest(
-                file_path=output_path,
-                options={"export_format": "pmx", "target_model": root},
+        with patch(
+            "mmd_tools.converters.export_scene_collector.cmds.pointPosition",
+            side_effect=AssertionError("vertex morph collection must use MFnMesh.getPoints"),
+        ):
+            result = ExportModelAction().execute(
+                ExportModelRequest(
+                    file_path=output_path,
+                    options={"export_format": "pmx", "target_model": root},
+                )
             )
-        )
 
         self.assertTrue(result.succeeded)
         pmx = _parse_pmx(output_path)

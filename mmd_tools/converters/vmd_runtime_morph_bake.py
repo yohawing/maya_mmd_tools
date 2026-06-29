@@ -38,6 +38,16 @@ def bake_morph_weights_from_runtime(
                 converter.logger.debug(f"runtime morph bake error for {morph_name} at frame {frame}: {e}")
 
 
+def _build_runtime_morph_target_map(converter, pmx_morph_names: List[str]) -> Dict[int, Tuple[str, list]]:
+    """Map PMX morph indices to Maya weight attrs that should receive keys."""
+    target_map: Dict[int, Tuple[str, list]] = {}
+    for index, morph_name in enumerate(pmx_morph_names):
+        mappings = list(converter._iter_morph_mappings(converter.morph_name_mapping.get(morph_name)))
+        if mappings:
+            target_map[index] = (morph_name, mappings)
+    return target_map
+
+
 def bake_morph_weight_cache_from_runtime(
     converter,
     morph_cache: List[Tuple[float, list]],
@@ -48,16 +58,17 @@ def bake_morph_weight_cache_from_runtime(
         return
 
     pmx_morph_names = pmx_morph_names or []
+    target_map = _build_runtime_morph_target_map(converter, pmx_morph_names)
+    if not target_map:
+        return
+
     samples_by_node: Dict[str, Dict[str, List[Tuple[float, float]]]] = {}
     keyed_morphs = set()
     for frame, morph_weights in morph_cache:
-        for index, weight in enumerate(morph_weights):
-            if index >= len(pmx_morph_names):
+        for index, (morph_name, mappings) in target_map.items():
+            if index >= len(morph_weights):
                 continue
-            morph_name = pmx_morph_names[index]
-            mappings = converter._iter_morph_mappings(converter.morph_name_mapping.get(morph_name))
-            if not mappings:
-                continue
+            weight = morph_weights[index]
             keyed_morphs.add(morph_name)
             for morph_node, weight_attr, _ in mappings:
                 node_samples = samples_by_node.setdefault(morph_node, {})

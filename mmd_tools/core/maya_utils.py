@@ -1475,18 +1475,10 @@ def create_animation_curves(
 
     # アニメーションレイヤーが指定されている場合
     if animation_layer and cmds.animLayer(animation_layer, query=True, exists=True):
-        # オブジェクトがレイヤーに含まれているか確認
-        cmds.select(node_name, replace=True)
-        affected_layers = cmds.animLayer([node_name], query=True, affectedLayers=True) or []
-        if animation_layer not in affected_layers:
-            # オブジェクトをレイヤーに追加
-            current_selection = cmds.ls(selection=True)
-            cmds.select(node_name, replace=True)
-            cmds.animLayer(animation_layer, edit=True, addSelectedObjects=True)
-            if current_selection:
-                cmds.select(current_selection)
-            else:
-                cmds.select(clear=True)
+        for attr in attributes:
+            base_attr = attr.split("[", 1)[0]
+            if cmds.objExists(f"{node_name}.{attr}") or cmds.attributeQuery(base_attr, node=node_name, exists=True):
+                cmds.animLayer(animation_layer, edit=True, attribute=f"{node_name}.{attr}")
 
     # 既存のアニメーションカーブをクリア（レイヤーモードでない場合のみ）
     if not animation_layer:
@@ -1501,22 +1493,27 @@ def create_animation_curves(
         if animation_layer:
             # レイヤーが有効な場合は、cmds.setKeyframeを使って初期カーブを作成
             cmds.setKeyframe(node_name, attribute=attr, animLayer=animation_layer)
-            # 作成されたカーブを取得
-            blend_nodes = cmds.animLayer(animation_layer, query=True, blendNodes=True) or []
+            # 作成されたカーブを取得。node.attr から直近の animBlendNode を辿ると、
+            # レイヤー全体の blendNodes を毎属性スキャンせずに目的の curve へ到達できる。
+            # 既存 base curve がある場合もあるため、返す curve は layer 所属に限定する。
+            layer_curves = set(cmds.animLayer(animation_layer, query=True, animCurves=True) or [])
+            blend_nodes = cmds.listConnections(
+                f"{node_name}.{attr}",
+                source=True,
+                destination=False,
+            ) or []
             for blend_node in blend_nodes:
-                # ブレンドノードの入力カーブを探す
                 input_curves = cmds.listConnections(blend_node, source=True, type="animCurve") or []
                 for curve_name in input_curves:
-                    # このカーブが目的の属性のものか確認
-                    curve_connections = cmds.listConnections(curve_name, destination=True, plugs=True) or []
-                    for conn in curve_connections:
-                        if f"{node_name}.{attr}" in conn or attr in conn:
-                            # Maya APIオブジェクトとして取得
-                            curve_sel = om.MSelectionList()
-                            curve_sel.add(curve_name)
-                            curve_obj = curve_sel.getDependNode(0)
-                            curves[attr] = oma.MFnAnimCurve(curve_obj)
-                            break
+                    if curve_name not in layer_curves:
+                        continue
+                    curve_sel = om.MSelectionList()
+                    curve_sel.add(curve_name)
+                    curve_obj = curve_sel.getDependNode(0)
+                    curves[attr] = oma.MFnAnimCurve(curve_obj)
+                    break
+                if attr in curves:
+                    break
         else:
             # 通常のアニメーションカーブ作成
             curve = oma.MFnAnimCurve()

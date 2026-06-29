@@ -101,7 +101,6 @@ def set_bone_keyframes(converter, joint: str, frames: List, vmd_bone_name: str, 
         not attr_targets
         and not skip_rotate
         and not key_route.get("ik_solver_rotate")
-        and not use_layer
     )
     if batch_simple_bone:
         channel_samples = {attr: [] for attr in attrs}
@@ -131,7 +130,11 @@ def set_bone_keyframes(converter, joint: str, frames: List, vmd_bone_name: str, 
             for attr, value in values.items():
                 channel_samples[attr].append((maya_time, float(value)))
 
-        if converter._batch_key_scalar_channels(joint, channel_samples):
+        animation_layer = converter.anim_layer if use_layer else None
+        if animation_layer:
+            channel_samples = converter._samples_as_anim_layer_deltas(joint, channel_samples)
+
+        if converter._batch_key_scalar_channels(joint, channel_samples, animation_layer=animation_layer):
             if converter.use_quaternion_interpolation:
                 try:
                     cmds.scriptEditorInfo(suppressWarnings=True)

@@ -32,6 +32,7 @@ def collect_runtime_bake_cache(converter, instance, clip, bake_samples) -> Runti
     runtime_anim_layer = converter.anim_layer
     converter.anim_layer = None
     refresh_suspended = False
+    outer_refresh_suspended = bool(getattr(converter, "_vmd_import_refresh_suspended", False))
 
     baked_frames: List[float] = []
     bake_times = om.MTimeArray()
@@ -46,11 +47,12 @@ def collect_runtime_bake_cache(converter, instance, clip, bake_samples) -> Runti
     append_elapsed = 0.0
 
     try:
-        try:
-            cmds.refresh(suspend=True)
-            refresh_suspended = True
-        except Exception:
-            refresh_suspended = False
+        if not outer_refresh_suspended:
+            try:
+                cmds.refresh(suspend=True)
+                refresh_suspended = True
+            except Exception:
+                refresh_suspended = False
 
         batch_result = None
         if bake_samples:

@@ -153,6 +153,8 @@ def apply_runtime_channel_arrays_to_scene_with_undo_disabled(
 ) -> None:
     """Apply runtime channels while suppressing Maya undo recording."""
     undo_was_enabled = True
+    refresh_suspended = False
+    outer_refresh_suspended = bool(getattr(converter, "_vmd_import_refresh_suspended", False))
     try:
         undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
     except Exception:
@@ -161,6 +163,12 @@ def apply_runtime_channel_arrays_to_scene_with_undo_disabled(
         cmds.undoInfo(stateWithoutFlush=False)
     except Exception:
         pass
+    if not outer_refresh_suspended:
+        try:
+            cmds.refresh(suspend=True)
+            refresh_suspended = True
+        except Exception:
+            refresh_suspended = False
     try:
         converter._apply_runtime_channel_arrays_to_scene(
             joint_channel_values,
@@ -171,6 +179,11 @@ def apply_runtime_channel_arrays_to_scene_with_undo_disabled(
             pmx_morph_names,
         )
     finally:
+        if refresh_suspended:
+            try:
+                cmds.refresh(suspend=False)
+            except Exception:
+                pass
         if undo_was_enabled:
             try:
                 cmds.undoInfo(stateWithoutFlush=True)

@@ -177,6 +177,7 @@ class VmdConverter:
         self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
         self.import_camera_animation = True
         self.import_light_animation = True
+        self._vmd_import_refresh_suspended = False
 
         # runtime bake: 静的チャンネル判定の閾値。ワールド行列→ローカル分解で乗る
         # 浮動小数ジッタを吸収し、これ未満しか動かないチャンネルはキーを打たず
@@ -223,6 +224,8 @@ class VmdConverter:
         """
         import_start_time = None
         anim_layer_selection = None
+        undo_was_enabled = True
+        refresh_suspended = False
 
         def _emit_progress(value: int) -> None:
             if progress_callback is not None:
@@ -233,6 +236,7 @@ class VmdConverter:
 
         try:
             self.logger.info("Starting VMD animation conversion")
+            undo_was_enabled, refresh_suspended = self._suspend_import_scene_updates()
             try:
                 import_start_time = cmds.currentTime(query=True)
                 cmds.play(state=False)
@@ -329,6 +333,42 @@ class VmdConverter:
             return False
         finally:
             self._restore_anim_layer_selection(anim_layer_selection)
+            self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
+
+    def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
+        """Suppress Maya undo recording and viewport refresh during VMD import."""
+        undo_was_enabled = True
+        refresh_suspended = False
+        try:
+            undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
+        except Exception:
+            undo_was_enabled = True
+        try:
+            cmds.undoInfo(stateWithoutFlush=False)
+        except Exception:
+            pass
+        try:
+            cmds.refresh(suspend=True)
+            refresh_suspended = True
+            self._vmd_import_refresh_suspended = True
+        except Exception:
+            refresh_suspended = False
+            self._vmd_import_refresh_suspended = False
+        return undo_was_enabled, refresh_suspended
+
+    def _restore_import_scene_updates(self, undo_was_enabled: bool, refresh_suspended: bool) -> None:
+        """Restore viewport refresh and undo state after VMD import."""
+        if refresh_suspended:
+            try:
+                cmds.refresh(suspend=False)
+            except Exception:
+                pass
+        self._vmd_import_refresh_suspended = False
+        if undo_was_enabled:
+            try:
+                cmds.undoInfo(stateWithoutFlush=True)
+            except Exception:
+                pass
 
     @staticmethod
     def _restore_import_timeline_state(current_time: Optional[float]) -> None:

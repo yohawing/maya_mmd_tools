@@ -12,7 +12,10 @@ later collector pass.
 """
 
 import json
+from typing import Optional
 
+import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 from maya import cmds
 
 from mmd_tools.converters.morph_converter import MorphConverter
@@ -150,8 +153,91 @@ def _collect_skin_bones(skin_cluster: str) -> tuple[list[dict], dict[str, int]]:
     return bones, export_index_by_joint
 
 
-def _collect_vertex_skin_weights(skin_cluster: str, shape: str, vertex_count: int, export_index_by_joint: dict[str, int]) -> list:
-    """Collect per-vertex exporter skinning fields from a skinCluster."""
+def _joint_export_index_from_dag_path(path: om.MDagPath, export_index_by_joint: dict[str, int]) -> int:
+    """Return exporter bone index for an influence dag path."""
+    candidates = [
+        path.fullPathName(),
+        path.partialPathName(),
+        path.fullPathName().rsplit("|", 1)[-1],
+        path.partialPathName().rsplit("|", 1)[-1],
+    ]
+    for candidate in candidates:
+        if candidate in export_index_by_joint:
+            return export_index_by_joint[candidate]
+    raise KeyError(path.fullPathName())
+
+
+def _normalize_export_skin_pairs(pairs: list[tuple[int, float]]) -> dict:
+    """Normalize, trim, and format one vertex's exporter skin weights."""
+    pairs = [(bone_index, float(weight)) for bone_index, weight in pairs if float(weight) > 1e-8]
+    if not pairs:
+        pairs = [(0, 1.0)]
+    pairs.sort(key=lambda pair: pair[1], reverse=True)
+    pairs = pairs[:4]
+    total = sum(weight for _bone_index, weight in pairs)
+    if total > 0.0:
+        pairs = [(bone_index, weight / total) for bone_index, weight in pairs]
+    if len(pairs) == 3:
+        pairs.append((pairs[-1][0], 0.0))
+    return {
+        "bone_indices": [bone_index for bone_index, _weight in pairs],
+        "bone_weights": [weight for _bone_index, weight in pairs],
+    }
+
+
+def _collect_vertex_skin_weights_api(
+    skin_cluster: str,
+    shape: str,
+    vertex_count: int,
+    export_index_by_joint: dict[str, int],
+) -> Optional[list]:
+    """Collect all skin weights in one MFnSkinCluster.getWeights call."""
+    try:
+        selection = om.MSelectionList()
+        selection.add(skin_cluster)
+        skin_obj = selection.getDependNode(0)
+        skin_fn = oma.MFnSkinCluster(skin_obj)
+
+        shape_selection = om.MSelectionList()
+        shape_selection.add(shape)
+        shape_path = shape_selection.getDagPath(0)
+
+        component_fn = om.MFnSingleIndexedComponent()
+        component = component_fn.create(om.MFn.kMeshVertComponent)
+        component_fn.addElements(list(range(vertex_count)))
+
+        weights, influence_count = skin_fn.getWeights(shape_path, component)
+        influence_count = int(influence_count)
+        if influence_count <= 0 or len(weights) < vertex_count * influence_count:
+            return None
+
+        influence_export_indices = [
+            _joint_export_index_from_dag_path(path, export_index_by_joint)
+            for path in skin_fn.influenceObjects()
+        ]
+        if len(influence_export_indices) < influence_count:
+            return None
+
+        vertex_weights = []
+        for vertex_index in range(vertex_count):
+            offset = vertex_index * influence_count
+            pairs = [
+                (influence_export_indices[influence_index], float(weights[offset + influence_index]))
+                for influence_index in range(influence_count)
+            ]
+            vertex_weights.append(_normalize_export_skin_pairs(pairs))
+        return vertex_weights
+    except Exception:
+        return None
+
+
+def _collect_vertex_skin_weights_cmds(
+    skin_cluster: str,
+    shape: str,
+    vertex_count: int,
+    export_index_by_joint: dict[str, int],
+) -> list:
+    """Collect skin weights via cmds.skinPercent fallback."""
     influences = cmds.skinCluster(skin_cluster, query=True, influence=True) or []
     influence_export_indices = [export_index_by_joint[joint] for joint in influences]
     vertex_weights = []
@@ -162,25 +248,16 @@ def _collect_vertex_skin_weights(skin_cluster: str, shape: str, vertex_count: in
             query=True,
             value=True,
         ) or []
-        pairs = [
-            (bone_index, float(weight))
-            for bone_index, weight in zip(influence_export_indices, weights)
-            if float(weight) > 1e-8
-        ]
-        if not pairs:
-            pairs = [(0, 1.0)]
-        pairs.sort(key=lambda pair: pair[1], reverse=True)
-        pairs = pairs[:4]
-        total = sum(weight for _bone_index, weight in pairs)
-        if total > 0.0:
-            pairs = [(bone_index, weight / total) for bone_index, weight in pairs]
-        if len(pairs) == 3:
-            pairs.append((pairs[-1][0], 0.0))
-        vertex_weights.append({
-            "bone_indices": [bone_index for bone_index, _weight in pairs],
-            "bone_weights": [weight for _bone_index, weight in pairs],
-        })
+        vertex_weights.append(_normalize_export_skin_pairs(list(zip(influence_export_indices, weights))))
     return vertex_weights
+
+
+def _collect_vertex_skin_weights(skin_cluster: str, shape: str, vertex_count: int, export_index_by_joint: dict[str, int]) -> list:
+    """Collect per-vertex exporter skinning fields from a skinCluster."""
+    api_weights = _collect_vertex_skin_weights_api(skin_cluster, shape, vertex_count, export_index_by_joint)
+    if api_weights is not None:
+        return api_weights
+    return _collect_vertex_skin_weights_cmds(skin_cluster, shape, vertex_count, export_index_by_joint)
 
 
 def _blendshape_aliases_by_index(blend_shape: str) -> dict[int, str]:
@@ -231,6 +308,19 @@ def _blendshape_target_indices(blend_shape: str) -> list[int]:
 
 def _mesh_local_positions(shape: str, vertex_count: int) -> list[list[float]]:
     """Return mesh vertex positions in local mesh space."""
+    try:
+        selection = om.MSelectionList()
+        selection.add(shape)
+        dag = selection.getDagPath(0)
+        points = om.MFnMesh(dag).getPoints(om.MSpace.kObject)
+        if len(points) < vertex_count:
+            raise ValueError("MFnMesh returned fewer points than expected")
+        return [
+            [float(points[index].x), float(points[index].y), float(points[index].z)]
+            for index in range(vertex_count)
+        ]
+    except Exception:
+        pass
     return [
         [float(v) for v in cmds.pointPosition(f"{shape}.vtx[{vertex_index}]", local=True)]
         for vertex_index in range(vertex_count)

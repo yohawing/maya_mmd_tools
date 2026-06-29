@@ -1,5 +1,6 @@
 import math
 import unittest
+from unittest.mock import patch
 
 from maya import cmds
 
@@ -549,6 +550,65 @@ class TestMayaUtils(MayaTestBase):
         # パフォーマンスは同等程度であることを確認
         # APIの方が若干遅い可能性もあるため、2倍の余裕を持たせる
         self.assertLess(api_time, cmds_time * 2.0)
+
+    def test_create_animation_curves_with_layer_does_not_touch_selection(self):
+        """animLayer 用 curve 作成は選択状態に依存せず属性を直接登録する。"""
+        node = cmds.createNode("transform", name="layer_curve_target")
+        selected = cmds.createNode("transform", name="layer_curve_selected")
+        layer = cmds.animLayer("layer_curve_test_layer", override=False, weight=1.0)
+        cmds.select(selected, replace=True)
+
+        with patch(
+            "mmd_tools.core.maya_utils.cmds.select",
+            side_effect=AssertionError("create_animation_curves must not select objects"),
+        ):
+            curves = maya_utils.create_animation_curves(
+                node,
+                ["translateX"],
+                animation_layer=layer,
+            )
+
+        self.assertIn("translateX", curves)
+        layer_attrs = cmds.animLayer(layer, query=True, attribute=True) or []
+        self.assertIn(f"{node}.translateX", layer_attrs)
+        self.assertEqual(cmds.ls(selection=True), [selected])
+
+    def test_create_animation_curves_with_layer_registers_blendshape_weight_plug(self):
+        """animLayer 用 curve 作成は blendShape の weight[0] plug も直接登録する。"""
+        base = cmds.polyCube(name="layer_curve_blendshape_base")[0]
+        target = cmds.duplicate(base, name="layer_curve_blendshape_target")[0]
+        blend_shape = cmds.blendShape(target, base, name="layer_curve_blendshape")[0]
+        cmds.aliasAttr("smile", f"{blend_shape}.weight[0]")
+        layer = cmds.animLayer("layer_curve_blendshape_layer", override=False, weight=1.0)
+
+        curves = maya_utils.create_animation_curves(
+            blend_shape,
+            ["weight[0]"],
+            animation_layer=layer,
+        )
+
+        self.assertIn("weight[0]", curves)
+        layer_attrs = cmds.animLayer(layer, query=True, attribute=True) or []
+        self.assertIn(f"{blend_shape}.smile", layer_attrs)
+
+    def test_create_animation_curves_with_layer_ignores_existing_base_curve(self):
+        """animLayer 用 curve 作成は既存 base animation curve を返さない。"""
+        node = cmds.createNode("transform", name="layer_curve_existing_base_target")
+        cmds.setKeyframe(node, attribute="translateX", time=0.0, value=1.0)
+        base_curves = set(cmds.listConnections(f"{node}.translateX", source=True, type="animCurve") or [])
+        self.assertTrue(base_curves)
+        layer = cmds.animLayer("layer_curve_existing_base_layer", override=False, weight=1.0)
+
+        curves = maya_utils.create_animation_curves(
+            node,
+            ["translateX"],
+            animation_layer=layer,
+        )
+
+        layer_curves = set(cmds.animLayer(layer, query=True, animCurves=True) or [])
+        self.assertIn("translateX", curves)
+        self.assertIn(curves["translateX"].name(), layer_curves)
+        self.assertNotIn(curves["translateX"].name(), base_curves)
 
     def test_set_attribute_edge_cases(self):
         """set_attributeのエッジケーステスト（既存アトリビュートを使用）"""
