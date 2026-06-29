@@ -18,6 +18,7 @@ import maya.api.OpenMaya as om
 
 import mmd_tools.converters.vmd_converter as vmd_converter_module
 import mmd_tools.converters.vmd_camera_animation as vmd_camera_animation_module
+import mmd_tools.converters.vmd_light_animation as vmd_light_animation_module
 from mmd_tools.converters.vmd_camera_animation import maya_camera_eye_from_vmd_state, parse_vmd_camera_interpolation
 from mmd_tools.converters.vmd_runtime_cache_collect import collect_runtime_bake_cache
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
@@ -450,10 +451,10 @@ class TestVmdConverter(MayaTestBase):
         convert_bone.assert_not_called()
         convert_morph.assert_not_called()
         convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=None)
-        convert_light.assert_called_once_with(vmd_data.light_frames)
+        convert_light.assert_called_once_with(vmd_data.light_frames, vmd_bytes=None)
 
-    def test_bake_mode_passes_vmd_bytes_to_camera_sampler(self):
-        """Bake モードだけ camera も mmd-anim sampler 用 VMD bytes を受け取る。"""
+    def test_bake_mode_passes_vmd_bytes_to_camera_and_light_samplers(self):
+        """Bake モードだけ camera/light が mmd-anim sampler 用 VMD bytes を受け取る。"""
         frame = type("FrameStub", (), {"frame_number": 1})()
         vmd_data = type("FakeVmdData", (), {})()
         vmd_data.bone_frames = [frame]
@@ -472,7 +473,7 @@ class TestVmdConverter(MayaTestBase):
 
         self.assertTrue(result)
         convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=b"vmd")
-        convert_light.assert_called_once_with(vmd_data.light_frames)
+        convert_light.assert_called_once_with(vmd_data.light_frames, vmd_bytes=b"vmd")
 
     def test_camera_and_light_import_flags_skip_channels(self):
         """UI/setting の camera/light OFF は converter 側でも尊重する。"""
@@ -686,6 +687,38 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(len(rot_keys), 1)
         self.assertIn(10.0, rot_keys)
         self.assertNotIn(0.0, rot_keys)
+
+    def test_runtime_light_sampling_dense_keys_maya_frames(self):
+        """VMD bytes がある場合は mmd-anim light sampler の補間済み値を frame ごとに key する。"""
+        from mmd_tools.core.constants import DEFAULT_LIGHT_NAME
+        from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+
+        frame0 = VmdLightFrame()
+        frame0.frame_number = 0
+        frame0.position = (0.0, -1.0, 0.0)
+        frame0.color = (1.0, 1.0, 1.0)
+
+        frame1 = VmdLightFrame()
+        frame1.frame_number = 2
+        frame1.position = (1.0, -1.0, 0.0)
+        frame1.color = (0.0, 0.5, 1.0)
+
+        samples = [
+            {"color": [1.0, 1.0, 1.0], "position": [0.0, -1.0, 0.0]},
+            {"color": [0.5, 0.75, 1.0], "position": [0.5, -1.0, 0.0]},
+            {"color": [0.0, 0.5, 1.0], "position": [1.0, -1.0, 0.0]},
+        ]
+
+        with patch.object(vmd_light_animation_module, "sample_vmd_light_frames", return_value=samples) as sampler:
+            self.assertTrue(self.converter._convert_light_animation([frame0, frame1], vmd_bytes=b"vmd"))
+
+        sampler.assert_called_once_with(b"vmd", 0.0, 1.0, 3)
+        light_shape = cmds.listRelatives(DEFAULT_LIGHT_NAME, shapes=True, type="directionalLight")[0]
+        self.assertEqual(cmds.keyframe(f"{light_shape}.colorR", query=True, timeChange=True), [0.0, 1.0, 2.0])
+        self.assertEqual(cmds.keyframe(f"{DEFAULT_LIGHT_NAME}.rotateX", query=True, timeChange=True), [0.0, 1.0, 2.0])
+        cmds.currentTime(1, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{light_shape}.colorR"), 0.5, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{light_shape}.colorG"), 0.75, places=6)
 
     def test_convert_light_animation_uses_batch_keying_with_anim_layer(self):
         """light color/rotation channel は batch keying 経由で animLayer にも登録される。"""

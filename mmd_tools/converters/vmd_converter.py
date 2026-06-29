@@ -315,7 +315,8 @@ class VmdConverter:
             # ライトアニメーション（レガシー）
             if self.import_light_animation and hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
                 self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
-                self._convert_light_animation(vmd_data.light_frames)
+                light_sample_bytes = vmd_bytes if bake_mode else None
+                self._convert_light_animation(vmd_data.light_frames, vmd_bytes=light_sample_bytes)
             _emit_progress(94)
 
             self.logger.info("VMD animation conversion completed")
@@ -1163,7 +1164,7 @@ class VmdConverter:
         """VMD viewing_angle(deg) を Maya camera focalLength(mm) に変換する。"""
         return viewing_angle_to_focal_length(camera_shape, viewing_angle)
 
-    def _convert_light_animation(self, light_frames: List) -> bool:
+    def _convert_light_animation(self, light_frames: List, vmd_bytes: bytes = None) -> bool:
         """照明アニメーションを変換
 
         VMD light_frames の position を方向ベクトルとして扱い、Maya directionalLight の
@@ -1173,11 +1174,12 @@ class VmdConverter:
 
         Args:
             light_frames: 照明フレームデータのリスト
+            vmd_bytes: mmd-anim light sampling に使用する VMD バイト列
 
         Returns:
             変換が成功した場合True
         """
-        return convert_light_animation(self, light_frames)
+        return convert_light_animation(self, light_frames, vmd_bytes=vmd_bytes)
 
     def _convert_morph_animation(self, morph_frames: List) -> bool:
         """モーフアニメーションを変換

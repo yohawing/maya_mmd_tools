@@ -240,9 +240,41 @@ def _setup_function_signatures(lib: CDLL) -> None:
     )
     _set_sig(
         lib,
-        "mmd_runtime_sample_vmd_camera_json",
-        MmdRuntimeFfiByteBuffer,
-        [POINTER(c_uint8), c_size_t, c_float, c_float, c_size_t],
+        "mmd_runtime_vmd_camera_track_create_from_vmd_bytes",
+        c_void_p,
+        [POINTER(c_uint8), c_size_t],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_vmd_camera_track_sample",
+        c_bool,
+        [c_void_p, c_float, POINTER(c_float), c_size_t],
+    )
+    _set_sig(lib, "mmd_runtime_vmd_camera_track_free", None, [c_void_p])
+    _set_sig(
+        lib,
+        "mmd_runtime_vmd_sample_camera",
+        c_bool,
+        [POINTER(c_uint8), c_size_t, c_float, POINTER(c_float), c_size_t],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_vmd_light_track_create_from_vmd_bytes",
+        c_void_p,
+        [POINTER(c_uint8), c_size_t],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_vmd_light_track_sample",
+        c_bool,
+        [c_void_p, c_float, POINTER(c_float), c_size_t],
+    )
+    _set_sig(lib, "mmd_runtime_vmd_light_track_free", None, [c_void_p])
+    _set_sig(
+        lib,
+        "mmd_runtime_vmd_sample_light",
+        c_bool,
+        [POINTER(c_uint8), c_size_t, c_float, POINTER(c_float), c_size_t],
     )
 
     # インスタンス
@@ -543,28 +575,85 @@ def sample_vmd_camera_frames(
     lib = get_mmd_runtime_library()
     if lib is None or not vmd_bytes or frame_count <= 0:
         return None
-    func = getattr(lib, "mmd_runtime_sample_vmd_camera_json", None)
-    if func is None:
+    create_track = getattr(lib, "mmd_runtime_vmd_camera_track_create_from_vmd_bytes", None)
+    sample_track = getattr(lib, "mmd_runtime_vmd_camera_track_sample", None)
+    free_track = getattr(lib, "mmd_runtime_vmd_camera_track_free", None)
+    if create_track is None or sample_track is None or free_track is None:
         return None
 
+    track = None
     try:
         buf = (c_uint8 * len(vmd_bytes)).from_buffer_copy(vmd_bytes)
-        result: MmdRuntimeFfiByteBuffer = func(
-            buf,
-            len(vmd_bytes),
-            c_float(float(start_frame)),
-            c_float(float(frame_step)),
-            c_size_t(int(frame_count)),
-        )
-        if not result.data or result.len == 0:
+        track = create_track(buf, len(vmd_bytes))
+        if not track:
             return None
-        raw = ctypes.string_at(result.data, result.len)
-        lib.mmd_runtime_byte_buffer_free(result)
-        parsed = json.loads(raw.decode("utf-8"))
-        return parsed if isinstance(parsed, list) else None
+        out = (c_float * 9)()
+        samples: List[Dict[str, Any]] = []
+        for index in range(int(frame_count)):
+            frame = float(start_frame) + float(frame_step) * index
+            if not sample_track(track, c_float(frame), out, c_size_t(9)):
+                continue
+            samples.append(
+                {
+                    "frame": frame,
+                    "distance": float(out[0]),
+                    "position": (float(out[1]), float(out[2]), float(out[3])),
+                    "rotation": (float(out[4]), float(out[5]), float(out[6])),
+                    "fov": float(out[7]),
+                    "perspective": bool(out[8] != 0.0),
+                }
+            )
+        return samples or None
     except Exception as e:
         logger.error(f"sample_vmd_camera_frames failed: {e}", exc_info=True)
         return None
+    finally:
+        if track:
+            free_track(track)
+
+
+def sample_vmd_light_frames(
+    vmd_bytes: bytes,
+    start_frame: float,
+    frame_step: float,
+    frame_count: int,
+) -> Optional[List[Dict[str, Any]]]:
+    """Sample VMD light state through mmd-anim's light interpolation logic."""
+    lib = get_mmd_runtime_library()
+    if lib is None or not vmd_bytes or frame_count <= 0:
+        return None
+    create_track = getattr(lib, "mmd_runtime_vmd_light_track_create_from_vmd_bytes", None)
+    sample_track = getattr(lib, "mmd_runtime_vmd_light_track_sample", None)
+    free_track = getattr(lib, "mmd_runtime_vmd_light_track_free", None)
+    if create_track is None or sample_track is None or free_track is None:
+        return None
+
+    track = None
+    try:
+        buf = (c_uint8 * len(vmd_bytes)).from_buffer_copy(vmd_bytes)
+        track = create_track(buf, len(vmd_bytes))
+        if not track:
+            return None
+        out = (c_float * 6)()
+        samples: List[Dict[str, Any]] = []
+        for index in range(int(frame_count)):
+            frame = float(start_frame) + float(frame_step) * index
+            if not sample_track(track, c_float(frame), out, c_size_t(6)):
+                continue
+            samples.append(
+                {
+                    "frame": frame,
+                    "color": (float(out[0]), float(out[1]), float(out[2])),
+                    "position": (float(out[3]), float(out[4]), float(out[5])),
+                }
+            )
+        return samples or None
+    except Exception as e:
+        logger.error(f"sample_vmd_light_frames failed: {e}", exc_info=True)
+        return None
+    finally:
+        if track:
+            free_track(track)
 
 
 def get_mmd_runtime_library() -> Optional[CDLL]:

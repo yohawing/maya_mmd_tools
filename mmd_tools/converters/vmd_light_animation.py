@@ -1,10 +1,73 @@
 """Light-specific helpers for VMD animation conversion."""
 
 import math
+from typing import List, Optional
 
 import maya.cmds as cmds
 
 from ..core.constants import ATTR_MMD_LIGHT, DEFAULT_LIGHT_NAME
+
+try:
+    from ..core.native.mmd_anim_runtime import sample_vmd_light_frames
+except Exception:
+    sample_vmd_light_frames = None  # type: ignore
+
+
+def _frame_value(frame, attr_name: str, key_name: str, default):
+    if hasattr(frame, attr_name):
+        return getattr(frame, attr_name)
+    if hasattr(frame, key_name):
+        return getattr(frame, key_name)
+    if isinstance(frame, dict):
+        return frame.get(key_name, frame.get(attr_name, default))
+    return default
+
+
+def _light_frame_range(light_frames) -> tuple[float, float]:
+    frame_numbers = [float(_frame_value(frame, "frame_number", "frame", 0.0)) for frame in light_frames]
+    return min(frame_numbers), max(frame_numbers)
+
+
+def _light_samples_from_runtime(converter, light_frames, vmd_bytes: Optional[bytes]) -> Optional[List[dict]]:
+    if sample_vmd_light_frames is None or not vmd_bytes:
+        return None
+    if not light_frames:
+        return None
+
+    min_frame, max_frame = _light_frame_range(light_frames)
+    start_maya_time = math.floor(converter.vmd_frame_to_maya_time(min_frame))
+    end_maya_time = math.ceil(converter.vmd_frame_to_maya_time(max_frame))
+    frame_count = max(1, int(end_maya_time - start_maya_time) + 1)
+    start_vmd_frame = converter.maya_time_to_vmd_frame(start_maya_time)
+    frame_step = converter.maya_time_to_vmd_frame(start_maya_time + 1.0) - start_vmd_frame
+    samples = sample_vmd_light_frames(vmd_bytes, start_vmd_frame, frame_step, frame_count)
+    if not samples:
+        return None
+
+    dense = []
+    for index, sample in enumerate(samples):
+        dense.append(
+            {
+                "maya_time": start_maya_time + index,
+                "color": tuple(sample.get("color", (1.0, 1.0, 1.0))),
+                "position": tuple(sample.get("position", (0.0, -1.0, 0.0))),
+            }
+        )
+    return dense
+
+
+def _sparse_light_samples_from_frames(converter, light_frames) -> List[dict]:
+    samples = []
+    for frame in light_frames:
+        frame_number = _frame_value(frame, "frame_number", "frame", 0)
+        samples.append(
+            {
+                "maya_time": converter.vmd_frame_to_maya_time(frame_number),
+                "color": tuple(_frame_value(frame, "color", "color", (1, 1, 1))),
+                "position": tuple(_frame_value(frame, "position", "position", (0.0, -1.0, 0.0))),
+            }
+        )
+    return samples
 
 
 def get_or_create_light() -> str:
@@ -20,7 +83,7 @@ def get_or_create_light() -> str:
     return light_transform
 
 
-def convert_light_animation(converter, light_frames) -> bool:
+def convert_light_animation(converter, light_frames, vmd_bytes: Optional[bytes] = None) -> bool:
     """Convert VMD light frames using the converter's shared Maya helpers."""
     if not light_frames:
         return False
@@ -43,11 +106,14 @@ def convert_light_animation(converter, light_frames) -> bool:
         light_color_samples = {"colorR": [], "colorG": [], "colorB": []}
     light_rotate_samples = {"rotateX": [], "rotateY": [], "rotateZ": []}
 
-    for frame in light_frames:
-        frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
-        maya_time = converter.vmd_frame_to_maya_time(frame_number)
-        color = frame.color if hasattr(frame, "color") else frame.get("color", (1, 1, 1))
-        position = frame.position if hasattr(frame, "position") else frame.get("position", (0.0, -1.0, 0.0))
+    samples = _light_samples_from_runtime(converter, light_frames, vmd_bytes)
+    if samples is None:
+        samples = _sparse_light_samples_from_frames(converter, light_frames)
+
+    for sample in samples:
+        maya_time = sample["maya_time"]
+        color = sample["color"]
+        position = sample["position"]
 
         for attr, value in zip(light_color_samples, color):
             light_color_samples[attr].append((maya_time, value))
@@ -56,7 +122,7 @@ def convert_light_animation(converter, light_frames) -> bool:
         length = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         if length < 1e-10:
-            converter.logger.warning(f"frame {frame_number}: position is zero vector; skipping rotation key")
+            converter.logger.warning(f"time {maya_time}: position is zero vector; skipping rotation key")
             continue
 
         dx /= length
