@@ -185,6 +185,29 @@ class TestVmdSceneCollector(unittest.TestCase):
         self.assertEqual(frame["viewing_angle"], 42)
         self.assertEqual(frame["perspective"], 1)
 
+    def test_collects_camera_position_from_target_attrs_when_present(self):
+        self.cmds.node_types["mmd_camera"] = "transform"
+        self.cmds.attrs[("mmd_camera", ATTR_MMD_CAMERA)] = True
+        self.cmds.attrs[("mmd_camera", "mmd_camera_target_x")] = 1.0
+        self.cmds.attrs[("mmd_camera", "mmd_camera_target_y")] = 2.0
+        self.cmds.attrs[("mmd_camera", "mmd_camera_target_z")] = -3.0
+        self.cmds.keys[("mmd_camera", "translateX")] = {12.0: 99.0}
+        self.cmds.keys[("mmd_camera", "translateY")] = {12.0: 99.0}
+        self.cmds.keys[("mmd_camera", "translateZ")] = {12.0: 99.0}
+        self.cmds.keys[("mmd_camera", "mmd_camera_target_x")] = {12.0: 1.0}
+        self.cmds.keys[("mmd_camera", "mmd_camera_target_y")] = {12.0: 2.0}
+        self.cmds.keys[("mmd_camera", "mmd_camera_target_z")] = {12.0: -3.0}
+        self.cmds.keys[("mmd_camera", "rotateX")] = {12.0: 0.0}
+        self.cmds.keys[("mmd_camera", "rotateY")] = {12.0: 0.0}
+        self.cmds.keys[("mmd_camera", "rotateZ")] = {12.0: 0.0}
+        self.cmds.keys[("mmd_camera", "mmd_camera_distance")] = {12.0: -45.0}
+        self.cmds.keys[("mmd_camera", "mmd_camera_viewing_angle")] = {12.0: 42.0}
+        self.cmds.keys[("mmd_camera", "mmd_camera_perspective")] = {12.0: 0.0}
+
+        result = VmdSceneCollector().collect()
+
+        self.assertEqual(result["camera_frames"][0]["position"], (1.0, 2.0, 3.0))
+
     def test_collects_light_frames_from_tagged_light_controller(self):
         self.cmds.node_types["mmd_light"] = "transform"
         self.cmds.attrs[("mmd_light", ATTR_MMD_LIGHT)] = True

@@ -3,6 +3,8 @@
 import math
 from typing import Dict, List, Optional, Tuple
 
+import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 import maya.cmds as cmds
 
 from .vmd_bone_interpolation import get_frame_interpolation, get_frame_number, is_linear_vmd_interp
@@ -23,6 +25,23 @@ def query_key_value(logger, plug: str, frame_number: float) -> Optional[float]:
     if not values:
         return None
     return float(values[0])
+
+
+def _unlock_anim_curve_tangent(logger, plug: str, frame_time: float) -> None:
+    """Unlock in/out tangents for the animCurve key at frame_time."""
+    try:
+        curves = cmds.listConnections(plug, source=True, destination=False, type="animCurve") or []
+        if not curves:
+            return
+        selection = om.MSelectionList()
+        selection.add(curves[0])
+        curve = oma.MFnAnimCurve(selection.getDependNode(0))
+        times = cmds.keyframe(plug, query=True, time=(frame_time, frame_time), indexValue=True) or []
+        if not times:
+            return
+        curve.setTangentsLocked(int(times[0]), False)
+    except Exception as exc:
+        logger.debug(f"Failed to unlock tangent for {plug} at {frame_time}: {exc}")
 
 
 def apply_vmd_bezier_tangents(
@@ -84,15 +103,19 @@ def apply_vmd_bezier_tangents(
             in_dy = dv * (1.0 - y2)
             out_angle = math.degrees(math.atan2(out_dy, out_dx))
             in_angle = math.degrees(math.atan2(in_dy, in_dx))
-            out_weight = math.sqrt((out_dx * out_dx) + (out_dy * out_dy)) / (3.0 * dt)
-            in_weight = math.sqrt((in_dx * in_dx) + (in_dy * in_dy)) / (3.0 * dt)
+            out_weight = math.sqrt((out_dx * out_dx) + (out_dy * out_dy))
+            in_weight = math.sqrt((in_dx * in_dx) + (in_dy * in_dy))
 
             try:
+                _unlock_anim_curve_tangent(converter.logger, plug, frame_time)
+                _unlock_anim_curve_tangent(converter.logger, plug, next_frame_time)
                 cmds.keyTangent(
                     plug,
                     edit=True,
                     time=(frame_time, frame_time),
                     weightedTangents=True,
+                    lock=False,
+                    weightLock=False,
                 )
                 cmds.keyTangent(
                     plug,
@@ -112,6 +135,8 @@ def apply_vmd_bezier_tangents(
                     edit=True,
                     time=(next_frame_time, next_frame_time),
                     weightedTangents=True,
+                    lock=False,
+                    weightLock=False,
                 )
                 cmds.keyTangent(
                     plug,

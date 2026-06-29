@@ -72,10 +72,10 @@ _PACKAGE_ROOT = _THIS_FILE.parents[2]  # mmd_tools/
 _CANDIDATE_PATHS: List[Path] = [
     # 1. 環境変数で明示指定
     Path(os.environ.get("MMD_ANIM_FFI_PATH", "")) if os.environ.get("MMD_ANIM_FFI_PATH") else None,
-    # 2. 推奨配置: mmd_tools/native/<platform>/
-    _PACKAGE_ROOT / "native" / ("win64" if platform.system() == "Windows" else "macos" if platform.system() == "Darwin" else "linux"),
-    # 3. 開発用: external/mmd-anim ビルド成果物 (参考)
+    # 2. 開発用: external/mmd-anim ビルド成果物
     _PACKAGE_ROOT.parent / "external" / "mmd-anim" / "target" / "release",
+    # 3. 配布配置: mmd_tools/native/<platform>/
+    _PACKAGE_ROOT / "native" / ("win64" if platform.system() == "Windows" else "macos" if platform.system() == "Darwin" else "linux"),
     # 4. カレントディレクトリ / Maya プラグイン隣接
     Path.cwd(),
     Path("plug-ins"),
@@ -237,6 +237,12 @@ def _setup_function_signatures(lib: CDLL) -> None:
         "mmd_runtime_clip_frame_range",
         c_bool,
         [c_void_p, POINTER(c_uint32), POINTER(c_uint32)],
+    )
+    _set_sig(
+        lib,
+        "mmd_runtime_sample_vmd_camera_json",
+        MmdRuntimeFfiByteBuffer,
+        [POINTER(c_uint8), c_size_t, c_float, c_float, c_size_t],
     )
 
     # インスタンス
@@ -525,6 +531,40 @@ def is_native_pmx_parser_available() -> bool:
     if lib is None:
         return False
     return hasattr(lib, "mmd_runtime_parsed_model_create_from_pmx_bytes")
+
+
+def sample_vmd_camera_frames(
+    vmd_bytes: bytes,
+    start_frame: float,
+    frame_step: float,
+    frame_count: int,
+) -> Optional[List[Dict[str, Any]]]:
+    """Sample VMD camera state through mmd-anim's camera interpolation logic."""
+    lib = get_mmd_runtime_library()
+    if lib is None or not vmd_bytes or frame_count <= 0:
+        return None
+    func = getattr(lib, "mmd_runtime_sample_vmd_camera_json", None)
+    if func is None:
+        return None
+
+    try:
+        buf = (c_uint8 * len(vmd_bytes)).from_buffer_copy(vmd_bytes)
+        result: MmdRuntimeFfiByteBuffer = func(
+            buf,
+            len(vmd_bytes),
+            c_float(float(start_frame)),
+            c_float(float(frame_step)),
+            c_size_t(int(frame_count)),
+        )
+        if not result.data or result.len == 0:
+            return None
+        raw = ctypes.string_at(result.data, result.len)
+        lib.mmd_runtime_byte_buffer_free(result)
+        parsed = json.loads(raw.decode("utf-8"))
+        return parsed if isinstance(parsed, list) else None
+    except Exception as e:
+        logger.error(f"sample_vmd_camera_frames failed: {e}", exc_info=True)
+        return None
 
 
 def get_mmd_runtime_library() -> Optional[CDLL]:

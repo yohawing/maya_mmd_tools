@@ -17,7 +17,8 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 
 import mmd_tools.converters.vmd_converter as vmd_converter_module
-from mmd_tools.converters.vmd_camera_animation import parse_vmd_camera_interpolation
+import mmd_tools.converters.vmd_camera_animation as vmd_camera_animation_module
+from mmd_tools.converters.vmd_camera_animation import maya_camera_eye_from_vmd_state, parse_vmd_camera_interpolation
 from mmd_tools.converters.vmd_runtime_cache_collect import collect_runtime_bake_cache
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
@@ -306,8 +307,11 @@ class TestVmdConverter(MayaTestBase):
 
         camera_name = self.converter._get_or_create_camera()
         cmds.currentTime(15, edit=True)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 1.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), -3.0, places=6)
+        expected_eye = maya_camera_eye_from_vmd_state(frame.position, frame.rotation, frame.distance, 1.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), expected_eye[0], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), expected_eye[2], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_x"), 1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), -3.0, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 12.0, places=6)
 
     def test_parse_vmd_camera_interpolation_uses_camera_channel_layout(self):
@@ -326,9 +330,9 @@ class TestVmdConverter(MayaTestBase):
         parsed = self.converter._parse_vmd_camera_interpolation(data)
         self.assertEqual(parsed, parse_vmd_camera_interpolation(data))
 
-        self.assertEqual(parsed["translate_x"], (1 / 127, 3 / 127, 2 / 127, 4 / 127))
-        self.assertEqual(parsed["distance"], (17 / 127, 19 / 127, 18 / 127, 20 / 127))
-        self.assertEqual(parsed["viewing_angle"], (21 / 127, 23 / 127, 22 / 127, 24 / 127))
+        self.assertEqual(parsed["translate_x"], (1 / 127, 2 / 127, 3 / 127, 4 / 127))
+        self.assertEqual(parsed["distance"], (17 / 127, 18 / 127, 19 / 127, 20 / 127))
+        self.assertEqual(parsed["viewing_angle"], (21 / 127, 22 / 127, 23 / 127, 24 / 127))
 
     def test_convert_camera_animation_applies_vmd_bezier_tangents(self):
         """camera distance/viewing angle などに VMD camera 補間 tangent を適用する。"""
@@ -415,11 +419,13 @@ class TestVmdConverter(MayaTestBase):
         self.assertIn(f"{camera_shape}.focalLength", layer_attrs)
 
         cmds.currentTime(12, edit=True)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 4.0, places=6)
+        expected_eye = maya_camera_eye_from_vmd_state(frames[-1].position, frames[-1].rotation, frames[-1].distance, 1.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), expected_eye[0], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_x"), 4.0, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 16.0, places=6)
 
     def test_runtime_bake_success_still_converts_camera_and_light(self):
-        """runtime bake 成功後も camera/light の legacy channel は処理する。"""
+        """通常モードでは runtime bake 成功後も camera は sparse path のまま処理する。"""
         frame = type("FrameStub", (), {"frame_number": 1})()
         vmd_data = type("FakeVmdData", (), {})()
         vmd_data.bone_frames = [frame]
@@ -443,7 +449,29 @@ class TestVmdConverter(MayaTestBase):
         apply_ik.assert_not_called()
         convert_bone.assert_not_called()
         convert_morph.assert_not_called()
-        convert_camera.assert_called_once_with(vmd_data.camera_frames)
+        convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=None)
+        convert_light.assert_called_once_with(vmd_data.light_frames)
+
+    def test_bake_mode_passes_vmd_bytes_to_camera_sampler(self):
+        """Bake モードだけ camera も mmd-anim sampler 用 VMD bytes を受け取る。"""
+        frame = type("FrameStub", (), {"frame_number": 1})()
+        vmd_data = type("FakeVmdData", (), {})()
+        vmd_data.bone_frames = [frame]
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = [frame]
+        vmd_data.light_frames = [frame]
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=True))
+            stack.enter_context(patch.object(self.converter, "_convert_using_mmd_runtime", return_value=True))
+            convert_camera = stack.enter_context(
+                patch.object(self.converter, "_convert_camera_animation", return_value=True)
+            )
+            convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
+            result = self.converter.convert(vmd_data, bake_mode=True, vmd_bytes=b"vmd", pmx_bytes=b"pmx")
+
+        self.assertTrue(result)
+        convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=b"vmd")
         convert_light.assert_called_once_with(vmd_data.light_frames)
 
     def test_camera_and_light_import_flags_skip_channels(self):
@@ -486,12 +514,71 @@ class TestVmdConverter(MayaTestBase):
         self.assertTrue(result)
         camera_name = self.converter._get_or_create_camera()
         cmds.currentTime(7, edit=True)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 2.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateY"), 4.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), -6.0, places=6)
+        expected_eye = maya_camera_eye_from_vmd_state(frame.position, frame.rotation, frame.distance, 2.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), expected_eye[0], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateY"), expected_eye[1], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), expected_eye[2], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_x"), 2.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_y"), 4.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), -6.0, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 24.0, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.rotateX"), math.degrees(0.1), places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_viewing_angle"), 40.0, places=6)
+
+    def test_camera_distance_offsets_actual_maya_camera_eye(self):
+        """VMD camera の distance は注視点ではなく実カメラ位置へ反映する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame = VmdCameraFrame()
+        frame.frame_number = 0
+        frame.position = (1.0, 2.0, 3.0)
+        frame.rotation = (0.0, 0.0, 0.0)
+        frame.distance = -10.0
+        frame.viewing_angle = 45
+
+        self.assertTrue(self.converter._convert_camera_animation([frame]))
+
+        camera_name = self.converter._get_or_create_camera()
+        cmds.currentTime(0, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateY"), 2.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), 7.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), -3.0, places=6)
+
+    def test_runtime_camera_sampling_dense_keys_maya_frames(self):
+        """VMD bytes がある場合は mmd-anim camera sampler の補間済み値を frame ごとに key する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame0 = VmdCameraFrame()
+        frame0.frame_number = 0
+        frame0.position = (0.0, 0.0, 0.0)
+        frame0.rotation = (0.0, 0.0, 0.0)
+        frame0.distance = -10.0
+        frame0.viewing_angle = 30
+
+        frame1 = VmdCameraFrame()
+        frame1.frame_number = 2
+        frame1.position = (2.0, 0.0, 0.0)
+        frame1.rotation = (0.0, 0.0, 0.0)
+        frame1.distance = -20.0
+        frame1.viewing_angle = 40
+
+        samples = [
+            {"position": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "distance": -10.0, "fov": 30.0, "perspective": True},
+            {"position": [1.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "distance": -15.0, "fov": 35.0, "perspective": True},
+            {"position": [2.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "distance": -20.0, "fov": 40.0, "perspective": False},
+        ]
+
+        with patch.object(vmd_camera_animation_module, "sample_vmd_camera_frames", return_value=samples) as sampler:
+            self.assertTrue(self.converter._convert_camera_animation([frame0, frame1], vmd_bytes=b"vmd"))
+
+        sampler.assert_called_once_with(b"vmd", 0.0, 1.0, 3)
+        camera_name = self.converter._get_or_create_camera()
+        self.assertEqual(cmds.keyframe(f"{camera_name}.translateX", query=True, timeChange=True), [0.0, 1.0, 2.0])
+        cmds.currentTime(1, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), 15.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_viewing_angle"), 35.0, places=6)
 
     def test_fps_60_camera_keys_vmd_frame_30_at_maya_time_60(self):
         """60fps import では VMD frame 30 の camera key を Maya time 60 に置く。"""

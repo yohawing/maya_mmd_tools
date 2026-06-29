@@ -33,6 +33,9 @@ _CAMERA_EXPORT_ATTRS = (
     "translateX",
     "translateY",
     "translateZ",
+    "mmd_camera_target_x",
+    "mmd_camera_target_y",
+    "mmd_camera_target_z",
     "rotateX",
     "rotateY",
     "rotateZ",
@@ -167,15 +170,23 @@ class VmdSceneCollector:
                 end_frame,
             )
             for frame_number in keyed_frames:
+                if all(_has_attr(camera, attr) for attr in ("mmd_camera_target_x", "mmd_camera_target_y", "mmd_camera_target_z")):
+                    position = (
+                        _plug_float(camera, "mmd_camera_target_x", frame_number),
+                        _plug_float(camera, "mmd_camera_target_y", frame_number),
+                        -_plug_float(camera, "mmd_camera_target_z", frame_number),
+                    )
+                else:
+                    position = (
+                        _plug_float(camera, "translateX", frame_number),
+                        _plug_float(camera, "translateY", frame_number),
+                        -_plug_float(camera, "translateZ", frame_number),
+                    )
                 frames.append(
                     {
                         "frame_number": int(round(frame_number)),
                         "distance": _plug_float(camera, "mmd_camera_distance", frame_number),
-                        "position": (
-                            _plug_float(camera, "translateX", frame_number),
-                            _plug_float(camera, "translateY", frame_number),
-                            -_plug_float(camera, "translateZ", frame_number),
-                        ),
+                        "position": position,
                         "rotation": (
                             math.radians(_plug_float(camera, "rotateX", frame_number)),
                             math.radians(_plug_float(camera, "rotateY", frame_number)),

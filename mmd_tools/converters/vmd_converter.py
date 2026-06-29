@@ -308,7 +308,8 @@ class VmdConverter:
             # カメラアニメーション（レガシー）
             if self.import_camera_animation and hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
                 self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
-                self._convert_camera_animation(vmd_data.camera_frames)
+                camera_sample_bytes = vmd_bytes if bake_mode else None
+                self._convert_camera_animation(vmd_data.camera_frames, vmd_bytes=camera_sample_bytes)
             _emit_progress(88)
 
             # ライトアニメーション（レガシー）
@@ -1142,16 +1143,17 @@ class VmdConverter:
         """
         return get_or_create_light()
 
-    def _convert_camera_animation(self, camera_frames: List) -> bool:
+    def _convert_camera_animation(self, camera_frames: List, vmd_bytes: bytes = None) -> bool:
         """カメラアニメーションを変換
 
         Args:
             camera_frames: カメラフレームデータのリスト
+            vmd_bytes: mmd-anim camera sampling に使用する VMD バイト列
 
         Returns:
             変換が成功した場合True
         """
-        return convert_camera_animation(self, camera_frames)
+        return convert_camera_animation(self, camera_frames, vmd_bytes=vmd_bytes)
 
     def _detect_vmd_motion_kind(self, vmd_data: VmdData) -> str:
         """VMD内容から大まかなモーション種別を判定する。"""
