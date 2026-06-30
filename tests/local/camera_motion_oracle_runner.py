@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import maya.cmds as cmds
+import maya.api.OpenMaya as om
 import maya.standalone
 
 
@@ -152,22 +153,93 @@ def _plug_float(node: str, attr: str, frame: float) -> float:
     return float(value or 0.0)
 
 
+def _normalize_vector(vector: om.MVector) -> list[float]:
+    if vector.length() <= 1.0e-12:
+        return [0.0, 0.0, 0.0]
+    vector.normalize()
+    return [float(vector.x), float(vector.y), float(vector.z)]
+
+
+def _maya_point_to_mmd(point: om.MVector) -> list[float]:
+    return [float(point.x), float(point.y), -float(point.z)]
+
+
+def _expected_maya_forward_up(rotation: list[float] | tuple[float, float, float]) -> tuple[list[float], list[float]]:
+    matrix = om.MEulerRotation(
+        -float(rotation[0]),
+        -float(rotation[1]),
+        -float(rotation[2]),
+        om.MEulerRotation.kZXY,
+    ).asMatrix()
+    look = om.MVector(0.0, 0.0, 1.0) * matrix
+    up = om.MVector(0.0, 1.0, 0.0) * matrix
+    return _normalize_vector(om.MVector(look.x, look.y, -look.z)), _normalize_vector(om.MVector(up.x, up.y, -up.z))
+
+
+def _expected_camera_transform_state(expected: dict[str, Any]) -> dict[str, list[float]]:
+    forward, up = _expected_maya_forward_up(expected["rotation"])
+    return {
+        "transformPosition": list(expected["position"]),
+        "transformForward": forward,
+        "transformUp": up,
+    }
+
+
+def _camera_shape(camera: str) -> str | None:
+    shapes = cmds.listRelatives(camera, shapes=True, type="camera") or []
+    return shapes[0] if shapes else None
+
+
+def _camera_shape_vertical_fov(camera: str, frame: float) -> float:
+    shape = _camera_shape(camera)
+    if not shape:
+        return _plug_float(camera, "mmd_camera_viewing_angle", frame)
+    focal_length = _plug_float(shape, "focalLength", frame)
+    if abs(focal_length) <= 1e-9:
+        return 0.0
+    aperture_inch = _plug_float(shape, "verticalFilmAperture", frame)
+    aperture_mm = aperture_inch * 25.4
+    return math.degrees(2.0 * math.atan(aperture_mm / (2.0 * focal_length)))
+
+
+def _camera_shape_perspective(camera: str, frame: float) -> bool:
+    shape = _camera_shape(camera)
+    if not shape or not cmds.attributeQuery("orthographic", node=shape, exists=True):
+        return bool(round(_plug_float(camera, "mmd_camera_perspective", frame))) == 0
+    return not bool(round(_plug_float(shape, "orthographic", frame)))
+
+
 def _maya_camera_state(camera: str, frame: float) -> dict[str, Any]:
     cmds.currentTime(frame, edit=True)
+    distance = _plug_float(camera, "mmd_camera_distance", frame)
+    world_position = cmds.xform(camera, query=True, worldSpace=True, translation=True)
+    world_rotation = cmds.xform(camera, query=True, worldSpace=True, rotation=True)
+    rotation = om.MEulerRotation(
+        math.radians(float(world_rotation[0])),
+        math.radians(float(world_rotation[1])),
+        math.radians(float(world_rotation[2])),
+    )
+    matrix = rotation.asMatrix()
+    forward = om.MVector(0.0, 0.0, -1.0) * matrix
+    up = om.MVector(0.0, 1.0, 0.0) * matrix
+    transform_target = om.MVector(*world_position) + forward.normal() * abs(distance)
     return {
-        "distance": _plug_float(camera, "mmd_camera_distance", frame),
+        "distance": distance,
         "position": [
             _plug_float(camera, "mmd_camera_target_x", frame),
             _plug_float(camera, "mmd_camera_target_y", frame),
-            -_plug_float(camera, "mmd_camera_target_z", frame),
+            _plug_float(camera, "mmd_camera_target_z", frame),
         ],
         "rotation": [
-            math.radians(_plug_float(camera, "rotateX", frame)),
-            math.radians(_plug_float(camera, "rotateY", frame)),
-            -math.radians(_plug_float(camera, "rotateZ", frame)),
+            _plug_float(camera, "mmd_camera_rotation_x", frame),
+            _plug_float(camera, "mmd_camera_rotation_y", frame),
+            _plug_float(camera, "mmd_camera_rotation_z", frame),
         ],
-        "fov": _plug_float(camera, "mmd_camera_viewing_angle", frame),
-        "perspective": bool(round(_plug_float(camera, "mmd_camera_perspective", frame))) == 0,
+        "fov": _camera_shape_vertical_fov(camera, frame),
+        "perspective": _camera_shape_perspective(camera, frame),
+        "transformPosition": _maya_point_to_mmd(transform_target),
+        "transformForward": _normalize_vector(forward),
+        "transformUp": _normalize_vector(up),
     }
 
 
@@ -240,6 +312,21 @@ def _compare_current(
                 ),
             )
             compared += 1
+        if mode == "bake":
+            for field, expected_value in _expected_camera_transform_state(expected).items():
+                worst = max(
+                    worst,
+                    _check_field(
+                        mismatches,
+                        frame=frame,
+                        mode=mode,
+                        field=f"camera.current.{field}",
+                        actual=actual[field],
+                        expected=expected_value,
+                        epsilon=epsilon,
+                    ),
+                )
+                compared += 1
     return {
         "compared": compared,
         "worstDelta": worst,
@@ -262,6 +349,7 @@ def _compare_keyframes(camera: str, keyframes: list[dict[str, Any]], *, mode: st
             "fov": float(expected["fov"]),
             "perspective": bool(expected["perspective"]),
         }
+        expected_values.update(_expected_camera_transform_state(expected))
         for field, expected_value in expected_values.items():
             worst = max(
                 worst,

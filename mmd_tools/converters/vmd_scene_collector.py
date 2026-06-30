@@ -39,12 +39,16 @@ _CAMERA_EXPORT_ATTRS = (
     "rotateX",
     "rotateY",
     "rotateZ",
+    "mmd_camera_rotation_x",
+    "mmd_camera_rotation_y",
+    "mmd_camera_rotation_z",
     "mmd_camera_distance",
     "mmd_camera_viewing_angle",
     "mmd_camera_perspective",
 )
 _LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
 _LIGHT_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
+_ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 
 
 class VmdSceneCollector:
@@ -170,11 +174,14 @@ class VmdSceneCollector:
                 end_frame,
             )
             for frame_number in keyed_frames:
-                if all(_has_attr(camera, attr) for attr in ("mmd_camera_target_x", "mmd_camera_target_y", "mmd_camera_target_z")):
+                uses_raw_mmd_attrs = _uses_raw_mmd_camera_attrs(camera)
+                if uses_raw_mmd_attrs and all(
+                    _has_attr(camera, attr) for attr in ("mmd_camera_target_x", "mmd_camera_target_y", "mmd_camera_target_z")
+                ):
                     position = (
                         _plug_float(camera, "mmd_camera_target_x", frame_number),
                         _plug_float(camera, "mmd_camera_target_y", frame_number),
-                        -_plug_float(camera, "mmd_camera_target_z", frame_number),
+                        _plug_float(camera, "mmd_camera_target_z", frame_number),
                     )
                 else:
                     position = (
@@ -182,16 +189,26 @@ class VmdSceneCollector:
                         _plug_float(camera, "translateY", frame_number),
                         -_plug_float(camera, "translateZ", frame_number),
                     )
+                if uses_raw_mmd_attrs and all(
+                    _has_attr(camera, attr) for attr in ("mmd_camera_rotation_x", "mmd_camera_rotation_y", "mmd_camera_rotation_z")
+                ):
+                    rotation = (
+                        _plug_float(camera, "mmd_camera_rotation_x", frame_number),
+                        _plug_float(camera, "mmd_camera_rotation_y", frame_number),
+                        _plug_float(camera, "mmd_camera_rotation_z", frame_number),
+                    )
+                else:
+                    rotation = (
+                        math.radians(_plug_float(camera, "rotateX", frame_number)),
+                        math.radians(_plug_float(camera, "rotateY", frame_number)),
+                        -math.radians(_plug_float(camera, "rotateZ", frame_number)),
+                    )
                 frames.append(
                     {
                         "frame_number": int(round(frame_number)),
                         "distance": _plug_float(camera, "mmd_camera_distance", frame_number),
                         "position": position,
-                        "rotation": (
-                            math.radians(_plug_float(camera, "rotateX", frame_number)),
-                            math.radians(_plug_float(camera, "rotateY", frame_number)),
-                            -math.radians(_plug_float(camera, "rotateZ", frame_number)),
-                        ),
+                        "rotation": rotation,
                         "viewing_angle": int(round(_plug_float(camera, "mmd_camera_viewing_angle", frame_number))),
                         "perspective": int(round(_plug_float(camera, "mmd_camera_perspective", frame_number))),
                     }
@@ -474,6 +491,15 @@ def _maya_light_rotation_to_vmd_direction(rx: float, ry: float) -> tuple[float, 
 def _has_attr(node: str, attr: str) -> bool:
     try:
         return bool(cmds.attributeQuery(attr, node=node, exists=True))
+    except Exception:
+        return False
+
+
+def _uses_raw_mmd_camera_attrs(camera: str) -> bool:
+    if not _has_attr(camera, _ATTR_MMD_CAMERA_RIG_TYPE):
+        return False
+    try:
+        return cmds.getAttr(f"{camera}.{_ATTR_MMD_CAMERA_RIG_TYPE}") == "mmd"
     except Exception:
         return False
 

@@ -7,6 +7,24 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from ..core.constants import ATTR_MMD_CAMERA, DEFAULT_CAMERA_NAME
+from ..core.coordinate_transform import mmd_point_to_maya
+
+ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
+MMD_CAMERA_TARGET_ATTRS = (
+    "mmd_camera_target_x",
+    "mmd_camera_target_y",
+    "mmd_camera_target_z",
+)
+MMD_CAMERA_ROTATION_ATTRS = (
+    "mmd_camera_rotation_x",
+    "mmd_camera_rotation_y",
+    "mmd_camera_rotation_z",
+)
+MMD_CAMERA_SCALAR_ATTRS = (
+    ("mmd_camera_distance", "double", 0.0),
+    ("mmd_camera_viewing_angle", "double", 45.0),
+    ("mmd_camera_perspective", "long", 0),
+)
 
 try:
     from ..core.native.mmd_anim_runtime import sample_vmd_camera_frames
@@ -45,11 +63,24 @@ def parse_vmd_camera_interpolation(interpolation_bytes) -> Dict[str, Tuple[float
 
 
 def viewing_angle_to_focal_length(camera_shape: str, viewing_angle: float) -> float:
-    """Convert VMD viewing_angle(deg) to Maya camera focalLength(mm)."""
+    """Convert VMD vertical viewing_angle(deg) to Maya camera focalLength(mm)."""
     clamped_angle = max(1.0, min(179.0, float(viewing_angle)))
-    aperture_inch = cmds.getAttr(f"{camera_shape}.horizontalFilmAperture")
+    aperture_inch = cmds.getAttr(f"{camera_shape}.verticalFilmAperture")
     aperture_mm = float(aperture_inch) * 25.4
     return aperture_mm / (2.0 * math.tan(math.radians(clamped_angle) / 2.0))
+
+
+def viewing_angle_to_orthographic_width(camera_shape: str, viewing_angle: float, distance: float) -> float:
+    """Convert MMD orthographic camera distance/FOV to Maya orthographicWidth."""
+    clamped_angle = max(1.0, min(179.0, float(viewing_angle)))
+    height = 2.0 * abs(float(distance)) * math.tan(math.radians(clamped_angle) / 2.0)
+    try:
+        aspect = float(cmds.camera(camera_shape, query=True, aspectRatio=True))
+    except Exception:
+        vertical = float(cmds.getAttr(f"{camera_shape}.verticalFilmAperture") or 1.0)
+        horizontal = float(cmds.getAttr(f"{camera_shape}.horizontalFilmAperture") or vertical)
+        aspect = horizontal / vertical if abs(vertical) > 1e-9 else 1.0
+    return max(1e-6, height * max(1e-6, aspect))
 
 
 def maya_camera_eye_from_vmd_state(
@@ -59,20 +90,90 @@ def maya_camera_eye_from_vmd_state(
     motion_scale: float = 1.0,
 ) -> Tuple[float, float, float]:
     """Convert MMD camera target/distance state to a Maya camera eye position."""
-    target = om.MVector(
-        float(position[0]) * motion_scale,
-        float(position[1]) * motion_scale,
-        -float(position[2]) * motion_scale,
-    )
-    maya_rotation = om.MEulerRotation(
-        float(rotation[0]),
-        float(rotation[1]),
-        -float(rotation[2]),
-        om.MEulerRotation.kXYZ,
-    )
-    forward = om.MVector(0.0, 0.0, -1.0) * maya_rotation.asMatrix()
-    eye = target + forward * (float(distance) * motion_scale)
+    target = om.MVector(*mmd_point_to_maya(position, motion_scale))
+    camera_rotation = _mmd_camera_rotation_matrix(rotation)
+    offset = om.MVector(0.0, 0.0, float(distance)) * camera_rotation
+    eye = target + om.MVector(offset.x * motion_scale, offset.y * motion_scale, -offset.z * motion_scale)
     return eye.x, eye.y, eye.z
+
+
+def maya_camera_rotation_from_vmd_state(rotation: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Convert MMD camera Euler channels to Maya camera transform Euler channels."""
+    camera_rotation = _mmd_camera_rotation_matrix(rotation)
+    look = om.MVector(0.0, 0.0, 1.0) * camera_rotation
+    up = om.MVector(0.0, 1.0, 0.0) * camera_rotation
+    forward = om.MVector(look.x, look.y, -look.z)
+    maya_up = om.MVector(up.x, up.y, -up.z)
+    return _maya_camera_euler_from_forward_up(forward, maya_up)
+
+
+def maya_camera_up_from_vmd_state(rotation: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Convert MMD camera Euler channels to a Maya-space up vector."""
+    camera_rotation = _mmd_camera_rotation_matrix(rotation)
+    up = om.MVector(0.0, 1.0, 0.0) * camera_rotation
+    maya_up = om.MVector(up.x, up.y, -up.z)
+    if maya_up.length() <= 1e-12:
+        return 0.0, 1.0, 0.0
+    maya_up.normalize()
+    return maya_up.x, maya_up.y, maya_up.z
+
+
+def _mmd_camera_rotation_matrix(rotation: Tuple[float, float, float]) -> om.MMatrix:
+    """Return the MMD camera orbit rotation matrix.
+
+    This mirrors three-mmd-loader's Euler(-x, -y, -z, "YXZ") camera convention
+    under Maya API's row-vector multiplication. In this convention roll is applied
+    before the distance offset, so it does not move the camera eye.
+    """
+    return om.MEulerRotation(
+        -float(rotation[0]),
+        -float(rotation[1]),
+        -float(rotation[2]),
+        om.MEulerRotation.kZXY,
+    ).asMatrix()
+
+
+def _maya_camera_euler_from_forward_up(forward: om.MVector, up: om.MVector) -> Tuple[float, float, float]:
+    """Build Maya transform Euler angles from camera forward/up vectors."""
+    forward = om.MVector(forward)
+    up = om.MVector(up)
+    if forward.length() <= 1e-12:
+        forward = om.MVector(0.0, 0.0, -1.0)
+    forward.normalize()
+    if up.length() <= 1e-12:
+        up = om.MVector(0.0, 1.0, 0.0)
+    up.normalize()
+
+    z_axis = -forward
+    x_axis = up ^ z_axis
+    if x_axis.length() <= 1e-12:
+        x_axis = om.MVector(1.0, 0.0, 0.0)
+    x_axis.normalize()
+    y_axis = z_axis ^ x_axis
+    y_axis.normalize()
+
+    matrix = om.MMatrix(
+        [
+            x_axis.x,
+            x_axis.y,
+            x_axis.z,
+            0.0,
+            y_axis.x,
+            y_axis.y,
+            y_axis.z,
+            0.0,
+            z_axis.x,
+            z_axis.y,
+            z_axis.z,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
+    )
+    euler = om.MTransformationMatrix(matrix).rotation()
+    return euler.x, euler.y, euler.z
 
 
 def _camera_frame_range(camera_frames) -> Tuple[float, float]:
@@ -149,7 +250,50 @@ def get_or_create_camera() -> str:
     camera_transform, _ = cmds.camera(name=DEFAULT_CAMERA_NAME)
     cmds.addAttr(camera_transform, longName=ATTR_MMD_CAMERA, attributeType="bool")
     cmds.setAttr(f"{camera_transform}.{ATTR_MMD_CAMERA}", True)
+    return _ensure_mmd_camera_rig(camera_transform)
+
+
+def _ensure_mmd_camera_rig(camera_transform: str) -> str:
+    """Prepare a self-contained MMD camera rig on the camera transform."""
+    _delete_aim_constraints(camera_transform)
+    _ensure_string_attr(camera_transform, ATTR_MMD_CAMERA_RIG_TYPE, "mmd")
+    for attr_name, attr_type, default_value in MMD_CAMERA_SCALAR_ATTRS:
+        _ensure_numeric_attr(camera_transform, attr_name, attr_type, default_value)
+    for attr_name in MMD_CAMERA_TARGET_ATTRS:
+        _ensure_numeric_attr(camera_transform, attr_name, "double", 0.0)
+    for attr_name in MMD_CAMERA_ROTATION_ATTRS:
+        _ensure_numeric_attr(camera_transform, attr_name, "double", 0.0)
     return camera_transform
+
+
+def _delete_aim_constraints(camera_transform: str) -> None:
+    """Disconnect old compatibility Aim/Up rigs so raw MMD attrs drive the camera."""
+    constraints = cmds.listConnections(
+        f"{camera_transform}.rotateX",
+        source=True,
+        destination=False,
+        type="aimConstraint",
+    ) or []
+    if constraints:
+        cmds.delete(list(set(constraints)))
+
+
+def _ensure_numeric_attr(node: str, attr: str, attr_type: str, value) -> None:
+    if not cmds.attributeQuery(attr, node=node, exists=True):
+        cmds.addAttr(node, longName=attr, attributeType=attr_type, keyable=True)
+        cmds.setAttr(f"{node}.{attr}", value)
+
+
+def _ensure_string_attr(node: str, attr: str, value: str) -> None:
+    if not cmds.attributeQuery(attr, node=node, exists=True):
+        cmds.addAttr(node, longName=attr, dataType="string")
+    cmds.setAttr(f"{node}.{attr}", value, type="string")
+
+
+def _prepare_mmd_camera_shape(camera_shape: str) -> None:
+    """Set fixed camera shape options needed for MMD camera projection parity."""
+    if cmds.attributeQuery("filmFit", node=camera_shape, exists=True):
+        cmds.setAttr(f"{camera_shape}.filmFit", 2)  # vertical
 
 
 def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes] = None) -> bool:
@@ -160,18 +304,9 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
     camera_transform = converter._get_or_create_camera()
     camera_shapes = cmds.listRelatives(camera_transform, shapes=True, type="camera") or []
     camera_shape = camera_shapes[0] if camera_shapes else None
-
-    for attr_name, attr_type, default_value in (
-        ("mmd_camera_distance", "double", 0.0),
-        ("mmd_camera_viewing_angle", "double", 45.0),
-        ("mmd_camera_perspective", "long", 0),
-    ):
-        if not cmds.attributeQuery(attr_name, node=camera_transform, exists=True):
-            cmds.addAttr(camera_transform, longName=attr_name, attributeType=attr_type, keyable=True)
-            cmds.setAttr(f"{camera_transform}.{attr_name}", default_value)
-    for attr_name in ("mmd_camera_target_x", "mmd_camera_target_y", "mmd_camera_target_z"):
-        if not cmds.attributeQuery(attr_name, node=camera_transform, exists=True):
-            cmds.addAttr(camera_transform, longName=attr_name, attributeType="double", keyable=True)
+    if camera_shape:
+        _prepare_mmd_camera_shape(camera_shape)
+    _ensure_mmd_camera_rig(camera_transform)
 
     camera_samples = {
         "translateX": [],
@@ -185,8 +320,11 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
         "mmd_camera_target_x": [],
         "mmd_camera_target_y": [],
         "mmd_camera_target_z": [],
+        "mmd_camera_rotation_x": [],
+        "mmd_camera_rotation_y": [],
+        "mmd_camera_rotation_z": [],
     }
-    camera_shape_samples = {"focalLength": []}
+    camera_shape_samples = {"focalLength": [], "orthographicWidth": []}
     perspective_samples = []
     orthographic_samples = []
 
@@ -202,29 +340,38 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
         distance = sample["distance"]
         viewing_angle = sample["viewing_angle"]
         perspective = sample["perspective"]
+        rotate_x, rotate_y, rotate_z = maya_camera_rotation_from_vmd_state(rotation)
         eye_x, eye_y, eye_z = maya_camera_eye_from_vmd_state(
             position,
             rotation,
             distance,
             converter.motion_scale,
         )
-
         camera_samples["translateX"].append((maya_time, eye_x))
         camera_samples["translateY"].append((maya_time, eye_y))
         camera_samples["translateZ"].append((maya_time, eye_z))
-        camera_samples["rotateX"].append((maya_time, math.degrees(rotation[0])))
-        camera_samples["rotateY"].append((maya_time, math.degrees(rotation[1])))
-        camera_samples["rotateZ"].append((maya_time, -math.degrees(rotation[2])))
-        camera_samples["mmd_camera_distance"].append((maya_time, distance * converter.motion_scale))
+        camera_samples["rotateX"].append((maya_time, math.degrees(rotate_x)))
+        camera_samples["rotateY"].append((maya_time, math.degrees(rotate_y)))
+        camera_samples["rotateZ"].append((maya_time, math.degrees(rotate_z)))
+        camera_samples["mmd_camera_distance"].append((maya_time, distance))
         camera_samples["mmd_camera_viewing_angle"].append((maya_time, float(viewing_angle)))
-        camera_samples["mmd_camera_target_x"].append((maya_time, position[0] * converter.motion_scale))
-        camera_samples["mmd_camera_target_y"].append((maya_time, position[1] * converter.motion_scale))
-        camera_samples["mmd_camera_target_z"].append((maya_time, -position[2] * converter.motion_scale))
+        camera_samples["mmd_camera_target_x"].append((maya_time, float(position[0])))
+        camera_samples["mmd_camera_target_y"].append((maya_time, float(position[1])))
+        camera_samples["mmd_camera_target_z"].append((maya_time, float(position[2])))
+        camera_samples["mmd_camera_rotation_x"].append((maya_time, float(rotation[0])))
+        camera_samples["mmd_camera_rotation_y"].append((maya_time, float(rotation[1])))
+        camera_samples["mmd_camera_rotation_z"].append((maya_time, float(rotation[2])))
         perspective_samples.append((maya_time, int(perspective)))
 
         if camera_shape:
             focal_length = viewing_angle_to_focal_length(camera_shape, float(viewing_angle))
             camera_shape_samples["focalLength"].append((maya_time, focal_length))
+            orthographic_width = viewing_angle_to_orthographic_width(
+                camera_shape,
+                float(viewing_angle),
+                float(distance) * converter.motion_scale,
+            )
+            camera_shape_samples["orthographicWidth"].append((maya_time, orthographic_width))
             if cmds.attributeQuery("orthographic", node=camera_shape, exists=True):
                 orthographic_samples.append((maya_time, bool(perspective)))
 
@@ -273,9 +420,13 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
         "mmd_camera_target_x": (camera_transform, "mmd_camera_target_x"),
         "mmd_camera_target_y": (camera_transform, "mmd_camera_target_y"),
         "mmd_camera_target_z": (camera_transform, "mmd_camera_target_z"),
+        "mmd_camera_rotation_x": (camera_transform, "mmd_camera_rotation_x"),
+        "mmd_camera_rotation_y": (camera_transform, "mmd_camera_rotation_y"),
+        "mmd_camera_rotation_z": (camera_transform, "mmd_camera_rotation_z"),
     }
     if camera_shape:
         camera_tangent_targets["focalLength"] = (camera_shape, "focalLength")
+        camera_tangent_targets["orthographicWidth"] = (camera_shape, "orthographicWidth")
     camera_channel_map = {
         "translateX": "translate_x",
         "translateY": "translate_y",
@@ -288,7 +439,11 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
         "mmd_camera_target_x": "translate_x",
         "mmd_camera_target_y": "translate_y",
         "mmd_camera_target_z": "translate_z",
+        "mmd_camera_rotation_x": "rotation",
+        "mmd_camera_rotation_y": "rotation",
+        "mmd_camera_rotation_z": "rotation",
         "focalLength": "viewing_angle",
+        "orthographicWidth": "viewing_angle",
     }
     if not runtime_sampled:
         converter._apply_vmd_bezier_tangents(

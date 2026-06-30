@@ -19,7 +19,13 @@ import maya.api.OpenMaya as om
 import mmd_tools.converters.vmd_converter as vmd_converter_module
 import mmd_tools.converters.vmd_camera_animation as vmd_camera_animation_module
 import mmd_tools.converters.vmd_light_animation as vmd_light_animation_module
-from mmd_tools.converters.vmd_camera_animation import maya_camera_eye_from_vmd_state, parse_vmd_camera_interpolation
+from mmd_tools.converters.vmd_camera_animation import (
+    maya_camera_eye_from_vmd_state,
+    maya_camera_rotation_from_vmd_state,
+    maya_camera_up_from_vmd_state,
+    parse_vmd_camera_interpolation,
+)
+from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.converters.vmd_runtime_cache_collect import collect_runtime_bake_cache
 from mmd_tools.converters.vmd_runtime_scene_apply import apply_runtime_channel_arrays_to_scene_with_undo_disabled
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
@@ -55,6 +61,10 @@ class TestVmdConverter(MayaTestBase):
 
         if cmds.objExists(DEFAULT_CAMERA_NAME):
             cmds.delete(DEFAULT_CAMERA_NAME)
+        if cmds.objExists(f"{DEFAULT_CAMERA_NAME}_target"):
+            cmds.delete(f"{DEFAULT_CAMERA_NAME}_target")
+        if cmds.objExists(f"{DEFAULT_CAMERA_NAME}_up"):
+            cmds.delete(f"{DEFAULT_CAMERA_NAME}_up")
         if cmds.objExists(DEFAULT_LIGHT_NAME):
             cmds.delete(DEFAULT_LIGHT_NAME)
 
@@ -66,6 +76,12 @@ class TestVmdConverter(MayaTestBase):
                     cmds.delete(layer)
                 except Exception:
                     pass
+
+    def _world_translation(self, node: str):
+        return cmds.xform(node, query=True, worldSpace=True, translation=True)
+
+    def _world_rotation_degrees(self, node: str):
+        return cmds.xform(node, query=True, worldSpace=True, rotation=True)
 
     def test_init(self):
         """初期化のテスト"""
@@ -272,7 +288,11 @@ class TestVmdConverter(MayaTestBase):
                 keyframes = cmds.keyframe(f"{transform[0]}.translateX", query=True)
                 self.assertIsNotNone(keyframes)
                 self.assertEqual(len(keyframes), 3)
-                self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.rotateX", query=True))
+                self.assertFalse(cmds.listConnections(f"{transform[0]}.rotateX", source=True, type="aimConstraint") or [])
+                for attr in ("rotateX", "rotateY", "rotateZ"):
+                    self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.{attr}", query=True))
+                for attr in ("mmd_camera_rotation_x", "mmd_camera_rotation_y", "mmd_camera_rotation_z"):
+                    self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.{attr}", query=True))
                 self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.mmd_camera_distance", query=True))
                 self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.mmd_camera_viewing_angle", query=True))
                 focal_keys = cmds.keyframe(f"{cam}.focalLength", query=True)
@@ -290,7 +310,7 @@ class TestVmdConverter(MayaTestBase):
         frame.frame_number = 15
         frame.position = (1.0, 2.0, 3.0)
         frame.rotation = (0.1, 0.2, 0.3)
-        frame.distance = 12.0
+        frame.distance = -12.0
         frame.viewing_angle = 40
 
         vmd_data = type(
@@ -310,11 +330,209 @@ class TestVmdConverter(MayaTestBase):
         camera_name = self.converter._get_or_create_camera()
         cmds.currentTime(15, edit=True)
         expected_eye = maya_camera_eye_from_vmd_state(frame.position, frame.rotation, frame.distance, 1.0)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), expected_eye[0], places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), expected_eye[2], places=6)
+        world_translate = self._world_translation(camera_name)
+        self.assertAlmostEqual(world_translate[0], expected_eye[0], places=6)
+        self.assertAlmostEqual(world_translate[2], expected_eye[2], places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_x"), 1.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), -3.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 12.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), 3.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), -12.0, places=6)
+
+    def test_camera_transform_aims_at_mmd_target(self):
+        """実 camera transform の視線が MMD camera target を向くことを確認する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame = VmdCameraFrame()
+        frame.frame_number = 0
+        frame.position = (4.0, 12.0, -6.0)
+        frame.rotation = (0.35, -0.25, 0.45)
+        frame.distance = -30.0
+        frame.viewing_angle = 45
+
+        self.assertTrue(self.converter._convert_camera_animation([frame]))
+
+        camera_name = self.converter._get_or_create_camera()
+        cmds.currentTime(0, edit=True)
+        world_translate = self._world_translation(camera_name)
+        eye = om.MVector(*world_translate)
+        target = om.MVector(
+            *mmd_point_to_maya(
+                (
+                    cmds.getAttr(f"{camera_name}.mmd_camera_target_x"),
+                    cmds.getAttr(f"{camera_name}.mmd_camera_target_y"),
+                    cmds.getAttr(f"{camera_name}.mmd_camera_target_z"),
+                ),
+                1.0,
+            )
+        )
+        world_rotation = self._world_rotation_degrees(camera_name)
+        rotation = om.MEulerRotation(
+            math.radians(world_rotation[0]),
+            math.radians(world_rotation[1]),
+            math.radians(world_rotation[2]),
+        )
+        camera_forward = om.MVector(0.0, 0.0, -1.0) * rotation.asMatrix()
+        target_direction = target - eye
+        camera_forward.normalize()
+        target_direction.normalize()
+
+        self.assertAlmostEqual(camera_forward.x, target_direction.x, places=6)
+        self.assertAlmostEqual(camera_forward.y, target_direction.y, places=6)
+        self.assertAlmostEqual(camera_forward.z, target_direction.z, places=6)
+
+    def test_camera_roll_does_not_move_eye_position(self):
+        """VMD camera roll は視線軸回転であり、target-distance の eye 位置は動かさない。"""
+        position = (4.0, 12.0, -6.0)
+        base_rotation = (0.35, -0.25, 0.0)
+        rolled_rotation = (0.35, -0.25, math.pi / 3.0)
+        distance = -30.0
+
+        base_eye = maya_camera_eye_from_vmd_state(position, base_rotation, distance, 1.0)
+        rolled_eye = maya_camera_eye_from_vmd_state(position, rolled_rotation, distance, 1.0)
+
+        self.assertAlmostEqual(rolled_eye[0], base_eye[0], places=6)
+        self.assertAlmostEqual(rolled_eye[1], base_eye[1], places=6)
+        self.assertAlmostEqual(rolled_eye[2], base_eye[2], places=6)
+
+    def test_mmd_camera_rig_roll_keys_camera_transform_without_up_locator(self):
+        """MMD Camera Rig は Roll を Up locator ではなく camera transform へ直接解決する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frames = []
+        for frame_number, roll in ((0, 0.0), (10, math.pi / 2.0)):
+            frame = VmdCameraFrame()
+            frame.frame_number = frame_number
+            frame.position = (0.0, 0.0, 0.0)
+            frame.rotation = (0.2, 0.4, roll)
+            frame.distance = -30.0
+            frame.viewing_angle = 45
+            frames.append(frame)
+
+        self.assertTrue(self.converter._convert_camera_animation(frames))
+
+        camera_name = self.converter._get_or_create_camera()
+        self.assertFalse(cmds.objExists(f"{camera_name}_up"))
+        self.assertFalse(cmds.listConnections(f"{camera_name}.rotateX", source=True, type="aimConstraint") or [])
+
+        cmds.currentTime(0, edit=True)
+        eye0 = om.MVector(*self._world_translation(camera_name))
+        rot0 = om.MEulerRotation(*(math.radians(value) for value in self._world_rotation_degrees(camera_name)))
+        forward0 = om.MVector(0.0, 0.0, -1.0) * rot0.asMatrix()
+        up0 = om.MVector(0.0, 1.0, 0.0) * rot0.asMatrix()
+
+        cmds.currentTime(10, edit=True)
+        eye1 = om.MVector(*self._world_translation(camera_name))
+        rot1 = om.MEulerRotation(*(math.radians(value) for value in self._world_rotation_degrees(camera_name)))
+        forward1 = om.MVector(0.0, 0.0, -1.0) * rot1.asMatrix()
+        up1 = om.MVector(0.0, 1.0, 0.0) * rot1.asMatrix()
+
+        forward0.normalize()
+        forward1.normalize()
+        up0.normalize()
+        up1.normalize()
+        self.assertAlmostEqual((eye1 - eye0).length(), 0.0, places=6)
+        self.assertAlmostEqual(forward0 * forward1, 1.0, places=6)
+        self.assertLess(abs(up0 * up1), 1e-6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_rotation_z"), math.pi / 2.0, places=6)
+
+    def test_mmd_camera_rig_orbits_around_constant_target_with_yaw_pitch(self):
+        """target 一定の yaw/pitch は raw target を中心に camera transform を回り込ませる。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frames = []
+        for frame_number, rotation in ((0, (0.0, 0.0, 0.0)), (10, (0.25, 0.5, 0.0))):
+            frame = VmdCameraFrame()
+            frame.frame_number = frame_number
+            frame.position = (1.0, 2.0, -3.0)
+            frame.rotation = rotation
+            frame.distance = -20.0
+            frame.viewing_angle = 45
+            frames.append(frame)
+
+        self.assertTrue(self.converter._convert_camera_animation(frames))
+
+        camera_name = self.converter._get_or_create_camera()
+        target = om.MVector(*mmd_point_to_maya(frames[0].position, 1.0))
+        positions = []
+        for frame_number in (0, 10):
+            cmds.currentTime(frame_number, edit=True)
+            eye = om.MVector(*self._world_translation(camera_name))
+            world_rotation = self._world_rotation_degrees(camera_name)
+            rotation = om.MEulerRotation(*(math.radians(value) for value in world_rotation))
+            forward = om.MVector(0.0, 0.0, -1.0) * rotation.asMatrix()
+            target_direction = target - eye
+            forward.normalize()
+            target_direction.normalize()
+            self.assertAlmostEqual(forward * target_direction, 1.0, places=6)
+            self.assertAlmostEqual((eye - target).length(), 20.0, places=6)
+            positions.append(eye)
+
+        self.assertGreater((positions[1] - positions[0]).length(), 1.0)
+
+    def test_camera_rotation_matches_three_mmd_loader_yxz_convention(self):
+        """MMD camera Euler は three-mmd-loader と同じ orbit 規約で Maya forward へ変換する。"""
+        rotate_x, rotate_y, rotate_z = maya_camera_rotation_from_vmd_state((0.25, 0.5, 0.0))
+        rotation = om.MEulerRotation(rotate_x, rotate_y, rotate_z)
+        forward = om.MVector(0.0, 0.0, -1.0) * rotation.asMatrix()
+
+        self.assertAlmostEqual(forward.x, -0.46452136, places=6)
+        self.assertAlmostEqual(forward.y, 0.247403959, places=6)
+        self.assertAlmostEqual(forward.z, -0.850300645, places=6)
+
+    def test_camera_eye_matches_three_mmd_loader_signed_distance(self):
+        """MMD camera distance は three-mmd-loader と同じ符号付き orbit offset として反映する。"""
+        yaw_eye = maya_camera_eye_from_vmd_state((0.0, 0.0, 0.0), (0.0, 0.5, 0.0), -10.0, 1.0)
+        pitch_eye = maya_camera_eye_from_vmd_state((0.0, 0.0, 0.0), (math.pi / 4.0, 0.0, 0.0), -45.0, 1.0)
+
+        self.assertAlmostEqual(yaw_eye[0], 4.794255386, places=6)
+        self.assertAlmostEqual(yaw_eye[1], 0.0, places=6)
+        self.assertAlmostEqual(yaw_eye[2], 8.775825619, places=6)
+        self.assertAlmostEqual(pitch_eye[0], 0.0, places=6)
+        self.assertAlmostEqual(pitch_eye[1], -31.819805153, places=6)
+        self.assertAlmostEqual(pitch_eye[2], 31.819805153, places=6)
+
+    def test_camera_viewing_angle_drives_vertical_fov(self):
+        """VMD viewing_angle は Maya camera shape の vertical FOV として反映する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame = VmdCameraFrame()
+        frame.frame_number = 0
+        frame.position = (0.0, 10.0, 0.0)
+        frame.rotation = (0.0, 0.0, 0.0)
+        frame.distance = -45.0
+        frame.viewing_angle = 60
+
+        self.assertTrue(self.converter._convert_camera_animation([frame]))
+
+        camera_name = self.converter._get_or_create_camera()
+        camera_shape = cmds.listRelatives(camera_name, shapes=True, type="camera")[0]
+        focal_length = cmds.getAttr(f"{camera_shape}.focalLength")
+        aperture_mm = cmds.getAttr(f"{camera_shape}.verticalFilmAperture") * 25.4
+        vertical_fov = math.degrees(2.0 * math.atan(aperture_mm / (2.0 * focal_length)))
+
+        self.assertAlmostEqual(vertical_fov, 60.0, places=5)
+        self.assertEqual(cmds.camera(camera_shape, query=True, filmFit=True), "vertical")
+
+    def test_camera_perspective_off_drives_orthographic_width(self):
+        """VMD perspective off では distance と viewing_angle から orthographicWidth を設定する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame = VmdCameraFrame()
+        frame.frame_number = 0
+        frame.position = (0.0, 0.0, 0.0)
+        frame.rotation = (0.0, 0.0, 0.0)
+        frame.distance = -20.0
+        frame.viewing_angle = 60
+        frame.perspective = 1
+
+        self.assertTrue(self.converter._convert_camera_animation([frame]))
+
+        camera_name = self.converter._get_or_create_camera()
+        camera_shape = cmds.listRelatives(camera_name, shapes=True, type="camera")[0]
+        aspect = cmds.camera(camera_shape, query=True, aspectRatio=True)
+        expected_width = 2.0 * abs(frame.distance) * math.tan(math.radians(frame.viewing_angle) / 2.0) * aspect
+
+        self.assertTrue(cmds.getAttr(f"{camera_shape}.orthographic"))
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_shape}.orthographicWidth"), expected_width, places=5)
 
     def test_parse_vmd_camera_interpolation_uses_camera_channel_layout(self):
         """camera interpolation は 6 channel x 4 bytes の連続レイアウトで読む。"""
@@ -417,17 +635,28 @@ class TestVmdConverter(MayaTestBase):
 
         layer_attrs = cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or []
         self.assertIn(f"{camera_name}.translateX", layer_attrs)
+        self.assertIn(f"{camera_name}.rotateX", layer_attrs)
+        self.assertIn(f"{camera_name}.rotateY", layer_attrs)
+        self.assertIn(f"{camera_name}.rotateZ", layer_attrs)
         self.assertIn(f"{camera_name}.mmd_camera_distance", layer_attrs)
+        self.assertIn(f"{camera_name}.mmd_camera_rotation_x", layer_attrs)
+        self.assertIn(f"{camera_name}.mmd_camera_rotation_y", layer_attrs)
+        self.assertIn(f"{camera_name}.mmd_camera_rotation_z", layer_attrs)
         self.assertIn(f"{camera_shape}.focalLength", layer_attrs)
 
         cmds.currentTime(12, edit=True)
         expected_eye = maya_camera_eye_from_vmd_state(frames[-1].position, frames[-1].rotation, frames[-1].distance, 1.0)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), expected_eye[0], places=6)
+        world_translate = self._world_translation(camera_name)
+        self.assertAlmostEqual(world_translate[0], expected_eye[0], places=6)
+        self.assertIsNotNone(cmds.keyframe(f"{camera_name}.rotateY", query=True, time=(12, 12)))
+        self.assertIsNotNone(cmds.keyframe(f"{camera_name}.rotateZ", query=True, time=(12, 12)))
+        self.assertIsNotNone(cmds.keyframe(f"{camera_name}.mmd_camera_rotation_y", query=True, time=(12, 12)))
+        self.assertIsNotNone(cmds.keyframe(f"{camera_name}.mmd_camera_rotation_z", query=True, time=(12, 12)))
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_x"), 4.0, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 16.0, places=6)
 
     def test_runtime_bake_success_still_converts_camera_and_light(self):
-        """通常モードでは runtime bake 成功後も camera は sparse path のまま処理する。"""
+        """通常モードでは runtime bake 成功後も camera/light は sparse path のまま処理する。"""
         frame = type("FrameStub", (), {"frame_number": 1})()
         vmd_data = type("FakeVmdData", (), {})()
         vmd_data.bone_frames = [frame]
@@ -536,7 +765,7 @@ class TestVmdConverter(MayaTestBase):
         frame.frame_number = 7
         frame.position = (1.0, 2.0, 3.0)
         frame.rotation = (0.1, 0.2, 0.3)
-        frame.distance = 12.0
+        frame.distance = -12.0
         frame.viewing_angle = 40
         frame.perspective = 0
 
@@ -547,14 +776,39 @@ class TestVmdConverter(MayaTestBase):
         camera_name = self.converter._get_or_create_camera()
         cmds.currentTime(7, edit=True)
         expected_eye = maya_camera_eye_from_vmd_state(frame.position, frame.rotation, frame.distance, 2.0)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), expected_eye[0], places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateY"), expected_eye[1], places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), expected_eye[2], places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_x"), 2.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_y"), 4.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), -6.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), 24.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.rotateX"), math.degrees(0.1), places=6)
+        world_translate = self._world_translation(camera_name)
+        self.assertAlmostEqual(world_translate[0], expected_eye[0], places=6)
+        self.assertAlmostEqual(world_translate[1], expected_eye[1], places=6)
+        self.assertAlmostEqual(world_translate[2], expected_eye[2], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_x"), 1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_y"), 2.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), 3.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_distance"), -12.0, places=6)
+        world_rotation = self._world_rotation_degrees(camera_name)
+        rotation = om.MEulerRotation(*(math.radians(value) for value in world_rotation))
+        camera_forward = om.MVector(0.0, 0.0, -1.0) * rotation.asMatrix()
+        camera_up = om.MVector(0.0, 1.0, 0.0) * rotation.asMatrix()
+        maya_target = om.MVector(
+            *mmd_point_to_maya(
+                (
+                    cmds.getAttr(f"{camera_name}.mmd_camera_target_x"),
+                    cmds.getAttr(f"{camera_name}.mmd_camera_target_y"),
+                    cmds.getAttr(f"{camera_name}.mmd_camera_target_z"),
+                ),
+                self.converter.motion_scale,
+            )
+        )
+        target_direction = maya_target - om.MVector(*world_translate)
+        expected_up = om.MVector(*maya_camera_up_from_vmd_state(frame.rotation))
+        camera_forward.normalize()
+        target_direction.normalize()
+        camera_up.normalize()
+        expected_up.normalize()
+        self.assertAlmostEqual(camera_forward * target_direction, 1.0, places=6)
+        self.assertAlmostEqual(camera_up * expected_up, 1.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_rotation_x"), frame.rotation[0], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_rotation_y"), frame.rotation[1], places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_rotation_z"), frame.rotation[2], places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_viewing_angle"), 40.0, places=6)
 
     def test_camera_distance_offsets_actual_maya_camera_eye(self):
@@ -572,10 +826,11 @@ class TestVmdConverter(MayaTestBase):
 
         camera_name = self.converter._get_or_create_camera()
         cmds.currentTime(0, edit=True)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 1.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateY"), 2.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), 7.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), -3.0, places=6)
+        world_translate = self._world_translation(camera_name)
+        self.assertAlmostEqual(world_translate[0], 1.0, places=6)
+        self.assertAlmostEqual(world_translate[1], 2.0, places=6)
+        self.assertAlmostEqual(world_translate[2], 7.0, places=6)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_target_z"), 3.0, places=6)
 
     def test_runtime_camera_sampling_dense_keys_maya_frames(self):
         """VMD bytes がある場合は mmd-anim camera sampler の補間済み値を frame ごとに key する。"""
@@ -608,8 +863,9 @@ class TestVmdConverter(MayaTestBase):
         camera_name = self.converter._get_or_create_camera()
         self.assertEqual(cmds.keyframe(f"{camera_name}.translateX", query=True, timeChange=True), [0.0, 1.0, 2.0])
         cmds.currentTime(1, edit=True)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateX"), 1.0, places=6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.translateZ"), 15.0, places=6)
+        world_translate = self._world_translation(camera_name)
+        self.assertAlmostEqual(world_translate[0], 1.0, places=6)
+        self.assertAlmostEqual(world_translate[2], 15.0, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.mmd_camera_viewing_angle"), 35.0, places=6)
 
     def test_fps_60_camera_keys_vmd_frame_30_at_maya_time_60(self):

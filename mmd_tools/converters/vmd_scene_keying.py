@@ -208,21 +208,46 @@ def batch_key_scalar_channels(
     if not attrs:
         return False
 
+    layer_rotate_attrs = set()
+    curve_attrs = attrs
+    if animation_layer:
+        layer_rotate_attrs = {attr for attr in attrs if attr in {"rotateX", "rotateY", "rotateZ"}}
+        curve_attrs = [attr for attr in attrs if attr not in layer_rotate_attrs]
+
     curves: Dict[str, oma.MFnAnimCurve] = {}
-    try:
-        curves = maya_utils.create_animation_curves(
-            node_name,
-            attrs,
-            tangent_type=oma.MFnAnimCurve.kTangentLinear,
-            animation_layer=animation_layer,
-        )
-    except Exception as exc:
-        converter.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
+    if curve_attrs:
+        try:
+            curves = maya_utils.create_animation_curves(
+                node_name,
+                curve_attrs,
+                tangent_type=oma.MFnAnimCurve.kTangentLinear,
+                animation_layer=animation_layer,
+            )
+        except Exception as exc:
+            converter.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
 
     tangent = oma.MFnAnimCurve.kTangentLinear
     success_any = False
     for attr in attrs:
         samples = channel_samples[attr]
+        if attr in layer_rotate_attrs:
+            try:
+                base_value = float(cmds.getAttr(f"{node_name}.{attr}") or 0.0)
+            except Exception:
+                base_value = 0.0
+            for frame, value in samples:
+                try:
+                    cmds.setKeyframe(
+                        node_name,
+                        attribute=attr,
+                        time=float(frame),
+                        value=base_value + float(value),
+                        animLayer=animation_layer,
+                    )
+                    success_any = True
+                except Exception as exc:
+                    converter.logger.debug(f"setKeyframe failed for {node_name}.{attr} at {frame}: {exc}")
+            continue
         curve = curves.get(attr)
         if curve:
             try:
