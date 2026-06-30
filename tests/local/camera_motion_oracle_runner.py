@@ -153,6 +153,16 @@ def _plug_float(node: str, attr: str, frame: float) -> float:
     return float(value or 0.0)
 
 
+def _current_plug_float(node: str, attr: str) -> float:
+    value = cmds.getAttr(f"{node}.{attr}")
+    if isinstance(value, (list, tuple)):
+        if len(value) == 1 and isinstance(value[0], (list, tuple)):
+            value = value[0][0]
+        else:
+            value = value[0]
+    return float(value or 0.0)
+
+
 def _normalize_vector(vector: om.MVector) -> list[float]:
     if vector.length() <= 1.0e-12:
         return [0.0, 0.0, 0.0]
@@ -194,19 +204,21 @@ def _camera_shape_vertical_fov(camera: str, frame: float) -> float:
     shape = _camera_shape(camera)
     if not shape:
         return _plug_float(camera, "mmd_camera_viewing_angle", frame)
-    focal_length = _plug_float(shape, "focalLength", frame)
+    focal_length = _current_plug_float(shape, "focalLength")
     if abs(focal_length) <= 1e-9:
         return 0.0
-    aperture_inch = _plug_float(shape, "verticalFilmAperture", frame)
+    aperture_inch = _current_plug_float(shape, "verticalFilmAperture")
     aperture_mm = aperture_inch * 25.4
     return math.degrees(2.0 * math.atan(aperture_mm / (2.0 * focal_length)))
 
 
 def _camera_shape_perspective(camera: str, frame: float) -> bool:
     shape = _camera_shape(camera)
-    if not shape or not cmds.attributeQuery("orthographic", node=shape, exists=True):
+    if shape and cmds.attributeQuery("orthographic", node=shape, exists=True):
+        return not bool(round(_current_plug_float(shape, "orthographic")))
+    if cmds.attributeQuery("mmd_camera_perspective", node=camera, exists=True):
         return bool(round(_plug_float(camera, "mmd_camera_perspective", frame))) == 0
-    return not bool(round(_plug_float(shape, "orthographic", frame)))
+    return True
 
 
 def _maya_camera_state(camera: str, frame: float) -> dict[str, Any]:
@@ -298,7 +310,9 @@ def _compare_current(
         if not expected:
             continue
         actual = _maya_camera_state(camera, frame)
-        for field in ("distance", "position", "rotation"):
+        for field in ("distance", "position", "rotation", "fov", "perspective"):
+            if field not in expected:
+                continue
             worst = max(
                 worst,
                 _check_field(
@@ -312,21 +326,20 @@ def _compare_current(
                 ),
             )
             compared += 1
-        if mode == "bake":
-            for field, expected_value in _expected_camera_transform_state(expected).items():
-                worst = max(
-                    worst,
-                    _check_field(
-                        mismatches,
-                        frame=frame,
-                        mode=mode,
-                        field=f"camera.current.{field}",
-                        actual=actual[field],
-                        expected=expected_value,
-                        epsilon=epsilon,
-                    ),
-                )
-                compared += 1
+        for field, expected_value in _expected_camera_transform_state(expected).items():
+            worst = max(
+                worst,
+                _check_field(
+                    mismatches,
+                    frame=frame,
+                    mode=mode,
+                    field=f"camera.current.{field}",
+                    actual=actual[field],
+                    expected=expected_value,
+                    epsilon=epsilon,
+                ),
+            )
+            compared += 1
     return {
         "compared": compared,
         "worstDelta": worst,

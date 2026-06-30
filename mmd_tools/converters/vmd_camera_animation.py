@@ -1,6 +1,7 @@
 """Camera-specific helpers for VMD animation conversion."""
 
 import math
+import uuid
 from typing import Dict, List, Optional, Tuple
 
 import maya.api.OpenMaya as om
@@ -25,6 +26,12 @@ MMD_CAMERA_SCALAR_ATTRS = (
     ("mmd_camera_viewing_angle", "double", 45.0),
     ("mmd_camera_perspective", "long", 0),
 )
+MMD_CAMERA_OUTPUT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+MMD_CAMERA_SHAPE_OUTPUT_ATTRS = ("focalLength", "orthographicWidth", "orthographic")
+MMD_CAMERA_EXPR_ID_ATTR = "mmd_camera_expression_id"
+MMD_CAMERA_EXPR_OWNER_ATTR = "mmd_camera_owner"
+MMD_CAMERA_EXPR_SHAPE_ATTR = "mmd_camera_shape"
+MMD_CAMERA_EXPR_SCALE_ATTR = "mmd_camera_motion_scale"
 
 try:
     from ..core.native.mmd_anim_runtime import sample_vmd_camera_frames
@@ -290,10 +297,212 @@ def _ensure_string_attr(node: str, attr: str, value: str) -> None:
     cmds.setAttr(f"{node}.{attr}", value, type="string")
 
 
+def _ensure_message_attr(node: str, attr: str) -> None:
+    if not cmds.attributeQuery(attr, node=node, exists=True):
+        cmds.addAttr(node, longName=attr, attributeType="message")
+
+
+def _ensure_double_attr(node: str, attr: str, value: float) -> None:
+    if not cmds.attributeQuery(attr, node=node, exists=True):
+        cmds.addAttr(node, longName=attr, attributeType="double")
+    cmds.setAttr(f"{node}.{attr}", float(value))
+
+
+def _connect_message(source_node: str, target_node: str, target_attr: str) -> None:
+    _ensure_message_attr(target_node, target_attr)
+    target_plug = f"{target_node}.{target_attr}"
+    for connection in cmds.listConnections(target_plug, source=True, destination=False, plugs=True) or []:
+        try:
+            cmds.disconnectAttr(connection, target_plug)
+        except Exception:
+            pass
+    cmds.connectAttr(f"{source_node}.message", target_plug, force=True)
+
+
 def _prepare_mmd_camera_shape(camera_shape: str) -> None:
     """Set fixed camera shape options needed for MMD camera projection parity."""
     if cmds.attributeQuery("filmFit", node=camera_shape, exists=True):
         cmds.setAttr(f"{camera_shape}.filmFit", 2)  # vertical
+
+
+def evaluate_mmd_camera_rig(camera_transform: str, camera_shape: str = "", motion_scale: float = 1.0) -> None:
+    """Evaluate sparse MMD camera raw attrs into Maya camera outputs."""
+    position = (
+        cmds.getAttr(f"{camera_transform}.mmd_camera_target_x"),
+        cmds.getAttr(f"{camera_transform}.mmd_camera_target_y"),
+        cmds.getAttr(f"{camera_transform}.mmd_camera_target_z"),
+    )
+    rotation = (
+        cmds.getAttr(f"{camera_transform}.mmd_camera_rotation_x"),
+        cmds.getAttr(f"{camera_transform}.mmd_camera_rotation_y"),
+        cmds.getAttr(f"{camera_transform}.mmd_camera_rotation_z"),
+    )
+    distance = float(cmds.getAttr(f"{camera_transform}.mmd_camera_distance"))
+    viewing_angle = float(cmds.getAttr(f"{camera_transform}.mmd_camera_viewing_angle"))
+    eye_x, eye_y, eye_z = maya_camera_eye_from_vmd_state(position, rotation, distance, motion_scale)
+    rotate_x, rotate_y, rotate_z = maya_camera_rotation_from_vmd_state(rotation)
+    cmds.setAttr(f"{camera_transform}.translate", eye_x, eye_y, eye_z, type="double3")
+    cmds.setAttr(
+        f"{camera_transform}.rotate",
+        math.degrees(rotate_x),
+        math.degrees(rotate_y),
+        math.degrees(rotate_z),
+        type="double3",
+    )
+    if camera_shape and cmds.objExists(camera_shape):
+        cmds.setAttr(f"{camera_shape}.focalLength", viewing_angle_to_focal_length(camera_shape, viewing_angle))
+        cmds.setAttr(
+            f"{camera_shape}.orthographicWidth",
+            viewing_angle_to_orthographic_width(camera_shape, viewing_angle, distance * motion_scale),
+        )
+        if cmds.attributeQuery("orthographic", node=camera_shape, exists=True):
+            perspective = int(round(cmds.getAttr(f"{camera_transform}.mmd_camera_perspective") or 0))
+            cmds.setAttr(f"{camera_shape}.orthographic", bool(perspective))
+
+
+def _find_mmd_camera_expression(expression_id: str) -> Optional[str]:
+    for expression in cmds.ls(type="expression") or []:
+        if not cmds.attributeQuery(MMD_CAMERA_EXPR_ID_ATTR, node=expression, exists=True):
+            continue
+        try:
+            if cmds.getAttr(f"{expression}.{MMD_CAMERA_EXPR_ID_ATTR}") == expression_id:
+                return expression
+        except Exception:
+            continue
+    return None
+
+
+def evaluate_mmd_camera_expression(expression_id: str) -> None:
+    """Evaluate an MMD camera expression through message-connected scene nodes."""
+    expression = _find_mmd_camera_expression(expression_id)
+    if not expression:
+        return
+    if not cmds.attributeQuery(MMD_CAMERA_EXPR_OWNER_ATTR, node=expression, exists=True):
+        return
+    cameras = cmds.listConnections(
+        f"{expression}.{MMD_CAMERA_EXPR_OWNER_ATTR}",
+        source=True,
+        destination=False,
+    ) or []
+    if not cameras:
+        return
+    shapes = []
+    if cmds.attributeQuery(MMD_CAMERA_EXPR_SHAPE_ATTR, node=expression, exists=True):
+        shapes = cmds.listConnections(
+            f"{expression}.{MMD_CAMERA_EXPR_SHAPE_ATTR}",
+            source=True,
+            destination=False,
+            shapes=True,
+        ) or []
+    try:
+        motion_scale = float(cmds.getAttr(f"{expression}.{MMD_CAMERA_EXPR_SCALE_ATTR}"))
+    except Exception:
+        motion_scale = 1.0
+    evaluate_mmd_camera_rig(cameras[0], shapes[0] if shapes else "", motion_scale)
+
+
+def _mmd_camera_expression_name(camera_transform: str) -> str:
+    short_name = camera_transform.rsplit("|", 1)[-1].replace(":", "_")
+    return f"{short_name}_mmdCameraRigExpression"
+
+
+def _delete_mmd_camera_expression(camera_transform: str) -> None:
+    expressions = set()
+    if cmds.objExists(camera_transform):
+        for expression in (
+            cmds.listConnections(
+                f"{camera_transform}.message",
+                source=False,
+                destination=True,
+                type="expression",
+            ) or []
+        ):
+            if cmds.attributeQuery(MMD_CAMERA_EXPR_ID_ATTR, node=expression, exists=True):
+                expressions.add(expression)
+    named_expression = _mmd_camera_expression_name(camera_transform)
+    if cmds.objExists(named_expression):
+        expressions.add(named_expression)
+    for expression in expressions:
+        if cmds.objExists(expression):
+            cmds.delete(expression)
+
+
+def _ensure_mmd_camera_expression(camera_transform: str, camera_shape: Optional[str], motion_scale: float) -> None:
+    _delete_mmd_camera_expression(camera_transform)
+    expression_id = str(uuid.uuid4())
+    expression = cmds.expression(
+        name=_mmd_camera_expression_name(camera_transform),
+        string="",
+        alwaysEvaluate=True,
+        unitConversion="all",
+    )
+    _ensure_string_attr(expression, MMD_CAMERA_EXPR_ID_ATTR, expression_id)
+    _ensure_double_attr(expression, MMD_CAMERA_EXPR_SCALE_ATTR, float(motion_scale))
+    _connect_message(camera_transform, expression, MMD_CAMERA_EXPR_OWNER_ATTR)
+    if camera_shape and cmds.objExists(camera_shape):
+        _connect_message(camera_shape, expression, MMD_CAMERA_EXPR_SHAPE_ATTR)
+    py_code = (
+        "from mmd_tools.converters.vmd_camera_animation import evaluate_mmd_camera_expression; "
+        f"evaluate_mmd_camera_expression({expression_id!r})"
+    )
+    expression_body = f'python("{py_code.replace(chr(92), chr(92) + chr(92)).replace(chr(34), chr(92) + chr(34))}");'
+    cmds.expression(
+        expression,
+        edit=True,
+        string=expression_body,
+    )
+    evaluate_mmd_camera_rig(camera_transform, camera_shape or "", motion_scale)
+
+
+def _remove_camera_output_from_anim_layers(node: str, attr: str) -> None:
+    plug = f"{node}.{attr}"
+    for layer in cmds.ls(type="animLayer") or []:
+        try:
+            layer_attrs = cmds.animLayer(layer, query=True, attribute=True) or []
+        except Exception:
+            continue
+        if plug not in layer_attrs:
+            continue
+        try:
+            cmds.animLayer(layer, edit=True, removeAttribute=plug)
+        except Exception:
+            pass
+
+
+def _disconnect_camera_output_animation_sources(node: str, attr: str) -> None:
+    plug = f"{node}.{attr}"
+    for source_plug in cmds.listConnections(plug, source=True, destination=False, plugs=True) or []:
+        source_node = source_plug.split(".", 1)[0]
+        try:
+            source_type = cmds.nodeType(source_node)
+        except Exception:
+            continue
+        if not (source_type.startswith("animCurve") or source_type.startswith("animBlendNode") or source_type == "pairBlend"):
+            continue
+        try:
+            cmds.disconnectAttr(source_plug, plug)
+        except Exception:
+            pass
+
+
+def _delete_camera_output_attr_keys(node: str, attr: str) -> None:
+    _remove_camera_output_from_anim_layers(node, attr)
+    try:
+        cmds.cutKey(node, attribute=attr)
+    except Exception:
+        pass
+    _disconnect_camera_output_animation_sources(node, attr)
+
+
+def _delete_camera_output_keys(camera_transform: str, camera_shape: Optional[str]) -> None:
+    """Remove stale final camera output curves before sparse expression driving."""
+    for attr in MMD_CAMERA_OUTPUT_ATTRS:
+        if cmds.attributeQuery(attr, node=camera_transform, exists=True):
+            _delete_camera_output_attr_keys(camera_transform, attr)
+    if camera_shape and cmds.objExists(camera_shape):
+        for attr in MMD_CAMERA_SHAPE_OUTPUT_ATTRS:
+            if cmds.attributeQuery(attr, node=camera_shape, exists=True):
+                _delete_camera_output_attr_keys(camera_shape, attr)
 
 
 def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes] = None) -> bool:
@@ -376,17 +585,26 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
                 orthographic_samples.append((maya_time, bool(perspective)))
 
     animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
-    if animation_layer:
-        converter._add_attrs_to_anim_layer(camera_transform, list(camera_samples) + ["mmd_camera_perspective"])
-        if camera_shape:
-            converter._add_attrs_to_anim_layer(camera_shape, list(camera_shape_samples) + ["orthographic"])
-        camera_samples = converter._samples_as_anim_layer_deltas(camera_transform, camera_samples)
-        if camera_shape:
-            camera_shape_samples = converter._samples_as_anim_layer_deltas(camera_shape, camera_shape_samples)
+    key_animation_layer = animation_layer if runtime_sampled else None
+    raw_camera_samples = {
+        attr: samples_for_attr
+        for attr, samples_for_attr in camera_samples.items()
+        if runtime_sampled or attr not in MMD_CAMERA_OUTPUT_ATTRS
+    }
+    keyed_shape_samples = camera_shape_samples if runtime_sampled else {}
+    if not runtime_sampled:
+        _delete_camera_output_keys(camera_transform, camera_shape)
+    if key_animation_layer:
+        converter._add_attrs_to_anim_layer(camera_transform, list(raw_camera_samples) + ["mmd_camera_perspective"])
+        if camera_shape and keyed_shape_samples:
+            converter._add_attrs_to_anim_layer(camera_shape, list(keyed_shape_samples) + ["orthographic"])
+        raw_camera_samples = converter._samples_as_anim_layer_deltas(camera_transform, raw_camera_samples)
+        if camera_shape and keyed_shape_samples:
+            keyed_shape_samples = converter._samples_as_anim_layer_deltas(camera_shape, keyed_shape_samples)
 
-    converter._batch_key_scalar_channels(camera_transform, camera_samples, animation_layer=animation_layer)
-    if camera_shape:
-        converter._batch_key_scalar_channels(camera_shape, camera_shape_samples, animation_layer=animation_layer)
+    converter._batch_key_scalar_channels(camera_transform, raw_camera_samples, animation_layer=key_animation_layer)
+    if camera_shape and keyed_shape_samples:
+        converter._batch_key_scalar_channels(camera_shape, keyed_shape_samples, animation_layer=key_animation_layer)
 
     for maya_time, perspective in perspective_samples:
         key_args = {
@@ -394,18 +612,18 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
             "time": maya_time,
             "value": int(perspective),
         }
-        if animation_layer:
-            key_args["animLayer"] = animation_layer
+        if key_animation_layer:
+            key_args["animLayer"] = key_animation_layer
         cmds.setKeyframe(camera_transform, **key_args)
-    if camera_shape:
+    if runtime_sampled and camera_shape:
         for maya_time, orthographic in orthographic_samples:
             key_args = {
                 "attribute": "orthographic",
                 "time": maya_time,
                 "value": bool(orthographic),
             }
-            if animation_layer:
-                key_args["animLayer"] = animation_layer
+            if key_animation_layer:
+                key_args["animLayer"] = key_animation_layer
             cmds.setKeyframe(camera_shape, **key_args)
 
     camera_tangent_targets = {
@@ -453,5 +671,8 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
             camera_channel_map,
             interpolation_parser=parse_vmd_camera_interpolation,
         )
+        _ensure_mmd_camera_expression(camera_transform, camera_shape, converter.motion_scale)
+    else:
+        _delete_mmd_camera_expression(camera_transform)
 
     return True
