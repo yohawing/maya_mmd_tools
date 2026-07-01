@@ -6,6 +6,8 @@ from typing import Callable, List, Optional, Tuple
 
 import maya.cmds as cmds
 
+from ..core.namespace_utils import NamespaceUtils
+
 
 def should_use_mmd_runtime_bake(
     converter,
@@ -66,8 +68,7 @@ def resolve_pmx_path_from_scene(converter, target_namespace: str = None) -> Opti
     for attr in cmds.ls("*.mmd_source_file", objectsOnly=False) or []:
         node = attr.rsplit(".", 1)[0]
         if target_namespace:
-            node_namespace = node.rsplit(":", 1)[0] if ":" in node else ""
-            if node_namespace != target_namespace:
+            if NamespaceUtils.get_namespace_from_node(node) != target_namespace:
                 continue
         try:
             stored = cmds.getAttr(attr)

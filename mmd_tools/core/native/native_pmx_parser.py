@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from mmd_tools.core.logger import get_logger
-from mmd_tools.core.native.mmd_anim_runtime import MmdRuntimeFfiByteBuffer as _ByteBuffer
+from mmd_tools.core.native.mmd_anim_runtime_types import MmdRuntimeFfiByteBuffer as _ByteBuffer
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
@@ -38,8 +38,8 @@ logger = get_logger(__name__)
 
 
 
-# _ByteBuffer is imported from mmd_anim_runtime.MmdRuntimeFfiByteBuffer
-# to avoid dual ctypes Structure definitions conflicting on argtypes.
+# _ByteBuffer is shared with mmd_anim_runtime to avoid dual ctypes Structure
+# definitions conflicting on argtypes.
 
 
 _SKINNING_MODE_MAP = {

@@ -1,11 +1,10 @@
 """Morph name mapping helpers for VMD animation conversion."""
 
-import json
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import maya.cmds as cmds
 
-from ..core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
+from .morph_scene_metadata import iter_morph_network_metadata, read_blendshape_morph_names
 
 
 def iter_morph_mappings(mapping_entry) -> List[Tuple[str, str, str]]:
@@ -49,26 +48,6 @@ def register_morph_mapping(converter, morph_name: str, mapping: Tuple[str, str, 
     existing.append(mapping)
 
 
-def read_blendshape_morph_names(blend_shape_node: str) -> Dict[int, str]:
-    """Read stored weight index to raw PMX morph name mapping from a blendShape."""
-    result: Dict[int, str] = {}
-    if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape_node, exists=True):
-        return result
-    try:
-        raw = cmds.getAttr(f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
-        parsed = json.loads(raw)
-    except (TypeError, ValueError):
-        return result
-    if not isinstance(parsed, dict):
-        return result
-    for key, value in parsed.items():
-        try:
-            result[int(key)] = str(value)
-        except (TypeError, ValueError):
-            continue
-    return result
-
-
 def build_morph_mappings(converter) -> None:
     """Build morph name mappings from scene blendShapes and metadata networks."""
     converter.morph_name_mapping = {}
@@ -90,18 +69,12 @@ def build_morph_mappings(converter) -> None:
                 for candidate in get_original_morph_name_candidates(alias):
                     register_morph_mapping(converter, candidate, mapping)
 
-    for morph_node in cmds.ls(type="network") or []:
-        if not cmds.attributeQuery("mmd_morph_type", node=morph_node, exists=True):
-            continue
-        morph_type = cmds.getAttr(f"{morph_node}.mmd_morph_type")
-        if morph_type not in {"bone", "group", "material"}:
-            continue
-        if not cmds.attributeQuery("weight", node=morph_node, exists=True):
-            continue
-
-        original_name = ""
-        if cmds.attributeQuery("mmd_morph_name", node=morph_node, exists=True):
-            original_name = cmds.getAttr(f"{morph_node}.mmd_morph_name") or ""
+    for metadata in iter_morph_network_metadata(
+        morph_types={"bone", "group", "material"},
+        required_attrs=("weight",),
+    ):
+        morph_node = metadata.node
+        original_name = metadata.name
         if not original_name:
             continue
 
@@ -113,10 +86,8 @@ def build_morph_mappings(converter) -> None:
                 safe_name = safe_name[: -len(suffix)]
                 break
         register_morph_mapping(converter, safe_name, mapping)
-        if cmds.attributeQuery("mmd_morph_name_en", node=morph_node, exists=True):
-            english_name = cmds.getAttr(f"{morph_node}.mmd_morph_name_en") or ""
-            if english_name:
-                register_morph_mapping(converter, english_name, mapping)
+        if metadata.name_english:
+            register_morph_mapping(converter, metadata.name_english, mapping)
 
 
 def get_original_morph_name_candidates(alias: str) -> List[str]:

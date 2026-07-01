@@ -128,6 +128,37 @@ class TestMayaUtils(MayaTestBase):
         # 同様に、例外ではなくログ出力される
         maya_utils.set_attribute(mesh_name, "non_existent_attr", 1.0, "float")
 
+    def test_safe_attr_and_json_helpers(self):
+        """安全 attr helper と JSON attr helper が Maya 例外なしで使える。"""
+        node = cmds.createNode("transform", name="safe_attr_helper_node")
+        cmds.addAttr(node, longName="numberAttr", attributeType="long")
+        cmds.setAttr(f"{node}.numberAttr", 42)
+
+        self.assertEqual(maya_utils.get_attr_safe(node, "numberAttr", default=0, cast=int), 42)
+        self.assertEqual(maya_utils.get_attr_safe(node, "missingAttr", default="fallback"), "fallback")
+
+        payload = {"0": "笑顔", "1": "wink"}
+        self.assertTrue(maya_utils.write_json_attr(node, "mmd_test_json", payload))
+        self.assertEqual(maya_utils.read_json_attr(node, "mmd_test_json"), payload)
+
+        cmds.setAttr(f"{node}.mmd_test_json", "{broken", type="string")
+        self.assertEqual(maya_utils.read_json_attr(node, "mmd_test_json", default=[]), [])
+
+    def test_tag_and_connection_helpers(self):
+        """bool tag と connection helper が重複接続なしで動作する。"""
+        source = cmds.createNode("transform", name="tag_connection_source")
+        dest = cmds.createNode("transform", name="tag_connection_dest")
+
+        self.assertTrue(maya_utils.mark_bool_tag(source, "mmd_test_tag", True))
+        self.assertIn(source, maya_utils.find_tagged_nodes("mmd_test_tag"))
+
+        self.assertTrue(maya_utils.connect_if_needed(f"{source}.translateX", f"{dest}.translateX"))
+        self.assertTrue(cmds.isConnected(f"{source}.translateX", f"{dest}.translateX"))
+        self.assertTrue(maya_utils.connect_if_needed(f"{source}.translateX", f"{dest}.translateX"))
+
+        self.assertEqual(maya_utils.disconnect_sources(f"{dest}.translateX"), 1)
+        self.assertFalse(cmds.isConnected(f"{source}.translateX", f"{dest}.translateX"))
+
     def test_set_attribute_with_custom_attributes(self):
         """set_custom_attributesと組み合わせたテスト"""
         test_obj = cmds.createNode("transform", name="test_custom_attr_obj")

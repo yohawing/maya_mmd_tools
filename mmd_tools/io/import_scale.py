@@ -2,10 +2,12 @@
 Model import scale helpers shared by PMX and PMD importers.
 """
 
+from typing import Any, Dict, Optional
+
 from maya import cmds
 
 
-def apply_import_scale(root_group, scale, logger):
+def apply_import_scale(root_group: str, scale: float, logger: Any) -> bool:
     """Apply and freeze import scale without making locked attrs fatal.
 
     Args:
@@ -59,7 +61,7 @@ def apply_import_scale(root_group, scale, logger):
         _restore_scale_locks(original_locks, logger)
 
 
-def _restore_scale_locks(original_locks, logger):
+def _restore_scale_locks(original_locks: Dict[str, Optional[bool]], logger: Any) -> None:
     """Restore scale attr lock states captured by apply_import_scale."""
     for attr, locked in original_locks.items():
         if locked is None:

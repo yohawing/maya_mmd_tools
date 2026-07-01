@@ -4,25 +4,20 @@ PMXファイルをMayaシーンにインポートするためのモジュール�
 
 import os
 import time
+from typing import Any, Callable, Dict, Optional
 
-from maya import cmds
 from mmd_tools.core import maya_utils
 
-from .. import settings
-from ..converters import BoneConverter, MeshConverter, MorphConverter, PhysicsConverter
+from ..converters import BoneConverter, MeshConverter, MorphConverter
 from ..converters.bone_morph_runtime import build_bone_morph_graph
-from ..converters.light_converter import create_mmd_light_controller, wire_dx11_shaders_to_mmd_light
 from ..converters.material_morph_runtime import build_material_morph_graph
-from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core.logger import get_logger
-from ..core.utils import create_bone_joint_mapping
-from .import_scale import apply_import_scale
+from .model_import_pipeline import ModelImportPipeline
 from ..core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
-    SCENE_ROOT_SUFFIX,
 )
 from ..core.namespace_utils import NamespaceUtils
 
@@ -30,7 +25,13 @@ from ..core.namespace_utils import NamespaceUtils
 logger = get_logger("mmd_tools.io.pmx_importer")
 
 
-def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback=None):
+def import_pmx_file(
+    parser: Any,
+    filepath: str,
+    scale: float = 1.0,
+    options: Optional[Dict[str, Any]] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
+) -> Optional[str]:
     """
     PMXファイルをMayaシーンにインポートします。
 
@@ -46,55 +47,28 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback
     """
     if options is None:
         options = {}
-    profile = options.get("profile") if isinstance(options.get("profile"), dict) else None
-    phase_timings = {}
-
-    def _record_phase(name: str, start: float) -> None:
-        if profile is not None:
-            phase_timings[name] = round(time.perf_counter() - start, 6)
-
-    def _emit_progress(value: int) -> None:
-        if progress_callback is not None:
-            try:
-                progress_callback(value)
-            except Exception:
-                logger.debug("Progress callback failed", exc_info=True)
+    pipeline = ModelImportPipeline(
+        logger=logger,
+        filepath=filepath,
+        scale=scale,
+        options=options,
+        progress_callback=progress_callback,
+    )
 
     logger.info("Starting PMX file import: %s", filepath)
 
     logger.debug("Scale factor: %f", scale)
 
-    # Namespace処理
-    use_namespace = options.get("use_namespace", False)
-    custom_namespace = options.get("custom_namespace")
-    namespace = None
-
-    if use_namespace:
-        if custom_namespace:
-            # カスタムnamespaceを使用
-            namespace = NamespaceUtils.ensure_unique_namespace(custom_namespace)
-            logger.info(f"Using custom namespace: {namespace}")
-        else:
-            # モデル名からnamespace生成
-            model_name = maya_utils.sanitize_text(parser.header.get_name())
-            base_ns = NamespaceUtils.generate_namespace(model_name)
-            namespace = NamespaceUtils.ensure_unique_namespace(base_ns)
-            logger.info(f"Using auto-generated namespace: {namespace}")
-        model_name = maya_utils.sanitize_text(parser.header.get_name())
-    else:
-        model_name = maya_utils.sanitize_text(parser.header.get_name())
+    model_name = maya_utils.sanitize_text(parser.header.get_name())
+    namespace = pipeline.resolve_namespace(model_name, custom_namespace=options.get("custom_namespace"))
 
     try:
         # namespace context内でモデルを構築
         with NamespaceUtils.namespace_context(namespace):
-            _emit_progress(15)
+            pipeline.emit_progress(15)
             # ルートグループを作成
-            root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
-            logger.debug("Created root group: %s", root_group)
-
-            # Add attributes to root node
-            maya_utils.set_custom_attributes(
-                root_group,
+            root_group = pipeline.create_root_group(
+                model_name,
                 {
                     ATTR_MMD_MODEL_NAME: parser.header.model_name,
                     ATTR_MMD_MODEL_NAME_EN: parser.header.model_name_english,
@@ -110,8 +84,8 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback
             mesh_converter = MeshConverter(filepath)
             phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
-            _record_phase("mesh_conversion_sec", phase_start)
-            _emit_progress(35)
+            pipeline.record_phase("mesh_conversion_sec", phase_start)
+            pipeline.emit_progress(35)
 
             # mesh_name が list かどうかで分岐
             mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
@@ -121,18 +95,12 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback
             morph_converter = MorphConverter()
             phase_start = time.perf_counter()
             morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
-            _record_phase("morph_conversion_sec", phase_start)
-            _emit_progress(50)
+            pipeline.record_phase("morph_conversion_sec", phase_start)
+            pipeline.emit_progress(50)
             logger.debug("Morph conversion complete")
 
             # network morph ノードをモデルルートに message 接続で紐付ける
-            for morph_node in (
-                morph_result.get("bone_morph_nodes", [])
-                + morph_result.get("material_morph_nodes", [])
-            ):
-                if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):
-                    cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
-                cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root", force=True)
+            pipeline.connect_morph_nodes_to_root(root_group, morph_result)
 
             # ボーンを変換
             logger.info("Converting bones...")
@@ -146,8 +114,8 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback
                 setup_bone_orientation=options.get("setup_bone_orientation", True),
                 pmx_filepath=filepath,
             )
-            _record_phase("bone_and_skin_conversion_sec", phase_start)
-            _emit_progress(70)
+            pipeline.record_phase("bone_and_skin_conversion_sec", phase_start)
+            pipeline.emit_progress(70)
             logger.debug(
                 "Bone conversion complete: %d joints, %d meshes",
                 len(maya_joints) if maya_joints else 0,
@@ -157,99 +125,47 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback
             logger.info("Building bone morph runtime graph...")
             phase_start = time.perf_counter()
             bone_morph_runtime_result = build_bone_morph_graph(root_group)
-            _record_phase("bone_morph_runtime_sec", phase_start)
+            pipeline.record_phase("bone_morph_runtime_sec", phase_start)
             logger.debug("Bone morph runtime graph result: %s", bone_morph_runtime_result)
 
             logger.info("Building material morph runtime graph...")
             phase_start = time.perf_counter()
             material_morph_runtime_result = build_material_morph_graph(root_group)
-            _record_phase("material_morph_runtime_sec", phase_start)
-            _emit_progress(78)
+            pipeline.record_phase("material_morph_runtime_sec", phase_start)
+            pipeline.emit_progress(78)
             logger.debug("Material morph runtime graph result: %s", material_morph_runtime_result)
 
-            # 呼び出しオプションを優先し、未指定時はグローバル設定に従う。
-            import_physics = options.get(
-                "import_physics",
-                settings.get("import.physics.import_physics", True),
+            pipeline.convert_physics(
+                file_kind="pmx",
+                parser=parser,
+                maya_joints=maya_joints,
+                root_group=root_group,
             )
-            if import_physics:
-                logger.info("Converting physics...")
-                physics_converter = PhysicsConverter()
-
-                # ボーン名とMayaジョイント名のマッピングを作成
-                bone_joint_mapping = create_bone_joint_mapping(parser.bones, maya_joints, "pmx")
-
-                # 物理データが存在する場合のみ変換
-                if hasattr(parser, "rigid_bodies") and parser.rigid_bodies:
-                    phase_start = time.perf_counter()
-                    ncloth_nodes, constraint_nodes = physics_converter.convert_pmx_physics(
-                        parser, bone_joint_mapping, root_group
-                    )
-                    _record_phase("physics_conversion_sec", phase_start)
-                    _emit_progress(86)
-                    logger.debug(
-                        "Physics conversion complete: nCloth=%d, Constraints=%d",
-                        len(ncloth_nodes),
-                        len(constraint_nodes),
-                    )
-                else:
-                    logger.debug("No physics data found")
 
             # MMD ライトコントローラ（操作可能なヌル）を作成（get-or-create）。
             # シェーダーへの結線は dx11 uniform 生成（refresh）後に行うため、
             # ここでは transform 名だけ控えておく。
-            light_ctrl = None
-            if settings.get("import.light.create_controller", True):
-                try:
-                    light_ctrl = create_mmd_light_controller()
-                except Exception:
-                    logger.debug("Failed to create MMD light controller", exc_info=True)
+            light_ctrl = pipeline.create_light_controller()
 
             # スケールを適用
-            apply_import_scale(root_group, scale, logger)
-            _emit_progress(92)
-
-            cmds.select(root_group)
+            pipeline.apply_scale_and_select(root_group)
             try:
-                if mesh_converter.has_dx11_shaders:
-                    try:
-                        # dx11Shader generates effect attrs such as DiffuseColorRGB
-                        # only after VP2 evaluates the .fx file.  Force that once
-                        # before copying MMD custom attrs into generated uniforms.
-                        phase_start = time.perf_counter()
-                        cmds.refresh(force=True)
-                        _record_phase("refresh_sec", phase_start)
-                    except Exception:
-                        pass
-                phase_start = time.perf_counter()
-                synced_dx11 = sync_dx11_generated_uniforms(mesh_converter.created_shaders)
-                _record_phase("dx11_uniform_sync_sec", phase_start)
-                if synced_dx11:
-                    logger.debug("dx11Shader generated uniforms synchronized: %d", synced_dx11)
+                pipeline.sync_dx11_uniforms(mesh_converter, refresh_if_dx11=True)
             except Exception:
                 logger.debug("Failed to synchronize dx11 generated uniforms", exc_info=True)
 
             # MMD ライトコントローラを各 dx11Shader に結線（uniform 生成後）。
-            if light_ctrl:
-                try:
-                    wire_dx11_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)
-                except Exception:
-                    logger.debug("Failed to wire MMD light", exc_info=True)
+            pipeline.wire_light_controller(mesh_converter, light_ctrl)
 
             # Color Management を MMD 向けに整える（CM の enable は触らない）。
-            if settings.get("import.view.setup_color_management", True):
-                maya_utils.setup_mmd_color_management()
-            # 透過アルゴリズムを Depth Peeling(OIT) にして近接透過マテリアルの順序を解決。
-            if settings.get("import.view.setup_transparency", True):
-                maya_utils.setup_mmd_transparency()
-            _emit_progress(96)
-            if profile is not None:
-                profile["phase_timings"] = phase_timings
-                profile["mesh_converter"] = dict(mesh_converter.profile)
-                profile["morph_converter"] = dict(morph_converter.profile)
-                profile["bone_converter"] = dict(bone_converter.profile)
-                profile["texture_issues"] = list(mesh_converter.unresolved_textures)
-                profile["morph_result"] = {
+            pipeline.setup_view()
+            if pipeline.profile is not None:
+                pipeline.profile["phase_timings"] = pipeline.phase_timings
+                pipeline.profile["mesh_converter"] = dict(mesh_converter.profile)
+                pipeline.profile["morph_converter"] = dict(morph_converter.profile)
+                pipeline.profile["bone_converter"] = dict(bone_converter.profile)
+                pipeline.profile["texture_issues"] = list(mesh_converter.unresolved_textures)
+                pipeline.profile["morph_result"] = {
                     "morphs_converted": morph_result.get("morphs_converted"),
                     "total_morphs": morph_result.get("total_morphs"),
                     "blend_shape_nodes": len(morph_result.get("blend_shape_nodes", []) or []),
@@ -264,11 +180,11 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback
                         0,
                     ),
                 }
-                profile["bone_morph_runtime"] = bone_morph_runtime_result
-                logger.info("PMX import phase timings: %s", profile["phase_timings"])
-                logger.info("Mesh converter profile: %s", profile["mesh_converter"])
-                logger.info("Morph converter profile: %s", profile["morph_converter"])
-                logger.info("Bone converter profile: %s", profile["bone_converter"])
+                pipeline.profile["bone_morph_runtime"] = bone_morph_runtime_result
+                logger.info("PMX import phase timings: %s", pipeline.profile["phase_timings"])
+                logger.info("Mesh converter profile: %s", pipeline.profile["mesh_converter"])
+                logger.info("Morph converter profile: %s", pipeline.profile["morph_converter"])
+                logger.info("Bone converter profile: %s", pipeline.profile["bone_converter"])
             if mesh_converter.unresolved_texture_count:
                 logger.warning(
                     "%d texture(s) could not be loaded. Use Resolve textures to repair them.",
@@ -284,8 +200,6 @@ def import_pmx_file(parser, filepath, scale=1.0, options=None, progress_callback
         logger.debug("Error details:\n%s", traceback.format_exc())
 
         # エラー時のnamespaceクリーンアップ
-        if namespace:
-            logger.info(f"Cleaning up namespace: {namespace}")
-            NamespaceUtils.cleanup_namespace(namespace, force=True)
+        pipeline.cleanup_namespace(namespace)
 
         return None

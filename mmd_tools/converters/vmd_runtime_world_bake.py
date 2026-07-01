@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import maya.cmds as cmds
 
+from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
+
 
 def bake_bone_poses_from_world_matrices(converter, frame: int, world_matrices: list, model_bone_count: int) -> None:
     """Bake runtime PMX-order world matrices directly to Maya joints."""
@@ -51,18 +53,4 @@ def bake_bone_poses_from_world_matrices(converter, frame: int, world_matrices: l
 
 def convert_mmd_world_matrix_to_maya(mmd_matrix: list) -> list:
     """Convert an mmd-anim flat world matrix to a Maya cmds.xform matrix."""
-    if len(mmd_matrix) != 16:
-        raise ValueError("mmd_matrix must contain 16 values")
-
-    signs = (1.0, 1.0, -1.0)
-    maya_matrix = [float(v) for v in mmd_matrix]
-
-    for row in range(3):
-        for col in range(3):
-            idx = row * 4 + col
-            maya_matrix[idx] = float(mmd_matrix[idx]) * signs[row] * signs[col]
-
-    for col in range(3):
-        maya_matrix[12 + col] = float(mmd_matrix[12 + col]) * signs[col]
-
-    return maya_matrix
+    return mmd_matrix_to_maya(mmd_matrix)

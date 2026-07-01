@@ -6,15 +6,13 @@ from typing import Dict, Optional
 
 import maya.cmds as cmds
 
+from ..core.namespace_utils import NamespaceUtils
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 
 def node_namespace(node: str) -> str:
     """Return the namespace of a Maya node leaf name."""
-    leaf = node.split("|")[-1]
-    if ":" not in leaf:
-        return ""
-    return leaf.rsplit(":", 1)[0].lstrip(":")
+    return NamespaceUtils.get_namespace_from_node(node) or ""
 
 
 def collect_ik_nodes_by_bone_name(converter, target_namespace: Optional[str] = None) -> Dict[str, str]:

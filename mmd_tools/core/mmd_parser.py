@@ -1,6 +1,6 @@
 import os
 import tempfile
-from typing import Optional
+from typing import Optional, Union
 
 from .exceptions import MMDParseException
 from .logger import get_logger
@@ -31,7 +31,7 @@ def _try_native_pmx_parse(
     file_path: str,
     use_native_pmx_parse: Optional[bool] = None,
     require_native_pmx_parse: bool = False,
-):
+) -> Optional[PmxData]:
     """ネイティブ DLL での PMX パースを試みる。
 
     Args:
@@ -114,10 +114,10 @@ def parse_pmd_file_as_pmx(
 
 
 def parse_mmd_file(
-    file_path,
+    file_path: str,
     use_native_pmx_parse: Optional[bool] = None,
     require_native_pmx_parse: bool = True,
-):
+) -> Union[PmxData, VmdData, VpdData]:
     """
     MMDファイル（PMD, PMX, VMD, VPD）を解析し、解析されたデータオブジェクトを返す。
 

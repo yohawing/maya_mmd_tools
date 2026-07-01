@@ -1,3 +1,4 @@
+import json
 import os
 
 from maya import cmds
@@ -237,21 +238,23 @@ def resolve_mmd_texture_file_node(file_node, workspace_root=None):
     return resolution
 
 
-def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
+def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr, cmds_module=None, set_attribute_func=None):
     """Bind a Maya file node to one dx11Shader texture slot."""
 
     destination_attr = f"{shader}.{texture_attr}"
+    cmds_ref = cmds_module or cmds
+    set_attr = set_attribute_func or set_attribute
     try:
-        existing = cmds.listConnections(
+        existing = cmds_ref.listConnections(
             f"{file_node}.outColor",
             source=False,
             destination=True,
             plugs=True,
         ) or []
         if not isinstance(existing, (list, tuple, set)) or destination_attr not in existing:
-            cmds.connectAttr(f"{file_node}.outColor", destination_attr, force=True)
-        if cmds.attributeQuery(has_attr, node=shader, exists=True):
-            set_attribute(shader, has_attr, 1, "long")
+            cmds_ref.connectAttr(f"{file_node}.outColor", destination_attr, force=True)
+        if cmds_ref.attributeQuery(has_attr, node=shader, exists=True):
+            set_attr(shader, has_attr, 1, "long")
         return True
     except Exception as exc:
         logger.warning(
@@ -967,6 +970,111 @@ def get_attribute(object_name, attr_name):
         return None
 
 
+def attribute_exists(node, attr):
+    """Return whether a Maya node has an attribute, swallowing Maya command errors."""
+    try:
+        return bool(node and cmds.objExists(node) and cmds.attributeQuery(attr, node=node, exists=True))
+    except Exception:
+        return False
+
+
+def get_attr_safe(node, attr, default=None, cast=None):
+    """Read ``node.attr`` with a default fallback and optional type conversion."""
+    if not attribute_exists(node, attr.split("[", 1)[0]):
+        return default
+    try:
+        value = cmds.getAttr(f"{node}.{attr}")
+    except Exception:
+        return default
+    if cast is None:
+        return value
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def read_json_attr(node, attr, default=None):
+    """Read a string JSON attribute, returning ``default`` when absent or invalid."""
+    fallback = default if default is not None else {}
+    raw_value = get_attr_safe(node, attr, default="")
+    if not raw_value:
+        return fallback
+    try:
+        return json.loads(raw_value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def write_json_attr(node, attr, value, *, ensure_attr=True, separators=(",", ":")):
+    """Write JSON data to a string attribute and optionally create the attribute."""
+    if not attribute_exists(node, attr):
+        if not ensure_attr:
+            return False
+        try:
+            cmds.addAttr(node, longName=attr, dataType="string")
+        except Exception:
+            return False
+    try:
+        cmds.setAttr(
+            f"{node}.{attr}",
+            json.dumps(value, ensure_ascii=False, separators=separators),
+            type="string",
+        )
+        return True
+    except Exception:
+        return False
+
+
+def find_tagged_nodes(attr):
+    """Return nodes that have a boolean-like tag attribute enabled."""
+    nodes = []
+    for node in cmds.ls(f"*.{attr}", objectsOnly=True) or []:
+        if get_attr_safe(node, attr, default=False, cast=bool):
+            nodes.append(node)
+    return nodes
+
+
+def mark_bool_tag(node, attr, value=True):
+    """Ensure a bool tag attribute exists and set its value."""
+    if not attribute_exists(node, attr):
+        try:
+            cmds.addAttr(node, longName=attr, attributeType="bool")
+        except Exception:
+            return False
+    try:
+        cmds.setAttr(f"{node}.{attr}", bool(value))
+        return True
+    except Exception:
+        return False
+
+
+def disconnect_sources(destination_plug):
+    """Disconnect every source plug feeding ``destination_plug``."""
+    disconnected = 0
+    for source_plug in cmds.listConnections(destination_plug, source=True, destination=False, plugs=True) or []:
+        try:
+            if cmds.isConnected(source_plug, destination_plug):
+                cmds.disconnectAttr(source_plug, destination_plug)
+                disconnected += 1
+        except Exception:
+            continue
+    return disconnected
+
+
+def connect_if_needed(source_plug, destination_plug, *, force=False):
+    """Connect two plugs when not already connected."""
+    try:
+        if cmds.isConnected(source_plug, destination_plug):
+            return True
+        if force:
+            disconnect_sources(destination_plug)
+        cmds.connectAttr(source_plug, destination_plug, force=force)
+        return True
+    except Exception:
+        return False
+
+
 def get_int_array_attribute(object_name, attr_name):
     """OpenMaya typed intArray attribute を Python の int list として取得する。"""
     try:
@@ -1448,32 +1556,11 @@ def _find_plug(fn_depend, attr):
     return plug
 
 
-def _layer_curve_for_blend_attr(blend_node, attr, layer_curves):
-    """Return the animLayer curve connected to the blend input for attr."""
-    axis = attr[-1] if attr and attr[-1] in "XYZ" else ""
-    candidate_inputs = []
-    if axis:
-        candidate_inputs.extend((f"inputB{axis}", f"inputB.inputB{axis}"))
-    candidate_inputs.append("inputB")
-
-    for input_attr in candidate_inputs:
-        plug = f"{blend_node}.{input_attr}"
-        if not cmds.objExists(plug):
-            continue
-        input_curves = cmds.listConnections(plug, source=True, destination=False, type="animCurve") or []
-        for curve_name in input_curves:
-            if curve_name in layer_curves:
-                return curve_name
-
-    return None
-
-
 def create_animation_curves(
     node_name,
     attributes,
     tangent_type=oma.MFnAnimCurve.kTangentLinear,
     animation_layer=None,
-    seed_values=None,
 ):
     """
     指定したノードの属性にアニメーションカーブを作成する。
@@ -1513,10 +1600,7 @@ def create_animation_curves(
     for attr in attributes:
         if animation_layer:
             # レイヤーが有効な場合は、cmds.setKeyframeを使って初期カーブを作成
-            key_args = {"attribute": attr, "animLayer": animation_layer}
-            if seed_values and attr in seed_values:
-                key_args["value"] = float(seed_values[attr])
-            cmds.setKeyframe(node_name, **key_args)
+            cmds.setKeyframe(node_name, attribute=attr, animLayer=animation_layer)
             # 作成されたカーブを取得。node.attr から直近の animBlendNode を辿ると、
             # レイヤー全体の blendNodes を毎属性スキャンせずに目的の curve へ到達できる。
             # 既存 base curve がある場合もあるため、返す curve は layer 所属に限定する。
@@ -1527,17 +1611,6 @@ def create_animation_curves(
                 destination=False,
             ) or []
             for blend_node in blend_nodes:
-                curve_name = _layer_curve_for_blend_attr(blend_node, attr, layer_curves)
-                if curve_name:
-                    curve_sel = om.MSelectionList()
-                    curve_sel.add(curve_name)
-                    curve_obj = curve_sel.getDependNode(0)
-                    curves[attr] = oma.MFnAnimCurve(curve_obj)
-                    break
-
-                if attr and attr[-1] in "XYZ":
-                    continue
-
                 input_curves = cmds.listConnections(blend_node, source=True, type="animCurve") or []
                 for curve_name in input_curves:
                     if curve_name not in layer_curves:

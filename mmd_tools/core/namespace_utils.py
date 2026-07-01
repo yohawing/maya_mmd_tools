@@ -212,9 +212,10 @@ class NamespaceUtils:
         Returns:
             namespace名（ルートnamespaceの場合はNone）
         """
-        if ":" not in node_name:
+        leaf_name = node_name.rsplit("|", 1)[-1]
+        if ":" not in leaf_name:
             return None
 
         # 最後の:より前がnamespace
-        namespace = node_name.rsplit(":", 1)[0]
+        namespace = leaf_name.rsplit(":", 1)[0]
         return namespace if namespace else None

@@ -32,6 +32,27 @@ def get_max_bone_frame(vmd_data: Any) -> int:
     return max_frame
 
 
+def get_animation_frame_range(vmd_data: Any) -> tuple:
+    """Return the inclusive VMD animation frame range across supported tracks."""
+    min_frame = 0
+    max_frame = 0
+    for frame_list in [
+        getattr(vmd_data, "bone_frames", []),
+        getattr(vmd_data, "morph_frames", []),
+        getattr(vmd_data, "camera_frames", []),
+        getattr(vmd_data, "light_frames", []),
+    ]:
+        for frame_data in frame_list:
+            if hasattr(frame_data, "frame_number"):
+                frame_number = frame_data.frame_number
+            elif isinstance(frame_data, dict):
+                frame_number = frame_data.get("frame_number", 0)
+            else:
+                frame_number = 0
+            max_frame = max(max_frame, frame_number)
+    return int(min_frame), int(max_frame)
+
+
 def set_scene_fps(fps: float, logger: Any) -> None:
     """Set the Maya scene time unit for a supported FPS value."""
     if fps in FPS_TIME_UNIT_MAPPING:

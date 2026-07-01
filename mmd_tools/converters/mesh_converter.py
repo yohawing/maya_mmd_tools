@@ -16,7 +16,6 @@ from mmd_tools.core.texture_path_cache import (
 )
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmx_data import PmxData
-from mmd_tools.core.pmx_data.material import PmxDrawFlag
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
@@ -51,13 +50,18 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
     ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
 )
+from mmd_tools.converters.mesh_material_properties import (
+    PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
+    material_is_double_sided as _material_is_double_sided,
+)
+from mmd_tools.converters.mesh_texture_resolve import (
+    resolve_pmx_toon_texture_path as _resolve_pmx_toon_texture_path,
+    resolve_texture_path as _resolve_texture_path,
+)
 
 LOGGER = get_logger(__name__)
 
 _ALPHA_CAPABLE_TEXTURE_EXTENSIONS = {".png", ".tga", ".tif", ".tiff", ".dds"}
-_STANDARD_TOON_TEXTURE_DIR = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "shaders", "toon_textures")
-)
 _SHADER_PLUGIN_LOAD_CACHE = {}
 _SHADER_BACKEND_WARNED = set()
 
@@ -67,7 +71,6 @@ TRANSPARENCY_MODE_OPAQUE = "opaque"
 TRANSPARENCY_MODE_CUTOUT = "cutout"
 TRANSPARENCY_MODE_BLEND = "blend"
 TRANSPARENCY_MODES = (TRANSPARENCY_MODE_OPAQUE, TRANSPARENCY_MODE_CUTOUT, TRANSPARENCY_MODE_BLEND)
-_PMX_DOUBLE_SIDED_DRAW_FLAG = int(getattr(PmxDrawFlag, "DOUBLE_SIDED", 0x01))
 _ATTR_MMD_DOUBLE_SIDED = "mmdDoubleSided"
 _DX11_TECHNIQUE_BY_RENDERING = {
     (TRANSPARENCY_MODE_OPAQUE, True, False): "MMDTechnique",
@@ -156,17 +159,6 @@ def _set_shader_attribute_checked(shader, attr_name, attr_value, attr_type) -> b
         return False
 
     return True
-
-
-def _material_is_double_sided(material) -> bool:
-    """Return True when a PMX material has the DOUBLE_SIDED draw flag."""
-    draw_flag = getattr(material, "draw_flag", None)
-    if draw_flag is None:
-        return False
-    try:
-        return bool(int(draw_flag) & _PMX_DOUBLE_SIDED_DRAW_FLAG)
-    except (TypeError, ValueError):
-        return False
 
 
 def _set_mesh_double_sided(mesh_transform_or_shape, enabled: bool) -> None:
@@ -324,53 +316,16 @@ def _is_degenerate_face(indices):
     return len(set(indices)) < len(indices)
 
 
-def _resolve_pmx_toon_texture_path(texture_dir, material, all_textures):
-    """Resolve a PMX custom/shared toon texture to an absolute file path."""
-    if not hasattr(material, "shared_toon_flag") or not hasattr(material, "toon_texture_index"):
-        return None
-
-    toon_index = int(material.toon_texture_index)
-    if toon_index < 0:
-        return None
-
-    # PMX shared_toon_flag: 0 = regular texture table, 1 = shared toon01..toon10.
-    if int(material.shared_toon_flag) == 0:
-        if not all_textures or toon_index >= len(all_textures):
-            return None
-        return _resolve_texture_path(texture_dir, all_textures[toon_index])
-
-    if toon_index > 9:
-        return None
-    return os.path.join(_STANDARD_TOON_TEXTURE_DIR, f"toon{toon_index + 1:02d}.bmp")
-
-
-def _resolve_texture_path(texture_dir, texture_path):
-    """Resolve a texture path once, preserving already-absolute paths."""
-    if not texture_path:
-        return None
-    if os.path.isabs(texture_path):
-        return os.path.normpath(texture_path)
-    return os.path.normpath(os.path.join(texture_dir, texture_path))
-
-
 def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
-    """Bind a file node to a dx11Shader texture slot."""
-
-    destination_attr = f"{shader}.{texture_attr}"
-    try:
-        existing = cmds.listConnections(
-            f"{file_node}.outColor",
-            source=False,
-            destination=True,
-            plugs=True,
-        ) or []
-        if not isinstance(existing, (list, tuple, set)) or destination_attr not in existing:
-            cmds.connectAttr(f"{file_node}.outColor", destination_attr, force=True)
-        if cmds.attributeQuery(has_attr, node=shader, exists=True):
-            maya_utils.set_attribute(shader, has_attr, 1, "long")
-        return True
-    except Exception:
-        return False
+    """Compatibility wrapper for the shared dx11 texture slot binder."""
+    return maya_utils.bind_dx11_texture_file_node(
+        shader,
+        file_node,
+        texture_attr,
+        has_attr,
+        cmds_module=cmds,
+        set_attribute_func=maya_utils.set_attribute,
+    )
 
 
 def _ensure_mmd_shader_uniform_attributes(shader_node):
@@ -630,8 +585,8 @@ class MeshConverter:
         try:
             if shader and cmds.objExists(shader) and cmds.nodeType(shader) == "dx11Shader":
                 self.has_dx11_shaders = True
-        except Exception:
-            pass
+        except Exception as exc:
+            self.logger.debug("Failed to record created shader %s: %s", shader, exc)
 
     def _record_unresolved_texture_issue(
         self,

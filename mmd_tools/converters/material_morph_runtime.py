@@ -13,6 +13,7 @@ from mmd_tools.converters.morph_runtime_common import (
     get_morph_order,
     parse_morph_offsets_json,
 )
+from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 
 
 logger = get_logger(__name__)
@@ -108,33 +109,12 @@ def _collect_shaders_by_material_index(root_group: str) -> Dict[int, str]:
 
 
 def _iter_material_morph_nodes(root_group: str) -> Iterable[str]:
-    namespace = _namespace_from_node(root_group)
-    for node in cmds.ls(type="network") or []:
-        if namespace is not None and _namespace_from_node(node) != namespace:
-            continue
-        if not cmds.attributeQuery("mmd_morph_type", node=node, exists=True):
-            continue
-        try:
-            if cmds.getAttr(f"{node}.mmd_morph_type") != "material":
-                continue
-        except Exception:
-            continue
-        if not cmds.attributeQuery("mmd_material_morph_offsets_json", node=node, exists=True):
-            continue
-        # model root スコープフィルタ — 複数モデルが namespace なしで
-        # ロードされた場合の cross-model morph bleed を防止する
-        if cmds.attributeQuery("mmd_model_root", node=node, exists=True):
-            connected = cmds.listConnections(f"{node}.mmd_model_root") or []
-            if root_group not in connected:
-                continue
-        yield node
-
-
-def _namespace_from_node(node: str) -> Optional[str]:
-    short_name = node.split("|")[-1]
-    if ":" not in short_name:
-        return None
-    return short_name.rsplit(":", 1)[0]
+    for metadata in iter_morph_network_metadata(
+        root_group=root_group,
+        morph_types={"material"},
+        required_attrs=("mmd_material_morph_offsets_json",),
+    ):
+        yield metadata.node
 
 
 def _collect_contributions_by_shader(

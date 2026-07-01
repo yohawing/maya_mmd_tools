@@ -21,6 +21,10 @@ from mmd_tools.core.constants import (
     ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.converters.morph_scene_metadata import (
+    iter_morph_network_metadata,
+    read_blendshape_morph_name_strings,
+)
 
 
 class MorphConverter:
@@ -331,18 +335,12 @@ class MorphConverter:
         """シーン内の network モーフノードから exporter 用の morph dict を収集する。"""
         morphs = []
 
-        for morph_node in cmds.ls(type="network") or []:
+        for metadata in iter_morph_network_metadata(morph_types={"bone", "material"}):
+            morph_node = metadata.node
             try:
-                if not cmds.attributeQuery("mmd_morph_type", node=morph_node, exists=True):
-                    continue
-
-                morph_type = cmds.getAttr(f"{morph_node}.mmd_morph_type")
-                if morph_type not in {"bone", "material"}:
-                    continue
-
                 offsets_attr = (
                     "mmd_bone_morph_offsets_json"
-                    if morph_type == "bone"
+                    if metadata.morph_type == "bone"
                     else "mmd_material_morph_offsets_json"
                 )
                 if not cmds.attributeQuery(offsets_attr, node=morph_node, exists=True):
@@ -364,24 +362,12 @@ class MorphConverter:
                     )
                     continue
 
-                morph_name = ""
-                if cmds.attributeQuery("mmd_morph_name", node=morph_node, exists=True):
-                    morph_name = cmds.getAttr(f"{morph_node}.mmd_morph_name") or ""
-
-                name_english = ""
-                if cmds.attributeQuery("mmd_morph_name_en", node=morph_node, exists=True):
-                    name_english = cmds.getAttr(f"{morph_node}.mmd_morph_name_en") or ""
-
-                panel = 0
-                if cmds.attributeQuery("mmd_morph_panel", node=morph_node, exists=True):
-                    panel = int(cmds.getAttr(f"{morph_node}.mmd_morph_panel"))
-
                 morphs.append(
                     {
-                        "type": morph_type,
-                        "name": morph_name,
-                        "name_english": name_english,
-                        "panel": panel,
+                        "type": metadata.morph_type,
+                        "name": metadata.name,
+                        "name_english": metadata.name_english,
+                        "panel": metadata.panel,
                         "offsets": offsets,
                     }
                 )
@@ -437,17 +423,7 @@ class MorphConverter:
 
     def _load_blendshape_morph_names(self, blend_shape_node: str) -> Dict[str, str]:
         """blendShape ノードの weight index → 生モーフ名 JSON を読み込む。"""
-        if not cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape_node, exists=True):
-            cmds.addAttr(blend_shape_node, longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, dataType="string")
-            return {}
-        try:
-            raw = cmds.getAttr(f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return {str(k): str(v) for k, v in parsed.items()}
-        except (TypeError, ValueError):
-            pass
-        return {}
+        return read_blendshape_morph_name_strings(blend_shape_node, ensure_attr=True)
 
     def _flush_vertex_morph_name_mapping(self, template_ctx: Dict[str, Any]) -> None:
         """vertex morph ループで蓄積した morph name mapping を一括保存する。"""
@@ -456,11 +432,7 @@ class MorphConverter:
         if not template_ctx.get("morph_name_mapping_dirty") or not blend_shape_node or not names:
             return
         start = time.perf_counter()
-        cmds.setAttr(
-            f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
-            json.dumps(names, ensure_ascii=False, separators=(",", ":")),
-            type="string",
-        )
+        maya_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
         self._add_profile_time("morph_name_store_sec", start)
         template_ctx["morph_name_mapping_dirty"] = False
 
@@ -468,23 +440,10 @@ class MorphConverter:
         """blendShape ノードに weight index → 生モーフ名 の対応を JSON で保存する。"""
         if not raw_name:
             return
-        names: Dict[str, str] = {}
-        if cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=blend_shape_node, exists=True):
-            try:
-                raw = cmds.getAttr(f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    names = {str(k): str(v) for k, v in parsed.items()}
-            except (TypeError, ValueError):
-                names = {}
-        else:
-            cmds.addAttr(blend_shape_node, longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, dataType="string")
+        parsed = maya_utils.read_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, default={})
+        names: Dict[str, str] = {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
         names[str(target_index)] = str(raw_name)
-        cmds.setAttr(
-            f"{blend_shape_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
-            json.dumps(names, ensure_ascii=False, separators=(",", ":")),
-            type="string",
-        )
+        maya_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
 
     def _convert_vertex_morph_pmd(self, morph, mesh_node: str) -> Dict[str, Any]:
         """PMD頂点モーフの変換"""

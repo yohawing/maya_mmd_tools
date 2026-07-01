@@ -27,6 +27,7 @@ from ctypes import c_float, c_uint8
 from unittest import mock
 
 import mmd_tools.core.native.mmd_anim_runtime as rt
+import mmd_tools.core.native.mmd_anim_runtime_loader as runtime_loader
 from mmd_tools.core.native.mmd_anim_runtime import (
     MmdParsedModel,
     MmdRuntimeBatchEvaluation,
@@ -836,7 +837,7 @@ class TestParsedModelByteBuffers(unittest.TestCase):
 
 
 # ----------------------------------------------------------------------
-# _set_sig / _find_library / get_mmd_runtime_library のキャッシュ
+# _set_sig / loader.find_library / get_mmd_runtime_library のキャッシュ
 # ----------------------------------------------------------------------
 
 class _SigStub:
@@ -876,22 +877,22 @@ class TestFindLibrary(unittest.TestCase):
     def test_returns_none_when_no_candidate_exists(self):
         # すべての候補パスを存在しないものに差し替える
         from pathlib import Path
-        with mock.patch.object(rt, "_CANDIDATE_PATHS",
+        with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS",
                                [Path("F:/__definitely_missing_dir__/x")]):
-            self.assertIsNone(rt._find_library())
+            self.assertIsNone(runtime_loader.find_library())
 
     def test_finds_explicit_file_candidate(self):
         # 実在する一時ファイルを「ライブラリ名そのもの」で配置し検出させる
         import tempfile
         from pathlib import Path
 
-        lib_name = rt._LIB_NAMES[0]
+        lib_name = runtime_loader._LIB_NAMES[0]
         tmpdir = tempfile.mkdtemp()
         try:
             lib_path = Path(tmpdir) / lib_name
             lib_path.write_bytes(b"\x00")
-            with mock.patch.object(rt, "_CANDIDATE_PATHS", [lib_path]):
-                found = rt._find_library()
+            with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS", [lib_path]):
+                found = runtime_loader.find_library()
             self.assertIsNotNone(found)
             self.assertEqual(Path(found).name, lib_name)
         finally:
@@ -902,12 +903,12 @@ class TestFindLibrary(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        lib_name = rt._LIB_NAMES[0]
+        lib_name = runtime_loader._LIB_NAMES[0]
         tmpdir = tempfile.mkdtemp()
         try:
             (Path(tmpdir) / lib_name).write_bytes(b"\x00")
-            with mock.patch.object(rt, "_CANDIDATE_PATHS", [Path(tmpdir)]):
-                found = rt._find_library()
+            with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS", [Path(tmpdir)]):
+                found = runtime_loader.find_library()
             self.assertIsNotNone(found)
             self.assertEqual(Path(found).name, lib_name)
         finally:
@@ -918,29 +919,29 @@ class TestFindLibrary(unittest.TestCase):
 class TestGetRuntimeLibraryCache(unittest.TestCase):
     def setUp(self):
         # グローバルキャッシュを退避し、各テストで初期化
-        self._saved_lib = rt._runtime_lib
-        self._saved_path = rt._runtime_lib_path
+        self._saved_lib = runtime_loader._runtime_lib
+        self._saved_path = runtime_loader._runtime_lib_path
 
     def tearDown(self):
-        rt._runtime_lib = self._saved_lib
-        rt._runtime_lib_path = self._saved_path
+        runtime_loader._runtime_lib = self._saved_lib
+        runtime_loader._runtime_lib_path = self._saved_path
 
     def test_caches_false_when_library_not_found(self):
-        rt._runtime_lib = None
-        rt._runtime_lib_path = None
-        with mock.patch.object(rt, "_find_library", return_value=None) as finder:
+        runtime_loader._runtime_lib = None
+        runtime_loader._runtime_lib_path = None
+        with mock.patch.object(runtime_loader, "find_library", return_value=None) as finder:
             self.assertIsNone(rt.get_mmd_runtime_library())
-            # 2 回目はキャッシュにより _find_library を再呼び出ししない
+            # 2 回目はキャッシュにより find_library を再呼び出ししない
             self.assertIsNone(rt.get_mmd_runtime_library())
         self.assertEqual(finder.call_count, 1)
-        self.assertIs(rt._runtime_lib, False)
+        self.assertIs(runtime_loader._runtime_lib, False)
 
     def test_is_available_reflects_cached_false(self):
-        rt._runtime_lib = False
+        runtime_loader._runtime_lib = False
         self.assertFalse(rt.is_mmd_runtime_available())
 
     def test_is_native_pmx_parser_available_false_when_lib_none(self):
-        rt._runtime_lib = False  # キャッシュ済み「ロード失敗」
+        runtime_loader._runtime_lib = False  # キャッシュ済み「ロード失敗」
         self.assertFalse(rt.is_native_pmx_parser_available())
 
 
@@ -950,26 +951,26 @@ class TestGetRuntimeLibraryCache(unittest.TestCase):
 
 class TestFactoryGuardsWithoutLibrary(unittest.TestCase):
     def setUp(self):
-        self._saved = rt._runtime_lib
+        self._saved = runtime_loader._runtime_lib
 
     def tearDown(self):
-        rt._runtime_lib = self._saved
+        runtime_loader._runtime_lib = self._saved
 
     def test_model_from_empty_bytes_returns_none_even_if_lib_present(self):
         # lib があっても空 bytes は弾く
-        rt._runtime_lib = _FakeRuntimeLib()
+        runtime_loader._runtime_lib = _FakeRuntimeLib()
         self.assertIsNone(MmdRuntimeModel.from_pmx_bytes(b""))
 
     def test_clip_from_none_model_returns_none(self):
-        rt._runtime_lib = _FakeRuntimeLib()
+        runtime_loader._runtime_lib = _FakeRuntimeLib()
         self.assertIsNone(MmdRuntimeClip.from_vmd_bytes_for_model(None, b"vmd"))
 
     def test_instance_for_none_model_returns_none(self):
-        rt._runtime_lib = _FakeRuntimeLib()
+        runtime_loader._runtime_lib = _FakeRuntimeLib()
         self.assertIsNone(MmdRuntimeInstance.for_model(None))
 
     def test_parsed_model_from_empty_bytes_returns_none(self):
-        rt._runtime_lib = _FakeParsedLib()
+        runtime_loader._runtime_lib = _FakeParsedLib()
         self.assertIsNone(MmdParsedModel.from_pmx_bytes(b""))
 
 

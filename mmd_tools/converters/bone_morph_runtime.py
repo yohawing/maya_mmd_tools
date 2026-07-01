@@ -13,6 +13,7 @@ from mmd_tools.converters.morph_runtime_common import (
     get_morph_order,
     parse_morph_offsets_json,
 )
+from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 
 
 logger = get_logger(__name__)
@@ -133,27 +134,13 @@ def _iter_group_morph_nodes(root_group: str) -> Iterable[str]:
 
 
 def _iter_morph_nodes(root_group: str, morph_type: str, required_attr: str) -> Iterable[str]:
-    namespace = _namespace_from_node(root_group)
-    for node in cmds.ls(type="network") or []:
-        if namespace is not None and _namespace_from_node(node) != namespace:
-            continue
-        if not cmds.attributeQuery("mmd_morph_type", node=node, exists=True):
-            continue
-        try:
-            if cmds.getAttr(f"{node}.mmd_morph_type") != morph_type:
-                continue
-        except Exception:
-            continue
-        if not cmds.attributeQuery(required_attr, node=node, exists=True):
-            continue
-        yield node
-
-
-def _namespace_from_node(node: str) -> Optional[str]:
-    short_name = node.split("|")[-1]
-    if ":" not in short_name:
-        return None
-    return short_name.rsplit(":", 1)[0]
+    for metadata in iter_morph_network_metadata(
+        root_group=root_group,
+        morph_types={morph_type},
+        required_attrs=(required_attr,),
+        enforce_model_root_scope=False,
+    ):
+        yield metadata.node
 
 
 def _collect_contributions_by_joint(

@@ -250,6 +250,9 @@ class TestNamespaceUtils(unittest.TestCase):
         # 空のケース
         self.assertIsNone(NamespaceUtils.get_namespace_from_node(":joint1"))
 
+        # フル DAG パスでは leaf node の namespace を返す
+        self.assertEqual(NamespaceUtils.get_namespace_from_node("|root|Model1:joint1"), "Model1")
+
 
 if __name__ == "__main__":
     unittest.main()
