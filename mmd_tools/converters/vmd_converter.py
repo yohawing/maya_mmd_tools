@@ -28,16 +28,12 @@ from .vmd_append_decomposition import (
     decompose_append_own_translation,
     decompose_append_rotations_for_scene,
     decompose_append_translations_for_scene,
-    get_or_expand_runtime_channel,
-    joint_orient_quat_from_joint,
 )
 from .vmd_anim_layer import add_existing_attrs_to_anim_layer, add_transform_attrs_to_anim_layer
-from .vmd_bezier_tangent import apply_vmd_bezier_tangents, query_key_value
+from .vmd_bezier_tangent import apply_vmd_bezier_tangents
 from .vmd_bone_animation import convert_bone_animation, set_bone_keyframes
 from .vmd_bone_interpolation import (
-    get_frame_interpolation,
     get_frame_number,
-    is_linear_vmd_interp,
     parse_vmd_interpolation,
     vmd_interp_channel_for_attr,
 )
@@ -45,52 +41,40 @@ from .vmd_camera_animation import (
     convert_camera_animation,
     get_or_create_camera,
     parse_vmd_camera_interpolation,
-    viewing_angle_to_focal_length,
 )
 from .vmd_import_state import (
     capture_anim_layer_selection,
     clear_existing_camera_motion,
     clear_existing_light_motion,
     clear_existing_motion,
-    cut_keyable_attrs,
-    node_matches_target_namespace,
+    record_bind_poses,
     restore_anim_layer_selection,
+    restore_import_scene_updates,
     restore_import_timeline_state,
-    store_bind_translate,
+    suspend_import_scene_updates,
 )
 from .vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nodes_by_bone_name, node_namespace
 from .vmd_ik_passthrough import collect_mmd_ik_passthrough_info, key_mmd_ik_passthrough_rotation
 from .vmd_joint_rotation import (
-    convert_vmd_quat_to_bind_space_rotate,
     convert_vmd_quat_to_joint_rotate,
-    extract_euler_from_matrix,
     get_joint_orient_cache,
 )
 from .vmd_legacy_bone_routes import (
     build_legacy_bone_key_routes,
     collect_ik_link_joints,
-    native_ik_handle_link_joints,
 )
 from .vmd_light_animation import convert_light_animation, get_or_create_light
 from .vmd_motion_kind import detect_vmd_motion_kind
 from .vmd_morph_animation import convert_morph_animation
 from .vmd_morph_mapping import (
     build_morph_mappings,
-    get_original_morph_name_candidates,
     iter_morph_mappings,
-    read_blendshape_morph_names,
-    register_morph_mapping,
 )
 from .vmd_name_mapping import build_name_mappings
 from .vmd_runtime_rig_helper import (
     disable_mmd_rig_constraints_for_runtime_bake,
-    disconnect_node_output_connections,
     has_live_mmd_rig_for_runtime_target,
-    native_ik_handle_targets_mapped_joint,
-    node_has_mapped_destination,
-    node_name_in_set,
     restore_joints_to_bind_pose_for_runtime_bake,
-    runtime_bake_mapped_joint_names,
 )
 from .vmd_runtime_channels import (
     append_bone_locals_to_channel_arrays,
@@ -98,7 +82,7 @@ from .vmd_runtime_channels import (
     create_runtime_joint_channel_static_state,
     runtime_joint_attrs,
 )
-from .vmd_runtime_cache_apply import apply_runtime_cache_to_scene, is_static_channel, scale_motion_translate_from_bind
+from .vmd_runtime_cache_apply import is_static_channel, scale_motion_translate_from_bind
 from .vmd_runtime_cache_collect import collect_runtime_bake_cache
 from .vmd_runtime_local_decompose import (
     build_bone_hierarchy_and_order_maps,
@@ -121,7 +105,6 @@ from .vmd_runtime_scene_apply import (
     apply_runtime_channel_arrays_to_scene_with_undo_disabled,
 )
 from .vmd_runtime_sources import (
-    resolve_pmx_path_from_scene,
     resolve_runtime_bake_sources,
     resolve_runtime_pmx_bytes_and_morph_names,
     should_use_mmd_runtime_bake,
@@ -133,7 +116,8 @@ from .vmd_scene_keying import (
     batch_key_scalar_channels,
     samples_as_anim_layer_deltas,
 )
-from .vmd_timeline import set_scene_fps, setup_timeline
+from .vmd_timeline import get_animation_frame_range, setup_timeline
+from . import vmd_profile
 
 # mmd-anim runtime (Phase 1+)
 try:
@@ -180,6 +164,7 @@ class VmdConverter:
         self.import_camera_animation = True
         self.import_light_animation = True
         self._vmd_import_refresh_suspended = False
+        self._current_import_live_rig_target = False
 
         # runtime bake: 静的チャンネル判定の閾値。ワールド行列→ローカル分解で乗る
         # 浮動小数ジッタを吸収し、これ未満しか動かないチャンネルはキーを打たず
@@ -248,24 +233,36 @@ class VmdConverter:
                 anim_layer_selection = self._capture_anim_layer_selection()
 
             # 名前マッピングの構築（ボーン名 → Maya joint）
-            self._build_name_mappings(target_namespace)
+            with vmd_profile.scope("name_mapping_build"):
+                self._build_name_mappings(target_namespace)
             _emit_progress(40)
-            if clear_existing_motion:
+            motion_kind = self._detect_vmd_motion_kind(vmd_data)
+            if clear_existing_motion and motion_kind in {"model", "mixed"}:
                 self._clear_existing_motion(layer_name, target_namespace)
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
-            self.logger.info(f"Detected VMD motion kind: {self._detect_vmd_motion_kind(vmd_data)}")
+            self.logger.info(f"Detected VMD motion kind: {motion_kind}")
 
             # タイムライン設定
-            self._setup_timeline(vmd_data)
+            with vmd_profile.scope("timeline_setup"):
+                self._setup_timeline(vmd_data)
             _emit_progress(48)
 
+            # Runtime final-pose bake writes absolute joint channels.  Additive
+            # animation layers can turn held rotation samples back into base
+            # values after the last VMD key, so bake mode keys the base attrs.
+            use_animation_layers_for_import = self.use_animation_layers and not bake_mode
+
             # アニメーションレイヤーの作成
-            if self.use_animation_layers:
-                self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
+            if use_animation_layers_for_import:
+                with vmd_profile.scope("anim_layer_create"):
+                    self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
+            else:
+                self.anim_layer = None
 
             live_rig_target = self._has_live_mmd_rig_for_runtime_target()
+            self._current_import_live_rig_target = live_rig_target
             if live_rig_target:
                 self._build_bone_hierarchy_and_order_maps()
                 self._build_runtime_bind_world_maps()
@@ -300,7 +297,8 @@ class VmdConverter:
 
                 if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
                     self.logger.info(f"Starting bone animation conversion (legacy): {len(vmd_data.bone_frames)} frames")
-                    bone_success = self._convert_bone_animation(vmd_data.bone_frames)
+                    with vmd_profile.scope("bone_animation_convert"):
+                        bone_success = self._convert_bone_animation(vmd_data.bone_frames)
                     if not bone_success:
                         self.logger.warning("Some errors occurred during bone animation conversion")
                 _emit_progress(72)
@@ -336,43 +334,17 @@ class VmdConverter:
             self.logger.error(f"Error occurred during VMD animation conversion: {str(e)}", exc_info=True)
             return False
         finally:
+            self._current_import_live_rig_target = False
             self._restore_anim_layer_selection(anim_layer_selection)
             self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
 
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
-        undo_was_enabled = True
-        refresh_suspended = False
-        try:
-            undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
-        except Exception:
-            undo_was_enabled = True
-        try:
-            cmds.undoInfo(stateWithoutFlush=False)
-        except Exception:
-            pass
-        try:
-            cmds.refresh(suspend=True)
-            refresh_suspended = True
-            self._vmd_import_refresh_suspended = True
-        except Exception:
-            refresh_suspended = False
-            self._vmd_import_refresh_suspended = False
-        return undo_was_enabled, refresh_suspended
+        return suspend_import_scene_updates(self)
 
     def _restore_import_scene_updates(self, undo_was_enabled: bool, refresh_suspended: bool) -> None:
         """Restore viewport refresh and undo state after VMD import."""
-        if refresh_suspended:
-            try:
-                cmds.refresh(suspend=False)
-            except Exception:
-                pass
-        self._vmd_import_refresh_suspended = False
-        if undo_was_enabled:
-            try:
-                cmds.undoInfo(stateWithoutFlush=True)
-            except Exception:
-                pass
+        restore_import_scene_updates(self, undo_was_enabled, refresh_suspended)
 
     @staticmethod
     def _restore_import_timeline_state(current_time: Optional[float]) -> None:
@@ -402,22 +374,12 @@ class VmdConverter:
         clear_existing_motion(self, layer_name, target_namespace)
 
     def _clear_existing_camera_motion(self) -> None:
-        """既存の MMD カメラアニメーションキーを削除する。"""
-        clear_existing_camera_motion(logger=self.logger)
+        """既存のMMDカメラアニメーションキーを削除する。"""
+        clear_existing_camera_motion(self.logger)
 
     def _clear_existing_light_motion(self) -> None:
-        """既存の MMD ライトアニメーションキーを削除する。"""
-        clear_existing_light_motion(logger=self.logger)
-
-    @staticmethod
-    def _node_matches_target_namespace(node: str, target_namespace: Optional[str]) -> bool:
-        """target_namespace が指定されている場合、その namespace 内の node だけを対象にする。"""
-        return node_matches_target_namespace(node, target_namespace)
-
-    @staticmethod
-    def _cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
-        """存在する attr の key を削除し、削除を試みた attr 数を返す。"""
-        return cut_keyable_attrs(node, attrs)
+        """既存のMMD照明アニメーションキーを削除する。"""
+        clear_existing_light_motion(self.logger)
 
     def _should_use_mmd_runtime_bake(
         self,
@@ -449,10 +411,6 @@ class VmdConverter:
     ) -> Tuple[bytes, bytes, str]:
         """明示指定がない runtime bake 入力を VMD/scene metadata から復元する。"""
         return resolve_runtime_bake_sources(self, vmd_data, vmd_bytes, pmx_bytes, pmx_path, target_namespace)
-
-    def _resolve_pmx_path_from_scene(self, target_namespace: str = None) -> Optional[str]:
-        """シーンの MMD model root に保存された PMX source path を探す。"""
-        return resolve_pmx_path_from_scene(self, target_namespace)
 
     def _convert_using_mmd_runtime(
         self,
@@ -560,23 +518,7 @@ class VmdConverter:
 
     def _get_animation_frame_range(self, vmd_data: VmdData):
         """VMDデータからアニメーションのフレーム範囲を取得"""
-        min_f = 0
-        max_f = 0
-        for frame_list in [
-            getattr(vmd_data, "bone_frames", []),
-            getattr(vmd_data, "morph_frames", []),
-            getattr(vmd_data, "camera_frames", []),
-            getattr(vmd_data, "light_frames", []),
-        ]:
-            for f in frame_list:
-                if hasattr(f, "frame_number"):
-                    fn = f.frame_number
-                elif isinstance(f, dict):
-                    fn = f.get("frame_number", 0)
-                else:
-                    fn = 0
-                max_f = max(max_f, fn)
-        return int(min_f), int(max_f)
+        return get_animation_frame_range(vmd_data)
 
     def _iter_runtime_bake_frame_samples(self, min_frame: int, max_frame: int) -> List[Tuple[float, float]]:
         """Return (Maya output time, VMD evaluation frame) samples for runtime bake."""
@@ -649,12 +591,6 @@ class VmdConverter:
     def _get_native_local_decompose_static_inputs(self, ordered_bone_indices: List[int]) -> Optional[Dict[str, list]]:
         """Return cached static inputs for native runtime local decomposition."""
         return get_native_local_decompose_static_inputs(self, ordered_bone_indices)
-
-    @staticmethod
-    def _extract_euler_from_matrix(m: om.MMatrix, rotate_order: int) -> Tuple[float, float, float]:
-        """MMatrix から、指定した Maya rotateOrder (0=xyz ... 5=zyx) に対応するオイラー角(度)を抽出。
-        """
-        return extract_euler_from_matrix(m, rotate_order)
 
     def _batch_create_and_key_curves(
         self,
@@ -729,20 +665,6 @@ class VmdConverter:
         return collect_append_info()
 
     @staticmethod
-    def _get_or_expand_runtime_channel(
-        ch_dict: Dict[str, Optional[om.MDoubleArray]],
-        st_dict: Dict[str, dict],
-        attr: str,
-        n_frames: int,
-    ) -> Optional[om.MDoubleArray]:
-        return get_or_expand_runtime_channel(ch_dict, st_dict, attr, n_frames)
-
-    @staticmethod
-    def _joint_orient_quat_from_joint(joint: str) -> om.MQuaternion:
-        """Return jointOrient as a quaternion, or identity when unavailable."""
-        return joint_orient_quat_from_joint(joint)
-
-    @staticmethod
     def _decompose_append_own_rotation(
         target_rx: om.MDoubleArray,
         target_ry: om.MDoubleArray,
@@ -751,8 +673,8 @@ class VmdConverter:
         source_ry: om.MDoubleArray,
         source_rz: om.MDoubleArray,
         ratio: float,
-        target_joint_orient: om.MQuaternion | None = None,
-        source_joint_orient: om.MQuaternion | None = None,
+        target_joint_orient: Optional[om.MQuaternion] = None,
+        source_joint_orient: Optional[om.MQuaternion] = None,
         source_rotation_is_mmd: bool = False,
     ):
         """bake の final rotation から grant 寄与を除去し、bone own rotation を計算。"""
@@ -873,15 +795,6 @@ class VmdConverter:
             disable_solver,
         )
 
-    def _apply_runtime_cache_to_scene(
-        self, runtime_cache: List[dict], pmx_morph_names: List[str]
-    ):
-        """キャッシュ済みフレームデータから、ジョイントの translate/rotate を API 2.0 で一括キーイング。
-
-        モーフは既存パスで後処理（評価ループ外）。これにより内側ループの cmds.xform/setKeyframe を排除。
-        """
-        apply_runtime_cache_to_scene(self, runtime_cache, pmx_morph_names)
-
     def _scale_motion_translate_from_bind(
         self,
         joint: str,
@@ -957,34 +870,9 @@ class VmdConverter:
         """
         return has_live_mmd_rig_for_runtime_target(self.logger)
 
-    @classmethod
-    def _native_ik_handle_targets_mapped_joint(cls, handle: str, mapped_joints: set[str]) -> bool:
-        return native_ik_handle_targets_mapped_joint(handle, mapped_joints, cls._native_ik_handle_link_joints)
-
     def _restore_joints_to_bind_pose_for_runtime_bake(self) -> None:
         """live rig出力切断後に残った値を消し、runtime bake用のbind姿勢へ戻す。"""
         restore_joints_to_bind_pose_for_runtime_bake(self)
-
-    def _runtime_bake_mapped_joint_names(self) -> set[str]:
-        return runtime_bake_mapped_joint_names(self.bone_name_mapping)
-
-    @classmethod
-    def _node_has_mapped_destination(
-        cls,
-        node: str,
-        attrs: Tuple[str, ...] | None,
-        mapped_joints: set[str],
-    ) -> bool:
-        return node_has_mapped_destination(node, attrs, mapped_joints)
-
-    @staticmethod
-    def _node_name_in_set(node: str, names: set[str]) -> bool:
-        return node_name_in_set(node, names)
-
-    @staticmethod
-    def _disconnect_node_output_connections(node: str, attrs: Tuple[str, ...]) -> int:
-        return disconnect_node_output_connections(node, attrs)
-
 
     def _add_objects_to_layer(self, objects: List[str]):
         """オブジェクトをアニメーションレイヤーに追加
@@ -1006,16 +894,7 @@ class VmdConverter:
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
-        self.logger.info("Recording initial bone positions")
-
-        for vmd_bone_name, maya_joint in self.bone_name_mapping.items():
-            try:
-                # 現在のtranslate値を取得（これがバインドポーズ）
-                translate = cmds.getAttr(f"{maya_joint}.translate")[0]
-                self._bone_bind_poses[vmd_bone_name] = translate
-                store_bind_translate(maya_joint, translate)
-            except Exception as e:
-                self.logger.warning(f"Failed to get bind pose for {vmd_bone_name}: {str(e)}")
+        record_bind_poses(self)
 
     def _setup_timeline(self, vmd_data: VmdData):
         """タイムラインの設定
@@ -1046,10 +925,6 @@ class VmdConverter:
             inputRotate にキーイングするときのインデックスとして使う。
         """
         return collect_ik_link_joints()
-
-    @staticmethod
-    def _native_ik_handle_link_joints(handle: str) -> List[str]:
-        return native_ik_handle_link_joints(handle)
 
     @staticmethod
     def _node_namespace(node: str) -> str:
@@ -1100,23 +975,9 @@ class VmdConverter:
         return parse_vmd_camera_interpolation(interpolation_bytes)
 
     @staticmethod
-    def _is_linear_vmd_interp(points: Tuple[float, float, float, float]) -> bool:
-        """VMD Bezier 制御点が線形指定かどうかを判定する。"""
-        return is_linear_vmd_interp(points)
-
-    @staticmethod
     def _get_frame_number(frame) -> float:
         """VMD frame object / dict から frame_number を取得する。"""
         return get_frame_number(frame)
-
-    @staticmethod
-    def _get_frame_interpolation(frame):
-        """VMD frame object / dict から interpolation bytes を取得する。"""
-        return get_frame_interpolation(frame)
-
-    def _query_key_value(self, plug: str, frame_number: float) -> Optional[float]:
-        """指定 plug/frame のキー値を取得する。取得できない場合は None。"""
-        return query_key_value(self.logger, plug, frame_number)
 
     def _apply_vmd_bezier_tangents(
         self,
@@ -1127,14 +988,15 @@ class VmdConverter:
         interpolation_parser=None,
     ):
         """VMD Bezier 補間を Maya weighted tangent として適用する。"""
-        apply_vmd_bezier_tangents(
-            self,
-            joint,
-            frames,
-            attrs,
-            channel_interp_map,
-            interpolation_parser=interpolation_parser,
-        )
+        with vmd_profile.scope("tangent_application", count=max(len(frames) - 1, 0)):
+            apply_vmd_bezier_tangents(
+                self,
+                joint,
+                frames,
+                attrs,
+                channel_interp_map,
+                interpolation_parser=interpolation_parser,
+            )
 
     def _set_bone_keyframes(self, joint: str, frames: List, vmd_bone_name: str, key_route: Optional[dict] = None):
         """ボーンのキーフレームを設定
@@ -1154,15 +1016,6 @@ class VmdConverter:
     def _convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw):
         """VMD quaternion を Maya joint.rotate の Euler 角（度）へ変換する。"""
         return convert_vmd_quat_to_joint_rotate(self, joint_name, qx, qy, qz, qw)
-
-    def _convert_vmd_quat_to_bind_space_rotate(
-        self,
-        joint_name: str,
-        q_maya: om.MQuaternion,
-        q_jo: Optional[om.MQuaternion],
-    ) -> om.MQuaternion:
-        """Convert a sparse VMD local rotation into this joint's JO-aware rotate space."""
-        return convert_vmd_quat_to_bind_space_rotate(self, joint_name, q_maya, q_jo)
 
     def get_failed_bones(self) -> set:
         """変換に失敗したボーン名のセットを取得
@@ -1212,10 +1065,6 @@ class VmdConverter:
         """VMD内容から大まかなモーション種別を判定する。"""
         return detect_vmd_motion_kind(vmd_data)
 
-    def _viewing_angle_to_focal_length(self, camera_shape: str, viewing_angle: float) -> float:
-        """VMD viewing_angle(deg) を Maya camera focalLength(mm) に変換する。"""
-        return viewing_angle_to_focal_length(camera_shape, viewing_angle)
-
     def _convert_light_animation(self, light_frames: List, vmd_bytes: bytes = None) -> bool:
         """照明アニメーションを変換
 
@@ -1248,34 +1097,6 @@ class VmdConverter:
     def _iter_morph_mappings(mapping_entry):
         return iter_morph_mappings(mapping_entry)
 
-    def _register_morph_mapping(self, morph_name: str, mapping: Tuple[str, str, str]) -> None:
-        register_morph_mapping(self, morph_name, mapping)
-
-    def _read_blendshape_morph_names(self, blend_shape_node: str) -> Dict[int, str]:
-        """blendShape に保存された weight index → 生モーフ名 (PmxMorph.name) を読み出す。
-
-        import 時に MorphConverter が保存した権威マップ。lossy な alias 逆引きに頼らず、
-        VMD/PMX が参照する生名で正確にマッピングするために使う。
-        """
-        return read_blendshape_morph_names(blend_shape_node)
-
     def _build_morph_mappings(self):
         """シーン内のblendShapeとmetadata networkからモーフ名マッピングを構築"""
         build_morph_mappings(self)
-
-    def _get_original_morph_name_candidates(self, alias: str) -> List[str]:
-        """Maya aliasからVMD/PMX側の元モーフ名候補を取得する。
-
-        PMX import では日本語名を Maya 安全なASCII aliasへ変換する一方、
-        VMD morph frame は日本語名のまま来る。そのため alias と辞書逆引き名の
-        両方を mapping key として登録する。
-        """
-        return get_original_morph_name_candidates(alias)
-
-    def _set_scene_fps(self, fps: float):
-        """シーンのFPSを設定
-
-        Args:
-            fps: 設定するFPS値
-        """
-        set_scene_fps(fps, self.logger)

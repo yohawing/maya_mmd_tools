@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaAnim as oma
 
 import mmd_tools.converters.vmd_converter as vmd_converter_module
 import mmd_tools.converters.vmd_camera_animation as vmd_camera_animation_module
@@ -25,6 +26,7 @@ from mmd_tools.converters.vmd_camera_animation import (
     maya_camera_up_from_vmd_state,
     parse_vmd_camera_interpolation,
 )
+from mmd_tools.converters.vmd_bone_interpolation import parse_vmd_interpolation
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.converters.vmd_runtime_cache_collect import collect_runtime_bake_cache
 from mmd_tools.converters.vmd_runtime_scene_apply import apply_runtime_channel_arrays_to_scene_with_undo_disabled
@@ -188,6 +190,30 @@ class TestVmdConverter(MayaTestBase):
 
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0, places=4)
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), rest_tx, places=4)
+
+    def test_clear_existing_motion_does_not_clear_camera_or_light_keys(self):
+        """clear_existing_motion はモデル motion だけを対象にし、camera/light key は残す。"""
+        camera = self.converter._get_or_create_camera()
+        camera_shape = cmds.listRelatives(camera, shapes=True, type="camera")[0]
+        light = self.converter._get_or_create_light()
+        light_shape = cmds.listRelatives(light, shapes=True, type="directionalLight")[0]
+
+        cmds.setKeyframe(camera, attribute="translateX", time=2, value=4.0)
+        cmds.setKeyframe(camera_shape, attribute="focalLength", time=2, value=35.0)
+        cmds.setKeyframe(light, attribute="rotateX", time=2, value=10.0)
+        cmds.setKeyframe(light_shape, attribute="colorR", time=2, value=0.25)
+
+        self.converter.bone_name_mapping = {}
+        self.converter.morph_name_mapping = {}
+        layer = cmds.animLayer("VMD_Motion_model_only_clear_test", override=False, weight=1.0)
+
+        self.converter._clear_existing_motion(layer, target_namespace=None)
+
+        self.assertEqual(cmds.keyframe(camera, attribute="translateX", query=True, timeChange=True), [2.0])
+        self.assertEqual(cmds.keyframe(camera_shape, attribute="focalLength", query=True, timeChange=True), [2.0])
+        self.assertEqual(cmds.keyframe(light, attribute="rotateX", query=True, timeChange=True), [2.0])
+        self.assertEqual(cmds.keyframe(light_shape, attribute="colorR", query=True, timeChange=True), [2.0])
+        self.assertFalse(cmds.objExists(layer))
 
     def test_convert_clear_existing_motion_replaces_previous_bone_keys(self):
         """clear ON の再 import は古いキーを残さず新しい VMD キーだけにする。"""
@@ -879,6 +905,84 @@ class TestVmdConverter(MayaTestBase):
         convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=b"vmd")
         convert_light.assert_called_once_with(vmd_data.light_frames, vmd_bytes=b"vmd")
 
+    def test_convert_clears_camera_and_light_before_scene_motion_conversion(self):
+        """camera/light frame がある場合だけ、各変換直前に専用 key clear を実行する。"""
+        frame = type("FrameStub", (), {"frame_number": 1})()
+        vmd_data = type("FakeVmdData", (), {})()
+        vmd_data.bone_frames = []
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = [frame]
+        vmd_data.light_frames = [frame]
+
+        order = []
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=False))
+            stack.enter_context(patch.object(self.converter, "_clear_existing_camera_motion", side_effect=lambda: order.append("clear_camera")))
+            stack.enter_context(
+                patch.object(
+                    self.converter,
+                    "_convert_camera_animation",
+                    side_effect=lambda *_args, **_kwargs: order.append("convert_camera") or True,
+                )
+            )
+            stack.enter_context(patch.object(self.converter, "_clear_existing_light_motion", side_effect=lambda: order.append("clear_light")))
+            stack.enter_context(
+                patch.object(
+                    self.converter,
+                    "_convert_light_animation",
+                    side_effect=lambda *_args, **_kwargs: order.append("convert_light") or True,
+                )
+            )
+            result = self.converter.convert(vmd_data)
+
+        self.assertTrue(result)
+        self.assertEqual(order, ["clear_camera", "convert_camera", "clear_light", "convert_light"])
+
+    def test_convert_clear_existing_motion_does_not_clear_model_keys_for_camera_only_vmd(self):
+        """camera-only VMD では clear_existing_motion ON でもモデル motion clear を走らせない。"""
+        frame = type("FrameStub", (), {"frame_number": 1})()
+        vmd_data = type("FakeVmdData", (), {})()
+        vmd_data.bone_frames = []
+        vmd_data.morph_frames = []
+        vmd_data.ik_show_hide_frames = []
+        vmd_data.camera_frames = [frame]
+        vmd_data.light_frames = []
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=False))
+            model_clear = stack.enter_context(patch.object(self.converter, "_clear_existing_motion"))
+            camera_clear = stack.enter_context(patch.object(self.converter, "_clear_existing_camera_motion"))
+            stack.enter_context(patch.object(self.converter, "_convert_camera_animation", return_value=True))
+            result = self.converter.convert(vmd_data, clear_existing_motion=True)
+
+        self.assertTrue(result)
+        model_clear.assert_not_called()
+        camera_clear.assert_called_once()
+
+    def test_convert_does_not_clear_missing_camera_or_light_channels(self):
+        """camera/light frame が無い場合は専用 clear も変換も実行しない。"""
+        vmd_data = type("FakeVmdData", (), {})()
+        vmd_data.bone_frames = []
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = []
+        vmd_data.light_frames = []
+
+        with ExitStack() as stack:
+            clear_camera = stack.enter_context(patch.object(self.converter, "_clear_existing_camera_motion"))
+            convert_camera = stack.enter_context(
+                patch.object(self.converter, "_convert_camera_animation", return_value=True)
+            )
+            clear_light = stack.enter_context(patch.object(self.converter, "_clear_existing_light_motion"))
+            convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
+            result = self.converter.convert(vmd_data)
+
+        self.assertTrue(result)
+        clear_camera.assert_not_called()
+        convert_camera.assert_not_called()
+        clear_light.assert_not_called()
+        convert_light.assert_not_called()
+
     def test_convert_suppresses_undo_and_refresh_for_full_import(self):
         """VMD import 全体で undo 記録と viewport refresh を抑制して復元する。"""
         vmd_data = type("FakeVmdData", (), {})()
@@ -921,14 +1025,18 @@ class TestVmdConverter(MayaTestBase):
         self.converter.import_light_animation = False
 
         with ExitStack() as stack:
+            clear_camera = stack.enter_context(patch.object(self.converter, "_clear_existing_camera_motion"))
             convert_camera = stack.enter_context(
                 patch.object(self.converter, "_convert_camera_animation", return_value=True)
             )
+            clear_light = stack.enter_context(patch.object(self.converter, "_clear_existing_light_motion"))
             convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
             result = self.converter.convert(vmd_data)
 
         self.assertTrue(result)
+        clear_camera.assert_not_called()
         convert_camera.assert_not_called()
+        clear_light.assert_not_called()
         convert_light.assert_not_called()
 
     def test_motion_scale_affects_camera_translate_and_distance_only(self):
@@ -1068,10 +1176,174 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(self.converter._detect_vmd_motion_kind(fake(bone_frames=[object()])), "model")
         self.assertEqual(self.converter._detect_vmd_motion_kind(fake(camera_frames=[object()])), "camera")
         self.assertEqual(self.converter._detect_vmd_motion_kind(fake(light_frames=[object()])), "light")
+        self.assertEqual(self.converter._detect_vmd_motion_kind(fake(ik_show_hide_frames=[object()])), "model")
         self.assertEqual(
             self.converter._detect_vmd_motion_kind(fake(bone_frames=[object()], camera_frames=[object()])),
             "mixed",
         )
+
+    @staticmethod
+    def _bone_interp_bytes_by_channel(**overrides):
+        """Build VMD bone interpolation bytes from per-channel control points."""
+        default_points = (20, 20, 107, 107)
+        channels = ("translate_x", "translate_y", "translate_z", "rotation")
+        points_by_channel = {channel: overrides.get(channel, default_points) for channel in channels}
+        data = bytearray(64)
+        for index, channel in enumerate(channels):
+            x1, y1, x2, y2 = points_by_channel[channel]
+            data[index] = x1
+            data[4 + index] = y1
+            data[8 + index] = x2
+            data[12 + index] = y2
+        return bytes(data)
+
+    def test_bone_bezier_tangents_use_api_on_animation_layer(self):
+        """大量 model VMD の tangent 適用で cmds.keyTangent hot path に落ちない。"""
+        from mmd_tools.converters import vmd_bezier_tangent
+        from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+
+        joint = cmds.joint(name="api_tangent_center")
+        self.converter.bone_name_mapping = {"センター": joint}
+        self.converter._bone_bind_poses = {"センター": (0.0, 0.0, 0.0)}
+        self.converter.anim_layer = cmds.animLayer("api_tangent_layer", override=False, weight=1.0)
+        frame0 = VmdBoneFrame()
+        frame0.bone_name = "センター"
+        frame0.frame_number = 0
+        frame0.position = (0.0, 0.0, 0.0)
+        frame0.rotation = (0.0, 0.0, 0.0, 1.0)
+        frame1 = VmdBoneFrame()
+        frame1.bone_name = "センター"
+        frame1.frame_number = 10
+        frame1.position = (10.0, 0.0, 0.0)
+        frame1.rotation = (0.0, 0.0, 0.0, 1.0)
+        frame1.interpolation = self._bone_interp_bytes_by_channel(translate_x=(20, 100, 100, 20))
+
+        with patch.object(vmd_bezier_tangent.cmds, "keyTangent", side_effect=AssertionError("cmds tangent path")):
+            self.converter._set_bone_keyframes(joint, [frame0, frame1], "センター")
+
+        out_type = cmds.keyTangent(
+            f"{joint}.translateX",
+            query=True,
+            time=(0, 0),
+            outTangentType=True,
+        )
+        self.assertEqual(out_type, ["fixed"])
+
+    def test_parse_vmd_bone_interpolation_uses_bone_channel_layout(self):
+        """bone interpolation は VMD の 4 channel x 4 byte layout で読む。"""
+        data = self._bone_interp_bytes_by_channel(
+            translate_x=(20, 100, 100, 20),
+            translate_y=(30, 40, 90, 110),
+            translate_z=(10, 80, 120, 30),
+            rotation=(64, 20, 100, 90),
+        )
+
+        parsed = self.converter._parse_vmd_interpolation(data)
+        self.assertEqual(parsed, parse_vmd_interpolation(data))
+        self.assertAlmostEqual(parsed["translate_x"][0], 20 / 127)
+        self.assertAlmostEqual(parsed["translate_x"][1], 100 / 127)
+        self.assertAlmostEqual(parsed["translate_y"][0], 30 / 127)
+        self.assertAlmostEqual(parsed["translate_y"][1], 40 / 127)
+        self.assertAlmostEqual(parsed["translate_z"][2], 120 / 127)
+        self.assertAlmostEqual(parsed["rotation"][3], 90 / 127)
+
+    def test_bone_interpolation_fixture_matches_mmd_anim_midframe_oracle(self):
+        """Rig import 後の中間フレーム translate が mmd-anim oracle と大きくズレない。"""
+        from mmd_tools.core.native.mmd_anim_runtime import (
+            MmdRuntimeClip,
+            MmdRuntimeInstance,
+            MmdRuntimeModel,
+            is_mmd_runtime_available,
+        )
+
+        if not is_mmd_runtime_available():
+            self.skipTest("mmd-anim native runtime is unavailable")
+
+        pmx_path = self.fixture_provider.get_pmx_file("mmt_test_model")
+        vmd_path = self.fixture_provider.get_vmd_file("bone_interp_ease_center")
+        oracle_x = self._mmd_anim_oracle_world_x(
+            pmx_path,
+            vmd_path,
+            bone_index=2,
+            frame=5.0,
+            runtime_model_cls=MmdRuntimeModel,
+            runtime_clip_cls=MmdRuntimeClip,
+            runtime_instance_cls=MmdRuntimeInstance,
+        )
+
+        root = import_mmd_file(
+            pmx_path,
+            options={"setup_rig": True, "setup_bone_orientation": True},
+        )
+        self.assertIsNotNone(root, "PMX import failed")
+        self.assertTrue(
+            import_mmd_file(vmd_path, options={"target_model": root, "pmx_path": pmx_path}),
+            "VMD import failed",
+        )
+
+        center_joint = self._find_joint_by_mmd_bone_name("センター")
+        self.assertIsNotNone(center_joint, "センター joint が見つかりません")
+        cmds.currentTime(5, edit=True)
+        cmds.refresh(force=True)
+        maya_x = float(cmds.xform(center_joint, query=True, worldSpace=True, translation=True)[0])
+
+        self.assertGreater(abs(oracle_x - 5.0), 0.25, "fixture must use non-linear interpolation")
+        self.assertAlmostEqual(maya_x, oracle_x, delta=0.15)
+
+    @staticmethod
+    def _find_joint_by_mmd_bone_name(bone_name: str):
+        for joint in cmds.ls(type="joint") or []:
+            if not cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
+                continue
+            if cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}") == bone_name:
+                return joint
+        return None
+
+    def _mmd_anim_oracle_world_x(
+        self,
+        pmx_path,
+        vmd_path,
+        *,
+        bone_index: int,
+        frame: float,
+        runtime_model_cls,
+        runtime_clip_cls,
+        runtime_instance_cls,
+    ) -> float:
+        """Return mmd-anim runtime world X converted to Maya coordinates."""
+        with open(pmx_path, "rb") as file:
+            pmx_bytes = file.read()
+        with open(vmd_path, "rb") as file:
+            vmd_bytes = file.read()
+
+        model = runtime_model_cls.from_pmx_bytes(pmx_bytes)
+        if model is None:
+            self.skipTest("mmd-anim runtime could not create model")
+        clip = None
+        instance = None
+        try:
+            clip = runtime_clip_cls.from_vmd_bytes_for_model(model, vmd_bytes)
+            if clip is None:
+                self.skipTest("mmd-anim runtime could not create VMD clip")
+            instance = runtime_instance_cls.for_model(model)
+            if instance is None:
+                self.skipTest("mmd-anim runtime could not create instance")
+            if not instance.evaluate_clip_frame(clip, float(frame)):
+                self.fail(f"mmd-anim runtime evaluate_clip_frame({frame}) failed")
+            world_matrices = instance.get_world_matrices() or []
+            if bone_index >= len(world_matrices):
+                self.fail(f"mmd-anim runtime did not return bone index {bone_index}")
+            maya_matrix = om.MMatrix(
+                self.converter._convert_mmd_world_matrix_to_maya(list(world_matrices[bone_index]))
+            )
+            pos = om.MTransformationMatrix(maya_matrix).translation(om.MSpace.kWorld)
+            return float(pos.x)
+        finally:
+            if instance is not None:
+                instance.free()
+            if clip is not None:
+                clip.free()
+            model.free()
 
     def test_convert_light_animation(self):
         """照明アニメーション変換テスト — color に加えて rotateX/Y/Z の keyframe が作成される"""
@@ -1229,6 +1501,26 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{controller}.mmd_light_colorR"), 0.25, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{controller}.mmd_light_colorG"), 0.5, places=6)
         self.assertAlmostEqual(cmds.getAttr(f"{controller}.mmd_light_colorB"), 0.75, places=6)
+
+    def test_clear_existing_light_motion_clears_controller_and_shape_color_keys(self):
+        """PMX 由来 controller と legacy directionalLight shape の色 key を両方消す。"""
+        from mmd_tools.converters.light_converter import create_mmd_light_controller
+
+        controller = create_mmd_light_controller()
+        light_shape = cmds.listRelatives(controller, shapes=True, type="directionalLight")[0]
+
+        for source_plug in cmds.listConnections(f"{light_shape}.color", source=True, destination=False, plugs=True) or []:
+            cmds.disconnectAttr(source_plug, f"{light_shape}.color")
+
+        cmds.setKeyframe(controller, attribute="rotateX", time=3, value=20.0)
+        cmds.setKeyframe(controller, attribute="mmd_light_colorR", time=3, value=0.4)
+        cmds.setKeyframe(light_shape, attribute="colorR", time=3, value=0.8)
+
+        self.converter._clear_existing_light_motion()
+
+        self.assertIsNone(cmds.keyframe(controller, attribute="rotateX", query=True, timeChange=True))
+        self.assertIsNone(cmds.keyframe(controller, attribute="mmd_light_colorR", query=True, timeChange=True))
+        self.assertIsNone(cmds.keyframe(light_shape, attribute="colorR", query=True, timeChange=True))
 
     def test_convert_light_animation_via_convert(self):
         """convert() が light_frames を持つ VMD で _convert_light_animation を呼ぶことを確認"""
@@ -1624,6 +1916,112 @@ class TestVmdConverter(MayaTestBase):
         self.assertTrue(result)
         self.assertEqual(FakeInstance.last.per_frame_calls, [0.0, 0.5, 1.0, 1.5, 2.0])
         self.assertEqual(apply_calls[0], [0.0, 1.0, 2.0, 3.0, 4.0])
+
+    def test_runtime_bake_with_joint_map_uses_channel_cache_pipeline(self):
+        """通常 PMX runtime bake は joint map があっても direct world bake に入らない。"""
+        class Frame:
+            frame_number = 2
+
+        class VmdDataLike:
+            bone_frames = [Frame()]
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeInstance:
+            @classmethod
+            def for_model(cls, _model):
+                return cls()
+
+            def evaluate_clip_frame(self, *_args, **_kwargs):
+                raise AssertionError("direct world bake should not evaluate frames here")
+
+            def get_world_matrices(self):
+                raise AssertionError("direct world bake should not read world matrices")
+
+            def free(self):
+                pass
+
+        runtime_cache = SimpleNamespace(
+            baked_frames=[0.0, 1.0, 2.0, 3.0, 4.0],
+            bake_times=object(),
+            joint_channel_values={"runtime_cache_joint": {}},
+            joint_channel_static={"runtime_cache_joint": {}},
+            morph_cache=[(0.0, [])],
+            batch_mode=True,
+            eval_elapsed=0.01,
+            eval_copy_elapsed=0.0,
+            batch_unpack_elapsed=0.0,
+            local_elapsed=0.0,
+            append_elapsed=0.0,
+        )
+
+        self.converter.motion_scale = 2.0
+        self.converter.bone_index_to_joint = {0: "runtime_cache_joint"}
+        self.converter.bone_name_to_index = {"センター": 0}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
+            self.converter,
+            "_disable_mmd_rig_constraints_for_runtime_bake",
+        ), patch.object(
+            self.converter,
+            "_restore_joints_to_bind_pose_for_runtime_bake",
+        ), patch.object(
+            self.converter,
+            "_build_runtime_bind_world_maps",
+        ) as build_bind_maps, patch.object(
+            self.converter,
+            "_bake_bone_poses_from_world_matrices",
+            side_effect=AssertionError("direct world bake helper should not be called"),
+        ) as direct_bake, patch.object(
+            vmd_converter_module,
+            "collect_runtime_bake_cache",
+            return_value=runtime_cache,
+        ) as collect_cache, patch.object(
+            vmd_converter_module,
+            "apply_runtime_channel_arrays_to_scene_with_undo_disabled",
+        ) as apply_cache:
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                pmx_path="",
+            )
+
+        self.assertTrue(result)
+        build_bind_maps.assert_called_once_with()
+        direct_bake.assert_not_called()
+        collect_cache.assert_called_once()
+        self.assertEqual(collect_cache.call_args.args[0], self.converter)
+        self.assertEqual(collect_cache.call_args.args[3], [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
+        apply_cache.assert_called_once_with(
+            self.converter,
+            runtime_cache.joint_channel_values,
+            runtime_cache.joint_channel_static,
+            runtime_cache.bake_times,
+            runtime_cache.baked_frames,
+            runtime_cache.morph_cache,
+            [],
+        )
 
     def test_should_use_mmd_runtime_bake_accepts_bake_pmx_rejects_pmd(self):
         """Bake mode は PMX 入力で runtime bake を使い、PMD 入力では無効"""
@@ -2644,6 +3042,310 @@ class TestVmdConverter(MayaTestBase):
 
         cmds.delete(joint)
 
+    def test_bone_animation_keying_error_propagates(self):
+        """API keying failure is not swallowed as a missing-bone conversion error."""
+        from mmd_tools.converters import vmd_scene_keying
+
+        joint = cmds.joint(name="bone_keying_error_joint")
+        cmds.select(clear=True)
+        self.converter.set_bone_name_mapping({"センター": joint})
+        frame = self._make_bone_frame("センター", 0, (0.0, 0.0, 0.0))
+        error = vmd_scene_keying.VmdKeyingError("forced keying failure")
+
+        with patch.object(self.converter, "_set_bone_keyframes", side_effect=error):
+            with self.assertRaises(vmd_scene_keying.VmdKeyingError):
+                self.converter._convert_bone_animation([frame])
+
+        self.assertNotIn("センター", self.converter._failed_bones)
+        cmds.delete(joint)
+
+    def test_live_rig_anim_layer_simple_path_uses_batch_keying(self):
+        """live rig 対象の sparse import でも per-frame setKeyframe に戻さない。"""
+        joint = cmds.joint(name="legacy_layer_live_rig_joint")
+        cmds.setAttr(f"{joint}.translateX", 10.0)
+        cmds.select(clear=True)
+        cmds.currentTime(100, edit=True)
+
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = cmds.animLayer("legacy_bone_live_rig_layer", override=False, weight=1.0)
+        self.converter._current_import_live_rig_target = True
+        self.converter.set_bone_name_mapping({"センター": joint})
+        self.converter._bone_bind_poses["センター"] = (10.0, 0.0, 0.0)
+        frames = [
+            self._make_bone_frame("センター", 0, (0.0, 0.0, 0.0)),
+            self._make_bone_frame("センター", 5, (2.0, 0.0, 0.0)),
+        ]
+
+        with patch.object(
+            self.converter,
+            "_batch_key_scalar_channels",
+            wraps=self.converter._batch_key_scalar_channels,
+        ) as batch_key, patch(
+            "mmd_tools.converters.vmd_scene_keying.cmds.setKeyframe",
+            wraps=cmds.setKeyframe,
+        ) as set_keyframe:
+            self.assertTrue(self.converter._convert_bone_animation(frames))
+
+        joint_batch_calls = [call for call in batch_key.call_args_list if call.args[0] == joint]
+        self.assertEqual(len(joint_batch_calls), 1)
+        self.assertEqual(joint_batch_calls[0].kwargs.get("animation_layer"), self.converter.anim_layer)
+        self.assertLessEqual(set_keyframe.call_count, 6)
+
+        layer_attrs = cmds.animLayer(self.converter.anim_layer, query=True, attribute=True) or []
+        self.assertIn(f"{joint}.translateX", layer_attrs)
+        self.assertEqual(cmds.currentTime(query=True), 100.0)
+        cmds.currentTime(5, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 12.0, places=6)
+
+        cmds.delete(joint)
+
+    def test_convert_exposes_live_rig_target_during_sparse_import_only(self):
+        """convert 中の live rig 判定は legacy bone keying 中だけ状態として見える。"""
+        frame = self._make_bone_frame("センター", 0, (0.0, 0.0, 0.0))
+        vmd_data = type("FakeVmdData", (), {})()
+        vmd_data.bone_frames = [frame]
+        vmd_data.morph_frames = []
+        vmd_data.camera_frames = []
+        vmd_data.light_frames = []
+        vmd_data.ik_show_hide_frames = []
+
+        def assert_live_flag(_frames):
+            self.assertTrue(self.converter._current_import_live_rig_target)
+            return True
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_has_live_mmd_rig_for_runtime_target", return_value=True))
+            stack.enter_context(patch.object(self.converter, "_build_bone_hierarchy_and_order_maps"))
+            stack.enter_context(patch.object(self.converter, "_build_runtime_bind_world_maps"))
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=False))
+            stack.enter_context(patch.object(self.converter, "_apply_ik_enabled_animation"))
+            stack.enter_context(patch.object(self.converter, "_convert_bone_animation", side_effect=assert_live_flag))
+
+            self.assertTrue(self.converter.convert(vmd_data))
+
+        self.assertFalse(self.converter._current_import_live_rig_target)
+
+    def test_batch_key_scalar_channels_anim_layer_rotate_uses_api_delta_units(self):
+        """animLayer rotate の batch key は degree delta を API curve の radian 値へ変換する。"""
+        joint = cmds.joint(name="scalar_layer_rotate_joint")
+        cmds.setAttr(f"{joint}.rotate", 30.0, -20.0, 5.0, type="double3")
+        cmds.currentTime(100, edit=True)
+        layer = cmds.animLayer("scalar_layer_rotate_api_layer", override=False, weight=1.0)
+
+        self.assertTrue(
+            self.converter._batch_key_scalar_channels(
+                joint,
+                {
+                    "rotateX": [(0.0, 0.0), (5.0, 15.0)],
+                    "rotateY": [(0.0, 0.0), (5.0, -10.0)],
+                    "rotateZ": [(0.0, 0.0), (5.0, 25.0)],
+                },
+                animation_layer=layer,
+            )
+        )
+
+        layer_attrs = cmds.animLayer(layer, query=True, attribute=True) or []
+        for attr in ("rotateX", "rotateY", "rotateZ"):
+            self.assertIn(f"{joint}.{attr}", layer_attrs)
+
+        rotate_curves = {}
+        layer_curves = set(cmds.animLayer(layer, query=True, animCurves=True) or [])
+        blend_nodes = cmds.listConnections(f"{joint}.rotateX", source=True, destination=False) or []
+        self.assertTrue(blend_nodes)
+        blend_node = blend_nodes[0]
+        for attr, input_attr in {
+            "rotateX": "inputBX",
+            "rotateY": "inputBY",
+            "rotateZ": "inputBZ",
+        }.items():
+            for curve_name in cmds.listConnections(f"{blend_node}.{input_attr}", source=True, type="animCurve") or []:
+                if curve_name in layer_curves:
+                    selection = om.MSelectionList()
+                    selection.add(curve_name)
+                    rotate_curves[attr] = oma.MFnAnimCurve(selection.getDependNode(0))
+                    break
+
+        self.assertEqual(set(rotate_curves), {"rotateX", "rotateY", "rotateZ"})
+        for attr, expected_delta in {"rotateX": 15.0, "rotateY": -10.0, "rotateZ": 25.0}.items():
+            rotate_curve = rotate_curves[attr]
+            self.assertEqual(
+                [rotate_curve.input(index).value for index in range(rotate_curve.numKeys)],
+                [0.0, 5.0],
+            )
+            key_index = rotate_curve.find(om.MTime(5.0, om.MTime.uiUnit()))
+            self.assertGreaterEqual(int(key_index), 0)
+            self.assertAlmostEqual(rotate_curve.value(int(key_index)), math.radians(expected_delta), places=6)
+        self.assertAlmostEqual(cmds.currentTime(query=True), 100.0, places=6)
+
+        cmds.currentTime(0, edit=True)
+        rx, ry, rz = cmds.getAttr(f"{joint}.rotate")[0]
+        self.assertAlmostEqual(rx, 30.0, places=6)
+        self.assertAlmostEqual(ry, -20.0, places=6)
+        self.assertAlmostEqual(rz, 5.0, places=6)
+        cmds.currentTime(5, edit=True)
+        rx, ry, rz = cmds.getAttr(f"{joint}.rotate")[0]
+        self.assertAlmostEqual(rx, 45.0, places=5)
+        self.assertAlmostEqual(ry, -30.0, places=5)
+        self.assertAlmostEqual(rz, 30.0, places=5)
+
+        cmds.delete(joint)
+
+    def test_batch_key_scalar_channels_anim_layer_rotate_xyz_uses_axis_curves(self):
+        """rotateY/Z keying は seed 済み rotateX curve を再利用しない。"""
+        joint = cmds.joint(name="scalar_layer_rotate_xyz_joint")
+        cmds.currentTime(100, edit=True)
+        layer = cmds.animLayer("scalar_layer_rotate_xyz_api_layer", override=False, weight=1.0)
+        self.converter.use_animation_layers = True
+        self.converter.anim_layer = layer
+        self.converter._add_attrs_to_anim_layer(joint, ["rotateX"])
+        cmds.setKeyframe(joint, attribute="rotateX", time=0.0, value=5.0, animLayer=layer)
+
+        self.assertTrue(
+            self.converter._batch_key_scalar_channels(
+                joint,
+                {
+                    "rotateY": [(0.0, 0.0), (5.0, 20.0)],
+                    "rotateZ": [(0.0, 0.0), (5.0, 30.0)],
+                },
+                animation_layer=layer,
+            )
+        )
+
+        blend_nodes = cmds.listConnections(f"{joint}.rotateX", source=True, destination=False) or []
+        self.assertTrue(blend_nodes)
+        blend_node = blend_nodes[0]
+        self.assertEqual(cmds.nodeType(blend_node), "animBlendNodeAdditiveRotation")
+        axis_curves = []
+        for input_attr in ("inputBX", "inputBY", "inputBZ"):
+            curves = cmds.listConnections(f"{blend_node}.{input_attr}", source=True, type="animCurve") or []
+            self.assertTrue(curves)
+            axis_curves.append(curves[0])
+        self.assertEqual(len(set(axis_curves)), 3)
+
+        self.assertAlmostEqual(cmds.currentTime(query=True), 100.0, places=6)
+        cmds.currentTime(5, edit=True)
+        rx, ry, rz = cmds.getAttr(f"{joint}.rotate")[0]
+        self.assertAlmostEqual(rx, 5.0, places=5)
+        self.assertAlmostEqual(ry, 20.0, places=5)
+        self.assertAlmostEqual(rz, 30.0, places=5)
+
+        cmds.delete(joint)
+
+    def test_batch_key_scalar_channels_anim_layer_api_path_does_not_build_fallback_base_values(self):
+        """API keying 成功時は fallback 用の per-key base 値を作らない。"""
+        from mmd_tools.converters import vmd_scene_keying
+
+        joint = cmds.joint(name="scalar_layer_no_fallback_base_joint")
+        cmds.setAttr(f"{joint}.translateX", 10.0)
+        layer = cmds.animLayer("scalar_layer_no_fallback_base_layer", override=False, weight=1.0)
+
+        with patch.object(vmd_scene_keying, "_base_ui_value_at_frame", side_effect=AssertionError):
+            self.assertTrue(
+                self.converter._batch_key_scalar_channels(
+                    joint,
+                    {"translateX": [(0.0, 5.0), (5.0, 2.0)]},
+                    animation_layer=layer,
+                )
+            )
+
+        cmds.currentTime(0, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 15.0, places=6)
+        cmds.currentTime(5, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 12.0, places=6)
+
+        cmds.delete(joint)
+
+    def test_batch_key_scalar_channels_anim_layer_failure_raises_without_fallback_opt_in(self):
+        """API keying 失敗時は env opt-in なしでは詳細付きで失敗する。"""
+        from mmd_tools.converters import vmd_scene_keying
+
+        joint = cmds.joint(name="scalar_layer_raise_no_fallback_joint")
+        cmds.setAttr(f"{joint}.translateX", 10.0)
+        layer = cmds.animLayer("scalar_layer_raise_no_fallback_layer", override=False, weight=1.0)
+
+        original_create = vmd_scene_keying._create_scalar_channel_curves
+
+        class FailingCurve:
+            def addKeys(self, *_args, **_kwargs):
+                raise RuntimeError("forced addKeys failure")
+
+        def create_failing_curves(*args, **kwargs):
+            real_curves = original_create(*args, **kwargs)
+            return {attr: FailingCurve() for attr in real_curves}
+
+        with patch.object(vmd_scene_keying, "_create_scalar_channel_curves", side_effect=create_failing_curves):
+            with self.assertRaises(vmd_scene_keying.VmdKeyingError) as raised:
+                self.converter._batch_key_scalar_channels(
+                    joint,
+                    {"translateX": [(0.0, 5.0), (5.0, 2.0)]},
+                    animation_layer=layer,
+                )
+
+        message = str(raised.exception)
+        self.assertIn(f"node_attr={joint}.translateX", message)
+        self.assertIn(f"animation_layer={layer}", message)
+        self.assertIn("reason=addKeys failed", message)
+        self.assertIn("curve_candidates=", message)
+
+        cmds.delete(joint)
+
+    def test_batch_key_scalar_channels_fallback_env_zero_does_not_opt_in(self):
+        """MMD_TOOLS_VMD_ALLOW_SETKEYFRAME_FALLBACK=0 は fallback 許可にしない。"""
+        from mmd_tools.converters import vmd_scene_keying
+
+        joint = cmds.joint(name="scalar_layer_fallback_zero_env_joint")
+        layer = cmds.animLayer("scalar_layer_fallback_zero_env_layer", override=False, weight=1.0)
+
+        class FailingCurve:
+            def addKeys(self, *_args, **_kwargs):
+                raise RuntimeError("forced addKeys failure")
+
+        with patch.object(vmd_scene_keying, "_create_scalar_channel_curves", return_value={"translateX": FailingCurve()}):
+            with patch.dict(os.environ, {"MMD_TOOLS_VMD_ALLOW_SETKEYFRAME_FALLBACK": "0"}):
+                with self.assertRaises(vmd_scene_keying.VmdKeyingError):
+                    self.converter._batch_key_scalar_channels(
+                        joint,
+                        {"translateX": [(0.0, 5.0)]},
+                        animation_layer=layer,
+                    )
+
+        cmds.delete(joint)
+
+    def test_batch_key_scalar_channels_anim_layer_fallback_uses_base_snapshot_when_opted_in(self):
+        """opt-in fallback は前の fallback key の寄与を base 値に混ぜない。"""
+        from mmd_tools.converters import vmd_scene_keying
+
+        joint = cmds.joint(name="scalar_layer_fallback_base_joint")
+        cmds.setAttr(f"{joint}.translateX", 10.0)
+        layer = cmds.animLayer("scalar_layer_fallback_base_layer", override=False, weight=1.0)
+
+        original_create = vmd_scene_keying._create_scalar_channel_curves
+
+        class FailingCurve:
+            def addKeys(self, *_args, **_kwargs):
+                raise RuntimeError("forced addKeys failure")
+
+        def create_failing_curves(*args, **kwargs):
+            real_curves = original_create(*args, **kwargs)
+            return {attr: FailingCurve() for attr in real_curves}
+
+        with patch.dict(os.environ, {"MMD_TOOLS_VMD_ALLOW_SETKEYFRAME_FALLBACK": "1"}):
+            with patch.object(vmd_scene_keying, "_create_scalar_channel_curves", side_effect=create_failing_curves):
+                self.assertTrue(
+                    self.converter._batch_key_scalar_channels(
+                        joint,
+                        {"translateX": [(0.0, 5.0), (5.0, 2.0)]},
+                        animation_layer=layer,
+                    )
+                )
+
+        cmds.currentTime(0, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 15.0, places=6)
+        cmds.currentTime(5, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), 12.0, places=6)
+
+        cmds.delete(joint)
+
     def test_legacy_bone_animation_redirects_append_rotate_to_base_rotate(self):
         """append target ボーンの rotate は append node の baseRotate に key する。"""
         joint = cmds.joint(name="legacy_append_target_joint")
@@ -2671,6 +3373,9 @@ class TestVmdConverter(MayaTestBase):
             self.converter,
             "_collect_ik_link_joints",
             return_value={},
+        ), patch(
+            "mmd_tools.converters.vmd_bone_animation.cmds.setKeyframe",
+            side_effect=AssertionError("append route should use batch keying"),
         ):
             self.assertTrue(self.converter._convert_bone_animation(frames))
 
@@ -2726,6 +3431,9 @@ class TestVmdConverter(MayaTestBase):
             self.converter,
             "_collect_ik_link_joints",
             return_value={joint: None},
+        ), patch(
+            "mmd_tools.converters.vmd_bone_animation.cmds.setKeyframe",
+            side_effect=AssertionError("IK link translate route should use batch keying"),
         ):
             self.assertTrue(self.converter._convert_bone_animation(frames))
 
@@ -3129,6 +3837,47 @@ class TestVmdConverter(MayaTestBase):
             self.assertAlmostEqual(actual_skinning[i], expected_skinning[i], places=5)
 
         cmds.delete(joint)
+
+    def test_compute_native_local_channel_batch_matches_python_fallback_with_parent_rotation(self):
+        """native batch local decomposition は親回転を含む Python fallback と同じ Euler を返す。"""
+        parent = cmds.joint(name="test_native_batch_parent_rotation")
+        cmds.select(parent, replace=True)
+        child = cmds.joint(name="test_native_batch_child_rotation")
+        cmds.select(clear=True)
+
+        cmds.setAttr(f"{parent}.translate", 1.5, 2.0, -3.0)
+        cmds.setAttr(f"{parent}.rotate", 0.0, 35.0, 10.0)
+        cmds.setAttr(f"{child}.translate", 2.0, -0.5, 1.25)
+        cmds.setAttr(f"{child}.rotate", 15.0, 0.0, -20.0)
+
+        self.converter.bone_index_to_joint = {0: parent, 1: child}
+        self.converter._bone_parent_map = {0: None, 1: 0}
+        self.converter._bone_rotate_orders = {0: 0, 1: 0}
+        self.converter._runtime_bind_world_matrices = {0: om.MMatrix(), 1: om.MMatrix()}
+        self.converter._runtime_no_orient_bind_world_matrices = {0: om.MMatrix(), 1: om.MMatrix()}
+
+        world_mats = [
+            self.converter._convert_mmd_world_matrix_to_maya(cmds.xform(parent, query=True, worldSpace=True, matrix=True)),
+            self.converter._convert_mmd_world_matrix_to_maya(cmds.xform(child, query=True, worldSpace=True, matrix=True)),
+        ]
+        expected = self.converter._compute_all_bone_locals(world_mats)
+        world_flat = [value for matrix in world_mats for value in matrix]
+        batch_result = SimpleNamespace(
+            frame_count=1,
+            bone_count=2,
+            world_matrices=(ctypes.c_float * len(world_flat))(*world_flat),
+        )
+
+        native_batch = self.converter._compute_native_local_channel_batch(batch_result)
+        if native_batch is None:
+            self.skipTest("mmd-anim native batch local channel ABI is unavailable")
+        actual = self.converter._native_local_channel_batch_for_frame(native_batch, 0)
+
+        for bidx in (0, 1):
+            for actual_value, expected_value in zip(actual[bidx], expected[bidx]):
+                self.assertAlmostEqual(actual_value, expected_value, places=5)
+
+        cmds.delete(parent)
 
     def test_compute_bone_locals_matches_maya_with_parent_rotation(self):
         """親が回転している階層でも runtime world 行列から Maya local 値を再構成できることを確認"""

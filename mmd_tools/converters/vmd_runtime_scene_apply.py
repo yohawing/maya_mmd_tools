@@ -130,6 +130,7 @@ def apply_runtime_channel_arrays_to_scene(
             skipped_static_channels += skipped
         except Exception as e:
             converter.logger.debug(f"batch array keying error for {joint}: {e}")
+            raise
 
     converter.logger.info(
         "runtime joint channel pruning: "

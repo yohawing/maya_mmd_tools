@@ -4,10 +4,12 @@ MMDファイル（PMX、PMD、VMD）を解析し、Mayaシーンにインポー�
 
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, Callable, Dict, Optional
 
 from mmd_tools.core import settings
 from mmd_tools.core.mmd_parser import parse_mmd_file
 from mmd_tools.core.vmd_data import VmdData
+from mmd_tools.converters import vmd_profile
 from mmd_tools.io import pmd_importer, pmx_importer, vmd_importer  # noqa: F401
 from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
@@ -32,7 +34,7 @@ _OPTION_TO_SETTINGS_KEY = {
 
 
 @contextmanager
-def _scoped_settings_override(options):
+def _scoped_settings_override(options: Dict[str, Any]):
     """Temporarily apply option values to global settings for the duration of a model import.
 
     Downstream converters that read settings directly will see the values from
@@ -51,7 +53,12 @@ def _scoped_settings_override(options):
             settings.set(settings_key, original_value)
 
 
-def import_mmd_file(filepath, scale=None, options=None, progress_callback=None):
+def import_mmd_file(
+    filepath: str,
+    scale: Optional[float] = None,
+    options: Optional[Dict[str, Any]] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
+) -> Optional[Any]:
     """
     MMDファイルを解析し、Mayaシーンにインポートします。
     ファイルタイプに応じて適切なインポーターを呼び出します。
@@ -117,14 +124,19 @@ def import_mmd_file(filepath, scale=None, options=None, progress_callback=None):
 
     try:
         # 汎用パーサーでファイルを解析
-        parsed_data = parse_mmd_file(
-            filepath,
-            use_native_pmx_parse=options.get("use_native_pmx_parse"),
-            require_native_pmx_parse=options.get(
-                "require_native_pmx_parse",
-                settings.get("import.native.require_native_pmx_parse", False),
-            ),
-        )
+        with vmd_profile.scope("vmd_parse" if suffix == ".vmd" else "model_parse"):
+            parsed_data = parse_mmd_file(
+                filepath,
+                use_native_pmx_parse=options.get("use_native_pmx_parse"),
+                require_native_pmx_parse=options.get(
+                    "require_native_pmx_parse",
+                    settings.get("import.native.require_native_pmx_parse", False),
+                ),
+            )
+        if suffix == ".vmd":
+            vmd_profile.set_extra("vmd_path", str(Path(filepath).resolve()))
+            for attr in ("bone_frames", "morph_frames", "camera_frames", "light_frames"):
+                vmd_profile.set_extra(attr, len(getattr(parsed_data, attr, []) or []))
         _emit_progress(12)
 
         # 手動reload後はクラスIDがずれて isinstance が失敗することがあるため、

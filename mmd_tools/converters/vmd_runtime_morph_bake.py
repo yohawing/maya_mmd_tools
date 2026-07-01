@@ -6,6 +6,9 @@ from typing import Dict, List, Optional, Tuple
 
 import maya.cmds as cmds
 
+from . import vmd_profile
+from .vmd_scene_keying import _ensure_fallback_allowed
+
 
 def bake_morph_weights_from_runtime(
     converter,
@@ -94,9 +97,22 @@ def bake_morph_weight_cache_from_runtime(
                 keyed_nodes += 1
                 continue
         except Exception as exc:
-            converter.logger.debug(f"runtime morph batch keying failed for {morph_node}, fallback: {exc}")
+            converter.logger.debug(f"runtime morph batch keying failed for {morph_node}: {exc}")
+            for weight_attr in samples_to_key:
+                _ensure_fallback_allowed(
+                    morph_node,
+                    weight_attr,
+                    animation_layer,
+                    f"runtime morph batch keying failed: {exc!r}",
+                )
 
         for weight_attr, samples in samples_to_key.items():
+            _ensure_fallback_allowed(
+                morph_node,
+                weight_attr,
+                animation_layer,
+                "batch_key_scalar_channels returned False for runtime morph samples",
+            )
             for frame, weight in samples:
                 try:
                     key_args = {
@@ -106,7 +122,8 @@ def bake_morph_weight_cache_from_runtime(
                     }
                     if animation_layer:
                         key_args["animLayer"] = animation_layer
-                    cmds.setKeyframe(morph_node, **key_args)
+                    with vmd_profile.scope("fallback_setKeyframe"):
+                        cmds.setKeyframe(morph_node, **key_args)
                 except Exception as exc:
                     converter.logger.debug(
                         f"runtime morph fallback keying failed for {morph_node}.{weight_attr} at {frame}: {exc}"

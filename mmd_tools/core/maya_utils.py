@@ -1448,11 +1448,32 @@ def _find_plug(fn_depend, attr):
     return plug
 
 
+def _layer_curve_for_blend_attr(blend_node, attr, layer_curves):
+    """Return the animLayer curve connected to the blend input for attr."""
+    axis = attr[-1] if attr and attr[-1] in "XYZ" else ""
+    candidate_inputs = []
+    if axis:
+        candidate_inputs.extend((f"inputB{axis}", f"inputB.inputB{axis}"))
+    candidate_inputs.append("inputB")
+
+    for input_attr in candidate_inputs:
+        plug = f"{blend_node}.{input_attr}"
+        if not cmds.objExists(plug):
+            continue
+        input_curves = cmds.listConnections(plug, source=True, destination=False, type="animCurve") or []
+        for curve_name in input_curves:
+            if curve_name in layer_curves:
+                return curve_name
+
+    return None
+
+
 def create_animation_curves(
     node_name,
     attributes,
     tangent_type=oma.MFnAnimCurve.kTangentLinear,
     animation_layer=None,
+    seed_values=None,
 ):
     """
     指定したノードの属性にアニメーションカーブを作成する。
@@ -1492,7 +1513,10 @@ def create_animation_curves(
     for attr in attributes:
         if animation_layer:
             # レイヤーが有効な場合は、cmds.setKeyframeを使って初期カーブを作成
-            cmds.setKeyframe(node_name, attribute=attr, animLayer=animation_layer)
+            key_args = {"attribute": attr, "animLayer": animation_layer}
+            if seed_values and attr in seed_values:
+                key_args["value"] = float(seed_values[attr])
+            cmds.setKeyframe(node_name, **key_args)
             # 作成されたカーブを取得。node.attr から直近の animBlendNode を辿ると、
             # レイヤー全体の blendNodes を毎属性スキャンせずに目的の curve へ到達できる。
             # 既存 base curve がある場合もあるため、返す curve は layer 所属に限定する。
@@ -1503,6 +1527,17 @@ def create_animation_curves(
                 destination=False,
             ) or []
             for blend_node in blend_nodes:
+                curve_name = _layer_curve_for_blend_attr(blend_node, attr, layer_curves)
+                if curve_name:
+                    curve_sel = om.MSelectionList()
+                    curve_sel.add(curve_name)
+                    curve_obj = curve_sel.getDependNode(0)
+                    curves[attr] = oma.MFnAnimCurve(curve_obj)
+                    break
+
+                if attr and attr[-1] in "XYZ":
+                    continue
+
                 input_curves = cmds.listConnections(blend_node, source=True, type="animCurve") or []
                 for curve_name in input_curves:
                     if curve_name not in layer_curves:

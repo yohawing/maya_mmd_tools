@@ -96,6 +96,121 @@ def _convert_mayapy_path_options(mayapy: Path, args: list[str], path_options: se
     return _convert_maya_path_options(mayapy, ROOT, args, path_options)
 
 
+def _import_order_manifest_asset_path(value: str) -> str:
+    """Return an absolute path string to store in a generated local manifest."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = ROOT / path
+    return str(path.resolve())
+
+
+def _write_import_order_local_manifest(
+    session: nox.Session,
+    background_model: str,
+    character_model: str,
+    character_motion: str,
+) -> Path:
+    """Write a UTF-8 manifest so mayapy argv stays ASCII for local asset paths."""
+    background_model = _import_order_manifest_asset_path(background_model)
+    character_model = _import_order_manifest_asset_path(character_model)
+    character_motion = _import_order_manifest_asset_path(character_motion)
+    manifest_path = _require_build_path(
+        session,
+        "build/import-order-e2e/generated-local-manifest.json",
+        "--manifest",
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "cases": [
+            {
+                "name": "background_character_permutations",
+                "assets": [
+                    {
+                        "id": "background",
+                        "type": "pmx",
+                        "role": "background",
+                        "path": background_model,
+                        "useNamespace": False,
+                    },
+                    {
+                        "id": "character",
+                        "type": "pmx",
+                        "role": "character",
+                        "path": character_model,
+                        "useNamespace": False,
+                    },
+                ],
+                "orders": [
+                    ["background", "character"],
+                    ["character", "background"],
+                ],
+            },
+            {
+                "name": "character_motion_camera_clear_permutations",
+                "assets": [
+                    {
+                        "id": "character",
+                        "type": "pmx",
+                        "role": "character",
+                        "path": character_model,
+                        "useNamespace": True,
+                    },
+                    {
+                        "id": "character_motion",
+                        "type": "vmd",
+                        "kind": "model",
+                        "path": character_motion,
+                        "target": "character",
+                    },
+                    {
+                        "id": "camera_wide",
+                        "type": "vmd",
+                        "kind": "camera",
+                        "generated": {
+                            "type": "camera-vmd",
+                            "filename": "camera_wide.vmd",
+                            "frames": [0, 10],
+                        },
+                        "expect": {
+                            "cameraKeys": [0, 10],
+                        },
+                    },
+                    {
+                        "id": "camera_short_clear",
+                        "type": "vmd",
+                        "kind": "camera",
+                        "requires": ["camera_wide"],
+                        "clearExistingMotion": True,
+                        "generated": {
+                            "type": "camera-vmd",
+                            "filename": "camera_short.vmd",
+                            "frames": [0],
+                        },
+                        "expect": {
+                            "cameraKeys": [0],
+                        },
+                    },
+                ],
+                "constraints": [
+                    ["character", "before", "character_motion"],
+                    ["camera_wide", "before", "camera_short_clear"],
+                ],
+                "orders": [
+                    ["character", "character_motion", "camera_wide", "camera_short_clear"],
+                    ["character", "camera_wide", "camera_short_clear", "character_motion"],
+                    ["camera_wide", "camera_short_clear", "character", "character_motion"],
+                ],
+                "expect": {
+                    "characterMotionKeys": True,
+                    "cameraKeysAfterClear": [0],
+                },
+            },
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
+
+
 def _maya_devkit_root(version: str) -> Path:
     """Return the Maya devkit root, allowing environment overrides."""
     version_env = os.environ.get(f"MAYA_DEVKIT_ROOT_{version}")
@@ -1141,6 +1256,75 @@ def local_parity(session: nox.Session) -> None:
         _mayapy_script(mayapy, "tests/viewport/local_asset_motion_compare.py"),
         *_convert_mayapy_path_options(mayapy, passthrough, {"--out"}),
         env=_mayapy_env(mayapy, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def import_order_e2e(session: nox.Session) -> None:
+    """Run manifest-driven mayapy E2E checks for model/motion import ordering.
+
+    Examples:
+        uvx nox -s import_order_e2e -- --maya 2024
+        uvx nox -s import_order_e2e -- --maya 2024 --log build/import-order-e2e/run.jsonl
+        uvx nox -s import_order_e2e -- --maya 2024 --manifest build/import-order-e2e/local-manifest.json
+        uvx nox -s import_order_e2e -- --maya 2024 --background-model F:/MMD/stage/stage.pmx --character-model F:/MMD/pmx/miku.pmx --character-motion F:/MMD/vmd/dance.vmd
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    manifest = _option(args, "--manifest", "")
+    path_options = {"--manifest", "--out-dir", "--log"}
+    value_options = path_options | {"--background-model", "--character-model", "--character-motion", "--case", "--limit", "--order-limit"}
+    flag_options = {"--require-zero-fallback"}
+    if not manifest:
+        generated_manifest = _write_import_order_local_manifest(
+            session,
+            _option(args, "--background-model", str(ROOT / "tests/data/for_unit_test/test_1bone_cube.pmx")),
+            _option(args, "--character-model", str(ROOT / "tests/data/mmt_test_model.pmx")),
+            _option(args, "--character-motion", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd")),
+        )
+        passthrough.extend(["--manifest", str(generated_manifest)])
+    env = _mayapy_env(mayapy, preserve_pythonpath=True)
+    if _has_flag(args, "--require-zero-fallback"):
+        profile_value = os.environ.get("MMD_TOOLS_VMD_PROFILE_JSONL")
+        if profile_value:
+            profile_path = Path(profile_value)
+            if not profile_path.is_absolute():
+                profile_path = ROOT / profile_path
+        else:
+            out_dir_value = _option(args, "--out-dir", str(ROOT / "build/import-order-e2e"))
+            out_dir_path = Path(out_dir_value)
+            if not out_dir_path.is_absolute():
+                out_dir_path = ROOT / out_dir_path
+            profile_path = out_dir_path / "vmd_profile.jsonl"
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        if profile_path.exists():
+            profile_path.unlink()
+        env["MMD_TOOLS_VMD_PROFILE_JSONL"] = str(profile_path)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if not manifest and args[i] in {"--background-model", "--character-model", "--character-motion"}:
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in flag_options:
+            passthrough.append(args[i])
+            i += 1
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/import_order_e2e.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=env,
         external=True,
     )
 

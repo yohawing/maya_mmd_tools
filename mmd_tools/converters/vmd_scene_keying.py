@@ -1,13 +1,18 @@
 """Scene keying helpers shared by VMD animation conversion paths."""
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 import maya.cmds as cmds
 
 from ..core import maya_utils
+from . import vmd_profile
+
+
+class VmdKeyingError(RuntimeError):
+    """Raised when API keying cannot proceed and slow fallback is disabled."""
 
 
 def _layer_base_value(node_name: str, attr: str) -> float:
@@ -21,12 +26,288 @@ def _layer_base_value(node_name: str, attr: str) -> float:
         value = float(value)
     except Exception:
         return 0.0
-    return math.radians(value) if "rotate" in attr else value
+    return math.radians(value) if "rotate" in attr.lower() else value
+
+
+def _base_ui_value_at_frame(node_name: str, attr: str, frame: float) -> float:
+    """Return the target plug's base UI value at *frame* for setKeyframe fallback."""
+    try:
+        value = cmds.getAttr(f"{node_name}.{attr}", time=float(frame))
+        if isinstance(value, (list, tuple)):
+            value = value[0]
+        if isinstance(value, (list, tuple)):
+            value = value[0]
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _layer_base_ui_value(node_name: str, attr: str) -> float:
+    """Return the current base value in Maya UI units for additive layer deltas."""
+    try:
+        value = cmds.getAttr(f"{node_name}.{attr}")
+        if isinstance(value, (list, tuple)):
+            value = value[0]
+        if isinstance(value, (list, tuple)):
+            value = value[0]
+        return float(value)
+    except Exception:
+        return 0.0
 
 
 def _as_layer_delta(node_name: str, attr: str, value: float) -> float:
     """Convert an absolute sample to an additive animation-layer delta."""
     return float(value) - _layer_base_value(node_name, attr)
+
+
+def _anim_curve_fn(curve_name: str) -> oma.MFnAnimCurve:
+    """Return an anim curve function set for an existing curve node."""
+    selection = om.MSelectionList()
+    selection.add(curve_name)
+    return oma.MFnAnimCurve(selection.getDependNode(0))
+
+
+def _create_anim_curve_for_plug(plug_path: str) -> oma.MFnAnimCurve:
+    """Create an anim curve directly for plugs not handled by attr-name helpers."""
+    selection = om.MSelectionList()
+    selection.add(plug_path)
+    plug = selection.getPlug(0)
+    curve = oma.MFnAnimCurve()
+    curve.create(plug)
+    return curve
+
+
+def _axis_suffix(attr: str) -> str:
+    return attr[-1] if attr and attr[-1] in {"X", "Y", "Z"} else ""
+
+
+def _curve_candidates_for_attr(
+    node_name: str,
+    attr: str,
+    animation_layer: Optional[str],
+) -> dict[str, Any]:
+    """Collect candidate curve/network names for diagnostic keying errors."""
+    plug = f"{node_name}.{attr}"
+    candidates: dict[str, Any] = {
+        "plug": plug,
+        "animation_layer": animation_layer,
+        "direct_anim_curves": [],
+        "source_plugs": [],
+        "blend_nodes": [],
+        "layer_anim_curves": [],
+        "blend_input_curves": {},
+    }
+    try:
+        candidates["direct_anim_curves"] = cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            type="animCurve",
+        ) or []
+        source_plugs = cmds.listConnections(
+            plug,
+            source=True,
+            destination=False,
+            plugs=True,
+        ) or []
+        candidates["source_plugs"] = source_plugs
+        blend_nodes = []
+        for source_plug in source_plugs:
+            if "." in source_plug:
+                blend_nodes.append(source_plug.rsplit(".", 1)[0])
+        blend_nodes.extend(cmds.listConnections(plug, source=True, destination=False) or [])
+        blend_nodes = sorted(set(blend_nodes))
+        candidates["blend_nodes"] = blend_nodes
+        if animation_layer and cmds.objExists(animation_layer):
+            candidates["layer_anim_curves"] = cmds.animLayer(animation_layer, query=True, animCurves=True) or []
+        for blend_node in blend_nodes:
+            input_curves = cmds.listConnections(
+                blend_node,
+                source=True,
+                destination=False,
+                type="animCurve",
+            ) or []
+            candidates["blend_input_curves"][blend_node] = input_curves
+    except Exception as exc:
+        candidates["candidate_error"] = str(exc)
+    return candidates
+
+
+def _keying_error(
+    node_name: str,
+    attr: str,
+    animation_layer: Optional[str],
+    reason: str,
+) -> VmdKeyingError:
+    candidates = _curve_candidates_for_attr(node_name, attr, animation_layer)
+    return VmdKeyingError(
+        "VMD API keying failed and cmds.setKeyframe fallback is disabled. "
+        f"node_attr={node_name}.{attr}; animation_layer={animation_layer}; "
+        f"reason={reason}; curve_candidates={candidates}"
+    )
+
+
+def _ensure_fallback_allowed(
+    node_name: str,
+    attr: str,
+    animation_layer: Optional[str],
+    reason: str,
+) -> None:
+    if not vmd_profile.allow_setkeyframe_fallback():
+        raise _keying_error(node_name, attr, animation_layer, reason)
+
+
+def _layer_curve_from_input_plugs(
+    input_plugs: List[str],
+    layer_curves: set,
+) -> Optional[oma.MFnAnimCurve]:
+    for input_plug in input_plugs:
+        if not cmds.objExists(input_plug):
+            continue
+        input_curves = cmds.listConnections(
+            input_plug,
+            source=True,
+            destination=False,
+            type="animCurve",
+        ) or []
+        for curve_name in input_curves:
+            if curve_name in layer_curves:
+                return _anim_curve_fn(curve_name)
+    return None
+
+
+def _find_layer_anim_curve(node_name: str, attr: str, animation_layer: str) -> Optional[oma.MFnAnimCurve]:
+    """Find Maya's generated animLayer curve for a target plug."""
+    layer_curves = set(cmds.animLayer(animation_layer, query=True, animCurves=True) or [])
+    if not layer_curves:
+        return None
+
+    plug = f"{node_name}.{attr}"
+    axis = _axis_suffix(attr)
+    source_plugs = cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
+    for source_plug in source_plugs:
+        if "." not in source_plug:
+            continue
+        blend_node, _output_attr = source_plug.rsplit(".", 1)
+        if not cmds.objExists(blend_node):
+            continue
+
+        if cmds.nodeType(blend_node) == "animBlendNodeAdditiveRotation" and axis:
+            curve = _layer_curve_from_input_plugs(
+                [f"{blend_node}.inputB{axis}", f"{blend_node}.inputB.inputB{axis}"],
+                layer_curves,
+            )
+            if curve is not None:
+                return curve
+            continue
+
+        curve = _layer_curve_from_input_plugs([f"{blend_node}.inputB"], layer_curves)
+        if curve is not None:
+            return curve
+
+    blend_nodes = cmds.listConnections(plug, source=True, destination=False) or []
+    for blend_node in blend_nodes:
+        if cmds.nodeType(blend_node) == "animBlendNodeAdditiveRotation" and axis:
+            continue
+        input_curves = cmds.listConnections(blend_node, source=True, destination=False, type="animCurve") or []
+        layer_input_curves = [curve_name for curve_name in input_curves if curve_name in layer_curves]
+        if len(layer_input_curves) == 1:
+            return _anim_curve_fn(layer_input_curves[0])
+    return None
+
+
+def _ensure_layer_anim_curve(
+    converter,
+    node_name: str,
+    attr: str,
+    samples: List[Tuple[float, float]],
+    animation_layer: str,
+) -> Optional[oma.MFnAnimCurve]:
+    """Ensure Maya has built the animLayer blend network, then return its curve."""
+    plug = f"{node_name}.{attr}"
+    try:
+        cmds.animLayer(animation_layer, edit=True, attribute=plug)
+    except Exception as exc:
+        converter.logger.debug(f"animLayer attribute registration failed for {plug}: {exc}")
+
+    curve = _find_layer_anim_curve(node_name, attr, animation_layer)
+    if curve is not None:
+        return curve
+
+    if not samples:
+        return None
+
+    try:
+        seed_frame = float(samples[0][0])
+        with vmd_profile.scope("animLayer_seed_setKeyframe"):
+            cmds.setKeyframe(
+                node_name,
+                attribute=attr,
+                time=seed_frame,
+                animLayer=animation_layer,
+            )
+    except Exception as exc:
+        converter.logger.debug(f"animLayer seed key failed for {plug}: {exc}")
+        return None
+
+    curve = _find_layer_anim_curve(node_name, attr, animation_layer)
+    if curve is None:
+        converter.logger.debug(f"Could not locate animLayer curve for {plug} on {animation_layer}")
+    return curve
+
+
+def _create_scalar_channel_curves(
+    converter,
+    node_name: str,
+    attrs: List[str],
+    channel_samples: Dict[str, List[Tuple[float, float]]],
+    animation_layer: Optional[str],
+) -> Dict[str, oma.MFnAnimCurve]:
+    """Create or locate scalar anim curves for direct API key insertion."""
+    if not animation_layer:
+        simple_attrs = [attr for attr in attrs if "[" not in attr and "." not in attr]
+        complex_attrs = [attr for attr in attrs if attr not in simple_attrs]
+        curves: Dict[str, oma.MFnAnimCurve] = {}
+        if simple_attrs:
+            with vmd_profile.scope("curve_setup", count=len(simple_attrs)):
+                curves.update(
+                    maya_utils.create_animation_curves(
+                        node_name,
+                        simple_attrs,
+                        tangent_type=oma.MFnAnimCurve.kTangentLinear,
+                        animation_layer=None,
+                    )
+                )
+        if complex_attrs:
+            with vmd_profile.scope("curve_setup", count=len(complex_attrs)):
+                for attr in complex_attrs:
+                    curves[attr] = _create_anim_curve_for_plug(f"{node_name}.{attr}")
+        return curves
+
+    curves: Dict[str, oma.MFnAnimCurve] = {}
+    with vmd_profile.scope("animLayer_curve_setup", count=len(attrs)):
+        for attr in attrs:
+            curve = _ensure_layer_anim_curve(converter, node_name, attr, channel_samples[attr], animation_layer)
+            if curve is not None:
+                curves[attr] = curve
+        refreshed_curves: Dict[str, oma.MFnAnimCurve] = {}
+        for attr in attrs:
+            curve = _find_layer_anim_curve(node_name, attr, animation_layer)
+            if curve is not None:
+                refreshed_curves[attr] = curve
+        curves = refreshed_curves
+        cleared = set()
+        for attr, curve in curves.items():
+            curve_name = curve.name()
+            if curve_name in cleared:
+                continue
+            try:
+                for index in reversed(range(curve.numKeys)):
+                    curve.remove(index)
+                cleared.add(curve_name)
+            except Exception as exc:
+                converter.logger.debug(f"Failed to clear animLayer seed keys for {node_name}.{attr}: {exc}")
+    return curves
 
 
 def batch_create_and_key_curves(
@@ -40,6 +321,7 @@ def batch_create_and_key_curves(
     attrs = list(channel_samples.keys())
     curves: Dict[str, oma.MFnAnimCurve] = {}
     animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
+    create_error: Optional[Exception] = None
     try:
         curves = maya_utils.create_animation_curves(
             joint_name,
@@ -49,6 +331,7 @@ def batch_create_and_key_curves(
         )
     except Exception as e:
         converter.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
+        create_error = e
         curves = {}
 
     tangent = oma.MFnAnimCurve.kTangentLinear
@@ -80,25 +363,33 @@ def batch_create_and_key_curves(
                     times = om.MTimeArray()
                     for frame, _ in samples:
                         times.append(om.MTime(float(frame), om.MTime.uiUnit()))
-                curve.addKeys(times, vals, tangent, tangent, False)
+                with vmd_profile.scope("addKeys", count=len(samples)):
+                    curve.addKeys(times, vals, tangent, tangent, False)
                 used_api = True
                 success_any = True
                 continue
             except Exception as e:
-                converter.logger.debug(f"addKeys failed for {joint_name}.{attr}, fallback: {e}")
+                converter.logger.debug(f"addKeys failed for {joint_name}.{attr}: {e}")
+                _ensure_fallback_allowed(joint_name, attr, animation_layer, f"addKeys failed: {e!r}")
+        else:
+            reason = "no API animCurve found"
+            if create_error is not None:
+                reason = f"create_animation_curves failed: {create_error!r}"
+            _ensure_fallback_allowed(joint_name, attr, animation_layer, reason)
         for frame, val in samples:
             try:
                 value = _as_layer_delta(joint_name, attr, val) if animation_layer else float(val)
-                cmd_val = math.degrees(value) if "rotate" in attr else value
+                cmd_val = math.degrees(value) if "rotate" in attr.lower() else value
                 key_args = {"attribute": attr, "time": frame, "value": cmd_val}
                 if animation_layer:
                     key_args["animLayer"] = animation_layer
-                cmds.setKeyframe(joint_name, **key_args)
+                with vmd_profile.scope("fallback_setKeyframe"):
+                    cmds.setKeyframe(joint_name, **key_args)
                 success_any = True
             except Exception:
                 pass
         if not used_api:
-            converter.logger.debug(f"Used cmds.setKeyframe fallback for {joint_name}.{attr}")
+            converter.logger.debug(f"Used opt-in cmds.setKeyframe fallback for {joint_name}.{attr}")
     return success_any
 
 
@@ -132,7 +423,7 @@ def batch_create_and_key_curve_arrays(
                     skipped_static += 1
                     try:
                         value = float(state["first"])
-                        if "rotate" in attr:
+                        if "rotate" in attr.lower():
                             value = math.degrees(value)
                         cmds.setAttr(f"{joint_name}.{attr}", value)
                     except Exception:
@@ -145,6 +436,7 @@ def batch_create_and_key_curve_arrays(
     if not dynamic_attrs:
         return 0, skipped_static
 
+    create_error: Optional[Exception] = None
     try:
         curves = maya_utils.create_animation_curves(
             joint_name,
@@ -154,6 +446,7 @@ def batch_create_and_key_curve_arrays(
         )
     except Exception as e:
         converter.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
+        create_error = e
         curves = {}
 
     tangent = oma.MFnAnimCurve.kTangentLinear
@@ -170,23 +463,31 @@ def batch_create_and_key_curve_arrays(
                     values_to_key = layer_values
                 else:
                     values_to_key = values
-                curve.addKeys(times, values_to_key, tangent, tangent, False)
+                with vmd_profile.scope("addKeys", count=len(values_to_key)):
+                    curve.addKeys(times, values_to_key, tangent, tangent, False)
                 keyed += 1
                 continue
             except Exception as e:
-                converter.logger.debug(f"addKeys failed for {joint_name}.{attr}, fallback: {e}")
+                converter.logger.debug(f"addKeys failed for {joint_name}.{attr}: {e}")
+                _ensure_fallback_allowed(joint_name, attr, animation_layer, f"addKeys failed: {e!r}")
+        else:
+            reason = "no API animCurve found"
+            if create_error is not None:
+                reason = f"create_animation_curves failed: {create_error!r}"
+            _ensure_fallback_allowed(joint_name, attr, animation_layer, reason)
 
         for index, frame in enumerate(frame_numbers):
             try:
                 value = float(values[index])
                 if animation_layer and attr not in layer_static_values:
                     value = _as_layer_delta(joint_name, attr, value)
-                if "rotate" in attr:
+                if "rotate" in attr.lower():
                     value = math.degrees(value)
                 key_args = {"attribute": attr, "time": frame, "value": value}
                 if animation_layer:
                     key_args["animLayer"] = animation_layer
-                cmds.setKeyframe(joint_name, **key_args)
+                with vmd_profile.scope("fallback_setKeyframe"):
+                    cmds.setKeyframe(joint_name, **key_args)
             except Exception:
                 pass
         keyed += 1
@@ -200,7 +501,12 @@ def batch_key_scalar_channels(
     channel_samples: Dict[str, List[Tuple[float, float]]],
     animation_layer: Optional[str] = None,
 ) -> bool:
-    """Key Maya UI scalar channels with MFnAnimCurve.addKeys and cmd fallback."""
+    """Key Maya UI scalar channels with MFnAnimCurve.addKeys and cmd fallback.
+
+    When *animation_layer* is provided, *channel_samples* must contain additive
+    layer deltas in Maya UI units. Rotation layer deltas are degrees and are
+    converted to radians only for animCurveTA API insertion.
+    """
     if not cmds.objExists(node_name) or not channel_samples:
         return False
 
@@ -208,46 +514,24 @@ def batch_key_scalar_channels(
     if not attrs:
         return False
 
-    layer_rotate_attrs = set()
-    curve_attrs = attrs
-    if animation_layer:
-        layer_rotate_attrs = {attr for attr in attrs if attr in {"rotateX", "rotateY", "rotateZ"}}
-        curve_attrs = [attr for attr in attrs if attr not in layer_rotate_attrs]
-
     curves: Dict[str, oma.MFnAnimCurve] = {}
-    if curve_attrs:
-        try:
-            curves = maya_utils.create_animation_curves(
-                node_name,
-                curve_attrs,
-                tangent_type=oma.MFnAnimCurve.kTangentLinear,
-                animation_layer=animation_layer,
-            )
-        except Exception as exc:
-            converter.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
+    create_error: Optional[Exception] = None
+    try:
+        curves = _create_scalar_channel_curves(
+            converter,
+            node_name,
+            attrs,
+            channel_samples,
+            animation_layer=animation_layer,
+        )
+    except Exception as exc:
+        converter.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
+        create_error = exc
 
     tangent = oma.MFnAnimCurve.kTangentLinear
     success_any = False
     for attr in attrs:
         samples = channel_samples[attr]
-        if attr in layer_rotate_attrs:
-            try:
-                base_value = float(cmds.getAttr(f"{node_name}.{attr}") or 0.0)
-            except Exception:
-                base_value = 0.0
-            for frame, value in samples:
-                try:
-                    cmds.setKeyframe(
-                        node_name,
-                        attribute=attr,
-                        time=float(frame),
-                        value=base_value + float(value),
-                        animLayer=animation_layer,
-                    )
-                    success_any = True
-                except Exception as exc:
-                    converter.logger.debug(f"setKeyframe failed for {node_name}.{attr} at {frame}: {exc}")
-            continue
         curve = curves.get(attr)
         if curve:
             try:
@@ -255,24 +539,42 @@ def batch_key_scalar_channels(
                 values = om.MDoubleArray()
                 for frame, value in samples:
                     times.append(om.MTime(float(frame), om.MTime.uiUnit()))
-                    api_value = math.radians(float(value)) if "rotate" in attr else float(value)
+                    api_value = math.radians(float(value)) if "rotate" in attr.lower() else float(value)
                     values.append(api_value)
-                curve.addKeys(times, values, tangent, tangent, False)
+                with vmd_profile.scope("addKeys", count=len(samples)):
+                    curve.addKeys(times, values, tangent, tangent, False)
                 success_any = True
                 continue
             except Exception as exc:
-                converter.logger.debug(f"addKeys failed for {node_name}.{attr}, fallback: {exc}")
+                converter.logger.debug(f"addKeys failed for {node_name}.{attr}: {exc}")
+                _ensure_fallback_allowed(node_name, attr, animation_layer, f"addKeys failed: {exc!r}")
+        else:
+            reason = "no API animCurve found"
+            if create_error is not None:
+                reason = f"create_animation_curves failed: {create_error!r}"
+            _ensure_fallback_allowed(node_name, attr, animation_layer, reason)
 
-        for frame, value in samples:
+        fallback_base_values = []
+        if animation_layer:
+            with vmd_profile.scope("fallback_base_values_build", count=len(samples)):
+                fallback_base_values = [
+                    _base_ui_value_at_frame(node_name, attr, float(frame))
+                    for frame, _value in samples
+                ]
+        for index, (frame, value) in enumerate(samples):
             try:
+                key_value = float(value)
+                if animation_layer:
+                    key_value = fallback_base_values[index] + key_value
                 key_args = {
                     "attribute": attr,
                     "time": frame,
-                    "value": float(value),
+                    "value": key_value,
                 }
                 if animation_layer:
                     key_args["animLayer"] = animation_layer
-                cmds.setKeyframe(node_name, **key_args)
+                with vmd_profile.scope("fallback_setKeyframe"):
+                    cmds.setKeyframe(node_name, **key_args)
                 success_any = True
             except Exception as exc:
                 converter.logger.debug(f"setKeyframe fallback failed for {node_name}.{attr} at {frame}: {exc}")
@@ -290,14 +592,9 @@ def samples_as_anim_layer_deltas(
         if not samples:
             adjusted[attr] = samples
             continue
-        try:
-            base_value = cmds.getAttr(f"{node_name}.{attr}")
-            if isinstance(base_value, (list, tuple)):
-                base_value = base_value[0]
-            if isinstance(base_value, (list, tuple)):
-                base_value = base_value[0]
-            base_value = float(base_value)
-        except Exception:
-            base_value = 0.0
-        adjusted[attr] = [(frame, float(value) - base_value) for frame, value in samples]
+        base_value = _layer_base_ui_value(node_name, attr)
+        attr_samples = []
+        for frame, value in samples:
+            attr_samples.append((frame, float(value) - base_value))
+        adjusted[attr] = attr_samples
     return adjusted

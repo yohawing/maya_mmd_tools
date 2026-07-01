@@ -10,8 +10,10 @@ import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 import maya.cmds as cmds
 
+from . import vmd_profile
 from .vmd_append_decomposition import get_or_expand_runtime_channel
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
+from .vmd_scene_keying import VmdKeyingError, _ensure_fallback_allowed
 
 
 def collect_mmd_ik_passthrough_info() -> Dict[str, Dict[str, Union[str, int]]]:
@@ -100,10 +102,17 @@ def key_mmd_ik_passthrough_rotation(
             curve.addKeys(bake_times, values, tangent, tangent, False)
             keyed += 1
         except Exception as exc:
-            converter.logger.debug(f"addKeys failed for {plug_path}, fallback: {exc}")
+            converter.logger.debug(f"addKeys failed for {plug_path}: {exc}")
+            _ensure_fallback_allowed(
+                node,
+                axis_attr,
+                None,
+                f"IK passthrough addKeys failed: {exc!r}",
+            )
             for index, frame in enumerate(baked_frames):
                 try:
-                    cmds.setKeyframe(plug_path, time=frame, value=math.degrees(float(values[index])))
+                    with vmd_profile.scope("fallback_setKeyframe"):
+                        cmds.setKeyframe(plug_path, time=frame, value=math.degrees(float(values[index])))
                 except Exception as exc2:
                     converter.logger.debug(f"failed to key {plug_path} at frame {frame}: {exc2}")
                     break
@@ -127,9 +136,18 @@ def key_mmd_ik_passthrough_rotation(
                 en_values = om.MDoubleArray([0.0] * n_frames)
                 curve.addKeys(bake_times, en_values, tangent, tangent, False)
             except Exception:
+                _ensure_fallback_allowed(
+                    node,
+                    "enabled",
+                    None,
+                    "IK passthrough enabled addKeys failed",
+                )
                 for frame in baked_frames:
-                    cmds.setKeyframe(node, attribute="enabled", time=frame, value=0.0)
+                    with vmd_profile.scope("fallback_setKeyframe"):
+                        cmds.setKeyframe(node, attribute="enabled", time=frame, value=0.0)
             keyed += 1
+        except VmdKeyingError:
+            raise
         except Exception as exc:
             converter.logger.debug(f"failed to key {node}.enabled off for runtime live apply: {exc}")
 

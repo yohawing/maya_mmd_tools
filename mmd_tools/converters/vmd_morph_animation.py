@@ -4,6 +4,9 @@ from typing import Dict, List
 
 import maya.cmds as cmds
 
+from . import vmd_profile
+from .vmd_scene_keying import _ensure_fallback_allowed
+
 
 def convert_morph_animation(converter, morph_frames) -> bool:
     """Convert VMD morph frames using the converter's shared Maya helpers."""
@@ -31,15 +34,22 @@ def convert_morph_animation(converter, morph_frames) -> bool:
                 value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
                 samples.append((converter.vmd_frame_to_maya_time(frame_number), float(value)))
             if not converter._batch_key_scalar_channels(morph_node, {weight_attr: samples}):
+                _ensure_fallback_allowed(
+                    morph_node,
+                    weight_attr,
+                    None,
+                    "batch_key_scalar_channels returned False for morph samples",
+                )
                 for frame in frames:
                     frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
                     value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
-                    cmds.setKeyframe(
-                        morph_node,
-                        attribute=weight_attr,
-                        time=converter.vmd_frame_to_maya_time(frame_number),
-                        value=value,
-                    )
+                    with vmd_profile.scope("fallback_setKeyframe"):
+                        cmds.setKeyframe(
+                            morph_node,
+                            attribute=weight_attr,
+                            time=converter.vmd_frame_to_maya_time(frame_number),
+                            value=value,
+                        )
 
         success_count += 1
 
