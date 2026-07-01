@@ -370,8 +370,8 @@ class BoneConverter:
         self._refresh_joint_paths(maya_joints, joint_uuids)
 
         # parenting 完了後に LOCAL_AXIS ボーンの JO を設定し translate を補正する。
-        # Bake/Rig とも JO を持つ skeleton に統一し、VMD/runtime 入力側で JO を補正する。
-        self._apply_joint_orient_all(maya_joints, bones, format_type)
+        if setup_bone_orientation:
+            self._apply_joint_orient_all(maya_joints, bones, format_type)
 
         return maya_joints
 

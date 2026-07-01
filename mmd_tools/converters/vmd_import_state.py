@@ -6,23 +6,66 @@ from typing import Any, Dict, Optional, Tuple
 import maya.cmds as cmds
 
 from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
-
+from ..core.logger import get_logger
+from ..core.namespace_utils import NamespaceUtils
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 _ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
+_LOGGER = get_logger(__name__)
 
 
-def restore_import_timeline_state(current_time: Optional[float]) -> None:
+def restore_import_timeline_state(current_time: Optional[float], logger: Optional[Any] = None) -> None:
     """Keep VMD import from leaving Maya visibly playing or scrubbed ahead."""
     if current_time is not None:
         try:
             cmds.currentTime(current_time, edit=True)
-        except Exception:
-            pass
+        except Exception as exc:
+            if logger is not None:
+                logger.debug("Failed to restore VMD import current time: %s", exc)
     try:
         cmds.play(state=False)
-    except Exception:
-        pass
+    except Exception as exc:
+        if logger is not None:
+            logger.debug("Failed to stop Maya playback after VMD import: %s", exc)
+
+
+def suspend_import_scene_updates(converter: Any) -> Tuple[bool, bool]:
+    """Suppress Maya undo recording and viewport refresh during VMD import."""
+    undo_was_enabled = True
+    refresh_suspended = False
+    try:
+        undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
+    except Exception as exc:
+        converter.logger.debug("Failed to query Maya undo state before VMD import: %s", exc)
+        undo_was_enabled = True
+    try:
+        cmds.undoInfo(stateWithoutFlush=False)
+    except Exception as exc:
+        converter.logger.debug("Failed to disable Maya undo during VMD import: %s", exc)
+    try:
+        cmds.refresh(suspend=True)
+        refresh_suspended = True
+        converter._vmd_import_refresh_suspended = True
+    except Exception as exc:
+        converter.logger.debug("Failed to suspend Maya refresh during VMD import: %s", exc)
+        refresh_suspended = False
+        converter._vmd_import_refresh_suspended = False
+    return undo_was_enabled, refresh_suspended
+
+
+def restore_import_scene_updates(converter: Any, undo_was_enabled: bool, refresh_suspended: bool) -> None:
+    """Restore viewport refresh and undo state after VMD import."""
+    if refresh_suspended:
+        try:
+            cmds.refresh(suspend=False)
+        except Exception as exc:
+            converter.logger.debug("Failed to restore Maya refresh after VMD import: %s", exc)
+    converter._vmd_import_refresh_suspended = False
+    if undo_was_enabled:
+        try:
+            cmds.undoInfo(stateWithoutFlush=True)
+        except Exception as exc:
+            converter.logger.debug("Failed to restore Maya undo after VMD import: %s", exc)
 
 
 def capture_anim_layer_selection() -> Dict[str, bool]:
@@ -36,9 +79,22 @@ def capture_anim_layer_selection() -> Dict[str, bool]:
     for layer in layers:
         try:
             selection[layer] = bool(cmds.animLayer(layer, query=True, selected=True))
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug("Failed to capture animLayer selection for %s: %s", layer, exc)
     return selection
+
+
+def record_bind_poses(converter: Any) -> None:
+    """Record current joint translates as VMD bind-pose fallback metadata."""
+    converter.logger.info("Recording initial bone positions")
+
+    for vmd_bone_name, maya_joint in converter.bone_name_mapping.items():
+        try:
+            translate = cmds.getAttr(f"{maya_joint}.translate")[0]
+            converter._bone_bind_poses[vmd_bone_name] = translate
+            store_bind_translate(maya_joint, translate)
+        except Exception as exc:
+            converter.logger.warning("Failed to get bind pose for %s: %s", vmd_bone_name, exc)
 
 
 def restore_anim_layer_selection(selection: Optional[Dict[str, bool]]) -> None:
@@ -53,8 +109,8 @@ def restore_anim_layer_selection(selection: Optional[Dict[str, bool]]) -> None:
     for layer in layers:
         try:
             cmds.animLayer(layer, edit=True, selected=selection.get(layer, False))
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug("Failed to restore animLayer selection for %s: %s", layer, exc)
 
 
 def clear_existing_motion(converter, layer_name: str, target_namespace: Optional[str] = None) -> None:
@@ -62,7 +118,7 @@ def clear_existing_motion(converter, layer_name: str, target_namespace: Optional
     cleared = 0
 
     mapped_joints = set(converter.bone_name_mapping.values())
-    fallback_translates = _capture_fallback_rest_translates(mapped_joints)
+    fallback_translates = _capture_fallback_rest_translates(mapped_joints, converter.logger)
     for joint in mapped_joints:
         cleared += cut_keyable_attrs(
             joint,
@@ -117,7 +173,7 @@ def clear_existing_motion(converter, layer_name: str, target_namespace: Optional
     )
 
 
-def _capture_fallback_rest_translates(joints) -> Dict[str, Tuple[float, float, float]]:
+def _capture_fallback_rest_translates(joints, logger) -> Dict[str, Tuple[float, float, float]]:
     """Capture translate fallback values before motion keys are removed."""
     fallback_translates = {}
     for joint in joints:
@@ -129,8 +185,8 @@ def _capture_fallback_rest_translates(joints) -> Dict[str, Tuple[float, float, f
             continue
         try:
             fallback_translates[joint] = tuple(cmds.getAttr(f"{joint}.translate")[0])
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to capture fallback rest translate for %s: %s", joint, exc)
     return fallback_translates
 
 
@@ -171,8 +227,8 @@ def _restore_joints_to_rest(joints, fallback_translates: Dict[str, Tuple[float, 
             if translate is not None:
                 cmds.setAttr(f"{joint}.translate", translate[0], translate[1], translate[2])
             restored += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Failed to restore joint fallback rest pose for %s: %s", joint, exc)
     if restored:
         logger.debug(f"Fallback: restored {restored} joints from snapshots (no dagPose)")
 
@@ -189,8 +245,8 @@ def store_bind_translate(joint: str, translate: Tuple[float, float, float]) -> N
             json.dumps([float(translate[0]), float(translate[1]), float(translate[2])]),
             type="string",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.debug("Failed to store VMD bind translate on %s: %s", joint, exc)
 
 
 def get_stored_bind_translate(joint: str) -> Optional[Tuple[float, float, float]]:
@@ -213,8 +269,7 @@ def node_matches_target_namespace(node: str, target_namespace: Optional[str]) ->
     """Return whether a node belongs to target_namespace when one is specified."""
     if not target_namespace:
         return True
-    short_name = node.split("|")[-1]
-    return short_name.startswith(f"{target_namespace}:")
+    return NamespaceUtils.get_namespace_from_node(node) == target_namespace
 
 
 def cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
@@ -230,8 +285,8 @@ def cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
         try:
             cmds.cutKey(node, attribute=attr)
             cleared += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOGGER.debug("Failed to cut key %s.%s: %s", node, attr, exc)
     return cleared
 
 
@@ -287,7 +342,8 @@ def clear_existing_light_motion(logger: Any = None) -> int:
     """Delete existing MMD light animation keys.
 
     Finds the MMD light by the mmd_light marker attribute and clears keys on
-    the light transform (rotation + color). Does NOT touch character bone/morph keys.
+    the light transform rotation, controller color attrs, and directionalLight
+    shape color attrs. Does NOT touch character bone/morph keys.
 
     Returns:
         Number of attribute channels cleared.
@@ -304,10 +360,9 @@ def clear_existing_light_motion(logger: Any = None) -> int:
 
         if cmds.attributeQuery("mmd_light_color", node=light_transform, exists=True):
             cleared += cut_keyable_attrs(light_transform, _LIGHT_MMD_COLOR_ATTRS)
-        else:
-            light_shapes = cmds.listRelatives(light_transform, shapes=True, type="directionalLight") or []
-            for shape in light_shapes:
-                cleared += cut_keyable_attrs(shape, _LIGHT_COLOR_ATTRS)
+        light_shapes = cmds.listRelatives(light_transform, shapes=True, type="directionalLight") or []
+        for shape in light_shapes:
+            cleared += cut_keyable_attrs(shape, _LIGHT_COLOR_ATTRS)
 
     if logger:
         logger.info("Cleared existing light motion: %d attribute channels from %d light(s)", cleared, len(lights))

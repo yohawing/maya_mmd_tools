@@ -597,8 +597,8 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertTrue(cmds.objExists(skin_cluster))
         mock_rig_converter.setup_pmx_rig.assert_not_called()
 
-    def test_create_maya_joints_applies_local_axis_even_when_orientation_flag_disabled(self):
-        """LOCAL_AXIS ボーンは setup_bone_orientation=False でも JO が設定される"""
+    def test_create_maya_joints_skips_local_axis_when_orientation_flag_disabled(self):
+        """setup_bone_orientation=False では bake/no-rig parity のため JO を設定しない"""
         bone = self._create_mock_pmx_bone(
             0,
             "local_axis_bone",
@@ -619,7 +619,7 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         joint_orient = cmds.getAttr(f"{maya_joints[0]}.jointOrient")[0]
         jo_magnitude = sum(v * v for v in joint_orient) ** 0.5
-        self.assertGreater(jo_magnitude, 1.0, "LOCAL_AXIS ボーンは常に JO が設定される")
+        self.assertAlmostEqual(jo_magnitude, 0.0, places=6)
 
     def test_create_maya_joints_local_axis_matches_world_axes_under_rotated_parent(self):
         """親が回転済みでも子のLOCAL_AXIS world X/Z軸と位置を維持する"""
