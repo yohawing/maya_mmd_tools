@@ -23,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MANIFEST = Path("F:/Develop/MMDDev/GoldenOracle/manifests/camera_motion.json")
 DEFAULT_OUT = ROOT / "build" / "local-camera-motion-oracle" / "report.json"
 DEFAULT_CURRENT_EPSILON = 3.0e-2
+ATTR_MMD_CAMERA_TARGET_NODE = "mmd_camera_target_node"
+GENERATED_CAMERA_CASE_MARKERS = ("generated", "interpolation-isolated")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -45,6 +47,15 @@ def _parse_args() -> argparse.Namespace:
         "--current-report-only",
         action="store_true",
         help="Report camera.current mismatches without failing the run.",
+    )
+    parser.add_argument(
+        "--current-frame-zero",
+        choices=["auto", "include", "skip"],
+        default="auto",
+        help=(
+            "camera.current frame 0 policy. auto skips frame 0 for non-generated "
+            "GoldenOracle dumps and keeps it for generated synthetic cases."
+        ),
     )
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     return parser.parse_args()
@@ -174,6 +185,10 @@ def _maya_point_to_mmd(point: om.MVector) -> list[float]:
     return [float(point.x), float(point.y), -float(point.z)]
 
 
+def _mmd_point_to_maya(point: list[float] | tuple[float, float, float]) -> list[float]:
+    return [float(point[0]), float(point[1]), -float(point[2])]
+
+
 def _expected_maya_forward_up(rotation: list[float] | tuple[float, float, float]) -> tuple[list[float], list[float]]:
     matrix = om.MEulerRotation(
         -float(rotation[0]),
@@ -221,37 +236,87 @@ def _camera_shape_perspective(camera: str, frame: float) -> bool:
     return True
 
 
-def _maya_camera_state(camera: str, frame: float) -> dict[str, Any]:
-    cmds.currentTime(frame, edit=True)
-    distance = _plug_float(camera, "mmd_camera_distance", frame)
-    world_position = cmds.xform(camera, query=True, worldSpace=True, translation=True)
-    world_rotation = cmds.xform(camera, query=True, worldSpace=True, rotation=True)
-    rotation = om.MEulerRotation(
-        math.radians(float(world_rotation[0])),
-        math.radians(float(world_rotation[1])),
-        math.radians(float(world_rotation[2])),
+def _camera_target_node(camera: str) -> str | None:
+    if not cmds.attributeQuery(ATTR_MMD_CAMERA_TARGET_NODE, node=camera, exists=True):
+        return None
+    targets = cmds.listConnections(
+        f"{camera}.{ATTR_MMD_CAMERA_TARGET_NODE}",
+        source=True,
+        destination=False,
+    ) or []
+    return targets[0] if targets else None
+
+
+def _evaluate_camera_expression(camera: str) -> None:
+    from mmd_tools.converters.vmd_camera_animation import (
+        MMD_CAMERA_EXPR_ID_ATTR,
+        evaluate_mmd_camera_expression,
     )
-    matrix = rotation.asMatrix()
+
+    for expression in (
+        cmds.listConnections(
+            f"{camera}.message",
+            source=False,
+            destination=True,
+            type="expression",
+        )
+        or []
+    ):
+        if not cmds.attributeQuery(MMD_CAMERA_EXPR_ID_ATTR, node=expression, exists=True):
+            continue
+        expression_id = cmds.getAttr(f"{expression}.{MMD_CAMERA_EXPR_ID_ATTR}")
+        if expression_id:
+            evaluate_mmd_camera_expression(str(expression_id))
+
+
+def _signed_camera_distance(eye: om.MVector, target: om.MVector, forward: om.MVector) -> float:
+    """Recover MMD signed distance from the camera eye, target, and world forward."""
+    target_from_eye = target - eye
+    distance = target_from_eye.length()
+    if distance <= 1.0e-12:
+        return 0.0
+    forward_normal = om.MVector(forward.x, forward.y, forward.z)
+    if forward_normal.length() <= 1.0e-12:
+        return -distance
+    forward_normal.normalize()
+    return -distance if target_from_eye * forward_normal >= 0.0 else distance
+
+
+def _maya_camera_state(camera: str, frame: float) -> dict[str, Any]:
+    from mmd_tools.converters.vmd_camera_animation import mmd_camera_rotation_from_maya_forward_up
+
+    cmds.currentTime(frame, edit=True)
+    _evaluate_camera_expression(camera)
+    world_position = cmds.xform(camera, query=True, worldSpace=True, translation=True)
+    matrix = om.MMatrix(cmds.getAttr(f"{camera}.worldMatrix[0]"))
     forward = om.MVector(0.0, 0.0, -1.0) * matrix
     up = om.MVector(0.0, 1.0, 0.0) * matrix
-    transform_target = om.MVector(*world_position) + forward.normal() * abs(distance)
-    return {
-        "distance": distance,
-        "position": [
+    forward_list = _normalize_vector(forward)
+    up_list = _normalize_vector(up)
+    target_node = _camera_target_node(camera)
+    if target_node:
+        eye = om.MVector(*world_position)
+        maya_target = om.MVector(*cmds.xform(target_node, query=True, worldSpace=True, translation=True))
+        position = _maya_point_to_mmd(maya_target)
+        distance = _signed_camera_distance(eye, maya_target, forward)
+    else:
+        distance = _plug_float(camera, "mmd_camera_distance", frame)
+        position = [
             _plug_float(camera, "mmd_camera_target_x", frame),
             _plug_float(camera, "mmd_camera_target_y", frame),
             _plug_float(camera, "mmd_camera_target_z", frame),
-        ],
-        "rotation": [
-            _plug_float(camera, "mmd_camera_rotation_x", frame),
-            _plug_float(camera, "mmd_camera_rotation_y", frame),
-            _plug_float(camera, "mmd_camera_rotation_z", frame),
-        ],
+        ]
+        maya_target = om.MVector(*_mmd_point_to_maya(position))
+    rotation = list(mmd_camera_rotation_from_maya_forward_up(tuple(forward_list), tuple(up_list)))
+    return {
+        "distance": distance,
+        "position": position,
+        "rotation": rotation,
         "fov": _camera_shape_vertical_fov(camera, frame),
         "perspective": _camera_shape_perspective(camera, frame),
-        "transformPosition": _maya_point_to_mmd(transform_target),
-        "transformForward": _normalize_vector(forward),
-        "transformUp": _normalize_vector(up),
+        "transformPosition": _maya_point_to_mmd(maya_target),
+        "transformForward": forward_list,
+        "transformUp": up_list,
     }
 
 
@@ -261,6 +326,15 @@ def _diff_scalar(actual: float, expected: float) -> float:
 
 def _diff_vector(actual: list[float], expected: list[float]) -> float:
     return max(_diff_scalar(left, right) for left, right in zip(actual, expected))
+
+
+def _diff_angle(actual: float, expected: float) -> float:
+    delta = (float(actual) - float(expected) + math.pi) % (2.0 * math.pi) - math.pi
+    return abs(delta)
+
+
+def _diff_rotation_vector(actual: list[float], expected: list[float]) -> float:
+    return max(_diff_angle(left, right) for left, right in zip(actual, expected))
 
 
 def _check_field(
@@ -273,7 +347,9 @@ def _check_field(
     expected: Any,
     epsilon: float,
 ) -> float:
-    if isinstance(expected, list):
+    if isinstance(expected, list) and field.endswith(".rotation"):
+        delta = _diff_rotation_vector(list(actual), list(expected))
+    elif isinstance(expected, list):
         delta = _diff_vector(list(actual), list(expected))
     elif isinstance(expected, bool):
         delta = 0.0 if bool(actual) == bool(expected) else 1.0
@@ -293,6 +369,19 @@ def _check_field(
     return delta
 
 
+def _is_generated_camera_case(case: dict[str, Any]) -> bool:
+    name = str(case.get("name") or "").lower()
+    return any(marker in name for marker in GENERATED_CAMERA_CASE_MARKERS)
+
+
+def _skip_current_frame_zero(case: dict[str, Any], policy: str) -> bool:
+    if policy == "include":
+        return False
+    if policy == "skip":
+        return True
+    return not _is_generated_camera_case(case)
+
+
 def _compare_current(
     camera: str,
     records: list[dict[str, Any]],
@@ -300,15 +389,30 @@ def _compare_current(
     mode: str,
     epsilon: float,
     gate: bool,
+    skip_frame_zero: bool,
 ) -> dict[str, Any]:
     mismatches: list[dict[str, Any]] = []
+    skipped_frames: list[dict[str, Any]] = []
     worst = 0.0
     compared = 0
+    compared_frames = 0
     for record in records:
         frame = int(record["frame"])
         expected = ((record.get("camera") or {}).get("current")) or {}
         if not expected:
             continue
+        if skip_frame_zero and frame == 0:
+            skipped_frames.append(
+                {
+                    "frame": frame,
+                    "reason": (
+                        "frame 0 camera.current is a keepInitialFrameZero/current-view dump, "
+                        "not VMD raw playback"
+                    ),
+                }
+            )
+            continue
+        compared_frames += 1
         actual = _maya_camera_state(camera, frame)
         for field in ("distance", "position", "rotation", "fov", "perspective"):
             if field not in expected:
@@ -341,7 +445,11 @@ def _compare_current(
             )
             compared += 1
     return {
+        "kind": "playbackCurrent",
         "compared": compared,
+        "comparedFrames": compared_frames,
+        "skipped": len(skipped_frames),
+        "skippedFrames": skipped_frames,
         "worstDelta": worst,
         "mismatches": mismatches[:50],
         "gate": gate,
@@ -378,6 +486,7 @@ def _compare_keyframes(camera: str, keyframes: list[dict[str, Any]], *, mode: st
             )
             compared += 1
     return {
+        "kind": "rawKeyframes",
         "compared": compared,
         "worstDelta": worst,
         "mismatches": mismatches[:50],
@@ -391,12 +500,17 @@ def _run_case(manifest_dir: Path, case: dict[str, Any], args: argparse.Namespace
     oracle_path = _resolve_path(manifest_dir, ((case.get("oracle") or {}).get("path")))
     epsilon = float(args.epsilon if args.epsilon is not None else (case.get("compare") or {}).get("epsilon", 5e-4))
     current_epsilon = float(args.current_epsilon if args.current_epsilon is not None else DEFAULT_CURRENT_EPSILON)
+    is_generated_case = _is_generated_camera_case(case)
+    skip_current_frame_zero = _skip_current_frame_zero(case, args.current_frame_zero)
     result: dict[str, Any] = {
         "name": case.get("name"),
         "vmd": str(vmd_path) if vmd_path else None,
         "oracle": str(oracle_path) if oracle_path else None,
         "epsilon": epsilon,
         "currentEpsilon": current_epsilon,
+        "currentFrameZeroPolicy": args.current_frame_zero,
+        "currentFrameZeroGeneratedCase": is_generated_case,
+        "currentFrameZeroSkipEnabled": skip_current_frame_zero,
         "status": "pending",
         "checks": {},
     }
@@ -427,6 +541,7 @@ def _run_case(manifest_dir: Path, case: dict[str, Any], args: argparse.Namespace
             mode=mode,
             epsilon=current_epsilon,
             gate=not args.current_report_only,
+            skip_frame_zero=skip_current_frame_zero,
         )
         result["checks"][mode] = mode_checks
         for check in mode_checks.values():
@@ -455,6 +570,7 @@ def main() -> int:
         "mode": args.mode,
         "allFrames": bool(args.all_frames),
         "maxCurrentFrames": args.max_current_frames,
+        "currentFrameZeroPolicy": args.current_frame_zero,
         "cases": [_run_case(manifest_dir, case, args) for case in cases],
     }
     failed = [case for case in report["cases"] if case["status"] == "failed"]

@@ -10,6 +10,7 @@ import json
 import math
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+import maya.api.OpenMaya as om
 from maya import cmds
 
 from mmd_tools.core.constants import (
@@ -18,6 +19,12 @@ from mmd_tools.core.constants import (
     ATTR_MMD_CAMERA,
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
+)
+from mmd_tools.converters.vmd_camera_animation import (
+    ATTR_MMD_CAMERA_ROOT_NODE,
+    ATTR_MMD_CAMERA_TARGET_NODE,
+    MMD_CAMERA_EXPR_SCALE_ATTR,
+    mmd_camera_rotation_from_maya_forward_up,
 )
 
 
@@ -49,6 +56,9 @@ _CAMERA_EXPORT_ATTRS = (
 _LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
 _LIGHT_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
 _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
+_MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
+_TRANSFORM_TRANSLATE_ATTRS = ("translateX", "translateY", "translateZ")
+_CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
 
 
 class VmdSceneCollector:
@@ -167,52 +177,97 @@ class VmdSceneCollector:
     ) -> list[dict]:
         """Collect keyed MMD camera controller frames."""
         frames = []
-        for camera in cameras:
-            keyed_frames = _filter_frame_range(
-                _key_times(camera, _CAMERA_EXPORT_ATTRS),
-                start_frame,
-                end_frame,
-            )
-            for frame_number in keyed_frames:
-                uses_raw_mmd_attrs = _uses_raw_mmd_camera_attrs(camera)
-                if uses_raw_mmd_attrs and all(
-                    _has_attr(camera, attr) for attr in ("mmd_camera_target_x", "mmd_camera_target_y", "mmd_camera_target_z")
-                ):
-                    position = (
-                        _plug_float(camera, "mmd_camera_target_x", frame_number),
-                        _plug_float(camera, "mmd_camera_target_y", frame_number),
-                        _plug_float(camera, "mmd_camera_target_z", frame_number),
-                    )
-                else:
-                    position = (
-                        _plug_float(camera, "translateX", frame_number),
-                        _plug_float(camera, "translateY", frame_number),
-                        -_plug_float(camera, "translateZ", frame_number),
-                    )
-                if uses_raw_mmd_attrs and all(
-                    _has_attr(camera, attr) for attr in ("mmd_camera_rotation_x", "mmd_camera_rotation_y", "mmd_camera_rotation_z")
-                ):
-                    rotation = (
-                        _plug_float(camera, "mmd_camera_rotation_x", frame_number),
-                        _plug_float(camera, "mmd_camera_rotation_y", frame_number),
-                        _plug_float(camera, "mmd_camera_rotation_z", frame_number),
-                    )
-                else:
-                    rotation = (
-                        math.radians(_plug_float(camera, "rotateX", frame_number)),
-                        math.radians(_plug_float(camera, "rotateY", frame_number)),
-                        -math.radians(_plug_float(camera, "rotateZ", frame_number)),
-                    )
-                frames.append(
-                    {
-                        "frame_number": int(round(frame_number)),
-                        "distance": _plug_float(camera, "mmd_camera_distance", frame_number),
-                        "position": position,
-                        "rotation": rotation,
-                        "viewing_angle": int(round(_plug_float(camera, "mmd_camera_viewing_angle", frame_number))),
-                        "perspective": int(round(_plug_float(camera, "mmd_camera_perspective", frame_number))),
-                    }
+        restore_time = None
+        try:
+            for camera in cameras:
+                camera_target = _camera_target_node(camera)
+                camera_root = _camera_root_node(camera)
+                camera_shape = _camera_shape(camera)
+                keyed_frames = _filter_frame_range(
+                    sorted(
+                        set(_key_times(camera, _CAMERA_EXPORT_ATTRS))
+                        | (set(_key_times(camera_root, _BONE_EXPORT_ATTRS)) if camera_root else set())
+                        | (set(_key_times(camera_target, _TRANSFORM_TRANSLATE_ATTRS)) if camera_target else set())
+                        | (set(_key_times(camera_shape, _CAMERA_SHAPE_EXPORT_ATTRS)) if camera_shape else set())
+                    ),
+                    start_frame,
+                    end_frame,
                 )
+                for frame_number in keyed_frames:
+                    uses_raw_mmd_attrs = _uses_raw_mmd_camera_attrs(camera)
+                    uses_aim_roll_rig = _uses_aim_roll_camera(camera) and camera_target
+                    if uses_aim_roll_rig:
+                        if restore_time is None:
+                            restore_time = _query_current_time()
+                        cmds.currentTime(frame_number, edit=True)
+                        motion_scale = _camera_motion_scale(camera)
+                        eye = om.MVector(*cmds.xform(camera, query=True, worldSpace=True, translation=True))
+                        target = om.MVector(*cmds.xform(camera_target, query=True, worldSpace=True, translation=True))
+                        position = (
+                            float(target.x) / motion_scale,
+                            float(target.y) / motion_scale,
+                            -float(target.z) / motion_scale,
+                        )
+                        matrix = om.MMatrix(cmds.getAttr(f"{camera}.worldMatrix[0]"))
+                        forward = om.MVector(0.0, 0.0, -1.0) * matrix
+                        up = om.MVector(0.0, 1.0, 0.0) * matrix
+                        if forward.length() > 1e-12:
+                            forward.normalize()
+                        if up.length() > 1e-12:
+                            up.normalize()
+                        distance = _signed_camera_distance(eye, target, forward) / motion_scale
+                        rotation = mmd_camera_rotation_from_maya_forward_up(
+                            (forward.x, forward.y, forward.z),
+                            (up.x, up.y, up.z),
+                        )
+                        viewing_angle = _camera_viewing_angle(camera, camera_shape, frame_number)
+                        perspective = _camera_perspective_value(camera, camera_shape, frame_number)
+                    elif uses_raw_mmd_attrs and all(
+                        _has_attr(camera, attr) for attr in ("mmd_camera_target_x", "mmd_camera_target_y", "mmd_camera_target_z")
+                    ):
+                        position = (
+                            _plug_float(camera, "mmd_camera_target_x", frame_number),
+                            _plug_float(camera, "mmd_camera_target_y", frame_number),
+                            _plug_float(camera, "mmd_camera_target_z", frame_number),
+                        )
+                    else:
+                        position = (
+                            _plug_float(camera, "translateX", frame_number),
+                            _plug_float(camera, "translateY", frame_number),
+                            -_plug_float(camera, "translateZ", frame_number),
+                        )
+                    if not uses_aim_roll_rig:
+                        if uses_raw_mmd_attrs and all(
+                            _has_attr(camera, attr)
+                            for attr in ("mmd_camera_rotation_x", "mmd_camera_rotation_y", "mmd_camera_rotation_z")
+                        ):
+                            rotation = (
+                                _plug_float(camera, "mmd_camera_rotation_x", frame_number),
+                                _plug_float(camera, "mmd_camera_rotation_y", frame_number),
+                                _plug_float(camera, "mmd_camera_rotation_z", frame_number),
+                            )
+                        else:
+                            rotation = (
+                                math.radians(_plug_float(camera, "rotateX", frame_number)),
+                                math.radians(_plug_float(camera, "rotateY", frame_number)),
+                                -math.radians(_plug_float(camera, "rotateZ", frame_number)),
+                            )
+                        distance = _plug_float(camera, "mmd_camera_distance", frame_number)
+                        viewing_angle = int(round(_plug_float(camera, "mmd_camera_viewing_angle", frame_number)))
+                        perspective = int(round(_plug_float(camera, "mmd_camera_perspective", frame_number)))
+                    frames.append(
+                        {
+                            "frame_number": int(round(frame_number)),
+                            "distance": distance,
+                            "position": position,
+                            "rotation": rotation,
+                            "viewing_angle": viewing_angle,
+                            "perspective": perspective,
+                        }
+                    )
+        finally:
+            if restore_time is not None:
+                cmds.currentTime(restore_time, edit=True)
         frames.sort(key=lambda item: item["frame_number"])
         return frames
 
@@ -304,6 +359,8 @@ def _read_blendshape_morph_names(blend_shape: str) -> dict[int, str]:
 
 
 def _key_times(node: str, attrs: Iterable[str]) -> list[float]:
+    if not node:
+        return []
     times = []
     for attr in attrs:
         plug = f"{node}.{attr}"
@@ -313,6 +370,13 @@ def _key_times(node: str, attrs: Iterable[str]) -> list[float]:
             values = []
         times.extend(float(value) for value in values)
     return sorted(set(times))
+
+
+def _query_current_time() -> Optional[float]:
+    try:
+        return float(cmds.currentTime(query=True))
+    except Exception:
+        return None
 
 
 def _filter_frame_range(
@@ -338,6 +402,31 @@ def _plug_float(node: str, attr: str, frame: float) -> float:
         else:
             value = value[0]
     return float(value or 0.0)
+
+
+def _camera_shape(camera: str) -> Optional[str]:
+    shapes = cmds.listRelatives(camera, shapes=True, type="camera") or []
+    return shapes[0] if shapes else None
+
+
+def _camera_viewing_angle(camera: str, camera_shape: Optional[str], frame: float) -> int:
+    if camera_shape:
+        focal_length = _plug_float(camera_shape, "focalLength", frame)
+        if abs(focal_length) > 1e-9:
+            aperture_inch = _plug_float(camera_shape, "verticalFilmAperture", frame)
+            aperture_mm = aperture_inch * 25.4
+            return int(round(math.degrees(2.0 * math.atan(aperture_mm / (2.0 * focal_length)))))
+    if _has_attr(camera, "mmd_camera_viewing_angle"):
+        return int(round(_plug_float(camera, "mmd_camera_viewing_angle", frame)))
+    return 45
+
+
+def _camera_perspective_value(camera: str, camera_shape: Optional[str], frame: float) -> int:
+    if camera_shape and _has_attr(camera_shape, "orthographic"):
+        return int(round(_plug_float(camera_shape, "orthographic", frame)))
+    if _has_attr(camera, "mmd_camera_perspective"):
+        return int(round(_plug_float(camera, "mmd_camera_perspective", frame)))
+    return 0
 
 
 def _resolve_bind_pose(
@@ -502,6 +591,57 @@ def _uses_raw_mmd_camera_attrs(camera: str) -> bool:
         return cmds.getAttr(f"{camera}.{_ATTR_MMD_CAMERA_RIG_TYPE}") == "mmd"
     except Exception:
         return False
+
+
+def _uses_aim_roll_camera(camera: str) -> bool:
+    if not _has_attr(camera, _ATTR_MMD_CAMERA_RIG_TYPE):
+        return False
+    try:
+        return cmds.getAttr(f"{camera}.{_ATTR_MMD_CAMERA_RIG_TYPE}") == _MMD_CAMERA_AIM_ROLL_RIG_TYPE
+    except Exception:
+        return False
+
+
+def _camera_target_node(camera: str) -> Optional[str]:
+    if not _has_attr(camera, ATTR_MMD_CAMERA_TARGET_NODE):
+        return None
+    targets = cmds.listConnections(
+        f"{camera}.{ATTR_MMD_CAMERA_TARGET_NODE}",
+        source=True,
+        destination=False,
+    ) or []
+    return targets[0] if targets else None
+
+
+def _camera_root_node(camera: str) -> Optional[str]:
+    if not _has_attr(camera, ATTR_MMD_CAMERA_ROOT_NODE):
+        return None
+    roots = cmds.listConnections(
+        f"{camera}.{ATTR_MMD_CAMERA_ROOT_NODE}",
+        source=True,
+        destination=False,
+    ) or []
+    return roots[0] if roots else None
+
+
+def _camera_motion_scale(camera: str) -> float:
+    if _has_attr(camera, MMD_CAMERA_EXPR_SCALE_ATTR):
+        scale = _plug_float(camera, MMD_CAMERA_EXPR_SCALE_ATTR, _query_current_time())
+        if abs(scale) > 1e-12:
+            return scale
+    return 1.0
+
+
+def _signed_camera_distance(eye: om.MVector, target: om.MVector, forward: om.MVector) -> float:
+    target_from_eye = target - eye
+    distance = target_from_eye.length()
+    if distance <= 1e-12:
+        return 0.0
+    forward_normal = om.MVector(forward.x, forward.y, forward.z)
+    if forward_normal.length() <= 1e-12:
+        return -distance
+    forward_normal.normalize()
+    return -distance if target_from_eye * forward_normal >= 0.0 else distance
 
 
 def _leaf_name(node: str) -> str:

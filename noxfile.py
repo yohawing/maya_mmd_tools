@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import platform
+import json
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,7 @@ from tests.common.maya_location import resolve_path_for_maya_process as _resolve
 
 DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_CMAKE_CONFIG = "Debug"
+RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
 
 nox.options.sessions = ["tests"]
 
@@ -960,6 +962,7 @@ def local_camera_motion_oracle(session: nox.Session) -> None:
         "--max-current-frames",
         "--epsilon",
         "--current-epsilon",
+        "--current-frame-zero",
         "--out",
     }
     while i < len(args):
@@ -990,6 +993,116 @@ def local_camera_motion_oracle(session: nox.Session) -> None:
         env=_mayapy_env(mayapy),
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def release_camera_motion_oracle(session: nox.Session) -> None:
+    """Run the local GoldenOracle camera-motion release gate.
+
+    Bake and sparse modes both gate raw keyframes and playback camera.current
+    pose by default. This release gate uses a current-pose tolerance for the
+    known local GoldenOracle dump residuals; pass --current-epsilon for a stricter
+    or looser audit. The runner's default camera.current frame 0 policy skips
+    non-generated GoldenOracle dump frame 0.
+
+    Examples:
+        uvx nox -s release_camera_motion_oracle -- --maya 2024
+        uvx nox -s release_camera_motion_oracle -- --manifest F:\\Develop\\MMDDev\\GoldenOracle\\manifests\\camera_motion.json
+        uvx nox -s release_camera_motion_oracle -- --all-cases
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    manifest = _option(
+        session.posargs,
+        "--manifest",
+        "F:/Develop/MMDDev/GoldenOracle/manifests/camera_motion.json",
+    )
+    out_dir = _require_build_path(
+        session,
+        _option(session.posargs, "--out-dir", "build/local-camera-motion-oracle/release"),
+        "--out-dir",
+    )
+    default_release_cases = [
+        "camera-edge-generated-vmd",
+        "camera-interpolation-isolated-vmd",
+    ]
+    requested_case = _option(session.posargs, "--case", "")
+    if _has_flag(session.posargs, "--all-cases"):
+        selected_cases = [""]
+    elif requested_case:
+        selected_cases = [requested_case]
+    else:
+        selected_cases = default_release_cases
+    args = list(session.posargs)
+    common_args = ["--manifest", manifest]
+    if "--current-epsilon" not in args:
+        common_args.extend(["--current-epsilon", RELEASE_CAMERA_CURRENT_EPSILON])
+    i = 0
+    passthrough_value_options = {
+        "--case",
+        "--limit",
+        "--max-current-frames",
+        "--epsilon",
+        "--current-epsilon",
+        "--current-frame-zero",
+    }
+    consumed_value_options = {"--maya", "--manifest", "--out-dir", "--case"}
+    while i < len(args):
+        if args[i] in consumed_value_options and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in passthrough_value_options and i + 1 < len(args):
+            common_args.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in {"--all-frames", "--all-cases", "--current-report-only"}:
+            if args[i] == "--all-cases":
+                i += 1
+                continue
+            common_args.append(args[i])
+            i += 1
+            continue
+        i += 1
+
+    failed_reports: list[str] = []
+    for case_name in selected_cases:
+        case_args = list(common_args)
+        case_suffix = "all-cases"
+        if case_name:
+            case_args.extend(["--case", case_name])
+            case_suffix = case_name
+        for mode in ("bake", "sparse"):
+            report_path = out_dir / f"{mode}-{case_suffix}.json"
+            runner_args = [
+                *case_args,
+                "--mode",
+                mode,
+                "--out",
+                str(report_path),
+            ]
+            session.run(
+                str(mayapy),
+                _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
+                "--repo-root",
+                _maya_process_path(mayapy, ROOT),
+                *_convert_mayapy_path_options(
+                    mayapy,
+                    runner_args,
+                    {"--manifest", "--out"},
+                ),
+                env=_mayapy_env(mayapy),
+                external=True,
+                success_codes=[0, 1],
+            )
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                failed = int((report.get("summary") or {}).get("failed", 0))
+            except Exception:
+                failed = 1
+            if failed:
+                failed_reports.append(str(report_path))
+    if failed_reports:
+        session.error("Camera motion release gate failed; reports: " + ", ".join(failed_reports))
 
 
 @nox.session(venv_backend="none")
