@@ -1368,7 +1368,7 @@ class RigConverter:
         ancestors = set()
         current = controller_joint
         while True:
-            parents = cmds.listRelatives(current, parent=True) or []
+            parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
             if not parents:
                 break
             current = parents[0]
