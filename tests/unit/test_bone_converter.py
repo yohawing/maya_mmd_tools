@@ -166,10 +166,10 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertTrue(cmds.objExists(maya_joints[2]))
 
         # 親子関係の確認
-        parent_of_upper = cmds.listRelatives(maya_joints[1], parent=True)[0]
+        parent_of_upper = cmds.listRelatives(maya_joints[1], parent=True, fullPath=True)[0]
         self.assertEqual(parent_of_upper, maya_joints[0])
 
-        parent_of_head = cmds.listRelatives(maya_joints[2], parent=True)[0]
+        parent_of_head = cmds.listRelatives(maya_joints[2], parent=True, fullPath=True)[0]
         self.assertEqual(parent_of_head, maya_joints[1])
 
         # 位置の確認（Mayaは左手系なのでZ座標が反転）
@@ -182,6 +182,40 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertAlmostEqual(upper_pos[0], 0, places=5)
         self.assertAlmostEqual(upper_pos[1], 10, places=5)
         self.assertAlmostEqual(upper_pos[2], 0, places=5)
+
+    @patch("mmd_tools.core.maya_utils.sanitize_text")
+    def test_create_maya_joints_refreshes_paths_after_name_collision(self, mock_sanitize):
+        """既存同名jointがあるシーンでもreparent後のDAG pathを返す"""
+        mock_sanitize.side_effect = lambda x: x
+
+        cmds.select(clear=True)
+        existing_center = cmds.joint(name="center", position=[100, 0, 0])
+        self.assertEqual(cmds.ls(existing_center, long=True)[0], "|center")
+
+        bones = [
+            self._create_mock_pmx_bone(0, "center", parent_index=-1, position=(0, 0, 0)),
+            self._create_mock_pmx_bone(1, "upper_body", parent_index=0, position=(0, 10, 0)),
+            self._create_mock_pmx_bone(2, "head", parent_index=1, position=(0, 20, 0)),
+        ]
+
+        skeleton_group = cmds.group(empty=True, name="skeleton_collision_grp")
+        maya_joints = self.converter._create_maya_joints(
+            bones,
+            {0: "center", 1: "upper_body", 2: "head"},
+            "pmx",
+            skeleton_group,
+        )
+
+        self.assertEqual(len(maya_joints), 3)
+        for joint in maya_joints:
+            self.assertTrue(cmds.objExists(joint), f"stale joint path returned: {joint}")
+            self.assertTrue(joint.startswith("|skeleton_collision_grp|"))
+
+        parent_of_upper = cmds.listRelatives(maya_joints[1], parent=True, fullPath=True)[0]
+        parent_of_head = cmds.listRelatives(maya_joints[2], parent=True, fullPath=True)[0]
+        self.assertEqual(parent_of_upper, maya_joints[0])
+        self.assertEqual(parent_of_head, maya_joints[1])
+        self.assertTrue(cmds.objExists("|center"), "pre-existing root joint should not be consumed")
 
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx(self, mock_set_attrs):

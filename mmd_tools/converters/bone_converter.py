@@ -1,6 +1,6 @@
 import math
 import time
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
@@ -207,6 +207,67 @@ class BoneConverter:
 
         return bone_map
 
+    def _get_node_uuid(self, node: str) -> Optional[str]:
+        """Return the Maya UUID for a node when available."""
+        uuids = cmds.ls(node, uuid=True) or []
+        return uuids[0] if uuids else None
+
+    def _resolve_node_long_path(self, node_uuid: Optional[str], fallback: Optional[str] = None) -> str:
+        """Resolve a node UUID to the current long DAG path.
+
+        Maya DAG paths change when an ancestor is reparented. UUID lookup keeps
+        the converter from using stale path strings after hierarchy edits.
+        """
+        if node_uuid:
+            matches = cmds.ls(node_uuid, long=True) or []
+            if matches:
+                return matches[0]
+
+        if fallback and cmds.objExists(fallback):
+            matches = cmds.ls(fallback, long=True) or []
+            if matches:
+                return matches[0]
+            return fallback
+
+        raise RuntimeError(f"Unable to resolve Maya node path for uuid={node_uuid!r}, fallback={fallback!r}")
+
+    def _refresh_joint_paths(self, maya_joints: List[str], joint_uuids: List[Optional[str]]) -> None:
+        """Refresh all stored joint paths from UUIDs after DAG parenting."""
+        for i, joint_uuid in enumerate(joint_uuids):
+            maya_joints[i] = self._resolve_node_long_path(joint_uuid, maya_joints[i])
+
+    def _parent_first_bone_indices(self, bones) -> List[int]:
+        """Return bone indices with parents before children."""
+        order = []
+        visiting = set()
+        visited = set()
+        bone_count = len(bones)
+
+        def _valid_parent_index(index):
+            parent_index = getattr(bones[index], "parent_bone_index", -1)
+            if isinstance(parent_index, int) and 0 <= parent_index < bone_count and parent_index != index:
+                return parent_index
+            return -1
+
+        def _visit(index):
+            if index in visited:
+                return
+            if index in visiting:
+                self.logger.warning("Cycle detected in bone hierarchy at index %s; using best-effort order", index)
+                return
+            visiting.add(index)
+            parent_index = _valid_parent_index(index)
+            if parent_index != -1:
+                _visit(parent_index)
+            visiting.remove(index)
+            visited.add(index)
+            order.append(index)
+
+        for index in range(bone_count):
+            _visit(index)
+
+        return order
+
     def _create_maya_joints(
         self,
         bones,
@@ -229,6 +290,7 @@ class BoneConverter:
             list: 作成されたMayaジョイントノードの名前のリスト。
         """
         maya_joints = []
+        joint_uuids = []
 
         # まず、すべてのジョイントを親なしで作成
         for i, bone in enumerate(bones):
@@ -249,6 +311,8 @@ class BoneConverter:
                     -position[2],
                 ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
             )
+            joint_uuid = self._get_node_uuid(joint)
+            joint = self._resolve_node_long_path(joint_uuid, joint)
 
             # セグメントスケール補償を無効化
             maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
@@ -258,16 +322,23 @@ class BoneConverter:
             self._set_extra_attributes(i, joint, bone, format_type)
             self._add_profile_time("joint_attr_sec", joint_attr_start)
             maya_joints.append(joint)
+            joint_uuids.append(joint_uuid)
 
         # 次に、親子関係を設定
-        for i, bone in enumerate(bones):
-            if bone.parent_bone_index != -1 and bone.parent_bone_index < len(bones):
+        for i in self._parent_first_bone_indices(bones):
+            bone = bones[i]
+            if 0 <= bone.parent_bone_index < len(bones):
                 child_joint = maya_joints[i]
                 parent_joint = maya_joints[bone.parent_bone_index]
 
                 try:
                     # 親子関係を設定
-                    cmds.parent(child_joint, parent_joint, absolute=True)
+                    parent_result = cmds.parent(child_joint, parent_joint, absolute=True) or []
+                    maya_joints[i] = self._resolve_node_long_path(
+                        joint_uuids[i],
+                        parent_result[0] if parent_result else child_joint,
+                    )
+                    self._refresh_joint_paths(maya_joints, joint_uuids)
                 except Exception as e:
                     self.logger.error(f"Failed to parent {child_joint} to {parent_joint}: {e}")
 
@@ -277,18 +348,26 @@ class BoneConverter:
         for i, bone in enumerate(bones):
             if bone.parent_bone_index == -1:
                 # 実際に作成されたジョイント名を使用
-                root_joints.append(maya_joints[i])
+                root_joints.append((i, maya_joints[i]))
 
         self.logger.debug(f"Root joints to parent: {root_joints}")
         self.logger.debug(f"Skeleton group: {skeleton_group}")
 
         # ルートジョイントをスケルトングループにペアレント
         # absolute=Trueを使用してワールド座標を維持
-        for root_joint in root_joints:
-            if cmds.objExists(root_joint):
-                cmds.parent(root_joint, skeleton_group, absolute=True)
+        for i, root_joint in root_joints:
+            current_root_joint = self._resolve_node_long_path(joint_uuids[i], root_joint)
+            if cmds.objExists(current_root_joint):
+                parent_result = cmds.parent(current_root_joint, skeleton_group, absolute=True) or []
+                maya_joints[i] = self._resolve_node_long_path(
+                    joint_uuids[i],
+                    parent_result[0] if parent_result else current_root_joint,
+                )
+                self._refresh_joint_paths(maya_joints, joint_uuids)
             else:
-                self.logger.error(f"Root joint '{root_joint}' does not exist in scene")
+                self.logger.error(f"Root joint '{current_root_joint}' does not exist in scene")
+
+        self._refresh_joint_paths(maya_joints, joint_uuids)
 
         # parenting 完了後に LOCAL_AXIS ボーンの JO を設定し translate を補正する。
         # Bake/Rig とも JO を持つ skeleton に統一し、VMD/runtime 入力側で JO を補正する。
