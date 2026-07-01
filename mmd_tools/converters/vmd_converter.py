@@ -49,6 +49,8 @@ from .vmd_camera_animation import (
 )
 from .vmd_import_state import (
     capture_anim_layer_selection,
+    clear_existing_camera_motion,
+    clear_existing_light_motion,
     clear_existing_motion,
     cut_keyable_attrs,
     node_matches_target_namespace,
@@ -312,6 +314,7 @@ class VmdConverter:
             # カメラアニメーション（レガシー）
             if self.import_camera_animation and hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
                 self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
+                self._clear_existing_camera_motion()
                 camera_sample_bytes = vmd_bytes if bake_mode else None
                 self._convert_camera_animation(vmd_data.camera_frames, vmd_bytes=camera_sample_bytes)
             _emit_progress(88)
@@ -319,6 +322,7 @@ class VmdConverter:
             # ライトアニメーション（レガシー）
             if self.import_light_animation and hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
                 self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
+                self._clear_existing_light_motion()
                 light_sample_bytes = vmd_bytes if bake_mode else None
                 self._convert_light_animation(vmd_data.light_frames, vmd_bytes=light_sample_bytes)
             _emit_progress(94)
@@ -396,6 +400,14 @@ class VmdConverter:
     def _clear_existing_motion(self, layer_name: str, target_namespace: Optional[str] = None) -> None:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
         clear_existing_motion(self, layer_name, target_namespace)
+
+    def _clear_existing_camera_motion(self) -> None:
+        """既存の MMD カメラアニメーションキーを削除する。"""
+        clear_existing_camera_motion(logger=self.logger)
+
+    def _clear_existing_light_motion(self) -> None:
+        """既存の MMD ライトアニメーションキーを削除する。"""
+        clear_existing_light_motion(logger=self.logger)
 
     @staticmethod
     def _node_matches_target_namespace(node: str, target_namespace: Optional[str]) -> bool:

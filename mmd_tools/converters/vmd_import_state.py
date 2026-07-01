@@ -1,9 +1,11 @@
 """Import state and cleanup helpers for VMD conversion."""
 
 import json
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import maya.cmds as cmds
+
+from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
 
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
@@ -230,4 +232,83 @@ def cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
             cleared += 1
         except Exception:
             pass
+    return cleared
+
+
+_CAMERA_TRANSFORM_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+_CAMERA_SHAPE_ATTRS = ("focalLength", "orthographicWidth", "orthographic")
+_LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
+_LIGHT_COLOR_ATTRS = ("colorR", "colorG", "colorB")
+_LIGHT_MMD_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
+
+
+def clear_existing_camera_motion(logger: Any = None) -> int:
+    """Delete existing MMD camera animation keys.
+
+    Finds the MMD camera by the mmd_camera marker attribute and clears keys on
+    the camera transform, its shape, camera target, and camera root nodes.
+    Does NOT touch character bone/morph keys.
+
+    Returns:
+        Number of attribute channels cleared.
+    """
+    from .vmd_camera_animation import ATTR_MMD_CAMERA_TARGET_NODE, ATTR_MMD_CAMERA_ROOT_NODE
+
+    cameras = cmds.ls(f"*.{ATTR_MMD_CAMERA}", objectsOnly=True) or []
+    if not cameras:
+        if logger:
+            logger.debug("No MMD camera found; nothing to clear")
+        return 0
+
+    cleared = 0
+    for camera_transform in cameras:
+        cleared += cut_keyable_attrs(camera_transform, _CAMERA_TRANSFORM_ATTRS)
+
+        camera_shapes = cmds.listRelatives(camera_transform, shapes=True, type="camera") or []
+        for shape in camera_shapes:
+            cleared += cut_keyable_attrs(shape, _CAMERA_SHAPE_ATTRS)
+
+        if cmds.attributeQuery(ATTR_MMD_CAMERA_TARGET_NODE, node=camera_transform, exists=True):
+            targets = cmds.listConnections(f"{camera_transform}.{ATTR_MMD_CAMERA_TARGET_NODE}", source=True) or []
+            for target in targets:
+                cleared += cut_keyable_attrs(target, _CAMERA_TRANSFORM_ATTRS)
+
+        if cmds.attributeQuery(ATTR_MMD_CAMERA_ROOT_NODE, node=camera_transform, exists=True):
+            roots = cmds.listConnections(f"{camera_transform}.{ATTR_MMD_CAMERA_ROOT_NODE}", source=True) or []
+            for root in roots:
+                cleared += cut_keyable_attrs(root, _CAMERA_TRANSFORM_ATTRS)
+
+    if logger:
+        logger.info("Cleared existing camera motion: %d attribute channels from %d camera(s)", cleared, len(cameras))
+    return cleared
+
+
+def clear_existing_light_motion(logger: Any = None) -> int:
+    """Delete existing MMD light animation keys.
+
+    Finds the MMD light by the mmd_light marker attribute and clears keys on
+    the light transform (rotation + color). Does NOT touch character bone/morph keys.
+
+    Returns:
+        Number of attribute channels cleared.
+    """
+    lights = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True) or []
+    if not lights:
+        if logger:
+            logger.debug("No MMD light found; nothing to clear")
+        return 0
+
+    cleared = 0
+    for light_transform in lights:
+        cleared += cut_keyable_attrs(light_transform, _LIGHT_ROTATE_ATTRS)
+
+        if cmds.attributeQuery("mmd_light_color", node=light_transform, exists=True):
+            cleared += cut_keyable_attrs(light_transform, _LIGHT_MMD_COLOR_ATTRS)
+        else:
+            light_shapes = cmds.listRelatives(light_transform, shapes=True, type="directionalLight") or []
+            for shape in light_shapes:
+                cleared += cut_keyable_attrs(shape, _LIGHT_COLOR_ATTRS)
+
+    if logger:
+        logger.info("Cleared existing light motion: %d attribute channels from %d light(s)", cleared, len(lights))
     return cleared
