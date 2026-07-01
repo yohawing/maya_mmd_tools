@@ -34,6 +34,11 @@ def _prefer_cpp_rig_nodes() -> bool:
     return _node_type_available("mmdAppendNode") and _node_type_available("mmdCcdIkNode")
 
 
+def _node_leaf_name(node_name: str) -> str:
+    """Return the DAG leaf name, preserving namespace but dropping parent paths."""
+    return str(node_name).rsplit("|", 1)[-1] if node_name else ""
+
+
 class RigConverter:
     """
     Mayaジョイントに対してMMDのリグシステムをセットアップするクラス。
@@ -926,7 +931,7 @@ class RigConverter:
                 continue
 
             try:
-                node_name = f"{target_joint}_mmdAppend"
+                node_name = f"{_node_leaf_name(target_joint)}_mmdAppend"
                 node = cmds.createNode(self._append_node_type(), name=node_name)
 
                 cmds.setAttr(f"{node}.ratio", ratio)
@@ -1179,7 +1184,8 @@ class RigConverter:
             ik_chain_obj.free()
 
             try:
-                node_name = f"{controller_joint}_mmdCcdIk"
+                controller_leaf_name = _node_leaf_name(controller_joint)
+                node_name = f"{controller_leaf_name}_mmdCcdIk"
                 node = cmds.createNode(self._ccd_ik_node_type(), name=node_name)
                 cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
                 self._attach_ik_controller_shape(controller_joint)
@@ -1321,9 +1327,10 @@ class RigConverter:
                 if distances:
                     radius = max(0.2, min(2.0, min(distances) * 0.25))
 
-            ctrl_name = f"{controller_joint}_ctrlShape#"
+            controller_leaf_name = _node_leaf_name(controller_joint)
+            ctrl_name = f"{controller_leaf_name}_ctrlShape#"
             curve_transform = cmds.circle(
-                name=f"{controller_joint}_ctrl#",
+                name=f"{controller_leaf_name}_ctrl#",
                 normal=(0.0, 1.0, 0.0),
                 radius=radius,
                 constructionHistory=False,
