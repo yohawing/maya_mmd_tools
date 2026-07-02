@@ -284,7 +284,7 @@ def run(cases: list[str], *, tolerance: float) -> dict[str, Any]:
         )
 
     return {
-        "status": "passed" if all(item["evalMatch"] for item in results) else "failed",
+        "status": "passed" if all(item["evalMatch"] and item["graphMatch"] for item in results) else "failed",
         "cases": results,
         "tolerance": tolerance,
     }

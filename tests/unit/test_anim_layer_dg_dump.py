@@ -28,6 +28,46 @@ class TestAnimLayerDgDump(unittest.TestCase):
         self.assertEqual(normalized["joint#.rotateX"][0], "animCurveTA#.output")
         self.assertEqual(normalized["joint#.rotateX"][1]["node"], "animBlendNodeAdditiveRotation#")
 
+    def test_normalize_graph_removes_harness_route_names(self):
+        graph = {
+            "joint_translate_setkeyframe_joint.translateX": {
+                "layer": "setkeyframe_compare_layer",
+                "node": "joint_translate_setkeyframe_joint_translateX_setkeyframe_compare_layer",
+            }
+        }
+
+        normalized = normalize_graph(graph)
+
+        self.assertEqual(
+            normalized,
+            {
+                "joint_translate_route_joint.translateX": {
+                    "layer": "route_compare_layer",
+                    "node": "joint_translate_route_joint_translateX_route_compare_layer",
+                }
+            },
+        )
+
+    def test_normalize_graph_sorts_edges_and_rounds_floats(self):
+        graph = {
+            "edges": [
+                {"source": "b.output", "destination": "node.input"},
+                {"source": "a.output", "destination": "node.input"},
+            ],
+            "values": [15.000000000000002],
+        }
+
+        normalized = normalize_graph(graph)
+
+        self.assertEqual(
+            normalized["edges"],
+            [
+                {"source": "a.output", "destination": "node.input"},
+                {"source": "b.output", "destination": "node.input"},
+            ],
+        )
+        self.assertEqual(normalized["values"], [15.0])
+
     def test_diff_evaluations_reports_tolerance_failures(self):
         diff = diff_evaluations(
             {"rotateX": {"0.0": 10.0, "5.0": 15.0}},

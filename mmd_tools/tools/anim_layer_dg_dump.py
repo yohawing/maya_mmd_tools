@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any, Iterable
 
 
 _NODE_NUMBER_RE = re.compile(r"(?P<prefix>[A-Za-z_][A-Za-z0-9_:|]*?)(?P<number>\d+)(?=\.|$)")
+_HARNESS_ROUTE_RE = re.compile(r"(?:(?<=_)|^)(setkeyframe|api)(?=_compare_layer|_)")
 
 
 def normalize_node_numbers(value: str) -> str:
     """Replace Maya-generated numeric node suffixes with a stable marker."""
-    return _NODE_NUMBER_RE.sub(lambda match: f"{match.group('prefix')}#", str(value))
+    normalized = _NODE_NUMBER_RE.sub(lambda match: f"{match.group('prefix')}#", str(value))
+    return _HARNESS_ROUTE_RE.sub("route", normalized)
 
 
 def normalize_graph(value: Any) -> Any:
@@ -20,11 +23,19 @@ def normalize_graph(value: Any) -> Any:
         normalized = {normalize_node_numbers(str(key)): normalize_graph(inner) for key, inner in value.items()}
         return {key: normalized[key] for key in sorted(normalized)}
     if isinstance(value, list):
-        return [normalize_graph(item) for item in value]
+        normalized = [normalize_graph(item) for item in value]
+        if all(isinstance(item, dict) and {"source", "destination"} <= set(item) for item in normalized):
+            return sorted(
+                normalized,
+                key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
+            )
+        return normalized
     if isinstance(value, tuple):
         return tuple(normalize_graph(item) for item in value)
     if isinstance(value, str):
         return normalize_node_numbers(value)
+    if isinstance(value, float):
+        return round(value, 12)
     return value
 
 
