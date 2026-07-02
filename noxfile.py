@@ -1520,6 +1520,40 @@ def import_scale_drift_e2e(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def anim_layer_graph_compare(session: nox.Session) -> None:
+    """Run mayapy diagnostics comparing setKeyframe and API animLayer graphs.
+
+    Examples:
+        uvx nox -s anim_layer_graph_compare -- --maya 2024
+        uvx nox -s anim_layer_graph_compare -- --maya 2024 --case joint_translate --case joint_rotate
+        uvx nox -s anim_layer_graph_compare -- --maya 2024 --out build/reports/anim_layer_graph_compare.json
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    path_options = {"--out"}
+    value_options = path_options | {"--case", "--tolerance"}
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/anim_layer_graph_compare.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def runtime_bake_bench(session: nox.Session) -> None:
     """Measure the Maya runtime-bake import path.
 
