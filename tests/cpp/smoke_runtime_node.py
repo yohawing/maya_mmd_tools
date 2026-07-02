@@ -417,7 +417,7 @@ def main() -> int:
 
         from mmd_tools.core import settings
         from mmd_tools.converters.rig_converter import RigConverter
-        from mmd_tools.converters import vmd_converter as vmd_converter_mod
+        from mmd_tools.converters import vmd_runtime_rig_helper as vmd_runtime_rig_helper_mod
 
         settings.set("import.native.use_cpp_rig_nodes", True)
         rig_converter = RigConverter()
@@ -804,7 +804,7 @@ def main() -> int:
 
         print(f"OK: {APPEND_NODE_TYPE} JO-aware append parity cases match native expected outputs")
 
-        if append_node not in vmd_converter_mod._ls_mmd_append_nodes():
+        if append_node not in vmd_runtime_rig_helper_mod._ls_mmd_append_nodes():
             raise RuntimeError(f"VmdConverter append collection did not include C++ node {append_node}")
         cmds.delete(append_node)
         print(
@@ -1221,16 +1221,16 @@ def main() -> int:
 
         print("OK: mmdCcdIkNode multi-link 2-link CCD produced non-zero output and reduced distance")
 
-        if ccdik_node not in vmd_converter_mod._ls_mmd_ccd_ik_nodes():
+        if ccdik_node not in vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes():
             raise RuntimeError(f"VmdConverter IK collection did not include C++ node {ccdik_node}")
         cmds.delete(ccdik_node)
         print(f"OK: created {CCDIK_NODE_TYPE}, verified attributes, IK compute, and disabled state")
-        if ccdik_node in vmd_converter_mod._ls_mmd_ccd_ik_nodes():
+        if ccdik_node in vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes():
             raise RuntimeError(f"Deleted C++ IK node {ccdik_node} should not remain in VmdConverter collection")
 
         from mmd_tools.io.mmd_importer import import_mmd_file
 
-        ik_nodes_before_model_import = set(vmd_converter_mod._ls_mmd_ccd_ik_nodes())
+        ik_nodes_before_model_import = set(vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes())
         rig_model_root = import_mmd_file(
             str(FAST_LOAD_MODEL),
             options={
@@ -1246,7 +1246,7 @@ def main() -> int:
         try:
             imported_ik_nodes = [
                 node
-                for node in vmd_converter_mod._ls_mmd_ccd_ik_nodes()
+                for node in vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes()
                 if node not in ik_nodes_before_model_import
             ]
             cpp_ik_nodes = [node for node in imported_ik_nodes if cmds.nodeType(node) == CCDIK_NODE_TYPE]
