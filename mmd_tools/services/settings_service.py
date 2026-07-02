@@ -6,6 +6,7 @@ while preserving the existing optionVar-backed storage behavior.
 
 import json
 
+from ..core import settings_keys as setting_keys
 from ..core.settings import get_settings
 
 
@@ -57,32 +58,32 @@ class SettingsService:
 
     def is_development_mode(self):
         """Return whether Development Mode is enabled."""
-        return self.get("ui.general.development_mode", False)
+        return self.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
 
     def set_development_mode_log_levels(self, enabled):
         """Set the logging level for Development Mode and return the level."""
         level_str = "INFO" if enabled else "WARNING"
-        self.set("logging.level", level_str)
+        self.set(setting_keys.LOGGING_LEVEL, level_str)
         return level_str
 
     def load_settings_tab_state(self):
         """Return settings needed by the Settings tab view."""
         return {
-            "development_mode": self.get("ui.general.development_mode", False),
-            "logging_enabled": self.get("logging.enabled", True),
-            "logging_level": self.get("logging.level", "WARNING"),
-            "log_file_path": self.get("logging.log_file_path", "logs/mmd_tools.log"),
-            "language": self.get("ui.general.language", "ja"),
+            "development_mode": self.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False),
+            "logging_enabled": self.get(setting_keys.LOGGING_ENABLED, True),
+            "logging_level": self.get(setting_keys.LOGGING_LEVEL, "WARNING"),
+            "log_file_path": self.get(setting_keys.LOGGING_LOG_FILE_PATH, "logs/mmd_tools.log"),
+            "language": self.get(setting_keys.UI_GENERAL_LANGUAGE, "ja"),
         }
 
     def save_settings_tab_state(self, state):
         """Persist settings supplied by the Settings tab presenter."""
-        self.set("ui.general.development_mode", state["development_mode"])
+        self.set(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, state["development_mode"])
         if "language" in state:
-            self.set("ui.general.language", state["language"])
-        self.set("logging.enabled", state["logging_enabled"])
-        self.set("logging.level", state["logging_level"])
-        self.set("logging.log_file_path", state["log_file_path"])
+            self.set(setting_keys.UI_GENERAL_LANGUAGE, state["language"])
+        self.set(setting_keys.LOGGING_ENABLED, state["logging_enabled"])
+        self.set(setting_keys.LOGGING_LEVEL, state["logging_level"])
+        self.set(setting_keys.LOGGING_LOG_FILE_PATH, state["log_file_path"])
         self.save()
 
     def export_settings_data(self):
@@ -115,16 +116,16 @@ class SettingsService:
         """Build VMD import options from persisted settings."""
         is_dev = self.is_development_mode()
         return {
-            "start_frame": self.get("import.animation.animation_start_frame", 1),
-            "vmd_fps": self.get("import.animation.vmd_fps", 30),
-            "import_bone_animation": self.get("import.animation.import_animations", True),
-            "import_morph_animation": self.get("import.animation.import_morph_animation", True),
-            "import_camera_animation": self.get("import.animation.import_camera_animation", True),
-            "import_light_animation": self.get("import.animation.import_light_animation", True),
-            "motion_scale": self.get("import.animation.motion_scale", 1.0),
-            "clear_existing_motion": self.get("import.animation.clear_existing_motion", False),
-            "resample_curves": self.get("import.animation.resample_curves", False) if is_dev else False,
-            "bake_mode": self.get("import.rig.bake_mode", False),
+            "start_frame": self.get(setting_keys.IMPORT_ANIMATION_START_FRAME, 1),
+            "vmd_fps": self.get(setting_keys.IMPORT_ANIMATION_VMD_FPS, 30),
+            "import_bone_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_ANIMATIONS, True),
+            "import_morph_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_MORPH_ANIMATION, True),
+            "import_camera_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_CAMERA_ANIMATION, True),
+            "import_light_animation": self.get(setting_keys.IMPORT_ANIMATION_IMPORT_LIGHT_ANIMATION, True),
+            "motion_scale": self.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0),
+            "clear_existing_motion": self.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False),
+            "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
+            "bake_mode": self.get(setting_keys.IMPORT_RIG_BAKE_MODE, False),
             "target_model": target_model,
         }
 
@@ -132,39 +133,39 @@ class SettingsService:
         """Build PMX/PMD import options from persisted settings."""
         is_dev = self.is_development_mode()
         opts = {
-            "scale": self.get("import.general.scale_factor", 1.0),
-            "use_namespace": self.get("import.general.use_namespace", False),
+            "scale": self.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, 1.0),
+            "use_namespace": self.get(setting_keys.IMPORT_GENERAL_USE_NAMESPACE, False),
             "custom_namespace": custom_namespace,
-            "import_models": self.get("import.model.import_models", True),
-            "create_mmd_shaders": self.get("import.model.create_mmd_shaders", True),
-            "separate_meshes_by_material": self.get("import.model.separate_meshes_by_material", False),
-            "split_meshes_by_morph_groups": self.get("import.model.split_meshes_by_morph_groups", False),
-            "hide_hidden_geometry": self.get("import.model.hide_hidden_geometry", False),
-            "auto_classify_transparency": self.get("import.model.auto_classify_transparency", False),
-            "auto_resolve_textures": self.get("import.model.auto_resolve_textures", True),
-            "disable_backface_culling": self.get("import.model.disable_backface_culling", True),
-            "uv_set_name": self.get("import.model.uv_set_name", "map#"),
-            "texture_search_path": self.get("import.model.texture_search_path", ""),
-            "import_physics": self.get("import.physics.import_physics", False),
-            "import_morphs": self.get("import.morph.import_morphs", True),
-            "add_semi_standard_bones": self.get("import.rig.add_semi_standard_bones", False),
-            "translate_names": self.get("import.naming.translate_names", True),
+            "import_models": self.get(setting_keys.IMPORT_MODEL_IMPORT_MODELS, True),
+            "create_mmd_shaders": self.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS, True),
+            "separate_meshes_by_material": self.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False),
+            "split_meshes_by_morph_groups": self.get(setting_keys.IMPORT_MODEL_SPLIT_MESHES_BY_MORPH_GROUPS, False),
+            "hide_hidden_geometry": self.get(setting_keys.IMPORT_MODEL_HIDE_HIDDEN_GEOMETRY, False),
+            "auto_classify_transparency": self.get(setting_keys.IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY, False),
+            "auto_resolve_textures": self.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True),
+            "disable_backface_culling": self.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True),
+            "uv_set_name": self.get(setting_keys.IMPORT_MODEL_UV_SET_NAME, "map#"),
+            "texture_search_path": self.get(setting_keys.IMPORT_MODEL_TEXTURE_SEARCH_PATH, ""),
+            "import_physics": self.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, False),
+            "import_morphs": self.get(setting_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
+            "add_semi_standard_bones": self.get(setting_keys.IMPORT_RIG_ADD_SEMI_STANDARD_BONES, False),
+            "translate_names": self.get(setting_keys.IMPORT_NAMING_TRANSLATE_NAMES, True),
         }
         if not is_dev:
             opts.update(_NORMAL_MODE_IMPORT_OVERRIDES)
-        opts["use_cpp_fast_load"] = self.get("import.native.use_cpp_fast_load", False)
-        opts["cpp_fast_load_mesh_only"] = self.get("import.native.cpp_fast_load_mesh_only", True)
-        opts["use_cpp_rig_nodes"] = self.get("import.native.use_cpp_rig_nodes", False)
+        opts["use_cpp_fast_load"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_FAST_LOAD, False)
+        opts["cpp_fast_load_mesh_only"] = self.get(setting_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY, True)
+        opts["use_cpp_rig_nodes"] = self.get(setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES, False)
         return opts
 
     def should_show_texture_issue_dialog(self):
         """Return whether post-import texture issue diagnostics should be shown."""
-        return self.get("import.model.show_texture_issue_dialog", True)
+        return self.get(setting_keys.IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG, True)
 
     def build_export_options(self, file_path):
         """Build PMX/PMD export options from persisted settings."""
         return {
             "file_path": file_path,
-            "export_format": self.get("export.general.export_format", "pmx"),
-            "apply_scale": self.get("export.general.apply_scale", True),
+            "export_format": self.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx"),
+            "apply_scale": self.get(setting_keys.EXPORT_GENERAL_APPLY_SCALE, True),
         }

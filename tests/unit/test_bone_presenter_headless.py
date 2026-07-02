@@ -20,6 +20,9 @@ from mmd_tools.core.constants import (  # noqa: E402
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag  # noqa: E402
 from mmd_tools.ui.presenters import bone_presenter as bone_presenter_module  # noqa: E402
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter  # noqa: E402
+from mmd_tools.ui.translations import UITranslator  # noqa: E402
+
+UITranslator.instance().set_language("en")
 
 TEST_MODEL = "test_mmd_model"
 TEST_BONE = "center_jnt"

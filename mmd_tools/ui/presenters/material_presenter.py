@@ -12,9 +12,22 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
 from mmd_tools.core.pmx_data.material import PmxSphereMode
+from mmd_tools.actions import (
+    apply_shader_settings,
+    shader_outline_enabled,
+    transparency_mode_from_index,
+    transparency_mode_index,
+)
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ..qt_compat import QColorDialog, QFileDialog, QColor, Qt
+from ..translations import UITranslator
+from .list_presenter_helpers import (
+    apply_list_filter,
+    reload_for_current_model_change,
+    select_existing_user_role_nodes,
+    tr_message_format,
+)
 
 logger = get_logger(__name__)
 
@@ -100,8 +113,11 @@ class MaterialPresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
-        logger.info(f"MaterialPresenter: Current model changed to {model_root}")
-        self.load_materials()
+        reload_for_current_model_change(logger, "MaterialPresenter", model_root, self.load_materials)
+
+    def tr_message(self, key: str) -> str:
+        """Translate a material presenter message key."""
+        return UITranslator.instance().translate(key, "messages")
 
     def load_materials(self):
         self.view.material_list.clear()
@@ -167,7 +183,7 @@ class MaterialPresenter:
             logger.error(f"Failed to load materials: {e}", exc_info=True)
             self.view._set_details_enabled(False)
             self.view._show_placeholder()
-            self.app_state.emit_status(f"Failed to load materials: {str(e)}")
+            self.app_state.emit_status(tr_message_format("materials_load_failed", error=str(e)))
 
     def on_material_selected(self, current, previous):
         if not current:
@@ -184,8 +200,8 @@ class MaterialPresenter:
 
             reply = QMessageBox.question(
                 self.view,
-                "Unsaved Changes",
-                "You have unsaved changes. Select a different material anyway?",
+                self.tr_message("unsaved_changes_title"),
+                self.tr_message("unsaved_changes_select_material"),
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -454,14 +470,7 @@ class MaterialPresenter:
         mode_index = 0
         try:
             if self.maya_adapter.node_type(material_name) == "dx11Shader":
-                from mmd_tools.converters import mesh_converter
-
-                mode = mesh_converter.get_transparency_mode(material_name)
-                mode_index = {
-                    mesh_converter.TRANSPARENCY_MODE_OPAQUE: 0,
-                    mesh_converter.TRANSPARENCY_MODE_CUTOUT: 1,
-                    mesh_converter.TRANSPARENCY_MODE_BLEND: 2,
-                }.get(mode, 0)
+                mode_index = transparency_mode_index(material_name)
         except Exception:
             mode_index = 0
         self.material_data["transparency_mode"] = mode_index
@@ -472,9 +481,7 @@ class MaterialPresenter:
         outline_enabled = False
         try:
             if self.maya_adapter.node_type(material_name) == "dx11Shader":
-                from mmd_tools.converters import mesh_converter
-
-                outline_enabled = mesh_converter.get_shader_outline_enabled(material_name)
+                outline_enabled = shader_outline_enabled(material_name)
             else:
                 outline_enabled = bool(self._get_attr_safe(material_name, ATTR_MMD_SHADER_OUTLINE_ENABLED, False))
         except Exception:
@@ -689,21 +696,13 @@ class MaterialPresenter:
             # Apply transparency mode (DX11 technique) if applicable
             try:
                 if self.maya_adapter.node_type(self.current_material) == "dx11Shader":
-                    from mmd_tools.converters import mesh_converter
-
-                    modes = [
-                        mesh_converter.TRANSPARENCY_MODE_OPAQUE,
-                        mesh_converter.TRANSPARENCY_MODE_CUTOUT,
-                        mesh_converter.TRANSPARENCY_MODE_BLEND,
-                    ]
                     idx = self.view.transparency_mode_combo.currentIndex()
-                    if 0 <= idx < len(modes):
-                        mesh_converter.apply_transparency_mode(self.current_material, modes[idx])
-                        mesh_converter.apply_shader_outline(
-                            self.current_material,
-                            self.view.shader_outline_check.isChecked(),
-                            self.view.edge_size_spin.value(),
-                        )
+                    apply_shader_settings(
+                        self.current_material,
+                        transparency_mode_index_value=idx,
+                        outline_enabled=self.view.shader_outline_check.isChecked(),
+                        edge_size=self.view.edge_size_spin.value(),
+                    )
             except Exception as e:
                 logger.warning(f"Failed to apply transparency mode: {e}")
 
@@ -734,11 +733,11 @@ class MaterialPresenter:
 
             self.has_unsaved_changes = False
             logger.info(f"Applied changes to material '{self.current_material}'")
-            self.app_state.emit_status(f"Applied material changes: {self.current_material}")
+            self.app_state.emit_status(tr_message_format("material_changes_applied", material=self.current_material))
 
         except Exception as e:
             logger.error(f"Failed to apply material changes: {e}", exc_info=True)
-            self.app_state.emit_status(f"Failed to apply material changes: {str(e)}")
+            self.app_state.emit_status(tr_message_format("material_changes_failed", error=str(e)))
 
     def _apply_texture(self, material, texture_path):
         """Apply texture to material"""
@@ -862,17 +861,10 @@ class MaterialPresenter:
 
     def apply_transparency_mode_to_selected(self):
         """Apply the chosen transparency and outline settings to selected materials."""
-        from mmd_tools.converters import mesh_converter
-
-        modes = [
-            mesh_converter.TRANSPARENCY_MODE_OPAQUE,
-            mesh_converter.TRANSPARENCY_MODE_CUTOUT,
-            mesh_converter.TRANSPARENCY_MODE_BLEND,
-        ]
         idx = self.view.transparency_mode_combo.currentIndex()
-        if not (0 <= idx < len(modes)):
+        mode = transparency_mode_from_index(idx)
+        if mode is None:
             return
-        mode = modes[idx]
         outline_enabled = self.view.shader_outline_check.isChecked()
         edge_size = self.view.edge_size_spin.value()
 
@@ -889,8 +881,12 @@ class MaterialPresenter:
             if not material or not self.maya_adapter.object_exists(material) or self.maya_adapter.node_type(material) != "dx11Shader":
                 continue
             try:
-                mesh_converter.apply_transparency_mode(material, mode)
-                mesh_converter.apply_shader_outline(material, outline_enabled, edge_size)
+                apply_shader_settings(
+                    material,
+                    transparency_mode_index_value=idx,
+                    outline_enabled=outline_enabled,
+                    edge_size=edge_size,
+                )
                 applied += 1
             except Exception as e:
                 logger.warning(f"Failed to apply transparency mode to {material}: {e}")
@@ -900,7 +896,7 @@ class MaterialPresenter:
             self.material_data["transparency_mode"] = idx
             self.material_data["shader_outline_enabled"] = outline_enabled
             self.material_data["edge_size"] = edge_size
-        self.app_state.emit_status(f"Applied shader material settings to {applied} material(s)")
+        self.app_state.emit_status(tr_message_format("shader_material_settings_applied", count=applied))
         logger.info(
             "Batch-applied material shader settings mode='%s' outline=%s edge_size=%.3f to %d materials",
             mode,
@@ -918,7 +914,7 @@ class MaterialPresenter:
         self.load_material_properties(self.current_material)
         self.has_unsaved_changes = False
         logger.info(f"Reset changes to material '{self.current_material}'")
-        self.app_state.emit_status(f"Reset material changes: {self.current_material}")
+        self.app_state.emit_status(tr_message_format("material_changes_reset", material=self.current_material))
 
     def _on_value_changed(self, value=None):
         """値が変更されたときの処理"""
@@ -986,60 +982,34 @@ class MaterialPresenter:
 
         except Exception as e:
             logger.error(f"Failed to apply sphere map: {e}", exc_info=True)
-            self.app_state.emit_status(f"Failed to apply sphere map: {str(e)}")
+            self.app_state.emit_status(tr_message_format("sphere_map_apply_failed", error=str(e)))
 
     def on_search_text_changed(self, text):
         """検索テキストが変更されたときの処理"""
-        for i in range(self.view.material_list.count()):
-            item = self.view.material_list.item(i)
-            # プレースホルダーアイテムは常に非表示
-            if item.text().startswith("--"):
-                item.setHidden(True)
-                continue
+        apply_list_filter(
+            (self.view.material_list.item(i) for i in range(self.view.material_list.count())),
+            text,
+            self._material_filter_terms,
+            always_hidden=lambda item: item.text().startswith("--"),
+        )
 
-            # 検索文字列が空の場合は全て表示
-            if not text:
-                item.setHidden(False)
-            else:
-                # 大文字小文字を区別せずに検索
-                display_text = item.text().lower()
-                search_text = text.lower()
-
-                # マテリアル名を取得して名前でも検索
-                mat_name = item.data(Qt.UserRole)
-                if mat_name:
-                    jp_name = maya_utils.get_attribute(mat_name, ATTR_MMD_MATERIAL_NAME)
-                    en_name = maya_utils.get_attribute(mat_name, ATTR_MMD_MATERIAL_NAME_EN)
-
-                    # いずれかに検索文字列が含まれていれば表示
-                    if (
-                        search_text in display_text
-                        or search_text in mat_name.lower()
-                        or (jp_name and search_text in jp_name.lower())
-                        or (en_name and search_text in en_name.lower())
-                    ):
-                        item.setHidden(False)
-                    else:
-                        item.setHidden(True)
-                else:
-                    item.setHidden(search_text not in display_text)
+    def _material_filter_terms(self, item):
+        """Return searchable terms for a material list item."""
+        material = item.data(Qt.UserRole)
+        return (
+            item.text(),
+            material,
+            maya_utils.get_attribute(material, ATTR_MMD_MATERIAL_NAME) if material else "",
+            maya_utils.get_attribute(material, ATTR_MMD_MATERIAL_NAME_EN) if material else "",
+        )
 
     def on_selection_changed_maya(self):
         """リスト選択が変更されたときにMayaでも選択する"""
-        selected_items = self.view.material_list.selectedItems()
-        if not selected_items:
-            return
-
-        # Mayaで選択
-        materials_to_select = []
-        for item in selected_items:
-            mat_name = item.data(Qt.UserRole)
-            if mat_name and self.maya_adapter.object_exists(mat_name):
-                materials_to_select.append(mat_name)
-
-        if materials_to_select:
-            try:
-                self.maya_adapter.select(materials_to_select, replace=True)
-                logger.debug(f"Selected materials in Maya: {materials_to_select}")
-            except Exception as e:
-                logger.warning(f"Could not select materials in Maya: {e}")
+        select_existing_user_role_nodes(
+            self.view.material_list,
+            self.maya_adapter,
+            Qt.UserRole,
+            exists=self.maya_adapter.object_exists,
+            logger=logger,
+            label="materials",
+        )

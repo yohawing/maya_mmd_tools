@@ -1,7 +1,7 @@
 """ImportExportPresenterのMaya非依存ロジックを検証するテスト。
 
 ImportExportPresenter 自体は純粋な分岐ロジックだが、import 連鎖の途中で
-``mmd_tools.io.mmd_importer`` → ``pmd_importer`` 等が ``from maya import cmds`` を、
+``mmd_tools.io.mmd_importer`` → model importer 等が ``from maya import cmds`` を、
 ``..qt_compat`` が PySide6/PySide2 を要求するため、何もしないと import 時点で
 これらが必要になる。そのため ``install_headless_ui_stubs()`` で maya と Qt を
 スタブ化してから presenter を import する。これにより本テストは mayapy / Qt なしの
@@ -28,6 +28,8 @@ from mmd_tools.ui.presenters.import_export_presenter import (  # noqa: E402
     ImportExportPresenter,
 )
 from mmd_tools.ui.translations.translator import UITranslator  # noqa: E402
+
+UITranslator.instance().set_language("en")
 
 
 class _FakeSignal:

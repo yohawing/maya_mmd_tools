@@ -9,8 +9,10 @@ from tests.common.maya_stub import install_headless_ui_stubs
 install_headless_ui_stubs()
 
 from mmd_tools.ui.presenters import morph_presenter as morph_presenter_module  # noqa: E402
+from mmd_tools.ui.translations import UITranslator  # noqa: E402
 
 MorphPresenter = morph_presenter_module.MorphPresenter
+UITranslator.instance().set_language("en")
 
 TEST_MODEL = "test_mmd_model"
 

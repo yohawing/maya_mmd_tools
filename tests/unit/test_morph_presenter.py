@@ -3,7 +3,10 @@ from unittest.mock import MagicMock
 import json
 from maya import cmds
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
+from mmd_tools.ui.translations import UITranslator
 from tests.common.maya_test_base import MayaTestBase
+
+UITranslator.instance().set_language("en")
 
 
 class TestMorphPresenter(MayaTestBase):

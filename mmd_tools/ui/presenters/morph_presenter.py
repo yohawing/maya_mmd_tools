@@ -6,6 +6,7 @@ from ...core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from ...core.logger import get_logger
 from ...core.maya_utils import set_custom_attributes, set_attribute
 from ..qt_compat import QTimer, QListWidgetItem
+from .list_presenter_helpers import apply_list_filter, reload_for_current_model_change, tr_message, tr_message_format
 
 logger = get_logger(__name__)
 
@@ -72,8 +73,7 @@ class MorphPresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
-        logger.info(f"MorphPresenter: Current model changed to {model_root}")
-        self.load_morphs()
+        reload_for_current_model_change(logger, "MorphPresenter", model_root, self.load_morphs)
 
     def load_morphs(self):
         """モーフをロード"""
@@ -432,13 +432,11 @@ class MorphPresenter:
 
     def filter_morphs(self, text):
         """検索テキストでモーフをフィルタ"""
-        # 全アイテムを表示/非表示
-        for i in range(self.view.morph_list.count()):
-            item = self.view.morph_list.item(i)
-            if text.lower() in item.text().lower():
-                item.setHidden(False)
-            else:
-                item.setHidden(True)
+        apply_list_filter(
+            (self.view.morph_list.item(i) for i in range(self.view.morph_list.count())),
+            text,
+            lambda item: (item.text(),),
+        )
 
     def select_morph_in_maya(self):
         """Mayaでモーフ（ブレンドシェイプノード）を選択"""
@@ -451,7 +449,7 @@ class MorphPresenter:
         if blend_shape_node and self.maya_adapter.object_exists(blend_shape_node):
             self.maya_adapter.select(blend_shape_node, replace=True)
             logger.info(f"Selected blend shape node in Maya: {blend_shape_node}")
-            self.app_state.emit_status(f"Selected blend shape node: {blend_shape_node}")
+            self.app_state.emit_status(tr_message_format("blend_shape_node_selected", node=blend_shape_node))
 
     def reset_current_morph(self):
         """現在のモーフをリセット"""
@@ -474,7 +472,7 @@ class MorphPresenter:
 
         # 現在のスライダーもリセット
         self.view.morph_slider.setValue(0)
-        self.app_state.emit_status(f"Reset {reset_count} morph(s)")
+        self.app_state.emit_status(tr_message_format("morphs_reset_count", count=reset_count))
         logger.info(f"Reset all morphs complete: reset {reset_count} morph(s)")
 
     def on_morph_type_changed(self, index):
@@ -496,7 +494,7 @@ class MorphPresenter:
                 existing_groups.append(self.view.group_list.item(i).text())
 
             if group_name in existing_groups:
-                self.app_state.emit_status(f"Group '{group_name}' already exists", "warning")
+                self.app_state.emit_status(tr_message_format("morph_group_exists", group=group_name), "warning")
                 return
 
             # グループリストに追加
@@ -507,7 +505,7 @@ class MorphPresenter:
             self.view.group_combo.addItem(group_name)
 
             logger.info(f"Added group: {group_name}")
-            self.app_state.emit_status(f"Added group: {group_name}")
+            self.app_state.emit_status(tr_message_format("morph_group_added", group=group_name))
 
     def remove_group(self):
         """グループを削除"""
@@ -519,7 +517,7 @@ class MorphPresenter:
     def connect_blend_shape(self):
         """ブレンドシェイプを連携"""
         if not self.current_morph:
-            self.app_state.emit_status("Please select a morph", "warning")
+            self.app_state.emit_status(tr_message("select_morph"), "warning")
             return
 
         # UI から情報を取得
@@ -527,19 +525,19 @@ class MorphPresenter:
         target_name = self.view.target_name_edit.text()
 
         if not blend_shape_node or not target_name:
-            self.app_state.emit_status("Please enter a blend shape node and target name", "warning")
+            self.app_state.emit_status(tr_message("enter_blend_shape_node_and_target"), "warning")
             return
 
         # ノードの存在確認
         if not self.maya_adapter.object_exists(blend_shape_node):
-            self.app_state.emit_status(f"Blend shape node not found: {blend_shape_node}", "error")
+            self.app_state.emit_status(tr_message_format("blend_shape_node_not_found", node=blend_shape_node), "error")
             return
 
         # ターゲットの存在確認
         try:
             self.maya_adapter.get_attr(f"{blend_shape_node}.{target_name}")
         except Exception:
-            self.app_state.emit_status(f"Target not found: {target_name}", "error")
+            self.app_state.emit_status(tr_message_format("target_not_found", target=target_name), "error")
             return
 
         # 連携を設定
@@ -552,7 +550,7 @@ class MorphPresenter:
         self.load_morph_details(self.current_morph)
 
         logger.info(f"Connected morph: {self.current_morph} -> {blend_shape_node}.{target_name}")
-        self.app_state.emit_status(f"Connected morph: {self.current_morph}")
+        self.app_state.emit_status(tr_message_format("morph_connected", morph=self.current_morph))
 
     def disconnect_blend_shape(self):
         """ブレンドシェイプの連携を解除"""
@@ -564,7 +562,7 @@ class MorphPresenter:
             self.morph_data[self.current_morph].pop("blend_shape_target", None)
             self.morph_data[self.current_morph].pop("blend_shape_targets", None)
             self.load_morph_details(self.current_morph)
-            self.app_state.emit_status("Disconnected blend shape")
+            self.app_state.emit_status(tr_message("blend_shape_disconnected"))
 
     def auto_connect_blend_shapes(self):
         """ブレンドシェイプを自動連携"""
@@ -631,7 +629,7 @@ class MorphPresenter:
             self.load_morph_details(self.current_morph)
 
         # 結果を通知
-        self.app_state.emit_status(f"Auto-connected {connected_count} morph(s)")
+        self.app_state.emit_status(tr_message_format("morphs_auto_connected_count", count=connected_count))
         logger.info(f"Auto-connect complete: connected {connected_count} morph(s)")
 
     def select_blend_shape_node(self):
@@ -673,7 +671,7 @@ class MorphPresenter:
         self._organize_morphs_by_group()
 
         logger.info(f"Applied changes to morph '{self.current_morph}'")
-        self.app_state.emit_status(f"Applied morph changes: {self.current_morph}")
+        self.app_state.emit_status(tr_message_format("morph_changes_applied", morph=self.current_morph))
 
     def _save_mmd_morph_data(self, model_root):
         """MMDモーフデータを保存"""
@@ -690,7 +688,7 @@ class MorphPresenter:
         """現在のモーフ値をプリセットとして保存"""
         preset_name = self.view.preset_combo.currentText()
         if not preset_name or preset_name == "なし":
-            self.app_state.emit_status("Please enter a preset name", "warning")
+            self.app_state.emit_status(tr_message("enter_preset_name"), "warning")
             return
 
         # 現在のモーフ値を収集
@@ -708,7 +706,7 @@ class MorphPresenter:
                     pass
 
         if not preset_data:
-            self.app_state.emit_status("No morph values to save", "warning")
+            self.app_state.emit_status(tr_message("no_morph_values_to_save"), "warning")
             return
 
         # プリセットをモデルのアトリビュートに保存
@@ -740,7 +738,7 @@ class MorphPresenter:
                 self.view.preset_combo.addItem(preset_name)
 
             logger.info(f"Saved preset '{preset_name}'")
-            self.app_state.emit_status(f"Saved preset '{preset_name}'")
+            self.app_state.emit_status(tr_message_format("preset_saved", preset=preset_name))
 
     def load_preset(self):
         """プリセットを読み込み"""
@@ -754,18 +752,18 @@ class MorphPresenter:
 
         # プリセットを読み込み
         if not self.maya_adapter.attribute_exists("mmdMorphPresets", current_model_root):
-            self.app_state.emit_status("No presets found", "warning")
+            self.app_state.emit_status(tr_message("no_presets_found"), "warning")
             return
 
         presets_json = self.maya_adapter.get_attr(f"{current_model_root}.mmdMorphPresets")
         if not presets_json:
-            self.app_state.emit_status("No presets found", "warning")
+            self.app_state.emit_status(tr_message("no_presets_found"), "warning")
             return
 
         try:
             presets = json.loads(presets_json)
             if preset_name not in presets:
-                self.app_state.emit_status(f"Preset '{preset_name}' not found", "warning")
+                self.app_state.emit_status(tr_message_format("preset_not_found", preset=preset_name), "warning")
                 return
 
             # プリセットの値を適用
@@ -790,11 +788,11 @@ class MorphPresenter:
                 self.view.morph_slider.setValue(int(preset_data[self.current_morph] * 100))
 
             logger.info(f"Applied preset '{preset_name}' ({applied_count} morph(s))")
-            self.app_state.emit_status(f"Applied preset '{preset_name}'")
+            self.app_state.emit_status(tr_message_format("preset_applied", preset=preset_name))
 
         except Exception as e:
             logger.error(f"Failed to load preset: {str(e)}")
-            self.app_state.emit_status("Failed to load preset", "error")
+            self.app_state.emit_status(tr_message("preset_load_failed"), "error")
 
     def delete_preset(self):
         """プリセットを削除"""
@@ -804,7 +802,7 @@ class MorphPresenter:
 
         # デフォルトプリセットは削除不可
         if preset_name in ["笑顔", "ウィンク", "驚き", "悲しみ"]:
-            self.app_state.emit_status("Default presets cannot be deleted", "warning")
+            self.app_state.emit_status(tr_message("default_presets_cannot_delete"), "warning")
             return
 
         current_model_root = self.app_state.current_model_root
@@ -834,7 +832,7 @@ class MorphPresenter:
                     self.view.preset_combo.removeItem(index)
 
                 logger.info(f"Deleted preset '{preset_name}'")
-                self.app_state.emit_status(f"Deleted preset '{preset_name}'")
+                self.app_state.emit_status(tr_message_format("preset_deleted", preset=preset_name))
         except Exception:
             pass
 

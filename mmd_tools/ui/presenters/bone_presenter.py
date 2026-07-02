@@ -34,6 +34,13 @@ from ..qt_compat import (
     QTableWidgetItem,
     QTimer,
 )
+from .list_presenter_helpers import (
+    apply_list_filter,
+    reload_for_current_model_change,
+    select_existing_user_role_nodes,
+    tr_message,
+    tr_message_format,
+)
 
 logger = get_logger(__name__)
 
@@ -91,9 +98,8 @@ class BonePresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
-        logger.info(f"BonePresenter: Current model changed to {model_root}")
         self.current_bone = None
-        self.load_bones()
+        reload_for_current_model_change(logger, "BonePresenter", model_root, self.load_bones)
 
     def load_bones(self):
         """ボーンリストをロード"""
@@ -179,23 +185,21 @@ class BonePresenter:
 
     def filter_bones(self, text):
         """ボーンを検索フィルタリング"""
-        if not text:
-            # 全て表示
-            for item in self.bone_list_items.values():
-                item.setHidden(False)
-        else:
-            # フィルタリング
-            text_lower = text.lower()
-            for joint, item in self.bone_list_items.items():
-                # 表示テキストから検索
-                display_text = item.text().lower()
-                name_jp = get_attribute(joint, ATTR_MMD_BONE_NAME).lower()
-                name_en = get_attribute(joint, ATTR_MMD_BONE_NAME_EN).lower()
+        apply_list_filter(
+            self.bone_list_items.values(),
+            text,
+            self._bone_filter_terms,
+        )
 
-                if text_lower in display_text or text_lower in name_jp or text_lower in name_en or text_lower in joint.lower():
-                    item.setHidden(False)
-                else:
-                    item.setHidden(True)
+    def _bone_filter_terms(self, item):
+        """Return searchable terms for a bone list item."""
+        joint = item.data(Qt.UserRole)
+        return (
+            item.text(),
+            joint,
+            get_attribute(joint, ATTR_MMD_BONE_NAME) if joint else "",
+            get_attribute(joint, ATTR_MMD_BONE_NAME_EN) if joint else "",
+        )
 
     def on_bone_selected(self, current, previous):
         """ボーンが選択されたときの処理"""
@@ -217,19 +221,14 @@ class BonePresenter:
         if self.is_updating:
             return
 
-        selected_items = self.view.bone_list.selectedItems()
-        if not selected_items:
-            return
-
-        # Mayaで選択
-        joints_to_select = []
-        for item in selected_items:
-            joint = item.data(Qt.UserRole)
-            if joint and object_exists(joint):
-                joints_to_select.append(joint)
-
-        if joints_to_select:
-            self.maya_adapter.select(joints_to_select, replace=True)
+        select_existing_user_role_nodes(
+            self.view.bone_list,
+            self.maya_adapter,
+            Qt.UserRole,
+            exists=object_exists,
+            logger=logger,
+            label="joints",
+        )
 
     def load_bone_properties(self):
         """選択されたボーンのプロパティをロード"""
@@ -505,7 +504,7 @@ class BonePresenter:
         # 簡易的な実装：現在のMaya選択を使用
         selected = self.maya_adapter.ls(selection=True, type="joint")
         if not selected:
-            self.app_state.emit_status("Please select a joint")
+            self.app_state.emit_status(tr_message("select_joint"))
             return
 
         bone = selected[0]
@@ -561,7 +560,7 @@ class BonePresenter:
         """IKリンクを追加"""
         selected = self.maya_adapter.ls(selection=True, type="joint")
         if not selected:
-            self.app_state.emit_status("Please select a joint to add as an IK link")
+            self.app_state.emit_status(tr_message("select_joint_for_ik_link"))
             return
 
         bone = selected[0]
@@ -743,17 +742,17 @@ class BonePresenter:
                 item.setText(display_text)
 
             logger.info(f"Applied changes to bone '{self.current_bone}'")
-            self.app_state.emit_status(f"Applied bone changes: {self.current_bone}")
+            self.app_state.emit_status(tr_message_format("bone_changes_applied", bone=self.current_bone))
 
         except Exception as e:
             logger.error(f"Failed to apply bone changes: {e}", exc_info=True)
-            self.app_state.emit_status(f"Failed to apply bone changes: {str(e)}")
+            self.app_state.emit_status(tr_message_format("bone_changes_failed", error=str(e)))
 
     def reset_changes(self):
         """変更をリセット"""
         if self.current_bone and self.bone_data:
             self.load_bone_properties()
-            self.app_state.emit_status("Reset changes")
+            self.app_state.emit_status(tr_message("changes_reset"))
 
     def _calculate_bone_flags(self):
         """UIの状態からボーンフラグを計算"""
