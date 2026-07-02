@@ -71,7 +71,7 @@ def _skin_clusters(cmds, root: str) -> list[str]:
     return clusters
 
 
-def _analyze_scale(pmx_path: Path, scale: float) -> dict[str, Any]:
+def _analyze_scale(pmx_path: Path, scale: float, parser_route: str) -> dict[str, Any]:
     import maya.api.OpenMaya as om
     import maya.cmds as cmds
 
@@ -86,8 +86,8 @@ def _analyze_scale(pmx_path: Path, scale: float) -> dict[str, Any]:
             "scale": scale,
             "import_physics": False,
             "use_namespace": False,
-            "use_native_pmx_parse": False,
-            "require_native_pmx_parse": False,
+            "use_native_pmx_parse": parser_route == "native",
+            "require_native_pmx_parse": parser_route == "native",
         },
     )
     if not root:
@@ -127,6 +127,7 @@ def _analyze_scale(pmx_path: Path, scale: float) -> dict[str, Any]:
                 )
 
     return {
+        "parser": parser_route,
         "scale": scale,
         "root": root,
         "rootScale": [round(float(value), 6) for value in cmds.getAttr(f"{root}.scale")[0]],
@@ -141,13 +142,18 @@ def run(
     pmx_path: Path,
     scales: list[float],
     *,
+    parsers: list[str],
     clean_threshold: float,
     drift_threshold: float,
     expect: str,
     log_path: str | None = None,
 ) -> dict[str, Any]:
     _repo_imports()
-    results = [_analyze_scale(pmx_path, scale) for scale in scales]
+    results = [
+        _analyze_scale(pmx_path, scale, parser_route)
+        for parser_route in parsers
+        for scale in scales
+    ]
     baseline_failures = [
         item
         for item in results
@@ -193,6 +199,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default=str(ROOT / "tests/data/mmt_test_model.pmx"))
     parser.add_argument("--scale", action="append", type=float, default=[1.0, 2.0, 0.5])
+    parser.add_argument("--parser", choices=["legacy", "native", "both"], default="both")
     parser.add_argument("--expect", choices=["drift", "fixed"], default="drift")
     parser.add_argument("--clean-threshold", type=float, default=1.0e-4)
     parser.add_argument("--drift-threshold", type=float, default=1.0)
@@ -202,9 +209,11 @@ def main() -> int:
     initialized = False
     try:
         initialized = _initialize_maya()
+        parsers = ["legacy", "native"] if args.parser == "both" else [args.parser]
         result = run(
             Path(args.model).resolve(),
             args.scale,
+            parsers=parsers,
             clean_threshold=args.clean_threshold,
             drift_threshold=args.drift_threshold,
             expect=args.expect,

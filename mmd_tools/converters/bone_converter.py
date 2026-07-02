@@ -75,6 +75,7 @@ class BoneConverter:
         setup_rig=True,
         setup_bone_orientation=True,
         pmx_filepath: str = None,
+        scale: float = 1.0,
     ):
         """
         PMXのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
@@ -85,6 +86,7 @@ class BoneConverter:
             root_group (str): ルートグループの名前。
             setup_rig (bool): Trueの場合、PMXの付与/IKなどのMayaリグを構築する。
             setup_bone_orientation (bool): Trueの場合、PMXローカル軸/軸固定をjointOrient等へ反映する。
+            scale (float): PMX座標からMaya座標へ変換する際のインポートスケール。
 
         Returns:
             tuple: (作成されたMayaジョイントノードの名前のリスト,
@@ -106,6 +108,7 @@ class BoneConverter:
             "pmx",
             skeleton_group,
             setup_bone_orientation=setup_bone_orientation,
+            scale=scale,
         )
 
         # skinCluster をリグセットアップの前に作成する。
@@ -230,6 +233,7 @@ class BoneConverter:
         format_type,
         skeleton_group,
         setup_bone_orientation=True,
+        scale: float = 1.0,
     ):
         """
         Mayaジョイントを作成する。
@@ -240,6 +244,7 @@ class BoneConverter:
             format_type (str): フォーマットタイプ（'pmx' または 'pmd'）。
             skeleton_group (str): スケルトングループの名前。
             setup_bone_orientation (bool): PMXローカル軸/軸固定をMaya jointへ反映するか。
+            scale (float): PMX座標からMaya座標へ変換する際のインポートスケール。
 
         Returns:
             list: 作成されたMayaジョイントノードの名前のリスト。
@@ -260,7 +265,7 @@ class BoneConverter:
             position = bone.position
             joint = cmds.joint(
                 name=joint_name,
-                position=list(mmd_point_to_maya(position)),  # MMD: +Z手前, Maya: +Z奥
+                position=list(mmd_point_to_maya(position, scale)),  # MMD: +Z手前, Maya: +Z奥
             )
             joint_uuid = self._get_node_uuid(joint)
             joint = self._resolve_node_long_path(joint_uuid, joint)

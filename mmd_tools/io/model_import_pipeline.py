@@ -135,9 +135,10 @@ class ModelImportPipeline:
             self.logger.debug("Failed to create MMD light controller", exc_info=True)
             return None
 
-    def apply_scale_and_select(self, root_group: str) -> None:
+    def apply_scale_and_select(self, root_group: str, *, apply_scale: bool = True) -> None:
         """Apply import scale and select the imported model root."""
-        apply_import_scale(root_group, self.scale, self.logger)
+        if apply_scale:
+            apply_import_scale(root_group, self.scale, self.logger)
         self.emit_progress(92)
         cmds.select(root_group)
 

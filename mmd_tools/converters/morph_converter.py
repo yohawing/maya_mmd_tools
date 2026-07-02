@@ -30,12 +30,13 @@ from mmd_tools.converters.morph_scene_metadata import (
 class MorphConverter:
     """MMDのモーフデータをMayaのblendShapeに変換するクラス"""
 
-    def __init__(self):
+    def __init__(self, scale: float = 1.0):
         from mmd_tools import settings
         from mmd_tools.core.logger import get_logger
 
         self.settings = settings.get(setting_keys.IMPORT_MORPH, {})
         self.logger = get_logger(__name__)
+        self.scale = float(scale)
         self.profile = {}
 
     def _add_profile_time(self, key: str, start: float) -> None:
@@ -397,7 +398,10 @@ class MorphConverter:
             offsets.append(
                 {
                     "bone_index": int(offset["bone_index"]),
-                    "translation": [float(v) for v in offset.get("translation", (0.0, 0.0, 0.0))],
+                    "translation": [
+                        float(v) * self.scale
+                        for v in offset.get("translation", (0.0, 0.0, 0.0))
+                    ],
                     "rotation": [float(v) for v in offset.get("rotation", (0.0, 0.0, 0.0, 1.0))],
                 }
             )
@@ -544,7 +548,7 @@ class MorphConverter:
             # リセット用 setPoints + getPoints を完全に排除
             target_points_start = time.perf_counter()
             target_points = self._compute_target_points(
-                template_ctx["base_points"], morph, template_ctx["source_to_local"],
+                template_ctx["base_points"], morph, template_ctx["source_to_local"], self.scale,
             )
             template_ctx["mesh_fn"].setPoints(target_points, om.MSpace.kObject)
             self._add_profile_time("target_points_sec", target_points_start)
@@ -615,6 +619,7 @@ class MorphConverter:
         base_points: om.MPointArray,
         morph,
         source_to_local: Optional[Dict[int, int]],
+        scale: float = 1.0,
     ) -> om.MPointArray:
         """base_points + morph offsets → 新しい MPointArray を返す（メッシュ操作なし）。"""
         points = om.MPointArray(base_points)
@@ -633,13 +638,17 @@ class MorphConverter:
                 vi = src_vi
             if vi < n_points:
                 pos = offset["position_offset"]
-                points[vi] += MorphConverter._pmx_vertex_offset_to_maya_vector(pos)
+                points[vi] += MorphConverter._pmx_vertex_offset_to_maya_vector(pos, scale)
         return points
 
     @staticmethod
-    def _pmx_vertex_offset_to_maya_vector(position_offset) -> om.MVector:
+    def _pmx_vertex_offset_to_maya_vector(position_offset, scale: float = 1.0) -> om.MVector:
         """Return a PMX vertex morph offset converted into Maya mesh space."""
-        return om.MVector(position_offset[0], position_offset[1], -position_offset[2])
+        return om.MVector(
+            float(position_offset[0]) * scale,
+            float(position_offset[1]) * scale,
+            -float(position_offset[2]) * scale,
+        )
 
     @staticmethod
     def cleanup_vertex_morph_template(template_ctx: Dict[str, Any]) -> None:
@@ -674,7 +683,7 @@ class MorphConverter:
                         vertex_index = source_vertex_index
                     offset_pos = offset["position_offset"]
                     if vertex_index < len(points):
-                        points[vertex_index] += self._pmx_vertex_offset_to_maya_vector(offset_pos)
+                        points[vertex_index] += self._pmx_vertex_offset_to_maya_vector(offset_pos, self.scale)
 
         # 変更された頂点位置を設定
         mesh_fn.setPoints(points, om.MSpace.kObject)

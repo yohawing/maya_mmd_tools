@@ -1499,7 +1499,7 @@ def import_scale_drift_e2e(session: nox.Session) -> None:
     passthrough: list[str] = []
     args = list(session.posargs)
     path_options = {"--model", "--log"}
-    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--drift-threshold"}
+    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--drift-threshold", "--parser"}
     i = 0
     while i < len(args):
         if args[i] == "--maya" and i + 1 < len(args):

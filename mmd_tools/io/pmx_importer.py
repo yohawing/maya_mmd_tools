@@ -85,7 +85,7 @@ def import_pmx_file(
 
             # メッシュを変換
             logger.info("Converting mesh...")
-            mesh_converter = MeshConverter(filepath)
+            mesh_converter = MeshConverter(filepath, scale=scale)
             phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
             pipeline.record_phase("mesh_conversion_sec", phase_start)
@@ -96,7 +96,7 @@ def import_pmx_file(
             logger.debug("Mesh conversion complete: group=%s, name=%s", mesh_group, mesh_name)
 
             logger.info("Converting morphs...")
-            morph_converter = MorphConverter()
+            morph_converter = MorphConverter(scale=scale)
             phase_start = time.perf_counter()
             morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
             pipeline.record_phase("morph_conversion_sec", phase_start)
@@ -117,6 +117,7 @@ def import_pmx_file(
                 setup_rig=options.get("setup_rig", True),
                 setup_bone_orientation=options.get("setup_bone_orientation", True),
                 pmx_filepath=filepath,
+                scale=scale,
             )
             pipeline.record_phase("bone_and_skin_conversion_sec", phase_start)
             pipeline.emit_progress(70)
@@ -151,8 +152,9 @@ def import_pmx_file(
             # ここでは transform 名だけ控えておく。
             light_ctrl = pipeline.create_light_controller()
 
-            # スケールを適用
-            pipeline.apply_scale_and_select(root_group)
+            # PMX座標は mesh / bone / morph 生成時点で scale 済み。
+            # bind 後の root scale freeze は skinCluster.bindPreMatrix を stale にするため避ける。
+            pipeline.apply_scale_and_select(root_group, apply_scale=False)
             try:
                 pipeline.sync_dx11_uniforms(mesh_converter, refresh_if_dx11=True)
             except Exception:

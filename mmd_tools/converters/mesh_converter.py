@@ -537,12 +537,13 @@ class MeshConverter:
     MMDのメッシュデータをMayaのメッシュノードに変換するクラス。
     """
 
-    def __init__(self, pmx_filepath=""):
+    def __init__(self, pmx_filepath="", scale: float = 1.0):
         """
         コンストラクタ。
 
         Args:
             pmx_filepath (str): 読み込むPMXファイルのパス。
+            scale (float): PMX座標からMaya座標へ変換する際のインポートスケール。
         """
         self.logger = get_logger(__name__)
         self.created_shaders = []
@@ -550,6 +551,7 @@ class MeshConverter:
         self.unresolved_texture_count = 0
         self.unresolved_textures = []
         self.model_filepath = pmx_filepath
+        self.scale = float(scale)
         # material_index -> transparency mode ("opaque"/"cutout"/"blend"),
         # precomputed from per-material UV-region texture alpha (atlas-safe).
         self._transparency_modes = {}
@@ -568,6 +570,14 @@ class MeshConverter:
         }
         if pmx_filepath:
             self.texture_dir = os.path.dirname(pmx_filepath)
+
+    def _mmd_vertex_to_maya(self, position) -> Tuple[float, float, float]:
+        """Convert a PMX vertex position to Maya object space with import scale."""
+        return (
+            float(position[0]) * self.scale,
+            float(position[1]) * self.scale,
+            -float(position[2]) * self.scale,
+        )
 
     def _add_profile_time(self, key: str, start: float) -> None:
         """Accumulate timing in the converter profile."""
@@ -811,8 +821,7 @@ class MeshConverter:
         mesh_name = maya_utils.sanitize_text(model_name) + "_mesh"
 
         # 全ての頂点と面を直接使用 z*= -1
-        vertices = [v.position for v in all_vertices]
-        vertices = [(v[0], v[1], -v[2]) for v in vertices]
+        vertices = [self._mmd_vertex_to_maya(v.position) for v in all_vertices]
         normals = [v.normal for v in all_vertices]
         normals = [(n[0], n[1], -n[2]) for n in normals]
 
@@ -951,8 +960,7 @@ class MeshConverter:
             return []
 
         # 全頂点座標 (z*= -1)
-        vertices = [v.position for v in all_vertices]
-        vertices = [(v[0], v[1], -v[2]) for v in vertices]
+        vertices = [self._mmd_vertex_to_maya(v.position) for v in all_vertices]
         normals = [v.normal for v in all_vertices]
         normals = [(n[0], n[1], -n[2]) for n in normals]
 
@@ -1207,7 +1215,7 @@ class MeshConverter:
         extra_attrs=None,
     ):
         """Create a compact PMX mesh from one or more material face ranges."""
-        vertices = [(v.position[0], v.position[1], -v.position[2]) for v in all_vertices]
+        vertices = [self._mmd_vertex_to_maya(v.position) for v in all_vertices]
         normals = [(v.normal[0], v.normal[1], -v.normal[2]) for v in all_vertices]
         uvs = []
         for vertex in all_vertices:
