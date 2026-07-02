@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -60,7 +61,15 @@ def _load_mmd_plugin() -> None:
     _MMD_PLUGIN_LOAD_ATTEMPTED = True
     plugin_path = ROOT / "mmd_tools" / "plugin_main.py"
     if not cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
-        cmds.loadPlugin(str(plugin_path), quiet=True)
+        previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+        try:
+            cmds.loadPlugin(str(plugin_path), quiet=True)
+        finally:
+            if previous is None:
+                os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+            else:
+                os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
 
 
 def _create_append_node(node_name: str, base_values: dict[str, float]) -> str:
