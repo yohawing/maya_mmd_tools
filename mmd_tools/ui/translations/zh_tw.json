@@ -232,7 +232,7 @@
     "texture_search_path": "貼圖搜尋路徑:",
     "uv_set_name": "UV集名稱:",
     "start_frame": "開始影格:",
-    "vmd_fps": "VMD FPS:",
+    "vmd_fps": "影格率:",
     "format": "格式:",
     "vmd_file": "VMD檔案:",
     "target_model": "目標模型:",

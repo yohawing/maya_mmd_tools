@@ -155,18 +155,24 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
 
 
 class TestImportExportTabDevModeVisibility(unittest.TestCase):
-    def test_dev_only_cpp_rig_node_control_follows_development_mode(self):
+    def test_dev_only_controls_follow_development_mode(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         cpp_rig_nodes_check = _FakeWidget()
-        tab._dev_only_widgets = [cpp_rig_nodes_check]
+        motion_scale_row = _FakeWidget()
+        export_settings_tab = _FakeWidget()
+        tab._dev_only_widgets = [cpp_rig_nodes_check, motion_scale_row, export_settings_tab]
         tab.settings_service = _FakeSettingsService({"ui.general.development_mode": False})
 
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
         self.assertFalse(cpp_rig_nodes_check.visible)
+        self.assertFalse(motion_scale_row.visible)
+        self.assertFalse(export_settings_tab.visible)
 
         tab.settings_service.set("ui.general.development_mode", True)
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
         self.assertTrue(cpp_rig_nodes_check.visible)
+        self.assertTrue(motion_scale_row.visible)
+        self.assertTrue(export_settings_tab.visible)
 
 
 class TestImportExportTabExportVisibility(unittest.TestCase):
@@ -176,13 +182,13 @@ class TestImportExportTabExportVisibility(unittest.TestCase):
         tab.settings_service = _FakeSettingsService()
         return tab
 
-    def test_export_group_is_hidden_for_pmx_format(self):
+    def test_export_group_is_shown_for_pmx_format(self):
         tab = self._make_tab()
 
         tab.settings_service.set("export.general.export_format", "pmx")
         import_export_tab.ImportExportTab._apply_export_visibility(tab)
 
-        self.assertFalse(tab.export_group.visible)
+        self.assertTrue(tab.export_group.visible)
 
     def test_export_group_is_shown_for_vmd_format(self):
         tab = self._make_tab()

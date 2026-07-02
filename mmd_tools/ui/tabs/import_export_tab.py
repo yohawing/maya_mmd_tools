@@ -311,19 +311,6 @@ class ImportExportTab(BaseTab):
         self.animation_settings_group = QGroupBox(self.tr("animation", "tabs"))
         anim_settings_layout = QVBoxLayout()
 
-        # Start frame
-        frame_layout = QHBoxLayout()
-        self.start_frame_label = QLabel(self.tr("start_frame", "fields"))
-        frame_layout.addWidget(self.start_frame_label)
-        self.animation_start_frame = QSpinBox()
-        self.animation_start_frame.setRange(0, 10000)
-        self.animation_start_frame.setValue(self.settings_service.get(setting_keys.IMPORT_ANIMATION_START_FRAME, 1))
-        self.animation_start_frame.valueChanged.connect(lambda v: self.settings_service.set(setting_keys.IMPORT_ANIMATION_START_FRAME, v))
-        self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
-        frame_layout.addWidget(self.animation_start_frame)
-        frame_layout.addStretch()
-        anim_settings_layout.addLayout(frame_layout)
-
         # VMD FPS (Maya scene time unit for VMD import; VMD has no FPS metadata)
         fps_layout = QHBoxLayout()
         self.vmd_fps_label = QLabel(self.tr("vmd_fps", "fields"))
@@ -348,7 +335,9 @@ class ImportExportTab(BaseTab):
         anim_settings_layout.addLayout(fps_layout)
 
         # Motion scale
-        motion_scale_layout = QHBoxLayout()
+        self.motion_scale_row = QWidget()
+        motion_scale_layout = QHBoxLayout(self.motion_scale_row)
+        motion_scale_layout.setContentsMargins(0, 0, 0, 0)
         self.motion_scale_label = QLabel(self.tr("motion_scale", "fields"))
         motion_scale_layout.addWidget(self.motion_scale_label)
         self.motion_scale_spin = QDoubleSpinBox()
@@ -360,7 +349,7 @@ class ImportExportTab(BaseTab):
         self.motion_scale_spin.setToolTip(self.tr("motion_scale", "tooltips"))
         motion_scale_layout.addWidget(self.motion_scale_spin)
         motion_scale_layout.addStretch()
-        anim_settings_layout.addLayout(motion_scale_layout)
+        anim_settings_layout.addWidget(self.motion_scale_row)
 
         self.bake_mode_check = QCheckBox(self.tr("bake_mode", "checkboxes"))
         self.bake_mode_check.setChecked(self.settings_service.get(setting_keys.IMPORT_RIG_BAKE_MODE, False))
@@ -369,14 +358,6 @@ class ImportExportTab(BaseTab):
         )
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
         anim_settings_layout.addWidget(self.bake_mode_check)
-
-        self.clear_existing_motion_check = QCheckBox(self.tr("clear_existing_motion", "checkboxes"))
-        self.clear_existing_motion_check.setChecked(self.settings_service.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False))
-        self.clear_existing_motion_check.toggled.connect(
-            lambda v: self.settings_service.set(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, v)
-        )
-        self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
-        anim_settings_layout.addWidget(self.clear_existing_motion_check)
 
         # Animation type checkboxes
         self.import_bone_animation_check = QCheckBox(self.tr("import_bone_animation", "checkboxes"))
@@ -538,6 +519,14 @@ class ImportExportTab(BaseTab):
         self.target_model_label = QLabel(self.tr("target_model", "fields"))
         animation_layout.addRow(self.target_model_label, self.target_model_combo)
 
+        self.clear_existing_motion_check = QCheckBox(self.tr("clear_existing_motion", "checkboxes"))
+        self.clear_existing_motion_check.setChecked(self.settings_service.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False))
+        self.clear_existing_motion_check.toggled.connect(
+            lambda v: self.settings_service.set(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, v)
+        )
+        self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
+        animation_layout.addRow(self.clear_existing_motion_check)
+
         self.import_vmd_button = QPushButton(self.tr("import_animation", "actions"))
         animation_layout.addRow(self.import_vmd_button)
 
@@ -608,11 +597,13 @@ class ImportExportTab(BaseTab):
             self.morph_physics_group,
             self.other_group,
             self.use_cpp_rig_nodes_check,
+            self.motion_scale_row,
             self.resample_curves_check,
             self.import_bone_animation_check,
             self.import_morph_animation_check,
             self.import_camera_animation_check,
             self.import_light_animation_check,
+            self._export_settings_tab,
         ]
         self._apply_dev_mode_visibility()
 
@@ -628,9 +619,10 @@ class ImportExportTab(BaseTab):
         self._apply_export_visibility()
 
     def _apply_export_visibility(self):
-        """VMD export 実装済みのときだけ export 操作群を表示する。"""
+        """対応済み export 形式の操作群を表示する。"""
         if hasattr(self, "export_group"):
-            self.export_group.setVisible(self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx") == "vmd")
+            export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
+            self.export_group.setVisible(export_format in {"pmx", "vmd"})
 
     def set_target_model_items(self, model_items, restore_selection=False):
         """Presenter から渡されたモデル候補で target combo を更新する。"""
@@ -783,7 +775,8 @@ class ImportExportTab(BaseTab):
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         self.translate_names_check.setToolTip(self.tr("translate_names", "tooltips"))
-        self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
+        if hasattr(self, "animation_start_frame"):
+            self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
         self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))
         self.motion_scale_spin.setToolTip(self.tr("motion_scale", "tooltips"))
         self.import_bone_animation_check.setToolTip(self.tr("import_bone_animation", "tooltips"))
