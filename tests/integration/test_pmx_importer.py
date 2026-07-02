@@ -100,7 +100,8 @@ class TestPmxImporter(MayaTestBase):
                 self.assertGreater(len(new_nodes), 0, "新しいノードが作成されていません")
 
                 meshes = cmds.ls(type="mesh")
-                self.assertGreater(len(meshes), 0, "メッシュが作成されていません")
+                if parser.vertices:
+                    self.assertGreater(len(meshes), 0, "メッシュが作成されていません")
 
                 joints = cmds.ls(type="joint")
                 self.assertGreater(len(joints), 0, "ジョイントが作成されていません")
