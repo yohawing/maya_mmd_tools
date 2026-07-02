@@ -172,19 +172,70 @@ def _default_cases(background_model: Path, character_model: Path, character_moti
                         "cameraKeys": [0],
                     },
                 },
+                {
+                    "id": "light_wide",
+                    "type": "vmd",
+                    "kind": "light",
+                    "generated": {
+                        "type": "light-vmd",
+                        "filename": "light_wide.vmd",
+                        "frames": [0, 10],
+                    },
+                    "expect": {
+                        "lightKeys": [0, 10],
+                    },
+                },
+                {
+                    "id": "light_short_clear",
+                    "type": "vmd",
+                    "kind": "light",
+                    "requires": ["light_wide"],
+                    "clearExistingMotion": True,
+                    "generated": {
+                        "type": "light-vmd",
+                        "filename": "light_short.vmd",
+                        "frames": [0],
+                    },
+                    "expect": {
+                        "lightKeys": [0],
+                    },
+                },
             ],
             "constraints": [
                 ["character", "before", "character_motion"],
                 ["camera_wide", "before", "camera_short_clear"],
+                ["light_wide", "before", "light_short_clear"],
             ],
             "orders": [
-                ["character", "character_motion", "camera_wide", "camera_short_clear"],
-                ["character", "camera_wide", "camera_short_clear", "character_motion"],
-                ["camera_wide", "camera_short_clear", "character", "character_motion"],
+                [
+                    "character",
+                    "character_motion",
+                    "camera_wide",
+                    "camera_short_clear",
+                    "light_wide",
+                    "light_short_clear",
+                ],
+                [
+                    "character",
+                    "character_motion",
+                    "light_wide",
+                    "light_short_clear",
+                    "camera_wide",
+                    "camera_short_clear",
+                ],
+                [
+                    "camera_wide",
+                    "camera_short_clear",
+                    "light_wide",
+                    "light_short_clear",
+                    "character",
+                    "character_motion",
+                ],
             ],
             "expect": {
                 "characterMotionKeys": True,
                 "cameraKeysAfterClear": [0],
+                "lightKeysAfterClear": [0],
             },
         },
     ]
@@ -218,6 +269,44 @@ def _find_center_joint(cmds, root: str) -> str:
 def _key_times(cmds, node: str, attr: str) -> list[float]:
     values = cmds.keyframe(node, attribute=attr, query=True, timeChange=True)
     return [float(value) for value in (values or [])]
+
+
+def _key_times_for_attrs(cmds, node: str, attrs: tuple[str, ...]) -> list[float]:
+    times: set[float] = set()
+    if not node or not cmds.objExists(node):
+        return []
+    for attr in attrs:
+        attr_name = attr.split("[", 1)[0]
+        if not cmds.attributeQuery(attr_name, node=node, exists=True):
+            continue
+        times.update(_key_times(cmds, node, attr))
+    return sorted(times)
+
+
+def _camera_key_times(cmds, camera: str) -> list[float]:
+    from mmd_tools.converters.vmd_camera_animation import ATTR_MMD_CAMERA_ROOT_NODE, ATTR_MMD_CAMERA_TARGET_NODE
+
+    nodes = [camera]
+    if cmds.attributeQuery(ATTR_MMD_CAMERA_TARGET_NODE, node=camera, exists=True):
+        nodes.extend(cmds.listConnections(f"{camera}.{ATTR_MMD_CAMERA_TARGET_NODE}", source=True) or [])
+    if cmds.attributeQuery(ATTR_MMD_CAMERA_ROOT_NODE, node=camera, exists=True):
+        nodes.extend(cmds.listConnections(f"{camera}.{ATTR_MMD_CAMERA_ROOT_NODE}", source=True) or [])
+
+    times: set[float] = set()
+    transform_attrs = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
+    for node in nodes:
+        times.update(_key_times_for_attrs(cmds, node, transform_attrs))
+    for shape in cmds.listRelatives(camera, shapes=True, type="camera") or []:
+        times.update(_key_times_for_attrs(cmds, shape, ("focalLength", "orthographicWidth", "orthographic")))
+    return sorted(times)
+
+
+def _light_key_times(cmds, light: str) -> list[float]:
+    times = set(_key_times_for_attrs(cmds, light, ("rotateX", "rotateY", "rotateZ")))
+    times.update(_key_times_for_attrs(cmds, light, ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")))
+    for shape in cmds.listRelatives(light, shapes=True, type="directionalLight") or []:
+        times.update(_key_times_for_attrs(cmds, shape, ("colorR", "colorG", "colorB")))
+    return sorted(times)
 
 
 def _import_model(path: Path, *, use_namespace: bool) -> str:
@@ -274,6 +363,25 @@ def _write_camera_vmd(path: Path, frame_numbers: list[int]) -> None:
     path.write_bytes(bytes(data))
 
 
+def _write_light_vmd(path: Path, frame_numbers: list[int]) -> None:
+    data = bytearray()
+    data.extend(b"Vocaloid Motion Data 0002\x00\x00\x00\x00\x00")
+    model_name = "Light".encode("shift-jis")
+    data.extend(model_name + b"\x00" * (20 - len(model_name)))
+    data.extend(struct.pack("<I", 0))  # bones
+    data.extend(struct.pack("<I", 0))  # morphs
+    data.extend(struct.pack("<I", 0))  # cameras
+    data.extend(struct.pack("<I", len(frame_numbers)))
+    for index, frame in enumerate(frame_numbers):
+        data.extend(struct.pack("<I", frame))
+        data.extend(struct.pack("<fff", 1.0, max(0.1, 0.8 - index * 0.1), max(0.1, 0.6 - index * 0.1)))
+        data.extend(struct.pack("<fff", 0.5 + index, -1.0, 1.0))
+    data.extend(struct.pack("<I", 0))  # shadows
+    data.extend(struct.pack("<I", 0))  # IK display
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(data))
+
+
 def _camera_transform(cmds) -> str:
     from mmd_tools.core.constants import ATTR_MMD_CAMERA
 
@@ -281,6 +389,15 @@ def _camera_transform(cmds) -> str:
     if not cameras:
         raise AssertionError("No MMD camera transform found")
     return cameras[0]
+
+
+def _light_transform(cmds) -> str:
+    from mmd_tools.core.constants import ATTR_MMD_LIGHT
+
+    lights = cmds.ls(f"*.{ATTR_MMD_LIGHT}", objectsOnly=True) or []
+    if not lights:
+        raise AssertionError("No MMD light transform found")
+    return lights[0]
 
 
 def _assets_by_id(case: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -364,6 +481,11 @@ def _asset_path(manifest_dir: Path, out_dir: Path, case_name: str, asset: dict[s
         path = out_dir / case_name / filename
         _write_camera_vmd(path, [int(frame) for frame in generated.get("frames", [])])
         return path
+    if generated.get("type") == "light-vmd":
+        filename = generated.get("filename") or f"{case_name}-{asset['id']}.vmd"
+        path = out_dir / case_name / filename
+        _write_light_vmd(path, [int(frame) for frame in generated.get("frames", [])])
+        return path
 
     raise ValueError(f"Asset has neither path nor supported generated block: {asset}")
 
@@ -396,6 +518,8 @@ def _run_order(
     centers: dict[str, str] = {}
     camera_keys_before_clear: list[float] = []
     camera_keys_after_clear: list[float] = []
+    light_keys_before_clear: list[float] = []
+    light_keys_after_clear: list[float] = []
     preserved_snapshots: list[dict[str, Any]] = []
     asset_timings: list[dict[str, Any]] = []
 
@@ -432,7 +556,7 @@ def _run_order(
 
             if asset.get("kind") == "camera":
                 camera = _camera_transform(cmds)
-                camera_keys = _key_times(cmds, camera, "translateX")
+                camera_keys = _camera_key_times(cmds, camera)
                 if clear_existing:
                     camera_keys_after_clear = camera_keys
                 else:
@@ -440,6 +564,17 @@ def _run_order(
                 expected = asset.get("expect", {}).get("cameraKeys")
                 if expected is not None and camera_keys != [float(frame) for frame in expected]:
                     raise AssertionError(f"Camera keys mismatch for {asset_id}: expected={expected}, actual={camera_keys}")
+
+            if asset.get("kind") == "light":
+                light = _light_transform(cmds)
+                light_keys = _light_key_times(cmds, light)
+                if clear_existing:
+                    light_keys_after_clear = light_keys
+                else:
+                    light_keys_before_clear = light_keys
+                expected = asset.get("expect", {}).get("lightKeys")
+                if expected is not None and light_keys != [float(frame) for frame in expected]:
+                    raise AssertionError(f"Light keys mismatch for {asset_id}: expected={expected}, actual={light_keys}")
 
             if before_character:
                 center, before_keys = before_character
@@ -489,6 +624,12 @@ def _run_order(
             raise AssertionError(
                 f"Camera clear keys mismatch: expected={expected_camera_keys}, actual={camera_keys_after_clear}"
             )
+    if expect.get("lightKeysAfterClear") is not None:
+        expected_light_keys = [float(frame) for frame in expect["lightKeysAfterClear"]]
+        if light_keys_after_clear != expected_light_keys:
+            raise AssertionError(
+                f"Light clear keys mismatch: expected={expected_light_keys}, actual={light_keys_after_clear}"
+            )
 
     return {
         "case": case["name"],
@@ -498,6 +639,8 @@ def _run_order(
         "centers": centers,
         "camera_keys_before_clear": camera_keys_before_clear,
         "camera_keys_after_clear": camera_keys_after_clear,
+        "light_keys_before_clear": light_keys_before_clear,
+        "light_keys_after_clear": light_keys_after_clear,
         "preserved_snapshots": preserved_snapshots,
         "asset_timings": asset_timings,
         "joint_count": len(cmds.ls(type="joint") or []),
