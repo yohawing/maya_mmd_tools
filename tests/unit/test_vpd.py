@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from mmd_tools.core.exceptions import MMDParseException
+from mmd_tools.core.exceptions import MMDImportException, MMDParseException
 from mmd_tools.core.vpd_data import VpdData
 from mmd_tools.core.vpd_data.bone_pose import BonePose
 from mmd_tools.core.vpd_data.header import VpdHeader
@@ -320,6 +320,13 @@ class TestVpdImporter(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(converter.convert.call_args_list[0].args, (parser, "model_a", options))
         self.assertEqual(converter.convert.call_args_list[1].args, (parser, "model_b", options))
+
+    def test_import_raises_import_exception_on_unexpected_error(self):
+        parser = SimpleNamespace(bone_poses=[])
+
+        with patch("mmd_tools.io.vpd_importer.NamespaceUtils.get_namespace_from_node", side_effect=RuntimeError("boom")):
+            with self.assertRaises(MMDImportException):
+                vpd_importer.import_vpd_file(parser, "pose.vpd", {"target_model": "model:root"})
 
 
 if __name__ == "__main__":

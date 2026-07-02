@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional
 from maya import cmds
 from ..converters import vmd_profile
 from ..converters.vmd_converter import VmdConverter
+from ..core.exceptions import MMDImportException
 from ..core.logger import get_logger
 from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
@@ -37,6 +38,9 @@ def import_vmd_file(
 
     Returns:
         bool: インポートが成功したかどうか
+
+    Raises:
+        MMDImportException: VMD インポート処理に失敗した場合。
     """
     if options is None:
         options = {}
@@ -187,11 +191,12 @@ def import_vmd_file(
             )
         else:
             cmds.warning("Failed to import VMD file")
+            raise MMDImportException(f"Failed to import VMD file {filepath}")
 
         return success
 
+    except MMDImportException:
+        raise
     except Exception as e:
-        cmds.error(f"Failed to import VMD file {filepath}: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+        logger.error(f"Failed to import VMD file {filepath}: {e}", exc_info=True)
+        raise MMDImportException(f"Failed to import VMD file {filepath}: {e}") from e

@@ -1,8 +1,8 @@
 """Action boundary for PMX/PMD model export execution."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from ..core.logger import get_logger
 from ..io.pmd_exporter import PmdExporter
@@ -29,6 +29,7 @@ class ExportModelResult:
     succeeded: bool = False
     status_message: str = ""
     error: Optional[Exception] = None
+    warnings: List[Any] = field(default_factory=list)
 
 
 def _default_collect_model_data(options: Dict[str, Any]) -> dict:

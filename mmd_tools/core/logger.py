@@ -9,6 +9,7 @@ import logging
 import os
 from typing import Optional, Dict
 
+from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core.settings import settings
 
 
@@ -122,7 +123,7 @@ class MayaLogger:
 
     def _setup_handlers(self):
         """設定に基づいてハンドラーを設定"""
-        if not settings.get("logging.enabled", True):
+        if not settings.get(setting_keys.LOGGING_ENABLED, True):
             return
 
         # Maya Dialogハンドラー（ERROR/CRITICALレベル用）
@@ -132,7 +133,7 @@ class MayaLogger:
         #     self._logger.addHandler(dialog_handler)
 
         # ログレベルを設定から更新
-        level_str = settings.get("logging.level", "INFO")
+        level_str = settings.get(setting_keys.LOGGING_LEVEL, "INFO")
         if isinstance(level_str, str):
             level = getattr(logging, level_str.upper(), logging.INFO)
         else:
@@ -211,7 +212,7 @@ class MayaLogger:
             level: logging のレベル定数（logging.ERROR 等）
             message: ログメッセージ
         """
-        if not settings.get("logging.enabled", True):
+        if not settings.get(setting_keys.LOGGING_ENABLED, True):
             return
         try:
             self._logger.log(level, message, *args, **kwargs)

@@ -17,34 +17,11 @@ from mmd_tools.core.pmx_data.material import PmxMaterial
 from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
 from mmd_tools.core.pmx_data.rigid_body import PmxRigidBody
 from mmd_tools.core.pmx_data.vertex import PmxVertex
-
-
-def _choose_index_size(count: int) -> int:
-    """要素数に応じた頂点インデックスサイズ（unsigned）を返す。"""
-    if count <= 0xFF:
-        return 1
-    if count <= 0xFFFF:
-        return 2
-    return 4
-
-
-def _choose_reference_index_size(count: int) -> int:
-    """参照インデックスサイズ（signed）を返す。"""
-    if count <= 0x7F:
-        return 1
-    if count <= 0x7FFF:
-        return 2
-    return 4
-
-
-def _fan_triangulate(polygon_indices: list) -> list:
-    """多角形（quad/ngon）をfan triangulationで三角形リストに変換する。"""
-    if len(polygon_indices) < 3:
-        raise ValueError(f"Polygon must have at least 3 vertices, got {len(polygon_indices)}")
-    triangles = []
-    for i in range(1, len(polygon_indices) - 1):
-        triangles.append([polygon_indices[0], polygon_indices[i], polygon_indices[i + 1]])
-    return triangles
+from mmd_tools.core.utils import (
+    choose_index_size as _choose_index_size,
+    choose_reference_index_size as _choose_reference_index_size,
+    fan_triangulate as _fan_triangulate,
+)
 
 
 class PmxExporter:

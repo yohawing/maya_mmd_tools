@@ -185,6 +185,36 @@ class _ImportActionContract:
         self.assertIsNone(result.root_node)
         self.assertIs(result.error, error)
 
+    def test_execute_returns_profile_warnings(self):
+        warning = {"message": "partial import warning"}
+        texture_issue = {"file_node": "file1"}
+        nested_issue = {"file_node": "file2"}
+        options = {
+            "profile": {
+                "warnings": [warning],
+                "texture_issues": [texture_issue],
+                "mesh_converter": {"unresolved_textures": [nested_issue]},
+            }
+        }
+
+        action = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=lambda: None)
+        result = action.execute(self._make_request(options))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.warnings, [warning, texture_issue, nested_issue])
+
+    def test_result_warning_lists_are_not_shared(self):
+        first = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=lambda: None).execute(
+            self._make_request({})
+        )
+        second = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=lambda: None).execute(
+            self._make_request({})
+        )
+
+        first.warnings.append("first")
+
+        self.assertEqual(second.warnings, [])
+
 
 class TestImportModelAction(_ImportActionContract, unittest.TestCase):
     """PMX/PMD model import action の依存境界を検証する。"""

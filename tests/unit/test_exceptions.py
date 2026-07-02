@@ -11,7 +11,7 @@ import unittest
 # プロジェクトルートを sys.path に追加
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from mmd_tools.core.exceptions import MMDParseException
+from mmd_tools.core.exceptions import MMDImportException, MMDParseException
 
 
 class TestMMDParseException(unittest.TestCase):
@@ -88,6 +88,24 @@ class TestMMDParseException(unittest.TestCase):
         with self.assertRaises(MMDParseException) as ctx:
             raise MMDParseException(f"Unsupported MMD file format: {file_path}")
         self.assertIn(file_path, str(ctx.exception))
+
+
+class TestMMDImportException(unittest.TestCase):
+    """MMDImportException の基本動作テスト"""
+
+    def test_is_exception_subclass(self):
+        """MMDImportException が Exception のサブクラスであることを確認する。"""
+        self.assertTrue(issubclass(MMDImportException, Exception))
+
+    def test_message_stored(self):
+        """コンストラクタで渡したメッセージが保持されることを確認する。"""
+        exc = MMDImportException("import failed")
+        self.assertEqual(exc.args[0], "import failed")
+
+    def test_raise_and_catch_as_exception(self):
+        """親クラス Exception として catch できることを確認する。"""
+        with self.assertRaises(Exception):
+            raise MMDImportException("caught as Exception")
 
 
 if __name__ == "__main__":

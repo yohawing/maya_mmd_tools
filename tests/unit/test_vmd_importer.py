@@ -7,6 +7,7 @@ from pathlib import Path
 
 from maya import cmds
 
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.io.vmd_importer import import_vmd_file
 from tests.common.maya_test_base import MayaTestBase
 
@@ -105,6 +106,19 @@ class TestVmdImporter(MayaTestBase):
         self.assertIn(15, progress)
         self.assertIn(25, progress)
         self.assertIn(35, progress)
+
+    def test_converter_failure_raises_import_exception(self):
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = False
+
+            with self.assertRaises(MMDImportException):
+                import_vmd_file(object(), vmd_path, {})
 
 
 if __name__ == "__main__":

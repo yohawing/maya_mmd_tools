@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 import maya.cmds as cmds
 
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.converters.vpd_converter import VpdConverter
@@ -25,6 +26,9 @@ def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]
 
     Returns:
         bool: インポートが成功したか
+
+    Raises:
+        MMDImportException: VPD インポート中に予期しないエラーが発生した場合。
     """
     if options is None:
         options = {}
@@ -117,12 +121,8 @@ def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]
         return success
 
     except Exception as e:
-        logger.error(f"Failed to import VPD file: {e}")
-        cmds.error(f"Failed to import VPD file {filepath}: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return False
+        logger.error(f"Failed to import VPD file: {e}", exc_info=True)
+        raise MMDImportException(f"Failed to import VPD file {filepath}: {e}") from e
 
 
 def _create_keyframes_for_namespace(namespace: Optional[str], frame: float) -> None:

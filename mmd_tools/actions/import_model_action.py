@@ -1,7 +1,7 @@
 """Action boundary for PMX/PMD model import execution."""
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
 
 from ..adapters import MayaCmdsAdapter
 from ..io.mmd_importer import import_mmd_file
@@ -24,6 +24,7 @@ class ImportModelResult:
     root_node: Any = None
     succeeded: bool = False
     error: Optional[Exception] = None
+    warnings: List[Any] = field(default_factory=list)
 
 
 class ImportModelAction:
@@ -51,8 +52,23 @@ class ImportModelAction:
             root_node = importer(request.file_path, **kwargs)
         except Exception as exc:
             return ImportModelResult(error=exc)
-        return ImportModelResult(root_node=root_node, succeeded=bool(root_node))
+        return ImportModelResult(
+            root_node=root_node,
+            succeeded=bool(root_node),
+            warnings=_warnings_from_options(request.options),
+        )
 
     def _create_new_scene(self) -> None:
         adapter = self._maya_adapter or MayaCmdsAdapter()
         adapter.new_scene(force=True)
+
+
+def _warnings_from_options(options: Dict[str, Any]) -> List[Any]:
+    """Collect warning records accumulated in an import profile."""
+    profile = options.get("profile") if isinstance(options, dict) else None
+    if not isinstance(profile, dict):
+        return []
+    warnings = list(profile.get("warnings") or [])
+    warnings.extend(profile.get("texture_issues") or [])
+    warnings.extend(profile.get("mesh_converter", {}).get("unresolved_textures") or [])
+    return warnings

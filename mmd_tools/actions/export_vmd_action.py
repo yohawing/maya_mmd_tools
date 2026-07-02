@@ -1,7 +1,7 @@
 """Action boundary for VMD animation export execution."""
 
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional
 
 from ..converters.vmd_scene_collector import VmdSceneCollector
 from ..io.vmd_exporter import VmdExporter
@@ -25,6 +25,7 @@ class ExportVmdResult:
     exported_path: Optional[str] = None
     succeeded: bool = False
     error: Optional[Exception] = None
+    warnings: List[Any] = field(default_factory=list)
 
 
 class ExportVmdAction:
