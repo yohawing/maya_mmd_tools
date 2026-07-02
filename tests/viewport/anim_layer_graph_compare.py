@@ -17,7 +17,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = ROOT / "build" / "reports" / "anim_layer_graph_compare.json"
-CASES = ("joint_translate", "joint_rotate")
+CASES = ("joint_translate", "joint_rotate", "append_base_rotate", "ccdik_input_rotate")
+_MMD_PLUGIN_LOAD_ATTEMPTED = False
 
 
 class _Logger:
@@ -48,6 +49,68 @@ def _create_joint(node_name: str, base_values: dict[str, float]) -> str:
     for attr, value in base_values.items():
         cmds.setAttr(f"{node}.{attr}", float(value))
     return node
+
+
+def _load_mmd_plugin() -> None:
+    import maya.cmds as cmds
+
+    global _MMD_PLUGIN_LOAD_ATTEMPTED
+    if _MMD_PLUGIN_LOAD_ATTEMPTED:
+        return
+    _MMD_PLUGIN_LOAD_ATTEMPTED = True
+    plugin_path = ROOT / "mmd_tools" / "plugin_main.py"
+    if not cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+        cmds.loadPlugin(str(plugin_path), quiet=True)
+
+
+def _create_append_node(node_name: str, base_values: dict[str, float]) -> str:
+    import maya.cmds as cmds
+
+    _load_mmd_plugin()
+    node = cmds.createNode("mmdAppend", name=node_name)
+    cmds.setAttr(f"{node}.ratio", 0.5)
+    cmds.setAttr(f"{node}.affectRotation", True)
+    cmds.setAttr(f"{node}.sourceRotate", 20.0, -10.0, 5.0, type="double3")
+    cmds.setAttr(f"{node}.sourceJointOrient", 0.0, 0.0, 0.0, type="double3")
+    cmds.setAttr(f"{node}.targetJointOrient", 0.0, 0.0, 0.0, type="double3")
+    cmds.setAttr(f"{node}.baseRotate", base_values["baseRotateX"], base_values["baseRotateY"], base_values["baseRotateZ"], type="double3")
+    return node
+
+
+def _create_ccdik_node(node_name: str, base_values: dict[str, float]) -> str:
+    import maya.cmds as cmds
+
+    _load_mmd_plugin()
+    node = cmds.createNode("mmdCcdIk", name=node_name)
+    chain = {
+        "targetBoneSlot": 0,
+        "iterationCount": 1,
+        "limitAngle": 0.0628,
+        "bones": [{"rest_position": [0, 0, 0], "parent_slot": -1, "joint_orient_deg": [0, 0, 0]}],
+        "links": [{"bone_slot": 0}],
+    }
+    cmds.setAttr(f"{node}.chainJson", json.dumps(chain), type="string")
+    cmds.setAttr(f"{node}.enabled", False)
+    cmds.setAttr(
+        f"{node}.inputRotate[0]",
+        base_values["inputRotate[0].inputRotateElementX"],
+        base_values["inputRotate[0].inputRotateElementY"],
+        base_values["inputRotate[0].inputRotateElementZ"],
+        type="double3",
+    )
+    return node
+
+
+def _create_case_node(case_name: str, route: str, spec: dict[str, Any]) -> str:
+    node_name = f"{case_name}_{route}_node"
+    node_kind = spec["nodeKind"]
+    if node_kind == "joint":
+        return _create_joint(f"{case_name}_{route}_joint", spec["base"])
+    if node_kind == "mmdAppend":
+        return _create_append_node(node_name, spec["base"])
+    if node_kind == "mmdCcdIk":
+        return _create_ccdik_node(node_name, spec["base"])
+    raise ValueError(f"unknown node kind: {node_kind}")
 
 
 def _create_layer(node: str, attrs: list[str], route: str) -> str:
@@ -105,6 +168,7 @@ def _api_path(
 def _case_spec(case_name: str) -> dict[str, Any]:
     if case_name == "joint_translate":
         return {
+            "nodeKind": "joint",
             "attrs": ["translateX", "translateY", "translateZ"],
             "base": {"translateX": 3.0, "translateY": -2.0, "translateZ": 1.5},
             "samples": {
@@ -116,12 +180,45 @@ def _case_spec(case_name: str) -> dict[str, Any]:
         }
     if case_name == "joint_rotate":
         return {
+            "nodeKind": "joint",
             "attrs": ["rotateX", "rotateY", "rotateZ"],
             "base": {"rotateX": 10.0, "rotateY": -5.0, "rotateZ": 20.0},
             "samples": {
                 "rotateX": [(0.0, 0.0), (5.0, 15.0), (10.0, -5.0)],
                 "rotateY": [(0.0, 5.0), (5.0, -10.0), (10.0, 0.0)],
                 "rotateZ": [(0.0, -20.0), (5.0, 10.0), (10.0, 30.0)],
+            },
+            "frames": [0.0, 2.5, 5.0, 7.5, 10.0],
+        }
+    if case_name == "append_base_rotate":
+        return {
+            "nodeKind": "mmdAppend",
+            "attrs": ["baseRotateX", "baseRotateY", "baseRotateZ"],
+            "base": {"baseRotateX": 10.0, "baseRotateY": -5.0, "baseRotateZ": 20.0},
+            "samples": {
+                "baseRotateX": [(0.0, 0.0), (5.0, 15.0), (10.0, -5.0)],
+                "baseRotateY": [(0.0, 5.0), (5.0, -10.0), (10.0, 0.0)],
+                "baseRotateZ": [(0.0, -20.0), (5.0, 10.0), (10.0, 30.0)],
+            },
+            "frames": [0.0, 2.5, 5.0, 7.5, 10.0],
+        }
+    if case_name == "ccdik_input_rotate":
+        return {
+            "nodeKind": "mmdCcdIk",
+            "attrs": [
+                "inputRotate[0].inputRotateElementX",
+                "inputRotate[0].inputRotateElementY",
+                "inputRotate[0].inputRotateElementZ",
+            ],
+            "base": {
+                "inputRotate[0].inputRotateElementX": 10.0,
+                "inputRotate[0].inputRotateElementY": -5.0,
+                "inputRotate[0].inputRotateElementZ": 20.0,
+            },
+            "samples": {
+                "inputRotate[0].inputRotateElementX": [(0.0, 0.0), (5.0, 15.0), (10.0, -5.0)],
+                "inputRotate[0].inputRotateElementY": [(0.0, 5.0), (5.0, -10.0), (10.0, 0.0)],
+                "inputRotate[0].inputRotateElementZ": [(0.0, -20.0), (5.0, 10.0), (10.0, 30.0)],
             },
             "frames": [0.0, 2.5, 5.0, 7.5, 10.0],
         }
@@ -136,7 +233,7 @@ def _run_route(case_name: str, route: str, spec: dict[str, Any]) -> dict[str, An
     cmds.file(new=True, force=True)
     cmds.currentUnit(time="ntsc")
     attrs = list(spec["attrs"])
-    node = _create_joint(f"{case_name}_{route}_joint", spec["base"])
+    node = _create_case_node(case_name, route, spec)
     if route == "setkeyframe":
         layer = _setkeyframe_path(node=node, attrs=attrs, samples=spec["samples"], base_values=spec["base"], route=route)
     elif route == "api":
