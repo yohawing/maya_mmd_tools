@@ -75,10 +75,10 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         shader_mod.uninitializePlugin = MagicMock()
         sys.modules["mmd_tools.view.shader_override"] = shader_mod
 
-        drag_drop_mod = types.ModuleType("mmd_tools.io.drag_drop_importer")
+        drag_drop_mod = types.ModuleType("mmd_tools.ui.drag_drop_importer")
         drag_drop_mod.install_drag_drop_importer = MagicMock()
         drag_drop_mod.uninstall_drag_drop_importer = MagicMock()
-        sys.modules["mmd_tools.io.drag_drop_importer"] = drag_drop_mod
+        sys.modules["mmd_tools.ui.drag_drop_importer"] = drag_drop_mod
 
         for name in (
             "mmd_tools.nodes.mmd_append_node",
@@ -92,8 +92,10 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             sys.modules[name] = mod
 
         self.plugin_main = importlib.import_module("mmd_tools.plugin_main")
+        self.plugin_main.cmds = MagicMock()
         self.plugin_main.cmds.window.return_value = False
         self.plugin_main.cmds.workspaceControl.return_value = False
+        self.plugin_main.om.MFnPlugin = MagicMock(return_value=MagicMock())
 
     def test_open_main_window_deletes_previous_python_owned_window(self):
         self.plugin_main.open_main_window(dockable=False)

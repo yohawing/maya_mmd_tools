@@ -10,7 +10,7 @@ from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
-from mmd_tools.io import drag_drop_importer  # noqa: E402
+from mmd_tools.ui import drag_drop_importer  # noqa: E402
 
 
 class _FakeSettingsService:

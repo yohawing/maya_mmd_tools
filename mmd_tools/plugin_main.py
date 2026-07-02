@@ -5,7 +5,7 @@ import maya.api.OpenMaya as om
 from mmd_tools import __version__
 from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.view import shader_override as mmd_shader
-from mmd_tools.io.drag_drop_importer import (
+from mmd_tools.ui.drag_drop_importer import (
     install_drag_drop_importer,
     uninstall_drag_drop_importer,
 )
