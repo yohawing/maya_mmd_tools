@@ -6,6 +6,7 @@ from typing import Callable, List, Optional, Tuple
 
 import maya.cmds as cmds
 
+from ..core.import_strategy import resolve_vmd_runtime_bake_strategy
 from ..core.namespace_utils import NamespaceUtils
 
 
@@ -20,19 +21,18 @@ def should_use_mmd_runtime_bake(
     bake_mode: bool = False,
 ) -> bool:
     """Return True for Bake mode final-pose import, False for live Rig mode."""
-    if not bake_mode:
-        return False
     if live_rig_target:
         converter.logger.info("Bake mode requested; live MMD rig outputs will be disabled for runtime bake")
-    if not (has_runtime and runtime_available()):
-        return False
-
-    has_vmd = bool(vmd_bytes)
-    if bool(pmx_bytes):
-        has_pmx = True
-    else:
-        has_pmx = bool(pmx_path) and Path(pmx_path).suffix.lower() == ".pmx" and os.path.exists(pmx_path)
-    return bool(has_vmd and has_pmx)
+    strategy = resolve_vmd_runtime_bake_strategy(
+        vmd_bytes=vmd_bytes,
+        pmx_bytes=pmx_bytes,
+        pmx_path=pmx_path,
+        has_runtime=has_runtime,
+        runtime_available=runtime_available,
+        bake_mode=bake_mode,
+    )
+    converter.logger.info("VMD import strategy: runtime_bake=%s (%s)", strategy.use_runtime_bake, strategy.reason)
+    return strategy.use_runtime_bake
 
 
 def resolve_runtime_bake_sources(

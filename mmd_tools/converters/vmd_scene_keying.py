@@ -9,6 +9,7 @@ import maya.cmds as cmds
 
 from ..core import maya_utils
 from . import vmd_profile
+from .vmd_context import VmdKeyingContext
 
 
 class VmdKeyingError(RuntimeError):
@@ -217,7 +218,7 @@ def _find_layer_anim_curve(node_name: str, attr: str, animation_layer: str) -> O
 
 
 def _ensure_layer_anim_curve(
-    converter,
+    context: VmdKeyingContext,
     node_name: str,
     attr: str,
     samples: List[Tuple[float, float]],
@@ -228,7 +229,7 @@ def _ensure_layer_anim_curve(
     try:
         cmds.animLayer(animation_layer, edit=True, attribute=plug)
     except Exception as exc:
-        converter.logger.debug(f"animLayer attribute registration failed for {plug}: {exc}")
+        context.logger.debug(f"animLayer attribute registration failed for {plug}: {exc}")
 
     curve = _find_layer_anim_curve(node_name, attr, animation_layer)
     if curve is not None:
@@ -247,17 +248,17 @@ def _ensure_layer_anim_curve(
                 animLayer=animation_layer,
             )
     except Exception as exc:
-        converter.logger.debug(f"animLayer seed key failed for {plug}: {exc}")
+        context.logger.debug(f"animLayer seed key failed for {plug}: {exc}")
         return None
 
     curve = _find_layer_anim_curve(node_name, attr, animation_layer)
     if curve is None:
-        converter.logger.debug(f"Could not locate animLayer curve for {plug} on {animation_layer}")
+        context.logger.debug(f"Could not locate animLayer curve for {plug} on {animation_layer}")
     return curve
 
 
 def _create_scalar_channel_curves(
-    converter,
+    context: VmdKeyingContext,
     node_name: str,
     attrs: List[str],
     channel_samples: Dict[str, List[Tuple[float, float]]],
@@ -287,7 +288,7 @@ def _create_scalar_channel_curves(
     curves: Dict[str, oma.MFnAnimCurve] = {}
     with vmd_profile.scope("animLayer_curve_setup", count=len(attrs)):
         for attr in attrs:
-            curve = _ensure_layer_anim_curve(converter, node_name, attr, channel_samples[attr], animation_layer)
+            curve = _ensure_layer_anim_curve(context, node_name, attr, channel_samples[attr], animation_layer)
             if curve is not None:
                 curves[attr] = curve
         refreshed_curves: Dict[str, oma.MFnAnimCurve] = {}
@@ -306,12 +307,12 @@ def _create_scalar_channel_curves(
                     curve.remove(index)
                 cleared.add(curve_name)
             except Exception as exc:
-                converter.logger.debug(f"Failed to clear animLayer seed keys for {node_name}.{attr}: {exc}")
+                context.logger.debug(f"Failed to clear animLayer seed keys for {node_name}.{attr}: {exc}")
     return curves
 
 
 def batch_create_and_key_curves(
-    converter,
+    context: VmdKeyingContext,
     joint_name: str,
     channel_samples: Dict[str, List[Tuple[float, float]]],
 ) -> bool:
@@ -320,7 +321,7 @@ def batch_create_and_key_curves(
         return False
     attrs = list(channel_samples.keys())
     curves: Dict[str, oma.MFnAnimCurve] = {}
-    animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
+    animation_layer = context.anim_layer if context.use_animation_layers and context.anim_layer else None
     create_error: Optional[Exception] = None
     try:
         curves = maya_utils.create_animation_curves(
@@ -330,7 +331,7 @@ def batch_create_and_key_curves(
             animation_layer=animation_layer,
         )
     except Exception as e:
-        converter.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
+        context.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
         create_error = e
         curves = {}
 
@@ -369,7 +370,7 @@ def batch_create_and_key_curves(
                 success_any = True
                 continue
             except Exception as e:
-                converter.logger.debug(f"addKeys failed for {joint_name}.{attr}: {e}")
+                context.logger.debug(f"addKeys failed for {joint_name}.{attr}: {e}")
                 _ensure_fallback_allowed(joint_name, attr, animation_layer, f"addKeys failed: {e!r}")
         else:
             reason = "no API animCurve found"
@@ -389,12 +390,12 @@ def batch_create_and_key_curves(
             except Exception:
                 pass
         if not used_api:
-            converter.logger.debug(f"Used opt-in cmds.setKeyframe fallback for {joint_name}.{attr}")
+            context.logger.debug(f"Used opt-in cmds.setKeyframe fallback for {joint_name}.{attr}")
     return success_any
 
 
 def batch_create_and_key_curve_arrays(
-    converter,
+    context: VmdKeyingContext,
     joint_name: str,
     channel_values: Dict[str, Optional[om.MDoubleArray]],
     static_state: Dict[str, dict],
@@ -407,7 +408,7 @@ def batch_create_and_key_curve_arrays(
 
     dynamic_attrs = []
     skipped_static = 0
-    animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
+    animation_layer = context.anim_layer if context.use_animation_layers and context.anim_layer else None
     layer_static_values: Dict[str, om.MDoubleArray] = {}
     for attr, values in channel_values.items():
         state = static_state.get(attr, {})
@@ -445,7 +446,7 @@ def batch_create_and_key_curve_arrays(
             animation_layer=animation_layer,
         )
     except Exception as e:
-        converter.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
+        context.logger.debug(f"create_animation_curves failed for {joint_name}: {e}")
         create_error = e
         curves = {}
 
@@ -468,7 +469,7 @@ def batch_create_and_key_curve_arrays(
                 keyed += 1
                 continue
             except Exception as e:
-                converter.logger.debug(f"addKeys failed for {joint_name}.{attr}: {e}")
+                context.logger.debug(f"addKeys failed for {joint_name}.{attr}: {e}")
                 _ensure_fallback_allowed(joint_name, attr, animation_layer, f"addKeys failed: {e!r}")
         else:
             reason = "no API animCurve found"
@@ -496,7 +497,7 @@ def batch_create_and_key_curve_arrays(
 
 
 def batch_key_scalar_channels(
-    converter,
+    context: VmdKeyingContext,
     node_name: str,
     channel_samples: Dict[str, List[Tuple[float, float]]],
     animation_layer: Optional[str] = None,
@@ -518,14 +519,14 @@ def batch_key_scalar_channels(
     create_error: Optional[Exception] = None
     try:
         curves = _create_scalar_channel_curves(
-            converter,
+            context,
             node_name,
             attrs,
             channel_samples,
             animation_layer=animation_layer,
         )
     except Exception as exc:
-        converter.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
+        context.logger.debug(f"create_animation_curves failed for {node_name}: {exc}")
         create_error = exc
 
     tangent = oma.MFnAnimCurve.kTangentLinear
@@ -546,7 +547,7 @@ def batch_key_scalar_channels(
                 success_any = True
                 continue
             except Exception as exc:
-                converter.logger.debug(f"addKeys failed for {node_name}.{attr}: {exc}")
+                context.logger.debug(f"addKeys failed for {node_name}.{attr}: {exc}")
                 _ensure_fallback_allowed(node_name, attr, animation_layer, f"addKeys failed: {exc!r}")
         else:
             reason = "no API animCurve found"
@@ -577,7 +578,7 @@ def batch_key_scalar_channels(
                     cmds.setKeyframe(node_name, **key_args)
                 success_any = True
             except Exception as exc:
-                converter.logger.debug(f"setKeyframe fallback failed for {node_name}.{attr} at {frame}: {exc}")
+                context.logger.debug(f"setKeyframe fallback failed for {node_name}.{attr} at {frame}: {exc}")
 
     return success_any
 

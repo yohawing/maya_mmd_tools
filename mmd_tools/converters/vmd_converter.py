@@ -21,6 +21,7 @@ import maya.cmds as cmds
 from ..core.logger import get_logger
 from ..core.native.native_pmx_parser import parse_pmx_native
 from ..core.settings import settings
+from ..core import settings_keys as setting_keys
 from ..core.vmd_data import VmdData
 from .vmd_append_decomposition import (
     collect_append_info,
@@ -42,6 +43,7 @@ from .vmd_camera_animation import (
     get_or_create_camera,
     parse_vmd_camera_interpolation,
 )
+from .vmd_context import VmdKeyingContext, VmdRuntimeRigContext
 from .vmd_import_state import (
     capture_anim_layer_selection,
     clear_existing_camera_motion,
@@ -155,7 +157,7 @@ class VmdConverter:
         # VMDモーフ名 -> [(node, attr, 元名), ...]
         # 単一 mapping の既存コード互換を保つため、値は list / tuple のいずれも許容。
         self.fps = 30.0  # デフォルトのFPS (VMD import setting)
-        self.motion_scale = float(settings.get("import.animation.motion_scale", 1.0))
+        self.motion_scale = float(settings.get(setting_keys.IMPORT_ANIMATION_MOTION_SCALE, 1.0))
         self._failed_bones = set()  # 変換に失敗したボーン名を記録
         self._bone_bind_poses: Dict[str, Tuple[float, float, float]] = {}  # ボーンの初期位置
         self.use_quaternion_interpolation = True  # Quaternion補間の使用フラグ
@@ -171,10 +173,27 @@ class VmdConverter:
         # setAttr 一回で固定する（不要な全フレームキーを抑制）。
         # 並進は Maya linear 単位、回転は度で指定（内部比較時にラジアン換算）。
         self._static_eps_translate = float(
-            settings.get("import.animation.static_channel_epsilon_translate", 1e-4)
+            settings.get(setting_keys.IMPORT_ANIMATION_STATIC_CHANNEL_EPSILON_TRANSLATE, 1e-4)
         )
         self._static_eps_rotate = math.radians(
-            float(settings.get("import.animation.static_channel_epsilon_rotate_deg", 0.01))
+            float(settings.get(setting_keys.IMPORT_ANIMATION_STATIC_CHANNEL_EPSILON_ROTATE_DEG, 0.01))
+        )
+
+    def _keying_context(self) -> VmdKeyingContext:
+        """Return keying-only state for split VMD helper modules."""
+        return VmdKeyingContext(
+            logger=self.logger,
+            anim_layer=self.anim_layer,
+            use_animation_layers=self.use_animation_layers,
+        )
+
+    def _runtime_rig_context(self) -> VmdRuntimeRigContext:
+        """Return runtime-rig-only state for split VMD helper modules."""
+        return VmdRuntimeRigContext(
+            logger=self.logger,
+            bone_name_mapping=self.bone_name_mapping,
+            bone_bind_poses=self._bone_bind_poses,
+            runtime_joint_attrs=self._runtime_joint_attrs,
         )
 
     def convert(
@@ -603,7 +622,7 @@ class VmdConverter:
         translate は Maya linear unit の値をそのまま渡す。
         API が使えない/失敗したチャンネルは cmds.setKeyframe にフォールバックして等価動作を維持。
         """
-        return batch_create_and_key_curves(self, joint_name, channel_samples)
+        return batch_create_and_key_curves(self._keying_context(), joint_name, channel_samples)
 
     @staticmethod
     def _runtime_joint_attrs() -> Tuple[str, str, str, str, str, str]:
@@ -637,7 +656,7 @@ class VmdConverter:
     ) -> Tuple[int, int]:
         """MDoubleArrayへ収集済みのchannel値をMFnAnimCurve.addKeysで一括登録する。"""
         return batch_create_and_key_curve_arrays(
-            self,
+            self._keying_context(),
             joint_name,
             channel_values,
             static_state,
@@ -652,7 +671,12 @@ class VmdConverter:
         animation_layer: Optional[str] = None,
     ) -> bool:
         """Maya UI 値の scalar channel を MFnAnimCurve.addKeys で一括キーイングする。"""
-        return batch_key_scalar_channels(self, node_name, channel_samples, animation_layer=animation_layer)
+        return batch_key_scalar_channels(
+            self._keying_context(),
+            node_name,
+            channel_samples,
+            animation_layer=animation_layer,
+        )
 
     @staticmethod
     def _samples_as_anim_layer_deltas(node_name: str, channel_samples: Dict[str, List[Tuple[float, float]]]):
@@ -859,7 +883,7 @@ class VmdConverter:
 
     def _disable_mmd_rig_constraints_for_runtime_bake(self):
         """runtime bake と二重評価になる PMX 付与constraint/IK solverを無効化する。"""
-        disable_mmd_rig_constraints_for_runtime_bake(self)
+        disable_mmd_rig_constraints_for_runtime_bake(self._runtime_rig_context())
 
     def _has_live_mmd_rig_for_runtime_target(self) -> bool:
         """現在の変換対象にlive MMD rig出力が接続されているかを返す。
@@ -872,7 +896,7 @@ class VmdConverter:
 
     def _restore_joints_to_bind_pose_for_runtime_bake(self) -> None:
         """live rig出力切断後に残った値を消し、runtime bake用のbind姿勢へ戻す。"""
-        restore_joints_to_bind_pose_for_runtime_bake(self)
+        restore_joints_to_bind_pose_for_runtime_bake(self._runtime_rig_context())
 
     def _add_objects_to_layer(self, objects: List[str]):
         """オブジェクトをアニメーションレイヤーに追加

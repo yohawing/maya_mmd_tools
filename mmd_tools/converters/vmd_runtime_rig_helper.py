@@ -6,6 +6,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import maya.cmds as cmds
 
+from .vmd_context import VmdRuntimeRigContext
+
 
 MMD_APPEND_NODE_TYPES = ("mmdAppend", "mmdAppendNode")
 MMD_CCD_IK_NODE_TYPES = ("mmdCcdIk", "mmdCcdIkNode")
@@ -94,9 +96,9 @@ def disconnect_node_output_connections(node: str, attrs: Tuple[str, ...]) -> int
     return disconnected
 
 
-def disable_mmd_rig_constraints_for_runtime_bake(converter) -> None:
+def disable_mmd_rig_constraints_for_runtime_bake(context: VmdRuntimeRigContext) -> None:
     """Disable live MMD rig outputs that would double-evaluate runtime bake."""
-    mapped_joints = runtime_bake_mapped_joint_names(converter.bone_name_mapping)
+    mapped_joints = runtime_bake_mapped_joint_names(dict(context.bone_name_mapping))
     disconnected = 0
     ik_nodes_for_runtime = set()
     for node in _ls_mmd_append_nodes():
@@ -116,7 +118,7 @@ def disable_mmd_rig_constraints_for_runtime_bake(converter) -> None:
         ik_nodes_for_runtime.add(node)
         disconnected += disconnect_node_output_connections(node, ("outputRotate",))
     if disconnected:
-        converter.logger.info(f"Disconnected {disconnected} live rig output connections for runtime bake")
+        context.logger.info(f"Disconnected {disconnected} live rig output connections for runtime bake")
 
     constraints = cmds.ls("*.mmd_grant_constraint", objectsOnly=True) or []
     disabled = 0
@@ -131,10 +133,10 @@ def disable_mmd_rig_constraints_for_runtime_bake(converter) -> None:
                 cmds.setAttr(f"{constraint}.envelope", 0)
                 disabled += 1
         except Exception as e:
-            converter.logger.debug(f"failed to disable MMD grant constraint {constraint}: {e}")
+            context.logger.debug(f"failed to disable MMD grant constraint {constraint}: {e}")
 
     if disabled:
-        converter.logger.info(f"Disabled {disabled} MMD append constraints for runtime bake")
+        context.logger.info(f"Disabled {disabled} MMD append constraints for runtime bake")
 
     ik_disabled = 0
     for node in ik_nodes_for_runtime:
@@ -144,10 +146,10 @@ def disable_mmd_rig_constraints_for_runtime_bake(converter) -> None:
             cmds.setAttr(f"{node}.enabled", False)
             ik_disabled += 1
         except Exception as e:
-            converter.logger.debug(f"failed to disable mmdCcdIk solver {node}: {e}")
+            context.logger.debug(f"failed to disable mmdCcdIk solver {node}: {e}")
 
     if ik_disabled:
-        converter.logger.info(f"Turned off {ik_disabled} mmdCcdIk solvers for runtime bake")
+        context.logger.info(f"Turned off {ik_disabled} mmdCcdIk solvers for runtime bake")
 
 
 def has_live_mmd_rig_for_runtime_target(logger) -> bool:
@@ -197,14 +199,14 @@ def native_ik_handle_targets_mapped_joint(
     return False
 
 
-def restore_joints_to_bind_pose_for_runtime_bake(converter) -> None:
+def restore_joints_to_bind_pose_for_runtime_bake(context: VmdRuntimeRigContext) -> None:
     """Clear live-rig values and restore mapped joints to bind pose before runtime bake."""
     restored = 0
-    for vmd_bone_name, joint in converter.bone_name_mapping.items():
+    for vmd_bone_name, joint in context.bone_name_mapping.items():
         if not cmds.objExists(joint):
             continue
 
-        for attr in converter._runtime_joint_attrs():
+        for attr in context.runtime_joint_attrs():
             plug = f"{joint}.{attr}"
             for source in cmds.listConnections(plug, s=True, d=False, p=True) or []:
                 try:
@@ -212,7 +214,7 @@ def restore_joints_to_bind_pose_for_runtime_bake(converter) -> None:
                 except Exception:
                     pass
 
-        bind_translate = converter._bone_bind_poses.get(vmd_bone_name)
+        bind_translate = context.bone_bind_poses.get(vmd_bone_name)
         try:
             if bind_translate is not None:
                 cmds.setAttr(
@@ -224,7 +226,7 @@ def restore_joints_to_bind_pose_for_runtime_bake(converter) -> None:
             cmds.setAttr(f"{joint}.rotate", 0.0, 0.0, 0.0)
             restored += 1
         except Exception as e:
-            converter.logger.debug(f"failed to restore bind pose for runtime bake {joint}: {e}")
+            context.logger.debug(f"failed to restore bind pose for runtime bake {joint}: {e}")
 
     if restored:
-        converter.logger.info(f"Restored {restored} joints to bind pose for runtime bake")
+        context.logger.info(f"Restored {restored} joints to bind pose for runtime bake")
