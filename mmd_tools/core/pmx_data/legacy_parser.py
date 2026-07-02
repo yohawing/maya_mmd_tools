@@ -1,4 +1,9 @@
-"""Legacy Python PMX reader retained for migration-only PMX tooling."""
+"""Legacy Python PMX reader retained for explicit fallback and roundtrip paths.
+
+The native parser is the preferred import path. This reader is still active for
+native-parser fallback, PMX 2.1 soft-body backfill, and tools/tests that
+explicitly opt out of native parser policy.
+"""
 
 import os
 import struct
