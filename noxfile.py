@@ -1486,6 +1486,40 @@ def import_order_e2e(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def import_scale_drift_e2e(session: nox.Session) -> None:
+    """Run mayapy E2E diagnostics for import scale / skin bind drift.
+
+    Examples:
+        uvx nox -s import_scale_drift_e2e -- --maya 2024
+        uvx nox -s import_scale_drift_e2e -- --maya 2024 --expect fixed
+        uvx nox -s import_scale_drift_e2e -- --maya 2024 --scale 1.0 --scale 2.0 --log build/import-scale-drift/run.jsonl
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    path_options = {"--model", "--log"}
+    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--drift-threshold"}
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/import_scale_drift_e2e.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def runtime_bake_bench(session: nox.Session) -> None:
     """Measure the Maya runtime-bake import path.
 
