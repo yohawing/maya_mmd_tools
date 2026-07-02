@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import platform
 import json
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -33,6 +34,14 @@ from tests.common.maya_location import resolve_path_for_maya_process as _resolve
 DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_CMAKE_CONFIG = "Debug"
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
+RELEASE_ADDICTION_INTERPOLATION_EYE_MAX = "2.0"
+RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG = "5.0"
+RELEASE_ADDICTION_INTERPOLATION_UP_MAX_DEG = "5.0"
+RELEASE_ADDICTION_INTERPOLATION_ROTATION_MAX_DEG = "5.0"
+RELEASE_ADDICTION_CAMERA_VMD = (
+    "F:/MMD/vmd/175_Addictionカメラモーションv1.3/"
+    "Addictionカメラモーション/Addictionカメラ用モーション(一人用).vmd"
+)
 
 nox.options.sessions = ["tests"]
 
@@ -94,6 +103,28 @@ def _mayapy_arg_path(mayapy: Path, value: str | Path) -> str:
 def _convert_mayapy_path_options(mayapy: Path, args: list[str], path_options: set[str]) -> list[str]:
     """Convert values following path-like options for a mayapy child process."""
     return _convert_maya_path_options(mayapy, ROOT, args, path_options)
+
+
+def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[str]:
+    """Copy a non-ASCII --parity-vmd path to an ASCII build path for mayapy argv."""
+    if "--parity-vmd" not in args:
+        return args
+    index = args.index("--parity-vmd")
+    if index + 1 >= len(args):
+        return args
+    source = Path(args[index + 1])
+    if not source.exists():
+        return args
+    digest = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:10]
+    alias_dir = ROOT / "build" / "local-camera-motion-oracle" / "local-assets"
+    alias_dir.mkdir(parents=True, exist_ok=True)
+    alias = alias_dir / f"camera-parity-{digest}.vmd"
+    if not alias.exists() or alias.stat().st_size != source.stat().st_size or alias.stat().st_mtime < source.stat().st_mtime:
+        shutil.copy2(source, alias)
+        session.log(f"Copied parity VMD for mayapy argv: {source} -> {alias}")
+    rewritten = list(args)
+    rewritten[index + 1] = str(alias)
+    return rewritten
 
 
 def _import_order_manifest_asset_path(value: str) -> str:
@@ -1094,6 +1125,7 @@ def local_camera_motion_oracle(session: nox.Session) -> None:
             continue
         passthrough.append(args[i])
         i += 1
+    passthrough = _copy_parity_vmd_for_mayapy(session, passthrough)
 
     session.run(
         str(mayapy),
@@ -1103,7 +1135,7 @@ def local_camera_motion_oracle(session: nox.Session) -> None:
         *_convert_mayapy_path_options(
             mayapy,
             passthrough,
-            {"--manifest", "--out"},
+            {"--manifest", "--out", "--parity-vmd"},
         ),
         env=_mayapy_env(mayapy),
         external=True,
@@ -1114,16 +1146,19 @@ def local_camera_motion_oracle(session: nox.Session) -> None:
 def release_camera_motion_oracle(session: nox.Session) -> None:
     """Run the local GoldenOracle camera-motion release gate.
 
-    Bake and sparse modes both gate raw keyframes and playback camera.current
-    pose by default. This release gate uses a current-pose tolerance for the
-    known local GoldenOracle dump residuals; pass --current-epsilon for a stricter
-    or looser audit. The runner's default camera.current frame 0 policy skips
+    Bake mode gates raw keyframes and playback camera.current pose. Sparse Rig
+    mode gates raw keyframes and editable-rig structure while keeping playback
+    camera.current deltas as a report, because the Rig path now preserves VMD
+    keys as Maya direct animation instead of using dense samples or expression
+    evaluation. The runner's default camera.current frame 0 policy skips
     non-generated GoldenOracle dump frame 0.
 
     Examples:
         uvx nox -s release_camera_motion_oracle -- --maya 2024
         uvx nox -s release_camera_motion_oracle -- --manifest F:\\Develop\\MMDDev\\GoldenOracle\\manifests\\camera_motion.json
         uvx nox -s release_camera_motion_oracle -- --all-cases
+        uvx nox -s release_camera_motion_oracle -- --strict-sparse-current
+        uvx nox -s release_camera_motion_oracle -- --skip-addiction-parity
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
@@ -1152,6 +1187,29 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
     common_args = ["--manifest", manifest]
     if "--current-epsilon" not in args:
         common_args.extend(["--current-epsilon", RELEASE_CAMERA_CURRENT_EPSILON])
+    parity_args: list[str] = [
+        "--parity-current-report-only",
+        "--all-frames",
+        "--parity-interpolation-eye-max",
+        _option(session.posargs, "--parity-interpolation-eye-max", RELEASE_ADDICTION_INTERPOLATION_EYE_MAX),
+        "--parity-interpolation-forward-max-deg",
+        _option(
+            session.posargs,
+            "--parity-interpolation-forward-max-deg",
+            RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG,
+        ),
+        "--parity-interpolation-up-max-deg",
+        _option(session.posargs, "--parity-interpolation-up-max-deg", RELEASE_ADDICTION_INTERPOLATION_UP_MAX_DEG),
+        "--parity-interpolation-rotation-max-deg",
+        _option(
+            session.posargs,
+            "--parity-interpolation-rotation-max-deg",
+            RELEASE_ADDICTION_INTERPOLATION_ROTATION_MAX_DEG,
+        ),
+    ]
+    parity_epsilon = _option(session.posargs, "--parity-epsilon", "")
+    if parity_epsilon:
+        parity_args.extend(["--parity-epsilon", parity_epsilon])
     i = 0
     passthrough_value_options = {
         "--case",
@@ -1160,8 +1218,22 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
         "--epsilon",
         "--current-epsilon",
         "--current-frame-zero",
+        "--parity-interpolation-eye-max",
+        "--parity-interpolation-forward-max-deg",
+        "--parity-interpolation-up-max-deg",
+        "--parity-interpolation-rotation-max-deg",
     }
-    consumed_value_options = {"--maya", "--manifest", "--out-dir", "--case"}
+    consumed_value_options = {
+        "--maya",
+        "--manifest",
+        "--out-dir",
+        "--case",
+        "--parity-epsilon",
+        "--parity-interpolation-eye-max",
+        "--parity-interpolation-forward-max-deg",
+        "--parity-interpolation-up-max-deg",
+        "--parity-interpolation-rotation-max-deg",
+    }
     while i < len(args):
         if args[i] in consumed_value_options and i + 1 < len(args):
             i += 2
@@ -1195,6 +1267,8 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
                 "--out",
                 str(report_path),
             ]
+            if mode == "sparse" and not _has_flag(session.posargs, "--strict-sparse-current"):
+                runner_args.append("--current-report-only")
             session.run(
                 str(mayapy),
                 _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
@@ -1216,6 +1290,37 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
                 failed = 1
             if failed:
                 failed_reports.append(str(report_path))
+    if not _has_flag(session.posargs, "--skip-addiction-parity"):
+        addiction_vmd = Path(RELEASE_ADDICTION_CAMERA_VMD)
+        if addiction_vmd.exists():
+            report_path = out_dir / "bake-rig-camera-addiction.json"
+            addiction_args = _copy_parity_vmd_for_mayapy(
+                session,
+                ["--parity-vmd", str(addiction_vmd), *parity_args],
+            )
+            session.run(
+                str(mayapy),
+                _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
+                "--repo-root",
+                _maya_process_path(mayapy, ROOT),
+                "--parity-case-name",
+                "camera-addiction-bake-rig-parity",
+                "--out",
+                _maya_process_path(mayapy, report_path),
+                *_convert_mayapy_path_options(mayapy, addiction_args, {"--parity-vmd"}),
+                env=_mayapy_env(mayapy),
+                external=True,
+                success_codes=[0, 1],
+            )
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                failed = int((report.get("summary") or {}).get("failed", 0))
+            except Exception:
+                failed = 1
+            if failed:
+                failed_reports.append(str(report_path))
+        else:
+            session.log(f"Skipping Addiction camera parity; local VMD not found: {addiction_vmd}")
     if failed_reports:
         session.error("Camera motion release gate failed; reports: " + ", ".join(failed_reports))
 

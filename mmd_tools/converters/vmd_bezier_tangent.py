@@ -103,6 +103,10 @@ def _time_key_index(curve: oma.MFnAnimCurve, frame_time: float) -> Optional[int]
     return int(index)
 
 
+def _uses_degree_tangent_units(attr: str) -> bool:
+    return "rotate" in attr.lower() or "inputRotateElement" in attr
+
+
 def _apply_api_tangent(
     curve: oma.MFnAnimCurve,
     key_index: int,
@@ -243,6 +247,9 @@ def apply_vmd_bezier_tangents(
                 try:
                     value = float(curve.value(key_index))
                     next_value = float(curve.value(next_key_index))
+                    if _uses_degree_tangent_units(target_attr):
+                        value = math.degrees(value)
+                        next_value = math.degrees(next_value)
                 except Exception:
                     value = query_key_value(converter.logger, plug, frame_time)
                     next_value = query_key_value(converter.logger, plug, next_frame_time)

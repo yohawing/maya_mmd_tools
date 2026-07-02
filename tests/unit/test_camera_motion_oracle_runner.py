@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -106,3 +107,69 @@ class TestCameraMotionOracleRunner(unittest.TestCase):
         delta = runner._diff_rotation_vector([0.0, 0.0, 0.0], [0.0, 2.0 * 3.141592653589793, 0.0])
 
         self.assertAlmostEqual(delta, 0.0, places=12)
+
+    def test_select_frame_numbers_sorts_deduplicates_and_keeps_last(self):
+        frames = runner._select_frame_numbers([75, 0, 50, 75, 5780, 74, 5722], max_frames=3, all_frames=False)
+
+        self.assertEqual(frames, [0, 2890, 5780])
+
+    def test_select_frame_numbers_can_select_all_timeline_frames(self):
+        frames = runner._select_frame_numbers([3, 1, 3, 2], max_frames=1, all_frames=True)
+
+        self.assertEqual(frames, [1, 2, 3])
+
+    def test_select_frame_numbers_uses_timeline_range_not_key_count(self):
+        frames = runner._select_frame_numbers([0, 10], max_frames=4, all_frames=False)
+
+        self.assertEqual(frames, [0, 3, 7, 10])
+
+    def test_parity_drift_summary_excludes_keyframes_for_interpolation_budget(self):
+        frames = [0, 5, 10]
+        base_state = {
+            "position": [0.0, 0.0, 0.0],
+            "distance": -10.0,
+            "rotation": [0.0, 0.0, 0.0],
+            "fov": 45.0,
+            "transformForward": [0.0, 0.0, -1.0],
+            "transformUp": [0.0, 1.0, 0.0],
+            "worldMatrix": [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 10.0, 1.0],
+        }
+        bake_states = {frame: dict(base_state) for frame in frames}
+        sparse_states = {frame: dict(base_state) for frame in frames}
+        sparse_states[5] = {
+            **base_state,
+            "rotation": [math.radians(12.0), 0.0, 0.0],
+            "transformForward": [0.0, 0.5, -0.8660254038],
+            "worldMatrix": [1.0, 0.0, 0.0, 0.0, 0.0, 0.8660254038, 0.5, 0.0, 0.0, -0.5, 0.8660254038, 0.0, 0.0, 5.0, 10.0, 1.0],
+        }
+
+        rows = runner._parity_drift_rows(frames, {0, 10}, sparse_states, bake_states)
+        summary = runner._summarize_parity_drift(rows)
+
+        self.assertEqual(summary["keyframes"], 2)
+        self.assertEqual(summary["inbetweenFrames"], 1)
+        self.assertAlmostEqual(summary["keyframesOnly"]["eyeEuclidean"]["max"], 0.0)
+        self.assertGreater(summary["inbetweenOnly"]["eyeEuclidean"]["max"], 4.9)
+        self.assertGreater(summary["inbetweenOnly"]["forwardAngleDeg"]["max"], 29.0)
+
+    def test_interpolation_drift_mismatches_gate_thresholds(self):
+        summary = {
+            "inbetweenOnly": {
+                "eyeEuclidean": {"max": 5.0, "maxFrame": 5},
+                "forwardAngleDeg": {"max": 12.0, "maxFrame": 5},
+                "upAngleDeg": {"max": 2.0, "maxFrame": 5},
+                "rotationMaxDeg": {"max": 9.0, "maxFrame": 5},
+            }
+        }
+
+        mismatches = runner._interpolation_drift_mismatches(
+            summary,
+            {
+                "parity-interpolation-eye-max": 1.0,
+                "parity-interpolation-forward-max-deg": 5.0,
+                "parity-interpolation-up-max-deg": 5.0,
+                "parity-interpolation-rotation-max-deg": 10.0,
+            },
+        )
+
+        self.assertEqual([item["field"] for item in mismatches], ["eyeEuclidean", "forwardAngleDeg"])

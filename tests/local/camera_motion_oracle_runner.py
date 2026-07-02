@@ -57,6 +57,27 @@ def _parse_args() -> argparse.Namespace:
             "GoldenOracle dumps and keeps it for generated synthetic cases."
         ),
     )
+    parser.add_argument(
+        "--parity-vmd",
+        default=None,
+        help="Run oracle-free Bake-vs-Rig camera.current parity for this VMD instead of manifest cases.",
+    )
+    parser.add_argument("--parity-case-name", default="camera-bake-rig-parity")
+    parser.add_argument("--parity-epsilon", type=float, default=DEFAULT_CURRENT_EPSILON)
+    parser.add_argument("--parity-interpolation-eye-max", type=float, default=None)
+    parser.add_argument("--parity-interpolation-forward-max-deg", type=float, default=None)
+    parser.add_argument("--parity-interpolation-up-max-deg", type=float, default=None)
+    parser.add_argument("--parity-interpolation-rotation-max-deg", type=float, default=None)
+    parser.add_argument(
+        "--parity-interpolation-report-only",
+        action="store_true",
+        help="Report sparse-vs-bake interpolation drift without failing the parity case.",
+    )
+    parser.add_argument(
+        "--parity-current-report-only",
+        action="store_true",
+        help="For Bake-vs-Rig parity mode, report playback deltas without failing when sparse Rig is editability-first.",
+    )
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     return parser.parse_args()
 
@@ -111,6 +132,11 @@ def _iter_oracle_records(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _write_json_report(path: Path, report: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8", errors="replace")
+
+
 def _select_records(case: dict[str, Any], records: list[dict[str, Any]], max_frames: int, all_frames: bool) -> list[dict[str, Any]]:
     if all_frames:
         return records
@@ -127,6 +153,23 @@ def _select_records(case: dict[str, Any], records: list[dict[str, Any]], max_fra
     if records[-1] not in selected:
         selected.append(records[-1])
     return selected
+
+
+def _select_frame_numbers(frame_numbers: list[int], max_frames: int, all_frames: bool) -> list[int]:
+    keyframes = sorted({int(frame) for frame in frame_numbers})
+    if not keyframes:
+        return []
+    start = keyframes[0]
+    end = keyframes[-1]
+    if all_frames or max_frames <= 0:
+        return list(range(start, end + 1))
+    span = end - start + 1
+    if span <= max_frames:
+        return list(range(start, end + 1))
+    if max_frames <= 1:
+        return [start, end] if start != end else [start]
+    step = (span - 1) / float(max_frames - 1)
+    return sorted({int(round(start + index * step)) for index in range(max_frames)} | {start, end})
 
 
 def _camera_keyframes(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -288,7 +331,8 @@ def _maya_camera_state(camera: str, frame: float) -> dict[str, Any]:
     cmds.currentTime(frame, edit=True)
     _evaluate_camera_expression(camera)
     world_position = cmds.xform(camera, query=True, worldSpace=True, translation=True)
-    matrix = om.MMatrix(cmds.getAttr(f"{camera}.worldMatrix[0]"))
+    matrix_values = [float(value) for value in cmds.getAttr(f"{camera}.worldMatrix[0]")]
+    matrix = om.MMatrix(matrix_values)
     forward = om.MVector(0.0, 0.0, -1.0) * matrix
     up = om.MVector(0.0, 1.0, 0.0) * matrix
     forward_list = _normalize_vector(forward)
@@ -308,7 +352,7 @@ def _maya_camera_state(camera: str, frame: float) -> dict[str, Any]:
         ]
         maya_target = om.MVector(*_mmd_point_to_maya(position))
     rotation = list(mmd_camera_rotation_from_maya_forward_up(tuple(forward_list), tuple(up_list)))
-    return {
+    state = {
         "distance": distance,
         "position": position,
         "rotation": rotation,
@@ -317,7 +361,18 @@ def _maya_camera_state(camera: str, frame: float) -> dict[str, Any]:
         "transformPosition": _maya_point_to_mmd(maya_target),
         "transformForward": forward_list,
         "transformUp": up_list,
+        "worldMatrix": matrix_values,
     }
+    shape = _camera_shape(camera)
+    if shape:
+        state.update(
+            {
+                "shapeFocalLength": _current_plug_float(shape, "focalLength"),
+                "shapeOrthographicWidth": _current_plug_float(shape, "orthographicWidth"),
+                "shapeOrthographic": bool(round(_current_plug_float(shape, "orthographic"))),
+            }
+        )
+    return state
 
 
 def _diff_scalar(actual: float, expected: float) -> float:
@@ -335,6 +390,135 @@ def _diff_angle(actual: float, expected: float) -> float:
 
 def _diff_rotation_vector(actual: list[float], expected: list[float]) -> float:
     return max(_diff_angle(left, right) for left, right in zip(actual, expected))
+
+
+def _vector_euclidean(actual: list[float], expected: list[float]) -> float:
+    return math.sqrt(sum((float(left) - float(right)) ** 2 for left, right in zip(actual, expected)))
+
+
+def _vector_angle_degrees(actual: list[float], expected: list[float]) -> float:
+    left = [float(value) for value in actual]
+    right = [float(value) for value in expected]
+    left_length = math.sqrt(sum(value * value for value in left))
+    right_length = math.sqrt(sum(value * value for value in right))
+    if left_length <= 1.0e-12 or right_length <= 1.0e-12:
+        return 0.0
+    dot = sum(l_value * r_value for l_value, r_value in zip(left, right)) / (left_length * right_length)
+    dot = max(-1.0, min(1.0, dot))
+    return math.degrees(math.acos(dot))
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(float(value) for value in values)
+    index = (len(sorted_values) - 1) * float(percentile) / 100.0
+    lower = math.floor(index)
+    upper = math.ceil(index)
+    if lower == upper:
+        return sorted_values[int(index)]
+    return sorted_values[lower] * (upper - index) + sorted_values[upper] * (index - lower)
+
+
+def _summarize_drift_values(rows: list[dict[str, Any]], field: str) -> dict[str, Any]:
+    values = [float(row[field]) for row in rows]
+    worst = max(rows, key=lambda row: float(row[field])) if rows else None
+    return {
+        "mean": sum(values) / len(values) if values else 0.0,
+        "p50": _percentile(values, 50.0),
+        "p95": _percentile(values, 95.0),
+        "p99": _percentile(values, 99.0),
+        "max": max(values) if values else 0.0,
+        "maxFrame": int(worst["frame"]) if worst else None,
+    }
+
+
+def _camera_eye_from_state(state: dict[str, Any]) -> list[float]:
+    matrix = state.get("worldMatrix") or []
+    if len(matrix) >= 15:
+        return [float(matrix[12]), float(matrix[13]), float(matrix[14])]
+    return [float(value) for value in state.get("transformPosition", [0.0, 0.0, 0.0])]
+
+
+def _parity_drift_rows(
+    frames: list[int],
+    keyframes: set[int],
+    sparse_states: dict[int, dict[str, Any]],
+    bake_states: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = []
+    for frame in frames:
+        sparse = sparse_states[frame]
+        bake = bake_states[frame]
+        rows.append(
+            {
+                "frame": int(frame),
+                "isKey": int(frame) in keyframes,
+                "targetMaxAbs": _diff_vector(list(sparse["position"]), list(bake["position"])),
+                "distanceAbs": _diff_scalar(float(sparse["distance"]), float(bake["distance"])),
+                "rotationMaxDeg": math.degrees(_diff_rotation_vector(list(sparse["rotation"]), list(bake["rotation"]))),
+                "fovAbsDeg": _diff_scalar(float(sparse["fov"]), float(bake["fov"])),
+                "eyeEuclidean": _vector_euclidean(_camera_eye_from_state(sparse), _camera_eye_from_state(bake)),
+                "eyeMaxAbs": _diff_vector(_camera_eye_from_state(sparse), _camera_eye_from_state(bake)),
+                "forwardAngleDeg": _vector_angle_degrees(list(sparse["transformForward"]), list(bake["transformForward"])),
+                "upAngleDeg": _vector_angle_degrees(list(sparse["transformUp"]), list(bake["transformUp"])),
+                "worldMatrixMaxAbs": _diff_vector(list(sparse["worldMatrix"]), list(bake["worldMatrix"])),
+            }
+        )
+    return rows
+
+
+def _summarize_parity_drift(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    fields = (
+        "targetMaxAbs",
+        "distanceAbs",
+        "rotationMaxDeg",
+        "fovAbsDeg",
+        "eyeEuclidean",
+        "eyeMaxAbs",
+        "forwardAngleDeg",
+        "upAngleDeg",
+        "worldMatrixMaxAbs",
+    )
+    inbetween = [row for row in rows if not row["isKey"]]
+    keyframes = [row for row in rows if row["isKey"]]
+    return {
+        "frames": len(rows),
+        "keyframes": len(keyframes),
+        "inbetweenFrames": len(inbetween),
+        "all": {field: _summarize_drift_values(rows, field) for field in fields},
+        "inbetweenOnly": {field: _summarize_drift_values(inbetween, field) for field in fields},
+        "keyframesOnly": {field: _summarize_drift_values(keyframes, field) for field in fields},
+        "topEyeFrames": sorted(rows, key=lambda row: float(row["eyeEuclidean"]), reverse=True)[:10],
+        "topForwardFrames": sorted(rows, key=lambda row: float(row["forwardAngleDeg"]), reverse=True)[:10],
+    }
+
+
+def _interpolation_drift_mismatches(summary: dict[str, Any], thresholds: dict[str, float | None]) -> list[dict[str, Any]]:
+    fields = {
+        "eyeEuclidean": "parity-interpolation-eye-max",
+        "forwardAngleDeg": "parity-interpolation-forward-max-deg",
+        "upAngleDeg": "parity-interpolation-up-max-deg",
+        "rotationMaxDeg": "parity-interpolation-rotation-max-deg",
+    }
+    mismatches = []
+    inbetween = summary.get("inbetweenOnly") or {}
+    for field, threshold_name in fields.items():
+        threshold = thresholds.get(threshold_name)
+        if threshold is None:
+            continue
+        stats = inbetween.get(field) or {}
+        actual = float(stats.get("max", 0.0))
+        if actual > float(threshold):
+            mismatches.append(
+                {
+                    "field": field,
+                    "actual": actual,
+                    "expected": f"<= {float(threshold)}",
+                    "maxFrame": stats.get("maxFrame"),
+                }
+            )
+    return mismatches
 
 
 def _check_field(
@@ -494,6 +678,158 @@ def _compare_keyframes(camera: str, keyframes: list[dict[str, Any]], *, mode: st
     }
 
 
+def _camera_frame_numbers_from_vmd(vmd_path: Path) -> list[int]:
+    from mmd_tools.core.vmd_data import VmdData
+
+    vmd_data = VmdData().parse_file(str(vmd_path))
+    return [int(frame.frame_number) for frame in getattr(vmd_data, "camera_frames", [])]
+
+
+def _check_sparse_camera_rig_structure(camera: str) -> dict[str, Any]:
+    raw_attrs = (
+        "mmd_camera_distance",
+        "mmd_camera_viewing_angle",
+        "mmd_camera_perspective",
+        "mmd_camera_target_x",
+        "mmd_camera_target_y",
+        "mmd_camera_target_z",
+        "mmd_camera_rotation_x",
+        "mmd_camera_rotation_y",
+        "mmd_camera_rotation_z",
+        "mmd_camera_motion_scale",
+    )
+    mismatches: list[dict[str, Any]] = []
+    present_raw_attrs = [attr for attr in raw_attrs if cmds.attributeQuery(attr, node=camera, exists=True)]
+    if present_raw_attrs:
+        mismatches.append({"field": "customAnimationAttrs", "actual": present_raw_attrs, "expected": []})
+    expressions = cmds.listConnections(f"{camera}.message", source=False, destination=True, type="expression") or []
+    if expressions:
+        mismatches.append({"field": "expressions", "actual": expressions, "expected": []})
+    target = _camera_target_node(camera)
+    if not target:
+        mismatches.append({"field": "target", "actual": None, "expected": "connected target locator"})
+    elif not cmds.keyframe(f"{target}.translateX", query=True):
+        mismatches.append({"field": "target.translateX.keys", "actual": 0, "expected": ">0"})
+    elif (cmds.listRelatives(camera, parent=True) or [None])[0] != target:
+        mismatches.append({"field": "camera.parent", "actual": (cmds.listRelatives(camera, parent=True) or [None])[0], "expected": target})
+    if target and not cmds.keyframe(f"{target}.rotateX", query=True):
+        mismatches.append({"field": "target.rotateX.keys", "actual": 0, "expected": ">0"})
+    if not cmds.keyframe(f"{camera}.translateZ", query=True):
+        mismatches.append({"field": "camera.translateZ.keys", "actual": 0, "expected": ">0"})
+    if not cmds.keyframe(f"{camera}.rotateZ", query=True):
+        mismatches.append({"field": "camera.rotateZ.keys", "actual": 0, "expected": ">0"})
+    aim_constraints = cmds.listConnections(f"{camera}.rotateX", source=True, destination=False, type="aimConstraint") or []
+    if aim_constraints:
+        mismatches.append({"field": "camera.aimConstraint", "actual": aim_constraints, "expected": []})
+    shape = _camera_shape(camera)
+    if shape and not cmds.keyframe(f"{shape}.focalLength", query=True):
+        mismatches.append({"field": "cameraShape.focalLength.keys", "actual": 0, "expected": ">0"})
+    return {
+        "kind": "sparseRigEditability",
+        "gate": True,
+        "mismatches": mismatches,
+    }
+
+
+def _run_parity_vmd(vmd_path: Path, args: argparse.Namespace) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "name": args.parity_case_name,
+        "vmd": str(vmd_path),
+        "epsilon": float(args.parity_epsilon),
+        "status": "pending",
+        "checks": {},
+    }
+    if not vmd_path.exists():
+        result.update({"status": "skipped", "reason": "camera VMD is missing"})
+        return result
+
+    frame_numbers = _camera_frame_numbers_from_vmd(vmd_path)
+    frames = _select_frame_numbers(frame_numbers, args.max_current_frames, args.all_frames)
+    result["vmdCameraFrames"] = len(frame_numbers)
+    result["selectedCurrentFrames"] = len(frames)
+    if not frames:
+        result.update({"status": "skipped", "reason": "camera VMD has no camera frames"})
+        return result
+
+    sparse_camera = _import_camera(vmd_path, bake_mode=False)
+    rig_structure = _check_sparse_camera_rig_structure(sparse_camera)
+    sparse_states = {frame: _maya_camera_state(sparse_camera, frame) for frame in frames}
+    bake_camera = _import_camera(vmd_path, bake_mode=True)
+    bake_states = {frame: _maya_camera_state(bake_camera, frame) for frame in frames}
+    drift_rows = _parity_drift_rows(frames, set(frame_numbers), sparse_states, bake_states)
+    drift_summary = _summarize_parity_drift(drift_rows)
+    drift_mismatches = _interpolation_drift_mismatches(
+        drift_summary,
+        {
+            "parity-interpolation-eye-max": args.parity_interpolation_eye_max,
+            "parity-interpolation-forward-max-deg": args.parity_interpolation_forward_max_deg,
+            "parity-interpolation-up-max-deg": args.parity_interpolation_up_max_deg,
+            "parity-interpolation-rotation-max-deg": args.parity_interpolation_rotation_max_deg,
+        },
+    )
+
+    mismatches: list[dict[str, Any]] = []
+    worst = 0.0
+    compared = 0
+    fields = (
+        "distance",
+        "position",
+        "rotation",
+        "fov",
+        "perspective",
+        "transformPosition",
+        "transformForward",
+        "transformUp",
+        "worldMatrix",
+        "shapeFocalLength",
+        "shapeOrthographicWidth",
+        "shapeOrthographic",
+    )
+    for frame in frames:
+        sparse = sparse_states[frame]
+        bake = bake_states[frame]
+        for field in fields:
+            if field not in sparse or field not in bake:
+                continue
+            worst = max(
+                worst,
+                _check_field(
+                    mismatches,
+                    frame=frame,
+                    mode="bake-vs-rig",
+                    field=f"camera.current.{field}",
+                    actual=sparse[field],
+                    expected=bake[field],
+                    epsilon=float(args.parity_epsilon),
+                ),
+            )
+            compared += 1
+
+    result["checks"]["current"] = {
+        "kind": "bakeRigParity",
+        "compared": compared,
+        "comparedFrames": len(frames),
+        "worstDelta": worst,
+        "mismatches": mismatches[:50],
+        "gate": not bool(args.parity_current_report_only),
+    }
+    result["checks"]["interpolationDrift"] = {
+        "kind": "sparseBakeInterpolationDrift",
+        "gate": not bool(args.parity_interpolation_report_only),
+        "summary": drift_summary,
+        "mismatches": drift_mismatches,
+    }
+    result["checks"]["rigStructure"] = rig_structure
+    result["status"] = (
+        "failed"
+        if rig_structure["mismatches"]
+        or (mismatches and not args.parity_current_report_only)
+        or (drift_mismatches and not args.parity_interpolation_report_only)
+        else "passed"
+    )
+    return result
+
+
 def _run_case(manifest_dir: Path, case: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
     assets = case.get("assets") or {}
     vmd_path = _resolve_path(manifest_dir, assets.get("cameraMotion") or assets.get("motion"))
@@ -556,6 +892,30 @@ def main() -> int:
     args = _parse_args()
     repo_root = Path(args.repo_root).resolve()
     _initialize(repo_root)
+    if args.parity_vmd:
+        case = _run_parity_vmd(Path(args.parity_vmd).resolve(), args)
+        report = {
+            "mode": "bake-rig-parity",
+            "allFrames": bool(args.all_frames),
+            "maxCurrentFrames": args.max_current_frames,
+            "cases": [case],
+        }
+        failed = [item for item in report["cases"] if item["status"] == "failed"]
+        runnable = [item for item in report["cases"] if item["status"] != "skipped"]
+        report["summary"] = {
+            "cases": len(report["cases"]),
+            "runnable": len(runnable),
+            "passed": sum(1 for item in report["cases"] if item["status"] == "passed"),
+            "failed": len(failed),
+            "skipped": sum(1 for item in report["cases"] if item["status"] == "skipped"),
+        }
+
+        out = Path(args.out).resolve()
+        _write_json_report(out, report)
+        print(json.dumps(report["summary"], ensure_ascii=False), flush=True)
+        print(f"report: {out}", flush=True)
+        return 1 if failed else 0
+
     manifest_path = Path(args.manifest).resolve()
     manifest_dir, cases = _load_manifest(manifest_path)
     if args.case_name:
@@ -584,8 +944,7 @@ def main() -> int:
     }
 
     out = Path(args.out).resolve()
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_report(out, report)
     print(json.dumps(report["summary"], ensure_ascii=False), flush=True)
     print(f"report: {out}", flush=True)
     return 1 if failed else 0

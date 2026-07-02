@@ -57,7 +57,7 @@ _LIGHT_ROTATE_ATTRS = ("rotateX", "rotateY", "rotateZ")
 _LIGHT_COLOR_ATTRS = ("mmd_light_colorR", "mmd_light_colorG", "mmd_light_colorB")
 _ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 _MMD_CAMERA_AIM_ROLL_RIG_TYPE = "mmd_aim_roll"
-_TRANSFORM_TRANSLATE_ATTRS = ("translateX", "translateY", "translateZ")
+_TRANSFORM_EXPORT_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
 _CAMERA_SHAPE_EXPORT_ATTRS = ("focalLength", "orthographic", "orthographicWidth")
 
 
@@ -187,7 +187,7 @@ class VmdSceneCollector:
                     sorted(
                         set(_key_times(camera, _CAMERA_EXPORT_ATTRS))
                         | (set(_key_times(camera_root, _BONE_EXPORT_ATTRS)) if camera_root else set())
-                        | (set(_key_times(camera_target, _TRANSFORM_TRANSLATE_ATTRS)) if camera_target else set())
+                        | (set(_key_times(camera_target, _TRANSFORM_EXPORT_ATTRS)) if camera_target else set())
                         | (set(_key_times(camera_shape, _CAMERA_SHAPE_EXPORT_ATTRS)) if camera_shape else set())
                     ),
                     start_frame,

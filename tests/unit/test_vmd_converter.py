@@ -354,20 +354,26 @@ class TestVmdConverter(MayaTestBase):
             transform = cmds.listRelatives(cam, parent=True)
             if transform and cmds.attributeQuery(ATTR_MMD_CAMERA, node=transform[0], exists=True):
                 camera_found = True
-                # キーフレームが設定されたことを確認
-                keyframes = cmds.keyframe(f"{transform[0]}.translateX", query=True)
+                # Sparse Rig は Target/Roll を直接編集できるノードにキーを持つ。
+                target = self._camera_target_node(transform[0])
+                keyframes = cmds.keyframe(f"{target}.translateX", query=True)
                 self.assertIsNotNone(keyframes)
                 self.assertEqual(len(keyframes), 3)
-                self.assertFalse(cmds.listConnections(f"{transform[0]}.rotateX", source=True, type="aimConstraint") or [])
+                self.assertEqual((cmds.listRelatives(transform[0], parent=True) or [None])[0], target)
                 for attr in ("rotateX", "rotateY"):
                     self.assertIsNone(cmds.keyframe(f"{transform[0]}.{attr}", query=True))
+                self.assertIsNone(cmds.keyframe(f"{transform[0]}.translateX", query=True))
+                self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.translateZ", query=True))
                 self.assertIsNotNone(cmds.keyframe(f"{transform[0]}.rotateZ", query=True))
+                self.assertIsNotNone(cmds.keyframe(f"{target}.rotateX", query=True))
+                self.assertIsNotNone(cmds.keyframe(f"{target}.rotateY", query=True))
                 self._assert_mmd_camera_raw_attrs_absent(transform[0])
-                target = self._camera_target_node(transform[0])
                 self.assertEqual(len(cmds.keyframe(f"{target}.translateX", query=True)), 3)
+                root = self._camera_root_node(transform[0])
+                self.assertIsNone(cmds.keyframe(f"{root}.translateX", query=True))
                 focal_keys = cmds.keyframe(f"{cam}.focalLength", query=True)
                 self.assertIsNotNone(focal_keys)
-                self.assertEqual(len(focal_keys), 3)
+                self.assertFalse(cmds.listConnections(f"{transform[0]}.message", source=False, destination=True, type="expression") or [])
                 break
 
         self.assertTrue(camera_found, "MMDカメラが作成されていません")
@@ -450,8 +456,8 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual(rolled_eye[1], base_eye[1], places=6)
         self.assertAlmostEqual(rolled_eye[2], base_eye[2], places=6)
 
-    def test_mmd_camera_rig_roll_keys_camera_transform_without_up_locator(self):
-        """MMD Camera Rig は Roll を Up locator ではなく camera transform へ直接解決する。"""
+    def test_mmd_camera_rig_roll_keys_camera_z_under_orbit_target(self):
+        """MMD Camera Rig は target orbit + camera.rotateZ で roll を編集可能にする。"""
         from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
 
         frames = []
@@ -467,7 +473,9 @@ class TestVmdConverter(MayaTestBase):
         self.assertTrue(self.converter._convert_camera_animation(frames))
 
         camera_name = self.converter._get_or_create_camera()
+        target_node = self._camera_target_node(camera_name)
         self.assertFalse(cmds.objExists(f"{camera_name}_up"))
+        self.assertEqual((cmds.listRelatives(camera_name, parent=True) or [None])[0], target_node)
         self.assertFalse(cmds.listConnections(f"{camera_name}.rotateX", source=True, type="aimConstraint") or [])
 
         cmds.currentTime(0, edit=True)
@@ -481,7 +489,6 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual((eye1 - eye0).length(), 0.0, places=6)
         self.assertAlmostEqual(forward0 * forward1, 1.0, places=6)
         self.assertLess(abs(up0 * up1), 1e-6)
-        self.assertAlmostEqual(cmds.getAttr(f"{camera_name}.rotateZ"), -90.0, places=6)
         self.assertEqual(cmds.keyframe(f"{camera_name}.rotateZ", query=True, timeChange=True), [0.0, 10.0])
         self._assert_mmd_camera_raw_attrs_absent(camera_name)
 
@@ -642,21 +649,21 @@ class TestVmdConverter(MayaTestBase):
         self.assertTrue(self.converter._convert_camera_animation([frame0, frame1]))
 
         camera_name = self.converter._get_or_create_camera()
-        root_node = self._camera_root_node(camera_name)
+        target_node = self._camera_target_node(camera_name)
         camera_shape = cmds.listRelatives(camera_name, shapes=True, type="camera")[0]
         out_angle = cmds.keyTangent(
-            f"{root_node}.translateX",
+            f"{target_node}.translateX",
             query=True,
             time=(0, 0),
             outAngle=True,
         )
         out_type = cmds.keyTangent(
-            f"{root_node}.translateX",
+            f"{target_node}.translateX",
             query=True,
             time=(0, 0),
             outTangentType=True,
         )
-        focal_out_type = cmds.keyTangent(
+        fov_out_type = cmds.keyTangent(
             f"{camera_shape}.focalLength",
             query=True,
             time=(0, 0),
@@ -666,7 +673,40 @@ class TestVmdConverter(MayaTestBase):
         self.assertIsNotNone(out_angle)
         self.assertGreater(out_angle[0], 70.0)
         self.assertEqual(out_type, ["fixed"])
-        self.assertEqual(focal_out_type, ["fixed"])
+        self.assertEqual(fov_out_type, ["fixed"])
+
+    def test_camera_rotation_bezier_tangents_use_degree_units(self):
+        """rotate animCurveTA の internal radians に引きずられず VMD Bezier を再現する。"""
+        from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+
+        frame0 = VmdCameraFrame()
+        frame0.frame_number = 0
+        frame0.position = (0.0, 0.0, 0.0)
+        frame0.rotation = (math.radians(-2.291833), math.radians(-4.010705), 0.0)
+        frame0.distance = -27.0
+        frame0.viewing_angle = 45
+
+        frame1 = VmdCameraFrame()
+        frame1.frame_number = 50
+        frame1.position = (0.0, 0.0, 0.0)
+        frame1.rotation = (math.radians(-2.291833), math.radians(178.189923), 0.0)
+        frame1.distance = -27.0
+        frame1.viewing_angle = 45
+        frame1.interpolation = self._camera_interp_bytes_by_channel(rotation=(74, 61, 24, 105))
+
+        self.assertTrue(self.converter._convert_camera_animation([frame0, frame1]))
+
+        camera_name = self.converter._get_or_create_camera()
+        target_node = self._camera_target_node(camera_name)
+        out_angle = cmds.keyTangent(
+            f"{target_node}.rotateY",
+            query=True,
+            time=(0, 0),
+            outAngle=True,
+        )
+
+        self.assertGreater(out_angle[0], 60.0)
+        self.assertAlmostEqual(cmds.getAttr(f"{target_node}.rotateY", time=1), -0.95746, places=4)
 
     def test_camera_interpolation_does_not_leak_y_handle_to_x_channel(self):
         """Y-only sparse camera move keeps constant X/distance stable even with an animLayer."""
@@ -694,15 +734,14 @@ class TestVmdConverter(MayaTestBase):
 
         camera_name = self.converter._get_or_create_camera()
         target_node = self._camera_target_node(camera_name)
-        root_node = self._camera_root_node(camera_name)
         x_out_type = cmds.keyTangent(
-            f"{root_node}.translateX",
+            f"{target_node}.translateX",
             query=True,
             time=(0, 0),
             outTangentType=True,
         )
         y_out_type = cmds.keyTangent(
-            f"{root_node}.translateY",
+            f"{target_node}.translateY",
             query=True,
             time=(0, 0),
             outTangentType=True,
@@ -718,8 +757,8 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual((target - eye).length(), 31.0, places=5)
         self.assertGreater(target.y, 0.0)
 
-    def test_sparse_camera_uses_editable_aim_roll_rig_without_dense_keys(self):
-        """Sparse camera は dense key なしで camera/target/roll の編集用 rig を評価する。"""
+    def test_sparse_camera_uses_editable_orbit_rig_without_dense_keys(self):
+        """Sparse camera は dense key なしで target orbit / distance / roll の編集用 rig を評価する。"""
         from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
 
         def camera_interp(points):
@@ -774,10 +813,12 @@ class TestVmdConverter(MayaTestBase):
         target_direction.normalize()
 
         self.assertAlmostEqual(forward * target_direction, 1.0, places=5)
-        self.assertIsNotNone(cmds.keyframe(f"{camera_name}.translateX", query=True))
+        self.assertIsNone(cmds.keyframe(f"{camera_name}.translateX", query=True))
         self.assertIsNotNone(cmds.keyframe(f"{camera_name}.translateZ", query=True))
         self.assertIsNotNone(cmds.keyframe(f"{camera_name}.rotateZ", query=True))
         self.assertIsNone(cmds.keyframe(f"{camera_name}.rotateY", query=True))
+        self.assertIsNotNone(cmds.keyframe(f"{target_node}.rotateX", query=True))
+        self.assertIsNotNone(cmds.keyframe(f"{target_node}.rotateY", query=True))
         self.assertIsNotNone(cmds.keyframe(f"{stale_shape}.focalLength", query=True))
         self.assertFalse(cmds.listConnections(f"{camera_name}.rotateY", source=True, destination=False) or [])
         self.assertNotIn(f"{camera_name}.translateZ", cmds.animLayer(stale_layer, query=True, attribute=True) or [])
@@ -851,6 +892,7 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual(world_translate[0], expected_eye[0], places=6)
         self.assertIsNone(cmds.keyframe(f"{camera_name}.rotateY", query=True, time=(12, 12)))
         self.assertIsNotNone(cmds.keyframe(f"{camera_name}.rotateZ", query=True, time=(12, 12)))
+        self.assertIsNotNone(cmds.keyframe(f"{camera_target}.translateX", query=True, time=(12, 12)))
         target_translate = self._world_translation(camera_target)
         self.assertAlmostEqual(target_translate[0], 4.0, places=6)
         self.assertAlmostEqual((om.MVector(*target_translate) - om.MVector(*world_translate)).length(), 16.0, places=6)
@@ -884,7 +926,7 @@ class TestVmdConverter(MayaTestBase):
         convert_light.assert_called_once_with(vmd_data.light_frames, vmd_bytes=None)
 
     def test_bake_mode_passes_vmd_bytes_to_camera_and_light_samplers(self):
-        """Bake モードだけ camera/light が mmd-anim sampler 用 VMD bytes を受け取る。"""
+        """Bake モードでは camera/light が mmd-anim sampler 用 VMD bytes を受け取る。"""
         frame = type("FrameStub", (), {"frame_number": 1})()
         vmd_data = type("FakeVmdData", (), {})()
         vmd_data.bone_frames = [frame]
@@ -1156,9 +1198,10 @@ class TestVmdConverter(MayaTestBase):
 
         camera_name = self.converter._get_or_create_camera()
         target_node = self._camera_target_node(camera_name)
-        self.assertEqual(cmds.keyframe(f"{camera_name}.translateX", query=True, timeChange=True), [60.0])
         self.assertEqual(cmds.keyframe(f"{target_node}.translateX", query=True, timeChange=True), [60.0])
+        self.assertEqual(cmds.keyframe(f"{target_node}.rotateX", query=True, timeChange=True), [60.0])
         self.assertEqual(cmds.keyframe(f"{camera_name}.rotateZ", query=True, timeChange=True), [60.0])
+        self.assertEqual(cmds.keyframe(f"{camera_name}.translateZ", query=True, timeChange=True), [60.0])
 
     def test_detect_vmd_motion_kind(self):
         """VMD内容から model/camera/light/mixed/empty を判定できることを確認"""
@@ -3474,7 +3517,11 @@ class TestVmdConverter(MayaTestBase):
         target_keys = cmds.keyframe(f"{target_node}.translateX", query=True)
         self.assertIsNotNone(target_keys, "MMD camera target にキーフレームが設定されていません")
         self.assertGreater(len(target_keys), 0, "MMD camera target にキーフレームが設定されていません")
-        self.assertIsNotNone(cmds.keyframe(f"{mmd_camera}.translateX", query=True))
+        self.assertFalse(cmds.attributeQuery("mmd_camera_target_x", node=mmd_camera, exists=True))
+        self.assertIsNone(cmds.keyframe(f"{mmd_camera}.translateX", query=True))
+        self.assertIsNotNone(cmds.keyframe(f"{mmd_camera}.translateZ", query=True))
+        self.assertIsNotNone(cmds.keyframe(f"{target_node}.rotateX", query=True))
+        self.assertFalse(cmds.listConnections(f"{mmd_camera}.rotateX", source=True, type="aimConstraint") or [])
         self._assert_mmd_camera_raw_attrs_absent(mmd_camera)
 
     # --- 新規追加: runtime bake キャッシュ + API2.0 キーイング 向けフォーカステスト ---
