@@ -73,7 +73,8 @@ def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_u
 
     dag_path = om.MDagPath.getAPathTo(mesh_obj)
     transform_fn = om.MFnTransform(dag_path.transform())
-    transform_name = transform_fn.setName(name)
+    transform_fn.setName(name)
+    transform_name = transform_fn.fullPathName()
 
     cmds.sets(transform_name, edit=True, forceElement="initialShadingGroup")
     cmds.select(clear=True)
@@ -157,16 +158,22 @@ def find_or_create_blendshape_node(mesh_node):
     if not cmds.objExists(mesh_node):
         raise ValueError(f"Mesh node {mesh_node} does not exist")
 
-    shape_nodes = cmds.listRelatives(mesh_node, shapes=True, type="mesh")
+    shape_nodes = cmds.listRelatives(mesh_node, shapes=True, type="mesh", fullPath=True)
     if not shape_nodes:
         raise ValueError(f"No mesh shape found for {mesh_node}")
 
     shape_node = shape_nodes[0]
 
     history = cmds.listHistory(shape_node, il=2, pdo=False) or []
-    blendshapes = [
-        x for x in history if cmds.nodeType(x) == "blendShape" and cmds.blendShape(x, q=True, g=True)[0] == shape_node
-    ]
+    blendshapes = []
+    for node in history:
+        if cmds.nodeType(node) != "blendShape":
+            continue
+        geometry_paths = set()
+        for geometry in cmds.blendShape(node, query=True, geometry=True) or []:
+            geometry_paths.update(cmds.ls(geometry, long=True) or [geometry])
+        if shape_node in geometry_paths:
+            blendshapes.append(node)
     if blendshapes:
         return blendshapes[0]
     return cmds.blendShape(mesh_node)[0]

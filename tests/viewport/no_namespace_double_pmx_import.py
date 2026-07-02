@@ -64,6 +64,21 @@ def _world_translation(cmds, node):
     return [round(float(value), 6) for value in cmds.xform(node, query=True, worldSpace=True, translation=True)]
 
 
+def _visible_mesh_transforms(cmds, root):
+    shapes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
+    transforms = []
+    for shape in shapes:
+        try:
+            if cmds.getAttr(f"{shape}.intermediateObject"):
+                continue
+        except Exception:
+            pass
+        parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+        if parents:
+            transforms.append(parents[0])
+    return sorted(set(transforms))
+
+
 def run(model_a, model_b=None, log_path=None):
     import maya.cmds as cmds
 
@@ -99,6 +114,27 @@ def run(model_a, model_b=None, log_path=None):
 
     parent_a = cmds.listRelatives(center_a, parent=True, fullPath=True) or []
     parent_b = cmds.listRelatives(center_b, parent=True, fullPath=True) or []
+    meshes_a = _visible_mesh_transforms(cmds, root_a)
+    meshes_b = _visible_mesh_transforms(cmds, root_b)
+    if not meshes_a:
+        raise AssertionError(f"No visible mesh transforms found under first import root: {root_a}")
+    if not meshes_b:
+        raise AssertionError(f"No visible mesh transforms found under second import root: {root_b}")
+    if set(meshes_a) & set(meshes_b):
+        raise AssertionError(f"Duplicate import reused mesh transform paths: {set(meshes_a) & set(meshes_b)}")
+    for mesh in meshes_a + meshes_b:
+        if not mesh.startswith("|"):
+            raise AssertionError(f"Mesh transform is not a long DAG path: {mesh}")
+        if not cmds.objExists(mesh):
+            raise AssertionError(f"Mesh transform has stale path: {mesh}")
+
+    ambiguous_mesh_leaves = {
+        mesh.rsplit("|", 1)[-1]: cmds.ls(mesh.rsplit("|", 1)[-1], long=True) or []
+        for mesh in meshes_a + meshes_b
+    }
+    ambiguous_mesh_leaves = {
+        leaf: paths for leaf, paths in ambiguous_mesh_leaves.items() if len(paths) > 1
+    }
     result = {
         "status": "pass",
         "root_a": root_a,
@@ -109,6 +145,9 @@ def run(model_a, model_b=None, log_path=None):
         "center_b_parent": parent_b[0] if parent_b else "",
         "center_a_world": _world_translation(cmds, center_a),
         "center_b_world": _world_translation(cmds, center_b),
+        "meshes_a": meshes_a,
+        "meshes_b": meshes_b,
+        "ambiguous_mesh_leaves": ambiguous_mesh_leaves,
         "joint_count": len(cmds.ls(type="joint") or []),
     }
     _emit(result, log_path)

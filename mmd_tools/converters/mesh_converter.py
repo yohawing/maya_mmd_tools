@@ -746,6 +746,38 @@ class MeshConverter:
         maya_utils.select_objects(geo_group)
         return geo_group, created_mesh
 
+    def _created_world_mesh_uuid(self, mesh_transform: str) -> Optional[str]:
+        """Return the UUID for a freshly-created world-root mesh transform."""
+        if not mesh_transform:
+            return None
+
+        world_path = mesh_transform if mesh_transform.startswith("|") else f"|{mesh_transform}"
+        matches = cmds.ls(world_path, uuid=True) or []
+        if matches:
+            return matches[0]
+
+        matches = cmds.ls(mesh_transform, uuid=True) or []
+        return matches[0] if len(matches) == 1 else None
+
+    def _resolve_mesh_long_path(self, mesh_uuid: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
+        """Resolve a mesh transform to its current long DAG path."""
+        if mesh_uuid:
+            matches = cmds.ls(mesh_uuid, long=True) or []
+            if matches:
+                return matches[0]
+        if fallback:
+            matches = cmds.ls(fallback, long=True) or []
+            if matches:
+                return matches[0]
+        return fallback
+
+    def _parent_mesh_to_group(self, mesh_transform: str, parent_group: str) -> str:
+        """Parent a freshly-created mesh and return its long DAG path."""
+        mesh_uuid = self._created_world_mesh_uuid(mesh_transform)
+        parented = maya_utils.parent_objects(mesh_transform, parent_group)
+        fallback = parented[0] if parented else mesh_transform
+        return self._resolve_mesh_long_path(mesh_uuid, fallback) or mesh_transform
+
     def _create_unified_mesh(
         self,
         model_name,
@@ -877,7 +909,7 @@ class MeshConverter:
 
         # 作成したメッシュをグループに追加
         parent_start = time.perf_counter()
-        maya_utils.parent_objects(created_mesh, model_group)
+        created_mesh = self._parent_mesh_to_group(created_mesh, model_group)
         self._add_profile_time("parent_sec", parent_start)
 
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
@@ -1042,7 +1074,7 @@ class MeshConverter:
 
             # グループに追加
             parent_start = time.perf_counter()
-            maya_utils.parent_objects(created_mesh, geo_group)
+            created_mesh = self._parent_mesh_to_group(created_mesh, geo_group)
             self._add_profile_time("parent_sec", parent_start)
             mesh_names.append(created_mesh)
 
@@ -1290,7 +1322,7 @@ class MeshConverter:
             self._add_profile_time("material_assign_sec", assign_start)
 
         parent_start = time.perf_counter()
-        maya_utils.parent_objects(created_mesh, geo_group)
+        created_mesh = self._parent_mesh_to_group(created_mesh, geo_group)
         self._add_profile_time("parent_sec", parent_start)
         return created_mesh
 
