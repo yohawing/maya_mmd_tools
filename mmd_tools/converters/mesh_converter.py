@@ -6,6 +6,7 @@ from maya import cmds
 from typing import Tuple, Union, List, Optional
 
 from mmd_tools.core.settings import settings
+from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.texture_path_cache import (
@@ -14,7 +15,6 @@ from mmd_tools.core.texture_path_cache import (
     is_unreadable_file_texture_path,
     resolve_texture_to_cache,
 )
-from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.constants import (
@@ -25,12 +25,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_TEXTURE_UNRESOLVED,
     ATTR_MMD_TOON_TEXTURE_INDEX,
     GEOMETRY_GROUP,
-    ATTR_MMD_FILE_TYPE,
-    ATTR_MMD_MODEL_NAME,
-    ATTR_MMD_MODEL_NAME_EN,
-    ATTR_MMD_COMMENT,
-    ATTR_MMD_COMMENT_EN,
-    ATTR_MMD_FILE_VERSION,
     ATTR_MMD_MATERIAL,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
@@ -630,7 +624,7 @@ class MeshConverter:
         diffuse-alpha fallback in ``_setup_dx11_shader`` applies.
         """
         self._transparency_modes = {}
-        if not settings.get("import.model.create_mmd_shaders"):
+        if not settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS):
             return
         # Default is opaque: texture-based cutout/blend auto-classification is
         # opt-in, because diffuse-texture alpha cannot reliably tell an occluding
@@ -638,7 +632,7 @@ class MeshConverter:
         # is a semantic choice the user makes per material in the Material tab.
         # When off, _setup_dx11_shader falls back to diffuse-alpha only
         # (alpha < 1 -> blend, otherwise opaque).
-        if not settings.get("import.model.auto_classify_transparency", False):
+        if not settings.get(setting_keys.IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY, False):
             return
         texture_dir = getattr(self, "texture_dir", None)
         if not texture_dir:
@@ -648,7 +642,7 @@ class MeshConverter:
         except Exception:
             return
 
-        opaque_threshold = int(settings.get("import.model.transparency_opaque_threshold", 255))
+        opaque_threshold = int(settings.get(setting_keys.IMPORT_MODEL_TRANSPARENCY_OPAQUE_THRESHOLD, 255))
         classify_start = time.perf_counter()
         alpha_cache = {}
         cursor = 0
@@ -716,8 +710,8 @@ class MeshConverter:
         geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
 
         # 設定からマテリアルごとのメッシュ分割設定を取得
-        separate_by_material = settings.get("import.model.separate_meshes_by_material", False)
-        split_by_morph_groups = settings.get("import.model.split_meshes_by_morph_groups", False)
+        separate_by_material = settings.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False)
+        split_by_morph_groups = settings.get(setting_keys.IMPORT_MODEL_SPLIT_MESHES_BY_MORPH_GROUPS, False)
 
         if separate_by_material:
             created_mesh = self._create_material_split_meshes(
@@ -747,67 +741,6 @@ class MeshConverter:
                 all_materials,
                 all_textures,
                 geo_group,
-            )
-
-        maya_utils.select_objects(geo_group)
-        return geo_group, created_mesh
-
-    def convert_pmd_mesh(self, pmd_data: PmdData, root_group: str) -> Tuple[str, Union[str, List[str]]]:
-        """
-        PMDのメッシュデータをMayaのメッシュノードに変換する。
-
-        Args:
-            pmd_data (PmdParser): 解析されたPMDデータオブジェクト。
-            root_group (str): ルートグループの名前。
-
-        Returns:
-            str: 作成されたMayaメッシュノードの名前。
-            str: 作成されたMayaメッシュをまとめるグループノードの名前。
-        """
-
-        model_name = pmd_data.header.get_name()
-        all_vertices = pmd_data.vertices
-        all_faces = pmd_data.faces
-        all_materials = pmd_data.materials
-
-        # ジオメトリグループを作成
-        geo_group = cmds.group(empty=True, name=GEOMETRY_GROUP, parent=root_group)
-
-        # カスタムアトリビュートをルートグループに追加
-        maya_utils.set_custom_attributes(
-            root_group,
-            {
-                ATTR_MMD_FILE_TYPE: pmd_data.header.magic,
-                ATTR_MMD_FILE_VERSION: pmd_data.header.version,
-                ATTR_MMD_MODEL_NAME: pmd_data.header.model_name,
-                ATTR_MMD_MODEL_NAME_EN: pmd_data.header.model_name_english,
-                ATTR_MMD_COMMENT: pmd_data.header.comment,
-                ATTR_MMD_COMMENT_EN: pmd_data.header.comment_english,
-            },
-        )
-
-        # 設定からマテリアルごとのメッシュ分割設定を取得
-        separate_by_material = settings.get("import.model.separate_meshes_by_material", False)
-
-        if separate_by_material:
-            created_mesh = self._create_material_split_meshes(
-                model_name,
-                all_vertices,
-                all_faces,
-                all_materials,
-                None,
-                geo_group,
-                is_pmd=True,
-            )
-        else:
-            created_mesh = self._create_unified_mesh(
-                model_name,
-                all_vertices,
-                all_faces,
-                all_materials,
-                None,
-                geo_group,
-                is_pmd=True,
             )
 
         maya_utils.select_objects(geo_group)
@@ -948,7 +881,7 @@ class MeshConverter:
         self._add_profile_time("parent_sec", parent_start)
 
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
-        disable_backface_culling = settings.get("import.model.disable_backface_culling", True)
+        disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
         if disable_backface_culling:
             maya_utils.set_viewport_backface_culling(False)
 
@@ -1116,7 +1049,7 @@ class MeshConverter:
             face_offset += num_material_faces
 
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
-        disable_backface_culling = settings.get("import.model.disable_backface_culling", True)
+        disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
         if disable_backface_culling:
             maya_utils.set_viewport_backface_culling(False)
 
@@ -1209,7 +1142,7 @@ class MeshConverter:
             if created_mesh:
                 mesh_names.append(created_mesh)
 
-        disable_backface_culling = settings.get("import.model.disable_backface_culling", True)
+        disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
         if disable_backface_culling:
             maya_utils.set_viewport_backface_culling(False)
 
@@ -1388,10 +1321,10 @@ class MeshConverter:
             sanitized_name = f"material_{material_index if material_index is not None else 0}"
 
         # create_mmd_shaders設定を確認
-        create_mmd_shaders = settings.get("import.model.create_mmd_shaders")
+        create_mmd_shaders = settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS)
 
         if create_mmd_shaders:
-            backend = str(settings.get("import.model.mmd_shader_backend", "auto")).lower()
+            backend = str(settings.get(setting_keys.IMPORT_MODEL_MMD_SHADER_BACKEND, "auto")).lower()
             if backend not in {"auto", "dx11", "glsl", "standard"}:
                 cmds.warning(f"Unknown mmd_shader_backend '{backend}', fallback to auto.")
                 backend = "auto"
@@ -1647,7 +1580,7 @@ class MeshConverter:
                 file_texture_path = full_texture_path
                 unresolved = is_unreadable_file_texture_path(full_texture_path)
                 cache_path = None
-                if unresolved and settings.get("import.model.auto_resolve_textures", True):
+                if unresolved and settings.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True):
                     resolution = resolve_texture_to_cache(
                         original_path=raw_texture_path,
                         file_texture_path=full_texture_path,
@@ -1790,7 +1723,7 @@ class MeshConverter:
         file_texture_path = full_texture_path
         unresolved = is_unreadable_file_texture_path(full_texture_path)
         cache_path = None
-        if unresolved and settings.get("import.model.auto_resolve_textures", True):
+        if unresolved and settings.get(setting_keys.IMPORT_MODEL_AUTO_RESOLVE_TEXTURES, True):
             resolution = resolve_texture_to_cache(
                 original_path=original_path,
                 file_texture_path=full_texture_path,
@@ -1924,65 +1857,16 @@ class MeshConverter:
         raw_texture_path = original_texture_path or texture_path
         if raw_texture_path:
             full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or raw_texture_path)
-
-            # ファイルが存在するかチェック
-            if (
-                full_texture_path
-                and os.path.exists(full_texture_path)
-                and cmds.attributeQuery("MainTexture", node=shader, exists=True)
-            ):
-                file_texture_path = full_texture_path
-                unresolved = is_unreadable_file_texture_path(full_texture_path)
-                cache_path = None
-                if unresolved and settings.get("import.model.auto_resolve_textures", True):
-                    resolution = resolve_texture_to_cache(
-                        original_path=raw_texture_path,
-                        file_texture_path=full_texture_path,
-                        model_path=self.model_filepath,
-                        workspace_root=cmds.workspace(q=True, rootDirectory=True),
-                    )
-                    if resolution.status == "resolved" and resolution.cache_path:
-                        file_texture_path = resolution.cache_path
-                        cache_path = resolution.cache_path
-                        unresolved = False
-
-                # ファイルテクスチャノードを作成
-                file_node = cmds.shadingNode("file", asTexture=True, name=shader + "_texture")
-                # ファイルパスを設定
-                maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
-                maya_utils.mark_mmd_texture_file_node(
-                    file_node,
-                    raw_texture_path,
-                    self.model_filepath,
-                    unresolved=unresolved,
-                )
-                if cache_path:
-                    maya_utils.set_custom_attributes(
-                        file_node,
-                        {
-                            ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
-                            ATTR_MMD_TEXTURE_UNRESOLVED: False,
-                        },
-                    )
-                if unresolved:
-                    issue = self._record_unresolved_texture_issue(
-                        file_node=file_node,
-                        shader=shader,
-                        material=material,
-                        original_path=raw_texture_path,
-                        current_path=full_texture_path,
-                    )
-                    cmds.warning(
-                        f"Texture path needs resolution ({issue.get('reason', 'unreadable_path')}): "
-                        f"{full_texture_path}"
-                    )
-                    file_node = None
-                # dx11ShaderのMainTextureに接続
-                if file_node:
-                    if not bind_dx11_texture_file_node(shader, file_node, "MainTexture", "HasMainTexture"):
-                        cmds.warning("Failed to connect texture to dx11Shader")
-            else:
-                cmds.warning(f"Texture file not found: {full_texture_path}")
+            self._connect_dx11_secondary_texture(
+                shader,
+                material,
+                raw_texture_path,
+                full_texture_path,
+                "MainTexture",
+                "HasMainTexture",
+                "_texture",
+                "Main",
+            )
 
         # スフィアテクスチャ設定（PMXのみ）
         sphere_texture_path = None
