@@ -11,7 +11,7 @@ from .. import settings
 from ..converters import PhysicsConverter
 from ..converters.light_converter import create_mmd_light_controller, wire_dx11_shaders_to_mmd_light
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
-from ..core import maya_utils
+from ..core import maya_utils, settings_keys as setting_keys
 from ..core.constants import SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
 from ..core.utils import create_bone_joint_mapping
@@ -95,7 +95,7 @@ class ModelImportPipeline:
         """Run PMX or PMD physics conversion when enabled and data is present."""
         import_physics = self.options.get(
             "import_physics",
-            settings.get("import.physics.import_physics", True),
+            settings.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, True),
         )
         if not import_physics:
             return [], []
@@ -127,7 +127,7 @@ class ModelImportPipeline:
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""
-        if not settings.get("import.light.create_controller", True):
+        if not settings.get(setting_keys.IMPORT_LIGHT_CREATE_CONTROLLER, True):
             return None
         try:
             return create_mmd_light_controller()
@@ -169,9 +169,9 @@ class ModelImportPipeline:
 
     def setup_view(self) -> None:
         """Apply MMD-friendly view settings requested by import options."""
-        if settings.get("import.view.setup_color_management", True):
+        if settings.get(setting_keys.IMPORT_VIEW_SETUP_COLOR_MANAGEMENT, True):
             maya_utils.setup_mmd_color_management()
-        if settings.get("import.view.setup_transparency", True):
+        if settings.get(setting_keys.IMPORT_VIEW_SETUP_TRANSPARENCY, True):
             maya_utils.setup_mmd_transparency()
         self.emit_progress(96)
 

@@ -7,6 +7,7 @@ import time
 from typing import Any, Callable, Dict, Optional
 
 from mmd_tools.core import maya_utils
+from mmd_tools.core.exceptions import MMDImportException
 
 from ..converters import BoneConverter, MeshConverter, MorphConverter
 from ..converters.bone_morph_runtime import build_bone_morph_graph
@@ -43,7 +44,10 @@ def import_pmx_file(
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
-        bool: インポートが成功したかどうか
+        str: 作成したモデルルートノード名。
+
+    Raises:
+        MMDImportException: PMX/PMD 変換済みデータのインポートに失敗した場合。
     """
     if options is None:
         options = {}
@@ -194,12 +198,7 @@ def import_pmx_file(
         return root_group  # ルートノードの名前を返す
 
     except Exception as e:
-        logger.error("Failed to import PMX file: %s - %s", filepath, str(e))
-        import traceback
-
-        logger.debug("Error details:\n%s", traceback.format_exc())
-
+        logger.error("Failed to import PMX file: %s - %s", filepath, str(e), exc_info=True)
         # エラー時のnamespaceクリーンアップ
         pipeline.cleanup_namespace(namespace)
-
-        return None
+        raise MMDImportException(f"Failed to import PMX file {filepath}: {e}") from e

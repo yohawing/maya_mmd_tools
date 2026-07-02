@@ -6,31 +6,19 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from mmd_tools.core import settings
+from mmd_tools.core import settings, settings_keys
+from mmd_tools.core.exceptions import MMDImportException
+from mmd_tools.core.import_strategy import resolve_model_import_strategy
 from mmd_tools.core.mmd_parser import parse_mmd_file
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.converters import vmd_profile
-from mmd_tools.io import pmd_importer, pmx_importer, vmd_importer  # noqa: F401
+from mmd_tools.io import pmx_importer, vmd_importer
 from mmd_tools.io.cpp_fast_importer import fast_import
 from mmd_tools.core.logger import get_logger
 
 logger = get_logger("mmd_tools.io.mmd_importer")
 
-# Maps option-dict keys to global settings paths for model imports.
-# Used by _scoped_settings_override to ensure downstream converters that read
-# settings directly receive the same forced values as the options dict.
-_OPTION_TO_SETTINGS_KEY = {
-    "separate_meshes_by_material": "import.model.separate_meshes_by_material",
-    "split_meshes_by_morph_groups": "import.model.split_meshes_by_morph_groups",
-    "auto_classify_transparency": "import.model.auto_classify_transparency",
-    "auto_resolve_textures": "import.model.auto_resolve_textures",
-    "disable_backface_culling": "import.model.disable_backface_culling",
-    "uv_set_name": "import.model.uv_set_name",
-    "texture_search_path": "import.model.texture_search_path",
-    "add_semi_standard_bones": "import.rig.add_semi_standard_bones",
-    "translate_names": "import.naming.translate_names",
-    "hide_hidden_geometry": "import.model.hide_hidden_geometry",
-}
+_OPTION_TO_SETTINGS_KEY = settings_keys.MODEL_OPTION_TO_SETTINGS_KEY
 
 
 @contextmanager
@@ -70,7 +58,10 @@ def import_mmd_file(
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
-        str: インポートされたモデルのルートノード名。失敗時はNone。
+        str: インポートされたモデルのルートノード名。
+
+    Raises:
+        MMDImportException: ファイルの解析またはインポートに失敗した場合。
     """
 
     # デフォルトオプション
@@ -85,53 +76,47 @@ def import_mmd_file(
                 logger.debug("Progress callback failed", exc_info=True)
 
     _emit_progress(5)
-    suffix = Path(filepath).suffix.lower()
+    strategy = resolve_model_import_strategy(filepath, options)
+    suffix = strategy.suffix
     import_scale = (
         scale
         if scale is not None
-        else options.get("scale", settings.get("import.general.scale_factor", 1.0))
+        else options.get("scale", settings.get(settings_keys.IMPORT_GENERAL_SCALE_FACTOR, 1.0))
     )
 
     # --- C++ fast import path (opt-in, PMX only) -------------------------
-    if suffix == ".pmx":
-        use_fast = options.get(
-            "use_cpp_fast_load",
-            settings.get("import.native.use_cpp_fast_load", False),
+    logger.info("Model import strategy: cpp_fast_load=%s (%s)", strategy.use_cpp_fast_load, strategy.cpp_fast_load_reason)
+    if strategy.use_cpp_fast_load:
+        _emit_progress(10)
+        mesh_only = options.get(
+            "cpp_fast_load_mesh_only",
+            settings.get(settings_keys.IMPORT_NATIVE_CPP_FAST_LOAD_MESH_ONLY, True),
         )
-        if use_fast:
-            _emit_progress(10)
-            mesh_only = options.get(
-                "cpp_fast_load_mesh_only",
-                settings.get("import.native.cpp_fast_load_mesh_only", True),
-            )
-            base_name = options.get("custom_namespace") or Path(filepath).stem
-            include_morphs = options.get(
-                "import_morphs",
-                settings.get("import.morph.import_morphs", True),
-            )
-            fast_root = fast_import(
-                filepath,
-                base_name=base_name,
-                scale=import_scale,
-                mesh_only=mesh_only,
-                include_morphs=include_morphs,
-            )
-            if fast_root is not None:
-                _emit_progress(90)
-                logger.info("C++ fast import succeeded: %s", fast_root)
-                return fast_root
-            logger.info("C++ fast import failed/excluded – falling back to Python parser")
+        base_name = options.get("custom_namespace") or Path(filepath).stem
+        include_morphs = options.get(
+            "import_morphs",
+            settings.get(settings_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
+        )
+        fast_root = fast_import(
+            filepath,
+            base_name=base_name,
+            scale=import_scale,
+            mesh_only=mesh_only,
+            include_morphs=include_morphs,
+        )
+        if fast_root is not None:
+            _emit_progress(90)
+            logger.info("C++ fast import succeeded: %s", fast_root)
+            return fast_root
+        logger.info("C++ fast import failed/excluded – falling back to Python parser")
 
     try:
         # 汎用パーサーでファイルを解析
         with vmd_profile.scope("vmd_parse" if suffix == ".vmd" else "model_parse"):
             parsed_data = parse_mmd_file(
                 filepath,
-                use_native_pmx_parse=options.get("use_native_pmx_parse"),
-                require_native_pmx_parse=options.get(
-                    "require_native_pmx_parse",
-                    settings.get("import.native.require_native_pmx_parse", False),
-                ),
+                use_native_pmx_parse=strategy.use_native_pmx_parse,
+                require_native_pmx_parse=strategy.require_native_pmx_parse,
             )
         if suffix == ".vmd":
             vmd_profile.set_extra("vmd_path", str(Path(filepath).resolve()))
@@ -170,8 +155,7 @@ def import_mmd_file(
             )
 
         else:
-            logger.warning(f"Unsupported data type returned from parser: {type(parsed_data)}")
-            return None
+            raise MMDImportException(f"Unsupported data type returned from parser: {type(parsed_data)}")
 
     except Exception as e:
         if suffix == ".vmd" and options.get("bake_mode", False):
@@ -187,8 +171,7 @@ def import_mmd_file(
                 options,
                 progress_callback=progress_callback,
             )
-        logger.error(f"Failed to import {filepath}: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return None
+        if isinstance(e, MMDImportException):
+            raise
+        logger.error(f"Failed to import {filepath}: {e}", exc_info=True)
+        raise MMDImportException(f"Failed to import {filepath}: {e}") from e
