@@ -36,3 +36,24 @@ def get_morph_order(morph_node: str) -> int:
         except Exception:
             pass
     return 0
+
+
+def connect_if_needed(source: str, destination: str, force: bool = False) -> None:
+    """Connect two plugs unless the destination already receives the source."""
+    if is_connected(source, destination):
+        return
+    cmds.connectAttr(source, destination, force=force)
+
+
+def is_connected(source: str, destination: str) -> bool:
+    """Return whether destination already has source connected."""
+    return any(same_source(conn, source) for conn in cmds.listConnections(destination, s=True, d=False, p=True) or [])
+
+
+def same_source(left: str, right: str) -> bool:
+    """Compare two plugs while tolerating short DAG names."""
+    if left == right:
+        return True
+    left_long = cmds.ls(left, long=True) or []
+    right_long = cmds.ls(right, long=True) or []
+    return bool(left_long and right_long and left_long == right_long)

@@ -9,6 +9,7 @@ import maya.api.OpenMaya as om
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.maya_utils import get_attribute
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
+from mmd_tools.core.coordinate_transform import mmd_euler_xyz_to_maya, mmd_point_to_maya
 from mmd_tools.core.vpd_data.bone_pose import BonePose
 from mmd_tools.converters.vmd_anim_layer import add_transform_attrs_to_anim_layer
 
@@ -250,10 +251,7 @@ class VpdConverter:
         Returns:
             list: Mayaの位置 [x, y, z]
         """
-        # MMD: 右手座標系 (X:右, Y:上, Z:手前)
-        # Maya: 右手座標系 (X:右, Y:上, Z:手前)
-        # ただし、単位の違いがある可能性があるため、スケール調整が必要な場合がある
-        return [position[0], position[1], -position[2]]  # Z軸を反転
+        return list(mmd_point_to_maya(position))
 
     def _convert_quaternion_to_euler(self, quaternion: Sequence[float]) -> List[float]:
         """四元数をオイラー角に変換
@@ -280,8 +278,7 @@ class VpdConverter:
         Returns:
             list: Mayaの回転（度） [x, y, z]
         """
-        # 座標系の違いを補正
-        return [rotation[0], rotation[1], -rotation[2]]  # Z軸の回転を反転
+        return list(mmd_euler_xyz_to_maya(rotation))
 
     def _setup_animation_layer(self, layer_name: str) -> None:
         """アニメーションレイヤーを作成または選択

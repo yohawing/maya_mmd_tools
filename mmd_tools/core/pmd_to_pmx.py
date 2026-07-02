@@ -13,22 +13,11 @@ from mmd_tools.core.pmx_data.material import PmxDrawFlag, PmxMaterial, PmxShared
 from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
 from mmd_tools.core.pmx_data.rigid_body import PmxRigidBody
 from mmd_tools.core.pmx_data.vertex import PmxVertex
+from mmd_tools.core.logger import get_logger
+from mmd_tools.core.utils import choose_index_size, choose_reference_index_size
 
 
-def _choose_index_size(count: int) -> int:
-    if count <= 0xFF:
-        return 1
-    if count <= 0xFFFF:
-        return 2
-    return 4
-
-
-def _choose_reference_index_size(count: int) -> int:
-    if count <= 0x7F:
-        return 1
-    if count <= 0x7FFF:
-        return 2
-    return 4
+logger = get_logger(__name__)
 
 
 def _valid_index(index: int, count: int) -> int:
@@ -219,10 +208,10 @@ def convert_pmd_to_pmx_data(pmd_data: PmdData) -> PmxData:
     pmx.header.header_size = 8
     pmx.header.encoding = PmxEncoding.UTF16LE
     pmx.header.additional_uv = 0
-    pmx.header.vertex_index_size = _choose_index_size(len(pmd_data.vertices))
-    pmx.header.bone_index_size = _choose_reference_index_size(len(pmd_data.bones))
-    pmx.header.morph_index_size = _choose_reference_index_size(max(1, len(pmd_data.morphs)))
-    pmx.header.rigid_body_index_size = _choose_reference_index_size(len(pmd_data.rigid_bodies))
+    pmx.header.vertex_index_size = choose_index_size(len(pmd_data.vertices))
+    pmx.header.bone_index_size = choose_reference_index_size(len(pmd_data.bones))
+    pmx.header.morph_index_size = choose_reference_index_size(max(1, len(pmd_data.morphs)))
+    pmx.header.rigid_body_index_size = choose_reference_index_size(len(pmd_data.rigid_bodies))
     pmx.header.model_name = pmd_data.header.model_name
     pmx.header.model_name_english = pmd_data.header.model_name_english
     pmx.header.comment = pmd_data.header.comment
@@ -240,17 +229,23 @@ def convert_pmd_to_pmx_data(pmd_data: PmdData) -> PmxData:
         for index, material in enumerate(pmd_data.materials)
     ]
     pmx.textures = textures
-    pmx.header.texture_index_size = _choose_reference_index_size(len(pmx.textures))
+    pmx.header.texture_index_size = choose_reference_index_size(len(pmx.textures))
     for material in pmx.materials:
         material.texture_index_size = pmx.header.texture_index_size
-    pmx.header.material_index_size = _choose_reference_index_size(len(pmx.materials))
+    pmx.header.material_index_size = choose_reference_index_size(len(pmx.materials))
 
-    ik_by_bone_index = {ik.ik_bone_index: ik for ik in pmd_data.ik_data}
-    ik_by_bone = {
-        id(pmd_data.bones[index]): ik
-        for index, ik in ik_by_bone_index.items()
-        if 0 <= index < len(pmd_data.bones)
-    }
+    ik_by_bone = {}
+    for ik in pmd_data.ik_data:
+        index = int(ik.ik_bone_index)
+        if 0 <= index < len(pmd_data.bones):
+            ik_by_bone[id(pmd_data.bones[index])] = ik
+        else:
+            logger.warning(
+                "Skipping PMD IK entry with out-of-range ik_bone_index %s "
+                "(bone count: %s)",
+                index,
+                len(pmd_data.bones),
+            )
     pmx.bones = [
         _build_bone(bone, pmx.header.bone_index_size, len(pmd_data.bones), ik_by_bone)
         for bone in pmd_data.bones

@@ -10,8 +10,11 @@ from maya import cmds
 from mmd_tools.core.constants import ATTR_MMD_MATERIAL_INDEX
 from mmd_tools.core.logger import get_logger
 from mmd_tools.converters.morph_runtime_common import (
+    connect_if_needed as _connect_if_needed,
     get_morph_order,
+    is_connected as _is_connected,
     parse_morph_offsets_json,
+    same_source as _same_source,
 )
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 
@@ -304,28 +307,3 @@ def _reroute_shader_color(shader: str, node: str) -> None:
                 _connect_if_needed(source, base_axis, force=True)
 
     _connect_if_needed(output_attr, shader_attr, force=True)
-
-
-# ---------------------------------------------------------------------------
-# Connection utilities (shared pattern with bone_morph_runtime)
-# ---------------------------------------------------------------------------
-
-def _connect_if_needed(source: str, destination: str, force: bool = False) -> None:
-    if _is_connected(source, destination):
-        return
-    cmds.connectAttr(source, destination, force=force)
-
-
-def _is_connected(source: str, destination: str) -> bool:
-    return any(
-        _same_source(conn, source)
-        for conn in cmds.listConnections(destination, s=True, d=False, p=True) or []
-    )
-
-
-def _same_source(left: str, right: str) -> bool:
-    if left == right:
-        return True
-    left_long = cmds.ls(left, long=True) or []
-    right_long = cmds.ls(right, long=True) or []
-    return bool(left_long and right_long and left_long == right_long)

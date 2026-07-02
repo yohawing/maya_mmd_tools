@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 from maya import cmds
 from maya.api import OpenMaya as om
 
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_utils, settings_keys as setting_keys
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_MATERIAL_INDEX,
@@ -34,60 +34,13 @@ class MorphConverter:
         from mmd_tools import settings
         from mmd_tools.core.logger import get_logger
 
-        self.settings = settings.get("import.morph", {})
+        self.settings = settings.get(setting_keys.IMPORT_MORPH, {})
         self.logger = get_logger(__name__)
         self.profile = {}
 
     def _add_profile_time(self, key: str, start: float) -> None:
         """Accumulate timing in the converter profile."""
         self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
-
-    def convert_pmd_morphs(self, pmd_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
-        """
-        PMDのモーフデータをMayaのブレンドシェイプに変換する。
-
-        Args:
-            pmd_data: 解析されたPMDデータオブジェクト
-            mesh_node (str or list): ブレンドシェイプを適用するMayaのメッシュノード名、またはそのリスト。
-
-        Returns:
-            Dict[str, Any]: 変換結果の辞書
-        """
-        if not self.settings.get("import_morphs", True):
-            return {"success": True, "morphs_converted": 0}
-
-        mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
-
-        results = []
-        blend_shape_nodes = []
-
-        for mn in mesh_nodes:
-            for morph in pmd_data.morphs:
-                # ベースモーフはスキップ
-                if morph.morph_type == 0:
-                    self.logger.debug("Skipping base morph")
-                    continue
-
-                try:
-                    self.logger.debug(f"Converting morph: {morph.name}, type: {morph.morph_type}")
-                    result = self._convert_vertex_morph_pmd(morph, mn)
-                    if result["success"]:
-                        results.append(result)
-                        if result["blend_shape_node"] not in blend_shape_nodes:
-                            blend_shape_nodes.append(result["blend_shape_node"])
-                        self.logger.info(f"Successfully converted morph: {morph.name}")
-                except Exception as e:
-                    # エラーをログに記録して次のモーフへ
-                    self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
-                    pass
-
-        return {
-            "success": True,
-            "morphs_converted": len(results),
-            "total_morphs": len(pmd_data.morphs) - 1,  # ベースモーフを除く
-            "blend_shape_nodes": blend_shape_nodes,
-            "results": results,
-        }
 
     def convert_pmx_morphs(self, pmx_data, mesh_node: Union[str, List[str]]) -> Dict[str, Any]:
         """
@@ -207,24 +160,7 @@ class MorphConverter:
     def _convert_group_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXグループモーフをMayaのnetwork nodeとしてインポートする。"""
         morph_name = morph.get_name()
-        safe_name = maya_utils.sanitize_text(morph_name)
-        node_name = f"{safe_name}_groupMorph"
-
-        if cmds.objExists(node_name):
-            morph_node = node_name
-        else:
-            morph_node = cmds.createNode("network", name=node_name)
-
-        if not cmds.attributeQuery("weight", node=morph_node, exists=True):
-            cmds.addAttr(
-                morph_node,
-                longName="weight",
-                attributeType="double",
-                minValue=0.0,
-                maxValue=1.0,
-                defaultValue=0.0,
-                keyable=True,
-            )
+        morph_node = self._create_or_get_morph_network_node(morph_name, "group")
 
         offsets = []
         for offset in getattr(morph, "offsets", []):
@@ -445,49 +381,6 @@ class MorphConverter:
         names[str(target_index)] = str(raw_name)
         maya_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
 
-    def _convert_vertex_morph_pmd(self, morph, mesh_node: str) -> Dict[str, Any]:
-        """PMD頂点モーフの変換"""
-        # モーフ名をMaya互換に変換
-        raw_name = self._raw_morph_name(morph)
-        morph_name = maya_utils.sanitize_text(morph.get_name())
-
-        # メッシュを複製してターゲットを作成
-        target_mesh = cmds.duplicate(mesh_node)[0]
-        target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
-
-        # ターゲットメッシュを非表示
-        maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
-
-        # 頂点オフセットを適用
-        self._apply_vertex_offsets_pmd(target_mesh, morph)
-
-        # blendShapeノードを取得または作成
-        blend_shape_node = maya_utils.find_or_create_blendshape_node(mesh_node)
-
-        # 現在のターゲット数を取得
-        target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
-        target_index = len(target_count) if target_count else 0
-
-        # blendShapeにターゲットを追加
-        cmds.blendShape(
-            blend_shape_node,
-            edit=True,
-            target=(mesh_node, target_index, target_mesh, 1.0),
-        )
-
-        # ターゲットの名前を設定（衝突時は一意化）。生名は別途保存し正確なマッピングを保証する。
-        alias = self._unique_blendshape_alias(blend_shape_node, morph_name)
-        cmds.aliasAttr(alias, f"{blend_shape_node}.w[{target_index}]")
-        self._store_blendshape_morph_name(blend_shape_node, target_index, raw_name)
-
-        return {
-            "success": True,
-            "morph_name": morph.get_name(),
-            "blend_shape_node": blend_shape_node,
-            "target_index": target_index,
-            "alias": alias,
-        }
-
     def _convert_bone_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXボーンモーフをMayaのnetwork nodeとしてインポートする。
 
@@ -495,24 +388,7 @@ class MorphConverter:
         `weight` と、後段評価用の offset metadata だけを作る。
         """
         morph_name = morph.get_name()
-        safe_name = maya_utils.sanitize_text(morph_name)
-        node_name = f"{safe_name}_boneMorph"
-
-        if cmds.objExists(node_name):
-            morph_node = node_name
-        else:
-            morph_node = cmds.createNode("network", name=node_name)
-
-        if not cmds.attributeQuery("weight", node=morph_node, exists=True):
-            cmds.addAttr(
-                morph_node,
-                longName="weight",
-                attributeType="double",
-                minValue=0.0,
-                maxValue=1.0,
-                defaultValue=0.0,
-                keyable=True,
-            )
+        morph_node = self._create_or_get_morph_network_node(morph_name, "bone")
 
         offsets = []
         for offset in getattr(morph, "offsets", []):
@@ -554,24 +430,7 @@ class MorphConverter:
         `weight` と、後段評価用の offset metadata だけを作る。
         """
         morph_name = morph.get_name()
-        safe_name = maya_utils.sanitize_text(morph_name)
-        node_name = f"{safe_name}_materialMorph"
-
-        if cmds.objExists(node_name):
-            morph_node = node_name
-        else:
-            morph_node = cmds.createNode("network", name=node_name)
-
-        if not cmds.attributeQuery("weight", node=morph_node, exists=True):
-            cmds.addAttr(
-                morph_node,
-                longName="weight",
-                attributeType="double",
-                minValue=0.0,
-                maxValue=1.0,
-                defaultValue=0.0,
-                keyable=True,
-            )
+        morph_node = self._create_or_get_morph_network_node(morph_name, "material")
 
         offsets = []
         for offset in getattr(morph, "offsets", []):
@@ -617,6 +476,28 @@ class MorphConverter:
             "morph_type": "material",
             "offset_count": len(offsets),
         }
+
+    def _create_or_get_morph_network_node(self, morph_name: str, morph_kind: str) -> str:
+        """Create or reuse a PMX morph network node with a keyable weight attr."""
+        safe_name = maya_utils.sanitize_text(morph_name)
+        node_name = f"{safe_name}_{morph_kind}Morph"
+
+        if cmds.objExists(node_name):
+            morph_node = node_name
+        else:
+            morph_node = cmds.createNode("network", name=node_name)
+
+        if not cmds.attributeQuery("weight", node=morph_node, exists=True):
+            cmds.addAttr(
+                morph_node,
+                longName="weight",
+                attributeType="double",
+                minValue=0.0,
+                maxValue=1.0,
+                defaultValue=0.0,
+                keyable=True,
+            )
+        return morph_node
 
     @staticmethod
     def _json_float_list(values) -> List[float]:
@@ -766,27 +647,6 @@ class MorphConverter:
         target = template_ctx.get("target_mesh")
         if target and cmds.objExists(target):
             cmds.delete(target)
-
-    def _apply_vertex_offsets_pmd(self, mesh_node: str, morph):
-        """PMDの頂点オフセットを適用"""
-        # MSelectionListを使用してDAGパスを取得
-        sel_list = om.MSelectionList()
-        sel_list.add(mesh_node)
-        dag_path = sel_list.getDagPath(0)
-
-        # MFnMeshを取得
-        mesh_fn = om.MFnMesh(dag_path)
-
-        # 現在の頂点位置を取得
-        points = mesh_fn.getPoints(om.MSpace.kObject)
-
-        # モーフオフセットを適用
-        for vertex_index, offset_pos in morph.vertices:
-            if vertex_index < len(points):
-                points[vertex_index] += om.MVector(offset_pos[0], offset_pos[1], offset_pos[2])
-
-        # 変更された頂点位置を設定
-        mesh_fn.setPoints(points, om.MSpace.kObject)
 
     def _apply_vertex_offsets_pmx(self, mesh_node: str, morph, source_to_local: Optional[Dict[int, int]] = None):
         """PMXの頂点オフセットを適用"""

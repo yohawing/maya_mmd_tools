@@ -29,6 +29,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MODEL_NAME,
 )
+from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 
 
 def _get_mesh_shape(node: str) -> str:
@@ -71,7 +72,7 @@ def _get_attr(node: str, attr: str, default=None):
 
 def _maya_to_mmd_vector(values) -> list[float]:
     """Convert a Maya XYZ vector to MMD basis by flipping Z."""
-    return [float(values[0]), float(values[1]), -float(values[2])]
+    return list(maya_point_to_mmd(values))
 
 
 def _list_export_mesh_shapes(root: str) -> list:
@@ -367,7 +368,7 @@ def _collect_vertex_morphs(shape: str, vertex_offset: int = 0) -> list[dict]:
                         continue
                     offsets.append({
                         "vertex_index": vertex_index + vertex_offset,
-                        "position_offset": [delta[0], delta[1], -delta[2]],
+                        "position_offset": _maya_to_mmd_vector(delta),
                     })
                 if not offsets:
                     continue

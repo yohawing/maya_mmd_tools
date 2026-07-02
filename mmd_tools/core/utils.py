@@ -107,6 +107,34 @@ def get_pmx_encoding_string(encoding_flag: PmxEncoding) -> str:
     return "utf-16-le" if encoding_flag == PmxEncoding.UTF16LE else "utf-8"
 
 
+def choose_index_size(count: int) -> int:
+    """Return the unsigned PMX vertex index byte size for an element count."""
+    if count <= 0xFF:
+        return 1
+    if count <= 0xFFFF:
+        return 2
+    return 4
+
+
+def choose_reference_index_size(count: int) -> int:
+    """Return the signed PMX reference index byte size for an element count."""
+    if count <= 0x7F:
+        return 1
+    if count <= 0x7FFF:
+        return 2
+    return 4
+
+
+def fan_triangulate(polygon_indices: list) -> list:
+    """Convert a polygon index list to triangle indices using fan triangulation."""
+    if len(polygon_indices) < 3:
+        raise ValueError(f"Polygon must have at least 3 vertices, got {len(polygon_indices)}")
+    triangles = []
+    for i in range(1, len(polygon_indices) - 1):
+        triangles.append([polygon_indices[0], polygon_indices[i], polygon_indices[i + 1]])
+    return triangles
+
+
 def encodePMXString(string, encoding=PmxEncoding.UTF16LE):
     """
     文字列をPMX形式（長さプレフィックス付き）にエンコードします。

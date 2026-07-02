@@ -1,4 +1,3 @@
-import math
 import time
 from typing import List, Optional, Tuple, Union
 
@@ -9,7 +8,6 @@ import maya.api.OpenMayaAnim as oma
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 from ..core import maya_utils
-from ..core.pmd_data import PmdData
 from ..core.pmx_data import PmxData
 from ..core.constants import (
     SKELETON_GROUP,
@@ -42,6 +40,7 @@ from ..core.constants import (
     ATTR_MMD_BONE_TYPE,
     ATTR_MMD_TAIL_POS_INDEX,
 )
+from ..core.coordinate_transform import mmd_point_to_maya
 from ..core.logger import get_logger
 from .rig_converter import RigConverter
 
@@ -132,50 +131,6 @@ class BoneConverter:
             )
 
         result_cluster = skin_clusters[0] if len(skin_clusters) == 1 else skin_clusters
-
-        return maya_joints, result_cluster
-
-    def convert_pmd_bones(self, pmd_data: PmdData, mesh_node: Union[str, List[str]], root_group):
-        """
-        PMDのボーンデータをMayaのジョイントに変換し、メッシュにスキニングを設定する。
-
-        Args:
-            pmd_data (PmdParser): 解析されたPMDデータオブジェクト。
-            mesh_node (str or list): スキニングを適用するMayaのメッシュノード名、またはそのリスト。
-            root_group (str): ルートグループの名前。
-
-        Returns:
-            tuple: (作成されたMayaジョイントノードの名前のリスト,
-                   スキンクラスターの名前、またはスキンクラスター名のリスト)
-        """
-        # PMDのボーン階層をMayaのjointノードに変換する
-        maya_utils.select_objects(clear=True)
-
-        # スケルトングループを作成
-        skeleton_group = cmds.group(empty=True, name=SKELETON_GROUP, parent=root_group)
-
-        # ボーン名とインデックスのマッピングを作成
-        bone_map = self._create_bone_mapping(pmd_data.bones)
-
-        # Mayaジョイントを作成 (1回だけ)
-        maya_joints = self._create_maya_joints(pmd_data.bones, bone_map, "pmd", skeleton_group)
-
-        # 複数メッシュ対応: mesh_node がリストの場合、各メッシュに同一 skeleton で skinCluster を適用
-        mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
-        skin_clusters = []
-
-        for mn in mesh_nodes:
-            if not mn or not cmds.objExists(mn):
-                continue
-            sc = self._create_skin_cluster(maya_joints, mn, max_influence=2)
-            if sc:
-                self._apply_pmd_vertex_weights(pmd_data, maya_joints, sc, mn)
-                skin_clusters.append(sc)
-
-        result_cluster = skin_clusters[0] if len(skin_clusters) == 1 else skin_clusters
-
-        # リグのセットアップはRigConverterに委譲
-        self.rig_converter.setup_pmd_rig(pmd_data, maya_joints, bone_map, skeleton_group)
 
         return maya_joints, result_cluster
 
@@ -305,11 +260,7 @@ class BoneConverter:
             position = bone.position
             joint = cmds.joint(
                 name=joint_name,
-                position=[
-                    position[0],
-                    position[1],
-                    -position[2],
-                ],  # Z軸の向きを反転（MMD: +Z手前, Maya: +Z奥）
+                position=list(mmd_point_to_maya(position)),  # MMD: +Z手前, Maya: +Z奥
             )
             joint_uuid = self._get_node_uuid(joint)
             joint = self._resolve_node_long_path(joint_uuid, joint)
@@ -676,65 +627,6 @@ class BoneConverter:
         except Exception:
             return None
 
-    def _apply_pmd_vertex_weights(self, pmd_data, maya_joints, skin_cluster, mesh_node):
-        """
-        PMD頂点ウェイトをスキンクラスターに適用する。
-
-        Args:
-            pmd_data: PMDデータオブジェクト。
-            maya_joints (list): Mayaジョイントノードの名前のリスト。
-            skin_cluster (str): スキンクラスターの名前。
-            mesh_node (str): メッシュノードの名前。
-        """
-
-        max_joint_index = len(maya_joints) - 1
-        invalid_bone_indices = set()
-        weight_pack_start = time.perf_counter()
-        weights = []
-        for vertex in pmd_data.vertices:
-            # ボーンの数でリストを初期化
-            vertex_weights = [0.0] * len(maya_joints)
-
-            # PMD頂点の重み情報を取得
-            bone1_index = vertex.bone_indices[0]
-            bone2_index = vertex.bone_indices[1]
-            weight1 = vertex.bone_weight / 100.0
-            weight2 = 1.0 - weight1
-
-            # PMDの未使用ボーンインデックス(例: 65535)を個別に扱う
-            bone1_valid = 0 <= bone1_index < len(maya_joints)
-            bone2_valid = 0 <= bone2_index < len(maya_joints)
-
-            if bone1_valid and bone2_valid and bone1_index == bone2_index:
-                # 同一ボーンの場合は100%の重み
-                vertex_weights[bone1_index] = 1.0
-            else:
-                # 2つのボーンに分割
-                if bone1_valid and weight1 > 0:
-                    vertex_weights[bone1_index] = weight1
-                if bone2_valid and weight2 > 0:
-                    vertex_weights[bone2_index] = weight2
-
-            if (not bone1_valid and weight1 > 0) or (not bone2_valid and weight2 > 0):
-                warning_key = (bone1_index, bone2_index, max_joint_index)
-                if warning_key not in invalid_bone_indices:
-                    self.logger.warning(
-                        "Invalid bone index "
-                        f"bone1={bone1_index}, bone2={bone2_index}, max={max_joint_index}"
-                    )
-                    invalid_bone_indices.add(warning_key)
-
-            weights.append(vertex_weights)
-        self._add_profile_time("weight_pack_sec", weight_pack_start)
-
-        # vertexの要素が存在することをチェック
-        if not weights:
-            self.logger.warning("Vertex weights are empty. Check whether the mesh has vertices.")
-            return
-        set_weights_start = time.perf_counter()
-        maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
-        self._add_profile_time("set_weights_sec", set_weights_start)
-
     def _compute_pmx_world_rotation_matrix(self, bone):
         """PMX LOCAL_AXIS の軸方向からワールド空間回転行列を計算する。"""
         x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], -bone.x_axis_direction[2])
@@ -804,93 +696,3 @@ class BoneConverter:
                 )
 
             maya_utils.set_attribute(maya_joints[i], "rotate", (0, 0, 0), "double3")
-
-    def _set_bone_local_axis(self, joint, bone):
-        """
-        PMXボーンのローカル軸情報をMayaジョイントに適用する。
-        子ボーンへの影響を防ぐため、子を一時的に切り離して処理する。
-
-        Args:
-            joint (str): Mayaジョイント名
-            bone: PMXボーンオブジェクト
-        """
-
-        # MMDのローカル軸はZ-Primary
-        x_axis = om.MVector(bone.x_axis_direction[0], bone.x_axis_direction[1], -bone.x_axis_direction[2])
-        x_axis.normalize()
-
-        z_axis = om.MVector(bone.z_axis_direction[0], bone.z_axis_direction[1], -bone.z_axis_direction[2])
-        z_axis.normalize()
-
-        y_axis = z_axis ^ x_axis
-        y_axis.normalize()
-
-        # rotation matrixを作成
-        matrix = om.MMatrix(
-            [
-                [x_axis.x, x_axis.y, x_axis.z, 0],
-                [y_axis.x, y_axis.y, y_axis.z, 0],
-                [z_axis.x, z_axis.y, z_axis.z, 0],
-                [0, 0, 0, 1],
-            ]
-        )
-
-        transform = om.MTransformationMatrix(matrix)
-        euler = transform.rotation(asQuaternion=False)
-
-        # Joint Orientを設定
-        maya_utils.set_attribute(joint, "jointOrient", (euler.x, euler.y, euler.z), "double3")
-
-        # maya_utils.set_attribute(joint, "displayLocalAxis", 1, "int")
-
-    def _set_bone_axis_limits(self, joint, bone):
-        """
-        PMXボーンの軸制限情報をMayaジョイントに適用する。
-
-        Args:
-            joint (str): Mayaジョイント名
-            bone: PMXボーンオブジェクト
-        """
-
-        # ローカル軸が設定されている場合Z軸以外をロック
-        if bone.get_flag(PmxBoneFlag.LOCAL_AXIS):
-            # X軸は自由、Y/Z軸は0に固定
-            maya_utils.set_joint_limits(
-                joint,
-                limit_min=(0, 0, -math.pi),
-                limit_max=(0, 0, math.pi),
-            )
-
-        else:
-            # ローカル軸が設定されてない場合は軸制限情報をローカル軸にする
-            # rotation matrixを作成
-
-            z_axis = om.MVector(bone.axis_direction[0], bone.axis_direction[1], -bone.axis_direction[2])
-            z_axis.normalize()
-            x_axis = z_axis ^ om.MVector(0, 1, 0)  # Y軸を基準にX軸を計算
-            x_axis.normalize()
-            y_axis = z_axis ^ x_axis  # Z軸とX軸からY軸を計算
-            y_axis.normalize()
-
-            matrix = om.MMatrix(
-                [
-                    [x_axis.x, x_axis.y, x_axis.z, 0],
-                    [y_axis.x, y_axis.y, y_axis.z, 0],
-                    [z_axis.x, z_axis.y, z_axis.z, 0],
-                    [0, 0, 0, 1],
-                ]
-            )
-
-            transform = om.MTransformationMatrix(matrix)
-            euler = transform.rotation(asQuaternion=False)
-
-            # Joint Orientを設定
-            maya_utils.set_attribute(joint, "jointOrient", (euler.x, euler.y, euler.z), "double3")
-
-            # maya_utils.set_attribute(joint, "displayLocalAxis", 1, "int")
-
-            maya_utils.set_joint_limits(
-                joint,
-                limit_min=(0, 0, -math.pi),
-                limit_max=(0, 0, math.pi),
-            )

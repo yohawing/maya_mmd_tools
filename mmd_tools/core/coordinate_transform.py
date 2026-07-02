@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import math
 from typing import Sequence, Tuple
 
 
 def mmd_point_to_maya(point: Sequence[float], scale: float = 1.0) -> Tuple[float, float, float]:
     """Convert an MMD point to Maya coordinates."""
+    return (
+        float(point[0]) * scale,
+        float(point[1]) * scale,
+        -float(point[2]) * scale,
+    )
+
+
+def maya_point_to_mmd(point: Sequence[float], scale: float = 1.0) -> Tuple[float, float, float]:
+    """Convert a Maya point to MMD coordinates."""
     return (
         float(point[0]) * scale,
         float(point[1]) * scale,
@@ -20,6 +30,24 @@ def mmd_euler_xyz_to_maya(euler_xyz: Sequence[float]) -> Tuple[float, float, flo
         float(euler_xyz[0]),
         float(euler_xyz[1]),
         -float(euler_xyz[2]),
+    )
+
+
+def mmd_euler_radians_to_maya_degrees(euler_xyz: Sequence[float]) -> Tuple[float, float, float]:
+    """Convert MMD XYZ Euler radians to Maya XYZ Euler degrees."""
+    return (
+        math.degrees(float(euler_xyz[0])),
+        math.degrees(float(euler_xyz[1])),
+        -math.degrees(float(euler_xyz[2])),
+    )
+
+
+def maya_euler_degrees_to_mmd_radians(euler_xyz: Sequence[float]) -> Tuple[float, float, float]:
+    """Convert Maya XYZ Euler degrees to MMD XYZ Euler radians."""
+    return (
+        math.radians(float(euler_xyz[0])),
+        math.radians(float(euler_xyz[1])),
+        -math.radians(float(euler_xyz[2])),
     )
 
 

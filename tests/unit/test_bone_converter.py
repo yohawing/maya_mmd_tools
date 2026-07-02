@@ -495,38 +495,6 @@ class TestBoneConverterMaya(unittest.TestCase):
         applied_weights = mock_apply_weights.call_args[0][2]
         self.assertEqual(applied_weights, [[0.0, 1.0], [1.0, 0.0]])
 
-    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
-    def test_apply_pmd_vertex_weights_with_sentinel_bone2(self, mock_apply_weights):
-        """PMD頂点ウェイト適用でbone2が未使用インデックスの場合を確認"""
-        pmd_data = Mock()
-        vertex = Mock()
-        vertex.bone_indices = [0, 65535]
-        vertex.bone_weight = 100
-        pmd_data.vertices = [vertex]
-
-        with patch.object(self.converter, "logger") as mock_logger:
-            self.converter._apply_pmd_vertex_weights(pmd_data, ["joint_0", "joint_1"], "skinCluster", self.test_mesh)
-
-        mock_apply_weights.assert_called_once()
-        mock_logger.warning.assert_not_called()
-        self.assertEqual(mock_apply_weights.call_args[0][2][0], [1.0, 0.0])
-
-    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
-    def test_apply_pmd_vertex_weights_with_sentinel_bone1(self, mock_apply_weights):
-        """PMD頂点ウェイト適用でbone1が未使用インデックスの場合を確認"""
-        pmd_data = Mock()
-        vertex = Mock()
-        vertex.bone_indices = [65535, 1]
-        vertex.bone_weight = 0
-        pmd_data.vertices = [vertex]
-
-        with patch.object(self.converter, "logger") as mock_logger:
-            self.converter._apply_pmd_vertex_weights(pmd_data, ["joint_0", "joint_1"], "skinCluster", self.test_mesh)
-
-        mock_apply_weights.assert_called_once()
-        mock_logger.warning.assert_not_called()
-        self.assertEqual(mock_apply_weights.call_args[0][2][0], [0.0, 1.0])
-
     @patch("mmd_tools.converters.bone_converter.RigConverter")
     def test_convert_pmx_bones_integration(self, mock_rig_converter_class):
         """PMXボーン変換の統合テスト（実際のMaya環境）"""
