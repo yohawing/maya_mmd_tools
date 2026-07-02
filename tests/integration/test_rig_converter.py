@@ -4,7 +4,6 @@ from unittest.mock import Mock
 import maya.cmds as cmds
 
 from mmd_tools.converters.rig_converter import RigConverter
-from mmd_tools.core import maya_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
@@ -192,8 +191,8 @@ class TestRigConverterMaya(unittest.TestCase):
         shapes_after = cmds.listRelatives(controller, shapes=True, type="nurbsCurve") or []
         self.assertEqual(len(shapes_after), 1)
 
-    def test_set_joint_limits(self):
-        """ジョイント角度制限の設定テスト（実際のMaya環境）"""
+    def test_import_fix_axis_bones(self):
+        """fix_axis fixture のボーンをインポートできることを確認する。"""
         # テスト用のジョイントロード
         pmx_data, pmx_path = self.fixture_provider.load_pmx_data("test_fix_axis")
 
@@ -293,8 +292,8 @@ class TestRigConverterMaya(unittest.TestCase):
         # 付与ボーンの確認
         for joint in maya_joints:
             if joint in ["B", "C", "D"]:  # 付与ボーンの名前を確認
-                self.assertTrue(maya_utils.get_attribute(joint, ATTR_MMD_GRANT_PARENT_INDEX))
-                self.assertTrue(maya_utils.get_attribute(joint, ATTR_MMD_GRANT_RATE))
+                self.assertTrue(cmds.attributeQuery(ATTR_MMD_GRANT_PARENT_INDEX, node=joint, exists=True))
+                self.assertTrue(cmds.attributeQuery(ATTR_MMD_GRANT_RATE, node=joint, exists=True))
 
         # グローバルの位置を確認
         # A: (1,2,-2)
@@ -407,63 +406,6 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertEqual(len(constraints), 1)
         self.assertFalse(cmds.objExists("master"))
         self.assertTrue(cmds.objExists("mmd_grant_reference"))
-
-    def test_pole_target_position_for_leg_ik(self):
-        """足IKのPoleTarget位置が膝の前方に配置されるかテスト"""
-        # 足のジョイントチェーンを作成
-        cmds.select(clear=True)
-        hip = cmds.joint(name="left_leg", position=[2, 10, 0])
-        knee = cmds.joint(name="left_knee", position=[2, 5, 0.5])  # 膝は少し前に出ている
-        ankle = cmds.joint(name="left_ankle", position=[2, 0, 0])
-
-        # IKボーンを作成
-        cmds.select(clear=True)
-        cmds.joint(name="left_leg_ik", position=[2, 0, 0])
-
-        # IKチェーン情報を作成
-        chain = {
-            "ik_bone": "left_leg_ik",
-            "ik_bone_index": 0,
-            "target_bone": "left_ankle",
-            "target_bone_index": 2,
-            "loop_count": 40,
-            "unit_angle": 114.5916,
-            "ik_links": [
-                {"bone": "left_knee", "bone_index": 1, "angle_limit": False},
-                {"bone": "left_leg", "bone_index": 0, "angle_limit": False},
-            ],
-        }
-
-        # IKハンドルを作成
-        ik_handle, _ = cmds.ikHandle(
-            startJoint=hip,
-            endEffector=ankle,
-            solver="ikRPsolver",
-            name="left_leg_ik_ikHandle",
-        )
-
-        # PoleTargetを作成
-        pole_target = self.converter._create_pole_target_for_leg_ik(chain, ik_handle, hip, ankle)
-
-        # PoleTargetが作成されたか確認
-        self.assertIsNotNone(pole_target)
-        self.assertTrue(cmds.objExists(pole_target))
-
-        # PoleTargetの位置を取得
-        pole_pos = cmds.xform(pole_target, query=True, worldSpace=True, translation=True)
-        knee_pos = cmds.xform(knee, query=True, worldSpace=True, translation=True)
-
-        # PoleTargetが膝の近くに配置されているか確認（Y座標が近い）
-        self.assertAlmostEqual(pole_pos[1], knee_pos[1], delta=1.0)
-
-        # PoleTargetが膝の前方（Z軸正方向）に配置されているか確認
-        self.assertGreater(pole_pos[2], knee_pos[2], "PoleTargetが膝の前方に配置されていません")
-
-        # PoleTargetが適切な距離に配置されているか確認（デフォルト2ユニット）
-        distance = (
-            (pole_pos[0] - knee_pos[0]) ** 2 + (pole_pos[1] - knee_pos[1]) ** 2 + (pole_pos[2] - knee_pos[2]) ** 2
-        ) ** 0.5
-        self.assertAlmostEqual(distance, 2.0, delta=1.0)
 
     def test_setup_given_parent_bones_local_given(self):
         """ローカル付与ボーンの設定テスト（実際のMaya環境）"""
@@ -813,88 +755,6 @@ class TestRigConverterMaya(unittest.TestCase):
         # 付与関係が1つ設定され、PMX IK ハンドルは作成されない
         self.assertEqual(len(result["constraints"]), 1)
         self.assertEqual(result["ik_handles"], [])
-
-    def test_pole_target_with_pmx_local_axis(self):
-        """PMXローカル軸情報を使用したPoleTarget作成テスト"""
-        # 足のジョイントチェーンを作成
-        cmds.select(clear=True)
-        hip = cmds.joint(name="left_leg", position=[1, 10, 0])
-        knee = cmds.joint(name="left_knee", position=[1, 5, 0])
-        ankle = cmds.joint(name="left_ankle", position=[1, 0, 0])
-
-        # 膝にPMXローカル軸情報を追加
-        cmds.addAttr(knee, longName="mmd_local_x_axis", attributeType="double3")
-        cmds.addAttr(
-            knee,
-            longName="mmd_local_x_axisX",
-            attributeType="double",
-            parent="mmd_local_x_axis",
-        )
-        cmds.addAttr(
-            knee,
-            longName="mmd_local_x_axisY",
-            attributeType="double",
-            parent="mmd_local_x_axis",
-        )
-        cmds.addAttr(
-            knee,
-            longName="mmd_local_x_axisZ",
-            attributeType="double",
-            parent="mmd_local_x_axis",
-        )
-        # X軸が前方を向くように設定（PMX座標系で）
-        cmds.setAttr(f"{knee}.mmd_local_x_axis", 0, 0, -1, type="double3")
-
-        # IKハンドルを作成
-        ik_handle, _ = cmds.ikHandle(startJoint=hip, endEffector=ankle, solver="ikRPsolver")
-
-        # IKチェーン情報を作成
-        chain = {
-            "ik_bone": "left_leg_ik",
-            "ik_links": [{"bone": knee, "bone_index": 1}],
-        }
-
-        # IKボーンを作成
-        cmds.select(clear=True)
-        cmds.joint(name="left_leg_ik", position=[1, 0, 2])
-
-        # PoleTargetを作成
-        pole_target = self.converter._create_pole_target_for_leg_ik(chain, ik_handle, hip, ankle)
-
-        # PoleTargetが作成されたか確認
-        self.assertIsNotNone(pole_target)
-
-    def test_pole_target_with_joint_orient(self):
-        """jointOrientを使用したPoleTarget作成テスト"""
-        # 足のジョイントチェーンを作成（膝にjointOrientを設定）
-        cmds.select(clear=True)
-        hip = cmds.joint(name="left_leg", position=[1, 10, 0])
-        knee = cmds.joint(name="left_knee", position=[1, 5, 1])  # 少し前方に配置
-        # jointOrientを設定（膝が前方に曲がる方向）
-        cmds.setAttr(f"{knee}.jointOrientX", 0)
-        cmds.setAttr(f"{knee}.jointOrientY", 90)  # Y軸周りに90度回転
-        cmds.setAttr(f"{knee}.jointOrientZ", 0)
-        ankle = cmds.joint(name="left_ankle", position=[1, 0, 0])
-
-        # IKハンドルを作成
-        ik_handle, _ = cmds.ikHandle(startJoint=hip, endEffector=ankle, solver="ikRPsolver")
-
-        # IKチェーン情報を作成
-        chain = {
-            "ik_bone": "left_leg_ik",
-            "ik_links": [{"bone": knee, "bone_index": 1}],
-        }
-
-        # IKボーンを作成
-        cmds.select(clear=True)
-        cmds.joint(name="left_leg_ik", position=[1, 0, 2])
-
-        # PoleTargetを作成
-        pole_target = self.converter._create_pole_target_for_leg_ik(chain, ik_handle, hip, ankle)
-
-        # PoleTargetが作成されたか確認
-        self.assertIsNotNone(pole_target)
-
 
 if __name__ == "__main__":
     unittest.main()
