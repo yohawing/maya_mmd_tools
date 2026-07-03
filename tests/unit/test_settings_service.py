@@ -32,7 +32,11 @@ class _FakeSettingsStore:
                 "physics": {"import_physics": True},
                 "morph": {"import_morphs": False},
                 "rig": {"add_semi_standard_bones": True, "bake_mode": False},
-                "native": {"use_cpp_fast_load": True, "cpp_fast_load_mesh_only": False},
+                "native": {
+                    "use_cpp_fast_load": True,
+                    "cpp_fast_load_mesh_only": False,
+                    "use_cpp_rig_nodes": True,
+                },
                 "naming": {"translate_names": False},
                 "animation": {
                     "animation_start_frame": 12,
@@ -41,6 +45,8 @@ class _FakeSettingsStore:
                     "import_morph_animation": False,
                     "import_camera_animation": False,
                     "import_light_animation": False,
+                    "motion_scale": 2.5,
+                    "clear_existing_motion": True,
                     "resample_curves": True,
                 },
             },
@@ -192,6 +198,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("setup_bone_orientation", options)
         self.assertTrue(options["use_cpp_fast_load"])
         self.assertFalse(options["cpp_fast_load_mesh_only"])
+        self.assertTrue(options["use_cpp_rig_nodes"])
 
     def test_build_pmx_import_options_preserves_dev_mode_saved_values(self):
         self.service.set("ui.general.development_mode", True)
@@ -222,6 +229,8 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["import_morph_animation"])
         self.assertFalse(options["import_camera_animation"])
         self.assertFalse(options["import_light_animation"])
+        self.assertEqual(options["motion_scale"], 2.5)
+        self.assertTrue(options["clear_existing_motion"])
         self.assertFalse(options["resample_curves"])
         self.assertFalse(options["bake_mode"])
         self.assertEqual(options["target_model"], "model")

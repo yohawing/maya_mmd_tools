@@ -13,6 +13,9 @@ from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter
 from mmd_tools.ui.tabs.bone_tab import BoneTab
 from mmd_tools.ui.application_state import ApplicationState
+from mmd_tools.ui.translations import UITranslator
+
+UITranslator.instance().set_language("en")
 
 
 class TestBonePresenter(MayaTestBase):

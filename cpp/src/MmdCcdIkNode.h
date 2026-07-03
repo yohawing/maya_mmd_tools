@@ -24,6 +24,8 @@
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnCompoundAttribute.h>
 #include <maya/MFnTypedAttribute.h>
+#include <maya/MFnUnitAttribute.h>
+#include <maya/MFnMatrixAttribute.h>
 #include <maya/MTypeId.h>
 
 class MmdCcdIkNode : public MPxNode {
@@ -69,6 +71,27 @@ public:
     // inputChain(doubleArray)
     static MObject aInputChain;
 
+    // Python mmdCcdIk name-compatible inputs. outputRotate is now an array
+    // angle compound; solver parity is still a later slice.
+    static MObject aChainJson;
+
+    static MObject aGoal;
+    static MObject aGoalX;
+    static MObject aGoalY;
+    static MObject aGoalZ;
+
+    static MObject aGoalWorldMatrix;
+
+    static MObject aInputRotateArray;
+    static MObject aInputRotateArrayX;
+    static MObject aInputRotateArrayY;
+    static MObject aInputRotateArrayZ;
+
+    static MObject aInputTranslateArray;
+    static MObject aInputTranslateArrayX;
+    static MObject aInputTranslateArrayY;
+    static MObject aInputTranslateArrayZ;
+
     // --- 出力 ---
     // outputRotate(double3)
     static MObject aOutputRotate;
@@ -96,4 +119,25 @@ private:
         MObject& childY,
         MObject& childZ,
         double defaultVal = 0.0);
+
+    static MObject createAngle3ArrayAttribute(
+        const MString& longName,
+        const MString& shortName,
+        MObject& childX,
+        MObject& childY,
+        MObject& childZ);
+
+    static MObject createAngle3ArrayOutputAttribute(
+        const MString& longName,
+        const MString& shortName,
+        MObject& childX,
+        MObject& childY,
+        MObject& childZ);
+
+    static MObject createDouble3ArrayAttribute(
+        const MString& longName,
+        const MString& shortName,
+        MObject& childX,
+        MObject& childY,
+        MObject& childZ);
 };

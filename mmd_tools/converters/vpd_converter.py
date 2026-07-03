@@ -1,12 +1,17 @@
 """VPDデータをMayaのポーズに変換するモジュール"""
 
+import math
+from typing import Any, Dict, List, Optional, Sequence
+
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
-import math
 
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.maya_utils import get_attribute
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
+from mmd_tools.core.coordinate_transform import mmd_euler_xyz_to_maya, mmd_point_to_maya
+from mmd_tools.core.vpd_data.bone_pose import BonePose
+from mmd_tools.converters.vmd_anim_layer import add_transform_attrs_to_anim_layer
 
 logger = get_logger(__name__)
 
@@ -18,13 +23,13 @@ class VpdConverter:
     座標系変換とボーン名のマッピングを行います。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """VpdConverterの初期化"""
-        self.bone_name_mapping = {}  # MMDボーン名 -> Mayaジョイント名のマッピング
-        self.use_animation_layers = True  # アニメーションレイヤーの使用フラグ
-        self.anim_layer = None  # 現在のアニメーションレイヤー名
+        self.bone_name_mapping: Dict[str, str] = {}  # MMDボーン名 -> Mayaジョイント名のマッピング
+        self.use_animation_layers: bool = True  # アニメーションレイヤーの使用フラグ
+        self.anim_layer: Optional[str] = None  # 現在のアニメーションレイヤー名
 
-    def convert(self, vpd_data, target_namespace=None, options=None):
+    def convert(self, vpd_data: Any, target_namespace: Optional[str] = None, options: Optional[Dict[str, Any]] = None) -> bool:
         """VPDデータをMayaのポーズに変換して適用
 
         Args:
@@ -60,7 +65,7 @@ class VpdConverter:
 
         # ボーンポーズを適用
         applied_count = 0
-        applied_joints = []  # アニメーションを適用したジョイントのリスト
+        applied_joints: List[str] = []  # アニメーションを適用したジョイントのリスト
 
         for bone_pose in vpd_data.bone_poses:
             joint = self._apply_bone_pose(bone_pose, joints, target_namespace, create_keyframe, current_frame)
@@ -77,7 +82,7 @@ class VpdConverter:
 
         return applied_count > 0
 
-    def _get_target_joints(self, namespace=None):
+    def _get_target_joints(self, namespace: Optional[str] = None) -> List[str]:
         """ターゲットのジョイントを取得
 
         Args:
@@ -94,7 +99,7 @@ class VpdConverter:
         joints = cmds.ls(pattern, type="joint")
         return joints
 
-    def _build_name_mappings(self, target_namespace=None):
+    def _build_name_mappings(self, target_namespace: Optional[str] = None) -> None:
         """ボーン名マッピングを構築
 
         Args:
@@ -117,7 +122,7 @@ class VpdConverter:
 
         logger.info(f"Built {len(self.bone_name_mapping)} bone mappings")
 
-    def _find_maya_joint(self, mmd_bone_name, joints, namespace=None):
+    def _find_maya_joint(self, mmd_bone_name: str, joints: Sequence[str], namespace: Optional[str] = None) -> Optional[str]:
         """MMDボーン名に対応するMayaジョイントを探す
 
         Args:
@@ -140,7 +145,14 @@ class VpdConverter:
 
         return None
 
-    def _apply_bone_pose(self, bone_pose, joints, namespace=None, create_keyframe=True, frame_time=None):
+    def _apply_bone_pose(
+        self,
+        bone_pose: BonePose,
+        joints: Sequence[str],
+        namespace: Optional[str] = None,
+        create_keyframe: bool = True,
+        frame_time: Optional[float] = None,
+    ) -> Optional[str]:
         """単一のボーンポーズを適用
 
         Args:
@@ -218,7 +230,7 @@ class VpdConverter:
             logger.warning(f"Failed to apply bone '{bone_pose.bone_name}': {e}")
             return None
 
-    def _is_movable_bone(self, bone_name):
+    def _is_movable_bone(self, bone_name: str) -> bool:
         """移動可能なボーンかどうかを判定
 
         Args:
@@ -230,7 +242,7 @@ class VpdConverter:
         movable_bones = ["センター", "center", "Center", "全ての親", "master", "Master"]
         return bone_name in movable_bones
 
-    def _convert_position_mmd_to_maya(self, position):
+    def _convert_position_mmd_to_maya(self, position: Sequence[float]) -> List[float]:
         """MMDの位置座標をMayaの座標系に変換
 
         Args:
@@ -239,12 +251,9 @@ class VpdConverter:
         Returns:
             list: Mayaの位置 [x, y, z]
         """
-        # MMD: 右手座標系 (X:右, Y:上, Z:手前)
-        # Maya: 右手座標系 (X:右, Y:上, Z:手前)
-        # ただし、単位の違いがある可能性があるため、スケール調整が必要な場合がある
-        return [position[0], position[1], -position[2]]  # Z軸を反転
+        return list(mmd_point_to_maya(position))
 
-    def _convert_quaternion_to_euler(self, quaternion):
+    def _convert_quaternion_to_euler(self, quaternion: Sequence[float]) -> List[float]:
         """四元数をオイラー角に変換
 
         Args:
@@ -260,7 +269,7 @@ class VpdConverter:
         # ラジアンから度に変換
         return [math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z)]
 
-    def _convert_rotation_mmd_to_maya(self, rotation):
+    def _convert_rotation_mmd_to_maya(self, rotation: Sequence[float]) -> List[float]:
         """MMDの回転をMayaの座標系に変換
 
         Args:
@@ -269,10 +278,9 @@ class VpdConverter:
         Returns:
             list: Mayaの回転（度） [x, y, z]
         """
-        # 座標系の違いを補正
-        return [rotation[0], rotation[1], -rotation[2]]  # Z軸の回転を反転
+        return list(mmd_euler_xyz_to_maya(rotation))
 
-    def _setup_animation_layer(self, layer_name):
+    def _setup_animation_layer(self, layer_name: str) -> None:
         """アニメーションレイヤーを作成または選択
 
         Args:
@@ -290,33 +298,15 @@ class VpdConverter:
             self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
             logger.info(f"Created new animation layer: {layer_name}")
 
-    def _add_objects_to_layer(self, objects):
+    def _add_objects_to_layer(self, objects: Sequence[str]) -> None:
         """オブジェクトをアニメーションレイヤーに追加
 
         Args:
             objects (list): 追加するオブジェクトのリスト
         """
-        if not self.anim_layer:
-            return
+        add_transform_attrs_to_anim_layer(self.anim_layer, objects)
 
-        # オブジェクトをレイヤーに追加
-        for obj in objects:
-            if cmds.objExists(obj):
-                # 各属性をレイヤーに追加
-                attrs = [
-                    "translateX",
-                    "translateY",
-                    "translateZ",
-                    "rotateX",
-                    "rotateY",
-                    "rotateZ",
-                ]
-                for attr in attrs:
-                    attr_path = f"{obj}.{attr}"
-                    if cmds.attributeQuery(attr, node=obj, exists=True):
-                        cmds.animLayer(self.anim_layer, edit=True, attribute=attr_path)
-
-    def _apply_joint_orient_correction(self, rotation, joint_orient):
+    def _apply_joint_orient_correction(self, rotation: Sequence[float], joint_orient: Sequence[float]) -> List[float]:
         """JointOrientを考慮した回転の補正
 
         Args:

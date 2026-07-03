@@ -1,5 +1,7 @@
 """VPDファイルのボーンポーズ情報を扱うモジュール"""
 
+from typing import List
+
 
 class BonePose:
     """VPDファイルのボーンポーズ情報を格納するクラス
@@ -13,18 +15,18 @@ class BonePose:
         quaternion (list): 回転（四元数）[x, y, z, w]
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """BonePoseの初期化"""
-        self.bone_index = 0  # ボーン番号
-        self.bone_name = ""  # ボーン名（日本語）
-        self.position = [0.0, 0.0, 0.0]  # 位置 [x, y, z]
-        self.quaternion = [0.0, 0.0, 0.0, 1.0]  # 回転（四元数）[x, y, z, w]
+        self.bone_index: int = 0  # ボーン番号
+        self.bone_name: str = ""  # ボーン名（日本語）
+        self.position: List[float] = [0.0, 0.0, 0.0]  # 位置 [x, y, z]
+        self.quaternion: List[float] = [0.0, 0.0, 0.0, 1.0]  # 回転（四元数）[x, y, z, w]
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         """文字列表現を返す"""
         return f"BonePose(index={self.bone_index}, name='{self.bone_name}', pos={self.position}, quat={self.quaternion})"
 
-    def __str__(self):
+    def __str__(self) -> str:
         """読みやすい文字列表現を返す"""
         return (
             f"Bone{self.bone_index}{{{self.bone_name}\n"
@@ -34,7 +36,7 @@ class BonePose:
             f"}}"
         )
 
-    def to_vpd_format(self):
+    def to_vpd_format(self) -> str:
         """VPDファイル形式の文字列を生成する
 
         Returns:

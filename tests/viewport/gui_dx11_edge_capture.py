@@ -182,7 +182,7 @@ def _ensure_edge_pmx_fixture(project_root: Path, model_arg: str) -> Path:
     # Lazily import the repo's PMX parser/writer
     try:
         sys.path.insert(0, str(project_root))
-        from mmd_tools.core.pmx_data import PmxData  # noqa: F811
+        from mmd_tools.core.mmd_parser import parse_pmx_file  # noqa: F811
         from mmd_tools.core.pmx_data.material import PmxDrawFlag  # noqa: F811
     except ImportError as exc:
         raise ImportError(
@@ -199,8 +199,7 @@ def _ensure_edge_pmx_fixture(project_root: Path, model_arg: str) -> Path:
     )
     model_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pmx = PmxData()
-    pmx.parse_file(str(src_path))
+    pmx = parse_pmx_file(str(src_path))
 
     # Enable EDGE_DRAWING on every material
     edge_flag = PmxDrawFlag.EDGE_DRAWING.value  # 0x10

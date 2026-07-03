@@ -21,6 +21,44 @@ from ..base_tab import BaseTab
 
 
 class MorphTab(BaseTab):
+    _TRANSLATION_REGISTRY = (
+        ("group_box", "setTitle", "morph_groups", "groups"),
+        ("morph_list_group", "setTitle", "morph_list", "groups"),
+        ("preview_group", "setTitle", "preview", "groups"),
+        ("blend_group", "setTitle", "blendshape_connection", "groups"),
+        ("advanced_group", "setTitle", "advanced_settings", "groups"),
+        ("add_group_btn", "setText", "add", "buttons"),
+        ("remove_group_btn", "setText", "delete", "buttons"),
+        ("refresh_morphs_btn", "setText", "refresh", "buttons"),
+        ("select_in_maya_btn", "setText", "select_in_maya", "actions"),
+        ("reset_slider_btn", "setText", "reset", "buttons"),
+        ("reset_all_btn", "setText", "reset_all", "actions"),
+        ("save_preset_btn", "setText", "save", "buttons"),
+        ("load_preset_btn", "setText", "load", "buttons"),
+        ("delete_preset_btn", "setText", "delete", "buttons"),
+        ("apply_btn", "setText", "apply", "buttons"),
+        ("reset_btn", "setText", "reset", "buttons"),
+        ("select_blend_shape_btn", "setText", "select", "buttons"),
+        ("connect_btn", "setText", "connect", "actions"),
+        ("disconnect_btn", "setText", "disconnect", "actions"),
+        ("auto_connect_btn", "setText", "auto_connect", "actions"),
+        ("search_label", "setText", "search", "fields"),
+        ("apply_rate_label", "setText", "apply_rate", "fields"),
+        ("preset_label", "setText", "preset", "fields"),
+        ("morph_name_jp_label", "setText", "morph_name_jp", "fields"),
+        ("morph_name_en_label", "setText", "morph_name_en", "fields"),
+        ("panel_label", "setText", "panel", "fields"),
+        ("morph_type_label", "setText", "type", "fields"),
+        ("group_label", "setText", "group", "fields"),
+        ("status_label", "setText", "status", "fields"),
+        ("node_label", "setText", "node", "fields"),
+        ("target_name_label", "setText", "target_name", "fields"),
+        ("multiplier_label", "setText", "multiplier", "fields"),
+        ("offset_count_label", "setText", "offset_not_supported", "labels"),
+        ("invert_check", "setText", "invert_value", "checkboxes"),
+        ("search_edit", "setPlaceholderText", "search_morph_name", "placeholders"),
+    )
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("MorphTab")
@@ -397,174 +435,87 @@ class MorphTab(BaseTab):
 
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
-        # GroupBoxes
-        if hasattr(self, "group_box"):
-            self.group_box.setTitle(self.tr("morph_groups", "groups"))
-        if hasattr(self, "morph_list_group"):
-            self.morph_list_group.setTitle(self.tr("morph_list", "groups"))
-        if hasattr(self, "preview_group"):
-            self.preview_group.setTitle(self.tr("preview", "groups"))
-        if hasattr(self, "blend_group"):
-            self.blend_group.setTitle(self.tr("blendshape_connection", "groups"))
-        if hasattr(self, "advanced_group"):
-            self.advanced_group.setTitle(self.tr("advanced_settings", "groups"))
-
-        # Buttons
-        if hasattr(self, "add_group_btn"):
-            self.add_group_btn.setText(self.tr("add", "buttons"))
-        if hasattr(self, "remove_group_btn"):
-            self.remove_group_btn.setText(self.tr("delete", "buttons"))
-        if hasattr(self, "refresh_morphs_btn"):
-            self.refresh_morphs_btn.setText(self.tr("refresh", "buttons"))
-        if hasattr(self, "select_in_maya_btn"):
-            self.select_in_maya_btn.setText(self.tr("select_in_maya", "actions"))
-        if hasattr(self, "reset_slider_btn"):
-            self.reset_slider_btn.setText(self.tr("reset", "buttons"))
-        if hasattr(self, "reset_all_btn"):
-            self.reset_all_btn.setText(self.tr("reset_all", "actions"))
-        if hasattr(self, "save_preset_btn"):
-            self.save_preset_btn.setText(self.tr("save", "buttons"))
-        if hasattr(self, "load_preset_btn"):
-            self.load_preset_btn.setText(self.tr("load", "buttons"))
-        if hasattr(self, "delete_preset_btn"):
-            self.delete_preset_btn.setText(self.tr("delete", "buttons"))
-        if hasattr(self, "apply_btn"):
-            self.apply_btn.setText(self.tr("apply", "buttons"))
-        if hasattr(self, "reset_btn"):
-            self.reset_btn.setText(self.tr("reset", "buttons"))
-        if hasattr(self, "select_blend_shape_btn"):
-            self.select_blend_shape_btn.setText(self.tr("select", "buttons"))
-        if hasattr(self, "connect_btn"):
-            self.connect_btn.setText(self.tr("connect", "actions"))
-        if hasattr(self, "disconnect_btn"):
-            self.disconnect_btn.setText(self.tr("disconnect", "actions"))
-        if hasattr(self, "auto_connect_btn"):
-            self.auto_connect_btn.setText(self.tr("auto_connect", "actions"))
-
-        # Labels
-        if hasattr(self, "search_label"):
-            self.search_label.setText(self.tr("search", "fields"))
-        if hasattr(self, "apply_rate_label"):
-            self.apply_rate_label.setText(self.tr("apply_rate", "fields"))
-        if hasattr(self, "preset_label"):
-            self.preset_label.setText(self.tr("preset", "fields"))
-        if hasattr(self, "morph_name_jp_label"):
-            self.morph_name_jp_label.setText(self.tr("morph_name_jp", "fields"))
-        if hasattr(self, "morph_name_en_label"):
-            self.morph_name_en_label.setText(self.tr("morph_name_en", "fields"))
-        if hasattr(self, "panel_label"):
-            self.panel_label.setText(self.tr("panel", "fields"))
-        if hasattr(self, "morph_type_label"):
-            self.morph_type_label.setText(self.tr("type", "fields"))
-        if hasattr(self, "group_label"):
-            self.group_label.setText(self.tr("group", "fields"))
-        if hasattr(self, "status_label"):
-            self.status_label.setText(self.tr("status", "fields"))
-        if hasattr(self, "node_label"):
-            self.node_label.setText(self.tr("node", "fields"))
-        if hasattr(self, "target_name_label"):
-            self.target_name_label.setText(self.tr("target_name", "fields"))
-        if hasattr(self, "multiplier_label"):
-            self.multiplier_label.setText(self.tr("multiplier", "fields"))
-
-        # オフセット表示は未対応のため、件数ではなく未対応ラベルを表示する
-        if hasattr(self, "offset_count_label"):
-            self.offset_count_label.setText(self.tr("offset_not_supported", "labels"))
-
-        # CheckBoxes
-        if hasattr(self, "invert_check"):
-            self.invert_check.setText(self.tr("invert_value", "checkboxes"))
+        self._apply_translation_registry(self._TRANSLATION_REGISTRY)
 
         # Tab widget texts
-        if hasattr(self, "detail_tabs"):
-            if self.detail_tabs.count() >= 3:
-                self.detail_tabs.setTabText(0, self.tr("basic_information", "tabs"))
-                self.detail_tabs.setTabText(1, self.tr("offset_information", "tabs"))
-                self.detail_tabs.setTabText(2, self.tr("maya_connection", "tabs"))
+        if self.detail_tabs.count() >= 3:
+            self.detail_tabs.setTabText(0, self.tr("basic_information", "tabs"))
+            self.detail_tabs.setTabText(1, self.tr("offset_information", "tabs"))
+            self.detail_tabs.setTabText(2, self.tr("maya_connection", "tabs"))
 
         # Group list items
-        if hasattr(self, "group_list"):
-            if self.group_list.count() >= 5:
-                self.group_list.item(0).setText(self.tr("show_all", "morph_groups"))
-                self.group_list.item(1).setText(self.tr("eyebrows", "morph_groups"))
-                self.group_list.item(2).setText(self.tr("eyes", "morph_groups"))
-                self.group_list.item(3).setText(self.tr("mouth", "morph_groups"))
-                self.group_list.item(4).setText(self.tr("other", "morph_groups"))
+        if self.group_list.count() >= 5:
+            self.group_list.item(0).setText(self.tr("show_all", "morph_groups"))
+            self.group_list.item(1).setText(self.tr("eyebrows", "morph_groups"))
+            self.group_list.item(2).setText(self.tr("eyes", "morph_groups"))
+            self.group_list.item(3).setText(self.tr("mouth", "morph_groups"))
+            self.group_list.item(4).setText(self.tr("other", "morph_groups"))
 
         # ComboBox items - Panel
-        if hasattr(self, "panel_combo"):
-            self.panel_combo.clear()
-            self.panel_combo.addItems(
-                [
-                    self.tr("none", "morph_panels"),
-                    self.tr("eyebrows_lower_left", "morph_panels"),
-                    self.tr("eyes_upper_left", "morph_panels"),
-                    self.tr("mouth_upper_right", "morph_panels"),
-                    self.tr("other_lower_right", "morph_panels"),
-                ]
-            )
+        self.panel_combo.clear()
+        self.panel_combo.addItems(
+            [
+                self.tr("none", "morph_panels"),
+                self.tr("eyebrows_lower_left", "morph_panels"),
+                self.tr("eyes_upper_left", "morph_panels"),
+                self.tr("mouth_upper_right", "morph_panels"),
+                self.tr("other_lower_right", "morph_panels"),
+            ]
+        )
 
         # ComboBox items - Morph Type
-        if hasattr(self, "morph_type_combo"):
-            self.morph_type_combo.clear()
-            self.morph_type_combo.addItems(
-                [
-                    self.tr("vertex", "morph_types"),
-                    "UV",
-                    "UV1",
-                    "UV2",
-                    "UV3",
-                    "UV4",
-                    self.tr("additional_uv1", "morph_types"),
-                    self.tr("additional_uv2", "morph_types"),
-                    self.tr("additional_uv3", "morph_types"),
-                    self.tr("additional_uv4", "morph_types"),
-                    self.tr("bone", "morph_types"),
-                    self.tr("material", "morph_types"),
-                    self.tr("group", "morph_types"),
-                    self.tr("flip", "morph_types"),
-                    self.tr("impulse", "morph_types"),
-                ]
-            )
+        self.morph_type_combo.clear()
+        self.morph_type_combo.addItems(
+            [
+                self.tr("vertex", "morph_types"),
+                "UV",
+                "UV1",
+                "UV2",
+                "UV3",
+                "UV4",
+                self.tr("additional_uv1", "morph_types"),
+                self.tr("additional_uv2", "morph_types"),
+                self.tr("additional_uv3", "morph_types"),
+                self.tr("additional_uv4", "morph_types"),
+                self.tr("bone", "morph_types"),
+                self.tr("material", "morph_types"),
+                self.tr("group", "morph_types"),
+                self.tr("flip", "morph_types"),
+                self.tr("impulse", "morph_types"),
+            ]
+        )
 
         # ComboBox items - Preset
-        if hasattr(self, "preset_combo"):
-            current_text = self.preset_combo.currentText()
-            self.preset_combo.clear()
-            self.preset_combo.addItems(
-                [
-                    self.tr("none", "presets"),
-                    self.tr("smile", "presets"),
-                    self.tr("wink", "presets"),
-                    self.tr("surprise", "presets"),
-                    self.tr("sadness", "presets"),
-                ]
-            )
-            # Try to restore selection if it was a preset
-            if current_text in ["なし", "笑顔", "ウィンク", "驚き", "悲しみ", "None", "Smile", "Wink", "Surprise", "Sadness"]:
-                index = self.preset_combo.findText(current_text)
-                if index >= 0:
-                    self.preset_combo.setCurrentIndex(index)
+        current_text = self.preset_combo.currentText()
+        self.preset_combo.clear()
+        self.preset_combo.addItems(
+            [
+                self.tr("none", "presets"),
+                self.tr("smile", "presets"),
+                self.tr("wink", "presets"),
+                self.tr("surprise", "presets"),
+                self.tr("sadness", "presets"),
+            ]
+        )
+        # Try to restore selection if it was a preset
+        if current_text in ["なし", "笑顔", "ウィンク", "驚き", "悲しみ", "None", "Smile", "Wink", "Surprise", "Sadness"]:
+            index = self.preset_combo.findText(current_text)
+            if index >= 0:
+                self.preset_combo.setCurrentIndex(index)
 
         # Table headers - Offset table
-        if hasattr(self, "offset_table"):
-            self.offset_table.setHorizontalHeaderLabels(
-                [
-                    self.tr("index", "table_headers"),
-                    self.tr("type", "table_headers"),
-                    self.tr("element", "table_headers"),
-                    self.tr("value", "table_headers"),
-                    self.tr("details", "table_headers"),
-                ]
-            )
+        self.offset_table.setHorizontalHeaderLabels(
+            [
+                self.tr("index", "table_headers"),
+                self.tr("type", "table_headers"),
+                self.tr("element", "table_headers"),
+                self.tr("value", "table_headers"),
+                self.tr("details", "table_headers"),
+            ]
+        )
 
         # Status label text
-        if hasattr(self, "connection_status_label"):
-            if self.connection_status_label.styleSheet() == "color: red;":
-                self.connection_status_label.setText(self.tr("not_connected", "status"))
-            else:
-                self.connection_status_label.setText(self.tr("connected", "status"))
-
-        # Placeholders
-        if hasattr(self, "search_edit"):
-            self.search_edit.setPlaceholderText(self.tr("search_morph_name", "placeholders"))
+        if self.connection_status_label.styleSheet() == "color: red;":
+            self.connection_status_label.setText(self.tr("not_connected", "status"))
+        else:
+            self.connection_status_label.setText(self.tr("connected", "status"))

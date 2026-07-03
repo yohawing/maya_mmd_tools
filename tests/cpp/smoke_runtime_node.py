@@ -191,6 +191,171 @@ def _ccd_2d_multi_link_angles(
     return positions, rotations
 
 
+def _mmd_world_to_maya_matrix(om, matrix):
+    signs = (1.0, 1.0, -1.0)
+    values = [float(matrix[i]) for i in range(16)]
+    for row in range(3):
+        for col in range(3):
+            values[row * 4 + col] *= signs[row] * signs[col]
+    for col in range(3):
+        values[12 + col] *= signs[col]
+    return om.MMatrix(values)
+
+
+def _matrix_to_list(matrix) -> list[float]:
+    return [float(matrix[i]) for i in range(16)]
+
+
+def _transform_matrix(om, translate, quat=None):
+    tfm = om.MTransformationMatrix()
+    tfm.setTranslation(om.MVector(*translate), om.MSpace.kTransform)
+    if quat is not None:
+        tfm.setRotation(quat)
+    return tfm.asMatrix()
+
+
+def _build_bind_worlds(om, bones: list[dict]) -> tuple[list, list]:
+    bind_worlds = []
+    no_orient_worlds = []
+    for index, bone in enumerate(bones):
+        translate = bone.get("maya_rest_translate", bone.get("rest_position", [0.0, 0.0, 0.0]))
+        jo = bone.get("joint_orient_deg", [0.0, 0.0, 0.0])
+        q_jo = om.MEulerRotation(*(math.radians(v) for v in jo)).asQuaternion()
+        local_bind = _transform_matrix(om, translate, q_jo)
+        local_no_orient = _transform_matrix(om, translate)
+        parent = int(bone.get("parent_slot", index - 1 if index > 0 else -1))
+        if 0 <= parent < index:
+            bind_worlds.append(local_bind * bind_worlds[parent])
+            no_orient_worlds.append(local_no_orient * no_orient_worlds[parent])
+        else:
+            bind_worlds.append(local_bind)
+            no_orient_worlds.append(local_no_orient)
+    return bind_worlds, no_orient_worlds
+
+
+def _expected_bind_space_ccdik_outputs(
+    om,
+    mmd_ik_chain_cls,
+    chain: dict,
+    goal: tuple[float, float, float],
+    input_rotates_deg: list[tuple[float, float, float]] | None = None,
+) -> list[tuple[float, float, float]]:
+    bones = chain["bones"]
+    links = chain["links"]
+    solver = mmd_ik_chain_cls.create(
+        bones=bones,
+        target_bone_slot=chain["targetBoneSlot"],
+        links=links,
+        iteration_count=chain["iterationCount"],
+        limit_angle=chain["limitAngle"],
+    )
+    if solver is None:
+        raise RuntimeError("MmdIkChain.create failed in C++ IK smoke expected-value path")
+
+    try:
+        bone_count = len(bones)
+        parent_slots = [int(b.get("parent_slot", -1)) for b in bones]
+        rest_positions = [b.get("rest_position", [0.0, 0.0, 0.0]) for b in bones]
+        maya_rest = [b.get("maya_rest_translate", b.get("rest_position", [0.0, 0.0, 0.0])) for b in bones]
+        q_joint_orients = [
+            om.MEulerRotation(*(math.radians(v) for v in b.get("joint_orient_deg", [0.0, 0.0, 0.0]))).asQuaternion()
+            for b in bones
+        ]
+        if input_rotates_deg is None:
+            input_rotates_deg = [(0.0, 0.0, 0.0)] * bone_count
+        if len(input_rotates_deg) < bone_count:
+            input_rotates_deg = [*input_rotates_deg, *([(0.0, 0.0, 0.0)] * (bone_count - len(input_rotates_deg)))]
+        q_input_rotates = [
+            om.MEulerRotation(*(math.radians(v) for v in input_rotates_deg[bone_i])).asQuaternion()
+            for bone_i in range(bone_count)
+        ]
+        bind_worlds = [om.MMatrix(b["maya_bind_world_matrix"]) for b in bones]
+        no_orient_worlds = [om.MMatrix(b["no_orient_bind_world_matrix"]) for b in bones]
+
+        maya_worlds = [om.MMatrix() for _ in range(bone_count)]
+        mmd_worlds = [om.MMatrix() for _ in range(bone_count)]
+        for bone_i in range(bone_count):
+            local_maya = _transform_matrix(om, maya_rest[bone_i], q_input_rotates[bone_i] * q_joint_orients[bone_i])
+            parent = parent_slots[bone_i]
+            maya_world = local_maya * maya_worlds[parent] if 0 <= parent < bone_i else local_maya
+            maya_worlds[bone_i] = maya_world
+            runtime_world = no_orient_worlds[bone_i] * bind_worlds[bone_i].inverse() * maya_world
+            mmd_worlds[bone_i] = _mmd_world_to_maya_matrix(om, runtime_world)
+
+        positions = [0.0] * (bone_count * 3)
+        rotations = [0.0] * (bone_count * 4)
+        for bone_i in range(bone_count):
+            parent = parent_slots[bone_i]
+            local_mmd = mmd_worlds[bone_i] * mmd_worlds[parent].inverse() if 0 <= parent < bone_i else mmd_worlds[bone_i]
+            local_tfm = om.MTransformationMatrix(local_mmd)
+            local_t = local_tfm.translation(om.MSpace.kTransform)
+            rest = rest_positions[bone_i]
+            positions[bone_i * 3] = float(local_t.x) - float(rest[0])
+            positions[bone_i * 3 + 1] = float(local_t.y) - float(rest[1])
+            positions[bone_i * 3 + 2] = float(local_t.z) - float(rest[2])
+            q = local_tfm.rotation(asQuaternion=True)
+            rotations[bone_i * 4:bone_i * 4 + 4] = [q.x, q.y, q.z, q.w]
+
+        goal_tfm = om.MTransformationMatrix()
+        goal_tfm.setTranslation(om.MVector(*goal), om.MSpace.kTransform)
+        mmd_goal = om.MTransformationMatrix(_mmd_world_to_maya_matrix(om, goal_tfm.asMatrix())).translation(om.MSpace.kWorld)
+        result = solver.solve(positions=positions, rotations=rotations, goal=[mmd_goal.x, mmd_goal.y, mmd_goal.z])
+        if result is None:
+            raise RuntimeError("MmdIkChain.solve failed in C++ IK smoke expected-value path")
+        out_rots, _stats = result
+
+        solved_rotations = list(rotations)
+        for link_i, link in enumerate(links):
+            slot = int(link["bone_slot"])
+            solved_rotations[slot * 4:slot * 4 + 4] = out_rots[link_i * 4:link_i * 4 + 4]
+
+        world_mmd = [om.MMatrix() for _ in range(bone_count)]
+        solved_maya_worlds = [om.MMatrix() for _ in range(bone_count)]
+        for bone_i in range(bone_count):
+            rest = rest_positions[bone_i]
+            local_t = [
+                rest[0] + positions[bone_i * 3],
+                rest[1] + positions[bone_i * 3 + 1],
+                rest[2] + positions[bone_i * 3 + 2],
+            ]
+            q = om.MQuaternion(*solved_rotations[bone_i * 4:bone_i * 4 + 4])
+            local_mmd = _transform_matrix(om, local_t, q)
+            parent = parent_slots[bone_i]
+            world_mmd[bone_i] = local_mmd * world_mmd[parent] if 0 <= parent < bone_i else local_mmd
+            runtime_world = _mmd_world_to_maya_matrix(om, world_mmd[bone_i])
+            solved_maya_worlds[bone_i] = bind_worlds[bone_i] * no_orient_worlds[bone_i].inverse() * runtime_world
+
+        outputs = []
+        for link in links:
+            slot = int(link["bone_slot"])
+            parent = parent_slots[slot]
+            local = (
+                solved_maya_worlds[slot] * solved_maya_worlds[parent].inverse()
+                if parent >= 0
+                else solved_maya_worlds[slot]
+            )
+            q = om.MTransformationMatrix(local).rotation(asQuaternion=True)
+            q = q * q_joint_orients[slot].inverse()
+            euler = q.asEulerRotation()
+            outputs.append((math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z)))
+        return outputs
+    finally:
+        solver.free()
+
+
+def _expected_bind_space_ccdik_output(
+    om,
+    mmd_ik_chain_cls,
+    chain: dict,
+    goal: tuple[float, float, float],
+    input_rotates_deg: list[tuple[float, float, float]] | None = None,
+) -> tuple[float, float, float]:
+    outputs = _expected_bind_space_ccdik_outputs(om, mmd_ik_chain_cls, chain, goal, input_rotates_deg)
+    if not outputs:
+        raise RuntimeError("MmdIkChain expected-value path returned no link outputs")
+    return outputs[0]
+
+
 def _candidate_plugin_paths() -> list[Path]:
     """Return possible C++ plugin artifact paths."""
     explicit = os.environ.get("MMD_TOOLS_CPP_PLUGIN")
@@ -250,6 +415,24 @@ def main() -> int:
         print(f"OK: loaded {plugin_path}")
         print(f"OK: created {node} ({NODE_TYPE})")
 
+        from mmd_tools.core import settings
+        from mmd_tools.converters.rig_converter import RigConverter
+        from mmd_tools.converters import vmd_runtime_rig_helper as vmd_runtime_rig_helper_mod
+
+        settings.set("import.native.use_cpp_rig_nodes", True)
+        rig_converter = RigConverter()
+        if rig_converter._append_node_type() != APPEND_NODE_TYPE:
+            raise RuntimeError(
+                f"RigConverter should prefer {APPEND_NODE_TYPE} when C++ plugin is loaded, "
+                f"got {rig_converter._append_node_type()}"
+            )
+        if rig_converter._ccd_ik_node_type() != CCDIK_NODE_TYPE:
+            raise RuntimeError(
+                f"RigConverter should prefer {CCDIK_NODE_TYPE} when C++ plugin is loaded, "
+                f"got {rig_converter._ccd_ik_node_type()}"
+            )
+        print("OK: RigConverter prefers C++ rig node types when mmd_tools_cpp is loaded")
+
         result = cmds.mmdFastLoad(f=str(FAST_LOAD_MODEL), n="mmt_fast_smoke", s=1.0)
         if not result or len(result) != 2:
             raise RuntimeError(f"mmdFastLoad returned unexpected result: {result!r}")
@@ -295,6 +478,11 @@ def main() -> int:
             "outputTranslate", "outputRotate",
             "inputTranslate", "inputRotate",
             "parentTranslate", "parentRotate",
+            "baseTranslate", "baseRotate",
+            "sourceTranslate", "sourceRotate",
+            "sourceJointOrient", "targetJointOrient",
+            "ratio", "affectRotation", "affectTranslation", "localAppend",
+            "appendTranslate", "appendRotate",
         ]
         for attr in expected_attrs:
             if not cmds.attributeQuery(attr, node=append_node, exists=True):
@@ -306,8 +494,16 @@ def main() -> int:
             ("inputRotate", ["inputRotateX", "inputRotateY", "inputRotateZ"]),
             ("parentTranslate", ["parentTranslateX", "parentTranslateY", "parentTranslateZ"]),
             ("parentRotate", ["parentRotateX", "parentRotateY", "parentRotateZ"]),
+            ("baseTranslate", ["baseTranslateX", "baseTranslateY", "baseTranslateZ"]),
+            ("baseRotate", ["baseRotateX", "baseRotateY", "baseRotateZ"]),
+            ("sourceTranslate", ["sourceTranslateX", "sourceTranslateY", "sourceTranslateZ"]),
+            ("sourceRotate", ["sourceRotateX", "sourceRotateY", "sourceRotateZ"]),
+            ("sourceJointOrient", ["sourceJointOrientX", "sourceJointOrientY", "sourceJointOrientZ"]),
+            ("targetJointOrient", ["targetJointOrientX", "targetJointOrientY", "targetJointOrientZ"]),
             ("outputTranslate", ["outputTranslateX", "outputTranslateY", "outputTranslateZ"]),
             ("outputRotate", ["outputRotateX", "outputRotateY", "outputRotateZ"]),
+            ("appendTranslate", ["appendTranslateX", "appendTranslateY", "appendTranslateZ"]),
+            ("appendRotate", ["appendRotateX", "appendRotateY", "appendRotateZ"]),
         ]:
             for child in children:
                 if not cmds.attributeQuery(child, node=append_node, exists=True):
@@ -381,8 +577,240 @@ def main() -> int:
         if any(abs(actual - expected) > 1e-9 for actual, expected in zip(out_xonly, expected_xonly)):
             raise RuntimeError(f"outputRotate X-only mismatch: expected {expected_xonly}, got {out_xonly}")
 
+        from maya.api import OpenMaya as om
+        from mmd_tools.core.native.mmd_anim_runtime import MmdAppendSolver, MmdIkChain
+
+        def _expected_append_outputs(
+            *,
+            base_translate: tuple[float, float, float],
+            base_rotate_deg: tuple[float, float, float],
+            source_translate: tuple[float, float, float],
+            source_rotate_deg: tuple[float, float, float],
+            source_jo_deg: tuple[float, float, float],
+            target_jo_deg: tuple[float, float, float],
+            ratio: float,
+            affect_rotation: bool,
+            affect_translation: bool,
+        ) -> tuple[tuple[float, float, float], tuple[float, float, float],
+                   tuple[float, float, float], tuple[float, float, float]]:
+            solver = MmdAppendSolver.create(
+                ratio=ratio,
+                affect_rotation=affect_rotation,
+                affect_translation=affect_translation,
+            )
+            if solver is None:
+                raise RuntimeError("MmdAppendSolver.create failed in C++ smoke expected-value path")
+            try:
+                src_quat = om.MEulerRotation(
+                    *(math.radians(v) for v in source_rotate_deg)
+                ).asQuaternion()
+                src_jo = om.MEulerRotation(
+                    *(math.radians(v) for v in source_jo_deg)
+                ).asQuaternion()
+                target_jo = om.MEulerRotation(
+                    *(math.radians(v) for v in target_jo_deg)
+                ).asQuaternion()
+                source_mmd_quat = src_jo.inverse() * src_quat * src_jo
+                solved = solver.solve(
+                    source_position=[
+                        source_translate[0],
+                        source_translate[1],
+                        -source_translate[2],
+                    ],
+                    source_rotation=[
+                        source_mmd_quat.x,
+                        source_mmd_quat.y,
+                        source_mmd_quat.z,
+                        source_mmd_quat.w,
+                    ],
+                )
+            finally:
+                solver.free()
+            if solved is None:
+                raise RuntimeError("MmdAppendSolver.solve failed in C++ smoke expected-value path")
+
+            grant_pos, grant_rot = solved
+            append_translate = (grant_pos[0], grant_pos[1], -grant_pos[2])
+            grant_quat = om.MQuaternion(grant_rot[0], grant_rot[1], grant_rot[2], grant_rot[3])
+            append_euler = grant_quat.asEulerRotation()
+            append_rotate_deg = tuple(math.degrees(v) for v in (append_euler.x, append_euler.y, append_euler.z))
+
+            base_quat = om.MEulerRotation(
+                *(math.radians(v) for v in base_rotate_deg)
+            ).asQuaternion()
+            target_grant_quat = target_jo * grant_quat * target_jo.inverse()
+            final_quat = base_quat * target_grant_quat
+            final_euler = final_quat.asEulerRotation()
+            output_rotate_deg = tuple(math.degrees(v) for v in (final_euler.x, final_euler.y, final_euler.z))
+            output_translate = (
+                base_translate[0] + append_translate[0],
+                base_translate[1] + append_translate[1],
+                base_translate[2] + append_translate[2],
+            )
+            return append_translate, append_rotate_deg, output_translate, output_rotate_deg
+
+        compat_case = {
+            "base_translate": (10.0, 20.0, 30.0),
+            "base_rotate_deg": (5.0, 0.0, 0.0),
+            "source_translate": (2.0, 4.0, -6.0),
+            "source_rotate_deg": (0.0, 45.0, 0.0),
+            "source_jo_deg": (10.0, 0.0, 0.0),
+            "target_jo_deg": (0.0, 15.0, 0.0),
+            "ratio": 0.5,
+            "affect_rotation": True,
+            "affect_translation": True,
+        }
+        expected_at, expected_ar, expected_ot, expected_or = _expected_append_outputs(**compat_case)
+        cmds.setAttr(f"{append_node}.baseTranslate", *compat_case["base_translate"], type="double3")
+        cmds.setAttr(f"{append_node}.baseRotate", *compat_case["base_rotate_deg"], type="double3")
+        cmds.setAttr(f"{append_node}.sourceTranslate", *compat_case["source_translate"], type="double3")
+        cmds.setAttr(f"{append_node}.sourceRotate", *compat_case["source_rotate_deg"], type="double3")
+        cmds.setAttr(f"{append_node}.sourceJointOrient", *compat_case["source_jo_deg"], type="double3")
+        cmds.setAttr(f"{append_node}.targetJointOrient", *compat_case["target_jo_deg"], type="double3")
+        cmds.setAttr(f"{append_node}.ratio", compat_case["ratio"])
+        cmds.setAttr(f"{append_node}.affectRotation", compat_case["affect_rotation"])
+        cmds.setAttr(f"{append_node}.affectTranslation", compat_case["affect_translation"])
+
+        append_t = cmds.getAttr(f"{append_node}.appendTranslate")[0]
+        append_r = cmds.getAttr(f"{append_node}.appendRotate")[0]
+        compat_out_t = cmds.getAttr(f"{append_node}.outputTranslate")[0]
+        compat_out_r = cmds.getAttr(f"{append_node}.outputRotate")[0]
+        for label, expected, actual, tolerance in (
+            ("appendTranslate", expected_at, append_t, 1e-5),
+            ("appendRotate", expected_ar, append_r, 1e-4),
+            ("compat outputTranslate", expected_ot, compat_out_t, 1e-5),
+            ("compat outputRotate", expected_or, compat_out_r, 1e-4),
+        ):
+            if any(abs(float(a) - float(e)) > tolerance for e, a in zip(expected, actual)):
+                raise RuntimeError(f"{label} mismatch: expected {expected}, got {actual}")
+
+        append_jo_cases = [
+            {
+                "label": "identity JO",
+                "source_rotate_deg": (30.0, 0.0, 0.0),
+                "base_rotate_deg": (0.0, 0.0, 0.0),
+                "source_jo_deg": (0.0, 0.0, 0.0),
+                "target_jo_deg": (0.0, 0.0, 0.0),
+                "ratio": 1.0,
+            },
+            {
+                "label": "source JO Z=45",
+                "source_rotate_deg": (30.0, 0.0, 0.0),
+                "base_rotate_deg": (0.0, 0.0, 0.0),
+                "source_jo_deg": (0.0, 0.0, 45.0),
+                "target_jo_deg": (0.0, 0.0, 0.0),
+                "ratio": 1.0,
+                "must_differ_from_source": True,
+            },
+            {
+                "label": "target JO Y=30",
+                "source_rotate_deg": (30.0, 15.0, 0.0),
+                "base_rotate_deg": (0.0, 0.0, 0.0),
+                "source_jo_deg": (0.0, 0.0, 0.0),
+                "target_jo_deg": (0.0, 30.0, 0.0),
+                "ratio": 1.0,
+            },
+            {
+                "label": "both JO non-zero",
+                "source_rotate_deg": (15.0, 20.0, 10.0),
+                "base_rotate_deg": (5.0, 10.0, 15.0),
+                "source_jo_deg": (0.0, 45.0, 0.0),
+                "target_jo_deg": (0.0, 0.0, 30.0),
+                "ratio": 0.5,
+            },
+            {
+                "label": "ratio=0.25 with JO",
+                "source_rotate_deg": (60.0, 0.0, 0.0),
+                "base_rotate_deg": (10.0, 0.0, 0.0),
+                "source_jo_deg": (30.0, 0.0, 0.0),
+                "target_jo_deg": (15.0, 0.0, 0.0),
+                "ratio": 0.25,
+            },
+            {
+                "label": "matching source/target JO",
+                "source_rotate_deg": (30.0, 20.0, 10.0),
+                "base_rotate_deg": (0.0, 0.0, 0.0),
+                "source_jo_deg": (25.0, 15.0, 5.0),
+                "target_jo_deg": (25.0, 15.0, 5.0),
+                "ratio": 1.0,
+                "compare_no_jo": True,
+            },
+            {
+                "label": "large multi-axis JO",
+                "source_rotate_deg": (45.0, -30.0, 20.0),
+                "base_rotate_deg": (-10.0, 15.0, -5.0),
+                "source_jo_deg": (45.0, 30.0, 60.0),
+                "target_jo_deg": (20.0, -15.0, 40.0),
+                "ratio": 0.7,
+            },
+        ]
+        for case in append_jo_cases:
+            expected_at, expected_ar, expected_ot, expected_or = _expected_append_outputs(
+                base_translate=(0.0, 0.0, 0.0),
+                base_rotate_deg=case["base_rotate_deg"],
+                source_translate=(0.0, 0.0, 0.0),
+                source_rotate_deg=case["source_rotate_deg"],
+                source_jo_deg=case["source_jo_deg"],
+                target_jo_deg=case["target_jo_deg"],
+                ratio=case["ratio"],
+                affect_rotation=True,
+                affect_translation=False,
+            )
+            cmds.setAttr(f"{append_node}.baseTranslate", 0.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{append_node}.baseRotate", *case["base_rotate_deg"], type="double3")
+            cmds.setAttr(f"{append_node}.sourceTranslate", 0.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{append_node}.sourceRotate", *case["source_rotate_deg"], type="double3")
+            cmds.setAttr(f"{append_node}.sourceJointOrient", *case["source_jo_deg"], type="double3")
+            cmds.setAttr(f"{append_node}.targetJointOrient", *case["target_jo_deg"], type="double3")
+            cmds.setAttr(f"{append_node}.ratio", case["ratio"])
+            cmds.setAttr(f"{append_node}.affectRotation", True)
+            cmds.setAttr(f"{append_node}.affectTranslation", False)
+
+            case_append_t = cmds.getAttr(f"{append_node}.appendTranslate")[0]
+            case_append_r = cmds.getAttr(f"{append_node}.appendRotate")[0]
+            case_output_t = cmds.getAttr(f"{append_node}.outputTranslate")[0]
+            case_output_r = cmds.getAttr(f"{append_node}.outputRotate")[0]
+            for label, expected, actual, tolerance in (
+                (f"{case['label']} appendTranslate", expected_at, case_append_t, 1e-5),
+                (f"{case['label']} appendRotate", expected_ar, case_append_r, 1e-4),
+                (f"{case['label']} outputTranslate", expected_ot, case_output_t, 1e-5),
+                (f"{case['label']} outputRotate", expected_or, case_output_r, 1e-4),
+            ):
+                if any(abs(float(a) - float(e)) > tolerance for e, a in zip(expected, actual)):
+                    raise RuntimeError(f"{label} mismatch: expected {expected}, got {actual}")
+
+            if case.get("must_differ_from_source") and all(
+                abs(float(actual) - float(source)) < 0.01
+                for actual, source in zip(case_output_r, case["source_rotate_deg"])
+            ):
+                raise RuntimeError(f"{case['label']} should differ from source rotation, got {case_output_r}")
+
+            if case.get("compare_no_jo"):
+                _expected_at, _expected_ar, _expected_ot, expected_no_jo = _expected_append_outputs(
+                    base_translate=(0.0, 0.0, 0.0),
+                    base_rotate_deg=case["base_rotate_deg"],
+                    source_translate=(0.0, 0.0, 0.0),
+                    source_rotate_deg=case["source_rotate_deg"],
+                    source_jo_deg=(0.0, 0.0, 0.0),
+                    target_jo_deg=(0.0, 0.0, 0.0),
+                    ratio=case["ratio"],
+                    affect_rotation=True,
+                    affect_translation=False,
+                )
+                if any(abs(float(a) - float(e)) > 1e-4 for e, a in zip(expected_no_jo, case_output_r)):
+                    raise RuntimeError(
+                        f"{case['label']} should match no-JO output: expected {expected_no_jo}, got {case_output_r}"
+                    )
+
+        print(f"OK: {APPEND_NODE_TYPE} JO-aware append parity cases match native expected outputs")
+
+        if append_node not in vmd_runtime_rig_helper_mod._ls_mmd_append_nodes():
+            raise RuntimeError(f"VmdConverter append collection did not include C++ node {append_node}")
         cmds.delete(append_node)
-        print(f"OK: created {APPEND_NODE_TYPE}, verified attributes, defaults, and Phase B compute")
+        print(
+            f"OK: created {APPEND_NODE_TYPE}, verified attributes, defaults, "
+            "Phase B compute, and Python-compatible append schema compute"
+        )
 
         # --- mmdCcdIkNode (Phase A - CCDIK) ---
         ccdik_node = cmds.createNode(CCDIK_NODE_TYPE)
@@ -393,6 +821,7 @@ def main() -> int:
         expected_attrs = [
             "inputRoot", "inputEffector", "target", "enabled",
             "iterations", "angleLimit", "inputChain",
+            "chainJson", "goal", "goalWorldMatrix", "inputRotate", "inputTranslate",
             "outputRotate", "outputAngle", "solved",
             "outputLinkAngles", "outputLinkRotates",
         ]
@@ -405,7 +834,8 @@ def main() -> int:
             ("inputRoot", ["inputRootX", "inputRootY", "inputRootZ"]),
             ("inputEffector", ["inputEffectorX", "inputEffectorY", "inputEffectorZ"]),
             ("target", ["targetX", "targetY", "targetZ"]),
-            ("outputRotate", ["outputRotateX", "outputRotateY", "outputRotateZ"]),
+            ("goal", ["goalX", "goalY", "goalZ"]),
+            ("outputRotate", ["outputRotateElementX", "outputRotateElementY", "outputRotateElementZ"]),
         ]:
             for child in children:
                 if not cmds.attributeQuery(child, node=ccdik_node, exists=True):
@@ -428,6 +858,224 @@ def main() -> int:
         if abs(actual_angle_limit - 180.0) > 1e-9:
             raise RuntimeError(f"angleLimit default should be 180.0, got {actual_angle_limit}")
 
+        cmds.setAttr(f"{ccdik_node}.chainJson", "{}", type="string")
+        cmds.setAttr(f"{ccdik_node}.goal", 1.0, 2.0, 3.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 10.0, 20.0, 30.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[0]", 4.0, 5.0, 6.0, type="double3")
+        compat_goal = cmds.getAttr(f"{ccdik_node}.goal")[0]
+        compat_ir = cmds.getAttr(f"{ccdik_node}.inputRotate[0]")[0]
+        compat_it = cmds.getAttr(f"{ccdik_node}.inputTranslate[0]")[0]
+        if compat_goal != (1.0, 2.0, 3.0):
+            raise RuntimeError(f"goal compatibility attr mismatch: {compat_goal}")
+        if any(abs(actual - expected) > 1e-9 for actual, expected in zip(compat_ir, (10.0, 20.0, 30.0))):
+            raise RuntimeError(f"inputRotate compatibility attr mismatch: {compat_ir}")
+        if compat_it != (4.0, 5.0, 6.0):
+            raise RuntimeError(f"inputTranslate compatibility attr mismatch: {compat_it}")
+
+        ffi_chain = {
+            "bones": [
+                {
+                    "parent_slot": -1,
+                    "rest_position": [0.0, 0.0, 0.0],
+                    "maya_rest_translate": [0.0, 0.0, 0.0],
+                },
+                {
+                    "parent_slot": 0,
+                    "rest_position": [1.0, 0.0, 0.0],
+                    "maya_rest_translate": [1.0, 0.0, 0.0],
+                },
+            ],
+            "links": [{"bone_slot": 0}],
+            "targetBoneSlot": 1,
+            "iterationCount": 32,
+            "limitAngle": math.pi,
+        }
+        cmds.setAttr(f"{ccdik_node}.chainJson", json.dumps(ffi_chain), type="string")
+        cmds.setAttr(f"{ccdik_node}.goal", 0.0, 1.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[1]", 0.0, 0.0, 0.0, type="double3")
+        ffi_out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
+        ffi_solved = cmds.getAttr(f"{ccdik_node}.solved")
+        if ffi_solved is not True:
+            raise RuntimeError("mmdCcdIkNode chainJson FFI path should solve the simple 1-link chain")
+        if abs(float(ffi_out_rot[2])) < 1.0:
+            raise RuntimeError(f"mmdCcdIkNode chainJson FFI outputRotate[0] should rotate around Z, got {ffi_out_rot}")
+        print(f"OK: mmdCcdIkNode chainJson FFI path solved simple 1-link chain -> Z={ffi_out_rot[2]}")
+
+        cmds.setAttr(f"{ccdik_node}.enabled", False)
+        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 25.0, type="double3")
+        ffi_disabled_out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
+        ffi_disabled_solved = cmds.getAttr(f"{ccdik_node}.solved")
+        if ffi_disabled_solved is not False:
+            raise RuntimeError(
+                f"mmdCcdIkNode chainJson disabled path should set solved=False, got {ffi_disabled_solved}"
+            )
+        if any(
+            abs(float(actual) - expected) > 1e-6
+            for actual, expected in zip(ffi_disabled_out_rot, (0.0, 0.0, 25.0))
+        ):
+            raise RuntimeError(
+                "mmdCcdIkNode chainJson disabled path should copy inputRotate for link slot 0, "
+                f"got {ffi_disabled_out_rot}"
+            )
+        print("OK: mmdCcdIkNode chainJson disabled path copies inputRotate to outputRotate[0]")
+
+        cmds.setAttr(f"{ccdik_node}.enabled", True)
+
+        jo_bones = [
+            {
+                "parent_slot": -1,
+                "rest_position": [0.0, 0.0, 0.0],
+                "maya_rest_translate": [0.0, 0.0, 0.0],
+                "joint_orient_deg": [25.0, 15.0, 0.0],
+            },
+            {
+                "parent_slot": 0,
+                "rest_position": [1.0, 0.0, 0.0],
+                "maya_rest_translate": [1.0, 0.0, 0.0],
+                "joint_orient_deg": [0.0, 0.0, 0.0],
+            },
+        ]
+        bind_worlds, no_orient_worlds = _build_bind_worlds(om, jo_bones)
+        for bone, bind_world, no_orient_world in zip(jo_bones, bind_worlds, no_orient_worlds):
+            bone["maya_bind_world_matrix"] = _matrix_to_list(bind_world)
+            bone["no_orient_bind_world_matrix"] = _matrix_to_list(no_orient_world)
+        jo_chain = {
+            "bones": jo_bones,
+            "links": [{"bone_slot": 0}],
+            "targetBoneSlot": 1,
+            "iterationCount": 32,
+            "limitAngle": math.pi,
+        }
+        jo_goal = (0.0, 1.0, 0.0)
+        cmds.setAttr(f"{ccdik_node}.chainJson", json.dumps(jo_chain), type="string")
+        cmds.setAttr(f"{ccdik_node}.goal", *jo_goal, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[1]", 0.0, 0.0, 0.0, type="double3")
+        jo_out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
+        expected_jo_out = _expected_bind_space_ccdik_output(om, MmdIkChain, jo_chain, jo_goal)
+        if any(abs(float(actual) - expected) > 1e-4 for actual, expected in zip(jo_out_rot, expected_jo_out)):
+            raise RuntimeError(
+                "mmdCcdIkNode chainJson JO/bind output mismatch: "
+                f"expected {expected_jo_out}, got {jo_out_rot}"
+            )
+        print(f"OK: mmdCcdIkNode chainJson JO/bind path matches native expected output -> {jo_out_rot}")
+
+        multi_bones = [
+            {
+                "parent_slot": -1,
+                "rest_position": [0.0, 0.0, 0.0],
+                "maya_rest_translate": [0.0, 0.0, 0.0],
+                "joint_orient_deg": [10.0, 0.0, 0.0],
+            },
+            {
+                "parent_slot": 0,
+                "rest_position": [1.0, 0.0, 0.0],
+                "maya_rest_translate": [1.0, 0.0, 0.0],
+                "joint_orient_deg": [0.0, 15.0, 0.0],
+            },
+            {
+                "parent_slot": 1,
+                "rest_position": [1.0, 0.0, 0.0],
+                "maya_rest_translate": [1.0, 0.0, 0.0],
+                "joint_orient_deg": [0.0, 0.0, 0.0],
+            },
+        ]
+        bind_worlds, no_orient_worlds = _build_bind_worlds(om, multi_bones)
+        for bone, bind_world, no_orient_world in zip(multi_bones, bind_worlds, no_orient_worlds):
+            bone["maya_bind_world_matrix"] = _matrix_to_list(bind_world)
+            bone["no_orient_bind_world_matrix"] = _matrix_to_list(no_orient_world)
+        multi_chain = {
+            "bones": multi_bones,
+            "links": [{"bone_slot": 1}, {"bone_slot": 0}],
+            "targetBoneSlot": 2,
+            "iterationCount": 32,
+            "limitAngle": math.pi,
+        }
+        multi_goal = (1.0, 1.2, 0.0)
+        multi_input_rotates = [(0.0, 0.0, 0.0), (8.0, -4.0, 6.0), (-3.0, 5.0, 2.0)]
+        cmds.setAttr(f"{ccdik_node}.chainJson", json.dumps(multi_chain), type="string")
+        cmds.setAttr(f"{ccdik_node}.goal", *multi_goal, type="double3")
+        for index, translate in enumerate(([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 0.0])):
+            cmds.setAttr(f"{ccdik_node}.inputTranslate[{index}]", *translate, type="double3")
+            cmds.setAttr(f"{ccdik_node}.inputRotate[{index}]", *multi_input_rotates[index], type="double3")
+        expected_multi_outs = _expected_bind_space_ccdik_outputs(
+            om,
+            MmdIkChain,
+            multi_chain,
+            multi_goal,
+            multi_input_rotates,
+        )
+        actual_multi_outs = [cmds.getAttr(f"{ccdik_node}.outputRotate[{index}]")[0] for index in range(2)]
+        for index, (actual, expected) in enumerate(zip(actual_multi_outs, expected_multi_outs)):
+            if any(abs(float(actual_component) - expected_component) > 1e-4 for actual_component, expected_component in zip(actual, expected)):
+                raise RuntimeError(
+                    f"mmdCcdIkNode chainJson 2-link outputRotate[{index}] mismatch: "
+                    f"expected {expected}, got {actual}"
+                )
+        print("OK: mmdCcdIkNode chainJson FFI 2-link path matches native expected outputs")
+
+        controller_chain = dict(ffi_chain)
+        controller_chain["controllerBoneSlot"] = 1
+        cmds.setAttr(f"{ccdik_node}.chainJson", json.dumps(controller_chain), type="string")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 13.0, type="double3")
+        controller_rest_out = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
+        controller_rest_solved = cmds.getAttr(f"{ccdik_node}.solved")
+        if controller_rest_solved is not False:
+            raise RuntimeError(
+                "mmdCcdIkNode controller rest path should skip solving and set solved=False, "
+                f"got {controller_rest_solved}"
+            )
+        if any(
+            abs(float(actual) - expected) > 1e-6
+            for actual, expected in zip(controller_rest_out, (0.0, 0.0, 13.0))
+        ):
+            raise RuntimeError(
+                "mmdCcdIkNode controller rest path should copy inputRotate for link slot 0, "
+                f"got {controller_rest_out}"
+            )
+        print("OK: mmdCcdIkNode controllerBoneSlot rest path copies inputRotate and skips solve")
+
+        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 1.0, 0.0, type="double3")
+        controller_moved_solved = cmds.getAttr(f"{ccdik_node}.solved")
+        if controller_moved_solved is not True:
+            raise RuntimeError(
+                "mmdCcdIkNode moved controller branch should compute a pre-IK goal and solve, "
+                f"got solved={controller_moved_solved}"
+            )
+        print("OK: mmdCcdIkNode controllerBoneSlot moved branch computes pre-IK goal and solves")
+
+        matrix_goal = cmds.createNode("transform", name="ccdikGoalMatrixSmoke")
+        cmds.setAttr(f"{matrix_goal}.translate", 0.0, 1.0, 0.0, type="double3")
+        cmds.connectAttr(f"{matrix_goal}.worldMatrix[0]", f"{ccdik_node}.goalWorldMatrix", force=True)
+        cmds.setAttr(f"{ccdik_node}.chainJson", json.dumps(jo_chain), type="string")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 0.0, type="double3")
+        cmds.setAttr(f"{ccdik_node}.inputRotate[1]", 0.0, 0.0, 0.0, type="double3")
+        matrix_goal_out = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
+        expected_matrix_goal_out = _expected_bind_space_ccdik_output(om, MmdIkChain, jo_chain, (0.0, 1.0, 0.0))
+        if any(
+            abs(float(actual) - expected) > 1e-4
+            for actual, expected in zip(matrix_goal_out, expected_matrix_goal_out)
+        ):
+            raise RuntimeError(
+                "mmdCcdIkNode goalWorldMatrix output mismatch: "
+                f"expected {expected_matrix_goal_out}, got {matrix_goal_out}"
+            )
+        cmds.disconnectAttr(f"{matrix_goal}.worldMatrix[0]", f"{ccdik_node}.goalWorldMatrix")
+        cmds.delete(matrix_goal)
+        print("OK: mmdCcdIkNode goalWorldMatrix connection drives chainJson FFI goal")
+
+        cmds.setAttr(f"{ccdik_node}.chainJson", "{}", type="string")
+
         # --- Test 1: 標準ケース root=(0,0,0), effector=(1,0,0), target=(0,1,0) ---
         # root->effector = (1,0,0) (X+方向)
         # root->target   = (0,1,0) (Y+方向)
@@ -436,7 +1084,7 @@ def main() -> int:
         cmds.setAttr(f"{ccdik_node}.inputEffector", 1.0, 0.0, 0.0, type="double3")
         cmds.setAttr(f"{ccdik_node}.target", 0.0, 1.0, 0.0, type="double3")
 
-        out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate")[0]
+        out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
         if any(abs(v) > 1e-9 for v in (out_rot[0], out_rot[1])):
             raise RuntimeError(
                 f"outputRotate should be (0,0,~90) for 90° XY case, got {out_rot}"
@@ -458,7 +1106,7 @@ def main() -> int:
 
         # --- Test 2: enabled=false -> solved=false, outputRotate=(0,0,0) ---
         cmds.setAttr(f"{ccdik_node}.enabled", False)
-        out_rot_disabled = cmds.getAttr(f"{ccdik_node}.outputRotate")[0]
+        out_rot_disabled = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
         out_angle_disabled = cmds.getAttr(f"{ccdik_node}.outputAngle")
         solved_disabled = cmds.getAttr(f"{ccdik_node}.solved")
         if any(abs(v) > 1e-9 for v in out_rot_disabled):
@@ -486,7 +1134,7 @@ def main() -> int:
             raise RuntimeError(
                 f"angleLimit=30, iterations=1 should output ~30.0, got {out_angle_lim}"
             )
-        out_rot_lim = cmds.getAttr(f"{ccdik_node}.outputRotate")[0]
+        out_rot_lim = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
         if abs(out_rot_lim[2] - 30.0) > 1e-6:
             raise RuntimeError(
                 f"outputRotateZ should be ~30.0 with angleLimit=30, iterations=1, "
@@ -573,8 +1221,104 @@ def main() -> int:
 
         print("OK: mmdCcdIkNode multi-link 2-link CCD produced non-zero output and reduced distance")
 
+        if ccdik_node not in vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes():
+            raise RuntimeError(f"VmdConverter IK collection did not include C++ node {ccdik_node}")
         cmds.delete(ccdik_node)
         print(f"OK: created {CCDIK_NODE_TYPE}, verified attributes, IK compute, and disabled state")
+        if ccdik_node in vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes():
+            raise RuntimeError(f"Deleted C++ IK node {ccdik_node} should not remain in VmdConverter collection")
+
+        from mmd_tools.io.mmd_importer import import_mmd_file
+
+        ik_nodes_before_model_import = set(vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes())
+        rig_model_root = import_mmd_file(
+            str(FAST_LOAD_MODEL),
+            options={
+                "setup_rig": True,
+                "setup_bone_orientation": True,
+                "use_cpp_fast_load": False,
+                "import_physics": False,
+                "auto_resolve_textures": False,
+            },
+        )
+        if not rig_model_root or not cmds.objExists(rig_model_root):
+            raise RuntimeError(f"real-model rig import failed for C++ IK smoke: {rig_model_root!r}")
+        try:
+            imported_ik_nodes = [
+                node
+                for node in vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes()
+                if node not in ik_nodes_before_model_import
+            ]
+            cpp_ik_nodes = [node for node in imported_ik_nodes if cmds.nodeType(node) == CCDIK_NODE_TYPE]
+            if not cpp_ik_nodes:
+                raise RuntimeError(
+                    "real-model rig import did not create C++ IK nodes; "
+                    f"new IK nodes={imported_ik_nodes}"
+                )
+
+            evaluated_multi_link_nodes = []
+            for node in cpp_ik_nodes:
+                chain = json.loads(cmds.getAttr(f"{node}.chainJson") or "{}")
+                links = chain.get("links") or []
+                if len(links) < 2:
+                    continue
+
+                controller_slot = int(chain.get("controllerBoneSlot", -1))
+                if controller_slot >= 0:
+                    translate_plugs = (
+                        cmds.listConnections(
+                            f"{node}.inputTranslate[{controller_slot}]",
+                            s=True,
+                            d=False,
+                            plugs=True,
+                        )
+                        or []
+                    )
+                    if translate_plugs:
+                        translate_node, translate_attr = translate_plugs[0].split(".", 1)
+                        if translate_attr == "translate":
+                            current = cmds.getAttr(f"{translate_node}.translate")[0]
+                            cmds.setAttr(
+                                f"{translate_node}.translate",
+                                float(current[0]),
+                                float(current[1]) + 0.5,
+                                float(current[2]),
+                                type="double3",
+                            )
+                    else:
+                        current = cmds.getAttr(f"{node}.inputTranslate[{controller_slot}]")[0]
+                        cmds.setAttr(
+                            f"{node}.inputTranslate[{controller_slot}]",
+                            float(current[0]),
+                            float(current[1]) + 0.5,
+                            float(current[2]),
+                            type="double3",
+                        )
+
+                cmds.setAttr(f"{node}.enabled", True)
+                cmds.dgdirty(node)
+                solved = cmds.getAttr(f"{node}.solved")
+                outputs = [cmds.getAttr(f"{node}.outputRotate[{index}]")[0] for index in range(len(links))]
+                if solved is True and any(
+                    abs(float(component)) > 1e-5
+                    for output in outputs
+                    for component in output
+                ):
+                    evaluated_multi_link_nodes.append(node)
+
+            if not evaluated_multi_link_nodes:
+                raise RuntimeError(
+                    "real-model C++ IK import created no evaluating multi-link nodes; "
+                    f"cpp_ik_nodes={cpp_ik_nodes}"
+                )
+
+            print(
+                "OK: real-model rig import created C++ multi-link mmdCcdIkNode(s) "
+                f"and evaluated outputRotate: {evaluated_multi_link_nodes}"
+            )
+        finally:
+            if cmds.objExists(rig_model_root):
+                cmds.delete(rig_model_root)
 
         from mmd_tools.io.cpp_fast_importer import fast_import
 
@@ -610,7 +1354,6 @@ def main() -> int:
         # --- Track 4 runtime node smoke (existing model + VMD import path) ---
         from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
         from mmd_tools.converters.vmd_converter import VmdConverter
-        from mmd_tools.io.mmd_importer import import_mmd_file
         from mmd_tools.core.native.mmd_anim_runtime import (
             MmdRuntimeClip,
             MmdRuntimeInstance,

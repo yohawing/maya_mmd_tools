@@ -1,7 +1,6 @@
-import os
+import json
 
 from maya import cmds
-from maya import mel
 from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
@@ -9,29 +8,15 @@ from maya.api import OpenMayaAnim as oma
 from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
-    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
-    ATTR_MMD_SOURCE_MODEL_PATH,
-    ATTR_MMD_TEXTURE_CACHE_PATH,
-    ATTR_MMD_TEXTURE_UNRESOLVED,
 )
-from mmd_tools.core.settings import settings
 
+from . import maya_material_utils as _maya_material_utils
+from . import maya_mesh_utils as _maya_mesh_utils
+from . import maya_physics_utils as _maya_physics_utils
 from . import utils
 from .logger import get_logger
-from .texture_path_cache import (
-    classify_texture_resolution,
-    decode_original_texture_path,
-    is_unreadable_file_texture_path,
-    resolve_texture_to_cache,
-)
 
 logger = get_logger(__name__)
-
-DX11_TEXTURE_SLOTS = {
-    "_texture": ("MainTexture", "HasMainTexture"),
-    "_sphere_texture": ("SphereTexture", "HasSphereTexture"),
-    "_toon_texture": ("ToonTexture", "HasToonTexture"),
-}
 
 
 def _is_non_bool_number(value):
@@ -93,524 +78,6 @@ def sanitize_text(name):
 
     converted_name = utils.convert_utf8_to_ascii(name)
     return converted_name or "default_name"
-
-
-def sanitize_texture_path(texture_path, texture_dir):
-    """
-    テクスチャパスをMaya用にサニタイズする。
-
-    Args:
-        texture_path (str): 元のテクスチャパス
-        texture_dir (str): テクスチャディレクトリ
-
-    Returns:
-        str: Maya互換のテクスチャパス、またはNone
-    """
-    if not texture_path:
-        return None
-
-    # 絶対パスを構築
-    if not os.path.isabs(texture_path):
-        full_texture_path = os.path.join(texture_dir, texture_path)
-    else:
-        full_texture_path = texture_path
-
-    # パスの正規化
-    full_texture_path = os.path.normpath(full_texture_path)
-
-    # ファイルの存在確認
-    if not os.path.exists(full_texture_path):
-        print(f"Warning: Texture file not found: {full_texture_path}")
-        return None
-
-    return full_texture_path
-
-
-ATTR_MMD_TEXTURE_SOURCE_KIND = "mmd_texture_source_kind"
-ATTR_MMD_SHARED_TOON_ID = "mmd_shared_toon_id"
-
-
-def mark_mmd_texture_file_node(
-    file_node,
-    original_path,
-    model_path,
-    unresolved=False,
-    source_kind="pmx_texture",
-    shared_toon_id="",
-):
-    """Store MMD texture provenance on a Maya file node."""
-
-    attrs = {
-        ATTR_MMD_ORIGINAL_TEXTURE_PATH: "" if original_path is None else os.fspath(original_path),
-        ATTR_MMD_SOURCE_MODEL_PATH: model_path or "",
-        ATTR_MMD_TEXTURE_UNRESOLVED: bool(unresolved),
-        ATTR_MMD_TEXTURE_SOURCE_KIND: source_kind or "pmx_texture",
-    }
-    if shared_toon_id:
-        attrs[ATTR_MMD_SHARED_TOON_ID] = shared_toon_id
-    set_custom_attributes(file_node, attrs)
-
-
-def get_mmd_original_texture_path(file_node):
-    """Return the original PMX texture path stored on a Maya file node."""
-
-    value = get_attribute(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)
-    return decode_original_texture_path(value)
-
-
-def is_mmd_file_node_unreadable(file_node):
-    """Return whether an MMD file node currently points at an unreadable texture."""
-
-    texture_path = get_attribute(file_node, "fileTextureName")
-    return is_unreadable_file_texture_path(texture_path)
-
-
-def find_material_texture_file_node(material):
-    """Find the base texture file node used by a material, if any."""
-
-    shader_type = cmds.nodeType(material)
-    texture_attrs = []
-    if shader_type == "standardSurface":
-        texture_attrs.append(f"{material}.baseColor")
-    elif shader_type == "dx11Shader":
-        if cmds.attributeQuery("MainTexture", node=material, exists=True):
-            texture_attrs.append(f"{material}.MainTexture")
-        if cmds.attributeQuery("DiffuseTexture", node=material, exists=True):
-            texture_attrs.append(f"{material}.DiffuseTexture")
-    if cmds.attributeQuery("color", node=material, exists=True):
-        texture_attrs.append(f"{material}.color")
-
-    for attr in texture_attrs:
-        connections = cmds.listConnections(attr, type="file", source=True, destination=False) or []
-        if connections:
-            return connections[0]
-    return None
-
-
-def classify_mmd_texture_file_node(file_node):
-    """Classify a Maya MMD file node for on-demand texture resolution."""
-
-    if get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
-        return None
-    original_path = get_mmd_original_texture_path(file_node)
-    model_path = get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
-    file_texture_path = get_attribute(file_node, "fileTextureName") or ""
-    if not model_path:
-        return None
-    return classify_texture_resolution(
-        original_path=original_path,
-        file_texture_path=file_texture_path,
-        model_path=model_path,
-    )
-
-
-def resolve_mmd_texture_file_node(file_node, workspace_root=None):
-    """Resolve one MMD file node into the workspace texture cache."""
-
-    if get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
-        return None
-    if workspace_root is None:
-        workspace_root = cmds.workspace(q=True, rootDirectory=True)
-    original_path = get_mmd_original_texture_path(file_node)
-    model_path = get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
-    file_texture_path = get_attribute(file_node, "fileTextureName") or ""
-    if not model_path:
-        return None
-
-    resolution = resolve_texture_to_cache(
-        original_path=original_path,
-        file_texture_path=file_texture_path,
-        model_path=model_path,
-        workspace_root=workspace_root,
-    )
-    if resolution.status == "resolved" and resolution.cache_path:
-        set_attribute(file_node, "fileTextureName", resolution.cache_path, "string")
-        set_custom_attributes(
-            file_node,
-            {
-                ATTR_MMD_TEXTURE_CACHE_PATH: resolution.cache_path,
-                ATTR_MMD_TEXTURE_UNRESOLVED: False,
-            },
-        )
-    elif resolution.status == "unrecoverable":
-        set_custom_attributes(file_node, {ATTR_MMD_TEXTURE_UNRESOLVED: True})
-    return resolution
-
-
-def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
-    """Bind a Maya file node to one dx11Shader texture slot."""
-
-    destination_attr = f"{shader}.{texture_attr}"
-    try:
-        existing = cmds.listConnections(
-            f"{file_node}.outColor",
-            source=False,
-            destination=True,
-            plugs=True,
-        ) or []
-        if not isinstance(existing, (list, tuple, set)) or destination_attr not in existing:
-            cmds.connectAttr(f"{file_node}.outColor", destination_attr, force=True)
-        if cmds.attributeQuery(has_attr, node=shader, exists=True):
-            set_attribute(shader, has_attr, 1, "long")
-        return True
-    except Exception as exc:
-        logger.warning(
-            "Failed to bind dx11 texture file node '%s' to '%s': %s",
-            file_node,
-            destination_attr,
-            exc,
-        )
-        return False
-
-
-def _dx11_texture_slot_from_attr(attr_name):
-    for texture_attr, has_attr in DX11_TEXTURE_SLOTS.values():
-        if attr_name == texture_attr:
-            return texture_attr, has_attr
-    return None
-
-
-def _connected_dx11_texture_slot(file_node):
-    connections = cmds.listConnections(
-        f"{file_node}.outColor",
-        source=False,
-        destination=True,
-        plugs=True,
-    ) or []
-    if not isinstance(connections, (list, tuple, set)):
-        return None
-    for plug in connections:
-        if "." not in plug:
-            continue
-        shader, attr_name = plug.rsplit(".", 1)
-        slot = _dx11_texture_slot_from_attr(attr_name)
-        if slot and cmds.objExists(shader):
-            return shader, slot[0], slot[1]
-    return None
-
-
-def _infer_dx11_texture_slot_from_file_node(file_node):
-    sorted_slots = sorted(DX11_TEXTURE_SLOTS.items(), key=lambda item: len(item[0]), reverse=True)
-    for suffix, (texture_attr, has_attr) in sorted_slots:
-        if not file_node.endswith(suffix):
-            continue
-        shader = file_node[: -len(suffix)]
-        if cmds.objExists(shader):
-            return shader, texture_attr, has_attr
-    return None
-
-
-def rebind_resolved_mmd_dx11_texture(file_node):
-    """Reconnect one resolved MMD file node to its dx11Shader texture slot."""
-
-    if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
-        return {"status": "skipped", "reason": "not_mmd_texture_file_node"}
-
-    target = _connected_dx11_texture_slot(file_node) or _infer_dx11_texture_slot_from_file_node(file_node)
-    if not target:
-        return {"status": "skipped", "reason": "dx11_texture_slot_not_found"}
-
-    shader, texture_attr, has_attr = target
-    if cmds.nodeType(shader) != "dx11Shader":
-        return {"status": "skipped", "reason": "not_dx11_shader"}
-    if not cmds.attributeQuery(texture_attr, node=shader, exists=True):
-        return {"status": "skipped", "reason": "texture_attr_missing"}
-    if not cmds.attributeQuery(has_attr, node=shader, exists=True):
-        return {"status": "skipped", "reason": "has_attr_missing"}
-
-    if not bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
-        return {
-            "status": "failed",
-            "reason": "connect_failed",
-            "shader": shader,
-            "texture_attr": texture_attr,
-            "has_attr": has_attr,
-        }
-
-    return {
-        "status": "rebound",
-        "reason": "connected",
-        "shader": shader,
-        "texture_attr": texture_attr,
-        "has_attr": has_attr,
-    }
-
-
-def rebind_resolved_scene_mmd_dx11_textures(results):
-    """Rebind resolved scene texture results and annotate each result."""
-
-    rebound = 0
-    skipped = 0
-    failed = 0
-    for result in results:
-        if getattr(result, "status", None) != "resolved":
-            continue
-        file_node = getattr(result, "file_node", None)
-        if not file_node:
-            setattr(result, "rebind_status", "skipped")
-            setattr(result, "rebind_reason", "missing_file_node")
-            skipped += 1
-            continue
-        rebind = rebind_resolved_mmd_dx11_texture(file_node)
-        setattr(result, "rebind_status", rebind["status"])
-        setattr(result, "rebind_reason", rebind["reason"])
-        for key in ("shader", "texture_attr", "has_attr"):
-            if key in rebind:
-                setattr(result, f"rebind_{key}", rebind[key])
-        if rebind["status"] == "rebound":
-            rebound += 1
-        elif rebind["status"] == "failed":
-            failed += 1
-        else:
-            skipped += 1
-    return {"rebound": rebound, "skipped": skipped, "failed": failed}
-
-
-def resolve_mmd_material_texture(material, workspace_root=None):
-    """Resolve the selected material's base texture file node, if present."""
-
-    file_node = find_material_texture_file_node(material)
-    if not file_node:
-        return None
-    return resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
-
-
-def resolve_scene_mmd_textures(workspace_root=None):
-    """Resolve all broken MMD file nodes in the current Maya scene."""
-
-    results = []
-    for file_node in cmds.ls(type="file") or []:
-        if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
-            continue
-        classification = classify_mmd_texture_file_node(file_node)
-        if classification and classification.status == "resolvable":
-            resolution = resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
-            if resolution is not None and not getattr(resolution, "file_node", None):
-                resolution.file_node = file_node
-            results.append(resolution)
-        elif classification:
-            classification.file_node = file_node
-            results.append(classification)
-    rebind_summary = rebind_resolved_scene_mmd_dx11_textures(results)
-    if rebind_summary["rebound"]:
-        # If this is not enough for VP2 in practice, the next fallback is a
-        # same-value .shader/technique re-set to force the dx11 effect reload.
-        cmds.refresh(force=True)
-    return results
-
-
-def create_mesh_with_uvs(name, vertices, face_counts, face_connects, uvs, face_uv_connects, normals=None):
-    """
-    MayaシーンにUV付きのメッシュオブジェクトを作成します。
-    OpenMaya APIを使用して高速化。
-
-    Args:
-        name (str): 作成するメッシュオブジェクトの名前。
-        vertices (list[tuple[float, float, float]]): 頂点座標のリスト。
-        face_counts (list[int]): 各面の頂点数のリスト。
-        face_connects (list[int]): 面を構成する頂点インデックスのリスト。
-        uvs (list[float]): UV座標のフラットなリスト (u1, v1, u2, v2, ...)。
-        face_uv_connects (list[int]): 各面の各頂点に対応するUVのインデックスリスト。
-        normals (list[tuple[float, float, float]] | None): 頂点法線のリスト。
-
-    Returns:
-        str: 作成されたメッシュのトランスフォームノード名。
-    """
-    # OpenMaya APIを使用してメッシュを作成
-    mesh_fn = om.MFnMesh()
-
-    # 頂点データをOpenMayaのMPointArrayに変換
-    points = om.MPointArray()
-    for vertex in vertices:
-        points.append(om.MPoint(vertex[0], vertex[1], vertex[2]))
-
-    # 面データをOpenMayaのMIntArrayに変換
-    face_counts_array = om.MIntArray()
-    for count in face_counts:
-        face_counts_array.append(count)
-
-    face_connects_array = om.MIntArray()
-    for connect in face_connects:
-        face_connects_array.append(connect)
-
-    # メッシュを作成
-    mesh_obj = mesh_fn.create(points, face_counts_array, face_connects_array)
-
-    if normals and len(normals) == len(vertices):
-        normal_array = om.MVectorArray()
-        normal_vertex_ids = om.MIntArray()
-        for vertex_id, normal in enumerate(normals):
-            normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
-            normal_vertex_ids.append(vertex_id)
-        mesh_fn.setVertexNormals(normal_array, normal_vertex_ids)
-    elif normals:
-        normal_array = om.MVectorArray()
-        normal_face_ids = om.MIntArray()
-        normal_vertex_ids = om.MIntArray()
-        face_id = 0
-        cursor = 0
-        for count in face_counts:
-            for _ in range(count):
-                vertex_id = face_connects[cursor]
-                normal = normals[cursor]
-                normal_array.append(om.MVector(normal[0], normal[1], normal[2]))
-                normal_face_ids.append(face_id)
-                normal_vertex_ids.append(vertex_id)
-                cursor += 1
-            face_id += 1
-        mesh_fn.setFaceVertexNormals(normal_array, normal_face_ids, normal_vertex_ids)
-
-    # UVセットを作成
-    if uvs and face_uv_connects:
-        # TODO: UVセットが複数ある場合に対応する。
-        uv_set_name = settings.get("import.model.uv_set_name").replace("#", "1")
-        mesh_fn.createUVSet(uv_set_name)
-
-        # UV座標をMFloatArrayに変換
-        u_array = om.MFloatArray()
-        v_array = om.MFloatArray()
-        for i in range(0, len(uvs), 2):
-            u_array.append(uvs[i])
-            v_array.append(uvs[i + 1])
-
-        # UV接続をMIntArrayに変換
-        uv_counts_array = om.MIntArray()
-        for count in face_counts:
-            uv_counts_array.append(count)
-
-        uv_connects_array = om.MIntArray()
-        for connect in face_uv_connects:
-            uv_connects_array.append(connect)
-
-        # UVを設定
-        mesh_fn.setUVs(u_array, v_array, uv_set_name)
-        mesh_fn.assignUVs(uv_counts_array, uv_connects_array, uv_set_name)
-
-    # トランスフォームノードを作成
-    dag_path = om.MDagPath.getAPathTo(mesh_obj)
-    transform_fn = om.MFnTransform(dag_path.transform())
-    transform_name = transform_fn.setName(name)
-
-    # デフォルトのシェーディンググループに割り当て
-    cmds.sets(transform_name, edit=True, forceElement="initialShadingGroup")
-    cmds.select(clear=True)
-
-    return transform_name
-
-
-def split_mesh_by_material(mesh_name, materials):
-    """
-    メッシュをマテリアルごとに分割します。
-
-    Args:
-        mesh_name (str): 分割するメッシュの名前。
-        materials (list): マテリアルのリスト。
-    """
-    for material in materials:
-        # マテリアルごとに新しいメッシュを作成
-        new_mesh = cmds.duplicate(mesh_name, name=f"{mesh_name}_{material.name}")[0]
-        # マテリアルを割り当て
-        cmds.select(new_mesh)
-        cmds.hyperShade(assign=material.name)
-
-
-def create_material(name, color, texture_path=None, texture_dir="", model_path=None):
-    """
-    Mayaシーンにマテリアルを作成します。
-
-    Args:
-        name (str): マテリアルの名前。
-        color (tuple[float, float, float, float]): RGBAカラー。
-        texture_path (str, optional): テクスチャファイルのパス。
-        texture_dir (str, optional): テクスチャファイルが置かれているディレクトリ。
-        model_path (str, optional): 元 PMX/PMD ファイルのパス。
-
-    Returns:
-        str: 作成されたシェーダーノード名。
-    """
-    sanitized_name = sanitize_text(name)
-    shader = cmds.shadingNode("lambert", asShader=True, name=sanitized_name)
-    set_attribute(shader, "color", color[:3], "double3")
-    transparency = 1.0 - color[3]
-    set_attribute(shader, "transparency", [transparency, transparency, transparency], "double3")
-
-    # 元の名前を保持
-    set_custom_attributes(shader, {"mmd_material_name": name})
-
-    if texture_path:
-        # テクスチャパスを解決
-        full_texture_path = os.path.normpath(os.path.join(texture_dir, texture_path))
-        file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
-        place_uv_node = cmds.shadingNode(
-            "place2dTexture",
-            asUtility=True,
-            name=sanitized_name + "_place2dTexture",
-        )
-        # 標準的なUV接続
-        cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
-        cmds.connectAttr(file_node + ".outColor", shader + ".color")
-
-        set_attribute(file_node, "fileTextureName", full_texture_path, "string")
-        source_model_path = model_path or os.path.join(texture_dir, "_mmd_tools_legacy_model.pmd")
-        mark_mmd_texture_file_node(
-            file_node,
-            texture_path,
-            source_model_path,
-            unresolved=not os.path.exists(full_texture_path),
-        )
-        if not os.path.exists(full_texture_path):
-            cmds.warning(f"Texture file not found: {full_texture_path}")
-
-    return shader
-
-
-def assign_material(mesh_name, shader_node):
-    """
-    メッシュにマテリアルを割り当てます。
-
-    Args:
-        mesh_name (str): マテリアルを割り当てるメッシュの名前。
-        shader_node (str): 割り当てるシェーダーノード名。
-    """
-    # マテリアル専用のシェーディンググループを作成
-    sanitized_shader_name = shader_node + "SG"
-    sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
-    # シェーダーをシェーディンググループに接続
-    cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
-    # メッシュをシェーディンググループに割り当て
-    cmds.sets(mesh_name, edit=True, forceElement=sg_name)
-
-
-def assign_material_to_faces(mesh_name, shader_node, face_selection):
-    """
-    メッシュの特定の面にマテリアルを割り当てます。
-
-    Args:
-        mesh_name (str): マテリアルを割り当てるメッシュの名前。
-        shader_node (str): 割り当てるシェーダーノード名。
-        face_selection (str): 選択する面の指定。例: "mesh_name.f[1:10]"
-    """
-    # シェーダーノードの存在確認
-    if not cmds.objExists(shader_node):
-        logger.error(f"Shader node '{shader_node}' does not exist")
-        return
-
-    # マテリアル専用のシェーディンググループを作成
-    sanitized_shader_name = shader_node + "SG"
-    sg_name = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name=sanitized_shader_name)
-
-    shader_type = cmds.nodeType(shader_node)
-
-    if cmds.attributeQuery("outColor", node=shader_node, exists=True):
-        cmds.connectAttr(shader_node + ".outColor", f"{sg_name}.surfaceShader", force=True)
-    elif shader_type == "dx11Shader":
-        cmds.connectAttr(shader_node + ".message", f"{sg_name}.surfaceShader", force=True)
-    else:
-        logger.error("Shader node '%s' has no outColor attribute", shader_node)
-        return
-
-    # 指定した面をシェーディンググループに割り当て
-    cmds.sets(face_selection, edit=True, forceElement=sg_name)
 
 
 def set_custom_attributes(object_name, attributes):
@@ -774,6 +241,26 @@ def _set_string_plug(plug, object_name, attr_name, value):
     cmds.setAttr(f"{object_name}.{attr_name}", text, type="string")
 
 
+_FBX_UTF8_AS_CP932_MARKERS = ("繧", "繝", "縺", "荳", "譁", "蜷", "髮", "驥")
+
+
+def repair_fbx_mojibake_string(value):
+    """Repair UTF-8 text imported by FBX as CP932 mojibake when detectable."""
+    if not isinstance(value, str) or not value:
+        return value
+    if not any(marker in value for marker in _FBX_UTF8_AS_CP932_MARKERS):
+        return value
+    try:
+        repaired = value.encode("cp932").decode("utf-8")
+    except UnicodeError:
+        return value
+    if repaired == value:
+        return value
+    if any("\u3040" <= ch <= "\u30ff" or "\u4e00" <= ch <= "\u9fff" for ch in repaired):
+        return repaired
+    return value
+
+
 def set_attribute(object_name, attr_name, attr_value, attr_type):
     """
     OpenMaya API 2.0を使用してアトリビュート値を設定します。
@@ -926,7 +413,10 @@ def get_attribute(object_name, attr_name):
             attr_type = attr_fn.attrType()
 
             if attr_type == om.MFnData.kString:
-                return plug.asString()
+                value = plug.asString()
+                if attr_name.startswith("mmd_"):
+                    return repair_fbx_mojibake_string(value)
+                return value
 
         # その他の場合、型を推測して取得
         # まずdoubleとして取得を試みる
@@ -942,6 +432,111 @@ def get_attribute(object_name, attr_name):
     except Exception:
         # オブジェクトが存在しない、その他のエラー
         return None
+
+
+def attribute_exists(node, attr):
+    """Return whether a Maya node has an attribute, swallowing Maya command errors."""
+    try:
+        return bool(node and cmds.objExists(node) and cmds.attributeQuery(attr, node=node, exists=True))
+    except Exception:
+        return False
+
+
+def get_attr_safe(node, attr, default=None, cast=None):
+    """Read ``node.attr`` with a default fallback and optional type conversion."""
+    if not attribute_exists(node, attr.split("[", 1)[0]):
+        return default
+    try:
+        value = cmds.getAttr(f"{node}.{attr}")
+    except Exception:
+        return default
+    if cast is None:
+        return value
+    try:
+        return cast(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def read_json_attr(node, attr, default=None):
+    """Read a string JSON attribute, returning ``default`` when absent or invalid."""
+    fallback = default if default is not None else {}
+    raw_value = get_attr_safe(node, attr, default="")
+    if not raw_value:
+        return fallback
+    try:
+        return json.loads(raw_value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def write_json_attr(node, attr, value, *, ensure_attr=True, separators=(",", ":")):
+    """Write JSON data to a string attribute and optionally create the attribute."""
+    if not attribute_exists(node, attr):
+        if not ensure_attr:
+            return False
+        try:
+            cmds.addAttr(node, longName=attr, dataType="string")
+        except Exception:
+            return False
+    try:
+        cmds.setAttr(
+            f"{node}.{attr}",
+            json.dumps(value, ensure_ascii=False, separators=separators),
+            type="string",
+        )
+        return True
+    except Exception:
+        return False
+
+
+def find_tagged_nodes(attr):
+    """Return nodes that have a boolean-like tag attribute enabled."""
+    nodes = []
+    for node in cmds.ls(f"*.{attr}", objectsOnly=True) or []:
+        if get_attr_safe(node, attr, default=False, cast=bool):
+            nodes.append(node)
+    return nodes
+
+
+def mark_bool_tag(node, attr, value=True):
+    """Ensure a bool tag attribute exists and set its value."""
+    if not attribute_exists(node, attr):
+        try:
+            cmds.addAttr(node, longName=attr, attributeType="bool")
+        except Exception:
+            return False
+    try:
+        cmds.setAttr(f"{node}.{attr}", bool(value))
+        return True
+    except Exception:
+        return False
+
+
+def disconnect_sources(destination_plug):
+    """Disconnect every source plug feeding ``destination_plug``."""
+    disconnected = 0
+    for source_plug in cmds.listConnections(destination_plug, source=True, destination=False, plugs=True) or []:
+        try:
+            if cmds.isConnected(source_plug, destination_plug):
+                cmds.disconnectAttr(source_plug, destination_plug)
+                disconnected += 1
+        except Exception:
+            continue
+    return disconnected
+
+
+def connect_if_needed(source_plug, destination_plug, *, force=False):
+    """Connect two plugs when not already connected."""
+    try:
+        if cmds.isConnected(source_plug, destination_plug):
+            return True
+        if force:
+            disconnect_sources(destination_plug)
+        cmds.connectAttr(source_plug, destination_plug, force=force)
+        return True
+    except Exception:
+        return False
 
 
 def get_int_array_attribute(object_name, attr_name):
@@ -963,241 +558,6 @@ def get_int_array_attribute(object_name, attr_name):
         return [int(int_array[i]) for i in range(len(int_array))]
     except Exception:
         return None
-
-
-def get_materials_from_mesh(mesh_name):
-    """メッシュに割り当てられているマテリアルを取得
-
-    Args:
-        mesh_name (str): メッシュの名前
-    Returns:
-        list: メッシュに割り当てられているマテリアルのリスト
-
-    """
-    mesh_shapes = cmds.listRelatives(mesh_name, shapes=True, type="mesh") or []
-    assigned_materials = []
-
-    for shape in mesh_shapes:
-        # シェーディングエンジンを取得
-        shading_engines = cmds.listConnections(shape, type="shadingEngine") or []
-        for sg in shading_engines:
-            # シェーディングエンジンに接続されているマテリアルを取得
-            materials = cmds.listConnections(f"{sg}.surfaceShader") or []
-            assigned_materials.extend(materials)
-
-    return assigned_materials
-
-
-def apply_vertex_weights(
-    skin_cluster,
-    mesh_node,
-    weights,
-):
-    """
-    Mayaのメッシュに頂点ウェイトを適用します。
-
-    Args:
-        vertices (list): PMXの頂点データ。
-        maya_joints (list): Mayaのジョイント名のリスト。
-        skin_cluster (str): スキンクラスターの名前。
-        mesh_node (str): メッシュノードの名前。
-        weights (list[list[float]]): 頂点ごとのウェイトリスト。
-        influences (list[list[int]]): 頂点ごとの影響ジョイントインデックスリスト。
-    """
-
-    # スキンクラスターのMObjectを取得
-    selection_list = om.MSelectionList()
-    selection_list.add(skin_cluster)
-    skin_cluster_obj = selection_list.getDependNode(0)
-    # https://help.autodesk.com/view/MAYAUL/2022/ENU/?guid=Maya_SDK_py_ref_class_open_maya_anim_1_1_m_fn_skin_cluster_html
-    skin_fn = oma.MFnSkinCluster(skin_cluster_obj)
-
-    influence_paths = skin_fn.influenceObjects()
-    influence_count = len(influence_paths)
-
-    # メッシュのDagPathを取得
-    mesh_selection_list = om.MSelectionList()
-    mesh_selection_list.add(mesh_node)
-    shape_dag_path = mesh_selection_list.getDagPath(0)
-    mesh_fn = om.MFnMesh(shape_dag_path)
-    vertex_count = mesh_fn.numVertices
-
-    # 全頂点のコンポーネントを作成
-    vertex_component = om.MFnSingleIndexedComponent()
-    vertex_component_obj = vertex_component.create(om.MFn.kMeshVertComponent)
-    vertex_indices = list(range(vertex_count))
-    vertex_component.addElements(vertex_indices)
-
-    # infarray = list(range(influence_count))
-    influence_indices = om.MIntArray(influence_count, 0)
-    for ii in range(influence_count):
-        influence_indices[ii] = ii
-
-    # flat list を構築して MDoubleArray に一括変換（per-element 代入より桁違いに速い）
-    zero_row = [0.0] * influence_count
-    n_weights = len(weights)
-    flat = []
-    flat_extend = flat.extend
-    for vi in range(vertex_count):
-        if vi < n_weights:
-            row = weights[vi]
-            row_len = len(row)
-            if row_len >= influence_count:
-                flat_extend(row[:influence_count])
-            else:
-                flat_extend(row)
-                flat_extend(zero_row[:influence_count - row_len])
-        else:
-            flat_extend(zero_row)
-    weight_array = om.MDoubleArray(flat)
-
-    # 一括で設定
-    skin_fn.setWeights(shape_dag_path, vertex_component_obj, influence_indices, weight_array, False)
-
-
-def find_or_create_blendshape_node(mesh_node):
-    """既存のblendShapeノードを検索または新規作成"""
-    # メッシュノードが存在するかチェック
-    if not cmds.objExists(mesh_node):
-        raise ValueError(f"Mesh node {mesh_node} does not exist")
-
-    # シェイプノードを取得
-    shape_nodes = cmds.listRelatives(mesh_node, shapes=True, type="mesh")
-    if not shape_nodes:
-        raise ValueError(f"No mesh shape found for {mesh_node}")
-
-    shape_node = shape_nodes[0]
-
-    history = cmds.listHistory(shape_node, il=2, pdo=False) or []
-    blendshapes = [
-        x for x in history if cmds.nodeType(x) == "blendShape" and cmds.blendShape(x, q=True, g=True)[0] == shape_node
-    ]
-    if blendshapes:
-        return blendshapes[0]
-    else:
-        return cmds.blendShape(mesh_node)[0]
-
-
-def find_or_create_nucleus_solver(name="mmd_nucleus"):
-    """既存のNucleusソルバーを検索または新規作成"""
-    nucleus_nodes = cmds.ls(type="nucleus")
-    if nucleus_nodes:
-        return nucleus_nodes[0]
-    return cmds.createNode("nucleus", name=name)
-
-
-def create_collision_primitive(shape_type, size, name="collision"):
-    """
-    形状タイプに応じたコリジョン用プリミティブを作成
-
-    Args:
-        shape_type (int): 0=箱, 1=球, 2=カプセル
-        size (tuple): (x, y, z) サイズ
-        name (str): オブジェクト名
-
-    Returns:
-        str: 作成されたオブジェクト名
-    """
-    if shape_type == 0:  # 箱
-        obj = cmds.polyCube(name=name, width=size[0] * 2, height=size[1] * 2, depth=size[2] * 2)[0]
-    elif shape_type == 1:  # 球
-        obj = cmds.polySphere(name=name, radius=size[0])[0]
-    elif shape_type == 2:  # カプセル（円柱で近似）
-        obj = cmds.polyCylinder(name=name, radius=size[0], height=size[1] * 2)[0]
-    else:
-        raise ValueError(f"Unknown shape type: {shape_type}")
-
-    return obj
-
-
-def apply_ncloth_to_mesh(mesh, nucleus_solver=None):
-    """
-    メッシュにnClothを適用
-
-    Args:
-        mesh (str): メッシュ名
-        nucleus_solver (str): Nucleusソルバー名（Noneの場合は新規作成）
-
-    Returns:
-        str: 作成されたnClothシェイプノード名
-    """
-
-    cmds.select(mesh)
-    ncloth_shape = mel.eval("createNCloth 0;")
-
-    if nucleus_solver and ncloth_shape:
-        # Nucleusソルバーへの接続
-        ncloth_nodes = cmds.ls(type="nCloth")
-        if ncloth_nodes:
-            index = len([i for i in cmds.listConnections(nucleus_solver + ".inputActive") or [] if i])
-            cmds.connectAttr(
-                f"{ncloth_shape[0]}.currentState",
-                f"{nucleus_solver}.inputActive[{index}]",
-            )
-            cmds.connectAttr(
-                f"{ncloth_shape[0]}.startState",
-                f"{nucleus_solver}.inputActiveStart[{index}]",
-            )
-
-    return ncloth_shape[0] if ncloth_shape else None
-
-
-def apply_nrigid_to_mesh(obj, is_dynamic=True):
-    """
-    オブジェクトにnRigidを適用
-
-    Args:
-        obj (str): オブジェクト名
-        is_dynamic (bool): 動的かどうか
-
-    Returns:
-        str: 作成されたnRigidノード名
-    """
-
-    cmds.select(obj)
-    nrigid = mel.eval("makeCollideNCloth;")
-
-    if nrigid:
-        cmds.setAttr(f"{nrigid[0]}.isDynamic", 1 if is_dynamic else 0)
-        return nrigid[0]
-
-    return None
-
-
-def create_dynamic_curve(points, name="dynamic_curve"):
-    """
-    ダイナミックカーブを作成
-
-    Args:
-        points (list): カーブのポイントリスト
-        name (str): カーブ名
-
-    Returns:
-        str: 作成されたカーブ名
-    """
-    curve = cmds.curve(d=1, p=points, name=name)
-    return curve
-
-
-def apply_nhair_to_curve(curve):
-    """
-    カーブにnHairシステムを適用
-
-    Args:
-        curve (str): カーブ名
-
-    Returns:
-        str: 作成されたhairSystemノード名
-    """
-
-    cmds.select(curve)
-    mel.eval('makeCurvesDynamic 2 { "1", "0", "1", "1", "0"};')
-
-    hair_systems = cmds.ls(type="hairSystem")
-    if hair_systems:
-        return hair_systems[-1]
-
-    return None
 
 
 def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
@@ -1425,11 +785,32 @@ def _find_plug(fn_depend, attr):
     return plug
 
 
+def _layer_curve_for_blend_attr(blend_node, attr, layer_curves):
+    """Return the animLayer curve connected to the blend input for attr."""
+    axis = attr[-1] if attr and attr[-1] in "XYZ" else ""
+    candidate_inputs = []
+    if axis:
+        candidate_inputs.extend((f"inputB{axis}", f"inputB.inputB{axis}"))
+    candidate_inputs.append("inputB")
+
+    for input_attr in candidate_inputs:
+        plug = f"{blend_node}.{input_attr}"
+        if not cmds.objExists(plug):
+            continue
+        input_curves = cmds.listConnections(plug, source=True, destination=False, type="animCurve") or []
+        for curve_name in input_curves:
+            if curve_name in layer_curves:
+                return curve_name
+
+    return None
+
+
 def create_animation_curves(
     node_name,
     attributes,
     tangent_type=oma.MFnAnimCurve.kTangentLinear,
     animation_layer=None,
+    seed_values=None,
 ):
     """
     指定したノードの属性にアニメーションカーブを作成する。
@@ -1452,18 +833,10 @@ def create_animation_curves(
 
     # アニメーションレイヤーが指定されている場合
     if animation_layer and cmds.animLayer(animation_layer, query=True, exists=True):
-        # オブジェクトがレイヤーに含まれているか確認
-        cmds.select(node_name, replace=True)
-        affected_layers = cmds.animLayer([node_name], query=True, affectedLayers=True) or []
-        if animation_layer not in affected_layers:
-            # オブジェクトをレイヤーに追加
-            current_selection = cmds.ls(selection=True)
-            cmds.select(node_name, replace=True)
-            cmds.animLayer(animation_layer, edit=True, addSelectedObjects=True)
-            if current_selection:
-                cmds.select(current_selection)
-            else:
-                cmds.select(clear=True)
+        for attr in attributes:
+            base_attr = attr.split("[", 1)[0]
+            if cmds.objExists(f"{node_name}.{attr}") or cmds.attributeQuery(base_attr, node=node_name, exists=True):
+                cmds.animLayer(animation_layer, edit=True, attribute=f"{node_name}.{attr}")
 
     # 既存のアニメーションカーブをクリア（レイヤーモードでない場合のみ）
     if not animation_layer:
@@ -1477,23 +850,42 @@ def create_animation_curves(
     for attr in attributes:
         if animation_layer:
             # レイヤーが有効な場合は、cmds.setKeyframeを使って初期カーブを作成
-            cmds.setKeyframe(node_name, attribute=attr, animLayer=animation_layer)
-            # 作成されたカーブを取得
-            blend_nodes = cmds.animLayer(animation_layer, query=True, blendNodes=True) or []
+            key_args = {"attribute": attr, "animLayer": animation_layer}
+            if seed_values and attr in seed_values:
+                key_args["value"] = float(seed_values[attr])
+            cmds.setKeyframe(node_name, **key_args)
+            # 作成されたカーブを取得。node.attr から直近の animBlendNode を辿ると、
+            # レイヤー全体の blendNodes を毎属性スキャンせずに目的の curve へ到達できる。
+            # 既存 base curve がある場合もあるため、返す curve は layer 所属に限定する。
+            layer_curves = set(cmds.animLayer(animation_layer, query=True, animCurves=True) or [])
+            blend_nodes = cmds.listConnections(
+                f"{node_name}.{attr}",
+                source=True,
+                destination=False,
+            ) or []
             for blend_node in blend_nodes:
-                # ブレンドノードの入力カーブを探す
+                curve_name = _layer_curve_for_blend_attr(blend_node, attr, layer_curves)
+                if curve_name:
+                    curve_sel = om.MSelectionList()
+                    curve_sel.add(curve_name)
+                    curve_obj = curve_sel.getDependNode(0)
+                    curves[attr] = oma.MFnAnimCurve(curve_obj)
+                    break
+
+                if attr and attr[-1] in "XYZ":
+                    continue
+
                 input_curves = cmds.listConnections(blend_node, source=True, type="animCurve") or []
                 for curve_name in input_curves:
-                    # このカーブが目的の属性のものか確認
-                    curve_connections = cmds.listConnections(curve_name, destination=True, plugs=True) or []
-                    for conn in curve_connections:
-                        if f"{node_name}.{attr}" in conn or attr in conn:
-                            # Maya APIオブジェクトとして取得
-                            curve_sel = om.MSelectionList()
-                            curve_sel.add(curve_name)
-                            curve_obj = curve_sel.getDependNode(0)
-                            curves[attr] = oma.MFnAnimCurve(curve_obj)
-                            break
+                    if curve_name not in layer_curves:
+                        continue
+                    curve_sel = om.MSelectionList()
+                    curve_sel.add(curve_name)
+                    curve_obj = curve_sel.getDependNode(0)
+                    curves[attr] = oma.MFnAnimCurve(curve_obj)
+                    break
+                if attr in curves:
+                    break
         else:
             # 通常のアニメーションカーブ作成
             curve = oma.MFnAnimCurve()
@@ -1937,3 +1329,171 @@ def setup_mmd_transparency(algorithm=TRANSPARENCY_ALGORITHM_DEPTH_PEELING):
     except Exception:
         logger.debug("Failed to set transparency algorithm", exc_info=True)
         return False
+
+
+DX11_TEXTURE_SLOTS = _maya_material_utils.DX11_TEXTURE_SLOTS
+ATTR_MMD_TEXTURE_SOURCE_KIND = _maya_material_utils.ATTR_MMD_TEXTURE_SOURCE_KIND
+ATTR_MMD_SHARED_TOON_ID = _maya_material_utils.ATTR_MMD_SHARED_TOON_ID
+
+sanitize_texture_path = _maya_material_utils.sanitize_texture_path
+mark_mmd_texture_file_node = _maya_material_utils.mark_mmd_texture_file_node
+get_mmd_original_texture_path = _maya_material_utils.get_mmd_original_texture_path
+is_mmd_file_node_unreadable = _maya_material_utils.is_mmd_file_node_unreadable
+find_material_texture_file_node = _maya_material_utils.find_material_texture_file_node
+classify_mmd_texture_file_node = _maya_material_utils.classify_mmd_texture_file_node
+resolve_mmd_texture_file_node = _maya_material_utils.resolve_mmd_texture_file_node
+bind_dx11_texture_file_node = _maya_material_utils.bind_dx11_texture_file_node
+create_material = _maya_material_utils.create_material
+assign_material = _maya_material_utils.assign_material
+assign_material_to_faces = _maya_material_utils.assign_material_to_faces
+
+create_mesh_with_uvs = _maya_mesh_utils.create_mesh_with_uvs
+split_mesh_by_material = _maya_mesh_utils.split_mesh_by_material
+get_materials_from_mesh = _maya_mesh_utils.get_materials_from_mesh
+apply_vertex_weights = _maya_mesh_utils.apply_vertex_weights
+find_or_create_blendshape_node = _maya_mesh_utils.find_or_create_blendshape_node
+
+find_or_create_nucleus_solver = _maya_physics_utils.find_or_create_nucleus_solver
+create_dynamic_curve = _maya_physics_utils.create_dynamic_curve
+apply_nhair_to_curve = _maya_physics_utils.apply_nhair_to_curve
+apply_ncloth_to_mesh = _maya_physics_utils.apply_ncloth_to_mesh
+create_collision_primitive = _maya_physics_utils.create_collision_primitive
+apply_nrigid_to_mesh = _maya_physics_utils.apply_nrigid_to_mesh
+
+
+def resolve_mmd_material_texture(material, workspace_root=None):
+    """Resolve the selected material's base texture file node, if present."""
+    file_node = find_material_texture_file_node(material)
+    if not file_node:
+        return None
+    return resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
+
+
+def _dx11_texture_slot_from_attr(attr_name):
+    for texture_attr, has_attr in DX11_TEXTURE_SLOTS.values():
+        if attr_name == texture_attr:
+            return texture_attr, has_attr
+    return None
+
+
+def _connected_dx11_texture_slot(file_node):
+    connections = cmds.listConnections(
+        f"{file_node}.outColor",
+        source=False,
+        destination=True,
+        plugs=True,
+    ) or []
+    if not isinstance(connections, (list, tuple, set)):
+        return None
+    for plug in connections:
+        if "." not in plug:
+            continue
+        shader, attr_name = plug.rsplit(".", 1)
+        slot = _dx11_texture_slot_from_attr(attr_name)
+        if slot and cmds.objExists(shader):
+            return shader, slot[0], slot[1]
+    return None
+
+
+def _infer_dx11_texture_slot_from_file_node(file_node):
+    sorted_slots = sorted(DX11_TEXTURE_SLOTS.items(), key=lambda item: len(item[0]), reverse=True)
+    for suffix, (texture_attr, has_attr) in sorted_slots:
+        if not file_node.endswith(suffix):
+            continue
+        shader = file_node[: -len(suffix)]
+        if cmds.objExists(shader):
+            return shader, texture_attr, has_attr
+    return None
+
+
+def rebind_resolved_mmd_dx11_texture(file_node):
+    """Reconnect one file node to its dx11Shader texture slot through compatibility names."""
+    target = _connected_dx11_texture_slot(file_node) or _infer_dx11_texture_slot_from_file_node(file_node)
+    if not target:
+        return {"status": "skipped", "reason": "dx11_texture_slot_not_found"}
+
+    shader, texture_attr, has_attr = target
+    if cmds.nodeType(shader) != "dx11Shader":
+        return {"status": "skipped", "reason": "not_dx11_shader"}
+    if not cmds.attributeQuery(texture_attr, node=shader, exists=True):
+        return {"status": "skipped", "reason": "texture_attr_missing"}
+    if not cmds.attributeQuery(has_attr, node=shader, exists=True):
+        return {"status": "skipped", "reason": "has_attr_missing"}
+
+    if not bind_dx11_texture_file_node(
+        shader,
+        file_node,
+        texture_attr,
+        has_attr,
+        cmds_module=cmds,
+        set_attribute_func=set_attribute,
+    ):
+        return {
+            "status": "failed",
+            "reason": "connect_failed",
+            "shader": shader,
+            "texture_attr": texture_attr,
+            "has_attr": has_attr,
+        }
+
+    return {
+        "status": "rebound",
+        "reason": "connected",
+        "shader": shader,
+        "texture_attr": texture_attr,
+        "has_attr": has_attr,
+    }
+
+
+def rebind_resolved_scene_mmd_dx11_textures(results):
+    """Rebind resolved scene texture results through maya_utils-compatible names."""
+    rebound = 0
+    skipped = 0
+    failed = 0
+    for result in results:
+        if getattr(result, "status", None) != "resolved":
+            continue
+        file_node = getattr(result, "file_node", None)
+        if not file_node:
+            setattr(result, "rebind_status", "skipped")
+            setattr(result, "rebind_reason", "missing_file_node")
+            skipped += 1
+            continue
+        rebind = rebind_resolved_mmd_dx11_texture(file_node)
+        setattr(result, "rebind_status", rebind["status"])
+        setattr(result, "rebind_reason", rebind["reason"])
+        for key in ("shader", "texture_attr", "has_attr"):
+            if key in rebind:
+                setattr(result, f"rebind_{key}", rebind[key])
+        if rebind["status"] == "rebound":
+            rebound += 1
+        elif rebind["status"] == "failed":
+            failed += 1
+        else:
+            skipped += 1
+    return {"rebound": rebound, "skipped": skipped, "failed": failed}
+
+
+def resolve_scene_mmd_textures(workspace_root=None):
+    """Resolve broken MMD file nodes in the current scene through compatibility names."""
+    results = []
+    for file_node in cmds.ls(type="file") or []:
+        if not cmds.attributeQuery(
+            _maya_material_utils.ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+            node=file_node,
+            exists=True,
+        ):
+            continue
+        classification = classify_mmd_texture_file_node(file_node)
+        if classification and classification.status == "resolvable":
+            resolution = resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
+            if resolution is not None and not getattr(resolution, "file_node", None):
+                resolution.file_node = file_node
+            results.append(resolution)
+        elif classification:
+            classification.file_node = file_node
+            results.append(classification)
+    rebind_summary = rebind_resolved_scene_mmd_dx11_textures(results)
+    if rebind_summary["rebound"]:
+        cmds.refresh(force=True)
+    return results

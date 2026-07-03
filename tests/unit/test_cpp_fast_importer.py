@@ -5,74 +5,22 @@ Verifies that ``import_mmd_file`` correctly routes through / around the
 ``cpp_fast_load_mesh_only`` options.  Also tests the skeleton/skin creation
 path inside ``_apply_fast_skeleton_skin``.
 
-NOTE: Maya/PyMel is unavailable in CI, so we pre-seed ``sys.modules``
-with real ``types.ModuleType`` stubs so the package import chain resolves.
+NOTE: Maya/PyMel is unavailable in CI, so the shared Maya stub is installed
+before importing the modules under test.
 """
 
 from __future__ import annotations
 
 import json
-import sys
 import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-
-class _StubModule(types.ModuleType):
-    """A module proxy that returns a MagicMock for any missing attribute."""
-
-    def __getattr__(self, name):
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return MagicMock()
+from tests.common.maya_stub import install_maya_stub
 
 
-# ── Pre-seed maya submodule tree ────────────────────────────────────────
-# Use ModuleType so Python's import machinery can find submodules.
-def _seed_maya_modules():
-    try:
-        import maya.cmds  # noqa: F401
-
-        return
-    except ImportError:
-        pass
-
-    maya_mod = types.ModuleType("maya")
-    maya_mod.__package__ = "maya"
-    maya_mod.__path__ = ["maya"]
-    maya_mod.__file__ = "<maya stub>"
-    sys.modules["maya"] = maya_mod
-
-    maya_cmds = types.ModuleType("maya.cmds")
-    maya_cmds.__package__ = "maya.cmds"
-    maya_cmds.__file__ = "<maya.cmds stub>"
-    maya_cmds.optionVar = MagicMock()
-    maya_cmds.optionVar.exists = MagicMock(return_value=False)
-    sys.modules["maya.cmds"] = maya_cmds
-
-    maya_api = types.ModuleType("maya.api")
-    maya_api.__package__ = "maya.api"
-    maya_api.__path__ = ["maya/api"]
-    maya_api.__file__ = "<maya.api stub>"
-    sys.modules["maya.api"] = maya_api
-
-    for sub in ("OpenMaya", "OpenMayaAnim", "OpenMayaRender"):
-        full_name = f"maya.api.{sub}"
-        mod = _StubModule(full_name)
-        mod.__package__ = full_name
-        mod.__file__ = f"<{full_name} stub>"
-        sys.modules[full_name] = mod
-
-    for sub_name in ("maya.mel", "maya.standalone", "maya.OpenMayaUI"):
-        if sub_name not in sys.modules:
-            mod = types.ModuleType(sub_name)
-            mod.__package__ = sub_name
-            mod.__file__ = f"<{sub_name} stub>"
-            sys.modules[sub_name] = mod
-
-
-_seed_maya_modules()
+install_maya_stub()
 
 # Now safe to import the module under test
 from mmd_tools.io.mmd_importer import import_mmd_file
@@ -124,6 +72,67 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_import_pmx.assert_called_once()
         self.assertEqual(result, "python_root")
 
+    @patch("mmd_tools.io.mmd_importer.fast_import")
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_python_pmx_path_honors_explicit_scale_argument(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+        mock_fast: MagicMock,
+    ):
+        """Python PMX path uses explicit scale before options/settings."""
+        settings.set("import.general.scale_factor", 9.0)
+        parsed = object()
+        mock_parse.return_value = parsed
+        mock_import_pmx.return_value = "python_root"
+
+        result = import_mmd_file(
+            "model.pmx",
+            scale=3.0,
+            options={"scale": 2.0, "use_cpp_fast_load": False},
+        )
+
+        mock_fast.assert_not_called()
+        mock_import_pmx.assert_called_once_with(
+            parsed,
+            "model.pmx",
+            3.0,
+            {"scale": 2.0, "use_cpp_fast_load": False},
+            progress_callback=None,
+        )
+        self.assertEqual(result, "python_root")
+
+    @patch("mmd_tools.io.mmd_importer.fast_import")
+    @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
+    def test_python_pmd_path_honors_options_scale_before_settings(
+        self,
+        mock_import_pmx: MagicMock,
+        mock_parse: MagicMock,
+        mock_fast: MagicMock,
+    ):
+        """Python PMD path uses PMX importer with options scale after PMD-to-PMX parse."""
+        settings.set("import.general.scale_factor", 9.0)
+        parsed = object()
+        mock_parse.return_value = parsed
+        mock_import_pmx.return_value = "pmd_root"
+
+        result = import_mmd_file(
+            "model.pmd",
+            options={"scale": 2.5, "use_cpp_fast_load": True},
+        )
+
+        mock_fast.assert_not_called()
+        mock_import_pmx.assert_called_once_with(
+            parsed,
+            "model.pmd",
+            2.5,
+            {"scale": 2.5, "use_cpp_fast_load": True},
+            progress_callback=None,
+        )
+        self.assertEqual(result, "pmd_root")
+
     # ------------------------------------------------------------------
     # Scenario 2: option enabled + fast import succeeds → bypass Python
     # ------------------------------------------------------------------
@@ -140,10 +149,12 @@ class TestCppFastImportRouting(unittest.TestCase):
         """When use_cpp_fast_load is True and fast_import succeeds,
         parse_mmd_file / import_pmx_file must NOT be called."""
         mock_fast.return_value = "cpp_root"
+        progress = []
 
         result = import_mmd_file(
             "model.pmx",
             options={"scale": 1.0, "use_cpp_fast_load": True},
+            progress_callback=progress.append,
         )
 
         mock_fast.assert_called_once_with(
@@ -156,6 +167,7 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_parse.assert_not_called()
         mock_import_pmx.assert_not_called()
         self.assertEqual(result, "cpp_root")
+        self.assertEqual(progress, [5, 10, 90])
 
     # ------------------------------------------------------------------
     # Scenario 3: option enabled + fast import fails → fallback
@@ -175,16 +187,19 @@ class TestCppFastImportRouting(unittest.TestCase):
         mock_fast.return_value = None
         mock_parse.return_value = object()
         mock_import_pmx.return_value = "fallback_root"
+        progress = []
 
         result = import_mmd_file(
             "model.pmx",
             options={"scale": 1.0, "use_cpp_fast_load": True},
+            progress_callback=progress.append,
         )
 
         mock_fast.assert_called_once()
         mock_parse.assert_called_once()
         mock_import_pmx.assert_called_once()
         self.assertEqual(result, "fallback_root")
+        self.assertEqual(progress, [5, 10, 12])
 
     # ------------------------------------------------------------------
     # Scenario 4: mesh_only=False → fast import receives mesh_only=False
@@ -295,16 +310,16 @@ class TestCppFastImportRouting(unittest.TestCase):
 
     @patch("mmd_tools.io.mmd_importer.fast_import")
     @patch("mmd_tools.io.mmd_importer.parse_mmd_file")
-    @patch("mmd_tools.io.mmd_importer.pmd_importer.import_pmd_file")
+    @patch("mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file")
     def test_pmd_never_uses_fast_import(
         self,
-        mock_import_pmd: MagicMock,
+        mock_import_pmx: MagicMock,
         mock_parse: MagicMock,
         mock_fast: MagicMock,
     ):
         """.pmd files must never attempt the C++ fast import path."""
         mock_parse.return_value = object()
-        mock_import_pmd.return_value = "pmd_root"
+        mock_import_pmx.return_value = "pmd_root"
 
         result = import_mmd_file(
             "model.pmd",
@@ -313,6 +328,7 @@ class TestCppFastImportRouting(unittest.TestCase):
 
         mock_fast.assert_not_called()
         mock_parse.assert_called_once()
+        mock_import_pmx.assert_called_once()
         self.assertEqual(result, "pmd_root")
 
 
@@ -429,6 +445,42 @@ class TestFastSkeletonSkin(unittest.TestCase):
                 [0.8, 0.2],
                 [1.0, 0.0],
             ],
+        )
+
+    @patch("mmd_tools.io.cpp_fast_importer.parse_pmx_native")
+    def test_skeleton_skin_falls_back_to_native_pmx_parser(self, mock_parse_native: MagicMock):
+        """ParsedModel ABI がない環境では native PMX parser から skeleton/skin を作る。"""
+        self.mock_parsed_cls.from_pmx_bytes.return_value = None
+
+        bone = types.SimpleNamespace(
+            name="センター",
+            name_english="center",
+            parent_bone_index=-1,
+            position=(0.0, 10.0, 0.0),
+        )
+        vertex = types.SimpleNamespace(
+            weight_transform_type=0,
+            bone_indices=[0],
+            bone_weights=[],
+        )
+        mock_parse_native.return_value = types.SimpleNamespace(
+            bones=[bone],
+            vertices=[vertex],
+        )
+
+        cmds = self._make_cmds_mock()
+
+        _apply_fast_skeleton_skin(
+            "model.pmx", "mesh1", "root1", "my_model", cmds
+        )
+
+        cmds.group.assert_called_once()
+        cmds.joint.assert_called_once()
+        cmds.skinCluster.assert_called_once()
+        self.mock_apply_weights.assert_called_once_with(
+            "skinCluster1",
+            "mesh1",
+            [[1.0]],
         )
 
     def test_skeleton_skin_no_bones(self):

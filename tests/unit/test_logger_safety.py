@@ -83,19 +83,23 @@ class TestMayaScriptEditorHandler(unittest.TestCase):
     """MayaScriptEditorHandler のルーティングと安全性を確認する。"""
 
     def setUp(self):
-        # ``import maya.OpenMaya as _om`` は親パッケージ ``maya`` が
-        # sys.modules に存在しないと ImportError になるため両方登録する。
+        # ``import maya.api.OpenMaya as _om`` は親パッケージ ``maya`` と
+        # ``maya.api`` が sys.modules に存在しないと ImportError になるため登録する。
         self._prev_maya = sys.modules.get("maya")
-        self._prev_om = sys.modules.get("maya.OpenMaya")
+        self._prev_api = sys.modules.get("maya.api")
+        self._prev_om = sys.modules.get("maya.api.OpenMaya")
 
         self.mock_mglobal = MagicMock(name="MGlobal")
-        om_stub = ModuleType("maya.OpenMaya")
+        om_stub = ModuleType("maya.api.OpenMaya")
         om_stub.MGlobal = self.mock_mglobal
+        api_stub = ModuleType("maya.api")
+        api_stub.OpenMaya = om_stub
         maya_stub = ModuleType("maya")
-        maya_stub.OpenMaya = om_stub
+        maya_stub.api = api_stub
 
         sys.modules["maya"] = maya_stub
-        sys.modules["maya.OpenMaya"] = om_stub
+        sys.modules["maya.api"] = api_stub
+        sys.modules["maya.api.OpenMaya"] = om_stub
 
         self.handler = MayaScriptEditorHandler()
         self.handler.setFormatter(logging.Formatter("%(message)s"))
@@ -105,10 +109,14 @@ class TestMayaScriptEditorHandler(unittest.TestCase):
             sys.modules.pop("maya", None)
         else:
             sys.modules["maya"] = self._prev_maya
-        if self._prev_om is None:
-            sys.modules.pop("maya.OpenMaya", None)
+        if self._prev_api is None:
+            sys.modules.pop("maya.api", None)
         else:
-            sys.modules["maya.OpenMaya"] = self._prev_om
+            sys.modules["maya.api"] = self._prev_api
+        if self._prev_om is None:
+            sys.modules.pop("maya.api.OpenMaya", None)
+        else:
+            sys.modules["maya.api.OpenMaya"] = self._prev_om
 
     def _rec(self, level, msg="test"):
         return logging.LogRecord("mmd_tools.test", level, "", 0, msg, (), None)
@@ -137,8 +145,9 @@ class TestMayaScriptEditorHandler(unittest.TestCase):
         self.mock_mglobal.displayError.assert_called_once_with("crit")
 
     def test_safe_when_maya_absent(self):
-        """maya.OpenMaya が import できない場合は displayXxx を呼ばず silent に返る。"""
-        sys.modules.pop("maya.OpenMaya", None)
+        """maya.api.OpenMaya が import できない場合は displayXxx を呼ばず silent に返る。"""
+        sys.modules.pop("maya.api.OpenMaya", None)
+        sys.modules.pop("maya.api", None)
         sys.modules.pop("maya", None)
         # Should not raise
         self.handler.emit(self._rec(logging.ERROR, "no maya"))

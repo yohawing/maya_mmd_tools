@@ -8,19 +8,57 @@ instead of creating a separate virtual environment.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import platform
 import shutil
 import subprocess
 import sys
+import tarfile
+import urllib.request
+import zipfile
 from pathlib import Path
 
 import nox
 
-
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tests.common.maya_location import maya_location as _maya_location  # noqa: E402
+from tests.common.maya_location import mayapy as _mayapy  # noqa: E402
+from tests.common.maya_location import convert_path_options_for_maya_process as _convert_maya_path_options  # noqa: E402
+from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
+from tests.common.maya_location import pythonpath_for_maya_process as _maya_pythonpath  # noqa: E402
+from tests.common.maya_location import resolve_path_for_maya_process as _resolve_maya_path  # noqa: E402
+
+
 DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_CMAKE_CONFIG = "Debug"
+RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
+RELEASE_ADDICTION_INTERPOLATION_EYE_MAX = "2.0"
+RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG = "5.0"
+RELEASE_ADDICTION_INTERPOLATION_UP_MAX_DEG = "5.0"
+RELEASE_ADDICTION_INTERPOLATION_ROTATION_MAX_DEG = "5.0"
+RELEASE_ADDICTION_CAMERA_VMD = (
+    "F:/MMD/vmd/175_Addictionカメラモーションv1.3/"
+    "Addictionカメラモーション/Addictionカメラ用モーション(一人用).vmd"
+)
+MMD_ANIM_CLI_VERSION = "v0.1.9"
+MMD_ANIM_CLI_REPO = "yohawing/mmd-anim"
+MMD_ANIM_CLI_ASSETS = {
+    "Windows": {
+        "archive": "mmd-anim-v0.1.9-x86_64-pc-windows-msvc.zip",
+        "sha256": "8fa674e2b8104324aaf84351ec91e857c47a768345a5e806c5da543cca0b2859",
+        "exe": "mmd-anim.exe",
+    },
+    "Linux": {
+        "archive": "mmd-anim-v0.1.9-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "821164e1db3191492303b5290b0a9166fd6bede41384eb805836f4ed3e03a576",
+        "exe": "mmd-anim",
+    },
+}
 
 nox.options.sessions = ["tests"]
 
@@ -54,23 +92,332 @@ def _require_build_path(session: nox.Session, value: str, option_name: str) -> P
     return path
 
 
-def _maya_location(version: str) -> Path:
-    """Return Maya installation root for the current platform."""
-    version_env = os.environ.get(f"MAYA_LOCATION_{version}")
-    if version_env:
-        return Path(version_env)
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest for a file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
-    common_env = os.environ.get("MAYA_LOCATION")
-    if common_env:
-        return Path(common_env)
+
+def _mmd_anim_cli_version(exe: Path) -> str:
+    """Return the mmd-anim CLI version string."""
+    result = subprocess.run(
+        [str(exe), "--version"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _download_file(url: str, destination: Path) -> None:
+    """Download a URL to a local file."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(url) as response, destination.open("wb") as handle:
+        shutil.copyfileobj(response, handle)
+
+
+def _extract_archive(archive: Path, destination: Path) -> None:
+    """Extract a supported mmd-anim release archive."""
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as zip_file:
+            zip_file.extractall(destination)
+    elif archive.name.endswith(".tar.gz"):
+        with tarfile.open(archive, "r:gz") as tar_file:
+            tar_file.extractall(destination)
+    else:
+        raise ValueError(f"Unsupported archive format: {archive}")
+
+
+def _downloaded_mmd_anim_cli(session: nox.Session) -> Path:
+    """Return the pinned mmd-anim CLI downloaded from GitHub Releases."""
+    expected_version = f"mmd-anim {MMD_ANIM_CLI_VERSION.removeprefix('v')}"
+    override = os.environ.get("MMD_ANIM_CLI")
+    if override:
+        exe = Path(override)
+        if not exe.exists():
+            session.error(f"MMD_ANIM_CLI does not exist: {exe}")
+        version = _mmd_anim_cli_version(exe)
+        if version != expected_version:
+            session.error(f"MMD_ANIM_CLI has unexpected version: {version}; expected {expected_version}")
+        return exe
 
     system = platform.system()
-    if system == "Windows":
-        return Path(f"C:/Program Files/Autodesk/Maya{version}")
-    if system == "Darwin":
-        return Path(f"/Applications/Autodesk/maya{version}/Maya.app/Contents")
+    asset = MMD_ANIM_CLI_ASSETS.get(system)
+    if asset is None:
+        session.error(
+            f"No prebuilt mmd-anim CLI asset is configured for {system}. "
+            "Set MMD_ANIM_CLI to a compatible binary."
+        )
 
-    return Path(f"/usr/autodesk/maya{version}")
+    archive_name = asset["archive"]
+    expected_sha256 = asset["sha256"]
+    exe_name = asset["exe"]
+    url = (
+        f"https://github.com/{MMD_ANIM_CLI_REPO}/releases/download/"
+        f"{MMD_ANIM_CLI_VERSION}/{archive_name}"
+    )
+    tool_dir = ROOT / "build" / "tools" / "mmd-anim" / MMD_ANIM_CLI_VERSION / system.lower()
+    archive = tool_dir / archive_name
+    extract_dir = tool_dir / "extract"
+
+    if not archive.exists() or _sha256_file(archive) != expected_sha256:
+        session.log(f"Downloading {url}")
+        _download_file(url, archive)
+    actual_sha256 = _sha256_file(archive)
+    if actual_sha256 != expected_sha256:
+        session.error(
+            f"SHA-256 mismatch for {archive_name}: got {actual_sha256}, expected {expected_sha256}"
+        )
+
+    candidates = [p for p in extract_dir.rglob(exe_name) if p.is_file()]
+    if not candidates:
+        _extract_archive(archive, extract_dir)
+        candidates = [p for p in extract_dir.rglob(exe_name) if p.is_file()]
+    if not candidates:
+        session.error(f"{exe_name} was not found in {archive_name}")
+    exe = candidates[0]
+    if system != "Windows":
+        exe.chmod(exe.stat().st_mode | 0o755)
+
+    version = _mmd_anim_cli_version(exe)
+    if version != expected_version:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        _extract_archive(archive, extract_dir)
+        candidates = [p for p in extract_dir.rglob(exe_name) if p.is_file()]
+        if not candidates:
+            session.error(f"{exe_name} was not found in {archive_name}")
+        exe = candidates[0]
+        if system != "Windows":
+            exe.chmod(exe.stat().st_mode | 0o755)
+        version = _mmd_anim_cli_version(exe)
+    if version != expected_version:
+        session.error(f"Downloaded mmd-anim CLI has unexpected version: {version}; expected {expected_version}")
+    return exe
+
+
+def _mayapy_env(mayapy: Path, preserve_pythonpath: bool = False, **extra: str) -> dict[str, str]:
+    """Return environment values with repo paths suitable for mayapy."""
+    env = {
+        **os.environ,
+        "PYTHONPATH": _maya_pythonpath(
+            mayapy,
+            ROOT,
+            os.environ.get("PYTHONPATH"),
+            preserve_existing=preserve_pythonpath,
+        ),
+    }
+    env.update(extra)
+    return env
+
+
+def _mayapy_script(mayapy: Path, relative_script: str) -> str:
+    """Return an absolute script path suitable for the resolved mayapy."""
+    return _maya_process_path(mayapy, ROOT / relative_script)
+
+
+def _mayapy_arg_path(mayapy: Path, value: str | Path) -> str:
+    """Return a path argument suitable for the resolved mayapy."""
+    return _resolve_maya_path(mayapy, ROOT, value)
+
+
+def _convert_mayapy_path_options(mayapy: Path, args: list[str], path_options: set[str]) -> list[str]:
+    """Convert values following path-like options for a mayapy child process."""
+    return _convert_maya_path_options(mayapy, ROOT, args, path_options)
+
+
+def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[str]:
+    """Copy a non-ASCII --parity-vmd path to an ASCII build path for mayapy argv."""
+    if "--parity-vmd" not in args:
+        return args
+    index = args.index("--parity-vmd")
+    if index + 1 >= len(args):
+        return args
+    source = Path(args[index + 1])
+    if not source.exists():
+        return args
+    digest = hashlib.sha1(str(source).encode("utf-8")).hexdigest()[:10]
+    alias_dir = ROOT / "build" / "local-camera-motion-oracle" / "local-assets"
+    alias_dir.mkdir(parents=True, exist_ok=True)
+    alias = alias_dir / f"camera-parity-{digest}.vmd"
+    if not alias.exists() or alias.stat().st_size != source.stat().st_size or alias.stat().st_mtime < source.stat().st_mtime:
+        shutil.copy2(source, alias)
+        session.log(f"Copied parity VMD for mayapy argv: {source} -> {alias}")
+    rewritten = list(args)
+    rewritten[index + 1] = str(alias)
+    return rewritten
+
+
+def _import_order_manifest_asset_path(value: str) -> str:
+    """Return an absolute path string to store in a generated local manifest."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = ROOT / path
+    return str(path.resolve())
+
+
+def _write_import_order_local_manifest(
+    session: nox.Session,
+    background_model: str,
+    character_model: str,
+    character_motion: str,
+) -> Path:
+    """Write a UTF-8 manifest so mayapy argv stays ASCII for local asset paths."""
+    background_model = _import_order_manifest_asset_path(background_model)
+    character_model = _import_order_manifest_asset_path(character_model)
+    character_motion = _import_order_manifest_asset_path(character_motion)
+    manifest_path = _require_build_path(
+        session,
+        "build/import-order-e2e/generated-local-manifest.json",
+        "--manifest",
+    )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "cases": [
+            {
+                "name": "background_character_permutations",
+                "assets": [
+                    {
+                        "id": "background",
+                        "type": "pmx",
+                        "role": "background",
+                        "path": background_model,
+                        "useNamespace": False,
+                    },
+                    {
+                        "id": "character",
+                        "type": "pmx",
+                        "role": "character",
+                        "path": character_model,
+                        "useNamespace": False,
+                    },
+                ],
+                "orders": [
+                    ["background", "character"],
+                    ["character", "background"],
+                ],
+            },
+            {
+                "name": "character_motion_camera_clear_permutations",
+                "assets": [
+                    {
+                        "id": "character",
+                        "type": "pmx",
+                        "role": "character",
+                        "path": character_model,
+                        "useNamespace": True,
+                    },
+                    {
+                        "id": "character_motion",
+                        "type": "vmd",
+                        "kind": "model",
+                        "path": character_motion,
+                        "target": "character",
+                    },
+                    {
+                        "id": "camera_wide",
+                        "type": "vmd",
+                        "kind": "camera",
+                        "generated": {
+                            "type": "camera-vmd",
+                            "filename": "camera_wide.vmd",
+                            "frames": [0, 10],
+                        },
+                        "expect": {
+                            "cameraKeys": [0, 10],
+                        },
+                    },
+                    {
+                        "id": "camera_short_clear",
+                        "type": "vmd",
+                        "kind": "camera",
+                        "requires": ["camera_wide"],
+                        "clearExistingMotion": True,
+                        "generated": {
+                            "type": "camera-vmd",
+                            "filename": "camera_short.vmd",
+                            "frames": [0],
+                        },
+                        "expect": {
+                            "cameraKeys": [0],
+                        },
+                    },
+                    {
+                        "id": "light_wide",
+                        "type": "vmd",
+                        "kind": "light",
+                        "generated": {
+                            "type": "light-vmd",
+                            "filename": "light_wide.vmd",
+                            "frames": [0, 10],
+                        },
+                        "expect": {
+                            "lightKeys": [0, 10],
+                        },
+                    },
+                    {
+                        "id": "light_short_clear",
+                        "type": "vmd",
+                        "kind": "light",
+                        "requires": ["light_wide"],
+                        "clearExistingMotion": True,
+                        "generated": {
+                            "type": "light-vmd",
+                            "filename": "light_short.vmd",
+                            "frames": [0],
+                        },
+                        "expect": {
+                            "lightKeys": [0],
+                        },
+                    },
+                ],
+                "constraints": [
+                    ["character", "before", "character_motion"],
+                    ["camera_wide", "before", "camera_short_clear"],
+                    ["light_wide", "before", "light_short_clear"],
+                ],
+                "orders": [
+                    [
+                        "character",
+                        "character_motion",
+                        "camera_wide",
+                        "camera_short_clear",
+                        "light_wide",
+                        "light_short_clear",
+                    ],
+                    [
+                        "character",
+                        "character_motion",
+                        "light_wide",
+                        "light_short_clear",
+                        "camera_wide",
+                        "camera_short_clear",
+                    ],
+                    [
+                        "camera_wide",
+                        "camera_short_clear",
+                        "light_wide",
+                        "light_short_clear",
+                        "character",
+                        "character_motion",
+                    ],
+                ],
+                "expect": {
+                    "characterMotionKeys": True,
+                    "cameraKeysAfterClear": [0],
+                    "lightKeysAfterClear": [0],
+                },
+            },
+        ],
+    }
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
 
 
 def _maya_devkit_root(version: str) -> Path:
@@ -84,14 +431,6 @@ def _maya_devkit_root(version: str) -> Path:
         return Path(common_env)
 
     return _maya_location(version) / "devkit"
-
-
-def _mayapy(version: str) -> Path:
-    """Return mayapy executable path for the current platform."""
-    executable = _maya_location(version) / "bin" / "mayapy"
-    if platform.system() == "Windows":
-        executable = executable.with_suffix(".exe")
-    return executable
 
 
 def _cpp_build_dir(version: str) -> Path:
@@ -340,7 +679,7 @@ def native_smoke(session: nox.Session) -> None:
         "get_mmd_runtime_library, get_runtime_library_path; "
         "lib = get_mmd_runtime_library(); "
         "print(get_runtime_library_path()); "
-        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 1 else 1)"
+        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
     )
     session.run(sys.executable, "-c", code, external=True)
 
@@ -371,15 +710,16 @@ def maya_smoke(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "MMD_TOOLS_CPP_CONFIG": config,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
     session.run(
         str(mayapy),
-        "tests/cpp/smoke_runtime_node.py",
+        _mayapy_script(mayapy, "tests/cpp/smoke_python_rig_fallback.py"),
+        env=env,
+        external=True,
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
         env=env,
         external=True,
     )
@@ -406,9 +746,6 @@ def maya_viewport_capture(session: nox.Session) -> None:
     """
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     out = _option(session.posargs, "--out", str(ROOT / "build/captures/viewport_smoke.png"))
-    out_path = Path(out)
-    if not out_path.is_absolute():
-        out_path = (ROOT / out_path).resolve()
     frame = _option(session.posargs, "--frame", "1")
     width = _option(session.posargs, "--width", "640")
     height = _option(session.posargs, "--height", "480")
@@ -417,17 +754,55 @@ def maya_viewport_capture(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
         # Intentionally no MMD_TOOLS_CPP_* or plugin env; this smoke is plugin-free.
-    }
+    )
     session.run(
         str(mayapy),
-        "tests/viewport/smoke_viewport_capture.py",
+        _mayapy_script(mayapy, "tests/viewport/smoke_viewport_capture.py"),
         "--out",
-        str(out_path),
+        _mayapy_arg_path(mayapy, out),
+        "--frame",
+        frame,
+        "--width",
+        width,
+        "--height",
+        height,
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def maya_shader_override_smoke(session: nox.Session) -> None:
+    """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
+
+    Loads the Python plug-in with shader override registration enabled, creates a
+    custom ``MMDShader`` node, assigns it to a cube, and verifies an offscreen
+    Viewport 2.0 PNG capture is produced.
+
+    Examples:
+        uvx nox -s maya_shader_override_smoke -- --maya 2024
+        uvx nox -s maya_shader_override_smoke -- --maya 2024 --out build/captures/shader_override_smoke.png
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    out = _option(session.posargs, "--out", str(ROOT / "build/captures/shader_override_smoke.png"))
+    frame = _option(session.posargs, "--frame", "1")
+    width = _option(session.posargs, "--width", "640")
+    height = _option(session.posargs, "--height", "480")
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/smoke_shader_override.py"),
+        "--out",
+        _mayapy_arg_path(mayapy, out),
         "--frame",
         frame,
         "--width",
@@ -480,9 +855,6 @@ def maya_static_render(session: nox.Session) -> None:
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     model = _option(session.posargs, "--model", str(ROOT / "tests/data/for_unit_test/test_1bone_cube.pmx"))
     out = _option(session.posargs, "--out", str(ROOT / "build/captures/static_render_1bone_cube.png"))
-    out_path = Path(out)
-    if not out_path.is_absolute():
-        out_path = (ROOT / out_path).resolve()
     frame = _option(session.posargs, "--frame", "0")
     width = _option(session.posargs, "--width", "1024")
     height = _option(session.posargs, "--height", "1024")
@@ -497,22 +869,19 @@ def maya_static_render(session: nox.Session) -> None:
     display = _option(session.posargs, "--display", "sRGB")
     rendering_space = _option(session.posargs, "--rendering-space", "ACEScg")
     diagnostics_out = _option(session.posargs, "--diagnostics-out", "")
-    diagnostics_args: list[str] = []
-    if diagnostics_out:
-        diagnostics_path = _require_build_path(session, diagnostics_out, "--diagnostics-out")
-        diagnostics_args.extend(["--diagnostics-out", str(diagnostics_path)])
-    if _has_flag(session.posargs, "--allow-blank"):
-        diagnostics_args.append("--allow-blank")
 
     mayapy = _mayapy(version)
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
-    }
+    diagnostics_args: list[str] = []
+    if diagnostics_out:
+        diagnostics_path = _require_build_path(session, diagnostics_out, "--diagnostics-out")
+        diagnostics_args.extend(["--diagnostics-out", _mayapy_arg_path(mayapy, diagnostics_path)])
+    if _has_flag(session.posargs, "--allow-blank"):
+        diagnostics_args.append("--allow-blank")
+
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
     vp2_device_map = {
         "gl": "VirtualDeviceGL",
         "glcore": "VirtualDeviceGLCore",
@@ -523,12 +892,12 @@ def maya_static_render(session: nox.Session) -> None:
 
     cmd = [
         str(mayapy),
-        "tests/viewport/static_render_capture.py",
+        _mayapy_script(mayapy, "tests/viewport/static_render_capture.py"),
         shader_flag,
         "--out",
-        str(out_path),
+        _mayapy_arg_path(mayapy, out),
         "--model",
-        model,
+        _mayapy_arg_path(mayapy, model),
         "--frame",
         frame,
         "--width",
@@ -647,15 +1016,15 @@ def maya_batch_import(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
     session.run(
         str(mayapy),
-        "tests/track6/track6_runner.py",
-        *runner_args,
+        _mayapy_script(mayapy, "tests/track6/track6_runner.py"),
+        *_convert_mayapy_path_options(
+            mayapy,
+            runner_args,
+            {"--manifest", "--out-dir", "--scan-root", "--write-manifest"},
+        ),
         env=env,
         external=True,
     )
@@ -705,15 +1074,11 @@ def pmx_roundtrip(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
     session.run(
         str(mayapy),
-        "tests/roundtrip/pmx_roundtrip_runner.py",
-        *runner_args,
+        _mayapy_script(mayapy, "tests/roundtrip/pmx_roundtrip_runner.py"),
+        *_convert_mayapy_path_options(mayapy, runner_args, {"--manifest", "--out-dir"}),
         env=env,
         external=True,
     )
@@ -837,7 +1202,7 @@ def cpp_verify(session: nox.Session) -> None:
         "get_mmd_runtime_library, get_runtime_library_path; "
         "lib = get_mmd_runtime_library(); "
         "print(get_runtime_library_path()); "
-        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 1 else 1)"
+        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
     )
     session.run(sys.executable, "-c", code, external=True)
 
@@ -855,15 +1220,10 @@ def cpp_verify(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = {
-        **os.environ,
-        "MAYA_VERSION": version,
-        "MMD_TOOLS_CPP_CONFIG": config,
-        "PYTHONPATH": str(ROOT),
-    }
+    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
     session.run(
         str(mayapy),
-        "tests/cpp/smoke_runtime_node.py",
+        _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
         env=env,
         external=True,
     )
@@ -873,8 +1233,9 @@ def cpp_verify(session: nox.Session) -> None:
 def golden_oracle(session: nox.Session) -> None:
     """Verify mmd-anim runtime against GoldenOracle numeric manifest.
 
-    Runs ``mmd-anim verify <manifest> --mode numeric`` which compares the
-    committed oracle JSONL against a fresh mmd-anim runtime evaluation.
+    Downloads the pinned mmd-anim GitHub Release CLI, verifies its SHA-256 and
+    version, then runs ``mmd-anim verify <manifest> --mode numeric``. Set
+    ``MMD_ANIM_CLI`` to use an explicit binary with the same version.
     Any regression beyond the manifest epsilon causes session failure.
 
     Examples:
@@ -885,19 +1246,252 @@ def golden_oracle(session: nox.Session) -> None:
         session.posargs, "--manifest",
         str(ROOT / "tests/golden-oracle/manifest.json"),
     )
-    mmd_anim = ROOT / "external" / "mmd-anim" / "target" / "release" / "mmd-anim"
-    if platform.system() == "Windows":
-        mmd_anim = mmd_anim.with_suffix(".exe")
-
-    if not mmd_anim.exists():
-        session.log("mmd-anim release binary not found; building via cargo...")
-        session.run(
-            "cargo", "build", "-p", "mmd-anim-cli",
-            "--manifest-path", "external/mmd-anim/Cargo.toml",
-            "--release", external=True,
-        )
+    mmd_anim = _downloaded_mmd_anim_cli(session)
 
     session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)
+
+
+@nox.session(venv_backend="none")
+def local_camera_motion_oracle(session: nox.Session) -> None:
+    """Run local-only GoldenOracle camera-motion checks against Maya camera import.
+
+    The default manifest path points outside this repository and is expected to
+    exist only on the developer machine. This session is not part of CI.
+
+    Examples:
+        uvx nox -s local_camera_motion_oracle -- --maya 2024 --case camera-edge-generated-vmd
+        uvx nox -s local_camera_motion_oracle -- --mode sparse --limit 2
+        uvx nox -s local_camera_motion_oracle -- --current-epsilon 0.0005 --case camera-edge-generated-vmd
+        uvx nox -s local_camera_motion_oracle -- --current-report-only --case camera-shake-it-nanoem
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    value_options = {
+        "--manifest",
+        "--case",
+        "--limit",
+        "--mode",
+        "--max-current-frames",
+        "--epsilon",
+        "--current-epsilon",
+        "--current-frame-zero",
+        "--out",
+    }
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in {"--all-frames", "--current-report-only"}:
+            passthrough.append(args[i])
+            i += 1
+            continue
+        passthrough.append(args[i])
+        i += 1
+    passthrough = _copy_parity_vmd_for_mayapy(session, passthrough)
+
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
+        "--repo-root",
+        _maya_process_path(mayapy, ROOT),
+        *_convert_mayapy_path_options(
+            mayapy,
+            passthrough,
+            {"--manifest", "--out", "--parity-vmd"},
+        ),
+        env=_mayapy_env(mayapy),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def release_camera_motion_oracle(session: nox.Session) -> None:
+    """Run the local GoldenOracle camera-motion release gate.
+
+    Bake mode gates raw keyframes and playback camera.current pose. Sparse Rig
+    mode gates raw keyframes and editable-rig structure while keeping playback
+    camera.current deltas as a report, because the Rig path now preserves VMD
+    keys as Maya direct animation instead of using dense samples or expression
+    evaluation. The runner's default camera.current frame 0 policy skips
+    non-generated GoldenOracle dump frame 0.
+
+    Examples:
+        uvx nox -s release_camera_motion_oracle -- --maya 2024
+        uvx nox -s release_camera_motion_oracle -- --manifest F:\\Develop\\MMDDev\\GoldenOracle\\manifests\\camera_motion.json
+        uvx nox -s release_camera_motion_oracle -- --all-cases
+        uvx nox -s release_camera_motion_oracle -- --strict-sparse-current
+        uvx nox -s release_camera_motion_oracle -- --skip-addiction-parity
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    manifest = _option(
+        session.posargs,
+        "--manifest",
+        "F:/Develop/MMDDev/GoldenOracle/manifests/camera_motion.json",
+    )
+    out_dir = _require_build_path(
+        session,
+        _option(session.posargs, "--out-dir", "build/local-camera-motion-oracle/release"),
+        "--out-dir",
+    )
+    default_release_cases = [
+        "camera-edge-generated-vmd",
+        "camera-interpolation-isolated-vmd",
+    ]
+    requested_case = _option(session.posargs, "--case", "")
+    if _has_flag(session.posargs, "--all-cases"):
+        selected_cases = [""]
+    elif requested_case:
+        selected_cases = [requested_case]
+    else:
+        selected_cases = default_release_cases
+    args = list(session.posargs)
+    common_args = ["--manifest", manifest]
+    if "--current-epsilon" not in args:
+        common_args.extend(["--current-epsilon", RELEASE_CAMERA_CURRENT_EPSILON])
+    parity_args: list[str] = [
+        "--parity-current-report-only",
+        "--all-frames",
+        "--parity-interpolation-eye-max",
+        _option(session.posargs, "--parity-interpolation-eye-max", RELEASE_ADDICTION_INTERPOLATION_EYE_MAX),
+        "--parity-interpolation-forward-max-deg",
+        _option(
+            session.posargs,
+            "--parity-interpolation-forward-max-deg",
+            RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG,
+        ),
+        "--parity-interpolation-up-max-deg",
+        _option(session.posargs, "--parity-interpolation-up-max-deg", RELEASE_ADDICTION_INTERPOLATION_UP_MAX_DEG),
+        "--parity-interpolation-rotation-max-deg",
+        _option(
+            session.posargs,
+            "--parity-interpolation-rotation-max-deg",
+            RELEASE_ADDICTION_INTERPOLATION_ROTATION_MAX_DEG,
+        ),
+    ]
+    parity_epsilon = _option(session.posargs, "--parity-epsilon", "")
+    if parity_epsilon:
+        parity_args.extend(["--parity-epsilon", parity_epsilon])
+    i = 0
+    passthrough_value_options = {
+        "--case",
+        "--limit",
+        "--max-current-frames",
+        "--epsilon",
+        "--current-epsilon",
+        "--current-frame-zero",
+        "--parity-interpolation-eye-max",
+        "--parity-interpolation-forward-max-deg",
+        "--parity-interpolation-up-max-deg",
+        "--parity-interpolation-rotation-max-deg",
+    }
+    consumed_value_options = {
+        "--maya",
+        "--manifest",
+        "--out-dir",
+        "--case",
+        "--parity-epsilon",
+        "--parity-interpolation-eye-max",
+        "--parity-interpolation-forward-max-deg",
+        "--parity-interpolation-up-max-deg",
+        "--parity-interpolation-rotation-max-deg",
+    }
+    while i < len(args):
+        if args[i] in consumed_value_options and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in passthrough_value_options and i + 1 < len(args):
+            common_args.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in {"--all-frames", "--all-cases", "--current-report-only"}:
+            if args[i] == "--all-cases":
+                i += 1
+                continue
+            common_args.append(args[i])
+            i += 1
+            continue
+        i += 1
+
+    failed_reports: list[str] = []
+    for case_name in selected_cases:
+        case_args = list(common_args)
+        case_suffix = "all-cases"
+        if case_name:
+            case_args.extend(["--case", case_name])
+            case_suffix = case_name
+        for mode in ("bake", "sparse"):
+            report_path = out_dir / f"{mode}-{case_suffix}.json"
+            runner_args = [
+                *case_args,
+                "--mode",
+                mode,
+                "--out",
+                str(report_path),
+            ]
+            if mode == "sparse" and not _has_flag(session.posargs, "--strict-sparse-current"):
+                runner_args.append("--current-report-only")
+            session.run(
+                str(mayapy),
+                _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
+                "--repo-root",
+                _maya_process_path(mayapy, ROOT),
+                *_convert_mayapy_path_options(
+                    mayapy,
+                    runner_args,
+                    {"--manifest", "--out"},
+                ),
+                env=_mayapy_env(mayapy),
+                external=True,
+                success_codes=[0, 1],
+            )
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                failed = int((report.get("summary") or {}).get("failed", 0))
+            except Exception:
+                failed = 1
+            if failed:
+                failed_reports.append(str(report_path))
+    if not _has_flag(session.posargs, "--skip-addiction-parity"):
+        addiction_vmd = Path(RELEASE_ADDICTION_CAMERA_VMD)
+        if addiction_vmd.exists():
+            report_path = out_dir / "bake-rig-camera-addiction.json"
+            addiction_args = _copy_parity_vmd_for_mayapy(
+                session,
+                ["--parity-vmd", str(addiction_vmd), *parity_args],
+            )
+            session.run(
+                str(mayapy),
+                _mayapy_script(mayapy, "tests/local/camera_motion_oracle_runner.py"),
+                "--repo-root",
+                _maya_process_path(mayapy, ROOT),
+                "--parity-case-name",
+                "camera-addiction-bake-rig-parity",
+                "--out",
+                _maya_process_path(mayapy, report_path),
+                *_convert_mayapy_path_options(mayapy, addiction_args, {"--parity-vmd"}),
+                env=_mayapy_env(mayapy),
+                external=True,
+                success_codes=[0, 1],
+            )
+            try:
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                failed = int((report.get("summary") or {}).get("failed", 0))
+            except Exception:
+                failed = 1
+            if failed:
+                failed_reports.append(str(report_path))
+        else:
+            session.log(f"Skipping Addiction camera parity; local VMD not found: {addiction_vmd}")
+    if failed_reports:
+        session.error("Camera motion release gate failed; reports: " + ", ".join(failed_reports))
 
 
 @nox.session(venv_backend="none")
@@ -922,7 +1516,7 @@ def local_parity(session: nox.Session) -> None:
         if args[i] == "--maya" and i + 1 < len(args):
             i += 2
             continue
-        if args[i] in ("--case", "--frame") and i + 1 < len(args):
+        if args[i] in ("--case", "--frame", "--out") and i + 1 < len(args):
             passthrough.extend([args[i], args[i + 1]])
             i += 2
             continue
@@ -933,8 +1527,146 @@ def local_parity(session: nox.Session) -> None:
         i += 1
     session.run(
         str(mayapy),
-        str(ROOT / "tests" / "viewport" / "local_asset_motion_compare.py"),
-        *passthrough,
+        _mayapy_script(mayapy, "tests/viewport/local_asset_motion_compare.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--out"}),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def import_order_e2e(session: nox.Session) -> None:
+    """Run manifest-driven mayapy E2E checks for model/motion import ordering.
+
+    Examples:
+        uvx nox -s import_order_e2e -- --maya 2024
+        uvx nox -s import_order_e2e -- --maya 2024 --log build/import-order-e2e/run.jsonl
+        uvx nox -s import_order_e2e -- --maya 2024 --manifest build/import-order-e2e/local-manifest.json
+        uvx nox -s import_order_e2e -- --maya 2024 --background-model F:/MMD/stage/stage.pmx --character-model F:/MMD/pmx/miku.pmx --character-motion F:/MMD/vmd/dance.vmd
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    manifest = _option(args, "--manifest", "")
+    path_options = {"--manifest", "--out-dir", "--log"}
+    value_options = path_options | {"--background-model", "--character-model", "--character-motion", "--case", "--limit", "--order-limit"}
+    flag_options = {"--require-zero-fallback"}
+    if not manifest:
+        generated_manifest = _write_import_order_local_manifest(
+            session,
+            _option(args, "--background-model", str(ROOT / "tests/data/for_unit_test/test_1bone_cube.pmx")),
+            _option(args, "--character-model", str(ROOT / "tests/data/mmt_test_model.pmx")),
+            _option(args, "--character-motion", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd")),
+        )
+        passthrough.extend(["--manifest", str(generated_manifest)])
+    env = _mayapy_env(mayapy, preserve_pythonpath=True)
+    if _has_flag(args, "--require-zero-fallback"):
+        profile_value = os.environ.get("MMD_TOOLS_VMD_PROFILE_JSONL")
+        if profile_value:
+            profile_path = Path(profile_value)
+            if not profile_path.is_absolute():
+                profile_path = ROOT / profile_path
+        else:
+            out_dir_value = _option(args, "--out-dir", str(ROOT / "build/import-order-e2e"))
+            out_dir_path = Path(out_dir_value)
+            if not out_dir_path.is_absolute():
+                out_dir_path = ROOT / out_dir_path
+            profile_path = out_dir_path / "vmd_profile.jsonl"
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        if profile_path.exists():
+            profile_path.unlink()
+        env["MMD_TOOLS_VMD_PROFILE_JSONL"] = str(profile_path)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if not manifest and args[i] in {"--background-model", "--character-model", "--character-motion"}:
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] in flag_options:
+            passthrough.append(args[i])
+            i += 1
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/import_order_e2e.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def import_scale_drift_e2e(session: nox.Session) -> None:
+    """Run mayapy E2E diagnostics for import scale / skin bind drift.
+
+    Examples:
+        uvx nox -s import_scale_drift_e2e -- --maya 2024
+        uvx nox -s import_scale_drift_e2e -- --maya 2024 --expect fixed
+        uvx nox -s import_scale_drift_e2e -- --maya 2024 --scale 1.0 --scale 2.0 --log build/import-scale-drift/run.jsonl
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    path_options = {"--model", "--log"}
+    value_options = path_options | {"--scale", "--expect", "--clean-threshold", "--drift-threshold", "--parser"}
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/import_scale_drift_e2e.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def anim_layer_graph_compare(session: nox.Session) -> None:
+    """Run mayapy diagnostics comparing setKeyframe and API animLayer graphs.
+
+    Examples:
+        uvx nox -s anim_layer_graph_compare -- --maya 2024
+        uvx nox -s anim_layer_graph_compare -- --maya 2024 --case joint_translate --case joint_rotate
+        uvx nox -s anim_layer_graph_compare -- --maya 2024 --out build/reports/anim_layer_graph_compare.json
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    path_options = {"--out"}
+    value_options = path_options | {"--case", "--tolerance"}
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/anim_layer_graph_compare.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
         external=True,
     )
 
@@ -966,7 +1698,8 @@ def runtime_bake_bench(session: nox.Session) -> None:
         i += 1
     session.run(
         str(mayapy),
-        str(ROOT / "tests" / "viewport" / "runtime_bake_benchmark.py"),
-        *passthrough,
+        _mayapy_script(mayapy, "tests/viewport/runtime_bake_benchmark.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--pmx", "--vmd", "--out", "--log"}),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
         external=True,
     )

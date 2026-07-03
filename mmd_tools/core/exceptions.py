@@ -4,3 +4,9 @@ class MMDParseException(Exception):
     """
 
     pass
+
+
+class MMDImportException(Exception):
+    """Custom exception for MMD import failures."""
+
+    pass

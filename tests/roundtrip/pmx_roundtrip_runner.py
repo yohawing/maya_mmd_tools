@@ -973,7 +973,7 @@ def run_case(
 ) -> dict[str, Any]:
     """Run one PMX roundtrip case and return a serializable result dict."""
     from maya import cmds
-    from mmd_tools.core.mmd_parser import parse_mmd_file
+    from mmd_tools.core.mmd_parser import parse_pmx_file
     from mmd_tools.io.mmd_importer import import_mmd_file
     from mmd_tools.io.pmx_exporter import PmxExporter
 
@@ -1009,8 +1009,8 @@ def run_case(
         export_path = exports_dir / f"{safe_name}.pmx"
         result["export_path"] = str(export_path)
 
-        # Step 1: Parse source PMX via PmxData
-        src_pmx = parse_mmd_file(model_path)  # returns PmxData
+        # Step 1: Parse source PMX via the PMX-specific structured parser.
+        src_pmx = parse_pmx_file(model_path)
 
         # Step 2: New Maya scene + import source
         cmds.file(new=True, force=True)
@@ -1044,7 +1044,7 @@ def run_case(
             raise RuntimeError(f"exported PMX not created or empty: {export_path}")
 
         # Step 5: Parse exported PMX to verify binary integrity
-        exported_pmx = parse_mmd_file(str(export_path))
+        exported_pmx = parse_pmx_file(str(export_path))
 
         # Step 6: Compare section counts
         diffs, compare_warnings = _compare_pmx_supported_content(

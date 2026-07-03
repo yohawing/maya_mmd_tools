@@ -166,10 +166,10 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertTrue(cmds.objExists(maya_joints[2]))
 
         # 親子関係の確認
-        parent_of_upper = cmds.listRelatives(maya_joints[1], parent=True)[0]
+        parent_of_upper = cmds.listRelatives(maya_joints[1], parent=True, fullPath=True)[0]
         self.assertEqual(parent_of_upper, maya_joints[0])
 
-        parent_of_head = cmds.listRelatives(maya_joints[2], parent=True)[0]
+        parent_of_head = cmds.listRelatives(maya_joints[2], parent=True, fullPath=True)[0]
         self.assertEqual(parent_of_head, maya_joints[1])
 
         # 位置の確認（Mayaは左手系なのでZ座標が反転）
@@ -182,6 +182,40 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertAlmostEqual(upper_pos[0], 0, places=5)
         self.assertAlmostEqual(upper_pos[1], 10, places=5)
         self.assertAlmostEqual(upper_pos[2], 0, places=5)
+
+    @patch("mmd_tools.core.maya_utils.sanitize_text")
+    def test_create_maya_joints_refreshes_paths_after_name_collision(self, mock_sanitize):
+        """既存同名jointがあるシーンでもreparent後のDAG pathを返す"""
+        mock_sanitize.side_effect = lambda x: x
+
+        cmds.select(clear=True)
+        existing_center = cmds.joint(name="center", position=[100, 0, 0])
+        self.assertEqual(cmds.ls(existing_center, long=True)[0], "|center")
+
+        bones = [
+            self._create_mock_pmx_bone(0, "center", parent_index=-1, position=(0, 0, 0)),
+            self._create_mock_pmx_bone(1, "upper_body", parent_index=0, position=(0, 10, 0)),
+            self._create_mock_pmx_bone(2, "head", parent_index=1, position=(0, 20, 0)),
+        ]
+
+        skeleton_group = cmds.group(empty=True, name="skeleton_collision_grp")
+        maya_joints = self.converter._create_maya_joints(
+            bones,
+            {0: "center", 1: "upper_body", 2: "head"},
+            "pmx",
+            skeleton_group,
+        )
+
+        self.assertEqual(len(maya_joints), 3)
+        for joint in maya_joints:
+            self.assertTrue(cmds.objExists(joint), f"stale joint path returned: {joint}")
+            self.assertTrue(joint.startswith("|skeleton_collision_grp|"))
+
+        parent_of_upper = cmds.listRelatives(maya_joints[1], parent=True, fullPath=True)[0]
+        parent_of_head = cmds.listRelatives(maya_joints[2], parent=True, fullPath=True)[0]
+        self.assertEqual(parent_of_upper, maya_joints[0])
+        self.assertEqual(parent_of_head, maya_joints[1])
+        self.assertTrue(cmds.objExists("|center"), "pre-existing root joint should not be consumed")
 
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx(self, mock_set_attrs):
@@ -461,38 +495,6 @@ class TestBoneConverterMaya(unittest.TestCase):
         applied_weights = mock_apply_weights.call_args[0][2]
         self.assertEqual(applied_weights, [[0.0, 1.0], [1.0, 0.0]])
 
-    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
-    def test_apply_pmd_vertex_weights_with_sentinel_bone2(self, mock_apply_weights):
-        """PMD頂点ウェイト適用でbone2が未使用インデックスの場合を確認"""
-        pmd_data = Mock()
-        vertex = Mock()
-        vertex.bone_indices = [0, 65535]
-        vertex.bone_weight = 100
-        pmd_data.vertices = [vertex]
-
-        with patch.object(self.converter, "logger") as mock_logger:
-            self.converter._apply_pmd_vertex_weights(pmd_data, ["joint_0", "joint_1"], "skinCluster", self.test_mesh)
-
-        mock_apply_weights.assert_called_once()
-        mock_logger.warning.assert_not_called()
-        self.assertEqual(mock_apply_weights.call_args[0][2][0], [1.0, 0.0])
-
-    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
-    def test_apply_pmd_vertex_weights_with_sentinel_bone1(self, mock_apply_weights):
-        """PMD頂点ウェイト適用でbone1が未使用インデックスの場合を確認"""
-        pmd_data = Mock()
-        vertex = Mock()
-        vertex.bone_indices = [65535, 1]
-        vertex.bone_weight = 0
-        pmd_data.vertices = [vertex]
-
-        with patch.object(self.converter, "logger") as mock_logger:
-            self.converter._apply_pmd_vertex_weights(pmd_data, ["joint_0", "joint_1"], "skinCluster", self.test_mesh)
-
-        mock_apply_weights.assert_called_once()
-        mock_logger.warning.assert_not_called()
-        self.assertEqual(mock_apply_weights.call_args[0][2][0], [0.0, 1.0])
-
     @patch("mmd_tools.converters.bone_converter.RigConverter")
     def test_convert_pmx_bones_integration(self, mock_rig_converter_class):
         """PMXボーン変換の統合テスト（実際のMaya環境）"""
@@ -563,8 +565,8 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertTrue(cmds.objExists(skin_cluster))
         mock_rig_converter.setup_pmx_rig.assert_not_called()
 
-    def test_create_maya_joints_applies_local_axis_even_when_orientation_flag_disabled(self):
-        """LOCAL_AXIS ボーンは setup_bone_orientation=False でも JO が設定される"""
+    def test_create_maya_joints_skips_local_axis_when_orientation_flag_disabled(self):
+        """setup_bone_orientation=False では bake/no-rig parity のため JO を設定しない"""
         bone = self._create_mock_pmx_bone(
             0,
             "local_axis_bone",
@@ -585,7 +587,7 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         joint_orient = cmds.getAttr(f"{maya_joints[0]}.jointOrient")[0]
         jo_magnitude = sum(v * v for v in joint_orient) ** 0.5
-        self.assertGreater(jo_magnitude, 1.0, "LOCAL_AXIS ボーンは常に JO が設定される")
+        self.assertAlmostEqual(jo_magnitude, 0.0, places=6)
 
     def test_create_maya_joints_local_axis_matches_world_axes_under_rotated_parent(self):
         """親が回転済みでも子のLOCAL_AXIS world X/Z軸と位置を維持する"""

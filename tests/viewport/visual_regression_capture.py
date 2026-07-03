@@ -746,7 +746,6 @@ def _capture_case(case):
     import mmd_tools.core.pmx_data.vertex as pmx_vertex
     import mmd_tools.core.maya_utils as maya_utils
     import mmd_tools.io.mmd_importer as mmd_importer
-    import mmd_tools.io.pmd_importer as pmd_importer
     import mmd_tools.io.pmx_importer as pmx_importer
     import mmd_tools.io.vmd_importer as vmd_importer
     from mmd_tools.core.settings import settings
@@ -757,7 +756,6 @@ def _capture_case(case):
     mmd_parser = importlib.reload(mmd_parser)
     mesh_converter = importlib.reload(mesh_converter)
     converters = importlib.reload(converters)
-    pmd_importer = importlib.reload(pmd_importer)
     pmx_importer = importlib.reload(pmx_importer)
     vmd_importer = importlib.reload(vmd_importer)
     mmd_importer = importlib.reload(mmd_importer)

@@ -10,6 +10,7 @@ from ..qt_compat import (
     QHBoxLayout,
 )
 from ..base_tab import BaseTab
+from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 
 
 class InfoTab(BaseTab):
@@ -24,6 +25,7 @@ class InfoTab(BaseTab):
         self.current_model_label = QLabel(self.tr("current_model", "fields"))
         model_select_layout.addWidget(self.current_model_label)
         self.model_combo = QComboBox()
+        configure_model_combo_width(self.model_combo)
         self.refresh_button = QPushButton(self.tr("refresh", "buttons"))
         self.refresh_button.setMaximumWidth(100)
         model_select_layout.addWidget(self.model_combo)
@@ -70,7 +72,7 @@ class InfoTab(BaseTab):
         self.set_fields_enabled(False)
 
         # モデルコンボボックスの初期状態
-        self.model_combo.addItem(self.tr("no_mmd_models", "placeholders"))
+        add_combo_item_with_tooltip(self.model_combo, self.tr("no_mmd_models", "placeholders"))
 
     def set_fields_enabled(self, enabled):
         """フィールドの編集可否を設定"""

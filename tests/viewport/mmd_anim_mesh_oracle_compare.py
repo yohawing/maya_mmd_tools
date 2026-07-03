@@ -105,10 +105,10 @@ def _compute_oracle_vertices(
     bind_world_matrices: list[om.MMatrix] | None = None,
 ) -> dict[int, list[tuple[float, float, float]]]:
     from mmd_tools.converters.vmd_converter import VmdConverter
+    from mmd_tools.core.mmd_parser import parse_pmx_file
     from mmd_tools.core.native.mmd_anim_runtime import MmdRuntimeClip, MmdRuntimeInstance, MmdRuntimeModel
-    from mmd_tools.core.pmx_data import PmxData
 
-    pmx = PmxData().parse_file(str(pmx_path))
+    pmx = parse_pmx_file(str(pmx_path))
     bind_world_matrices = bind_world_matrices or _compute_bind_world_matrices(pmx)
 
     pmx_bytes = pmx_path.read_bytes()
@@ -360,9 +360,9 @@ def main() -> int:
     pmx_path = (ROOT / args.pmx).resolve() if not Path(args.pmx).is_absolute() else Path(args.pmx)
     vmd_path = (ROOT / args.vmd).resolve() if not Path(args.vmd).is_absolute() else Path(args.vmd)
     frames = list(dict.fromkeys(args.frame))
-    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.mmd_parser import parse_pmx_file
 
-    bone_count = len(PmxData().parse_file(str(pmx_path)).bones)
+    bone_count = len(parse_pmx_file(str(pmx_path)).bones)
     root, maya_bind_world_matrices = _import_scene(pmx_path, vmd_path, args.mode, bone_count)
     bind_world_matrices = None if args.bind_source == "pmx" else maya_bind_world_matrices
     oracle = _compute_oracle_vertices(pmx_path, vmd_path, frames, bind_world_matrices)

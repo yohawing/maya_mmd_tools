@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ..core import maya_utils
+from ..core import maya_utils, settings_keys as setting_keys
 from ..core.settings import settings
 from ..core.texture_path_cache import describe_texture_issue
 from .translations.translator import UITranslator
@@ -186,7 +186,7 @@ class TextureIssueDialog(QDialog):
 
     def _save_visibility_setting(self, checked):
         if checked:
-            settings.set("import.model.show_texture_issue_dialog", False)
+            settings.set(setting_keys.IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG, False)
 
     def _emit_status(self, message):
         if self.app_state is not None and hasattr(self.app_state, "emit_status"):

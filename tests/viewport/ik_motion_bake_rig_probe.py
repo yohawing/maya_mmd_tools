@@ -55,7 +55,14 @@ def _import_scene(pmx_path: Path, vmd_path: Path, mode: str) -> str:
     if not root:
         raise RuntimeError(f"PMX import failed: {pmx_path}")
     cmds.select(root, replace=True)
-    if not import_mmd_file(str(vmd_path), options={"target_model": root, "pmx_path": str(pmx_path)}):
+    if not import_mmd_file(
+        str(vmd_path),
+        options={
+            "target_model": root,
+            "pmx_path": str(pmx_path),
+            "bake_mode": mode == "bake",
+        },
+    ):
         raise RuntimeError(f"VMD import failed: {vmd_path}")
     return root
 
@@ -113,6 +120,93 @@ def _skinning_matrices(root: str) -> dict[int, list[float]]:
     return result
 
 
+def _plug_sources(plug: str) -> list[str]:
+    return cmds.listConnections(plug, s=True, d=False, p=True) or []
+
+
+def _plug_destinations(plug: str) -> list[str]:
+    return cmds.listConnections(plug, s=False, d=True, p=True) or []
+
+
+def _safe_get_attr(plug: str):
+    try:
+        return cmds.getAttr(plug)
+    except Exception:
+        return None
+
+
+def _float_tuple(value) -> list[float] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)) and value and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    if isinstance(value, (list, tuple)):
+        return [float(v) for v in value]
+    try:
+        return [float(value)]
+    except (TypeError, ValueError):
+        return None
+
+
+def _ik_node_state(node: str) -> dict[str, object]:
+    raw_chain = _safe_get_attr(f"{node}.chainJson") or "{}"
+    try:
+        chain = json.loads(raw_chain)
+    except Exception:
+        chain = {"parse_error": True, "raw": raw_chain}
+
+    links = chain.get("links", []) if isinstance(chain, dict) else []
+    link_count = len(links)
+    max_slot = max(
+        [int(link.get("bone_slot", index)) for index, link in enumerate(links)]
+        + [link_count - 1, 0]
+    )
+    input_rotate = {}
+    for slot in range(max_slot + 1):
+        slot_plug = f"{node}.inputRotate[{slot}]"
+        element = {
+            "value": _float_tuple(_safe_get_attr(slot_plug)),
+            "sources": _plug_sources(slot_plug),
+        }
+        for axis in "XYZ":
+            axis_plug = f"{slot_plug}.inputRotateElement{axis}"
+            element[f"{axis.lower()}_value"] = _float_tuple(_safe_get_attr(axis_plug))
+            element[f"{axis.lower()}_sources"] = _plug_sources(axis_plug)
+        input_rotate[str(slot)] = element
+
+    output_rotate = {}
+    for index in range(max(link_count, 1)):
+        plug = f"{node}.outputRotate[{index}]"
+        output_rotate[str(index)] = {
+            "value": _float_tuple(_safe_get_attr(plug)),
+            "destinations": _plug_destinations(plug),
+        }
+
+    return {
+        "enabled": bool(_safe_get_attr(f"{node}.enabled"))
+        if cmds.attributeQuery("enabled", node=node, exists=True)
+        else None,
+        "controllerBoneSlot": chain.get("controllerBoneSlot") if isinstance(chain, dict) else None,
+        "targetBoneSlot": chain.get("targetBoneSlot") if isinstance(chain, dict) else None,
+        "links": links,
+        "chainJson": chain,
+        "inputRotate": input_rotate,
+        "outputRotate": output_rotate,
+    }
+
+
+def _append_node_state(node: str) -> dict[str, object]:
+    attrs = ("baseTranslate", "baseRotate", "sourceTranslate", "sourceRotate", "outputTranslate", "outputRotate")
+    return {
+        attr: {
+            "value": _float_tuple(_safe_get_attr(f"{node}.{attr}")),
+            "sources": _plug_sources(f"{node}.{attr}"),
+            "destinations": _plug_destinations(f"{node}.{attr}"),
+        }
+        for attr in attrs
+    }
+
+
 def _capture(pmx_path: Path, vmd_path: Path, mode: str, frame: int, bones: tuple[str, ...]) -> dict[str, object]:
     cmds.file(new=True, force=True)
     root = _import_scene(pmx_path, vmd_path, mode)
@@ -122,17 +216,8 @@ def _capture(pmx_path: Path, vmd_path: Path, mode: str, frame: int, bones: tuple
         "root": root,
         "bones": {bone: _world_transform(bone) for bone in bones if cmds.objExists(bone)},
         "skinning": _skinning_matrices(root),
-        "ik_nodes": {
-            node: {
-                "enabled": bool(cmds.getAttr(f"{node}.enabled")) if cmds.attributeQuery("enabled", node=node, exists=True) else None,
-                "outputRotate": [
-                    [float(v) for v in cmds.getAttr(f"{node}.outputRotate[{index}]")[0]]
-                    for index in range(8)
-                    if cmds.objExists(f"{node}.outputRotate[{index}]")
-                ],
-            }
-            for node in (cmds.ls(type="mmdCcdIk") or [])
-        },
+        "ik_nodes": {node: _ik_node_state(node) for node in (cmds.ls(type="mmdCcdIk") or [])},
+        "append_nodes": {node: _append_node_state(node) for node in (cmds.ls(type="mmdAppend") or [])},
     }
 
 
@@ -213,6 +298,7 @@ def run_probe(
         "bone_diffs": bone_diffs,
         "top_skinning_diffs": skinning_diffs[:20],
         "rig_ik_nodes": rig["ik_nodes"],
+        "rig_append_nodes": rig["append_nodes"],
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -243,6 +329,20 @@ def run_probe(
     lines.extend(["", "## Top Skinning Diffs", ""])
     for item in skinning_diffs[:10]:
         lines.append(f"- bone `{item['bone_index']}` matrix=`{item['matrix_distance']:.6f}`")
+    lines.extend(["", "## Rig IK Nodes", ""])
+    for node, state in rig["ik_nodes"].items():
+        lines.append(
+            f"- `{node}` enabled=`{state.get('enabled')}` "
+            f"controllerSlot=`{state.get('controllerBoneSlot')}` "
+            f"targetSlot=`{state.get('targetBoneSlot')}` "
+            f"links=`{len(state.get('links') or [])}`"
+        )
+    lines.extend(["", "## Rig Append Nodes", ""])
+    for node, state in rig["append_nodes"].items():
+        output_rotate = state.get("outputRotate", {}) if isinstance(state, dict) else {}
+        lines.append(
+            f"- `{node}` outputRotateDests=`{output_rotate.get('destinations', [])}`"
+        )
     out_path.with_suffix(".md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     print(f"Report JSON: {out_path}")

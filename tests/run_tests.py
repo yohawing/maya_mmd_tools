@@ -9,10 +9,16 @@
 import argparse
 import importlib.util
 import os
-import platform
 import subprocess
 import sys
 from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from tests.common.maya_location import maya_location  # noqa: E402
+from tests.common.maya_location import mayapy as resolve_mayapy  # noqa: E402
 
 
 def is_running_in_mayapy() -> bool:
@@ -40,25 +46,7 @@ def get_maya_location(maya_version: int) -> Path:
         >>> get_maya_location(2024)
         Path('C:/Program Files/Autodesk/Maya2024')
     """
-    if "MAYA_LOCATION" in os.environ:
-        return Path(os.environ["MAYA_LOCATION"])
-
-    if platform.system() == "Windows":
-        return Path(f"C:\\Program Files\\Autodesk\\Maya{maya_version}")
-    elif platform.system() == "Darwin":
-        return Path(f"/Applications/Autodesk/maya{maya_version}/Maya.app/Contents")
-    else:
-        # WSL環境からWindows側のMayaを使用する場合
-        wsl_maya_path = Path(f"/mnt/c/Program Files/Autodesk/Maya{maya_version}")
-        if wsl_maya_path.exists():
-            return wsl_maya_path
-
-        # 通常のLinux環境
-        location = f"/usr/autodesk/maya{maya_version}"
-        if maya_version < 2016:
-            # 2016以降、デフォルトのインストールディレクトリ名が変更されました
-            location += "-x64"
-        return Path(location)
+    return maya_location(maya_version)
 
 
 def mayapy(maya_version: int) -> Path:
@@ -74,14 +62,7 @@ def mayapy(maya_version: int) -> Path:
         >>> mayapy(2024)
         Path('C:/Program Files/Autodesk/Maya2024/bin/mayapy.exe')
     """
-    maya_location = get_maya_location(maya_version)
-    python_exe = maya_location / "bin" / "mayapy"
-
-    # Windowsまたは WSL環境でWindows版Mayaを使用する場合は.exeを追加
-    if platform.system() == "Windows" or str(maya_location).startswith("/mnt/"):
-        python_exe = python_exe.with_suffix(".exe")
-
-    return python_exe
+    return resolve_mayapy(maya_version)
 
 
 def wsl_to_windows_path(wsl_path: Path) -> str:
@@ -110,9 +91,6 @@ def wsl_to_windows_path(wsl_path: Path) -> str:
 
 def main():
     """メイン関数。引数を解析してmayapyを起動します。"""
-    # プロジェクトルートを取得
-    ROOT_DIR = Path(__file__).resolve().parent.parent.absolute()
-
     # 引数解析
     parser = argparse.ArgumentParser(description="Run tests for the MMD Tools project.")
     parser.add_argument(

@@ -5,17 +5,31 @@ from .export_model_action import (
     ExportModelRequest,
     ExportModelResult,
 )
+from .export_vmd_action import ExportVmdAction, ExportVmdRequest, ExportVmdResult
 from .import_model_action import ImportModelAction, ImportModelRequest, ImportModelResult
 from .import_vmd_action import ImportVmdAction, ImportVmdRequest, ImportVmdResult
+from .material_shader_action import (
+    apply_shader_settings,
+    shader_outline_enabled,
+    transparency_mode_from_index,
+    transparency_mode_index,
+)
 
 __all__ = [
     "ExportModelAction",
     "ExportModelRequest",
     "ExportModelResult",
+    "ExportVmdAction",
+    "ExportVmdRequest",
+    "ExportVmdResult",
     "ImportModelAction",
     "ImportModelRequest",
     "ImportModelResult",
     "ImportVmdAction",
     "ImportVmdRequest",
     "ImportVmdResult",
+    "apply_shader_settings",
+    "shader_outline_enabled",
+    "transparency_mode_from_index",
+    "transparency_mode_index",
 ]

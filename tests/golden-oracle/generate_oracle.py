@@ -35,7 +35,7 @@ def _generate_case(
         MmdRuntimeInstance,
         MmdRuntimeModel,
     )
-    from mmd_tools.core.pmx_data import PmxData
+    from mmd_tools.core.mmd_parser import parse_pmx_file
 
     assets = case.get("assets", {})
     pmx_path = _resolve_manifest_path(manifest_path, assets["model"])
@@ -54,8 +54,7 @@ def _generate_case(
     pmx_bytes = pmx_path.read_bytes()
     vmd_bytes = vmd_path.read_bytes()
 
-    pmx_data = PmxData()
-    pmx_data.parse_file(str(pmx_path))
+    pmx_data = parse_pmx_file(str(pmx_path))
     bone_names = [b.name for b in pmx_data.bones]
 
     model = MmdRuntimeModel.from_pmx_bytes(pmx_bytes)

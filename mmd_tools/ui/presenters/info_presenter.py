@@ -8,6 +8,7 @@ from ...core.logger import get_logger
 from ...core.maya_utils import (
     set_custom_attributes,
 )
+from ..combo_box_utils import add_combo_item_with_tooltip
 
 logger = get_logger(__name__)
 
@@ -135,13 +136,13 @@ class InfoPresenter:
         self.view.model_combo.clear()
 
         if not models:
-            self.view.model_combo.addItem("No MMD models found")
+            add_combo_item_with_tooltip(self.view.model_combo, "No MMD models found")
             self.view.set_fields_enabled(False)
         else:
             # コンボボックスにモデルを追加
             for model in models:
                 display_name = self.scene_model_service.get_model_display_name(model)
-                self.view.model_combo.addItem(f"{display_name} ({model})", userData=model)
+                add_combo_item_with_tooltip(self.view.model_combo, f"{display_name} ({model})", user_data=model)
 
             # 現在のモデルを選択
             if current_model in models:

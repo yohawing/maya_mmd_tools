@@ -1,9 +1,9 @@
 """Auto-skip Maya-dependent tests when running outside real Maya (mayapy).
 
-When running `pytest tests/unit/` outside Maya, test modules that import
-`maya.cmds` would fail to collect. We install the maya stub early so they
-can be collected, then mark them as skipped since the stub doesn't provide
-real return values.
+When running ``pytest tests/unit/`` outside Maya, importing modules that touch
+``maya.cmds`` would otherwise fail at collection time. We install the Maya
+stub early so mixed modules can be collected, then skip only the test classes
+that explicitly inherit the live-scene base.
 """
 
 from unittest.mock import MagicMock
@@ -14,33 +14,43 @@ from tests.common.maya_stub import install_maya_stub, _is_real_maya_present
 
 _real_maya = _is_real_maya_present()
 if not _real_maya:
-    install_maya_stub()
+    install_maya_stub(profile="headless")
 
 
-def _module_uses_real_maya(module):
-    """Return True if a test module expects real Maya (imports cmds as MagicMock)."""
-    cmds = getattr(module, "cmds", None)
-    if isinstance(cmds, MagicMock):
+def _uses_real_maya_class(cls):
+    """Return True when a collected test class expects a live Maya scene."""
+    if cls is None:
+        return False
+    for base in cls.__mro__:
+        if base.__name__ == "MayaTestBase":
+            return True
+    if cls.__name__.endswith("Maya"):
         return True
-    for attr in vars(module).values():
-        if isinstance(attr, type):
-            for base in attr.__mro__:
-                if base.__name__ == "MayaTestBase":
-                    return True
     return False
+
+
+def _uses_real_maya_function(item):
+    """Return True for module-level tests that directly use the cmds stub."""
+    if getattr(item, "cls", None) is not None:
+        return False
+    module = getattr(item, "module", None)
+    if module is None:
+        return False
+    cmds = getattr(module, "cmds", None)
+    return isinstance(cmds, MagicMock)
+
+
+def _item_uses_real_maya(item):
+    """Return True if a collected pytest item should require mayapy."""
+    if _uses_real_maya_class(getattr(item, "cls", None)):
+        return True
+    return _uses_real_maya_function(item)
 
 
 def pytest_collection_modifyitems(config, items):
     if _real_maya:
         return
     skip_maya = pytest.mark.skip(reason="requires real Maya (not stub)")
-    seen_modules = {}
     for item in items:
-        mod = getattr(item, "module", None)
-        if mod is None:
-            continue
-        mod_name = mod.__name__
-        if mod_name not in seen_modules:
-            seen_modules[mod_name] = _module_uses_real_maya(mod)
-        if seen_modules[mod_name]:
+        if _item_uses_real_maya(item):
             item.add_marker(skip_maya)

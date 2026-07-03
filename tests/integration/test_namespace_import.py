@@ -10,6 +10,7 @@ import unittest
 from maya import cmds
 
 from mmd_tools.core import settings
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.core.namespace_utils import NamespaceUtils
 
@@ -155,9 +156,9 @@ class TestNamespaceImport(unittest.TestCase):
             "scale": 1.0,
         }
 
-        # インポートは失敗するはず
-        result = import_mmd_file(invalid_file, options=options)
-        self.assertIsNone(result)
+        # インポートは例外で失敗するはず
+        with self.assertRaises(MMDImportException):
+            import_mmd_file(invalid_file, options=options)
 
         # namespaceが残っていないことを確認
         namespaces = NamespaceUtils.list_model_namespaces()

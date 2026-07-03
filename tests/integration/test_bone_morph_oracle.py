@@ -1,9 +1,8 @@
-"""ボーンモーフ parity テスト: mmd-anim oracle vs Maya rig mode.
+"""ボーンモーフ parity テスト: mmd-anim oracle vs Maya import paths.
 
 mmd-anim CLI で生成した bone morph 付きテストモデル (test_bone_morph.pmx) と
 モーション (test_bone_morph_motion.vmd) を Maya にインポートし、
-rig mode (bone morph accumulator DG graph) のワールド位置が
-mmd-anim runtime oracle と一致することを検証する。
+rig mode / bake mode のワールド位置が mmd-anim runtime oracle と一致することを検証する。
 """
 
 import os
@@ -19,7 +18,7 @@ from mmd_tools.core.native.mmd_anim_runtime import (
     MmdRuntimeModel,
     is_mmd_runtime_available,
 )
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.io.pmx_importer import import_pmx_file
 from tests.common.maya_test_base import MayaTestBase
@@ -79,7 +78,7 @@ def _get_maya_joint_positions(root, frames):
 
 
 class TestBoneMorphOracle(MayaTestBase):
-    """mmd-anim oracle と Maya rig mode bone morph の world position parity."""
+    """mmd-anim oracle と Maya bone morph import path の world position parity."""
 
     def setUp(self):
         super().setUp()
@@ -89,20 +88,31 @@ class TestBoneMorphOracle(MayaTestBase):
     @unittest.skipUnless(os.path.exists(PMX_FILE), "test_bone_morph.pmx not found")
     def test_bone_morph_world_positions_match_oracle(self):
         """Rig mode bone morph 適用後の joint world position が mmd-anim oracle と一致。"""
+        self._assert_bone_morph_world_positions_match_oracle(bake_mode=False)
+
+    @unittest.skipUnless(os.path.exists(PMX_FILE), "test_bone_morph.pmx not found")
+    def test_bake_mode_bone_morph_world_positions_match_oracle(self):
+        """Bake mode の runtime final pose に bone morph が反映される。"""
+        self._assert_bone_morph_world_positions_match_oracle(bake_mode=True)
+
+    def _assert_bone_morph_world_positions_match_oracle(self, bake_mode=False):
         if not is_mmd_runtime_available():
             self.skipTest("mmd-anim runtime not available")
 
         oracle = _get_runtime_oracle(PMX_FILE, VMD_FILE, FRAMES)
 
-        pmx_data = PmxData()
-        pmx_data.parse_file(PMX_FILE)
+        pmx_data = parse_pmx_file(PMX_FILE)
         root = import_pmx_file(pmx_data, PMX_FILE, scale=1.0)
         self.assertTrue(root, "PMX import failed")
 
         vmd_data = VmdData()
         vmd_data.parse_file(VMD_FILE)
         converter = VmdConverter()
-        converter.convert(vmd_data, pmx_path=PMX_FILE)
+        kwargs = {"pmx_path": PMX_FILE, "bake_mode": bake_mode}
+        if bake_mode:
+            with open(VMD_FILE, "rb") as file:
+                kwargs["vmd_bytes"] = file.read()
+        self.assertTrue(converter.convert(vmd_data, **kwargs))
 
         maya_positions = _get_maya_joint_positions(root, FRAMES)
 

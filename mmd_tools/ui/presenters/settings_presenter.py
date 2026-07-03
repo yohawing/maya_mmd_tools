@@ -1,6 +1,8 @@
 from ..qt_compat import QFileDialog, QMessageBox
+from ...core import settings_keys as setting_keys
 from ...core.logger import get_logger
 from ...services.settings_service import SettingsService
+from ..translations import UITranslator
 
 logger = get_logger(__name__)
 
@@ -57,6 +59,14 @@ class SettingsPresenter:
 
             traceback.print_exc()
             raise
+
+    def tr(self, key: str) -> str:
+        """Translate a settings presenter message key."""
+        return UITranslator.instance().translate(key, "messages")
+
+    def tr_format(self, key: str, **kwargs) -> str:
+        """Translate and format a settings presenter message template."""
+        return self.tr(key).format(**kwargs)
 
     def load_settings(self):
         """設定をロード"""
@@ -157,18 +167,18 @@ class SettingsPresenter:
             self.settings_service.save_settings_tab_state(state)
             self._refresh_development_mode_visibility()
             logger.info("Settings saved")
-            self.app_state.emit_status("Settings saved")
+            self.app_state.emit_status(self.tr("settings_saved"))
 
         except Exception as e:
             logger.error(f"Failed to save settings: {e}", exc_info=True)
-            self.app_state.emit_status(f"Failed to save settings: {str(e)}")
+            self.app_state.emit_status(self.tr_format("settings_save_failed", error=str(e)))
 
     def reset_to_defaults(self):
         """デフォルト設定に戻す"""
         reply = QMessageBox.question(
             self.view,
-            "Confirm",
-            "Reset all settings to their defaults?",
+            self.tr("settings_reset_confirm_title"),
+            self.tr("settings_reset_confirm_message"),
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -179,7 +189,7 @@ class SettingsPresenter:
             self.settings_service.reset()
             self.load_settings()
             self._refresh_development_mode_visibility()
-            self.app_state.emit_status("Settings reset to defaults")
+            self.app_state.emit_status(self.tr("settings_reset_to_defaults"))
 
     def export_settings(self):
         """設定をファイルにエクスポート"""
@@ -195,11 +205,11 @@ class SettingsPresenter:
                 self.settings_service.write_settings_json(file_path)
 
                 logger.info(f"Exported settings: {file_path}")
-                self.app_state.emit_status("Settings exported")
+                self.app_state.emit_status(self.tr("settings_exported"))
 
             except Exception as e:
                 logger.error(f"Failed to export settings: {e}", exc_info=True)
-                self.app_state.emit_status(f"Failed to export settings: {str(e)}")
+                self.app_state.emit_status(self.tr_format("settings_export_failed", error=str(e)))
 
     def import_settings(self):
         """設定をファイルからインポート"""
@@ -214,11 +224,11 @@ class SettingsPresenter:
                 self._refresh_development_mode_visibility()
 
                 logger.info(f"Imported settings: {file_path}")
-                self.app_state.emit_status("Settings imported")
+                self.app_state.emit_status(self.tr("settings_imported"))
 
             except Exception as e:
                 logger.error(f"Failed to import settings: {e}", exc_info=True)
-                self.app_state.emit_status(f"Failed to import settings: {str(e)}")
+                self.app_state.emit_status(self.tr_format("settings_import_failed", error=str(e)))
 
     def browse_log_file(self):
         """ログファイルのパスを選択"""
@@ -241,7 +251,7 @@ class SettingsPresenter:
         selected_language = self.view.language_combo.currentData()
 
         # 設定に保存（即座に永続化）
-        self.settings_service.set("ui.general.language", selected_language)
+        self.settings_service.set(setting_keys.UI_GENERAL_LANGUAGE, selected_language)
 
         # UITranslatorに言語を設定
         from ...ui.translations import UITranslator
@@ -255,4 +265,6 @@ class SettingsPresenter:
             main_window.retranslate_all_tabs()
 
         # ステータスメッセージ
-        self.app_state.emit_status(f"Language changed: {self.view.language_combo.currentText()}")
+        self.app_state.emit_status(
+            self.tr_format("language_changed", language=self.view.language_combo.currentText())
+        )

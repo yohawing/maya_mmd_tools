@@ -9,6 +9,11 @@ class PmxEncoding(enum.IntEnum):
     UTF8 = 1
 
 
+def is_pmx_21_or_later(version: float) -> bool:
+    """Return True for PMX 2.1+, tolerating float32 readback precision."""
+    return float(version) >= 2.1 - 1e-5
+
+
 class PmxHeader:
     """
     PMXファイルのヘッダ情報を保持するクラス。

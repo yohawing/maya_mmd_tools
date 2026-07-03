@@ -16,6 +16,8 @@ from .maya_utils import sanitize_text
 
 logger = get_logger(__name__)
 
+_MAX_NAMESPACE_SUFFIX_ATTEMPTS = 10000
+
 
 class NamespaceUtils:
     """Namespace管理のためのユーティリティクラス"""
@@ -74,13 +76,16 @@ class NamespaceUtils:
             return base_name
 
         # 連番を付与
-        counter = 2
-        while True:
+        for counter in range(2, _MAX_NAMESPACE_SUFFIX_ATTEMPTS + 1):
             candidate = f"{base_name}_{counter}"
             if not cmds.namespace(exists=candidate):
                 logger.debug(f"Unique namespace found: {candidate}")
                 return candidate
-            counter += 1
+
+        raise RuntimeError(
+            f"Could not find unique namespace for {base_name!r} "
+            f"after {_MAX_NAMESPACE_SUFFIX_ATTEMPTS} attempts"
+        )
 
     @staticmethod
     def create_namespace(namespace_name: str) -> bool:
@@ -207,9 +212,10 @@ class NamespaceUtils:
         Returns:
             namespace名（ルートnamespaceの場合はNone）
         """
-        if ":" not in node_name:
+        leaf_name = node_name.rsplit("|", 1)[-1]
+        if ":" not in leaf_name:
             return None
 
         # 最後の:より前がnamespace
-        namespace = node_name.rsplit(":", 1)[0]
+        namespace = leaf_name.rsplit(":", 1)[0]
         return namespace if namespace else None

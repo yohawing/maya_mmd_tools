@@ -110,13 +110,8 @@ class TestVmdImporter(MayaTestBase):
         # テスト用スケルトンを作成
         self._create_test_skeleton()
 
-        # VMDファイルのパスを取得
-        vmd_files = [f for f in os.listdir(self.test_data_dir) if f.endswith(".vmd")]
-
-        if not vmd_files:
-            self.skipTest("テスト用VMDファイルが見つかりません")
-
-        vmd_path = os.path.join(self.test_data_dir, vmd_files[0])
+        # タイムライン拡張を検証するため、24f を超える fixture を明示する。
+        vmd_path = self.fixture_provider.get_vmd_file("joint_orient_test")
 
         # VMDファイルが存在することを確認
         self.assertTrue(os.path.exists(vmd_path), f"VMDファイルが見つかりません: {vmd_path}")
@@ -460,4 +455,3 @@ class TestVmdImporter(MayaTestBase):
             # レイヤーのウェイトが1.0であることを確認
             weight = cmds.animLayer(vmd_layer, query=True, weight=True)
             self.assertEqual(weight, 1.0, "アニメーションレイヤーのウェイトが正しくありません")
-

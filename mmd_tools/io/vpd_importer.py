@@ -1,8 +1,11 @@
 """VPDファイルのインポート機能を提供するモジュール"""
 
 import os
+from typing import Any, Dict, Optional
+
 import maya.cmds as cmds
 
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.namespace_utils import NamespaceUtils
 from mmd_tools.converters.vpd_converter import VpdConverter
@@ -10,7 +13,7 @@ from mmd_tools.converters.vpd_converter import VpdConverter
 logger = get_logger(__name__)
 
 
-def import_vpd_file(parser, filepath, options=None):
+def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]] = None) -> bool:
     """VPDファイルをMayaシーンにインポートしてポーズを適用
 
     Args:
@@ -23,6 +26,9 @@ def import_vpd_file(parser, filepath, options=None):
 
     Returns:
         bool: インポートが成功したか
+
+    Raises:
+        MMDImportException: VPD インポート中に予期しないエラーが発生した場合。
     """
     if options is None:
         options = {}
@@ -70,7 +76,7 @@ def import_vpd_file(parser, filepath, options=None):
         if apply_to_all:
             # 全てのモデルに適用
             logger.info("Applying pose to all models")
-            namespaces = NamespaceUtils.get_all_namespaces()
+            namespaces = NamespaceUtils.list_model_namespaces()
             success_count = 0
 
             for ns in namespaces:
@@ -115,15 +121,11 @@ def import_vpd_file(parser, filepath, options=None):
         return success
 
     except Exception as e:
-        logger.error(f"Failed to import VPD file: {e}")
-        cmds.error(f"Failed to import VPD file {filepath}: {e}")
-        import traceback
-
-        traceback.print_exc()
-        return False
+        logger.error(f"Failed to import VPD file: {e}", exc_info=True)
+        raise MMDImportException(f"Failed to import VPD file {filepath}: {e}") from e
 
 
-def _create_keyframes_for_namespace(namespace, frame):
+def _create_keyframes_for_namespace(namespace: Optional[str], frame: float) -> None:
     """指定されたネームスペースのジョイントにキーフレームを作成
 
     Args:
@@ -152,7 +154,7 @@ def _create_keyframes_for_namespace(namespace, frame):
     logger.debug(f"Created keyframes for {len(joints)} joints at frame {frame}")
 
 
-def _is_movable_joint(joint_name):
+def _is_movable_joint(joint_name: str) -> bool:
     """移動可能なジョイントかどうかを判定
 
     Args:

@@ -1,5 +1,6 @@
 import math
 import unittest
+from unittest.mock import patch
 
 from maya import cmds
 
@@ -127,6 +128,37 @@ class TestMayaUtils(MayaTestBase):
         # 同様に、例外ではなくログ出力される
         maya_utils.set_attribute(mesh_name, "non_existent_attr", 1.0, "float")
 
+    def test_safe_attr_and_json_helpers(self):
+        """安全 attr helper と JSON attr helper が Maya 例外なしで使える。"""
+        node = cmds.createNode("transform", name="safe_attr_helper_node")
+        cmds.addAttr(node, longName="numberAttr", attributeType="long")
+        cmds.setAttr(f"{node}.numberAttr", 42)
+
+        self.assertEqual(maya_utils.get_attr_safe(node, "numberAttr", default=0, cast=int), 42)
+        self.assertEqual(maya_utils.get_attr_safe(node, "missingAttr", default="fallback"), "fallback")
+
+        payload = {"0": "笑顔", "1": "wink"}
+        self.assertTrue(maya_utils.write_json_attr(node, "mmd_test_json", payload))
+        self.assertEqual(maya_utils.read_json_attr(node, "mmd_test_json"), payload)
+
+        cmds.setAttr(f"{node}.mmd_test_json", "{broken", type="string")
+        self.assertEqual(maya_utils.read_json_attr(node, "mmd_test_json", default=[]), [])
+
+    def test_tag_and_connection_helpers(self):
+        """bool tag と connection helper が重複接続なしで動作する。"""
+        source = cmds.createNode("transform", name="tag_connection_source")
+        dest = cmds.createNode("transform", name="tag_connection_dest")
+
+        self.assertTrue(maya_utils.mark_bool_tag(source, "mmd_test_tag", True))
+        self.assertIn(source, maya_utils.find_tagged_nodes("mmd_test_tag"))
+
+        self.assertTrue(maya_utils.connect_if_needed(f"{source}.translateX", f"{dest}.translateX"))
+        self.assertTrue(cmds.isConnected(f"{source}.translateX", f"{dest}.translateX"))
+        self.assertTrue(maya_utils.connect_if_needed(f"{source}.translateX", f"{dest}.translateX"))
+
+        self.assertEqual(maya_utils.disconnect_sources(f"{dest}.translateX"), 1)
+        self.assertFalse(cmds.isConnected(f"{source}.translateX", f"{dest}.translateX"))
+
     def test_set_attribute_with_custom_attributes(self):
         """set_custom_attributesと組み合わせたテスト"""
         test_obj = cmds.createNode("transform", name="test_custom_attr_obj")
@@ -214,6 +246,24 @@ class TestMayaUtils(MayaTestBase):
                 self.assertAlmostEqual(attr_value, value, places=5)
             else:
                 self.assertEqual(attr_value, value)
+
+    def test_repair_fbx_mojibake_string_restores_utf8_as_cp932_text(self):
+        """FBX round-trip で UTF-8 が CP932 として読まれた MMD 名を復元する。"""
+        mojibake = "センター".encode("utf-8").decode("cp932")
+        self.assertEqual(maya_utils.repair_fbx_mojibake_string(mojibake), "センター")
+        self.assertEqual(maya_utils.repair_fbx_mojibake_string("Test Model EN"), "Test Model EN")
+
+    def test_get_attribute_repairs_mmd_string_mojibake_only_for_mmd_attrs(self):
+        """mmd_* string attr だけ FBX mojibake 補正を適用する。"""
+        node = cmds.createNode("transform", name="test_fbx_mojibake_attr")
+        mojibake = "センター".encode("utf-8").decode("cp932")
+        cmds.addAttr(node, longName="mmd_bone_name", dataType="string")
+        cmds.addAttr(node, longName="plain_name", dataType="string")
+        cmds.setAttr(f"{node}.mmd_bone_name", mojibake, type="string")
+        cmds.setAttr(f"{node}.plain_name", mojibake, type="string")
+
+        self.assertEqual(maya_utils.get_attribute(node, "mmd_bone_name"), "センター")
+        self.assertEqual(maya_utils.get_attribute(node, "plain_name"), mojibake)
 
     def test_get_custom_attributes(self):
         """カスタムアトリビュートを取得できるか"""
@@ -531,6 +581,65 @@ class TestMayaUtils(MayaTestBase):
         # パフォーマンスは同等程度であることを確認
         # APIの方が若干遅い可能性もあるため、2倍の余裕を持たせる
         self.assertLess(api_time, cmds_time * 2.0)
+
+    def test_create_animation_curves_with_layer_does_not_touch_selection(self):
+        """animLayer 用 curve 作成は選択状態に依存せず属性を直接登録する。"""
+        node = cmds.createNode("transform", name="layer_curve_target")
+        selected = cmds.createNode("transform", name="layer_curve_selected")
+        layer = cmds.animLayer("layer_curve_test_layer", override=False, weight=1.0)
+        cmds.select(selected, replace=True)
+
+        with patch(
+            "mmd_tools.core.maya_utils.cmds.select",
+            side_effect=AssertionError("create_animation_curves must not select objects"),
+        ):
+            curves = maya_utils.create_animation_curves(
+                node,
+                ["translateX"],
+                animation_layer=layer,
+            )
+
+        self.assertIn("translateX", curves)
+        layer_attrs = cmds.animLayer(layer, query=True, attribute=True) or []
+        self.assertIn(f"{node}.translateX", layer_attrs)
+        self.assertEqual(cmds.ls(selection=True), [selected])
+
+    def test_create_animation_curves_with_layer_registers_blendshape_weight_plug(self):
+        """animLayer 用 curve 作成は blendShape の weight[0] plug も直接登録する。"""
+        base = cmds.polyCube(name="layer_curve_blendshape_base")[0]
+        target = cmds.duplicate(base, name="layer_curve_blendshape_target")[0]
+        blend_shape = cmds.blendShape(target, base, name="layer_curve_blendshape")[0]
+        cmds.aliasAttr("smile", f"{blend_shape}.weight[0]")
+        layer = cmds.animLayer("layer_curve_blendshape_layer", override=False, weight=1.0)
+
+        curves = maya_utils.create_animation_curves(
+            blend_shape,
+            ["weight[0]"],
+            animation_layer=layer,
+        )
+
+        self.assertIn("weight[0]", curves)
+        layer_attrs = cmds.animLayer(layer, query=True, attribute=True) or []
+        self.assertIn(f"{blend_shape}.smile", layer_attrs)
+
+    def test_create_animation_curves_with_layer_ignores_existing_base_curve(self):
+        """animLayer 用 curve 作成は既存 base animation curve を返さない。"""
+        node = cmds.createNode("transform", name="layer_curve_existing_base_target")
+        cmds.setKeyframe(node, attribute="translateX", time=0.0, value=1.0)
+        base_curves = set(cmds.listConnections(f"{node}.translateX", source=True, type="animCurve") or [])
+        self.assertTrue(base_curves)
+        layer = cmds.animLayer("layer_curve_existing_base_layer", override=False, weight=1.0)
+
+        curves = maya_utils.create_animation_curves(
+            node,
+            ["translateX"],
+            animation_layer=layer,
+        )
+
+        layer_curves = set(cmds.animLayer(layer, query=True, animCurves=True) or [])
+        self.assertIn("translateX", curves)
+        self.assertIn(curves["translateX"].name(), layer_curves)
+        self.assertNotIn(curves["translateX"].name(), base_curves)
 
     def test_set_attribute_edge_cases(self):
         """set_attributeのエッジケーステスト（既存アトリビュートを使用）"""

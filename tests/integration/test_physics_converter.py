@@ -8,7 +8,7 @@ Bullet が利用不可の場合はテストをスキップする。
 
 from maya import cmds
 
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.converters import PhysicsConverter
 from mmd_tools.io.pmx_exporter import PmxExporter
 from tests.common.maya_test_base import MayaTestBase
@@ -667,8 +667,11 @@ class TestPhysicsConverter(MayaTestBase):
             },
         )
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = parse_pmx_file(
+            out_path,
+            use_native_pmx_parse=False,
+            require_native_pmx_parse=False,
+        )
         self.assertEqual(len(pmx.rigid_bodies), 2, "収集した rigid_bodies が PMX に書き出されていない")
         self.assertEqual(len(pmx.joints), 1, "収集した joints が PMX に書き出されていない")
         self.assertEqual(pmx.rigid_bodies[0].related_bone_index, 3)

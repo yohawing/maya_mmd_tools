@@ -1,7 +1,7 @@
 """ImportExportPresenterのMaya非依存ロジックを検証するテスト。
 
 ImportExportPresenter 自体は純粋な分岐ロジックだが、import 連鎖の途中で
-``mmd_tools.io.mmd_importer`` → ``pmd_importer`` 等が ``from maya import cmds`` を、
+``mmd_tools.io.mmd_importer`` → model importer 等が ``from maya import cmds`` を、
 ``..qt_compat`` が PySide6/PySide2 を要求するため、何もしないと import 時点で
 これらが必要になる。そのため ``install_headless_ui_stubs()`` で maya と Qt を
 スタブ化してから presenter を import する。これにより本テストは mayapy / Qt なしの
@@ -21,12 +21,15 @@ from mmd_tools.core.constants import (  # noqa: E402
 )
 from mmd_tools.core.settings import settings  # noqa: E402
 from mmd_tools.actions.export_model_action import ExportModelResult  # noqa: E402
+from mmd_tools.actions.export_vmd_action import ExportVmdResult  # noqa: E402
 from mmd_tools.actions.import_model_action import ImportModelResult  # noqa: E402
 from mmd_tools.actions.import_vmd_action import ImportVmdResult  # noqa: E402
 from mmd_tools.ui.presenters.import_export_presenter import (  # noqa: E402
     ImportExportPresenter,
 )
 from mmd_tools.ui.translations.translator import UITranslator  # noqa: E402
+
+UITranslator.instance().set_language("en")
 
 
 class _FakeSignal:
@@ -93,6 +96,9 @@ class _FakeView:
         self.vmd_path_edit = _FakeLineEdit("motion.vmd")
         self.target_model_combo = _FakeComboBox()
         self.new_file_check = _FakeCheckBox(False)
+        self.export_history = []
+        self.model_items = None
+        self.restore_selection = None
 
     def get_custom_namespace(self):
         return None
@@ -100,18 +106,26 @@ class _FakeView:
     def refresh_model_list(self):
         pass
 
+    def set_target_model_items(self, model_items, restore_selection=False):
+        self.model_items = list(model_items)
+        self.restore_selection = restore_selection
+
     def add_import_path_to_history(self, _path):
         pass
 
     def add_vmd_path_to_history(self, _path):
         pass
 
+    def add_export_path_to_history(self, path):
+        self.export_history.append(path)
+
 
 class _FakeAppState:
-    def __init__(self):
+    def __init__(self, scene_model_service=None):
         self.current_model_root = None
         self.statuses = []
         self.progress = []
+        self.scene_model_service = scene_model_service
 
     def emit_status(self, message):
         self.statuses.append(message)
@@ -121,6 +135,21 @@ class _FakeAppState:
 
     def refresh_model_list(self):
         pass
+
+
+class _FakeSceneModelService:
+    def __init__(self, models=None, display_names=None, error=None):
+        self.models = models or []
+        self.display_names = display_names or {}
+        self.error = error
+
+    def list_mmd_models(self):
+        if self.error:
+            raise self.error
+        return list(self.models)
+
+    def get_model_display_name(self, model_root):
+        return self.display_names.get(model_root, model_root)
 
 
 class _FakeMayaAdapter:
@@ -187,7 +216,22 @@ class _RecordingExportModelAction:
 
 class _FailingExportModelAction:
     def execute(self, _request):
-        raise AssertionError("export action must not be used")
+        raise AssertionError("model export action must not be used")
+
+
+class _RecordingExportVmdAction:
+    def __init__(self, result):
+        self.result = result
+        self.requests = []
+
+    def execute(self, request):
+        self.requests.append(request)
+        return self.result
+
+
+class _FailingExportVmdAction:
+    def execute(self, _request):
+        raise AssertionError("vmd export action must not be used")
 
 
 class TestImportExportPresenter(unittest.TestCase):
@@ -260,7 +304,8 @@ class TestImportExportPresenter(unittest.TestCase):
         presenter = ImportExportPresenter(view, app_state)
         issue = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
 
-        def fake_import(_path, options=None):
+        def fake_import(_path, options=None, progress_callback=None):
+            self.assertEqual(progress_callback, app_state.emit_progress)
             options["profile"]["texture_issues"] = [issue]
             return "model_root"
 
@@ -283,7 +328,8 @@ class TestImportExportPresenter(unittest.TestCase):
         app_state = _FakeAppState()
         presenter = ImportExportPresenter(view, app_state)
 
-        def fake_import(_path, options=None):
+        def fake_import(_path, options=None, progress_callback=None):
+            self.assertEqual(progress_callback, app_state.emit_progress)
             options["profile"]["texture_issues"] = [{"file_node": "file1"}]
             return "model_root"
 
@@ -303,6 +349,28 @@ class TestImportExportPresenter(unittest.TestCase):
         presenter = ImportExportPresenter(view, app_state)
 
         self.assertEqual(view.fix_texture_path_button.clicked.connected, [presenter.fix_texture_paths])
+
+    def test_refresh_model_list_uses_scene_model_service_display_names(self):
+        view = _FakeView()
+        scene_service = _FakeSceneModelService(
+            models=["ModelA:miku_root"],
+            display_names={"ModelA:miku_root": "Miku"},
+        )
+        app_state = _FakeAppState(scene_model_service=scene_service)
+
+        ImportExportPresenter(view, app_state)
+
+        self.assertEqual(view.model_items, [("ModelA:miku_root", "Miku")])
+        self.assertTrue(view.restore_selection)
+
+    def test_refresh_model_list_handles_scene_service_failure(self):
+        view = _FakeView()
+        app_state = _FakeAppState(scene_model_service=_FakeSceneModelService(error=RuntimeError("boom")))
+
+        presenter = ImportExportPresenter(view, app_state)
+        presenter.refresh_model_list()
+
+        self.assertEqual(view.model_items, [])
 
     def test_fix_texture_paths_shows_dialog_even_when_import_dialog_setting_disabled(self):
         settings.set("import.model.show_texture_issue_dialog", False)
@@ -431,13 +499,9 @@ class TestImportExportPresenter(unittest.TestCase):
         mock_maya_utils.get_attribute.assert_not_called()
 
     def test_import_file_model_branch_uses_injected_action_and_updates_ui_state(self):
-        recorded_refreshes = []
         recorded_history = []
 
         class _RecordingView(_FakeView):
-            def refresh_model_list(self):
-                recorded_refreshes.append("refresh")
-
             def add_import_path_to_history(self, path):
                 recorded_history.append(path)
 
@@ -457,10 +521,11 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(action.requests[0].file_path, "model.pmx")
         self.assertIn("profile", action.requests[0].options)
         self.assertFalse(action.requests[0].create_new_scene)
+        self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
         self.assertEqual(app_state.current_model_root, "model_root")
         self.assertIn("Import complete: model_root", app_state.statuses)
         self.assertIn(100, app_state.progress)
-        self.assertEqual(recorded_refreshes, ["refresh"])
+        self.assertEqual(view.model_items, [])
         self.assertEqual(recorded_history, ["model.pmx"])
 
     def test_import_file_vmd_branch_does_not_use_model_action(self):
@@ -479,6 +544,7 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertEqual(len(action.requests), 1)
         self.assertEqual(action.requests[0].file_path, "motion.vmd")
+        self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
 
     def test_import_file_vmd_branch_passes_create_new_scene_to_action(self):
         view = _FakeView()
@@ -492,6 +558,7 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertEqual(len(action.requests), 1)
         self.assertTrue(action.requests[0].create_new_scene)
+        self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
 
     def test_import_vmd_auto_detect_uses_current_model_root(self):
         view = _FakeView()
@@ -636,6 +703,8 @@ class TestVmdImportOptions(unittest.TestCase):
             "import_morph_animation",
             "import_camera_animation",
             "import_light_animation",
+            "motion_scale",
+            "clear_existing_motion",
             "resample_curves",
             "target_model",
         ):
@@ -710,6 +779,7 @@ class TestVmdImportOptions(unittest.TestCase):
         self.assertEqual(len(action.requests), 1)
         self.assertEqual(action.requests[0].file_path, "dance.vmd")
         self.assertFalse(action.requests[0].create_new_scene)
+        self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
         self.assertEqual(recorded, ["dance.vmd"])
         self.assertIn(100, app_state.progress)
 
@@ -748,7 +818,7 @@ class TestVmdImportOptions(unittest.TestCase):
 
 
 class TestExportFile(unittest.TestCase):
-    """export_file は未実装である旨を明示する分岐を検証する。"""
+    """export_file の PMX/PMD/VMD action 分岐を検証する。"""
 
     _KEYS_TO_PRESERVE = (
         "export.general.export_format",
@@ -766,25 +836,35 @@ class TestExportFile(unittest.TestCase):
         view = _FakeView()
         view.export_path_edit = _FakeLineEdit("")
         app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state, export_model_action=_FailingExportModelAction())
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            export_model_action=_FailingExportModelAction(),
+            export_vmd_action=_FailingExportVmdAction(),
+        )
         presenter.export_file()
         self.assertIn("Please enter a file path", app_state.statuses)
 
-    def test_reports_not_implemented(self):
+    def test_reports_model_action_status_message(self):
         view = _FakeView()
         view.export_path_edit = _FakeLineEdit("out.pmx")
         app_state = _FakeAppState()
         action = _RecordingExportModelAction(
             ExportModelResult(
-                status_message="PMX export is not implemented yet (scene data collection is unsupported)"
+                status_message="Export failed: Model export requires model_data, target_mesh, or a selected mesh"
             )
         )
-        presenter = ImportExportPresenter(view, app_state, export_model_action=action)
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            export_model_action=action,
+            export_vmd_action=_FailingExportVmdAction(),
+        )
         presenter.export_file()
         self.assertEqual(len(action.requests), 1)
         self.assertEqual(action.requests[0].file_path, "out.pmx")
         self.assertTrue(
-            any("not implemented" in s.lower() for s in app_state.statuses)
+            any("Model export requires" in s for s in app_state.statuses)
         )
 
     def test_build_export_options_includes_file_path(self):
@@ -817,19 +897,22 @@ class TestExportFile(unittest.TestCase):
 
         self.assertFalse(opts["apply_scale"])
 
-    def test_export_file_does_not_call_pmx_exporter_before_scene_collection_exists(self):
+    def test_export_file_reports_model_action_error(self):
         view = _FakeView()
         view.export_path_edit = _FakeLineEdit("out.pmx")
         app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
-
-        with patch("mmd_tools.io.pmx_exporter.PmxExporter") as mock_exporter:
-            presenter.export_file()
-
-        mock_exporter.assert_not_called()
-        self.assertTrue(
-            any("not implemented" in s.lower() for s in app_state.statuses)
+        action = _RecordingExportModelAction(ExportModelResult(error=ValueError("boom")))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            export_model_action=action,
+            export_vmd_action=_FailingExportVmdAction(),
         )
+
+        presenter.export_file()
+
+        self.assertEqual(len(action.requests), 1)
+        self.assertTrue(any("Export error: boom" in s for s in app_state.statuses))
 
     def test_export_file_passes_built_options_to_injected_action(self):
         settings.set("export.general.export_format", "pmx")
@@ -837,8 +920,13 @@ class TestExportFile(unittest.TestCase):
         view = _FakeView()
         view.export_path_edit = _FakeLineEdit("  out.pmx  ")
         app_state = _FakeAppState()
-        action = _RecordingExportModelAction(ExportModelResult(status_message="not implemented"))
-        presenter = ImportExportPresenter(view, app_state, export_model_action=action)
+        action = _RecordingExportModelAction(ExportModelResult(exported_path="out.pmx", succeeded=True))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            export_model_action=action,
+            export_vmd_action=_FailingExportVmdAction(),
+        )
 
         presenter.export_file()
 
@@ -853,7 +941,54 @@ class TestExportFile(unittest.TestCase):
                 "apply_scale": False,
             },
         )
-        self.assertIn("not implemented", app_state.statuses)
+        self.assertIn("Export complete: out.pmx", app_state.statuses)
+        self.assertEqual(view.export_history, ["out.pmx"])
+
+    def test_export_file_uses_vmd_action_when_format_is_vmd(self):
+        settings.set("export.general.export_format", "vmd")
+        view = _FakeView()
+        view.export_path_edit = _FakeLineEdit("  out.vmd  ")
+        app_state = _FakeAppState()
+        action = _RecordingExportVmdAction(ExportVmdResult(exported_path="out.vmd", succeeded=True))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            export_model_action=_FailingExportModelAction(),
+            export_vmd_action=action,
+        )
+
+        presenter.export_file()
+
+        self.assertEqual(len(action.requests), 1)
+        request = action.requests[0]
+        self.assertEqual(request.file_path, "out.vmd")
+        self.assertEqual(
+            request.options,
+            {
+                "file_path": "out.vmd",
+                "export_format": "vmd",
+                "apply_scale": True,
+            },
+        )
+        self.assertIn("Export complete: out.vmd", app_state.statuses)
+
+    def test_export_file_reports_vmd_action_error(self):
+        settings.set("export.general.export_format", "vmd")
+        view = _FakeView()
+        view.export_path_edit = _FakeLineEdit("out.vmd")
+        app_state = _FakeAppState()
+        action = _RecordingExportVmdAction(ExportVmdResult(error=RuntimeError("boom")))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            export_model_action=_FailingExportModelAction(),
+            export_vmd_action=action,
+        )
+
+        presenter.export_file()
+
+        self.assertEqual(len(action.requests), 1)
+        self.assertTrue(any("Export error: boom" in s for s in app_state.statuses))
 
 
 class TestDevModeBehaviorGating(unittest.TestCase):

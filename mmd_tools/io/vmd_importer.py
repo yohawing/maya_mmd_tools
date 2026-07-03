@@ -3,15 +3,23 @@ VMDファイル（モーションデータ）をMayaシーンにインポート�
 """
 
 import os
+from typing import Any, Callable, Dict, Optional
 
 from maya import cmds
+from ..converters import vmd_profile
 from ..converters.vmd_converter import VmdConverter
+from ..core.exceptions import MMDImportException
 from ..core.logger import get_logger
 from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
 
 
-def import_vmd_file(parser, filepath, options=None):
+def import_vmd_file(
+    parser: Any,
+    filepath: str,
+    options: Optional[Dict[str, Any]] = None,
+    progress_callback: Optional[Callable[[int], None]] = None,
+) -> bool:
     """
     VMDファイルをMayaシーンにインポートします。
 
@@ -26,16 +34,29 @@ def import_vmd_file(parser, filepath, options=None):
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
             - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
+        progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
     Returns:
         bool: インポートが成功したかどうか
+
+    Raises:
+        MMDImportException: VMD インポート処理に失敗した場合。
     """
     if options is None:
         options = {}
+
+    def _emit_progress(value: int) -> None:
+        if progress_callback is not None:
+            try:
+                progress_callback(value)
+            except Exception:
+                logger.debug("Progress callback failed", exc_info=True)
+
     logger = get_logger("vmd_importer")
     logger.info(f"Starting VMD file import: {filepath}")
 
     try:
+        _emit_progress(15)
         # オプションからターゲットモデルを取得
         target_namespace = None
         target_model = options.get("target_model")
@@ -64,8 +85,11 @@ def import_vmd_file(parser, filepath, options=None):
         # bake when live mmdCcdIk/mmdAppend rig connections are present.
         vmd_bytes = None
         try:
-            with open(filepath, "rb") as f:
-                vmd_bytes = f.read()
+            with vmd_profile.scope("vmd_raw_bytes_read"):
+                with open(filepath, "rb") as f:
+                    vmd_bytes = f.read()
+            vmd_profile.set_extra("vmd_bytes", len(vmd_bytes))
+            _emit_progress(25)
         except Exception as e:
             logger.warning(f"Failed to read raw VMD bytes: {e}")
 
@@ -82,7 +106,7 @@ def import_vmd_file(parser, filepath, options=None):
                         pmx_path = stored
                         logger.info(f"Restored PMX source from model: {pmx_path}")
             except Exception:
-                pass
+                logger.debug("Failed to restore PMX source from target model", exc_info=True)
 
         if not pmx_bytes and not pmx_path:
             # 同じディレクトリに .pmx/.pmd があるか簡易推定
@@ -93,7 +117,8 @@ def import_vmd_file(parser, filepath, options=None):
                     pmx_path = os.path.join(vmd_dir, candidates[0])
                     logger.info(f"Auto-detected PMX source: {pmx_path} (explicit path recommended)")
             except Exception:
-                pass
+                logger.debug("Failed to auto-detect PMX source next to VMD", exc_info=True)
+        _emit_progress(35)
 
         # VMDコンバーターを使用してアニメーションを変換
         converter = VmdConverter()
@@ -109,14 +134,23 @@ def import_vmd_file(parser, filepath, options=None):
                 logger.warning(f"Invalid vmd_fps={vmd_fps} (only 30 or 60 allowed), falling back to 30")
                 vmd_fps = 30
         converter.fps = float(vmd_fps)
-        success = converter.convert(
-            parser,
-            target_namespace,
-            bake_mode=options.get("bake_mode", False),
-            vmd_bytes=vmd_bytes,
-            pmx_bytes=pmx_bytes,
-            pmx_path=pmx_path,
-        )
+        converter.motion_scale = float(options.get("motion_scale", 1.0))
+        converter.import_camera_animation = bool(options.get("import_camera_animation", True))
+        converter.import_light_animation = bool(options.get("import_light_animation", True))
+        try:
+            with vmd_profile.scope("vmd_converter_convert"):
+                success = converter.convert(
+                    parser,
+                    target_namespace,
+                    bake_mode=options.get("bake_mode", False),
+                    clear_existing_motion=options.get("clear_existing_motion", False),
+                    vmd_bytes=vmd_bytes,
+                    pmx_bytes=pmx_bytes,
+                    pmx_path=pmx_path,
+                    progress_callback=progress_callback,
+                )
+        finally:
+            vmd_profile.flush("import_vmd_file")
 
         if success:
             logger.info("VMD file import completed")
@@ -157,11 +191,12 @@ def import_vmd_file(parser, filepath, options=None):
             )
         else:
             cmds.warning("Failed to import VMD file")
+            raise MMDImportException(f"Failed to import VMD file {filepath}")
 
         return success
 
+    except MMDImportException:
+        raise
     except Exception as e:
-        cmds.error(f"Failed to import VMD file {filepath}: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+        logger.error(f"Failed to import VMD file {filepath}: {e}", exc_info=True)
+        raise MMDImportException(f"Failed to import VMD file {filepath}: {e}") from e

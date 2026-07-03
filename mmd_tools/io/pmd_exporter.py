@@ -13,31 +13,12 @@ from mmd_tools.core.pmd_data.bone import PmdBone, PmdBoneType
 from mmd_tools.core.pmd_data.face import PmdFace
 from mmd_tools.core.pmd_data.material import PmdMaterial
 from mmd_tools.core.pmd_data.vertex import PmdVertex
+from mmd_tools.core.utils import fan_triangulate as _fan_triangulate
 
 # PMDの頂点インデックスは符号なし16bit。
 PMD_MAX_VERTEX_INDEX = 0xFFFF
 # tail / IK 親が無いことを表す番兵。
 PMD_NO_BONE = 0xFFFF
-
-
-def _fan_triangulate(polygon_indices: list) -> list:
-    """多角形（quad/ngon）をfan triangulationで三角形リストに変換する。
-
-    Args:
-        polygon_indices: 多角形を構成する頂点インデックスのリスト。
-
-    Returns:
-        三角形（長さ3のインデックスリスト）のリスト。
-
-    Raises:
-        ValueError: 頂点数が3未満の場合。
-    """
-    if len(polygon_indices) < 3:
-        raise ValueError(f"Polygon must have at least 3 vertices, got {len(polygon_indices)}")
-    triangles = []
-    for i in range(1, len(polygon_indices) - 1):
-        triangles.append([polygon_indices[0], polygon_indices[i], polygon_indices[i + 1]])
-    return triangles
 
 
 def _normalize_bone_weight(v_raw: dict) -> int:

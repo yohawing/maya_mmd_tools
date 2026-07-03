@@ -7,7 +7,6 @@
 
 import platform
 import sys
-import unittest
 from unittest.runner import TextTestResult, TextTestRunner
 
 # ANSIカラーコード
@@ -186,25 +185,3 @@ class CustomTestRunner(TextTestRunner):
                 self.stream.write(f"{COLOR['RESET']}")
 
         return result
-
-
-if __name__ == "__main__":
-    # 使用例
-    class ExampleTest(unittest.TestCase):
-        def test_success(self):
-            self.assertTrue(True)
-
-        def test_failure(self):
-            self.assertTrue(False)
-
-        def test_error(self):
-            raise RuntimeError("エラーが発生しました")
-
-        @unittest.skip("スキップの理由")
-        def test_skip(self):
-            pass
-
-    # カラーテストランナーを使用してテストを実行
-    enable_windows_ansi_support()
-    runner = CustomTestRunner(verbosity=2)
-    runner.run(unittest.makeSuite(ExampleTest))

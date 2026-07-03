@@ -37,7 +37,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 
 | Feature | Status | Notes |
 |---|---|---|
-| Bone animation | 🔶 | Normally plays through the MMD rig. Bake mode uses high-precision [mmd-anim](https://github.com/yohawing/mmd-anim) evaluation. |
+| Bone animation | 🔶 | Bake mode uses high-precision [mmd-anim](https://github.com/yohawing/mmd-anim) final-pose evaluation. Rig mode keeps editable sparse keys and live MMD rig nodes, but remains experimental for complex motions. |
 | Morph animation | ✅ | Vertex and bone morphs are supported. Material morphs are partially supported. |
 | Camera animation | ✅ | Creates/keys `mmd_camera` |
 | Light animation | ✅ | Drives the `mmd_light` controller |
@@ -62,7 +62,9 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 - **Soft body (PMX 2.1) data is silently ignored.** The rest of the file still imports correctly.
 - **Display frames (表示枠) are read but not reflected in Maya.**
 - **Physics is experimental** and off by default.
-- **Bone local-axis fidelity is approximate** and not fully verified.
+- **Bake mode is the fidelity path for VMD motion.** It bakes final poses from the `mmd-anim` runtime and is the recommended path when matching MMD output matters.
+- **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
+- **File > Import integration is not part of this release.** Use the MMD Tools UI or drag-and-drop import instead. The Maya file translator path is deferred because it needs a separate safe integration path.
 - Large models may have performance issues, and some PMX files may fail to import.
 - The opt-in C++ fast-import path supports mesh, basic materials, basic skeleton/skin, and vertex-morph blendShape targets only (UV / material / bone / group morphs are not handled on that path).
 
@@ -161,6 +163,8 @@ You can also import MMD files by dragging them into the Maya viewport.
 - Drop a PMX/PMD file together with a VMD file to import the model first and then apply the motion.
 - Drop a VMD file after a model is already loaded to apply the motion to the selected or existing MMD model.
 - Dropping a VMD file before loading a model shows a warning and does not import the motion.
+
+Maya `File > Import` is not a supported MMD import path in this release.
 
 ## Viewport Setup
 

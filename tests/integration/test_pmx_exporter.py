@@ -5,13 +5,35 @@ collect → export → parse round-trip for a minimum geometry.
 """
 
 import os
+from unittest.mock import patch
 
 from maya import cmds
 
+from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
+from mmd_tools.converters.morph_converter import MorphConverter
+from mmd_tools.converters.physics_converter import PhysicsConverter
+from mmd_tools.core.constants import (
+    ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_MODEL_NAME,
+)
 from mmd_tools.io.pmx_exporter import PmxExporter
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmd_data import PmdData
+from mmd_tools.core.mmd_parser import parse_pmx_file
+from mmd_tools.core.pmx_data.morph import PmxMorphType
 from tests.common.maya_test_base import MayaTestBase
+
+
+def _parse_pmx(path):
+    """Read exporter output with the legacy PMX reader for writer roundtrip checks."""
+    return parse_pmx_file(
+        path,
+        use_native_pmx_parse=False,
+        require_native_pmx_parse=False,
+    )
 
 
 class TestPmxExporter(MayaTestBase):
@@ -73,6 +95,180 @@ class TestPmxExporter(MayaTestBase):
         cmds.sets(component, edit=True, forceElement=sg)
         return shader
 
+    def _make_two_mesh_model_root(self, root_name: str = "export_model_root"):
+        """Create a root with two child triangle meshes and return (root, meshes)."""
+        root = cmds.group(empty=True, name=root_name)
+        cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME, dataType="string")
+        cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "MergedExport", type="string")
+
+        mesh_a, _ = self._make_triangle(name=f"{root_name}_mesh_a")
+        mesh_b, _ = self._make_triangle(name=f"{root_name}_mesh_b")
+        cmds.move(2.0, 0.0, 0.0, mesh_b, absolute=True)
+        cmds.parent(mesh_a, root)
+        cmds.parent(mesh_b, root)
+        shader_a = self._assign_shader(mesh_a, shader_name=f"{root_name}_MatA")
+        shader_b = self._assign_shader(mesh_b, shader_name=f"{root_name}_MatB")
+        return root, (mesh_a, mesh_b), (shader_a, shader_b)
+
+    def _make_skinned_triangle(self, name: str = "skinned_tri"):
+        """Create a skinned triangle with two MMD-tagged influence joints."""
+        transform, _shape = self._make_triangle(name=name)
+        self._assign_shader(transform, shader_name=f"{name}_Mat")
+
+        cmds.select(clear=True)
+        root_joint = cmds.joint(name=f"{name}_root_jnt", position=[0.0, 0.0, 0.0])
+        child_joint = cmds.joint(name=f"{name}_child_jnt", position=[0.0, 2.0, 0.0])
+        for joint, bone_index, parent_index, bone_name, bone_name_en in [
+            (root_joint, 0, -1, "センター", "Center"),
+            (child_joint, 1, 0, "上半身", "UpperBody"),
+        ]:
+            cmds.addAttr(joint, longName=ATTR_MMD_BONE_INDEX, attributeType="long")
+            cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}", bone_index)
+            cmds.addAttr(joint, longName=ATTR_MMD_BONE_PARENT_INDEX, attributeType="long")
+            cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_PARENT_INDEX}", parent_index)
+            cmds.addAttr(joint, longName=ATTR_MMD_BONE_NAME, dataType="string")
+            cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_NAME}", bone_name, type="string")
+            cmds.addAttr(joint, longName=ATTR_MMD_BONE_NAME_EN, dataType="string")
+            cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_NAME_EN}", bone_name_en, type="string")
+
+        skin_cluster = cmds.skinCluster(
+            [root_joint, child_joint],
+            transform,
+            toSelectedBones=True,
+            maximumInfluences=2,
+            normalizeWeights=1,
+            name=f"{name}_skinCluster",
+        )[0]
+        cmds.skinPercent(
+            skin_cluster,
+            f"{transform}.vtx[0]",
+            transformValue=[(root_joint, 1.0), (child_joint, 0.0)],
+        )
+        cmds.skinPercent(
+            skin_cluster,
+            f"{transform}.vtx[1]",
+            transformValue=[(root_joint, 0.25), (child_joint, 0.75)],
+        )
+        cmds.skinPercent(
+            skin_cluster,
+            f"{transform}.vtx[2]",
+            transformValue=[(root_joint, 0.0), (child_joint, 1.0)],
+        )
+        return transform, (root_joint, child_joint), skin_cluster
+
+    def _create_scene_morph_metadata(self, mesh_name: str):
+        """Create vertex/bone/material morph metadata through MorphConverter."""
+
+        class FakeVertexMorph:
+            name = "頂点にこり"
+            name_english = "vertex_smile"
+            panel = 3
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [
+                {
+                    "vertex_index": 1,
+                    "position_offset": (0.25, 0.0, 0.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        class FakeBoneMorph:
+            name = "ボーン笑い"
+            name_english = "bone_smile"
+            panel = 4
+            morph_type = PmxMorphType.BoneMorph
+            offsets = [
+                {
+                    "bone_index": 0,
+                    "translation": (1.0, 2.0, 3.0),
+                    "rotation": (0.0, 0.0, 0.0, 1.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        class FakeMaterialMorph:
+            name = "材質点滅"
+            name_english = "material_flash"
+            panel = 5
+            morph_type = PmxMorphType.MaterialMorph
+            offsets = [
+                {
+                    "material_index": 0,
+                    "operation_type": 0,
+                    "diffuse": (0.1, 0.2, 0.3, 0.4),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [FakeVertexMorph(), FakeBoneMorph(), FakeMaterialMorph()],
+            },
+        )()
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh_name)
+        self.assertTrue(result.get("success", False))
+        return result
+
+    def _create_scene_physics_metadata(self, root: str):
+        """Create Bullet physics metadata below *root* through PhysicsConverter."""
+
+        class FakeRigidBody:
+            def __init__(self, name, related_bone_index, position, physics_mode):
+                self.name = name
+                self.name_english = f"{name}_en"
+                self.related_bone_index = related_bone_index
+                self.group = 1
+                self.collision_mask = 0xFFFE
+                self.shape_type = 0
+                self.size = (0.5, 0.5, 0.5)
+                self.position = position
+                self.rotation = (0.0, 0.0, 0.0)
+                self.mass = 1.0
+                self.velocity_attenuation = 0.4
+                self.rotation_attenuation = 0.5
+                self.friction = 0.6
+                self.elasticity = 0.2
+                self.physics_mode = physics_mode
+
+        class FakeJoint:
+            name = "physics_joint"
+            name_english = "physics_joint_en"
+            joint_type = 0
+            rigid_body_a_index = 0
+            rigid_body_b_index = 1
+            position = (0.5, 0.5, 0.0)
+            rotation = (0.0, 0.0, 0.0)
+            translation_limit_min = (-0.1, -0.2, -0.3)
+            translation_limit_max = (0.1, 0.2, 0.3)
+            rotation_limit_min = (-0.1, -0.2, -0.3)
+            rotation_limit_max = (0.1, 0.2, 0.3)
+            spring_translation = (0.01, 0.02, 0.03)
+            spring_rotation = (0.04, 0.05, 0.06)
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "bones": [],
+                "rigid_bodies": [
+                    FakeRigidBody("physics_rb_a", 0, (0.0, 1.0, 0.0), 2),
+                    FakeRigidBody("physics_rb_b", 0, (1.0, 1.0, 0.0), 0),
+                ],
+                "joints": [FakeJoint()],
+            },
+        )()
+        return PhysicsConverter().convert_pmx_physics(fake_data, {}, root)
+
     # ------------------------------------------------------------------
     # tests
     # ------------------------------------------------------------------
@@ -110,6 +306,27 @@ class TestPmxExporter(MayaTestBase):
 
         self.assertEqual(maya_data["materials"][0]["name"], shader)
 
+    def test_roundtrip_converts_geometry_to_mmd_basis(self):
+        """Maya-space geometry is exported with MMD Z basis and reversed winding."""
+        result = cmds.polyCreateFacet(
+            p=[(0, 0, 2), (1, 0, 2), (0, 1, 2)],
+            name="basis_tri_mesh",
+        )
+        transform = result[0]
+        self._assign_shader(transform, shader_name="BasisTriMat")
+
+        maya_data = ExportSceneCollector().collect_from_mesh(transform)
+        self.assertEqual(maya_data["faces"], [[2, 1, 0]])
+
+        output_path = self.get_temp_filename("basis_triangle.pmx")
+        PmxExporter().export_pmx_model(output_path, maya_data)
+
+        pmx = _parse_pmx(output_path)
+
+        self.assertEqual(pmx.faces[0].indices, (2, 1, 0))
+        self.assertAlmostEqual(pmx.vertices[0].position[2], -2.0)
+        self.assertAlmostEqual(pmx.vertices[0].normal[2], -1.0)
+
     def test_roundtrip_single_triangle(self):
         """Full round-trip: collect → export PMX → parse → assert structure."""
         transform, _ = self._make_triangle(name="tri_mesh")
@@ -124,8 +341,7 @@ class TestPmxExporter(MayaTestBase):
 
         self.assertTrue(os.path.exists(output_path), "PMX file was not written")
 
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         # Vertex / face counts
         self.assertEqual(len(pmx.vertices), 3)
@@ -138,6 +354,209 @@ class TestPmxExporter(MayaTestBase):
 
         # Bones: exporter auto-creates one default root bone when bones=None
         self.assertEqual(len(pmx.bones), 1)
+
+    def test_export_model_action_collects_target_mesh_and_writes_pmx(self):
+        """ExportModelAction の default collector 経由で PMX を書き出せる。"""
+        transform, _ = self._make_triangle(name="action_tri_mesh")
+        shader = self._assign_shader(transform, shader_name="ActionTriMat")
+        output_path = self.get_temp_filename("action_triangle.pmx")
+
+        with patch(
+            "mmd_tools.converters.export_scene_collector.cmds.skinPercent",
+            side_effect=AssertionError("export skin collection must use bulk API"),
+        ):
+            result = ExportModelAction().execute(
+                ExportModelRequest(
+                    file_path=output_path,
+                    options={"export_format": "pmx", "target_mesh": transform},
+                )
+            )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.exported_path, output_path)
+        self.assertTrue(os.path.exists(output_path), "PMX file was not written")
+
+        pmx = _parse_pmx(output_path)
+        self.assertEqual(len(pmx.vertices), 3)
+        self.assertEqual(len(pmx.faces), 1)
+        self.assertEqual(pmx.materials[0].name, shader)
+
+    def test_export_model_action_collects_target_mesh_and_writes_pmd(self):
+        """ExportModelAction の default collector 経由で PMD を書き出せる。"""
+        transform, _ = self._make_triangle(name="action_pmd_tri_mesh")
+        cmds.addAttr(transform, longName=ATTR_MMD_MODEL_NAME, dataType="string")
+        cmds.setAttr(f"{transform}.{ATTR_MMD_MODEL_NAME}", "PmdTri", type="string")
+        self._assign_shader(transform, shader_name="ActionPmdTriMat")
+        output_path = self.get_temp_filename("action_triangle.pmd")
+
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmd", "target_mesh": transform},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.exported_path, output_path)
+        self.assertTrue(os.path.exists(output_path), "PMD file was not written")
+
+        pmd = PmdData()
+        pmd.parse_file(output_path)
+        self.assertEqual(pmd.header.model_name, "PmdTri")
+        self.assertEqual(len(pmd.vertices), 3)
+        self.assertEqual(len(pmd.faces), 1)
+        self.assertEqual(len(pmd.materials), 1)
+        self.assertEqual(pmd.materials[0].face_count, 3)
+        self.assertEqual(len(pmd.bones), 1)
+
+    def test_export_model_action_collects_model_root_meshes_to_pmx(self):
+        """target_model 配下の複数 mesh を PMX の単一 model data にまとめる。"""
+        root, _meshes, shaders = self._make_two_mesh_model_root("pmx_multi_root")
+        output_path = self.get_temp_filename("multi_mesh_model.pmx")
+
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_model": root},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmx = _parse_pmx(output_path)
+
+        self.assertEqual(pmx.header.model_name, "MergedExport")
+        self.assertEqual(len(pmx.vertices), 6)
+        self.assertEqual(len(pmx.faces), 2)
+        self.assertEqual(len(pmx.materials), 2)
+        self.assertEqual([mat.face_count for mat in pmx.materials], [3, 3])
+        self.assertEqual({mat.name for mat in pmx.materials}, set(shaders))
+
+    def test_export_model_action_collects_model_root_meshes_to_pmd(self):
+        """target_model 配下の複数 mesh を PMD の単一 model data にまとめる。"""
+        root, _meshes, _shaders = self._make_two_mesh_model_root("pmd_multi_root")
+        output_path = self.get_temp_filename("multi_mesh_model.pmd")
+
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmd", "target_model": root},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmd = PmdData()
+        pmd.parse_file(output_path)
+
+        self.assertEqual(pmd.header.model_name, "MergedExport")
+        self.assertEqual(len(pmd.vertices), 6)
+        self.assertEqual(len(pmd.faces), 2)
+        self.assertEqual(len(pmd.materials), 2)
+        self.assertEqual([mat.face_count for mat in pmd.materials], [3, 3])
+
+    def test_export_model_action_collects_scene_morph_metadata_to_pmx(self):
+        """target_model export は scene の vertex/bone/material morph metadata を PMX に書き戻す。"""
+        root, (mesh_a, _mesh_b), _shaders = self._make_two_mesh_model_root("pmx_morph_root")
+        self._create_scene_morph_metadata(mesh_a)
+        output_path = self.get_temp_filename("morph_metadata_model.pmx")
+
+        with patch(
+            "mmd_tools.converters.export_scene_collector.cmds.pointPosition",
+            side_effect=AssertionError("vertex morph collection must use MFnMesh.getPoints"),
+        ):
+            result = ExportModelAction().execute(
+                ExportModelRequest(
+                    file_path=output_path,
+                    options={"export_format": "pmx", "target_model": root},
+                )
+            )
+
+        self.assertTrue(result.succeeded)
+        pmx = _parse_pmx(output_path)
+
+        self.assertEqual(len(pmx.morphs), 3)
+        vertex_morph = next(m for m in pmx.morphs if m.name == "頂点にこり")
+        self.assertEqual(int(vertex_morph.morph_type), 1)
+        self.assertEqual(vertex_morph.offsets[0]["vertex_index"], 1)
+        self.assertAlmostEqual(vertex_morph.offsets[0]["position_offset"][0], 0.25)
+        self.assertTrue(any(m.name == "ボーン笑い" and int(m.morph_type) == 2 for m in pmx.morphs))
+        self.assertTrue(any(m.name == "材質点滅" and int(m.morph_type) == 8 for m in pmx.morphs))
+
+    def test_export_model_action_collects_scene_physics_to_pmx(self):
+        """target_model export は root 配下の Bullet physics metadata を PMX に書き戻す。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root, _meshes, _shaders = self._make_two_mesh_model_root("pmx_physics_root")
+        self._create_scene_physics_metadata(root)
+        output_path = self.get_temp_filename("physics_metadata_model.pmx")
+
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_model": root},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmx = _parse_pmx(output_path)
+
+        self.assertEqual([rb.name for rb in pmx.rigid_bodies], ["physics_rb_a", "physics_rb_b"])
+        self.assertEqual([rb.related_bone_index for rb in pmx.rigid_bodies], [0, 0])
+        self.assertEqual([rb.physics_mode for rb in pmx.rigid_bodies], [2, 0])
+        self.assertEqual(len(pmx.joints), 1)
+        self.assertEqual(pmx.joints[0].name, "physics_joint")
+        self.assertEqual(pmx.joints[0].rigid_body_a_index, 0)
+        self.assertEqual(pmx.joints[0].rigid_body_b_index, 1)
+
+    def test_export_model_action_collects_skincluster_weights_to_pmx(self):
+        """skinCluster の influence と weight を PMX bones/BDEF に書き出す。"""
+        transform, _joints, _skin_cluster = self._make_skinned_triangle("pmx_skinned_tri")
+        output_path = self.get_temp_filename("skinned_triangle.pmx")
+
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_mesh": transform},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmx = _parse_pmx(output_path)
+
+        self.assertEqual([bone.name for bone in pmx.bones], ["センター", "上半身"])
+        self.assertEqual([bone.parent_bone_index for bone in pmx.bones], [-1, 0])
+        self.assertEqual(pmx.vertices[0].weight_transform_type, 0)
+        self.assertEqual(pmx.vertices[0].bone_indices, [0])
+        self.assertEqual(pmx.vertices[1].weight_transform_type, 1)
+        self.assertEqual(pmx.vertices[1].bone_indices, [1, 0])
+        self.assertAlmostEqual(pmx.vertices[1].bone_weights[0], 0.75)
+        self.assertEqual(pmx.vertices[2].weight_transform_type, 0)
+        self.assertEqual(pmx.vertices[2].bone_indices, [1])
+
+    def test_export_model_action_collects_skincluster_weights_to_pmd(self):
+        """skinCluster の influence と weight を PMD bones/vertex weight に書き出す。"""
+        transform, _joints, _skin_cluster = self._make_skinned_triangle("pmd_skinned_tri")
+        output_path = self.get_temp_filename("skinned_triangle.pmd")
+
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmd", "target_mesh": transform},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmd = PmdData()
+        pmd.parse_file(output_path)
+
+        self.assertEqual([bone.name for bone in pmd.bones], ["センター", "上半身"])
+        self.assertEqual([bone.parent_bone_index for bone in pmd.bones], [-1, 0])
+        self.assertEqual(pmd.vertices[0].bone_indices, (0, 0))
+        self.assertEqual(pmd.vertices[0].bone_weight, 100)
+        self.assertEqual(pmd.vertices[1].bone_indices, (1, 0))
+        self.assertEqual(pmd.vertices[1].bone_weight, 75)
+        self.assertEqual(pmd.vertices[2].bone_indices, (1, 0))
+        self.assertEqual(pmd.vertices[2].bone_weight, 100)
 
     def test_roundtrip_quad_triangulates_to_two_faces(self):
         """Quad polygon → fan triangulation → 2 PmxFace objects, face_count=6."""
@@ -161,8 +580,7 @@ class TestPmxExporter(MayaTestBase):
         exporter = PmxExporter()
         exporter.export_pmx_model(output_path, maya_data)
 
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual(len(pmx.faces), 2)  # 2 triangles after fan-triangulation
         self.assertEqual(pmx.materials[0].face_count, 6)
@@ -206,8 +624,7 @@ class TestPmxExporter(MayaTestBase):
 
         self.assertTrue(os.path.exists(output_path), "PMX file was not written")
 
-        pmx = PmxData()
-        pmx.parse_file(output_path)
+        pmx = _parse_pmx(output_path)
 
         self.assertEqual(len(pmx.materials), 2)
         pmx_mat_names = {m.name for m in pmx.materials}

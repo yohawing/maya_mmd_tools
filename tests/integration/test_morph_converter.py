@@ -3,7 +3,7 @@ import os
 
 from maya import cmds
 
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_utils
@@ -133,6 +133,50 @@ class TestMorphConverter(MayaTestBase):
         offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_bone_morph_offsets_json"))
         self.assertEqual(offsets[0]["bone_index"], 3)
         self.assertEqual(offsets[0]["translation"], [1.0, 2.0, 3.0])
+
+        cmds.delete(mesh_name, morph_node)
+
+    def test_convert_pmx_group_morph_metadata(self):
+        """PMX GroupMorph が network node として import されることをテストする。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeGroupMorph:
+            name = "グループ笑い"
+            name_english = "group_smile"
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [
+                {
+                    "morph_index": 3,
+                    "morph_rate": 0.25,
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type("FakePmxData", (), {"morphs": [FakeGroupMorph()]})()
+
+        morph_converter = MorphConverter()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 1)
+        group_nodes = result.get("group_morph_nodes", [])
+        self.assertEqual(len(group_nodes), 1)
+
+        morph_node = group_nodes[0]
+        self.assertTrue(cmds.objExists(morph_node))
+        self.assertTrue(cmds.attributeQuery("weight", node=morph_node, exists=True))
+        self.assertTrue(cmds.getAttr(f"{morph_node}.weight", keyable=True))
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_name"), "グループ笑い")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_type"), "group")
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_morph_index"), 0)
+        self.assertEqual(cmds.getAttr(f"{morph_node}.mmd_group_morph_offset_count"), 1)
+
+        offsets = json.loads(cmds.getAttr(f"{morph_node}.mmd_group_morph_offsets_json"))
+        self.assertEqual(offsets[0]["morph_index"], 3)
+        self.assertEqual(offsets[0]["morph_rate"], 0.25)
 
         cmds.delete(mesh_name, morph_node)
 
@@ -613,8 +657,11 @@ class TestMorphConverter(MayaTestBase):
             },
         )
 
-        pmx = PmxData()
-        pmx.parse_file(out_pmx)
+        pmx = parse_pmx_file(
+            out_pmx,
+            use_native_pmx_parse=False,
+            require_native_pmx_parse=False,
+        )
         self.assertEqual(len(pmx.morphs), 2)
         self.assertTrue(any(int(m.morph_type) == 2 for m in pmx.morphs))
         self.assertTrue(any(int(m.morph_type) == 8 for m in pmx.morphs))

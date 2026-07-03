@@ -3,14 +3,13 @@ PMXインポーターの統合テスト
 """
 
 import os
-import struct
 
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.io.pmx_importer import import_pmx_file
-from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
 
 
 class TestPmxImporter(MayaTestBase):
@@ -47,8 +46,7 @@ class TestPmxImporter(MayaTestBase):
         pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
 
         # PMXファイルをパース
-        parser = PmxData()
-        parser.parse_file(pmx_file)
+        parser = parse_pmx_file(pmx_file)
 
         # インポート前のシーン状態を記録
         initial_nodes = set(cmds.ls())
@@ -85,16 +83,14 @@ class TestPmxImporter(MayaTestBase):
         if len(pmx_files) < 2:
             self.skipTest("複数の PMX fixture が必要です")
 
-        parser = PmxData()
-
         for model_name, file_path in pmx_files.items():
             with self.subTest(model=model_name):
                 cmds.file(new=True, force=True)
                 initial_nodes = set(cmds.ls())
 
                 try:
-                    parser.parse_file(file_path)
-                except (ValueError, struct.error):
+                    parser = parse_pmx_file(file_path)
+                except (ValueError, MMDParseException):
                     continue
                 result = import_pmx_file(parser, file_path)
 
@@ -104,7 +100,8 @@ class TestPmxImporter(MayaTestBase):
                 self.assertGreater(len(new_nodes), 0, "新しいノードが作成されていません")
 
                 meshes = cmds.ls(type="mesh")
-                self.assertGreater(len(meshes), 0, "メッシュが作成されていません")
+                if parser.vertices:
+                    self.assertGreater(len(meshes), 0, "メッシュが作成されていません")
 
                 joints = cmds.ls(type="joint")
                 self.assertGreater(len(joints), 0, "ジョイントが作成されていません")

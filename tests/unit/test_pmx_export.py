@@ -7,6 +7,7 @@ import importlib.machinery
 import importlib.util
 import os
 
+from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data import PmxData
 
 # Load PmxExporter directly without triggering io/__init__.py's maya imports
@@ -31,6 +32,15 @@ from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
 
 
+def _parse_pmx(path):
+    """Read exporter output with the legacy PMX reader for writer roundtrip checks."""
+    return parse_pmx_file(
+        path,
+        use_native_pmx_parse=False,
+        require_native_pmx_parse=False,
+    )
+
+
 class TestPmxExport(TestBase):
     """PMXエクスポート機能のテストクラス"""
 
@@ -46,16 +56,14 @@ class TestPmxExport(TestBase):
             f.write(mock_data)
 
         # モックデータからPMXを読み込む
-        parser1 = PmxData()
-        parser1.parse_file(tmp_input_path)
+        parser1 = _parse_pmx(tmp_input_path)
 
         # 2. 一時ファイルに書き込む
         tmp_path = os.path.join(self.temp_dir, "test_export.pmx")
         parser1.write_file(tmp_path)
 
         # 3. 書き込んだファイルを再度読み込む
-        parser2 = PmxData()
-        parser2.parse_file(tmp_path)
+        parser2 = _parse_pmx(tmp_path)
 
         # 4. データの一致を確認
         # ヘッダー情報の比較
@@ -104,16 +112,14 @@ class TestPmxExport(TestBase):
             f.write(mock_data)
 
         # モックデータからPMXを読み込む
-        parser1 = PmxData()
-        parser1.parse_file(tmp_input_path)
+        parser1 = _parse_pmx(tmp_input_path)
 
         # 2. 一時ファイルに書き込む
         tmp_path = os.path.join(self.temp_dir, "test_export_full.pmx")
         parser1.write_file(tmp_path)
 
         # 3. 書き込んだファイルを再度読み込む
-        parser2 = PmxData()
-        parser2.parse_file(tmp_path)
+        parser2 = _parse_pmx(tmp_path)
 
         # 4. データの一致を確認
         # ヘッダー情報の比較
@@ -269,8 +275,7 @@ class TestPmxExport(TestBase):
         parser.write_file(tmp_path)
 
         # 書き込んだファイルを読み込んで確認
-        parser2 = PmxData()
-        parser2.parse_file(tmp_path)
+        parser2 = _parse_pmx(tmp_path)
 
         # データの検証
         self.assertEqual(parser2.header.model_name, "TestModel")
@@ -302,8 +307,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "triangle.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(pmx.header.model_name, "TriangleTest")
         self.assertEqual(pmx.header.version, 2.0)
@@ -340,8 +344,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "display_encoding.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(pmx.header.encoding_flag, 0)
         self.assertEqual(len(pmx.display_frames), 2)
@@ -402,8 +405,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "supported_fields.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(pmx.header.model_name_english, "TestModelEnglish")
         self.assertEqual(pmx.header.comment, "JP comment")
@@ -440,8 +442,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "quad.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.vertices), 4)
         self.assertEqual(len(pmx.faces), 2)  # quad -> 2 triangles
@@ -484,8 +485,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "multimat.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.materials), 2)
         self.assertEqual(pmx.materials[0].face_count, 6)  # first gets all index count
@@ -509,8 +509,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "mat_none.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.materials), 2)
         self.assertEqual(pmx.materials[0].face_count, 3)
@@ -534,8 +533,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "tex.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.textures), 2)
         self.assertEqual(pmx.textures[0], "tex_a.png")
@@ -568,8 +566,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "vertex_cutoff.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(pmx.header.vertex_index_size, 2)
         self.assertEqual(pmx.header.bone_index_size, 1)
@@ -594,8 +591,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "reference_cutoff.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(pmx.header.bone_index_size, 2)
         self.assertEqual(pmx.header.texture_index_size, 2)
@@ -626,8 +622,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "edge.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertAlmostEqual(pmx.vertices[0].edge_magnification, 0.5)
         self.assertAlmostEqual(pmx.vertices[1].edge_magnification, 1.0)  # default
@@ -669,8 +664,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "bone_bdef2.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(pmx.header.model_name, "BoneBDEF2Test")
         self.assertEqual(len(pmx.bones), 2)
@@ -732,8 +726,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "bdef4.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.bones), 4)
         self.assertEqual(pmx.header.bone_index_size, 1)
@@ -844,8 +837,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "autoroot.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.bones), 1)
         self.assertEqual(pmx.bones[0].name, "root")
@@ -877,8 +869,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "vertex_morph.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.morphs), 1)
         morph = pmx.morphs[0]
@@ -930,8 +921,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "bone_morph.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.morphs), 1)
         morph = pmx.morphs[0]
@@ -1028,8 +1018,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "material_morph.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.morphs), 1)
         morph = pmx.morphs[0]
@@ -1206,8 +1195,7 @@ class TestPmxExporterFromDict(TestBase):
         out_path = os.path.join(self.temp_dir, "physics.pmx")
         self.exporter.export_pmx_model(out_path, data)
 
-        pmx = PmxData()
-        pmx.parse_file(out_path)
+        pmx = _parse_pmx(out_path)
 
         self.assertEqual(len(pmx.rigid_bodies), 1)
         rigid_body = pmx.rigid_bodies[0]

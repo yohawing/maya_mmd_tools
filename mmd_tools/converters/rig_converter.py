@@ -1,13 +1,43 @@
+import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import maya.cmds as cmds
 
+from mmd_tools.config.bone_aliases import get_bone_aliases, get_original_bone_name_aliases
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_utils, settings_keys as setting_keys
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime import is_rig_primitive_available
 from mmd_tools.core.settings import settings
+
+
+def _node_type_available(node_type: str) -> bool:
+    """Return True when Maya can create the requested DG node type."""
+    try:
+        probe = cmds.createNode(node_type, name=f"{node_type}_availability_probe#")
+        cmds.delete(probe)
+        return True
+    except Exception:
+        return False
+
+
+def _prefer_cpp_rig_nodes() -> bool:
+    """Use C++ rig prototype nodes only when explicitly enabled and loaded."""
+    if not settings.get(setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES, False):
+        return False
+    try:
+        loaded_plugins = set(cmds.pluginInfo(query=True, listPlugins=True) or [])
+    except Exception:
+        loaded_plugins = set()
+    if "mmd_tools_cpp" not in loaded_plugins:
+        return False
+    return _node_type_available("mmdAppendNode") and _node_type_available("mmdCcdIkNode")
+
+
+def _node_leaf_name(node_name: str) -> str:
+    """Return the DAG leaf name, preserving namespace but dropping parent paths."""
+    return str(node_name).rsplit("|", 1)[-1] if node_name else ""
 
 
 class RigConverter:
@@ -23,6 +53,13 @@ class RigConverter:
         """
         self.logger = get_logger(__name__)
         self.original_bone_names = {}  # ボーンインデックスから元の日本語名へのマッピング
+        self._use_cpp_rig_nodes = _prefer_cpp_rig_nodes()
+
+    def _append_node_type(self) -> str:
+        return "mmdAppendNode" if self._use_cpp_rig_nodes else "mmdAppend"
+
+    def _ccd_ik_node_type(self) -> str:
+        return "mmdCcdIkNode" if self._use_cpp_rig_nodes else "mmdCcdIk"
 
     def setup_pmx_rig(
         self,
@@ -149,46 +186,6 @@ class RigConverter:
                 if not cmds.attributeQuery("mmd_append_native", node=target_joint, exists=True):
                     cmds.addAttr(target_joint, longName="mmd_append_native", attributeType="bool")
                 cmds.setAttr(f"{target_joint}.mmd_append_native", True)
-
-    def setup_pmd_rig(
-        self,
-        pmd_data,
-        maya_joints: List[str],
-        bone_map: Dict[int, str],
-        skeleton_group: str,
-    ) -> Dict:
-        """
-        PMDボーンデータを元にMayaのリグシステムをセットアップする。
-
-        Args:
-            pmd_data: PMDパーサーデータ
-            maya_joints: 作成されたMayaジョイントのリスト
-            bone_map: ボーンインデックスからジョイント名へのマッピング
-            skeleton_group: スケルトングループ名
-
-        Returns:
-            dict: セットアップ結果の情報
-        """
-        result = {"ik_handles": [], "semi_standard_bones": {}, "constraints": []}
-
-        # IKチェーンを抽出してMayaのIKハンドルを作成
-        ik_chains = self._extract_ik_chains(pmd_data.bones, bone_map, pmd_data.ik_data)
-        if ik_chains:
-            self.logger.info(f"Detected {len(ik_chains)} IK chains")
-            result["ik_handles"] = self._create_maya_ik_handles(ik_chains)
-            self.logger.info(f"Created {len(result['ik_handles'])} IK handles")
-
-        # 元のボーン名を保存（日本語名での重複チェック用）
-        for i, bone in enumerate(pmd_data.bones):
-            self.original_bone_names[i] = bone.get_name()
-
-        # 準標準ボーンを追加（設定による）
-        if settings.get("import.rig.add_semi_standard_bones", False):
-            result["semi_standard_bones"] = self._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
-            if result["semi_standard_bones"]:
-                self.logger.info(f"Added {len(result['semi_standard_bones'])} semi-standard bones")
-
-        return result
 
     def _extract_ik_chains(self, bones, bone_map, ik_data=None):
         """
@@ -328,104 +325,6 @@ class RigConverter:
 
         return ik_handles
 
-    def _is_leg_ik(self, ik_bone_name):
-        """
-        IKボーンが足IKかどうかを判定する。
-
-        Args:
-            ik_bone_name (str): IKボーン名
-
-        Returns:
-            bool: 足IKの場合True
-        """
-        leg_patterns = ["足IK", "leg_ik", "LegIK", "foot_ik", "FootIK"]
-        for pattern in leg_patterns:
-            if pattern.lower() in ik_bone_name.lower():
-                return True
-        return False
-
-    def _create_pole_target_for_leg_ik(self, chain, ik_handle, start_joint, end_joint):
-        """
-        足IK用のPoleTargetロケータを作成する。
-
-        Args:
-            chain (dict): IKチェーン情報
-            ik_handle (str): IKハンドル名
-            start_joint (str): 開始ジョイント（太もも）
-            end_joint (str): 終了ジョイント（足首）
-
-        Returns:
-            str: 作成されたPoleTarget名、失敗した場合はNone
-        """
-        try:
-            # PoleTargetロケータを作成
-            pole_target = cmds.spaceLocator(name=f"{chain['ik_bone']}_poleTarget")[0]
-
-            # PoleTargetを太もも（start_joint）の子として配置
-            maya_utils.parent_objects(pole_target, start_joint)
-            self.logger.debug(f"Placed PoleTarget under thigh '{start_joint}'")
-
-            # PoleTargetの初期位置を計算
-            # 太ももと足首の位置を取得
-            start_pos = cmds.xform(start_joint, query=True, worldSpace=True, translation=True)
-            end_pos = cmds.xform(end_joint, query=True, worldSpace=True, translation=True)
-
-            method_used = "fixed_z_positive"
-
-            mid_pos = [(start_pos[i] + end_pos[i]) / 2 for i in range(3)]
-            pole_pos = [mid_pos[0], mid_pos[1], mid_pos[2] + 2.0]  # Z+方向に配置
-            method_used = "default_midpoint"
-
-            # PoleTargetの位置を設定
-            cmds.xform(pole_target, worldSpace=True, translation=pole_pos)
-
-            # PoleVectorConstraintを作成
-            cmds.poleVectorConstraint(pole_target, ik_handle)
-
-            # PoleTargetのコントロール性を向上
-            # ロケータのサイズを調整
-            maya_utils.set_attribute(pole_target, "localScaleX", 0.5, "double")
-            maya_utils.set_attribute(pole_target, "localScaleY", 0.5, "double")
-            maya_utils.set_attribute(pole_target, "localScaleZ", 0.5, "double")
-
-            self.logger.info(f"Created PoleTarget '{pole_target}' (for {chain['ik_bone']}, method: {method_used})")
-            return pole_target
-
-        except Exception as e:
-            self.logger.error(f"Failed to create PoleTarget '{chain['ik_bone']}': {e}")
-            return None
-
-    def _set_joint_limits(self, ik_links):
-        """
-        IKリンクのジョイントに角度制限を設定する。
-
-        Args:
-            ik_links (list): IKリンク情報のリスト
-        """
-        for link in ik_links:
-            if not link["bone"]:
-                continue
-
-            if link["angle_limit"] and link["limit_min"] and link["limit_max"]:
-                joint = link["bone"]
-
-                # X軸の正負を反転（MMDとMayaの座標系の違いに対応）
-                limit_min = list(link["limit_min"])
-                limit_max = list(link["limit_max"])
-
-                # X軸の値の符号を反転
-                limit_min[0] = -limit_min[0]
-                limit_max[0] = -limit_max[0]
-
-                # limit_min/maxは既にラジアンで保存されている
-                # maya_utils.set_joint_limitsがラジアンから度数への変換を行う
-                maya_utils.set_joint_limits(
-                    joint=joint,
-                    limit_min=limit_min,
-                    limit_max=limit_max,
-                    enable_limits=True,
-                )
-
     def _add_semi_standard_bones(self, maya_joints, bone_map, skeleton_group):
         """
         準標準ボーンを追加する。
@@ -442,7 +341,7 @@ class RigConverter:
 
         # 全ての親
         # 既存の「全ての親」ボーンを日本語名でチェック
-        existing_master = self._find_joint_by_japanese_name(["全ての親", "マスター"])
+        existing_master = self._find_joint_by_japanese_name(get_original_bone_name_aliases("全ての親"))
         # 英語名でもチェック
         if not existing_master and maya_utils.object_exists("master"):
             existing_master = "master"
@@ -469,12 +368,12 @@ class RigConverter:
 
         # グルーブ
         # 既存のグルーブボーンを日本語名でチェック
-        existing_groove = self._find_joint_by_japanese_name(["グルーブ"])
+        existing_groove = self._find_joint_by_japanese_name(get_original_bone_name_aliases("グルーブ"))
         # 英語名でもチェック
         if not existing_groove and maya_utils.object_exists("groove"):
             existing_groove = "groove"
 
-        center_joint = self._find_joint_by_name(maya_joints, ["center", "センター", "centre"])
+        center_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("センター"))
 
         if not existing_groove and center_joint:
             # センターの位置を取得
@@ -497,13 +396,13 @@ class RigConverter:
 
         # 腰ボーン（下半身と足の間）
         # 既存の腰ボーンを日本語名でチェック
-        existing_waist = self._find_joint_by_japanese_name(["腰"])
+        existing_waist = self._find_joint_by_japanese_name(get_original_bone_name_aliases("腰"))
         # 英語名でもチェック
         if not existing_waist:
-            existing_waist = self._find_joint_by_name(maya_joints, ["waist", "腰", "koshi"])
+            existing_waist = self._find_joint_by_name(maya_joints, get_bone_aliases("腰"))
 
-        lower_body_joint = self._find_joint_by_name(maya_joints, ["lower_body", "下半身", "lowerbody"])
-        left_leg_joint = self._find_joint_by_name(maya_joints, ["left_leg", "左足", "leftleg", "left_thigh", "左もも"])
+        lower_body_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("下半身"))
+        left_leg_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("左足"))
 
         if not existing_waist and lower_body_joint and left_leg_joint:
             # 下半身と左足の中間位置を計算
@@ -525,7 +424,7 @@ class RigConverter:
             maya_utils.parent_objects(waist, lower_body_joint)
 
             # 左右の足を腰の子にする
-            right_leg_joint = self._find_joint_by_name(maya_joints, ["right_leg", "右足", "rightleg", "right_thigh", "右もも"])
+            right_leg_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("右足"))
 
             # 左足を腰の子にする（既に存在確認済み）
             maya_utils.parent_objects(left_leg_joint, waist)
@@ -895,8 +794,8 @@ class RigConverter:
                 continue
 
             try:
-                node_name = f"{target_joint}_mmdAppend"
-                node = cmds.createNode("mmdAppend", name=node_name)
+                node_name = f"{_node_leaf_name(target_joint)}_mmdAppend"
+                node = cmds.createNode(self._append_node_type(), name=node_name)
 
                 cmds.setAttr(f"{node}.ratio", ratio)
                 cmds.setAttr(f"{node}.affectRotation", affect_rotation)
@@ -996,12 +895,227 @@ class RigConverter:
                 nodes.append(node)
                 append_nodes_by_target[target_joint] = node
                 self.logger.info(
-                    f"mmdAppend node '{node}': {source_joint} -> {target_joint} (ratio={ratio})"
+                    f"{self._append_node_type()} node '{node}': {source_joint} -> {target_joint} (ratio={ratio})"
                 )
             except Exception as e:
                 self.logger.error(f"Failed to create mmdAppend node '{target_joint}': {e}")
 
         return nodes
+
+    def _build_ik_chain_json(
+        self,
+        manifest,
+        chain_def: Dict[str, Any],
+        mapping: Dict[str, Any],
+        maya_joints: List[str],
+    ) -> Tuple[str, List[Dict[str, Any]]]:
+        """Build the JSON payload consumed by the native IK node."""
+        controller_idx = chain_def.get("controllerBoneIndex", -1)
+        target_idx = chain_def.get("targetBoneIndex", -1)
+        links = chain_def.get("links", [])
+        pmx_to_slot = mapping["pmx_to_slot"]
+        slot_to_pmx = mapping["slot_to_pmx"]
+        bone_count = len(pmx_to_slot)
+
+        # Collect absolute positions first, then convert to local (parent-relative).
+        # The rig primitive solver expects local rest positions.
+        abs_positions = []
+        bones_for_json = []
+        for slot in range(bone_count):
+            pmx_idx = slot_to_pmx[slot]
+            bone_data = manifest.bones[pmx_idx]
+            parent_pmx = bone_data.get("parentIndex", -1)
+            parent_slot = pmx_to_slot.get(parent_pmx, -1)
+            abs_pos = bone_data.get("restPosition", [0, 0, 0])
+            abs_positions.append(abs_pos)
+            flags = 0
+            fixed_axis = bone_data.get("fixedAxis")
+            fa = [0, 0, 0]
+            if fixed_axis is not None:
+                flags = 0x1  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS (1 << 0)
+                fa = list(fixed_axis)
+            jo_deg = [0.0, 0.0, 0.0]
+            if pmx_idx < len(maya_joints):
+                jnt = maya_joints[pmx_idx]
+                if maya_utils.object_exists(jnt):
+                    try:
+                        jo = cmds.getAttr(f"{jnt}.jointOrient")[0]
+                        jo_deg = [jo[0], jo[1], jo[2]]
+                    except Exception:
+                        pass
+            bones_for_json.append({
+                "parent_slot": parent_slot,
+                "rest_position": None,
+                "maya_rest_translate": None,
+                "maya_bind_world_matrix": None,
+                "no_orient_bind_world_matrix": None,
+                "flags": flags,
+                "fixed_axis": fa,
+                "joint_orient_deg": jo_deg,
+            })
+
+        for slot, bone in enumerate(bones_for_json):
+            abs_pos = abs_positions[slot]
+            parent_slot = bone["parent_slot"]
+            if parent_slot >= 0:
+                parent_abs = abs_positions[parent_slot]
+                bone["rest_position"] = [abs_pos[j] - parent_abs[j] for j in range(3)]
+            else:
+                bone["rest_position"] = list(abs_pos)
+            pmx_idx = slot_to_pmx[slot]
+            if pmx_idx < len(maya_joints):
+                jnt = maya_joints[pmx_idx]
+                if maya_utils.object_exists(jnt):
+                    try:
+                        bone["maya_rest_translate"] = list(cmds.getAttr(f"{jnt}.translate")[0])
+                    except Exception:
+                        bone["maya_rest_translate"] = list(bone["rest_position"])
+                    try:
+                        bind_world = [float(v) for v in cmds.getAttr(f"{jnt}.worldMatrix[0]")]
+                        no_orient = [0.0] * 16
+                        no_orient[0] = no_orient[5] = no_orient[10] = no_orient[15] = 1.0
+                        no_orient[12] = bind_world[12]
+                        no_orient[13] = bind_world[13]
+                        no_orient[14] = bind_world[14]
+                        bone["maya_bind_world_matrix"] = bind_world
+                        bone["no_orient_bind_world_matrix"] = no_orient
+                    except Exception:
+                        pass
+            if bone["maya_rest_translate"] is None:
+                bone["maya_rest_translate"] = list(bone["rest_position"])
+
+        links_for_json = []
+        for lk in links:
+            bone_slot = pmx_to_slot.get(lk["boneIndex"], -1)
+            if bone_slot < 0:
+                continue
+            lmin = lk.get("angleLimitMin", [0, 0, 0])
+            lmax = lk.get("angleLimitMax", [0, 0, 0])
+            links_for_json.append({
+                "bone_slot": bone_slot,
+                "has_angle_limit": lk.get("hasAngleLimit", False),
+                "angle_limit_min": list(lmin),
+                "angle_limit_max": list(lmax),
+            })
+
+        target_slot = pmx_to_slot.get(target_idx, 0)
+        controller_slot = pmx_to_slot.get(controller_idx, target_slot)
+        chain_json = json.dumps({
+            "bones": bones_for_json,
+            "controllerBoneSlot": controller_slot,
+            "targetBoneSlot": target_slot,
+            "links": links_for_json,
+            "iterationCount": chain_def.get("iterationCount", 40),
+            "limitAngle": chain_def.get("limitAngle", 2.0),
+        })
+        return chain_json, links_for_json
+
+    def _existing_ik_link_joints(
+        self,
+        link_slots: List[int],
+        slot_to_pmx: Dict[int, int],
+        maya_joints: List[str],
+    ) -> List[str]:
+        """Return existing Maya joints that correspond to IK link slots."""
+        link_joints = []
+        for link_slot in link_slots:
+            pmx_idx = slot_to_pmx.get(link_slot, -1)
+            if 0 <= pmx_idx < len(maya_joints):
+                link_joint = maya_joints[pmx_idx]
+                if maya_utils.object_exists(link_joint):
+                    link_joints.append(link_joint)
+        return link_joints
+
+    def _connect_ik_goal_world_matrix_if_safe(
+        self,
+        node: str,
+        controller_joint: str,
+        link_slots: List[int],
+        slot_to_pmx: Dict[int, int],
+        maya_joints: List[str],
+    ) -> None:
+        """Connect the controller world matrix when it will not create a DG cycle."""
+        link_joints = self._existing_ik_link_joints(link_slots, slot_to_pmx, maya_joints)
+        if not self._can_connect_live_ik_goal_world_matrix(controller_joint, link_joints):
+            return
+        try:
+            cmds.connectAttr(
+                f"{controller_joint}.worldMatrix[0]",
+                f"{node}.goalWorldMatrix",
+                force=True,
+            )
+        except Exception as exc:
+            self.logger.debug(f"failed to connect IK goalWorldMatrix for {node}: {exc}")
+
+    @staticmethod
+    def _excluded_ik_input_bones(
+        links: List[Dict[str, Any]],
+        all_chain_links: List[Tuple[int, set]],
+        controller_idx: int,
+    ) -> set:
+        """Return PMX bone indices excluded from inputRotate to avoid DG cycles."""
+        excluded_bones = {lk["boneIndex"] for lk in links}
+        for other_ctrl, other_links in all_chain_links:
+            if other_ctrl > controller_idx:
+                excluded_bones.update(other_links)
+        return excluded_bones
+
+    def _connect_ik_input_channels(
+        self,
+        node: str,
+        *,
+        bone_count: int,
+        slot_to_pmx: Dict[int, int],
+        maya_joints: List[str],
+        links: List[Dict[str, Any]],
+        all_chain_links: List[Tuple[int, set]],
+        controller_idx: int,
+    ) -> None:
+        """Connect rotate/translate inputs for a native IK node."""
+        excluded_bones = self._excluded_ik_input_bones(links, all_chain_links, controller_idx)
+
+        for slot in range(bone_count):
+            pmx_idx = slot_to_pmx[slot]
+            if pmx_idx in excluded_bones:
+                continue
+            if pmx_idx < len(maya_joints):
+                jnt = maya_joints[pmx_idx]
+                if maya_utils.object_exists(jnt):
+                    cmds.connectAttr(f"{jnt}.rotate", f"{node}.inputRotate[{slot}]")
+
+        # inputTranslate: ALL bones for position offset computation.
+        for slot in range(bone_count):
+            pmx_idx = slot_to_pmx[slot]
+            if pmx_idx < len(maya_joints):
+                jnt = maya_joints[pmx_idx]
+                if maya_utils.object_exists(jnt):
+                    cmds.connectAttr(f"{jnt}.translate", f"{node}.inputTranslate[{slot}]")
+
+    def _connect_ik_output_rotates(
+        self,
+        node: str,
+        link_slots: List[int],
+        slot_to_pmx: Dict[int, int],
+        maya_joints: List[str],
+    ) -> None:
+        """Connect native IK output rotations to link joints."""
+        for link_i, link_slot in enumerate(link_slots):
+            pmx_idx = slot_to_pmx.get(link_slot, -1)
+            if pmx_idx < 0 or pmx_idx >= len(maya_joints):
+                continue
+            link_joint = maya_joints[pmx_idx]
+            if not maya_utils.object_exists(link_joint):
+                continue
+
+            for axis in ("X", "Y", "Z"):
+                src = cmds.listConnections(f"{link_joint}.rotate{axis}", s=True, d=False, p=True)
+                if src:
+                    try:
+                        cmds.disconnectAttr(src[0], f"{link_joint}.rotate{axis}")
+                    except Exception:
+                        pass
+
+            cmds.connectAttr(f"{node}.outputRotate[{link_i}]", f"{link_joint}.rotate")
 
     def _create_ik_nodes_from_manifest(
         self,
@@ -1013,7 +1127,6 @@ class RigConverter:
         Rig import 直後の手動 IK 操作も mmdCcdIk で扱う。VMD import 時は
         runtime final pose を inputRotate に焼き、mmdCcdIk を pass-through にする。
         """
-        import json as _json
         from mmd_tools.converters.native_rig_builder import build_ik_mini_chain
 
         # Collect all chains' link bones keyed by controller index.
@@ -1053,104 +1166,21 @@ class RigConverter:
             link_slots = mapping["link_slots"]
             bone_count = len(pmx_to_slot)
 
-            # Collect absolute positions first, then convert to local (parent-relative).
-            # The rig primitive solver expects local rest positions.
-            abs_positions = []
-            bones_for_json = []
-            for slot in range(bone_count):
-                pmx_idx = slot_to_pmx[slot]
-                bone_data = manifest.bones[pmx_idx]
-                parent_pmx = bone_data.get("parentIndex", -1)
-                parent_slot = pmx_to_slot.get(parent_pmx, -1)
-                abs_pos = bone_data.get("restPosition", [0, 0, 0])
-                abs_positions.append(abs_pos)
-                flags = 0
-                fixed_axis = bone_data.get("fixedAxis")
-                fa = [0, 0, 0]
-                if fixed_axis is not None:
-                    flags = 0x1  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS (1 << 0)
-                    fa = list(fixed_axis)
-                jo_deg = [0.0, 0.0, 0.0]
-                if pmx_idx < len(maya_joints):
-                    jnt = maya_joints[pmx_idx]
-                    if maya_utils.object_exists(jnt):
-                        try:
-                            jo = cmds.getAttr(f"{jnt}.jointOrient")[0]
-                            jo_deg = [jo[0], jo[1], jo[2]]
-                        except Exception:
-                            pass
-                bones_for_json.append({
-                    "parent_slot": parent_slot,
-                    "rest_position": None,
-                    "maya_rest_translate": None,
-                    "maya_bind_world_matrix": None,
-                    "no_orient_bind_world_matrix": None,
-                    "flags": flags,
-                    "fixed_axis": fa,
-                    "joint_orient_deg": jo_deg,
-                })
-
-            for slot, bone in enumerate(bones_for_json):
-                abs_pos = abs_positions[slot]
-                parent_slot = bone["parent_slot"]
-                if parent_slot >= 0:
-                    parent_abs = abs_positions[parent_slot]
-                    bone["rest_position"] = [abs_pos[j] - parent_abs[j] for j in range(3)]
-                else:
-                    bone["rest_position"] = list(abs_pos)
-                pmx_idx = slot_to_pmx[slot]
-                if pmx_idx < len(maya_joints):
-                    jnt = maya_joints[pmx_idx]
-                    if maya_utils.object_exists(jnt):
-                        try:
-                            bone["maya_rest_translate"] = list(cmds.getAttr(f"{jnt}.translate")[0])
-                        except Exception:
-                            bone["maya_rest_translate"] = list(bone["rest_position"])
-                        try:
-                            bind_world = [float(v) for v in cmds.getAttr(f"{jnt}.worldMatrix[0]")]
-                            no_orient = [0.0] * 16
-                            no_orient[0] = no_orient[5] = no_orient[10] = no_orient[15] = 1.0
-                            no_orient[12] = bind_world[12]
-                            no_orient[13] = bind_world[13]
-                            no_orient[14] = bind_world[14]
-                            bone["maya_bind_world_matrix"] = bind_world
-                            bone["no_orient_bind_world_matrix"] = no_orient
-                        except Exception:
-                            pass
-                if bone["maya_rest_translate"] is None:
-                    bone["maya_rest_translate"] = list(bone["rest_position"])
-
-            links_for_json = []
-            for lk in links:
-                bone_slot = pmx_to_slot.get(lk["boneIndex"], -1)
-                if bone_slot < 0:
-                    continue
-                lmin = lk.get("angleLimitMin", [0, 0, 0])
-                lmax = lk.get("angleLimitMax", [0, 0, 0])
-                links_for_json.append({
-                    "bone_slot": bone_slot,
-                    "has_angle_limit": lk.get("hasAngleLimit", False),
-                    "angle_limit_min": list(lmin),
-                    "angle_limit_max": list(lmax),
-                })
-
-            target_slot = pmx_to_slot.get(target_idx, 0)
-            controller_slot = pmx_to_slot.get(controller_idx, target_slot)
-            chain_json = _json.dumps({
-                "bones": bones_for_json,
-                "controllerBoneSlot": controller_slot,
-                "targetBoneSlot": target_slot,
-                "links": links_for_json,
-                "iterationCount": chain_def.get("iterationCount", 40),
-                "limitAngle": chain_def.get("limitAngle", 2.0),
-            })
+            chain_json, links_for_json = self._build_ik_chain_json(
+                manifest,
+                chain_def,
+                mapping,
+                maya_joints,
+            )
 
             ik_chain_obj.free()
 
             try:
-                node_name = f"{controller_joint}_mmdCcdIk"
-                node = cmds.createNode("mmdCcdIk", name=node_name)
+                controller_leaf_name = _node_leaf_name(controller_joint)
+                node_name = f"{controller_leaf_name}_mmdCcdIk"
+                node = cmds.createNode(self._ccd_ik_node_type(), name=node_name)
                 cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
+                self._attach_ik_controller_shape(controller_joint)
                 if cmds.attributeQuery("enabled", node=node, exists=True):
                     cmds.setAttr(f"{node}.enabled", False)
                 try:
@@ -1166,79 +1196,28 @@ class RigConverter:
                 # mmdCcdIk reconstructs the pre-IK controller position from
                 # controllerBoneSlot + inputTranslate.  External goal connections
                 # remain supported and override that internal controller goal.
-                link_joints = []
-                for link_slot in link_slots:
-                    pmx_idx = slot_to_pmx.get(link_slot, -1)
-                    if 0 <= pmx_idx < len(maya_joints):
-                        link_joint = maya_joints[pmx_idx]
-                        if maya_utils.object_exists(link_joint):
-                            link_joints.append(link_joint)
-                if self._can_connect_live_ik_goal_world_matrix(controller_joint, link_joints):
-                    try:
-                        cmds.connectAttr(
-                            f"{controller_joint}.worldMatrix[0]",
-                            f"{node}.goalWorldMatrix",
-                            force=True,
-                        )
-                    except Exception as exc:
-                        self.logger.debug(
-                            f"failed to connect IK goalWorldMatrix for {node}: {exc}"
-                        )
+                self._connect_ik_goal_world_matrix_if_safe(
+                    node,
+                    controller_joint,
+                    link_slots,
+                    slot_to_pmx,
+                    maya_joints,
+                )
 
                 # inputRotate: exclude own links AND downstream chains' links.
                 # Downstream = higher controllerBoneIndex (evaluated later in MMD).
                 # This prevents DG cycles (leg_ik <-> toe_ik) while still
                 # allowing downstream chains to read upstream results.
-                excluded_bones: set = set()
-                for lk in links:
-                    excluded_bones.add(lk["boneIndex"])
-                for other_ctrl, other_links in all_chain_links:
-                    if other_ctrl > controller_idx:
-                        excluded_bones.update(other_links)
-
-                for slot in range(bone_count):
-                    pmx_idx = slot_to_pmx[slot]
-                    if pmx_idx in excluded_bones:
-                        continue
-                    if pmx_idx < len(maya_joints):
-                        jnt = maya_joints[pmx_idx]
-                        if maya_utils.object_exists(jnt):
-                            cmds.connectAttr(f"{jnt}.rotate", f"{node}.inputRotate[{slot}]")
-
-                # inputTranslate: ALL bones for position offset computation
-                for slot in range(bone_count):
-                    pmx_idx = slot_to_pmx[slot]
-                    if pmx_idx < len(maya_joints):
-                        jnt = maya_joints[pmx_idx]
-                        if maya_utils.object_exists(jnt):
-                            cmds.connectAttr(
-                                f"{jnt}.translate",
-                                f"{node}.inputTranslate[{slot}]",
-                            )
-
-                # outputRotate → link joint rotations
-                for link_i, link_slot in enumerate(link_slots):
-                    pmx_idx = slot_to_pmx.get(link_slot, -1)
-                    if pmx_idx < 0 or pmx_idx >= len(maya_joints):
-                        continue
-                    link_joint = maya_joints[pmx_idx]
-                    if not maya_utils.object_exists(link_joint):
-                        continue
-
-                    for axis in ("X", "Y", "Z"):
-                        src = cmds.listConnections(
-                            f"{link_joint}.rotate{axis}", s=True, d=False, p=True
-                        )
-                        if src:
-                            try:
-                                cmds.disconnectAttr(src[0], f"{link_joint}.rotate{axis}")
-                            except Exception:
-                                pass
-
-                    cmds.connectAttr(
-                        f"{node}.outputRotate[{link_i}]",
-                        f"{link_joint}.rotate",
-                    )
+                self._connect_ik_input_channels(
+                    node,
+                    bone_count=bone_count,
+                    slot_to_pmx=slot_to_pmx,
+                    maya_joints=maya_joints,
+                    links=links,
+                    all_chain_links=all_chain_links,
+                    controller_idx=controller_idx,
+                )
+                self._connect_ik_output_rotates(node, link_slots, slot_to_pmx, maya_joints)
 
                 if not cmds.attributeQuery("mmd_ik_native_node", node=node, exists=True):
                     cmds.addAttr(node, longName="mmd_ik_native_node", attributeType="bool")
@@ -1252,7 +1231,7 @@ class RigConverter:
 
                 nodes.append(node)
                 self.logger.info(
-                    f"mmdCcdIk node '{node}': controller={controller_joint}, "
+                    f"{self._ccd_ik_node_type()} node '{node}': controller={controller_joint}, "
                     f"{len(links_for_json)} links"
                 )
             except Exception as e:
@@ -1260,12 +1239,77 @@ class RigConverter:
 
         return nodes
 
+    def _attach_ik_controller_shape(self, controller_joint: str) -> Optional[str]:
+        """Attach a lightweight NURBS control shape to the IK controller joint.
+
+        The controller joint already drives generated ``mmdCcdIk`` goals in Rig
+        mode.  To avoid adding constraints or evaluation cycles, this method only
+        parents a curve shape under that joint transform so the existing joint is
+        easier to select in the viewport.
+        """
+        if not controller_joint or not maya_utils.object_exists(controller_joint):
+            return None
+        if cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
+            return None
+
+        try:
+            radius = 0.6
+            children = cmds.listRelatives(controller_joint, children=True, type="joint") or []
+            if children:
+                child_positions = [
+                    cmds.xform(child, query=True, worldSpace=True, translation=True)
+                    for child in children
+                ]
+                own_pos = cmds.xform(controller_joint, query=True, worldSpace=True, translation=True)
+                distances = [
+                    sum((child_pos[i] - own_pos[i]) ** 2 for i in range(3)) ** 0.5
+                    for child_pos in child_positions
+                ]
+                if distances:
+                    radius = max(0.2, min(2.0, min(distances) * 0.25))
+
+            controller_leaf_name = _node_leaf_name(controller_joint)
+            ctrl_name = f"{controller_leaf_name}_ctrlShape#"
+            curve_transform = cmds.circle(
+                name=f"{controller_leaf_name}_ctrl#",
+                normal=(0.0, 1.0, 0.0),
+                radius=radius,
+                constructionHistory=False,
+            )[0]
+            curve_shape = (cmds.listRelatives(curve_transform, shapes=True, fullPath=True) or [None])[0]
+            if not curve_shape:
+                cmds.delete(curve_transform)
+                return None
+            curve_shape = cmds.rename(curve_shape, ctrl_name)
+            curve_shape_short = curve_shape.rsplit("|", 1)[-1]
+            cmds.parent(curve_shape, controller_joint, shape=True, relative=True)
+            cmds.delete(curve_transform)
+            shapes = cmds.listRelatives(controller_joint, shapes=True, fullPath=True) or []
+            attached = next((shape for shape in shapes if shape.endswith(curve_shape_short)), None)
+            if attached is None and shapes:
+                attached = shapes[-1]
+
+            if attached:
+                try:
+                    cmds.setAttr(f"{attached}.overrideEnabled", True)
+                    cmds.setAttr(f"{attached}.overrideColor", 17)  # yellow
+                except Exception:
+                    pass
+
+            if not cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
+                cmds.addAttr(controller_joint, longName="mmd_ik_controller_visual", attributeType="bool")
+            cmds.setAttr(f"{controller_joint}.mmd_ik_controller_visual", True)
+            return attached
+        except Exception as exc:
+            self.logger.debug(f"failed to attach IK controller shape for {controller_joint}: {exc}")
+            return None
+
     def _can_connect_live_ik_goal_world_matrix(self, controller_joint: str, link_joints: List[str]) -> bool:
         """Return True when controller.worldMatrix will not depend on IK output links."""
         ancestors = set()
         current = controller_joint
         while True:
-            parents = cmds.listRelatives(current, parent=True) or []
+            parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
             if not parents:
                 break
             current = parents[0]
@@ -1301,4 +1345,3 @@ class RigConverter:
                 sorted_grants.append(g)
 
         return sorted_grants
-

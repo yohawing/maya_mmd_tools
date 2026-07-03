@@ -1,5 +1,6 @@
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
+from .list_presenter_helpers import reload_for_current_model_change
 
 logger = get_logger(__name__)
 
@@ -17,7 +18,7 @@ class PhysicsPresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
-        self.load_physics()
+        reload_for_current_model_change(logger, "PhysicsPresenter", model_root, self.load_physics)
 
     def load_physics(self):
         self.view.rigid_body_list.clear()

@@ -27,6 +27,7 @@ from ctypes import c_float, c_uint8
 from unittest import mock
 
 import mmd_tools.core.native.mmd_anim_runtime as rt
+import mmd_tools.core.native.mmd_anim_runtime_loader as runtime_loader
 from mmd_tools.core.native.mmd_anim_runtime import (
     MmdParsedModel,
     MmdRuntimeBatchEvaluation,
@@ -34,6 +35,8 @@ from mmd_tools.core.native.mmd_anim_runtime import (
     MmdRuntimeInstance,
     MmdRuntimeModel,
     MmdRuntimeFfiByteBuffer,
+    compute_maya_local_channels,
+    compute_maya_local_channels_batch,
 )
 
 
@@ -58,6 +61,8 @@ class _FakeRuntimeLib:
         ik_enabled=None,
         batch_world_matrices=None,
         batch_morph_weights=None,
+        local_channels=None,
+        local_channels_batch=None,
         evaluate_result=True,
         with_ik_options=True,
     ):
@@ -70,6 +75,8 @@ class _FakeRuntimeLib:
         self._batch_morph = (
             list(batch_morph_weights) if batch_morph_weights is not None else None
         )
+        self._local_channels = list(local_channels) if local_channels is not None else None
+        self._local_channels_batch = list(local_channels_batch) if local_channels_batch is not None else None
         self._evaluate_result = evaluate_result
         self._provide_ik_options = with_ik_options
         # 呼び出し記録 (引数検証用)
@@ -151,6 +158,66 @@ class _FakeRuntimeLib:
         if self._batch_morph is not None:
             for i in range(min(int(out_morph_len.value), len(self._batch_morph))):
                 out_morph[i] = self._batch_morph[i]
+        return True
+
+    def mmd_runtime_compute_maya_local_channels(
+        self,
+        world_matrices,
+        world_matrices_len,
+        parent_indices,
+        parent_indices_len,
+        bind_world_matrices,
+        bind_world_matrices_len,
+        bind_no_orient_matrices,
+        bind_no_orient_matrices_len,
+        joint_orient_xyzw,
+        joint_orient_xyzw_len,
+        rotate_orders,
+        rotate_orders_len,
+        bone_count,
+        out_local_channels,
+        out_local_channels_len,
+    ):
+        if self._local_channels is None:
+            return False
+        bone_count_value = int(getattr(bone_count, "value", bone_count))
+        out_len_value = int(getattr(out_local_channels_len, "value", out_local_channels_len))
+        required = bone_count_value * 6
+        if out_len_value < required:
+            return False
+        for i in range(min(required, len(self._local_channels))):
+            out_local_channels[i] = self._local_channels[i]
+        return True
+
+    def mmd_runtime_compute_maya_local_channels_batch(
+        self,
+        world_matrices,
+        world_matrices_len,
+        frame_count,
+        parent_indices,
+        parent_indices_len,
+        bind_world_matrices,
+        bind_world_matrices_len,
+        bind_no_orient_matrices,
+        bind_no_orient_matrices_len,
+        joint_orient_xyzw,
+        joint_orient_xyzw_len,
+        rotate_orders,
+        rotate_orders_len,
+        bone_count,
+        out_local_channels,
+        out_local_channels_len,
+    ):
+        if self._local_channels_batch is None:
+            return False
+        frame_count_value = int(getattr(frame_count, "value", frame_count))
+        bone_count_value = int(getattr(bone_count, "value", bone_count))
+        out_len_value = int(getattr(out_local_channels_len, "value", out_local_channels_len))
+        required = frame_count_value * bone_count_value * 6
+        if out_len_value < required:
+            return False
+        for i in range(min(required, len(self._local_channels_batch))):
+            out_local_channels[i] = self._local_channels_batch[i]
         return True
 
     # --- morph weights ---
@@ -356,6 +423,100 @@ class TestEvaluateClipFrameBatch(unittest.TestCase):
         lib = _FakeRuntimeLib(batch_world_matrices=[0.0] * 16, batch_morph_weights=[])
         inst = _make_instance(lib)
         self.assertIsNone(inst.evaluate_clip_frame_batch(_make_clip(), 0.0, 1.0, -1))
+
+
+class TestComputeMayaLocalChannels(unittest.TestCase):
+    def test_returns_bone_channel_tuples_from_native_buffer(self):
+        lib = _FakeRuntimeLib(
+            local_channels=[
+                1.0, 2.0, 3.0, 10.0, 20.0, 30.0,
+                4.0, 5.0, 6.0, 40.0, 50.0, 60.0,
+            ],
+        )
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = compute_maya_local_channels(
+                world_matrices=[0.0] * 32,
+                parent_indices=[-1, 0],
+                bind_world_matrices=[0.0] * 32,
+                bind_no_orient_matrices=[0.0] * 32,
+                joint_orient_quats=[0.0, 0.0, 0.0, 1.0] * 2,
+                rotate_orders=[0, 2],
+            )
+
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0], (1.0, 2.0, 3.0, 10.0, 20.0, 30.0))
+        self.assertEqual(result[1], (4.0, 5.0, 6.0, 40.0, 50.0, 60.0))
+
+    def test_returns_none_when_symbol_missing_or_lengths_invalid(self):
+        lib = _FakeRuntimeLib(local_channels=[0.0] * 6)
+        lib.mmd_runtime_compute_maya_local_channels = None
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertIsNone(
+                compute_maya_local_channels(
+                    world_matrices=[0.0] * 16,
+                    parent_indices=[-1],
+                    bind_world_matrices=[0.0] * 16,
+                    bind_no_orient_matrices=[0.0] * 16,
+                    joint_orient_quats=[0.0, 0.0, 0.0, 1.0],
+                    rotate_orders=[0],
+                )
+            )
+
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=_FakeRuntimeLib()):
+            self.assertIsNone(
+                compute_maya_local_channels(
+                    world_matrices=[0.0] * 15,
+                    parent_indices=[-1],
+                    bind_world_matrices=[0.0] * 16,
+                    bind_no_orient_matrices=[0.0] * 16,
+                    joint_orient_quats=[0.0, 0.0, 0.0, 1.0],
+                    rotate_orders=[0],
+                )
+            )
+
+
+class TestComputeMayaLocalChannelsBatch(unittest.TestCase):
+    def test_returns_ctypes_batch_buffer(self):
+        values = [
+            1.0, 2.0, 3.0, 10.0, 20.0, 30.0,
+            4.0, 5.0, 6.0, 40.0, 50.0, 60.0,
+            7.0, 8.0, 9.0, 70.0, 80.0, 90.0,
+            10.0, 11.0, 12.0, 100.0, 110.0, 120.0,
+        ]
+        lib = _FakeRuntimeLib(local_channels_batch=values)
+        world = (c_float * (2 * 2 * 16))(*([0.0] * (2 * 2 * 16)))
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = compute_maya_local_channels_batch(
+                world_matrices=world,
+                frame_count=2,
+                bone_count=2,
+                parent_indices=[-1, 0],
+                bind_world_matrices=[0.0] * 32,
+                bind_no_orient_matrices=[0.0] * 32,
+                joint_orient_quats=[0.0, 0.0, 0.0, 1.0] * 2,
+                rotate_orders=[0, 0],
+            )
+
+        self.assertEqual(result.frame_count, 2)
+        self.assertEqual(result.bone_count, 2)
+        self.assertEqual(list(result.local_channels), values)
+
+    def test_returns_none_when_batch_symbol_fails(self):
+        lib = _FakeRuntimeLib(local_channels_batch=None)
+        world = (c_float * 16)(*([0.0] * 16))
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertIsNone(
+                compute_maya_local_channels_batch(
+                    world_matrices=world,
+                    frame_count=1,
+                    bone_count=1,
+                    parent_indices=[-1],
+                    bind_world_matrices=[0.0] * 16,
+                    bind_no_orient_matrices=[0.0] * 16,
+                    joint_orient_quats=[0.0, 0.0, 0.0, 1.0],
+                    rotate_orders=[0],
+                )
+            )
 
 
 # ----------------------------------------------------------------------
@@ -676,7 +837,7 @@ class TestParsedModelByteBuffers(unittest.TestCase):
 
 
 # ----------------------------------------------------------------------
-# _set_sig / _find_library / get_mmd_runtime_library のキャッシュ
+# _set_sig / loader.find_library / get_mmd_runtime_library のキャッシュ
 # ----------------------------------------------------------------------
 
 class _SigStub:
@@ -716,22 +877,22 @@ class TestFindLibrary(unittest.TestCase):
     def test_returns_none_when_no_candidate_exists(self):
         # すべての候補パスを存在しないものに差し替える
         from pathlib import Path
-        with mock.patch.object(rt, "_CANDIDATE_PATHS",
+        with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS",
                                [Path("F:/__definitely_missing_dir__/x")]):
-            self.assertIsNone(rt._find_library())
+            self.assertIsNone(runtime_loader.find_library())
 
     def test_finds_explicit_file_candidate(self):
         # 実在する一時ファイルを「ライブラリ名そのもの」で配置し検出させる
         import tempfile
         from pathlib import Path
 
-        lib_name = rt._LIB_NAMES[0]
+        lib_name = runtime_loader._LIB_NAMES[0]
         tmpdir = tempfile.mkdtemp()
         try:
             lib_path = Path(tmpdir) / lib_name
             lib_path.write_bytes(b"\x00")
-            with mock.patch.object(rt, "_CANDIDATE_PATHS", [lib_path]):
-                found = rt._find_library()
+            with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS", [lib_path]):
+                found = runtime_loader.find_library()
             self.assertIsNotNone(found)
             self.assertEqual(Path(found).name, lib_name)
         finally:
@@ -742,12 +903,12 @@ class TestFindLibrary(unittest.TestCase):
         import tempfile
         from pathlib import Path
 
-        lib_name = rt._LIB_NAMES[0]
+        lib_name = runtime_loader._LIB_NAMES[0]
         tmpdir = tempfile.mkdtemp()
         try:
             (Path(tmpdir) / lib_name).write_bytes(b"\x00")
-            with mock.patch.object(rt, "_CANDIDATE_PATHS", [Path(tmpdir)]):
-                found = rt._find_library()
+            with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS", [Path(tmpdir)]):
+                found = runtime_loader.find_library()
             self.assertIsNotNone(found)
             self.assertEqual(Path(found).name, lib_name)
         finally:
@@ -758,29 +919,29 @@ class TestFindLibrary(unittest.TestCase):
 class TestGetRuntimeLibraryCache(unittest.TestCase):
     def setUp(self):
         # グローバルキャッシュを退避し、各テストで初期化
-        self._saved_lib = rt._runtime_lib
-        self._saved_path = rt._runtime_lib_path
+        self._saved_lib = runtime_loader._runtime_lib
+        self._saved_path = runtime_loader._runtime_lib_path
 
     def tearDown(self):
-        rt._runtime_lib = self._saved_lib
-        rt._runtime_lib_path = self._saved_path
+        runtime_loader._runtime_lib = self._saved_lib
+        runtime_loader._runtime_lib_path = self._saved_path
 
     def test_caches_false_when_library_not_found(self):
-        rt._runtime_lib = None
-        rt._runtime_lib_path = None
-        with mock.patch.object(rt, "_find_library", return_value=None) as finder:
+        runtime_loader._runtime_lib = None
+        runtime_loader._runtime_lib_path = None
+        with mock.patch.object(runtime_loader, "find_library", return_value=None) as finder:
             self.assertIsNone(rt.get_mmd_runtime_library())
-            # 2 回目はキャッシュにより _find_library を再呼び出ししない
+            # 2 回目はキャッシュにより find_library を再呼び出ししない
             self.assertIsNone(rt.get_mmd_runtime_library())
         self.assertEqual(finder.call_count, 1)
-        self.assertIs(rt._runtime_lib, False)
+        self.assertIs(runtime_loader._runtime_lib, False)
 
     def test_is_available_reflects_cached_false(self):
-        rt._runtime_lib = False
+        runtime_loader._runtime_lib = False
         self.assertFalse(rt.is_mmd_runtime_available())
 
     def test_is_native_pmx_parser_available_false_when_lib_none(self):
-        rt._runtime_lib = False  # キャッシュ済み「ロード失敗」
+        runtime_loader._runtime_lib = False  # キャッシュ済み「ロード失敗」
         self.assertFalse(rt.is_native_pmx_parser_available())
 
 
@@ -790,26 +951,26 @@ class TestGetRuntimeLibraryCache(unittest.TestCase):
 
 class TestFactoryGuardsWithoutLibrary(unittest.TestCase):
     def setUp(self):
-        self._saved = rt._runtime_lib
+        self._saved = runtime_loader._runtime_lib
 
     def tearDown(self):
-        rt._runtime_lib = self._saved
+        runtime_loader._runtime_lib = self._saved
 
     def test_model_from_empty_bytes_returns_none_even_if_lib_present(self):
         # lib があっても空 bytes は弾く
-        rt._runtime_lib = _FakeRuntimeLib()
+        runtime_loader._runtime_lib = _FakeRuntimeLib()
         self.assertIsNone(MmdRuntimeModel.from_pmx_bytes(b""))
 
     def test_clip_from_none_model_returns_none(self):
-        rt._runtime_lib = _FakeRuntimeLib()
+        runtime_loader._runtime_lib = _FakeRuntimeLib()
         self.assertIsNone(MmdRuntimeClip.from_vmd_bytes_for_model(None, b"vmd"))
 
     def test_instance_for_none_model_returns_none(self):
-        rt._runtime_lib = _FakeRuntimeLib()
+        runtime_loader._runtime_lib = _FakeRuntimeLib()
         self.assertIsNone(MmdRuntimeInstance.for_model(None))
 
     def test_parsed_model_from_empty_bytes_returns_none(self):
-        rt._runtime_lib = _FakeParsedLib()
+        runtime_loader._runtime_lib = _FakeParsedLib()
         self.assertIsNone(MmdParsedModel.from_pmx_bytes(b""))
 
 

@@ -1,10 +1,15 @@
 import os
+import struct
+from io import BytesIO
 from unittest.mock import patch
 
 from mmd_tools.core import mmd_parser
+from mmd_tools.core import utils
 from mmd_tools.core.pmd_data.material import PmdMaterial
 from mmd_tools.core.pmx_data.header import PmxEncoding
 from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmx_data.soft_body import PmxSoftBody, _UNSUPPORTED_DETAIL_SIZE
+from mmd_tools.core.native.native_pmx_parser import is_native_parser_available
 from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
 
@@ -12,6 +17,9 @@ from tests.common.pmx_mock import PmxMock
 class TestPmxParser(TestBase):
     def setUp(self):
         super().setUp()
+        if not is_native_parser_available():
+            self.skipTest("native PMX parser is unavailable in this environment")
+
         # モックデータを使用してテスト用PMXファイルを作成
         self.pmx_file_path = os.path.join(self.temp_dir, "test_model.pmx")
 
@@ -40,6 +48,69 @@ class TestPmxParser(TestBase):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("MMD_TOOLS_ENABLE_NATIVE_PMX_PARSE", None)
             self.assertIsNone(mmd_parser._try_native_pmx_parse(self.pmx_file_path, use_native_pmx_parse=False))
+
+    def test_required_native_pmx_parse_rejects_disabled_parser(self):
+        """native PMX parse 必須モードでは無効化を Python parser fallback で隠さない。"""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MMD_TOOLS_ENABLE_NATIVE_PMX_PARSE", None)
+            with self.assertRaises(mmd_parser.MMDParseException):
+                mmd_parser._try_native_pmx_parse(
+                    self.pmx_file_path,
+                    use_native_pmx_parse=False,
+                    require_native_pmx_parse=True,
+                )
+
+    def test_required_native_pmx_parse_rejects_unavailable_parser(self):
+        """native PMX parse 必須モードでは None 戻り値を parse 失敗として扱う。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            with self.assertRaises(mmd_parser.MMDParseException):
+                mmd_parser.parse_mmd_file(
+                    self.pmx_file_path,
+                    require_native_pmx_parse=True,
+                )
+
+    def test_pmx_parse_requires_native_parser_by_default(self):
+        """PMX parse は既定で Python parser fallback を許可しない。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            with self.assertRaises(mmd_parser.MMDParseException):
+                mmd_parser.parse_mmd_file(self.pmx_file_path)
+
+    def test_legacy_python_pmx_parser_requires_explicit_opt_out(self):
+        """移行用の legacy Python PMX parser は明示 opt-out 時だけ使える。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            parsed_data = mmd_parser.parse_mmd_file(
+                self.pmx_file_path,
+                require_native_pmx_parse=False,
+            )
+        self.assertIsInstance(parsed_data, PmxData)
+
+    def test_parse_pmx_file_uses_pmx_specific_entry_point(self):
+        """PMX専用入口は import parser dispatch なしで構造化PMXを返す。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            parsed_data = mmd_parser.parse_pmx_file(
+                self.pmx_file_path,
+                require_native_pmx_parse=False,
+            )
+        self.assertIsInstance(parsed_data, PmxData)
+
+    def test_parse_pmx_file_fallback_uses_legacy_helper_not_pmx_data_method(self):
+        """PMX専用入口の legacy fallback は PmxData.parse_file へ戻さない。"""
+        with patch("mmd_tools.core.native.native_pmx_parser.parse_pmx_native", return_value=None):
+            with patch.object(PmxData, "parse_file", side_effect=AssertionError("legacy method should not be used")):
+                parsed_data = mmd_parser.parse_pmx_file(
+                    self.pmx_file_path,
+                    require_native_pmx_parse=False,
+                )
+        self.assertIsInstance(parsed_data, PmxData)
+
+    def test_parse_pmx_file_rejects_non_pmx_magic(self):
+        """PMX専用入口は PMX 以外の magic を受け付けない。"""
+        invalid_path = os.path.join(self.temp_dir, "not_pmx.vmd")
+        with open(invalid_path, "wb") as f:
+            f.write(b"Vocaloid Motion Data file")
+
+        with self.assertRaises(mmd_parser.MMDParseException):
+            mmd_parser.parse_pmx_file(invalid_path)
 
     def test_native_pmx_parse_env_flag(self):
         """native PMX parse は通常有効で、環境変数で明示的に切り替えられる。"""
@@ -362,3 +433,104 @@ class TestPmxParser(TestBase):
         # 注: 現在の実装ではSoftBodyのパーサーはプレースホルダーであり、詳細な解析は行われない。
         # そのため、リストがNoneでないことのみを確認する。
         self.assertIsNotNone(self.parsed_data.soft_bodies, msg="ソフトボディリストがNoneです")
+
+    def test_soft_body_header_roundtrip_preserves_section_boundary(self):
+        """SoftBody は未対応詳細を保持しつつ anchor/pin まで読み書きできる。"""
+        detail = bytes(range(_UNSUPPORTED_DETAIL_SIZE))
+        record = bytearray()
+        record.extend(utils.encodePMXString("布", PmxEncoding.UTF16LE))
+        record.extend(utils.encodePMXString("cloth", PmxEncoding.UTF16LE))
+        record.extend(struct.pack("<B", 0))  # kind: tri mesh
+        record.extend(struct.pack("<b", 0))  # material index
+        record.extend(struct.pack("<B", 3))  # collision group
+        record.extend(struct.pack("<H", 0x00F0))  # collision mask
+        record.extend(struct.pack("<B", 0x07))  # flags
+        record.extend(struct.pack("<i", 4))  # bending constraints distance
+        record.extend(struct.pack("<i", 2))  # cluster count
+        record.extend(struct.pack("<f", 12.5))  # total mass
+        record.extend(struct.pack("<f", 0.25))  # collision margin
+        record.extend(detail)
+        record.extend(struct.pack("<I", 1))  # anchor count
+        record.extend(struct.pack("<bBB", 0, 5, 1))  # rigid body, vertex, near mode
+        record.extend(struct.pack("<I", 2))  # pin count
+        record.extend(struct.pack("<BB", 6, 7))
+
+        soft_body = PmxSoftBody(
+            material_index_size=1,
+            rigid_body_index_size=1,
+            vertex_index_size=1,
+            encoding_flag=PmxEncoding.UTF16LE,
+        )
+        stream = BytesIO(bytes(record) + b"next")
+
+        soft_body.parse(stream)
+
+        self.assertEqual(soft_body.name, "布")
+        self.assertEqual(soft_body.name_english, "cloth")
+        self.assertEqual(soft_body.material_index, 0)
+        self.assertEqual(soft_body.collision_group, 3)
+        self.assertEqual(soft_body.collision_mask, 0x00F0)
+        self.assertEqual(soft_body.flags, 0x07)
+        self.assertEqual(soft_body.bending_constraints_distance, 4)
+        self.assertEqual(soft_body.cluster_count, 2)
+        self.assertAlmostEqual(soft_body.total_mass, 12.5)
+        self.assertAlmostEqual(soft_body.collision_margin, 0.25)
+        self.assertEqual(soft_body.anchors, [(0, 5, 1)])
+        self.assertEqual(soft_body.pins, [6, 7])
+        self.assertEqual(stream.read(), b"next")
+
+        out = BytesIO()
+        soft_body.write(out)
+        self.assertEqual(out.getvalue(), bytes(record))
+
+    def test_pmx_data_write_file_preserves_soft_body_section(self):
+        """PmxData.write_file 経由でも PMX 2.1 SoftBody セクションを保持する。"""
+        pmx_data = PmxData()
+        pmx_data.header.version = 2.1
+        pmx_data.header.encoding = PmxEncoding.UTF16LE
+        pmx_data.header.vertex_index_size = 1
+        pmx_data.header.texture_index_size = 1
+        pmx_data.header.material_index_size = 1
+        pmx_data.header.bone_index_size = 1
+        pmx_data.header.morph_index_size = 1
+        pmx_data.header.rigid_body_index_size = 1
+
+        soft_body = PmxSoftBody(
+            material_index_size=1,
+            rigid_body_index_size=1,
+            vertex_index_size=1,
+            encoding_flag=PmxEncoding.UTF16LE,
+        )
+        soft_body.name = "布"
+        soft_body.name_english = "cloth"
+        soft_body.kind = 0
+        soft_body.material_index = -1
+        soft_body.collision_group = 3
+        soft_body.collision_mask = 0x00F0
+        soft_body.flags = 0x07
+        soft_body.bending_constraints_distance = 4
+        soft_body.cluster_count = 2
+        soft_body.total_mass = 12.5
+        soft_body.collision_margin = 0.25
+        soft_body._unsupported_detail = bytes(range(_UNSUPPORTED_DETAIL_SIZE))
+        soft_body.anchors = [(0, 5, 1)]
+        soft_body.pins = [6, 7]
+        pmx_data.soft_bodies = [soft_body]
+
+        out_path = os.path.join(self.temp_dir, "soft_body_roundtrip.pmx")
+        pmx_data.write_file(out_path)
+
+        parsed = PmxData().parse_file(out_path)
+
+        self.assertEqual(len(parsed.soft_bodies), 1)
+        parsed_soft_body = parsed.soft_bodies[0]
+        self.assertEqual(parsed_soft_body.name, "布")
+        self.assertEqual(parsed_soft_body.name_english, "cloth")
+        self.assertEqual(parsed_soft_body.collision_group, 3)
+        self.assertEqual(parsed_soft_body.collision_mask, 0x00F0)
+        self.assertEqual(parsed_soft_body.flags, 0x07)
+        self.assertAlmostEqual(parsed_soft_body.total_mass, 12.5)
+        self.assertAlmostEqual(parsed_soft_body.collision_margin, 0.25)
+        self.assertEqual(parsed_soft_body._unsupported_detail, bytes(range(_UNSUPPORTED_DETAIL_SIZE)))
+        self.assertEqual(parsed_soft_body.anchors, [(0, 5, 1)])
+        self.assertEqual(parsed_soft_body.pins, [6, 7])

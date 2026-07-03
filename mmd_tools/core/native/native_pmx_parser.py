@@ -3,8 +3,8 @@
 Python の struct.unpack ベースのパーサー (PmxData.parse_file) を置き換え、
 Rust ネイティブパーサーで 5-10x の高速化を実現する。
 
-DLL が利用不可能な場合や解析に失敗した場合は None を返し、
-呼び出し元が Python パーサーにフォールバックする。
+DLL が利用不可能な場合や解析に失敗した場合は None を返す。PMX import では
+呼び出し元が native 必須モードとして扱い、Python parser fallback は移行用途の明示 opt-out 時だけ許可する。
 """
 
 from __future__ import annotations
@@ -16,12 +16,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from mmd_tools.core.logger import get_logger
-from mmd_tools.core.native.mmd_anim_runtime import MmdRuntimeFfiByteBuffer as _ByteBuffer
+from mmd_tools.core.native.mmd_anim_runtime_types import MmdRuntimeFfiByteBuffer as _ByteBuffer
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
 from mmd_tools.core.pmx_data.face import PmxFace
-from mmd_tools.core.pmx_data.header import PmxEncoding, PmxHeader
+from mmd_tools.core.pmx_data.header import PmxEncoding, PmxHeader, is_pmx_21_or_later
 from mmd_tools.core.pmx_data.ik_link import PmxIKLink
 from mmd_tools.core.pmx_data.joint import PmxJoint
 from mmd_tools.core.pmx_data.material import (
@@ -38,8 +38,8 @@ logger = get_logger(__name__)
 
 
 
-# _ByteBuffer is imported from mmd_anim_runtime.MmdRuntimeFfiByteBuffer
-# to avoid dual ctypes Structure definitions conflicting on argtypes.
+# _ByteBuffer is shared with mmd_anim_runtime to avoid dual ctypes Structure
+# definitions conflicting on argtypes.
 
 
 _SKINNING_MODE_MAP = {
@@ -73,6 +73,19 @@ _MORPH_TYPE_MAP = {
     "impulse": PmxMorphType.ImpulseMorph,
 }
 
+_MATERIAL_MORPH_OPERATION_MAP = {
+    "multiply": 0,
+    "add": 1,
+}
+
+
+def _get_any(data: dict, *keys: str, default=None):
+    """Return the first present value from *data* for compatible JSON field aliases."""
+    for key in keys:
+        if key in data:
+            return data[key]
+    return default
+
 
 def is_native_parser_available() -> bool:
     """buffer-based PMX パーサーが DLL で利用可能か返す。"""
@@ -104,10 +117,33 @@ def parse_pmx_native(file_path: str) -> Optional[PmxData]:
         return None
 
     try:
-        return _parse_pmx_bytes(lib, pmx_bytes)
+        pmx = _parse_pmx_bytes(lib, pmx_bytes)
+        if pmx is not None:
+            _preserve_soft_bodies_from_legacy(file_path, pmx)
+        return pmx
     except Exception as exc:
         logger.info("Native PMX parse failed, will fallback: %s", exc)
         return None
+
+
+def _preserve_soft_bodies_from_legacy(file_path: str, pmx: PmxData) -> bool:
+    """Copy PMX 2.1 soft bodies into native parse results for writer roundtrip."""
+    if not is_pmx_21_or_later(pmx.header.version) or getattr(pmx, "soft_bodies", None):
+        return True
+
+    # mmd-anim native metadata does not expose PMX 2.1 soft bodies yet. Preserve
+    # them via the legacy reader so native import/export roundtrips do not drop
+    # the trailing section.
+    try:
+        from mmd_tools.core.pmx_data.legacy_parser import parse_pmx_file_legacy
+
+        legacy_pmx = parse_pmx_file_legacy(file_path)
+    except Exception as exc:
+        logger.warning("Failed to preserve PMX soft bodies from legacy parser: %s", exc)
+        return False
+
+    pmx.soft_bodies = list(getattr(legacy_pmx, "soft_bodies", []) or [])
+    return True
 
 
 def _parse_pmx_bytes(lib: Any, pmx_bytes: bytes) -> Optional[PmxData]:
@@ -155,6 +191,7 @@ def _parse_pmx_bytes(lib: Any, pmx_bytes: bytes) -> Optional[PmxData]:
         sdef_c = _as_float_array(sdef_c_buf, vert_count * 3)
         sdef_r0 = _as_float_array(sdef_r0_buf, vert_count * 3)
         sdef_r1 = _as_float_array(sdef_r1_buf, vert_count * 3)
+        additional_uvs = _read_additional_uv_arrays(lib, buf_in, n, vert_count, buffers)
 
         modes_data = _read_json(modes_buf)
         skinning_modes = (
@@ -172,7 +209,7 @@ def _parse_pmx_bytes(lib: Any, pmx_bytes: bytes) -> Optional[PmxData]:
         pmx.vertices = _build_vertices(
             vert_count, pos, norm, uv, edge,
             skin_i, skin_w, skinning_modes,
-            sdef_c, sdef_r0, sdef_r1,
+            sdef_c, sdef_r0, sdef_r1, additional_uvs,
         )
 
         pmx.faces = _build_faces(idx, idx_count)
@@ -236,6 +273,16 @@ def _ensure_signatures(lib: Any) -> None:
             fn.restype = _ByteBuffer
             fn.argtypes = [POINTER(c_uint8), c_size_t]
 
+    count_fn = getattr(lib, "mmd_runtime_parse_pmx_additional_uv_count", None)
+    if count_fn is not None:
+        count_fn.restype = c_size_t
+        count_fn.argtypes = [POINTER(c_uint8), c_size_t]
+
+    additional_uvs_fn = getattr(lib, "mmd_runtime_parse_pmx_additional_uvs_buffer", None)
+    if additional_uvs_fn is not None:
+        additional_uvs_fn.restype = _ByteBuffer
+        additional_uvs_fn.argtypes = [POINTER(c_uint8), c_size_t, c_size_t]
+
     free_fn = getattr(lib, "mmd_runtime_byte_buffer_free", None)
     if free_fn is not None:
         free_fn.restype = None
@@ -249,6 +296,24 @@ def _call_buffer(
     result = fn(buf_in, n)
     tracker.append(result)
     return result
+
+
+def _read_additional_uv_arrays(lib: Any, buf_in: Any, n: int, vertex_count: int, tracker: list):
+    count_fn = getattr(lib, "mmd_runtime_parse_pmx_additional_uv_count", None)
+    buffer_fn = getattr(lib, "mmd_runtime_parse_pmx_additional_uvs_buffer", None)
+    if count_fn is None or buffer_fn is None:
+        return []
+
+    count = int(count_fn(buf_in, n))
+    if count <= 0:
+        return []
+
+    arrays = []
+    for uv_index in range(count):
+        buf = buffer_fn(buf_in, n, uv_index)
+        tracker.append(buf)
+        arrays.append(_as_float_array(buf, vertex_count * 4))
+    return arrays
 
 
 def _read_json(buf: _ByteBuffer) -> Optional[dict]:
@@ -311,8 +376,9 @@ def _build_vertices(
     count: int,
     pos, norm, uv, edge,
     skin_i, skin_w, modes,
-    sdef_c, sdef_r0, sdef_r1,
+    sdef_c, sdef_r0, sdef_r1, additional_uv_arrays=None,
 ) -> List[PmxVertex]:
+    additional_uv_arrays = additional_uv_arrays or []
     vertices = []
     for i in range(count):
         v = PmxVertex.__new__(PmxVertex)
@@ -324,6 +390,16 @@ def _build_vertices(
         v.normal = (norm[i3], norm[i3 + 1], norm[i3 + 2])
         v.uv = (uv[i2], uv[i2 + 1])
         v.additional_uvs = []
+        for additional_uv in additional_uv_arrays:
+            if additional_uv is None:
+                continue
+            uv4 = i * 4
+            v.additional_uvs.append((
+                additional_uv[uv4],
+                additional_uv[uv4 + 1],
+                additional_uv[uv4 + 2],
+                additional_uv[uv4 + 3],
+            ))
         v.edge_magnification = edge[i] if edge else 1.0
 
         mode_str = modes[i] if i < len(modes) else "bdef1"
@@ -356,7 +432,7 @@ def _build_vertices(
             v.sdef_r1 = (0.0, 0.0, 1.0)
 
         v.bone_index_size = 2
-        v.additional_uv_count = 0
+        v.additional_uv_count = len(v.additional_uvs)
 
         vertices.append(v)
 
@@ -595,9 +671,15 @@ def _build_morphs(morphs_json: list) -> List[PmxMorph]:
         m.name = mj.get("name", "")
         m.name_english = mj.get("englishName", "")
         m.panel = int(mj.get("panel", 4))
-        m.morph_type = _MORPH_TYPE_MAP.get(
-            mj.get("type", "vertex"), PmxMorphType.VertexMorph,
-        )
+        morph_type_name = mj.get("type", "vertex")
+        if morph_type_name == "additionalUv":
+            add_uv_offsets = mj.get("additionalUvOffsets", [])
+            uv_index = int(add_uv_offsets[0].get("uvIndex", 0)) if add_uv_offsets else 0
+            m.morph_type = PmxMorphType.AdditionalUVMorph1 + max(0, min(uv_index, 3))
+        else:
+            m.morph_type = _MORPH_TYPE_MAP.get(
+                morph_type_name, PmxMorphType.VertexMorph,
+            )
 
         offsets = []
         if m.morph_type == PmxMorphType.VertexMorph:
@@ -620,11 +702,18 @@ def _build_morphs(morphs_json: list) -> List[PmxMorph]:
             for go in mj.get("groupOffsets", []):
                 offsets.append({
                     "morph_index": int(go.get("morphIndex", 0)),
-                    "morph_rate": float(go.get("morphRate", 0.0)),
+                    "morph_rate": float(_get_any(go, "weight", "morphRate", default=0.0)),
                 })
-        elif PmxMorphType.UVMorph <= m.morph_type <= PmxMorphType.AdditionalUVMorph4:
+        elif m.morph_type == PmxMorphType.UVMorph:
             for uo in mj.get("uvOffsets", []):
-                uv_off = uo.get("uvOffset", [0.0, 0.0, 0.0, 0.0])
+                uv_off = _get_any(uo, "uv", "uvOffset", default=[0.0, 0.0, 0.0, 0.0])
+                offsets.append({
+                    "vertex_index": int(uo.get("vertexIndex", 0)),
+                    "uv_offset": tuple(uv_off[:4]),
+                })
+        elif PmxMorphType.AdditionalUVMorph1 <= m.morph_type <= PmxMorphType.AdditionalUVMorph4:
+            for uo in mj.get("additionalUvOffsets", []):
+                uv_off = _get_any(uo, "uv", "uvOffset", default=[0.0, 0.0, 0.0, 0.0])
                 offsets.append({
                     "vertex_index": int(uo.get("vertexIndex", 0)),
                     "uv_offset": tuple(uv_off[:4]),
@@ -635,37 +724,50 @@ def _build_morphs(morphs_json: list) -> List[PmxMorph]:
                 s = mo.get("specular", [0.0, 0.0, 0.0])
                 a = mo.get("ambient", [0.0, 0.0, 0.0])
                 ec = mo.get("edgeColor", [0.0, 0.0, 0.0, 0.0])
-                tex_coeff = mo.get("textureCoefficient", [0.0, 0.0, 0.0, 0.0])
-                sph_coeff = mo.get("sphereCoefficient", [0.0, 0.0, 0.0, 0.0])
-                toon_coeff = mo.get("toonCoefficient", [0.0, 0.0, 0.0, 0.0])
+                tex_coeff = _get_any(mo, "textureFactor", "textureCoefficient", default=[0.0, 0.0, 0.0, 0.0])
+                sph_coeff = _get_any(
+                    mo,
+                    "sphereTextureFactor",
+                    "sphereCoefficient",
+                    default=[0.0, 0.0, 0.0, 0.0],
+                )
+                toon_coeff = _get_any(
+                    mo,
+                    "toonTextureFactor",
+                    "toonCoefficient",
+                    default=[0.0, 0.0, 0.0, 0.0],
+                )
+                operation_type = _get_any(mo, "operationType", default=None)
+                if operation_type is None:
+                    operation_type = _MATERIAL_MORPH_OPERATION_MAP.get(mo.get("operation", "multiply"), 0)
                 offsets.append({
                     "material_index": int(mo.get("materialIndex", 0)),
-                    "operation_type": int(mo.get("operationType", 0)),
+                    "operation_type": int(operation_type),
                     "diffuse": tuple(d[:4]),
                     "specular": tuple(s[:3]),
                     "specular_coefficient": float(mo.get("specularPower", 0.0)),
                     "ambient": tuple(a[:3]),
                     "edge_color": tuple(ec[:4]),
                     "edge_size": float(mo.get("edgeSize", 0.0)),
-                    "texture_coefficient": tuple(tex_coeff[:4]),
-                    "sphere_texture_coefficient": tuple(sph_coeff[:4]),
-                    "toon_texture_coefficient": tuple(toon_coeff[:4]),
+                    "texture_factor": tuple(tex_coeff[:4]),
+                    "sphere_texture_factor": tuple(sph_coeff[:4]),
+                    "toon_texture_factor": tuple(toon_coeff[:4]),
                 })
         elif m.morph_type == PmxMorphType.FlipMorph:
             for fo in mj.get("flipOffsets", []):
                 offsets.append({
                     "morph_index": int(fo.get("morphIndex", 0)),
-                    "morph_rate": float(fo.get("morphRate", 0.0)),
+                    "flip_rate": float(_get_any(fo, "weight", "morphRate", default=0.0)),
                 })
         elif m.morph_type == PmxMorphType.ImpulseMorph:
             for io_data in mj.get("impulseOffsets", []):
                 v = io_data.get("velocity", [0.0, 0.0, 0.0])
-                rv = io_data.get("rotationVelocity", [0.0, 0.0, 0.0])
+                torque = _get_any(io_data, "torque", "rotationVelocity", default=[0.0, 0.0, 0.0])
                 offsets.append({
                     "rigid_body_index": int(io_data.get("rigidBodyIndex", 0)),
-                    "is_local": int(io_data.get("isLocal", 0)),
-                    "velocity": tuple(v[:3]),
-                    "rotation_velocity": tuple(rv[:3]),
+                    "is_local": int(_get_any(io_data, "local", "isLocal", default=0)),
+                    "impulse": tuple(v[:3]),
+                    "torque": tuple(torque[:3]),
                 })
 
         m.offset_count = len(offsets)
@@ -711,12 +813,12 @@ def _build_rigid_bodies(bodies_json: list) -> List[PmxRigidBody]:
 
         rb.name = rj.get("name", "")
         rb.name_english = rj.get("englishName", "")
-        rb.related_bone_index = int(rj.get("boneIndex", -1))
+        rb.related_bone_index = int(_get_any(rj, "boneIndex", "relatedBoneIndex", default=-1))
         rb.group = int(rj.get("group", 0))
-        rb.collision_mask = int(rj.get("collisionMask", 0))
+        rb.collision_mask = int(_get_any(rj, "mask", "collisionMask", default=0))
 
         shape_map = {"sphere": 0, "box": 1, "capsule": 2}
-        rb.shape_type = shape_map.get(rj.get("shapeType", "sphere"), 0)
+        rb.shape_type = shape_map.get(_get_any(rj, "shape", "shapeType", default="sphere"), 0)
 
         sz = rj.get("size", [0.0, 0.0, 0.0])
         rb.size = tuple(sz[:3])
@@ -726,13 +828,20 @@ def _build_rigid_bodies(bodies_json: list) -> List[PmxRigidBody]:
         rb.rotation = tuple(r[:3])
 
         rb.mass = float(rj.get("mass", 0.0))
-        rb.velocity_attenuation = float(rj.get("linearDamping", 0.0))
-        rb.rotation_attenuation = float(rj.get("angularDamping", 0.0))
+        rb.velocity_attenuation = float(_get_any(rj, "linearDamping", "velocityAttenuation", default=0.0))
+        rb.rotation_attenuation = float(_get_any(rj, "angularDamping", "rotationAttenuation", default=0.0))
         rb.elasticity = float(rj.get("restitution", 0.0))
         rb.friction = float(rj.get("friction", 0.0))
 
-        mode_map = {"boneFollow": 0, "physics": 1, "physicsAlignment": 2}
-        rb.physics_mode = mode_map.get(rj.get("physicsMode", "boneFollow"), 0)
+        mode_map = {
+            "boneFollow": 0,
+            "static": 0,
+            "physics": 1,
+            "dynamic": 1,
+            "physicsAlignment": 2,
+            "dynamicBone": 2,
+        }
+        rb.physics_mode = mode_map.get(_get_any(rj, "mode", "physicsMode", default="boneFollow"), 0)
 
         bodies.append(rb)
 
@@ -750,31 +859,38 @@ def _build_joints(joints_json: list) -> List[PmxJoint]:
         j.name_english = jj.get("englishName", "")
 
         type_map = {
-            "spring6DOF": 0, "6dof": 1, "p2p": 2,
-            "coneTwist": 3, "slider": 4, "hinge": 5,
+            "spring6DOF": 0,
+            "generic6dofSpring": 0,
+            "6dof": 1,
+            "generic6dof": 1,
+            "p2p": 2,
+            "point2point": 2,
+            "coneTwist": 3,
+            "slider": 4,
+            "hinge": 5,
         }
-        j.joint_type = type_map.get(jj.get("jointType", "spring6DOF"), 0)
+        j.joint_type = type_map.get(_get_any(jj, "type", "jointType", default="spring6DOF"), 0)
 
-        j.rigid_body_a_index = int(jj.get("rigidBodyAIndex", -1))
-        j.rigid_body_b_index = int(jj.get("rigidBodyBIndex", -1))
+        j.rigid_body_a_index = int(_get_any(jj, "rigidBodyIndexA", "rigidBodyAIndex", default=-1))
+        j.rigid_body_b_index = int(_get_any(jj, "rigidBodyIndexB", "rigidBodyBIndex", default=-1))
 
         p = jj.get("position", [0.0, 0.0, 0.0])
         j.position = tuple(p[:3])
         r = jj.get("rotation", [0.0, 0.0, 0.0])
         j.rotation = tuple(r[:3])
 
-        tmin = jj.get("translationLimitMin", [0.0, 0.0, 0.0])
-        tmax = jj.get("translationLimitMax", [0.0, 0.0, 0.0])
+        tmin = _get_any(jj, "translationLowerLimit", "translationLimitMin", default=[0.0, 0.0, 0.0])
+        tmax = _get_any(jj, "translationUpperLimit", "translationLimitMax", default=[0.0, 0.0, 0.0])
         j.translation_limit_min = tuple(tmin[:3])
         j.translation_limit_max = tuple(tmax[:3])
 
-        rmin = jj.get("rotationLimitMin", [0.0, 0.0, 0.0])
-        rmax = jj.get("rotationLimitMax", [0.0, 0.0, 0.0])
+        rmin = _get_any(jj, "rotationLowerLimit", "rotationLimitMin", default=[0.0, 0.0, 0.0])
+        rmax = _get_any(jj, "rotationUpperLimit", "rotationLimitMax", default=[0.0, 0.0, 0.0])
         j.rotation_limit_min = tuple(rmin[:3])
         j.rotation_limit_max = tuple(rmax[:3])
 
-        st = jj.get("springTranslation", [0.0, 0.0, 0.0])
-        sr = jj.get("springRotation", [0.0, 0.0, 0.0])
+        st = _get_any(jj, "springTranslationFactor", "springTranslation", default=[0.0, 0.0, 0.0])
+        sr = _get_any(jj, "springRotationFactor", "springRotation", default=[0.0, 0.0, 0.0])
         j.spring_translation = tuple(st[:3])
         j.spring_rotation = tuple(sr[:3])
 

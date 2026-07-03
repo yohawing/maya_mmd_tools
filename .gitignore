@@ -48,8 +48,12 @@ KIRO.md
 CLAUDE.md
 AGENTS.md
 docs-dev/
+/TODO.md
+/ROADMAP.md
+/PLAN.md
 docs/*
 !docs/README_ja.md
+!docs/RELEASE.md
 
 # TestData
 /tests/data/*

@@ -4,7 +4,7 @@ mmd-anim (Rust) の C ABI を ctypes でラップするモジュール。
 このファイルは Maya 環境で mmd-anim-ffi の共有ライブラリをロードし、
 PMX モデルと VMD モーションの忠実なランタイム評価を提供します。
 
-対応する主な機能 (mmd-anim-ffi v1 ABI 基準):
+対応する主な機能 (mmd-anim-ffi ABI 2 基準):
 - PMX バイト列からのモデル構築
 - VMD バイト列 + モデルからのクリップ構築
 - 任意フレーム (float) での評価
@@ -13,7 +13,7 @@ PMX モデルと VMD モーションの忠実なランタイム評価を提供�
 
 注意:
 - 物理演算は mmd-anim 側で提供されません (ホスト側で別途対応)。
-- 事前ビルドされた mmd_runtime_ffi.dll / mmd_anim_ffi.dll (Windows) / .dylib (macOS) が必要です。
+- 事前ビルドされた mmd_runtime_ffi.dll (Windows) / libmmd_runtime_ffi.dylib (macOS) が必要です。
 - ライブラリが見つからない場合、すべての公開 API は安全に失敗 (None / False) します。
 
 ファイルヘッダ / コーディング規約:
@@ -26,13 +26,8 @@ from __future__ import annotations
 
 import ctypes
 import json
-import os
-import platform
 from ctypes import (
     CDLL,
-    POINTER,
-    Structure,
-    c_bool,
     c_float,
     c_int32,
     c_size_t,
@@ -41,411 +36,40 @@ from ctypes import (
     c_void_p,
 )
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.native import mmd_anim_runtime_loader as _runtime_loader
+from mmd_tools.core.native.mmd_anim_runtime_types import (
+    MMD_RUNTIME_RIG_BONE_FIXED_AXIS as _MMD_RUNTIME_RIG_BONE_FIXED_AXIS,
+    MmdRuntimeBatchEvaluation,
+    MmdRuntimeFfiAppendConfig,
+    MmdRuntimeFfiByteBuffer,
+    MmdRuntimeFfiIkSolveStats,
+    MmdRuntimeFfiRigBone,
+    MmdRuntimeFfiRigIkLink,
+    MmdRuntimeLocalChannelBatch,
+)
+from mmd_tools.core.native.mmd_anim_runtime_signatures import (
+    set_sig as _signature_set_sig,
+)
 
 logger = get_logger(__name__)
+MMD_RUNTIME_RIG_BONE_FIXED_AXIS = _MMD_RUNTIME_RIG_BONE_FIXED_AXIS
 
 # ------------------------------------------------------------------
 # ABI 定数 (mmd_runtime.h より)
 # ------------------------------------------------------------------
-MMD_RUNTIME_ABI_VERSION = 1
-
-# ライブラリ名候補
-if platform.system() == "Windows":
-    _LIB_NAMES = ["mmd_runtime_ffi.dll", "mmd_anim_ffi.dll"]
-elif platform.system() == "Darwin":
-    _LIB_NAMES = [
-        "libmmd_runtime_ffi.dylib",
-        "mmd_runtime_ffi.dylib",
-        "libmmd_anim_ffi.dylib",
-        "mmd_anim_ffi.dylib",
-    ]
-else:
-    _LIB_NAMES = ["libmmd_runtime_ffi.so", "mmd_runtime_ffi.so", "libmmd_anim_ffi.so", "mmd_anim_ffi.so"]
-
-# 検索パス候補 (相対はパッケージ位置基準)
-_THIS_FILE = Path(__file__).resolve()
-_PACKAGE_ROOT = _THIS_FILE.parents[2]  # mmd_tools/
-
-_CANDIDATE_PATHS: List[Path] = [
-    # 1. 環境変数で明示指定
-    Path(os.environ.get("MMD_ANIM_FFI_PATH", "")) if os.environ.get("MMD_ANIM_FFI_PATH") else None,
-    # 2. 推奨配置: mmd_tools/native/<platform>/
-    _PACKAGE_ROOT / "native" / ("win64" if platform.system() == "Windows" else "macos" if platform.system() == "Darwin" else "linux"),
-    # 3. 開発用: external/mmd-anim ビルド成果物 (参考)
-    _PACKAGE_ROOT.parent / "external" / "mmd-anim" / "target" / "release",
-    # 4. カレントディレクトリ / Maya プラグイン隣接
-    Path.cwd(),
-    Path("plug-ins"),
-]
-
-# グローバルキャッシュ
-_runtime_lib: Optional[CDLL] = None
-_runtime_lib_path: Optional[Path] = None
-
-
-# ------------------------------------------------------------------
-# 構造体定義
-# ------------------------------------------------------------------
-
-class MmdRuntimeFfiByteBuffer(Structure):
-    """
-    Rust 側の MmdRuntimeFfiByteBuffer (repr(C)) に対応する ctypes Structure。
-
-    Fields:
-        data: バイト列のポインタ (uint8_t*)
-        len:  バイト列の長さ (size_t)
-
-    mmd_runtime_byte_buffer_free にそのまま渡す値型の構造体。
-    """
-    _fields_ = [
-        ("data", POINTER(c_uint8)),
-        ("len", c_size_t),
-    ]
-
-
-class MmdRuntimeBatchEvaluation(NamedTuple):
-    """連続フレーム batch 評価結果。
-
-    `world_matrices` は `[frame][bone][16]`、`morph_weights` は
-    `[frame][morph]` の flat ctypes buffer です。Python list へ変換せず
-    Maya 側の bake 処理が直接参照できるよう、buffer 自体を保持します。
-    """
-
-    frame_count: int
-    bone_count: int
-    morph_count: int
-    world_matrices: Any
-    morph_weights: Any
-
-
-class MmdRuntimeFfiRigBone(Structure):
-    _fields_ = [
-        ("parent_slot", c_int32),
-        ("rest_position_xyz", c_float * 3),
-        ("flags", c_uint32),
-        ("fixed_axis_xyz", c_float * 3),
-    ]
-
-
-MMD_RUNTIME_RIG_BONE_FIXED_AXIS = 1 << 0
-
-
-class MmdRuntimeFfiRigIkLink(Structure):
-    _fields_ = [
-        ("bone_slot", c_uint32),
-        ("has_angle_limit", c_bool),
-        ("angle_limit_min_xyz", c_float * 3),
-        ("angle_limit_max_xyz", c_float * 3),
-    ]
-
-
-class MmdRuntimeFfiIkSolveStats(Structure):
-    _fields_ = [
-        ("executed_iterations", c_uint32),
-        ("link_steps", c_uint32),
-        ("final_distance", c_float),
-        ("break_reason", c_uint32),
-    ]
-
-
-class MmdRuntimeFfiAppendConfig(Structure):
-    _fields_ = [
-        ("ratio", c_float),
-        ("affect_rotation", c_bool),
-        ("affect_translation", c_bool),
-    ]
-
+MMD_RUNTIME_ABI_VERSION = 2
 
 def _find_library() -> Optional[Path]:
-    """mmd-anim-ffi 共有ライブラリを複数の候補パスから探す。"""
-    for raw_base in _CANDIDATE_PATHS:
-        if raw_base is None:
-            continue
-        base = Path(raw_base)
-        if not base.exists():
-            continue
-
-        # 環境変数などで「ファイル本体」を直接指定されたケースを最初に処理
-        if base.is_file():
-            if base.name in _LIB_NAMES:
-                return base.resolve()
-            # ファイル名が一致しない場合はこの候補をスキップ
-            continue
-
-        # ディレクトリとして扱う通常ケース
-        for name in _LIB_NAMES:
-            candidate = base / name
-            if candidate.exists():
-                return candidate.resolve()
-            # サブディレクトリも少し見る (debug/release など)
-            for sub in ("", "debug", "release"):
-                c2 = (base / sub / name) if sub else candidate
-                if c2.exists():
-                    return c2.resolve()
-
-    # 最後の手段: システムサーチ (PATH や カレントに置いてある場合)
-    for name in _LIB_NAMES:
-        try:
-            # CDLL は名前だけで探せる場合がある
-            # ここでは実体パスを返したいので、find_library 的なことはせず None のまま
-            pass
-        except Exception:
-            pass
-    return None
+    """Compatibility wrapper for runtime library discovery."""
+    return _runtime_loader.find_library()
 
 
-def _setup_function_signatures(lib: CDLL) -> None:
-    """ctypes の argtypes / restype を設定して安全に呼び出せるようにする。"""
-    # ABI バージョン
-    lib.mmd_runtime_abi_version.restype = c_uint32
-    lib.mmd_runtime_abi_version.argtypes = []
-
-    # 解放
-    lib.mmd_runtime_model_free.restype = None
-    lib.mmd_runtime_model_free.argtypes = [c_void_p]
-
-    lib.mmd_runtime_clip_free.restype = None
-    lib.mmd_runtime_clip_free.argtypes = [c_void_p]
-
-    lib.mmd_runtime_instance_free.restype = None
-    lib.mmd_runtime_instance_free.argtypes = [c_void_p]
-
-    # byte buffer: 正しい構造体で定義する
-    lib.mmd_runtime_byte_buffer_free.restype = None
-    lib.mmd_runtime_byte_buffer_free.argtypes = [MmdRuntimeFfiByteBuffer]
-
-    # モデル作成 (最も実用的)
-    lib.mmd_runtime_model_create_from_pmx_bytes.restype = c_void_p
-    lib.mmd_runtime_model_create_from_pmx_bytes.argtypes = [POINTER(c_uint8), c_size_t]
-
-    # クリップ作成
-    lib.mmd_runtime_clip_create_from_vmd_bytes_for_model.restype = c_void_p
-    lib.mmd_runtime_clip_create_from_vmd_bytes_for_model.argtypes = [c_void_p, POINTER(c_uint8), c_size_t]
-
-    # インスタンス
-    lib.mmd_runtime_instance_create_for_model.restype = c_void_p
-    lib.mmd_runtime_instance_create_for_model.argtypes = [c_void_p]
-
-    # 評価
-    lib.mmd_runtime_instance_evaluate_clip_frame.restype = c_bool
-    lib.mmd_runtime_instance_evaluate_clip_frame.argtypes = [c_void_p, c_void_p, c_float]
-    try:
-        lib.mmd_runtime_instance_evaluate_clip_frame_with_ik_options.restype = c_bool
-        lib.mmd_runtime_instance_evaluate_clip_frame_with_ik_options.argtypes = [
-            c_void_p,
-            c_void_p,
-            c_float,
-            c_float,
-            c_uint32,
-        ]
-    except AttributeError:
-        logger.debug("mmd-anim runtime does not expose evaluate_clip_frame_with_ik_options")
-    try:
-        lib.mmd_runtime_instance_evaluate_rest_pose.restype = c_bool
-        lib.mmd_runtime_instance_evaluate_rest_pose.argtypes = [c_void_p]
-    except AttributeError:
-        logger.debug("mmd-anim runtime does not expose evaluate_rest_pose")
-
-    # 出力取得 (コピー版を優先)
-    lib.mmd_runtime_instance_world_matrix_f32_len.restype = c_size_t
-    lib.mmd_runtime_instance_world_matrix_f32_len.argtypes = [c_void_p]
-
-    lib.mmd_runtime_instance_copy_world_matrices.restype = c_bool
-    lib.mmd_runtime_instance_copy_world_matrices.argtypes = [c_void_p, POINTER(c_float), c_size_t]
-    _set_sig(
-        lib,
-        "mmd_runtime_instance_clip_frame_batch_world_matrix_f32_len",
-        c_size_t,
-        [c_void_p, c_size_t],
-    )
-    _set_sig(
-        lib,
-        "mmd_runtime_instance_clip_frame_batch_morph_weight_f32_len",
-        c_size_t,
-        [c_void_p, c_size_t],
-    )
-    _set_sig(
-        lib,
-        "mmd_runtime_instance_evaluate_clip_frame_batch",
-        c_bool,
-        [
-            c_void_p,
-            c_void_p,
-            c_float,
-            c_float,
-            c_size_t,
-            c_uint32,
-            POINTER(c_float),
-            c_size_t,
-            POINTER(c_float),
-            c_size_t,
-        ],
-    )
-    try:
-        lib.mmd_runtime_instance_skinning_matrix_f32_len.restype = c_size_t
-        lib.mmd_runtime_instance_skinning_matrix_f32_len.argtypes = [c_void_p]
-
-        lib.mmd_runtime_instance_copy_skinning_matrices.restype = c_bool
-        lib.mmd_runtime_instance_copy_skinning_matrices.argtypes = [c_void_p, POINTER(c_float), c_size_t]
-    except AttributeError:
-        logger.debug("mmd-anim runtime does not expose skinning matrix copy ABI")
-
-    lib.mmd_runtime_instance_morph_weight_len.restype = c_size_t
-    lib.mmd_runtime_instance_morph_weight_len.argtypes = [c_void_p]
-
-    lib.mmd_runtime_instance_copy_morph_weights.restype = c_bool
-    lib.mmd_runtime_instance_copy_morph_weights.argtypes = [c_void_p, POINTER(c_float), c_size_t]
-
-    lib.mmd_runtime_instance_ik_enabled_len.restype = c_size_t
-    lib.mmd_runtime_instance_ik_enabled_len.argtypes = [c_void_p]
-
-    lib.mmd_runtime_instance_copy_ik_enabled.restype = c_bool
-    lib.mmd_runtime_instance_copy_ik_enabled.argtypes = [c_void_p, POINTER(c_uint8), c_size_t]
-
-    # --- parsed-model ABI (optional, guarded) ---
-    _setup_parsed_model_signatures(lib)
-
-    # --- rig primitive ABI (optional, guarded) ---
-    _setup_rig_primitive_signatures(lib)
-
-
-def _setup_parsed_model_signatures(lib: CDLL) -> None:
-    """
-    parsed-model シンボル (mmd_runtime_parsed_model_*) の argtypes/restype を
-    getattr / try で安全に設定する。
-
-    古い DLL はこれらのシンボルをエクスポートしていない可能性があるため、
-    各シンボルの有無を個別にチェックする。
-    設定に失敗しても全体としてはフォールバックする。
-    """
-    try:
-        # 作成 / 解放
-        _set_sig(
-            lib,
-            "mmd_runtime_parsed_model_create_from_pmx_bytes",
-            c_void_p,
-            [POINTER(c_uint8), c_size_t],
-        )
-        _set_sig(lib, "mmd_runtime_parsed_model_free", None, [c_void_p])
-
-        # カウント (const model* → size_t)
-        _set_sig(lib, "mmd_runtime_parsed_model_vertex_count", c_size_t, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_index_count", c_size_t, [c_void_p])
-        _set_sig(
-            lib,
-            "mmd_runtime_parsed_model_material_group_count",
-            c_size_t,
-            [c_void_p],
-        )
-        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_count", c_size_t, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_offset_count", c_size_t, [c_void_p])
-
-        # ポインターアクセサ (const model* → const float* / const uint32_t*)
-        _set_sig(lib, "mmd_runtime_parsed_model_positions", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_normals", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_uvs", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_edge_scale", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_indices", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_skin_indices", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_skin_weights", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_material_groups", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_spans", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_vertex_indices", c_void_p, [c_void_p])
-        _set_sig(lib, "mmd_runtime_parsed_model_vertex_morph_position_offsets", c_void_p, [c_void_p])
-
-        # byte buffers (const model* → MmdRuntimeFfiByteBuffer by value)
-        _set_sig(
-            lib,
-            "mmd_runtime_parsed_model_vertex_morph_name",
-            MmdRuntimeFfiByteBuffer,
-            [c_void_p, c_size_t],
-        )
-        _set_sig(lib, "mmd_runtime_parsed_model_metadata_json", MmdRuntimeFfiByteBuffer, [c_void_p])
-    except Exception as exc:
-        logger.debug(f"Error while setting parsed-model ABI signatures: {exc}")
-
-
-def _set_sig(
-    lib: CDLL, name: str, restype: Any, argtypes: List[Any]
-) -> None:
-    """
-    シンボル name が lib に存在すれば argtypes/restype を設定する。
-    存在しなければ何もしない。
-    """
-    func = getattr(lib, name, None)
-    if func is None:
-        logger.debug(f"parsed-model ABI symbol '{name}' does not exist in the DLL")
-        return
-    func.restype = restype
-    func.argtypes = argtypes
-
-
-def _setup_rig_primitive_signatures(lib: CDLL) -> None:
-    try:
-        # --- rig spec ---
-        _set_sig(lib, "mmd_runtime_pmx_rig_spec_create", c_void_p, [POINTER(c_uint8), c_size_t])
-        _set_sig(lib, "mmd_runtime_pmx_rig_spec_free", None, [c_void_p])
-        _set_sig(lib, "mmd_runtime_pmx_rig_spec_manifest_json", MmdRuntimeFfiByteBuffer, [c_void_p])
-
-        # --- IK chain ---
-        _set_sig(
-            lib,
-            "mmd_runtime_ik_chain_create",
-            c_void_p,
-            [
-                POINTER(MmdRuntimeFfiRigBone),  # bones
-                c_size_t,                       # bone_count
-                c_uint32,                       # target_bone_slot
-                POINTER(MmdRuntimeFfiRigIkLink),  # links
-                c_size_t,                       # link_count
-                c_uint32,                       # iteration_count
-                c_float,                        # limit_angle
-            ],
-        )
-        _set_sig(lib, "mmd_runtime_ik_chain_free", None, [c_void_p])
-        _set_sig(
-            lib,
-            "mmd_runtime_ik_chain_solve",
-            c_bool,
-            [
-                c_void_p,                         # chain
-                POINTER(c_float),                 # parent_world_matrix (nullable)
-                POINTER(c_float),                 # local_position_offsets_xyz
-                POINTER(c_float),                 # local_rotations_xyzw
-                POINTER(c_float),                 # goal_position_xyz
-                c_float,                          # tolerance
-                c_uint32,                         # max_iterations_cap
-                POINTER(c_float),                 # out_link_rotations_xyzw
-                c_size_t,                         # out_link_rotation_f32_len
-                POINTER(MmdRuntimeFfiIkSolveStats),  # out_stats (nullable)
-            ],
-        )
-
-        # --- append solver ---
-        _set_sig(
-            lib,
-            "mmd_runtime_append_solver_create",
-            c_void_p,
-            [POINTER(MmdRuntimeFfiAppendConfig)],
-        )
-        _set_sig(lib, "mmd_runtime_append_solver_free", None, [c_void_p])
-        _set_sig(
-            lib,
-            "mmd_runtime_append_solver_solve",
-            c_bool,
-            [
-                c_void_p,          # solver
-                POINTER(c_float),  # source_position_offset_xyz
-                POINTER(c_float),  # source_rotation_xyzw
-                POINTER(c_float),  # out_position_offset_xyz
-                POINTER(c_float),  # out_rotation_xyzw
-            ],
-        )
-    except Exception as exc:
-        logger.debug(f"Error while setting rig primitive ABI signatures: {exc}")
+def _set_sig(lib: CDLL, name: str, restype: Any, argtypes: List[Any]) -> None:
+    """Compatibility wrapper for optional FFI signature binding."""
+    _signature_set_sig(lib, name, restype, argtypes)
 
 
 def is_rig_primitive_available() -> bool:
@@ -468,6 +92,97 @@ def is_native_pmx_parser_available() -> bool:
     return hasattr(lib, "mmd_runtime_parsed_model_create_from_pmx_bytes")
 
 
+def sample_vmd_camera_frames(
+    vmd_bytes: bytes,
+    start_frame: float,
+    frame_step: float,
+    frame_count: int,
+) -> Optional[List[Dict[str, Any]]]:
+    """Sample VMD camera state through mmd-anim's camera interpolation logic."""
+    lib = get_mmd_runtime_library()
+    if lib is None or not vmd_bytes or frame_count <= 0:
+        return None
+    create_track = getattr(lib, "mmd_runtime_vmd_camera_track_create_from_vmd_bytes", None)
+    sample_track = getattr(lib, "mmd_runtime_vmd_camera_track_sample", None)
+    free_track = getattr(lib, "mmd_runtime_vmd_camera_track_free", None)
+    if create_track is None or sample_track is None or free_track is None:
+        return None
+
+    track = None
+    try:
+        buf = (c_uint8 * len(vmd_bytes)).from_buffer_copy(vmd_bytes)
+        track = create_track(buf, len(vmd_bytes))
+        if not track:
+            return None
+        out = (c_float * 9)()
+        samples: List[Dict[str, Any]] = []
+        for index in range(int(frame_count)):
+            frame = float(start_frame) + float(frame_step) * index
+            if not sample_track(track, c_float(frame), out, c_size_t(9)):
+                continue
+            samples.append(
+                {
+                    "frame": frame,
+                    "distance": float(out[0]),
+                    "position": (float(out[1]), float(out[2]), float(out[3])),
+                    "rotation": (float(out[4]), float(out[5]), float(out[6])),
+                    "fov": float(out[7]),
+                    "perspective": bool(out[8] != 0.0),
+                }
+            )
+        return samples or None
+    except Exception as e:
+        logger.error(f"sample_vmd_camera_frames failed: {e}", exc_info=True)
+        return None
+    finally:
+        if track:
+            free_track(track)
+
+
+def sample_vmd_light_frames(
+    vmd_bytes: bytes,
+    start_frame: float,
+    frame_step: float,
+    frame_count: int,
+) -> Optional[List[Dict[str, Any]]]:
+    """Sample VMD light state through mmd-anim's light interpolation logic."""
+    lib = get_mmd_runtime_library()
+    if lib is None or not vmd_bytes or frame_count <= 0:
+        return None
+    create_track = getattr(lib, "mmd_runtime_vmd_light_track_create_from_vmd_bytes", None)
+    sample_track = getattr(lib, "mmd_runtime_vmd_light_track_sample", None)
+    free_track = getattr(lib, "mmd_runtime_vmd_light_track_free", None)
+    if create_track is None or sample_track is None or free_track is None:
+        return None
+
+    track = None
+    try:
+        buf = (c_uint8 * len(vmd_bytes)).from_buffer_copy(vmd_bytes)
+        track = create_track(buf, len(vmd_bytes))
+        if not track:
+            return None
+        out = (c_float * 6)()
+        samples: List[Dict[str, Any]] = []
+        for index in range(int(frame_count)):
+            frame = float(start_frame) + float(frame_step) * index
+            if not sample_track(track, c_float(frame), out, c_size_t(6)):
+                continue
+            samples.append(
+                {
+                    "frame": frame,
+                    "color": (float(out[0]), float(out[1]), float(out[2])),
+                    "position": (float(out[3]), float(out[4]), float(out[5])),
+                }
+            )
+        return samples or None
+    except Exception as e:
+        logger.error(f"sample_vmd_light_frames failed: {e}", exc_info=True)
+        return None
+    finally:
+        if track:
+            free_track(track)
+
+
 def get_mmd_runtime_library() -> Optional[CDLL]:
     """
     mmd-anim-ffi 共有ライブラリを取得する (キャッシュ付き)。
@@ -475,43 +190,160 @@ def get_mmd_runtime_library() -> Optional[CDLL]:
     Returns:
         ロード済み CDLL インスタンス。失敗時は None。
     """
-    global _runtime_lib, _runtime_lib_path
-
-    if _runtime_lib is not None:
-        return _runtime_lib if _runtime_lib is not False else None
-
-    path = _find_library()
-    if path is None:
-        logger.info("mmd-anim runtime library was not found (check prebuilt binary placement)")
-        _runtime_lib = False
-        return None
-
-    try:
-        lib = ctypes.CDLL(str(path))
-        _setup_function_signatures(lib)
-
-        abi = lib.mmd_runtime_abi_version()
-        if abi != MMD_RUNTIME_ABI_VERSION:
-            logger.warning(
-                f"mmd-anim runtime ABI version mismatch: got={abi}, expected={MMD_RUNTIME_ABI_VERSION}"
-            )
-            # 互換性の範囲で続行するか、厳格に拒否するかは将来調整
-        else:
-            logger.debug(f"Loaded mmd-anim runtime library: {path} (ABI {abi})")
-
-        _runtime_lib = lib
-        _runtime_lib_path = path
-        return lib
-
-    except Exception as e:
-        logger.error(f"Failed to load mmd-anim runtime library: {path} - {e}", exc_info=True)
-        _runtime_lib = False
-        return None
+    return _runtime_loader.get_mmd_runtime_library()
 
 
 def is_mmd_runtime_available() -> bool:
     """mmd-anim ランタイムが利用可能かどうかを返す。"""
-    return get_mmd_runtime_library() is not None
+    return _runtime_loader.is_mmd_runtime_available()
+
+
+def compute_maya_local_channels(
+    world_matrices: List[float],
+    parent_indices: List[int],
+    bind_world_matrices: List[float],
+    bind_no_orient_matrices: List[float],
+    joint_orient_quats: List[float],
+    rotate_orders: List[int],
+) -> Optional[List[Tuple[float, float, float, float, float, float]]]:
+    """mmd-anim FFI で world matrix から Maya local channel を計算する。
+
+    Args:
+        world_matrices: `[bone][16]` の flat float 配列。
+        parent_indices: `[bone]`、root は `-1`。
+        bind_world_matrices: `[bone][16]` の Maya bind world matrix。
+        bind_no_orient_matrices: `[bone][16]` の no-JO bind matrix。
+        joint_orient_quats: `[bone][x,y,z,w]`。
+        rotate_orders: `[bone]` の Maya rotateOrder enum。
+
+    Returns:
+        `[bone] -> (tx, ty, tz, rx, ry, rz)`。DLL またはシンボル未対応時は None。
+    """
+    bone_count = len(parent_indices)
+    if bone_count == 0:
+        return []
+    if (
+        len(world_matrices) < bone_count * 16
+        or len(bind_world_matrices) < bone_count * 16
+        or len(bind_no_orient_matrices) < bone_count * 16
+        or len(joint_orient_quats) < bone_count * 4
+        or len(rotate_orders) < bone_count
+    ):
+        return None
+
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return None
+    func = getattr(lib, "mmd_runtime_compute_maya_local_channels", None)
+    if func is None:
+        return None
+
+    try:
+        world_buf = (c_float * (bone_count * 16))(*[float(v) for v in world_matrices[: bone_count * 16]])
+        parent_buf = (c_int32 * bone_count)(*[int(v) for v in parent_indices[:bone_count]])
+        bind_buf = (c_float * (bone_count * 16))(*[float(v) for v in bind_world_matrices[: bone_count * 16]])
+        no_orient_buf = (c_float * (bone_count * 16))(
+            *[float(v) for v in bind_no_orient_matrices[: bone_count * 16]]
+        )
+        jo_buf = (c_float * (bone_count * 4))(*[float(v) for v in joint_orient_quats[: bone_count * 4]])
+        ro_buf = (c_uint8 * bone_count)(*[int(v) & 0xFF for v in rotate_orders[:bone_count]])
+        out_buf = (c_float * (bone_count * 6))()
+        ok = func(
+            world_buf,
+            len(world_buf),
+            parent_buf,
+            len(parent_buf),
+            bind_buf,
+            len(bind_buf),
+            no_orient_buf,
+            len(no_orient_buf),
+            jo_buf,
+            len(jo_buf),
+            ro_buf,
+            len(ro_buf),
+            bone_count,
+            out_buf,
+            len(out_buf),
+        )
+        if not ok:
+            return None
+        result = []
+        for index in range(bone_count):
+            start = index * 6
+            result.append(tuple(float(out_buf[start + offset]) for offset in range(6)))
+        return result
+    except Exception as exc:
+        logger.debug("compute_maya_local_channels failed: %s", exc, exc_info=True)
+        return None
+
+
+def compute_maya_local_channels_batch(
+    world_matrices: Any,
+    frame_count: int,
+    bone_count: int,
+    parent_indices: List[int],
+    bind_world_matrices: List[float],
+    bind_no_orient_matrices: List[float],
+    joint_orient_quats: List[float],
+    rotate_orders: List[int],
+) -> Optional[MmdRuntimeLocalChannelBatch]:
+    """mmd-anim FFI で `[frame][bone][16]` を Maya local channel batch へ変換する。"""
+    frame_count = int(frame_count)
+    bone_count = int(bone_count)
+    if frame_count <= 0 or bone_count <= 0:
+        return MmdRuntimeLocalChannelBatch(0, bone_count, (c_float * 0)())
+    if (
+        len(parent_indices) < bone_count
+        or len(bind_world_matrices) < bone_count * 16
+        or len(bind_no_orient_matrices) < bone_count * 16
+        or len(joint_orient_quats) < bone_count * 4
+        or len(rotate_orders) < bone_count
+    ):
+        return None
+
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return None
+    func = getattr(lib, "mmd_runtime_compute_maya_local_channels_batch", None)
+    if func is None:
+        return None
+
+    world_len = frame_count * bone_count * 16
+    try:
+        if len(world_matrices) < world_len:
+            return None
+        parent_buf = (c_int32 * bone_count)(*[int(v) for v in parent_indices[:bone_count]])
+        bind_buf = (c_float * (bone_count * 16))(*[float(v) for v in bind_world_matrices[: bone_count * 16]])
+        no_orient_buf = (c_float * (bone_count * 16))(
+            *[float(v) for v in bind_no_orient_matrices[: bone_count * 16]]
+        )
+        jo_buf = (c_float * (bone_count * 4))(*[float(v) for v in joint_orient_quats[: bone_count * 4]])
+        ro_buf = (c_uint8 * bone_count)(*[int(v) & 0xFF for v in rotate_orders[:bone_count]])
+        out_buf = (c_float * (frame_count * bone_count * 6))()
+        ok = func(
+            world_matrices,
+            world_len,
+            frame_count,
+            parent_buf,
+            len(parent_buf),
+            bind_buf,
+            len(bind_buf),
+            no_orient_buf,
+            len(no_orient_buf),
+            jo_buf,
+            len(jo_buf),
+            ro_buf,
+            len(ro_buf),
+            bone_count,
+            out_buf,
+            len(out_buf),
+        )
+        if not ok:
+            return None
+        return MmdRuntimeLocalChannelBatch(frame_count, bone_count, out_buf)
+    except Exception as exc:
+        logger.debug("compute_maya_local_channels_batch failed: %s", exc, exc_info=True)
+        return None
 
 
 # ------------------------------------------------------------------
@@ -566,8 +398,8 @@ class MmdRuntimeModel:
         if self._handle and self._lib:
             try:
                 self._lib.mmd_runtime_model_free(self._handle)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("mmd_runtime_model_free failed: %s", exc)
             self._handle = None
 
     def __del__(self):
@@ -627,9 +459,24 @@ class MmdRuntimeClip:
         if self._handle and self._lib:
             try:
                 self._lib.mmd_runtime_clip_free(self._handle)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("mmd_runtime_clip_free failed: %s", exc)
             self._handle = None
+
+    def frame_range(self) -> Optional[Tuple[int, int]]:
+        """Return the first/last VMD frame numbers stored in this runtime clip."""
+        func = getattr(self._lib, "mmd_runtime_clip_frame_range", None)
+        if func is None or not self._handle:
+            return None
+        try:
+            first = c_uint32(0)
+            last = c_uint32(0)
+            if not func(self._handle, ctypes.byref(first), ctypes.byref(last)):
+                return None
+            return int(first.value), int(last.value)
+        except Exception as e:
+            logger.error(f"MmdRuntimeClip.frame_range failed: {e}", exc_info=True)
+            return None
 
     def __del__(self):
         self.free()
@@ -923,8 +770,8 @@ class MmdRuntimeInstance:
         if self._handle and self._lib:
             try:
                 self._lib.mmd_runtime_instance_free(self._handle)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("mmd_runtime_instance_free failed: %s", exc)
             self._handle = None
 
     def __del__(self):
@@ -940,8 +787,7 @@ class MmdRuntimeInstance:
 
 def get_runtime_library_path() -> Optional[Path]:
     """現在ロードされているライブラリの実体パスを返します (デバッグ用)。"""
-    get_mmd_runtime_library()  # ロードをトリガー
-    return _runtime_lib_path
+    return _runtime_loader.get_runtime_library_path()
 
 
 # ------------------------------------------------------------------
@@ -1003,8 +849,8 @@ class MmdParsedModel:
             if func:
                 try:
                     func(self._handle)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("mmd_runtime_parsed_model_free failed: %s", exc)
             self._handle = None
 
     def __del__(self):
@@ -1367,8 +1213,8 @@ class MmdParsedModel:
         if free_func:
             try:
                 free_func(MmdRuntimeFfiByteBuffer(data=None, len=0))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("mmd_runtime_byte_buffer_free cleanup failed: %s", exc)
 
     def __repr__(self):
         return f"<MmdParsedModel handle={self._handle}>"
@@ -1384,60 +1230,10 @@ class MmdParsedModel:
 # ------------------------------------------------------------------
 
 def create_runtime_node_for_model(model_root: str, pmx_path: str, vmd_path: str = None) -> str:
-    """
-    Maya シーンに mmdRuntimeInstance ノードを作成し、モデルと関連付けるヘルパー。
+    """Compatibility wrapper for the Maya DG runtime node connector."""
+    from mmd_tools.core.native.runtime_node_connector import create_runtime_node_for_model as _create
 
-    C++ ノード (mmdRuntimeInstance) がロードされている前提。
-    ノードを作成し、pmx/vmd パスを設定、time を接続する。
-
-    戻り値: 作成したノード名
-    """
-    import maya.cmds as cmds
-
-    node = cmds.createNode("mmdRuntimeInstance", name="mmdRuntimeInstance#")
-
-    # パス設定 (ノードの aPmxData / aVmdData に string として)
-    cmds.setAttr(f"{node}.pmxData", pmx_path, type="string")
-    if vmd_path:
-        cmds.setAttr(f"{node}.vmdData", vmd_path, type="string")
-
-    # time 接続 (現在の時間に連動)
-    # 簡易: expression や scriptJob で駆動。フルは time1.outTime を接続
-    try:
-        cmds.connectAttr("time1.outTime", f"{node}.time", force=True)
-    except Exception:
-        pass
-
-    # モデルルートにメッセージで関連付け (将来のドライバ用)
-    if cmds.objExists(model_root):
-        try:
-            if not cmds.attributeQuery("mmdRuntimeNode", node=model_root, exists=True):
-                cmds.addAttr(model_root, ln="mmdRuntimeNode", at="message")
-            existing_connections = (
-                cmds.listConnections(f"{model_root}.mmdRuntimeNode", source=True, destination=False, plugs=True)
-                or []
-            )
-            for source in existing_connections:
-                if source == f"{node}.message":
-                    break
-                try:
-                    cmds.disconnectAttr(source, f"{model_root}.mmdRuntimeNode")
-                except Exception:
-                    pass
-            cmds.connectAttr(f"{node}.message", f"{model_root}.mmdRuntimeNode", force=True)
-        except Exception:
-            pass
-
-    return node
-
-
-def get_runtime_matrices_from_node(node: str) -> list:
-    """ノードから現在の world matrices を取得 (float flat list)"""
-    import maya.cmds as cmds
-    try:
-        return cmds.getAttr(f"{node}.worldMatrices[*]") or []
-    except Exception:
-        return []
+    return _create(model_root, pmx_path, vmd_path)
 
 
 def connect_runtime_node_outputs_to_model(
@@ -1445,316 +1241,10 @@ def connect_runtime_node_outputs_to_model(
     model_root: str,
     pmx_path: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Connect an mmdRuntimeInstance node\'s worldMatrices/morphWeights outputs to existing
-    Maya joints (with mmd_bone_index) and blendShape weights via standard DG nodes.
+    """Compatibility wrapper for the Maya DG runtime node connector."""
+    from mmd_tools.core.native.runtime_node_connector import connect_runtime_node_outputs_to_model as _connect
 
-    For each bone with a matching joint:
-      1. Build a fourByFourMatrix from the 16 raw runtime float values.
-      2. Apply the MMD-to-Maya Z-flip via S * M * S where S = diag(1,1,-1,1)
-         using a shared Z-flip fourByFourMatrix and two multMatrix nodes.
-      3. Multiply by the DAG parent\'s worldInverseMatrix[0] to get the local matrix.
-      4. DecomposeMatrix with the joint\'s rotateOrder, then connect translate/rotate.
-
-    For morphs, when pmx_path resolves:
-      - Parse PMX vertex morph names, find matching blendShape aliases,
-        and connect morphWeights[pmx_idx] → blendShape.weight[bs_idx].
-
-    Args:
-        node: The mmdRuntimeInstance node name.
-        model_root: The root transform of the imported MMD model.
-        pmx_path: Path to the .pmx file (optional; needed for morph resolution).
-
-    Returns:
-        A dict with keys:
-          connected_bones: list of (joint_name, bone_index) connected.
-          connected_morphs: list of (morph_name, pmx_index, bs_node, weight_idx) connected.
-          skipped: list of strings describing why some bones/morphs were skipped.
-          warnings: list of strings describing non-blocking issues (jointOrient, rotateAxis).
-          utility_nodes: list of created DG node names (for cleanup).
-    """
-    import maya.cmds as cmds
-    from mmd_tools.core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, ATTR_MMD_BONE_INDEX
-
-    result: Dict[str, Any] = {
-        "connected_bones": [],
-        "connected_morphs": [],
-        "skipped": [],
-        "warnings": [],
-        "utility_nodes": [],
-    }
-
-    if not cmds.objExists(node):
-        result["skipped"].append(f"Runtime node {node!r} does not exist")
-        return result
-    if not cmds.objExists(model_root):
-        result["skipped"].append(f"Model root {model_root!r} does not exist")
-        return result
-
-    _ATTR_MAP = [
-        (0, "in00"), (1, "in01"), (2, "in02"), (3, "in03"),
-        (4, "in10"), (5, "in11"), (6, "in12"), (7, "in13"),
-        (8, "in20"), (9, "in21"), (10, "in22"), (11, "in23"),
-        (12, "in30"), (13, "in31"), (14, "in32"), (15, "in33"),
-    ]
-
-    def _make_zflip_node() -> str:
-        """Create a shared fourByFourMatrix representing S = diag(1,1,-1,1)."""
-        flip = cmds.createNode("fourByFourMatrix", name=f"{node}_zflip")
-        result["utility_nodes"].append(flip)
-        # S = diag(1,1,-1,1) in row-major for fourByFourMatrix
-        for row in range(4):
-            for col in range(4):
-                if row == col == 0:
-                    val = 1.0
-                elif row == col == 1:
-                    val = 1.0
-                elif row == col == 2:
-                    val = -1.0
-                elif row == col == 3:
-                    val = 1.0
-                else:
-                    val = 0.0
-                attr_name = f"in{row}{col}"
-                cmds.setAttr(f"{flip}.{attr_name}", val)
-        return flip
-
-    # Collect joints with mmd_bone_index
-    joints_by_index: Dict[int, str] = {}
-    for joint in cmds.listRelatives(model_root, allDescendents=True, type="joint") or []:
-        if not cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True):
-            continue
-        try:
-            bi = int(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}"))
-        except Exception:
-            continue
-        if bi in joints_by_index:
-            result["warnings"].append(
-                f"Duplicate mmd_bone_index={bi}: {joints_by_index[bi]} and {joint}"
-            )
-        joints_by_index[bi] = joint
-
-    if not joints_by_index:
-        result["skipped"].append("No joints with mmd_bone_index found")
-        return result
-
-    unsupported_orientation = []
-    for bone_idx in sorted(joints_by_index.keys()):
-        joint = joints_by_index[bone_idx]
-        try:
-            jo = cmds.getAttr(f"{joint}.jointOrient")[0]
-            if any(abs(v) > 1e-6 for v in jo):
-                unsupported_orientation.append(
-                    f"{joint} (bone_idx={bone_idx}) has non-zero jointOrient {jo}"
-                )
-        except Exception:
-            pass
-        try:
-            ra = cmds.getAttr(f"{joint}.rotateAxis")[0]
-            if any(abs(v) > 1e-6 for v in ra):
-                unsupported_orientation.append(
-                    f"{joint} (bone_idx={bone_idx}) has non-zero rotateAxis {ra}"
-                )
-        except Exception:
-            pass
-    if unsupported_orientation:
-        result["skipped"].append(
-            "Live DG connection skipped because jointOrient/rotateAxis is not yet supported: "
-            + "; ".join(unsupported_orientation)
-        )
-        return result
-
-    zflip = _make_zflip_node()
-
-    for bone_idx in sorted(joints_by_index.keys()):
-        joint = joints_by_index[bone_idx]
-
-        # --- Step 1: fourByFourMatrix from raw runtime floats ---
-        fbf = cmds.createNode("fourByFourMatrix", name=f"{joint}_fbf")
-        result["utility_nodes"].append(fbf)
-
-        base_idx = bone_idx * 16
-        for offset, attr_name in _ATTR_MAP:
-            src = f"{node}.worldMatrices[{base_idx + offset}]"
-            dst = f"{fbf}.{attr_name}"
-            try:
-                cmds.connectAttr(src, dst, force=True)
-            except Exception as e:
-                result["warnings"].append(
-                    f"Failed to connect {src} → {dst}: {e}"
-                )
-
-        # --- Step 2: S * M * S (Z-flip) via multMatrix ---
-        # multMatrix output = matrix0 * matrix1 * matrix2 * ...
-        # We want S * raw * S, so inputs: [zflip, fbf, zflip]
-        mm_world = cmds.createNode("multMatrix", name=f"{joint}_mm_world")
-        result["utility_nodes"].append(mm_world)
-        cmds.connectAttr(f"{zflip}.output", f"{mm_world}.matrixIn[0]", force=True)
-        cmds.connectAttr(f"{fbf}.output", f"{mm_world}.matrixIn[1]", force=True)
-        cmds.connectAttr(f"{zflip}.output", f"{mm_world}.matrixIn[2]", force=True)
-
-        # --- Step 3: parent-relative (local matrix) ---
-        parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
-        if parents:
-            parent_node = parents[0]
-            mm_local = cmds.createNode("multMatrix", name=f"{joint}_mm_local")
-            result["utility_nodes"].append(mm_local)
-            # local = world * parentWorldInverse
-            cmds.connectAttr(f"{mm_world}.matrixSum", f"{mm_local}.matrixIn[0]", force=True)
-            cmds.connectAttr(
-                f"{parent_node}.worldInverseMatrix[0]",
-                f"{mm_local}.matrixIn[1]",
-                force=True,
-            )
-            matrix_source = f"{mm_local}.matrixSum"
-        else:
-            # Root joint: world = local
-            matrix_source = f"{mm_world}.matrixSum"
-
-        # --- Step 4: decomposeMatrix with correct rotateOrder ---
-        dm = cmds.createNode("decomposeMatrix", name=f"{joint}_dm")
-        result["utility_nodes"].append(dm)
-        cmds.connectAttr(matrix_source, f"{dm}.inputMatrix", force=True)
-
-        # RotateOrder: Maya uses 0=xyz, 1=yzx, 2=zxy, 3=xzy, 4=yxz, 5=zyx
-        # MMD bone rotation order is typically ZXY (Maya index 2) matching
-        # VMD channel order. Query the joint\'s actual rotateOrder.
-        try:
-            ro = int(cmds.getAttr(f"{joint}.rotateOrder"))
-            cmds.setAttr(f"{dm}.inputRotateOrder", ro)
-        except Exception:
-            pass
-
-        # --- Step 5: Connect to joint ---
-        try:
-            cmds.connectAttr(f"{dm}.outputTranslate", f"{joint}.translate", force=True)
-            cmds.connectAttr(f"{dm}.outputRotate", f"{joint}.rotate", force=True)
-        except Exception as e:
-            result["warnings"].append(
-                f"Failed to connect {dm} outputs to {joint}: {e}"
-            )
-            continue
-
-        result["connected_bones"].append((joint, bone_idx))
-
-    # --- Morph connections (only if pmx_path resolves) ---
-    if pmx_path:
-        try:
-            from mmd_tools.core.maya_utils import sanitize_text
-
-            pmx_bytes = Path(pmx_path).read_bytes()
-            parsed = MmdParsedModel.from_pmx_bytes(pmx_bytes)
-            if parsed is not None and parsed.vertex_morph_count > 0:
-                pmx_morph_names = parsed.vertex_morph_names or []
-                # Get vertex_morph_spans to map vertex-morph-index to global PMX morph index
-                pmx_morph_spans = parsed.vertex_morph_spans or []
-                parsed.free()
-
-                # Build a mapping: vertex_morph_index to global_pmx_morph_index
-                # Each span entry is (start, count, pmx_morph_index)
-                vtx_idx_to_global = {}
-                for vmi, span in enumerate(pmx_morph_spans):
-                    if len(span) >= 3:
-                        vtx_idx_to_global[vmi] = int(span[2])
-                    else:
-                        vtx_idx_to_global[vmi] = vmi  # fallback
-
-                # Find blendShape nodes affecting mesh shapes under model_root.  A
-                # blendShape is a DG node, not a DAG child, so listRelatives() on
-                # the blendShape itself does not identify model ownership.
-                mesh_shapes = cmds.listRelatives(
-                    model_root,
-                    allDescendents=True,
-                    type="mesh",
-                    fullPath=True,
-                ) or []
-                model_blend_shapes = []
-                for shape in mesh_shapes:
-                    for history_node in cmds.listHistory(shape, pruneDagObjects=True) or []:
-                        if cmds.nodeType(history_node) != "blendShape":
-                            continue
-                        if history_node not in model_blend_shapes:
-                            model_blend_shapes.append(history_node)
-
-                for bs_node in model_blend_shapes:
-
-                    weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
-
-                    # Authoritative map stored at import time: raw morph name -> weight index.
-                    # Preferred over the lossy sanitized-alias match (aliases can collide and
-                    # are uniquified with numeric suffixes, so alias == sanitize(name) may fail).
-                    stored_raw_to_index = {}
-                    if cmds.attributeQuery(
-                        ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True
-                    ):
-                        try:
-                            parsed_names = json.loads(
-                                cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
-                            )
-                            if isinstance(parsed_names, dict):
-                                for stored_index, stored_name in parsed_names.items():
-                                    stored_raw_to_index[str(stored_name)] = int(stored_index)
-                        except (TypeError, ValueError):
-                            stored_raw_to_index = {}
-
-                    for vmi, pmx_name in enumerate(pmx_morph_names):
-                        if not pmx_name:
-                            continue
-                        # Resolve global PMX morph index for correct morphWeights indexing
-                        global_idx = vtx_idx_to_global.get(vmi, vmi)
-
-                        # Compute sanitized alias using the same logic as MorphConverter
-                        sanitized_alias = sanitize_text(pmx_name)
-                        stored_wi = stored_raw_to_index.get(pmx_name)
-
-                        # Find the weight index that matches this PMX morph name
-                        for wi in range(weight_count):
-                            if stored_wi is not None:
-                                # Authoritative: only connect the exact stored index.
-                                if wi != stored_wi:
-                                    continue
-                            else:
-                                alias = cmds.aliasAttr(f"{bs_node}.weight[{wi}]", query=True)
-                                if not alias:
-                                    continue
-                                # Fallback: sanitized alias match first, then exact (raw) match
-                                if not (alias == sanitized_alias or alias == pmx_name):
-                                    continue
-                            # Direct connection from morphWeights[global_idx] to weight[wi]
-                            try:
-                                src = f"{node}.morphWeights[{global_idx}]"
-                                dst = f"{bs_node}.weight[{wi}]"
-                                existing_sources = (
-                                    cmds.listConnections(
-                                        dst,
-                                        source=True,
-                                        destination=False,
-                                        plugs=True,
-                                    )
-                                    or []
-                                )
-                                if src not in existing_sources:
-                                    cmds.connectAttr(src, dst, force=True)
-                                result["connected_morphs"].append(
-                                    (pmx_name, global_idx, bs_node, wi)
-                                )
-                            except Exception as e:
-                                result["warnings"].append(
-                                    f"Failed to connect morphWeights[{global_idx}] → "
-                                    f"{bs_node}.weight[{wi}]: {e}"
-                                )
-                            break
-        except Exception as e:
-            result["warnings"].append(
-                f"Morph resolution skipped (could not read PMX morph names): {e}"
-            )
-    else:
-        result["warnings"].append(
-            "pmx_path not provided; morphWeights → blendShape connection skipped. "
-            "Pass pmx_path to enable morph resolution."
-        )
-
-    return result
+    return _connect(node, model_root, pmx_path=pmx_path)
 
 
 # ------------------------------------------------------------------
@@ -1806,8 +1296,8 @@ class MmdRigSpec:
         if self._handle and self._lib:
             try:
                 self._lib.mmd_runtime_pmx_rig_spec_free(self._handle)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("mmd_runtime_pmx_rig_spec_free failed: %s", exc)
             self._handle = None
 
     def __del__(self) -> None:
@@ -1947,8 +1437,8 @@ class MmdIkChain:
         if self._handle and self._lib:
             try:
                 self._lib.mmd_runtime_ik_chain_free(self._handle)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("mmd_runtime_ik_chain_free failed: %s", exc)
             self._handle = None
 
     def __del__(self) -> None:
@@ -2029,8 +1519,8 @@ class MmdAppendSolver:
         if self._handle and self._lib:
             try:
                 self._lib.mmd_runtime_append_solver_free(self._handle)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("mmd_runtime_append_solver_free failed: %s", exc)
             self._handle = None
 
     def __del__(self) -> None:

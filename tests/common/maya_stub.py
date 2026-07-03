@@ -20,13 +20,14 @@
 使い方 (テストモジュールの先頭、対象 import より前に呼ぶ)::
 
     from tests.common.maya_stub import install_maya_stub
-    install_maya_stub()
+    install_maya_stub(profile="minimal")
 
     from mmd_tools.ui.presenters.import_export_presenter import ImportExportPresenter
 """
 
 import sys
 from types import ModuleType
+from typing import Optional
 from unittest.mock import MagicMock
 
 # install_maya_stub() が登録したモジュール名 (テスト側の後始末用)
@@ -42,6 +43,75 @@ _STUBBED_MODULE_NAMES = (
     "maya.api.OpenMayaRender",
     "maya.api.OpenMayaUI",
 )
+
+_CMDS_PROFILE_METHODS = (
+    "namespace",
+    "namespaceInfo",
+    "ls",
+    "listRelatives",
+    "listConnections",
+    "objExists",
+    "attributeQuery",
+)
+
+
+def _reset_cmds_profile_methods(cmds: MagicMock) -> None:
+    """Reset methods managed by named profiles to plain MagicMock children."""
+    for name in _CMDS_PROFILE_METHODS:
+        setattr(cmds, name, MagicMock(name=f"maya.cmds.{name}"))
+
+
+def _configure_cmds_headless_profile(cmds: MagicMock) -> None:
+    """Apply headless-safe defaults for common Maya query commands.
+
+    Bare ``MagicMock`` results are truthy and record every chained call.  Code
+    that probes Maya state in a loop, such as namespace collision checks, can
+    otherwise grow memory abruptly in pure Python tests.
+    """
+    _reset_cmds_profile_methods(cmds)
+
+    def _namespace(*_args, **kwargs):
+        if "exists" in kwargs:
+            return False
+        if "set" in kwargs or "add" in kwargs or "removeNamespace" in kwargs:
+            return None
+        return None
+
+    def _namespace_info(*_args, **kwargs):
+        if kwargs.get("currentNamespace"):
+            return ":"
+        if kwargs.get("listOnlyNamespaces"):
+            return []
+        return None
+
+    cmds.namespace.side_effect = _namespace
+    cmds.namespaceInfo.side_effect = _namespace_info
+    cmds.ls.return_value = []
+    cmds.listRelatives.return_value = []
+    cmds.listConnections.return_value = []
+    cmds.objExists.return_value = False
+    cmds.attributeQuery.return_value = False
+
+
+def _configure_cmds_minimal_profile(_cmds: MagicMock) -> None:
+    """Leave ``maya.cmds`` as a plain MagicMock for import-only tests."""
+    _reset_cmds_profile_methods(_cmds)
+
+
+_CMDS_PROFILE_CONFIGURERS = {
+    "headless": _configure_cmds_headless_profile,
+    "minimal": _configure_cmds_minimal_profile,
+}
+
+
+def _configure_cmds_profile(cmds: MagicMock, profile: str) -> None:
+    """Apply a named ``maya.cmds`` stub profile."""
+    try:
+        configure = _CMDS_PROFILE_CONFIGURERS[profile]
+    except KeyError as exc:
+        valid = ", ".join(sorted(_CMDS_PROFILE_CONFIGURERS))
+        raise ValueError(f"Unknown Maya cmds stub profile '{profile}'. Expected one of: {valid}") from exc
+    configure(cmds)
 
 
 def _is_real_maya_present() -> bool:
@@ -65,8 +135,15 @@ def _is_real_maya_present() -> bool:
     return True
 
 
-def install_maya_stub() -> bool:
+def install_maya_stub(profile: Optional[str] = None) -> bool:
     """``maya`` 系モジュールをスタブとして ``sys.modules`` に登録する。
+
+    Args:
+        profile: ``maya.cmds`` の既定挙動。未指定で新規登録する場合は
+            ``"minimal"`` として import を通すだけの素の ``MagicMock`` に留める。
+            ``"headless"`` は既存互換の query-safe default を設定する。
+            既存スタブに対する未指定呼び出しは冪等 no-op とし、明示指定時だけ
+            profile を切り替える。
 
     Returns:
         スタブを新規登録した場合 True、本物の Maya が既にあり何もしなかった場合 False。
@@ -78,10 +155,13 @@ def install_maya_stub() -> bool:
     if isinstance(sys.modules.get("maya"), ModuleType) and isinstance(
         getattr(sys.modules.get("maya"), "cmds", None), MagicMock
     ):
+        if profile is not None:
+            _configure_cmds_profile(sys.modules["maya"].cmds, profile)
         return True
 
     maya = ModuleType("maya")
     maya.cmds = MagicMock(name="maya.cmds")
+    _configure_cmds_profile(maya.cmds, profile or "minimal")
     maya.mel = MagicMock(name="maya.mel")
     maya.OpenMaya = MagicMock(name="maya.OpenMaya")
 
@@ -280,7 +360,7 @@ def install_qt_stub() -> bool:
 
 def install_headless_ui_stubs() -> None:
     """Maya + Qt をまとめてスタブ化する (presenter 等の純Python テスト用)。"""
-    install_maya_stub()
+    install_maya_stub(profile="headless")
     install_qt_stub()
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -10,6 +9,14 @@ from maya import cmds
 
 from mmd_tools.core.constants import ATTR_MMD_MATERIAL_INDEX
 from mmd_tools.core.logger import get_logger
+from mmd_tools.converters.morph_runtime_common import (
+    connect_if_needed as _connect_if_needed,
+    get_morph_order,
+    is_connected as _is_connected,
+    parse_morph_offsets_json,
+    same_source as _same_source,
+)
+from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 
 
 logger = get_logger(__name__)
@@ -105,33 +112,12 @@ def _collect_shaders_by_material_index(root_group: str) -> Dict[int, str]:
 
 
 def _iter_material_morph_nodes(root_group: str) -> Iterable[str]:
-    namespace = _namespace_from_node(root_group)
-    for node in cmds.ls(type="network") or []:
-        if namespace is not None and _namespace_from_node(node) != namespace:
-            continue
-        if not cmds.attributeQuery("mmd_morph_type", node=node, exists=True):
-            continue
-        try:
-            if cmds.getAttr(f"{node}.mmd_morph_type") != "material":
-                continue
-        except Exception:
-            continue
-        if not cmds.attributeQuery("mmd_material_morph_offsets_json", node=node, exists=True):
-            continue
-        # model root スコープフィルタ — 複数モデルが namespace なしで
-        # ロードされた場合の cross-model morph bleed を防止する
-        if cmds.attributeQuery("mmd_model_root", node=node, exists=True):
-            connected = cmds.listConnections(f"{node}.mmd_model_root") or []
-            if root_group not in connected:
-                continue
-        yield node
-
-
-def _namespace_from_node(node: str) -> Optional[str]:
-    short_name = node.split("|")[-1]
-    if ":" not in short_name:
-        return None
-    return short_name.rsplit(":", 1)[0]
+    for metadata in iter_morph_network_metadata(
+        root_group=root_group,
+        morph_types={"material"},
+        required_attrs=("mmd_material_morph_offsets_json",),
+    ):
+        yield metadata.node
 
 
 def _collect_contributions_by_shader(
@@ -168,23 +154,11 @@ def _collect_contributions_by_shader(
 
 
 def _parse_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
-    try:
-        raw = cmds.getAttr(f"{morph_node}.mmd_material_morph_offsets_json") or "[]"
-        offsets = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(offsets, list):
-        return None
-    return offsets
+    return parse_morph_offsets_json(morph_node, "mmd_material_morph_offsets_json")
 
 
 def _get_morph_order(morph_node: str) -> int:
-    if cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
-        try:
-            return int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
-        except Exception:
-            pass
-    return 0
+    return get_morph_order(morph_node)
 
 
 def _offset_to_contribution(
@@ -333,28 +307,3 @@ def _reroute_shader_color(shader: str, node: str) -> None:
                 _connect_if_needed(source, base_axis, force=True)
 
     _connect_if_needed(output_attr, shader_attr, force=True)
-
-
-# ---------------------------------------------------------------------------
-# Connection utilities (shared pattern with bone_morph_runtime)
-# ---------------------------------------------------------------------------
-
-def _connect_if_needed(source: str, destination: str, force: bool = False) -> None:
-    if _is_connected(source, destination):
-        return
-    cmds.connectAttr(source, destination, force=force)
-
-
-def _is_connected(source: str, destination: str) -> bool:
-    return any(
-        _same_source(conn, source)
-        for conn in cmds.listConnections(destination, s=True, d=False, p=True) or []
-    )
-
-
-def _same_source(left: str, right: str) -> bool:
-    if left == right:
-        return True
-    left_long = cmds.ls(left, long=True) or []
-    right_long = cmds.ls(right, long=True) or []
-    return bool(left_long and right_long and left_long == right_long)

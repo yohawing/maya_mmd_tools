@@ -7,15 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-03
+
+### Added
+- Added regression gates for import scale drift, animLayer graph comparison, import ordering, and camera motion release oracle coverage.
+- Added runtime-backed VMD light motion sampling and auto-clear behavior for re-imported camera and light motion.
+- Added progress reporting during MMD model imports.
+
+### Changed
+- Updated Windows Release C++ plug-ins and native runtime artifacts for Maya 2024, 2025, 2026, and 2027.
+- Improved VMD import/export performance, including faster animLayer API keying and split runtime helper modules.
+- Cleaned up animation import settings and model combo labeling in the UI.
+- Documented the expanded release verification gates.
+
+### Fixed
+- Fixed PMX import scale bind drift by applying import scale before mesh, bone, and morph coordinate generation.
+- Fixed sparse VMD camera rig evaluation, interpolation, bake transforms, and oracle gating.
+- Fixed duplicate no-namespace mesh imports and duplicate skeleton IK ancestor lookup.
+- Fixed PMX joint path refresh after reparenting and sanitized rig node names derived from joint paths.
+- Fixed light VMD clear import ordering and material morph integration fixture path handling.
+
+### Known Issues
+- macOS Toon capture, `glslShader`, and live VP2.0 behavior still require final real-machine confirmation before publishing the tag.
+- The opt-in C++ fast-import `mesh_only=False` path still does not create joints/skinCluster in `maya_smoke`; full joint/skinCluster creation is deferred to a future C++ fast path task.
+- Bake mode remains the recommended fidelity path for VMD motion because it bakes final poses from the `mmd-anim` runtime.
+- Rig mode remains experimental for complex Bake/Rig mesh parity cases involving jointOrient, IK, append, or local-axis behavior.
+
 ## [0.3.0] - 2026-06-27
 
 ### Added
 - Native MMD runtime/import pipeline based on `mmd-anim` v0.1.7, including native PMX parsing, runtime FFI loading, and refreshed C++ plug-ins for Maya 2024-2027.
-- Rig mode runtime path with JO-aware space handling, native rig construction, append/IK DG nodes, and Bake/Rig parity test coverage.
+- Rig mode runtime path with JO-aware space handling, native rig construction, append/IK DG nodes, and focused Bake/Rig parity regression coverage.
 - VMD runtime/bake improvements including batched frame evaluation, Bezier tangent application, IK on/off frame handling, morph key batching, and camera/light fixtures.
 - Runtime morph infrastructure for vertex, bone, and material morphs, including DG graph builders and oracle-backed regression fixtures.
 - Drag-and-drop installer and import workflow, including Maya `modules` installation, generated `.mod` files for bundled Maya versions, and VMD-only drop warnings before a model is loaded.
-- File menu import routing for supported MMD import entry points.
+- MMD Tools UI and drag-and-drop import routing for supported MMD import entry points.
 - GoldenOracle/numeric manifests, Nox verification sessions, and tracked TestModel smoke fixtures.
 
 ### Changed
@@ -23,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Native runtime artifacts now use `mmd_runtime_ffi.dll` on Windows while keeping compatibility with legacy `mmd_anim_ffi` library names where needed.
 - C++ fast-import smoke defaults no longer depend on local Lumine/Addiction assets.
 - Import UI and README guidance now favor drag-and-drop install/import and normal UI import paths.
+- File > Import is deferred from the release surface; users should use the MMD Tools UI or drag-and-drop import.
 - Windows Release and macOS universal plug-in artifacts were rebuilt for Maya 2024, 2025, 2026, and 2027.
 
 ### Fixed
@@ -39,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known Issues
 - The opt-in C++ fast-import `mesh_only=False` path still does not create joints/skinCluster in `maya_smoke`; full joint/skinCluster creation is deferred to a future C++ fast path task.
-- Rig mode remains experimental for complex Bake/Rig mesh parity cases.
+- Bake mode is the recommended fidelity path for VMD motion because it bakes final poses from the `mmd-anim` runtime.
+- Rig mode remains experimental for complex Bake/Rig mesh parity cases involving jointOrient, IK, append, or local-axis behavior.
 
 ## [0.2.0] - 2026-06-21
 

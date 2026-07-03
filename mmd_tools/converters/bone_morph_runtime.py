@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -10,6 +9,14 @@ from maya import cmds
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
 from mmd_tools.core.logger import get_logger
+from mmd_tools.converters.morph_runtime_common import (
+    connect_if_needed as _connect_if_needed,
+    get_morph_order,
+    is_connected as _is_connected,
+    parse_morph_offsets_json,
+    same_source as _same_source,
+)
+from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 
 
 logger = get_logger(__name__)
@@ -46,14 +53,31 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         result["skipped"].append("no_indexed_joints")
         return result
 
+    bone_morph_nodes = list(_iter_bone_morph_nodes(root_group))
     contributions_by_joint = _collect_contributions_by_joint(
-        _iter_bone_morph_nodes(root_group),
+        bone_morph_nodes,
+        joints_by_index,
+        result["skipped"],
+    )
+    _append_group_morph_contributions(
+        contributions_by_joint,
+        list(_iter_group_morph_nodes(root_group)),
+        bone_morph_nodes,
         joints_by_index,
         result["skipped"],
     )
     if not contributions_by_joint:
         result["skipped"].append("no_bone_morph_contributions")
         return result
+
+    for contributions in contributions_by_joint.values():
+        contributions.sort(
+            key=lambda item: (
+                item["morph_order"],
+                item.get("group_morph_node") or "",
+                item["morph_node"],
+            )
+        )
 
     existing_by_joint = _collect_existing_accumulators()
     for joint, contributions in contributions_by_joint.items():
@@ -105,27 +129,21 @@ def _collect_joints_by_bone_index(root_group: str) -> Dict[int, str]:
 
 
 def _iter_bone_morph_nodes(root_group: str) -> Iterable[str]:
-    namespace = _namespace_from_node(root_group)
-    for node in cmds.ls(type="network") or []:
-        if namespace is not None and _namespace_from_node(node) != namespace:
-            continue
-        if not cmds.attributeQuery("mmd_morph_type", node=node, exists=True):
-            continue
-        try:
-            if cmds.getAttr(f"{node}.mmd_morph_type") != "bone":
-                continue
-        except Exception:
-            continue
-        if not cmds.attributeQuery("mmd_bone_morph_offsets_json", node=node, exists=True):
-            continue
-        yield node
+    yield from _iter_morph_nodes(root_group, "bone", "mmd_bone_morph_offsets_json")
 
 
-def _namespace_from_node(node: str) -> Optional[str]:
-    short_name = node.split("|")[-1]
-    if ":" not in short_name:
-        return None
-    return short_name.rsplit(":", 1)[0]
+def _iter_group_morph_nodes(root_group: str) -> Iterable[str]:
+    yield from _iter_morph_nodes(root_group, "group", "mmd_group_morph_offsets_json")
+
+
+def _iter_morph_nodes(root_group: str, morph_type: str, required_attr: str) -> Iterable[str]:
+    for metadata in iter_morph_network_metadata(
+        root_group=root_group,
+        morph_types={morph_type},
+        required_attrs=(required_attr,),
+        enforce_model_root_scope=False,
+    ):
+        yield metadata.node
 
 
 def _collect_contributions_by_joint(
@@ -151,29 +169,81 @@ def _collect_contributions_by_joint(
                 continue
             contributions_by_joint[joint].append(contribution)
 
-    for contributions in contributions_by_joint.values():
-        contributions.sort(key=lambda item: (item["morph_order"], item["morph_node"]))
     return dict(contributions_by_joint)
 
 
+def _append_group_morph_contributions(
+    contributions_by_joint: Dict[str, List[Dict[str, Any]]],
+    group_morph_nodes: Iterable[str],
+    bone_morph_nodes: Iterable[str],
+    joints_by_index: Dict[int, str],
+    skipped: List[str],
+) -> None:
+    bone_nodes_by_morph_index = _collect_morph_nodes_by_index(bone_morph_nodes)
+    for group_node in group_morph_nodes:
+        group_offsets = _parse_group_offsets_json(group_node)
+        if group_offsets is None:
+            skipped.append(f"invalid_group_offsets:{group_node}")
+            continue
+
+        group_order = _get_morph_order(group_node)
+        for group_offset in group_offsets:
+            if not isinstance(group_offset, dict) or "morph_index" not in group_offset:
+                skipped.append(f"invalid_group_offset:{group_node}")
+                continue
+            try:
+                target_morph_index = int(group_offset["morph_index"])
+                group_rate = float(group_offset.get("morph_rate", 0.0))
+            except Exception:
+                skipped.append(f"invalid_group_offset:{group_node}")
+                continue
+
+            target_node = bone_nodes_by_morph_index.get(target_morph_index)
+            if target_node is None:
+                skipped.append(f"group_reference_not_bone:{group_node}:{target_morph_index}")
+                continue
+
+            offsets = _parse_offsets_json(target_node)
+            if offsets is None:
+                skipped.append(f"invalid_offsets:{target_node}")
+                continue
+            for offset in offsets:
+                contribution = _offset_to_contribution(target_node, group_order, offset)
+                if contribution is None:
+                    skipped.append(f"invalid_offset:{target_node}")
+                    continue
+                joint = joints_by_index.get(contribution["bone_index"])
+                if joint is None:
+                    skipped.append(f"missing_joint:{target_node}:{contribution['bone_index']}")
+                    continue
+                contribution["group_morph_node"] = group_node
+                contribution["group_morph_rate"] = group_rate
+                contributions_by_joint.setdefault(joint, []).append(contribution)
+
+
+def _collect_morph_nodes_by_index(morph_nodes: Iterable[str]) -> Dict[int, str]:
+    nodes_by_index: Dict[int, str] = {}
+    for morph_node in morph_nodes:
+        if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
+            continue
+        try:
+            morph_index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
+        except Exception:
+            continue
+        nodes_by_index.setdefault(morph_index, morph_node)
+    return nodes_by_index
+
+
 def _parse_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
-    try:
-        raw = cmds.getAttr(f"{morph_node}.mmd_bone_morph_offsets_json") or "[]"
-        offsets = json.loads(raw)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(offsets, list):
-        return None
-    return offsets
+    return parse_morph_offsets_json(morph_node, "mmd_bone_morph_offsets_json")
+
+
+def _parse_group_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
+    return parse_morph_offsets_json(morph_node, "mmd_group_morph_offsets_json")
 
 
 def _get_morph_order(morph_node: str) -> int:
-    if cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
-        try:
-            return int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
-        except Exception:
-            pass
-    return 0
+    return get_morph_order(morph_node)
 
 
 def _offset_to_contribution(
@@ -194,6 +264,7 @@ def _offset_to_contribution(
             "bone_index": int(offset["bone_index"]),
             "translate": _pmx_translate_to_maya(translation),
             "rotate_quat": _pmx_quat_to_maya(rotation),
+            "weight_source": f"{morph_node}.weight",
         }
     except Exception:
         return None
@@ -262,7 +333,38 @@ def _refresh_contributions(node: str, contributions: List[Dict[str, Any]]) -> No
         cmds.setAttr(f"{prefix}.translateOffset", tx, ty, tz, type="double3")
         qx, qy, qz, qw = contribution["rotate_quat"]
         cmds.setAttr(f"{prefix}.rotateOffsetQuat", qx, qy, qz, qw, type="double4")
-        _connect_if_needed(f"{contribution['morph_node']}.weight", f"{prefix}.weight", force=True)
+        _connect_contribution_weight(node, slot, contribution, f"{prefix}.weight")
+
+
+def _connect_contribution_weight(
+    accumulator_node: str,
+    slot: int,
+    contribution: Dict[str, Any],
+    destination: str,
+) -> None:
+    group_node = contribution.get("group_morph_node")
+    if not group_node:
+        _connect_if_needed(str(contribution["weight_source"]), destination, force=True)
+        return
+
+    multiplier = _group_weight_multiplier_node(accumulator_node, slot)
+    if not cmds.objExists(multiplier):
+        multiplier = cmds.createNode("multiplyDivide", name=multiplier)
+    cmds.setAttr(f"{multiplier}.operation", 1)
+    cmds.setAttr(f"{multiplier}.input2X", float(contribution.get("group_morph_rate", 0.0)))
+    _connect_if_needed(f"{group_node}.weight", f"{multiplier}.input1X", force=True)
+    _connect_if_needed(f"{multiplier}.outputX", destination, force=True)
+
+
+def _group_weight_multiplier_node(accumulator_node: str, slot: int) -> str:
+    return f"{_safe_node_token(accumulator_node)}_contribution{slot}_groupWeight"
+
+
+def _safe_node_token(node: str) -> str:
+    token = node.split("|")[-1]
+    for char in (":", ".", "[", "]"):
+        token = token.replace(char, "_")
+    return token
 
 
 def _reroute_joint_inputs_through_accumulator(joint: str, node: str) -> None:
@@ -349,24 +451,6 @@ def _disconnect_and_reconnect(source: str, destination: str, new_destination: st
     except Exception:
         pass
     _connect_if_needed(source, new_destination, force=True)
-
-
-def _connect_if_needed(source: str, destination: str, force: bool = False) -> None:
-    if _is_connected(source, destination):
-        return
-    cmds.connectAttr(source, destination, force=force)
-
-
-def _is_connected(source: str, destination: str) -> bool:
-    return any(_same_source(conn, source) for conn in cmds.listConnections(destination, s=True, d=False, p=True) or [])
-
-
-def _same_source(left: str, right: str) -> bool:
-    if left == right:
-        return True
-    left_long = cmds.ls(left, long=True) or []
-    right_long = cmds.ls(right, long=True) or []
-    return bool(left_long and right_long and left_long == right_long)
 
 
 def _split_plug(plug: str) -> Tuple[str, str]:

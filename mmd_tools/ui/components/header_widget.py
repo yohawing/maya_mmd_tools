@@ -4,6 +4,7 @@
 """
 
 from ...core.logger import get_logger
+from ..combo_box_utils import add_combo_item_with_tooltip, configure_model_combo_width
 from ..qt_compat import (
     QWidget,
     QHBoxLayout,
@@ -11,6 +12,7 @@ from ..qt_compat import (
     QPushButton,
     QComboBox,
 )
+from ..translations import UITranslator
 
 logger = get_logger(__name__)
 
@@ -21,6 +23,7 @@ class HeaderWidget(QWidget):
     def __init__(self, app_state, parent=None):
         super().__init__(parent)
         self.app_state = app_state
+        self._translator = UITranslator.instance()
         self.is_updating = False
 
         self.setup_ui()
@@ -35,22 +38,33 @@ class HeaderWidget(QWidget):
         main_layout.setContentsMargins(5, 5, 5, 5)
 
         # 現在のモデルラベル
-        model_label = QLabel("現在のモデル:")
-        main_layout.addWidget(model_label)
+        self.model_label = QLabel()
+        main_layout.addWidget(self.model_label)
 
         # モデル選択コンボボックス
         self.model_combo = QComboBox()
-        self.model_combo.setMinimumWidth(250)
+        configure_model_combo_width(self.model_combo)
         main_layout.addWidget(self.model_combo)
 
         # リフレッシュボタン
         self.refresh_btn = QPushButton("🔄")
-        self.refresh_btn.setToolTip("モデルリストを更新")
         self.refresh_btn.setMaximumWidth(30)
         main_layout.addWidget(self.refresh_btn)
 
         # 右側のスペース
         main_layout.addStretch()
+        self.retranslateUi()
+
+    def tr(self, key, category=None):
+        """現在の UI 言語で翻訳する。"""
+        return self._translator.translate(key, category)
+
+    def retranslateUi(self):
+        """言語切替時にヘッダーの固定テキストを更新する。"""
+        self.model_label.setText(self.tr("current_model", "fields"))
+        self.refresh_btn.setToolTip(self.tr("refresh_list", "tooltips"))
+        if self.model_combo.count() == 1 and self.model_combo.itemData(0) is None:
+            self.model_combo.setItemText(0, self.tr("no_mmd_models", "placeholders"))
 
     def connect_signals(self):
         """シグナルを接続"""
@@ -77,7 +91,7 @@ class HeaderWidget(QWidget):
         self.model_combo.clear()
 
         if not models:
-            self.model_combo.addItem("-- モデルが見つかりません --")
+            add_combo_item_with_tooltip(self.model_combo, self.tr("no_mmd_models", "placeholders"))
         else:
             for model in models:
                 info = self.app_state.get_model_info(model)
@@ -86,12 +100,13 @@ class HeaderWidget(QWidget):
                     namespace = info.get("namespace")
                     if namespace:
                         # namespace付きの場合
-                        self.model_combo.addItem(f"{display_name} [{namespace}:{model.split(':')[-1]}]", userData=model)
+                        label = f"{display_name} [{namespace}:{model.split(':')[-1]}]"
                     else:
                         # namespaceなしの場合
-                        self.model_combo.addItem(f"{display_name} [{model}]", userData=model)
+                        label = f"{display_name} [{model}]"
+                    add_combo_item_with_tooltip(self.model_combo, label, user_data=model)
                 else:
-                    self.model_combo.addItem(model, userData=model)
+                    add_combo_item_with_tooltip(self.model_combo, model, user_data=model)
 
             # 現在のモデルを選択
             if current_model in models:

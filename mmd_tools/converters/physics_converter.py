@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import maya.cmds as cmds
 
-from ..core import maya_utils
+from ..core import maya_physics_utils, maya_utils
 from ..core.constants import (
     CONSTRAINTS_GROUP,
     PHYSICS_GROUP,
@@ -20,6 +20,12 @@ from ..core.constants import (
     PHYSICS_TYPE_RIGID,
     PHYSICS_TYPE_SOFT,
     RIGID_BODIES_GROUP,
+)
+from ..core.coordinate_transform import (
+    maya_euler_degrees_to_mmd_radians,
+    maya_point_to_mmd,
+    mmd_euler_radians_to_maya_degrees,
+    mmd_point_to_maya,
 )
 from ..core.logger import get_logger
 from ..core.pmd_data.rigid_body import PmdRigidBody
@@ -1020,7 +1026,7 @@ class PhysicsConverter:
     def _ensure_nucleus_solver(self) -> str:
         if self.nucleus_solver and maya_utils.object_exists(self.nucleus_solver):
             return self.nucleus_solver
-        self.nucleus_solver = maya_utils.find_or_create_nucleus_solver("mmd_nucleus")
+        self.nucleus_solver = maya_physics_utils.find_or_create_nucleus_solver("mmd_nucleus")
         self.logger.info(f"Nucleus solver: {self.nucleus_solver}")
         self._configure_nucleus_solver()
         return self.nucleus_solver
@@ -1138,22 +1144,22 @@ class PhysicsConverter:
     @staticmethod
     def _mmd_to_maya_position(position: Tuple[float, float, float]) -> List[float]:
         """MMD (X右, Y上, Z手前) → Maya (X右, Y上, Z後ろ)"""
-        return [position[0], position[1], -position[2]]
+        return list(mmd_point_to_maya(position))
 
     @staticmethod
     def _mmd_to_maya_rotation(rotation: Tuple[float, float, float]) -> List[float]:
         """MMD rotation (radian) → Maya rotation (degree), Z 反転"""
-        return [math.degrees(rotation[0]), math.degrees(rotation[1]), -math.degrees(rotation[2])]
+        return list(mmd_euler_radians_to_maya_degrees(rotation))
 
     @staticmethod
     def _maya_to_mmd_position(position: List[float]) -> List[float]:
         """Maya (X右, Y上, Z後ろ) → MMD (X右, Y上, Z手前)"""
-        return [position[0], position[1], -position[2]]
+        return list(maya_point_to_mmd(position))
 
     @staticmethod
     def _maya_to_mmd_rotation(rotation: List[float]) -> List[float]:
         """Maya rotation (degree) → MMD rotation (radian), Z 反転"""
-        return [math.radians(rotation[0]), math.radians(rotation[1]), -math.radians(rotation[2])]
+        return list(maya_euler_degrees_to_mmd_radians(rotation))
 
     # ------------------------------------------------------------------
     # その他ヘルパー (既存)
@@ -1182,14 +1188,14 @@ class PhysicsConverter:
         try:
             pos = cmds.xform(joint_name, q=True, ws=True, t=True)
             end_pos = [pos[0], pos[1] - 5.0, pos[2]]
-            return maya_utils.create_dynamic_curve([pos, end_pos], name=f"{rigid_body.name}_curve")
+            return maya_physics_utils.create_dynamic_curve([pos, end_pos], name=f"{rigid_body.name}_curve")
         except Exception as e:
             self.logger.error(f"Curve creation error: {e}")
             return None
 
     def _create_nhair_system(self, curve: str, rigid_body) -> Optional[str]:
         try:
-            hair_system = maya_utils.apply_nhair_to_curve(curve)
+            hair_system = maya_physics_utils.apply_nhair_to_curve(curve)
             if hair_system:
                 params = self._map_physics_parameters({
                     "mass": rigid_body.mass,
@@ -1223,7 +1229,7 @@ class PhysicsConverter:
 
     def _create_ncloth(self, mesh: str, rigid_body) -> Optional[str]:
         try:
-            ncloth_shape = maya_utils.apply_ncloth_to_mesh(mesh, self.nucleus_solver)
+            ncloth_shape = maya_physics_utils.apply_ncloth_to_mesh(mesh, self.nucleus_solver)
             if ncloth_shape:
                 params = self._map_physics_parameters({
                     "mass": rigid_body.mass,
@@ -1243,7 +1249,7 @@ class PhysicsConverter:
 
     def _create_collision_object(self, rigid_body) -> Optional[str]:
         try:
-            obj = maya_utils.create_collision_primitive(
+            obj = maya_physics_utils.create_collision_primitive(
                 rigid_body.shape_type, rigid_body.size, name=f"{rigid_body.name}_collision",
             )
             maya_pos = self._mmd_to_maya_position(rigid_body.position)
@@ -1261,7 +1267,7 @@ class PhysicsConverter:
             is_dynamic = True
             if hasattr(rigid_body, "physics_mode"):
                 is_dynamic = rigid_body.physics_mode != 0
-            nrigid = maya_utils.apply_nrigid_to_mesh(obj, is_dynamic)
+            nrigid = maya_physics_utils.apply_nrigid_to_mesh(obj, is_dynamic)
             if nrigid:
                 maya_utils.set_attribute(nrigid, "friction", rigid_body.friction, "double")
                 maya_utils.set_attribute(nrigid, "bounce", rigid_body.elasticity, "double")

@@ -94,7 +94,7 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.tab_widget)
 
         # 通常モードでは Physics タブなし: 6タブ
-        # （display_pane はデッドタブのため非表示、physics は dev mode のみ）
+        # （physics は dev mode のみ）
         self.assertEqual(self.window.tab_widget.count(), 6)
 
         # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
@@ -117,7 +117,7 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.material_presenter)
         self.assertIsNotNone(self.window.bone_presenter)
         self.assertIsNotNone(self.window.morph_presenter)
-        # display_pane_presenter はデッドタブ非表示に伴い生成しない（属性自体が存在しない）
+        # display_pane_presenter は削除済みのため生成しない（属性自体が存在しない）
         self.assertFalse(hasattr(self.window, "display_pane_presenter"))
         # 通常モード: Physics タブ/プレゼンターは存在しない
         self.assertIsNone(self.window.physics_tab)

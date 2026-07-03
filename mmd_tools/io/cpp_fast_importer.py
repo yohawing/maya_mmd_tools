@@ -20,13 +20,33 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from mmd_tools.core.constants import (
+    ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_BONE_NAME_EN,
+)
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
 
 logger = get_logger(__name__)
 
 # Kept as a module attribute so tests can patch it without importing native code.
 MmdParsedModel = None
+
+
+class _FastSkinData:
+    """Parsed bone and skin data needed by the fast skeleton/skin path."""
+
+    def __init__(
+        self,
+        bones: list[dict],
+        skin_indices: list[tuple[int, int, int, int]],
+        skin_weights: list[tuple[float, float, float, float]],
+    ):
+        self.bones = bones
+        self.skin_indices = skin_indices
+        self.skin_weights = skin_weights
 
 # ---------------------------------------------------------------------------
 # Candidate discovery  (mirrors tests/cpp/smoke_runtime_node.py)
@@ -277,6 +297,78 @@ def _create_standard_material(material: dict, material_index: int, cmds_module) 
         return None
 
 
+def _load_fast_skin_data(filepath: str) -> Optional[_FastSkinData]:
+    """Load bones and skin weights for the fast skeleton/skin add-on path."""
+    pmx_bytes = Path(filepath).read_bytes()
+    parsed_model_cls = _mmd_parsed_model_class()
+    parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
+    if parsed is not None:
+        try:
+            metadata_text = parsed.metadata_json
+            skin_indices = parsed.skin_indices
+            skin_weights = parsed.skin_weights
+        finally:
+            parsed.free()
+
+        if metadata_text and skin_indices is not None and skin_weights is not None:
+            metadata = json.loads(metadata_text)
+            bones = metadata.get("bones") or metadata.get("skeleton", {}).get("bones") or []
+            if bones:
+                return _FastSkinData(list(bones), list(skin_indices), list(skin_weights))
+
+        logger.info("Parsed-model skin metadata incomplete; trying native PMX parser fallback")
+
+    pmx = parse_pmx_native(filepath)
+    if pmx is None:
+        logger.info("Native PMX parser fallback unavailable; skipping skeleton/skin")
+        return None
+
+    bones = [
+        {
+            "name": bone.name,
+            "englishName": bone.name_english,
+            "parentIndex": bone.parent_bone_index,
+            "position": bone.position,
+        }
+        for bone in pmx.bones
+    ]
+    skin_indices, skin_weights = _skin_data_from_pmx_vertices(pmx.vertices)
+    return _FastSkinData(bones, skin_indices, skin_weights)
+
+
+def _skin_data_from_pmx_vertices(
+    vertices,
+) -> tuple[list[tuple[int, int, int, int]], list[tuple[float, float, float, float]]]:
+    """Convert PmxVertex skinning fields to fixed four-influence tuples."""
+    skin_indices: list[tuple[int, int, int, int]] = []
+    skin_weights: list[tuple[float, float, float, float]] = []
+
+    for vertex in vertices:
+        indices = [int(i) for i in getattr(vertex, "bone_indices", [])[:4]]
+        weights = [float(w) for w in getattr(vertex, "bone_weights", [])[:4]]
+        mode = int(getattr(vertex, "weight_transform_type", 0))
+
+        if mode == 0:
+            weights = [1.0]
+        elif mode in (1, 3):
+            first = weights[0] if weights else 1.0
+            weights = [first, 1.0 - first]
+        elif mode in (2, 4):
+            pass
+        elif indices:
+            weights = [1.0]
+
+        while len(indices) < 4:
+            indices.append(0)
+        while len(weights) < 4:
+            weights.append(0.0)
+
+        skin_indices.append(tuple(indices[:4]))
+        skin_weights.append(tuple(weights[:4]))
+
+    return skin_indices, skin_weights
+
+
 def _apply_fast_skeleton_skin(
     filepath: str,
     mesh_node: str,
@@ -293,37 +385,15 @@ def _apply_fast_skeleton_skin(
     On any error the function logs and returns; the caller is responsible
     for falling back to the mesh-only result.
     """
-    pmx_bytes = Path(filepath).read_bytes()
-    parsed_model_cls = _mmd_parsed_model_class()
-    parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
-    if parsed is None:
-        logger.info("Native parsed-model unavailable; skipping skeleton/skin")
+    skin_data = _load_fast_skin_data(filepath)
+    if skin_data is None:
         return
 
-    try:
-        metadata_text = parsed.metadata_json
-        skin_indices = parsed.skin_indices
-        skin_weights = parsed.skin_weights
-        if skin_indices is not None:
-            # The C ABI returns flattened tuples; convert to list-of-4-int
-            skin_indices = list(skin_indices)
-        if skin_weights is not None:
-            skin_weights = list(skin_weights)
-    finally:
-        parsed.free()
-
-    if not metadata_text:
-        logger.info("No parsed metadata JSON; skipping skeleton/skin")
-        return
-
-    metadata = json.loads(metadata_text)
-    bones = metadata.get("bones") or []
+    bones = skin_data.bones
+    skin_indices = skin_data.skin_indices
+    skin_weights = skin_data.skin_weights
     if not bones:
         logger.info("No bones in metadata; skipping skeleton/skin")
-        return
-
-    if skin_indices is None or skin_weights is None:
-        logger.info("Skin data unavailable; skipping skeleton/skin")
         return
 
     # ---- build unique bone/joint names ----
@@ -357,6 +427,7 @@ def _apply_fast_skeleton_skin(
             position=(float(pos[0]), float(pos[1]), -float(pos[2])),
         )
         cmds_module.setAttr(f"{jnt}.segmentScaleCompensate", False)
+        _tag_fast_joint_metadata(cmds_module, jnt, i, b)
         joints.append(jnt)
 
     # ---- parent joints according to parentIndex ----
@@ -430,6 +501,28 @@ def _apply_fast_skeleton_skin(
         maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights_list)
     except Exception as exc:
         logger.info("Failed to apply vertex weights: %s", exc)
+
+
+def _tag_fast_joint_metadata(cmds_module, joint: str, bone_index: int, bone: dict) -> None:
+    """Attach MMD bone metadata expected by VMD/runtime paths."""
+    attrs = (
+        (ATTR_MMD_BONE_INDEX, "long", int(bone_index)),
+        (ATTR_MMD_BONE_NAME, "string", str(bone.get("name") or "")),
+        (ATTR_MMD_BONE_NAME_EN, "string", str(bone.get("englishName") or "")),
+    )
+    for attr, attr_type, value in attrs:
+        try:
+            if not cmds_module.attributeQuery(attr, node=joint, exists=True):
+                if attr_type == "string":
+                    cmds_module.addAttr(joint, longName=attr, dataType="string")
+                else:
+                    cmds_module.addAttr(joint, longName=attr, attributeType=attr_type)
+            if attr_type == "string":
+                cmds_module.setAttr(f"{joint}.{attr}", value, type="string")
+            else:
+                cmds_module.setAttr(f"{joint}.{attr}", value)
+        except Exception:
+            pass
 
 
 def _sanitize_node_name(raw: str) -> str:
