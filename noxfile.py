@@ -8,13 +8,16 @@ instead of creating a separate virtual environment.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import platform
-import json
-import hashlib
 import shutil
 import subprocess
 import sys
+import tarfile
+import urllib.request
+import zipfile
 from pathlib import Path
 
 import nox
@@ -42,6 +45,20 @@ RELEASE_ADDICTION_CAMERA_VMD = (
     "F:/MMD/vmd/175_Addictionカメラモーションv1.3/"
     "Addictionカメラモーション/Addictionカメラ用モーション(一人用).vmd"
 )
+MMD_ANIM_CLI_VERSION = "v0.1.9"
+MMD_ANIM_CLI_REPO = "yohawing/mmd-anim"
+MMD_ANIM_CLI_ASSETS = {
+    "Windows": {
+        "archive": "mmd-anim-v0.1.9-x86_64-pc-windows-msvc.zip",
+        "sha256": "8fa674e2b8104324aaf84351ec91e857c47a768345a5e806c5da543cca0b2859",
+        "exe": "mmd-anim.exe",
+    },
+    "Linux": {
+        "archive": "mmd-anim-v0.1.9-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "821164e1db3191492303b5290b0a9166fd6bede41384eb805836f4ed3e03a576",
+        "exe": "mmd-anim",
+    },
+}
 
 nox.options.sessions = ["tests"]
 
@@ -73,6 +90,116 @@ def _require_build_path(session: nox.Session, value: str, option_name: str) -> P
     if path != build_root and build_root not in path.parents:
         session.error(f"{option_name} must resolve under {build_root}: {path}")
     return path
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest for a file."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _mmd_anim_cli_version(exe: Path) -> str:
+    """Return the mmd-anim CLI version string."""
+    result = subprocess.run(
+        [str(exe), "--version"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _download_file(url: str, destination: Path) -> None:
+    """Download a URL to a local file."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(url) as response, destination.open("wb") as handle:
+        shutil.copyfileobj(response, handle)
+
+
+def _extract_archive(archive: Path, destination: Path) -> None:
+    """Extract a supported mmd-anim release archive."""
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir(parents=True)
+    if archive.suffix == ".zip":
+        with zipfile.ZipFile(archive) as zip_file:
+            zip_file.extractall(destination)
+    elif archive.name.endswith(".tar.gz"):
+        with tarfile.open(archive, "r:gz") as tar_file:
+            tar_file.extractall(destination)
+    else:
+        raise ValueError(f"Unsupported archive format: {archive}")
+
+
+def _downloaded_mmd_anim_cli(session: nox.Session) -> Path:
+    """Return the pinned mmd-anim CLI downloaded from GitHub Releases."""
+    expected_version = f"mmd-anim {MMD_ANIM_CLI_VERSION.removeprefix('v')}"
+    override = os.environ.get("MMD_ANIM_CLI")
+    if override:
+        exe = Path(override)
+        if not exe.exists():
+            session.error(f"MMD_ANIM_CLI does not exist: {exe}")
+        version = _mmd_anim_cli_version(exe)
+        if version != expected_version:
+            session.error(f"MMD_ANIM_CLI has unexpected version: {version}; expected {expected_version}")
+        return exe
+
+    system = platform.system()
+    asset = MMD_ANIM_CLI_ASSETS.get(system)
+    if asset is None:
+        session.error(
+            f"No prebuilt mmd-anim CLI asset is configured for {system}. "
+            "Set MMD_ANIM_CLI to a compatible binary."
+        )
+
+    archive_name = asset["archive"]
+    expected_sha256 = asset["sha256"]
+    exe_name = asset["exe"]
+    url = (
+        f"https://github.com/{MMD_ANIM_CLI_REPO}/releases/download/"
+        f"{MMD_ANIM_CLI_VERSION}/{archive_name}"
+    )
+    tool_dir = ROOT / "build" / "tools" / "mmd-anim" / MMD_ANIM_CLI_VERSION / system.lower()
+    archive = tool_dir / archive_name
+    extract_dir = tool_dir / "extract"
+
+    if not archive.exists() or _sha256_file(archive) != expected_sha256:
+        session.log(f"Downloading {url}")
+        _download_file(url, archive)
+    actual_sha256 = _sha256_file(archive)
+    if actual_sha256 != expected_sha256:
+        session.error(
+            f"SHA-256 mismatch for {archive_name}: got {actual_sha256}, expected {expected_sha256}"
+        )
+
+    candidates = [p for p in extract_dir.rglob(exe_name) if p.is_file()]
+    if not candidates:
+        _extract_archive(archive, extract_dir)
+        candidates = [p for p in extract_dir.rglob(exe_name) if p.is_file()]
+    if not candidates:
+        session.error(f"{exe_name} was not found in {archive_name}")
+    exe = candidates[0]
+    if system != "Windows":
+        exe.chmod(exe.stat().st_mode | 0o755)
+
+    version = _mmd_anim_cli_version(exe)
+    if version != expected_version:
+        shutil.rmtree(extract_dir, ignore_errors=True)
+        _extract_archive(archive, extract_dir)
+        candidates = [p for p in extract_dir.rglob(exe_name) if p.is_file()]
+        if not candidates:
+            session.error(f"{exe_name} was not found in {archive_name}")
+        exe = candidates[0]
+        if system != "Windows":
+            exe.chmod(exe.stat().st_mode | 0o755)
+        version = _mmd_anim_cli_version(exe)
+    if version != expected_version:
+        session.error(f"Downloaded mmd-anim CLI has unexpected version: {version}; expected {expected_version}")
+    return exe
 
 
 def _mayapy_env(mayapy: Path, preserve_pythonpath: bool = False, **extra: str) -> dict[str, str]:
@@ -1106,8 +1233,9 @@ def cpp_verify(session: nox.Session) -> None:
 def golden_oracle(session: nox.Session) -> None:
     """Verify mmd-anim runtime against GoldenOracle numeric manifest.
 
-    Runs ``mmd-anim verify <manifest> --mode numeric`` which compares the
-    committed oracle JSONL against a fresh mmd-anim runtime evaluation.
+    Downloads the pinned mmd-anim GitHub Release CLI, verifies its SHA-256 and
+    version, then runs ``mmd-anim verify <manifest> --mode numeric``. Set
+    ``MMD_ANIM_CLI`` to use an explicit binary with the same version.
     Any regression beyond the manifest epsilon causes session failure.
 
     Examples:
@@ -1118,17 +1246,7 @@ def golden_oracle(session: nox.Session) -> None:
         session.posargs, "--manifest",
         str(ROOT / "tests/golden-oracle/manifest.json"),
     )
-    mmd_anim = ROOT / "external" / "mmd-anim" / "target" / "release" / "mmd-anim"
-    if platform.system() == "Windows":
-        mmd_anim = mmd_anim.with_suffix(".exe")
-
-    if not mmd_anim.exists():
-        session.log("mmd-anim release binary not found; building via cargo...")
-        session.run(
-            "cargo", "build", "-p", "mmd-anim-cli",
-            "--manifest-path", "external/mmd-anim/Cargo.toml",
-            "--release", external=True,
-        )
+    mmd_anim = _downloaded_mmd_anim_cli(session)
 
     session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)
 

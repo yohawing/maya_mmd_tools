@@ -9,6 +9,7 @@ from mmd_tools.core.pmd_data.material import PmdMaterial
 from mmd_tools.core.pmx_data.header import PmxEncoding
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.soft_body import PmxSoftBody, _UNSUPPORTED_DETAIL_SIZE
+from mmd_tools.core.native.native_pmx_parser import is_native_parser_available
 from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
 
@@ -16,6 +17,9 @@ from tests.common.pmx_mock import PmxMock
 class TestPmxParser(TestBase):
     def setUp(self):
         super().setUp()
+        if not is_native_parser_available():
+            self.skipTest("native PMX parser is unavailable in this environment")
+
         # モックデータを使用してテスト用PMXファイルを作成
         self.pmx_file_path = os.path.join(self.temp_dir, "test_model.pmx")
 

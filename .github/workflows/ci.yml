@@ -66,20 +66,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           lfs: true
-          submodules: recursive
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust builds
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: external/mmd-anim
 
       - name: Install nox
         run: python -m pip install --upgrade pip nox
