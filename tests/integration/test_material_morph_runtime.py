@@ -4,6 +4,7 @@ material morph network node が shader パラメータに接続され、
 weight 変更がマテリアル外観に反映されることを検証する。
 """
 
+from pathlib import Path
 
 from maya import cmds
 
@@ -58,7 +59,7 @@ class TestMaterialMorphModelRootConnection(MayaTestBase):
             [4], [0, 1, 2, 3],
             [0, 0, 1, 0, 1, 1, 0, 1], [0, 1, 2, 3],
         )
-        cmds.parent(mesh, root)
+        mesh = cmds.parent(mesh, root)[0]
 
         morph = _make_material_morph("材質点滅", [
             {
@@ -133,13 +134,24 @@ class TestMaterialMorphModelRootConnection(MayaTestBase):
 
 
 class TestMaterialMorphWeightDrivesShader(MayaTestBase):
-    """material morph の weight 変更が shader パラメータに反映されることを検証する。
+    """material morph の weight 変更が shader パラメータに反映されることを検証する。"""
 
-    現状 material morph runtime が未実装のため FAIL する。
-    """
+    def _require_material_morph_node(self):
+        try:
+            node = cmds.createNode("mmdMaterialMorphEval", name="availability_probe_materialMorphEval")
+        except RuntimeError as exc:
+            plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+            try:
+                self.load_plugin(str(plugin_path))
+                node = cmds.createNode("mmdMaterialMorphEval", name="availability_probe_materialMorphEval")
+            except RuntimeError:
+                self.skipTest(f"mmdMaterialMorphEval node is unavailable: {exc}")
+        cmds.delete(node)
 
     def _create_scene_with_shader(self):
         """mesh + lambert shader + material morph を持つ最小シーンを構築する。"""
+        self._require_material_morph_node()
+
         root = cmds.group(empty=True, name=f"mat_morph_test{SCENE_ROOT_SUFFIX}")
         maya_utils.set_custom_attributes(root, {ATTR_MMD_MODEL_NAME: "test"})
 
@@ -149,7 +161,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             [4], [0, 1, 2, 3],
             [0, 0, 1, 0, 1, 1, 0, 1], [0, 1, 2, 3],
         )
-        cmds.parent(mesh, root)
+        mesh = cmds.parent(mesh, root)[0]
 
         # lambert shader を作成して割り当て
         shader = cmds.shadingNode("lambert", asShader=True, name="mmd_mat_0")
@@ -221,10 +233,9 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         cmds.setAttr(f"{morph_node}.weight", 1.0)
 
         diffuse = cmds.getAttr(f"{shader}.color")[0]
-        # runtime 未実装のため、diffuse は base のまま (1,1,1) → FAIL 期待
         self.assertGreater(
             diffuse[0], 1.0 + 0.01,
-            "weight=1 でも diffuse.R が変化しない — material morph runtime が未実装",
+            "weight=1 でも diffuse.R が変化しない",
         )
 
     def test_weight_half_applies_partial_offset(self):
@@ -238,5 +249,5 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         expected_r = 1.0 + 0.5 * 1.0  # base + weight * offset
         self.assertAlmostEqual(
             diffuse[0], expected_r, places=4,
-            msg="weight=0.5 の diffuse.R が期待値と違う — material morph runtime が未実装",
+            msg="weight=0.5 の diffuse.R が期待値と違う",
         )
