@@ -10,7 +10,7 @@ from mmd_tools.core import texture_path_cache as cache
 
 class TestTexturePathCache(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=r"F:\tmp")
+        self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.model = self.root / "モデル.pmx"
         self.model.write_bytes(b"same model bytes")

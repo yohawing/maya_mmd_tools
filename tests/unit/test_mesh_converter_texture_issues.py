@@ -19,7 +19,7 @@ from mmd_tools.core.settings import settings  # noqa: E402
 
 class TestMeshConverterTextureIssues(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=r"F:\tmp")
+        self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         self.model = self.root / "model.pmx"
         self.model.write_bytes(b"model")
