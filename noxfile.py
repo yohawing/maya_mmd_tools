@@ -552,7 +552,7 @@ def native_smoke(session: nox.Session) -> None:
         "get_mmd_runtime_library, get_runtime_library_path; "
         "lib = get_mmd_runtime_library(); "
         "print(get_runtime_library_path()); "
-        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 1 else 1)"
+        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
     )
     session.run(sys.executable, "-c", code, external=True)
 
@@ -1075,7 +1075,7 @@ def cpp_verify(session: nox.Session) -> None:
         "get_mmd_runtime_library, get_runtime_library_path; "
         "lib = get_mmd_runtime_library(); "
         "print(get_runtime_library_path()); "
-        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 1 else 1)"
+        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
     )
     session.run(sys.executable, "-c", code, external=True)
 

@@ -25,7 +25,7 @@ C ABI (mmd-anim-ffi) を Maya Python から安全に呼び出すための
         matrices = instance.get_world_matrices()
         # ... Maya ジョイントや skinning へ適用
 
-native バイナリ (mmd_anim_ffi.dll / .dylib) が存在しない場合は
+native バイナリ (mmd_runtime_ffi.dll / libmmd_runtime_ffi.dylib) が存在しない場合は
 すべての関数が None / False を返し、既存の Python 実装に自動フォールバックします。
 """
 

@@ -19,7 +19,7 @@ from mmd_tools.core.native.mmd_anim_runtime_signatures import setup_function_sig
 
 logger = get_logger(__name__)
 
-MMD_RUNTIME_ABI_VERSION = 1
+MMD_RUNTIME_ABI_VERSION = 2
 
 if platform.system() == "Windows":
     _LIB_NAMES = ["mmd_runtime_ffi.dll", "mmd_anim_ffi.dll"]

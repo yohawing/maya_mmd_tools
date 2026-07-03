@@ -158,7 +158,13 @@ def pythonpath_for_maya_process(
     if not preserve_existing or not existing_pythonpath:
         return root_entry
 
-    target_sep = ";" if str(mayapy_path).startswith("/mnt/") or platform.system() == "Windows" else os.pathsep
+    mayapy_path_str = str(mayapy_path)
+    target_is_windows = (
+        mayapy_path_str.startswith("/mnt/")
+        or platform.system() == "Windows"
+        or re.match(r"^[A-Za-z]:\\", mayapy_path_str) is not None
+    )
+    target_sep = ";" if target_is_windows else os.pathsep
     source_sep = host_pathsep
     if str(mayapy_path).startswith("/mnt/") and re.search(r"(?:^|;)[A-Za-z]:\\", existing_pythonpath):
         source_sep = ";"

@@ -4,7 +4,7 @@ mmd-anim (Rust) の C ABI を ctypes でラップするモジュール。
 このファイルは Maya 環境で mmd-anim-ffi の共有ライブラリをロードし、
 PMX モデルと VMD モーションの忠実なランタイム評価を提供します。
 
-対応する主な機能 (mmd-anim-ffi v1 ABI 基準):
+対応する主な機能 (mmd-anim-ffi ABI 2 基準):
 - PMX バイト列からのモデル構築
 - VMD バイト列 + モデルからのクリップ構築
 - 任意フレーム (float) での評価
@@ -13,7 +13,7 @@ PMX モデルと VMD モーションの忠実なランタイム評価を提供�
 
 注意:
 - 物理演算は mmd-anim 側で提供されません (ホスト側で別途対応)。
-- 事前ビルドされた mmd_runtime_ffi.dll / mmd_anim_ffi.dll (Windows) / .dylib (macOS) が必要です。
+- 事前ビルドされた mmd_runtime_ffi.dll (Windows) / libmmd_runtime_ffi.dylib (macOS) が必要です。
 - ライブラリが見つからない場合、すべての公開 API は安全に失敗 (None / False) します。
 
 ファイルヘッダ / コーディング規約:
@@ -60,7 +60,7 @@ MMD_RUNTIME_RIG_BONE_FIXED_AXIS = _MMD_RUNTIME_RIG_BONE_FIXED_AXIS
 # ------------------------------------------------------------------
 # ABI 定数 (mmd_runtime.h より)
 # ------------------------------------------------------------------
-MMD_RUNTIME_ABI_VERSION = 1
+MMD_RUNTIME_ABI_VERSION = 2
 
 def _find_library() -> Optional[Path]:
     """Compatibility wrapper for runtime library discovery."""

@@ -49,9 +49,15 @@ def setup_function_signatures(lib: CDLL) -> None:
     set_sig(lib, "mmd_runtime_vmd_camera_track_free", None, [c_void_p])
     set_sig(lib, "mmd_runtime_vmd_sample_camera", c_bool, [POINTER(c_uint8), c_size_t, c_float, POINTER(c_float), c_size_t])
     set_sig(lib, "mmd_runtime_vmd_light_track_create_from_vmd_bytes", c_void_p, [POINTER(c_uint8), c_size_t])
+    set_sig(lib, "mmd_runtime_vmd_light_track_frame_count", c_size_t, [c_void_p])
     set_sig(lib, "mmd_runtime_vmd_light_track_sample", c_bool, [c_void_p, c_float, POINTER(c_float), c_size_t])
     set_sig(lib, "mmd_runtime_vmd_light_track_free", None, [c_void_p])
     set_sig(lib, "mmd_runtime_vmd_sample_light", c_bool, [POINTER(c_uint8), c_size_t, c_float, POINTER(c_float), c_size_t])
+    set_sig(lib, "mmd_runtime_vmd_self_shadow_track_create_from_vmd_bytes", c_void_p, [POINTER(c_uint8), c_size_t])
+    set_sig(lib, "mmd_runtime_vmd_self_shadow_track_frame_count", c_size_t, [c_void_p])
+    set_sig(lib, "mmd_runtime_vmd_self_shadow_track_sample", c_bool, [c_void_p, c_float, POINTER(c_float), c_size_t])
+    set_sig(lib, "mmd_runtime_vmd_self_shadow_track_free", None, [c_void_p])
+    set_sig(lib, "mmd_runtime_vmd_sample_self_shadow", c_bool, [POINTER(c_uint8), c_size_t, c_float, POINTER(c_float), c_size_t])
 
     lib.mmd_runtime_instance_create_for_model.restype = c_void_p
     lib.mmd_runtime_instance_create_for_model.argtypes = [c_void_p]

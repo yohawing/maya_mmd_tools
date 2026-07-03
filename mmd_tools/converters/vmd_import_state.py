@@ -280,14 +280,25 @@ def cut_keyable_attrs(node: str, attrs: Tuple[str, ...]) -> int:
     cleared = 0
     for attr in attrs:
         attr_name = attr.split("[", 1)[0]
-        if not cmds.attributeQuery(attr_name, node=node, exists=True):
+        if not cmds.attributeQuery(attr_name, node=node, exists=True) and not cmds.objExists(f"{node}.{attr}"):
             continue
         try:
-            cmds.cutKey(node, attribute=attr)
+            for target_attr in _key_cut_attrs(node, attr):
+                cmds.cutKey(node, attribute=target_attr)
             cleared += 1
         except Exception as exc:
             _LOGGER.debug("Failed to cut key %s.%s: %s", node, attr, exc)
     return cleared
+
+
+def _key_cut_attrs(node: str, attr: str) -> Tuple[str, ...]:
+    """Return attribute names that may carry keys for an attr or its alias."""
+    attrs = [attr]
+    aliases = cmds.aliasAttr(node, query=True) or []
+    for alias, plug in zip(aliases[0::2], aliases[1::2]):
+        if plug == attr and alias not in attrs:
+            attrs.append(alias)
+    return tuple(attrs)
 
 
 _CAMERA_TRANSFORM_ATTRS = ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ")
