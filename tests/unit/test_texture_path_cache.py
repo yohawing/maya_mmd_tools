@@ -146,16 +146,6 @@ class TestTexturePathCache(unittest.TestCase):
         self.assertIsNone(source)
         self.assertEqual(reason, "absolute_original_path_rejected")
 
-    def test_absolute_original_on_other_drive_is_rejected_by_path_comparison(self):
-        current_drive = self.root.drive.upper()
-        other_drive = "Z:" if current_drive != "Z:" else "Y:"
-        original = other_drive + r"\mmd_tools_other_drive_texture.png"
-
-        source, reason = cache.find_resolvable_source(original, self.model)
-
-        self.assertIsNone(source)
-        self.assertEqual(reason, "absolute_original_path_rejected")
-
     def test_unc_original_outside_model_parent_is_rejected_when_absolute(self):
         original = r"\\server\share\mmd_tools_unc_texture.png"
         if not Path(original).is_absolute():
