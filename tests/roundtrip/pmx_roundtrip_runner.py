@@ -39,7 +39,6 @@ _UNSUPPORTED_WARN = {
     "soft_bodies": "Soft body data is PMX v2.1-only and unsupported in roundtrip",
     "bone_ik": "IK bone data skipped during PmxData→dict conversion",
     "toon_textures": "Toon textures skipped during PmxData→dict conversion",
-    "display_frames_beyond_default": "Extra display frames beyond Root/Exp skipped",
 }
 
 # ---------------------------------------------------------------------------
@@ -132,10 +131,11 @@ def _initialize_maya() -> None:
 def _pmxdata_to_exporter_dict(pmx_data: Any, warn_list: list[str]) -> dict:
     """Convert a PmxData object into the dict format expected by PmxExporter.
 
-    Unsupported sections (SDEF, additional UVs, soft bodies, IK, toon textures,
-    custom display frames) are collected as warnings rather than errors.
+    Unsupported sections (SDEF, additional UVs, soft bodies, IK, toon textures)
+    are collected as warnings rather than errors.
     """
     from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+    from mmd_tools.core.display_frame_metadata import display_frames_to_dicts
     from mmd_tools.core.pmx_data.morph import PmxMorphType
 
     maya_data: dict[str, Any] = {}
@@ -350,9 +350,8 @@ def _pmxdata_to_exporter_dict(pmx_data: Any, warn_list: list[str]) -> dict:
         joints_raw.append(jd)
     maya_data["joints"] = joints_raw
 
-    # -- display frames (skip extra frames beyond Root/Exp) ----------------
-    if len(pmx_data.display_frames) > 2:
-        warn_list.append(_UNSUPPORTED_WARN["display_frames_beyond_default"])
+    # -- display frames -----------------------------------------------------
+    maya_data["display_frames"] = display_frames_to_dicts(pmx_data.display_frames)
 
     # -- soft bodies --------------------------------------------------------
     if getattr(pmx_data, "soft_bodies", None) and len(pmx_data.soft_bodies) > 0:
@@ -771,6 +770,41 @@ def _compare_pmx_supported_content(
                 _get_field(ej, field),
                 tolerance,
             )
+
+    # ------------------------------------------------------------------
+    # display frames
+    # ------------------------------------------------------------------
+    compare_count("display_frames", original.display_frames, exported.display_frames)
+    display_frame_fields = ["name", "name_english", "special_flag"]
+    for idx, (odf, edf) in enumerate(zip(original.display_frames, exported.display_frames)):
+        for field in display_frame_fields:
+            _compare_numeric_field(
+                diffs,
+                "display_frames",
+                idx,
+                field,
+                _get_field(odf, field),
+                _get_field(edf, field),
+                tolerance,
+            )
+        original_elements = _get_field(odf, "elements", []) or []
+        exported_elements = _get_field(edf, "elements", []) or []
+        compare_count(
+            f"display_frames[{idx}].elements",
+            original_elements,
+            exported_elements,
+        )
+        for elem_idx, (original_element, exported_element) in enumerate(zip(original_elements, exported_elements)):
+            for field in ("type", "index"):
+                _compare_numeric_field(
+                    diffs,
+                    f"display_frames[{idx}].elements[{elem_idx}]",
+                    0,
+                    field,
+                    _get_field(original_element, field),
+                    _get_field(exported_element, field),
+                    tolerance,
+                )
 
     return diffs, compare_warnings
 

@@ -6,6 +6,13 @@ from typing import List
 from mmd_tools.core.pmx_data.header import PmxEncoding
 
 
+def _is_pmx_utf16le_encoding(encoding) -> bool:
+    """Return whether a PMX encoding value represents UTF-16LE."""
+    if isinstance(encoding, str):
+        return encoding.lower().replace("_", "-") in {"utf-16-le", "utf16-le", "utf-16le", "utf16le"}
+    return encoding == PmxEncoding.UTF16LE or encoding == int(PmxEncoding.UTF16LE)
+
+
 def parsePMXString(f, encoding=0):
     """PMX形式の文字列をファイルから読み込み、通常の文字列に変換します。
 
@@ -21,7 +28,7 @@ def parsePMXString(f, encoding=0):
     if length == 0:
         return ""
     (buf,) = struct.unpack("<%ds" % length, f.read(length))
-    return buf.decode("utf-16-le" if encoding == PmxEncoding.UTF16LE else "utf-8", errors="replace")
+    return buf.decode("utf-16-le" if _is_pmx_utf16le_encoding(encoding) else "utf-8", errors="replace")
 
 
 def decodePMDString(byteString):
@@ -104,7 +111,7 @@ def get_pmx_encoding_string(encoding_flag: PmxEncoding) -> str:
     Returns:
         str: エンコーディング文字列
     """
-    return "utf-16-le" if encoding_flag == PmxEncoding.UTF16LE else "utf-8"
+    return "utf-16-le" if _is_pmx_utf16le_encoding(encoding_flag) else "utf-8"
 
 
 def choose_index_size(count: int) -> int:
@@ -148,7 +155,7 @@ def encodePMXString(string, encoding=PmxEncoding.UTF16LE):
     """
     if not string:
         return struct.pack("<i", 0)
-    if encoding == PmxEncoding.UTF16LE:
+    if _is_pmx_utf16le_encoding(encoding):
         encoded = string.encode("utf-16-le")
     else:
         encoded = string.encode("utf-8")

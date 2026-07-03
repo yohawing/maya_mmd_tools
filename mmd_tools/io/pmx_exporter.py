@@ -17,6 +17,7 @@ from mmd_tools.core.pmx_data.material import PmxMaterial
 from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
 from mmd_tools.core.pmx_data.rigid_body import PmxRigidBody
 from mmd_tools.core.pmx_data.vertex import PmxVertex
+from mmd_tools.core.display_frame_metadata import normalize_display_frame_dict
 from mmd_tools.core.utils import (
     choose_index_size as _choose_index_size,
     choose_reference_index_size as _choose_reference_index_size,
@@ -77,6 +78,7 @@ class PmxExporter:
         pmx.header.bone_index_size = _choose_reference_index_size(bone_count)
 
         morphs_raw = maya_data.get("morphs") or []
+        display_frames_raw = maya_data.get("display_frames") or []
         rigid_bodies_raw = maya_data.get("rigid_bodies") or []
         joints_raw = maya_data.get("joints") or []
         rigid_body_count = len(rigid_bodies_raw)
@@ -415,7 +417,7 @@ class PmxExporter:
         for rb_raw in rigid_bodies_raw:
             rb = PmxRigidBody(
                 bone_index_size=pmx.header.bone_index_size,
-                encoding_flag=pmx.header.encoding,
+                encoding_flag=pmx.header.encoding_flag,
             )
             rb.name = rb_raw.get("name", "RigidBody")
             rb.name_english = rb_raw.get("name_english", "")
@@ -468,27 +470,57 @@ class PmxExporter:
             pmx.joints.append(joint)
 
         # --- display frames (required for valid PMX) ---
-        root_frame = PmxDisplayFrame(
-            pmx.header.bone_index_size,
-            pmx.header.morph_index_size,
-            pmx.header.encoding_flag,
-        )
-        root_frame.name = "Root"
-        root_frame.name_english = "Root"
-        root_frame.special_flag = 1
-        root_frame.elements = [{"type": 0, "index": 0}]  # bone 0
-        pmx.display_frames.append(root_frame)
+        def _append_display_frame(frame_raw):
+            frame_data = normalize_display_frame_dict(frame_raw)
+            frame = PmxDisplayFrame(
+                pmx.header.bone_index_size,
+                pmx.header.morph_index_size,
+                pmx.header.encoding_flag,
+            )
+            frame.name = frame_data["name"]
+            frame.name_english = frame_data["name_english"]
+            frame.special_flag = frame_data["special_flag"]
+            frame.elements = []
+            for element in frame_data["elements"]:
+                element_type = element["type"]
+                index = element["index"]
+                if element_type == 0:
+                    if index < 0 or index >= bone_count:
+                        raise ValueError(
+                            f"display frame bone index out of range: {index} "
+                            f"(bone_count={bone_count})"
+                        )
+                elif element_type == 1:
+                    if index < 0 or index >= len(pmx.morphs):
+                        raise ValueError(
+                            f"display frame morph index out of range: {index} "
+                            f"(morph_count={len(pmx.morphs)})"
+                        )
+                else:
+                    raise ValueError(f"Unsupported display frame element type: {element_type}")
+                frame.elements.append({"type": element_type, "index": index})
+            pmx.display_frames.append(frame)
 
-        exp_frame = PmxDisplayFrame(
-            pmx.header.bone_index_size,
-            pmx.header.morph_index_size,
-            pmx.header.encoding_flag,
-        )
-        exp_frame.name = "表情"
-        exp_frame.name_english = "Exp"
-        exp_frame.special_flag = 1
-        exp_frame.elements = []
-        pmx.display_frames.append(exp_frame)
+        if display_frames_raw:
+            for frame_raw in display_frames_raw:
+                _append_display_frame(frame_raw)
+        else:
+            _append_display_frame(
+                {
+                    "name": "Root",
+                    "name_english": "Root",
+                    "special_flag": 1,
+                    "elements": [{"type": 0, "index": 0}],
+                }
+            )
+            _append_display_frame(
+                {
+                    "name": "表情",
+                    "name_english": "Exp",
+                    "special_flag": 1,
+                    "elements": [],
+                }
+            )
 
         # --- write ---
         pmx.write_file(file_path)

@@ -26,10 +26,12 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
+from mmd_tools.core.display_frame_metadata import display_frames_from_json
 
 
 def _get_mesh_shape(node: str) -> str:
@@ -68,6 +70,11 @@ def _get_attr(node: str, attr: str, default=None):
         if value is not None:
             return value
     return default
+
+
+def _collect_display_frames(root: str) -> list[dict]:
+    """Return root-level PMX display-frame metadata collected during import."""
+    return display_frames_from_json(_get_attr(root, ATTR_MMD_DISPLAY_FRAMES_JSON, ""))
 
 
 def _maya_to_mmd_vector(values) -> list[float]:
@@ -697,6 +704,7 @@ class ExportSceneCollector:
             "materials": merged_materials,
             "bones": merged_bones or None,
             "morphs": morphs,
+            "display_frames": _collect_display_frames(root),
             "rigid_bodies": physics.get("rigid_bodies", []),
             "joints": physics.get("joints", []),
         }

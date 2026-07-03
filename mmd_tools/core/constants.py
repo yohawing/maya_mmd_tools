@@ -24,6 +24,7 @@ ATTR_MMD_MODEL_NAME = "mmd_model_name"
 ATTR_MMD_MODEL_NAME_EN = "mmd_model_name_en"
 ATTR_MMD_COMMENT = "mmd_comment"
 ATTR_MMD_COMMENT_EN = "mmd_comment_en"
+ATTR_MMD_DISPLAY_FRAMES_JSON = "mmd_display_frames_json"
 
 # マテリアルカスタムアトリビュート名
 ATTR_MMD_MATERIAL = "mmd_material"

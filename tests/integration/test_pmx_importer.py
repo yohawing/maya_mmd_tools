@@ -8,6 +8,7 @@ from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
+from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
 
@@ -68,6 +69,12 @@ class TestPmxImporter(MayaTestBase):
         # ジョイントが作成されたことを確認
         joints = cmds.ls(type="joint")
         self.assertGreater(len(joints), 0, "ジョイントが作成されていません")
+
+        self.assertTrue(
+            cmds.attributeQuery(ATTR_MMD_DISPLAY_FRAMES_JSON, node=result, exists=True),
+            "表示枠 metadata が root に保存されていません",
+        )
+        self.assertTrue(cmds.getAttr(f"{result}.{ATTR_MMD_DISPLAY_FRAMES_JSON}"))
 
         # テクスチャ file ノードがあれば、パスが有効であることを確認
         file_nodes = cmds.ls(type="file") or []

@@ -17,9 +17,11 @@ from .model_import_pipeline import ModelImportPipeline
 from ..core.constants import (
     ATTR_MMD_COMMENT,
     ATTR_MMD_COMMENT_EN,
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
 )
+from ..core.display_frame_metadata import display_frames_to_json
 from ..core.namespace_utils import NamespaceUtils
 
 # ロガーを取得
@@ -78,6 +80,9 @@ def import_pmx_file(
                     ATTR_MMD_MODEL_NAME_EN: parser.header.model_name_english,
                     ATTR_MMD_COMMENT: parser.header.comment,
                     ATTR_MMD_COMMENT_EN: parser.header.comment_english,
+                    ATTR_MMD_DISPLAY_FRAMES_JSON: display_frames_to_json(
+                        getattr(parser, "display_frames", [])
+                    ),
                     # Phase 1: runtime bake で VMD インポート時に PMX ソースを容易に見つけるため
                     "mmd_source_file": filepath,
                 },

@@ -350,6 +350,87 @@ class TestPmxExporterFromDict(TestBase):
         self.assertEqual(len(pmx.display_frames), 2)
         self.assertEqual(pmx.display_frames[1].name, "表情")
 
+    def test_export_custom_display_frames_roundtrip(self):
+        """dict export は任意表示枠と bone / morph 要素を保持する"""
+        data = {
+            "model_name": "DisplayFrameRoundtripTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [
+                {"name": "センター", "name_english": "Center", "position": [0.0, 0.0, 0.0]},
+                {"name": "上半身", "name_english": "UpperBody", "position": [0.0, 1.0, 0.0]},
+            ],
+            "morphs": [
+                {
+                    "type": "vertex",
+                    "name": "笑い",
+                    "name_english": "Smile",
+                    "panel": 3,
+                    "offsets": [{"vertex_index": 1, "position_offset": [0.1, 0.0, 0.0]}],
+                }
+            ],
+            "display_frames": [
+                {
+                    "name": "Root",
+                    "name_english": "Root",
+                    "special_flag": 1,
+                    "elements": [{"type": 0, "index": 0}],
+                },
+                {
+                    "name": "表情",
+                    "name_english": "Exp",
+                    "special_flag": 1,
+                    "elements": [{"type": 1, "index": 0}],
+                },
+                {
+                    "name": "操作",
+                    "name_english": "Controls",
+                    "special_flag": 0,
+                    "elements": [
+                        {"type": 0, "index": 1},
+                        {"type": 1, "index": 0},
+                    ],
+                },
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "custom_display_frames.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+
+        self.assertEqual([frame.name for frame in pmx.display_frames], ["Root", "表情", "操作"])
+        self.assertEqual(pmx.display_frames[2].name_english, "Controls")
+        self.assertEqual(pmx.display_frames[2].special_flag, 0)
+        self.assertEqual(
+            pmx.display_frames[2].elements,
+            [{"type": 0, "index": 1}, {"type": 1, "index": 0}],
+        )
+
+    def test_export_display_frame_bone_index_out_of_range_raises(self):
+        """表示枠の bone index が範囲外なら ValueError"""
+        data = {
+            "model_name": "BadDisplayFrameBone",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "root"}],
+            "display_frames": [
+                {"name": "Bad", "elements": [{"type": 0, "index": 1}]},
+            ],
+        }
+        with self.assertRaises(ValueError):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_display_frame_bone.pmx"),
+                data,
+            )
+
     def test_export_roundtrip_keeps_supported_field_values(self):
         """ヘッダ英名 / 材質英名・flags / 接続位置オフセットを保持する"""
         data = {

@@ -4,6 +4,7 @@ These tests run under Maya 2024 mayapy and verify the full
 collect → export → parse round-trip for a minimum geometry.
 """
 
+import json
 import os
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.io.pmx_exporter import PmxExporter
@@ -507,6 +509,51 @@ class TestPmxExporter(MayaTestBase):
         self.assertEqual(pmx.joints[0].name, "physics_joint")
         self.assertEqual(pmx.joints[0].rigid_body_a_index, 0)
         self.assertEqual(pmx.joints[0].rigid_body_b_index, 1)
+
+    def test_export_model_action_collects_display_frames_to_pmx(self):
+        """target_model export は root の表示枠 metadata を PMX に書き戻す。"""
+        root, _meshes, _shaders = self._make_two_mesh_model_root("pmx_display_frame_root")
+        display_frames = [
+            {
+                "name": "Root",
+                "name_english": "Root",
+                "special_flag": 1,
+                "elements": [{"type": 0, "index": 0}],
+            },
+            {
+                "name": "表情",
+                "name_english": "Exp",
+                "special_flag": 1,
+                "elements": [],
+            },
+            {
+                "name": "操作",
+                "name_english": "Controls",
+                "special_flag": 0,
+                "elements": [{"type": 0, "index": 0}],
+            },
+        ]
+        cmds.addAttr(root, longName=ATTR_MMD_DISPLAY_FRAMES_JSON, dataType="string")
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_DISPLAY_FRAMES_JSON}",
+            json.dumps(display_frames, ensure_ascii=False),
+            type="string",
+        )
+        output_path = self.get_temp_filename("display_frame_metadata_model.pmx")
+
+        result = ExportModelAction().execute(
+            ExportModelRequest(
+                file_path=output_path,
+                options={"export_format": "pmx", "target_model": root},
+            )
+        )
+
+        self.assertTrue(result.succeeded)
+        pmx = _parse_pmx(output_path)
+
+        self.assertEqual([frame.name for frame in pmx.display_frames], ["Root", "表情", "操作"])
+        self.assertEqual(pmx.display_frames[2].name_english, "Controls")
+        self.assertEqual(pmx.display_frames[2].elements, [{"type": 0, "index": 0}])
 
     def test_export_model_action_collects_skincluster_weights_to_pmx(self):
         """skinCluster の influence と weight を PMX bones/BDEF に書き出す。"""
