@@ -82,6 +82,38 @@ class TestPmxImporter(MayaTestBase):
             texture_path = cmds.getAttr(f"{file_node}.fileTextureName")
             self.assertTrue(texture_path, f"{file_node}.fileTextureName が空です")
 
+    def test_import_pmx_with_physics_disabled_keeps_display_metadata(self):
+        """import_physics=False では物理 node を作らず表示枠 metadata は保持する。"""
+        cmds.file(new=True, force=True)
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        parser = parse_pmx_file(pmx_file)
+
+        result = import_pmx_file(parser, pmx_file, options={"import_physics": False})
+
+        self.assertTrue(result)
+        self.assertTrue(
+            cmds.attributeQuery(ATTR_MMD_DISPLAY_FRAMES_JSON, node=result, exists=True),
+            "表示枠 metadata が root に保存されていません",
+        )
+        self.assertTrue(cmds.getAttr(f"{result}.{ATTR_MMD_DISPLAY_FRAMES_JSON}"))
+        self.assertGreater(
+            len(cmds.listRelatives(result, allDescendents=True, type="joint", fullPath=True) or []),
+            0,
+            "physics disabled import でも skeleton は作成されるはずです",
+        )
+        child_names = {
+            child.rsplit("|", 1)[-1]
+            for child in (cmds.listRelatives(result, children=True, fullPath=True) or [])
+        }
+        self.assertNotIn("Physics", child_names)
+        try:
+            bullet_loaded = bool(cmds.pluginInfo("bullet", query=True, loaded=True))
+        except Exception:
+            bullet_loaded = False
+        if bullet_loaded:
+            self.assertFalse(cmds.ls(type="bulletRigidBodyShape") or [])
+            self.assertFalse(cmds.ls(type="bulletRigidBodyConstraintShape") or [])
+
     def test_import_pmx_multiple_files(self):
         """全てのPMXモデルが基本的にロード可能かテスト"""
 
