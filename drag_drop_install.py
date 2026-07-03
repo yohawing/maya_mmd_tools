@@ -199,10 +199,21 @@ def install(root: Optional[Path] = None) -> Path:
 
     from maya import cmds
 
+    plugin_path = installed_root / "plug-ins" / "mmd_tools_plugin.py"
+
     def _load_plugin():
         try:
-            if not cmds.pluginInfo("mmd_tools_plugin.py", query=True, loaded=True):
-                cmds.loadPlugin("mmd_tools_plugin.py")
+            # Maya only reads .mod files (and populates MAYA_PLUG_IN_PATH) at
+            # startup, so the freshly written module is not on the plug-in path
+            # yet. Load by absolute path to work in the current session.
+            try:
+                already_loaded = bool(
+                    cmds.pluginInfo("mmd_tools_plugin.py", query=True, loaded=True)
+                )
+            except Exception:
+                already_loaded = False
+            if not already_loaded:
+                cmds.loadPlugin(str(plugin_path))
             from mmd_tools.plugin_main import install_mmd_menu
 
             install_mmd_menu()
