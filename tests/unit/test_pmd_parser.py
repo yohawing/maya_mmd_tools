@@ -5,6 +5,7 @@ from mmd_tools.core import mmd_parser
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.display_frame import PmdDisplayFrame
 from mmd_tools.core.pmd_data.face import PmdFace
+from mmd_tools.core.native.native_pmx_parser import is_native_parser_available
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.face import PmxFace
 from tests.common.test_base import TestBase
@@ -14,6 +15,9 @@ from tests.common.pmd_mock import PmdMock
 class TestPmdParser(TestBase):
     def setUp(self):
         super().setUp()
+        if not is_native_parser_available():
+            self.skipTest("native PMX parser is unavailable in this environment")
+
         # モックデータを使用してテスト用PMDファイルを作成
         self.pmd_file_path = os.path.join(self.temp_dir, "test_model.pmd")
 
