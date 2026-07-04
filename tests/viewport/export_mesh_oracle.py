@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import sys
 from pathlib import Path
 from typing import Any
 
-import maya.api.OpenMaya as om
 import maya.cmds as cmds
 import maya.standalone
+
+from mesh_oracle_utils import bbox, mesh_points, visible_mesh_transforms
 
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -51,69 +51,8 @@ def _resolve(value: str) -> Path:
     return path if path.is_absolute() else (Path.cwd() / path).resolve()
 
 
-def _node_is_visible(node: str) -> bool:
-    current = node
-    while current:
-        try:
-            if cmds.attributeQuery("visibility", node=current, exists=True) and not cmds.getAttr(f"{current}.visibility"):
-                return False
-        except Exception:
-            pass
-        parents = cmds.listRelatives(current, parent=True, fullPath=True) or []
-        current = parents[0] if parents else ""
-    return True
-
-
-def _has_skin_cluster(mesh_transform: str) -> bool:
-    history = cmds.listHistory(mesh_transform, pruneDagObjects=True) or []
-    return any(cmds.nodeType(node) == "skinCluster" for node in history)
-
-
 def _mesh_transforms(root: str) -> list[str]:
-    shapes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
-    transforms: list[str] = []
-    skinned: list[str] = []
-    for shape in shapes:
-        try:
-            if cmds.getAttr(f"{shape}.intermediateObject"):
-                continue
-        except Exception:
-            pass
-        if not _node_is_visible(shape):
-            continue
-        parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
-        if not parents or not _node_is_visible(parents[0]) or parents[0] in transforms:
-            continue
-        transforms.append(parents[0])
-        if _has_skin_cluster(parents[0]):
-            skinned.append(parents[0])
-    return sorted(skinned or transforms)
-
-
-def _mesh_points(mesh_transform: str) -> list[list[float]]:
-    points: list[list[float]] = []
-    shapes = cmds.listRelatives(mesh_transform, shapes=True, noIntermediate=True, fullPath=True) or []
-    for shape in shapes:
-        sel = om.MSelectionList()
-        sel.add(shape)
-        fn = om.MFnMesh(sel.getDagPath(0))
-        points.extend([[float(p.x), float(p.y), float(p.z)] for p in fn.getPoints(om.MSpace.kWorld)])
-    return points
-
-
-def _bbox(points: list[list[float]]) -> dict[str, Any]:
-    if not points:
-        return {"min": [], "max": [], "center": [], "diag": 0.0}
-    mins = [min(point[i] for point in points) for i in range(3)]
-    maxs = [max(point[i] for point in points) for i in range(3)]
-    center = [(mins[i] + maxs[i]) * 0.5 for i in range(3)]
-    diag = math.sqrt(sum((maxs[i] - mins[i]) ** 2 for i in range(3)))
-    return {
-        "min": [round(value, 6) for value in mins],
-        "max": [round(value, 6) for value in maxs],
-        "center": [round(value, 6) for value in center],
-        "diag": round(diag, 6),
-    }
+    return visible_mesh_transforms(root, prefer_skin_cluster=True)
 
 
 def _capture(root: str, frames: list[int]) -> list[dict[str, Any]]:
@@ -129,11 +68,11 @@ def _capture(root: str, frames: list[int]) -> list[dict[str, Any]]:
             pass
         vertices: list[list[float]] = []
         for mesh in meshes:
-            vertices.extend(_mesh_points(mesh))
+            vertices.extend([list(point) for point in mesh_points(mesh)])
         result.append({
             "frame": frame,
             "vertices": vertices,
-            "bbox": _bbox(vertices),
+            "bbox": bbox(vertices),
         })
     return result
 

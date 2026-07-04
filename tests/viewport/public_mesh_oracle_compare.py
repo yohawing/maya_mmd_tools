@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 import sys
 from pathlib import Path
 
-import maya.api.OpenMaya as om
 import maya.cmds as cmds
 import maya.standalone
+
+from mesh_oracle_utils import bbox, distance, mesh_points_under_root
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -39,41 +39,6 @@ def _initialize() -> None:
         pass
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-
-
-def _mesh_points(root: str) -> list[list[float]]:
-    points: list[list[float]] = []
-    shapes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
-    for shape in shapes:
-        try:
-            if cmds.getAttr(f"{shape}.intermediateObject"):
-                continue
-        except Exception:
-            pass
-        sel = om.MSelectionList()
-        sel.add(shape)
-        fn = om.MFnMesh(sel.getDagPath(0))
-        points.extend([[p.x, p.y, p.z] for p in fn.getPoints(om.MSpace.kWorld)])
-    return points
-
-
-def _distance(a: list[float], b: list[float]) -> float:
-    return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
-
-
-def _bbox(points: list[list[float]]) -> dict[str, list[float] | float]:
-    if not points:
-        return {"min": [], "max": [], "center": [], "diag": 0.0}
-    mins = [min(point[i] for point in points) for i in range(3)]
-    maxs = [max(point[i] for point in points) for i in range(3)]
-    center = [(mins[i] + maxs[i]) * 0.5 for i in range(3)]
-    diag = _distance(mins, maxs)
-    return {
-        "min": [round(value, 6) for value in mins],
-        "max": [round(value, 6) for value in maxs],
-        "center": [round(value, 6) for value in center],
-        "diag": round(diag, 6),
-    }
 
 
 def _import_current(pmx_path: Path, vmd_path: Path, mode: str) -> str:
@@ -128,10 +93,10 @@ def main() -> int:
         expected = frame_data["vertices"]
         cmds.currentTime(frame, edit=True)
         cmds.refresh(force=True)
-        actual = _mesh_points(root)
+        actual = mesh_points_under_root(root)
         if len(actual) != len(expected):
             raise RuntimeError(f"frame {frame}: vertex count mismatch actual={len(actual)} oracle={len(expected)}")
-        distances = [_distance(a, b) for a, b in zip(actual, expected)]
+        distances = [distance(a, b) for a, b in zip(actual, expected)]
         worst_index, worst_distance = max(enumerate(distances), key=lambda item: item[1])
         all_distances.extend(distances)
         frames.append({
@@ -141,8 +106,8 @@ def main() -> int:
             "mean": round(statistics.fmean(distances), 6),
             "p95": round(sorted(distances)[int(len(distances) * 0.95)], 6),
             "failed": max(distances) > args.threshold,
-            "actual_bbox": _bbox(actual),
-            "oracle_bbox": _bbox(expected),
+            "actual_bbox": bbox(actual),
+            "oracle_bbox": bbox(expected),
             "worst_vertex": {
                 "index": worst_index,
                 "distance": round(worst_distance, 6),

@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 import sys
 from pathlib import Path
 
-import maya.api.OpenMaya as om
-import maya.cmds as cmds
 import maya.standalone
+
+from mesh_oracle_utils import distance, mesh_points, source_indices, visible_mesh_transforms
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -65,61 +64,6 @@ def _pmx_positions(pmx_path: Path) -> list[tuple[float, float, float]]:
     return [(v.position[0], v.position[1], -v.position[2]) for v in pmx.vertices]
 
 
-def _visible_meshes(root: str) -> list[str]:
-    shapes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
-    meshes: list[str] = []
-    for shape in shapes:
-        try:
-            if cmds.getAttr(f"{shape}.intermediateObject"):
-                continue
-        except Exception:
-            pass
-        if not _node_is_visible(shape):
-            continue
-        parent = cmds.listRelatives(shape, parent=True, fullPath=True) or []
-        if parent and _node_is_visible(parent[0]) and parent[0] not in meshes:
-            meshes.append(parent[0])
-    return sorted(meshes)
-
-
-def _node_is_visible(node: str) -> bool:
-    current = node
-    while current:
-        try:
-            if cmds.attributeQuery("visibility", node=current, exists=True) and not cmds.getAttr(f"{current}.visibility"):
-                return False
-        except Exception:
-            pass
-        parent = cmds.listRelatives(current, parent=True, fullPath=True) or []
-        current = parent[0] if parent else ""
-    return True
-
-
-def _source_indices(mesh: str) -> list[int]:
-    from mmd_tools.core import maya_utils
-    from mmd_tools.core.constants import ATTR_MMD_SOURCE_VERTEX_INDICES
-
-    if cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh, exists=True):
-        return list(maya_utils.get_int_array_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES))
-    return list(range(int(cmds.polyEvaluate(mesh, vertex=True))))
-
-
-def _mesh_points(mesh: str) -> list[tuple[float, float, float]]:
-    shapes = cmds.listRelatives(mesh, shapes=True, noIntermediate=True, fullPath=True) or []
-    points: list[tuple[float, float, float]] = []
-    for shape in shapes:
-        sel = om.MSelectionList()
-        sel.add(shape)
-        dag = sel.getDagPath(0)
-        fn = om.MFnMesh(dag)
-        points.extend((p.x, p.y, p.z) for p in fn.getPoints(om.MSpace.kWorld))
-    return points
-
-
-def _distance(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
-    return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
-
-
 def main() -> int:
     args = _parse_args()
     _initialize()
@@ -128,16 +72,16 @@ def main() -> int:
     root = _import_pmx(pmx_path, args.setup_rig, args.setup_bone_orientation)
     distances = []
     missing = 0
-    for mesh in _visible_meshes(root):
-        points = _mesh_points(mesh)
-        indices = _source_indices(mesh)
+    for mesh in visible_mesh_transforms(root):
+        points = mesh_points(mesh)
+        indices = source_indices(mesh)
         if len(points) != len(indices):
             raise RuntimeError(f"{mesh}: point/source-index count mismatch")
         for source_index, point in zip(indices, points):
             if source_index >= len(expected):
                 missing += 1
                 continue
-            distances.append(_distance(point, expected[source_index]))
+            distances.append(distance(point, expected[source_index]))
 
     max_dist = max(distances) if distances else None
     mean = statistics.fmean(distances) if distances else None

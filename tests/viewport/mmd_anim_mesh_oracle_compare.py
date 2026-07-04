@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import statistics
 import sys
 from pathlib import Path
@@ -19,6 +18,8 @@ from typing import Any
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 import maya.standalone
+
+from mesh_oracle_utils import distance, mesh_points, source_indices, visible_mesh_transforms
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -185,7 +186,7 @@ def _capture_joint_world_matrices(bone_count: int) -> list[om.MMatrix]:
 def _capture_skin_bind_world_matrices(root: str, bone_count: int) -> list[om.MMatrix]:
     bind_matrices = _capture_joint_world_matrices(bone_count)
     skin_clusters: list[str] = []
-    for mesh in _visible_mesh_transforms(root):
+    for mesh in visible_mesh_transforms(root, require_skin_cluster=True):
         history = cmds.listHistory(mesh, pruneDagObjects=True) or []
         for node in history:
             if cmds.nodeType(node) == "skinCluster" and node not in skin_clusters:
@@ -232,65 +233,8 @@ def _import_scene(pmx_path: Path, vmd_path: Path, mode: str, bone_count: int) ->
     return root, bind_world_matrices
 
 
-def _visible_mesh_transforms(root: str) -> list[str]:
-    shapes = cmds.listRelatives(root, allDescendents=True, type="mesh", fullPath=True) or []
-    transforms: list[str] = []
-    for shape in shapes:
-        try:
-            if cmds.getAttr(f"{shape}.intermediateObject"):
-                continue
-        except Exception:
-            pass
-        if not _node_is_visible(shape):
-            continue
-        parent = cmds.listRelatives(shape, parent=True, fullPath=True) or []
-        if parent and _node_is_visible(parent[0]) and _has_skin_cluster(parent[0]) and parent[0] not in transforms:
-            transforms.append(parent[0])
-    return sorted(transforms)
-
-
-def _node_is_visible(node: str) -> bool:
-    current = node
-    while current:
-        try:
-            if cmds.attributeQuery("visibility", node=current, exists=True) and not cmds.getAttr(f"{current}.visibility"):
-                return False
-        except Exception:
-            pass
-        parent = cmds.listRelatives(current, parent=True, fullPath=True) or []
-        current = parent[0] if parent else ""
-    return True
-
-
-def _has_skin_cluster(mesh_transform: str) -> bool:
-    history = cmds.listHistory(mesh_transform, pruneDagObjects=True) or []
-    return any(cmds.nodeType(node) == "skinCluster" for node in history)
-
-
-def _source_indices(mesh: str) -> list[int]:
-    from mmd_tools.core import maya_utils
-    from mmd_tools.core.constants import ATTR_MMD_SOURCE_VERTEX_INDICES
-
-    if cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh, exists=True):
-        return list(maya_utils.get_int_array_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES))
-    vertex_count = cmds.polyEvaluate(mesh, vertex=True)
-    return list(range(int(vertex_count)))
-
-
-def _mesh_points(mesh: str) -> list[tuple[float, float, float]]:
-    shapes = cmds.listRelatives(mesh, shapes=True, noIntermediate=True, fullPath=True) or []
-    points: list[tuple[float, float, float]] = []
-    for shape in shapes:
-        sel = om.MSelectionList()
-        sel.add(shape)
-        dag = sel.getDagPath(0)
-        fn = om.MFnMesh(dag)
-        points.extend((p.x, p.y, p.z) for p in fn.getPoints(om.MSpace.kWorld))
-    return points
-
-
 def _capture_maya_by_source_index(root: str, frames: list[int]) -> dict[int, dict[int, tuple[float, float, float]]]:
-    meshes = _visible_mesh_transforms(root)
+    meshes = visible_mesh_transforms(root, require_skin_cluster=True)
     result: dict[int, dict[int, tuple[float, float, float]]] = {}
     for frame in frames:
         cmds.currentTime(frame, edit=True)
@@ -300,18 +244,14 @@ def _capture_maya_by_source_index(root: str, frames: list[int]) -> dict[int, dic
             pass
         frame_points: dict[int, tuple[float, float, float]] = {}
         for mesh in meshes:
-            points = _mesh_points(mesh)
-            indices = _source_indices(mesh)
+            points = mesh_points(mesh)
+            indices = source_indices(mesh)
             if len(points) != len(indices):
                 raise RuntimeError(f"{mesh}: point/source-index count mismatch {len(points)} != {len(indices)}")
             for source_index, point in zip(indices, points):
                 frame_points[int(source_index)] = point
         result[frame] = frame_points
     return result
-
-
-def _distance(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
-    return math.sqrt(sum((a[i] - b[i]) ** 2 for i in range(3)))
 
 
 def _compare(
@@ -330,7 +270,7 @@ def _compare(
             if source_index >= len(oracle[frame]):
                 missing += 1
                 continue
-            frame_distances.append(_distance(maya_point, oracle[frame][source_index]))
+            frame_distances.append(distance(maya_point, oracle[frame][source_index]))
         all_distances.extend(frame_distances)
         max_dist = max(frame_distances) if frame_distances else None
         mean = statistics.fmean(frame_distances) if frame_distances else None
