@@ -330,6 +330,92 @@ class TestPmxExporterFromDict(TestBase):
         # Verify face
         self.assertEqual(pmx.faces[0].indices, (0, 1, 2))
 
+    def test_exporter_uses_native_parts_writer_for_basic_model(self):
+        """basic PMX は native parts writer に flat buffers と descriptor を渡す。"""
+        calls = []
+
+        def native_parts_exporter(metadata, positions, normals, uvs, **kwargs):
+            calls.append(
+                {
+                    "metadata": metadata,
+                    "positions": positions,
+                    "normals": normals,
+                    "uvs": uvs,
+                    **kwargs,
+                }
+            )
+            return b"NATIVE-PMX"
+
+        exporter = PmxExporter(native_parts_exporter=native_parts_exporter)
+        out_path = os.path.join(self.temp_dir, "native_parts.pmx")
+        exporter.export_pmx_model(
+            out_path,
+            {
+                "model_name": "NativePmx",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 0, 1], "uv": [0, 0], "bone_indices": [0]},
+                    {
+                        "position": [1, 0, 0],
+                        "normal": [0, 0, 1],
+                        "uv": [1, 0],
+                        "bone_indices": [0, 0],
+                        "bone_weights": [0.25],
+                    },
+                    {
+                        "position": [0, 1, 0],
+                        "normal": [0, 0, 1],
+                        "uv": [0, 1],
+                        "bone_indices": [0, 0, 0, 0],
+                        "bone_weights": [0.25, 0.25, 0.25, 0.25],
+                    },
+                ],
+                "faces": [[0, 1, 2]],
+                "materials": [{"name": "mat", "face_count": 3}],
+            },
+        )
+
+        with open(out_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"NATIVE-PMX")
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call["metadata"]["name"], "NativePmx")
+        self.assertEqual(call["metadata"]["materials"][0]["faceCount"], 1)
+        self.assertEqual(call["metadata"]["bones"][0]["name"], "root")
+        self.assertEqual(call["positions"], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+        self.assertEqual(call["indices"], [0, 1, 2])
+        self.assertEqual(call["skin_indices"], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(call["skin_weights"], [1.0, 0.0, 0.0, 0.0, 0.25, 0.75, 0.0, 0.0, 0.25, 0.25, 0.25, 0.25])
+
+    def test_exporter_falls_back_for_rich_sections_not_supported_by_basic_parts_path(self):
+        """morph 等を含む PMX は basic native parts path ではなく従来 writer に戻る。"""
+        calls = []
+        exporter = PmxExporter(native_parts_exporter=lambda *args, **kwargs: calls.append((args, kwargs)) or b"NATIVE-PMX")
+        out_path = os.path.join(self.temp_dir, "native_parts_fallback.pmx")
+        exporter.export_pmx_model(
+            out_path,
+            {
+                "model_name": "FallbackPmx",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 0, 1], "uv": [0, 0]},
+                    {"position": [1, 0, 0], "normal": [0, 0, 1], "uv": [1, 0]},
+                    {"position": [0, 1, 0], "normal": [0, 0, 1], "uv": [0, 1]},
+                ],
+                "faces": [[0, 1, 2]],
+                "morphs": [
+                    {
+                        "type": "vertex",
+                        "name": "smile",
+                        "offsets": [{"vertex_index": 0, "position_offset": [0.0, 0.1, 0.0]}],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(calls, [])
+        pmx = _parse_pmx(out_path)
+        self.assertEqual(pmx.header.model_name, "FallbackPmx")
+        self.assertEqual(len(pmx.morphs), 1)
+
     def test_export_display_frame_name_roundtrip_matches_header_encoding(self):
         """dict export でヘッダと同じ encoding_flag で表示枠名を保存できる"""
         data = {
