@@ -18,6 +18,17 @@ from mmd_tools.core.humanik_resolver import (
 )
 
 
+_HIK_MEL_SCRIPTS = (
+    "hikSkeletonOperations.mel",
+    "hikGlobalUtils.mel",
+    "hikDefinitionUtils.mel",
+    "hikCharacterControlsUI.mel",
+    "hikControlRigOperations.mel",
+)
+_HIK_LOAD_PLUGIN_COMMAND = 'if (!`pluginInfo -query -loaded "mayaHIK"`) loadPlugin "mayaHIK";'
+_REQUIRED_HIK_PROCS = ("hikCreateCharacter", "hikSetCharacterObject", "hikSetCurrentCharacter")
+
+
 def collect_humanik_joint_candidates(model_root: Optional[str] = None, cmds_module=None) -> List[HumanIkJointCandidate]:
     """Collect imported MMD joint metadata as HumanIK resolver candidates.
 
@@ -82,6 +93,7 @@ def create_humanik_definition(
         raise ValueError("HumanIK definition requires at least one resolved assignment")
 
     mel = mel_module or _maya_mel()
+    ensure_humanik_mel_loaded(mel)
     character = str(mel.eval(f'hikCreateCharacter({_mel_string(name_hint)})'))
     for command in build_humanik_definition_mel_commands(
         character,
@@ -91,6 +103,19 @@ def create_humanik_definition(
     ):
         mel.eval(command)
     return character
+
+
+def ensure_humanik_mel_loaded(mel_module=None) -> None:
+    """Source Maya HumanIK MEL scripts when standalone has not loaded them."""
+    mel = mel_module or _maya_mel()
+    if _has_hik_procs(mel):
+        return
+    mel.eval(_HIK_LOAD_PLUGIN_COMMAND)
+    for script in _HIK_MEL_SCRIPTS:
+        mel.eval(f"source {script}")
+    if not _has_hik_procs(mel):
+        missing = [proc for proc in _REQUIRED_HIK_PROCS if not _mel_exists(mel, proc)]
+        raise RuntimeError(f"Failed to load Maya HumanIK MEL procedures: {', '.join(missing)}")
 
 
 def create_humanik_definition_from_scene(
@@ -185,3 +210,11 @@ def _sort_bone_index(index: Optional[int]) -> int:
 
 def _mel_string(value: str) -> str:
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _has_hik_procs(mel) -> bool:
+    return all(_mel_exists(mel, proc) for proc in _REQUIRED_HIK_PROCS)
+
+
+def _mel_exists(mel, proc: str) -> bool:
+    return bool(mel.eval(f"exists {proc}"))

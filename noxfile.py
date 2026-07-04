@@ -897,6 +897,37 @@ def maya_viewport_capture(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def humanik_definition_smoke(session: nox.Session) -> None:
+    """Create a minimal HumanIK definition under mayapy.
+
+    Examples:
+        uvx nox -s humanik_definition_smoke -- --maya 2024
+        uvx nox -s humanik_definition_smoke -- --maya 2024 --out build/reports/humanik_definition_smoke.json
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in {"--out", "--name"} and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/humanik_definition_smoke.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--out"}),
+        env=_mayapy_env(mayapy),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def maya_shader_override_smoke(session: nox.Session) -> None:
     """Smoke the legacy MMDShader VP2.0 override through mayapy playblast.
 

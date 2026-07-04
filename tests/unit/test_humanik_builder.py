@@ -9,6 +9,7 @@ from mmd_tools.core.humanik_builder import (
     collect_humanik_joint_candidates,
     create_humanik_definition,
     create_humanik_definition_from_scene,
+    ensure_humanik_mel_loaded,
     resolve_scene_humanik_assignments,
 )
 
@@ -70,9 +71,15 @@ class FakeMel:
 
     def __init__(self):
         self.commands = []
+        self.loaded = False
 
     def eval(self, command):
         self.commands.append(command)
+        if command.startswith("exists "):
+            return int(self.loaded)
+        if command.startswith("source "):
+            self.loaded = True
+            return None
         if command.startswith("hikCreateCharacter("):
             return "Character1"
         return None
@@ -132,7 +139,9 @@ class TestHumanIkBuilder(unittest.TestCase):
         character = create_humanik_definition(result, name_hint="MMD Character", mel_module=mel)
 
         self.assertEqual(character, "Character1")
-        self.assertEqual(mel.commands[0], 'hikCreateCharacter("MMD Character")')
+        self.assertIn("source hikGlobalUtils.mel", mel.commands)
+        self.assertIn("source hikDefinitionUtils.mel", mel.commands)
+        self.assertIn('hikCreateCharacter("MMD Character")', mel.commands)
         self.assertIn('hikSetCharacterObject("|model|lower", "Character1", 1, 0);', mel.commands)
         self.assertEqual(mel.commands[-1], "hikUpdateCharacterControlsUI(false);")
 
@@ -147,6 +156,14 @@ class TestHumanIkBuilder(unittest.TestCase):
     def test_create_humanik_definition_rejects_empty_assignments(self):
         with self.assertRaisesRegex(ValueError, "requires at least one"):
             create_humanik_definition(resolve_scene_humanik_assignments("|missing", _EmptySceneCmds()), mel_module=FakeMel())
+
+    def test_ensure_humanik_mel_loaded_skips_source_when_available(self):
+        mel = FakeMel()
+        mel.loaded = True
+
+        ensure_humanik_mel_loaded(mel)
+
+        self.assertNotIn("source hikGlobalUtils.mel", mel.commands)
 
 
 class _EmptySceneCmds(FakeCmds):
