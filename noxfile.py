@@ -913,9 +913,13 @@ def humanik_definition_smoke(session: nox.Session) -> None:
         if args[i] == "--maya" and i + 1 < len(args):
             i += 2
             continue
-        if args[i] in {"--out", "--name"} and i + 1 < len(args):
+        if args[i] in {"--out", "--name", "--fixture"} and i + 1 < len(args):
             passthrough.extend([args[i], args[i + 1]])
             i += 2
+            continue
+        if args[i] == "--create-control-rig":
+            passthrough.append(args[i])
+            i += 1
             continue
         i += 1
     session.run(
