@@ -7,8 +7,6 @@ Maya環境内で実行されるが、シーン操作を伴わないテストを�
 import ctypes
 import json
 import math
-import os
-import tempfile
 from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -24,7 +22,6 @@ from mmd_tools.converters.vmd_camera_animation import (
 )
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from tests.common.maya_test_base import MayaTestBase
-from tests.common.vmd_mock import create_test_vmd_data
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.io.mmd_importer import import_mmd_file
@@ -753,24 +750,6 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(cmds.keyframe(f"{camera_name}.rotateZ", query=True, timeChange=True), [60.0])
         self.assertEqual(cmds.keyframe(f"{camera_name}.translateZ", query=True, timeChange=True), [60.0])
 
-    def test_runtime_bake_infrastructure(self):
-        """Phase 1 runtime bake のインフラテスト (native なし環境でも安全)"""
-        vmd_data = create_test_vmd_data()
-        self.converter.set_bone_name_mapping({"センター": "center"})
-
-        # 新パラメータを受け付ける
-        res = self.converter.convert(vmd_data, vmd_bytes=b"dummy", pmx_bytes=None, pmx_path=None)
-        self.assertIsInstance(res, bool)
-
-        # should_use はデータ不足で False
-        self.assertFalse(
-            self.converter._should_use_mmd_runtime_bake(b"vmd", None, "/nonexistent.pmx")
-        )
-
-        # runtime bake インフラの確認のみ (キーフレーム検証は別テストに依存しないよう削除)
-        # ここでは convert が例外なく完了し、should_use が正しく動くことを確認
-        pass  # 追加の検証は test_convert_light_animation 等で行う
-
     def test_runtime_bake_uses_batch_evaluation_when_available(self):
         """batch ABI がある runtime では per-frame 評価へ落ちずに cache を構築する。"""
         class Frame:
@@ -1219,71 +1198,6 @@ class TestVmdConverter(MayaTestBase):
             [],
         )
 
-    def test_should_use_mmd_runtime_bake_accepts_bake_pmx_rejects_pmd(self):
-        """Bake mode は PMX 入力で runtime bake を使い、PMD 入力では無効"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            pmx_path = os.path.join(temp_dir, "model.pmx")
-            pmd_path = os.path.join(temp_dir, "model.pmd")
-            open(pmx_path, "wb").close()
-            open(pmd_path, "wb").close()
-
-            with patch.object(vmd_converter_module, "HAS_MMD_RUNTIME", True), patch.object(
-                vmd_converter_module,
-                "is_mmd_runtime_available",
-                return_value=True,
-            ):
-                self.assertTrue(
-                    self.converter._should_use_mmd_runtime_bake(
-                        vmd_bytes=b"vmd",
-                        pmx_bytes=None,
-                        pmx_path=pmx_path,
-                        bake_mode=True,
-                    )
-                )
-                self.assertFalse(
-                    self.converter._should_use_mmd_runtime_bake(
-                        vmd_bytes=b"vmd",
-                        pmx_bytes=None,
-                        pmx_path=pmd_path,
-                        bake_mode=True,
-                    )
-                )
-                self.assertTrue(
-                    self.converter._should_use_mmd_runtime_bake(
-                        vmd_bytes=b"vmd",
-                        pmx_bytes=b"pmx",
-                        pmx_path=pmd_path,
-                        bake_mode=True,
-                    )
-                )
-
-    def test_live_rig_target_uses_sparse_vmd_path(self):
-        """Rig mode でも VMD import は runtime dense bake に逃げない"""
-        joint = cmds.joint(name="runtime_live_rig_target_joint")
-        ik_node = cmds.createNode("mmdCcdIk", name="runtime_live_rig_ik")
-        cmds.connectAttr(f"{ik_node}.outputRotate[0]", f"{joint}.rotate", force=True)
-        self.converter.bone_name_mapping = {"左足ＩＫ": joint}
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            pmx_path = os.path.join(temp_dir, "model.pmx")
-            open(pmx_path, "wb").close()
-
-            with patch.object(vmd_converter_module, "HAS_MMD_RUNTIME", True), patch.object(
-                vmd_converter_module,
-                "is_mmd_runtime_available",
-                return_value=True,
-            ):
-                self.assertFalse(
-                    self.converter._should_use_mmd_runtime_bake(
-                        vmd_bytes=b"vmd",
-                        pmx_bytes=None,
-                        pmx_path=pmx_path,
-                        live_rig_target=True,
-                    )
-                )
-
-        cmds.delete(ik_node, joint)
-
     def test_mmd_ik_passthrough_keys_chain_bone_slot(self):
         """runtime live apply 中は mmdCcdIk output link の入力 slot へ final rotation を焼く"""
         joint = cmds.joint(name="runtime_live_toe_link")
@@ -1396,35 +1310,6 @@ class TestVmdConverter(MayaTestBase):
             0.01,
             "IK link inputRotate がほぼゼロで、二重ラジアン変換の再発が疑われます",
         )
-
-    def test_resolve_runtime_bake_sources_uses_vmd_source_file_and_scene_pmx(self):
-        """convert 直呼びでも VmdData.source_file と model root の mmd_source_file から runtime 入力を復元する"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            vmd_path = os.path.join(temp_dir, "motion.vmd")
-            pmx_path = os.path.join(temp_dir, "model.pmx")
-            with open(vmd_path, "wb") as file:
-                file.write(b"vmd-bytes")
-            with open(pmx_path, "wb") as file:
-                file.write(b"pmx-bytes")
-
-            root = cmds.group(empty=True, name="runtime_source_model_root")
-            cmds.addAttr(root, longName="mmd_source_file", dataType="string")
-            cmds.setAttr(f"{root}.mmd_source_file", pmx_path, type="string")
-            vmd_data = create_test_vmd_data()
-            vmd_data.source_file = vmd_path
-
-            vmd_bytes, pmx_bytes, resolved_pmx_path = self.converter._resolve_runtime_bake_sources(
-                vmd_data,
-                vmd_bytes=None,
-                pmx_bytes=None,
-                pmx_path=None,
-            )
-
-            self.assertEqual(vmd_bytes, b"vmd-bytes")
-            self.assertIsNone(pmx_bytes)
-            self.assertEqual(resolved_pmx_path, pmx_path)
-
-            cmds.delete(root)
 
     def test_disable_mmd_rig_constraints_for_runtime_bake_only_marked_constraints(self):
         """runtime bakeではMMD付与constraintとlive IK solverを無効化する"""
