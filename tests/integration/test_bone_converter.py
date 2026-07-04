@@ -61,8 +61,7 @@ class TestBoneConverter(MayaTestBase):
 
         # 階層構造を確認（位置は付与ボーンの処理により変更される可能性があるため、階層のみ確認）
         for bone in pmx_data.bones:
-            bone_name = bone.get_name()  # 英語名があればそれを使用
-            bone_name = maya_utils.sanitize_bone_name(bone_name)
+            bone_name = maya_utils.sanitize_bone_name(converter._bone_node_name_source(bone))
             self.assertTrue(
                 cmds.objExists(bone_name),
                 f"ジョイント '{bone_name}' が作成されていません。",
@@ -70,11 +69,12 @@ class TestBoneConverter(MayaTestBase):
 
             # 親子関係の確認
             if bone.parent_bone_index != -1:
-                parent_name = pmx_data.bones[bone.parent_bone_index].get_name()
-                parent_name = maya_utils.sanitize_bone_name(parent_name)
                 parent_joint = cmds.listRelatives(bone_name, parent=True, type="joint")
                 self.assertIsNotNone(parent_joint, f"ジョイント '{bone_name}' に親がいません。")
                 # 準標準ボーンの追加により親が変更される場合があるため、厳密な確認は行わない
+
+        if any(getattr(bone, "name_english", "") == "D" for bone in pmx_data.bones):
+            self.assertFalse(cmds.objExists("D"), "汎用英名 D を joint 名として使ってはいけません。")
 
         # jointOrinentの確認
 

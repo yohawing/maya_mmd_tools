@@ -143,6 +143,23 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(bone_map[1], "ボーン_1")
         self.assertEqual(bone_map[2], "ボーン_2")
 
+    def test_create_bone_mapping_prefers_native_name_for_generic_d_bone_english_names(self):
+        """PMX英名が汎用的なDだけの場合は日本語名からDボーン名を作る。"""
+        bones = [
+            self._create_mock_pmx_bone(0, "左腕D"),
+            self._create_mock_pmx_bone(1, "右腕捩D"),
+            self._create_mock_pmx_bone(2, "左ひじD"),
+        ]
+        for bone in bones:
+            bone.name_english = "D"
+            bone.get_name.return_value = "D"
+
+        bone_map = self.converter._create_bone_mapping(bones)
+
+        self.assertEqual(bone_map[0], "left_arm_d")
+        self.assertEqual(bone_map[1], "right_arm_twist_d")
+        self.assertEqual(bone_map[2], "left_elbow_d")
+
     @patch("mmd_tools.core.maya_utils.sanitize_bone_name")
     def test_create_maya_joints_hierarchy(self, mock_sanitize):
         """ジョイント階層作成のテスト（実際のMaya環境）"""

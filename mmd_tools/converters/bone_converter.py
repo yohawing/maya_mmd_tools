@@ -1,4 +1,5 @@
 import time
+import unicodedata
 from typing import List, Optional, Tuple, Union
 
 import maya.cmds as cmds
@@ -151,7 +152,7 @@ class BoneConverter:
         used_names = set()
 
         for i, bone in enumerate(bones):
-            joint_name = maya_utils.sanitize_bone_name(bone.get_name())
+            joint_name = maya_utils.sanitize_bone_name(self._bone_node_name_source(bone))
 
             # 重複する名前がある場合はサフィックスを追加
             original_name = joint_name
@@ -164,6 +165,20 @@ class BoneConverter:
             bone_map[i] = joint_name
 
         return bone_map
+
+    def _bone_node_name_source(self, bone) -> str:
+        """Return the source PMX/PMD name to use for the Maya joint node name."""
+        native_name = str(getattr(bone, "name", "") or "")
+        english_name = str(getattr(bone, "name_english", "") or "")
+        if native_name and self._is_generic_semistandard_english_name(english_name):
+            return native_name
+        return bone.get_name()
+
+    @staticmethod
+    def _is_generic_semistandard_english_name(name: str) -> bool:
+        """Return True for short PMX English names that lose semistandard context."""
+        normalized = unicodedata.normalize("NFKC", name).strip().lower().replace(" ", "_")
+        return normalized in {"d", "p", "c", "ex", "ik"}
 
     def _get_node_uuid(self, node: str) -> Optional[str]:
         """Return the Maya UUID for a node when available."""
