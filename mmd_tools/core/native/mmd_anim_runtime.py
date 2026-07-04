@@ -163,6 +163,67 @@ def _byte_buffer_to_bytes(lib: CDLL, buffer: MmdRuntimeFfiByteBuffer) -> Optiona
         free_func(buffer)
 
 
+_JSON_EXPORT_SYMBOLS = {
+    "vmd": "mmd_runtime_export_vmd_animation_json",
+    "pmx": "mmd_runtime_export_pmx_model_json",
+    "pmd": "mmd_runtime_export_pmd_model_json",
+}
+
+
+def is_native_json_export_available(format_kind: str) -> bool:
+    """
+    指定 MMD format の JSON writer FFI が利用可能かどうかを返す。
+
+    Args:
+        format_kind: ``"vmd"`` / ``"pmx"`` / ``"pmd"``。
+
+    Returns:
+        対応する native JSON writer と byte buffer free ABI があれば True。
+    """
+    symbol = _JSON_EXPORT_SYMBOLS.get(str(format_kind).lower())
+    if symbol is None:
+        return False
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return False
+    return hasattr(lib, symbol) and hasattr(lib, "mmd_runtime_byte_buffer_free")
+
+
+def _export_json_with_symbol(symbol: str, payload: Any) -> Optional[bytes]:
+    """JSON payload を指定 native writer に渡して MMD bytes を返す。"""
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return None
+    export_func = getattr(lib, symbol, None)
+    if export_func is None or getattr(lib, "mmd_runtime_byte_buffer_free", None) is None:
+        return None
+    payload_bytes = _encode_export_metadata(payload)
+    if not payload_bytes:
+        return None
+    payload_buf = (c_uint8 * len(payload_bytes)).from_buffer_copy(payload_bytes)
+    try:
+        native_buffer: MmdRuntimeFfiByteBuffer = export_func(payload_buf, len(payload_bytes))
+        return _byte_buffer_to_bytes(lib, native_buffer)
+    except Exception as exc:
+        logger.error("%s failed: %s", symbol, exc, exc_info=True)
+        return None
+
+
+def export_vmd_animation_json(payload: Any) -> Optional[bytes]:
+    """VmdParsedAnimation JSON から VMD バイト列を native writer で生成する。"""
+    return _export_json_with_symbol(_JSON_EXPORT_SYMBOLS["vmd"], payload)
+
+
+def export_pmx_model_json(payload: Any) -> Optional[bytes]:
+    """PmxParsedModel JSON から PMX バイト列を native writer で生成する。"""
+    return _export_json_with_symbol(_JSON_EXPORT_SYMBOLS["pmx"], payload)
+
+
+def export_pmd_model_json(payload: Any) -> Optional[bytes]:
+    """PmdParsedModel JSON から PMD バイト列を native writer で生成する。"""
+    return _export_json_with_symbol(_JSON_EXPORT_SYMBOLS["pmd"], payload)
+
+
 def export_pmx_from_parts(
     metadata: Any,
     positions_xyz: Any,

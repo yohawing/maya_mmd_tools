@@ -40,6 +40,9 @@ def setup_function_signatures(lib: CDLL) -> None:
 
     lib.mmd_runtime_model_create_from_pmx_bytes.restype = c_void_p
     lib.mmd_runtime_model_create_from_pmx_bytes.argtypes = [POINTER(c_uint8), c_size_t]
+    set_sig(lib, "mmd_runtime_export_vmd_animation_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
+    set_sig(lib, "mmd_runtime_export_pmx_model_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
+    set_sig(lib, "mmd_runtime_export_pmd_model_json", MmdRuntimeFfiByteBuffer, [POINTER(c_uint8), c_size_t])
     set_sig(
         lib,
         "mmd_runtime_export_pmx_from_parts",
