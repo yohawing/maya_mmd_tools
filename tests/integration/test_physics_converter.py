@@ -296,6 +296,41 @@ class TestPhysicsConverter(MayaTestBase):
         )
         self.assertEqual(cmds.getAttr(f"{rbs[0]}.mmd_physics_mode"), 2)
 
+    def test_pmx_dynamic_rigid_body_drives_transform_from_bullet_preview(self):
+        """PMX dynamic 剛体は Bullet solved output で transform が動く。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        rb = self._make_fake_pmx_rigid_body(
+            name="falling_preview_rb",
+            related_bone_index=-1,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=1,
+            mass=1.0,
+            velocity_attenuation=0.0,
+            rotation_attenuation=0.0,
+        )
+        data = self._make_fake_pmx_data(rigid_bodies=[rb])
+
+        converter = PhysicsConverter({"create_physics_joints": False})
+        rbs, _ = converter.convert_pmx_physics(data, {}, root)
+        self.assertGreaterEqual(len(rbs), 1)
+
+        self.assertTrue(cmds.attributeQuery("isDrivenBySimulation", node=rbs[0], exists=True))
+        self.assertTrue(cmds.getAttr(f"{rbs[0]}.isDrivenBySimulation"))
+        pair_blends = cmds.listConnections(f"{rbs[0]}.translateY", source=True, destination=False, type="pairBlend") or []
+        self.assertTrue(pair_blends, "Bullet solved output が transform.translate に接続されていない")
+
+        cmds.playbackOptions(min=1, max=30, animationStartTime=1, animationEndTime=30)
+        cmds.currentTime(1, edit=True)
+        start_y = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)[1]
+        cmds.currentTime(30, edit=True)
+        end_y = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)[1]
+        self.assertLess(end_y, start_y - 0.1)
+
     def test_pmx_static_rigid_body_follows_related_bone(self):
         """PMX physics_mode=0 は関連ボーンの transform に追従する。"""
         if not PhysicsConverter.is_bullet_available():

@@ -668,6 +668,8 @@ class PhysicsConverter:
             parented = cmds.parent(transform, parent_group)
             if parented:
                 transform = parented[0]
+            if physics_mode != 0:
+                self._connect_bullet_simulation_output(transform, shape)
             if physics_mode == 0:
                 self._attach_static_bullet_body_to_bone(transform, rb, bone_index_map)
             shapes = cmds.listRelatives(transform, shapes=True, type="bulletRigidBodyShape", fullPath=True) or []
@@ -728,12 +730,18 @@ class PhysicsConverter:
             self.logger.warning(f"Failed to get Bullet solver: {exc}")
             return None
 
-    def _connect_attr_if_possible(self, source: str, destination: str, next_available: bool = False) -> None:
+    def _connect_attr_if_possible(
+        self,
+        source: str,
+        destination: str,
+        next_available: bool = False,
+        force: bool = False,
+    ) -> None:
         """既存接続を壊さず、存在する plug だけを接続する。"""
         try:
             if not cmds.objExists(source) or not cmds.objExists(destination):
                 return
-            if not next_available and cmds.listConnections(destination, source=True, destination=False):
+            if not next_available and not force and cmds.listConnections(destination, source=True, destination=False):
                 return
             kwargs = {"force": True}
             if next_available:
@@ -763,6 +771,38 @@ class PhysicsConverter:
         cmds.setAttr(f"{shape}.initialRotateX", math.radians(rotate[0]))
         cmds.setAttr(f"{shape}.initialRotateY", math.radians(rotate[1]))
         cmds.setAttr(f"{shape}.initialRotateZ", math.radians(rotate[2]))
+
+    def _connect_bullet_simulation_output(self, transform: str, shape: str) -> None:
+        """Drive a dynamic Bullet rigid body transform from solved output."""
+        if not cmds.objExists(transform) or not cmds.objExists(shape):
+            return
+
+        translate = cmds.xform(transform, query=True, objectSpace=True, translation=True)
+        rotate = cmds.xform(transform, query=True, objectSpace=True, rotation=True)
+        pair_blend = cmds.createNode("pairBlend", name=f"{transform.split('|')[-1]}_bulletSolveBlend")
+        cmds.setAttr(f"{pair_blend}.inTranslate1", *translate, type="double3")
+        cmds.setAttr(f"{pair_blend}.inRotate1", *rotate, type="double3")
+        cmds.setAttr(f"{pair_blend}.weight", 1.0)
+
+        if not cmds.attributeQuery("isDrivenBySimulation", node=transform, exists=True):
+            cmds.addAttr(transform, longName="isDrivenBySimulation", attributeType="bool", defaultValue=True, keyable=True)
+        cmds.setAttr(f"{transform}.isDrivenBySimulation", True)
+
+        self._connect_attr_if_possible(f"{shape}.outSolvedTranslate", f"{pair_blend}.inTranslate2")
+        self._connect_attr_if_possible(f"{shape}.outSolvedRotate", f"{pair_blend}.inRotate2")
+        self._connect_attr_if_possible(f"{transform}.isDrivenBySimulation", f"{pair_blend}.weight")
+
+        for axis in "XYZ":
+            self._connect_attr_if_possible(
+                f"{pair_blend}.outTranslate{axis}",
+                f"{transform}.translate{axis}",
+                force=True,
+            )
+            self._connect_attr_if_possible(
+                f"{pair_blend}.outRotate{axis}",
+                f"{transform}.rotate{axis}",
+                force=True,
+            )
 
     def _add_rigid_body_custom_attrs(self, transform: str, rb, rigid_body_index: int, physics_mode: int, model_type: str):
         """MMD 剛体メタデータをカスタムアトリビュートとして追加する。"""
