@@ -4,7 +4,13 @@ import unittest
 
 from mmd_tools.config.humanik_mapping import HIK_BONE_INDICES
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_BONE_NAME, ATTR_MMD_BONE_NAME_EN
-from mmd_tools.core.humanik_builder import collect_humanik_joint_candidates, resolve_scene_humanik_assignments
+from mmd_tools.core.humanik_builder import (
+    build_humanik_definition_mel_commands,
+    collect_humanik_joint_candidates,
+    create_humanik_definition,
+    create_humanik_definition_from_scene,
+    resolve_scene_humanik_assignments,
+)
 
 
 class FakeCmds:
@@ -59,6 +65,19 @@ class FakeCmds:
         return self.attrs[(node, attr)]
 
 
+class FakeMel:
+    """Small Maya mel fake for HumanIK definition tests."""
+
+    def __init__(self):
+        self.commands = []
+
+    def eval(self, command):
+        self.commands.append(command)
+        if command.startswith("hikCreateCharacter("):
+            return "Character1"
+        return None
+
+
 class TestHumanIkBuilder(unittest.TestCase):
     """HumanIK builder scene collection tests."""
 
@@ -84,6 +103,57 @@ class TestHumanIkBuilder(unittest.TestCase):
     def test_collect_humanik_joint_candidates_rejects_missing_root(self):
         with self.assertRaisesRegex(ValueError, "Model root does not exist"):
             collect_humanik_joint_candidates("|missing", FakeCmds())
+
+    def test_build_humanik_definition_mel_commands_assigns_hik_indices(self):
+        result = resolve_scene_humanik_assignments("|model", FakeCmds())
+
+        commands = build_humanik_definition_mel_commands("Character1", result.assignments)
+
+        self.assertIn('hikSetCharacterObject("|model|lower", "Character1", 1, 0);', commands)
+        self.assertIn('hikSetCharacterObject("|model|spine", "Character1", 8, 0);', commands)
+        self.assertEqual(commands[-1], 'hikUpdateCharacterControlsUI(false);')
+
+    def test_build_humanik_definition_mel_commands_can_create_control_rig(self):
+        result = resolve_scene_humanik_assignments("|model", FakeCmds())
+
+        commands = build_humanik_definition_mel_commands(
+            'Character"One',
+            result.assignments,
+            create_control_rig=True,
+        )
+
+        self.assertIn('hikSetCurrentCharacter("Character\\"One");', commands)
+        self.assertEqual(commands[-2:], ["hikCreateControlRig();", "hikUpdateCharacterControlsUI(false);"])
+
+    def test_create_humanik_definition_executes_create_then_assignments(self):
+        result = resolve_scene_humanik_assignments("|model", FakeCmds())
+        mel = FakeMel()
+
+        character = create_humanik_definition(result, name_hint="MMD Character", mel_module=mel)
+
+        self.assertEqual(character, "Character1")
+        self.assertEqual(mel.commands[0], 'hikCreateCharacter("MMD Character")')
+        self.assertIn('hikSetCharacterObject("|model|lower", "Character1", 1, 0);', mel.commands)
+        self.assertEqual(mel.commands[-1], "hikUpdateCharacterControlsUI(false);")
+
+    def test_create_humanik_definition_from_scene_uses_collector_and_resolver(self):
+        mel = FakeMel()
+
+        character = create_humanik_definition_from_scene("|model", cmds_module=FakeCmds(), mel_module=mel)
+
+        self.assertEqual(character, "Character1")
+        self.assertIn('hikSetCharacterObject("|model|spine", "Character1", 8, 0);', mel.commands)
+
+    def test_create_humanik_definition_rejects_empty_assignments(self):
+        with self.assertRaisesRegex(ValueError, "requires at least one"):
+            create_humanik_definition(resolve_scene_humanik_assignments("|missing", _EmptySceneCmds()), mel_module=FakeMel())
+
+
+class _EmptySceneCmds(FakeCmds):
+    def __init__(self):
+        super().__init__()
+        self.types["|missing"] = "transform"
+        self.children["|missing"] = []
 
 
 if __name__ == "__main__":

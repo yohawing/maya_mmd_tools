@@ -7,10 +7,15 @@ without requiring Maya's HIK UI commands.
 
 from __future__ import annotations
 
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Sequence
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_BONE_NAME, ATTR_MMD_BONE_NAME_EN
-from mmd_tools.core.humanik_resolver import HumanIkJointCandidate, HumanIkResolveResult, resolve_humanik_assignments
+from mmd_tools.core.humanik_resolver import (
+    HumanIkBoneAssignment,
+    HumanIkJointCandidate,
+    HumanIkResolveResult,
+    resolve_humanik_assignments,
+)
 
 
 def collect_humanik_joint_candidates(model_root: Optional[str] = None, cmds_module=None) -> List[HumanIkJointCandidate]:
@@ -46,10 +51,77 @@ def resolve_scene_humanik_assignments(
     return resolve_humanik_assignments(collect_humanik_joint_candidates(model_root, cmds_module))
 
 
+def build_humanik_definition_mel_commands(
+    character: str,
+    assignments: Sequence[HumanIkBoneAssignment],
+    create_control_rig: bool = False,
+    update_ui: bool = True,
+) -> List[str]:
+    """Build MEL commands that assign resolved joints to a HIK character."""
+    commands = [
+        f'hikSetCharacterObject({_mel_string(assignment.joint)}, {_mel_string(character)}, {assignment.hik_index}, 0);'
+        for assignment in assignments
+    ]
+    commands.append(f'hikSetCurrentCharacter({_mel_string(character)});')
+    if create_control_rig:
+        commands.append("hikCreateControlRig();")
+    if update_ui:
+        commands.append("hikUpdateCharacterControlsUI(false);")
+    return commands
+
+
+def create_humanik_definition(
+    result: HumanIkResolveResult,
+    name_hint: str = "MMDCharacter",
+    mel_module=None,
+    create_control_rig: bool = False,
+    update_ui: bool = True,
+) -> str:
+    """Create a Maya HumanIK character definition from resolved assignments."""
+    if not result.assignments:
+        raise ValueError("HumanIK definition requires at least one resolved assignment")
+
+    mel = mel_module or _maya_mel()
+    character = str(mel.eval(f'hikCreateCharacter({_mel_string(name_hint)})'))
+    for command in build_humanik_definition_mel_commands(
+        character,
+        result.assignments,
+        create_control_rig=create_control_rig,
+        update_ui=update_ui,
+    ):
+        mel.eval(command)
+    return character
+
+
+def create_humanik_definition_from_scene(
+    model_root: Optional[str] = None,
+    name_hint: str = "MMDCharacter",
+    cmds_module=None,
+    mel_module=None,
+    create_control_rig: bool = False,
+    update_ui: bool = True,
+) -> str:
+    """Resolve scene joints and create a Maya HumanIK character definition."""
+    result = resolve_scene_humanik_assignments(model_root, cmds_module)
+    return create_humanik_definition(
+        result,
+        name_hint=name_hint,
+        mel_module=mel_module,
+        create_control_rig=create_control_rig,
+        update_ui=update_ui,
+    )
+
+
 def _maya_cmds():
     from maya import cmds
 
     return cmds
+
+
+def _maya_mel():
+    from maya import mel
+
+    return mel
 
 
 def _list_candidate_joints(cmds, model_root: Optional[str]) -> List[str]:
@@ -109,3 +181,7 @@ def _dedupe(values: Iterable[str]) -> List[str]:
 
 def _sort_bone_index(index: Optional[int]) -> int:
     return index if index is not None else 1_000_000_000
+
+
+def _mel_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
