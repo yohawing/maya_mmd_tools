@@ -563,7 +563,7 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{shape}.radius"), 0.5, places=4)
         self.assertAlmostEqual(cmds.getAttr(f"{shape}.length"), 3.5, places=4)
         self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterGroup"), 0x0002)
-        self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterMask"), 0xFFFD)
+        self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterMask"), 0x0002)
 
         collected = converter.collect_physics_from_scene_for_export(root)
         self.assertEqual(collected["rigid_bodies"][0]["group"], 1)
@@ -745,6 +745,30 @@ class TestPhysicsConverter(MayaTestBase):
         chain = [value / chain_len for value in chain]
         axis_alignment = abs(sum(local_y[i] * chain[i] for i in range(3)))
         self.assertGreater(axis_alignment, 0.98, "capsule local Y axis が髪チェーン方向に沿っていない")
+
+    def test_hair_physics_fixture_collision_filter_converts_non_collision_mask(self):
+        """代表フィクスチャの PMX 非衝突 mask を Bullet collide-with mask へ変換する。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        pmx = parse_pmx_file(str(HAIR_PHYSICS_FIXTURE))
+        root = cmds.group(name="hair_fixture_filter_root", empty=True)
+
+        converter = PhysicsConverter({"create_physics_joints": True})
+        rbs, constraints = converter.convert_pmx_physics(pmx, {}, root)
+
+        self.assertEqual(len(rbs), 16)
+        self.assertEqual(len(constraints), 14)
+        self.assertEqual({rb.group for rb in pmx.rigid_bodies}, {1})
+        self.assertEqual({rb.collision_mask for rb in pmx.rigid_bodies}, {0xFFFD})
+
+        for index, rb_transform in enumerate(rbs):
+            rb = pmx.rigid_bodies[index]
+            shape = cmds.listRelatives(rb_transform, shapes=True, type="bulletRigidBodyShape")[0]
+            self.assertEqual(cmds.getAttr(f"{rb_transform}.mmd_collision_group"), rb.group)
+            self.assertEqual(cmds.getAttr(f"{rb_transform}.mmd_collision_mask"), rb.collision_mask)
+            self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterGroup"), 1 << rb.group)
+            self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterMask"), (~rb.collision_mask) & 0xFFFF)
 
     def test_pmd_rigid_body_sphere_bullet(self):
         """PMD sphere (shape_type=0) → Bullet colliderShapeType=2(sphere)"""

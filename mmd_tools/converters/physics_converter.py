@@ -149,12 +149,13 @@ def _mmd_collision_group_to_bullet_filter_group(collision_group: int) -> int:
 
 
 def _mmd_collision_mask_to_bullet_filter_mask(collision_mask: int) -> int:
-    """Keep PMX/PMD collision mask as Bullet's collide-with bit mask."""
+    """Convert PMX/PMD non-collision flags to Bullet's collide-with bit mask."""
     try:
         mask = int(collision_mask)
     except (TypeError, ValueError):
         mask = 0xFFFF
-    return max(0, min(mask, 0xFFFF)) & 0xFFFF
+    non_collision_bits = max(0, min(mask, 0xFFFF)) & 0xFFFF
+    return (~non_collision_bits) & 0xFFFF
 
 
 def _clamp_to_range(

@@ -104,11 +104,12 @@ class TestCollisionFilterConversion(unittest.TestCase):
         self.assertEqual(_mmd_collision_group_to_bullet_filter_group(-1), 0x0001)
         self.assertEqual(_mmd_collision_group_to_bullet_filter_group(99), 0x8000)
 
-    def test_mask_is_passed_through_as_collide_with_bits(self):
-        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0xFFFF), 0xFFFF)
-        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0xFFFD), 0xFFFD)
-        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(-1), 0x0000)
-        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0x1FFFF), 0xFFFF)
+    def test_mask_converts_non_collision_flags_to_collide_with_bits(self):
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0xFFFF), 0x0000)
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0xFFFD), 0x0002)
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0x0000), 0xFFFF)
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(-1), 0xFFFF)
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0x1FFFF), 0x0000)
 
 
 class TestGravityResolution(unittest.TestCase):

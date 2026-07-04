@@ -87,6 +87,8 @@ def _rigid_body_refs(cmds, root: str) -> dict[int, dict[str, Any]]:
             "name": _safe_get_attr(cmds, f"{transform}.mmd_rigid_body_name", transform.rsplit("|", 1)[-1]),
             "physicsMode": mode,
             "relatedBoneIndex": bone,
+            "collisionGroup": int(_safe_get_attr(cmds, f"{transform}.mmd_collision_group", 0)),
+            "collisionMask": int(_safe_get_attr(cmds, f"{transform}.mmd_collision_mask", 0xFFFF)),
         }
     return refs
 
@@ -136,6 +138,29 @@ def _has_preview_orient_constraint(cmds, joint: str) -> bool:
         except Exception:
             continue
     return False
+
+
+def _collision_filter_summary(cmds, rigid_refs: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    filters = []
+    for index, ref in sorted(rigid_refs.items()):
+        shape = ref["shape"]
+        mmd_group = int(ref["collisionGroup"])
+        mmd_mask = int(ref["collisionMask"])
+        bullet_group = int(_safe_get_attr(cmds, f"{shape}.collisionFilterGroup", 0))
+        bullet_mask = int(_safe_get_attr(cmds, f"{shape}.collisionFilterMask", 0))
+        filters.append(
+            {
+                "index": index,
+                "node": ref["node"],
+                "mmdCollisionGroup": mmd_group,
+                "mmdNonCollisionMask": mmd_mask,
+                "bulletCollisionFilterGroup": bullet_group,
+                "bulletCollisionFilterMask": bullet_mask,
+                "expectedBulletGroup": 1 << max(0, min(mmd_group, 15)),
+                "expectedBulletMask": (~(max(0, min(mmd_mask, 0xFFFF)) & 0xFFFF)) & 0xFFFF,
+            }
+        )
+    return filters
 
 
 def _sample_node(cmds, node: str) -> dict[str, list[float]]:
@@ -296,6 +321,12 @@ def run(
     )
     locator_count = len(cmds.ls(type="mmdRigidBodyLocator", long=True) or [])
     constraint_count = len(cmds.ls(type="bulletRigidBodyConstraintShape", long=True) or [])
+    collision_filters = _collision_filter_summary(cmds, rigid_refs)
+    collision_filters_match = all(
+        item["bulletCollisionFilterGroup"] == item["expectedBulletGroup"]
+        and item["bulletCollisionFilterMask"] == item["expectedBulletMask"]
+        for item in collision_filters
+    )
 
     assertions: list[dict[str, Any]] = []
     _assertion(assertions, "rigid_body_count_is_16", len(rigid_refs) == 16, {"actual": len(rigid_refs)})
@@ -343,6 +374,20 @@ def run(
         rewind_error_max < REWIND_EPSILON,
         {"actual": rewind_error_max, "maximum": REWIND_EPSILON},
     )
+    _assertion(
+        assertions,
+        "collision_filters_match_mmd_non_collision_masks",
+        collision_filters_match,
+        {
+            "checked": len(collision_filters),
+            "mismatches": [
+                item
+                for item in collision_filters
+                if item["bulletCollisionFilterGroup"] != item["expectedBulletGroup"]
+                or item["bulletCollisionFilterMask"] != item["expectedBulletMask"]
+            ],
+        },
+    )
 
     failed = [item for item in assertions if not item["pass"]]
     payload = {
@@ -359,6 +404,7 @@ def run(
             "pairBlendDrivenDynamicCount": pair_blend_count,
             "previewOrientConstraintCount": orient_constraint_count,
             "solver": _solver_summary(cmds),
+            "collisionFilters": collision_filters,
         },
         "probeNodes": {
             name: {"node": node, "kind": "bone" if name.startswith("bone_") else "rigidBody"}
