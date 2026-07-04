@@ -4,6 +4,10 @@ from ..qt_compat import (
     QGroupBox,
     QHBoxLayout,
     QListWidget,
+    QPushButton,
+    QCheckBox,
+    QLabel,
+    QFormLayout,
 )
 from ..base_tab import BaseTab
 
@@ -14,6 +18,13 @@ class PhysicsTab(BaseTab):
         self.setObjectName("PhysicsTab")
 
         main_layout = QVBoxLayout(self)
+        controls_layout = QHBoxLayout()
+        self.refresh_btn = QPushButton("Refresh")
+        controls_layout.addWidget(self.refresh_btn)
+        self.collider_visible_check = QCheckBox("Show Colliders")
+        self.collider_visible_check.setChecked(True)
+        controls_layout.addWidget(self.collider_visible_check)
+        main_layout.addLayout(controls_layout)
 
         tab_widget = QTabWidget()
         main_layout.addWidget(tab_widget)
@@ -33,3 +44,18 @@ class PhysicsTab(BaseTab):
         joint_layout.addWidget(self.joint_list)
         joint_group.setLayout(joint_layout)
         tab_widget.addTab(joint_group, "Joints")
+
+        details_group = QGroupBox("Details")
+        details_layout = QFormLayout()
+        self.detail_name_value = QLabel("None")
+        self.detail_type_value = QLabel("")
+        self.detail_shape_value = QLabel("")
+        self.detail_bodies_value = QLabel("")
+        self.detail_node_value = QLabel("")
+        details_layout.addRow("Name", self.detail_name_value)
+        details_layout.addRow("Type", self.detail_type_value)
+        details_layout.addRow("Shape", self.detail_shape_value)
+        details_layout.addRow("Bodies", self.detail_bodies_value)
+        details_layout.addRow("Node", self.detail_node_value)
+        details_group.setLayout(details_layout)
+        main_layout.addWidget(details_group)
