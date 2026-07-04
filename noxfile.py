@@ -92,6 +92,21 @@ def _options(args: list[str], name: str) -> list[str]:
     return values
 
 
+def _without_option(args: list[str], name: str) -> list[str]:
+    """Return args with a single value option removed."""
+    filtered: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == name:
+            if i + 1 >= len(args):
+                raise ValueError(f"{name} requires a value")
+            i += 2
+            continue
+        filtered.append(args[i])
+        i += 1
+    return filtered
+
+
 def _has_flag(args: list[str], name: str) -> bool:
     """Return True if a boolean flag is present in positional arguments."""
     return name in args
@@ -107,6 +122,14 @@ def _require_build_path(session: nox.Session, value: str, option_name: str) -> P
     if path != build_root and build_root not in path.parents:
         session.error(f"{option_name} must resolve under {build_root}: {path}")
     return path
+
+
+def _resolve_existing_or_repo_path(value: str) -> Path:
+    """Resolve an input path from absolute or repository-relative text."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.resolve()
 
 
 def _sha256_file(path: Path) -> str:
@@ -823,21 +846,35 @@ def gui_tests(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none")
 def ffi_build(session: nox.Session) -> None:
-    """Build the mmd-anim FFI library used by Python and C++ integrations."""
+    """Build the mmd-anim FFI library used by Python and C++ integrations.
+
+    Examples:
+        uvx nox -s ffi_build
+        uvx nox -s ffi_build -- --release --cargo-target-dir build/mmd-anim-unlocked-target
+    """
     args = session.posargs or ["--release"]
+    cargo_target_dir_raw = _option(args, "--cargo-target-dir", "")
+    cargo_args = _without_option(args, "--cargo-target-dir") if cargo_target_dir_raw else list(args)
+    cargo_target_dir = None
+    if cargo_target_dir_raw:
+        cargo_target_dir = _require_build_path(session, cargo_target_dir_raw, "--cargo-target-dir")
     profile = "release" if "--release" in args else "debug"
     library_name = {
         "Windows": "mmd_runtime_ffi.dll",
         "Darwin": "libmmd_runtime_ffi.dylib",
     }.get(platform.system(), "libmmd_runtime_ffi.so")
+    output_root = cargo_target_dir or (ROOT / "external" / "mmd-anim" / "target")
     locked_by = _windows_processes_locking_module(
-        ROOT / "external" / "mmd-anim" / "target" / profile / library_name
+        output_root / profile / library_name
     )
     if locked_by:
         session.error(
             "mmd-anim FFI output DLL is currently loaded and cannot be replaced: "
             + "; ".join(locked_by)
         )
+    env = os.environ.copy()
+    if cargo_target_dir is not None:
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
     session.run(
         "cargo",
         "build",
@@ -845,14 +882,25 @@ def ffi_build(session: nox.Session) -> None:
         "mmd-anim-ffi",
         "--manifest-path",
         "external/mmd-anim/Cargo.toml",
-        *args,
+        *cargo_args,
+        env=env,
         external=True,
     )
 
 
 @nox.session(venv_backend="none")
 def native_smoke(session: nox.Session) -> None:
-    """Verify that Python can load mmd-anim-ffi and read its ABI version."""
+    """Verify that Python can load mmd-anim-ffi and read its ABI version.
+
+    Examples:
+        uvx nox -s native_smoke
+        uvx nox -s native_smoke -- --ffi-path build/mmd-anim-unlocked-target/release
+    """
+    args = list(session.posargs)
+    ffi_path = _option(args, "--ffi-path", "")
+    env = os.environ.copy()
+    if ffi_path:
+        env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
     code = (
         "from mmd_tools.core.native.mmd_anim_runtime import "
         "get_mmd_runtime_library, get_runtime_library_path; "
@@ -860,13 +908,24 @@ def native_smoke(session: nox.Session) -> None:
         "print(get_runtime_library_path()); "
         "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
     )
-    session.run(sys.executable, "-c", code, external=True)
+    session.run(sys.executable, "-c", code, env=env, external=True)
 
 
 @nox.session(venv_backend="none")
 def native_export_smoke(session: nox.Session) -> None:
-    """Verify native VMD/PMD/PMX export writer symbols when the DLL is current."""
-    session.run(sys.executable, "tests/native_export_smoke.py", *session.posargs, external=True)
+    """Verify native VMD/PMD/PMX export writer symbols when the DLL is current.
+
+    Examples:
+        uvx nox -s native_export_smoke
+        uvx nox -s native_export_smoke -- --strict --ffi-path build/mmd-anim-unlocked-target/release
+    """
+    args = list(session.posargs)
+    ffi_path = _option(args, "--ffi-path", "")
+    smoke_args = _without_option(args, "--ffi-path") if ffi_path else args
+    env = os.environ.copy()
+    if ffi_path:
+        env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
+    session.run(sys.executable, "tests/native_export_smoke.py", *smoke_args, env=env, external=True)
 
 
 @nox.session(venv_backend="none")

@@ -106,6 +106,14 @@ uvx nox -s native_smoke
 uvx nox -s golden_oracle
 ```
 
+If an open Maya session has loaded the default development DLL, build and smoke
+an alternate target without replacing it:
+
+```powershell
+uvx nox -s ffi_build -- --release --cargo-target-dir build/mmd-anim-unlocked-target
+uvx nox -s native_export_smoke -- --strict --ffi-path build/mmd-anim-unlocked-target/release
+```
+
 Maya-local regression gates:
 
 ```powershell
