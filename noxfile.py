@@ -1472,6 +1472,23 @@ def release_gate(session: nox.Session) -> None:
                 "tier2:import-order-e2e",
                 ["uvx", "nox", "-s", "import_order_e2e", "--", "--maya", version, "--require-zero-fallback"],
             ),
+            (
+                "tier2:humanik-control-rig",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "humanik_definition_smoke",
+                    "--",
+                    "--maya",
+                    version,
+                    "--fixture",
+                    "body",
+                    "--create-control-rig",
+                    "--out",
+                    "build/release-gate/humanik_control_rig_smoke.json",
+                ],
+            ),
             ("tier3:local-assets-check", ["uvx", "nox", "-s", "local_assets_check", "--", "--maya", version]),
         ]
         if _has_flag(args, "--with-cpp"):
