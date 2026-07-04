@@ -958,6 +958,39 @@ class TestPhysicsConverter(MayaTestBase):
                 f"joint_type={jtype}: rigidBodyA が outRigidBodyData から接続されていない",
             )
 
+    def test_pmx_sixdof_joint_with_spring_uses_spring_sixdof_preview(self):
+        """PMX joint_type=0 でも spring 値がある場合は preview を SpringSixDOF にする。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        rb_a = self._make_fake_pmx_rigid_body(
+            name="rb_a", related_bone_index=0, shape_type=0,
+            position=(0, 5, 0))
+        rb_b = self._make_fake_pmx_rigid_body(
+            name="rb_b", related_bone_index=1, shape_type=0,
+            position=(0, 10, 0))
+        joint = self._make_fake_pmx_joint(
+            name="spring_sixdof",
+            joint_type=0,
+            rigid_body_a_index=0,
+            rigid_body_b_index=1,
+            position=(0, 7.5, 0),
+            spring_rotation=(50.0, 50.0, 50.0),
+        )
+        data = self._make_fake_pmx_data(rigid_bodies=[rb_a, rb_b], joints=[joint])
+
+        converter = PhysicsConverter({"create_physics_joints": True})
+        _, cons = converter.convert_pmx_physics(data, {}, root)
+
+        self.assertGreaterEqual(len(cons), 1)
+        constr_shape = cmds.listRelatives(cons[0], shapes=True, type="bulletRigidBodyConstraintShape")[0]
+        self.assertEqual(cmds.getAttr(f"{constr_shape}.constraintType"), 5)
+        self.assertEqual(cmds.getAttr(f"{cons[0]}.mmd_joint_type"), 0)
+        for axis in ("X", "Y", "Z"):
+            self.assertTrue(cmds.getAttr(f"{constr_shape}.angularSpringEnabled{axis}"))
+            self.assertAlmostEqual(cmds.getAttr(f"{constr_shape}.angularSpringStiffness{axis}"), 50.0)
+
     def test_bullet_unavailable_fallback(self):
         """Bullet が不可の場合に Nucleus fallback が例外を出さない"""
         root = cmds.group(name="test_root", empty=True)

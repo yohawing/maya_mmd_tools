@@ -65,6 +65,32 @@ _Z_REFLECTION_MATRIX = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0))
 _RIGID_BODY_LOCATOR_TYPE = "mmdRigidBodyLocator"
 
 
+def _has_nonzero_spring(*spring_vectors) -> bool:
+    """Return whether any joint spring vector contains a non-zero value."""
+    for spring_vector in spring_vectors:
+        if not spring_vector:
+            continue
+        for value in spring_vector:
+            try:
+                if float(value) != 0.0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+def _resolve_pmx_bullet_constraint_type(
+    pmx_joint_type: int,
+    spring_trans: Optional[Tuple[float, float, float]] = None,
+    spring_rot: Optional[Tuple[float, float, float]] = None,
+) -> int:
+    """Choose the Bullet preview constraint type while preserving PMX metadata."""
+    bullet_constraint_type = _PMX_JOINT_TO_BULLET.get(pmx_joint_type, 4)
+    if bullet_constraint_type == 4 and _has_nonzero_spring(spring_trans, spring_rot):
+        return 5
+    return bullet_constraint_type
+
+
 def _mat3_mul(a, b):
     return tuple(
         tuple(sum(float(a[row][k]) * float(b[k][col]) for k in range(3)) for col in range(3))
@@ -1198,7 +1224,9 @@ class PhysicsConverter:
                 return None
 
             pmx_joint_type = getattr(joint, "joint_type", 0)
-            bullet_ct = _PMX_JOINT_TO_BULLET.get(pmx_joint_type, 4)
+            spring_trans = joint.spring_translation if hasattr(joint, "spring_translation") else None
+            spring_rot = joint.spring_rotation if hasattr(joint, "spring_rotation") else None
+            bullet_ct = _resolve_pmx_bullet_constraint_type(pmx_joint_type, spring_trans, spring_rot)
 
             # PMX 回転リミットは radian → degree 変換
             rot_lo = joint.rotation_limit_min if hasattr(joint, "rotation_limit_min") else None
@@ -1217,8 +1245,8 @@ class PhysicsConverter:
                 trans_hi=joint.translation_limit_max if hasattr(joint, "translation_limit_max") else None,
                 rot_lo_deg=rot_lo_deg,
                 rot_hi_deg=rot_hi_deg,
-                spring_trans=joint.spring_translation if hasattr(joint, "spring_translation") else None,
-                spring_rot=joint.spring_rotation if hasattr(joint, "spring_rotation") else None,
+                spring_trans=spring_trans,
+                spring_rot=spring_rot,
             )
         except Exception as e:
             self._safe_log_error("PMX joint 作成エラー", joint, e)
