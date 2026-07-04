@@ -1820,7 +1820,16 @@ def semistandard_name_audit(session: nox.Session) -> None:
 
     passthrough: list[str] = []
     i = 0
-    value_options = {"--manifest", "--scan-root", "--max-files", "--out-json", "--out-md", "--limit-findings"}
+    value_options = {
+        "--manifest",
+        "--scan-root",
+        "--max-files",
+        "--out-json",
+        "--out-md",
+        "--limit-findings",
+        "--min-candidate-files",
+        "--min-candidate-findings",
+    }
     flag_options = {"--strict-local"}
     while i < len(args):
         arg = args[i]

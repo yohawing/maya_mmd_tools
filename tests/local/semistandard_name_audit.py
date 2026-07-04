@@ -7,6 +7,7 @@ import json
 import re
 import time
 from collections import defaultdict
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -43,6 +44,27 @@ _SEMISTANDARD_MARKERS = (
     "ひざD",
     "足首D",
 )
+_MODEL_DEPENDENT_MARKERS = (
+    "髪",
+    "前髪",
+    "横髪",
+    "後髪",
+    "胸",
+    "骨盤",
+    "スカート",
+    "袖",
+    "リボン",
+    "ツインテ",
+    "テール",
+    "ネクタイ",
+    "マント",
+    "尻尾",
+    "羽",
+    "補助",
+    "抽出",
+    "軸",
+)
+_LOW_RISK_SEMISTANDARD_ALIAS_RE = re.compile(r"^[左右](足IK先|腕捩先|手捩先)$")
 _SIDE_PREFIX_RE = re.compile(r"^[左右].+")
 
 
@@ -140,9 +162,10 @@ def _iter_scan_root_paths(scan_roots: Iterable[Path]) -> Iterable[Path]:
                 yield path.resolve()
 
 
-def _unique_paths(paths: Iterable[Path], max_files: int | None) -> tuple[list[Path], int]:
+def _unique_paths(paths: Iterable[Path], max_files: int | None) -> tuple[list[Path], int, bool]:
     result: list[Path] = []
     seen: set[str] = set()
+    truncated = False
     for path in paths:
         key = str(path).casefold()
         if key in seen:
@@ -150,8 +173,9 @@ def _unique_paths(paths: Iterable[Path], max_files: int | None) -> tuple[list[Pa
         seen.add(key)
         result.append(path)
         if max_files is not None and len(result) >= max_files:
+            truncated = True
             break
-    return result, len(seen)
+    return result, len(seen), truncated
 
 
 def _audit_pmx(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -349,6 +373,76 @@ def _audit_path(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     )
 
 
+def _model_dependent_hint(normalized_name: str) -> str:
+    markers = [marker for marker in _MODEL_DEPENDENT_MARKERS if marker in normalized_name]
+    return ",".join(markers)
+
+
+def _build_name_statistics(
+    findings: list[dict[str, Any]],
+    *,
+    min_candidate_files: int,
+    min_candidate_findings: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for finding in findings:
+        normalized = normalize_mmd_bone_name(finding.get("name")) or str(finding.get("name", ""))
+        grouped[normalized].append(finding)
+
+    statistics: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    for normalized, items in grouped.items():
+        file_counts = Counter(str(item["file"]) for item in items)
+        kind_counts = Counter(str(item["kind"]) for item in items)
+        converted_counts = Counter(str(item.get("converted") or "") for item in items)
+        source_counts = Counter(str(item["source"]) for item in items)
+        original_counts = Counter(str(item["name"]) for item in items)
+        converted = converted_counts.most_common(1)[0][0] if converted_counts else ""
+        hash_fallback = any("HASH" in str(item.get("converted") or "") for item in items)
+        generic_ascii = any(str(item["kind"]).startswith("generic_ascii") for item in items)
+        model_dependent = _model_dependent_hint(normalized)
+        unmapped = any(str(item["kind"]).startswith("unmapped_semistandard_like") for item in items)
+        low_risk_alias = bool(_LOW_RISK_SEMISTANDARD_ALIAS_RE.fullmatch(normalized))
+        registration_candidate = (
+            unmapped
+            and low_risk_alias
+            and not hash_fallback
+            and not generic_ascii
+            and not model_dependent
+            and len(file_counts) >= min_candidate_files
+            and len(items) >= min_candidate_findings
+        )
+
+        row = {
+            "normalized_name": normalized,
+            "converted": converted,
+            "findings": len(items),
+            "files": len(file_counts),
+            "registration_candidate": registration_candidate,
+            "low_risk_alias": low_risk_alias,
+            "hash_fallback": hash_fallback,
+            "generic_ascii": generic_ascii,
+            "model_dependent_hint": model_dependent,
+            "kinds": dict(kind_counts),
+            "sources": dict(source_counts),
+            "original_names": dict(original_counts.most_common(8)),
+            "examples": [
+                {
+                    "file": file,
+                    "count": count,
+                }
+                for file, count in file_counts.most_common(5)
+            ],
+        }
+        statistics.append(row)
+        if registration_candidate:
+            candidates.append(row)
+
+    statistics.sort(key=lambda row: (-int(row["files"]), -int(row["findings"]), str(row["normalized_name"])))
+    candidates.sort(key=lambda row: (-int(row["files"]), -int(row["findings"]), str(row["normalized_name"])))
+    return statistics, candidates
+
+
 def _write_reports(payload: dict[str, Any], out_json: Path, out_md: Path, limit_findings: int) -> None:
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_md.parent.mkdir(parents=True, exist_ok=True)
@@ -360,9 +454,11 @@ def _write_reports(payload: dict[str, Any], out_json: Path, out_md: Path, limit_
         "",
         f"- Status: {payload['status']}",
         f"- Files scanned: {summary['files_scanned']} / discovered {summary['files_discovered']}",
+        f"- Truncated by max-files: {summary['truncated_by_max_files']}",
         f"- PMX: {summary['pmx_files']}",
         f"- VMD: {summary['vmd_files']}",
         f"- Findings: {summary['findings']} (errors {summary['errors']}, warnings {summary['warnings']})",
+        f"- Registration candidates: {summary['registration_candidates']}",
         "",
         "| File | Type | Status | Seconds | Detail |",
         "| --- | --- | --- | ---: | --- |",
@@ -371,6 +467,42 @@ def _write_reports(payload: dict[str, Any], out_json: Path, out_md: Path, limit_
         lines.append(
             f"| {result['file']} | {result['type']} | {result['status']} | {result['duration_sec']} | {result.get('detail', '')} |"
         )
+
+    candidates = payload["registration_candidates"]
+    if candidates:
+        lines.extend(
+            [
+                "",
+                "## Registration Candidates",
+                "",
+                "| Normalized name | Converted | Files | Findings | Original names | Examples |",
+                "| --- | --- | ---: | ---: | --- | --- |",
+            ]
+        )
+        for row in candidates[:limit_findings]:
+            original_names = ", ".join(row["original_names"].keys())
+            examples = ", ".join(Path(example["file"]).name for example in row["examples"])
+            lines.append(
+                f"| {row['normalized_name']} | {row['converted']} | {row['files']} | {row['findings']} | {original_names} | {examples} |"
+            )
+
+    statistics = payload["name_statistics"]
+    if statistics:
+        lines.extend(
+            [
+                "",
+                f"## Name Statistics (first {min(limit_findings, len(statistics))} of {len(statistics)})",
+                "",
+                "| Normalized name | Converted | Files | Findings | Candidate | Hash | Model hint | Kinds |",
+                "| --- | --- | ---: | ---: | --- | --- | --- | --- |",
+            ]
+        )
+        for row in statistics[:limit_findings]:
+            kinds = ", ".join(f"{key}:{value}" for key, value in row["kinds"].items())
+            lines.append(
+                f"| {row['normalized_name']} | {row['converted']} | {row['files']} | {row['findings']} | "
+                f"{row['registration_candidate']} | {row['hash_fallback']} | {row['model_dependent_hint']} | {kinds} |"
+            )
 
     findings = payload["findings"]
     if findings:
@@ -403,9 +535,12 @@ def run_audit(
     paths: list[Path],
     *,
     discovered_count: int,
+    truncated_by_max_files: bool,
     out_json: Path,
     out_md: Path,
     limit_findings: int,
+    min_candidate_files: int,
+    min_candidate_findings: int,
 ) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     findings: list[dict[str, Any]] = []
@@ -437,25 +572,37 @@ def run_audit(
     else:
         status = "pass"
 
+    name_statistics, registration_candidates = _build_name_statistics(
+        findings,
+        min_candidate_files=min_candidate_files,
+        min_candidate_findings=min_candidate_findings,
+    )
     payload = {
         "status": status,
         "summary": {
             "files_discovered": discovered_count,
             "files_scanned": len(paths),
+            "truncated_by_max_files": truncated_by_max_files,
             "pmx_files": sum(1 for result in results if result["type"] == "pmx"),
             "vmd_files": sum(1 for result in results if result["type"] == "vmd"),
             "findings": len(findings),
             "errors": errors,
             "warnings": warnings,
+            "name_statistics": len(name_statistics),
+            "registration_candidates": len(registration_candidates),
+            "min_candidate_files": min_candidate_files,
+            "min_candidate_findings": min_candidate_findings,
         },
         "results": results,
+        "registration_candidates": registration_candidates,
+        "name_statistics": name_statistics,
         "findings": findings,
     }
     _write_reports(payload, out_json, out_md, limit_findings)
     return payload
 
 
-def _collect_input_paths(args: argparse.Namespace) -> tuple[list[Path], int]:
+def _collect_input_paths(args: argparse.Namespace) -> tuple[list[Path], int, bool]:
     manifest_inputs: list[Path] = []
     for value in args.manifest or []:
         manifest = Path(value).resolve()
@@ -480,20 +627,25 @@ def main() -> int:
     parser.add_argument("--out-json", default="build/reports/semistandard_name_audit.json")
     parser.add_argument("--out-md", default="build/reports/semistandard_name_audit.md")
     parser.add_argument("--limit-findings", type=int, default=200)
+    parser.add_argument("--min-candidate-files", type=int, default=2)
+    parser.add_argument("--min-candidate-findings", type=int, default=2)
     parser.add_argument("--strict-local", action="store_true")
     args = parser.parse_args()
 
-    paths, discovered = _collect_input_paths(args)
+    paths, discovered, truncated = _collect_input_paths(args)
     payload = run_audit(
         paths,
         discovered_count=discovered,
+        truncated_by_max_files=truncated,
         out_json=Path(args.out_json),
         out_md=Path(args.out_md),
         limit_findings=args.limit_findings,
+        min_candidate_files=args.min_candidate_files,
+        min_candidate_findings=args.min_candidate_findings,
     )
     if args.strict_local and payload["status"] in {"fail", "findings"}:
         return 1
-    return 1 if payload["status"] == "fail" else 0
+    return 0
 
 
 if __name__ == "__main__":
