@@ -273,6 +273,10 @@ class TestMmdBoneNameConversion(unittest.TestCase):
             "左足IK親": "left_leg_ik_parent",
             "左足ＩＫ親": "left_leg_ik_parent",
             "右足IK親": "right_leg_ik_parent",
+            "左腕捩": "left_arm_twist",
+            "右手捩": "right_wrist_twist",
+            "腰": "waist",
+            "左親指0": "left_thumb_0",
             "右足D": "right_leg_d",
             "右ひざD": "right_knee_d",
             "右足首D": "right_ankle_d",
@@ -296,6 +300,8 @@ class TestMmdBoneNameConversion(unittest.TestCase):
         self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足IK親"), "right_leg_ik_parent")
         self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右肩P"), "right_shoulder_p")
         self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足D"), "right_leg_d")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("左腕捩"), "left_arm_twist")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("左親指０"), "left_thumb_0")
         self.assertTrue(has_semistandard_mmd_bone_name("右足先ＥＸ"))
         self.assertFalse(has_semistandard_mmd_bone_name("髪D"))
 

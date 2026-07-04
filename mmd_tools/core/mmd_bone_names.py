@@ -16,42 +16,50 @@ _BONE_NAME_REPLACEMENTS = {
     "つまさき": "つま先",
 }
 
-_SEMISTANDARD_BONE_BASE_MAP = {
+_SEMISTANDARD_BONE_MAP = {
     "全ての親": "master",
     "操作中心": "manipulation_center",
     "グルーブ": "groove",
     "上半身2": "upper_body_2",
+    "腰": "waist",
     "胸親": "breast_parent",
+    "左腕捩": "left_arm_twist",
+    "右腕捩": "right_arm_twist",
+    "左手捩": "left_wrist_twist",
+    "右手捩": "right_wrist_twist",
+    "左足IK": "left_leg_ik",
+    "右足IK": "right_leg_ik",
+    "左足IK親": "left_leg_ik_parent",
+    "右足IK親": "right_leg_ik_parent",
+    "左つま先IK": "left_toe_ik",
+    "右つま先IK": "right_toe_ik",
+    "左つま先IK先": "left_toe_ik_end",
+    "右つま先IK先": "right_toe_ik_end",
+    "左足先EX": "left_toe_ex",
+    "右足先EX": "right_toe_ex",
+    "左親指0": "left_thumb_0",
+    "右親指0": "right_thumb_0",
+    "左肩P": "left_shoulder_p",
+    "右肩P": "right_shoulder_p",
+    "左肩C": "left_shoulder_c",
+    "右肩C": "right_shoulder_c",
+    "左腕D": "left_arm_d",
+    "右腕D": "right_arm_d",
+    "左腕捩D": "left_arm_twist_d",
+    "右腕捩D": "right_arm_twist_d",
+    "左ひじD": "left_elbow_d",
+    "右ひじD": "right_elbow_d",
+    "左手首D": "left_wrist_d",
+    "右手首D": "right_wrist_d",
+    "左手捩D": "left_wrist_twist_d",
+    "右手捩D": "right_wrist_twist_d",
+    "左足D": "left_leg_d",
+    "右足D": "right_leg_d",
+    "左ひざD": "left_knee_d",
+    "右ひざD": "right_knee_d",
+    "左足首D": "left_ankle_d",
+    "右足首D": "right_ankle_d",
 }
-
-_SEMISTANDARD_SIDED_SUFFIX_MAP = {
-    "足IK": "leg_ik",
-    "足IK親": "leg_ik_parent",
-    "つま先IK": "toe_ik",
-    "つま先IK先": "toe_ik_end",
-    "足先EX": "toe_ex",
-    "肩P": "shoulder_p",
-    "肩C": "shoulder_c",
-    "腕D": "arm_d",
-    "腕捩D": "arm_twist_d",
-    "ひじD": "elbow_d",
-    "手首D": "wrist_d",
-    "手捩D": "wrist_twist_d",
-    "足D": "leg_d",
-    "ひざD": "knee_d",
-    "足首D": "ankle_d",
-}
-
-
-def _build_semistandard_bone_name_map() -> dict[str, str]:
-    names = dict(_SEMISTANDARD_BONE_BASE_MAP)
-    for side_jp, side_en in (("左", "left"), ("右", "right")):
-        for suffix_jp, suffix_en in _SEMISTANDARD_SIDED_SUFFIX_MAP.items():
-            names[f"{side_jp}{suffix_jp}"] = f"{side_en}_{suffix_en}"
-    return names
-
-
-_SEMISTANDARD_BONE_NAME_MAP = _build_semistandard_bone_name_map()
 
 _BONE_TOKEN_MAP = {
     "全ての親": "master",
@@ -169,13 +177,13 @@ def convert_semistandard_mmd_bone_name_to_ascii(name: str | None) -> str | None:
     normalized = normalize_mmd_bone_name(name)
     if normalized is None:
         return None
-    converted = _SEMISTANDARD_BONE_NAME_MAP.get(normalized)
+    converted = _SEMISTANDARD_BONE_MAP.get(normalized)
     if converted is not None:
         return converted
 
     numbered = re.fullmatch(r"(.+?)([0-9]+)", normalized)
     if numbered:
-        base = _SEMISTANDARD_BONE_NAME_MAP.get(numbered.group(1))
+        base = _SEMISTANDARD_BONE_MAP.get(numbered.group(1))
         if base is not None:
             return f"{base}_{numbered.group(2)}"
     return None
