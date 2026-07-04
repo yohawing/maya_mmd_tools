@@ -26,6 +26,7 @@
     "cancel": "取消",
     "browse": "瀏覽...",
     "refresh": "重新整理",
+    "create_humanik_rig": "建立 HumanIK 綁定",
     "reset": "重設",
     "add": "新增",
     "remove": "移除",
@@ -123,6 +124,9 @@
     "error_no_selection": "未選擇任何物件",
     "confirm_delete": "確定要刪除選取的項目嗎？",
     "confirm_overwrite": "確定要覆蓋檔案嗎？",
+    "humanik_no_model": "請先選擇模型再建立 HumanIK 綁定",
+    "humanik_rig_created": "已建立 HumanIK 綁定: {character}",
+    "humanik_rig_failed": "建立 HumanIK 綁定失敗: {error}",
     "loading": "載入中...",
     "saving": "儲存中...",
     "processing": "處理中..."

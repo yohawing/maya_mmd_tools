@@ -164,6 +164,7 @@ class _FakeView:
     def __init__(self):
         self.bone_list = _FakeList()
         self.refresh_btn = _FakeButton()
+        self.create_humanik_rig_btn = _FakeButton()
         self.search_edit = _FakeLineEdit()
         self.select_ik_target_btn = _FakeButton()
         self.select_grant_parent_btn = _FakeButton()
@@ -279,11 +280,11 @@ class _FakeMayaAdapter:
         return True
 
 
-def _make_presenter(adapter=None):
+def _make_presenter(adapter=None, humanik_builder=None):
     view = _FakeView()
     app_state = _FakeAppState()
     adapter = adapter or _FakeMayaAdapter()
-    presenter = BonePresenter(view, app_state, maya_adapter=adapter)
+    presenter = BonePresenter(view, app_state, maya_adapter=adapter, humanik_builder=humanik_builder)
     return presenter, view, app_state, adapter
 
 
@@ -316,6 +317,41 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertEqual(adapter.calls, [("object_exists", TEST_MODEL)])
         self.assertEqual(view.bone_list.items, [])
         self.assertEqual(presenter.bone_list_items, {})
+
+    def test_create_humanik_rig_requires_current_model(self):
+        presenter, _, app_state, adapter = _make_presenter()
+
+        presenter.create_humanik_rig()
+
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(app_state.status_messages, ["Please select a model before creating a HumanIK rig"])
+
+    def test_create_humanik_rig_calls_builder_for_current_model(self):
+        calls = []
+
+        def _builder(model_root, **kwargs):
+            calls.append((model_root, kwargs))
+            return "Character1"
+
+        presenter, _, app_state, adapter = _make_presenter(humanik_builder=_builder)
+        app_state.current_model_root = TEST_MODEL
+
+        presenter.create_humanik_rig()
+
+        self.assertEqual(adapter.calls, [("object_exists", TEST_MODEL)])
+        self.assertEqual(calls, [(TEST_MODEL, {"create_control_rig": True})])
+        self.assertEqual(app_state.status_messages, ["Created HumanIK rig: Character1"])
+
+    def test_create_humanik_rig_reports_builder_errors(self):
+        def _builder(_model_root, **_kwargs):
+            raise RuntimeError("bad skeleton")
+
+        presenter, _, app_state, _ = _make_presenter(humanik_builder=_builder)
+        app_state.current_model_root = TEST_MODEL
+
+        presenter.create_humanik_rig()
+
+        self.assertEqual(app_state.status_messages, ["Failed to create HumanIK rig: bad skeleton"])
 
     def test_load_bones_routes_to_adapter_and_adds_sorted_items(self):
         relatives = {

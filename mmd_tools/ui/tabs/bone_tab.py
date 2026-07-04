@@ -37,6 +37,7 @@ class BoneTab(BaseTab):
         ("fixed_axis_group", "setTitle", "fixed_axis", "groups"),
         ("local_axis_group", "setTitle", "local_axis", "groups"),
         ("refresh_btn", "setText", "refresh", "buttons"),
+        ("create_humanik_rig_btn", "setText", "create_humanik_rig", "buttons"),
         ("apply_btn", "setText", "apply", "buttons"),
         ("reset_btn", "setText", "reset", "buttons"),
         ("select_ik_target_btn", "setText", "select", "buttons"),
@@ -111,8 +112,10 @@ class BoneTab(BaseTab):
         toolbar_layout = QHBoxLayout()
         self.refresh_btn = QPushButton(self.tr("refresh", "buttons"))
         self.refresh_btn.setMaximumWidth(60)
+        self.create_humanik_rig_btn = QPushButton(self.tr("create_humanik_rig", "buttons"))
 
         toolbar_layout.addWidget(self.refresh_btn)
+        toolbar_layout.addWidget(self.create_humanik_rig_btn)
         toolbar_layout.addStretch()
 
         bone_tree_layout.addLayout(toolbar_layout)

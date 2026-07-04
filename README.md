@@ -30,7 +30,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Morphs (vertex / bone / material / group / UV) | 🔶 | Partially supported |
 | Rigid bodies & joints | ⛔ | Not supported |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
-| HumanIK | ⛔ | Not supported |
+| HumanIK | 🧪 | Experimental Bone tab action creates a HumanIK definition/control rig from the imported MMD skeleton |
 | Export | ⛔ | Not supported |
 
 ### Animation (VMD)
@@ -64,6 +64,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 - **Physics is experimental** and off by default.
 - **Bake mode is the fidelity path for VMD motion.** It bakes final poses from the `mmd-anim` runtime and is the recommended path when matching MMD output matters.
 - **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
+- **HumanIK setup requires a valid full-body skeleton.** The Bone tab action reports an error if Maya cannot create the HumanIK control rig from the current model.
 - **File > Import integration is not part of this release.** Use the MMD Tools UI or drag-and-drop import instead. The Maya file translator path is deferred because it needs a separate safe integration path.
 - Large models may have performance issues, and some PMX files may fail to import.
 - The opt-in C++ fast-import path supports mesh, basic materials, basic skeleton/skin, and vertex-morph blendShape targets only (UV / material / bone / group morphs are not handled on that path).

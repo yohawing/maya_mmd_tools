@@ -6,6 +6,7 @@ from ...core.maya_utils import (
     set_custom_attributes,
     get_attribute,
 )
+from ...core.humanik_builder import create_humanik_definition_from_scene
 from ...core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
@@ -46,10 +47,11 @@ logger = get_logger(__name__)
 
 
 class BonePresenter:
-    def __init__(self, view, app_state, maya_adapter=None):
+    def __init__(self, view, app_state, maya_adapter=None, humanik_builder=None):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self.humanik_builder = humanik_builder or create_humanik_definition_from_scene
         self.current_bone = None
         self.bone_data = {}  # Store original bone data for reset
         self.bone_list_items = {}  # Map bone name to list item
@@ -72,6 +74,9 @@ class BonePresenter:
         self.view.bone_list.itemSelectionChanged.connect(self.on_selection_changed_maya)
         self.view.refresh_btn.clicked.connect(self.load_bones)
         self.view.search_edit.textChanged.connect(self.filter_bones)
+        humanik_button = getattr(self.view, "create_humanik_rig_btn", None)
+        if humanik_button is not None:
+            humanik_button.clicked.connect(self.create_humanik_rig)
 
         # ボーン選択ボタン
         self.view.select_ik_target_btn.clicked.connect(lambda: self.select_bone_dialog("ik_target"))
@@ -169,6 +174,20 @@ class BonePresenter:
             self.bone_list_items[joint] = item
 
         logger.info(f"Loaded {len(joints)} bones for model: {current_model_root}")
+
+    def create_humanik_rig(self):
+        """Create a HumanIK definition and control rig for the current model."""
+        current_model_root = self.app_state.current_model_root
+        if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
+            self.app_state.emit_status(tr_message("humanik_no_model"))
+            return
+
+        try:
+            character = self.humanik_builder(current_model_root, create_control_rig=True)
+            self.app_state.emit_status(tr_message_format("humanik_rig_created", character=character))
+        except Exception as e:
+            logger.error(f"Failed to create HumanIK rig: {e}", exc_info=True)
+            self.app_state.emit_status(tr_message_format("humanik_rig_failed", error=str(e)))
 
     def _get_bone_type(self, joint):
         """ボーンのタイプを判定"""

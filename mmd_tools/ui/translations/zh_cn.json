@@ -26,6 +26,7 @@
     "cancel": "取消",
     "browse": "浏览...",
     "refresh": "刷新",
+    "create_humanik_rig": "创建 HumanIK 绑定",
     "reset": "重置",
     "add": "添加",
     "remove": "移除",
@@ -123,6 +124,9 @@
     "error_no_selection": "未选择任何对象",
     "confirm_delete": "确定要删除选中的项目吗？",
     "confirm_overwrite": "确定要覆盖文件吗？",
+    "humanik_no_model": "请先选择模型再创建 HumanIK 绑定",
+    "humanik_rig_created": "已创建 HumanIK 绑定: {character}",
+    "humanik_rig_failed": "创建 HumanIK 绑定失败: {error}",
     "loading": "加载中...",
     "saving": "保存中...",
     "processing": "处理中..."
