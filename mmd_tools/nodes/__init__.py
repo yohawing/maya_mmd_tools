@@ -5,4 +5,5 @@ __all__ = [
     "mmd_bone_morph_accum_node",
     "mmd_ccd_ik_node",
     "mmd_material_morph_eval_node",
+    "mmd_rigid_body_locator_node",
 ]

@@ -7,13 +7,16 @@ Bullet が利用不可の場合はテストをスキップする。
 """
 
 import math
+import os
 from pathlib import Path
 
 from maya import cmds
+import maya.api.OpenMaya as om
 
 from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.converters import PhysicsConverter
+from mmd_tools.nodes.mmd_rigid_body_locator_node import _read_node_state
 from mmd_tools.io.pmx_exporter import PmxExporter
 from tests.common.maya_test_base import MayaTestBase
 
@@ -201,10 +204,36 @@ class TestPhysicsConverter(MayaTestBase):
         result = PhysicsConverter.is_bullet_available()
         self.assertIsInstance(result, bool)
 
+    def _require_rigid_body_locator_node(self):
+        try:
+            node = cmds.createNode("mmdRigidBodyLocator", name="availability_probe_rigidBodyLocator")
+        except RuntimeError as exc:
+            plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+            previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+            os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+            try:
+                self.load_plugin(str(plugin_path))
+                node = cmds.createNode("mmdRigidBodyLocator", name="availability_probe_rigidBodyLocator")
+            except RuntimeError:
+                self.skipTest(f"mmdRigidBodyLocator node is unavailable: {exc}")
+            finally:
+                if previous is None:
+                    os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+                else:
+                    os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
+        cmds.delete(node)
+
+    @staticmethod
+    def _dependency_object(node: str):
+        selection = om.MSelectionList()
+        selection.add(node)
+        return selection.getDependNode(0)
+
     def _run_bullet_rigid_body_test(self, model_type, shape_type, expected_bullet_shape):
         """Bullet 剛体作成の共通テスト。"""
         if not PhysicsConverter.is_bullet_available():
             self.skipTest("Bullet プラグインが利用できません")
+        self._require_rigid_body_locator_node()
 
         root = cmds.group(name="test_root", empty=True)
         bone_joints: dict = {}
@@ -243,6 +272,32 @@ class TestPhysicsConverter(MayaTestBase):
         cst = cmds.getAttr(f"{shape}.colliderShapeType")
         self.assertEqual(cst, expected_bullet_shape,
                          f"colliderShapeType mismatch: expected {expected_bullet_shape}, got {cst}")
+
+        locator_shapes = cmds.listRelatives(rb_transform, shapes=True, type="mmdRigidBodyLocator", fullPath=True) or []
+        self.assertEqual(len(locator_shapes), 1, "DX11 表示用 mmdRigidBodyLocator が作成されていない")
+        locator = locator_shapes[0]
+        self.assertEqual(cmds.getAttr(f"{locator}.colliderShapeType"), expected_bullet_shape)
+        self.assertAlmostEqual(cmds.getAttr(f"{locator}.radius"), 2.0, places=4)
+        locator_state = _read_node_state(self._dependency_object(locator))
+        self.assertEqual(locator_state[0], expected_bullet_shape)
+        if expected_bullet_shape == 1:
+            self.assertAlmostEqual(cmds.getAttr(f"{locator}.boxSizeX"), 1.0, places=4)
+            self.assertAlmostEqual(cmds.getAttr(f"{locator}.boxSizeY"), 1.0, places=4)
+            self.assertAlmostEqual(cmds.getAttr(f"{locator}.boxSizeZ"), 1.0, places=4)
+            scale = cmds.getAttr(f"{rb_transform}.scale")[0]
+            self.assertListAlmostEqual(list(scale), [4.0, 4.0, 4.0], places=4)
+            self.assertEqual(locator_state[3], (1.0, 1.0, 1.0))
+        if expected_bullet_shape == 2:
+            cmds.setAttr(f"{shape}.radius", 3.0)
+            locator_state = _read_node_state(self._dependency_object(locator))
+            self.assertAlmostEqual(locator_state[1], 3.0, places=4)
+        if expected_bullet_shape == 3:
+            self.assertAlmostEqual(cmds.getAttr(f"{locator}.length"), 6.0, places=4)
+            self.assertAlmostEqual(locator_state[2], 6.0, places=4)
+        self.assertFalse(
+            cmds.listRelatives(rb_transform, shapes=True, type="mesh", fullPath=True) or [],
+            "暫定 collider mesh proxy が残っている",
+        )
 
         # bodyType
         bt = cmds.getAttr(f"{shape}.bodyType")

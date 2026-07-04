@@ -1262,6 +1262,50 @@ def maya_visual_regression(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_physics_collider_capture(session: nox.Session) -> None:
+    """Capture MMD physics collider locator drawing in Maya GUI / DX11.
+
+    The harness imports a physics fixture with Bullet enabled, verifies
+    ``mmdRigidBodyLocator`` shapes exist, captures one VP2 PNG, and validates
+    that the DX11 device plus cyan-ish wire pixels are present.
+
+    Examples:
+        uvx nox -s maya_physics_collider_capture -- --maya 2026
+        uvx nox -s maya_physics_collider_capture -- --maya 2026 --attach-existing --out build/captures/gui-physics-collider/physics_collider.png
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    model = _option(session.posargs, "--model", str(ROOT / "tests/data/physics/test_hair_physics.pmx"))
+    out = _option(session.posargs, "--out", str(ROOT / "build/captures/gui-physics-collider/physics_collider.png"))
+    port = _option(session.posargs, "--port", "7726")
+    width = _option(session.posargs, "--width", "1280")
+    height = _option(session.posargs, "--height", "720")
+
+    forwarded: list[str] = []
+    for flag in ("--attach-existing", "--leave-open"):
+        if flag in session.posargs:
+            forwarded.append(flag)
+
+    session.run(
+        sys.executable,
+        "tests/viewport/gui_physics_collider_capture.py",
+        "--maya",
+        version,
+        "--model",
+        model,
+        "--out",
+        out,
+        "--port",
+        port,
+        "--width",
+        width,
+        "--height",
+        height,
+        *forwarded,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def maya_batch_import(session: nox.Session) -> None:
     """Run Track 6 manifest-driven Maya batch import checks.
 

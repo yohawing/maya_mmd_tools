@@ -62,6 +62,7 @@ _CONSTRAINT_FREE = 0
 _CONSTRAINT_LOCKED = 1
 _CONSTRAINT_LIMITED = 2
 _Z_REFLECTION_MATRIX = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0))
+_RIGID_BODY_LOCATOR_TYPE = "mmdRigidBodyLocator"
 
 
 def _mat3_mul(a, b):
@@ -721,6 +722,7 @@ class PhysicsConverter:
             if bullet_shape != 1:
                 cmds.setAttr(f"{shape}.colliderShapeType", bullet_shape)
 
+            self._create_bullet_visual_locator(transform, bullet_shape, size)
             self._set_bullet_collision_filter(shape, rb, model_type)
 
             # bodyType
@@ -930,6 +932,42 @@ class PhysicsConverter:
         if paths_a and paths_b:
             return paths_a[0] == paths_b[0]
         return node_a == node_b or node_a.split("|")[-1] == node_b.split("|")[-1]
+
+    def _create_bullet_visual_locator(self, transform: str, bullet_shape: int, size: List[float]) -> None:
+        """Add a draw-only collider locator under a Bullet rigid body.
+
+        The locator is a viewport affordance only.  Bullet simulation and PMX
+        export continue to read the Bullet shape plus MMD metadata from the
+        parent transform.
+        """
+        if not cmds.objExists(transform):
+            return
+
+        try:
+            radius = max(float(size[0]) if size else 0.0, 0.001)
+            locator = cmds.createNode(
+                _RIGID_BODY_LOCATOR_TYPE,
+                name=f"{transform.split('|')[-1]}_colliderLocatorShape",
+                parent=transform,
+            )
+            cmds.setAttr(f"{locator}.colliderShapeType", int(bullet_shape))
+            cmds.setAttr(f"{locator}.radius", radius)
+            length = float(size[1]) + radius * 2.0 if len(size) > 1 else radius * 2.0
+            cmds.setAttr(f"{locator}.length", max(length, radius * 2.0))
+            if len(size) >= 3:
+                # Box rigid bodies encode their full extents in the parent
+                # transform scale.  The locator shape must stay unit-sized so
+                # VP2 does not apply the same dimensions twice.
+                box_size = (1.0, 1.0, 1.0) if bullet_shape == 1 else (
+                    max(float(size[0]) * 2.0, 0.001),
+                    max(float(size[1]) * 2.0, 0.001),
+                    max(float(size[2]) * 2.0, 0.001),
+                )
+                cmds.setAttr(f"{locator}.boxSizeX", box_size[0])
+                cmds.setAttr(f"{locator}.boxSizeY", box_size[1])
+                cmds.setAttr(f"{locator}.boxSizeZ", box_size[2])
+        except Exception as exc:
+            self.logger.warning(f"Skipped Bullet visual locator for '{transform}': {exc}")
 
     def _get_bullet_solver(self) -> Optional[str]:
         """Maya Bullet solver shape を取得または作成する。"""
