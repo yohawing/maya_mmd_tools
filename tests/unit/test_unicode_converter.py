@@ -13,7 +13,12 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from mmd_tools.core import utils
-from mmd_tools.core.mmd_bone_names import convert_mmd_bone_name_to_ascii, normalize_mmd_bone_name
+from mmd_tools.core.mmd_bone_names import (
+    convert_mmd_bone_name_to_ascii,
+    convert_semistandard_mmd_bone_name_to_ascii,
+    has_semistandard_mmd_bone_name,
+    normalize_mmd_bone_name,
+)
 from mmd_tools.core.unicode_converter import UnicodeToAsciiConverter, get_converter
 
 
@@ -267,6 +272,10 @@ class TestMmdBoneNameConversion(unittest.TestCase):
         test_cases = {
             "左足IK親": "left_leg_ik_parent",
             "左足ＩＫ親": "left_leg_ik_parent",
+            "右足IK親": "right_leg_ik_parent",
+            "右足D": "right_leg_d",
+            "右ひざD": "right_knee_d",
+            "右足首D": "right_ankle_d",
             "左腕D": "left_arm_d",
             "右腕捩D": "right_arm_twist_d",
             "右腕捻Ｄ": "right_arm_twist_d",
@@ -282,6 +291,13 @@ class TestMmdBoneNameConversion(unittest.TestCase):
         for original, expected in test_cases.items():
             with self.subTest(original=original):
                 self.assertEqual(convert_mmd_bone_name_to_ascii(original), expected)
+
+    def test_semistandard_bone_names_are_detected_before_generic_tokenization(self):
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足IK親"), "right_leg_ik_parent")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右肩P"), "right_shoulder_p")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足D"), "right_leg_d")
+        self.assertTrue(has_semistandard_mmd_bone_name("右足先ＥＸ"))
+        self.assertFalse(has_semistandard_mmd_bone_name("髪D"))
 
     def test_unknown_bone_name_tokens_are_hashed_without_dropping_known_tokens(self):
         self.assertEqual(convert_mmd_bone_name_to_ascii("左未知捩1"), "left_HASH1622dc9b_twist_1")

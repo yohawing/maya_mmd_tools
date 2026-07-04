@@ -16,6 +16,43 @@ _BONE_NAME_REPLACEMENTS = {
     "つまさき": "つま先",
 }
 
+_SEMISTANDARD_BONE_BASE_MAP = {
+    "全ての親": "master",
+    "操作中心": "manipulation_center",
+    "グルーブ": "groove",
+    "上半身2": "upper_body_2",
+    "胸親": "breast_parent",
+}
+
+_SEMISTANDARD_SIDED_SUFFIX_MAP = {
+    "足IK": "leg_ik",
+    "足IK親": "leg_ik_parent",
+    "つま先IK": "toe_ik",
+    "つま先IK先": "toe_ik_end",
+    "足先EX": "toe_ex",
+    "肩P": "shoulder_p",
+    "肩C": "shoulder_c",
+    "腕D": "arm_d",
+    "腕捩D": "arm_twist_d",
+    "ひじD": "elbow_d",
+    "手首D": "wrist_d",
+    "手捩D": "wrist_twist_d",
+    "足D": "leg_d",
+    "ひざD": "knee_d",
+    "足首D": "ankle_d",
+}
+
+
+def _build_semistandard_bone_name_map() -> dict[str, str]:
+    names = dict(_SEMISTANDARD_BONE_BASE_MAP)
+    for side_jp, side_en in (("左", "left"), ("右", "right")):
+        for suffix_jp, suffix_en in _SEMISTANDARD_SIDED_SUFFIX_MAP.items():
+            names[f"{side_jp}{suffix_jp}"] = f"{side_en}_{suffix_en}"
+    return names
+
+
+_SEMISTANDARD_BONE_NAME_MAP = _build_semistandard_bone_name_map()
+
 _BONE_TOKEN_MAP = {
     "全ての親": "master",
     "操作中心": "manipulation_center",
@@ -86,6 +123,10 @@ def convert_mmd_bone_name_to_ascii(name: str | None) -> str | None:
         return ""
 
     converter = get_converter()
+    semistandard_name = convert_semistandard_mmd_bone_name_to_ascii(normalized)
+    if semistandard_name is not None:
+        return converter.maya_safe_name(semistandard_name)
+
     if converter.is_ascii_only(normalized):
         return converter.maya_safe_name(normalized)
 
@@ -121,6 +162,28 @@ def convert_mmd_bone_name_to_ascii(name: str | None) -> str | None:
 
     result = "_".join(part for part in parts if part)
     return converter.maya_safe_name(re.sub(r"_+", "_", result).strip("_"))
+
+
+def convert_semistandard_mmd_bone_name_to_ascii(name: str | None) -> str | None:
+    """Return the hardcoded ASCII name for known standard and semistandard MMD bones."""
+    normalized = normalize_mmd_bone_name(name)
+    if normalized is None:
+        return None
+    converted = _SEMISTANDARD_BONE_NAME_MAP.get(normalized)
+    if converted is not None:
+        return converted
+
+    numbered = re.fullmatch(r"(.+?)([0-9]+)", normalized)
+    if numbered:
+        base = _SEMISTANDARD_BONE_NAME_MAP.get(numbered.group(1))
+        if base is not None:
+            return f"{base}_{numbered.group(2)}"
+    return None
+
+
+def has_semistandard_mmd_bone_name(name: str | None) -> bool:
+    """Return True when a name is handled by the hardcoded MMD bone-name table."""
+    return convert_semistandard_mmd_bone_name_to_ascii(name) is not None
 
 
 def _ascii_run_to_parts(text: str) -> list[str]:

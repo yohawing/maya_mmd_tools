@@ -1,5 +1,4 @@
 import time
-import unicodedata
 from typing import List, Optional, Tuple, Union
 
 import maya.cmds as cmds
@@ -9,6 +8,7 @@ import maya.api.OpenMayaAnim as oma
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
 from ..core import maya_utils
+from ..core.mmd_bone_names import has_semistandard_mmd_bone_name
 from ..core.pmx_data import PmxData
 from ..core.constants import (
     SKELETON_GROUP,
@@ -169,16 +169,9 @@ class BoneConverter:
     def _bone_node_name_source(self, bone) -> str:
         """Return the source PMX/PMD name to use for the Maya joint node name."""
         native_name = str(getattr(bone, "name", "") or "")
-        english_name = str(getattr(bone, "name_english", "") or "")
-        if native_name and self._is_generic_semistandard_english_name(english_name):
+        if native_name and has_semistandard_mmd_bone_name(native_name):
             return native_name
         return bone.get_name()
-
-    @staticmethod
-    def _is_generic_semistandard_english_name(name: str) -> bool:
-        """Return True for short PMX English names that lose semistandard context."""
-        normalized = unicodedata.normalize("NFKC", name).strip().lower().replace(" ", "_")
-        return normalized in {"d", "p", "c", "ex", "ik"}
 
     def _get_node_uuid(self, node: str) -> Optional[str]:
         """Return the Maya UUID for a node when available."""

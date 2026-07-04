@@ -143,22 +143,26 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(bone_map[1], "ボーン_1")
         self.assertEqual(bone_map[2], "ボーン_2")
 
-    def test_create_bone_mapping_prefers_native_name_for_generic_d_bone_english_names(self):
-        """PMX英名が汎用的なDだけの場合は日本語名からDボーン名を作る。"""
-        bones = [
-            self._create_mock_pmx_bone(0, "左腕D"),
-            self._create_mock_pmx_bone(1, "右腕捩D"),
-            self._create_mock_pmx_bone(2, "左ひじD"),
+    def test_create_bone_mapping_prefers_hardcoded_semistandard_native_names(self):
+        """PMX英名より準標準ボーンのハードコード日本語名変換を優先する。"""
+        cases = [
+            ("左腕D", "D", "left_arm_d"),
+            ("右腕捩D", "D", "right_arm_twist_d"),
+            ("左ひじD", "D", "left_elbow_d"),
+            ("右足IK親", "leg IKP_R", "right_leg_ik_parent"),
+            ("右足先EX", "toe2_R", "right_toe_ex"),
+            ("右肩P", "shoulderP_R", "right_shoulder_p"),
         ]
-        for bone in bones:
-            bone.name_english = "D"
-            bone.get_name.return_value = "D"
+        bones = []
+        for index, (native_name, english_name, _expected) in enumerate(cases):
+            bone = self._create_mock_pmx_bone(index, native_name)
+            bone.name_english = english_name
+            bone.get_name.return_value = english_name
+            bones.append(bone)
 
         bone_map = self.converter._create_bone_mapping(bones)
 
-        self.assertEqual(bone_map[0], "left_arm_d")
-        self.assertEqual(bone_map[1], "right_arm_twist_d")
-        self.assertEqual(bone_map[2], "left_elbow_d")
+        self.assertEqual(bone_map, {index: expected for index, (_native, _english, expected) in enumerate(cases)})
 
     @patch("mmd_tools.core.maya_utils.sanitize_bone_name")
     def test_create_maya_joints_hierarchy(self, mock_sanitize):
