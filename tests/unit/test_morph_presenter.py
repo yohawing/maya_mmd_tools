@@ -4,6 +4,7 @@ import json
 from maya import cmds
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.translations import UITranslator
+from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
 
 UITranslator.instance().set_language("en")
@@ -29,55 +30,48 @@ class TestMorphPresenter(MayaTestBase):
 
     def _setup_view_mocks(self):
         """ビューのモックを設定"""
-        # リストウィジェット
-        self.mock_view.morph_list = MagicMock()
-        self.mock_view.group_list = MagicMock()
-
-        # ボタン
-        self.mock_view.refresh_morphs_btn = MagicMock()
-        self.mock_view.select_in_maya_btn = MagicMock()
-        self.mock_view.add_group_btn = MagicMock()
-        self.mock_view.remove_group_btn = MagicMock()
-        self.mock_view.reset_slider_btn = MagicMock()
-        self.mock_view.reset_all_btn = MagicMock()
-        self.mock_view.connect_btn = MagicMock()
-        self.mock_view.disconnect_btn = MagicMock()
-        self.mock_view.auto_connect_btn = MagicMock()
-        self.mock_view.select_blend_shape_btn = MagicMock()
-        self.mock_view.apply_btn = MagicMock()
-        self.mock_view.reset_btn = MagicMock()
-        self.mock_view.save_preset_btn = MagicMock()
-        self.mock_view.load_preset_btn = MagicMock()
-        self.mock_view.delete_preset_btn = MagicMock()
-
-        # エディット/コンボボックス
-        self.mock_view.search_edit = MagicMock()
-        self.mock_view.morph_name_jp_edit = MagicMock()
-        self.mock_view.morph_name_en_edit = MagicMock()
-        self.mock_view.blend_shape_edit = MagicMock()
-        self.mock_view.target_name_edit = MagicMock()
-        self.mock_view.panel_combo = MagicMock()
-        self.mock_view.morph_type_combo = MagicMock()
-        self.mock_view.group_combo = MagicMock()
-        self.mock_view.preset_combo = MagicMock()
-
-        # スライダー/ラベル
-        self.mock_view.morph_slider = MagicMock()
-        self.mock_view.morph_value_label = MagicMock()
-        self.mock_view.connection_status_label = MagicMock()
-        self.mock_view.offset_count_label = MagicMock()
-
-        # チェックボックス/スピンボックス
-        self.mock_view.invert_check = MagicMock()
+        attach_mocks(
+            self.mock_view,
+            [
+                "morph_list",
+                "group_list",
+                "refresh_morphs_btn",
+                "select_in_maya_btn",
+                "add_group_btn",
+                "remove_group_btn",
+                "reset_slider_btn",
+                "reset_all_btn",
+                "connect_btn",
+                "disconnect_btn",
+                "auto_connect_btn",
+                "select_blend_shape_btn",
+                "apply_btn",
+                "reset_btn",
+                "save_preset_btn",
+                "load_preset_btn",
+                "delete_preset_btn",
+                "search_edit",
+                "morph_name_jp_edit",
+                "morph_name_en_edit",
+                "blend_shape_edit",
+                "target_name_edit",
+                "panel_combo",
+                "morph_type_combo",
+                "group_combo",
+                "preset_combo",
+                "morph_slider",
+                "morph_value_label",
+                "connection_status_label",
+                "offset_count_label",
+                "invert_check",
+                "multiplier_spin",
+                "offset_table",
+                "set_morph_details_enabled",
+            ],
+            mock_cls=MagicMock,
+        )
         self.mock_view.invert_check.isChecked.return_value = False
-        self.mock_view.multiplier_spin = MagicMock()
         self.mock_view.multiplier_spin.value.return_value = 1.0
-
-        # テーブル
-        self.mock_view.offset_table = MagicMock()
-
-        # その他のメソッド
-        self.mock_view.set_morph_details_enabled = MagicMock()
 
     def test_init(self):
         """初期化のテスト"""
