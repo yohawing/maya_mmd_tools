@@ -1799,6 +1799,59 @@ def local_assets_check(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def semistandard_name_audit(session: nox.Session) -> None:
+    """Audit local PMX/VMD assets for semistandard bone-name conversion gaps.
+
+    Examples:
+        uvx nox -s semistandard_name_audit -- --scan-root F:/MMD --max-files 200
+        uvx nox -s semistandard_name_audit -- --manifest build/batch-import/manifest.json --strict-local
+    """
+    args = list(session.posargs)
+    out_json = _require_build_path(
+        session,
+        _option(args, "--out-json", "build/reports/semistandard_name_audit.json"),
+        "--out-json",
+    )
+    out_md = _require_build_path(
+        session,
+        _option(args, "--out-md", "build/reports/semistandard_name_audit.md"),
+        "--out-md",
+    )
+
+    passthrough: list[str] = []
+    i = 0
+    value_options = {"--manifest", "--scan-root", "--max-files", "--out-json", "--out-md", "--limit-findings"}
+    flag_options = {"--strict-local"}
+    while i < len(args):
+        arg = args[i]
+        if arg in value_options and i + 1 < len(args):
+            value = args[i + 1]
+            if arg in {"--manifest", "--scan-root", "--out-json", "--out-md"}:
+                path = Path(value)
+                value = str(path.resolve() if path.is_absolute() else (ROOT / path).resolve())
+            passthrough.extend([arg, value])
+            i += 2
+            continue
+        if arg in flag_options:
+            passthrough.append(arg)
+            i += 1
+            continue
+        passthrough.append(arg)
+        i += 1
+
+    if "--out-json" not in passthrough:
+        passthrough.extend(["--out-json", str(out_json)])
+    if "--out-md" not in passthrough:
+        passthrough.extend(["--out-md", str(out_md)])
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH", "")]))
+    session.run(sys.executable, "tests/local/semistandard_name_audit.py", *passthrough, env=env, external=True)
+    session.log(f"Semistandard name audit report: {out_md}")
+    session.log(f"Semistandard name audit JSON: {out_json}")
+
+
+@nox.session(venv_backend="none")
 def local_camera_motion_oracle(session: nox.Session) -> None:
     """Run local-only GoldenOracle camera-motion checks against Maya camera import.
 
