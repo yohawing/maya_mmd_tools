@@ -67,28 +67,55 @@ class MmdBoneMorphAccumNode(om.MPxNode):
         om.MEulerRotation.kZYX,
     )
 
+    @staticmethod
+    def _plug_matches_any(plug, attributes):
+        """Return whether *plug* matches any initialized output attribute."""
+        for attr in attributes:
+            if attr is None:
+                continue
+            try:
+                if plug == attr:
+                    return True
+            except TypeError:
+                pass
+            except Exception:
+                pass
+            try:
+                if plug.attribute() == attr:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def compute(self, plug, data):
-        is_translate_plug = (
-            plug == self.aOutputTranslate
-            or plug == self.aOutputTranslateX
-            or plug == self.aOutputTranslateY
-            or plug == self.aOutputTranslateZ
+        N = type(self)
+        is_translate_plug = self._plug_matches_any(
+            plug,
+            (
+                N.aOutputTranslate,
+                N.aOutputTranslateX,
+                N.aOutputTranslateY,
+                N.aOutputTranslateZ,
+            ),
         )
-        is_rotate_plug = (
-            plug == self.aOutputRotate
-            or plug == self.aOutputRotateX
-            or plug == self.aOutputRotateY
-            or plug == self.aOutputRotateZ
+        is_rotate_plug = self._plug_matches_any(
+            plug,
+            (
+                N.aOutputRotate,
+                N.aOutputRotateX,
+                N.aOutputRotateY,
+                N.aOutputRotateZ,
+            ),
         )
         if not is_translate_plug and not is_rotate_plug:
             return None
 
-        base_tx = data.inputValue(self.aBaseTranslateX).asDouble()
-        base_ty = data.inputValue(self.aBaseTranslateY).asDouble()
-        base_tz = data.inputValue(self.aBaseTranslateZ).asDouble()
-        base_rx = data.inputValue(self.aBaseRotateX).asDouble()
-        base_ry = data.inputValue(self.aBaseRotateY).asDouble()
-        base_rz = data.inputValue(self.aBaseRotateZ).asDouble()
+        base_tx = data.inputValue(N.aBaseTranslateX).asDouble()
+        base_ty = data.inputValue(N.aBaseTranslateY).asDouble()
+        base_tz = data.inputValue(N.aBaseTranslateZ).asDouble()
+        base_rx = data.inputValue(N.aBaseRotateX).asDouble()
+        base_ry = data.inputValue(N.aBaseRotateY).asDouble()
+        base_rz = data.inputValue(N.aBaseRotateZ).asDouble()
         rotate_order = self._rotate_order_from_data(data)
 
         tx, ty, tz = base_tx, base_ty, base_tz
@@ -99,7 +126,7 @@ class MmdBoneMorphAccumNode(om.MPxNode):
             ty += weight * contribution["translate"][1]
             tz += weight * contribution["translate"][2]
 
-        out_trans_handle = data.outputValue(self.aOutputTranslate)
+        out_trans_handle = data.outputValue(N.aOutputTranslate)
         out_trans_handle.set3Double(tx, ty, tz)
         out_trans_handle.setClean()
 
@@ -115,7 +142,7 @@ class MmdBoneMorphAccumNode(om.MPxNode):
 
         out_euler = final_quat.asEulerRotation()
         out_euler.reorderIt(rotate_order)
-        out_rot_handle = data.outputValue(self.aOutputRotate)
+        out_rot_handle = data.outputValue(N.aOutputRotate)
         out_rot_handle.set3Double(out_euler.x, out_euler.y, out_euler.z)
         out_rot_handle.setClean()
 
@@ -123,7 +150,7 @@ class MmdBoneMorphAccumNode(om.MPxNode):
 
     def _rotate_order_from_data(self, data):
         try:
-            order_index = int(data.inputValue(self.aRotateOrder).asShort())
+            order_index = int(data.inputValue(type(self).aRotateOrder).asShort())
         except Exception:
             order_index = 0
         if 0 <= order_index < len(self._ROTATE_ORDERS):

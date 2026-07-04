@@ -173,10 +173,35 @@ class BoneConverter:
             return native_name
         return bone.get_name()
 
-    def _get_node_uuid(self, node: str) -> Optional[str]:
-        """Return the Maya UUID for a node when available."""
-        uuids = cmds.ls(node, uuid=True) or []
-        return uuids[0] if uuids else None
+    def _get_active_selection_uuid(self) -> Optional[str]:
+        """Return the first active selection UUID without parsing its Maya name."""
+        selection = om.MGlobal.getActiveSelectionList()
+        if selection.length() == 0:
+            return None
+        node_obj = selection.getDependNode(0)
+        return om.MFnDependencyNode(node_obj).uuid().asString()
+
+    def _get_node_uuid(self, node: str, allow_active_selection_fallback: bool = False) -> Optional[str]:
+        """Return the Maya UUID for a node when available.
+
+        Some real-world PMX bone names can produce Maya node names that make
+        ``cmds.ls(node, uuid=True)`` fail in Maya's name parser.  Immediately
+        after ``cmds.joint`` creation the new joint is selected, so the importer
+        can safely recover its UUID through the API selection list without
+        reparsing the problematic string.
+        """
+        try:
+            uuids = cmds.ls(node, uuid=True) or []
+            if uuids:
+                return uuids[0]
+        except RuntimeError as exc:
+            if not allow_active_selection_fallback:
+                raise
+            self.logger.debug("cmds.ls(uuid=True) failed for node %r; using active selection UUID: %s", node, exc)
+
+        if allow_active_selection_fallback:
+            return self._get_active_selection_uuid()
+        return None
 
     def _resolve_node_long_path(self, node_uuid: Optional[str], fallback: Optional[str] = None) -> str:
         """Resolve a node UUID to the current long DAG path.
@@ -275,7 +300,7 @@ class BoneConverter:
                 name=joint_name,
                 position=list(mmd_point_to_maya(position, scale)),  # MMD: +Z手前, Maya: +Z奥
             )
-            joint_uuid = self._get_node_uuid(joint)
+            joint_uuid = self._get_node_uuid(joint, allow_active_selection_fallback=True)
             joint = self._resolve_node_long_path(joint_uuid, joint)
 
             # セグメントスケール補償を無効化

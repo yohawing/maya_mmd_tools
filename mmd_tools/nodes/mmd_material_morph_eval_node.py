@@ -43,19 +43,43 @@ class MmdMaterialMorphEvalNode(om.MPxNode):
     aOutputDiffuseG = None
     aOutputDiffuseB = None
 
+    @staticmethod
+    def _plug_matches_any(plug, attributes):
+        """Return whether *plug* matches any initialized output attribute."""
+        for attr in attributes:
+            if attr is None:
+                continue
+            try:
+                if plug == attr:
+                    return True
+            except TypeError:
+                pass
+            except Exception:
+                pass
+            try:
+                if plug.attribute() == attr:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def compute(self, plug, data):
-        is_output = (
-            plug == self.aOutputDiffuse
-            or plug == self.aOutputDiffuseR
-            or plug == self.aOutputDiffuseG
-            or plug == self.aOutputDiffuseB
+        N = type(self)
+        is_output = self._plug_matches_any(
+            plug,
+            (
+                N.aOutputDiffuse,
+                N.aOutputDiffuseR,
+                N.aOutputDiffuseG,
+                N.aOutputDiffuseB,
+            ),
         )
         if not is_output:
             return None
 
-        r = data.inputValue(self.aBaseDiffuseR).asDouble()
-        g = data.inputValue(self.aBaseDiffuseG).asDouble()
-        b = data.inputValue(self.aBaseDiffuseB).asDouble()
+        r = data.inputValue(N.aBaseDiffuseR).asDouble()
+        g = data.inputValue(N.aBaseDiffuseG).asDouble()
+        b = data.inputValue(N.aBaseDiffuseB).asDouble()
 
         contributions = self._read_contributions(data)
         for c in contributions:
@@ -71,15 +95,16 @@ class MmdMaterialMorphEvalNode(om.MPxNode):
                 g *= (1.0 - w) + w * dg
                 b *= (1.0 - w) + w * db
 
-        out = data.outputValue(self.aOutputDiffuse)
+        out = data.outputValue(N.aOutputDiffuse)
         out.set3Double(r, g, b)
         out.setClean()
         data.setClean(plug)
 
     def _read_contributions(self, data):
+        N = type(self)
         contributions = []
         try:
-            array_handle = data.inputArrayValue(self.aContribution)
+            array_handle = data.inputArrayValue(N.aContribution)
         except Exception:
             return contributions
 
@@ -87,13 +112,13 @@ class MmdMaterialMorphEvalNode(om.MPxNode):
             try:
                 logical_index = array_handle.elementLogicalIndex()
                 elem = array_handle.inputValue()
-                weight = elem.child(self.aContributionWeight).asFloat()
-                op = elem.child(self.aOperationType).asShort()
-                morph_order = elem.child(self.aMorphOrder).asInt()
-                diffuse = elem.child(self.aDiffuseOffset)
-                dr = diffuse.child(self.aDiffuseOffsetR).asDouble()
-                dg = diffuse.child(self.aDiffuseOffsetG).asDouble()
-                db = diffuse.child(self.aDiffuseOffsetB).asDouble()
+                weight = elem.child(N.aContributionWeight).asFloat()
+                op = elem.child(N.aOperationType).asShort()
+                morph_order = elem.child(N.aMorphOrder).asInt()
+                diffuse = elem.child(N.aDiffuseOffset)
+                dr = diffuse.child(N.aDiffuseOffsetR).asDouble()
+                dg = diffuse.child(N.aDiffuseOffsetG).asDouble()
+                db = diffuse.child(N.aDiffuseOffsetB).asDouble()
                 contributions.append({
                     "logical_index": logical_index,
                     "morph_order": morph_order,

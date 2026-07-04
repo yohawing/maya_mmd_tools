@@ -17,6 +17,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MATERIAL_INDEX,
 )
 from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.nodes.mmd_material_morph_eval_node import MmdMaterialMorphEvalNode
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -135,6 +136,20 @@ class TestMaterialMorphModelRootConnection(MayaTestBase):
 
 class TestMaterialMorphWeightDrivesShader(MayaTestBase):
     """material morph の weight 変更が shader パラメータに反映されることを検証する。"""
+
+    def test_plug_match_guard_ignores_uninitialized_attributes(self):
+        """古い module 状態の None 属性と plug 比較しても TypeError にしない。"""
+
+        class ExplodingPlug:
+            def __eq__(self, other):
+                if other is None:
+                    raise TypeError("MPlug or MObject expected.")
+                return False
+
+            def attribute(self):
+                raise TypeError("MPlug or MObject expected.")
+
+        self.assertFalse(MmdMaterialMorphEvalNode._plug_matches_any(ExplodingPlug(), (None,)))
 
     def _require_material_morph_node(self):
         try:

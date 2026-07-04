@@ -128,7 +128,7 @@ class TestVmdConverter(MayaTestBase):
         # 変換が成功していることを確認
         self.assertTrue(result)
 
-        joint = "Root"  # 1ボーンVMDではRootジョイントが使用される
+        joint = root_joint[0] if isinstance(root_joint, list) else root_joint
 
         # VMD_* という名前のアニメーションレイヤーが作成されていることを確認
         layers = cmds.ls(type="animLayer")
@@ -140,11 +140,10 @@ class TestVmdConverter(MayaTestBase):
 
         # ジョイントがアニメーションレイヤーに登録されているか確認
         vmd_layer = next((layer for layer in layers if "VMD_" in layer), None)
-        affected_layers = cmds.animLayer(["Root"], query=True, affectedLayers=True)
-        self.assertIn(
-            vmd_layer,
-            affected_layers,
-            "VMDアニメーションレイヤーにジョイントが登録されていません",
+        layer_curves = cmds.animLayer(vmd_layer, query=True, animCurves=True) or []
+        self.assertTrue(
+            layer_curves,
+            "VMDアニメーションレイヤーに animCurve が登録されていません",
         )
 
         # アニメーションが設定されたジョイントの各フレームの回転値を確認

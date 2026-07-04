@@ -1194,15 +1194,8 @@ class RigConverter:
 
                 # Leave the public goal input unconnected for generated rigs.
                 # mmdCcdIk reconstructs the pre-IK controller position from
-                # controllerBoneSlot + inputTranslate.  External goal connections
-                # remain supported and override that internal controller goal.
-                self._connect_ik_goal_world_matrix_if_safe(
-                    node,
-                    controller_joint,
-                    link_slots,
-                    slot_to_pmx,
-                    maya_joints,
-                )
+                # controllerBoneSlot + inputTranslate in PMX/no-JO space. External
+                # users can still connect goal/goalWorldMatrix after import.
 
                 # inputRotate: exclude own links AND downstream chains' links.
                 # Downstream = higher controllerBoneIndex (evaluated later in MMD).

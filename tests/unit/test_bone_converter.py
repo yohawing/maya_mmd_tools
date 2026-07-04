@@ -238,6 +238,17 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(parent_of_head, maya_joints[1])
         self.assertTrue(cmds.objExists("|center"), "pre-existing root joint should not be consumed")
 
+    def test_get_node_uuid_falls_back_to_active_selection_when_name_parser_fails(self):
+        """cmds.ls(uuid=True) が名前パースで落ちても作成直後 joint の UUID を取れる。"""
+        cmds.select(clear=True)
+        joint = cmds.joint(name="uuid_parser_fallback_joint", position=(0, 0, 0))
+        expected_uuid = cmds.ls(joint, uuid=True)[0]
+
+        with patch("mmd_tools.converters.bone_converter.cmds.ls", side_effect=RuntimeError("parser failed")):
+            actual_uuid = self.converter._get_node_uuid(joint, allow_active_selection_fallback=True)
+
+        self.assertEqual(actual_uuid, expected_uuid)
+
     @patch("mmd_tools.core.maya_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト"""

@@ -120,12 +120,17 @@ def initializePlugin(mobject):
     try:
         install_mmd_menu()
         install_drag_drop_importer()
-        if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
-            mmd_shader.initializePlugin(mobject)
         mmd_bone_morph_accum_node.register(plugin_fn)
         mmd_material_morph_eval_node.register(plugin_fn)
         mmd_append_node.register(plugin_fn)
         mmd_ccd_ik_node.register(plugin_fn)
+        if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
+            try:
+                mmd_shader.initializePlugin(mobject)
+            except Exception as e:
+                om.MGlobal.displayWarning(
+                    f"MMD shader override initialization failed; continuing without viewport override: {e}"
+                )
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
         raise
@@ -142,7 +147,10 @@ def uninitializePlugin(mobject):
         uninstall_mmd_menu()
         uninstall_drag_drop_importer()
         if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
-            mmd_shader.uninitializePlugin(mobject)
+            try:
+                mmd_shader.uninitializePlugin(mobject)
+            except Exception as e:
+                om.MGlobal.displayWarning(f"MMD shader override uninitialization failed: {e}")
         mmd_ccd_ik_node.deregister(plugin_fn)
         mmd_append_node.deregister(plugin_fn)
         mmd_material_morph_eval_node.deregister(plugin_fn)

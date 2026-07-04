@@ -22,6 +22,7 @@ class TestMayaUtils(MayaTestBase):
         """PMXボーン名は準標準ボーン規則でサニタイズされる。"""
         self.assertEqual(maya_utils.sanitize_bone_name("左足IK親"), "left_leg_ik_parent")
         self.assertEqual(maya_utils.sanitize_bone_name("右腕捻Ｄ"), "right_arm_twist_d")
+        self.assertEqual(maya_utils.sanitize_bone_name("001"), "bone_001")
 
     def test_create_mesh_with_uvs(self):
         """UV付きのメッシュを作成できるか"""

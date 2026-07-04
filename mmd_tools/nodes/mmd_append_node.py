@@ -121,33 +121,60 @@ class MmdAppendNode(om.MPxNode):
         """Convert an MMD-space translation offset to Maya-space."""
         return (float(translate[0]), float(translate[1]), -float(translate[2]))
 
+    @staticmethod
+    def _plug_matches_any(plug, attributes):
+        """Return whether *plug* matches any initialized output attribute."""
+        for attr in attributes:
+            if attr is None:
+                continue
+            try:
+                if plug == attr:
+                    return True
+            except TypeError:
+                pass
+            except Exception:
+                pass
+            try:
+                if plug.attribute() == attr:
+                    return True
+            except Exception:
+                pass
+        return False
+
     def compute(self, plug, data):
-        is_rot_plug = (
-            plug == self.aOutputRotate
-            or plug == self.aOutputRotateX
-            or plug == self.aOutputRotateY
-            or plug == self.aOutputRotateZ
-            or plug == self.aAppendRotate
-            or plug == self.aAppendRotateX
-            or plug == self.aAppendRotateY
-            or plug == self.aAppendRotateZ
+        N = type(self)
+        is_rot_plug = self._plug_matches_any(
+            plug,
+            (
+                N.aOutputRotate,
+                N.aOutputRotateX,
+                N.aOutputRotateY,
+                N.aOutputRotateZ,
+                N.aAppendRotate,
+                N.aAppendRotateX,
+                N.aAppendRotateY,
+                N.aAppendRotateZ,
+            ),
         )
-        is_trans_plug = (
-            plug == self.aOutputTranslate
-            or plug == self.aOutputTranslateX
-            or plug == self.aOutputTranslateY
-            or plug == self.aOutputTranslateZ
-            or plug == self.aAppendTranslate
-            or plug == self.aAppendTranslateX
-            or plug == self.aAppendTranslateY
-            or plug == self.aAppendTranslateZ
+        is_trans_plug = self._plug_matches_any(
+            plug,
+            (
+                N.aOutputTranslate,
+                N.aOutputTranslateX,
+                N.aOutputTranslateY,
+                N.aOutputTranslateZ,
+                N.aAppendTranslate,
+                N.aAppendTranslateX,
+                N.aAppendTranslateY,
+                N.aAppendTranslateZ,
+            ),
         )
         if not is_rot_plug and not is_trans_plug:
             return None  # let Maya handle unknown plugs
 
-        ratio = data.inputValue(self.aRatio).asFloat()
-        affect_rot = data.inputValue(self.aAffectRotation).asBool()
-        affect_trans = data.inputValue(self.aAffectTranslation).asBool()
+        ratio = data.inputValue(N.aRatio).asFloat()
+        affect_rot = data.inputValue(N.aAffectRotation).asBool()
+        affect_trans = data.inputValue(N.aAffectTranslation).asBool()
 
         self._ensure_solver(ratio, affect_rot, affect_trans)
         if self._solver is None:
@@ -155,25 +182,25 @@ class MmdAppendNode(om.MPxNode):
             return
 
         # kAngle attrs store radians internally; asDouble() returns radians
-        src_rx = data.inputValue(self.aSourceRotateX).asDouble()
-        src_ry = data.inputValue(self.aSourceRotateY).asDouble()
-        src_rz = data.inputValue(self.aSourceRotateZ).asDouble()
+        src_rx = data.inputValue(N.aSourceRotateX).asDouble()
+        src_ry = data.inputValue(N.aSourceRotateY).asDouble()
+        src_rz = data.inputValue(N.aSourceRotateZ).asDouble()
         src_quat = om.MEulerRotation(src_rx, src_ry, src_rz).asQuaternion()
         src_jo = om.MEulerRotation(
-            data.inputValue(self.aSourceJointOrientX).asDouble(),
-            data.inputValue(self.aSourceJointOrientY).asDouble(),
-            data.inputValue(self.aSourceJointOrientZ).asDouble(),
+            data.inputValue(N.aSourceJointOrientX).asDouble(),
+            data.inputValue(N.aSourceJointOrientY).asDouble(),
+            data.inputValue(N.aSourceJointOrientZ).asDouble(),
         ).asQuaternion()
         target_jo = om.MEulerRotation(
-            data.inputValue(self.aTargetJointOrientX).asDouble(),
-            data.inputValue(self.aTargetJointOrientY).asDouble(),
-            data.inputValue(self.aTargetJointOrientZ).asDouble(),
+            data.inputValue(N.aTargetJointOrientX).asDouble(),
+            data.inputValue(N.aTargetJointOrientY).asDouble(),
+            data.inputValue(N.aTargetJointOrientZ).asDouble(),
         ).asQuaternion()
         source_mmd_quat = src_jo.inverse() * src_quat * src_jo
 
-        src_tx = data.inputValue(self.aSourceTranslateX).asDouble()
-        src_ty = data.inputValue(self.aSourceTranslateY).asDouble()
-        src_tz = data.inputValue(self.aSourceTranslateZ).asDouble()
+        src_tx = data.inputValue(N.aSourceTranslateX).asDouble()
+        src_ty = data.inputValue(N.aSourceTranslateY).asDouble()
+        src_tz = data.inputValue(N.aSourceTranslateZ).asDouble()
 
         source_position_mmd = self._maya_translate_to_mmd(src_tx, src_ty, src_tz)
         result = self._solver.solve(
@@ -195,31 +222,31 @@ class MmdAppendNode(om.MPxNode):
         grant_euler = grant_quat.asEulerRotation()
         target_grant_quat = target_jo * grant_quat * target_jo.inverse()
 
-        append_rot_handle = data.outputValue(self.aAppendRotate)
+        append_rot_handle = data.outputValue(N.aAppendRotate)
         append_rot_handle.set3Double(grant_euler.x, grant_euler.y, grant_euler.z)
         append_rot_handle.setClean()
 
-        append_trans_handle = data.outputValue(self.aAppendTranslate)
+        append_trans_handle = data.outputValue(N.aAppendTranslate)
         append_trans_handle.set3Double(grant_tx, grant_ty, grant_tz)
         append_trans_handle.setClean()
 
         # Compose: output = base * grant_contribution
-        base_rx = data.inputValue(self.aBaseRotateX).asDouble()
-        base_ry = data.inputValue(self.aBaseRotateY).asDouble()
-        base_rz = data.inputValue(self.aBaseRotateZ).asDouble()
+        base_rx = data.inputValue(N.aBaseRotateX).asDouble()
+        base_ry = data.inputValue(N.aBaseRotateY).asDouble()
+        base_rz = data.inputValue(N.aBaseRotateZ).asDouble()
         base_quat = om.MEulerRotation(base_rx, base_ry, base_rz).asQuaternion()
         final_quat = base_quat * target_grant_quat
         final_euler = final_quat.asEulerRotation()
 
-        out_rot_handle = data.outputValue(self.aOutputRotate)
+        out_rot_handle = data.outputValue(N.aOutputRotate)
         out_rot_handle.set3Double(final_euler.x, final_euler.y, final_euler.z)
         out_rot_handle.setClean()
 
-        base_tx = data.inputValue(self.aBaseTranslateX).asDouble()
-        base_ty = data.inputValue(self.aBaseTranslateY).asDouble()
-        base_tz = data.inputValue(self.aBaseTranslateZ).asDouble()
+        base_tx = data.inputValue(N.aBaseTranslateX).asDouble()
+        base_ty = data.inputValue(N.aBaseTranslateY).asDouble()
+        base_tz = data.inputValue(N.aBaseTranslateZ).asDouble()
 
-        out_trans_handle = data.outputValue(self.aOutputTranslate)
+        out_trans_handle = data.outputValue(N.aOutputTranslate)
         out_trans_handle.set3Double(
             base_tx + grant_tx,
             base_ty + grant_ty,

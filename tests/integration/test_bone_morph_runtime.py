@@ -7,11 +7,24 @@ from pathlib import Path
 from maya import cmds
 
 from mmd_tools.converters.bone_morph_runtime import build_bone_morph_graph
+from mmd_tools.nodes.mmd_bone_morph_accum_node import MmdBoneMorphAccumNode
 from tests.common.maya_test_base import MayaTestBase
 
 
 class TestBoneMorphRuntime(MayaTestBase):
     """Synthetic scene tests for PMX bone morph DG runtime wiring."""
+
+    def test_plug_match_guard_ignores_uninitialized_attributes(self):
+        class FakePlug:
+            def __eq__(self, other):
+                if other is None:
+                    raise TypeError("MPlug or MObject expected.")
+                return False
+
+            def attribute(self):
+                raise RuntimeError("no attribute")
+
+        self.assertFalse(MmdBoneMorphAccumNode._plug_matches_any(FakePlug(), (None,)))
 
     def _require_accumulator_node(self):
         try:

@@ -17,6 +17,7 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from mmd_tools.core.native.mmd_anim_runtime import is_rig_primitive_available
+from mmd_tools.nodes.mmd_append_node import MmdAppendNode
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -67,6 +68,18 @@ def _assert_angles_close(test_case, actual, expected, tol=0.01, msg=""):
 @unittest.skipUnless(is_rig_primitive_available(), "mmd-anim runtime not available")
 class TestMmdAppendJointOrient(MayaTestBase):
     """mmdAppend ノードの JO 空間変換テスト"""
+
+    def test_plug_match_guard_ignores_uninitialized_attributes(self):
+        class FakePlug:
+            def __eq__(self, other):
+                if other is None:
+                    raise TypeError("MPlug or MObject expected.")
+                return False
+
+            def attribute(self):
+                raise RuntimeError("no attribute")
+
+        self.assertFalse(MmdAppendNode._plug_matches_any(FakePlug(), (None,)))
 
     def _create_append_node(self, source_deg, base_deg, src_jo_deg, target_jo_deg, ratio):
         node = cmds.createNode("mmdAppend")
