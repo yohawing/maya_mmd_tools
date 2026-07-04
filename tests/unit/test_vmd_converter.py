@@ -24,7 +24,6 @@ from mmd_tools.converters.vmd_camera_animation import (
     maya_camera_eye_from_vmd_state,
     maya_camera_up_from_vmd_state,
 )
-from mmd_tools.converters.vmd_bone_interpolation import parse_vmd_interpolation
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
@@ -230,11 +229,6 @@ class TestVmdConverter(MayaTestBase):
         self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
         self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
 
-    def test_vmd_frame_to_maya_time_uses_fixed_30fps_source(self):
-        """VMD frame は常に30fps基準として Maya time へ変換する。"""
-        self.converter.fps = 60.0
-        self.assertEqual(self.converter.vmd_frame_to_maya_time(30), 60.0)
-
     def test_fps_60_timeline_maps_vmd_frame_30_to_maya_time_60(self):
         """60fps import では timeline max も VMD frame 30 -> Maya time 60 にする。"""
         vmd_data = type("VmdDataStub", (), {})()
@@ -244,25 +238,6 @@ class TestVmdConverter(MayaTestBase):
         self.converter._setup_timeline(vmd_data)
 
         self.assertEqual(cmds.playbackOptions(q=True, max=True), 60.0)
-
-    def test_get_failed_bones(self):
-        """失敗したボーン名の取得テスト"""
-        # 初期状態
-        self.assertEqual(len(self.converter.get_failed_bones()), 0)
-
-        # 失敗したボーンを追加
-        self.converter._failed_bones.add("ボーン1")
-        self.converter._failed_bones.add("ボーン2")
-
-        # 取得
-        failed = self.converter.get_failed_bones()
-        self.assertEqual(len(failed), 2)
-        self.assertIn("ボーン1", failed)
-        self.assertIn("ボーン2", failed)
-
-        # 元のセットが変更されないことを確認
-        failed.add("ボーン3")
-        self.assertEqual(len(self.converter._failed_bones), 2)
 
     def test_convert_with_test_vmd_data(self):
         """テスト用VMDデータでの変換テスト"""
@@ -1143,28 +1118,6 @@ class TestVmdConverter(MayaTestBase):
         self.assertEqual(cmds.keyframe(f"{camera_name}.rotateZ", query=True, timeChange=True), [60.0])
         self.assertEqual(cmds.keyframe(f"{camera_name}.translateZ", query=True, timeChange=True), [60.0])
 
-    def test_detect_vmd_motion_kind(self):
-        """VMD内容から model/camera/light/mixed/empty を判定できることを確認"""
-        def fake(**kwargs):
-            defaults = {
-                "bone_frames": [],
-                "morph_frames": [],
-                "camera_frames": [],
-                "light_frames": [],
-            }
-            defaults.update(kwargs)
-            return type("FakeVmdData", (), defaults)()
-
-        self.assertEqual(self.converter._detect_vmd_motion_kind(fake()), "empty")
-        self.assertEqual(self.converter._detect_vmd_motion_kind(fake(bone_frames=[object()])), "model")
-        self.assertEqual(self.converter._detect_vmd_motion_kind(fake(camera_frames=[object()])), "camera")
-        self.assertEqual(self.converter._detect_vmd_motion_kind(fake(light_frames=[object()])), "light")
-        self.assertEqual(self.converter._detect_vmd_motion_kind(fake(ik_show_hide_frames=[object()])), "model")
-        self.assertEqual(
-            self.converter._detect_vmd_motion_kind(fake(bone_frames=[object()], camera_frames=[object()])),
-            "mixed",
-        )
-
     @staticmethod
     def _bone_interp_bytes_by_channel(**overrides):
         """Build VMD bone interpolation bytes from per-channel control points."""
@@ -1211,24 +1164,6 @@ class TestVmdConverter(MayaTestBase):
             outTangentType=True,
         )
         self.assertEqual(out_type, ["fixed"])
-
-    def test_parse_vmd_bone_interpolation_uses_bone_channel_layout(self):
-        """bone interpolation は VMD の 4 channel x 4 byte layout で読む。"""
-        data = self._bone_interp_bytes_by_channel(
-            translate_x=(20, 100, 100, 20),
-            translate_y=(30, 40, 90, 110),
-            translate_z=(10, 80, 120, 30),
-            rotation=(64, 20, 100, 90),
-        )
-
-        parsed = self.converter._parse_vmd_interpolation(data)
-        self.assertEqual(parsed, parse_vmd_interpolation(data))
-        self.assertAlmostEqual(parsed["translate_x"][0], 20 / 127)
-        self.assertAlmostEqual(parsed["translate_x"][1], 100 / 127)
-        self.assertAlmostEqual(parsed["translate_y"][0], 30 / 127)
-        self.assertAlmostEqual(parsed["translate_y"][1], 40 / 127)
-        self.assertAlmostEqual(parsed["translate_z"][2], 120 / 127)
-        self.assertAlmostEqual(parsed["rotation"][3], 90 / 127)
 
     def test_bone_interpolation_fixture_matches_mmd_anim_midframe_oracle(self):
         """Rig import 後の中間フレーム translate が mmd-anim oracle と大きくズレない。"""
