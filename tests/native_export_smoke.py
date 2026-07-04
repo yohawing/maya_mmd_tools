@@ -90,7 +90,7 @@ def _pmd_payload() -> dict:
                 "bones": 0,
                 "ik": 0,
                 "morphs": 0,
-                "displayFrames": 0,
+                "displayFrames": 1,
                 "rigidBodies": 0,
                 "joints": 0,
             },
@@ -101,7 +101,15 @@ def _pmd_payload() -> dict:
         "toonTextureBytes": [],
         "skeleton": {"bones": [], "ik": []},
         "morphs": [],
-        "displayFrames": [],
+        "displayFrames": [
+            {
+                "name": "Root",
+                "nameBytes": [],
+                "englishName": "",
+                "englishNameBytes": [],
+                "frames": [],
+            }
+        ],
         "rigidBodies": [],
         "joints": [],
         "diagnostics": [],
