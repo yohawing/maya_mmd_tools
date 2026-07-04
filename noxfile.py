@@ -1306,6 +1306,48 @@ def maya_physics_collider_capture(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_physics_preview_numeric(session: nox.Session) -> None:
+    """Sample representative Bullet physics preview transforms under mayapy.
+
+    Examples:
+        uvx nox -s maya_physics_preview_numeric -- --maya 2024
+        uvx nox -s maya_physics_preview_numeric -- --maya 2024 --frames 1,30,60 --out build/reports/physics_preview_numeric.json
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    path_options = {"--model", "--out"}
+    value_options = path_options | {
+        "--frames",
+        "--min-dynamic-movers",
+        "--min-tip-rotate-deg",
+        "--max-displacement",
+    }
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in value_options and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] == "--dgdirty":
+            passthrough.append(args[i])
+            i += 1
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/physics_preview_numeric_harness.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
+        env=_mayapy_env(mayapy, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def maya_batch_import(session: nox.Session) -> None:
     """Run Track 6 manifest-driven Maya batch import checks.
 
