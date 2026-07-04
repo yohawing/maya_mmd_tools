@@ -1421,6 +1421,7 @@ def release_gate(session: nox.Session) -> None:
                     "build/release-gate/pmx_roundtrip_v0_4",
                 ],
             ),
+            ("tier3:local-assets-check", ["uvx", "nox", "-s", "local_assets_check", "--", "--maya", version]),
         ]
         for name, command in tier2_commands:
             _run_release_gate_command(name, command, results)
@@ -1433,6 +1434,91 @@ def release_gate(session: nox.Session) -> None:
     if failed:
         failed_names = ", ".join(str(result["name"]) for result in failed)
         session.error(f"Release gate failed: {failed_names}")
+
+
+@nox.session(venv_backend="none")
+def local_assets_check(session: nox.Session) -> None:
+    """Run local PMX/VMD asset smoke checks from an optional manifest.
+
+    Manifest format:
+        {"assets": [{"name": "case", "model": "path/to/model.pmx", "motion": "optional.vmd"}]}
+
+    Examples:
+        uvx nox -s local_assets_check
+        uvx nox -s local_assets_check -- --manifest F:/local/assets.json --strict-local
+    """
+    args = list(session.posargs)
+    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    manifest = Path(_option(args, "--manifest", "local-assets-manifest.json"))
+    strict = _has_flag(args, "--strict-local")
+    out_json = _require_build_path(
+        session,
+        _option(args, "--out-json", "build/reports/local_assets_check.json"),
+        "--out-json",
+    )
+    out_md = _require_build_path(
+        session,
+        _option(args, "--out-md", "build/reports/local_assets_check.md"),
+        "--out-md",
+    )
+
+    if not manifest.is_absolute():
+        manifest = ROOT / manifest
+    manifest = manifest.resolve()
+
+    if not manifest.exists():
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_md.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": "fail" if strict else "skip",
+            "results": [
+                {
+                    "name": str(manifest),
+                    "status": "fail" if strict else "skip",
+                    "duration_sec": 0.0,
+                    "detail": "manifest not found",
+                }
+            ],
+        }
+        out_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        out_md.write_text(
+            "\n".join(
+                [
+                    "# Local Assets Check",
+                    "",
+                    f"- Status: {payload['status']}",
+                    "",
+                    "| Asset | Status | Seconds | Detail |",
+                    "| --- | --- | ---: | --- |",
+                    f"| {manifest} | {payload['status']} | 0.0 | manifest not found |",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        session.log(f"Local assets manifest not found: {manifest}")
+        session.log(f"Local assets report: {out_md}")
+        if strict:
+            session.error("Local assets manifest is required with --strict-local")
+        return
+
+    mayapy = _mayapy(version)
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
+    command = [
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/local/local_assets_check.py"),
+        "--manifest",
+        _mayapy_arg_path(mayapy, manifest),
+        "--out-json",
+        _mayapy_arg_path(mayapy, out_json),
+        "--out-md",
+        _mayapy_arg_path(mayapy, out_md),
+    ]
+    if strict:
+        command.append("--strict-local")
+    session.run(*command, env=env, external=True)
+    session.log(f"Local assets report: {out_md}")
+    session.log(f"Local assets JSON: {out_json}")
 
 
 @nox.session(venv_backend="none")
