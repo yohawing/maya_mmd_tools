@@ -258,6 +258,63 @@ class TestPmdExporterFromDict(TestBase):
         self.assertEqual(pmd.bones[0].parent_bone_index, -1)
         self.assertEqual(pmd.bones[0].bone_type, PmdBoneType.ROTATE_AND_MOVE)
 
+    def test_exporter_uses_native_writer_when_available(self):
+        """native PMD writer が bytes を返す場合はその bytes を書く。"""
+        calls = []
+
+        def native_exporter(payload):
+            calls.append(payload)
+            return b"NATIVE-PMD"
+
+        exporter = PmdExporter(native_exporter=native_exporter)
+        out_path = os.path.join(self.temp_dir, "native_dict.pmd")
+        exporter.export_pmd_model(
+            out_path,
+            {
+                "model_name": "NativePmd",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 1, 0], "uv": [0, 0], "bone_indices": [0, 0]},
+                    {"position": [1, 0, 0], "normal": [0, 1, 0], "uv": [1, 0], "bone_indices": [0, 0]},
+                    {"position": [0, 1, 0], "normal": [0, 1, 0], "uv": [0, 1], "bone_indices": [0, 0]},
+                ],
+                "faces": [[0, 1, 2]],
+                "materials": [{"name": "mat", "face_count": 3, "edge_flag": 1}],
+            },
+        )
+
+        with open(out_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"NATIVE-PMD")
+        self.assertEqual(len(calls), 1)
+        payload = calls[0]
+        self.assertEqual(payload["metadata"]["name"], "NativePmd")
+        self.assertEqual(payload["metadata"]["counts"]["vertices"], 3)
+        self.assertEqual(payload["metadata"]["counts"]["faces"], 1)
+        self.assertEqual(payload["materials"][0]["faceCount"], 1)
+        self.assertEqual(payload["geometry"]["vertices"][0]["edgeEnabled"], True)
+        self.assertEqual(payload["skeleton"]["bones"][0]["name"], "root")
+
+    def test_exporter_falls_back_when_native_writer_returns_none(self):
+        """native PMD writer が使えない環境では従来 writer へ戻る。"""
+        exporter = PmdExporter(native_exporter=lambda payload: None)
+        out_path = os.path.join(self.temp_dir, "fallback_dict.pmd")
+        exporter.export_pmd_model(
+            out_path,
+            {
+                "model_name": "FallbackPmd",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 1, 0], "uv": [0, 0], "bone_indices": [0, 0]},
+                    {"position": [1, 0, 0], "normal": [0, 1, 0], "uv": [1, 0], "bone_indices": [0, 0]},
+                    {"position": [0, 1, 0], "normal": [0, 1, 0], "uv": [0, 1], "bone_indices": [0, 0]},
+                ],
+                "faces": [[0, 1, 2]],
+            },
+        )
+
+        parsed = PmdData().parse_file(out_path)
+        self.assertEqual(parsed.header.model_name, "FallbackPmd")
+        self.assertEqual(len(parsed.vertices), 3)
+        self.assertEqual(len(parsed.faces), 1)
+
     def test_export_quad_triangulation(self):
         """quad dictをfan triangulate -> export -> parse_file で検証"""
         data = {
