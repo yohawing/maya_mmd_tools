@@ -535,8 +535,6 @@ class PmxExporter:
         """basic PMX data を mmd-anim parts exporter の入力へ変換する。"""
         if pmx.header.additional_uv != 0:
             return None
-        if pmx.morphs or pmx.rigid_bodies or pmx.joints:
-            return None
         if any(vertex.additional_uvs for vertex in pmx.vertices):
             return None
 
@@ -571,6 +569,7 @@ class PmxExporter:
             "englishComment": pmx.header.comment_english,
             "materials": [self._native_material_descriptor(pmx, material) for material in pmx.materials],
             "bones": [self._native_bone_descriptor(bone) for bone in pmx.bones],
+            "morphs": [],
             "displayFrames": [
                 {
                     "name": frame.name,
@@ -586,6 +585,8 @@ class PmxExporter:
                 }
                 for frame in pmx.display_frames
             ],
+            "rigidBodies": [self._native_rigid_body_descriptor(body) for body in pmx.rigid_bodies],
+            "joints": [self._native_joint_descriptor(joint) for joint in pmx.joints],
             "indexSizes": {
                 "vertex": int(pmx.header.vertex_index_size),
                 "texture": int(pmx.header.texture_index_size),
@@ -595,6 +596,11 @@ class PmxExporter:
                 "rigidBody": int(pmx.header.rigid_body_index_size),
             },
         }
+        for morph in pmx.morphs:
+            morph_descriptor = self._native_morph_descriptor(morph)
+            if morph_descriptor is None:
+                return None
+            descriptor["morphs"].append(morph_descriptor)
         return descriptor, positions, normals, uvs, indices, skin_indices, skin_weights, edge_scale
 
     def _try_native_parts_export(self, pmx: PmxData):
@@ -672,6 +678,74 @@ class PmxExporter:
             descriptor["tailPosition"] = _float_list(bone.connect_position_offset, 3, "bone tail position")
         return descriptor
 
+    @staticmethod
+    def _native_morph_descriptor(morph: PmxMorph):
+        if morph.morph_type == PmxMorphType.VertexMorph:
+            return {
+                "name": morph.name,
+                "englishName": morph.name_english,
+                "kind": "vertex",
+                "vertexOffsets": [
+                    {
+                        "vertexIndex": int(offset["vertex_index"]),
+                        "position": _float_list(offset["position_offset"], 3, "vertex morph position"),
+                    }
+                    for offset in morph.offsets
+                ],
+            }
+        if morph.morph_type == PmxMorphType.GroupMorph:
+            return {
+                "name": morph.name,
+                "englishName": morph.name_english,
+                "kind": "group",
+                "groupOffsets": [
+                    {
+                        "morphIndex": int(offset["morph_index"]),
+                        "weight": float(offset["morph_rate"]),
+                    }
+                    for offset in morph.offsets
+                ],
+            }
+        return None
+
+    @staticmethod
+    def _native_rigid_body_descriptor(body: PmxRigidBody) -> dict:
+        return {
+            "name": body.name,
+            "englishName": body.name_english,
+            "boneIndex": int(body.related_bone_index),
+            "group": int(body.group),
+            "mask": int(body.collision_mask),
+            "shape": _rigid_body_shape_name(body.shape_type),
+            "size": _float_list(body.size, 3, "rigid body size"),
+            "position": _float_list(body.position, 3, "rigid body position"),
+            "rotation": _float_list(body.rotation, 3, "rigid body rotation"),
+            "mass": float(body.mass),
+            "linearDamping": float(body.velocity_attenuation),
+            "angularDamping": float(body.rotation_attenuation),
+            "restitution": float(body.elasticity),
+            "friction": float(body.friction),
+            "mode": _rigid_body_mode_name(body.physics_mode),
+        }
+
+    @staticmethod
+    def _native_joint_descriptor(joint: PmxJoint) -> dict:
+        return {
+            "name": joint.name,
+            "englishName": joint.name_english,
+            "type": _joint_type_name(joint.joint_type),
+            "rigidBodyIndexA": int(joint.rigid_body_a_index),
+            "rigidBodyIndexB": int(joint.rigid_body_b_index),
+            "position": _float_list(joint.position, 3, "joint position"),
+            "rotation": _float_list(joint.rotation, 3, "joint rotation"),
+            "translationLowerLimit": _float_list(joint.translation_limit_min, 3, "joint translation lower limit"),
+            "translationUpperLimit": _float_list(joint.translation_limit_max, 3, "joint translation upper limit"),
+            "rotationLowerLimit": _float_list(joint.rotation_limit_min, 3, "joint rotation lower limit"),
+            "rotationUpperLimit": _float_list(joint.rotation_limit_max, 3, "joint rotation upper limit"),
+            "springTranslationFactor": _float_list(joint.spring_translation, 3, "joint spring translation"),
+            "springRotationFactor": _float_list(joint.spring_rotation, 3, "joint spring rotation"),
+        }
+
 
 def _float_list(value, length: int, label: str) -> list:
     try:
@@ -694,10 +768,43 @@ def _sphere_mode_name(value) -> str:
     if mode == int(PmxSphereMode.MULTIPLY):
         return "multiply"
     if mode == int(PmxSphereMode.ADDITIVE):
-        return "additive"
+        return "add"
     if mode == int(PmxSphereMode.SUB_TEXTURE):
         return "subTexture"
     return "disabled"
+
+
+def _rigid_body_shape_name(value) -> str:
+    shape = int(value)
+    if shape == 1:
+        return "box"
+    if shape == 2:
+        return "capsule"
+    return "sphere"
+
+
+def _rigid_body_mode_name(value) -> str:
+    mode = int(value)
+    if mode == 1:
+        return "dynamic"
+    if mode == 2:
+        return "dynamicBone"
+    return "static"
+
+
+def _joint_type_name(value) -> str:
+    joint_type = int(value)
+    if joint_type == 1:
+        return "generic6dof"
+    if joint_type == 2:
+        return "point2point"
+    if joint_type == 3:
+        return "coneTwist"
+    if joint_type == 4:
+        return "slider"
+    if joint_type == 5:
+        return "hinge"
+    return "generic6dofSpring"
 
 
 def _pmx_vertex_skinning(vertex: PmxVertex):

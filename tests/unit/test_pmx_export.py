@@ -386,8 +386,45 @@ class TestPmxExporterFromDict(TestBase):
         self.assertEqual(call["skin_indices"], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
         self.assertEqual(call["skin_weights"], [1.0, 0.0, 0.0, 0.0, 0.25, 0.75, 0.0, 0.0, 0.25, 0.25, 0.25, 0.25])
 
-    def test_exporter_falls_back_for_rich_sections_not_supported_by_basic_parts_path(self):
-        """morph 等を含む PMX は basic native parts path ではなく従来 writer に戻る。"""
+    def test_exporter_includes_supported_rich_parts_in_native_descriptor(self):
+        """vertex morph / rigid body / joint は native parts descriptor に含める。"""
+        calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda metadata, positions, normals, uvs, **kwargs: calls.append(metadata) or b"NATIVE-PMX"
+        )
+        out_path = os.path.join(self.temp_dir, "native_rich_parts.pmx")
+        exporter.export_pmx_model(
+            out_path,
+            {
+                "model_name": "NativeRichPmx",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 0, 1], "uv": [0, 0]},
+                    {"position": [1, 0, 0], "normal": [0, 0, 1], "uv": [1, 0]},
+                    {"position": [0, 1, 0], "normal": [0, 0, 1], "uv": [0, 1]},
+                ],
+                "faces": [[0, 1, 2]],
+                "morphs": [
+                    {
+                        "type": "vertex",
+                        "name": "smile",
+                        "offsets": [{"vertex_index": 0, "position_offset": [0.0, 0.1, 0.0]}],
+                    }
+                ],
+                "rigid_bodies": [{"name": "body", "shape_type": 1, "physics_mode": 2}],
+                "joints": [{"name": "joint", "rigid_body_a_index": 0, "rigid_body_b_index": -1}],
+            },
+        )
+
+        self.assertEqual(len(calls), 1)
+        metadata = calls[0]
+        self.assertEqual(metadata["morphs"][0]["kind"], "vertex")
+        self.assertEqual(metadata["morphs"][0]["vertexOffsets"][0]["position"], [0.0, 0.1, 0.0])
+        self.assertEqual(metadata["rigidBodies"][0]["shape"], "box")
+        self.assertEqual(metadata["rigidBodies"][0]["mode"], "dynamicBone")
+        self.assertEqual(metadata["joints"][0]["type"], "generic6dofSpring")
+
+    def test_exporter_falls_back_for_sections_not_supported_by_parts_path(self):
+        """material morph 等の parts ABI 未対応 PMX は従来 writer に戻る。"""
         calls = []
         exporter = PmxExporter(native_parts_exporter=lambda *args, **kwargs: calls.append((args, kwargs)) or b"NATIVE-PMX")
         out_path = os.path.join(self.temp_dir, "native_parts_fallback.pmx")
@@ -403,9 +440,9 @@ class TestPmxExporterFromDict(TestBase):
                 "faces": [[0, 1, 2]],
                 "morphs": [
                     {
-                        "type": "vertex",
-                        "name": "smile",
-                        "offsets": [{"vertex_index": 0, "position_offset": [0.0, 0.1, 0.0]}],
+                        "type": "material",
+                        "name": "hide_mat",
+                        "offsets": [{"material_index": 0}],
                     }
                 ],
             },
@@ -415,6 +452,7 @@ class TestPmxExporterFromDict(TestBase):
         pmx = _parse_pmx(out_path)
         self.assertEqual(pmx.header.model_name, "FallbackPmx")
         self.assertEqual(len(pmx.morphs), 1)
+        self.assertEqual(int(pmx.morphs[0].morph_type), 8)
 
     def test_export_display_frame_name_roundtrip_matches_header_encoding(self):
         """dict export でヘッダと同じ encoding_flag で表示枠名を保存できる"""
