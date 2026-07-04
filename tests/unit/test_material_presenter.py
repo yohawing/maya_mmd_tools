@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
+from tests.common.mock_ui import attach_mocks
 
 install_headless_ui_stubs()
 
@@ -26,47 +27,44 @@ class TestMaterialPresenter(unittest.TestCase):
         """テスト前の準備"""
         # モックビューを作成
         self.mock_view = Mock()
-        self.mock_view.material_list = Mock()
+        attach_mocks(
+            self.mock_view,
+            [
+                "material_list",
+                "material_jp_name_edit",
+                "material_en_name_edit",
+                "texture_path_edit",
+                "sphere_map_path_edit",
+                "sphere_mode_combo",
+                "toon_texture_combo",
+                "diffuse_color_widget",
+                "specular_color_widget",
+                "ambient_color_widget",
+                "edge_color_widget",
+                "specular_coefficient_spin",
+                "transparency_spin",
+                "edge_size_spin",
+                "shader_outline_check",
+                "search_edit",
+                "refresh_btn",
+                "apply_btn",
+                "reset_btn",
+                "both_face_check",
+                "ground_shadow_check",
+                "self_shadow_map_check",
+                "self_shadow_check",
+                "edge_draw_check",
+                "vertex_color_check",
+                "point_draw_check",
+                "line_draw_check",
+                "transparency_slider",
+                "specular_coefficient_slider",
+                "texture_browse_btn",
+                "sphere_map_browse_btn",
+            ],
+        )
         self.mock_view.material_list.count.return_value = 0
         self.mock_view.material_list.currentItem.return_value = None
-
-        # 各種UIウィジェットのモック
-        self.mock_view.material_jp_name_edit = Mock()
-        self.mock_view.material_en_name_edit = Mock()
-        self.mock_view.texture_path_edit = Mock()
-        self.mock_view.sphere_map_path_edit = Mock()
-        self.mock_view.sphere_mode_combo = Mock()
-        self.mock_view.toon_texture_combo = Mock()
-        self.mock_view.diffuse_color_widget = Mock()
-        self.mock_view.specular_color_widget = Mock()
-        self.mock_view.ambient_color_widget = Mock()
-        self.mock_view.edge_color_widget = Mock()
-        self.mock_view.specular_coefficient_spin = Mock()
-        self.mock_view.transparency_spin = Mock()
-        self.mock_view.edge_size_spin = Mock()
-        self.mock_view.shader_outline_check = Mock()
-        self.mock_view.search_edit = Mock()
-        self.mock_view.refresh_btn = Mock()
-        self.mock_view.apply_btn = Mock()
-        self.mock_view.reset_btn = Mock()
-
-        # チェックボックスのモック
-        self.mock_view.both_face_check = Mock()
-        self.mock_view.ground_shadow_check = Mock()
-        self.mock_view.self_shadow_map_check = Mock()
-        self.mock_view.self_shadow_check = Mock()
-        self.mock_view.edge_draw_check = Mock()
-        self.mock_view.vertex_color_check = Mock()
-        self.mock_view.point_draw_check = Mock()
-        self.mock_view.line_draw_check = Mock()
-
-        # スライダーのモック
-        self.mock_view.transparency_slider = Mock()
-        self.mock_view.specular_coefficient_slider = Mock()
-
-        # ファイルブラウザボタンのモック
-        self.mock_view.texture_browse_btn = Mock()
-        self.mock_view.sphere_map_browse_btn = Mock()
 
         # モックアプリケーション状態を作成
         self.mock_app_state = Mock()
