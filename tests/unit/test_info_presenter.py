@@ -8,6 +8,7 @@ import 連鎖で maya.cmds と PySide6 が必要になるため、
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
+from tests.common.mock_ui import attach_mocks
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
@@ -99,13 +100,11 @@ class _FakeSceneModelService:
 
 def _make_mock_view():
     view = Mock()
-    view.model_combo = Mock()
+    attach_mocks(view, ["model_combo", "refresh_button", "set_fields_enabled"])
     view.model_combo.currentTextChanged = MagicMock()
     view.model_combo.currentTextChanged.connect = Mock()
-    view.refresh_button = Mock()
     view.refresh_button.clicked = MagicMock()
     view.refresh_button.clicked.connect = Mock()
-    view.set_fields_enabled = Mock()
 
     for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
         widget = Mock()
