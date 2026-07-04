@@ -806,6 +806,12 @@ def native_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def native_export_smoke(session: nox.Session) -> None:
+    """Verify native VMD/PMD/PMX export writer symbols when the DLL is current."""
+    session.run(sys.executable, "tests/native_export_smoke.py", *session.posargs, external=True)
+
+
+@nox.session(venv_backend="none")
 def cpp_config(session: nox.Session) -> None:
     """Configure the Maya C++ plugin build."""
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
@@ -1437,6 +1443,7 @@ def release_gate(session: nox.Session) -> None:
             [
                 ("tier1:ffi_build", ["uvx", "nox", "-s", "ffi_build"]),
                 ("tier1:native_smoke", ["uvx", "nox", "-s", "native_smoke"]),
+                ("tier1:native_export_smoke", ["uvx", "nox", "-s", "native_export_smoke"]),
             ]
         )
     for name, command in tier1_commands:
