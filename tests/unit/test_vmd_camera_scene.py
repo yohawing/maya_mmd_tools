@@ -1,7 +1,7 @@
-"""VmdConverterのユニットテスト
+"""VMD camera scene conversion regression tests.
 
-VmdConverterクラスの基本的な機能をテスト。
-Maya環境内で実行されるが、シーン操作を伴わないテストを行う。
+VmdConverter の camera import が作る Maya camera rig、keyframe、
+interpolation、fixture import の scene-level behavior を検証する。
 """
 
 import math
@@ -21,8 +21,8 @@ from mmd_tools.converters.vmd_converter import VmdConverter
 from tests.common.test_fixture_provider import TestFixtureProvider
 
 
-class TestVmdConverter(MayaTestBase):
-    """VmdConverterクラスのユニットテスト"""
+class TestVmdCameraScene(MayaTestBase):
+    """Scene-level VMD camera conversion tests."""
 
     def setUp(self):
         """テストのセットアップ"""
