@@ -18,6 +18,11 @@ class TestMayaUtils(MayaTestBase):
         self.assertEqual(maya_utils.sanitize_text(" name"), "_name")
         self.assertEqual(maya_utils.sanitize_text("name "), "name_")
 
+    def test_sanitize_bone_name_uses_mmd_bone_rules(self):
+        """PMXボーン名は準標準ボーン規則でサニタイズされる。"""
+        self.assertEqual(maya_utils.sanitize_bone_name("左足IK親"), "left_leg_ik_parent")
+        self.assertEqual(maya_utils.sanitize_bone_name("右腕捻Ｄ"), "right_arm_twist_d")
+
     def test_create_mesh_with_uvs(self):
         """UV付きのメッシュを作成できるか"""
         name = "test_mesh"

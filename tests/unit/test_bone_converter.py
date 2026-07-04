@@ -116,7 +116,7 @@ class TestBoneConverterMaya(unittest.TestCase):
             self._create_mock_pmx_bone(2, "頭"),
         ]
 
-        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+        with patch("mmd_tools.core.maya_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x  # そのまま返す
 
             bone_map = self.converter._create_bone_mapping(bones)
@@ -134,7 +134,7 @@ class TestBoneConverterMaya(unittest.TestCase):
             self._create_mock_pmx_bone(2, "ボーン"),
         ]
 
-        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+        with patch("mmd_tools.core.maya_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x  # そのまま返す
 
             bone_map = self.converter._create_bone_mapping(bones)
@@ -143,7 +143,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(bone_map[1], "ボーン_1")
         self.assertEqual(bone_map[2], "ボーン_2")
 
-    @patch("mmd_tools.core.maya_utils.sanitize_text")
+    @patch("mmd_tools.core.maya_utils.sanitize_bone_name")
     def test_create_maya_joints_hierarchy(self, mock_sanitize):
         """ジョイント階層作成のテスト（実際のMaya環境）"""
         mock_sanitize.side_effect = lambda x: x
@@ -183,7 +183,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertAlmostEqual(upper_pos[1], 10, places=5)
         self.assertAlmostEqual(upper_pos[2], 0, places=5)
 
-    @patch("mmd_tools.core.maya_utils.sanitize_text")
+    @patch("mmd_tools.core.maya_utils.sanitize_bone_name")
     def test_create_maya_joints_refreshes_paths_after_name_collision(self, mock_sanitize):
         """既存同名jointがあるシーンでもreparent後のDAG pathを返す"""
         mock_sanitize.side_effect = lambda x: x
@@ -519,7 +519,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         ]
         pmx_data.vertices = []
 
-        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+        with patch("mmd_tools.core.maya_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x
 
             maya_joints, skin_cluster = converter.convert_pmx_bones(pmx_data, self.test_mesh, self.root_group)
@@ -552,7 +552,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         ]
         pmx_data.vertices = []
 
-        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+        with patch("mmd_tools.core.maya_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x
             maya_joints, skin_cluster = converter.convert_pmx_bones(
                 pmx_data,

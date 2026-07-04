@@ -80,6 +80,17 @@ def sanitize_text(name):
     return converted_name or "default_name"
 
 
+def sanitize_bone_name(name):
+    """Maya用にMMD/PMXボーン名をサニタイズする。"""
+    if not name:
+        return "unnamed"
+
+    from .mmd_bone_names import convert_mmd_bone_name_to_ascii
+
+    converted_name = convert_mmd_bone_name_to_ascii(name)
+    return converted_name or "default_name"
+
+
 def set_custom_attributes(object_name, attributes):
     """
     Mayaオブジェクトにカスタムアトリビュートを設定します。

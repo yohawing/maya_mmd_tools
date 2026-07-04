@@ -151,7 +151,7 @@ class BoneConverter:
         used_names = set()
 
         for i, bone in enumerate(bones):
-            joint_name = maya_utils.sanitize_text(bone.get_name())
+            joint_name = maya_utils.sanitize_bone_name(bone.get_name())
 
             # 重複する名前がある場合はサフィックスを追加
             original_name = joint_name

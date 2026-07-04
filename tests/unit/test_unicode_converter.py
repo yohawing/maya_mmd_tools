@@ -13,6 +13,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from mmd_tools.core import utils
+from mmd_tools.core.mmd_bone_names import convert_mmd_bone_name_to_ascii, normalize_mmd_bone_name
 from mmd_tools.core.unicode_converter import UnicodeToAsciiConverter, get_converter
 
 
@@ -257,6 +258,37 @@ class TestUtilsAPI(unittest.TestCase):
         # utils.convert_utf8_to_ascii_batchはリストを返す
         self.assertIn("bone", converted)
         self.assertIn("head", converted)
+
+
+class TestMmdBoneNameConversion(unittest.TestCase):
+    """PMX/MMDボーン名専用の正規化変換をテストする。"""
+
+    def test_semistandard_bone_names_use_hardcoded_rules(self):
+        test_cases = {
+            "左足IK親": "left_leg_ik_parent",
+            "左足ＩＫ親": "left_leg_ik_parent",
+            "左腕D": "left_arm_d",
+            "右腕捩D": "right_arm_twist_d",
+            "右腕捻Ｄ": "right_arm_twist_d",
+            "左ひじD": "left_elbow_d",
+            "左肘Ｄ": "left_elbow_d",
+            "右足先EX": "right_toe_ex",
+            "右足先ＥＸ": "right_toe_ex",
+            "胸親": "breast_parent",
+            "左肩P": "left_shoulder_p",
+            "左肩C": "left_shoulder_c",
+            "左腕捩1": "left_arm_twist_1",
+        }
+        for original, expected in test_cases.items():
+            with self.subTest(original=original):
+                self.assertEqual(convert_mmd_bone_name_to_ascii(original), expected)
+
+    def test_unknown_bone_name_tokens_are_hashed_without_dropping_known_tokens(self):
+        self.assertEqual(convert_mmd_bone_name_to_ascii("左未知捩1"), "left_HASH1622dc9b_twist_1")
+
+    def test_normalize_mmd_bone_name_folds_common_variants(self):
+        self.assertEqual(normalize_mmd_bone_name("右腕捻Ｄ"), "右腕捩D")
+        self.assertEqual(normalize_mmd_bone_name("左肘ＩＫ"), "左ひじIK")
 
 
 class TestSingletonPattern(unittest.TestCase):
