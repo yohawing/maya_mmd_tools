@@ -1397,6 +1397,13 @@ def release_gate(session: nox.Session) -> None:
         ("tier1:ci_unit", ["uvx", "nox", "-s", "ci_unit"]),
         ("tier1:golden_oracle", ["uvx", "nox", "-s", "golden_oracle"]),
     ]
+    if not quick:
+        tier1_commands.extend(
+            [
+                ("tier1:ffi_build", ["uvx", "nox", "-s", "ffi_build"]),
+                ("tier1:native_smoke", ["uvx", "nox", "-s", "native_smoke"]),
+            ]
+        )
     for name, command in tier1_commands:
         _run_release_gate_command(name, command, results)
 
@@ -1421,8 +1428,21 @@ def release_gate(session: nox.Session) -> None:
                     "build/release-gate/pmx_roundtrip_v0_4",
                 ],
             ),
+            (
+                "tier2:import-scale-drift",
+                ["uvx", "nox", "-s", "import_scale_drift_e2e", "--", "--maya", version, "--expect", "fixed"],
+            ),
+            ("tier2:anim-layer-graph", ["uvx", "nox", "-s", "anim_layer_graph_compare", "--", "--maya", version]),
+            (
+                "tier2:import-order-e2e",
+                ["uvx", "nox", "-s", "import_order_e2e", "--", "--maya", version, "--require-zero-fallback"],
+            ),
             ("tier3:local-assets-check", ["uvx", "nox", "-s", "local_assets_check", "--", "--maya", version]),
         ]
+        if _has_flag(args, "--with-cpp"):
+            tier2_commands.append(
+                ("tier2:cpp-verify", ["uvx", "nox", "-s", "cpp_verify", "--", "--maya", version, "--config", DEFAULT_CMAKE_CONFIG])
+            )
         for name, command in tier2_commands:
             _run_release_gate_command(name, command, results)
 
