@@ -124,6 +124,10 @@ uvx nox -s cpp_verify -- --maya 2026 --config Release
 uvx nox -s cpp_verify -- --maya 2027 --config Release
 ```
 
+`uvx nox -s release_gate -- --with-cpp --cpp-config Release` runs the same
+Maya 2024-2027 `cpp_verify` matrix. To narrow a local rerun, repeat
+`--cpp-maya`, for example `--cpp-maya 2024 --cpp-maya 2026`.
+
 If a bundled Maya version cannot run in the local environment, run at least `cpp_build` for that version and record the skipped smoke reason in the release PR:
 
 ```powershell

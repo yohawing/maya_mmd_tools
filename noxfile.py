@@ -37,6 +37,7 @@ from tests.common.maya_location import resolve_path_for_maya_process as _resolve
 
 DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_CMAKE_CONFIG = "Debug"
+DEFAULT_CPP_VERIFY_MAYA_VERSIONS = ("2024", "2025", "2026", "2027")
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
 RELEASE_ADDICTION_INTERPOLATION_EYE_MAX = "2.0"
 RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG = "5.0"
@@ -74,6 +75,21 @@ def _option(args: list[str], name: str, default: str) -> str:
         return args[index + 1]
     except IndexError as exc:
         raise ValueError(f"{name} requires a value") from exc
+
+
+def _options(args: list[str], name: str) -> list[str]:
+    """Return all string option values from nox positional arguments."""
+    values: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == name:
+            if i + 1 >= len(args):
+                raise ValueError(f"{name} requires a value")
+            values.append(args[i + 1])
+            i += 2
+            continue
+        i += 1
+    return values
 
 
 def _has_flag(args: list[str], name: str) -> bool:
@@ -1462,11 +1478,15 @@ def release_gate(session: nox.Session) -> None:
     Examples:
         uvx nox -s release_gate -- --quick
         uvx nox -s release_gate -- --maya 2024
+        uvx nox -s release_gate -- --with-cpp
+        uvx nox -s release_gate -- --with-cpp --cpp-maya 2024 --cpp-maya 2026 --cpp-config Release
         uvx nox -s release_gate -- --strict-local --local-parity-manifest F:/local/parity.json
     """
     args = list(session.posargs)
     quick = _has_flag(args, "--quick")
     version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    cpp_versions = _options(args, "--cpp-maya") or list(DEFAULT_CPP_VERIFY_MAYA_VERSIONS)
+    cpp_config = _option(args, "--cpp-config", DEFAULT_CMAKE_CONFIG)
     strict_local = _has_flag(args, "--strict-local")
     local_assets_manifest = _option(args, "--local-assets-manifest", "local-assets-manifest.json")
     camera_manifest = _option(
@@ -1549,9 +1569,13 @@ def release_gate(session: nox.Session) -> None:
             ),
         ]
         if _has_flag(args, "--with-cpp"):
-            tier2_commands.append(
-                ("tier2:cpp-verify", ["uvx", "nox", "-s", "cpp_verify", "--", "--maya", version, "--config", DEFAULT_CMAKE_CONFIG])
-            )
+            for cpp_version in cpp_versions:
+                tier2_commands.append(
+                    (
+                        f"tier2:cpp-verify-{cpp_version}",
+                        ["uvx", "nox", "-s", "cpp_verify", "--", "--maya", cpp_version, "--config", cpp_config],
+                    )
+                )
         for name, command in tier2_commands:
             _run_release_gate_command(name, command, results)
 
