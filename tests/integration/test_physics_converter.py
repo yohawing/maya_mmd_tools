@@ -6,12 +6,19 @@ bulletRigidBodyConstraintShape の作成とカスタムアトリビュートを�
 Bullet が利用不可の場合はテストをスキップする。
 """
 
+import math
+from pathlib import Path
+
 from maya import cmds
 
+from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.converters import PhysicsConverter
 from mmd_tools.io.pmx_exporter import PmxExporter
 from tests.common.maya_test_base import MayaTestBase
+
+
+HAIR_PHYSICS_FIXTURE = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
 
 
 class TestPhysicsConverter(MayaTestBase):
@@ -217,7 +224,7 @@ class TestPhysicsConverter(MayaTestBase):
             )
             data = self._make_fake_pmx_data(rigid_bodies=[rb])
 
-        converter = PhysicsConverter({"create_physics_joints": False})
+        converter = PhysicsConverter({"create_physics_joints": False, "gravity": 30.0})
         if model_type == "pmd":
             rbs, cons = converter.convert_pmd_physics(data, bone_joints, root)
         else:
@@ -283,7 +290,7 @@ class TestPhysicsConverter(MayaTestBase):
         )
         data = self._make_fake_pmx_data(rigid_bodies=[rb])
 
-        converter = PhysicsConverter({"create_physics_joints": False})
+        converter = PhysicsConverter({"create_physics_joints": False, "gravity": 120.0})
         rbs, _ = converter.convert_pmx_physics(data, {}, root)
 
         self.assertGreaterEqual(len(rbs), 1, "Bullet rigid body が作成されていない")
@@ -315,7 +322,7 @@ class TestPhysicsConverter(MayaTestBase):
         )
         data = self._make_fake_pmx_data(rigid_bodies=[rb])
 
-        converter = PhysicsConverter({"create_physics_joints": False})
+        converter = PhysicsConverter({"create_physics_joints": False, "gravity": 120.0})
         rbs, _ = converter.convert_pmx_physics(data, {}, root)
         self.assertGreaterEqual(len(rbs), 1)
 
@@ -330,6 +337,40 @@ class TestPhysicsConverter(MayaTestBase):
         cmds.currentTime(30, edit=True)
         end_y = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)[1]
         self.assertLess(end_y, start_y - 0.1)
+
+    def test_bullet_solver_settings_are_applied(self):
+        """PhysicsConverter settings は Maya Bullet solver に反映される。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        rb = self._make_fake_pmx_rigid_body(
+            name="solver_settings_rb",
+            related_bone_index=-1,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=1,
+            mass=1.0,
+        )
+        data = self._make_fake_pmx_data(rigid_bodies=[rb])
+
+        converter = PhysicsConverter({
+            "create_physics_joints": False,
+            "bullet_fixed_frame_rate": 240,
+            "solver_iterations": 24,
+            "gravity": 30.0,
+            "split_impulse": True,
+        })
+        converter.convert_pmx_physics(data, {}, root)
+
+        solver_shapes = cmds.ls(type="bulletSolverShape") or []
+        self.assertTrue(solver_shapes, "bulletSolverShape が作成されていない")
+        solver = solver_shapes[0]
+        self.assertEqual(cmds.getAttr(f"{solver}.internalFixedFrameRate"), 240)
+        self.assertEqual(cmds.getAttr(f"{solver}.maxNumIterations"), 24)
+        self.assertTrue(cmds.getAttr(f"{solver}.splitImpulse"))
+        self.assertAlmostEqual(cmds.getAttr(f"{solver}.gravityY"), -30.0, places=4)
 
     def test_pmx_static_rigid_body_follows_related_bone(self):
         """PMX physics_mode=0 は関連ボーンの transform に追従する。"""
@@ -364,6 +405,291 @@ class TestPhysicsConverter(MayaTestBase):
         cmds.xform(joint, worldSpace=True, translation=(0.0, 8.0, 0.0))
         after = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)
         self.assertAlmostEqual(after[1] - before[1], 3.0, places=4)
+
+    def test_pmx_dynamic_rigid_body_drives_related_bone_orientation_preview(self):
+        """PMX physics_mode=1 は親階層の移動を保ったまま姿勢だけ関連ボーンへ戻す。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        cmds.select(clear=True)
+        parent_joint = cmds.joint(name="dynamic_parent_bone", position=(0.0, 0.0, 0.0))
+        joint = cmds.joint(name="dynamic_follow_bone", position=(0.0, 10.0, 0.0))
+        cmds.parent(parent_joint, root)
+
+        rb = self._make_fake_pmx_rigid_body(
+            name="dynamic_follow",
+            related_bone_index=0,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=1,
+            mass=1.0,
+            velocity_attenuation=0.0,
+            rotation_attenuation=0.0,
+        )
+        data = self._make_fake_pmx_data(
+            rigid_bodies=[rb],
+            bones=[self._make_fake_bone("dynamic_follow_bone")],
+        )
+
+        converter = PhysicsConverter({"create_physics_joints": False})
+        rbs, _ = converter.convert_pmx_physics(data, {"dynamic_follow_bone": joint}, root)
+
+        self.assertGreaterEqual(len(rbs), 1)
+        constraints = cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or []
+        self.assertTrue(constraints, "dynamic 剛体から関連ボーンへの orientConstraint が作成されていない")
+        self.assertTrue(
+            cmds.attributeQuery("mmd_physics_preview_constraint", node=constraints[0], exists=True),
+            "物理 preview constraint marker が付いていない",
+        )
+
+        before = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+        cmds.xform(parent_joint, worldSpace=True, translation=(0.0, 3.0, 0.0))
+        after = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(after[1] - before[1], 3.0, places=4)
+
+    def test_pmx_dynamic_rigid_body_maps_related_bone_by_metadata_index(self):
+        """関連ボーン接続は sanitize 名ではなく mmd_bone_index を優先する。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="sanitized_joint_name", position=(0.0, 10.0, 0.0))
+        cmds.addAttr(joint, longName=ATTR_MMD_BONE_INDEX, attributeType="long")
+        cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}", 7)
+        cmds.parent(joint, root)
+
+        rb = self._make_fake_pmx_rigid_body(
+            name="metadata_follow",
+            related_bone_index=7,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=1,
+            mass=1.0,
+        )
+        data = self._make_fake_pmx_data(
+            rigid_bodies=[rb],
+            bones=[self._make_fake_bone(f"unmapped_bone_{i}") for i in range(8)],
+        )
+
+        converter = PhysicsConverter({"create_physics_joints": False})
+        converter.convert_pmx_physics(data, {"totally_different_name": joint}, root)
+
+        constraints = cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or []
+        self.assertTrue(constraints, "mmd_bone_index による dynamic preview 接続が作成されていない")
+
+    def test_pmx_rigid_body_applies_collision_filter_and_capsule_total_length(self):
+        """PMX capsule sizeY は半球込みの Maya Bullet length に変換する。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        rb = self._make_fake_pmx_rigid_body(
+            name="filtered_capsule",
+            related_bone_index=0,
+            shape_type=2,
+            size=(0.5, 2.5, 0.0),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=2,
+            group=1,
+            collision_mask=0xFFFD,
+            mass=1.0,
+        )
+        data = self._make_fake_pmx_data(rigid_bodies=[rb])
+
+        converter = PhysicsConverter({"create_physics_joints": False})
+        rbs, _ = converter.convert_pmx_physics(data, {}, root)
+
+        shape = cmds.listRelatives(rbs[0], shapes=True, type="bulletRigidBodyShape")[0]
+        self.assertEqual(cmds.getAttr(f"{shape}.colliderShapeType"), 3)
+        self.assertAlmostEqual(cmds.getAttr(f"{shape}.radius"), 0.5, places=4)
+        self.assertAlmostEqual(cmds.getAttr(f"{shape}.length"), 3.5, places=4)
+        self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterGroup"), 0x0002)
+        self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterMask"), 0xFFFD)
+
+        collected = converter.collect_physics_from_scene_for_export(root)
+        self.assertEqual(collected["rigid_bodies"][0]["group"], 1)
+        self.assertEqual(collected["rigid_bodies"][0]["collision_mask"], 0xFFFD)
+        self.assertEqual(collected["rigid_bodies"][0]["shape_type"], 2)
+        self.assertAlmostEqual(collected["rigid_bodies"][0]["size"][0], 0.5, places=4)
+        self.assertAlmostEqual(collected["rigid_bodies"][0]["size"][1], 2.5, places=4)
+
+    def test_pmx_rigid_body_applies_import_scale_to_transform_and_shape(self):
+        """PMX physics は mesh/bone と同じ import scale で作成する。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        rb = self._make_fake_pmx_rigid_body(
+            name="scaled_capsule",
+            related_bone_index=0,
+            shape_type=2,
+            size=(0.5, 2.5, 0.0),
+            position=(1.0, 2.0, 3.0),
+            physics_mode=2,
+            mass=1.0,
+        )
+        data = self._make_fake_pmx_data(rigid_bodies=[rb])
+
+        converter = PhysicsConverter({"create_physics_joints": False, "scale": 0.1})
+        rbs, _ = converter.convert_pmx_physics(data, {}, root)
+
+        shape = cmds.listRelatives(rbs[0], shapes=True, type="bulletRigidBodyShape")[0]
+        translate = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(translate[0], 0.1, places=4)
+        self.assertAlmostEqual(translate[1], 0.2, places=4)
+        self.assertAlmostEqual(translate[2], -0.3, places=4)
+        self.assertAlmostEqual(cmds.getAttr(f"{shape}.radius"), 0.05, places=4)
+        self.assertAlmostEqual(cmds.getAttr(f"{shape}.length"), 0.35, places=4)
+
+    def test_connect_existing_bullet_preview_to_bones_repairs_imported_scene(self):
+        """既存 Bullet scene は mmd index metadata から preview 接続を後付けできる。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="repair_follow_bone", position=(0.0, 10.0, 0.0))
+        cmds.addAttr(joint, longName=ATTR_MMD_BONE_INDEX, attributeType="long")
+        cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}", 3)
+        cmds.parent(joint, root)
+
+        rb = self._make_fake_pmx_rigid_body(
+            name="repair_follow",
+            related_bone_index=3,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=1,
+            mass=1.0,
+        )
+        data = self._make_fake_pmx_data(
+            rigid_bodies=[rb],
+            bones=[self._make_fake_bone(f"unmapped_bone_{i}") for i in range(4)],
+        )
+
+        converter = PhysicsConverter({"create_physics_joints": False})
+        converter.convert_pmx_physics(data, {}, root)
+        self.assertFalse(cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or [])
+
+        connected = converter.connect_existing_bullet_preview_to_bones(root)
+
+        self.assertEqual(connected, 1)
+        self.assertTrue(cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or [])
+
+    def test_connect_existing_bullet_preview_replaces_stale_parent_constraint(self):
+        """古い parentConstraint preview は親ボーン移動を壊すため orientConstraint へ置換する。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="stale_preview_bone", position=(0.0, 10.0, 0.0))
+        cmds.addAttr(joint, longName=ATTR_MMD_BONE_INDEX, attributeType="long")
+        cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}", 3)
+        cmds.parent(joint, root)
+
+        rb = self._make_fake_pmx_rigid_body(
+            name="stale_preview_rb",
+            related_bone_index=3,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=1,
+            mass=1.0,
+        )
+        data = self._make_fake_pmx_data(
+            rigid_bodies=[rb],
+            bones=[self._make_fake_bone(f"unmapped_bone_{i}") for i in range(4)],
+        )
+
+        converter = PhysicsConverter({"create_physics_joints": False})
+        rbs, _ = converter.convert_pmx_physics(data, {}, root)
+        stale = cmds.parentConstraint(rbs[0], joint, maintainOffset=True)[0]
+        cmds.addAttr(stale, longName="mmd_physics_preview_constraint", attributeType="bool")
+        cmds.setAttr(f"{stale}.mmd_physics_preview_constraint", True)
+
+        connected = converter.connect_existing_bullet_preview_to_bones(root)
+
+        self.assertEqual(connected, 1)
+        self.assertFalse(cmds.objExists(stale), "古い parentConstraint preview が残っている")
+        self.assertTrue(cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or [])
+
+    def test_hair_physics_fixture_preview_preserves_parent_bone_translation(self):
+        """髪物理フィクスチャの dynamic bone は親ボーン移動で world 固定されない。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        pmx = parse_pmx_file(str(HAIR_PHYSICS_FIXTURE))
+        root = cmds.group(name="hair_fixture_root", empty=True)
+        bone_joints = {}
+        joints = []
+
+        for index, bone in enumerate(pmx.bones):
+            cmds.select(clear=True)
+            # PMX fixture positions are already small and only hierarchy motion matters here.
+            joint = cmds.joint(
+                name=f"fixture_bone_{index}",
+                position=(bone.position[0], bone.position[1], -bone.position[2]),
+            )
+            cmds.addAttr(joint, longName=ATTR_MMD_BONE_INDEX, attributeType="long")
+            cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}", index)
+            bone_joints[f"fixture_bone_{index}"] = joint
+            joints.append(joint)
+
+        for index, bone in enumerate(pmx.bones):
+            parent_index = bone.parent_bone_index
+            if parent_index >= 0:
+                cmds.parent(joints[index], joints[parent_index])
+            else:
+                cmds.parent(joints[index], root)
+
+        converter = PhysicsConverter({"create_physics_joints": True})
+        rbs, constraints = converter.convert_pmx_physics(pmx, bone_joints, root)
+
+        self.assertEqual(len(rbs), 16)
+        self.assertEqual(len(constraints), 14)
+
+        dynamic_bone_indices = list(range(4, 11)) + list(range(13, 20))
+        for bone_index in dynamic_bone_indices:
+            joint = joints[bone_index]
+            orient_constraints = cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or []
+            parent_constraints = cmds.listConnections(joint, source=True, destination=False, type="parentConstraint") or []
+            self.assertTrue(orient_constraints, f"{joint} に orientConstraint preview がない")
+            self.assertFalse(
+                [
+                    constraint
+                    for constraint in parent_constraints
+                    if cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint, exists=True)
+                ],
+                f"{joint} に古い parentConstraint preview が残っている",
+            )
+
+        sample_joint = joints[4]
+        before = cmds.xform(sample_joint, query=True, worldSpace=True, translation=True)
+        cmds.move(0.0, 5.0, 0.0, joints[2], relative=True, worldSpace=True)
+        after = cmds.xform(sample_joint, query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(after[1] - before[1], 5.0, places=4)
+
+        axis_probe = cmds.spaceLocator(name="capsule_axis_probe")[0]
+        cmds.parent(axis_probe, rbs[1])
+        cmds.setAttr(f"{axis_probe}.translate", 0.0, 1.0, 0.0, type="double3")
+        rb_pos = cmds.xform(rbs[1], query=True, worldSpace=True, translation=True)
+        probe_pos = cmds.xform(axis_probe, query=True, worldSpace=True, translation=True)
+        local_y = [probe_pos[i] - rb_pos[i] for i in range(3)]
+        local_y_len = math.sqrt(sum(value * value for value in local_y))
+        local_y = [value / local_y_len for value in local_y]
+
+        chain_start = cmds.xform(rbs[1], query=True, worldSpace=True, translation=True)
+        chain_end = cmds.xform(rbs[2], query=True, worldSpace=True, translation=True)
+        chain = [chain_end[i] - chain_start[i] for i in range(3)]
+        chain_len = math.sqrt(sum(value * value for value in chain))
+        chain = [value / chain_len for value in chain]
+        axis_alignment = abs(sum(local_y[i] * chain[i] for i in range(3)))
+        self.assertGreater(axis_alignment, 0.98, "capsule local Y axis が髪チェーン方向に沿っていない")
 
     def test_pmd_rigid_body_sphere_bullet(self):
         """PMD sphere (shape_type=0) → Bullet colliderShapeType=2(sphere)"""

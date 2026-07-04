@@ -60,7 +60,11 @@ def _seed_maya_modules():
 _seed_maya_modules()
 
 from mmd_tools.converters import physics_converter  # noqa: E402
-from mmd_tools.converters.physics_converter import _clamp_to_range  # noqa: E402
+from mmd_tools.converters.physics_converter import (  # noqa: E402
+    _clamp_to_range,
+    _mmd_collision_group_to_bullet_filter_group,
+    _mmd_collision_mask_to_bullet_filter_mask,
+)
 
 
 class TestClampToRange(unittest.TestCase):
@@ -86,6 +90,37 @@ class TestClampToRange(unittest.TestCase):
 
     def test_no_bounds(self):
         self.assertEqual(_clamp_to_range(123.456, None, None), 123.456)
+
+
+class TestCollisionFilterConversion(unittest.TestCase):
+    """MMD collision group/mask から Maya Bullet filter 値への変換を検証。"""
+
+    def test_group_index_converts_to_bullet_bit(self):
+        self.assertEqual(_mmd_collision_group_to_bullet_filter_group(0), 0x0001)
+        self.assertEqual(_mmd_collision_group_to_bullet_filter_group(1), 0x0002)
+        self.assertEqual(_mmd_collision_group_to_bullet_filter_group(15), 0x8000)
+
+    def test_group_index_is_clamped(self):
+        self.assertEqual(_mmd_collision_group_to_bullet_filter_group(-1), 0x0001)
+        self.assertEqual(_mmd_collision_group_to_bullet_filter_group(99), 0x8000)
+
+    def test_mask_is_passed_through_as_collide_with_bits(self):
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0xFFFF), 0xFFFF)
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0xFFFD), 0xFFFD)
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(-1), 0x0000)
+        self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0x1FFFF), 0xFFFF)
+
+
+class TestGravityResolution(unittest.TestCase):
+    """Bullet gravity の既定値と明示指定を検証。"""
+
+    def test_default_gravity_is_mmd_tuned_magnitude(self):
+        conv = physics_converter.PhysicsConverter()
+        self.assertEqual(conv._resolve_bullet_gravity(), (0.0, -98.0, 0.0))
+
+    def test_explicit_scalar_gravity_overrides_default(self):
+        conv = physics_converter.PhysicsConverter({"gravity": 30.0})
+        self.assertEqual(conv._resolve_bullet_gravity(), (0.0, -30.0, 0.0))
 
 
 class TestSetAttrClamped(unittest.TestCase):

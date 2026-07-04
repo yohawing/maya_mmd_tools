@@ -13,6 +13,7 @@ import maya.cmds as cmds
 
 from ..core import maya_physics_utils, maya_utils
 from ..core.constants import (
+    ATTR_MMD_BONE_INDEX,
     CONSTRAINTS_GROUP,
     PHYSICS_GROUP,
     PHYSICS_TYPE_CLOTH,
@@ -22,9 +23,7 @@ from ..core.constants import (
     RIGID_BODIES_GROUP,
 )
 from ..core.coordinate_transform import (
-    maya_euler_degrees_to_mmd_radians,
     maya_point_to_mmd,
-    mmd_euler_radians_to_maya_degrees,
     mmd_point_to_maya,
 )
 from ..core.logger import get_logger
@@ -62,6 +61,73 @@ _PMX_JOINT_TO_BULLET = {0: 4, 1: 5, 2: 0, 3: 3, 4: 2, 5: 1}
 _CONSTRAINT_FREE = 0
 _CONSTRAINT_LOCKED = 1
 _CONSTRAINT_LIMITED = 2
+_Z_REFLECTION_MATRIX = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0))
+
+
+def _mat3_mul(a, b):
+    return tuple(
+        tuple(sum(float(a[row][k]) * float(b[k][col]) for k in range(3)) for col in range(3))
+        for row in range(3)
+    )
+
+
+def _euler_xyz_radians_to_matrix(euler_xyz: Tuple[float, float, float]):
+    """Return a row-major rotation matrix for XYZ Euler channels."""
+    x, y, z = (float(euler_xyz[0]), float(euler_xyz[1]), float(euler_xyz[2]))
+    cx, sx = math.cos(x), math.sin(x)
+    cy, sy = math.cos(y), math.sin(y)
+    cz, sz = math.cos(z), math.sin(z)
+    rx = ((1.0, 0.0, 0.0), (0.0, cx, -sx), (0.0, sx, cx))
+    ry = ((cy, 0.0, sy), (0.0, 1.0, 0.0), (-sy, 0.0, cy))
+    rz = ((cz, -sz, 0.0), (sz, cz, 0.0), (0.0, 0.0, 1.0))
+    return _mat3_mul(rz, _mat3_mul(ry, rx))
+
+
+def _matrix_to_euler_xyz_radians(matrix) -> Tuple[float, float, float]:
+    """Extract XYZ Euler channels from a row-major rotation matrix."""
+    sy = max(-1.0, min(1.0, -float(matrix[2][0])))
+    y = math.asin(sy)
+    cy = math.cos(y)
+    if abs(cy) > 1.0e-8:
+        x = math.atan2(float(matrix[2][1]), float(matrix[2][2]))
+        z = math.atan2(float(matrix[1][0]), float(matrix[0][0]))
+    else:
+        x = 0.0
+        z = math.atan2(-float(matrix[0][1]), float(matrix[1][1]))
+    return (x, y, z)
+
+
+def _mmd_euler_radians_to_maya_degrees(euler_xyz: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Convert MMD rigid-body Euler radians to Maya Euler degrees via matrix reflection."""
+    mmd_matrix = _euler_xyz_radians_to_matrix(euler_xyz)
+    maya_matrix = _mat3_mul(_Z_REFLECTION_MATRIX, _mat3_mul(mmd_matrix, _Z_REFLECTION_MATRIX))
+    return tuple(math.degrees(value) for value in _matrix_to_euler_xyz_radians(maya_matrix))
+
+
+def _maya_euler_degrees_to_mmd_radians(euler_xyz: Tuple[float, float, float]) -> Tuple[float, float, float]:
+    """Convert Maya Euler degrees to MMD rigid-body Euler radians via matrix reflection."""
+    maya_radians = tuple(math.radians(float(value)) for value in euler_xyz)
+    maya_matrix = _euler_xyz_radians_to_matrix(maya_radians)
+    mmd_matrix = _mat3_mul(_Z_REFLECTION_MATRIX, _mat3_mul(maya_matrix, _Z_REFLECTION_MATRIX))
+    return _matrix_to_euler_xyz_radians(mmd_matrix)
+
+
+def _mmd_collision_group_to_bullet_filter_group(collision_group: int) -> int:
+    """Convert PMX/PMD collision group index to Bullet's filter bit."""
+    try:
+        group = int(collision_group)
+    except (TypeError, ValueError):
+        group = 0
+    return 1 << max(0, min(group, 15))
+
+
+def _mmd_collision_mask_to_bullet_filter_mask(collision_mask: int) -> int:
+    """Keep PMX/PMD collision mask as Bullet's collide-with bit mask."""
+    try:
+        mask = int(collision_mask)
+    except (TypeError, ValueError):
+        mask = 0xFFFF
+    return max(0, min(mask, 0xFFFF)) & 0xFFFF
 
 
 def _clamp_to_range(
@@ -119,12 +185,17 @@ class PhysicsConverter:
             "substeps": 3,
             "start_frame": 1,
             "time_scale": 1.0,
+            "gravity": 98.0,
+            "bullet_fixed_frame_rate": 120,
+            "split_impulse": True,
             "create_physics_joints": True,
+            "scale": 1.0,
         }
 
         self.settings = self._default_settings.copy()
         if settings:
             self.settings.update(settings)
+        self.physics_scale = float(self.settings.get("scale", 1.0) or 1.0)
 
         # nCloth ソルバーの名前 (fallback 時のみ使用)
         self.nucleus_solver: Optional[str] = None
@@ -260,7 +331,7 @@ class PhysicsConverter:
                 elif collider_shape_type == 3:
                     radius = _safe_to_float(_safe_get_attr(f"{shape}.radius", 0.0), 0.0)
                     length = _safe_to_float(_safe_get_attr(f"{shape}.length", 0.0), 0.0)
-                    size = [radius, length / 2.0, radius]
+                    size = [radius, max(0.0, length - radius * 2.0), radius]
                 else:
                     scale = cmds.xform(rb_transform, query=True, worldSpace=True, scale=True) or [1.0, 1.0, 1.0]
                     size = [_safe_to_float(scale[0], 1.0) * 0.5, _safe_to_float(scale[1], 1.0) * 0.5, _safe_to_float(scale[2], 1.0) * 0.5]
@@ -613,23 +684,27 @@ class PhysicsConverter:
             shape = cmds.createNode("bulletRigidBodyShape", name=f"{rb_name}_bulletRbShape", parent=transform)
 
             # 位置・回転
-            maya_pos = self._mmd_to_maya_position(rb.position)
-            cmds.xform(transform, ws=True, t=maya_pos)
             if hasattr(rb, "rotation") and rb.rotation:
-                maya_rot = self._mmd_to_maya_rotation(rb.rotation)
-                cmds.xform(transform, ws=True, ro=maya_rot)
+                cmds.xform(
+                    transform,
+                    ws=True,
+                    matrix=self._mmd_to_maya_transform_matrix(rb.position, rb.rotation, self.physics_scale),
+                )
+            else:
+                maya_pos = self._mmd_to_maya_position(rb.position, self.physics_scale)
+                cmds.xform(transform, ws=True, t=maya_pos)
 
             # colliderShapeType
             mmd_shape = getattr(rb, "shape_type", 0)
             bullet_shape = _MMD_SHAPE_TO_BULLET.get(mmd_shape, 2)
 
             # サイズ設定
-            size = getattr(rb, "size", (1.0, 1.0, 1.0))
+            size = self._scaled_rigid_body_size(getattr(rb, "size", (1.0, 1.0, 1.0)))
             if bullet_shape == 2:  # sphere
                 cmds.setAttr(f"{shape}.radius", size[0])
             elif bullet_shape == 3:  # capsule
                 cmds.setAttr(f"{shape}.radius", size[0])
-                cmds.setAttr(f"{shape}.length", size[1] * 2.0)
+                cmds.setAttr(f"{shape}.length", size[1] + size[0] * 2.0)
             elif bullet_shape == 1:  # box: scale transform
                 cmds.setAttr(f"{shape}.colliderShapeType", bullet_shape)
                 cmds.xform(transform, ws=True, s=[size[0] * 2.0, size[1] * 2.0, size[2] * 2.0], relative=True)
@@ -645,6 +720,8 @@ class PhysicsConverter:
             # Use a single setAttr unless it's box (already done above)
             if bullet_shape != 1:
                 cmds.setAttr(f"{shape}.colliderShapeType", bullet_shape)
+
+            self._set_bullet_collision_filter(shape, rb, model_type)
 
             # bodyType
             physics_mode = getattr(rb, "physics_mode", 0)
@@ -670,6 +747,7 @@ class PhysicsConverter:
                 transform = parented[0]
             if physics_mode != 0:
                 self._connect_bullet_simulation_output(transform, shape)
+                self._attach_dynamic_bullet_body_to_bone(transform, rb, bone_index_map)
             if physics_mode == 0:
                 self._attach_static_bullet_body_to_bone(transform, rb, bone_index_map)
             shapes = cmds.listRelatives(transform, shapes=True, type="bulletRigidBodyShape", fullPath=True) or []
@@ -717,18 +795,212 @@ class PhysicsConverter:
                 f"Skipped related-bone follow connection for physics_mode=0 Bullet rigid body '{transform}': {exc}"
             )
 
+    def _attach_dynamic_bullet_body_to_bone(
+        self,
+        transform: str,
+        rb,
+        bone_index_map: Optional[Dict[int, str]],
+    ) -> None:
+        """Drive the related Maya joint from a simulated MMD rigid body.
+
+        MMD dynamic rigid bodies are useful only when their solved transform is
+        fed back into the related bone that skins the mesh.  The Bullet preview
+        body is already driven from ``outSolvedTranslate/Rotate``; this method
+        adds the final preview link from that body to the Maya joint.
+        """
+        if not bone_index_map:
+            return
+
+        bone_index = None
+        if hasattr(rb, "bone_index"):
+            bone_index = getattr(rb, "bone_index")
+        elif hasattr(rb, "related_bone_index"):
+            bone_index = getattr(rb, "related_bone_index")
+
+        if bone_index is None or bone_index < 0:
+            return
+
+        joint = bone_index_map.get(bone_index)
+        if not joint or not cmds.objExists(joint):
+            return
+
+        try:
+            constraint = self._create_physics_preview_constraint(transform, joint)
+            if constraint:
+                self.logger.debug(
+                    f"Connected dynamic Bullet rigid body '{transform}' to drive related bone '{joint}'"
+                )
+        except Exception as exc:
+            self.logger.warning(
+                f"Skipped dynamic Bullet rigid body to related-bone connection '{transform}' -> '{joint}': {exc}"
+            )
+
+    def connect_existing_bullet_preview_to_bones(self, root_group: Optional[str] = None) -> int:
+        """Connect existing dynamic Bullet bodies to indexed MMD joints.
+
+        This is a repair/refresh path for scenes imported before preview
+        feedback existed, and it is also useful after manual Bullet edits.
+        It relies on ``mmd_related_bone_index`` on rigid body transforms and
+        ``mmd_bone_index`` on joints, so it is independent of sanitized names.
+        """
+        bone_index_map = self._create_bone_index_mapping_from_scene(root_group)
+        if not bone_index_map:
+            return 0
+
+        shapes = cmds.ls(type="bulletRigidBodyShape", long=True) or []
+        if root_group and cmds.objExists(root_group):
+            descendants = set(cmds.listRelatives(root_group, allDescendents=True, fullPath=True) or [])
+            shapes = [shape for shape in shapes if shape in descendants]
+
+        connected = 0
+        for shape in shapes:
+            parents = cmds.listRelatives(shape, parent=True, fullPath=True) or []
+            if not parents:
+                continue
+            transform = parents[0]
+            try:
+                body_type = cmds.getAttr(f"{shape}.bodyType")
+                if body_type not in (2, 3):
+                    continue
+                if not cmds.attributeQuery("mmd_related_bone_index", node=transform, exists=True):
+                    continue
+                bone_index = int(cmds.getAttr(f"{transform}.mmd_related_bone_index"))
+                if bone_index < 0:
+                    continue
+                joint = bone_index_map.get(bone_index)
+                if not joint or not cmds.objExists(joint):
+                    continue
+                if self._has_physics_preview_constraint(transform, joint):
+                    continue
+                self._create_physics_preview_constraint(transform, joint)
+                connected += 1
+            except Exception as exc:
+                self.logger.warning(f"Skipped Bullet preview repair for '{shape}': {exc}")
+        return connected
+
+    def _create_physics_preview_constraint(self, transform: str, joint: str) -> Optional[str]:
+        """Create and mark a constraint that feeds simulated orientation into a joint.
+
+        Dynamic MMD bones still need to inherit their parent joint translation.
+        Constraining the full parent transform pins the bone in world space and
+        makes it stop following manual parent-bone edits.
+        """
+        self._delete_marked_preview_parent_constraints(transform, joint)
+        constraint = cmds.orientConstraint(transform, joint, maintainOffset=True)
+        if not constraint:
+            return None
+        constraint_node = constraint[0]
+        if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint_node, exists=True):
+            cmds.addAttr(constraint_node, longName="mmd_physics_preview_constraint", attributeType="bool")
+        cmds.setAttr(f"{constraint_node}.mmd_physics_preview_constraint", True)
+        return constraint_node
+
+    def _has_physics_preview_constraint(self, transform: str, joint: str) -> bool:
+        """Return True when *transform* already drives *joint* through a marked preview constraint."""
+        constraints = cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or []
+        for constraint in constraints:
+            try:
+                if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint, exists=True):
+                    continue
+                targets = cmds.orientConstraint(constraint, query=True, targetList=True) or []
+                if any(self._is_same_maya_node(transform, target) for target in targets):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _delete_marked_preview_parent_constraints(self, transform: str, joint: str) -> None:
+        """Remove old full-transform preview constraints for the same rigid body."""
+        constraints = cmds.listConnections(joint, source=True, destination=False, type="parentConstraint") or []
+        for constraint in constraints:
+            try:
+                if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint, exists=True):
+                    continue
+                targets = cmds.parentConstraint(constraint, query=True, targetList=True) or []
+                if any(self._is_same_maya_node(transform, target) for target in targets):
+                    cmds.delete(constraint)
+            except Exception:
+                continue
+
+    @staticmethod
+    def _is_same_maya_node(node_a: str, node_b: str) -> bool:
+        """Compare Maya nodes after resolving long DAG paths when possible."""
+        paths_a = cmds.ls(node_a, long=True) or []
+        paths_b = cmds.ls(node_b, long=True) or []
+        if paths_a and paths_b:
+            return paths_a[0] == paths_b[0]
+        return node_a == node_b or node_a.split("|")[-1] == node_b.split("|")[-1]
+
     def _get_bullet_solver(self) -> Optional[str]:
         """Maya Bullet solver shape を取得または作成する。"""
         if self.bullet_solver and cmds.objExists(self.bullet_solver):
+            self._configure_bullet_solver(self.bullet_solver)
             return self.bullet_solver
         try:
             from maya.app.mayabullet import BulletUtils
 
             self.bullet_solver = BulletUtils.getSolver()
+            self._configure_bullet_solver(self.bullet_solver)
             return self.bullet_solver
         except Exception as exc:
             self.logger.warning(f"Failed to get Bullet solver: {exc}")
             return None
+
+    def _configure_bullet_solver(self, solver: str) -> None:
+        """Apply importer physics settings to Maya Bullet solver attributes."""
+        if not solver or not cmds.objExists(solver):
+            return
+
+        fixed_frame_rate = self._resolve_bullet_fixed_frame_rate()
+        settings_by_attr = {
+            "maxNumIterations": int(self.settings.get("solver_iterations", 10)),
+            "internalFixedFrameRate": fixed_frame_rate,
+            "splitImpulse": bool(self.settings.get("split_impulse", True)),
+        }
+        for attr, value in settings_by_attr.items():
+            self._set_attr_if_exists(solver, attr, value)
+
+        gravity = self._resolve_bullet_gravity()
+        if gravity is not None:
+            self._set_attr_if_exists(solver, "gravity", gravity, attr_type="float3")
+
+    def _resolve_bullet_fixed_frame_rate(self) -> int:
+        """Resolve Maya Bullet fixed frame rate from explicit value or quality."""
+        explicit = self.settings.get("bullet_fixed_frame_rate")
+        try:
+            if explicit is not None:
+                value = int(explicit)
+                return min((60, 120, 240), key=lambda candidate: abs(candidate - value))
+        except (TypeError, ValueError):
+            pass
+
+        quality = str(self.settings.get("simulation_quality", "medium")).lower()
+        return {"low": 60, "medium": 120, "high": 240}.get(quality, 120)
+
+    def _resolve_bullet_gravity(self) -> Optional[tuple]:
+        """Resolve gravity as a Maya Bullet vector."""
+        gravity = self.settings.get("gravity", 98.0)
+        if isinstance(gravity, (list, tuple)) and len(gravity) >= 3:
+            try:
+                return (float(gravity[0]), float(gravity[1]), float(gravity[2]))
+            except (TypeError, ValueError):
+                return None
+        try:
+            return (0.0, -abs(float(gravity)), 0.0)
+        except (TypeError, ValueError):
+            return None
+
+    def _set_attr_if_exists(self, node: str, attr: str, value, attr_type: Optional[str] = None) -> None:
+        """Set a Maya attr when it exists, ignoring unsupported Bullet variants."""
+        try:
+            if not cmds.attributeQuery(attr, node=node, exists=True):
+                return
+            if attr_type:
+                cmds.setAttr(f"{node}.{attr}", *value, type=attr_type)
+            else:
+                cmds.setAttr(f"{node}.{attr}", value)
+        except Exception as exc:
+            self.logger.debug(f"Skipping Bullet solver attr {node}.{attr}: {exc}")
 
     def _connect_attr_if_possible(
         self,
@@ -749,6 +1021,25 @@ class PhysicsConverter:
             cmds.connectAttr(source, destination, **kwargs)
         except Exception as exc:
             self.logger.debug(f"Skipping Bullet attr connection: {source} -> {destination}: {exc}")
+
+    def _set_bullet_collision_filter(self, shape: str, rb, model_type: str) -> None:
+        """Apply MMD collision group/mask to Maya Bullet filter attributes."""
+        if model_type == "pmd":
+            collision_group = getattr(rb, "collision_group", 0)
+        else:
+            collision_group = getattr(rb, "group", 0)
+        collision_mask = getattr(rb, "collision_mask", 0xFFFF)
+
+        values = {
+            "collisionFilterGroup": _mmd_collision_group_to_bullet_filter_group(collision_group),
+            "collisionFilterMask": _mmd_collision_mask_to_bullet_filter_mask(collision_mask),
+        }
+        for attr, value in values.items():
+            try:
+                if cmds.attributeQuery(attr, node=shape, exists=True):
+                    cmds.setAttr(f"{shape}.{attr}", value)
+            except Exception as exc:
+                self.logger.debug(f"Skipping Bullet collision filter attr {shape}.{attr}: {exc}")
 
     def _connect_bullet_rigid_body(self, transform: str, shape: str) -> None:
         """bulletRigidBodyShape を solver と transform に接続する。"""
@@ -934,11 +1225,15 @@ class PhysicsConverter:
 
         # 位置・回転
         if hasattr(joint, "position") and joint.position:
-            maya_pos = self._mmd_to_maya_position(joint.position)
-            cmds.xform(transform, ws=True, t=maya_pos)
-        if hasattr(joint, "rotation") and joint.rotation:
-            maya_rot = self._mmd_to_maya_rotation(joint.rotation)
-            cmds.xform(transform, ws=True, ro=maya_rot)
+            if hasattr(joint, "rotation") and joint.rotation:
+                cmds.xform(
+                    transform,
+                    ws=True,
+                    matrix=self._mmd_to_maya_transform_matrix(joint.position, joint.rotation, self.physics_scale),
+                )
+            else:
+                maya_pos = self._mmd_to_maya_position(joint.position, self.physics_scale)
+                cmds.xform(transform, ws=True, t=maya_pos)
 
         # constraintType
         cmds.setAttr(f"{shape}.constraintType", constraint_type)
@@ -1085,7 +1380,7 @@ class PhysicsConverter:
         maya_utils.set_attribute(self.nucleus_solver, "maxCollisionIterations", qs["maxCollisionIterations"], "long")
         maya_utils.set_attribute(self.nucleus_solver, "startFrame", self.settings.get("start_frame", 1), "double")
         maya_utils.set_attribute(self.nucleus_solver, "timeScale", self.settings.get("time_scale", 1.0), "double")
-        maya_utils.set_attribute(self.nucleus_solver, "gravity", 9.8, "double")
+        maya_utils.set_attribute(self.nucleus_solver, "gravity", 98.0, "double")
         maya_utils.set_attribute(self.nucleus_solver, "gravityDirection", [0, -1, 0], "double3")
         self.logger.debug(f"Nucleus solver setup complete: quality={quality}")
 
@@ -1182,14 +1477,43 @@ class PhysicsConverter:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _mmd_to_maya_position(position: Tuple[float, float, float]) -> List[float]:
+    def _mmd_to_maya_position(position: Tuple[float, float, float], scale: float = 1.0) -> List[float]:
         """MMD (X右, Y上, Z手前) → Maya (X右, Y上, Z後ろ)"""
-        return list(mmd_point_to_maya(position))
+        return list(mmd_point_to_maya(position, scale))
 
     @staticmethod
     def _mmd_to_maya_rotation(rotation: Tuple[float, float, float]) -> List[float]:
-        """MMD rotation (radian) → Maya rotation (degree), Z 反転"""
-        return list(mmd_euler_radians_to_maya_degrees(rotation))
+        """MMD rotation (radian) → Maya rotation (degree), with handedness conversion."""
+        return list(_mmd_euler_radians_to_maya_degrees(rotation))
+
+    @staticmethod
+    def _mmd_to_maya_transform_matrix(
+        position: Tuple[float, float, float],
+        rotation: Tuple[float, float, float],
+        scale: float = 1.0,
+    ) -> List[float]:
+        """Build a Maya xform matrix for an MMD transform."""
+        mmd_matrix = _euler_xyz_radians_to_matrix(rotation)
+        maya_matrix = _mat3_mul(_Z_REFLECTION_MATRIX, _mat3_mul(mmd_matrix, _Z_REFLECTION_MATRIX))
+        maya_pos = mmd_point_to_maya(position, scale)
+        return [
+            maya_matrix[0][0],
+            maya_matrix[1][0],
+            maya_matrix[2][0],
+            0.0,
+            maya_matrix[0][1],
+            maya_matrix[1][1],
+            maya_matrix[2][1],
+            0.0,
+            maya_matrix[0][2],
+            maya_matrix[1][2],
+            maya_matrix[2][2],
+            0.0,
+            maya_pos[0],
+            maya_pos[1],
+            maya_pos[2],
+            1.0,
+        ]
 
     @staticmethod
     def _maya_to_mmd_position(position: List[float]) -> List[float]:
@@ -1198,8 +1522,12 @@ class PhysicsConverter:
 
     @staticmethod
     def _maya_to_mmd_rotation(rotation: List[float]) -> List[float]:
-        """Maya rotation (degree) → MMD rotation (radian), Z 反転"""
-        return list(maya_euler_degrees_to_mmd_radians(rotation))
+        """Maya rotation (degree) → MMD rotation (radian), with handedness conversion."""
+        return list(_maya_euler_degrees_to_mmd_radians(rotation))
+
+    def _scaled_rigid_body_size(self, size: Tuple[float, float, float]) -> List[float]:
+        """Scale PMX/PMD rigid body dimensions into Maya scene units."""
+        return [float(size[i]) * self.physics_scale for i in range(3)]
 
     # ------------------------------------------------------------------
     # その他ヘルパー (既存)
@@ -1207,10 +1535,37 @@ class PhysicsConverter:
 
     def _create_bone_index_mapping(self, bones, bone_joints: Dict[str, str]) -> Dict[int, str]:
         bone_index_map = {}
+        for joint in set(bone_joints.values()):
+            try:
+                if not cmds.objExists(joint):
+                    continue
+                if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True):
+                    bone_index_map[int(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}"))] = joint
+            except Exception as exc:
+                self.logger.debug(f"Failed to read MMD bone index from '{joint}': {exc}")
+
         for i, bone in enumerate(bones):
+            if i in bone_index_map:
+                continue
             bone_name = maya_utils.sanitize_text(bone.get_name())
             if bone_name in bone_joints:
                 bone_index_map[i] = bone_joints[bone_name]
+        return bone_index_map
+
+    def _create_bone_index_mapping_from_scene(self, root_group: Optional[str] = None) -> Dict[int, str]:
+        """Create bone-index mapping from joint metadata in the current Maya scene."""
+        joints = cmds.ls(type="joint", long=True) or []
+        if root_group and cmds.objExists(root_group):
+            descendants = set(cmds.listRelatives(root_group, allDescendents=True, fullPath=True) or [])
+            joints = [joint for joint in joints if joint in descendants]
+
+        bone_index_map = {}
+        for joint in joints:
+            try:
+                if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True):
+                    bone_index_map[int(cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}"))] = joint
+            except Exception as exc:
+                self.logger.debug(f"Failed to map scene joint '{joint}' by MMD bone index: {exc}")
         return bone_index_map
 
     def _get_bone_name_from_rigid_body(self, rigid_body, bone_index_map: Optional[Dict[int, str]] = None) -> Optional[str]:
@@ -1260,7 +1615,7 @@ class PhysicsConverter:
                 width=rigid_body.size[0] * 2, height=rigid_body.size[2] * 2,
                 subdivisionsX=5, subdivisionsY=5,
             )[0]
-            maya_pos = self._mmd_to_maya_position(rigid_body.position)
+            maya_pos = self._mmd_to_maya_position(rigid_body.position, self.physics_scale)
             cmds.xform(proxy, ws=True, t=maya_pos)
             return proxy
         except Exception as e:
@@ -1292,7 +1647,7 @@ class PhysicsConverter:
             obj = maya_physics_utils.create_collision_primitive(
                 rigid_body.shape_type, rigid_body.size, name=f"{rigid_body.name}_collision",
             )
-            maya_pos = self._mmd_to_maya_position(rigid_body.position)
+            maya_pos = self._mmd_to_maya_position(rigid_body.position, self.physics_scale)
             cmds.xform(obj, ws=True, t=maya_pos)
             if hasattr(rigid_body, "rotation"):
                 maya_rot = self._mmd_to_maya_rotation(rigid_body.rotation)

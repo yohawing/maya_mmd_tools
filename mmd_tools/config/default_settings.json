@@ -26,7 +26,12 @@
       "import_physics": false,
       "create_rigid_bodies": true,
       "create_physics_joints": true,
-      "group_physics_objects": true
+      "group_physics_objects": true,
+      "simulation_quality": "medium",
+      "solver_iterations": 10,
+      "gravity": 98.0,
+      "bullet_fixed_frame_rate": 120,
+      "split_impulse": true
     },
     "morph": {
       "_comment": "Settings for importing morphs (blend shapes)",

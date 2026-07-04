@@ -105,7 +105,7 @@ class ModelImportPipeline:
             self.logger.debug("No physics data found")
             return [], []
 
-        physics_converter = PhysicsConverter()
+        physics_converter = PhysicsConverter(self._physics_converter_settings())
         bone_joint_mapping = create_bone_joint_mapping(parser.bones, maya_joints, file_kind)
         phase_start = time.perf_counter()
         if file_kind == "pmx":
@@ -124,6 +124,26 @@ class ModelImportPipeline:
             len(constraint_nodes),
         )
         return ncloth_nodes, constraint_nodes
+
+    def _physics_converter_settings(self) -> dict:
+        """Collect physics converter settings from import options and defaults."""
+        keys = (
+            "create_physics_joints",
+            "simulation_quality",
+            "solver_iterations",
+            "substeps",
+            "start_frame",
+            "time_scale",
+            "gravity",
+            "bullet_fixed_frame_rate",
+            "split_impulse",
+        )
+        result = {}
+        for key in keys:
+            setting_key = f"import.physics.{key}"
+            result[key] = self.options.get(key, settings.get(setting_key, None))
+        result["scale"] = self.scale
+        return {key: value for key, value in result.items() if value is not None}
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""
