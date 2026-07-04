@@ -533,9 +533,7 @@ class PmxExporter:
 
     def to_native_parts(self, pmx: PmxData):
         """basic PMX data を mmd-anim parts exporter の入力へ変換する。"""
-        if pmx.header.additional_uv != 0:
-            return None
-        if any(vertex.additional_uvs for vertex in pmx.vertices):
+        if self.native_parts_export_blocker(pmx) is not None:
             return None
 
         positions = []
@@ -546,8 +544,6 @@ class PmxExporter:
         edge_scale = []
         for vertex in pmx.vertices:
             skinning = _pmx_vertex_skinning(vertex)
-            if skinning is None:
-                return None
             indices4, weights4 = skinning
             positions.extend(_float_list(vertex.position, 3, "vertex position"))
             normals.extend(_float_list(vertex.normal, 3, "vertex normal"))
@@ -557,8 +553,6 @@ class PmxExporter:
             edge_scale.append(float(vertex.edge_magnification))
 
         indices = [int(index) for face in pmx.faces for index in face.indices]
-        if any(material.face_count % 3 != 0 for material in pmx.materials):
-            return None
 
         descriptor = {
             "version": float(pmx.header.version),
@@ -598,10 +592,24 @@ class PmxExporter:
         }
         for morph in pmx.morphs:
             morph_descriptor = self._native_morph_descriptor(morph)
-            if morph_descriptor is None:
-                return None
             descriptor["morphs"].append(morph_descriptor)
         return descriptor, positions, normals, uvs, indices, skin_indices, skin_weights, edge_scale
+
+    def native_parts_export_blocker(self, pmx: PmxData) -> str | None:
+        """Return why PMX must use the Python writer instead of native parts export."""
+        if pmx.header.additional_uv != 0:
+            return "additional_uv_header"
+        if any(vertex.additional_uvs for vertex in pmx.vertices):
+            return "additional_uv_vertices"
+        for vertex in pmx.vertices:
+            if _pmx_vertex_skinning(vertex) is None:
+                return f"unsupported_skinning_type:{int(vertex.weight_transform_type)}"
+        if any(material.face_count % 3 != 0 for material in pmx.materials):
+            return "non_triangle_material_face_count"
+        for morph in pmx.morphs:
+            if self._native_morph_descriptor(morph) is None:
+                return f"unsupported_morph_type:{int(morph.morph_type)}"
+        return None
 
     def _try_native_parts_export(self, pmx: PmxData):
         if self._native_parts_exporter is None:

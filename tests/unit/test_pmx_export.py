@@ -26,7 +26,7 @@ from mmd_tools.core.pmx_data.vertex import PmxVertex
 from mmd_tools.core.pmx_data.face import PmxFace
 from mmd_tools.core.pmx_data.material import PmxMaterial
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
-from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
 from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
@@ -39,6 +39,47 @@ def _parse_pmx(path):
         use_native_pmx_parse=False,
         require_native_pmx_parse=False,
     )
+
+
+def _minimal_native_parts_pmx() -> PmxData:
+    """Build a tiny PmxData object that is eligible for native parts export."""
+    pmx = PmxData()
+    pmx.header.magic = b"PMX "
+    pmx.header.version = 2.0
+    pmx.header.header_size = 8
+    pmx.header.vertex_index_size = 1
+    pmx.header.texture_index_size = 1
+    pmx.header.material_index_size = 1
+    pmx.header.bone_index_size = 1
+    pmx.header.morph_index_size = 1
+    pmx.header.rigid_body_index_size = 1
+    pmx.header.model_name = "NativeEligible"
+    pmx.header.model_name_english = "NativeEligible"
+
+    for position in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+        vertex = PmxVertex(bone_index_size=1, additional_uv_count=0)
+        vertex.position = position
+        vertex.normal = (0.0, 0.0, 1.0)
+        vertex.uv = (0.0, 0.0)
+        vertex.weight_transform_type = 0
+        vertex.bone_indices = [0]
+        vertex.bone_weights = []
+        vertex.edge_magnification = 1.0
+        pmx.vertices.append(vertex)
+
+    face = PmxFace(vertex_index_size=1)
+    face.indices = (0, 1, 2)
+    pmx.faces.append(face)
+
+    material = PmxMaterial(texture_index_size=1)
+    material.name = "mat"
+    material.face_count = 3
+    pmx.materials.append(material)
+
+    bone = PmxBone(bone_index_size=1)
+    bone.name = "root"
+    pmx.bones.append(bone)
+    return pmx
 
 
 class TestPmxExport(TestBase):
@@ -453,6 +494,47 @@ class TestPmxExporterFromDict(TestBase):
         self.assertEqual(pmx.header.model_name, "FallbackPmx")
         self.assertEqual(len(pmx.morphs), 1)
         self.assertEqual(int(pmx.morphs[0].morph_type), 8)
+
+    def test_native_parts_export_blocker_documents_unsupported_pmx_sections(self):
+        """parts ABI 非対象の PMX 範囲を理由付きで固定する。"""
+        exporter = PmxExporter(native_parts_exporter=lambda *args, **kwargs: b"NATIVE-PMX")
+
+        pmx = _minimal_native_parts_pmx()
+        self.assertIsNone(exporter.native_parts_export_blocker(pmx))
+        self.assertIsNotNone(exporter.to_native_parts(pmx))
+
+        pmx = _minimal_native_parts_pmx()
+        pmx.header.additional_uv = 1
+        self.assertEqual(exporter.native_parts_export_blocker(pmx), "additional_uv_header")
+        self.assertIsNone(exporter.to_native_parts(pmx))
+
+        pmx = _minimal_native_parts_pmx()
+        pmx.vertices[0].additional_uvs = [(0.0, 0.0, 0.0, 0.0)]
+        self.assertEqual(exporter.native_parts_export_blocker(pmx), "additional_uv_vertices")
+        self.assertIsNone(exporter.to_native_parts(pmx))
+
+        for weight_type in (3, 4):
+            with self.subTest(weight_type=weight_type):
+                pmx = _minimal_native_parts_pmx()
+                pmx.vertices[0].weight_transform_type = weight_type
+                self.assertEqual(
+                    exporter.native_parts_export_blocker(pmx),
+                    f"unsupported_skinning_type:{weight_type}",
+                )
+                self.assertIsNone(exporter.to_native_parts(pmx))
+
+        for morph_type in (PmxMorphType.BoneMorph, PmxMorphType.MaterialMorph):
+            with self.subTest(morph_type=morph_type):
+                pmx = _minimal_native_parts_pmx()
+                morph = PmxMorph(1, 1, 1, 1, 1)
+                morph.name = "unsupported"
+                morph.morph_type = morph_type
+                pmx.morphs.append(morph)
+                self.assertEqual(
+                    exporter.native_parts_export_blocker(pmx),
+                    f"unsupported_morph_type:{int(morph_type)}",
+                )
+                self.assertIsNone(exporter.to_native_parts(pmx))
 
     def test_export_display_frame_name_roundtrip_matches_header_encoding(self):
         """dict export でヘッダと同じ encoding_flag で表示枠名を保存できる"""
