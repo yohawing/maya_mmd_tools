@@ -120,6 +120,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
             state,
             {
                 "development_mode": False,
+                "command_port": 3939,
                 "logging_enabled": False,
                 "logging_level": "ERROR",
                 "log_file_path": "custom.log",
@@ -130,6 +131,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         self.service.save_settings_tab_state(
             {
                 "development_mode": True,
+                "command_port": 7788,
                 "logging_enabled": True,
                 "logging_level": "INFO",
                 "log_file_path": "next.log",
@@ -138,6 +140,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         )
 
         self.assertTrue(self.service.get("ui.general.development_mode"))
+        self.assertEqual(self.service.get("ui.dev.command_port"), 7788)
         self.assertEqual(self.service.get("ui.general.language"), "ja")
         self.assertTrue(self.service.get("logging.enabled"))
         self.assertEqual(self.service.get("logging.level"), "INFO")

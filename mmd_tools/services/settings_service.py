@@ -70,6 +70,7 @@ class SettingsService:
         """Return settings needed by the Settings tab view."""
         return {
             "development_mode": self.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False),
+            "command_port": self.get(setting_keys.UI_DEV_COMMAND_PORT, 3939),
             "logging_enabled": self.get(setting_keys.LOGGING_ENABLED, True),
             "logging_level": self.get(setting_keys.LOGGING_LEVEL, "WARNING"),
             "log_file_path": self.get(setting_keys.LOGGING_LOG_FILE_PATH, "logs/mmd_tools.log"),
@@ -79,6 +80,8 @@ class SettingsService:
     def save_settings_tab_state(self, state):
         """Persist settings supplied by the Settings tab presenter."""
         self.set(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, state["development_mode"])
+        if "command_port" in state:
+            self.set(setting_keys.UI_DEV_COMMAND_PORT, int(state["command_port"]))
         if "language" in state:
             self.set(setting_keys.UI_GENERAL_LANGUAGE, state["language"])
         self.set(setting_keys.LOGGING_ENABLED, state["logging_enabled"])

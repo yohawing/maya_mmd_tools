@@ -44,7 +44,9 @@
     "timestamp": "タイムスタンプ",
     "filter": "フィルタ",
     "apply_to_selected": "選択に適用",
-    "clear_history": "履歴をクリア"
+    "clear_history": "履歴をクリア",
+    "open_command_port": "開く",
+    "close_command_port": "閉じる"
   },
   "labels": {
     "file_path": "ファイルパス:",
@@ -137,6 +139,13 @@
     "settings_imported": "設定をインポートしました",
     "settings_import_failed": "設定のインポートに失敗しました: {error}",
     "language_changed": "言語を変更しました: {language}",
+    "command_port_opened": "Command Port :{port} を開きました",
+    "command_port_already_open": "Command Port :{port} は既に開いています",
+    "command_port_open_failed": "Command Port :{port} を開けませんでした: {error}",
+    "command_port_closed": "Command Port :{port} を閉じました",
+    "command_port_already_closed": "Command Port :{port} は既に閉じています",
+    "command_port_close_failed": "Command Port :{port} を閉じられませんでした: {error}",
+    "command_port_dev_mode_required": "Command Port は開発モードでのみ開けます",
     "unsaved_changes_title": "未保存の変更",
     "unsaved_changes_select_material": "未保存の変更があります。別のマテリアルを選択しますか？",
     "enter_file_path": "ファイルパスを入力してください",
@@ -252,6 +261,7 @@
     "advanced_settings": "詳細設定",
     "ui_settings": "UI設定",
     "log_settings": "ログ設定",
+    "dev_tools": "開発ツール",
     "model_settings": "モデル設定",
     "physics_settings": "物理設定",
     "other_settings": "その他"
@@ -353,6 +363,7 @@
     "language": "言語:",
     "log_level": "ログレベル:",
     "log_file": "ログファイル:",
+    "command_port": "Command Port:",
     "export_format": "エクスポート形式:",
     "transparency_mode": "透過モード:",
     "transparency_opaque_threshold": "不透明とみなすα閾値:",

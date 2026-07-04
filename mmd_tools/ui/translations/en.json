@@ -44,7 +44,9 @@
     "timestamp": "Timestamp",
     "filter": "Filter",
     "apply_to_selected": "Apply to Selected",
-    "clear_history": "Clear History"
+    "clear_history": "Clear History",
+    "open_command_port": "Open",
+    "close_command_port": "Close"
   },
   "labels": {
     "file_path": "File Path:",
@@ -137,6 +139,13 @@
     "settings_imported": "Settings imported",
     "settings_import_failed": "Failed to import settings: {error}",
     "language_changed": "Language changed: {language}",
+    "command_port_opened": "Opened Command Port :{port}",
+    "command_port_already_open": "Command Port :{port} is already open",
+    "command_port_open_failed": "Failed to open Command Port :{port}: {error}",
+    "command_port_closed": "Closed Command Port :{port}",
+    "command_port_already_closed": "Command Port :{port} is already closed",
+    "command_port_close_failed": "Failed to close Command Port :{port}: {error}",
+    "command_port_dev_mode_required": "Command Port is available only in Development Mode",
     "unsaved_changes_title": "Unsaved Changes",
     "unsaved_changes_select_material": "You have unsaved changes. Select a different material anyway?",
     "enter_file_path": "Please enter a file path",
@@ -252,6 +261,7 @@
     "advanced_settings": "Advanced Settings",
     "ui_settings": "UI Settings",
     "log_settings": "Log Settings",
+    "dev_tools": "Development Tools",
     "model_settings": "Model Settings",
     "physics_settings": "Physics Settings",
     "other_settings": "Other"
@@ -353,6 +363,7 @@
     "language": "Language:",
     "log_level": "Log Level:",
     "log_file": "Log File:",
+    "command_port": "Command Port:",
     "export_format": "Export Format:",
     "transparency_mode": "Transparency Mode:",
     "transparency_opaque_threshold": "Opaque alpha threshold:",

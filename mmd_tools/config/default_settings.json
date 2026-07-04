@@ -79,6 +79,9 @@
       "show_advanced_options": false,
       "development_mode": false,
       "language": "ja"
+    },
+    "dev": {
+      "command_port": 3939
     }
   },
   "logging": {

@@ -3,8 +3,8 @@
 Development Mode チェックボックス変更時に logging.level が決定論的に設定される動作を検証する。
 """
 
-import sys
 import os
+import sys
 import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
@@ -90,8 +90,50 @@ class _FakeLineEdit:
         self._text = v
 
 
+class _FakeSpinBox:
+    def __init__(self, value=3939):
+        self._value = value
+
+    def value(self):
+        return self._value
+
+    def setValue(self, value):
+        self._value = int(value)
+
+
+class _FakeGroup:
+    def __init__(self):
+        self.visible = None
+
+    def setVisible(self, value):
+        self.visible = bool(value)
+
+
 class _FakeButton:
     clicked = _FakeSignal()
+
+    def __init__(self):
+        self.text = ""
+
+    def setText(self, text):
+        self.text = text
+
+
+class _FakeMayaCmds:
+    def __init__(self):
+        self.open_ports = set()
+        self.calls = []
+
+    def commandPort(self, *args, **kwargs):
+        self.calls.append((args, kwargs))
+        name = kwargs.get("name") or (args[0] if args else None)
+        if kwargs.get("query"):
+            return name in self.open_ports
+        if kwargs.get("close"):
+            self.open_ports.discard(name)
+            return None
+        self.open_ports.add(name)
+        return None
 
 
 class _FakeView:
@@ -101,11 +143,14 @@ class _FakeView:
         self.logging_enabled_check = _FakeCheckBox(True)
         self.log_file_path_edit = _FakeLineEdit("logs/mmd_tools.log")
         self.language_combo = _FakeComboBox(["Japanese", "English"], 0)
+        self.command_port_spin = _FakeSpinBox()
+        self.dev_tools_group = _FakeGroup()
         self.save_settings_btn = _FakeButton()
         self.reset_settings_btn = _FakeButton()
         self.export_settings_btn = _FakeButton()
         self.import_settings_btn = _FakeButton()
         self.log_file_browse_btn = _FakeButton()
+        self.open_command_port_btn = _FakeButton()
         self.import_export_tab = _FakeImportExportTab()
 
     def window(self):
@@ -139,7 +184,8 @@ class TestDevelopmentModeLogLevels(unittest.TestCase):
         _reset_singleton()
         self.view = _FakeView()
         self.app_state = _FakeAppState()
-        self.presenter = SettingsPresenter(self.view, self.app_state)
+        self.maya_cmds = _FakeMayaCmds()
+        self.presenter = SettingsPresenter(self.view, self.app_state, maya_cmds=self.maya_cmds)
 
     def tearDown(self):
         _reset_singleton()
@@ -201,7 +247,8 @@ class TestLoadSettings(unittest.TestCase):
         _reset_singleton()
         self.view = _FakeView()
         self.app_state = _FakeAppState()
-        self.presenter = SettingsPresenter(self.view, self.app_state)
+        self.maya_cmds = _FakeMayaCmds()
+        self.presenter = SettingsPresenter(self.view, self.app_state, maya_cmds=self.maya_cmds)
 
     def tearDown(self):
         _reset_singleton()
@@ -209,7 +256,7 @@ class TestLoadSettings(unittest.TestCase):
     def test_default_logging_level_is_warning(self):
         """default_settings.json で logging.level が WARNING に設定されている。"""
         import json
-        import os
+
         config_path = os.path.join(
             os.path.dirname(__file__), "..", "..",
             "mmd_tools", "config", "default_settings.json",
@@ -230,8 +277,34 @@ class TestLoadSettings(unittest.TestCase):
         """settings に development_mode=True を設定すると、ロード後にチェックされる。"""
         from mmd_tools.core.settings import settings
         settings.set("ui.general.development_mode", True)
+        settings.set("ui.dev.command_port", 3939)
         self.presenter.load_settings()
         self.assertTrue(self.view.development_mode_check.isChecked())
+        self.assertIn(":3939", self.maya_cmds.open_ports)
+
+    def test_default_command_port_is_3939(self):
+        """Command Port のデフォルトは 3939。"""
+        import json
+
+        config_path = os.path.join(
+            os.path.dirname(__file__), "..", "..",
+            "mmd_tools", "config", "default_settings.json",
+        )
+        with open(config_path) as f:
+            defaults = json.load(f)
+        self.assertEqual(defaults["ui"]["dev"]["command_port"], 3939)
+
+    def test_dev_tools_visibility_follows_development_mode(self):
+        """開発ツールは Development Mode に従って表示する。"""
+        from mmd_tools.core.settings import settings
+
+        settings.set("ui.general.development_mode", False)
+        self.presenter.load_settings()
+        self.assertFalse(self.view.dev_tools_group.visible)
+
+        settings.set("ui.general.development_mode", True)
+        self.presenter.load_settings()
+        self.assertTrue(self.view.dev_tools_group.visible)
 
 
 class TestSaveSettings(unittest.TestCase):
@@ -241,7 +314,8 @@ class TestSaveSettings(unittest.TestCase):
         _reset_singleton()
         self.view = _FakeView()
         self.app_state = _FakeAppState()
-        self.presenter = SettingsPresenter(self.view, self.app_state)
+        self.maya_cmds = _FakeMayaCmds()
+        self.presenter = SettingsPresenter(self.view, self.app_state, maya_cmds=self.maya_cmds)
 
     def tearDown(self):
         _reset_singleton()
@@ -271,6 +345,124 @@ class TestSaveSettings(unittest.TestCase):
         self.presenter.save_all_settings()
 
         self.assertEqual(self.view.import_export_tab.apply_dev_mode_visibility_calls, 1)
+
+    def test_save_persists_command_port(self):
+        """Command Port 欄の値を設定に保存する。"""
+        from mmd_tools.core.settings import settings
+
+        self.view.command_port_spin.setValue(7788)
+        self.presenter.save_all_settings()
+
+        self.assertEqual(settings.get("ui.dev.command_port"), 7788)
+
+
+class TestCommandPortAction(unittest.TestCase):
+    """開発用 commandPort ボタンの動作を検証する。"""
+
+    def setUp(self):
+        _reset_singleton()
+        self.view = _FakeView()
+        self.app_state = _FakeAppState()
+        self.maya_cmds = _FakeMayaCmds()
+        self.presenter = SettingsPresenter(self.view, self.app_state, maya_cmds=self.maya_cmds)
+
+    def tearDown(self):
+        _reset_singleton()
+
+    def test_open_command_port_requires_development_mode(self):
+        """通常モードでは commandPort を開かない。"""
+        self.view.development_mode_check.setChecked(False)
+
+        self.presenter.open_command_port()
+
+        self.assertTrue(self.app_state.statuses)
+        self.assertIn("Command Port", self.app_state.statuses[-1])
+
+    def test_open_command_port_creates_python_command_port(self):
+        """開発モードでは Python commandPort を開く。"""
+        from mmd_tools.core.settings import settings
+
+        self.view.development_mode_check.setChecked(True)
+        self.view.command_port_spin.setValue(7788)
+
+        self.presenter.open_command_port()
+
+        self.assertIn(":7788", self.maya_cmds.open_ports)
+        self.assertEqual(settings.get("ui.dev.command_port"), 7788)
+        self.assertIn(":7788", self.app_state.statuses[-1])
+
+    def test_open_command_port_reports_existing_port(self):
+        """同じ commandPort が Maya 内で開いている場合は再作成しない。"""
+        self.view.development_mode_check.setChecked(True)
+        self.view.command_port_spin.setValue(3939)
+        self.maya_cmds.open_ports.add(":3939")
+
+        self.presenter.open_command_port()
+
+        self.assertIn(":3939", self.app_state.statuses[-1])
+
+    def test_close_command_port_closes_existing_port(self):
+        """開いている commandPort は閉じられる。"""
+        self.view.development_mode_check.setChecked(True)
+        self.view.command_port_spin.setValue(7788)
+        self.maya_cmds.open_ports.add(":7788")
+
+        self.presenter.close_command_port()
+
+        self.assertNotIn(":7788", self.maya_cmds.open_ports)
+        self.assertIn(":7788", self.app_state.statuses[-1])
+
+    def test_toggle_command_port_closes_when_open(self):
+        """ボタン操作は開いている port では close として働く。"""
+        self.view.development_mode_check.setChecked(True)
+        self.view.command_port_spin.setValue(7788)
+        self.maya_cmds.open_ports.add(":7788")
+
+        self.presenter.toggle_command_port()
+
+        self.assertNotIn(":7788", self.maya_cmds.open_ports)
+
+    def test_close_button_text_falls_back_when_translation_cache_is_stale(self):
+        """古い翻訳キャッシュでも close ボタン表示は警告キー文字列に落ちない。"""
+        from mmd_tools.ui.translations import UITranslator
+
+        translator = UITranslator.instance()
+        original_translations = translator._translations
+        original_language = translator.get_language()
+        try:
+            translator.set_language("ja")
+            translator._translations = {
+                "ja": {"buttons": {"open_command_port": "開く"}},
+                "en": {"buttons": {"open_command_port": "Open"}},
+            }
+            self.view.command_port_spin.setValue(7788)
+            self.maya_cmds.open_ports.add(":7788")
+
+            self.presenter.refresh_command_port_status()
+
+            self.assertEqual(self.view.open_command_port_btn.text, "閉じる")
+        finally:
+            translator._translations = original_translations
+            translator.set_language(original_language)
+
+    def test_development_mode_on_auto_opens_command_port(self):
+        """Development Mode を ON にした時点で commandPort を自動 open する。"""
+        self.view.command_port_spin.setValue(7788)
+        self.view.development_mode_check.setChecked(True)
+
+        self.presenter.on_development_mode_changed()
+
+        self.assertIn(":7788", self.maya_cmds.open_ports)
+
+    def test_development_mode_off_auto_closes_command_port(self):
+        """Development Mode を OFF にすると開いている commandPort を閉じる。"""
+        self.view.command_port_spin.setValue(7788)
+        self.view.development_mode_check.setChecked(False)
+        self.maya_cmds.open_ports.add(":7788")
+
+        self.presenter.on_development_mode_changed()
+
+        self.assertNotIn(":7788", self.maya_cmds.open_ports)
 
 
 if __name__ == "__main__":
