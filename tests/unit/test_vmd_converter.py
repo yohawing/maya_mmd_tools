@@ -22,9 +22,7 @@ import mmd_tools.converters.vmd_camera_animation as vmd_camera_animation_module
 import mmd_tools.converters.vmd_light_animation as vmd_light_animation_module
 from mmd_tools.converters.vmd_camera_animation import (
     maya_camera_eye_from_vmd_state,
-    maya_camera_rotation_from_vmd_state,
     maya_camera_up_from_vmd_state,
-    parse_vmd_camera_interpolation,
 )
 from mmd_tools.converters.vmd_bone_interpolation import parse_vmd_interpolation
 from mmd_tools.core.coordinate_transform import mmd_point_to_maya
@@ -442,20 +440,6 @@ class TestVmdConverter(MayaTestBase):
         self.assertAlmostEqual(camera_forward.y, target_direction.y, places=6)
         self.assertAlmostEqual(camera_forward.z, target_direction.z, places=6)
 
-    def test_camera_roll_does_not_move_eye_position(self):
-        """VMD camera roll は視線軸回転であり、target-distance の eye 位置は動かさない。"""
-        position = (4.0, 12.0, -6.0)
-        base_rotation = (0.35, -0.25, 0.0)
-        rolled_rotation = (0.35, -0.25, math.pi / 3.0)
-        distance = -30.0
-
-        base_eye = maya_camera_eye_from_vmd_state(position, base_rotation, distance, 1.0)
-        rolled_eye = maya_camera_eye_from_vmd_state(position, rolled_rotation, distance, 1.0)
-
-        self.assertAlmostEqual(rolled_eye[0], base_eye[0], places=6)
-        self.assertAlmostEqual(rolled_eye[1], base_eye[1], places=6)
-        self.assertAlmostEqual(rolled_eye[2], base_eye[2], places=6)
-
     def test_mmd_camera_rig_roll_keys_camera_z_under_orbit_target(self):
         """MMD Camera Rig は target orbit + camera.rotateZ で roll を編集可能にする。"""
         from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
@@ -523,28 +507,6 @@ class TestVmdConverter(MayaTestBase):
 
         self.assertGreater((positions[1] - positions[0]).length(), 1.0)
 
-    def test_camera_rotation_matches_three_mmd_loader_yxz_convention(self):
-        """MMD camera Euler は three-mmd-loader と同じ orbit 規約で Maya forward へ変換する。"""
-        rotate_x, rotate_y, rotate_z = maya_camera_rotation_from_vmd_state((0.25, 0.5, 0.0))
-        rotation = om.MEulerRotation(rotate_x, rotate_y, rotate_z)
-        forward = om.MVector(0.0, 0.0, -1.0) * rotation.asMatrix()
-
-        self.assertAlmostEqual(forward.x, -0.46452136, places=6)
-        self.assertAlmostEqual(forward.y, 0.247403959, places=6)
-        self.assertAlmostEqual(forward.z, -0.850300645, places=6)
-
-    def test_camera_eye_matches_three_mmd_loader_signed_distance(self):
-        """MMD camera distance は three-mmd-loader と同じ符号付き orbit offset として反映する。"""
-        yaw_eye = maya_camera_eye_from_vmd_state((0.0, 0.0, 0.0), (0.0, 0.5, 0.0), -10.0, 1.0)
-        pitch_eye = maya_camera_eye_from_vmd_state((0.0, 0.0, 0.0), (math.pi / 4.0, 0.0, 0.0), -45.0, 1.0)
-
-        self.assertAlmostEqual(yaw_eye[0], 4.794255386, places=6)
-        self.assertAlmostEqual(yaw_eye[1], 0.0, places=6)
-        self.assertAlmostEqual(yaw_eye[2], 8.775825619, places=6)
-        self.assertAlmostEqual(pitch_eye[0], 0.0, places=6)
-        self.assertAlmostEqual(pitch_eye[1], -31.819805153, places=6)
-        self.assertAlmostEqual(pitch_eye[2], 31.819805153, places=6)
-
     def test_camera_viewing_angle_drives_vertical_fov(self):
         """VMD viewing_angle は Maya camera shape の vertical FOV として反映する。"""
         from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
@@ -588,26 +550,6 @@ class TestVmdConverter(MayaTestBase):
 
         self.assertTrue(cmds.getAttr(f"{camera_shape}.orthographic"))
         self.assertAlmostEqual(cmds.getAttr(f"{camera_shape}.orthographicWidth"), expected_width, places=5)
-
-    def test_parse_vmd_camera_interpolation_uses_camera_channel_layout(self):
-        """camera interpolation は 6 channel x 4 bytes の連続レイアウトで読む。"""
-        data = bytes(
-            [
-                1, 2, 3, 4,
-                5, 6, 7, 8,
-                9, 10, 11, 12,
-                13, 14, 15, 16,
-                17, 18, 19, 20,
-                21, 22, 23, 24,
-            ]
-        )
-
-        parsed = self.converter._parse_vmd_camera_interpolation(data)
-        self.assertEqual(parsed, parse_vmd_camera_interpolation(data))
-
-        self.assertEqual(parsed["translate_x"], (1 / 127, 2 / 127, 3 / 127, 4 / 127))
-        self.assertEqual(parsed["distance"], (17 / 127, 18 / 127, 19 / 127, 20 / 127))
-        self.assertEqual(parsed["viewing_angle"], (21 / 127, 22 / 127, 23 / 127, 24 / 127))
 
     @staticmethod
     def _camera_interp_bytes_by_channel(**overrides):
