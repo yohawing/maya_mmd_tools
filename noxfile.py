@@ -136,6 +136,35 @@ def _extract_archive(archive: Path, destination: Path) -> None:
         raise ValueError(f"Unsupported archive format: {archive}")
 
 
+def _windows_processes_locking_module(path: Path) -> list[str]:
+    """Return Windows processes that have a DLL loaded, best-effort."""
+    if platform.system() != "Windows" or not path.exists():
+        return []
+    target = str(path).replace("'", "''")
+    script = (
+        "$target = '"
+        + target
+        + "'; "
+        "$rows = Get-Process | Where-Object { "
+        "try { $_.Modules | Where-Object { $_.FileName -eq $target } } catch { $false } "
+        "} | Select-Object Id,ProcessName,Path; "
+        "$rows | ForEach-Object { \"$($_.Id) $($_.ProcessName) $($_.Path)\" }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 def _downloaded_mmd_anim_cli(session: nox.Session) -> Path:
     """Return the pinned mmd-anim CLI downloaded from GitHub Releases."""
     expected_version = f"mmd-anim {MMD_ANIM_CLI_VERSION.removeprefix('v')}"
@@ -780,6 +809,19 @@ def gui_tests(session: nox.Session) -> None:
 def ffi_build(session: nox.Session) -> None:
     """Build the mmd-anim FFI library used by Python and C++ integrations."""
     args = session.posargs or ["--release"]
+    profile = "release" if "--release" in args else "debug"
+    library_name = {
+        "Windows": "mmd_runtime_ffi.dll",
+        "Darwin": "libmmd_runtime_ffi.dylib",
+    }.get(platform.system(), "libmmd_runtime_ffi.so")
+    locked_by = _windows_processes_locking_module(
+        ROOT / "external" / "mmd-anim" / "target" / profile / library_name
+    )
+    if locked_by:
+        session.error(
+            "mmd-anim FFI output DLL is currently loaded and cannot be replaced: "
+            + "; ".join(locked_by)
+        )
     session.run(
         "cargo",
         "build",
