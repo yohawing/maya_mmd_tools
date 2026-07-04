@@ -114,6 +114,12 @@ uvx nox -s ffi_build -- --release --cargo-target-dir build/mmd-anim-unlocked-tar
 uvx nox -s native_export_smoke -- --strict --ffi-path build/mmd-anim-unlocked-target/release
 ```
 
+For the aggregate gate, pass the same alternate target once:
+
+```powershell
+uvx nox -s release_gate -- --ffi-cargo-target-dir build/mmd-anim-unlocked-target
+```
+
 Maya-local regression gates:
 
 ```powershell

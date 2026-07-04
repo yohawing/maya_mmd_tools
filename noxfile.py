@@ -1539,6 +1539,7 @@ def release_gate(session: nox.Session) -> None:
         uvx nox -s release_gate -- --maya 2024
         uvx nox -s release_gate -- --with-cpp
         uvx nox -s release_gate -- --with-cpp --cpp-maya 2024 --cpp-maya 2026 --cpp-config Release
+        uvx nox -s release_gate -- --ffi-cargo-target-dir build/mmd-anim-unlocked-target
         uvx nox -s release_gate -- --strict-local --local-parity-manifest F:/local/parity.json
     """
     args = list(session.posargs)
@@ -1546,6 +1547,10 @@ def release_gate(session: nox.Session) -> None:
     version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
     cpp_versions = _options(args, "--cpp-maya") or list(DEFAULT_CPP_VERIFY_MAYA_VERSIONS)
     cpp_config = _option(args, "--cpp-config", DEFAULT_CMAKE_CONFIG)
+    ffi_cargo_target_dir = _option(args, "--ffi-cargo-target-dir", "")
+    ffi_path = _option(args, "--ffi-path", "")
+    if ffi_cargo_target_dir and not ffi_path:
+        ffi_path = str(Path(ffi_cargo_target_dir) / "release")
     strict_local = _has_flag(args, "--strict-local")
     local_assets_manifest = _option(args, "--local-assets-manifest", "local-assets-manifest.json")
     camera_manifest = _option(
@@ -1569,11 +1574,19 @@ def release_gate(session: nox.Session) -> None:
         ("tier1:golden_oracle", ["uvx", "nox", "-s", "golden_oracle"]),
     ]
     if not quick:
+        ffi_build_command = ["uvx", "nox", "-s", "ffi_build"]
+        native_smoke_command = ["uvx", "nox", "-s", "native_smoke"]
+        native_export_smoke_command = ["uvx", "nox", "-s", "native_export_smoke"]
+        if ffi_cargo_target_dir:
+            ffi_build_command.extend(["--", "--release", "--cargo-target-dir", ffi_cargo_target_dir])
+        if ffi_path:
+            native_smoke_command.extend(["--", "--ffi-path", ffi_path])
+            native_export_smoke_command.extend(["--", "--strict", "--ffi-path", ffi_path])
         tier1_commands.extend(
             [
-                ("tier1:ffi_build", ["uvx", "nox", "-s", "ffi_build"]),
-                ("tier1:native_smoke", ["uvx", "nox", "-s", "native_smoke"]),
-                ("tier1:native_export_smoke", ["uvx", "nox", "-s", "native_export_smoke"]),
+                ("tier1:ffi_build", ffi_build_command),
+                ("tier1:native_smoke", native_smoke_command),
+                ("tier1:native_export_smoke", native_export_smoke_command),
             ]
         )
     for name, command in tier1_commands:
