@@ -273,8 +273,12 @@ class TestMmdBoneNameConversion(unittest.TestCase):
             "左足IK親": "left_leg_ik_parent",
             "左足ＩＫ親": "left_leg_ik_parent",
             "右足IK親": "right_leg_ik_parent",
+            "右足ＩＫ先": "right_leg_ik_end",
+            "左足IK先": "left_leg_ik_end",
             "左腕捩": "left_arm_twist",
+            "左腕捩先": "left_arm_twist_end",
             "右手捩": "right_wrist_twist",
+            "右手捩先": "right_wrist_twist_end",
             "腰": "waist",
             "左親指0": "left_thumb_0",
             "右足D": "right_leg_d",
@@ -298,6 +302,8 @@ class TestMmdBoneNameConversion(unittest.TestCase):
 
     def test_semistandard_bone_names_are_detected_before_generic_tokenization(self):
         self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足IK親"), "right_leg_ik_parent")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足ＩＫ先"), "right_leg_ik_end")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("左手捩先"), "left_wrist_twist_end")
         self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右肩P"), "right_shoulder_p")
         self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足D"), "right_leg_d")
         self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("左腕捩"), "left_arm_twist")
@@ -307,6 +313,23 @@ class TestMmdBoneNameConversion(unittest.TestCase):
 
     def test_unknown_bone_name_tokens_are_hashed_without_dropping_known_tokens(self):
         self.assertEqual(convert_mmd_bone_name_to_ascii("左未知捩1"), "left_HASH1622dc9b_twist_1")
+
+    def test_frequent_local_asset_tokens_avoid_hash_fallback(self):
+        test_cases = {
+            "右腕捩軸": "right_arm_twist_axis",
+            "左足IK調整": "left_leg_ik_adjust",
+            "右足IK向き": "right_leg_ik_direction",
+            "左腕捩元": "left_arm_twist_base",
+            "右ひざD補助": "right_knee_d_assist",
+            "左腕捩抽出": "left_arm_twist_extract",
+            "右太ももD": "right_thigh_d",
+            "左骨盤P": "left_pelvis_p",
+        }
+        for original, expected in test_cases.items():
+            with self.subTest(original=original):
+                converted = convert_mmd_bone_name_to_ascii(original)
+                self.assertEqual(converted, expected)
+                self.assertNotIn("HASH", converted)
 
     def test_normalize_mmd_bone_name_folds_common_variants(self):
         self.assertEqual(normalize_mmd_bone_name("右腕捻Ｄ"), "右腕捩D")
