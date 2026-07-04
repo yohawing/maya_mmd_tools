@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -252,6 +253,126 @@ def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[s
     rewritten = list(args)
     rewritten[index + 1] = str(alias)
     return rewritten
+
+
+def _release_gate_version_check() -> None:
+    """Validate release version markers before running expensive gates."""
+    import re
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = pyproject["project"]["version"]
+
+    init_text = (ROOT / "mmd_tools" / "__init__.py").read_text(encoding="utf-8")
+    init_match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
+    if not init_match or init_match.group(1) != version:
+        raise RuntimeError(f"mmd_tools/__init__.py version does not match pyproject.toml: {version}")
+
+    mod_text = (ROOT / "maya_mmd_tools.mod").read_text(encoding="utf-8")
+    mod_versions = set(re.findall(r"maya_mmd_tools\s+([0-9]+\.[0-9]+\.[0-9]+)", mod_text))
+    if mod_versions != {version}:
+        raise RuntimeError(f"maya_mmd_tools.mod versions {sorted(mod_versions)} do not match {version}")
+
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = f"## [{version}]"
+    start = changelog.find(heading)
+    if start == -1:
+        raise RuntimeError(f"CHANGELOG.md is missing {heading}")
+    next_heading = changelog.find("\n## [", start + len(heading))
+    section = changelog[start: next_heading if next_heading != -1 else len(changelog)]
+    body_lines = [
+        line.strip()
+        for line in section.splitlines()[1:]
+        if line.strip() and not line.strip().startswith("[")
+    ]
+    if not body_lines:
+        raise RuntimeError(f"CHANGELOG.md section {heading} is empty")
+
+
+def _run_release_gate_command(
+    name: str,
+    command: list[str],
+    results: list[dict[str, object]],
+) -> None:
+    """Run a release-gate command and append a keep-going result entry."""
+    started = time.perf_counter()
+    completed = subprocess.run(command, cwd=ROOT, text=True, check=False)
+    results.append(
+        {
+            "name": name,
+            "command": command,
+            "status": "pass" if completed.returncode == 0 else "fail",
+            "returncode": completed.returncode,
+            "duration_sec": round(time.perf_counter() - started, 3),
+        }
+    )
+
+
+def _run_release_gate_callable(
+    name: str,
+    func,
+    results: list[dict[str, object]],
+) -> None:
+    """Run an in-process release-gate step and append a keep-going result entry."""
+    started = time.perf_counter()
+    try:
+        func()
+    except Exception as exc:
+        results.append(
+            {
+                "name": name,
+                "command": [],
+                "status": "fail",
+                "returncode": 1,
+                "duration_sec": round(time.perf_counter() - started, 3),
+                "error": str(exc),
+            }
+        )
+    else:
+        results.append(
+            {
+                "name": name,
+                "command": [],
+                "status": "pass",
+                "returncode": 0,
+                "duration_sec": round(time.perf_counter() - started, 3),
+            }
+        )
+
+
+def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -> tuple[Path, Path]:
+    """Write release-gate Markdown and JSON summaries."""
+    report_dir = ROOT / "build" / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    json_path = report_dir / "release_gate.json"
+    md_path = report_dir / "release_gate.md"
+
+    failed = [result for result in results if result["status"] != "pass"]
+    payload = {
+        "quick": quick,
+        "status": "fail" if failed else "pass",
+        "results": results,
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    lines = [
+        "# Release Gate",
+        "",
+        f"- Mode: {'quick' if quick else 'full'}",
+        f"- Status: {payload['status']}",
+        "",
+        "| Step | Status | Seconds | Command |",
+        "| --- | --- | ---: | --- |",
+    ]
+    for result in results:
+        command = " ".join(str(part) for part in result.get("command") or [])
+        if not command:
+            command = str(result.get("error", "in-process"))
+        lines.append(
+            f"| {result['name']} | {result['status']} | {result['duration_sec']} | `{command}` |"
+        )
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return md_path, json_path
 
 
 def _import_order_manifest_asset_path(value: str) -> str:
@@ -1249,6 +1370,69 @@ def golden_oracle(session: nox.Session) -> None:
     mmd_anim = _downloaded_mmd_anim_cli(session)
 
     session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)
+
+
+@nox.session(venv_backend="none")
+def release_gate(session: nox.Session) -> None:
+    """Run release verification gates with keep-going reporting.
+
+    Examples:
+        uvx nox -s release_gate -- --quick
+        uvx nox -s release_gate -- --maya 2024
+    """
+    args = list(session.posargs)
+    quick = _has_flag(args, "--quick")
+    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    results: list[dict[str, object]] = []
+
+    tier0_commands = [
+        ("tier0:ruff", ["uvx", "ruff", "check", "--no-fix", "."]),
+        ("tier0:diff-check", ["git", "diff", "--check"]),
+    ]
+    for name, command in tier0_commands:
+        _run_release_gate_command(name, command, results)
+    _run_release_gate_callable("tier0:version-markers", _release_gate_version_check, results)
+
+    tier1_commands = [
+        ("tier1:ci_unit", ["uvx", "nox", "-s", "ci_unit"]),
+        ("tier1:golden_oracle", ["uvx", "nox", "-s", "golden_oracle"]),
+    ]
+    for name, command in tier1_commands:
+        _run_release_gate_command(name, command, results)
+
+    if not quick:
+        tier2_commands = [
+            ("tier2:mayapy-unit", ["uvx", "nox", "-s", "tests", "--", "--type", "unit"]),
+            ("tier2:mayapy-integration", ["uvx", "nox", "-s", "tests", "--", "--type", "integration"]),
+            (
+                "tier2:pmx-roundtrip-v0_4",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "pmx_roundtrip",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    "tests/roundtrip/manifest_v0_4.json",
+                    "--require-clean",
+                    "--out-dir",
+                    "build/release-gate/pmx_roundtrip_v0_4",
+                ],
+            ),
+        ]
+        for name, command in tier2_commands:
+            _run_release_gate_command(name, command, results)
+
+    md_path, json_path = _write_release_gate_reports(results, quick)
+    session.log(f"Release gate report: {md_path}")
+    session.log(f"Release gate JSON: {json_path}")
+
+    failed = [result for result in results if result["status"] != "pass"]
+    if failed:
+        failed_names = ", ".join(str(result["name"]) for result in failed)
+        session.error(f"Release gate failed: {failed_names}")
 
 
 @nox.session(venv_backend="none")
