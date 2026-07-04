@@ -72,6 +72,7 @@ class FakeMel:
     def __init__(self):
         self.commands = []
         self.loaded = False
+        self.has_control_rig = False
 
     def eval(self, command):
         self.commands.append(command)
@@ -82,6 +83,11 @@ class FakeMel:
             return None
         if command.startswith("hikCreateCharacter("):
             return "Character1"
+        if command == "hikCreateControlRig();":
+            self.has_control_rig = True
+            return None
+        if command.startswith("hikHasControlRig("):
+            return int(self.has_control_rig)
         return None
 
 
@@ -153,9 +159,26 @@ class TestHumanIkBuilder(unittest.TestCase):
         self.assertEqual(character, "Character1")
         self.assertIn('hikSetCharacterObject("|model|spine", "Character1", 8, 0);', mel.commands)
 
+    def test_create_humanik_definition_verifies_requested_control_rig(self):
+        result = resolve_scene_humanik_assignments("|model", FakeCmds())
+        mel = FakeMel()
+
+        character = create_humanik_definition(result, mel_module=mel, create_control_rig=True)
+
+        self.assertEqual(character, "Character1")
+        self.assertIn("hikCreateControlRig();", mel.commands)
+        self.assertIn('hikHasControlRig("Character1")', mel.commands)
+
     def test_create_humanik_definition_rejects_empty_assignments(self):
         with self.assertRaisesRegex(ValueError, "requires at least one"):
             create_humanik_definition(resolve_scene_humanik_assignments("|missing", _EmptySceneCmds()), mel_module=FakeMel())
+
+    def test_create_humanik_definition_fails_when_control_rig_is_missing(self):
+        result = resolve_scene_humanik_assignments("|model", FakeCmds())
+        mel = _NoControlRigMel()
+
+        with self.assertRaisesRegex(RuntimeError, "control rig was not created"):
+            create_humanik_definition(result, mel_module=mel, create_control_rig=True)
 
     def test_ensure_humanik_mel_loaded_skips_source_when_available(self):
         mel = FakeMel()
@@ -171,6 +194,14 @@ class _EmptySceneCmds(FakeCmds):
         super().__init__()
         self.types["|missing"] = "transform"
         self.children["|missing"] = []
+
+
+class _NoControlRigMel(FakeMel):
+    def eval(self, command):
+        if command == "hikCreateControlRig();":
+            self.commands.append(command)
+            return None
+        return super().eval(command)
 
 
 if __name__ == "__main__":

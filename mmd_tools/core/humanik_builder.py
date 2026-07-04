@@ -25,7 +25,10 @@ _HIK_MEL_SCRIPTS = (
     "hikCharacterControlsUI.mel",
     "hikControlRigOperations.mel",
 )
-_HIK_LOAD_PLUGIN_COMMAND = 'if (!`pluginInfo -query -loaded "mayaHIK"`) loadPlugin "mayaHIK";'
+_HIK_LOAD_PLUGIN_COMMANDS = (
+    'if (!`pluginInfo -query -loaded "mayaHIK"`) loadPlugin "mayaHIK";',
+    'if (!`pluginInfo -query -loaded "mayaCharacterization"`) loadPlugin "mayaCharacterization";',
+)
 _REQUIRED_HIK_PROCS = ("hikCreateCharacter", "hikSetCharacterObject", "hikSetCurrentCharacter")
 
 
@@ -102,6 +105,8 @@ def create_humanik_definition(
         update_ui=update_ui,
     ):
         mel.eval(command)
+    if create_control_rig and not bool(mel.eval(f"hikHasControlRig({_mel_string(character)})")):
+        raise RuntimeError(f"HumanIK control rig was not created for character: {character}")
     return character
 
 
@@ -110,7 +115,8 @@ def ensure_humanik_mel_loaded(mel_module=None) -> None:
     mel = mel_module or _maya_mel()
     if _has_hik_procs(mel):
         return
-    mel.eval(_HIK_LOAD_PLUGIN_COMMAND)
+    for command in _HIK_LOAD_PLUGIN_COMMANDS:
+        mel.eval(command)
     for script in _HIK_MEL_SCRIPTS:
         mel.eval(f"source {script}")
     if not _has_hik_procs(mel):
