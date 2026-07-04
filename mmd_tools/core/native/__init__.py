@@ -41,16 +41,20 @@ from .mmd_anim_runtime import (
     get_mmd_runtime_library,
     is_mmd_runtime_available,
     is_native_pmx_parser_available,
+    is_native_pmx_parts_export_available,
     is_rig_primitive_available,
+    export_pmx_from_parts,
 )
 from .native_pmx_parser import is_native_parser_available, parse_pmx_native
 
 __all__ = [
     "is_mmd_runtime_available",
     "is_native_pmx_parser_available",
+    "is_native_pmx_parts_export_available",
     "is_native_parser_available",
     "is_rig_primitive_available",
     "get_mmd_runtime_library",
+    "export_pmx_from_parts",
     "parse_pmx_native",
     "MmdRuntimeModel",
     "MmdRuntimeClip",

@@ -92,6 +92,177 @@ def is_native_pmx_parser_available() -> bool:
     return hasattr(lib, "mmd_runtime_parsed_model_create_from_pmx_bytes")
 
 
+def is_native_pmx_parts_export_available() -> bool:
+    """
+    PMX parts export の DLL シンボルが利用可能かどうかを返す。
+
+    Returns:
+        PMX metadata/geometry から PMX バイト列を書き出す ABI があれば True。
+    """
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return False
+    return hasattr(lib, "mmd_runtime_export_pmx_from_parts") and hasattr(lib, "mmd_runtime_byte_buffer_free")
+
+
+def _encode_export_metadata(metadata: Any) -> Optional[bytes]:
+    """PMX export metadata を UTF-8 JSON bytes に変換する。"""
+    if isinstance(metadata, bytes):
+        return metadata
+    if isinstance(metadata, bytearray):
+        return bytes(metadata)
+    if isinstance(metadata, str):
+        return metadata.encode("utf-8")
+    try:
+        return json.dumps(metadata, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    except Exception as exc:
+        logger.error("Failed to encode PMX export metadata: %s", exc)
+        return None
+
+
+def _float_buffer(values: Any, expected_len: int, name: str):
+    """float 配列を ctypes buffer に変換する。長さ不一致時は None。"""
+    try:
+        flat = [float(value) for value in values]
+    except Exception as exc:
+        logger.error("PMX export %s buffer is not float-compatible: %s", name, exc)
+        return None
+    if len(flat) != expected_len:
+        logger.error("PMX export %s buffer length mismatch: expected %s, got %s", name, expected_len, len(flat))
+        return None
+    return (c_float * len(flat))(*flat)
+
+
+def _uint32_buffer(values: Any, expected_len: int, name: str):
+    """uint32 配列を ctypes buffer に変換する。長さ不一致時は None。"""
+    try:
+        flat = [int(value) for value in values]
+    except Exception as exc:
+        logger.error("PMX export %s buffer is not int-compatible: %s", name, exc)
+        return None
+    if len(flat) != expected_len:
+        logger.error("PMX export %s buffer length mismatch: expected %s, got %s", name, expected_len, len(flat))
+        return None
+    return (c_uint32 * len(flat))(*flat)
+
+
+def _byte_buffer_to_bytes(lib: CDLL, buffer: MmdRuntimeFfiByteBuffer) -> Optional[bytes]:
+    """FFI byte buffer を Python bytes へコピーし、必ず native buffer を解放する。"""
+    free_func = getattr(lib, "mmd_runtime_byte_buffer_free", None)
+    if free_func is None:
+        return None
+    try:
+        if not buffer.data or buffer.len == 0:
+            return None
+        addr = ctypes.cast(buffer.data, c_void_p).value
+        if addr is None or addr == 0:
+            return None
+        raw_bytes = (c_uint8 * buffer.len).from_address(addr)
+        return bytes(raw_bytes)
+    finally:
+        free_func(buffer)
+
+
+def export_pmx_from_parts(
+    metadata: Any,
+    positions_xyz: Any,
+    normals_xyz: Any,
+    uvs_xy: Any,
+    indices: Any = None,
+    skin_indices: Any = None,
+    skin_weights: Any = None,
+    edge_scale: Any = None,
+) -> Optional[bytes]:
+    """PMX metadata と flat geometry buffers から PMX バイト列を native exporter で生成する。
+
+    Args:
+        metadata: mmd-anim exporter metadata JSON。dict/list/str/bytes を受け付ける。
+        positions_xyz: 頂点数 * 3 の flat float 配列。
+        normals_xyz: 頂点数 * 3 の flat float 配列。
+        uvs_xy: 頂点数 * 2 の flat float 配列。
+        indices: 省略可能な uint32 index 配列。
+        skin_indices: 省略可能な 頂点数 * 4 の uint32 bone index 配列。
+        skin_weights: 省略可能な 頂点数 * 4 の float weight 配列。
+        edge_scale: 省略可能な 頂点数分の float 配列。
+
+    Returns:
+        PMX bytes。DLL/シンボルが無い、または native export に失敗した場合は None。
+    """
+    lib = get_mmd_runtime_library()
+    if lib is None:
+        return None
+    export_func = getattr(lib, "mmd_runtime_export_pmx_from_parts", None)
+    if export_func is None or getattr(lib, "mmd_runtime_byte_buffer_free", None) is None:
+        return None
+
+    metadata_bytes = _encode_export_metadata(metadata)
+    if not metadata_bytes:
+        return None
+    try:
+        positions_flat = [float(value) for value in positions_xyz]
+    except Exception as exc:
+        logger.error("PMX export positions buffer is not float-compatible: %s", exc)
+        return None
+    if not positions_flat or len(positions_flat) % 3 != 0:
+        logger.error("PMX export positions buffer length must be a non-empty multiple of 3")
+        return None
+
+    vertex_count = len(positions_flat) // 3
+    metadata_buf = (c_uint8 * len(metadata_bytes)).from_buffer_copy(metadata_bytes)
+    positions_buf = (c_float * len(positions_flat))(*positions_flat)
+    normals_buf = _float_buffer(normals_xyz, vertex_count * 3, "normals")
+    uvs_buf = _float_buffer(uvs_xy, vertex_count * 2, "uvs")
+    if normals_buf is None or uvs_buf is None:
+        return None
+
+    indices_buf = None
+    index_count = 0
+    if indices is not None:
+        try:
+            index_values = [int(value) for value in indices]
+        except Exception as exc:
+            logger.error("PMX export indices buffer is not int-compatible: %s", exc)
+            return None
+        index_count = len(index_values)
+        indices_buf = (c_uint32 * index_count)(*index_values) if index_count else None
+
+    if (skin_indices is None) != (skin_weights is None):
+        logger.error("PMX export skin_indices and skin_weights must be supplied together")
+        return None
+    skin_indices_buf = None
+    skin_weights_buf = None
+    if skin_indices is not None and skin_weights is not None:
+        skin_indices_buf = _uint32_buffer(skin_indices, vertex_count * 4, "skin_indices")
+        skin_weights_buf = _float_buffer(skin_weights, vertex_count * 4, "skin_weights")
+        if skin_indices_buf is None or skin_weights_buf is None:
+            return None
+
+    edge_scale_buf = None
+    if edge_scale is not None:
+        edge_scale_buf = _float_buffer(edge_scale, vertex_count, "edge_scale")
+        if edge_scale_buf is None:
+            return None
+
+    try:
+        native_buffer: MmdRuntimeFfiByteBuffer = export_func(
+            metadata_buf,
+            len(metadata_bytes),
+            positions_buf,
+            vertex_count,
+            normals_buf,
+            uvs_buf,
+            indices_buf,
+            index_count,
+            skin_indices_buf,
+            skin_weights_buf,
+            edge_scale_buf,
+        )
+        return _byte_buffer_to_bytes(lib, native_buffer)
+    except Exception as exc:
+        logger.error("mmd_runtime_export_pmx_from_parts failed: %s", exc, exc_info=True)
+        return None
+
+
 def sample_vmd_camera_frames(
     vmd_bytes: bytes,
     start_frame: float,

@@ -836,6 +836,143 @@ class TestParsedModelByteBuffers(unittest.TestCase):
         self.assertIsNone(model.vertex_morph_names)
 
 
+class _FakePmxExportLib:
+    def __init__(self, payload=b"PMX exported bytes", *, empty_result=False):
+        self.payload = payload
+        self.empty_result = empty_result
+        self.calls = []
+        self.free_calls = 0
+        self._keepalive = []
+
+    def mmd_runtime_export_pmx_from_parts(
+        self,
+        metadata_json,
+        metadata_json_len,
+        positions_xyz,
+        vertex_count,
+        normals_xyz,
+        uvs_xy,
+        indices,
+        index_count,
+        skin_indices,
+        skin_weights,
+        edge_scale,
+    ):
+        vertex_count = int(vertex_count)
+        index_count = int(index_count)
+        metadata_json_len = int(metadata_json_len)
+        self.calls.append(
+            {
+                "metadata": bytes(metadata_json[i] for i in range(metadata_json_len)),
+                "positions": [float(positions_xyz[i]) for i in range(vertex_count * 3)],
+                "normals": [float(normals_xyz[i]) for i in range(vertex_count * 3)],
+                "uvs": [float(uvs_xy[i]) for i in range(vertex_count * 2)],
+                "indices": [int(indices[i]) for i in range(index_count)] if indices else None,
+                "skin_indices": [int(skin_indices[i]) for i in range(vertex_count * 4)] if skin_indices else None,
+                "skin_weights": [float(skin_weights[i]) for i in range(vertex_count * 4)] if skin_weights else None,
+                "edge_scale": [float(edge_scale[i]) for i in range(vertex_count)] if edge_scale else None,
+            }
+        )
+        buf = MmdRuntimeFfiByteBuffer()
+        if self.empty_result:
+            buf.data = None
+            buf.len = 0
+            return buf
+        arr = (c_uint8 * len(self.payload)).from_buffer_copy(self.payload)
+        self._keepalive.append(arr)
+        buf.data = ctypes.cast(arr, ctypes.POINTER(c_uint8))
+        buf.len = len(self.payload)
+        return buf
+
+    def mmd_runtime_byte_buffer_free(self, buf):
+        self.free_calls += 1
+
+
+class TestPmxPartsExportWrapper(unittest.TestCase):
+    def test_availability_false_without_library(self):
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=None):
+            self.assertFalse(rt.is_native_pmx_parts_export_available())
+            self.assertIsNone(
+                rt.export_pmx_from_parts(
+                    {"format": "PMX"},
+                    [0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0],
+                )
+            )
+
+    def test_export_passes_flat_buffers_and_frees_result(self):
+        lib = _FakePmxExportLib(payload=b"PMX-data")
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertTrue(rt.is_native_pmx_parts_export_available())
+            result = rt.export_pmx_from_parts(
+                {"format": "PMX", "version": 2.0},
+                [0, 0, 0, 1, 2, 3],
+                [0, 1, 0, 0, 1, 0],
+                [0, 0, 1, 1],
+                indices=[0, 1, 0],
+                skin_indices=[0, 1, 2, 3, 4, 5, 6, 7],
+                skin_weights=[1, 0, 0, 0, 0.25, 0.25, 0.25, 0.25],
+                edge_scale=[1, 0.5],
+            )
+
+        self.assertEqual(result, b"PMX-data")
+        self.assertEqual(lib.free_calls, 1)
+        self.assertEqual(len(lib.calls), 1)
+        call = lib.calls[0]
+        self.assertEqual(call["metadata"], b'{"format":"PMX","version":2.0}')
+        self.assertEqual(call["positions"], [0.0, 0.0, 0.0, 1.0, 2.0, 3.0])
+        self.assertEqual(call["uvs"], [0.0, 0.0, 1.0, 1.0])
+        self.assertEqual(call["indices"], [0, 1, 0])
+        self.assertEqual(call["skin_indices"], [0, 1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(call["edge_scale"], [1.0, 0.5])
+
+    def test_export_allows_optional_buffers_to_be_null(self):
+        lib = _FakePmxExportLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = rt.export_pmx_from_parts(
+                b'{"format":"PMX"}',
+                [0, 0, 0],
+                [0, 1, 0],
+                [0, 0],
+            )
+
+        self.assertEqual(result, b"PMX exported bytes")
+        call = lib.calls[0]
+        self.assertIsNone(call["indices"])
+        self.assertIsNone(call["skin_indices"])
+        self.assertIsNone(call["skin_weights"])
+        self.assertIsNone(call["edge_scale"])
+
+    def test_export_empty_native_buffer_returns_none_and_frees(self):
+        lib = _FakePmxExportLib(empty_result=True)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = rt.export_pmx_from_parts(
+                {"format": "PMX"},
+                [0, 0, 0],
+                [0, 1, 0],
+                [0, 0],
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(lib.free_calls, 1)
+
+    def test_export_rejects_mismatched_skin_buffers_before_native_call(self):
+        lib = _FakePmxExportLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = rt.export_pmx_from_parts(
+                {"format": "PMX"},
+                [0, 0, 0],
+                [0, 1, 0],
+                [0, 0],
+                skin_indices=[0, 1, 2, 3],
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(lib.calls, [])
+        self.assertEqual(lib.free_calls, 0)
+
+
 # ----------------------------------------------------------------------
 # _set_sig / loader.find_library / get_mmd_runtime_library のキャッシュ
 # ----------------------------------------------------------------------
