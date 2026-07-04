@@ -1462,10 +1462,19 @@ def release_gate(session: nox.Session) -> None:
     Examples:
         uvx nox -s release_gate -- --quick
         uvx nox -s release_gate -- --maya 2024
+        uvx nox -s release_gate -- --strict-local --local-parity-manifest F:/local/parity.json
     """
     args = list(session.posargs)
     quick = _has_flag(args, "--quick")
     version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    strict_local = _has_flag(args, "--strict-local")
+    local_assets_manifest = _option(args, "--local-assets-manifest", "local-assets-manifest.json")
+    camera_manifest = _option(
+        args,
+        "--camera-manifest",
+        "F:/Develop/MMDDev/GoldenOracle/manifests/camera_motion.json",
+    )
+    local_parity_manifest = _option(args, "--local-parity-manifest", "local-parity-manifest.json")
     results: list[dict[str, object]] = []
 
     tier0_commands = [
@@ -1538,13 +1547,64 @@ def release_gate(session: nox.Session) -> None:
                     "build/release-gate/humanik_control_rig_smoke.json",
                 ],
             ),
-            ("tier3:local-assets-check", ["uvx", "nox", "-s", "local_assets_check", "--", "--maya", version]),
         ]
         if _has_flag(args, "--with-cpp"):
             tier2_commands.append(
                 ("tier2:cpp-verify", ["uvx", "nox", "-s", "cpp_verify", "--", "--maya", version, "--config", DEFAULT_CMAKE_CONFIG])
             )
         for name, command in tier2_commands:
+            _run_release_gate_command(name, command, results)
+
+        tier3_commands = [
+            (
+                "tier3:local-assets-check",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "local_assets_check",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    local_assets_manifest,
+                ],
+            ),
+            (
+                "tier3:release-camera-motion-oracle",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "release_camera_motion_oracle",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    camera_manifest,
+                    "--skip-addiction-parity",
+                ],
+            ),
+            (
+                "tier3:local-parity",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "local_parity",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    local_parity_manifest,
+                    "--skip-fbx",
+                ],
+            ),
+        ]
+        if strict_local:
+            for _, command in tier3_commands:
+                command.append("--strict-local")
+        for name, command in tier3_commands:
             _run_release_gate_command(name, command, results)
 
     md_path, json_path = _write_release_gate_reports(results, quick)
@@ -1719,7 +1779,9 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
         uvx nox -s release_camera_motion_oracle -- --all-cases
         uvx nox -s release_camera_motion_oracle -- --strict-sparse-current
         uvx nox -s release_camera_motion_oracle -- --skip-addiction-parity
+        uvx nox -s release_camera_motion_oracle -- --strict-local
     """
+    args = list(session.posargs)
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
     manifest = _option(
@@ -1732,6 +1794,25 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
         _option(session.posargs, "--out-dir", "build/local-camera-motion-oracle/release"),
         "--out-dir",
     )
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = ROOT / manifest_path
+    manifest_path = manifest_path.resolve()
+    if not manifest_path.exists():
+        out_dir.mkdir(parents=True, exist_ok=True)
+        skip_report = out_dir / "manifest-skip.json"
+        payload = {
+            "status": "fail" if _has_flag(args, "--strict-local") else "skip",
+            "summary": {"passed": 0, "failed": 1 if _has_flag(args, "--strict-local") else 0, "skipped": 1},
+            "manifest": str(manifest_path),
+            "detail": "manifest not found",
+        }
+        skip_report.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        session.log(f"Camera motion manifest not found: {manifest_path}")
+        session.log(f"Camera motion skip report: {skip_report}")
+        if _has_flag(args, "--strict-local"):
+            session.error("Camera motion manifest is required with --strict-local")
+        return
     default_release_cases = [
         "camera-edge-generated-vmd",
         "camera-interpolation-isolated-vmd",
@@ -1896,22 +1977,70 @@ def local_parity(session: nox.Session) -> None:
     Examples:
         uvx nox -s local_parity -- --maya 2024
         uvx nox -s local_parity -- --maya 2024 --case alicia_weekender
+        uvx nox -s local_parity -- --maya 2024 --manifest F:/local/parity.json
         uvx nox -s local_parity -- --maya 2024 --skip-fbx
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
     passthrough: list[str] = []
     args = list(session.posargs)
+    manifest = _option(args, "--manifest", "")
+    out_json = _option(args, "--out", "build/reports/local_asset_motion_compare.json")
+    if manifest:
+        manifest_path = Path(manifest)
+        if not manifest_path.is_absolute():
+            manifest_path = ROOT / manifest_path
+        manifest_path = manifest_path.resolve()
+        if not manifest_path.exists():
+            out_path = _require_build_path(session, out_json, "--out")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path = out_path.with_suffix(".md")
+            status = "failed" if _has_flag(args, "--strict-local") else "skipped"
+            payload = {
+                "status": status,
+                "vertex_threshold": None,
+                "fbx_threshold": None,
+                "cases": [
+                    {
+                        "name": str(manifest_path),
+                        "status": status,
+                        "reason": "manifest_not_found",
+                    }
+                ],
+            }
+            out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            md_path.write_text(
+                "\n".join(
+                    [
+                        "# Local Asset Motion Compare",
+                        "",
+                        f"- status: `{status}`",
+                        "- cases: `1`",
+                        "",
+                        f"## {manifest_path}",
+                        "",
+                        f"- status: `{status}`",
+                        "- reason: `manifest_not_found`",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            session.log(f"Local parity manifest not found: {manifest_path}")
+            session.log(f"Local parity report: {md_path}")
+            if _has_flag(args, "--strict-local"):
+                session.error("Local parity manifest is required with --strict-local")
+            return
     i = 0
     while i < len(args):
         if args[i] == "--maya" and i + 1 < len(args):
             i += 2
             continue
-        if args[i] in ("--case", "--frame", "--out") and i + 1 < len(args):
+        if args[i] in ("--case", "--frame", "--out", "--manifest") and i + 1 < len(args):
             passthrough.extend([args[i], args[i + 1]])
             i += 2
             continue
-        if args[i] in ("--skip-fbx",):
+        if args[i] in ("--skip-fbx", "--strict-local"):
             passthrough.append(args[i])
             i += 1
             continue

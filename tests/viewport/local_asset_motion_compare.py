@@ -156,12 +156,54 @@ DEFAULT_CASES = [
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default="build/reports/local_asset_motion_compare.json")
+    parser.add_argument("--manifest", default="", help="Optional JSON manifest with cases/assets.")
     parser.add_argument("--case", action="append", default=[], help="Run only the named default case. Repeatable.")
     parser.add_argument("--frame", action="append", type=int, default=[], help="Override frames. Repeatable.")
     parser.add_argument("--vertex-threshold", type=float, default=1.0)
     parser.add_argument("--fbx-threshold", type=float, default=1.0)
     parser.add_argument("--skip-fbx", action="store_true")
+    parser.add_argument("--strict-local", action="store_true")
     return parser.parse_args()
+
+
+def _load_cases(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if not args.manifest:
+        return list(DEFAULT_CASES)
+
+    manifest_path = Path(args.manifest).resolve()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw_cases = manifest.get("cases") or manifest.get("assets") or []
+    cases: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_cases):
+        pmx = raw.get("pmx") or raw.get("model")
+        vmd = raw.get("vmd") or raw.get("motion")
+        name = str(raw.get("name") or pmx or f"case_{index}")
+        if not pmx or not vmd:
+            cases.append(
+                {
+                    "name": name,
+                    "pmx": str(pmx or ""),
+                    "vmd": str(vmd or ""),
+                    "frames": list(raw.get("frames") or [0]),
+                    "missing_manifest_fields": True,
+                }
+            )
+            continue
+        pmx_path = Path(str(pmx))
+        vmd_path = Path(str(vmd))
+        if not pmx_path.is_absolute():
+            pmx_path = manifest_path.parent / pmx_path
+        if not vmd_path.is_absolute():
+            vmd_path = manifest_path.parent / vmd_path
+        cases.append(
+            {
+                "name": name,
+                "pmx": str(pmx_path.resolve()),
+                "vmd": str(vmd_path.resolve()),
+                "frames": list(raw.get("frames") or [0, 30, 60]),
+            }
+        )
+    return cases
 
 
 def _repo_imports() -> None:
@@ -376,8 +418,12 @@ def _run_case(
         "vmd": str(vmd_path),
         "frames": frames,
     }
+    if case.get("missing_manifest_fields"):
+        result["status"] = "failed" if args.strict_local else "skipped"
+        result["reason"] = "manifest_case_requires_pmx_and_vmd"
+        return result
     if not pmx_path.exists() or not vmd_path.exists():
-        result["status"] = "skipped"
+        result["status"] = "failed" if args.strict_local else "skipped"
         result["reason"] = "asset_not_found"
         result["pmx_exists"] = pmx_path.exists()
         result["vmd_exists"] = vmd_path.exists()
@@ -468,7 +514,7 @@ def main() -> int:
     args = _parse_args()
     _initialize_maya()
     selected_names = set(args.case)
-    cases = [case for case in DEFAULT_CASES if not selected_names or case["name"] in selected_names]
+    cases = [case for case in _load_cases(args) if not selected_names or case["name"] in selected_names]
     out_path = Path(args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     report_dir = out_path.parent
@@ -491,6 +537,15 @@ def main() -> int:
         print(f"Path staging active: {staging_root}")
 
     try:
+        if not cases:
+            report["status"] = "failed" if args.strict_local else "skipped"
+            report["cases"].append(
+                {
+                    "name": str(Path(args.manifest).resolve()) if args.manifest else "default",
+                    "status": report["status"],
+                    "reason": "manifest_contains_no_cases" if args.manifest else "no_cases_selected",
+                }
+            )
         for case in cases:
             try:
                 result = _run_case(case, args, report_dir, stage=stage)
@@ -510,7 +565,11 @@ def main() -> int:
 
     if any(case.get("status") == "failed" for case in report["cases"]):
         report["status"] = "failed"
-    if not report["cases"] or all(case.get("status") == "skipped" for case in report["cases"]):
+    if args.strict_local and any(case.get("status") == "skipped" for case in report["cases"]):
+        report["status"] = "failed"
+    if report["status"] != "failed" and (
+        not report["cases"] or all(case.get("status") == "skipped" for case in report["cases"])
+    ):
         report["status"] = "skipped"
 
     out_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -518,7 +577,7 @@ def main() -> int:
     print(f"Report JSON: {out_path}")
     print(f"Report Markdown: {out_path.with_suffix('.md')}")
     print(f"Status: {report['status']}")
-    return 0 if report["status"] == "passed" else 1
+    return 1 if report["status"] == "failed" else 0
 
 
 if __name__ == "__main__":
