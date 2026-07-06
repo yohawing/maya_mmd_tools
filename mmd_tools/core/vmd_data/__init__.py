@@ -12,13 +12,21 @@ from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
 from mmd_tools.core.exceptions import MMDParseException
 
 
-def _read_optional_uint32(f):
+def _read_optional_section_count(f, frame_size):
     data = f.read(4)
     if not data:
         return None
-    if len(data) != 4:
-        raise struct.error("unpack requires a buffer of 4 bytes")
-    return struct.unpack("<I", data)[0]
+    if len(data) < 4:
+        return None
+    count = struct.unpack("<I", data)[0]
+    if frame_size > 0 and count > 0:
+        pos = f.tell()
+        f.seek(0, 2)
+        remaining = f.tell() - pos
+        f.seek(pos)
+        if count * frame_size > remaining:
+            return None
+    return count
 
 
 class VmdData:
@@ -73,32 +81,32 @@ class VmdData:
                     frame.parse(f.read(VmdMorphFrame.size()))
                     self.morph_frames.append(frame)
 
-                # Camera Frames
-                num_camera_frames = struct.unpack("<I", f.read(4))[0]
-                for _ in range(num_camera_frames):
-                    frame = VmdCameraFrame()
-                    frame.parse(f.read(VmdCameraFrame.size()))
-                    self.camera_frames.append(frame)
+                # Camera Frames (optional — lip/morph-only VMDs omit this section)
+                num_camera_frames = _read_optional_section_count(f, VmdCameraFrame.size())
+                if num_camera_frames is not None:
+                    for _ in range(num_camera_frames):
+                        frame = VmdCameraFrame()
+                        frame.parse(f.read(VmdCameraFrame.size()))
+                        self.camera_frames.append(frame)
 
-                # Light Frames
-                num_light_frames = struct.unpack("<I", f.read(4))[0]
-                for _ in range(num_light_frames):
-                    frame = VmdLightFrame()
-                    frame.parse(f.read(VmdLightFrame.size()))
-                    self.light_frames.append(frame)
+                # Light Frames (optional)
+                num_light_frames = _read_optional_section_count(f, VmdLightFrame.size())
+                if num_light_frames is not None:
+                    for _ in range(num_light_frames):
+                        frame = VmdLightFrame()
+                        frame.parse(f.read(VmdLightFrame.size()))
+                        self.light_frames.append(frame)
 
-                # Shadow Frames
-                # Some VMDs end after the light section and omit self-shadow and IK sections.
-                num_shadow_frames = _read_optional_uint32(f)
+                # Shadow Frames (optional)
+                num_shadow_frames = _read_optional_section_count(f, VmdShadowFrame.size())
                 if num_shadow_frames is not None:
                     for _ in range(num_shadow_frames):
                         frame = VmdShadowFrame()
                         frame.parse(f.read(VmdShadowFrame.size()))
                         self.shadow_frames.append(frame)
 
-                # IK Show/Hide Frames
-                # VMD 2.0ではIK表示/非表示フレームは存在しない場合があるため、ファイルの終端チェックを行う
-                num_ik_show_hide_frames = _read_optional_uint32(f)
+                # IK Show/Hide Frames (optional, variable-length)
+                num_ik_show_hide_frames = _read_optional_section_count(f, VmdIKShowHideFrame.size())
                 if num_ik_show_hide_frames is not None:
                     for _ in range(num_ik_show_hide_frames):
                         frame = VmdIKShowHideFrame()

@@ -244,6 +244,29 @@ class TestVmdParser(TestBase):
             # IK状態のリストが正しく設定されていることを確認
             self.assertIsInstance(ik_frame.ik_states, list)
 
+    def test_parse_morph_only_vmd(self):
+        """camera/light/shadow/IK をすべて省略した morph-only VMD を読み込めることを確認する。"""
+        fixture = os.path.join(os.path.dirname(__file__), "..", "data", "vmd", "morph_only.vmd")
+        parsed = mmd_parser.parse_mmd_file(fixture)
+
+        self.assertEqual(len(parsed.bone_frames), 0)
+        self.assertEqual(len(parsed.morph_frames), 1)
+        self.assertEqual(parsed.morph_frames[0].morph_name, "test_morph")
+        self.assertEqual(parsed.camera_frames, [])
+        self.assertEqual(parsed.light_frames, [])
+        self.assertEqual(parsed.shadow_frames, [])
+        self.assertEqual(parsed.ik_show_hide_frames, [])
+
+    def test_parse_vmd_with_trailing_garbage(self):
+        """light 後に不正な shadow count が続く VMD でもクラッシュしないことを確認する。"""
+        fixture = os.path.join(os.path.dirname(__file__), "..", "data", "vmd", "trailing_garbage.vmd")
+        parsed = mmd_parser.parse_mmd_file(fixture)
+
+        self.assertEqual(len(parsed.morph_frames), 1)
+        self.assertEqual(parsed.camera_frames, [])
+        self.assertEqual(parsed.light_frames, [])
+        self.assertEqual(parsed.shadow_frames, [])
+
     def test_parse_vmd_with_invalid_data(self):
         """不正なVMDデータのパースがエラーを発生させることをテストする。"""
         # 不正なVMDデータを作成

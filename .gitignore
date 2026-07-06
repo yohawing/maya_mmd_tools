@@ -70,4 +70,6 @@ docs/*
 !/tests/data/joint_orient_test.vmd
 !/tests/data/test_camera_light.vmd
 !/tests/data/test_morph_model.pmx
+!/tests/data/vmd/
+!/tests/data/vmd/*.vmd
 mmd_tools/shaders/MayaToonOutline.fx
