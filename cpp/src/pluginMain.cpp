@@ -30,14 +30,10 @@
 static bool sCppRegisteredAppend = false;
 static bool sCppRegisteredCcdIk = false;
 
-static bool isNodeTypeRegistered(const MString& typeName, const MTypeId& expectedId)
+static bool isNodeTypeRegistered(const MTypeId& expectedId)
 {
-    MStatus status;
-    MNodeClass cls(typeName, &status);
-    if (status != MS::kSuccess) {
-        return false;
-    }
-    return cls.typeId() == expectedId;
+    MNodeClass cls(expectedId);
+    return cls.typeName().length() > 0;
 }
 
 MStatus initializePlugin(MObject obj)
@@ -64,7 +60,7 @@ MStatus initializePlugin(MObject obj)
 
     // mmdAppend 登録 (Python 版と統一した typeName)
     // Python 版が同じ typeId で登録済みの場合はスキップ
-    if (isNodeTypeRegistered("mmdAppend", MmdAppendNode::id)) {
+    if (isNodeTypeRegistered(MmdAppendNode::id)) {
         MGlobal::displayInfo("mmdAppend already registered by Python plugin; skipping C++ registration.");
         sCppRegisteredAppend = false;
     } else {
@@ -80,7 +76,7 @@ MStatus initializePlugin(MObject obj)
 
     // mmdCcdIk 登録 (Python 版と統一した typeName)
     // Python 版が同じ typeId で登録済みの場合はスキップ
-    if (isNodeTypeRegistered("mmdCcdIk", MmdCcdIkNode::id)) {
+    if (isNodeTypeRegistered(MmdCcdIkNode::id)) {
         MGlobal::displayInfo("mmdCcdIk already registered by Python plugin; skipping C++ registration.");
         sCppRegisteredCcdIk = false;
     } else {

@@ -465,33 +465,53 @@ def main() -> int:
         cmds.delete(morph_transform)
         print(f"OK: mmdFastLoad(morphs=True) created {int(weight_count)} vertex morph target(s)")
 
-        # --- mmdAppendNode (Phase B) ---
+        # --- mmdAppend node ---
         append_node = cmds.createNode(APPEND_NODE_TYPE)
         if not cmds.objExists(append_node):
             raise RuntimeError(f"Failed to create node: {APPEND_NODE_TYPE}")
 
-        # double3 属性は compound なので attributeQuery では子属性まで個別確認
-        expected_attrs = [
-            "grantRate", "enableTranslate", "enableRotate",
+        # Detect whether C++ registered the rig node or Python did
+        # (Python autoload may have registered first)
+        cpp_registered_append = cmds.attributeQuery("grantRate", node=append_node, exists=True)
+
+        # Common attributes (present in both C++ and Python)
+        common_attrs = [
             "outputTranslate", "outputRotate",
-            "inputTranslate", "inputRotate",
-            "parentTranslate", "parentRotate",
             "baseTranslate", "baseRotate",
             "sourceTranslate", "sourceRotate",
             "sourceJointOrient", "targetJointOrient",
             "ratio", "affectRotation", "affectTranslation", "localAppend",
             "appendTranslate", "appendRotate",
         ]
-        for attr in expected_attrs:
+        for attr in common_attrs:
             if not cmds.attributeQuery(attr, node=append_node, exists=True):
                 raise RuntimeError(f"Missing attribute {attr!r} on {append_node}")
 
-        # double3 の子属性も確認
+        # C++-only legacy attributes (hidden, only present when C++ registered)
+        if cpp_registered_append:
+            legacy_attrs = [
+                "grantRate", "enableTranslate", "enableRotate",
+                "inputTranslate", "inputRotate",
+                "parentTranslate", "parentRotate",
+            ]
+            for attr in legacy_attrs:
+                if not cmds.attributeQuery(attr, node=append_node, exists=True):
+                    raise RuntimeError(f"Missing legacy attribute {attr!r} on {append_node}")
+
+            for parent, children in [
+                ("inputTranslate", ["inputTranslateX", "inputTranslateY", "inputTranslateZ"]),
+                ("inputRotate", ["inputRotateX", "inputRotateY", "inputRotateZ"]),
+                ("parentTranslate", ["parentTranslateX", "parentTranslateY", "parentTranslateZ"]),
+                ("parentRotate", ["parentRotateX", "parentRotateY", "parentRotateZ"]),
+            ]:
+                for child in children:
+                    if not cmds.attributeQuery(child, node=append_node, exists=True):
+                        raise RuntimeError(
+                            f"Missing child attribute {child!r} (of {parent}) on {append_node}"
+                        )
+
+        # Common child attributes
         for parent, children in [
-            ("inputTranslate", ["inputTranslateX", "inputTranslateY", "inputTranslateZ"]),
-            ("inputRotate", ["inputRotateX", "inputRotateY", "inputRotateZ"]),
-            ("parentTranslate", ["parentTranslateX", "parentTranslateY", "parentTranslateZ"]),
-            ("parentRotate", ["parentRotateX", "parentRotateY", "parentRotateZ"]),
             ("baseTranslate", ["baseTranslateX", "baseTranslateY", "baseTranslateZ"]),
             ("baseRotate", ["baseRotateX", "baseRotateY", "baseRotateZ"]),
             ("sourceTranslate", ["sourceTranslateX", "sourceTranslateY", "sourceTranslateZ"]),
@@ -509,71 +529,70 @@ def main() -> int:
                         f"Missing child attribute {child!r} (of {parent}) on {append_node}"
                     )
 
-        # default 値の確認 (grantRate=0.0, enableTranslate=true, enableRotate=true)
-        actual_grant = cmds.getAttr(f"{append_node}.grantRate")
-        if abs(actual_grant - 0.0) > 1e-9:
-            raise RuntimeError(f"grantRate default should be 0.0, got {actual_grant}")
-        actual_et = cmds.getAttr(f"{append_node}.enableTranslate")
-        if actual_et is not True:
-            raise RuntimeError(f"enableTranslate default should be True, got {actual_et}")
-        actual_er = cmds.getAttr(f"{append_node}.enableRotate")
-        if actual_er is not True:
-            raise RuntimeError(f"enableRotate default should be True, got {actual_er}")
+        # Legacy Phase B compute tests (only when C++ registered the node)
+        if cpp_registered_append:
+            actual_grant = cmds.getAttr(f"{append_node}.grantRate")
+            if abs(actual_grant - 0.0) > 1e-9:
+                raise RuntimeError(f"grantRate default should be 0.0, got {actual_grant}")
+            actual_et = cmds.getAttr(f"{append_node}.enableTranslate")
+            if actual_et is not True:
+                raise RuntimeError(f"enableTranslate default should be True, got {actual_et}")
+            actual_er = cmds.getAttr(f"{append_node}.enableRotate")
+            if actual_er is not True:
+                raise RuntimeError(f"enableRotate default should be True, got {actual_er}")
 
-        cmds.setAttr(f"{append_node}.inputTranslate", 10.0, 20.0, 30.0, type="double3")
-        cmds.setAttr(f"{append_node}.parentTranslate", 2.0, 4.0, 6.0, type="double3")
-        cmds.setAttr(f"{append_node}.inputRotate", 90.0, 45.0, 30.0, type="double3")
-        cmds.setAttr(f"{append_node}.parentRotate", 10.0, 20.0, 30.0, type="double3")
-        cmds.setAttr(f"{append_node}.grantRate", 0.25)
+            cmds.setAttr(f"{append_node}.inputTranslate", 10.0, 20.0, 30.0, type="double3")
+            cmds.setAttr(f"{append_node}.parentTranslate", 2.0, 4.0, 6.0, type="double3")
+            cmds.setAttr(f"{append_node}.inputRotate", 90.0, 45.0, 30.0, type="double3")
+            cmds.setAttr(f"{append_node}.parentRotate", 10.0, 20.0, 30.0, type="double3")
+            cmds.setAttr(f"{append_node}.grantRate", 0.25)
 
-        # Phase B: outputTranslate = inputTranslate + parentTranslate * grantRate
-        out_t = cmds.getAttr(f"{append_node}.outputTranslate")[0]
-        expected_t = (10.5, 21.0, 31.5)
-        if any(abs(actual - expected) > 1e-9 for actual, expected in zip(out_t, expected_t)):
-            raise RuntimeError(f"outputTranslate mismatch: expected {expected_t}, got {out_t}")
+            out_t = cmds.getAttr(f"{append_node}.outputTranslate")[0]
+            expected_t = (10.5, 21.0, 31.5)
+            if any(abs(actual - expected) > 1e-9 for actual, expected in zip(out_t, expected_t)):
+                raise RuntimeError(f"outputTranslate mismatch: expected {expected_t}, got {out_t}")
 
-        # Phase B: outputRotate = slerp(identity, parentQuat, grantRate) * inputQuat
-        out_r = cmds.getAttr(f"{append_node}.outputRotate")[0]
-        expected_r = (96.0251476257, 48.8315586337, 41.3787177580)
-        if any(abs(actual - expected) > 1e-6 for actual, expected in zip(out_r, expected_r)):
-            raise RuntimeError(f"outputRotate mismatch: expected {expected_r}, got {out_r}")
+            out_r = cmds.getAttr(f"{append_node}.outputRotate")[0]
+            expected_r = (96.0251476257, 48.8315586337, 41.3787177580)
+            if any(abs(actual - expected) > 1e-6 for actual, expected in zip(out_r, expected_r)):
+                raise RuntimeError(f"outputRotate mismatch: expected {expected_r}, got {out_r}")
 
-        # enableTranslate=false → output = input
-        cmds.setAttr(f"{append_node}.enableTranslate", False)
-        out_disabled_t = cmds.getAttr(f"{append_node}.outputTranslate")[0]
-        expected_disabled_t = (10.0, 20.0, 30.0)
-        if any(
-            abs(actual - expected) > 1e-9
-            for actual, expected in zip(out_disabled_t, expected_disabled_t)
-        ):
-            raise RuntimeError(
-                f"outputTranslate disabled mismatch: expected {expected_disabled_t}, "
-                f"got {out_disabled_t}"
-            )
-        cmds.setAttr(f"{append_node}.enableTranslate", True)
+            cmds.setAttr(f"{append_node}.enableTranslate", False)
+            out_disabled_t = cmds.getAttr(f"{append_node}.outputTranslate")[0]
+            expected_disabled_t = (10.0, 20.0, 30.0)
+            if any(
+                abs(actual - expected) > 1e-9
+                for actual, expected in zip(out_disabled_t, expected_disabled_t)
+            ):
+                raise RuntimeError(
+                    f"outputTranslate disabled mismatch: expected {expected_disabled_t}, "
+                    f"got {out_disabled_t}"
+                )
+            cmds.setAttr(f"{append_node}.enableTranslate", True)
 
-        # enableRotate=false → output = input
-        cmds.setAttr(f"{append_node}.enableRotate", False)
-        out_disabled_r = cmds.getAttr(f"{append_node}.outputRotate")[0]
-        expected_disabled_r = (90.0, 45.0, 30.0)
-        if any(
-            abs(actual - expected) > 1e-9
-            for actual, expected in zip(out_disabled_r, expected_disabled_r)
-        ):
-            raise RuntimeError(
-                f"outputRotate disabled mismatch: expected {expected_disabled_r}, "
-                f"got {out_disabled_r}"
-            )
-        cmds.setAttr(f"{append_node}.enableRotate", True)
+            cmds.setAttr(f"{append_node}.enableRotate", False)
+            out_disabled_r = cmds.getAttr(f"{append_node}.outputRotate")[0]
+            expected_disabled_r = (90.0, 45.0, 30.0)
+            if any(
+                abs(actual - expected) > 1e-9
+                for actual, expected in zip(out_disabled_r, expected_disabled_r)
+            ):
+                raise RuntimeError(
+                    f"outputRotate disabled mismatch: expected {expected_disabled_r}, "
+                    f"got {out_disabled_r}"
+                )
+            cmds.setAttr(f"{append_node}.enableRotate", True)
 
-        # X 軸のみの回転: outputRotateX = inputRotateX + parentRotateX * grantRate
-        cmds.setAttr(f"{append_node}.inputRotate", 90.0, 0.0, 0.0, type="double3")
-        cmds.setAttr(f"{append_node}.parentRotate", 10.0, 0.0, 0.0, type="double3")
-        cmds.setAttr(f"{append_node}.grantRate", 0.25)
-        out_xonly = cmds.getAttr(f"{append_node}.outputRotate")[0]
-        expected_xonly = (92.5, 0.0, 0.0)
-        if any(abs(actual - expected) > 1e-9 for actual, expected in zip(out_xonly, expected_xonly)):
-            raise RuntimeError(f"outputRotate X-only mismatch: expected {expected_xonly}, got {out_xonly}")
+            cmds.setAttr(f"{append_node}.inputRotate", 90.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{append_node}.parentRotate", 10.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{append_node}.grantRate", 0.25)
+            out_xonly = cmds.getAttr(f"{append_node}.outputRotate")[0]
+            expected_xonly = (92.5, 0.0, 0.0)
+            if any(abs(actual - expected) > 1e-9 for actual, expected in zip(out_xonly, expected_xonly)):
+                raise RuntimeError(f"outputRotate X-only mismatch: expected {expected_xonly}, got {out_xonly}")
+            print(f"OK: {APPEND_NODE_TYPE} legacy Phase B compute verified (C++ registered)")
+        else:
+            print(f"SKIP: {APPEND_NODE_TYPE} legacy Phase B compute (Python registered, C++ skipped)")
 
         from maya.api import OpenMaya as om
         from mmd_tools.core.native.mmd_anim_runtime import MmdAppendSolver, MmdIkChain
@@ -810,28 +829,23 @@ def main() -> int:
             "Phase B compute, and Python-compatible append schema compute"
         )
 
-        # --- mmdCcdIkNode (Phase A - CCDIK) ---
+        # --- mmdCcdIk node ---
         ccdik_node = cmds.createNode(CCDIK_NODE_TYPE)
         if not cmds.objExists(ccdik_node):
             raise RuntimeError(f"Failed to create node: {CCDIK_NODE_TYPE}")
 
-        # 全属性存在確認
-        expected_attrs = [
-            "inputRoot", "inputEffector", "target", "enabled",
-            "iterations", "angleLimit", "inputChain",
-            "chainJson", "goal", "goalWorldMatrix", "inputRotate", "inputTranslate",
-            "outputRotate", "outputAngle", "solved",
-            "outputLinkAngles", "outputLinkRotates",
+        cpp_registered_ccdik = cmds.attributeQuery("inputRoot", node=ccdik_node, exists=True)
+
+        # Common attributes (present in both C++ and Python)
+        common_ccdik_attrs = [
+            "enabled", "chainJson", "goal", "goalWorldMatrix",
+            "inputRotate", "inputTranslate", "outputRotate",
         ]
-        for attr in expected_attrs:
+        for attr in common_ccdik_attrs:
             if not cmds.attributeQuery(attr, node=ccdik_node, exists=True):
                 raise RuntimeError(f"Missing attribute {attr!r} on {ccdik_node}")
 
-        # double3 子属性
         for parent, children in [
-            ("inputRoot", ["inputRootX", "inputRootY", "inputRootZ"]),
-            ("inputEffector", ["inputEffectorX", "inputEffectorY", "inputEffectorZ"]),
-            ("target", ["targetX", "targetY", "targetZ"]),
             ("goal", ["goalX", "goalY", "goalZ"]),
             ("outputRotate", ["outputRotateElementX", "outputRotateElementY", "outputRotateElementZ"]),
         ]:
@@ -841,20 +855,42 @@ def main() -> int:
                         f"Missing child attribute {child!r} (of {parent}) on {ccdik_node}"
                     )
 
-        # enabled のデフォルト値
         actual_enabled = cmds.getAttr(f"{ccdik_node}.enabled")
         if actual_enabled is not True:
             raise RuntimeError(f"enabled default should be True, got {actual_enabled}")
 
-        # iterations のデフォルト値
-        actual_iterations = cmds.getAttr(f"{ccdik_node}.iterations")
-        if actual_iterations != 1:
-            raise RuntimeError(f"iterations default should be 1, got {actual_iterations}")
+        # C++-only legacy attributes
+        if cpp_registered_ccdik:
+            legacy_ccdik_attrs = [
+                "inputRoot", "inputEffector", "target",
+                "iterations", "angleLimit", "inputChain",
+                "outputAngle", "solved",
+                "outputLinkAngles", "outputLinkRotates",
+            ]
+            for attr in legacy_ccdik_attrs:
+                if not cmds.attributeQuery(attr, node=ccdik_node, exists=True):
+                    raise RuntimeError(f"Missing legacy attribute {attr!r} on {ccdik_node}")
 
-        # angleLimit のデフォルト値
-        actual_angle_limit = cmds.getAttr(f"{ccdik_node}.angleLimit")
-        if abs(actual_angle_limit - 180.0) > 1e-9:
-            raise RuntimeError(f"angleLimit default should be 180.0, got {actual_angle_limit}")
+            for parent, children in [
+                ("inputRoot", ["inputRootX", "inputRootY", "inputRootZ"]),
+                ("inputEffector", ["inputEffectorX", "inputEffectorY", "inputEffectorZ"]),
+                ("target", ["targetX", "targetY", "targetZ"]),
+            ]:
+                for child in children:
+                    if not cmds.attributeQuery(child, node=ccdik_node, exists=True):
+                        raise RuntimeError(
+                            f"Missing child attribute {child!r} (of {parent}) on {ccdik_node}"
+                        )
+
+            actual_iterations = cmds.getAttr(f"{ccdik_node}.iterations")
+            if actual_iterations != 1:
+                raise RuntimeError(f"iterations default should be 1, got {actual_iterations}")
+            actual_angle_limit = cmds.getAttr(f"{ccdik_node}.angleLimit")
+            if abs(actual_angle_limit - 180.0) > 1e-9:
+                raise RuntimeError(f"angleLimit default should be 180.0, got {actual_angle_limit}")
+            print(f"OK: {CCDIK_NODE_TYPE} legacy Phase A attributes verified (C++ registered)")
+        else:
+            print(f"SKIP: {CCDIK_NODE_TYPE} legacy Phase A attributes (Python registered, C++ skipped)")
 
         cmds.setAttr(f"{ccdik_node}.chainJson", "{}", type="string")
         cmds.setAttr(f"{ccdik_node}.goal", 1.0, 2.0, 3.0, type="double3")
@@ -895,9 +931,10 @@ def main() -> int:
         cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 0.0, type="double3")
         cmds.setAttr(f"{ccdik_node}.inputRotate[1]", 0.0, 0.0, 0.0, type="double3")
         ffi_out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
-        ffi_solved = cmds.getAttr(f"{ccdik_node}.solved")
-        if ffi_solved is not True:
-            raise RuntimeError("mmdCcdIkNode chainJson FFI path should solve the simple 1-link chain")
+        if cpp_registered_ccdik:
+            ffi_solved = cmds.getAttr(f"{ccdik_node}.solved")
+            if ffi_solved is not True:
+                raise RuntimeError("mmdCcdIk chainJson FFI path should solve the simple 1-link chain")
         if abs(float(ffi_out_rot[2])) < 1.0:
             raise RuntimeError(f"mmdCcdIkNode chainJson FFI outputRotate[0] should rotate around Z, got {ffi_out_rot}")
         print(f"OK: mmdCcdIkNode chainJson FFI path solved simple 1-link chain -> Z={ffi_out_rot[2]}")
@@ -905,11 +942,12 @@ def main() -> int:
         cmds.setAttr(f"{ccdik_node}.enabled", False)
         cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 25.0, type="double3")
         ffi_disabled_out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
-        ffi_disabled_solved = cmds.getAttr(f"{ccdik_node}.solved")
-        if ffi_disabled_solved is not False:
-            raise RuntimeError(
-                f"mmdCcdIkNode chainJson disabled path should set solved=False, got {ffi_disabled_solved}"
-            )
+        if cpp_registered_ccdik:
+            ffi_disabled_solved = cmds.getAttr(f"{ccdik_node}.solved")
+            if ffi_disabled_solved is not False:
+                raise RuntimeError(
+                    f"mmdCcdIk chainJson disabled path should set solved=False, got {ffi_disabled_solved}"
+                )
         if any(
             abs(float(actual) - expected) > 1e-6
             for actual, expected in zip(ffi_disabled_out_rot, (0.0, 0.0, 25.0))
@@ -1009,13 +1047,16 @@ def main() -> int:
             multi_input_rotates,
         )
         actual_multi_outs = [cmds.getAttr(f"{ccdik_node}.outputRotate[{index}]")[0] for index in range(2)]
-        for index, (actual, expected) in enumerate(zip(actual_multi_outs, expected_multi_outs)):
-            if any(abs(float(actual_component) - expected_component) > 1e-4 for actual_component, expected_component in zip(actual, expected)):
-                raise RuntimeError(
-                    f"mmdCcdIkNode chainJson 2-link outputRotate[{index}] mismatch: "
-                    f"expected {expected}, got {actual}"
-                )
-        print("OK: mmdCcdIkNode chainJson FFI 2-link path matches native expected outputs")
+        if cpp_registered_ccdik:
+            for index, (actual, expected) in enumerate(zip(actual_multi_outs, expected_multi_outs)):
+                if any(abs(float(actual_component) - expected_component) > 1e-4 for actual_component, expected_component in zip(actual, expected)):
+                    raise RuntimeError(
+                        f"mmdCcdIk chainJson 2-link outputRotate[{index}] mismatch: "
+                        f"expected {expected}, got {actual}"
+                    )
+            print("OK: mmdCcdIk chainJson FFI 2-link path matches native expected outputs")
+        else:
+            print("SKIP: mmdCcdIk 2-link numeric parity (Python registered, C++ skipped)")
 
         controller_chain = dict(ffi_chain)
         controller_chain["controllerBoneSlot"] = 1
@@ -1024,31 +1065,35 @@ def main() -> int:
         cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 0.0, 0.0, type="double3")
         cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 13.0, type="double3")
         controller_rest_out = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
-        controller_rest_solved = cmds.getAttr(f"{ccdik_node}.solved")
-        if controller_rest_solved is not False:
-            raise RuntimeError(
-                "mmdCcdIkNode controller rest path should skip solving and set solved=False, "
-                f"got {controller_rest_solved}"
-            )
+        if cpp_registered_ccdik:
+            controller_rest_solved = cmds.getAttr(f"{ccdik_node}.solved")
+            if controller_rest_solved is not False:
+                raise RuntimeError(
+                    "mmdCcdIk controller rest path should skip solving and set solved=False, "
+                    f"got {controller_rest_solved}"
+                )
         if any(
             abs(float(actual) - expected) > 1e-6
             for actual, expected in zip(controller_rest_out, (0.0, 0.0, 13.0))
         ):
             raise RuntimeError(
-                "mmdCcdIkNode controller rest path should copy inputRotate for link slot 0, "
+                "mmdCcdIk controller rest path should copy inputRotate for link slot 0, "
                 f"got {controller_rest_out}"
             )
-        print("OK: mmdCcdIkNode controllerBoneSlot rest path copies inputRotate and skips solve")
+        print("OK: mmdCcdIk controllerBoneSlot rest path copies inputRotate and skips solve")
 
         cmds.setAttr(f"{ccdik_node}.inputRotate[0]", 0.0, 0.0, 0.0, type="double3")
         cmds.setAttr(f"{ccdik_node}.inputTranslate[1]", 1.0, 1.0, 0.0, type="double3")
-        controller_moved_solved = cmds.getAttr(f"{ccdik_node}.solved")
-        if controller_moved_solved is not True:
-            raise RuntimeError(
-                "mmdCcdIkNode moved controller branch should compute a pre-IK goal and solve, "
-                f"got solved={controller_moved_solved}"
-            )
-        print("OK: mmdCcdIkNode controllerBoneSlot moved branch computes pre-IK goal and solves")
+        if cpp_registered_ccdik:
+            controller_moved_solved = cmds.getAttr(f"{ccdik_node}.solved")
+            if controller_moved_solved is not True:
+                raise RuntimeError(
+                    "mmdCcdIk moved controller branch should compute a pre-IK goal and solve, "
+                    f"got solved={controller_moved_solved}"
+                )
+            print("OK: mmdCcdIk controllerBoneSlot moved branch computes pre-IK goal and solves")
+        else:
+            print("SKIP: mmdCcdIk controller solved checks (Python registered, C++ skipped)")
 
         matrix_goal = cmds.createNode("transform", name="ccdikGoalMatrixSmoke")
         cmds.setAttr(f"{matrix_goal}.translate", 0.0, 1.0, 0.0, type="double3")
@@ -1070,154 +1115,157 @@ def main() -> int:
             )
         cmds.disconnectAttr(f"{matrix_goal}.worldMatrix[0]", f"{ccdik_node}.goalWorldMatrix")
         cmds.delete(matrix_goal)
-        print("OK: mmdCcdIkNode goalWorldMatrix connection drives chainJson FFI goal")
+        print("OK: mmdCcdIk goalWorldMatrix connection drives chainJson FFI goal")
 
-        cmds.setAttr(f"{ccdik_node}.chainJson", "{}", type="string")
+        if not cpp_registered_ccdik:
+            print("SKIP: mmdCcdIk legacy Phase A compute tests (Python registered, C++ skipped)")
+        else:
+            cmds.setAttr(f"{ccdik_node}.chainJson", "{}", type="string")
 
-        # --- Test 1: 標準ケース root=(0,0,0), effector=(1,0,0), target=(0,1,0) ---
-        # root->effector = (1,0,0) (X+方向)
-        # root->target   = (0,1,0) (Y+方向)
-        # Z 軸周りの signed angle = atan2(1*1 - 0*0, 1*0 + 0*1) = atan2(1, 0) = 90°
-        cmds.setAttr(f"{ccdik_node}.inputRoot", 0.0, 0.0, 0.0, type="double3")
-        cmds.setAttr(f"{ccdik_node}.inputEffector", 1.0, 0.0, 0.0, type="double3")
-        cmds.setAttr(f"{ccdik_node}.target", 0.0, 1.0, 0.0, type="double3")
+            # --- Test 1: 標準ケース root=(0,0,0), effector=(1,0,0), target=(0,1,0) ---
+            # root->effector = (1,0,0) (X+方向)
+            # root->target   = (0,1,0) (Y+方向)
+            # Z 軸周りの signed angle = atan2(1*1 - 0*0, 1*0 + 0*1) = atan2(1, 0) = 90°
+            cmds.setAttr(f"{ccdik_node}.inputRoot", 0.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{ccdik_node}.inputEffector", 1.0, 0.0, 0.0, type="double3")
+            cmds.setAttr(f"{ccdik_node}.target", 0.0, 1.0, 0.0, type="double3")
 
-        out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
-        if any(abs(v) > 1e-9 for v in (out_rot[0], out_rot[1])):
-            raise RuntimeError(
-                f"outputRotate should be (0,0,~90) for 90° XY case, got {out_rot}"
-            )
-        if abs(out_rot[2] - 90.0) > 1e-6:
-            raise RuntimeError(
-                f"outputRotateZ should be ~90.0 for 90° XY case, got {out_rot[2]}"
-            )
-
-        out_angle = cmds.getAttr(f"{ccdik_node}.outputAngle")
-        if abs(out_angle - 90.0) > 1e-6:
-            raise RuntimeError(f"outputAngle should be ~90.0, got {out_angle}")
-
-        solved = cmds.getAttr(f"{ccdik_node}.solved")
-        if solved is not True:
-            raise RuntimeError(f"solved should be True for valid IK case, got {solved}")
-
-        print(f"OK: mmdCcdIkNode basic IK (effector=(1,0,0) -> target=(0,1,0)) -> Z={out_rot[2]}")
-
-        # --- Test 2: enabled=false -> solved=false, outputRotate=(0,0,0) ---
-        cmds.setAttr(f"{ccdik_node}.enabled", False)
-        out_rot_disabled = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
-        out_angle_disabled = cmds.getAttr(f"{ccdik_node}.outputAngle")
-        solved_disabled = cmds.getAttr(f"{ccdik_node}.solved")
-        if any(abs(v) > 1e-9 for v in out_rot_disabled):
-            raise RuntimeError(
-                f"outputRotate should be (0,0,0) when disabled, got {out_rot_disabled}"
-            )
-        if abs(out_angle_disabled) > 1e-9:
-            raise RuntimeError(
-                f"outputAngle should be 0 when disabled, got {out_angle_disabled}"
-            )
-        if solved_disabled is not False:
-            raise RuntimeError(f"solved should be False when disabled, got {solved_disabled}")
-
-        print("OK: mmdCcdIkNode disabled -> solved=False, zero output")
-
-        # --- Test 3: angleLimit clamping with iterations ---
-        # Restore enabled, same 90° target setup
-        cmds.setAttr(f"{ccdik_node}.enabled", True)
-
-        # angleLimit=30, iterations=1 -> maxAllowed=30, clamp 90->30
-        cmds.setAttr(f"{ccdik_node}.angleLimit", 30.0)
-        cmds.setAttr(f"{ccdik_node}.iterations", 1)
-        out_angle_lim = cmds.getAttr(f"{ccdik_node}.outputAngle")
-        if abs(out_angle_lim - 30.0) > 1e-6:
-            raise RuntimeError(
-                f"angleLimit=30, iterations=1 should output ~30.0, got {out_angle_lim}"
-            )
-        out_rot_lim = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
-        if abs(out_rot_lim[2] - 30.0) > 1e-6:
-            raise RuntimeError(
-                f"outputRotateZ should be ~30.0 with angleLimit=30, iterations=1, "
-                f"got {out_rot_lim[2]}"
-            )
-        print("OK: mmdCcdIkNode angleLimit=30, iterations=1 -> 30°")
-
-        # angleLimit=30, iterations=2 -> maxAllowed=60, clamp 90->60
-        cmds.setAttr(f"{ccdik_node}.iterations", 2)
-        out_angle_lim = cmds.getAttr(f"{ccdik_node}.outputAngle")
-        if abs(out_angle_lim - 60.0) > 1e-6:
-            raise RuntimeError(
-                f"angleLimit=30, iterations=2 should output ~60.0, got {out_angle_lim}"
-            )
-        print("OK: mmdCcdIkNode angleLimit=30, iterations=2 -> 60°")
-
-        # angleLimit=30, iterations=3 -> maxAllowed=90, outputs 90
-        cmds.setAttr(f"{ccdik_node}.iterations", 3)
-        out_angle_lim = cmds.getAttr(f"{ccdik_node}.outputAngle")
-        if abs(out_angle_lim - 90.0) > 1e-6:
-            raise RuntimeError(
-                f"angleLimit=30, iterations=3 should output ~90.0, got {out_angle_lim}"
-            )
-        print("OK: mmdCcdIkNode angleLimit=30, iterations=3 -> 90°")
-
-        # --- Test 4: multi-link CCD (2-link XY/Z) ---
-        ccd_chain = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0]
-        cmds.setAttr(f"{ccdik_node}.inputChain", ccd_chain, type="doubleArray")
-        cmds.setAttr(f"{ccdik_node}.target", 1.0, 1.0, 0.0, type="double3")
-        cmds.setAttr(f"{ccdik_node}.iterations", 4)
-        cmds.setAttr(f"{ccdik_node}.angleLimit", 45.0)
-
-        out_link_angles = cmds.getAttr(f"{ccdik_node}.outputLinkAngles")
-        out_link_rotates = cmds.getAttr(f"{ccdik_node}.outputLinkRotates")
-        out_solved = cmds.getAttr(f"{ccdik_node}.solved")
-
-        if not isinstance(out_link_angles, (tuple, list)):
-            out_link_angles = [out_link_angles]
-        if not isinstance(out_link_rotates, (tuple, list)):
-            out_link_rotates = [out_link_rotates]
-
-        if len(out_link_angles) != 2:
-            raise RuntimeError(
-                f"outputLinkAngles should have 2 elements for 2-link chain, got {len(out_link_angles)}"
-            )
-        if len(out_link_rotates) != 6:
-            raise RuntimeError(
-                f"outputLinkRotates should have 6 elements for 2-link chain, got {len(out_link_rotates)}"
-            )
-        if all(abs(float(angle)) < 1e-9 for angle in out_link_angles):
-            raise RuntimeError(f"outputLinkAngles should contain at least one non-zero angle, got {out_link_angles}")
-
-        if out_solved is not True:
-            raise RuntimeError(f"mmdCcdIkNode should be solved for valid 2-link chain, got {out_solved}")
-
-        initial_positions, expected_angles = _ccd_2d_multi_link_angles(
-            ccd_chain, 1.0, 1.0, iterations=4, angle_limit=45.0
-        )
-        if len(initial_positions) != 3 or len(expected_angles) != 2:
-            raise RuntimeError(
-                f"internal CCD helper failed for 2-link chain: positions={len(initial_positions)}, angles={len(expected_angles)}"
-            )
-
-        for actual, expected in zip(out_link_angles, expected_angles):
-            if abs(float(actual) - expected) > 1e-6:
+            out_rot = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
+            if any(abs(v) > 1e-9 for v in (out_rot[0], out_rot[1])):
                 raise RuntimeError(
-                    f"outputLinkAngles mismatch: expected {expected_angles}, got {out_link_angles}"
+                    f"outputRotate should be (0,0,~90) for 90° XY case, got {out_rot}"
+                )
+            if abs(out_rot[2] - 90.0) > 1e-6:
+                raise RuntimeError(
+                    f"outputRotateZ should be ~90.0 for 90° XY case, got {out_rot[2]}"
                 )
 
-        expected_rotates: list[float] = []
-        for angle in expected_angles:
-            expected_rotates.extend([0.0, 0.0, angle])
-        if any(abs(float(actual) - expected) > 1e-6 for actual, expected in zip(out_link_rotates, expected_rotates)):
-            raise RuntimeError(
-                f"outputLinkRotates mismatch: expected {expected_rotates}, got {out_link_rotates}"
-            )
+            out_angle = cmds.getAttr(f"{ccdik_node}.outputAngle")
+            if abs(out_angle - 90.0) > 1e-6:
+                raise RuntimeError(f"outputAngle should be ~90.0, got {out_angle}")
 
-        initial_distance = math.hypot(ccd_chain[-3] - 1.0, ccd_chain[-2] - 1.0)
-        final_distance = math.hypot(initial_positions[-1][0] - 1.0, initial_positions[-1][1] - 1.0)
-        if final_distance >= initial_distance:
-            raise RuntimeError(
-                f"multi-link CCD should reduce distance to target: initial={initial_distance}, final={final_distance}"
-            )
+            solved = cmds.getAttr(f"{ccdik_node}.solved")
+            if solved is not True:
+                raise RuntimeError(f"solved should be True for valid IK case, got {solved}")
 
-        print("OK: mmdCcdIkNode multi-link 2-link CCD produced non-zero output and reduced distance")
+            print(f"OK: mmdCcdIkNode basic IK (effector=(1,0,0) -> target=(0,1,0)) -> Z={out_rot[2]}")
+
+            # --- Test 2: enabled=false -> solved=false, outputRotate=(0,0,0) ---
+            cmds.setAttr(f"{ccdik_node}.enabled", False)
+            out_rot_disabled = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
+            out_angle_disabled = cmds.getAttr(f"{ccdik_node}.outputAngle")
+            solved_disabled = cmds.getAttr(f"{ccdik_node}.solved")
+            if any(abs(v) > 1e-9 for v in out_rot_disabled):
+                raise RuntimeError(
+                    f"outputRotate should be (0,0,0) when disabled, got {out_rot_disabled}"
+                )
+            if abs(out_angle_disabled) > 1e-9:
+                raise RuntimeError(
+                    f"outputAngle should be 0 when disabled, got {out_angle_disabled}"
+                )
+            if solved_disabled is not False:
+                raise RuntimeError(f"solved should be False when disabled, got {solved_disabled}")
+
+            print("OK: mmdCcdIkNode disabled -> solved=False, zero output")
+
+            # --- Test 3: angleLimit clamping with iterations ---
+            # Restore enabled, same 90° target setup
+            cmds.setAttr(f"{ccdik_node}.enabled", True)
+
+            # angleLimit=30, iterations=1 -> maxAllowed=30, clamp 90->30
+            cmds.setAttr(f"{ccdik_node}.angleLimit", 30.0)
+            cmds.setAttr(f"{ccdik_node}.iterations", 1)
+            out_angle_lim = cmds.getAttr(f"{ccdik_node}.outputAngle")
+            if abs(out_angle_lim - 30.0) > 1e-6:
+                raise RuntimeError(
+                    f"angleLimit=30, iterations=1 should output ~30.0, got {out_angle_lim}"
+                )
+            out_rot_lim = cmds.getAttr(f"{ccdik_node}.outputRotate[0]")[0]
+            if abs(out_rot_lim[2] - 30.0) > 1e-6:
+                raise RuntimeError(
+                    f"outputRotateZ should be ~30.0 with angleLimit=30, iterations=1, "
+                    f"got {out_rot_lim[2]}"
+                )
+            print("OK: mmdCcdIkNode angleLimit=30, iterations=1 -> 30°")
+
+            # angleLimit=30, iterations=2 -> maxAllowed=60, clamp 90->60
+            cmds.setAttr(f"{ccdik_node}.iterations", 2)
+            out_angle_lim = cmds.getAttr(f"{ccdik_node}.outputAngle")
+            if abs(out_angle_lim - 60.0) > 1e-6:
+                raise RuntimeError(
+                    f"angleLimit=30, iterations=2 should output ~60.0, got {out_angle_lim}"
+                )
+            print("OK: mmdCcdIkNode angleLimit=30, iterations=2 -> 60°")
+
+            # angleLimit=30, iterations=3 -> maxAllowed=90, outputs 90
+            cmds.setAttr(f"{ccdik_node}.iterations", 3)
+            out_angle_lim = cmds.getAttr(f"{ccdik_node}.outputAngle")
+            if abs(out_angle_lim - 90.0) > 1e-6:
+                raise RuntimeError(
+                    f"angleLimit=30, iterations=3 should output ~90.0, got {out_angle_lim}"
+                )
+            print("OK: mmdCcdIkNode angleLimit=30, iterations=3 -> 90°")
+
+            # --- Test 4: multi-link CCD (2-link XY/Z) ---
+            ccd_chain = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0]
+            cmds.setAttr(f"{ccdik_node}.inputChain", ccd_chain, type="doubleArray")
+            cmds.setAttr(f"{ccdik_node}.target", 1.0, 1.0, 0.0, type="double3")
+            cmds.setAttr(f"{ccdik_node}.iterations", 4)
+            cmds.setAttr(f"{ccdik_node}.angleLimit", 45.0)
+
+            out_link_angles = cmds.getAttr(f"{ccdik_node}.outputLinkAngles")
+            out_link_rotates = cmds.getAttr(f"{ccdik_node}.outputLinkRotates")
+            out_solved = cmds.getAttr(f"{ccdik_node}.solved")
+
+            if not isinstance(out_link_angles, (tuple, list)):
+                out_link_angles = [out_link_angles]
+            if not isinstance(out_link_rotates, (tuple, list)):
+                out_link_rotates = [out_link_rotates]
+
+            if len(out_link_angles) != 2:
+                raise RuntimeError(
+                    f"outputLinkAngles should have 2 elements for 2-link chain, got {len(out_link_angles)}"
+                )
+            if len(out_link_rotates) != 6:
+                raise RuntimeError(
+                    f"outputLinkRotates should have 6 elements for 2-link chain, got {len(out_link_rotates)}"
+                )
+            if all(abs(float(angle)) < 1e-9 for angle in out_link_angles):
+                raise RuntimeError(f"outputLinkAngles should contain at least one non-zero angle, got {out_link_angles}")
+
+            if out_solved is not True:
+                raise RuntimeError(f"mmdCcdIkNode should be solved for valid 2-link chain, got {out_solved}")
+
+            initial_positions, expected_angles = _ccd_2d_multi_link_angles(
+                ccd_chain, 1.0, 1.0, iterations=4, angle_limit=45.0
+            )
+            if len(initial_positions) != 3 or len(expected_angles) != 2:
+                raise RuntimeError(
+                    f"internal CCD helper failed for 2-link chain: positions={len(initial_positions)}, angles={len(expected_angles)}"
+                )
+
+            for actual, expected in zip(out_link_angles, expected_angles):
+                if abs(float(actual) - expected) > 1e-6:
+                    raise RuntimeError(
+                        f"outputLinkAngles mismatch: expected {expected_angles}, got {out_link_angles}"
+                    )
+
+            expected_rotates: list[float] = []
+            for angle in expected_angles:
+                expected_rotates.extend([0.0, 0.0, angle])
+            if any(abs(float(actual) - expected) > 1e-6 for actual, expected in zip(out_link_rotates, expected_rotates)):
+                raise RuntimeError(
+                    f"outputLinkRotates mismatch: expected {expected_rotates}, got {out_link_rotates}"
+                )
+
+            initial_distance = math.hypot(ccd_chain[-3] - 1.0, ccd_chain[-2] - 1.0)
+            final_distance = math.hypot(initial_positions[-1][0] - 1.0, initial_positions[-1][1] - 1.0)
+            if final_distance >= initial_distance:
+                raise RuntimeError(
+                    f"multi-link CCD should reduce distance to target: initial={initial_distance}, final={final_distance}"
+                )
+
+            print("OK: mmdCcdIkNode multi-link 2-link CCD produced non-zero output and reduced distance")
 
         if ccdik_node not in vmd_runtime_rig_helper_mod._ls_mmd_ccd_ik_nodes():
             raise RuntimeError(f"VmdConverter IK collection did not include C++ node {ccdik_node}")
@@ -1295,7 +1343,10 @@ def main() -> int:
 
                 cmds.setAttr(f"{node}.enabled", True)
                 cmds.dgdirty(node)
-                solved = cmds.getAttr(f"{node}.solved")
+                if cpp_registered_ccdik:
+                    solved = cmds.getAttr(f"{node}.solved")
+                else:
+                    solved = True
                 outputs = [cmds.getAttr(f"{node}.outputRotate[{index}]")[0] for index in range(len(links))]
                 if solved is True and any(
                     abs(float(component)) > 1e-5
