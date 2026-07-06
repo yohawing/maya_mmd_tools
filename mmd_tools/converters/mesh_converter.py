@@ -1812,6 +1812,30 @@ class MeshConverter:
         if not bind_dx11_texture_file_node(shader, file_node, texture_attr, has_texture_attr):
             cmds.warning(f"Failed to connect {warning_label.lower()} texture to dx11Shader")
 
+    def _connect_dx11_main_texture(
+        self,
+        shader,
+        material,
+        texture_path,
+        original_texture_path=None,
+    ):
+        """Connect the main diffuse texture to a dx11Shader."""
+        raw_texture_path = original_texture_path or texture_path
+        if not raw_texture_path:
+            return
+
+        full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or raw_texture_path)
+        self._connect_dx11_secondary_texture(
+            shader,
+            material,
+            raw_texture_path,
+            full_texture_path,
+            "MainTexture",
+            "HasMainTexture",
+            "_texture",
+            "Main",
+        )
+
     def _setup_dx11_shader(
         self,
         shader,
@@ -1894,19 +1918,7 @@ class MeshConverter:
                 maya_utils.set_attribute(shader, texture_flag, 0, "long")
 
         # テクスチャ設定
-        raw_texture_path = original_texture_path or texture_path
-        if raw_texture_path:
-            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or raw_texture_path)
-            self._connect_dx11_secondary_texture(
-                shader,
-                material,
-                raw_texture_path,
-                full_texture_path,
-                "MainTexture",
-                "HasMainTexture",
-                "_texture",
-                "Main",
-            )
+        self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
         # スフィアテクスチャ設定（PMXのみ）
         sphere_texture_path = None
