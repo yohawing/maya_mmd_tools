@@ -60,6 +60,10 @@ class AnimationPresenter:
         self.view.body_picker.region_clicked.connect(self.on_body_region_clicked)
         self.view.body_picker.goto_finger_clicked.connect(self.on_goto_finger)
         self.view.body_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
+        for key, cb in self.view.vis_checkboxes.items():
+            cb.stateChanged.connect(
+                lambda state, k=key: self._on_visibility_changed(k, state != 0)
+            )
 
     def disconnect_signals(self):
         try:
@@ -160,6 +164,43 @@ class AnimationPresenter:
                 self.view.status_label.setText(", ".join(mirrored))
             except Exception:
                 pass
+
+    # -- Visibility -------------------------------------------------------
+
+    _VIS_NODE_TYPES = {
+        "mesh": "mesh",
+        "joints": "joint",
+        "ik": "ikHandle",
+        "controllers": "locator",
+        "colliders": "mmdRigidBodyLocator",
+    }
+
+    def _on_visibility_changed(self, category: str, visible: bool):
+        model_root = self.app_state.current_model_root
+        if not model_root:
+            return
+        if category == "morphs":
+            return
+        node_type = self._VIS_NODE_TYPES.get(category)
+        if not node_type:
+            return
+        try:
+            descendants = self.maya_adapter.list_relatives(
+                model_root, allDescendents=True, type=node_type
+            ) or []
+            if node_type == "mesh":
+                transforms = []
+                for mesh in descendants:
+                    parents = self.maya_adapter.list_relatives(mesh, parent=True) or []
+                    transforms.extend(parents)
+                descendants = transforms
+            for node in descendants:
+                try:
+                    self.maya_adapter.set_attr(f"{node}.visibility", visible)
+                except Exception:
+                    continue
+        except Exception as exc:
+            logger.debug("Visibility toggle failed for %s: %s", category, exc)
 
     # -- Internal ------------------------------------------------------
 

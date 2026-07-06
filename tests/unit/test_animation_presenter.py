@@ -203,6 +203,19 @@ class _FakeTabWidget:
         self._current = idx
 
 
+class _FakeCheckBox:
+    def __init__(self, label=""):
+        self._label = label
+        self._checked = True
+        self.stateChanged = _FakeSignal()
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, val):
+        self._checked = val
+
+
 class _FakeView:
     TAB_BODY = 0
     TAB_FINGER = 1
@@ -218,6 +231,10 @@ class _FakeView:
         self.body_picker = _FakeBodyPicker()
         self.morph_groups_layout = _FakeLayout()
         self.picker_tabs = _FakeTabWidget()
+        self.vis_checkboxes = {
+            k: _FakeCheckBox(k)
+            for k in ("mesh", "joints", "ik", "controllers", "morphs", "colliders")
+        }
 
 
 class _FakeAppState:
@@ -254,6 +271,8 @@ class _FakeAdapter:
         return nodes if nodes else []
 
     def list_relatives(self, node, **kwargs):
+        if kwargs.get("parent"):
+            return [node.rsplit("|", 1)[0] or node]
         node_type = kwargs.get("type")
         if node_type == "mesh":
             return list(self._blend_shapes.keys()) if self._blend_shapes else []
@@ -635,6 +654,38 @@ class TestAnimationPresenterMorph(unittest.TestCase):
 
         self.assertAlmostEqual(adapter._set_attrs["bs_face.weight[0]"], 1.0)
         self.assertAlmostEqual(adapter._set_attrs["bs_hair.weight[0]"], 1.0)
+
+
+class TestVisibilityToggle(unittest.TestCase):
+    def _make_with_model(self, model_root="test_model"):
+        view = _FakeView()
+        app_state = _FakeAppState(model_root=model_root)
+        adapter = _FakeAdapter(
+            joints_by_index={0: "head_jnt"},
+            bone_names={"head_jnt": "頭"},
+        )
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter"
+            ".AnimationPresenter._populate_morph_groups"
+        ):
+            presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
+        return presenter, view, app_state, adapter
+
+    def test_visibility_toggle_sets_attr(self):
+        presenter, _, _, adapter = self._make_with_model()
+        presenter._on_visibility_changed("joints", False)
+        self.assertIn("head_jnt.visibility", adapter._set_attrs)
+        self.assertEqual(adapter._set_attrs["head_jnt.visibility"], False)
+
+    def test_visibility_morphs_is_noop(self):
+        presenter, _, _, adapter = self._make_with_model()
+        presenter._on_visibility_changed("morphs", False)
+        self.assertEqual(len(adapter._set_attrs), 0)
+
+    def test_visibility_no_model_is_noop(self):
+        presenter, _, _, adapter = self._make_with_model(model_root=None)
+        presenter._on_visibility_changed("joints", False)
+        self.assertEqual(len(adapter._set_attrs), 0)
 
 
 if __name__ == "__main__":

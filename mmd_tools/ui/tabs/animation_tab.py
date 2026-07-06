@@ -1,7 +1,9 @@
 """Animator Toolset tab — dev-mode gated, 4-tab picker + tools."""
 
 from ..qt_compat import (
+    QCheckBox,
     QComboBox,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -82,6 +84,31 @@ class AnimationTab(BaseTab):
         self.picker_tabs.addTab(self.other_page, "Other")
 
         main_layout.addWidget(self.picker_tabs, 1)
+
+        # --- Visibility toggles ---
+        self.visibility_group = QGroupBox("Visibility")
+        self.visibility_group.setCheckable(True)
+        self.visibility_group.setChecked(True)
+        vis_layout = QHBoxLayout()
+        vis_layout.setContentsMargins(4, 4, 4, 4)
+        vis_layout.setSpacing(8)
+
+        self.vis_checkboxes: dict[str, QCheckBox] = {}
+        for key, label in [
+            ("mesh", "Mesh"),
+            ("joints", "Joints"),
+            ("ik", "IK"),
+            ("controllers", "Ctrl"),
+            ("morphs", "Morphs"),
+            ("colliders", "Colliders"),
+        ]:
+            cb = QCheckBox(label)
+            cb.setChecked(True)
+            vis_layout.addWidget(cb)
+            self.vis_checkboxes[key] = cb
+
+        self.visibility_group.setLayout(vis_layout)
+        main_layout.addWidget(self.visibility_group)
 
         # --- Status bar ---
         status_layout = QHBoxLayout()
