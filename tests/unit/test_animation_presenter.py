@@ -243,6 +243,10 @@ class _FakeView:
             k: _FakeCheckBox(k)
             for k in ("mesh", "joints", "ik", "controllers", "morphs", "colliders")
         }
+        self.tool_buttons = {
+            k: _FakeButton()
+            for k in ("copy", "paste", "mirror", "reset", "clean", "bake")
+        }
 
 
 class _FakeAppState:
@@ -272,6 +276,8 @@ class _FakeAdapter:
         self._bone_names = bone_names or {}
         self.selected = []
         self._set_attrs = {}
+        self._transforms: dict[str, tuple[list, list]] = {}
+        self._undo_chunks: list[str] = []
 
     def ls(self, nodes=None, type=None, selection=False):
         if selection:
@@ -336,6 +342,27 @@ class _FakeAdapter:
 
     def select(self, nodes, replace=True):
         self.selected = list(nodes)
+
+    def xform(self, node, **kwargs):
+        if kwargs.get("query"):
+            t, r = self._transforms.get(node, ([0, 0, 0], [0, 0, 0]))
+            if kwargs.get("translation"):
+                return list(t)
+            if kwargs.get("rotation"):
+                return list(r)
+            return None
+        t = kwargs.get("translation")
+        if t is not None:
+            self._transforms.setdefault(node, ([0, 0, 0], [0, 0, 0]))
+            self._transforms[node] = (list(t), self._transforms[node][1])
+        r = kwargs.get("rotation")
+        if r is not None:
+            self._transforms.setdefault(node, ([0, 0, 0], [0, 0, 0]))
+            self._transforms[node] = (self._transforms[node][0], list(r))
+
+    def undo_info(self, **kwargs):
+        if kwargs.get("openChunk"):
+            self._undo_chunks.append(kwargs.get("chunkName", ""))
 
 
 _USER_ROLE = 0x0100
@@ -707,6 +734,89 @@ class TestVisibilityToggle(unittest.TestCase):
         presenter, _, _, adapter = self._make_with_model(model_root=None)
         presenter._on_visibility_changed("joints", False)
         self.assertEqual(len(adapter._set_attrs), 0)
+
+
+class TestToolsSection(unittest.TestCase):
+    _POPULATE_PATH = (
+        "mmd_tools.ui.presenters.animation_presenter"
+        ".AnimationPresenter._populate_morph_groups"
+    )
+
+    def _make(self, model_root="test_model"):
+        view = _FakeView()
+        app_state = _FakeAppState(model_root=model_root)
+        adapter = _FakeAdapter(
+            joints_by_index={0: "j1", 1: "j2"},
+            bone_names={"j1": "センター", "j2": "上半身"},
+        )
+        adapter._transforms["j1"] = ([1, 2, 3], [10, 20, 30])
+        adapter._transforms["j2"] = ([4, 5, 6], [40, 50, 60])
+        with patch(self._POPULATE_PATH):
+            presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
+        return presenter, view, app_state, adapter
+
+    def test_copy_pose_stores_clipboard(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j1"]
+        presenter._on_tool_clicked("copy")
+        self.assertIsNotNone(presenter._pose_clipboard)
+        self.assertIn("j1", presenter._pose_clipboard)
+        self.assertIn("Copied", view.status_label.text())
+
+    def test_copy_pose_no_selection(self):
+        presenter, view, _, _ = self._make()
+        presenter._on_tool_clicked("copy")
+        self.assertIn("No joints", view.status_label.text())
+
+    def test_paste_pose_applies_clipboard(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j1"]
+        presenter._on_tool_clicked("copy")
+        adapter._transforms["j1"] = ([0, 0, 0], [0, 0, 0])
+        presenter._on_tool_clicked("paste")
+        t, r = adapter._transforms["j1"]
+        self.assertEqual(t, [1, 2, 3])
+        self.assertEqual(r, [10, 20, 30])
+        self.assertIn("Pasted", view.status_label.text())
+
+    def test_paste_pose_no_clipboard(self):
+        presenter, view, _, _ = self._make()
+        presenter._on_tool_clicked("paste")
+        self.assertIn("No pose copied", view.status_label.text())
+
+    def test_reset_pose_zeroes_rotation_only(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j1"]
+        presenter._on_tool_clicked("reset")
+        t, r = adapter._transforms["j1"]
+        self.assertEqual(t, [1, 2, 3])
+        self.assertEqual(r, [0, 0, 0])
+        self.assertIn("Reset", view.status_label.text())
+
+    def test_reset_opens_undo_chunk(self):
+        presenter, _, _, adapter = self._make()
+        adapter.selected = ["j1"]
+        presenter._on_tool_clicked("reset")
+        self.assertIn("Reset Pose", adapter._undo_chunks)
+
+    def test_mirror_stub_shows_error(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j1"]
+        presenter._on_tool_clicked("mirror")
+        self.assertIn("Mirror", view.status_label.text())
+        self.assertIn("not yet implemented", view.status_label.text().lower())
+
+    def test_bake_stub_shows_error(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j1"]
+        presenter._on_tool_clicked("bake")
+        self.assertIn("Bake", view.status_label.text())
+
+    def test_clean_stub_shows_error(self):
+        presenter, view, _, adapter = self._make()
+        adapter.selected = ["j1"]
+        presenter._on_tool_clicked("clean")
+        self.assertIn("Clean", view.status_label.text())
 
 
 if __name__ == "__main__":

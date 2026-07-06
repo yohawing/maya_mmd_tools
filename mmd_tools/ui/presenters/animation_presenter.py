@@ -45,6 +45,7 @@ class AnimationPresenter:
         self._bone_name_to_joint: dict[str, str] = {}
         self._morph_sliders: dict[str, object] = {}
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
+        self._pose_clipboard: dict | None = None
         self.connect_signals()
 
         if self.app_state.current_model_root:
@@ -66,6 +67,10 @@ class AnimationPresenter:
         for key, cb in self.view.vis_checkboxes.items():
             cb.stateChanged.connect(
                 lambda state, k=key: self._on_visibility_changed(k, state != 0)
+            )
+        for key, btn in self.view.tool_buttons.items():
+            btn.clicked.connect(
+                lambda _checked=False, k=key: self._on_tool_clicked(k)
             )
 
     def disconnect_signals(self):
@@ -477,3 +482,119 @@ class AnimationPresenter:
                 self.maya_adapter.set_attr(f"{bs_node}.weight[{weight_idx}]", weight)
             except Exception as exc:
                 logger.debug("Morph slider set failed for %s: %s", morph_name, exc)
+
+    # -- Tools section ----------------------------------------------------
+
+    _TOOL_HANDLERS = {
+        "copy": "_on_copy_pose",
+        "paste": "_on_paste_pose",
+        "mirror": "_on_mirror_pose",
+        "reset": "_on_reset_pose",
+        "clean": "_on_clean_curves",
+        "bake": "_on_bake_animation",
+    }
+
+    def _on_tool_clicked(self, tool_key: str):
+        handler_name = self._TOOL_HANDLERS.get(tool_key)
+        if handler_name:
+            getattr(self, handler_name)()
+
+    def _selected_joints(self) -> list[str]:
+        try:
+            return self.maya_adapter.ls(selection=True, type="joint") or []
+        except Exception:
+            return []
+
+    def _on_copy_pose(self):
+        from ...actions.pose_actions import CopyPoseAction, CopyPoseRequest
+
+        joints = self._selected_joints()
+        if not joints:
+            self.view.status_label.setText("No joints selected")
+            return
+        result = CopyPoseAction(self.maya_adapter).execute(
+            CopyPoseRequest(joints=joints)
+        )
+        if result.succeeded:
+            self._pose_clipboard = result.pose
+            self.view.status_label.setText(f"Copied pose ({len(result.pose)} joints)")
+        else:
+            self.view.status_label.setText(f"Copy failed: {result.error}")
+
+    def _on_paste_pose(self):
+        from ...actions.pose_actions import PastePoseAction, PastePoseRequest
+
+        if not self._pose_clipboard:
+            self.view.status_label.setText("No pose copied")
+            return
+        result = PastePoseAction(self.maya_adapter).execute(
+            PastePoseRequest(pose=self._pose_clipboard)
+        )
+        if result.succeeded:
+            self.view.status_label.setText(
+                f"Pasted pose ({result.applied_count} joints)"
+            )
+        else:
+            self.view.status_label.setText(f"Paste failed: {result.error}")
+
+    def _on_reset_pose(self):
+        from ...actions.pose_actions import ResetPoseAction, ResetPoseRequest
+
+        joints = self._selected_joints()
+        if not joints:
+            self.view.status_label.setText("No joints selected")
+            return
+        result = ResetPoseAction(self.maya_adapter).execute(
+            ResetPoseRequest(joints=joints)
+        )
+        if result.succeeded:
+            self.view.status_label.setText(
+                f"Reset pose ({result.reset_count} joints)"
+            )
+        else:
+            self.view.status_label.setText(f"Reset failed: {result.error}")
+
+    def _on_mirror_pose(self):
+        from ...actions.pose_actions import MirrorPoseAction, MirrorPoseRequest
+
+        joints = self._selected_joints()
+        if not joints:
+            self.view.status_label.setText("No joints selected")
+            return
+        result = MirrorPoseAction(self.maya_adapter).execute(
+            MirrorPoseRequest(joints=joints)
+        )
+        if result.succeeded:
+            self.view.status_label.setText("Mirrored pose")
+        else:
+            self.view.status_label.setText(f"Mirror: {result.error}")
+
+    def _on_bake_animation(self):
+        from ...actions.pose_actions import BakeAnimationAction, BakeAnimationRequest
+
+        joints = self._selected_joints()
+        if not joints:
+            self.view.status_label.setText("No joints selected")
+            return
+        result = BakeAnimationAction(self.maya_adapter).execute(
+            BakeAnimationRequest(joints=joints)
+        )
+        if result.succeeded:
+            self.view.status_label.setText("Baked animation")
+        else:
+            self.view.status_label.setText(f"Bake: {result.error}")
+
+    def _on_clean_curves(self):
+        from ...actions.pose_actions import CleanCurvesAction, CleanCurvesRequest
+
+        joints = self._selected_joints()
+        if not joints:
+            self.view.status_label.setText("No joints selected")
+            return
+        result = CleanCurvesAction(self.maya_adapter).execute(
+            CleanCurvesRequest(joints=joints)
+        )
+        if result.succeeded:
+            self.view.status_label.setText("Cleaned curves")
+        else:
+            self.view.status_label.setText(f"Clean: {result.error}")

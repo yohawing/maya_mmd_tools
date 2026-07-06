@@ -94,3 +94,7 @@ class MayaCmdsAdapter:
     def select(self, nodes, replace=True):
         """Pass through to maya.cmds.select."""
         return self._cmds.select(nodes, replace=replace)
+
+    def undo_info(self, **kwargs):
+        """Pass through to maya.cmds.undoInfo."""
+        return self._cmds.undoInfo(**kwargs)

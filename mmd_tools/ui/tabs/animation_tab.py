@@ -3,6 +3,7 @@
 from ..qt_compat import (
     QCheckBox,
     QComboBox,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -111,6 +112,32 @@ class AnimationTab(BaseTab):
 
         self.visibility_group.setLayout(vis_layout)
         main_layout.addWidget(self.visibility_group)
+
+        # --- Tools section ---
+        self.tools_group = QGroupBox("Tools")
+        tools_layout = QGridLayout()
+        tools_layout.setContentsMargins(4, 4, 4, 4)
+        tools_layout.setSpacing(4)
+
+        self.tool_buttons: dict[str, QPushButton] = {}
+        for i, (key, label) in enumerate(
+            [
+                ("copy", "Copy"),
+                ("paste", "Paste"),
+                ("mirror", "Mirror"),
+                ("reset", "Reset"),
+                ("clean", "Clean"),
+                ("bake", "Bake"),
+            ]
+        ):
+            btn = QPushButton(label)
+            btn.setMinimumHeight(28)
+            row, col = divmod(i, 5)
+            tools_layout.addWidget(btn, row, col)
+            self.tool_buttons[key] = btn
+
+        self.tools_group.setLayout(tools_layout)
+        main_layout.addWidget(self.tools_group)
 
         # --- Status bar ---
         status_layout = QHBoxLayout()
