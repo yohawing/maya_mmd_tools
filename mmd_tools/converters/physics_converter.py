@@ -26,7 +26,7 @@ from ..core.coordinate_transform import (
     maya_point_to_mmd,
     mmd_point_to_maya,
 )
-from ..core.logger import get_logger
+from ..core.logger import get_logger, safe_log_error
 from ..core.pmd_data.rigid_body import PmdRigidBody
 from ..core.pmx_data.rigid_body import PmxRigidBody
 
@@ -580,7 +580,7 @@ class PhysicsConverter:
                 try:
                     self._create_bullet_rigid_body(rb, idx, rigid_bodies_group, "pmd", bone_index_map)
                 except Exception as e:
-                    self._safe_log_error("Bullet 剛体作成エラー", rb, e)
+                    safe_log_error(self.logger, "Bullet 剛体作成エラー", rb, e)
 
         create_joints = self.settings.get(_OPT_CREATE_PHYSICS_JOINTS, True)
         if create_joints and hasattr(pmd_data, "joints") and pmd_data.joints:
@@ -588,7 +588,7 @@ class PhysicsConverter:
                 try:
                     self._create_bullet_constraint_pmd(joint, pmd_data.rigid_bodies, constraints_group)
                 except Exception as e:
-                    self._safe_log_error("PMD joint 作成エラー", joint, e)
+                    safe_log_error(self.logger, "PMD joint 作成エラー", joint, e)
 
         self.logger.info(
             f"PMD Bullet physics conversion complete: Rb={len(self.created_bullet_rigid_bodies)} "
@@ -619,7 +619,7 @@ class PhysicsConverter:
                 try:
                     self._create_bullet_rigid_body(rb, idx, rigid_bodies_group, "pmx", bone_index_map)
                 except Exception as e:
-                    self._safe_log_error("Bullet 剛体作成エラー", rb, e)
+                    safe_log_error(self.logger, "Bullet 剛体作成エラー", rb, e)
 
         create_joints = self.settings.get(_OPT_CREATE_PHYSICS_JOINTS, True)
         if create_joints and hasattr(pmx_data, "joints") and pmx_data.joints:
@@ -627,7 +627,7 @@ class PhysicsConverter:
                 try:
                     self._create_bullet_constraint_pmx(joint, pmx_data.rigid_bodies, constraints_group)
                 except Exception as e:
-                    self._safe_log_error("PMX joint 作成エラー", joint, e)
+                    safe_log_error(self.logger, "PMX joint 作成エラー", joint, e)
 
         self.logger.info(
             f"PMX Bullet physics conversion complete: Rb={len(self.created_bullet_rigid_bodies)} "
@@ -638,32 +638,6 @@ class PhysicsConverter:
     # ------------------------------------------------------------------
     # Bullet 剛体作成
     # ------------------------------------------------------------------
-
-    def _safe_log_error(self, prefix: str, mmd_obj, error: Exception) -> None:
-        """
-        剛体/ジョイント作成失敗を安全にログ出力する。
-
-        ログ出力経路（カスタムハンドラ/フィルタや Maya API 由来）が
-        例外を投げても呼び出し元に伝播させず、最終的に必ず握りつぶす。
-        これにより 1 要素の失敗が import 全体を巻き込むのを防ぐ。
-
-        Args:
-            prefix: ログメッセージの接頭辞
-            mmd_obj: 失敗した MMD オブジェクト（name 属性を持つ想定）
-            error: 発生した例外
-        """
-        try:
-            name = getattr(mmd_obj, "name", "?")
-        except Exception:
-            name = "?"
-        try:
-            self.logger.error(f"{prefix} '{name}': {error}")
-        except Exception:
-            # ロガー自体が失敗した場合の最終フォールバック
-            try:
-                print(f"[MMD] {prefix} '{name}': {error}")
-            except Exception:
-                pass
 
     def _set_attr_clamped(self, node: str, attr: str, value: float) -> None:
         """
@@ -801,7 +775,7 @@ class PhysicsConverter:
         except Exception as e:
             # 1 剛体の失敗は握りつぶし、残りの剛体変換を続行する。
             # ログ出力自体が失敗しても import 全体を止めないよう防御する。
-            self._safe_log_error("Bullet 剛体作成エラー", rb, e)
+            safe_log_error(self.logger, "Bullet 剛体作成エラー", rb, e)
             return None
 
     def _attach_static_bullet_body_to_bone(
@@ -1252,7 +1226,7 @@ class PhysicsConverter:
                 spring_rot=joint.spring_rotation if hasattr(joint, "spring_rotation") else None,
             )
         except Exception as e:
-            self._safe_log_error("PMD joint 作成エラー", joint, e)
+            safe_log_error(self.logger, "PMD joint 作成エラー", joint, e)
             return None
 
     # ------------------------------------------------------------------
@@ -1294,7 +1268,7 @@ class PhysicsConverter:
                 spring_rot=spring_rot,
             )
         except Exception as e:
-            self._safe_log_error("PMX joint 作成エラー", joint, e)
+            safe_log_error(self.logger, "PMX joint 作成エラー", joint, e)
             return None
 
     # ------------------------------------------------------------------

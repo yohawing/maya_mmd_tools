@@ -42,7 +42,9 @@ from ..core.constants import (
     ATTR_MMD_TAIL_POS_INDEX,
 )
 from ..core.coordinate_transform import mmd_point_to_maya
-from ..core.logger import get_logger
+from types import SimpleNamespace
+
+from ..core.logger import get_logger, safe_log_error
 from .rig_converter import RigConverter
 
 
@@ -329,7 +331,12 @@ class BoneConverter:
                     )
                     self._refresh_joint_paths(maya_joints, joint_uuids)
                 except Exception as e:
-                    self.logger.error(f"Failed to parent {child_joint} to {parent_joint}: {e}")
+                    safe_log_error(
+                        self.logger,
+                        "Failed to parent",
+                        SimpleNamespace(name=f"{child_joint} to {parent_joint}"),
+                        e,
+                    )
 
         # ルートジョイントをスケルトングループにペアレント
         # 親を持たないジョイントを探す

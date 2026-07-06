@@ -7,7 +7,9 @@ import maya.cmds as cmds
 from mmd_tools.config.bone_aliases import get_bone_aliases, get_original_bone_name_aliases
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.core import maya_utils
-from mmd_tools.core.logger import get_logger
+from types import SimpleNamespace
+
+from mmd_tools.core.logger import get_logger, safe_log_error
 from mmd_tools.core.native.mmd_anim_runtime import is_rig_primitive_available
 
 
@@ -298,7 +300,12 @@ class RigConverter:
                 self.logger.info(f"Created IK handle '{ik_handle}' ({start_joint} -> {end_joint})")
 
             except Exception as e:
-                self.logger.error(f"Failed to create IK handle '{chain['ik_bone']}': {e}")
+                safe_log_error(
+                    self.logger,
+                    "Failed to create IK handle",
+                    SimpleNamespace(name=chain["ik_bone"]),
+                    e,
+                )
 
         return ik_handles
 
@@ -875,7 +882,12 @@ class RigConverter:
                     f"{self._append_node_type()} node '{node}': {source_joint} -> {target_joint} (ratio={ratio})"
                 )
             except Exception as e:
-                self.logger.error(f"Failed to create mmdAppend node '{target_joint}': {e}")
+                safe_log_error(
+                    self.logger,
+                    "Failed to create mmdAppend node",
+                    SimpleNamespace(name=target_joint),
+                    e,
+                )
 
         return nodes
 
@@ -1212,7 +1224,12 @@ class RigConverter:
                     f"{len(links_for_json)} links"
                 )
             except Exception as e:
-                self.logger.error(f"Failed to create mmdCcdIk node '{controller_joint}': {e}")
+                safe_log_error(
+                    self.logger,
+                    "Failed to create mmdCcdIk node",
+                    SimpleNamespace(name=controller_joint),
+                    e,
+                )
 
         return nodes
 
