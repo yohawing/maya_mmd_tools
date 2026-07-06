@@ -7,6 +7,7 @@ VertexMorph / physics データをPmxDataに変換して書き出す。
 
 import os
 
+from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.native import export_pmx_from_parts
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
@@ -47,6 +48,12 @@ class PmxExporter:
             ValueError: 入力データがPMXとして書き出せない場合。
             IOError: ファイル書き込みに失敗した場合。
         """
+        try:
+            self._export_pmx_model_impl(file_path, maya_data)
+        except (ValueError, TypeError) as e:
+            raise MMDExportException(f"Failed to export PMX file {file_path}: {e}") from e
+
+    def _export_pmx_model_impl(self, file_path: str, maya_data: dict) -> None:
         # --- validation ---
         vertices_raw = maya_data.get("vertices", [])
         faces_raw = maya_data.get("faces", [])

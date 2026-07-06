@@ -8,6 +8,7 @@ this class so it can be tested separately from the binary writer.
 import os
 from typing import Any, Iterable, Mapping, Optional
 
+from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
@@ -39,17 +40,20 @@ class VmdExporter:
         Returns:
             書き出しに使用した ``VmdData``。
         """
-        vmd_data = self.to_vmd_data(maya_data)
-        native_bytes = self._try_native_export(vmd_data)
-        if native_bytes is not None:
-            parent_dir = os.path.dirname(file_path)
-            if parent_dir:
-                os.makedirs(parent_dir, exist_ok=True)
-            with open(file_path, "wb") as handle:
-                handle.write(native_bytes)
-        else:
-            vmd_data.write_file(file_path)
-        return vmd_data
+        try:
+            vmd_data = self.to_vmd_data(maya_data)
+            native_bytes = self._try_native_export(vmd_data)
+            if native_bytes is not None:
+                parent_dir = os.path.dirname(file_path)
+                if parent_dir:
+                    os.makedirs(parent_dir, exist_ok=True)
+                with open(file_path, "wb") as handle:
+                    handle.write(native_bytes)
+            else:
+                vmd_data.write_file(file_path)
+            return vmd_data
+        except (ValueError, TypeError) as e:
+            raise MMDExportException(f"Failed to export VMD file {file_path}: {e}") from e
 
     def to_vmd_data(self, maya_data: Any) -> VmdData:
         """収集済みデータを ``VmdData`` に正規化する。"""

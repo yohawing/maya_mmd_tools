@@ -8,6 +8,7 @@ PmdDataに変換して書き出す。PMXエクスポータの最小スライス�
 
 import os
 
+from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.native import export_pmd_model_json
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.bone import PmdBone, PmdBoneType
@@ -67,6 +68,12 @@ class PmdExporter:
             ValueError: 入力データがPMDとして書き出せない場合。
             IOError: ファイル書き込みに失敗した場合。
         """
+        try:
+            self._export_pmd_model_impl(file_path, maya_data)
+        except (ValueError, TypeError) as e:
+            raise MMDExportException(f"Failed to export PMD file {file_path}: {e}") from e
+
+    def _export_pmd_model_impl(self, file_path: str, maya_data: dict) -> None:
         # --- validation ---
         vertices_raw = maya_data.get("vertices", [])
         faces_raw = maya_data.get("faces", [])
