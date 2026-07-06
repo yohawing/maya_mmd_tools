@@ -5,10 +5,12 @@ from ..qt_compat import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTreeWidget,
     QVBoxLayout,
     QWidget,
+    Qt,
 )
 from ..base_tab import BaseTab
 
@@ -56,10 +58,18 @@ class AnimationTab(BaseTab):
         self.picker_tabs.addTab(self.finger_page, "Finger")
 
         self.morph_page = QWidget()
-        morph_layout = QVBoxLayout(self.morph_page)
-        self.morph_placeholder = QLabel("Morph tab (Phase 3)")
-        self.morph_placeholder.setAlignment(0x0084)
-        morph_layout.addWidget(self.morph_placeholder)
+        morph_outer = QVBoxLayout(self.morph_page)
+        morph_outer.setContentsMargins(0, 0, 0, 0)
+        morph_scroll = QScrollArea()
+        morph_scroll.setWidgetResizable(True)
+        morph_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.morph_scroll_content = QWidget()
+        self.morph_groups_layout = QVBoxLayout(self.morph_scroll_content)
+        self.morph_groups_layout.setContentsMargins(4, 4, 4, 4)
+        self.morph_groups_layout.setSpacing(2)
+        self.morph_groups_layout.addStretch()
+        morph_scroll.setWidget(self.morph_scroll_content)
+        morph_outer.addWidget(morph_scroll)
         self.picker_tabs.addTab(self.morph_page, "Morph")
 
         self.other_page = QWidget()

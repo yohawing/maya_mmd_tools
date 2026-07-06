@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -154,6 +155,35 @@ class _FakeTreeWidget:
         pass
 
 
+class _FakeLayoutItem:
+    def __init__(self, widget=None):
+        self._widget = widget
+
+    def widget(self):
+        return self._widget
+
+
+class _FakeWidget:
+    def deleteLater(self):
+        pass
+
+
+class _FakeLayout:
+    def __init__(self):
+        self._items: list[_FakeLayoutItem] = [_FakeLayoutItem()]  # stretch
+
+    def count(self):
+        return len(self._items)
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            return self._items.pop(index)
+        return _FakeLayoutItem()
+
+    def insertWidget(self, index, widget):
+        self._items.insert(index, _FakeLayoutItem(widget))
+
+
 class _FakeView:
     def __init__(self):
         self.model_combo = _FakeComboBox()
@@ -163,7 +193,7 @@ class _FakeView:
         self.display_frame_tree = _FakeTreeWidget()
         self.body_placeholder = _FakeLabel()
         self.finger_placeholder = _FakeLabel()
-        self.morph_placeholder = _FakeLabel()
+        self.morph_groups_layout = _FakeLayout()
         self.picker_tabs = type("FakeTabWidget", (), {"setObjectName": lambda s, _: None})()
 
 
@@ -186,22 +216,46 @@ class _FakeAppState:
 
 
 class _FakeAdapter:
-    def __init__(self, joints_by_index=None, display_json=None):
+    def __init__(self, joints_by_index=None, display_json=None, blend_shapes=None):
         self._joints_by_index = joints_by_index or {}
         self._display_json = display_json
+        self._blend_shapes = blend_shapes or {}
         self.selected = []
+        self._set_attrs = {}
 
     def ls(self, nodes, type=None):
         return nodes
 
     def list_relatives(self, node, **kwargs):
+        node_type = kwargs.get("type")
+        if node_type == "mesh":
+            return list(self._blend_shapes.keys()) if self._blend_shapes else []
         return list(self._joints_by_index.values())
+
+    def list_history(self, node):
+        return list(self._blend_shapes.get(node, {}).keys())
+
+    def node_type(self, node):
+        for mesh_bs in self._blend_shapes.values():
+            if node in mesh_bs:
+                return mesh_bs[node]["type"]
+        return "transform"
+
+    def alias_attr(self, node, query=False):
+        for mesh_bs in self._blend_shapes.values():
+            if node in mesh_bs and "aliases" in mesh_bs[node]:
+                return mesh_bs[node]["aliases"]
+        return []
 
     def attribute_exists(self, attr, node):
         if attr == "mmd_bone_index":
             return node in self._joints_by_index.values()
         if attr == "mmd_display_frames_json":
             return self._display_json is not None
+        if attr == "mmd_blendshape_morph_names_json":
+            for mesh_bs in self._blend_shapes.values():
+                if node in mesh_bs and "morph_json" in mesh_bs[node]:
+                    return True
         return False
 
     def get_attr(self, attr_path):
@@ -213,7 +267,14 @@ class _FakeAdapter:
             return -1
         if attr == "mmd_display_frames_json":
             return self._display_json
+        if attr == "mmd_blendshape_morph_names_json":
+            for mesh_bs in self._blend_shapes.values():
+                if node in mesh_bs and "morph_json" in mesh_bs[node]:
+                    return json.dumps(mesh_bs[node]["morph_json"])
         return None
+
+    def set_attr(self, attr_path, value):
+        self._set_attrs[attr_path] = value
 
     def select(self, nodes, replace=True):
         self.selected = list(nodes)
@@ -377,6 +438,113 @@ class TestAnimationPresenter(unittest.TestCase):
         presenter.on_model_list_updated(["model_A", "model_B"])
 
         self.assertEqual(len(view.model_combo._items), 2)
+
+
+SAMPLE_BLEND_SHAPES = {
+    "body_mesh": {
+        "blendShape1": {
+            "type": "blendShape",
+            "morph_json": {"0": "笑い", "1": "怒り", "2": "まばたき"},
+            "aliases": ["笑い", "weight[0]", "怒り", "weight[1]", "まばたき", "weight[2]"],
+        }
+    }
+}
+
+
+class TestAnimationPresenterMorph(unittest.TestCase):
+    _POPULATE_PATH = (
+        "mmd_tools.ui.presenters.animation_presenter"
+        ".AnimationPresenter._populate_morph_groups"
+    )
+
+    def _make_with_morphs(self, blend_shapes=None, model_root="test_model"):
+        view = _FakeView()
+        app_state = _FakeAppState(model_root=model_root)
+        adapter = _FakeAdapter(blend_shapes=blend_shapes or {})
+        with patch(self._POPULATE_PATH):
+            presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
+        return presenter, view, app_state, adapter
+
+    def test_collect_morph_infos(self):
+        presenter, _, _, _ = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        infos = presenter._collect_morph_infos("test_model")
+        names = [m.name for m in infos]
+        self.assertIn("笑い", names)
+        self.assertIn("怒り", names)
+        self.assertIn("まばたき", names)
+
+    def test_morph_targets_tracked(self):
+        presenter, _, _, _ = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        self.assertEqual(presenter._morph_targets["笑い"], [("blendShape1", 0)])
+        self.assertEqual(presenter._morph_targets["怒り"], [("blendShape1", 1)])
+
+    def test_collect_empty_blend_shapes(self):
+        presenter, _, _, _ = self._make_with_morphs(blend_shapes={})
+        infos = presenter._collect_morph_infos("test_model")
+        self.assertEqual(len(infos), 0)
+
+    def test_clear_morph_tab(self):
+        presenter, view, _, _ = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        presenter._morph_sliders["test"] = object()
+        presenter._morph_targets["test"] = "bs1"
+
+        presenter._clear_morph_tab()
+
+        self.assertEqual(len(presenter._morph_sliders), 0)
+        self.assertEqual(len(presenter._morph_targets), 0)
+
+    def test_morph_slider_sets_weight(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        presenter._on_morph_slider_changed("笑い", 50, _FakeLabel("0"))
+
+        self.assertIn("blendShape1.weight[0]", adapter._set_attrs)
+        self.assertAlmostEqual(adapter._set_attrs["blendShape1.weight[0]"], 0.5)
+
+    def test_morph_slider_unknown_morph_noop(self):
+        presenter, _, _, adapter = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        presenter._on_morph_slider_changed("unknown", 50, _FakeLabel("0"))
+        self.assertEqual(len(adapter._set_attrs), 0)
+
+    def test_model_clear_resets_morph_state(self):
+        presenter, _, app_state, _ = self._make_with_morphs(
+            blend_shapes=SAMPLE_BLEND_SHAPES,
+        )
+        with patch(self._POPULATE_PATH):
+            app_state.current_model_changed.emit("")
+        self.assertEqual(len(presenter._morph_targets), 0)
+
+    def test_split_morph_drives_all_nodes(self):
+        split_bs = {
+            "mesh_face": {
+                "bs_face": {
+                    "type": "blendShape",
+                    "morph_json": {"0": "笑い"},
+                }
+            },
+            "mesh_hair": {
+                "bs_hair": {
+                    "type": "blendShape",
+                    "morph_json": {"0": "笑い"},
+                }
+            },
+        }
+        presenter, _, _, adapter = self._make_with_morphs(blend_shapes=split_bs)
+        self.assertEqual(len(presenter._morph_targets["笑い"]), 2)
+
+        presenter._on_morph_slider_changed("笑い", 100, _FakeLabel("0"))
+
+        self.assertAlmostEqual(adapter._set_attrs["bs_face.weight[0]"], 1.0)
+        self.assertAlmostEqual(adapter._set_attrs["bs_hair.weight[0]"], 1.0)
 
 
 if __name__ == "__main__":
