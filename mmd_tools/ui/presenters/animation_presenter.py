@@ -7,10 +7,12 @@ from typing import TYPE_CHECKING
 from ...core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_NAME,
     ATTR_MMD_DISPLAY_FRAMES_JSON,
 )
 from ...core.display_frame_resolver import PickerGroup, resolve_display_frames
 from ...core.logger import get_logger
+from ...core.mmd_bone_names import normalize_mmd_bone_name
 from ...core.morph_metadata_reader import (
     CategorizedMorphs,
     MorphInfo,
@@ -40,6 +42,7 @@ class AnimationPresenter:
             maya_adapter = MayaCmdsAdapter()
         self.maya_adapter = maya_adapter
         self._picker_groups: list[PickerGroup] = []
+        self._bone_name_to_joint: dict[str, str] = {}
         self._morph_sliders: dict[str, object] = {}
         self._morph_targets: dict[str, list[tuple[str, int]]] = {}
         self.connect_signals()
@@ -54,6 +57,9 @@ class AnimationPresenter:
         self.view.refresh_btn.clicked.connect(self.on_refresh_clicked)
         self.view.clear_btn.clicked.connect(self.on_clear_clicked)
         self.view.display_frame_tree.itemClicked.connect(self.on_display_frame_item_clicked)
+        self.view.body_picker.region_clicked.connect(self.on_body_region_clicked)
+        self.view.body_picker.goto_finger_clicked.connect(self.on_goto_finger)
+        self.view.body_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
 
     def disconnect_signals(self):
         try:
@@ -103,10 +109,63 @@ class AnimationPresenter:
         except Exception:
             self.view.status_label.setText(f"(not found: {node_name})")
 
+    def on_body_region_clicked(self, region_id: str):
+        from ..widgets.body_picker_widget import _BODY_REGIONS
+
+        for region in _BODY_REGIONS:
+            if region["id"] == region_id:
+                bone_name = region["bone_name"]
+                normalized = normalize_mmd_bone_name(bone_name) or bone_name
+                joint = self._bone_name_to_joint.get(normalized)
+                if joint:
+                    try:
+                        self.maya_adapter.select([joint], replace=True)
+                        self.view.status_label.setText(joint)
+                    except Exception:
+                        self.view.status_label.setText(f"(not found: {bone_name})")
+                else:
+                    self.view.status_label.setText(f"(unmapped: {bone_name})")
+                return
+
+    def on_goto_finger(self):
+        self.view.picker_tabs.setCurrentIndex(self.view.TAB_FINGER)
+
+    def on_mirror_selection(self):
+        _MIRROR_PAIRS = {"左": "右", "右": "左"}
+        try:
+            sel = self.maya_adapter.ls(selection=True) or []
+        except Exception:
+            return
+        joint_to_bone = {v: k for k, v in self._bone_name_to_joint.items()}
+        mirrored = []
+        for node in sel:
+            bone_name = joint_to_bone.get(node)
+            if bone_name:
+                found = False
+                for jp, mirror_jp in _MIRROR_PAIRS.items():
+                    if jp in bone_name:
+                        mirror_bone = bone_name.replace(jp, mirror_jp, 1)
+                        mirror_joint = self._bone_name_to_joint.get(mirror_bone)
+                        if mirror_joint:
+                            mirrored.append(mirror_joint)
+                            found = True
+                            break
+                if not found:
+                    mirrored.append(node)
+            else:
+                mirrored.append(node)
+        if mirrored:
+            try:
+                self.maya_adapter.select(mirrored, replace=True)
+                self.view.status_label.setText(", ".join(mirrored))
+            except Exception:
+                pass
+
     # -- Internal ------------------------------------------------------
 
     def _reload_for_model(self, model_root: str):
         bone_map = self._build_bone_index_map(model_root)
+        self._bone_name_to_joint = self._build_bone_name_map(model_root)
         display_json = self._read_display_frames_json(model_root)
         self._picker_groups = resolve_display_frames(display_json, bone_map)
         self._populate_display_frame_tree(self._picker_groups)
@@ -115,6 +174,7 @@ class AnimationPresenter:
 
     def _clear_all(self):
         self._picker_groups = []
+        self._bone_name_to_joint.clear()
         self.view.display_frame_tree.clear()
         self._clear_morph_tab()
         self.view.status_label.setText("")
@@ -151,6 +211,28 @@ class AnimationPresenter:
             except Exception:
                 continue
         return bone_map
+
+    def _build_bone_name_map(self, model_root: str) -> dict[str, str]:
+        try:
+            joints = self.maya_adapter.ls(
+                self.maya_adapter.list_relatives(model_root, allDescendents=True, type="joint") or [],
+                type="joint",
+            ) or []
+        except Exception:
+            return {}
+
+        name_map: dict[str, str] = {}
+        for joint in joints:
+            try:
+                if not self.maya_adapter.attribute_exists(ATTR_MMD_BONE_NAME, joint):
+                    continue
+                bone_name = self.maya_adapter.get_attr(f"{joint}.{ATTR_MMD_BONE_NAME}")
+                if bone_name:
+                    normalized = normalize_mmd_bone_name(bone_name) or bone_name
+                    name_map[normalized] = joint
+            except Exception:
+                continue
+        return name_map
 
     def _read_display_frames_json(self, model_root: str) -> str | None:
         try:

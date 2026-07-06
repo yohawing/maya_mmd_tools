@@ -184,17 +184,40 @@ class _FakeLayout:
         self._items.insert(index, _FakeLayoutItem(widget))
 
 
+class _FakeBodyPicker:
+    def __init__(self):
+        self.region_clicked = _FakeSignal()
+        self.goto_finger_clicked = _FakeSignal()
+        self.mirror_selection_clicked = _FakeSignal()
+        self.ik_toggled = _FakeSignal()
+
+
+class _FakeTabWidget:
+    def __init__(self):
+        self._current = 0
+
+    def setObjectName(self, _):
+        pass
+
+    def setCurrentIndex(self, idx):
+        self._current = idx
+
+
 class _FakeView:
+    TAB_BODY = 0
+    TAB_FINGER = 1
+    TAB_MORPH = 2
+    TAB_OTHER = 3
+
     def __init__(self):
         self.model_combo = _FakeComboBox()
         self.refresh_btn = _FakeButton()
         self.clear_btn = _FakeButton()
         self.status_label = _FakeLabel()
         self.display_frame_tree = _FakeTreeWidget()
-        self.body_placeholder = _FakeLabel()
-        self.finger_placeholder = _FakeLabel()
+        self.body_picker = _FakeBodyPicker()
         self.morph_groups_layout = _FakeLayout()
-        self.picker_tabs = type("FakeTabWidget", (), {"setObjectName": lambda s, _: None})()
+        self.picker_tabs = _FakeTabWidget()
 
 
 class _FakeAppState:
@@ -216,15 +239,19 @@ class _FakeAppState:
 
 
 class _FakeAdapter:
-    def __init__(self, joints_by_index=None, display_json=None, blend_shapes=None):
+    def __init__(self, joints_by_index=None, display_json=None,
+                 blend_shapes=None, bone_names=None):
         self._joints_by_index = joints_by_index or {}
         self._display_json = display_json
         self._blend_shapes = blend_shapes or {}
+        self._bone_names = bone_names or {}
         self.selected = []
         self._set_attrs = {}
 
-    def ls(self, nodes, type=None):
-        return nodes
+    def ls(self, nodes=None, type=None, selection=False):
+        if selection:
+            return list(self.selected)
+        return nodes if nodes else []
 
     def list_relatives(self, node, **kwargs):
         node_type = kwargs.get("type")
@@ -250,6 +277,8 @@ class _FakeAdapter:
     def attribute_exists(self, attr, node):
         if attr == "mmd_bone_index":
             return node in self._joints_by_index.values()
+        if attr == "mmd_bone_name":
+            return node in self._bone_names
         if attr == "mmd_display_frames_json":
             return self._display_json is not None
         if attr == "mmd_blendshape_morph_names_json":
@@ -265,6 +294,8 @@ class _FakeAdapter:
                 if name == node:
                     return idx
             return -1
+        if attr == "mmd_bone_name":
+            return self._bone_names.get(node)
         if attr == "mmd_display_frames_json":
             return self._display_json
         if attr == "mmd_blendshape_morph_names_json":
@@ -438,6 +469,65 @@ class TestAnimationPresenter(unittest.TestCase):
         presenter.on_model_list_updated(["model_A", "model_B"])
 
         self.assertEqual(len(view.model_combo._items), 2)
+
+
+class TestBodyPickerPresenter(unittest.TestCase):
+    def _make_with_bones(self, bone_names=None, model_root="test_model"):
+        view = _FakeView()
+        app_state = _FakeAppState(model_root=model_root)
+        joints_by_index = {}
+        bn = bone_names or {}
+        for i, joint in enumerate(bn.keys()):
+            joints_by_index[i] = joint
+        adapter = _FakeAdapter(
+            joints_by_index=joints_by_index,
+            bone_names=bn,
+        )
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter"
+            ".AnimationPresenter._populate_morph_groups"
+        ):
+            presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
+        return presenter, view, app_state, adapter
+
+    def test_region_click_selects_bone(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"head_jnt": "頭", "neck_jnt": "首"},
+        )
+        presenter.on_body_region_clicked("head")
+        self.assertEqual(adapter.selected, ["head_jnt"])
+        self.assertEqual(view.status_label.text(), "head_jnt")
+
+    def test_region_click_unmapped_bone(self):
+        presenter, view, _, adapter = self._make_with_bones(bone_names={})
+        presenter.on_body_region_clicked("head")
+        self.assertEqual(adapter.selected, [])
+        self.assertIn("unmapped", view.status_label.text())
+
+    def test_goto_finger_switches_tab(self):
+        presenter, view, _, _ = self._make_with_bones()
+        presenter.on_goto_finger()
+        self.assertEqual(view.picker_tabs._current, view.TAB_FINGER)
+
+    def test_mirror_selection(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"left_arm_jnt": "左腕", "right_arm_jnt": "右腕"},
+        )
+        adapter.selected = ["left_arm_jnt"]
+        presenter.on_mirror_selection()
+        self.assertIn("right_arm_jnt", adapter.selected)
+
+    def test_bone_name_map_cleared_on_model_clear(self):
+        presenter, _, app_state, _ = self._make_with_bones(
+            bone_names={"head_jnt": "頭"},
+        )
+        self.assertGreater(len(presenter._bone_name_to_joint), 0)
+        with patch(
+            "mmd_tools.ui.presenters.animation_presenter"
+            ".AnimationPresenter._populate_morph_groups"
+        ):
+            app_state.current_model_changed.emit("")
+        self.assertEqual(len(presenter._bone_name_to_joint), 0)
 
 
 SAMPLE_BLEND_SHAPES = {

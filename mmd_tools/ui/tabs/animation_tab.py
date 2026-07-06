@@ -13,6 +13,7 @@ from ..qt_compat import (
     Qt,
 )
 from ..base_tab import BaseTab
+from ..widgets.body_picker_widget import BodyPickerWidget
 
 
 class AnimationTab(BaseTab):
@@ -45,9 +46,10 @@ class AnimationTab(BaseTab):
 
         self.body_page = QWidget()
         body_layout = QVBoxLayout(self.body_page)
-        self.body_placeholder = QLabel("Body picker (Phase 2)")
-        self.body_placeholder.setAlignment(0x0084)  # AlignCenter
-        body_layout.addWidget(self.body_placeholder)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_picker = BodyPickerWidget()
+        body_layout.addWidget(self.body_picker, 0, Qt.AlignCenter)
+        body_layout.addStretch()
         self.picker_tabs.addTab(self.body_page, "Body")
 
         self.finger_page = QWidget()
