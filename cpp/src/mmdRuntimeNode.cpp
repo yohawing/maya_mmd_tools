@@ -31,7 +31,7 @@
 #include <vector>
 #include <cstring>
 
-const MTypeId MmdRuntimeNode::id(0x00123456); // TODO: 正式な ID を取得して置き換え
+const MTypeId MmdRuntimeNode::id(0x00128006);
 
 MObject MmdRuntimeNode::aTime;
 MObject MmdRuntimeNode::aPmxData;

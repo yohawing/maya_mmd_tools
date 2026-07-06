@@ -6,33 +6,9 @@ import maya.cmds as cmds
 
 from mmd_tools.config.bone_aliases import get_bone_aliases, get_original_bone_name_aliases
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-from mmd_tools.core import maya_utils, settings_keys as setting_keys
+from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime import is_rig_primitive_available
-from mmd_tools.core.settings import settings
-
-
-def _node_type_available(node_type: str) -> bool:
-    """Return True when Maya can create the requested DG node type."""
-    try:
-        probe = cmds.createNode(node_type, name=f"{node_type}_availability_probe#")
-        cmds.delete(probe)
-        return True
-    except Exception:
-        return False
-
-
-def _prefer_cpp_rig_nodes() -> bool:
-    """Use C++ rig prototype nodes only when explicitly enabled and loaded."""
-    if not settings.get(setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES, False):
-        return False
-    try:
-        loaded_plugins = set(cmds.pluginInfo(query=True, listPlugins=True) or [])
-    except Exception:
-        loaded_plugins = set()
-    if "mmd_tools_cpp" not in loaded_plugins:
-        return False
-    return _node_type_available("mmdAppendNode") and _node_type_available("mmdCcdIkNode")
 
 
 def _node_leaf_name(node_name: str) -> str:
@@ -53,13 +29,14 @@ class RigConverter:
         """
         self.logger = get_logger(__name__)
         self.original_bone_names = {}  # ボーンインデックスから元の日本語名へのマッピング
-        self._use_cpp_rig_nodes = _prefer_cpp_rig_nodes()
 
     def _append_node_type(self) -> str:
-        return "mmdAppendNode" if self._use_cpp_rig_nodes else "mmdAppend"
+        """Return the unified mmdAppend node type name (C++ / Python share the same typeName)."""
+        return "mmdAppend"
 
     def _ccd_ik_node_type(self) -> str:
-        return "mmdCcdIkNode" if self._use_cpp_rig_nodes else "mmdCcdIk"
+        """Return the unified mmdCcdIk node type name (C++ / Python share the same typeName)."""
+        return "mmdCcdIk"
 
     def setup_pmx_rig(
         self,
@@ -1194,8 +1171,15 @@ class RigConverter:
 
                 # Leave the public goal input unconnected for generated rigs.
                 # mmdCcdIk reconstructs the pre-IK controller position from
-                # controllerBoneSlot + inputTranslate in PMX/no-JO space. External
-                # users can still connect goal/goalWorldMatrix after import.
+                # controllerBoneSlot + inputTranslate.  External goal connections
+                # remain supported and override that internal controller goal.
+                self._connect_ik_goal_world_matrix_if_safe(
+                    node,
+                    controller_joint,
+                    link_slots,
+                    slot_to_pmx,
+                    maya_joints,
+                )
 
                 # inputRotate: exclude own links AND downstream chains' links.
                 # Downstream = higher controllerBoneIndex (evaluated later in MMD).

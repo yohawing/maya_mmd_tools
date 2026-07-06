@@ -14,6 +14,7 @@
 
 #include <maya/MFnPlugin.h>
 #include <maya/MGlobal.h>
+#include <maya/MNodeClass.h>
 #include <maya/MStatus.h>
 
 #include "mmdRuntimeNode.h"
@@ -23,6 +24,21 @@
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
+
+// Track whether C++ actually registered mmdAppend / mmdCcdIk (may be
+// skipped when the Python plugin already registered them with the same typeId).
+static bool sCppRegisteredAppend = false;
+static bool sCppRegisteredCcdIk = false;
+
+static bool isNodeTypeRegistered(const MString& typeName, const MTypeId& expectedId)
+{
+    MStatus status;
+    MNodeClass cls(typeName, &status);
+    if (status != MS::kSuccess) {
+        return false;
+    }
+    return cls.typeId() == expectedId;
+}
 
 MStatus initializePlugin(MObject obj)
 {
@@ -46,25 +62,37 @@ MStatus initializePlugin(MObject obj)
                                     MmdFastLoad::newSyntax);
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
-    // mmdAppendNode 登録 (Track 4, Phase B)
-    status = plugin.registerNode(
-        "mmdAppendNode",
-        MmdAppendNode::id,
-        MmdAppendNode::creator,
-        MmdAppendNode::initialize);
-    CHECK_MSTATUS_AND_RETURN_IT(status);
+    // mmdAppend 登録 (Python 版と統一した typeName)
+    // Python 版が同じ typeId で登録済みの場合はスキップ
+    if (isNodeTypeRegistered("mmdAppend", MmdAppendNode::id)) {
+        MGlobal::displayInfo("mmdAppend already registered by Python plugin; skipping C++ registration.");
+        sCppRegisteredAppend = false;
+    } else {
+        status = plugin.registerNode(
+            "mmdAppend",
+            MmdAppendNode::id,
+            MmdAppendNode::creator,
+            MmdAppendNode::initialize);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredAppend = true;
+        MGlobal::displayInfo("mmdAppend node registered.");
+    }
 
-    MGlobal::displayInfo("mmdAppendNode (Phase B) registered.");
-
-    // mmdCcdIkNode 登録 (Track 4, Phase A - CCDIK)
-    status = plugin.registerNode(
-        "mmdCcdIkNode",
-        MmdCcdIkNode::id,
-        MmdCcdIkNode::creator,
-        MmdCcdIkNode::initialize);
-    CHECK_MSTATUS_AND_RETURN_IT(status);
-
-    MGlobal::displayInfo("mmdCcdIkNode (Phase A) registered.");
+    // mmdCcdIk 登録 (Python 版と統一した typeName)
+    // Python 版が同じ typeId で登録済みの場合はスキップ
+    if (isNodeTypeRegistered("mmdCcdIk", MmdCcdIkNode::id)) {
+        MGlobal::displayInfo("mmdCcdIk already registered by Python plugin; skipping C++ registration.");
+        sCppRegisteredCcdIk = false;
+    } else {
+        status = plugin.registerNode(
+            "mmdCcdIk",
+            MmdCcdIkNode::id,
+            MmdCcdIkNode::creator,
+            MmdCcdIkNode::initialize);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredCcdIk = true;
+        MGlobal::displayInfo("mmdCcdIk node registered.");
+    }
 
     return MS::kSuccess;
 }
@@ -81,11 +109,18 @@ MStatus uninitializePlugin(MObject obj)
     status = plugin.deregisterCommand("mmdFastLoad");
     CHECK_MSTATUS_AND_RETURN_IT(status);
 
-    status = plugin.deregisterNode(MmdAppendNode::id);
-    CHECK_MSTATUS_AND_RETURN_IT(status);
+    // C++ が登録したノードのみ deregister
+    if (sCppRegisteredAppend) {
+        status = plugin.deregisterNode(MmdAppendNode::id);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredAppend = false;
+    }
 
-    status = plugin.deregisterNode(MmdCcdIkNode::id);
-    CHECK_MSTATUS_AND_RETURN_IT(status);
+    if (sCppRegisteredCcdIk) {
+        status = plugin.deregisterNode(MmdCcdIkNode::id);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredCcdIk = false;
+    }
 
     MGlobal::displayInfo("maya_mmd_tools_cpp plugin unloaded.");
     return MS::kSuccess;

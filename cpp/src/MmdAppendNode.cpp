@@ -12,6 +12,7 @@
 
 #include "MmdAppendNode.h"
 
+#include <maya/MFnAttribute.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnCompoundAttribute.h>
 #include <maya/MDataHandle.h>
@@ -199,7 +200,7 @@ void setAngle3OutputsDegrees(
 }
 
 
-const MTypeId MmdAppendNode::id(0x00123457); // 仮 ID (0x00123456 の次)
+const MTypeId MmdAppendNode::id(0x00128001);
 
 // --- 入力: inputTranslate ---
 MObject MmdAppendNode::aInputTranslate;
@@ -434,52 +435,59 @@ MStatus MmdAppendNode::initialize() {
     MStatus status;
     MFnNumericAttribute nAttr;
 
-    // --- 入力: inputTranslate(double3) ---
+    // --- Legacy 入力 (hidden): inputTranslate(double3) ---
     aInputTranslate = createDouble3Attribute(
         "inputTranslate", "it",
         aInputTranslateX, aInputTranslateY, aInputTranslateZ, 0.0);
     addAttribute(aInputTranslate);
+    MFnAttribute(aInputTranslate).setHidden(true);
 
-    // --- 入力: inputRotate(double3) ---
+    // --- Legacy 入力 (hidden): inputRotate(double3) ---
     aInputRotate = createDouble3Attribute(
         "inputRotate", "ir",
         aInputRotateX, aInputRotateY, aInputRotateZ, 0.0);
     addAttribute(aInputRotate);
+    MFnAttribute(aInputRotate).setHidden(true);
 
-    // --- 入力: parentTranslate(double3) ---
+    // --- Legacy 入力 (hidden): parentTranslate(double3) ---
     aParentTranslate = createDouble3Attribute(
         "parentTranslate", "pt",
         aParentTranslateX, aParentTranslateY, aParentTranslateZ, 0.0);
     addAttribute(aParentTranslate);
+    MFnAttribute(aParentTranslate).setHidden(true);
 
-    // --- 入力: parentRotate(double3) ---
+    // --- Legacy 入力 (hidden): parentRotate(double3) ---
     aParentRotate = createDouble3Attribute(
         "parentRotate", "pr",
         aParentRotateX, aParentRotateY, aParentRotateZ, 0.0);
     addAttribute(aParentRotate);
+    MFnAttribute(aParentRotate).setHidden(true);
 
-    // --- 入力: grantRate(double) ---
+    // --- Legacy 入力 (hidden): grantRate(double) ---
     aGrantRate = nAttr.create("grantRate", "gr", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
+    nAttr.setHidden(true);
     addAttribute(aGrantRate);
 
-    // --- 入力: enableTranslate(bool) ---
+    // --- Legacy 入力 (hidden): enableTranslate(bool) ---
     aEnableTranslate = nAttr.create("enableTranslate", "et", MFnNumericData::kBoolean, true, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
+    nAttr.setHidden(true);
     addAttribute(aEnableTranslate);
 
-    // --- 入力: enableRotate(bool) ---
+    // --- Legacy 入力 (hidden): enableRotate(bool) ---
     aEnableRotate = nAttr.create("enableRotate", "er", MFnNumericData::kBoolean, true, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
+    nAttr.setHidden(true);
     addAttribute(aEnableRotate);
 
     aBaseTranslate = createDouble3Attribute(

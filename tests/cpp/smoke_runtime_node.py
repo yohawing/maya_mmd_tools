@@ -16,8 +16,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE_TYPE = "mmdRuntimeInstance"
-APPEND_NODE_TYPE = "mmdAppendNode"
-CCDIK_NODE_TYPE = "mmdCcdIkNode"
+APPEND_NODE_TYPE = "mmdAppend"
+CCDIK_NODE_TYPE = "mmdCcdIk"
 FAST_LOAD_MODEL = ROOT / "tests" / "data" / "mmt_test_model.pmx"
 FAST_IMPORT_SKIN_MODEL = ROOT / "tests" / "data" / "for_unit_test" / "test_1bone_cube.pmx"
 FAST_LOAD_MORPH_MODEL = ROOT / "tests" / "data" / "test_morph_model.pmx"
@@ -415,23 +415,21 @@ def main() -> int:
         print(f"OK: loaded {plugin_path}")
         print(f"OK: created {node} ({NODE_TYPE})")
 
-        from mmd_tools.core import settings
         from mmd_tools.converters.rig_converter import RigConverter
         from mmd_tools.converters import vmd_runtime_rig_helper as vmd_runtime_rig_helper_mod
 
-        settings.set("import.native.use_cpp_rig_nodes", True)
         rig_converter = RigConverter()
         if rig_converter._append_node_type() != APPEND_NODE_TYPE:
             raise RuntimeError(
-                f"RigConverter should prefer {APPEND_NODE_TYPE} when C++ plugin is loaded, "
+                f"RigConverter should return unified {APPEND_NODE_TYPE}, "
                 f"got {rig_converter._append_node_type()}"
             )
         if rig_converter._ccd_ik_node_type() != CCDIK_NODE_TYPE:
             raise RuntimeError(
-                f"RigConverter should prefer {CCDIK_NODE_TYPE} when C++ plugin is loaded, "
+                f"RigConverter should return unified {CCDIK_NODE_TYPE}, "
                 f"got {rig_converter._ccd_ik_node_type()}"
             )
-        print("OK: RigConverter prefers C++ rig node types when mmd_tools_cpp is loaded")
+        print("OK: RigConverter returns unified rig node type names")
 
         result = cmds.mmdFastLoad(f=str(FAST_LOAD_MODEL), n="mmt_fast_smoke", s=1.0)
         if not result or len(result) != 2:

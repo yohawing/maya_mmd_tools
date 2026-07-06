@@ -1,21 +1,17 @@
 /**
  * MmdCcdIkNode.h
  *
- * Maya カスタムノード: mmdCcdIkNode
+ * Maya カスタムノード: mmdCcdIk
  *
- * Phase A:
- * - 登録可能な MPxNode, TypeId 0x00123458
- * - 属性: inputRoot(double3), inputEffector(double3), target(double3),
- *          enabled(bool default true),
- *          iterations(int default 1), angleLimit(double default 180.0),
- *          outputRotate(double3 degrees), outputAngle(double degrees),
- *          solved(bool)
- * - compute: 1-link analytic CCDIK (Z 軸回転のみ)
- *   root->effector vector を root->target vector へ近づける Z 軸角度を
- *   atan2/cross/dot で計算し、iterations * angleLimit でクランプして
- *   outputRotate=(0,0,clampedAngleDeg), outputAngle=clampedAngleDeg,
- *   solved=true を出力。
- *   enabled=false またはゼロ長 vector 時は (0,0,0), 0, solved=false。
+ * TypeId 0x00128002 (Python 版と統一)
+ *
+ * 属性: inputRoot(double3), inputEffector(double3), target(double3),
+ *        enabled(bool default true),
+ *        iterations(int default 1), angleLimit(double default 180.0),
+ *        outputRotate(double3 degrees), outputAngle(double degrees),
+ *        solved(bool)
+ *
+ * compute: CCD-IK (1-link 解析解 + multi-link FFI)
  */
 
 #pragma once
@@ -125,19 +121,22 @@ private:
         const MString& shortName,
         MObject& childX,
         MObject& childY,
-        MObject& childZ);
+        MObject& childZ,
+        const MString& childShortPrefix = "");
 
     static MObject createAngle3ArrayOutputAttribute(
         const MString& longName,
         const MString& shortName,
         MObject& childX,
         MObject& childY,
-        MObject& childZ);
+        MObject& childZ,
+        const MString& childShortPrefix = "");
 
     static MObject createDouble3ArrayAttribute(
         const MString& longName,
         const MString& shortName,
         MObject& childX,
         MObject& childY,
-        MObject& childZ);
+        MObject& childZ,
+        const MString& childShortPrefix = "");
 };

@@ -9,6 +9,7 @@
 
 #include "MmdCcdIkNode.h"
 
+#include <maya/MFnAttribute.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnCompoundAttribute.h>
 #include <maya/MFnTypedAttribute.h>
@@ -792,7 +793,7 @@ bool solveChainJsonIk(
 }
 }
 
-const MTypeId MmdCcdIkNode::id(0x00123458);
+const MTypeId MmdCcdIkNode::id(0x00128002);
 
 // --- 入力: inputRoot ---
 MObject MmdCcdIkNode::aInputRoot;
@@ -917,25 +918,28 @@ MObject MmdCcdIkNode::createAngle3ArrayAttribute(
     const MString& shortName,
     MObject& childX,
     MObject& childY,
-    MObject& childZ)
+    MObject& childZ,
+    const MString& childShortPrefix)
 {
     MStatus status;
     MFnUnitAttribute uAttr;
     MFnCompoundAttribute cAttr;
 
-    childX = uAttr.create(longName + "ElementX", shortName + "x", MFnUnitAttribute::kAngle, 0.0, &status);
+    const MString csp = childShortPrefix.length() > 0 ? childShortPrefix : shortName;
+
+    childX = uAttr.create(longName + "ElementX", csp + "x", MFnUnitAttribute::kAngle, 0.0, &status);
     uAttr.setStorable(true);
     uAttr.setKeyable(true);
     uAttr.setWritable(true);
     uAttr.setReadable(true);
 
-    childY = uAttr.create(longName + "ElementY", shortName + "y", MFnUnitAttribute::kAngle, 0.0, &status);
+    childY = uAttr.create(longName + "ElementY", csp + "y", MFnUnitAttribute::kAngle, 0.0, &status);
     uAttr.setStorable(true);
     uAttr.setKeyable(true);
     uAttr.setWritable(true);
     uAttr.setReadable(true);
 
-    childZ = uAttr.create(longName + "ElementZ", shortName + "z", MFnUnitAttribute::kAngle, 0.0, &status);
+    childZ = uAttr.create(longName + "ElementZ", csp + "z", MFnUnitAttribute::kAngle, 0.0, &status);
     uAttr.setStorable(true);
     uAttr.setKeyable(true);
     uAttr.setWritable(true);
@@ -958,10 +962,11 @@ MObject MmdCcdIkNode::createAngle3ArrayOutputAttribute(
     const MString& shortName,
     MObject& childX,
     MObject& childY,
-    MObject& childZ)
+    MObject& childZ,
+    const MString& childShortPrefix)
 {
     MStatus status;
-    MObject compound = createAngle3ArrayAttribute(longName, shortName, childX, childY, childZ);
+    MObject compound = createAngle3ArrayAttribute(longName, shortName, childX, childY, childZ, childShortPrefix);
     MFnCompoundAttribute cAttr(compound, &status);
     cAttr.setWritable(false);
     cAttr.setReadable(true);
@@ -989,25 +994,28 @@ MObject MmdCcdIkNode::createDouble3ArrayAttribute(
     const MString& shortName,
     MObject& childX,
     MObject& childY,
-    MObject& childZ)
+    MObject& childZ,
+    const MString& childShortPrefix)
 {
     MStatus status;
     MFnNumericAttribute nAttr;
     MFnCompoundAttribute cAttr;
 
-    childX = nAttr.create(longName + "ElementX", shortName + "x", MFnNumericData::kDouble, 0.0, &status);
+    const MString csp = childShortPrefix.length() > 0 ? childShortPrefix : shortName;
+
+    childX = nAttr.create(longName + "ElementX", csp + "x", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(true);
 
-    childY = nAttr.create(longName + "ElementY", shortName + "y", MFnNumericData::kDouble, 0.0, &status);
+    childY = nAttr.create(longName + "ElementY", csp + "y", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(true);
 
-    childZ = nAttr.create(longName + "ElementZ", shortName + "z", MFnNumericData::kDouble, 0.0, &status);
+    childZ = nAttr.create(longName + "ElementZ", csp + "z", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
@@ -1032,56 +1040,62 @@ MStatus MmdCcdIkNode::initialize() {
     MFnStringData sData;
     MFnMatrixAttribute mAttr;
 
-    // --- 入力: inputRoot(double3) ---
+    // --- Legacy 入力 (hidden): inputRoot(double3) ---
     aInputRoot = createDouble3Attribute(
         "inputRoot", "irt",
         aInputRootX, aInputRootY, aInputRootZ, 0.0);
     addAttribute(aInputRoot);
+    MFnAttribute(aInputRoot).setHidden(true);
 
-    // --- 入力: inputEffector(double3) ---
+    // --- Legacy 入力 (hidden): inputEffector(double3) ---
     aInputEffector = createDouble3Attribute(
         "inputEffector", "ief",
         aInputEffectorX, aInputEffectorY, aInputEffectorZ, 0.0);
     addAttribute(aInputEffector);
+    MFnAttribute(aInputEffector).setHidden(true);
 
-    // --- 入力: target(double3) ---
+    // --- Legacy 入力 (hidden): target(double3) ---
     aTarget = createDouble3Attribute(
         "target", "tgt",
         aTargetX, aTargetY, aTargetZ, 0.0);
     addAttribute(aTarget);
+    MFnAttribute(aTarget).setHidden(true);
 
     // --- 入力: enabled(bool, default true) ---
-    aEnabled = nAttr.create("enabled", "enb", MFnNumericData::kBoolean, true, &status);
+    aEnabled = nAttr.create("enabled", "en", MFnNumericData::kBoolean, true, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
     addAttribute(aEnabled);
 
-    // --- 入力: iterations(int, default 1, min 1) ---
+    // --- Legacy 入力 (hidden): iterations(int, default 1, min 1) ---
     aIterations = nAttr.create("iterations", "itn", MFnNumericData::kInt, 1, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
     nAttr.setMin(1);
+    nAttr.setHidden(true);
     addAttribute(aIterations);
 
-    // --- 入力: angleLimit(double degrees, default 180.0, min 0) ---
+    // --- Legacy 入力 (hidden): angleLimit(double degrees, default 180.0, min 0) ---
     aAngleLimit = nAttr.create("angleLimit", "alm", MFnNumericData::kDouble, 180.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
     nAttr.setMin(0.0);
+    nAttr.setHidden(true);
     addAttribute(aAngleLimit);
 
-    // --- 入力: inputChain(doubleArray) ---
+    // --- Legacy 入力 (hidden): inputChain(doubleArray) ---
     aInputChain = tAttr.create("inputChain", "ichn", MFnData::kDoubleArray, MObject::kNullObj, &status);
     tAttr.setStorable(true);
     tAttr.setKeyable(false);
     tAttr.setWritable(true);
     tAttr.setReadable(true);
+    tAttr.setHidden(true);
     addAttribute(aInputChain);
 
     aChainJson = tAttr.create("chainJson", "cj", MFnData::kString, sData.create(""), &status);
@@ -1105,50 +1119,54 @@ MStatus MmdCcdIkNode::initialize() {
 
     aInputRotateArray = createAngle3ArrayAttribute(
         "inputRotate", "ir",
-        aInputRotateArrayX, aInputRotateArrayY, aInputRotateArrayZ);
+        aInputRotateArrayX, aInputRotateArrayY, aInputRotateArrayZ, "ier");
     addAttribute(aInputRotateArray);
 
     aInputTranslateArray = createDouble3ArrayAttribute(
         "inputTranslate", "it_ik",
-        aInputTranslateArrayX, aInputTranslateArrayY, aInputTranslateArrayZ);
+        aInputTranslateArrayX, aInputTranslateArrayY, aInputTranslateArrayZ, "iet");
     addAttribute(aInputTranslateArray);
 
     // --- 出力: outputRotate angle array ---
     aOutputRotate = createAngle3ArrayOutputAttribute(
-        "outputRotate", "ort",
-        aOutputRotateX, aOutputRotateY, aOutputRotateZ);
+        "outputRotate", "or_ik",
+        aOutputRotateX, aOutputRotateY, aOutputRotateZ, "oer");
     addAttribute(aOutputRotate);
 
-    // --- 出力: outputAngle(double) ---
+    // --- Legacy 出力 (hidden): outputAngle(double) ---
     aOutputAngle = nAttr.create("outputAngle", "oan", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setWritable(false);
     nAttr.setReadable(true);
     nAttr.setStorable(false);
     nAttr.setKeyable(false);
+    nAttr.setHidden(true);
     addAttribute(aOutputAngle);
 
-    // --- 出力: solved(bool) ---
+    // --- Legacy 出力 (hidden): solved(bool) ---
     aSolved = nAttr.create("solved", "sol", MFnNumericData::kBoolean, false, &status);
     nAttr.setWritable(false);
     nAttr.setReadable(true);
     nAttr.setStorable(false);
     nAttr.setKeyable(false);
+    nAttr.setHidden(true);
     addAttribute(aSolved);
 
-    // --- 出力: outputLinkAngles(doubleArray) ---
+    // --- Legacy 出力 (hidden): outputLinkAngles(doubleArray) ---
     aOutputLinkAngles = tAttr.create("outputLinkAngles", "ola", MFnData::kDoubleArray, MObject::kNullObj, &status);
     tAttr.setWritable(false);
     tAttr.setReadable(true);
     tAttr.setStorable(false);
     tAttr.setKeyable(false);
+    tAttr.setHidden(true);
     addAttribute(aOutputLinkAngles);
 
-    // --- 出力: outputLinkRotates(doubleArray) ---
+    // --- Legacy 出力 (hidden): outputLinkRotates(doubleArray) ---
     aOutputLinkRotates = tAttr.create("outputLinkRotates", "olr", MFnData::kDoubleArray, MObject::kNullObj, &status);
     tAttr.setWritable(false);
     tAttr.setReadable(true);
     tAttr.setStorable(false);
     tAttr.setKeyable(false);
+    tAttr.setHidden(true);
     addAttribute(aOutputLinkRotates);
 
     // --- attributeAffects ---

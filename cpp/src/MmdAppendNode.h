@@ -1,14 +1,11 @@
 /**
  * MmdAppendNode.h
  *
- * Maya カスタムノード: mmdAppendNode
+ * Maya カスタムノード: mmdAppend (C++ 実装)
  *
- * Phase B:
- * - 登録可能な MPxNode
- * - 属性: inputTranslate(double3), inputRotate(double3),
- *          parentTranslate(double3), parentRotate(double3),
- *          grantRate(double), enableTranslate(bool), enableRotate(bool),
- *          outputTranslate(double3), outputRotate(double3)
+ * TypeId 0x00128001 (Python 版と統一)
+ *
+ * MMD 付与ボーン演算ノード。
  * - compute: parent contribution を grantRate で input に加える
  */
 

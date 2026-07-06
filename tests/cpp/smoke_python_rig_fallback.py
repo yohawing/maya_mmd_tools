@@ -52,20 +52,17 @@ def main() -> int:
             raise RuntimeError("loading the Python plugin unexpectedly loaded mmd_tools_cpp")
 
         from mmd_tools.converters.rig_converter import RigConverter
-        from mmd_tools.core import settings
         from mmd_tools.io.mmd_importer import import_mmd_file
 
-        if settings.get("import.native.use_cpp_rig_nodes", False):
-            raise RuntimeError("Python fallback smoke expects use_cpp_rig_nodes=False by default")
         rig_converter = RigConverter()
         if rig_converter._append_node_type() != "mmdAppend":
             raise RuntimeError(
-                "RigConverter should use Python append nodes without mmd_tools_cpp, "
+                "RigConverter should return unified mmdAppend, "
                 f"got {rig_converter._append_node_type()}"
             )
         if rig_converter._ccd_ik_node_type() != "mmdCcdIk":
             raise RuntimeError(
-                "RigConverter should use Python IK nodes without mmd_tools_cpp, "
+                "RigConverter should return unified mmdCcdIk, "
                 f"got {rig_converter._ccd_ik_node_type()}"
             )
 
@@ -88,8 +85,9 @@ def main() -> int:
             raise RuntimeError("Python fallback import did not create any mmdCcdIk nodes")
         if not append_nodes:
             raise RuntimeError("Python fallback import did not create any mmdAppend nodes")
-        if _ls_type_if_registered(cmds, "mmdCcdIkNode") or _ls_type_if_registered(cmds, "mmdAppendNode"):
-            raise RuntimeError("Python fallback import created C++ prototype rig nodes")
+        # C++ and Python now share the same typeName (mmdCcdIk / mmdAppend),
+        # so we cannot distinguish by type. The guard at the top ensures
+        # mmd_tools_cpp is not loaded.
 
         multi_link_nodes = []
         for node in ik_nodes:
