@@ -280,8 +280,7 @@ def reload_dictionary(dictionary_path: str = None):
     from .unicode_converter import get_converter
 
     converter = get_converter()
-    converter._load_dictionary(dictionary_path)
-    converter.clear_cache()
+    converter.reload_dictionary(dictionary_path)
 
 
 # ベクトル演算関数

@@ -19,6 +19,191 @@ import re
 from typing import Dict, List, Optional
 
 
+class _DictionaryState:
+    """辞書ロード結果を保持するコンテナ"""
+
+    __slots__ = (
+        "unicode_to_ascii",
+        "ascii_to_unicode",
+        "exact_match",
+        "exact_match_reverse",
+        "maya_invalid_chars",
+        "prefix_map",
+        "suffix_map",
+        "languages",
+    )
+
+    def __init__(
+        self,
+        unicode_to_ascii: Dict[str, str],
+        ascii_to_unicode: Dict[str, str],
+        exact_match: Optional[Dict[str, str]],
+        exact_match_reverse: Optional[Dict[str, str]],
+        maya_invalid_chars: Dict[str, str],
+        prefix_map: List[List[str]],
+        suffix_map: List[List[str]],
+        languages: List[str],
+    ):
+        self.unicode_to_ascii = unicode_to_ascii
+        self.ascii_to_unicode = ascii_to_unicode
+        self.exact_match = exact_match
+        self.exact_match_reverse = exact_match_reverse
+        self.maya_invalid_chars = maya_invalid_chars
+        self.prefix_map = prefix_map
+        self.suffix_map = suffix_map
+        self.languages = languages
+
+
+class _DictionaryLoader:
+    """辞書ファイルの読み込みとデフォルト辞書の構築を担当する"""
+
+    @staticmethod
+    def default_dictionary_path() -> str:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(os.path.dirname(current_dir), "config", "unicode_dictionary.json")
+
+    @staticmethod
+    def process_list_dictionary(dictionary_list: List[List[str]]) -> Dict[str, str]:
+        """
+        リスト形式の辞書データを処理してunicode_to_asciiに変換
+
+        Args:
+            dictionary_list: [日本語, 英語, 中国語(簡体), 中国語(繁体)]のリスト
+        """
+        unicode_to_ascii: Dict[str, str] = {}
+        for entry in dictionary_list:
+            if len(entry) >= 2:
+                japanese = entry[0]
+                english = entry[1]
+                unicode_to_ascii[japanese] = english
+
+                if len(entry) >= 3:
+                    chinese_simplified = entry[2]
+                    unicode_to_ascii[chinese_simplified] = english
+                if len(entry) >= 4:
+                    chinese_traditional = entry[3]
+                    unicode_to_ascii[chinese_traditional] = english
+        return unicode_to_ascii
+
+    @staticmethod
+    def build_reverse_map(unicode_to_ascii: Dict[str, str]) -> Dict[str, str]:
+        """逆引きマップを構築する"""
+        ascii_to_unicode: Dict[str, str] = {}
+        for unicode_text, ascii_text in unicode_to_ascii.items():
+            if ascii_text not in ascii_to_unicode:
+                ascii_to_unicode[ascii_text] = unicode_text
+        return ascii_to_unicode
+
+    @staticmethod
+    def load_default_dictionary() -> _DictionaryState:
+        """デフォルト辞書を読み込む（フォールバック用）"""
+        dictionary_list = [
+            ["なし", "none", "无", "無"],
+            ["全て", "all", "全部", "全部"],
+            ["全ての親", "master", "主骨骼", "主骨骼"],
+            ["ボーン", "bone", "骨骼", "骨骼"],
+            ["腕", "arm", "臂", "臂"],
+            ["頭", "head", "头部", "頭部"],
+            ["前髪", "bangs", "刘海", "瀏海"],
+            ["横髪", "side_hair", "侧发", "側髮"],
+            ["後髪", "back_hair", "后发", "後髮"],
+            ["髪", "hair", "头发", "頭髮"],
+            ["つまさき", "toe", "脚趾", "腳趾"],
+            ["肩", "shoulder", "肩", "肩"],
+            ["上半身", "spine", "上半身", "上半身"],
+            ["元素", "element", "元素", "元素"],
+        ]
+
+        unicode_to_ascii = _DictionaryLoader.process_list_dictionary(dictionary_list)
+        maya_invalid_chars = {"+": "_plus_", "|": "_pipe_"}
+        prefix_map = [
+            ["左", "left_", "左", "左"],
+            ["右", "right_", "右", "右"],
+        ]
+        suffix_map = [
+            ["先", "_end", "末端", "末端"],
+            ["ＩＫ", "_ik", "IK", "IK"],
+            ["捩", "_twist", "扭", "扭"],
+        ]
+        languages = ["jp", "en", "zh-cn", "zh-tw"]
+
+        return _DictionaryState(
+            unicode_to_ascii=unicode_to_ascii,
+            ascii_to_unicode=_DictionaryLoader.build_reverse_map(unicode_to_ascii),
+            exact_match=None,
+            exact_match_reverse=None,
+            maya_invalid_chars=maya_invalid_chars,
+            prefix_map=prefix_map,
+            suffix_map=suffix_map,
+            languages=languages,
+        )
+
+    @staticmethod
+    def load(dictionary_path: Optional[str], logger: logging.Logger) -> _DictionaryState:
+        """
+        辞書ファイルを読み込む
+
+        Args:
+            dictionary_path: 辞書ファイルのパス
+            logger: ログ出力用
+        """
+        if dictionary_path is None:
+            dictionary_path = _DictionaryLoader.default_dictionary_path()
+
+        try:
+            if os.path.exists(dictionary_path):
+                with open(dictionary_path, encoding="utf-8") as f:
+                    data = json.load(f)
+
+                unicode_to_ascii: Dict[str, str]
+                if "dictionary" in data and isinstance(data["dictionary"], dict):
+                    unicode_to_ascii = data["dictionary"]
+                    maya_invalid_chars = data.get("maya_invalid_chars", {})
+                    prefix_map = data.get("prefix", [])
+                    suffix_map = data.get("suffix", [])
+                    languages = data.get("_meta", {}).get("languages", ["jp", "en", "zh-cn", "zh-tw"])
+                elif "dictionary" in data and isinstance(data["dictionary"], list):
+                    unicode_to_ascii = _DictionaryLoader.process_list_dictionary(data["dictionary"])
+                    maya_invalid_chars = data.get("maya_invalid_chars", {})
+                    prefix_map = data.get("prefix", [])
+                    suffix_map = data.get("suffix", [])
+                    languages = data.get("_meta", {}).get("languages", ["jp", "en", "zh-cn", "zh-tw"])
+
+                exact_match: Optional[Dict[str, str]] = None
+                exact_match_reverse: Optional[Dict[str, str]] = None
+                if "exact_match" in data:
+                    exact_match = data["exact_match"]
+                    exact_match_reverse = {}
+                    for unicode_text, ascii_text in exact_match.items():
+                        exact_match_reverse[ascii_text] = unicode_text
+
+                state = _DictionaryState(
+                    unicode_to_ascii=unicode_to_ascii,
+                    ascii_to_unicode=_DictionaryLoader.build_reverse_map(unicode_to_ascii),
+                    exact_match=exact_match,
+                    exact_match_reverse=exact_match_reverse,
+                    maya_invalid_chars=maya_invalid_chars,
+                    prefix_map=prefix_map,
+                    suffix_map=suffix_map,
+                    languages=languages,
+                )
+
+                logger.debug(f"Loaded dictionary file: {dictionary_path}")
+                logger.debug(f"Dictionary entry count: {len(state.unicode_to_ascii)}")
+                if state.exact_match:
+                    logger.debug(f"Exact-match entry count: {len(state.exact_match)}")
+                return state
+
+            logger.warning(f"Dictionary file not found: {dictionary_path}")
+            logger.info("Using default dictionary")
+            return _DictionaryLoader.load_default_dictionary()
+
+        except Exception as e:
+            logger.error(f"Failed to load dictionary file: {e}")
+            logger.info("Using default dictionary")
+            return _DictionaryLoader.load_default_dictionary()
+
+
 class UnicodeToAsciiConverter:
     """
     Unicode文字列とMaya互換ASCII文字列の相互変換を行うクラス
@@ -54,131 +239,19 @@ class UnicodeToAsciiConverter:
         self.exact_match = {}
         self.exact_match_reverse = {}
 
-        self._load_dictionary(dictionary_path)
+        self._apply_dictionary_state(_DictionaryLoader.load(dictionary_path, self.logger))
 
-    def _load_dictionary(self, dictionary_path: Optional[str] = None):
-        """
-        辞書ファイルを読み込む
-
-        Args:
-            dictionary_path: 辞書ファイルのパス
-        """
-        if dictionary_path is None:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            dictionary_path = os.path.join(os.path.dirname(current_dir), "config", "unicode_dictionary.json")
-
-        try:
-            if os.path.exists(dictionary_path):
-                with open(dictionary_path, encoding="utf-8") as f:
-                    data = json.load(f)
-
-                # 新しい辞書フォーマットに対応
-                if "dictionary" in data and isinstance(data["dictionary"], dict):
-                    # 新しいフラット辞書フォーマット
-                    self.unicode_to_ascii = data["dictionary"]
-                    self.maya_invalid_chars = data.get("maya_invalid_chars", {})
-                    self.prefix_map = data.get("prefix", [])
-                    self.suffix_map = data.get("suffix", [])
-                    self.languages = data.get("_meta", {}).get("languages", ["jp", "en", "zh-cn", "zh-tw"])
-                elif "dictionary" in data and isinstance(data["dictionary"], list):
-                    # 旧フォーマット（リスト形式）対応
-                    self._process_list_dictionary(data["dictionary"])
-                    self.maya_invalid_chars = data.get("maya_invalid_chars", {})
-                    self.prefix_map = data.get("prefix", [])
-                    self.suffix_map = data.get("suffix", [])
-                    self.languages = data.get("_meta", {}).get("languages", ["jp", "en", "zh-cn", "zh-tw"])
-
-                # exact_matchセクションの読み込み
-                if "exact_match" in data:
-                    self.exact_match = data["exact_match"]
-                    # exact_matchの逆引き辞書を構築
-                    for unicode_text, ascii_text in self.exact_match.items():
-                        self.exact_match_reverse[ascii_text] = unicode_text
-
-                self._build_reverse_map()
-
-                self.logger.debug(f"Loaded dictionary file: {dictionary_path}")
-                self.logger.debug(f"Dictionary entry count: {len(self.unicode_to_ascii)}")
-                if self.exact_match:
-                    self.logger.debug(f"Exact-match entry count: {len(self.exact_match)}")
-            else:
-                self._load_default_dictionary()
-                self.logger.warning(f"Dictionary file not found: {dictionary_path}")
-                self.logger.info("Using default dictionary")
-
-        except Exception as e:
-            self._load_default_dictionary()
-            self.logger.error(f"Failed to load dictionary file: {e}")
-            self.logger.info("Using default dictionary")
-
-    def _process_list_dictionary(self, dictionary_list: List[List[str]]):
-        """
-        リスト形式の辞書データを処理してunicode_to_asciiに変換
-
-        Args:
-            dictionary_list: [日本語, 英語, 中国語(簡体), 中国語(繁体)]のリスト
-        """
-        self.unicode_to_ascii = {}
-        for entry in dictionary_list:
-            if len(entry) >= 2:
-                # 日本語（インデックス0）を英語（インデックス1）に変換
-                japanese = entry[0]
-                english = entry[1]
-                self.unicode_to_ascii[japanese] = english
-
-                # 中国語も対応
-                if len(entry) >= 3:
-                    chinese_simplified = entry[2]
-                    self.unicode_to_ascii[chinese_simplified] = english
-                if len(entry) >= 4:
-                    chinese_traditional = entry[3]
-                    self.unicode_to_ascii[chinese_traditional] = english
-
-    def _build_reverse_map(self):
-        """逆引きマップを構築する"""
-        self.ascii_to_unicode = {}
-        for unicode_text, ascii_text in self.unicode_to_ascii.items():
-            # 日本語のみを逆引きマップに追加（最初に出現したものを優先）
-            if ascii_text not in self.ascii_to_unicode:
-                self.ascii_to_unicode[ascii_text] = unicode_text
-
-    def _load_default_dictionary(self):
-        """
-        デフォルト辞書を読み込む（フォールバック用）
-        """
-        dictionary_list = [
-            ["なし", "none", "无", "無"],
-            ["全て", "all", "全部", "全部"],
-            ["全ての親", "master", "主骨骼", "主骨骼"],
-            ["ボーン", "bone", "骨骼", "骨骼"],
-            ["腕", "arm", "臂", "臂"],
-            ["頭", "head", "头部", "頭部"],
-            ["前髪", "bangs", "刘海", "瀏海"],
-            ["横髪", "side_hair", "侧发", "側髮"],
-            ["後髪", "back_hair", "后发", "後髮"],
-            ["髪", "hair", "头发", "頭髮"],
-            ["つまさき", "toe", "脚趾", "腳趾"],
-            ["肩", "shoulder", "肩", "肩"],
-            ["上半身", "spine", "上半身", "上半身"],
-            ["元素", "element", "元素", "元素"],
-        ]
-
-        # リスト形式の辞書データを処理
-        self._process_list_dictionary(dictionary_list)
-
-        self.maya_invalid_chars = {"+": "_plus_", "|": "_pipe_"}
-
-        self.prefix_map = [
-            ["左", "left_", "左", "左"],
-            ["右", "right_", "右", "右"],
-        ]
-        self.suffix_map = [
-            ["先", "_end", "末端", "末端"],
-            ["ＩＫ", "_ik", "IK", "IK"],
-            ["捩", "_twist", "扭", "扭"],
-        ]
-        self.languages = ["jp", "en", "zh-cn", "zh-tw"]
-        self._build_reverse_map()
+    def _apply_dictionary_state(self, state: _DictionaryState):
+        """ロード済み辞書状態をコンバーターに反映する"""
+        self.unicode_to_ascii = state.unicode_to_ascii
+        self.ascii_to_unicode = state.ascii_to_unicode
+        if state.exact_match is not None:
+            self.exact_match = state.exact_match
+            self.exact_match_reverse = state.exact_match_reverse
+        self.maya_invalid_chars = state.maya_invalid_chars
+        self.prefix_map = state.prefix_map
+        self.suffix_map = state.suffix_map
+        self.languages = state.languages
 
     def convert(self, text: str) -> str:
         """
@@ -676,7 +749,7 @@ class UnicodeToAsciiConverter:
             dictionary_path: 辞書ファイルのパス
         """
         self.clear_cache()
-        self._load_dictionary(dictionary_path)
+        self._apply_dictionary_state(_DictionaryLoader.load(dictionary_path, self.logger))
 
 
 # グローバルインスタンス（シングルトンパターン）
