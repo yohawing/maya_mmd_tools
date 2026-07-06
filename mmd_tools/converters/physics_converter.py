@@ -64,6 +64,20 @@ _CONSTRAINT_LIMITED = 2
 _Z_REFLECTION_MATRIX = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, -1.0))
 _RIGID_BODY_LOCATOR_TYPE = "mmdRigidBodyLocator"
 
+_OPT_ENABLE_HAIR_PHYSICS = "enable_hair_physics"
+_OPT_ENABLE_CLOTH_PHYSICS = "enable_cloth_physics"
+_OPT_SIMULATION_QUALITY = "simulation_quality"
+_OPT_AUTO_DETECT_TYPE = "auto_detect_type"
+_OPT_SOLVER_ITERATIONS = "solver_iterations"
+_OPT_SUBSTEPS = "substeps"
+_OPT_START_FRAME = "start_frame"
+_OPT_TIME_SCALE = "time_scale"
+_OPT_GRAVITY = "gravity"
+_OPT_BULLET_FIXED_FRAME_RATE = "bullet_fixed_frame_rate"
+_OPT_SPLIT_IMPULSE = "split_impulse"
+_OPT_CREATE_PHYSICS_JOINTS = "create_physics_joints"
+_OPT_SCALE = "scale"
+
 
 def _has_nonzero_spring(*spring_vectors) -> bool:
     """Return whether any joint spring vector contains a non-zero value."""
@@ -205,25 +219,25 @@ class PhysicsConverter:
         self.logger = get_logger(__class__.__name__)
 
         self._default_settings: Dict = {
-            "enable_hair_physics": True,
-            "enable_cloth_physics": True,
-            "simulation_quality": "medium",
-            "auto_detect_type": True,
-            "solver_iterations": 10,
-            "substeps": 3,
-            "start_frame": 1,
-            "time_scale": 1.0,
-            "gravity": 98.0,
-            "bullet_fixed_frame_rate": 120,
-            "split_impulse": True,
-            "create_physics_joints": True,
-            "scale": 1.0,
+            _OPT_ENABLE_HAIR_PHYSICS: True,
+            _OPT_ENABLE_CLOTH_PHYSICS: True,
+            _OPT_SIMULATION_QUALITY: "medium",
+            _OPT_AUTO_DETECT_TYPE: True,
+            _OPT_SOLVER_ITERATIONS: 10,
+            _OPT_SUBSTEPS: 3,
+            _OPT_START_FRAME: 1,
+            _OPT_TIME_SCALE: 1.0,
+            _OPT_GRAVITY: 98.0,
+            _OPT_BULLET_FIXED_FRAME_RATE: 120,
+            _OPT_SPLIT_IMPULSE: True,
+            _OPT_CREATE_PHYSICS_JOINTS: True,
+            _OPT_SCALE: 1.0,
         }
 
         self.settings = self._default_settings.copy()
         if settings:
             self.settings.update(settings)
-        self.physics_scale = float(self.settings.get("scale", 1.0) or 1.0)
+        self.physics_scale = float(self.settings.get(_OPT_SCALE, 1.0) or 1.0)
 
         # nCloth ソルバーの名前 (fallback 時のみ使用)
         self.nucleus_solver: Optional[str] = None
@@ -568,7 +582,7 @@ class PhysicsConverter:
                 except Exception as e:
                     self._safe_log_error("Bullet 剛体作成エラー", rb, e)
 
-        create_joints = self.settings.get("create_physics_joints", True)
+        create_joints = self.settings.get(_OPT_CREATE_PHYSICS_JOINTS, True)
         if create_joints and hasattr(pmd_data, "joints") and pmd_data.joints:
             for joint in pmd_data.joints:
                 try:
@@ -607,7 +621,7 @@ class PhysicsConverter:
                 except Exception as e:
                     self._safe_log_error("Bullet 剛体作成エラー", rb, e)
 
-        create_joints = self.settings.get("create_physics_joints", True)
+        create_joints = self.settings.get(_OPT_CREATE_PHYSICS_JOINTS, True)
         if create_joints and hasattr(pmx_data, "joints") and pmx_data.joints:
             for joint in pmx_data.joints:
                 try:
@@ -1048,9 +1062,9 @@ class PhysicsConverter:
 
         fixed_frame_rate = self._resolve_bullet_fixed_frame_rate()
         settings_by_attr = {
-            "maxNumIterations": int(self.settings.get("solver_iterations", 10)),
+            "maxNumIterations": int(self.settings.get(_OPT_SOLVER_ITERATIONS, 10)),
             "internalFixedFrameRate": fixed_frame_rate,
-            "splitImpulse": bool(self.settings.get("split_impulse", True)),
+            "splitImpulse": bool(self.settings.get(_OPT_SPLIT_IMPULSE, True)),
         }
         for attr, value in settings_by_attr.items():
             self._set_attr_if_exists(solver, attr, value)
@@ -1061,7 +1075,7 @@ class PhysicsConverter:
 
     def _resolve_bullet_fixed_frame_rate(self) -> int:
         """Resolve Maya Bullet fixed frame rate from explicit value or quality."""
-        explicit = self.settings.get("bullet_fixed_frame_rate")
+        explicit = self.settings.get(_OPT_BULLET_FIXED_FRAME_RATE)
         try:
             if explicit is not None:
                 value = int(explicit)
@@ -1069,12 +1083,12 @@ class PhysicsConverter:
         except (TypeError, ValueError):
             pass
 
-        quality = str(self.settings.get("simulation_quality", "medium")).lower()
+        quality = str(self.settings.get(_OPT_SIMULATION_QUALITY, "medium")).lower()
         return {"low": 60, "medium": 120, "high": 240}.get(quality, 120)
 
     def _resolve_bullet_gravity(self) -> Optional[tuple]:
         """Resolve gravity as a Maya Bullet vector."""
-        gravity = self.settings.get("gravity", 98.0)
+        gravity = self.settings.get(_OPT_GRAVITY, 98.0)
         if isinstance(gravity, (list, tuple)) and len(gravity) >= 3:
             try:
                 return (float(gravity[0]), float(gravity[1]), float(gravity[2]))
@@ -1432,9 +1446,9 @@ class PhysicsConverter:
         rigid_body_groups = self._analyze_rigid_bodies(data.rigid_bodies)
 
         for group_type, rigid_bodies in rigid_body_groups.items():
-            if group_type == PHYSICS_TYPE_HAIR and self.settings.get("enable_hair_physics", True):
+            if group_type == PHYSICS_TYPE_HAIR and self.settings.get(_OPT_ENABLE_HAIR_PHYSICS, True):
                 self._create_hair_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
-            elif group_type == PHYSICS_TYPE_CLOTH and self.settings.get("enable_cloth_physics", True):
+            elif group_type == PHYSICS_TYPE_CLOTH and self.settings.get(_OPT_ENABLE_CLOTH_PHYSICS, True):
                 self._create_cloth_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
             elif group_type == PHYSICS_TYPE_RIGID:
                 self._create_rigid_physics(rigid_bodies, bone_joints, bone_index_map, rigid_bodies_group)
@@ -1471,12 +1485,12 @@ class PhysicsConverter:
             "medium": {"substeps": 3, "maxCollisionIterations": 8},
             "high": {"substeps": 5, "maxCollisionIterations": 12},
         }
-        quality = self.settings.get("simulation_quality", "medium")
+        quality = self.settings.get(_OPT_SIMULATION_QUALITY, "medium")
         qs = quality_settings.get(quality, quality_settings["medium"])
         maya_utils.set_attribute(self.nucleus_solver, "subSteps", qs["substeps"], "long")
         maya_utils.set_attribute(self.nucleus_solver, "maxCollisionIterations", qs["maxCollisionIterations"], "long")
-        maya_utils.set_attribute(self.nucleus_solver, "startFrame", self.settings.get("start_frame", 1), "double")
-        maya_utils.set_attribute(self.nucleus_solver, "timeScale", self.settings.get("time_scale", 1.0), "double")
+        maya_utils.set_attribute(self.nucleus_solver, "startFrame", self.settings.get(_OPT_START_FRAME, 1), "double")
+        maya_utils.set_attribute(self.nucleus_solver, "timeScale", self.settings.get(_OPT_TIME_SCALE, 1.0), "double")
         maya_utils.set_attribute(self.nucleus_solver, "gravity", 98.0, "double")
         maya_utils.set_attribute(self.nucleus_solver, "gravityDirection", [0, -1, 0], "double3")
         self.logger.debug(f"Nucleus solver setup complete: quality={quality}")
@@ -1487,7 +1501,7 @@ class PhysicsConverter:
 
     def _analyze_rigid_bodies(self, rigid_bodies: List[Union[PmdRigidBody, PmxRigidBody]]) -> Dict[str, List]:
         groups = {PHYSICS_TYPE_HAIR: [], PHYSICS_TYPE_CLOTH: [], PHYSICS_TYPE_RIGID: [], PHYSICS_TYPE_SOFT: []}
-        if not self.settings.get("auto_detect_type", True):
+        if not self.settings.get(_OPT_AUTO_DETECT_TYPE, True):
             groups[PHYSICS_TYPE_RIGID] = rigid_bodies
             return groups
         for rb in rigid_bodies:

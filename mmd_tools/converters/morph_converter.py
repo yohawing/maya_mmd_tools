@@ -26,6 +26,8 @@ from mmd_tools.converters.morph_scene_metadata import (
     read_blendshape_morph_name_strings,
 )
 
+_OPT_IMPORT_MORPHS = "import_morphs"
+
 
 class MorphConverter:
     """MMDのモーフデータをMayaのblendShapeに変換するクラス"""
@@ -54,7 +56,7 @@ class MorphConverter:
         Returns:
             Dict[str, Any]: 変換結果の辞書
         """
-        if not self.settings.get("import_morphs", True):
+        if not self.settings.get(_OPT_IMPORT_MORPHS, True):
             return {"success": True, "morphs_converted": 0}
 
         mesh_nodes = [mesh_node] if isinstance(mesh_node, str) else (mesh_node or [])
