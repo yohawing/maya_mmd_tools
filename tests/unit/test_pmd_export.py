@@ -7,6 +7,7 @@ import importlib.machinery
 import importlib.util
 import os
 
+from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.vertex import PmdVertex
 from mmd_tools.core.pmd_data.face import PmdFace
@@ -359,7 +360,7 @@ class TestPmdExporterFromDict(TestBase):
     def test_export_rejects_vertex_count_above_pmd_index_range(self):
         """65537 頂点以上は PMD の face index で表現できないため拒否する。"""
         vertices = [{"position": [0.0, 0.0, 0.0]} for _ in range(0x10001)]
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "too_many_vertices.pmd"),
                 {"vertices": vertices, "faces": [[0, 1, 2]]},
@@ -517,7 +518,7 @@ class TestPmdExporterFromDict(TestBase):
 
     def test_export_empty_vertices_raises(self):
         """vertices空でValueError"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "empty.pmd"),
                 {"vertices": [], "faces": [[0, 1, 2]]},
@@ -525,7 +526,7 @@ class TestPmdExporterFromDict(TestBase):
 
     def test_export_empty_faces_raises(self):
         """faces空でValueError"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "empty.pmd"),
                 {"vertices": [{"position": [0.0, 0.0, 0.0]}], "faces": []},
@@ -542,7 +543,7 @@ class TestPmdExporterFromDict(TestBase):
             ],
             "faces": [[0, 1, 3]],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "bad_face_index.pmd"),
                 data,
@@ -560,7 +561,7 @@ class TestPmdExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "bones": [{"name": "root"}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "bad_bone_index.pmd"),
                 data,
@@ -578,7 +579,7 @@ class TestPmdExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "bones": [],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "empty_bones.pmd"),
                 data,

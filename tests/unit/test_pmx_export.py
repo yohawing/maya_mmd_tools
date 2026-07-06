@@ -7,6 +7,7 @@ import importlib.machinery
 import importlib.util
 import os
 
+from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data import PmxData
 
@@ -631,7 +632,7 @@ class TestPmxExporterFromDict(TestBase):
                 {"name": "Bad", "elements": [{"type": 0, "index": 1}]},
             ],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_display_frame_bone.pmx"),
                 data,
@@ -739,7 +740,7 @@ class TestPmxExporterFromDict(TestBase):
 
     def test_export_empty_vertices_raises(self):
         """vertices空でValueError"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "empty.pmx"),
                 {"vertices": [], "faces": [[0, 1, 2]]},
@@ -747,7 +748,7 @@ class TestPmxExporterFromDict(TestBase):
 
     def test_export_empty_faces_raises(self):
         """faces空でValueError"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "empty.pmx"),
                 {"vertices": [{"position": [0.0, 0.0, 0.0]}], "faces": []},
@@ -1051,7 +1052,7 @@ class TestPmxExporterFromDict(TestBase):
                 ],
                 "faces": [[0, 1, 2]],
             }
-            with self.assertRaises(ValueError):
+            with self.assertRaises(MMDExportException):
                 self.exporter.export_pmx_model(
                     os.path.join(self.temp_dir, f"bad_len_{bad_len}.pmx"),
                     data,
@@ -1069,7 +1070,7 @@ class TestPmxExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "bones": [],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "empty_bones.pmx"),
                 data,
@@ -1087,7 +1088,7 @@ class TestPmxExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "bones": [{"name": "root"}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_bone_index.pmx"),
                 data,
@@ -1104,7 +1105,7 @@ class TestPmxExporterFromDict(TestBase):
             ],
             "faces": [[0, 1, 3]],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_face_index.pmx"),
                 data,
@@ -1254,7 +1255,7 @@ class TestPmxExporterFromDict(TestBase):
                 }
             ],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_bone_morph.pmx"),
                 data,
@@ -1364,7 +1365,7 @@ class TestPmxExporterFromDict(TestBase):
                 }
             ],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_mat_morph.pmx"),
                 data,
@@ -1401,7 +1402,7 @@ class TestPmxExporterFromDict(TestBase):
             with self.subTest(morph_type=morph_type):
                 data = dict(_base_data)
                 data["morphs"] = [{"type": morph_type, "name": "bad", "offsets": []}]
-                with self.assertRaises(ValueError):
+                with self.assertRaises(MMDExportException):
                     self.exporter.export_pmx_model(
                         os.path.join(self.temp_dir, f"unsupported_{str(morph_type).replace(' ', '_')}.pmx"),
                         data,
@@ -1425,7 +1426,7 @@ class TestPmxExporterFromDict(TestBase):
                 }
             ],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_morph_index.pmx"),
                 data,
@@ -1531,7 +1532,7 @@ class TestPmxExporterFromDict(TestBase):
             "bones": [{"name": "center"}],
             "rigid_bodies": [{"name": "bad", "related_bone_index": 1}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_rigid_body_bone.pmx"),
                 data,
@@ -1550,7 +1551,7 @@ class TestPmxExporterFromDict(TestBase):
             "rigid_bodies": [{"name": "rb"}],
             "joints": [{"name": "bad_joint", "rigid_body_a_index": 1}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_joint_rb.pmx"),
                 data,
@@ -1568,7 +1569,7 @@ class TestPmxExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "joints": [{"name": "bad_joint"}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "joint_without_rb.pmx"),
                 data,
