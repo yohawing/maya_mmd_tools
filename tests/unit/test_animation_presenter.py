@@ -192,6 +192,13 @@ class _FakeBodyPicker:
         self.ik_toggled = _FakeSignal()
 
 
+class _FakeFingerPicker:
+    def __init__(self):
+        self.region_clicked = _FakeSignal()
+        self.goto_body_clicked = _FakeSignal()
+        self.mirror_selection_clicked = _FakeSignal()
+
+
 class _FakeTabWidget:
     def __init__(self):
         self._current = 0
@@ -229,6 +236,7 @@ class _FakeView:
         self.status_label = _FakeLabel()
         self.display_frame_tree = _FakeTreeWidget()
         self.body_picker = _FakeBodyPicker()
+        self.finger_picker = _FakeFingerPicker()
         self.morph_groups_layout = _FakeLayout()
         self.picker_tabs = _FakeTabWidget()
         self.vis_checkboxes = {
@@ -527,6 +535,19 @@ class TestBodyPickerPresenter(unittest.TestCase):
         presenter, view, _, _ = self._make_with_bones()
         presenter.on_goto_finger()
         self.assertEqual(view.picker_tabs._current, view.TAB_FINGER)
+
+    def test_goto_body_switches_tab(self):
+        presenter, view, _, _ = self._make_with_bones()
+        presenter.on_goto_body()
+        self.assertEqual(view.picker_tabs._current, view.TAB_BODY)
+
+    def test_finger_region_click_selects_bone(self):
+        presenter, view, _, adapter = self._make_with_bones(
+            bone_names={"left_thumb_jnt": "左親指０"},
+        )
+        presenter.on_finger_region_clicked("left_thumb_0")
+        self.assertEqual(adapter.selected, ["left_thumb_jnt"])
+        self.assertEqual(view.status_label.text(), "left_thumb_jnt")
 
     def test_mirror_selection(self):
         presenter, view, _, adapter = self._make_with_bones(

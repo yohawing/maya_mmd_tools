@@ -60,6 +60,9 @@ class AnimationPresenter:
         self.view.body_picker.region_clicked.connect(self.on_body_region_clicked)
         self.view.body_picker.goto_finger_clicked.connect(self.on_goto_finger)
         self.view.body_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
+        self.view.finger_picker.region_clicked.connect(self.on_finger_region_clicked)
+        self.view.finger_picker.goto_body_clicked.connect(self.on_goto_body)
+        self.view.finger_picker.mirror_selection_clicked.connect(self.on_mirror_selection)
         for key, cb in self.view.vis_checkboxes.items():
             cb.stateChanged.connect(
                 lambda state, k=key: self._on_visibility_changed(k, state != 0)
@@ -131,8 +134,29 @@ class AnimationPresenter:
                     self.view.status_label.setText(f"(unmapped: {bone_name})")
                 return
 
+    def on_finger_region_clicked(self, region_id: str):
+        from ..widgets.finger_picker_widget import _FINGER_REGIONS
+
+        for region in _FINGER_REGIONS:
+            if region["id"] == region_id:
+                bone_name = region["bone_name"]
+                normalized = normalize_mmd_bone_name(bone_name) or bone_name
+                joint = self._bone_name_to_joint.get(normalized)
+                if joint:
+                    try:
+                        self.maya_adapter.select([joint], replace=True)
+                        self.view.status_label.setText(joint)
+                    except Exception:
+                        self.view.status_label.setText(f"(not found: {bone_name})")
+                else:
+                    self.view.status_label.setText(f"(unmapped: {bone_name})")
+                return
+
     def on_goto_finger(self):
         self.view.picker_tabs.setCurrentIndex(self.view.TAB_FINGER)
+
+    def on_goto_body(self):
+        self.view.picker_tabs.setCurrentIndex(self.view.TAB_BODY)
 
     def on_mirror_selection(self):
         _MIRROR_PAIRS = {"左": "右", "右": "左"}
