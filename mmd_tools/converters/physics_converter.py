@@ -776,7 +776,7 @@ class PhysicsConverter:
                 transform = parented[0]
             if physics_mode != 0:
                 self._connect_bullet_simulation_output(transform, shape)
-                self._attach_dynamic_bullet_body_to_bone(transform, rb, bone_index_map)
+                self._attach_dynamic_bullet_body_to_bone(transform, rb, bone_index_map, physics_mode)
             if physics_mode == 0:
                 self._attach_static_bullet_body_to_bone(transform, rb, bone_index_map)
             shapes = cmds.listRelatives(transform, shapes=True, type="bulletRigidBodyShape", fullPath=True) or []
@@ -829,6 +829,7 @@ class PhysicsConverter:
         transform: str,
         rb,
         bone_index_map: Optional[Dict[int, str]],
+        physics_mode: int,
     ) -> None:
         """Drive the related Maya joint from a simulated MMD rigid body.
 
@@ -854,7 +855,7 @@ class PhysicsConverter:
             return
 
         try:
-            constraint = self._create_physics_preview_constraint(transform, joint)
+            constraint = self._create_physics_preview_constraint(transform, joint, physics_mode)
             if constraint:
                 self.logger.debug(
                     f"Connected dynamic Bullet rigid body '{transform}' to drive related bone '{joint}'"
@@ -899,57 +900,86 @@ class PhysicsConverter:
                 joint = bone_index_map.get(bone_index)
                 if not joint or not cmds.objExists(joint):
                     continue
-                if self._has_physics_preview_constraint(transform, joint):
+                physics_mode = 1
+                if cmds.attributeQuery("mmd_physics_mode", node=transform, exists=True):
+                    physics_mode = int(cmds.getAttr(f"{transform}.mmd_physics_mode"))
+                if self._has_physics_preview_constraint(transform, joint, physics_mode):
                     continue
-                self._create_physics_preview_constraint(transform, joint)
+                self._create_physics_preview_constraint(transform, joint, physics_mode)
                 connected += 1
             except Exception as exc:
                 self.logger.warning(f"Skipped Bullet preview repair for '{shape}': {exc}")
         return connected
 
-    def _create_physics_preview_constraint(self, transform: str, joint: str) -> Optional[str]:
-        """Create and mark a constraint that feeds simulated orientation into a joint.
+    def _create_physics_preview_constraint(self, transform: str, joint: str, physics_mode: int) -> Optional[str]:
+        """Create and mark constraints that feed simulated motion into a joint.
 
-        Dynamic MMD bones still need to inherit their parent joint translation.
-        Constraining the full parent transform pins the bone in world space and
-        makes it stop following manual parent-bone edits.
+        ``physics_mode=1`` is pure dynamic, so the preview feeds back simulated
+        translation and rotation.  ``physics_mode=2`` is dynamic-with-bone
+        alignment, so it keeps inheriting parent-joint translation and only
+        receives simulated orientation.
         """
-        self._delete_marked_preview_parent_constraints(transform, joint)
+        self._delete_marked_preview_constraints(transform, joint)
+        point_constraint = None
+        if int(physics_mode) == 1:
+            point = cmds.pointConstraint(transform, joint, maintainOffset=True)
+            if point:
+                point_constraint = point[0]
+                self._mark_physics_preview_constraint(point_constraint)
+
         constraint = cmds.orientConstraint(transform, joint, maintainOffset=True)
         if not constraint:
-            return None
+            return point_constraint
         constraint_node = constraint[0]
+        self._mark_physics_preview_constraint(constraint_node)
+        return constraint_node
+
+    def _mark_physics_preview_constraint(self, constraint_node: str) -> None:
+        """Mark a generated physics preview constraint for future repair."""
         if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint_node, exists=True):
             cmds.addAttr(constraint_node, longName="mmd_physics_preview_constraint", attributeType="bool")
         cmds.setAttr(f"{constraint_node}.mmd_physics_preview_constraint", True)
-        return constraint_node
 
-    def _has_physics_preview_constraint(self, transform: str, joint: str) -> bool:
-        """Return True when *transform* already drives *joint* through a marked preview constraint."""
-        constraints = cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or []
+    def _has_physics_preview_constraint(self, transform: str, joint: str, physics_mode: int) -> bool:
+        """Return True when *transform* already drives *joint* through the expected preview constraints."""
+        has_orient = self._has_marked_target_constraint(transform, joint, "orientConstraint")
+        if int(physics_mode) != 1:
+            return has_orient
+        return has_orient and self._has_marked_target_constraint(transform, joint, "pointConstraint")
+
+    def _has_marked_target_constraint(self, transform: str, joint: str, constraint_type: str) -> bool:
+        constraints = cmds.listConnections(joint, source=True, destination=False, type=constraint_type) or []
         for constraint in constraints:
             try:
                 if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint, exists=True):
                     continue
-                targets = cmds.orientConstraint(constraint, query=True, targetList=True) or []
+                if constraint_type == "pointConstraint":
+                    targets = cmds.pointConstraint(constraint, query=True, targetList=True) or []
+                else:
+                    targets = cmds.orientConstraint(constraint, query=True, targetList=True) or []
                 if any(self._is_same_maya_node(transform, target) for target in targets):
                     return True
             except Exception:
                 continue
         return False
 
-    def _delete_marked_preview_parent_constraints(self, transform: str, joint: str) -> None:
-        """Remove old full-transform preview constraints for the same rigid body."""
-        constraints = cmds.listConnections(joint, source=True, destination=False, type="parentConstraint") or []
-        for constraint in constraints:
-            try:
-                if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint, exists=True):
+    def _delete_marked_preview_constraints(self, transform: str, joint: str) -> None:
+        """Remove all marked preview constraints between *transform* and *joint*."""
+        for ctype, query_fn in (
+            ("parentConstraint", lambda c: cmds.parentConstraint(c, query=True, targetList=True) or []),
+            ("orientConstraint", lambda c: cmds.orientConstraint(c, query=True, targetList=True) or []),
+            ("pointConstraint", lambda c: cmds.pointConstraint(c, query=True, targetList=True) or []),
+        ):
+            constraints = cmds.listConnections(joint, source=True, destination=False, type=ctype) or []
+            for constraint in constraints:
+                try:
+                    if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint, exists=True):
+                        continue
+                    targets = query_fn(constraint)
+                    if any(self._is_same_maya_node(transform, target) for target in targets):
+                        cmds.delete(constraint)
+                except Exception:
                     continue
-                targets = cmds.parentConstraint(constraint, query=True, targetList=True) or []
-                if any(self._is_same_maya_node(transform, target) for target in targets):
-                    cmds.delete(constraint)
-            except Exception:
-                continue
 
     @staticmethod
     def _is_same_maya_node(node_a: str, node_b: str) -> bool:
