@@ -16,6 +16,7 @@ from .components.header_widget import HeaderWidget
 from .application_state import ApplicationState
 from ..core import settings_keys as setting_keys
 from ..core.logger import get_logger, install_maya_script_editor_handler
+from ..services.settings_service import SettingsService
 from .tabs.import_export_tab import ImportExportTab
 from .presenters.import_export_presenter import ImportExportPresenter
 from .tabs.info_tab import InfoTab
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
 
         # アプリケーション状態管理
         self.app_state = ApplicationState()
+        self.settings_service = SettingsService()
 
         # 中央ウィジェットの設定
         central_widget = QWidget()
@@ -214,11 +216,7 @@ class MainWindow(QMainWindow):
         translator = UITranslator.instance()
 
         # 言語設定を読み込み
-        from .. import settings
-
-        # 設定を確実に読み込む
-        settings.load()
-        current_language = settings.get(setting_keys.UI_GENERAL_LANGUAGE, "ja")
+        current_language = self.settings_service.get(setting_keys.UI_GENERAL_LANGUAGE, "ja")
         translator.set_language(current_language)
 
         # File I/O Tab
@@ -248,7 +246,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
 
         # Physics Tab — dev mode only (physics import is a dev-only feature)
-        is_dev = settings.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
+        is_dev = self.settings_service.is_development_mode()
         if is_dev:
             self._add_physics_tab()
         else:
@@ -287,12 +285,10 @@ class MainWindow(QMainWindow):
 
     def refresh_development_mode_visibility(self):
         """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""
-        from .. import settings
-
         if hasattr(self, "import_export_tab"):
             self.import_export_tab._apply_dev_mode_visibility()
 
-        is_dev = settings.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
+        is_dev = self.settings_service.is_development_mode()
         physics_index = self.tab_widget.indexOf(self.physics_tab) if self.physics_tab is not None else -1
 
         if is_dev and self.physics_tab is None:

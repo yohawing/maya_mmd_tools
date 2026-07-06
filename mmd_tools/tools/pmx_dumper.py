@@ -9,6 +9,8 @@ from typing import List, Optional, TextIO
 from mmd_tools.core import utils
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data import PmxData
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
+from mmd_tools.core.pmx_data.material import PmxDrawFlag
 
 
 class PmxDumper:
@@ -160,21 +162,21 @@ class PmxDumper:
 
             # フラグを解析
             flags = []
-            if bone.bone_flag & 0x0020:  # IK
+            if bone.bone_flag & PmxBoneFlag.IK:
                 flags.append("IK")
-            if bone.bone_flag & 0x0002:  # 回転可能
+            if bone.bone_flag & PmxBoneFlag.ROTATABLE:
                 flags.append("ROT")
-            if bone.bone_flag & 0x0004:  # 移動可能
+            if bone.bone_flag & PmxBoneFlag.MOVABLE:
                 flags.append("MOVE")
-            if bone.bone_flag & 0x0008:  # 表示
+            if bone.bone_flag & PmxBoneFlag.DISPLAY:
                 flags.append("VIS")
-            if bone.bone_flag & 0x0010:  # 操作可能
+            if bone.bone_flag & PmxBoneFlag.OPERATABLE:
                 flags.append("EN")
 
             flag_str = f" [{'+'.join(flags)}]" if flags else ""
 
             # 接続先情報を取得
-            if bone.bone_flag & 0x0001:  # 接続先がボーン
+            if bone.bone_flag & PmxBoneFlag.CONNECT_BONE:
                 tail_str = f" → [{bone.connect_bone_index}]" if bone.connect_bone_index >= 0 else ""
             else:  # 接続先が相対座標
                 tail_str = f" → offset({bone.connect_position_offset[0]:.1f}, {bone.connect_position_offset[1]:.1f}, {bone.connect_position_offset[2]:.1f})"
@@ -199,7 +201,7 @@ class PmxDumper:
 
         # IKボーンの詳細
         lines.append("\n=== BONE DETAILS ===")
-        ik_bones = [b for b in self.pmx.bones if b.bone_flag & 0x0020]  # IKフラグが立っているボーン
+        ik_bones = [b for b in self.pmx.bones if b.bone_flag & PmxBoneFlag.IK]
 
         for bone in ik_bones:
             lines.append(f"\n[{self.pmx.bones.index(bone)}] {bone.name} ({bone.name_english})")
@@ -208,7 +210,7 @@ class PmxDumper:
             lines.append(f"    Position: ({bone.position[0]:.3f}, {bone.position[1]:.3f}, {bone.position[2]:.3f})")
             lines.append(f"    Flags: 0x{bone.bone_flag:04X}")
 
-            if bone.bone_flag & 0x0020:  # IKフラグが立っている場合
+            if bone.bone_flag & PmxBoneFlag.IK:
                 lines.append(
                     f"    IK Target: [{bone.ik_target_bone_index}] | Loop: {bone.ik_loop_count} | Limit: {bone.ik_limit_angle:.2f} rad"
                 )
@@ -280,13 +282,13 @@ class PmxDumper:
 
             # フラグ
             flags = []
-            if mat.draw_flag & 0x01:  # 両面描画
+            if mat.draw_flag & PmxDrawFlag.DOUBLE_SIDED:
                 flags.append("DoubleSide")
-            if mat.draw_flag & 0x02:  # 地面影
+            if mat.draw_flag & PmxDrawFlag.GROUND_SHADOW:
                 flags.append("Shadow")
-            if mat.draw_flag & 0x08:  # セルフシャドウ
+            if mat.draw_flag & PmxDrawFlag.SELF_SHADOW:
                 flags.append("SelfShadow")
-            if mat.draw_flag & 0x10:  # エッジ描画
+            if mat.draw_flag & PmxDrawFlag.EDGE_DRAWING:
                 flags.append("Edge")
 
             lines.append(f"    Flags: {' | '.join(flags) if flags else 'None'}")
