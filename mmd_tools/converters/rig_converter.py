@@ -6,7 +6,7 @@ import maya.cmds as cmds
 
 from mmd_tools.config.bone_aliases import get_bone_aliases, get_original_bone_name_aliases
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-from mmd_tools.core import maya_rig_utils, maya_scene_utils, maya_utils
+from mmd_tools.core import maya_attribute_utils, maya_rig_utils, maya_scene_utils
 from types import SimpleNamespace
 
 from mmd_tools.core.logger import get_logger, safe_log_error
@@ -324,7 +324,7 @@ class RigConverter:
                 maya_scene_utils.parent_objects(ik_handle, chain["ik_bone"])
 
                 # IKハンドルのアトリビュートを設定
-                maya_utils.set_attribute(ik_handle, "v", 0, "bool")  # 非表示
+                maya_attribute_utils.set_attribute(ik_handle, "v", 0, "bool")  # 非表示
 
                 # 足IKの場合、PoleTargetを作成
                 pole_target = None
@@ -680,7 +680,7 @@ class RigConverter:
         reference = "mmd_grant_reference"
         if not maya_scene_utils.object_exists(reference):
             reference = cmds.group(empty=True, name=reference)
-            maya_utils.set_attribute(reference, "visibility", False, "bool")
+            maya_attribute_utils.set_attribute(reference, "visibility", False, "bool")
             self.logger.info(f"Added reference node for rotation append: {reference}")
 
         return reference
