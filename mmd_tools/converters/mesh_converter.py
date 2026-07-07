@@ -134,7 +134,7 @@ def _delete_shader_node(shader) -> None:
 
 
 def _set_shader_attribute_checked(shader, attr_name, attr_value, attr_type) -> bool:
-    """Set a shader attr through maya_utils and verify the attr did not silently fail."""
+    """Set a shader attr through attribute utils and verify the attr did not silently fail."""
     if not cmds.attributeQuery(attr_name, node=shader, exists=True):
         LOGGER.debug("Shader '%s' has no '%s' attribute", shader, attr_name)
         return False

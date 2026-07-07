@@ -667,13 +667,11 @@ def _capture_case(case):
     import mmd_tools.core.mmd_parser as mmd_parser
     import mmd_tools.core.pmx_data as pmx_data
     import mmd_tools.core.pmx_data.vertex as pmx_vertex
-    import mmd_tools.core.maya_utils as maya_utils
     import mmd_tools.io.mmd_importer as mmd_importer
     import mmd_tools.io.pmx_importer as pmx_importer
     import mmd_tools.io.vmd_importer as vmd_importer
     from mmd_tools.core.settings import settings
 
-    maya_utils = importlib.reload(maya_utils)
     pmx_vertex = importlib.reload(pmx_vertex)
     pmx_data = importlib.reload(pmx_data)
     mmd_parser = importlib.reload(mmd_parser)

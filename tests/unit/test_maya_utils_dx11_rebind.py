@@ -8,7 +8,7 @@ from tests.common.maya_stub import install_maya_stub
 
 install_maya_stub()
 
-from mmd_tools.core import maya_material_utils, maya_utils  # noqa: E402
+from mmd_tools.core import maya_material_utils  # noqa: E402
 
 
 class TestMayaUtilsDx11Rebind(unittest.TestCase):
@@ -161,17 +161,6 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
         self.assertEqual(summary, {"rebound": 0, "skipped": 1, "failed": 0})
         self.assertEqual(result.rebind_status, "skipped")
         self.assertEqual(result.rebind_reason, "dx11_texture_slot_not_found")
-
-    def test_maya_utils_compatibility_wrapper_delegates_to_material_utils(self):
-        with patch(
-            "mmd_tools.core.maya_material_utils.resolve_scene_mmd_textures",
-            return_value=["resolved"],
-        ) as mock_resolve:
-            result = maya_utils.resolve_scene_mmd_textures(workspace_root="F:/workspace")
-
-        self.assertEqual(result, ["resolved"])
-        mock_resolve.assert_called_once_with(workspace_root="F:/workspace")
-
 
 if __name__ == "__main__":
     unittest.main()
