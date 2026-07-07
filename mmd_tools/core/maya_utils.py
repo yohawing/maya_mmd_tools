@@ -9,6 +9,7 @@ from . import maya_animation_utils as _maya_animation_utils
 from . import maya_material_utils as _maya_material_utils
 from . import maya_mesh_utils as _maya_mesh_utils
 from . import maya_physics_utils as _maya_physics_utils
+from . import maya_transform_utils as _maya_transform_utils
 from . import utils
 from .logger import get_logger
 
@@ -710,48 +711,8 @@ def create_pole_vector_constraint(ik_handle, pole_vector_object, maintain_offset
         raise
 
 
-def create_matrix_from_axes(x_axis, y_axis, z_axis):
-    """
-    3つの軸ベクトルから回転行列を作成する。
-
-    Args:
-        x_axis (list): X軸ベクトル [x, y, z]
-        y_axis (list): Y軸ベクトル [x, y, z]
-        z_axis (list): Z軸ベクトル [x, y, z]
-
-    Returns:
-        om.MMatrix: 回転行列
-    """
-    matrix = om.MMatrix()
-    matrix.setElement(0, 0, x_axis[0])
-    matrix.setElement(0, 1, x_axis[1])
-    matrix.setElement(0, 2, x_axis[2])
-    matrix.setElement(1, 0, y_axis[0])
-    matrix.setElement(1, 1, y_axis[1])
-    matrix.setElement(1, 2, y_axis[2])
-    matrix.setElement(2, 0, z_axis[0])
-    matrix.setElement(2, 1, z_axis[1])
-    matrix.setElement(2, 2, z_axis[2])
-    return matrix
-
-
-def matrix_to_euler(matrix):
-    """
-    回転行列をオイラー角に変換する。
-
-    Args:
-        matrix (om.MMatrix): 回転行列
-
-    Returns:
-        list: オイラー角 [x, y, z] 度数法
-    """
-    transform_matrix = om.MTransformationMatrix(matrix)
-    euler = transform_matrix.rotation(asQuaternion=False)
-    # ラジアンから度に変換
-    import math
-
-    return [math.degrees(euler.x), math.degrees(euler.y), math.degrees(euler.z)]
-
+create_matrix_from_axes = _maya_transform_utils.create_matrix_from_axes
+matrix_to_euler = _maya_transform_utils.matrix_to_euler
 
 create_animation_curves = _maya_animation_utils.create_animation_curves
 set_keyframes_batch = _maya_animation_utils.set_keyframes_batch
