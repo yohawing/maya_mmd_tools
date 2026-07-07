@@ -7,6 +7,7 @@ DLL が利用できない環境でも安全に skip する。
 import math
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from mmd_tools.core.native import (
     MmdAppendSolver,
@@ -14,6 +15,7 @@ from mmd_tools.core.native import (
     MmdRigSpec,
     is_rig_primitive_available,
 )
+from mmd_tools.core.native import mmd_anim_runtime as rt
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _PMX_PATH = _TEST_DATA_DIR / "mmt_test_model.pmx"
@@ -40,6 +42,41 @@ class TestRigPrimitiveAvailability(unittest.TestCase):
         solver = MmdAppendSolver.create(1.0)
         if not is_rig_primitive_available():
             self.assertIsNone(solver)
+
+    def test_package_availability_uses_runtime_getter_patch(self):
+        """core.native API は mmd_anim_runtime 側の patched getter 互換を保つ。"""
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_ik_chain_create():
+                return None
+
+        with patch.object(rt, "get_mmd_runtime_library", return_value=FakeLib()):
+            self.assertTrue(rt.is_rig_primitive_available())
+            self.assertTrue(is_rig_primitive_available())
+
+    def test_class_factories_use_runtime_getter_patch(self):
+        """re-export 後も class factory は runtime module の patched getter を使う。"""
+        calls = []
+
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_append_solver_create(_config):
+                calls.append("create")
+                return 123
+
+            @staticmethod
+            def mmd_runtime_append_solver_free(_handle):
+                calls.append("free")
+
+        fake = FakeLib()
+        with patch.object(rt, "get_mmd_runtime_library", return_value=fake):
+            solver = MmdAppendSolver.create(ratio=0.5)
+
+        self.assertIsNotNone(solver)
+        self.assertIs(solver._lib, fake)
+        self.assertEqual(calls, ["create"])
+        solver.free()
+        self.assertEqual(calls, ["create", "free"])
 
 
 @unittest.skipUnless(is_rig_primitive_available(), "rig primitive DLL not available")
