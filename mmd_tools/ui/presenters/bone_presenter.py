@@ -1,11 +1,11 @@
 import math
 from mmd_tools.adapters import MayaCmdsAdapter
 from ...core.logger import get_logger
-from ...core.maya_utils import (
-    object_exists,
+from ...core.maya_attribute_utils import (
     set_custom_attributes,
     get_attribute,
 )
+from ...core.maya_scene_utils import object_exists
 from ...core.humanik_builder import create_humanik_definition_from_scene
 from ...core.constants import (
     ATTR_MMD_BONE_NAME,
