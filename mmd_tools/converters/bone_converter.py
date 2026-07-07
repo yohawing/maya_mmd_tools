@@ -7,7 +7,7 @@ import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
-from ..core import maya_mesh_utils, maya_utils
+from ..core import maya_mesh_utils, maya_scene_utils, maya_utils
 from ..core.mmd_bone_names import has_semistandard_mmd_bone_name
 from ..core.pmx_data import PmxData
 from ..core.constants import (
@@ -96,7 +96,7 @@ class BoneConverter:
                    スキンクラスターの名前、またはスキンクラスター名のリスト)
         """
         # PMXのボーン階層をMayaのjointノードに変換する
-        maya_utils.select_objects(clear=True)
+        maya_scene_utils.select_objects(clear=True)
 
         # スケルトングループを作成
         skeleton_group = cmds.group(empty=True, name=SKELETON_GROUP, parent=root_group)
@@ -299,7 +299,7 @@ class BoneConverter:
             joint_name = bone_map[i]
 
             # 選択をクリアしてルートにジョイントを作成
-            maya_utils.select_objects(clear=True)
+            maya_scene_utils.select_objects(clear=True)
 
             # ジョイントを作成
             position = bone.position
@@ -484,7 +484,7 @@ class BoneConverter:
             str: 作成されたスキンクラスターの名前。
         """
         # 選択をクリアしてジョイントとメッシュのみを選択
-        maya_utils.select_objects(clear=True)
+        maya_scene_utils.select_objects(clear=True)
 
         # メッシュノードが存在しない場合はNoneを返す
         if not mesh_node or not cmds.objExists(mesh_node):

@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 import maya.cmds as cmds
 
-from ..core import maya_physics_utils, maya_utils
+from ..core import maya_physics_utils, maya_scene_utils, maya_utils
 from ..core.constants import (
     ATTR_MMD_BONE_INDEX,
     CONSTRAINTS_GROUP,
@@ -1622,7 +1622,7 @@ class PhysicsConverter:
     # ------------------------------------------------------------------
 
     def _ensure_nucleus_solver(self) -> str:
-        if self.nucleus_solver and maya_utils.object_exists(self.nucleus_solver):
+        if self.nucleus_solver and maya_scene_utils.object_exists(self.nucleus_solver):
             return self.nucleus_solver
         self.nucleus_solver = maya_physics_utils.find_or_create_nucleus_solver("mmd_nucleus")
         self.logger.info(f"Nucleus solver: {self.nucleus_solver}")
@@ -1630,7 +1630,7 @@ class PhysicsConverter:
         return self.nucleus_solver
 
     def _configure_nucleus_solver(self):
-        if not self.nucleus_solver or not maya_utils.object_exists(self.nucleus_solver):
+        if not self.nucleus_solver or not maya_scene_utils.object_exists(self.nucleus_solver):
             return
         quality_settings = {
             "low": {"substeps": 2, "maxCollisionIterations": 4},
@@ -1690,7 +1690,7 @@ class PhysicsConverter:
                     hair_system = self._create_nhair_system(curve, rb)
                     if hair_system:
                         self.created_ncloth_nodes.append(hair_system)
-                        maya_utils.parent_objects(hair_system, rigid_bodies_group)
+                        maya_scene_utils.parent_objects(hair_system, rigid_bodies_group)
             except Exception as e:
                 self.logger.error(f"Hair physics creation error: {rb.name} - {e}")
 
@@ -1702,7 +1702,7 @@ class PhysicsConverter:
                     ncloth = self._create_ncloth(proxy_mesh, rb)
                     if ncloth:
                         self.created_ncloth_nodes.append(ncloth)
-                        maya_utils.parent_objects(ncloth, rigid_bodies_group)
+                        maya_scene_utils.parent_objects(ncloth, rigid_bodies_group)
             except Exception as e:
                 self.logger.error(f"Cloth physics creation error: {rb.name} - {e}")
 
@@ -1714,7 +1714,7 @@ class PhysicsConverter:
                     nrigid = self._create_nrigid(collision_obj, rb)
                     if nrigid:
                         self.created_nrigid_nodes.append(nrigid)
-                        maya_utils.parent_objects(nrigid, rigid_bodies_group)
+                        maya_scene_utils.parent_objects(nrigid, rigid_bodies_group)
             except Exception as e:
                 self.logger.error(f"Rigid body physics creation error: {rb.name} - {e}")
 

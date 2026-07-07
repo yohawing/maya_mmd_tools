@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 import maya.cmds as cmds
 
-from ..core import maya_utils
+from ..core import maya_scene_utils
 from ..core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_BONE_NAME
 
 
@@ -18,9 +18,9 @@ def build_name_mappings(converter, target_namespace: Optional[str] = None) -> No
     converter.bone_index_to_joint: Dict[int, str] = {}
 
     if target_namespace:
-        joints = maya_utils.list_objects(object_filter=f"{target_namespace}:*", type="joint")
+        joints = maya_scene_utils.list_objects(object_filter=f"{target_namespace}:*", type="joint")
     else:
-        joints = maya_utils.list_objects(type="joint")
+        joints = maya_scene_utils.list_objects(type="joint")
 
     for joint in joints:
         if cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
