@@ -9,6 +9,7 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_context import VmdRuntimeLocalDecomposeContext
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -26,6 +27,24 @@ class TestVmdRuntimeMatrix(MayaTestBase):
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def test_runtime_local_decompose_context_exposes_mutable_cache_state(self):
+        """Runtime local decomposition helpers receive explicit mutable cache state."""
+        self.converter.bone_index_to_joint = {0: "center_joint"}
+        self.converter.bone_name_to_index = {"センター": 0}
+        self.converter._bone_parent_map = {0: None}
+        self.converter._native_local_decompose_inputs = {"ordered_bone_indices": (0,)}
+
+        context = self.converter._runtime_local_decompose_context()
+
+        self.assertIsInstance(context, VmdRuntimeLocalDecomposeContext)
+        self.assertIs(context.bone_index_to_joint, self.converter.bone_index_to_joint)
+        self.assertIs(context.bone_parent_map, self.converter._bone_parent_map)
+        self.assertEqual(context.native_local_decompose_cache["inputs"], self.converter._native_local_decompose_inputs)
+
+        context.native_local_decompose_cache["inputs"] = {"ordered_bone_indices": (1,)}
+        self.converter._sync_runtime_local_decompose_context(context)
+        self.assertEqual(self.converter._native_local_decompose_inputs, {"ordered_bone_indices": (1,)})
 
     def test_runtime_matrix_coordinate_conversion_identity_and_translation(self):
         """runtime world matrix の座標変換で identity を壊さず Z translation だけ反転する"""

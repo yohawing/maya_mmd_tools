@@ -43,7 +43,13 @@ from .vmd_camera_animation import (
     get_or_create_camera,
     parse_vmd_camera_interpolation,
 )
-from .vmd_context import VmdImportContext, VmdKeyingContext, VmdRuntimeRigContext
+from .vmd_context import (
+    VmdBoneAnimationContext,
+    VmdImportContext,
+    VmdKeyingContext,
+    VmdRuntimeLocalDecomposeContext,
+    VmdRuntimeRigContext,
+)
 from .vmd_import_state import (
     capture_anim_layer_selection,
     clear_existing_camera_motion,
@@ -189,6 +195,30 @@ class VmdConverter:
             use_animation_layers=self.use_animation_layers,
         )
 
+    def _bone_animation_context(self) -> VmdBoneAnimationContext:
+        """Return legacy bone-animation state for split VMD helper modules."""
+        return VmdBoneAnimationContext(
+            logger=self.logger,
+            bone_name_mapping=self.bone_name_mapping,
+            bone_bind_poses=self._bone_bind_poses,
+            failed_bones=self._failed_bones,
+            use_animation_layers=self.use_animation_layers,
+            anim_layer=self.anim_layer,
+            motion_scale=self.motion_scale,
+            use_quaternion_interpolation=self.use_quaternion_interpolation,
+            set_bone_keyframes=self._set_bone_keyframes,
+            build_legacy_bone_key_routes=self._build_legacy_bone_key_routes,
+            collect_ik_link_joints=self._collect_ik_link_joints,
+            add_objects_to_layer=self._add_objects_to_layer,
+            add_attrs_to_anim_layer=self._add_attrs_to_anim_layer,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            vmd_interp_channel_for_attr=self._vmd_interp_channel_for_attr,
+            convert_vmd_quat_to_joint_rotate=self._convert_vmd_quat_to_joint_rotate,
+            samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=self._batch_key_scalar_channels,
+            apply_vmd_bezier_tangents=self._apply_vmd_bezier_tangents,
+        )
+
     def _import_context(
         self,
         vmd_data: VmdData,
@@ -217,6 +247,39 @@ class VmdConverter:
             import_camera_animation=bool(self.import_camera_animation),
             import_light_animation=bool(self.import_light_animation),
         )
+
+    def _runtime_local_decompose_context(self) -> VmdRuntimeLocalDecomposeContext:
+        """Return runtime local-channel decomposition state for split helpers."""
+        for attr_name in (
+            "bone_index_to_joint",
+            "bone_name_to_index",
+            "_bone_parent_map",
+            "_bone_rotate_orders",
+            "_runtime_bind_world_matrices",
+            "_runtime_no_orient_bind_world_matrices",
+        ):
+            if not hasattr(self, attr_name):
+                setattr(self, attr_name, {})
+
+        return VmdRuntimeLocalDecomposeContext(
+            logger=self.logger,
+            bone_index_to_joint=self.bone_index_to_joint,
+            bone_name_to_index=self.bone_name_to_index,
+            bone_bind_poses=self._bone_bind_poses,
+            bone_parent_map=self._bone_parent_map,
+            bone_rotate_orders=self._bone_rotate_orders,
+            runtime_bind_world_matrices=self._runtime_bind_world_matrices,
+            runtime_no_orient_bind_world_matrices=self._runtime_no_orient_bind_world_matrices,
+            native_local_decompose_cache={
+                "inputs": getattr(self, "_native_local_decompose_inputs", None),
+            },
+            convert_mmd_world_matrix_to_maya=self._convert_mmd_world_matrix_to_maya,
+            get_joint_orient_cache=self._get_joint_orient_cache,
+        )
+
+    def _sync_runtime_local_decompose_context(self, context: VmdRuntimeLocalDecomposeContext) -> None:
+        """Keep legacy converter cache attributes visible to existing tests/callers."""
+        self._native_local_decompose_inputs = context.native_local_decompose_cache.get("inputs")
 
     def _runtime_rig_context(self) -> VmdRuntimeRigContext:
         """Return runtime-rig-only state for split VMD helper modules."""
@@ -646,7 +709,9 @@ class VmdConverter:
 
         Maya ジョイントの DAG 親子とカスタム属性から bone index ベースのマップを構築。
         """
-        build_bone_hierarchy_and_order_maps(self)
+        context = self._runtime_local_decompose_context()
+        build_bone_hierarchy_and_order_maps(context)
+        self._sync_runtime_local_decompose_context(context)
 
     def _build_runtime_bind_world_maps(self) -> None:
         """Build bind-space maps used to convert runtime matrices for JO skinning.
@@ -656,7 +721,9 @@ class VmdConverter:
         different bind world matrix, so the joint world matrix must be converted
         to ``B_maya * inverse(B_noJO) * W_mmd`` before local decomposition.
         """
-        build_runtime_bind_world_maps(self)
+        context = self._runtime_local_decompose_context()
+        build_runtime_bind_world_maps(context)
+        self._sync_runtime_local_decompose_context(context)
 
     def _compute_all_bone_locals(
         self, world_matrices: List[List[float]]
@@ -670,18 +737,30 @@ class VmdConverter:
         JO 付き skeleton では、runtime world matrix そのものではなく skinning
         matrix が no-JO MMD 評価と一致するよう bind-space 補正を行う。
         """
-        return compute_all_bone_locals(self, world_matrices)
+        context = self._runtime_local_decompose_context()
+        try:
+            return compute_all_bone_locals(context, world_matrices, compute_maya_local_channels)
+        finally:
+            self._sync_runtime_local_decompose_context(context)
 
     def _compute_all_bone_locals_native(
         self,
         world_matrices: List[List[float]],
     ) -> Optional[Dict[int, Tuple[float, float, float, float, float, float]]]:
         """Use mmd-anim FFI to decompose runtime world matrices when available."""
-        return compute_all_bone_locals_native(self, world_matrices, compute_maya_local_channels)
+        context = self._runtime_local_decompose_context()
+        try:
+            return compute_all_bone_locals_native(context, world_matrices, compute_maya_local_channels)
+        finally:
+            self._sync_runtime_local_decompose_context(context)
 
     def _compute_native_local_channel_batch(self, batch_result):
         """Compute native local channels for an entire runtime batch when possible."""
-        return compute_native_local_channel_batch(self, batch_result, compute_maya_local_channels_batch)
+        context = self._runtime_local_decompose_context()
+        try:
+            return compute_native_local_channel_batch(context, batch_result, compute_maya_local_channels_batch)
+        finally:
+            self._sync_runtime_local_decompose_context(context)
 
     @staticmethod
     def _native_local_channel_batch_for_frame(
@@ -693,7 +772,11 @@ class VmdConverter:
 
     def _get_native_local_decompose_static_inputs(self, ordered_bone_indices: List[int]) -> Optional[Dict[str, list]]:
         """Return cached static inputs for native runtime local decomposition."""
-        return get_native_local_decompose_static_inputs(self, ordered_bone_indices)
+        context = self._runtime_local_decompose_context()
+        try:
+            return get_native_local_decompose_static_inputs(context, ordered_bone_indices)
+        finally:
+            self._sync_runtime_local_decompose_context(context)
 
     def _batch_create_and_key_curves(
         self,
@@ -1021,7 +1104,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_bone_animation(self, bone_frames)
+        return convert_bone_animation(self._bone_animation_context(), bone_frames)
 
     @staticmethod
     def _collect_ik_link_joints() -> dict:
@@ -1115,7 +1198,7 @@ class VmdConverter:
             vmd_bone_name: VMDボーン名
             key_route: append / IK rig 接続に応じたキー出力先情報
         """
-        set_bone_keyframes(self, joint, frames, vmd_bone_name, key_route)
+        set_bone_keyframes(self._bone_animation_context(), joint, frames, vmd_bone_name, key_route)
 
     def _get_joint_orient_cache(self, joint_name):
         """joint の jointOrient quaternion と rotateOrder をキャッシュ付きで取得する。"""

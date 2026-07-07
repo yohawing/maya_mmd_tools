@@ -6,6 +6,7 @@ import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_context import VmdBoneAnimationContext
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
 
@@ -25,6 +26,21 @@ class TestVmdBoneAnimation(MayaTestBase):
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def test_bone_animation_context_exposes_legacy_keying_state(self):
+        """Legacy bone helper state is passed through an explicit context object."""
+        self.converter.bone_name_mapping["センター"] = "center_joint"
+        self.converter._bone_bind_poses["センター"] = (1.0, 2.0, 3.0)
+        self.converter._failed_bones.add("missing")
+
+        context = self.converter._bone_animation_context()
+
+        self.assertIsInstance(context, VmdBoneAnimationContext)
+        self.assertIs(context.bone_name_mapping, self.converter.bone_name_mapping)
+        self.assertIs(context.bone_bind_poses, self.converter._bone_bind_poses)
+        self.assertIs(context.failed_bones, self.converter._failed_bones)
+        self.assertEqual(context.motion_scale, self.converter.motion_scale)
+        self.assertEqual(context.vmd_frame_to_maya_time(30), self.converter.vmd_frame_to_maya_time(30))
 
     def test_legacy_bone_keyframes_use_bind_pose_without_accumulation(self):
         """レガシー VMD パスは現在フレーム値ではなく bind pose + VMD offset を key する。"""
