@@ -17,6 +17,9 @@
 #include <maya/MNodeClass.h>
 #include <maya/MStatus.h>
 
+#include <string>
+
+#include "mmdRuntimeBridge.h"
 #include "mmdRuntimeNode.h"
 #include "mmdFastLoad.h"
 #include "MmdAppendNode.h"
@@ -40,6 +43,22 @@ MStatus initializePlugin(MObject obj)
 {
     MStatus status;
     MFnPlugin plugin(obj, "yohawing", "0.2.0", "Any");
+
+    const uint32_t runtimeAbi = mmd::RuntimeBridge::runtimeAbiVersion();
+    if (runtimeAbi != MMD_RUNTIME_ABI_VERSION) {
+        const std::string message =
+            "mmd-anim runtime ABI mismatch: got=" + std::to_string(runtimeAbi) +
+            ", expected=" + std::to_string(MMD_RUNTIME_ABI_VERSION);
+        if (!mmd::RuntimeBridge::allowRuntimeAbiMismatch()) {
+            MGlobal::displayError((message + ". Refusing to initialize maya_mmd_tools_cpp.").c_str());
+            return MS::kFailure;
+        }
+        MGlobal::displayWarning(
+            (message + "; continuing because " + mmd::RuntimeBridge::runtimeAbiMismatchEnvName() + " is set.").c_str());
+    } else {
+        MGlobal::displayInfo(
+            ("mmd-anim runtime ABI verified: " + std::to_string(runtimeAbi)).c_str());
+    }
 
     // mmdRuntimeInstance ノード登録 (Phase 2)
     status = plugin.registerNode(

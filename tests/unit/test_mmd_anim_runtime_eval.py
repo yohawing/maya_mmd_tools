@@ -1171,6 +1171,70 @@ class TestGetRuntimeLibraryCache(unittest.TestCase):
         runtime_loader._runtime_lib = False  # キャッシュ済み「ロード失敗」
         self.assertFalse(rt.is_native_pmx_parser_available())
 
+    def test_rejects_runtime_library_when_abi_mismatches(self):
+        from pathlib import Path
+
+        path = Path("F:/runtime/mmd_runtime_ffi.dll")
+
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_abi_version():
+                return runtime_loader.MMD_RUNTIME_ABI_VERSION + 1
+
+        runtime_loader._runtime_lib = None
+        runtime_loader._runtime_lib_path = None
+        with mock.patch.dict("os.environ", {runtime_loader._ALLOW_ABI_MISMATCH_ENV: ""}, clear=False):
+            with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
+                runtime_loader.ctypes, "CDLL", return_value=FakeLib()
+            ), mock.patch.object(runtime_loader, "setup_function_signatures"):
+                self.assertIsNone(rt.get_mmd_runtime_library())
+
+        self.assertIs(runtime_loader._runtime_lib, False)
+        self.assertIsNone(runtime_loader._runtime_lib_path)
+
+    def test_accepts_mismatched_runtime_library_only_with_escape_hatch(self):
+        from pathlib import Path
+
+        path = Path("F:/runtime/mmd_runtime_ffi.dll")
+
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_abi_version():
+                return runtime_loader.MMD_RUNTIME_ABI_VERSION + 1
+
+        fake = FakeLib()
+        runtime_loader._runtime_lib = None
+        runtime_loader._runtime_lib_path = None
+        with mock.patch.dict("os.environ", {runtime_loader._ALLOW_ABI_MISMATCH_ENV: "1"}, clear=False):
+            with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
+                runtime_loader.ctypes, "CDLL", return_value=fake
+            ), mock.patch.object(runtime_loader, "setup_function_signatures"):
+                self.assertIs(rt.get_mmd_runtime_library(), fake)
+
+        self.assertIs(runtime_loader._runtime_lib, fake)
+        self.assertEqual(runtime_loader._runtime_lib_path, path)
+
+    def test_logs_loaded_runtime_library_path_at_info_level(self):
+        from pathlib import Path
+
+        path = Path("F:/runtime/mmd_runtime_ffi.dll")
+
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_abi_version():
+                return runtime_loader.MMD_RUNTIME_ABI_VERSION
+
+        runtime_loader._runtime_lib = None
+        runtime_loader._runtime_lib_path = None
+        with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
+            runtime_loader.ctypes, "CDLL", return_value=FakeLib()
+        ), mock.patch.object(runtime_loader, "setup_function_signatures"):
+            with self.assertLogs(runtime_loader.logger.name, level="INFO") as logs:
+                self.assertIsNotNone(rt.get_mmd_runtime_library())
+
+        self.assertIn(str(path), "\n".join(logs.output))
+        self.assertIn(f"ABI {runtime_loader.MMD_RUNTIME_ABI_VERSION}", "\n".join(logs.output))
+
 
 # ----------------------------------------------------------------------
 # from_pmx_bytes / from_vmd_bytes のガード (lib が None のとき)

@@ -7,8 +7,10 @@
 
 #include "mmdRuntimeBridge.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <string>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -20,9 +22,33 @@ namespace {
     // FFI ライブラリの遅延ロード (Windows 例)
     // 本番では CMake でリンク or LoadLibrary + GetProcAddress がより堅牢
     bool g_ffiLoaded = false;
+    constexpr const char* kAllowAbiMismatchEnv = "MMD_ANIM_FFI_ALLOW_ABI_MISMATCH";
 
 #ifdef _WIN32
     HMODULE g_ffiModule = nullptr;
+    std::string g_ffiPath;
+#endif
+
+    bool isTruthyEnvValue(const char* value) {
+        if (!value) return false;
+        return std::strcmp(value, "1") == 0 ||
+               std::strcmp(value, "true") == 0 ||
+               std::strcmp(value, "TRUE") == 0 ||
+               std::strcmp(value, "yes") == 0 ||
+               std::strcmp(value, "YES") == 0 ||
+               std::strcmp(value, "on") == 0 ||
+               std::strcmp(value, "ON") == 0;
+    }
+
+#ifdef _WIN32
+    std::string modulePath(HMODULE module) {
+        char buffer[MAX_PATH] = {};
+        const DWORD length = GetModuleFileNameA(module, buffer, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH) {
+            return "";
+        }
+        return std::string(buffer, length);
+    }
 #endif
 }
 
@@ -52,7 +78,10 @@ bool RuntimeBridge::loadFfiIfNeeded() {
     };
     for (auto cand : candidates) {
         g_ffiModule = LoadLibraryA(cand);
-        if (g_ffiModule) break;
+        if (g_ffiModule) {
+            g_ffiPath = modulePath(g_ffiModule);
+            break;
+        }
     }
     if (!g_ffiModule) {
         std::cerr << "[mmd] Failed to load mmd_runtime_ffi.dll or mmd_anim_ffi.dll\n";
@@ -60,8 +89,37 @@ bool RuntimeBridge::loadFfiIfNeeded() {
     }
 #endif
 
-    // ここで GetProcAddress で全関数を取ることも可能だが、
-    // ヘッダを直接リンクする方がシンプル (CMake で .lib 提供時)
+    const uint32_t abi = runtimeAbiVersion();
+    if (abi != MMD_RUNTIME_ABI_VERSION) {
+        if (!allowRuntimeAbiMismatch()) {
+            std::cerr << "[mmd] Rejected mmd-anim runtime ABI mismatch: got="
+                      << abi << ", expected=" << MMD_RUNTIME_ABI_VERSION;
+#ifdef _WIN32
+            if (!g_ffiPath.empty()) {
+                std::cerr << ", path=" << g_ffiPath;
+            }
+#endif
+            std::cerr << "\n";
+#ifdef _WIN32
+            FreeLibrary(g_ffiModule);
+            g_ffiModule = nullptr;
+            g_ffiPath.clear();
+#endif
+            return false;
+        }
+        std::cerr << "[mmd] Using mmd-anim runtime despite ABI mismatch because "
+                  << kAllowAbiMismatchEnv << " is set: got=" << abi
+                  << ", expected=" << MMD_RUNTIME_ABI_VERSION << "\n";
+    } else {
+        std::cerr << "[mmd] Loaded mmd-anim runtime ABI " << abi;
+#ifdef _WIN32
+        if (!g_ffiPath.empty()) {
+            std::cerr << " from " << g_ffiPath;
+        }
+#endif
+        std::cerr << "\n";
+    }
+
     g_ffiLoaded = true;
     return true;
 }
@@ -216,6 +274,22 @@ size_t RuntimeBridge::boneCount() const {
 size_t RuntimeBridge::morphCount() const {
     if (!model_) return 0;
     return mmd_runtime_model_morph_count(model_);
+}
+
+uint32_t RuntimeBridge::runtimeAbiVersion() {
+    return mmd_runtime_abi_version();
+}
+
+bool RuntimeBridge::isRuntimeAbiCompatible() {
+    return runtimeAbiVersion() == MMD_RUNTIME_ABI_VERSION || allowRuntimeAbiMismatch();
+}
+
+bool RuntimeBridge::allowRuntimeAbiMismatch() {
+    return isTruthyEnvValue(std::getenv(kAllowAbiMismatchEnv));
+}
+
+const char* RuntimeBridge::runtimeAbiMismatchEnvName() {
+    return kAllowAbiMismatchEnv;
 }
 
 } // namespace mmd
