@@ -43,7 +43,7 @@ from .vmd_camera_animation import (
     get_or_create_camera,
     parse_vmd_camera_interpolation,
 )
-from .vmd_context import VmdKeyingContext, VmdRuntimeRigContext
+from .vmd_context import VmdImportContext, VmdKeyingContext, VmdRuntimeRigContext
 from .vmd_import_state import (
     capture_anim_layer_selection,
     clear_existing_camera_motion,
@@ -189,6 +189,35 @@ class VmdConverter:
             use_animation_layers=self.use_animation_layers,
         )
 
+    def _import_context(
+        self,
+        vmd_data: VmdData,
+        target_namespace: str = None,
+        layer_name: str = "VMD_Motion",
+        bake_mode: bool = False,
+        clear_existing_motion: bool = False,
+        vmd_bytes: bytes = None,
+        pmx_bytes: bytes = None,
+        pmx_path: str = None,
+        profile: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[int], None]] = None,
+    ) -> VmdImportContext:
+        """Return import-run state for convert() dispatch and split helpers."""
+        return VmdImportContext(
+            vmd_data=vmd_data,
+            target_namespace=target_namespace,
+            layer_name=layer_name,
+            bake_mode=bool(bake_mode),
+            clear_existing_motion=bool(clear_existing_motion),
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=pmx_bytes,
+            pmx_path=pmx_path,
+            profile=profile,
+            progress_callback=progress_callback,
+            import_camera_animation=bool(self.import_camera_animation),
+            import_light_animation=bool(self.import_light_animation),
+        )
+
     def _runtime_rig_context(self) -> VmdRuntimeRigContext:
         """Return runtime-rig-only state for split VMD helper modules."""
         return VmdRuntimeRigContext(
@@ -236,11 +265,23 @@ class VmdConverter:
         anim_layer_selection = None
         undo_was_enabled = True
         refresh_suspended = False
+        import_context = self._import_context(
+            vmd_data=vmd_data,
+            target_namespace=target_namespace,
+            layer_name=layer_name,
+            bake_mode=bake_mode,
+            clear_existing_motion=clear_existing_motion,
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=pmx_bytes,
+            pmx_path=pmx_path,
+            profile=profile,
+            progress_callback=progress_callback,
+        )
 
         def _emit_progress(value: int) -> None:
-            if progress_callback is not None:
+            if import_context.progress_callback is not None:
                 try:
-                    progress_callback(value)
+                    import_context.progress_callback(value)
                 except Exception:
                     self.logger.debug("Progress callback failed", exc_info=True)
 
@@ -257,11 +298,11 @@ class VmdConverter:
 
             # 名前マッピングの構築（ボーン名 → Maya joint）
             with vmd_profile.scope("name_mapping_build"):
-                self._build_name_mappings(target_namespace)
+                self._build_name_mappings(import_context.target_namespace)
             _emit_progress(40)
-            motion_kind = self._detect_vmd_motion_kind(vmd_data)
-            if clear_existing_motion and motion_kind in {"model", "mixed"}:
-                self._clear_existing_motion(layer_name, target_namespace)
+            motion_kind = self._detect_vmd_motion_kind(import_context.vmd_data)
+            if import_context.clear_existing_motion and motion_kind in {"model", "mixed"}:
+                self._clear_existing_motion(import_context.layer_name, import_context.target_namespace)
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
@@ -269,18 +310,18 @@ class VmdConverter:
 
             # タイムライン設定
             with vmd_profile.scope("timeline_setup"):
-                self._setup_timeline(vmd_data)
+                self._setup_timeline(import_context.vmd_data)
             _emit_progress(48)
 
             # Runtime final-pose bake writes absolute joint channels.  Additive
             # animation layers can turn held rotation samples back into base
             # values after the last VMD key, so bake mode keys the base attrs.
-            use_animation_layers_for_import = self.use_animation_layers and not bake_mode
+            use_animation_layers_for_import = self.use_animation_layers and not import_context.bake_mode
 
             # アニメーションレイヤーの作成
             if use_animation_layers_for_import:
                 with vmd_profile.scope("anim_layer_create"):
-                    self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
+                    self.anim_layer = cmds.animLayer(import_context.layer_name, override=False, weight=1.0)
             else:
                 self.anim_layer = None
 
@@ -290,19 +331,25 @@ class VmdConverter:
                 self._build_bone_hierarchy_and_order_maps()
                 self._build_runtime_bind_world_maps()
             vmd_bytes, pmx_bytes, pmx_path = self._resolve_runtime_bake_sources(
-                vmd_data,
-                vmd_bytes,
-                pmx_bytes,
-                pmx_path,
-                target_namespace,
+                import_context.vmd_data,
+                import_context.vmd_bytes,
+                import_context.pmx_bytes,
+                import_context.pmx_path,
+                import_context.target_namespace,
             )
             _emit_progress(55)
 
             runtime_success = False
-            if self._should_use_mmd_runtime_bake(vmd_bytes, pmx_bytes, pmx_path, live_rig_target, bake_mode):
+            if self._should_use_mmd_runtime_bake(
+                vmd_bytes,
+                pmx_bytes,
+                pmx_path,
+                live_rig_target,
+                import_context.bake_mode,
+            ):
                 self.logger.info("Converting with mmd-anim runtime high-precision bake path")
                 runtime_success = self._convert_using_mmd_runtime(
-                    vmd_data=vmd_data,
+                    vmd_data=import_context.vmd_data,
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,
@@ -313,14 +360,14 @@ class VmdConverter:
                 else:
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
                     self._record_profile_warning(
-                        profile,
+                        import_context.profile,
                         {
                             "source": "vmd_converter",
                             "code": "runtime_bake_failed_fallback",
                             "severity": "warning",
                             "message": "mmd-anim runtime bake failed; falling back to legacy VMD conversion",
                             "fallback": "legacy",
-                            "bake_mode": bool(bake_mode),
+                            "bake_mode": bool(import_context.bake_mode),
                             "live_rig_target": bool(live_rig_target),
                             "has_vmd_bytes": bool(vmd_bytes),
                             "has_pmx_bytes": bool(pmx_bytes),
@@ -330,37 +377,47 @@ class VmdConverter:
 
             if not runtime_success:
                 # --- レガシーパス（従来の変換） ---
-                self._apply_ik_enabled_animation(vmd_data, target_namespace)
+                self._apply_ik_enabled_animation(import_context.vmd_data, import_context.target_namespace)
                 _emit_progress(60)
 
-                if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
-                    self.logger.info(f"Starting bone animation conversion (legacy): {len(vmd_data.bone_frames)} frames")
+                if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
+                    self.logger.info(
+                        f"Starting bone animation conversion (legacy): {len(import_context.vmd_data.bone_frames)} frames"
+                    )
                     with vmd_profile.scope("bone_animation_convert"):
-                        bone_success = self._convert_bone_animation(vmd_data.bone_frames)
+                        bone_success = self._convert_bone_animation(import_context.vmd_data.bone_frames)
                     if not bone_success:
                         self.logger.warning("Some errors occurred during bone animation conversion")
                 _emit_progress(72)
 
                 # モーフアニメーション（レガシー）
-                if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
+                if hasattr(import_context.vmd_data, "morph_frames") and import_context.vmd_data.morph_frames:
                     self.logger.info("Converting morph animation (legacy)")
-                    self._convert_morph_animation(vmd_data.morph_frames)
+                    self._convert_morph_animation(import_context.vmd_data.morph_frames)
                 _emit_progress(82)
 
             # カメラアニメーション（レガシー）
-            if self.import_camera_animation and hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
-                self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
+            if (
+                import_context.import_camera_animation
+                and hasattr(import_context.vmd_data, "camera_frames")
+                and import_context.vmd_data.camera_frames
+            ):
+                self.logger.info(f"Converting camera animation: {len(import_context.vmd_data.camera_frames)} frames")
                 self._clear_existing_camera_motion()
-                camera_sample_bytes = vmd_bytes if bake_mode else None
-                self._convert_camera_animation(vmd_data.camera_frames, vmd_bytes=camera_sample_bytes)
+                camera_sample_bytes = vmd_bytes if import_context.bake_mode else None
+                self._convert_camera_animation(import_context.vmd_data.camera_frames, vmd_bytes=camera_sample_bytes)
             _emit_progress(88)
 
             # ライトアニメーション（レガシー）
-            if self.import_light_animation and hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
-                self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
+            if (
+                import_context.import_light_animation
+                and hasattr(import_context.vmd_data, "light_frames")
+                and import_context.vmd_data.light_frames
+            ):
+                self.logger.info(f"Converting light animation: {len(import_context.vmd_data.light_frames)} frames")
                 self._clear_existing_light_motion()
-                light_sample_bytes = vmd_bytes if bake_mode else None
-                self._convert_light_animation(vmd_data.light_frames, vmd_bytes=light_sample_bytes)
+                light_sample_bytes = vmd_bytes if import_context.bake_mode else None
+                self._convert_light_animation(import_context.vmd_data.light_frames, vmd_bytes=light_sample_bytes)
             _emit_progress(94)
 
             self.logger.info("VMD animation conversion completed")

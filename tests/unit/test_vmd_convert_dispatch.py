@@ -4,6 +4,7 @@ import unittest
 from contextlib import ExitStack
 from unittest.mock import patch
 
+from mmd_tools.converters.vmd_context import VmdImportContext
 from mmd_tools.converters.vmd_converter import VmdConverter
 
 
@@ -23,6 +24,44 @@ class TestVmdConvertDispatch(unittest.TestCase):
 
     def setUp(self):
         self.converter = VmdConverter()
+
+    def test_import_context_captures_convert_options_and_current_channel_flags(self):
+        """convert() dispatch state is bundled before split helpers consume it."""
+        vmd_data = _fake_vmd_data()
+        profile = {}
+
+        def progress_callback(_value):
+            return None
+
+        self.converter.import_camera_animation = False
+        self.converter.import_light_animation = True
+
+        context = self.converter._import_context(
+            vmd_data,
+            target_namespace="model_ns",
+            layer_name="Layer_A",
+            bake_mode=True,
+            clear_existing_motion=True,
+            vmd_bytes=b"vmd",
+            pmx_bytes=b"pmx",
+            pmx_path="model.pmx",
+            profile=profile,
+            progress_callback=progress_callback,
+        )
+
+        self.assertIsInstance(context, VmdImportContext)
+        self.assertIs(context.vmd_data, vmd_data)
+        self.assertEqual(context.target_namespace, "model_ns")
+        self.assertEqual(context.layer_name, "Layer_A")
+        self.assertTrue(context.bake_mode)
+        self.assertTrue(context.clear_existing_motion)
+        self.assertEqual(context.vmd_bytes, b"vmd")
+        self.assertEqual(context.pmx_bytes, b"pmx")
+        self.assertEqual(context.pmx_path, "model.pmx")
+        self.assertIs(context.profile, profile)
+        self.assertIs(context.progress_callback, progress_callback)
+        self.assertFalse(context.import_camera_animation)
+        self.assertTrue(context.import_light_animation)
 
     def test_runtime_bake_success_still_converts_camera_and_light(self):
         """Normal runtime bake leaves camera/light on the sparse scene path."""
