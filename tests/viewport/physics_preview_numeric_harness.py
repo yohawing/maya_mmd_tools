@@ -153,11 +153,11 @@ def _collision_filter_summary(cmds, rigid_refs: dict[int, dict[str, Any]]) -> li
                 "index": index,
                 "node": ref["node"],
                 "mmdCollisionGroup": mmd_group,
-                "mmdNonCollisionMask": mmd_mask,
+                "mmdCollideWithMask": mmd_mask,
                 "bulletCollisionFilterGroup": bullet_group,
                 "bulletCollisionFilterMask": bullet_mask,
                 "expectedBulletGroup": 1 << max(0, min(mmd_group, 15)),
-                "expectedBulletMask": (~(max(0, min(mmd_mask, 0xFFFF)) & 0xFFFF)) & 0xFFFF,
+                "expectedBulletMask": max(0, min(mmd_mask, 0xFFFF)) & 0xFFFF,
             }
         )
     return filters
@@ -376,7 +376,7 @@ def run(
     )
     _assertion(
         assertions,
-        "collision_filters_match_mmd_non_collision_masks",
+        "collision_filters_match_mmd_collide_with_masks",
         collision_filters_match,
         {
             "checked": len(collision_filters),

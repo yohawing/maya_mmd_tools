@@ -42,6 +42,8 @@ stubs/
 .gemini/
 .clinerules/
 .claude/
+.ai/
+agent-tools/
 .kiro/
 KIRO.md
 .mcp.json
