@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, Callable, Dict, Optional
 
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_name_utils
 from mmd_tools.core.exceptions import MMDImportException
 
 from ..converters import BoneConverter, MeshConverter, MorphConverter
@@ -65,7 +65,7 @@ def import_pmx_file(
 
     logger.debug("Scale factor: %f", scale)
 
-    model_name = maya_utils.sanitize_text(parser.header.get_name())
+    model_name = maya_name_utils.sanitize_text(parser.header.get_name())
     namespace = pipeline.resolve_namespace(model_name, custom_namespace=options.get("custom_namespace"))
 
     try:

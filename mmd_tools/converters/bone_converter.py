@@ -7,7 +7,7 @@ import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
-from ..core import maya_attribute_utils, maya_mesh_utils, maya_scene_utils, maya_utils
+from ..core import maya_attribute_utils, maya_mesh_utils, maya_name_utils, maya_scene_utils
 from ..core.mmd_bone_names import has_semistandard_mmd_bone_name
 from ..core.pmx_data import PmxData
 from ..core.constants import (
@@ -159,7 +159,7 @@ class BoneConverter:
         used_names = set()
 
         for i, bone in enumerate(bones):
-            joint_name = maya_utils.sanitize_bone_name(self._bone_node_name_source(bone))
+            joint_name = maya_name_utils.sanitize_bone_name(self._bone_node_name_source(bone))
 
             # 重複する名前がある場合はサフィックスを追加
             original_name = joint_name

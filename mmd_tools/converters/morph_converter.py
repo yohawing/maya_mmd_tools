@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 from maya import cmds
 from maya.api import OpenMaya as om
 
-from mmd_tools.core import maya_attribute_utils, maya_mesh_utils, maya_utils, settings_keys as setting_keys
+from mmd_tools.core import maya_attribute_utils, maya_mesh_utils, maya_name_utils, settings_keys as setting_keys
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_MATERIAL_INDEX,
@@ -485,7 +485,7 @@ class MorphConverter:
 
     def _create_or_get_morph_network_node(self, morph_name: str, morph_kind: str) -> str:
         """Create or reuse a PMX morph network node with a keyable weight attr."""
-        safe_name = maya_utils.sanitize_text(morph_name)
+        safe_name = maya_name_utils.sanitize_text(morph_name)
         node_name = f"{safe_name}_{morph_kind}Morph"
 
         if cmds.objExists(node_name):
@@ -520,7 +520,7 @@ class MorphConverter:
         呼び出し元は空 dict を渡してループ終了後に cleanup_vertex_morph_template() を呼ぶこと。
         """
         raw_name = self._raw_morph_name(morph)
-        morph_name = maya_utils.sanitize_text(morph.get_name())
+        morph_name = maya_name_utils.sanitize_text(morph.get_name())
 
         if template_ctx is not None:
             if "target_mesh" not in template_ctx:

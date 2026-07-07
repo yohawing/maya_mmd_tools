@@ -4,46 +4,19 @@ from . import maya_attribute_utils as _maya_attribute_utils
 from . import maya_animation_utils as _maya_animation_utils
 from . import maya_material_utils as _maya_material_utils
 from . import maya_mesh_utils as _maya_mesh_utils
+from . import maya_name_utils as _maya_name_utils
 from . import maya_physics_utils as _maya_physics_utils
 from . import maya_rig_utils as _maya_rig_utils
 from . import maya_scene_utils as _maya_scene_utils
 from . import maya_transform_utils as _maya_transform_utils
 from . import maya_viewport_utils as _maya_viewport_utils
-from . import utils
 from .logger import get_logger
 
 logger = get_logger(__name__)
 
 
-def sanitize_text(name):
-    """
-    Maya用に名前をサニタイズする。
-    日本語などのマルチバイト文字をASCII文字に変換し、Maya互換の名前にする。
-
-    Args:
-        name (str): 元の名前
-
-    Returns:
-        str: Maya互換の名前
-    """
-    if not name:
-        return "unnamed"
-
-    converted_name = utils.convert_utf8_to_ascii(name)
-    return converted_name or "default_name"
-
-
-def sanitize_bone_name(name):
-    """Maya用にMMD/PMXボーン名をサニタイズする。"""
-    if not name:
-        return "unnamed"
-
-    from .mmd_bone_names import convert_mmd_bone_name_to_ascii
-
-    converted_name = convert_mmd_bone_name_to_ascii(name)
-    if converted_name and converted_name[0].isdigit():
-        return f"bone_{converted_name}"
-    return converted_name or "default_name"
+sanitize_text = _maya_name_utils.sanitize_text
+sanitize_bone_name = _maya_name_utils.sanitize_bone_name
 
 
 set_custom_attributes = _maya_attribute_utils.set_custom_attributes

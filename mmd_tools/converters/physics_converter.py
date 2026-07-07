@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 import maya.cmds as cmds
 
-from ..core import maya_attribute_utils, maya_physics_utils, maya_scene_utils, maya_utils
+from ..core import maya_attribute_utils, maya_name_utils, maya_physics_utils, maya_scene_utils
 from ..core.constants import (
     ATTR_MMD_BONE_INDEX,
     CONSTRAINTS_GROUP,
@@ -710,7 +710,7 @@ class PhysicsConverter:
           - mass, linearDamping, angularDamping, friction, restitution
         """
         try:
-            rb_name = maya_utils.sanitize_text(rb.name) if rb.name else f"rigid_{rigid_body_index}"
+            rb_name = maya_name_utils.sanitize_text(rb.name) if rb.name else f"rigid_{rigid_body_index}"
             transform = cmds.createNode("transform", name=f"{rb_name}_bulletRb")
             shape = cmds.createNode("bulletRigidBodyShape", name=f"{rb_name}_bulletRbShape", parent=transform)
 
@@ -1482,7 +1482,7 @@ class PhysicsConverter:
           - linearSpringEnabled{X,Y,Z}, angularSpringEnabled{X,Y,Z}
           - rigidBodyA, rigidBodyB (message connections)
         """
-        jname = maya_utils.sanitize_text(getattr(joint, "name", "")) or "joint"
+        jname = maya_name_utils.sanitize_text(getattr(joint, "name", "")) or "joint"
         transform = cmds.createNode("transform", name=f"{jname}_bulletConstraint")
         shape = cmds.createNode("bulletRigidBodyConstraintShape", name=f"{jname}_bulletConstraintShape", parent=transform)
 
@@ -1820,7 +1820,7 @@ class PhysicsConverter:
         for i, bone in enumerate(bones):
             if i in bone_index_map:
                 continue
-            bone_name = maya_utils.sanitize_text(bone.get_name())
+            bone_name = maya_name_utils.sanitize_text(bone.get_name())
             if bone_name in bone_joints:
                 bone_index_map[i] = bone_joints[bone_name]
         return bone_index_map
@@ -1844,11 +1844,11 @@ class PhysicsConverter:
     def _get_bone_name_from_rigid_body(self, rigid_body, bone_index_map: Optional[Dict[int, str]] = None) -> Optional[str]:
         if hasattr(rigid_body, "bone_index"):
             if bone_index_map and rigid_body.bone_index in bone_index_map:
-                return maya_utils.sanitize_text(bone_index_map[rigid_body.bone_index])
+                return maya_name_utils.sanitize_text(bone_index_map[rigid_body.bone_index])
             return f"bone_{rigid_body.bone_index}"
         elif hasattr(rigid_body, "related_bone_index"):
             if bone_index_map and rigid_body.related_bone_index in bone_index_map:
-                return maya_utils.sanitize_text(bone_index_map[rigid_body.related_bone_index])
+                return maya_name_utils.sanitize_text(bone_index_map[rigid_body.related_bone_index])
             return f"bone_{rigid_body.related_bone_index}"
         return None
 

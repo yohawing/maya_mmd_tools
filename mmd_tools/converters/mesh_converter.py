@@ -7,7 +7,7 @@ from typing import Tuple, Union, List, Optional
 
 from mmd_tools.core.settings import settings
 from mmd_tools.core import settings_keys as setting_keys
-from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_utils, maya_scene_utils, maya_utils, maya_viewport_utils
+from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_utils, maya_name_utils, maya_scene_utils, maya_viewport_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.texture_path_cache import (
     build_texture_path_diagnostics,
@@ -855,7 +855,7 @@ class MeshConverter:
             return None
 
         # 統合メッシュの名前を設定
-        mesh_name = maya_utils.sanitize_text(model_name) + "_mesh"
+        mesh_name = maya_name_utils.sanitize_text(model_name) + "_mesh"
 
         # 全ての頂点と面を直接使用 z*= -1
         vertices = [self._mmd_vertex_to_maya(v.position) for v in all_vertices]
@@ -919,7 +919,7 @@ class MeshConverter:
                 continue
 
             # マテリアル名をサニタイズ
-            # material_name = maya_utils.sanitize_text(material.name)
+            # material_name = maya_name_utils.sanitize_text(material.name)
 
             # テクスチャパスを取得
             texture_path = None
@@ -1054,7 +1054,7 @@ class MeshConverter:
 
             # マテリアル名からメッシュ名生成
             mat_name = material.get_name() if material.get_name() else f"material_{i}"
-            sub_mesh_name = maya_utils.sanitize_text(f"{model_name}_{mat_name}_mesh")
+            sub_mesh_name = maya_name_utils.sanitize_text(f"{model_name}_{mat_name}_mesh")
 
             create_start = time.perf_counter()
             created_mesh = maya_mesh_utils.create_mesh_with_uvs(
@@ -1197,7 +1197,7 @@ class MeshConverter:
         mesh_names = []
         for group_index, (material_indices, vertex_morph_names) in enumerate(material_sets):
             suffix = f"morphGroup_{group_index}" if vertex_morph_names else "morphGroup_static"
-            mesh_name = maya_utils.sanitize_text(f"{model_name}_{suffix}_mesh")
+            mesh_name = maya_name_utils.sanitize_text(f"{model_name}_{suffix}_mesh")
             created_mesh = self._create_compact_material_subset_mesh(
                 mesh_name,
                 all_vertices,
@@ -1394,7 +1394,7 @@ class MeshConverter:
         Returns:
             str: 作成されたシェーダーノード名。
         """
-        sanitized_name = maya_utils.sanitize_text(material.get_name())
+        sanitized_name = maya_name_utils.sanitize_text(material.get_name())
         # 名前が空の場合はデフォルト名を使用
         if not sanitized_name:
             sanitized_name = f"material_{material_index if material_index is not None else 0}"
@@ -1608,7 +1608,7 @@ class MeshConverter:
         """標準のstandardSurfaceシェーダーを設定"""
 
         # マテリアル名をサニタイズ（テクスチャノード名に使用）
-        sanitized_name = maya_utils.sanitize_text(material.name if material.name else "material")
+        sanitized_name = maya_name_utils.sanitize_text(material.name if material.name else "material")
 
         # 基本色設定（Diffuse）
         maya_attribute_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")

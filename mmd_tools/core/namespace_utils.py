@@ -12,7 +12,7 @@ from typing import Optional, List
 from maya import cmds
 
 from .logger import get_logger
-from .maya_utils import sanitize_text
+from .maya_name_utils import sanitize_text
 
 logger = get_logger(__name__)
 

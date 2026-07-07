@@ -13,13 +13,13 @@ from mmd_tools.core.constants import (
 )
 
 from .logger import get_logger
+from . import maya_name_utils
 from .texture_path_cache import (
     classify_texture_resolution,
     decode_original_texture_path,
     is_unreadable_file_texture_path,
     resolve_texture_to_cache,
 )
-from . import utils
 
 logger = get_logger(__name__)
 
@@ -31,14 +31,6 @@ DX11_TEXTURE_SLOTS = {
 
 ATTR_MMD_TEXTURE_SOURCE_KIND = "mmd_texture_source_kind"
 ATTR_MMD_SHARED_TOON_ID = "mmd_shared_toon_id"
-
-
-def _sanitize_text(name):
-    if not name:
-        return "unnamed"
-
-    converted_name = utils.convert_utf8_to_ascii(name)
-    return converted_name or "default_name"
 
 
 def sanitize_texture_path(texture_path, texture_dir):
@@ -319,7 +311,7 @@ def resolve_scene_mmd_textures(workspace_root=None):
 
 def create_material(name, color, texture_path=None, texture_dir="", model_path=None):
     """Mayaシーンにマテリアルを作成します。"""
-    sanitized_name = _sanitize_text(name)
+    sanitized_name = maya_name_utils.sanitize_text(name)
     shader = cmds.shadingNode("lambert", asShader=True, name=sanitized_name)
     maya_attribute_utils.set_attribute(shader, "color", color[:3], "double3")
     transparency = 1.0 - color[3]

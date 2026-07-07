@@ -138,6 +138,15 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
             ),
         )
 
+    def test_maya_name_utils_public_helpers_import_directly(self):
+        self._assert_callables(
+            "mmd_tools.core.maya_name_utils",
+            (
+                "sanitize_text",
+                "sanitize_bone_name",
+            ),
+        )
+
     def test_maya_utils_animation_helpers_remain_compatibility_shims(self):
         maya_utils = importlib.import_module("mmd_tools.core.maya_utils")
         maya_animation_utils = importlib.import_module("mmd_tools.core.maya_animation_utils")
@@ -194,6 +203,13 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
         self.assertIs(maya_utils.disconnect_sources, maya_attribute_utils.disconnect_sources)
         self.assertIs(maya_utils.connect_if_needed, maya_attribute_utils.connect_if_needed)
         self.assertIs(maya_utils.get_int_array_attribute, maya_attribute_utils.get_int_array_attribute)
+
+    def test_maya_utils_name_helpers_remain_compatibility_shims(self):
+        maya_utils = importlib.import_module("mmd_tools.core.maya_utils")
+        maya_name_utils = importlib.import_module("mmd_tools.core.maya_name_utils")
+
+        self.assertIs(maya_utils.sanitize_text, maya_name_utils.sanitize_text)
+        self.assertIs(maya_utils.sanitize_bone_name, maya_name_utils.sanitize_bone_name)
 
 
 if __name__ == "__main__":
