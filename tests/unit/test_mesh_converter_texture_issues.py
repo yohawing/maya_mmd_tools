@@ -37,7 +37,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
 
     def test_bind_dx11_texture_file_node_connects_main_texture_and_sets_has_flag(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute:
             mock_cmds.listConnections.return_value = []
             mock_cmds.attributeQuery.return_value = True
@@ -66,7 +66,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             with self.subTest(texture_attr=texture_attr), patch(
                 "mmd_tools.converters.mesh_converter.cmds"
             ) as mock_cmds, patch(
-                "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+                "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
             ) as mock_set_attribute:
                 mock_cmds.listConnections.return_value = []
                 mock_cmds.attributeQuery.return_value = True
@@ -83,7 +83,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
 
     def test_bind_dx11_texture_file_node_avoids_duplicate_connection(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute:
             mock_cmds.listConnections.return_value = ["Face_shader.MainTexture"]
             mock_cmds.attributeQuery.return_value = True
@@ -101,7 +101,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
 
     def test_set_dx11_color_uniform_skips_locked_generated_rgb_attr(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch("mmd_tools.converters.mesh_converter.LOGGER.warning") as mock_warning:
             mock_cmds.attributeQuery.return_value = True
             mock_cmds.getAttr.side_effect = lambda plug, **kwargs: (
@@ -125,7 +125,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
 
     def test_set_dx11_color_uniform_skips_connected_generated_rgb_attr(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ), patch("mmd_tools.converters.mesh_converter.LOGGER.warning") as mock_warning:
             mock_cmds.attributeQuery.return_value = True
             mock_cmds.getAttr.return_value = False
@@ -143,7 +143,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
 
     def test_set_dx11_color_uniform_skips_protected_child_and_alpha_attrs(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ), patch("mmd_tools.converters.mesh_converter.LOGGER.warning") as mock_warning:
             mock_cmds.attributeQuery.return_value = True
             mock_cmds.getAttr.side_effect = lambda plug, **kwargs: (
@@ -219,9 +219,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         )
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ), patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark:
@@ -257,9 +257,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material()
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
@@ -316,9 +316,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material()
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ), patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
@@ -354,9 +354,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material()
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ), patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
@@ -398,9 +398,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material(sphere_texture_index=0, sphere_mode=1)
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
@@ -457,9 +457,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material(sphere_texture_index=0, sphere_mode=1)
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ), patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
@@ -495,9 +495,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material(sphere_texture_index=0, sphere_mode=1)
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ), patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
@@ -539,9 +539,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material(toon_texture_index=0, shared_toon_flag=0)
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
@@ -598,9 +598,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material(toon_texture_index=0, shared_toon_flag=0)
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ), patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
@@ -635,9 +635,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         material = self._material(toon_texture_index=0, shared_toon_flag=0)
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ), patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(

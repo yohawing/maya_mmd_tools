@@ -42,7 +42,7 @@ class TestMaterialIsDoubleSided(unittest.TestCase):
 class TestSetMeshDoubleSided(unittest.TestCase):
     def test_enabled_sets_shape_double_sided_to_one(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute:
             mock_cmds.listRelatives.return_value = ["meshShape1", "meshShape2"]
 
@@ -59,7 +59,7 @@ class TestSetMeshDoubleSided(unittest.TestCase):
 
     def test_disabled_sets_shape_double_sided_to_zero(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute:
             mock_cmds.listRelatives.return_value = ["meshShape1"]
 
@@ -109,7 +109,7 @@ class TestDx11TechniqueSelection(unittest.TestCase):
 
     def test_apply_transparency_mode_preserves_double_sided_technique_state(self):
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ) as mock_set_custom_attributes:
             mock_cmds.attributeQuery.side_effect = lambda *args, **kwargs: args[0] == "technique"
             mock_cmds.getAttr.return_value = "MMDTechniqueNoEdgeDoubleSided"
@@ -133,9 +133,9 @@ class TestDx11TechniqueSelection(unittest.TestCase):
             raise AssertionError(f"Unexpected getAttr plug: {plug}")
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ):
             mock_cmds.attributeQuery.side_effect = attribute_exists
             mock_cmds.getAttr.side_effect = get_attr

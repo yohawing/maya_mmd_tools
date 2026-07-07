@@ -7,7 +7,7 @@ from typing import Tuple, Union, List, Optional
 
 from mmd_tools.core.settings import settings
 from mmd_tools.core import settings_keys as setting_keys
-from mmd_tools.core import maya_material_utils, maya_mesh_utils, maya_scene_utils, maya_utils, maya_viewport_utils
+from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_utils, maya_scene_utils, maya_utils, maya_viewport_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.texture_path_cache import (
     build_texture_path_diagnostics,
@@ -140,7 +140,7 @@ def _set_shader_attribute_checked(shader, attr_name, attr_value, attr_type) -> b
         return False
 
     try:
-        maya_utils.set_attribute(shader, attr_name, attr_value, attr_type)
+        maya_attribute_utils.set_attribute(shader, attr_name, attr_value, attr_type)
     except Exception:
         LOGGER.debug("Failed to set shader attribute '%s.%s'", shader, attr_name, exc_info=True)
         return False
@@ -161,7 +161,7 @@ def _set_mesh_double_sided(mesh_transform_or_shape, enabled: bool) -> None:
     """Set Maya mesh shape doubleSided from an MMD material draw flag."""
     mesh_shapes = cmds.listRelatives(mesh_transform_or_shape, shapes=True, type="mesh") or []
     for shape in mesh_shapes:
-        maya_utils.set_attribute(shape, "doubleSided", 1 if enabled else 0, "bool")
+        maya_attribute_utils.set_attribute(shape, "doubleSided", 1 if enabled else 0, "bool")
 
 
 def _classify_material_transparency(material, texture_path=None) -> str:
@@ -227,9 +227,9 @@ def _draw_flags_double_sided_from_node(node: str) -> Optional[bool]:
 def _store_shader_double_sided_attr(shader: str, enabled: bool) -> None:
     """Persist dx11Shader double-sided state for UI re-application."""
     if not cmds.attributeQuery(_ATTR_MMD_DOUBLE_SIDED, node=shader, exists=True):
-        maya_utils.set_custom_attributes(shader, {_ATTR_MMD_DOUBLE_SIDED: bool(enabled)})
+        maya_attribute_utils.set_custom_attributes(shader, {_ATTR_MMD_DOUBLE_SIDED: bool(enabled)})
     else:
-        maya_utils.set_attribute(shader, _ATTR_MMD_DOUBLE_SIDED, bool(enabled), "bool")
+        maya_attribute_utils.set_attribute(shader, _ATTR_MMD_DOUBLE_SIDED, bool(enabled), "bool")
 
 
 def _shader_is_double_sided(shader: str, technique: Optional[str] = None) -> bool:
@@ -301,9 +301,9 @@ def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] 
     if edge_size is not None and cmds.attributeQuery("EdgeSize", node=shader, exists=True):
         cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))) if enabled else 0.0)
     if not cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
-        maya_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
+        maya_attribute_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
     else:
-        maya_utils.set_attribute(shader, ATTR_MMD_SHADER_OUTLINE_ENABLED, bool(enabled), "bool")
+        maya_attribute_utils.set_attribute(shader, ATTR_MMD_SHADER_OUTLINE_ENABLED, bool(enabled), "bool")
     return new_technique
 
 
@@ -320,7 +320,7 @@ def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
         texture_attr,
         has_attr,
         cmds_module=cmds,
-        set_attribute_func=maya_utils.set_attribute,
+        set_attribute_func=maya_attribute_utils.set_attribute,
     )
 
 
@@ -467,7 +467,7 @@ def _set_dx11_color_uniform(shader_node, attr_name, values):
     attr_type = "double4" if alpha is not None else "double3"
 
     if cmds.attributeQuery(attr_name, node=shader_node, exists=True):
-        maya_utils.set_attribute(shader_node, attr_name, color, attr_type)
+        maya_attribute_utils.set_attribute(shader_node, attr_name, color, attr_type)
 
     rgb_attr = f"{attr_name}RGB"
     if cmds.attributeQuery(rgb_attr, node=shader_node, exists=True):
@@ -1072,7 +1072,7 @@ class MeshConverter:
             self.profile["mesh_vertex_slots_estimated"] += len(mesh_vertices)
             self.profile["face_count"] += len(sub_face_counts)
             _set_mesh_double_sided(created_mesh, _material_is_double_sided(material))
-            maya_utils.set_custom_attributes(
+            maya_attribute_utils.set_custom_attributes(
                 created_mesh,
                 {
                     ATTR_MMD_MATERIAL_INDEX: i,
@@ -1080,8 +1080,8 @@ class MeshConverter:
                 },
             )
             if not is_pmd:
-                maya_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-                maya_utils.set_attribute(
+                maya_attribute_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+                maya_attribute_utils.set_attribute(
                     created_mesh,
                     ATTR_MMD_SOURCE_VERTEX_INDICES,
                     source_vertex_indices,
@@ -1330,9 +1330,9 @@ class MeshConverter:
             attrs[ATTR_MMD_MATERIAL_INDEX] = material_index_attr
             attrs["mmd_material_split_mesh"] = True
         if attrs:
-            maya_utils.set_custom_attributes(created_mesh, attrs)
-        maya_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_utils.set_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, source_vertex_indices, "longArray")
+            maya_attribute_utils.set_custom_attributes(created_mesh, attrs)
+        maya_attribute_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_attribute_utils.set_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, source_vertex_indices, "longArray")
 
         if len(local_material_ranges) == 1:
             _set_mesh_double_sided(created_mesh, _material_is_double_sided(local_material_ranges[0][1]))
@@ -1590,7 +1590,7 @@ class MeshConverter:
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
 
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             shader,
             custom_attrs,
         )
@@ -1611,10 +1611,10 @@ class MeshConverter:
         sanitized_name = maya_utils.sanitize_text(material.name if material.name else "material")
 
         # 基本色設定（Diffuse）
-        maya_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")
+        maya_attribute_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")
 
         # AlphaをOpacityに変換（StandardSurfaceではopacityを使用）
-        maya_utils.set_attribute(
+        maya_attribute_utils.set_attribute(
             shader,
             "opacity",
             (material.diffuse[3], material.diffuse[3], material.diffuse[3]),
@@ -1624,7 +1624,7 @@ class MeshConverter:
         # スペキュラー設定（MMDのspecularをStandardSurfaceにマッピング）
         if hasattr(material, "specular"):
             # スペキュラー色
-            maya_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
+            maya_attribute_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
 
             # スペキュラー係数の取得（PMDとPMXで異なる）
             specular_coef = None
@@ -1634,18 +1634,18 @@ class MeshConverter:
                 specular_coef = material.specular_power
 
             if specular_coef is not None:
-                maya_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
+                maya_attribute_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
 
         # アンビエント設定（StandardSurfaceでは間接光の強度として使用）
         if hasattr(material, "ambient"):
             # アンビエント色の平均値を間接光の強度として使用
             ambient_intensity = (material.ambient[0] + material.ambient[1] + material.ambient[2]) / 3.0
             # エミッションとして微弱に設定（アンビエント光の表現）
-            maya_utils.set_attribute(shader, "emission", ambient_intensity * 0.1, "float")
-            maya_utils.set_attribute(shader, "emissionColor", material.ambient[:3], "double3")
+            maya_attribute_utils.set_attribute(shader, "emission", ambient_intensity * 0.1, "float")
+            maya_attribute_utils.set_attribute(shader, "emissionColor", material.ambient[:3], "double3")
 
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
-        maya_utils.set_attribute(shader, "metalness", 0.0, "float")
+        maya_attribute_utils.set_attribute(shader, "metalness", 0.0, "float")
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(shader, material, all_textures, is_pmd, material_index, texture_path)
@@ -1681,7 +1681,7 @@ class MeshConverter:
                 cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
                 cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
 
-                maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
+                maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
                 maya_material_utils.mark_mmd_texture_file_node(
                     file_node,
                     raw_texture_path,
@@ -1689,7 +1689,7 @@ class MeshConverter:
                     unresolved=unresolved,
                 )
                 if cache_path:
-                    maya_utils.set_custom_attributes(
+                    maya_attribute_utils.set_custom_attributes(
                         file_node,
                         {
                             ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
@@ -1815,7 +1815,7 @@ class MeshConverter:
                 unresolved = False
 
         file_node = cmds.shadingNode("file", asTexture=True, name=shader + node_suffix)
-        maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
+        maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
         mark_kwargs = {"unresolved": unresolved}
         if source_kind != "pmx_texture" or shared_toon_id:
             mark_kwargs["source_kind"] = source_kind
@@ -1827,7 +1827,7 @@ class MeshConverter:
             **mark_kwargs,
         )
         if cache_path:
-            maya_utils.set_custom_attributes(
+            maya_attribute_utils.set_custom_attributes(
                 file_node,
                 {
                     ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
@@ -1892,7 +1892,7 @@ class MeshConverter:
         shader_fx_path = os.path.normpath(shader_fx_path)
 
         # dx11Shaderにエフェクトファイルを設定
-        maya_utils.set_attribute(shader, "shader", shader_fx_path, "string")
+        maya_attribute_utils.set_attribute(shader, "shader", shader_fx_path, "string")
 
         # mayapy standalone では dx11Shader が .fx ファイルから uniform 属性を
         # 自動生成しないため、事前に動的アトリビュートとして作成しておく
@@ -1912,11 +1912,11 @@ class MeshConverter:
         # 基本色設定（Diffuse）
         _set_dx11_color_uniform(shader, "DiffuseColor", material.diffuse)
         opacity = material.diffuse[3] if hasattr(material, "diffuse") and len(material.diffuse) > 3 else 1.0
-        maya_utils.set_attribute(shader, "Opacity", opacity, "float")
+        maya_attribute_utils.set_attribute(shader, "Opacity", opacity, "float")
 
         # スペキュラー設定
         if hasattr(material, "specular"):
-            maya_utils.set_attribute(
+            maya_attribute_utils.set_attribute(
                 shader,
                 "SpecularColor",
                 material.specular[:3],
@@ -1931,11 +1931,11 @@ class MeshConverter:
             specular_coef = material.specular_power
 
         if specular_coef is not None:
-            maya_utils.set_attribute(shader, "Shininess", specular_coef, "float")
+            maya_attribute_utils.set_attribute(shader, "Shininess", specular_coef, "float")
 
         # アンビエント設定
         if hasattr(material, "ambient"):
-            maya_utils.set_attribute(
+            maya_attribute_utils.set_attribute(
                 shader,
                 "AmbientColor",
                 material.ambient[:3],
@@ -1946,15 +1946,15 @@ class MeshConverter:
         if not is_pmd:
             # エッジ色
             _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
-        maya_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
+        maya_attribute_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)
-        maya_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
+        maya_attribute_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
 
         for texture_flag in ("HasMainTexture", "HasSphereTexture", "HasToonTexture"):
             if cmds.attributeQuery(texture_flag, node=shader, exists=True):
-                maya_utils.set_attribute(shader, texture_flag, 0, "long")
+                maya_attribute_utils.set_attribute(shader, texture_flag, 0, "long")
 
         # テクスチャ設定
         self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
