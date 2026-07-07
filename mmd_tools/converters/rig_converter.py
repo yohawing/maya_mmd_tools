@@ -6,7 +6,7 @@ import maya.cmds as cmds
 
 from mmd_tools.config.bone_aliases import get_bone_aliases, get_original_bone_name_aliases
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-from mmd_tools.core import maya_rig_utils, maya_utils
+from mmd_tools.core import maya_rig_utils, maya_scene_utils, maya_utils
 from types import SimpleNamespace
 
 from mmd_tools.core.logger import get_logger, safe_log_error
@@ -321,7 +321,7 @@ class RigConverter:
                 )
 
                 # IKハンドルをIKボーンにペアレント
-                maya_utils.parent_objects(ik_handle, chain["ik_bone"])
+                maya_scene_utils.parent_objects(ik_handle, chain["ik_bone"])
 
                 # IKハンドルのアトリビュートを設定
                 maya_utils.set_attribute(ik_handle, "v", 0, "bool")  # 非表示
@@ -369,7 +369,7 @@ class RigConverter:
         # 既存の「全ての親」ボーンを日本語名でチェック
         existing_master = self._find_joint_by_japanese_name(get_original_bone_name_aliases("全ての親"))
         # 英語名でもチェック
-        if not existing_master and maya_utils.object_exists("master"):
+        if not existing_master and maya_scene_utils.object_exists("master"):
             existing_master = "master"
 
         if not existing_master:
@@ -390,13 +390,13 @@ class RigConverter:
                     continue
                 # ジョイントまたはトランスフォームノードをmasterの子にする
                 if cmds.nodeType(child) in ["joint", "transform"]:
-                    maya_utils.parent_objects(child, master)
+                    maya_scene_utils.parent_objects(child, master)
 
         # グルーブ
         # 既存のグルーブボーンを日本語名でチェック
         existing_groove = self._find_joint_by_japanese_name(get_original_bone_name_aliases("グルーブ"))
         # 英語名でもチェック
-        if not existing_groove and maya_utils.object_exists("groove"):
+        if not existing_groove and maya_scene_utils.object_exists("groove"):
             existing_groove = "groove"
 
         center_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("センター"))
@@ -415,7 +415,7 @@ class RigConverter:
             semi_standard_bones["groove"] = groove
 
             # センターをグルーブの子にする
-            maya_utils.parent_objects(center_joint, groove)
+            maya_scene_utils.parent_objects(center_joint, groove)
             self.logger.info(f"Added groove bone: {groove}")
         elif existing_groove:
             self.logger.info(f"Using existing groove bone: {existing_groove}")
@@ -442,20 +442,20 @@ class RigConverter:
             ]
 
             # 腰ボーンを作成
-            maya_utils.select_objects(clear=True)
+            maya_scene_utils.select_objects(clear=True)
             waist = cmds.joint(name="waist", position=waist_pos)
             semi_standard_bones["waist"] = waist
 
             # 階層を設定（下半身の子、足の親）
-            maya_utils.parent_objects(waist, lower_body_joint)
+            maya_scene_utils.parent_objects(waist, lower_body_joint)
 
             # 左右の足を腰の子にする
             right_leg_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("右足"))
 
             # 左足を腰の子にする（既に存在確認済み）
-            maya_utils.parent_objects(left_leg_joint, waist)
+            maya_scene_utils.parent_objects(left_leg_joint, waist)
             if right_leg_joint:
-                maya_utils.parent_objects(right_leg_joint, waist)
+                maya_scene_utils.parent_objects(right_leg_joint, waist)
 
             self.logger.info(f"Added waist bone: {waist}")
         elif existing_waist:
@@ -500,7 +500,7 @@ class RigConverter:
             for jp_name in japanese_names:
                 if original_name == jp_name:
                     # 対応するMayaジョイントを探す
-                    all_joints = maya_utils.list_objects(type="joint")
+                    all_joints = maya_scene_utils.list_objects(type="joint")
                     for joint in all_joints:
                         # カスタムアトリビュートでボーンインデックスを確認
                         if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
@@ -666,19 +666,19 @@ class RigConverter:
         Returns:
             str: 実在する参照ノード名
         """
-        if cached_reference and maya_utils.object_exists(cached_reference):
+        if cached_reference and maya_scene_utils.object_exists(cached_reference):
             return cached_reference
 
         master_joint = self._find_joint_by_japanese_name(["全ての親", "マスター"])
-        if master_joint and maya_utils.object_exists(master_joint):
+        if master_joint and maya_scene_utils.object_exists(master_joint):
             return master_joint
 
         master_joint = self._find_joint_by_name(maya_joints, ["master", "全ての親", "マスター"])
-        if master_joint and maya_utils.object_exists(master_joint):
+        if master_joint and maya_scene_utils.object_exists(master_joint):
             return master_joint
 
         reference = "mmd_grant_reference"
-        if not maya_utils.object_exists(reference):
+        if not maya_scene_utils.object_exists(reference):
             reference = cmds.group(empty=True, name=reference)
             maya_utils.set_attribute(reference, "visibility", False, "bool")
             self.logger.info(f"Added reference node for rotation append: {reference}")
@@ -816,7 +816,7 @@ class RigConverter:
             if target_joint == source_joint:
                 continue
 
-            if not maya_utils.object_exists(target_joint) or not maya_utils.object_exists(source_joint):
+            if not maya_scene_utils.object_exists(target_joint) or not maya_scene_utils.object_exists(source_joint):
                 continue
 
             try:
@@ -970,7 +970,7 @@ class RigConverter:
             jo_deg = [0.0, 0.0, 0.0]
             if pmx_idx < len(maya_joints):
                 jnt = maya_joints[pmx_idx]
-                if maya_utils.object_exists(jnt):
+                if maya_scene_utils.object_exists(jnt):
                     try:
                         jo = cmds.getAttr(f"{jnt}.jointOrient")[0]
                         jo_deg = [jo[0], jo[1], jo[2]]
@@ -998,7 +998,7 @@ class RigConverter:
             pmx_idx = slot_to_pmx[slot]
             if pmx_idx < len(maya_joints):
                 jnt = maya_joints[pmx_idx]
-                if maya_utils.object_exists(jnt):
+                if maya_scene_utils.object_exists(jnt):
                     try:
                         bone["maya_rest_translate"] = list(cmds.getAttr(f"{jnt}.translate")[0])
                     except Exception:
@@ -1055,7 +1055,7 @@ class RigConverter:
             pmx_idx = slot_to_pmx.get(link_slot, -1)
             if 0 <= pmx_idx < len(maya_joints):
                 link_joint = maya_joints[pmx_idx]
-                if maya_utils.object_exists(link_joint):
+                if maya_scene_utils.object_exists(link_joint):
                     link_joints.append(link_joint)
         return link_joints
 
@@ -1113,7 +1113,7 @@ class RigConverter:
                 continue
             if pmx_idx < len(maya_joints):
                 jnt = maya_joints[pmx_idx]
-                if maya_utils.object_exists(jnt):
+                if maya_scene_utils.object_exists(jnt):
                     cmds.connectAttr(f"{jnt}.rotate", f"{node}.inputRotate[{slot}]")
 
         # inputTranslate: ALL bones for position offset computation.
@@ -1121,7 +1121,7 @@ class RigConverter:
             pmx_idx = slot_to_pmx[slot]
             if pmx_idx < len(maya_joints):
                 jnt = maya_joints[pmx_idx]
-                if maya_utils.object_exists(jnt):
+                if maya_scene_utils.object_exists(jnt):
                     cmds.connectAttr(f"{jnt}.translate", f"{node}.inputTranslate[{slot}]")
 
     def _connect_ik_output_rotates(
@@ -1137,7 +1137,7 @@ class RigConverter:
             if pmx_idx < 0 or pmx_idx >= len(maya_joints):
                 continue
             link_joint = maya_joints[pmx_idx]
-            if not maya_utils.object_exists(link_joint):
+            if not maya_scene_utils.object_exists(link_joint):
                 continue
 
             for axis in ("X", "Y", "Z"):
@@ -1184,7 +1184,7 @@ class RigConverter:
                 continue
 
             controller_joint = maya_joints[controller_idx]
-            if not maya_utils.object_exists(controller_joint):
+            if not maya_scene_utils.object_exists(controller_joint):
                 continue
 
             result = build_ik_mini_chain(manifest, chain_def)
@@ -1285,7 +1285,7 @@ class RigConverter:
         parents a curve shape under that joint transform so the existing joint is
         easier to select in the viewport.
         """
-        if not controller_joint or not maya_utils.object_exists(controller_joint):
+        if not controller_joint or not maya_scene_utils.object_exists(controller_joint):
             return None
         if cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
             return None

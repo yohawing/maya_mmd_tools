@@ -72,7 +72,7 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(
-                patch("mmd_tools.converters.rig_converter.maya_utils.object_exists", return_value=True)
+                patch("mmd_tools.converters.rig_converter.maya_scene_utils.object_exists", return_value=True)
             )
             stack.enter_context(patch.object(rig_converter.cmds, "createNode", return_value="target_mmdAppend"))
             stack.enter_context(patch.object(rig_converter.cmds, "attributeQuery", side_effect=_attribute_query))
