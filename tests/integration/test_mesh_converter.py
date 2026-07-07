@@ -7,7 +7,7 @@ from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import mesh_converter as mesh_converter_module
 from mmd_tools.converters import MeshConverter
-from mmd_tools.core import maya_mesh_utils, maya_utils
+from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
@@ -153,7 +153,7 @@ class TestMeshConverter(MayaTestBase):
         # 各マテリアルのカスタムアトリビュートを確認
         for material in unique_materials:
             # マテリアルインデックスを取得
-            material_index = maya_utils.get_attribute(material, ATTR_MMD_MATERIAL_INDEX)
+            material_index = maya_attribute_utils.get_attribute(material, ATTR_MMD_MATERIAL_INDEX)
             self.assertIsNotNone(
                 material_index,
                 f"{material}にmmd_material_indexアトリビュートが存在しません",
@@ -180,7 +180,7 @@ class TestMeshConverter(MayaTestBase):
 
                 for maya_attr, pmx_attr in attr_map.items():
                     self.assertEqual(
-                        maya_utils.get_attribute(material, maya_attr),
+                        maya_attribute_utils.get_attribute(material, maya_attr),
                         getattr(pmx_material, pmx_attr),
                         f"{material}の{maya_attr}がpmx_material.{pmx_attr}と一致しません",
                     )
@@ -196,7 +196,7 @@ class TestMeshConverter(MayaTestBase):
             for maya_attr, pmx_attr in attr_map.items():
                 if cmds.attributeQuery(maya_attr, node=material, exists=True):
                     self.assertEqual(
-                        maya_utils.get_attribute(material, maya_attr),
+                        maya_attribute_utils.get_attribute(material, maya_attr),
                         getattr(pmx_material, pmx_attr)[:3],
                         f"{material}の{maya_attr}がpmx_material.{pmx_attr}と一致しません",
                     )
@@ -290,7 +290,7 @@ class TestMeshConverter(MayaTestBase):
             for mesh_name in mesh_names:
                 self.assertTrue(cmds.attributeQuery(ATTR_MMD_MORPH_GROUP_SPLIT_MESH, node=mesh_name, exists=True))
                 self.assertTrue(cmds.getAttr(f"{mesh_name}.{ATTR_MMD_MORPH_GROUP_SPLIT_MESH}"))
-                source_indices = maya_utils.get_int_array_attribute(mesh_name, ATTR_MMD_SOURCE_VERTEX_INDICES)
+                source_indices = maya_attribute_utils.get_int_array_attribute(mesh_name, ATTR_MMD_SOURCE_VERTEX_INDICES)
                 self.assertEqual(len(source_indices), cmds.polyEvaluate(mesh_name, vertex=True))
                 raw_names = cmds.getAttr(f"{mesh_name}.{ATTR_MMD_VERTEX_MORPH_NAMES_JSON}")
                 morph_name_sets.append(tuple(json.loads(raw_names)))
@@ -407,7 +407,7 @@ class TestMeshConverter(MayaTestBase):
             self.assertEqual(morph_meshes[0][1], ["morph_a"], "morph mesh の morph 名が正しくありません")
 
             static_mn = static_meshes[0]
-            source_indices = maya_utils.get_int_array_attribute(static_mn, ATTR_MMD_SOURCE_VERTEX_INDICES)
+            source_indices = maya_attribute_utils.get_int_array_attribute(static_mn, ATTR_MMD_SOURCE_VERTEX_INDICES)
             vertex_count = cmds.polyEvaluate(static_mn, vertex=True)
             self.assertEqual(
                 len(source_indices),

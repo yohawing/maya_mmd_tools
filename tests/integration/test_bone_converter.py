@@ -2,7 +2,7 @@ from maya import cmds
 
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import BoneConverter, MeshConverter
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_name_utils
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 
@@ -61,7 +61,7 @@ class TestBoneConverter(MayaTestBase):
 
         # 階層構造を確認（位置は付与ボーンの処理により変更される可能性があるため、階層のみ確認）
         for bone in pmx_data.bones:
-            bone_name = maya_utils.sanitize_bone_name(converter._bone_node_name_source(bone))
+            bone_name = maya_name_utils.sanitize_bone_name(converter._bone_node_name_source(bone))
             self.assertTrue(
                 cmds.objExists(bone_name),
                 f"ジョイント '{bone_name}' が作成されていません。",

@@ -6,7 +6,7 @@ from maya import cmds
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.converters import MorphConverter, MeshConverter
-from mmd_tools.core import maya_mesh_utils, maya_utils
+from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
@@ -236,14 +236,14 @@ class TestMorphConverter(MayaTestBase):
         """material split mesh では表示 material に関係しない vertex morph を作らない。"""
         mesh_a = self._create_test_mesh()
         mesh_b = self._create_test_mesh()
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             mesh_a,
             {
                 "mmd_material_split_mesh": True,
                 "mmd_material_index": 0,
             },
         )
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             mesh_b,
             {
                 "mmd_material_split_mesh": True,
@@ -312,15 +312,15 @@ class TestMorphConverter(MayaTestBase):
             [0, 0, 1, 0, 1, 1],
             [0, 1, 2],
         )
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             mesh,
             {
                 "mmd_material_split_mesh": True,
                 "mmd_material_index": 0,
             },
         )
-        maya_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 2, 3], "longArray")
+        maya_attribute_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_attribute_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 2, 3], "longArray")
 
         class FakeFace:
             indices = [0, 2, 3]
@@ -373,15 +373,15 @@ class TestMorphConverter(MayaTestBase):
     def test_morph_group_split_mesh_filters_vertex_morphs_by_name(self):
         """morph group split mesh では許可された vertex morph だけ blendShape target を作る。"""
         mesh = self._create_test_mesh()
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             mesh,
             {
                 ATTR_MMD_MORPH_GROUP_SPLIT_MESH: True,
                 ATTR_MMD_VERTEX_MORPH_NAMES_JSON: json.dumps(["allowed_morph"]),
             },
         )
-        maya_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 1, 2, 3], "longArray")
+        maya_attribute_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_attribute_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 1, 2, 3], "longArray")
 
         class FakeVertexMorph:
             morph_type = PmxMorphType.VertexMorph

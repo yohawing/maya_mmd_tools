@@ -81,11 +81,11 @@ def visible_mesh_transforms(
 
 def source_indices(mesh: str) -> list[int]:
     """Return PMX source vertex indices for a Maya mesh transform."""
-    from mmd_tools.core import maya_utils
+    from mmd_tools.core import maya_attribute_utils
     from mmd_tools.core.constants import ATTR_MMD_SOURCE_VERTEX_INDICES
 
     if cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh, exists=True):
-        return list(maya_utils.get_int_array_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES))
+        return list(maya_attribute_utils.get_int_array_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES))
     return list(range(int(cmds.polyEvaluate(mesh, vertex=True))))
 
 
