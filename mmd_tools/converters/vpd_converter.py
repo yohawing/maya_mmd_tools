@@ -7,7 +7,7 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 
 from mmd_tools.core.logger import get_logger
-from mmd_tools.core.maya_utils import get_attribute
+from mmd_tools.core.maya_attribute_utils import get_attribute
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.coordinate_transform import mmd_euler_xyz_to_maya, mmd_point_to_maya
 from mmd_tools.core.vpd_data.bone_pose import BonePose
