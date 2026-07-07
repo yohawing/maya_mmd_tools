@@ -187,11 +187,19 @@ class _ImportActionContract:
 
     def test_execute_returns_profile_warnings(self):
         warning = {"message": "partial import warning"}
+        vmd_warning = {"message": "runtime fallback"}
+        bone_warning = {"message": "bone warning"}
+        rig_warning = {"message": "native rig fallback"}
         texture_issue = {"file_node": "file1"}
         nested_issue = {"file_node": "file2"}
         options = {
             "profile": {
                 "warnings": [warning],
+                "vmd_converter": {"warnings": [vmd_warning]},
+                "bone_converter": {
+                    "warnings": [bone_warning],
+                    "rig_converter": {"warnings": [rig_warning]},
+                },
                 "texture_issues": [texture_issue],
                 "mesh_converter": {"unresolved_textures": [nested_issue]},
             }
@@ -201,7 +209,7 @@ class _ImportActionContract:
         result = action.execute(self._make_request(options))
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(result.warnings, [warning, texture_issue, nested_issue])
+        self.assertEqual(result.warnings, [warning, vmd_warning, bone_warning, rig_warning, texture_issue, nested_issue])
 
     def test_result_warning_lists_are_not_shared(self):
         first = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=lambda: None).execute(

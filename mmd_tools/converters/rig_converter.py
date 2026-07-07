@@ -71,6 +71,7 @@ class RigConverter:
             "semi_standard_bones": {},
             "constraints": [],
             "native_rig": None,
+            "warnings": [],
         }
 
         # 元のボーン名を保存（日本語名での重複チェック用）
@@ -79,8 +80,19 @@ class RigConverter:
 
         # native rig primitive が利用可能なら使用
         native_rig = None
-        if pmx_filepath and is_rig_primitive_available():
-            native_rig = self._try_setup_native_rig(pmx_filepath, maya_joints, bone_map)
+        if pmx_filepath:
+            if is_rig_primitive_available():
+                native_rig, warning = self._try_setup_native_rig(pmx_filepath, maya_joints, bone_map)
+                if warning:
+                    result["warnings"].append(warning)
+            else:
+                result["warnings"].append(
+                    self._native_rig_warning(
+                        "native_rig_unavailable",
+                        "Native rig primitives are unavailable; falling back to Python constraints",
+                        fallback="python_constraints",
+                    )
+                )
 
         if native_rig is not None:
             result["native_rig"] = native_rig
@@ -103,20 +115,30 @@ class RigConverter:
         maya_joints: List[str],
         bone_map: Dict[int, str],
     ):
-        """native rig builder で IK/付与を構築し、mmdAppend/mmdCcdIk DG ノードを作成する。失敗時は None。"""
+        """native rig builder で IK/付与を構築し、mmdAppend/mmdCcdIk DG ノードを作成する。"""
         try:
             from mmd_tools.converters.native_rig_builder import NativeRigPrimitives
 
             pmx_path = Path(pmx_filepath)
             if not pmx_path.exists():
                 self.logger.warning(f"PMX file not found for native rig: {pmx_filepath}")
-                return None
+                return None, self._native_rig_warning(
+                    "native_rig_pmx_missing",
+                    "PMX file not found for native rig; falling back to Python constraints",
+                    fallback="python_constraints",
+                    pmx_path=pmx_filepath,
+                )
 
             pmx_bytes = pmx_path.read_bytes()
             prims = NativeRigPrimitives.from_pmx_bytes(pmx_bytes)
             if prims is None:
                 self.logger.warning("NativeRigPrimitives.from_pmx_bytes returned None, falling back to Python")
-                return None
+                return None, self._native_rig_warning(
+                    "native_rig_build_unavailable",
+                    "Native rig primitive build returned no result; falling back to Python constraints",
+                    fallback="python_constraints",
+                    pmx_path=pmx_filepath,
+                )
 
             self._store_native_rig_metadata(prims, maya_joints, bone_map)
 
@@ -128,11 +150,29 @@ class RigConverter:
                 f"{len(ik_nodes)} mmdCcdIk"
             )
 
-            return prims
+            return prims, None
 
         except Exception as e:
             self.logger.warning(f"native rig setup failed, falling back to Python: {e}")
-            return None
+            return None, self._native_rig_warning(
+                "native_rig_setup_failed",
+                "Native rig setup failed; falling back to Python constraints",
+                fallback="python_constraints",
+                exception_type=type(e).__name__,
+                error=str(e),
+                pmx_path=pmx_filepath,
+            )
+
+    @staticmethod
+    def _native_rig_warning(code: str, message: str, **extra) -> Dict[str, object]:
+        warning = {
+            "source": "rig_converter",
+            "code": code,
+            "message": message,
+            "severity": "warning",
+        }
+        warning.update(extra)
+        return warning
 
     def _store_native_rig_metadata(self, prims, maya_joints, bone_map):
         """native rig の情報を Maya ジョイントのカスタムアトリビュートに保存する。"""

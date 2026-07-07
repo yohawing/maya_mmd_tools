@@ -137,6 +137,10 @@ def import_vmd_file(
         converter.motion_scale = float(options.get("motion_scale", 1.0))
         converter.import_camera_animation = bool(options.get("import_camera_animation", True))
         converter.import_light_animation = bool(options.get("import_light_animation", True))
+        profile = options.get("profile")
+        if not isinstance(profile, dict):
+            profile = {}
+            options["profile"] = profile
         try:
             with vmd_profile.scope("vmd_converter_convert"):
                 success = converter.convert(
@@ -147,6 +151,7 @@ def import_vmd_file(
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,
+                    profile=profile,
                     progress_callback=progress_callback,
                 )
         finally:

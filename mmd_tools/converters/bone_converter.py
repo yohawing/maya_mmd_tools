@@ -131,10 +131,15 @@ class BoneConverter:
         # リグのセットアップはRigConverterに委譲。
         # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
         if setup_rig:
-            self.rig_converter.setup_pmx_rig(
+            rig_result = self.rig_converter.setup_pmx_rig(
                 pmx_data, maya_joints, bone_map, skeleton_group,
                 pmx_filepath=pmx_filepath,
             )
+            self.profile["rig_converter"] = {
+                "used_native_rig": rig_result.get("native_rig") is not None,
+                "constraint_count": len(rig_result.get("constraints") or []),
+                "warnings": list(rig_result.get("warnings") or []),
+            }
 
         result_cluster = skin_clusters[0] if len(skin_clusters) == 1 else skin_clusters
 

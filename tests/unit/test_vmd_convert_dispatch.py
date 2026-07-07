@@ -53,6 +53,34 @@ class TestVmdConvertDispatch(unittest.TestCase):
         convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=None)
         convert_light.assert_called_once_with(vmd_data.light_frames, vmd_bytes=None)
 
+    def test_runtime_bake_failure_records_profile_warning_before_legacy_fallback(self):
+        """Runtime bake failure is visible to the action boundary via profile warnings."""
+        vmd_data = _fake_vmd_data()
+        profile = {}
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=True))
+            stack.enter_context(patch.object(self.converter, "_convert_using_mmd_runtime", return_value=False))
+            apply_ik = stack.enter_context(patch.object(self.converter, "_apply_ik_enabled_animation"))
+            result = self.converter.convert(
+                vmd_data,
+                bake_mode=True,
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                profile=profile,
+            )
+
+        self.assertTrue(result)
+        apply_ik.assert_called_once()
+        warning = profile["vmd_converter"]["warnings"][0]
+        self.assertEqual(warning["source"], "vmd_converter")
+        self.assertEqual(warning["code"], "runtime_bake_failed_fallback")
+        self.assertEqual(warning["severity"], "warning")
+        self.assertEqual(warning["fallback"], "legacy")
+        self.assertTrue(warning["bake_mode"])
+        self.assertTrue(warning["has_vmd_bytes"])
+        self.assertTrue(warning["has_pmx_bytes"])
+
     def test_bake_mode_passes_vmd_bytes_to_camera_and_light_samplers(self):
         """Bake mode passes raw VMD bytes to camera/light native samplers."""
         frame = type("FrameStub", (), {"frame_number": 1})()

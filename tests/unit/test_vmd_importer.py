@@ -61,6 +61,22 @@ class TestVmdImporter(MayaTestBase):
         self.assertTrue(result)
         self.assertEqual(converter.motion_scale, 2.5)
 
+    def test_profile_is_created_for_converter_diagnostics(self):
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+        options = {}
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = True
+            result = import_vmd_file(object(), vmd_path, options)
+
+        self.assertTrue(result)
+        self.assertIsInstance(options["profile"], dict)
+        self.assertIs(converter.convert.call_args.kwargs["profile"], options["profile"])
+
     def test_camera_light_import_options_are_applied_to_converter(self):
         temp_root = Path(tempfile.mkdtemp())
         vmd_path = str(temp_root / "motion.vmd")

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 import maya.api.OpenMaya as om
@@ -206,6 +206,7 @@ class VmdConverter:
         vmd_bytes: bytes = None,
         pmx_bytes: bytes = None,
         pmx_path: str = None,
+        profile: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
@@ -223,6 +224,7 @@ class VmdConverter:
             vmd_bytes: 生の VMD バイナリ（runtime bake で使用）
             pmx_bytes: 生の PMX バイナリ（runtime bake で使用）
             pmx_path: PMX ファイルパス（pmx_bytes がない場合に読み込みに使用）
+            profile: import action へ返す診断を書き込む mutable dict
             progress_callback: フェーズ進捗通知コールバック
 
         Returns:
@@ -308,6 +310,21 @@ class VmdConverter:
                     _emit_progress(82)
                 else:
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
+                    self._record_profile_warning(
+                        profile,
+                        {
+                            "source": "vmd_converter",
+                            "code": "runtime_bake_failed_fallback",
+                            "severity": "warning",
+                            "message": "mmd-anim runtime bake failed; falling back to legacy VMD conversion",
+                            "fallback": "legacy",
+                            "bake_mode": bool(bake_mode),
+                            "live_rig_target": bool(live_rig_target),
+                            "has_vmd_bytes": bool(vmd_bytes),
+                            "has_pmx_bytes": bool(pmx_bytes),
+                            "pmx_path": pmx_path or "",
+                        },
+                    )
 
             if not runtime_success:
                 # --- レガシーパス（従来の変換） ---
@@ -369,6 +386,14 @@ class VmdConverter:
     def _restore_import_timeline_state(current_time: Optional[float]) -> None:
         """Keep VMD import from leaving Maya visibly playing or scrubbed ahead."""
         restore_import_timeline_state(current_time)
+
+    @staticmethod
+    def _record_profile_warning(profile: Optional[Dict[str, Any]], warning: Dict[str, Any]) -> None:
+        """Append a structured converter warning to the import profile."""
+        if not isinstance(profile, dict):
+            return
+        converter_profile = profile.setdefault("vmd_converter", {})
+        converter_profile.setdefault("warnings", []).append(dict(warning))
 
     def vmd_frame_to_maya_time(self, frame_number: float) -> float:
         """Convert VMD's fixed 30fps frame number to the target Maya time unit."""

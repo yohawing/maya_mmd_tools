@@ -69,6 +69,9 @@ def _warnings_from_options(options: Dict[str, Any]) -> List[Any]:
     if not isinstance(profile, dict):
         return []
     warnings = list(profile.get("warnings") or [])
+    warnings.extend(profile.get("vmd_converter", {}).get("warnings") or [])
+    warnings.extend(profile.get("bone_converter", {}).get("warnings") or [])
+    warnings.extend(profile.get("bone_converter", {}).get("rig_converter", {}).get("warnings") or [])
     warnings.extend(profile.get("texture_issues") or [])
     warnings.extend(profile.get("mesh_converter", {}).get("unresolved_textures") or [])
     return warnings
