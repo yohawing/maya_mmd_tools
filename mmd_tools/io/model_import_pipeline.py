@@ -11,7 +11,7 @@ from .. import settings
 from ..converters import PhysicsConverter
 from ..converters.light_converter import create_mmd_light_controller, wire_dx11_shaders_to_mmd_light
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
-from ..core import maya_attribute_utils, maya_utils, settings_keys as setting_keys
+from ..core import maya_attribute_utils, maya_viewport_utils, settings_keys as setting_keys
 from ..core.constants import SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
 from ..core.utils import create_bone_joint_mapping
@@ -202,9 +202,9 @@ class ModelImportPipeline:
     def setup_view(self) -> None:
         """Apply MMD-friendly view settings requested by import options."""
         if settings.get(setting_keys.IMPORT_VIEW_SETUP_COLOR_MANAGEMENT, True):
-            maya_utils.setup_mmd_color_management()
+            maya_viewport_utils.setup_mmd_color_management()
         if settings.get(setting_keys.IMPORT_VIEW_SETUP_TRANSPARENCY, True):
-            maya_utils.setup_mmd_transparency()
+            maya_viewport_utils.setup_mmd_transparency()
         self.emit_progress(96)
 
     def cleanup_namespace(self, namespace: Optional[str]) -> None:

@@ -92,6 +92,8 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
             "mmd_tools.core.maya_viewport_utils",
             (
                 "set_viewport_backface_culling",
+                "setup_mmd_color_management",
+                "setup_mmd_transparency",
             ),
         )
 
@@ -166,6 +168,8 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
         maya_viewport_utils = importlib.import_module("mmd_tools.core.maya_viewport_utils")
 
         self.assertIs(maya_utils.set_viewport_backface_culling, maya_viewport_utils.set_viewport_backface_culling)
+        self.assertIs(maya_utils.setup_mmd_color_management, maya_viewport_utils.setup_mmd_color_management)
+        self.assertIs(maya_utils.setup_mmd_transparency, maya_viewport_utils.setup_mmd_transparency)
 
     def test_maya_utils_rig_helpers_remain_compatibility_shims(self):
         maya_utils = importlib.import_module("mmd_tools.core.maya_utils")
