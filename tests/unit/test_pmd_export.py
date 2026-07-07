@@ -11,8 +11,13 @@ from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.vertex import PmdVertex
 from mmd_tools.core.pmd_data.face import PmdFace
+from mmd_tools.core.pmd_data.ik import PmdIK
 from mmd_tools.core.pmd_data.material import PmdMaterial
+from mmd_tools.core.pmd_data.morph import PmdMorph
 from mmd_tools.core.pmd_data.bone import PmdBone, PmdBoneType
+from mmd_tools.core.pmd_data.display_frame import PmdDisplayFrame
+from mmd_tools.core.pmd_data.rigid_body import PmdRigidBody
+from mmd_tools.core.pmd_data.joint import PmdJoint
 
 # Load PmdExporter directly without triggering io/__init__.py's maya imports
 _pmd_exporter_path = os.path.join(
@@ -315,6 +320,65 @@ class TestPmdExporterFromDict(TestBase):
         self.assertEqual(parsed.header.model_name, "FallbackPmd")
         self.assertEqual(len(parsed.vertices), 3)
         self.assertEqual(len(parsed.faces), 1)
+
+    def test_native_export_blocker_documents_unsupported_pmd_sections(self):
+        """native JSON がまだ表現しない PMD セクションは理由付きで Python writer に戻す。"""
+        exporter = PmdExporter(native_exporter=lambda payload: b"NATIVE-PMD")
+        pmd = PmdData()
+        self.assertIsNone(exporter.native_export_blocker(pmd))
+
+        section_cases = [
+            ("ik_data", PmdIK(), "ik"),
+            ("morphs", PmdMorph(), "morphs"),
+            ("display_frames", PmdDisplayFrame(), "display_frames"),
+            ("rigid_bodies", PmdRigidBody(), "rigid_bodies"),
+            ("joints", PmdJoint(), "joints"),
+        ]
+        for attr, item, reason in section_cases:
+            with self.subTest(section=attr):
+                pmd = PmdData()
+                getattr(pmd, attr).append(item)
+                self.assertEqual(exporter.native_export_blocker(pmd), reason)
+
+    def test_native_export_falls_back_for_unsupported_pmd_sections(self):
+        """blocker 対象セクションがある場合は native writer を呼ばず Python writer を使う。"""
+        calls = []
+        exporter = PmdExporter(native_exporter=lambda payload: calls.append(payload) or b"NATIVE-PMD")
+        pmd = PmdData()
+        pmd.header.magic = b"Pmd"
+        pmd.header.version = 1.0
+        pmd.header.model_name = "UnsupportedNativePmd"
+
+        for position in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+            vertex = PmdVertex()
+            vertex.position = position
+            vertex.normal = (0.0, 0.0, 1.0)
+            vertex.uv = (0.0, 0.0)
+            vertex.bone_indices = (0, 0)
+            vertex.bone_weight = 100
+            pmd.vertices.append(vertex)
+
+        face = PmdFace()
+        face.indices = (0, 1, 2)
+        pmd.faces.append(face)
+
+        material = PmdMaterial(0)
+        material.face_count = 3
+        pmd.materials.append(material)
+
+        bone = PmdBone()
+        bone.name = "root"
+        bone.parent_bone_index = -1
+        bone.tail_pos_bone_index = 0xFFFF
+        bone.bone_type = PmdBoneType.ROTATE_AND_MOVE
+        bone.ik_parent_bone_index = 0
+        pmd.bones.append(bone)
+
+        display_frame = PmdDisplayFrame()
+        pmd.display_frames.append(display_frame)
+        native_bytes = exporter._try_native_export(pmd)
+        self.assertIsNone(native_bytes)
+        self.assertEqual(calls, [])
 
     def test_export_quad_triangulation(self):
         """quad dictをfan triangulate -> export -> parse_file で検証"""

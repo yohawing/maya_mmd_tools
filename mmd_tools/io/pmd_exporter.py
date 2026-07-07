@@ -315,7 +315,23 @@ class PmdExporter:
     def _try_native_export(self, pmd: PmdData):
         if self._native_exporter is None:
             return None
+        if self.native_export_blocker(pmd) is not None:
+            return None
         return self._native_exporter(self.to_native_json_payload(pmd))
+
+    def native_export_blocker(self, pmd: PmdData) -> str | None:
+        """Return why PMD must use the Python writer instead of native JSON export."""
+        if pmd.ik_data:
+            return "ik"
+        if pmd.morphs:
+            return "morphs"
+        if pmd.display_frames:
+            return "display_frames"
+        if pmd.rigid_bodies:
+            return "rigid_bodies"
+        if pmd.joints:
+            return "joints"
+        return None
 
 
 def _float_list(value, length: int, label: str) -> list:

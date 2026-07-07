@@ -142,9 +142,33 @@ class TestVmdExport(TestBase):
         self.assertEqual(payload["metadata"]["counts"]["selfShadows"], 1)
         self.assertEqual(payload["metadata"]["counts"]["properties"], 1)
         self.assertEqual(payload["metadata"]["maxFrame"], 10)
-        self.assertEqual(payload["boneFrames"][0]["interpolation"], [0] * 64)
+        self.assertEqual(payload["boneFrames"][0]["interpolation"], [20] * 64)
         self.assertEqual(payload["lightFrames"][0]["direction"], [4.0, 5.0, 6.0])
         self.assertEqual(payload["propertyFrames"][0]["ikStates"][1]["enabled"], False)
+
+    def test_native_payload_uses_linear_default_interpolation_for_missing_values(self):
+        """native payload の補間 fallback は Python writer と同じ linear default にする。"""
+        exporter = VmdExporter(native_exporter=lambda payload: b"NATIVE-VMD")
+
+        for missing_value in (None, b"", []):
+            with self.subTest(missing_value=missing_value):
+                vmd_data = VmdData()
+
+                bone = VmdBoneFrame()
+                bone.bone_name = "センター"
+                bone.frame_number = 1
+                bone.interpolation = missing_value
+                vmd_data.bone_frames.append(bone)
+
+                camera = VmdCameraFrame()
+                camera.frame_number = 1
+                camera.interpolation = missing_value
+                vmd_data.camera_frames.append(camera)
+
+                payload = exporter.to_native_json_payload(vmd_data)
+
+                self.assertEqual(payload["boneFrames"][0]["interpolation"], [20] * 64)
+                self.assertEqual(payload["cameraFrames"][0]["interpolation"], [20] * 24)
 
     def test_exporter_falls_back_when_native_writer_returns_none(self):
         """native writer が使えない環境では従来の VmdData writer へ戻る。"""

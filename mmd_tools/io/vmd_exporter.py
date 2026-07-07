@@ -10,18 +10,12 @@ from typing import Any, Iterable, Mapping, Optional
 
 from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.vmd_data import VmdData
-from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
-from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+from mmd_tools.core.vmd_data.bone_frame import DEFAULT_BONE_INTERPOLATION, VmdBoneFrame
+from mmd_tools.core.vmd_data.camera_frame import DEFAULT_CAMERA_INTERPOLATION, VmdCameraFrame
 from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
 from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
 from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
 from mmd_tools.core.native import export_vmd_animation_json
-
-
-_DEFAULT_BONE_INTERPOLATION = b"\x14" * 64
-_DEFAULT_CAMERA_INTERPOLATION = b"\x14" * 24
-_ZERO_BONE_INTERPOLATION = b"\x00" * 64
-_ZERO_CAMERA_INTERPOLATION = b"\x00" * 24
 
 
 class VmdExporter:
@@ -90,7 +84,7 @@ class VmdExporter:
                 "frame": int(frame.frame_number),
                 "translation": _float_list(frame.position, 3, "bone translation"),
                 "rotation": _float_list(frame.rotation, 4, "bone rotation"),
-                "interpolation": list(_interpolation_bytes(frame.interpolation, 64, _ZERO_BONE_INTERPOLATION)),
+                "interpolation": list(_interpolation_bytes(frame.interpolation, 64, DEFAULT_BONE_INTERPOLATION)),
             }
             for frame in vmd_data.bone_frames
         ]
@@ -108,7 +102,7 @@ class VmdExporter:
                 "distance": float(frame.distance),
                 "position": _float_list(frame.position, 3, "camera position"),
                 "rotation": _float_list(frame.rotation, 3, "camera rotation"),
-                "interpolation": list(_interpolation_bytes(frame.interpolation, 24, _ZERO_CAMERA_INTERPOLATION)),
+                "interpolation": list(_interpolation_bytes(frame.interpolation, 24, DEFAULT_CAMERA_INTERPOLATION)),
                 "fov": int(frame.viewing_angle),
                 "perspective": bool(frame.perspective == 0),
             }
@@ -195,7 +189,7 @@ class VmdExporter:
         frame.frame_number = int(data.get("frame_number", data.get("frame", 0)))
         frame.position = _float_tuple(data.get("position", (0.0, 0.0, 0.0)), 3, "bone position")
         frame.rotation = _float_tuple(data.get("rotation", (0.0, 0.0, 0.0, 1.0)), 4, "bone rotation")
-        frame.interpolation = _bytes_value(data.get("interpolation", _DEFAULT_BONE_INTERPOLATION), 64)
+        frame.interpolation = _bytes_value(data.get("interpolation", DEFAULT_BONE_INTERPOLATION), 64)
         return frame
 
     @staticmethod
@@ -220,7 +214,7 @@ class VmdExporter:
         frame.position = _float_tuple(data.get("position", (0.0, 0.0, 0.0)), 3, "camera position")
         frame.rotation = _float_tuple(data.get("rotation", (0.0, 0.0, 0.0)), 3, "camera rotation")
         frame.interpolation = _bytes_value(
-            data.get("interpolation", _DEFAULT_CAMERA_INTERPOLATION), 24
+            data.get("interpolation", DEFAULT_CAMERA_INTERPOLATION), 24
         )
         frame.viewing_angle = int(data.get("viewing_angle", data.get("view_angle", 0)))
         frame.perspective = int(data.get("perspective", 0))
