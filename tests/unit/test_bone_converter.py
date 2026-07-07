@@ -4,7 +4,7 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 
 from mmd_tools.converters.bone_converter import BoneConverter
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
@@ -249,7 +249,7 @@ class TestBoneConverterMaya(unittest.TestCase):
 
         self.assertEqual(actual_uuid, expected_uuid)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト"""
         bone = self._create_mock_pmx_bone(0, "TestBone", bone_flag=PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE)
@@ -267,7 +267,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "TestBone")
         self.assertTrue(attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_rotate(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（回転付与）"""
         bone = self._create_mock_pmx_bone(5, "GrantBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
@@ -299,7 +299,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
         self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 3)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_move(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（移動付与）"""
         bone = self._create_mock_pmx_bone(7, "grantMoveBone", bone_flag=PmxBoneFlag.GRANT_PARENT_MOVE)
@@ -330,7 +330,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
         self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 2)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_both(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（回転＋移動付与）"""
         bone = self._create_mock_pmx_bone(
@@ -365,7 +365,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
         self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 4)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_ik(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（IKボーン）"""
         bone = self._create_mock_pmx_bone(10, "IKBone", bone_flag=PmxBoneFlag.IK)
@@ -405,7 +405,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertIn(ATTR_MMD_IK_TARGET_INDEX, attrs)
         self.assertEqual(attrs[ATTR_MMD_IK_TARGET_INDEX], 11)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_local_axis(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（ローカル軸）"""
         bone = self._create_mock_pmx_bone(15, "LocalAxisBone", bone_flag=PmxBoneFlag.LOCAL_AXIS)
@@ -513,8 +513,8 @@ class TestBoneConverterMaya(unittest.TestCase):
             vertices.append(vertex)
         pmx_data.vertices = vertices
 
-        maya_utils.add_typed_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_utils.set_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [1, 2], "longArray")
+        maya_attribute_utils.add_typed_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_attribute_utils.set_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [1, 2], "longArray")
 
         self.converter._apply_pmx_vertex_weights(
             pmx_data,

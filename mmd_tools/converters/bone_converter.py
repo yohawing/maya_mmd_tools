@@ -7,7 +7,7 @@ import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
-from ..core import maya_mesh_utils, maya_scene_utils, maya_utils
+from ..core import maya_attribute_utils, maya_mesh_utils, maya_scene_utils, maya_utils
 from ..core.mmd_bone_names import has_semistandard_mmd_bone_name
 from ..core.pmx_data import PmxData
 from ..core.constants import (
@@ -311,7 +311,7 @@ class BoneConverter:
             joint = self._resolve_node_long_path(joint_uuid, joint)
 
             # セグメントスケール補償を無効化
-            maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
+            maya_attribute_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
             self._add_profile_time("joint_create_sec", joint_create_start)
 
             joint_attr_start = time.perf_counter()
@@ -470,7 +470,7 @@ class BoneConverter:
         else:
             return
 
-        maya_utils.set_custom_attributes(joint, attrs)
+        maya_attribute_utils.set_custom_attributes(joint, attrs)
 
     def _create_skin_cluster(self, maya_joints, mesh_node, max_influence=4):
         """
@@ -672,7 +672,7 @@ class BoneConverter:
                 return None
             if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh_node, exists=True):
                 return None
-            source_indices = maya_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
+            source_indices = maya_attribute_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
             return source_indices or None
         except Exception:
             return None
@@ -726,7 +726,7 @@ class BoneConverter:
                     parent_rot = om.MMatrix()
                 jo_mat = desired_world * parent_rot.inverse()
                 jo_euler = om.MTransformationMatrix(jo_mat).rotation(asQuaternion=False)
-                maya_utils.set_attribute(
+                maya_attribute_utils.set_attribute(
                     maya_joints[i], "jointOrient",
                     (jo_euler.x, jo_euler.y, jo_euler.z), "double3",
                 )
@@ -740,9 +740,9 @@ class BoneConverter:
                     bone.position[0], bone.position[1], -bone.position[2],
                 )
                 local_pos = my_pos * parent_wm_inv
-                maya_utils.set_attribute(
+                maya_attribute_utils.set_attribute(
                     maya_joints[i], "translate",
                     (local_pos.x, local_pos.y, local_pos.z), "double3",
                 )
 
-            maya_utils.set_attribute(maya_joints[i], "rotate", (0, 0, 0), "double3")
+            maya_attribute_utils.set_attribute(maya_joints[i], "rotate", (0, 0, 0), "double3")
