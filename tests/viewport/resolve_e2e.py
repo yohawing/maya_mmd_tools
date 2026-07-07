@@ -232,7 +232,7 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
         if str(root) not in sys.path:
             sys.path.insert(0, str(root))
 
-        from mmd_tools.core import maya_utils, settings
+        from mmd_tools.core import maya_material_utils, settings
         from mmd_tools.io.mmd_importer import import_mmd_file
 
         settings.set("import.model.create_mmd_shaders", True)
@@ -257,7 +257,7 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
         for row in _snapshot("before"):
             _emit(row, log_path)
 
-        results = maya_utils.resolve_scene_mmd_textures()
+        results = maya_material_utils.resolve_scene_mmd_textures()
         resolved = sum(1 for result in results if getattr(result, "status", "") == "resolved")
         failed = sum(1 for result in results if getattr(result, "status", "") == "unrecoverable")
         _emit(

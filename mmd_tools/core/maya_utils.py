@@ -1326,131 +1326,16 @@ def resolve_mmd_material_texture(material, workspace_root=None):
     return resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
 
 
-def _dx11_texture_slot_from_attr(attr_name):
-    for texture_attr, has_attr in DX11_TEXTURE_SLOTS.values():
-        if attr_name == texture_attr:
-            return texture_attr, has_attr
-    return None
-
-
-def _connected_dx11_texture_slot(file_node):
-    connections = cmds.listConnections(
-        f"{file_node}.outColor",
-        source=False,
-        destination=True,
-        plugs=True,
-    ) or []
-    if not isinstance(connections, (list, tuple, set)):
-        return None
-    for plug in connections:
-        if "." not in plug:
-            continue
-        shader, attr_name = plug.rsplit(".", 1)
-        slot = _dx11_texture_slot_from_attr(attr_name)
-        if slot and cmds.objExists(shader):
-            return shader, slot[0], slot[1]
-    return None
-
-
-def _infer_dx11_texture_slot_from_file_node(file_node):
-    sorted_slots = sorted(DX11_TEXTURE_SLOTS.items(), key=lambda item: len(item[0]), reverse=True)
-    for suffix, (texture_attr, has_attr) in sorted_slots:
-        if not file_node.endswith(suffix):
-            continue
-        shader = file_node[: -len(suffix)]
-        if cmds.objExists(shader):
-            return shader, texture_attr, has_attr
-    return None
-
-
 def rebind_resolved_mmd_dx11_texture(file_node):
-    """Reconnect one file node to its dx11Shader texture slot through compatibility names."""
-    target = _connected_dx11_texture_slot(file_node) or _infer_dx11_texture_slot_from_file_node(file_node)
-    if not target:
-        return {"status": "skipped", "reason": "dx11_texture_slot_not_found"}
-
-    shader, texture_attr, has_attr = target
-    if cmds.nodeType(shader) != "dx11Shader":
-        return {"status": "skipped", "reason": "not_dx11_shader"}
-    if not cmds.attributeQuery(texture_attr, node=shader, exists=True):
-        return {"status": "skipped", "reason": "texture_attr_missing"}
-    if not cmds.attributeQuery(has_attr, node=shader, exists=True):
-        return {"status": "skipped", "reason": "has_attr_missing"}
-
-    if not bind_dx11_texture_file_node(
-        shader,
-        file_node,
-        texture_attr,
-        has_attr,
-        cmds_module=cmds,
-        set_attribute_func=set_attribute,
-    ):
-        return {
-            "status": "failed",
-            "reason": "connect_failed",
-            "shader": shader,
-            "texture_attr": texture_attr,
-            "has_attr": has_attr,
-        }
-
-    return {
-        "status": "rebound",
-        "reason": "connected",
-        "shader": shader,
-        "texture_attr": texture_attr,
-        "has_attr": has_attr,
-    }
+    """Compatibility wrapper for the material texture rebinding helper."""
+    return _maya_material_utils.rebind_resolved_mmd_dx11_texture(file_node)
 
 
 def rebind_resolved_scene_mmd_dx11_textures(results):
-    """Rebind resolved scene texture results through maya_utils-compatible names."""
-    rebound = 0
-    skipped = 0
-    failed = 0
-    for result in results:
-        if getattr(result, "status", None) != "resolved":
-            continue
-        file_node = getattr(result, "file_node", None)
-        if not file_node:
-            setattr(result, "rebind_status", "skipped")
-            setattr(result, "rebind_reason", "missing_file_node")
-            skipped += 1
-            continue
-        rebind = rebind_resolved_mmd_dx11_texture(file_node)
-        setattr(result, "rebind_status", rebind["status"])
-        setattr(result, "rebind_reason", rebind["reason"])
-        for key in ("shader", "texture_attr", "has_attr"):
-            if key in rebind:
-                setattr(result, f"rebind_{key}", rebind[key])
-        if rebind["status"] == "rebound":
-            rebound += 1
-        elif rebind["status"] == "failed":
-            failed += 1
-        else:
-            skipped += 1
-    return {"rebound": rebound, "skipped": skipped, "failed": failed}
+    """Compatibility wrapper for scene-level material texture rebinding."""
+    return _maya_material_utils.rebind_resolved_scene_mmd_dx11_textures(results)
 
 
 def resolve_scene_mmd_textures(workspace_root=None):
-    """Resolve broken MMD file nodes in the current scene through compatibility names."""
-    results = []
-    for file_node in cmds.ls(type="file") or []:
-        if not cmds.attributeQuery(
-            _maya_material_utils.ATTR_MMD_ORIGINAL_TEXTURE_PATH,
-            node=file_node,
-            exists=True,
-        ):
-            continue
-        classification = classify_mmd_texture_file_node(file_node)
-        if classification and classification.status == "resolvable":
-            resolution = resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
-            if resolution is not None and not getattr(resolution, "file_node", None):
-                resolution.file_node = file_node
-            results.append(resolution)
-        elif classification:
-            classification.file_node = file_node
-            results.append(classification)
-    rebind_summary = rebind_resolved_scene_mmd_dx11_textures(results)
-    if rebind_summary["rebound"]:
-        cmds.refresh(force=True)
-    return results
+    """Compatibility wrapper for scene-level material texture resolution."""
+    return _maya_material_utils.resolve_scene_mmd_textures(workspace_root=workspace_root)
