@@ -29,8 +29,6 @@ from .tabs.morph_tab import MorphTab
 from .presenters.morph_presenter import MorphPresenter
 from .tabs.physics_tab import PhysicsTab
 from .presenters.physics_presenter import PhysicsPresenter
-from .tabs.animation_tab import AnimationTab
-from .presenters.animation_presenter import AnimationPresenter
 from .tabs.settings_tab import SettingsTab
 from .presenters.settings_presenter import SettingsPresenter
 
@@ -254,12 +252,6 @@ class MainWindow(QMainWindow):
         else:
             self.physics_tab = None
 
-        # Animation Tab — dev mode only (animator toolset)
-        if is_dev:
-            self._add_animation_tab()
-        else:
-            self.animation_tab = None
-
         # Settings Tab
         settings_tab = SettingsTab()
         self.settings_presenter = SettingsPresenter(settings_tab, self.app_state)
@@ -275,8 +267,6 @@ class MainWindow(QMainWindow):
         ]
         if self.physics_tab is not None:
             self.tabs.append(self.physics_tab)
-        if self.animation_tab is not None:
-            self.tabs.append(self.animation_tab)
         self.tabs.append(settings_tab)
 
     def _add_physics_tab(self, insert_index=None):
@@ -292,21 +282,6 @@ class MainWindow(QMainWindow):
             self.tab_widget.insertTab(insert_index, physics_tab, translator.translate("physics", "tabs"))
         self.physics_tab = physics_tab
         return physics_tab
-
-    def _add_animation_tab(self, insert_index=None):
-        """Create the dev-only Animation (Anim Picker) tab."""
-        from .translations import UITranslator
-
-        translator = UITranslator.instance()
-        animation_tab = AnimationTab()
-        self.animation_presenter = AnimationPresenter(animation_tab, self.app_state)
-        label = translator.translate("animation", "tabs") or "Animation"
-        if insert_index is None:
-            self.tab_widget.addTab(animation_tab, label)
-        else:
-            self.tab_widget.insertTab(insert_index, animation_tab, label)
-        self.animation_tab = animation_tab
-        return animation_tab
 
     def refresh_development_mode_visibility(self):
         """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""
@@ -328,21 +303,6 @@ class MainWindow(QMainWindow):
             self.physics_tab = None
             self.physics_presenter = None
 
-        anim_index = self.tab_widget.indexOf(self.animation_tab) if self.animation_tab is not None else -1
-
-        if is_dev and self.animation_tab is None:
-            insert_index = max(0, self.tab_widget.count() - 1)
-            animation_tab = self._add_animation_tab(insert_index)
-            self.tabs.insert(insert_index, animation_tab)
-        elif not is_dev and anim_index >= 0:
-            self.animation_presenter.disconnect_signals()
-            self.tab_widget.removeTab(anim_index)
-            if self.animation_tab in self.tabs:
-                self.tabs.remove(self.animation_tab)
-            self.animation_tab.deleteLater()
-            self.animation_tab = None
-            self.animation_presenter = None
-
     def retranslate_all_tabs(self):
         """すべてのタブのUIテキストを再翻訳"""
         from .translations import UITranslator
@@ -354,8 +314,6 @@ class MainWindow(QMainWindow):
         tab_keys = ["file_io", "info", "material", "bone", "morph"]
         if getattr(self, "physics_tab", None) is not None:
             tab_keys.append("physics")
-        if getattr(self, "animation_tab", None) is not None:
-            tab_keys.append("animation")
         tab_keys.append("settings")
         for i, key in enumerate(tab_keys):
             self.tab_widget.setTabText(i, translator.translate(key, "tabs"))

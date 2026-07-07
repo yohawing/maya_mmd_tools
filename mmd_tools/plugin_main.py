@@ -15,6 +15,7 @@ from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
 
 _main_window = None
+_animator_toolset_window = None
 # Track whether Python actually registered rig nodes (mmdAppend / mmdCcdIk).
 # Used at deregister time instead of re-checking _cpp_plugin_loaded(), which
 # is fragile if the C++ plugin loads or unloads between init and uninit.
@@ -89,11 +90,37 @@ def open_main_window(dockable=False):
     return main_window
 
 
-def _open_animator_toolset(*_args):
-    """Open the main window and switch to the Animation tab."""
-    window = open_main_window(dockable=False)
-    if window.animation_tab is not None:
-        window.tab_widget.setCurrentWidget(window.animation_tab)
+def close_animator_toolset():
+    """Close the standalone Animator Toolset window."""
+    global _animator_toolset_window
+
+    if _animator_toolset_window is not None:
+        try:
+            _animator_toolset_window.close_window()
+        except Exception:
+            _delete_qt_widget(_animator_toolset_window)
+        _animator_toolset_window = None
+
+    ws = "MMDAnimatorToolsetWorkspaceControl"
+    try:
+        if cmds.workspaceControl(ws, exists=True):
+            cmds.deleteUI(ws)
+    except Exception:
+        pass
+
+
+def open_animator_toolset(dockable=True):
+    """Open the standalone Animator Toolset window."""
+    global _animator_toolset_window
+
+    close_animator_toolset()
+
+    from mmd_tools.ui.animator_toolset_window import AnimatorToolsetWindow
+
+    window = AnimatorToolsetWindow()
+    window.show_window(dockable=dockable)
+    _animator_toolset_window = window
+    return window
 
 
 def install_mmd_menu():
@@ -119,7 +146,7 @@ def install_mmd_menu():
         cmds.menuItem(
             "MMDAnimatorToolsetMenuItem",
             label="Animator Toolset",
-            command=_open_animator_toolset,
+            command=lambda *args: open_animator_toolset(dockable=True),
             parent="MMD",
         )
 
@@ -173,6 +200,7 @@ def uninitializePlugin(mobject):
     plugin_fn = om.MFnPlugin(mobject)
 
     try:
+        close_animator_toolset()
         close_main_window()
         uninstall_mmd_menu()
         uninstall_drag_drop_importer()
