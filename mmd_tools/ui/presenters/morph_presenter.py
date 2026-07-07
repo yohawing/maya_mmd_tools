@@ -4,7 +4,7 @@ import re
 from mmd_tools.adapters import MayaCmdsAdapter
 from ...core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from ...core.logger import get_logger
-from ...core.maya_utils import set_custom_attributes, set_attribute
+from ...core.maya_attribute_utils import set_custom_attributes, set_attribute
 from ..qt_compat import QTimer, QListWidgetItem
 from .list_presenter_helpers import apply_list_filter, reload_for_current_model_change, tr_message, tr_message_format
 
