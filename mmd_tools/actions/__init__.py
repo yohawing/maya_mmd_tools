@@ -9,6 +9,7 @@ from .export_vmd_action import ExportVmdAction, ExportVmdRequest, ExportVmdResul
 from .import_model_action import ImportModelAction, ImportModelRequest, ImportModelResult
 from .import_vmd_action import ImportVmdAction, ImportVmdRequest, ImportVmdResult
 from .material_shader_action import (
+    apply_sphere_map,
     apply_shader_settings,
     shader_outline_enabled,
     transparency_mode_from_index,
@@ -49,6 +50,7 @@ __all__ = [
     "ImportVmdAction",
     "ImportVmdRequest",
     "ImportVmdResult",
+    "apply_sphere_map",
     "apply_shader_settings",
     "shader_outline_enabled",
     "transparency_mode_from_index",

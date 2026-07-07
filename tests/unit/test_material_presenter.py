@@ -259,8 +259,9 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter._update_color_widget(widget, (1.0, 0.5))
         widget.setStyleSheet.assert_called_with("background-color: rgb(128, 128, 128); border: 1px solid black;")
 
+    @patch("mmd_tools.ui.presenters.material_presenter.apply_sphere_map", return_value=True)
     @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_changes(self, mock_maya_utils):
+    def test_apply_changes(self, mock_maya_utils, mock_apply_sphere_map):
         """変更適用のテスト"""
         self.presenter.current_material = "test_material"
         self.presenter.material_data = {
@@ -299,6 +300,12 @@ class TestMaterialPresenter(unittest.TestCase):
 
         # カスタムアトリビュートが設定されることを確認
         mock_maya_utils.set_custom_attributes.assert_called()
+        mock_apply_sphere_map.assert_called_once_with(
+            "test_material",
+            "sphere.spa",
+            1,
+            maya_adapter=self.mock_maya_adapter,
+        )
 
         # 変更フラグがリセットされることを確認
         self.assertFalse(self.presenter.has_unsaved_changes)
@@ -376,6 +383,38 @@ class TestMaterialPresenter(unittest.TestCase):
             (0.8, 0.8, 0.8),
             "double3",
         )
+        self.assertFalse(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.apply_sphere_map", side_effect=RuntimeError("boom"))
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
+    def test_apply_changes_reports_sphere_map_exception(self, mock_maya_utils, _mock_apply_sphere_map):
+        """sphere map 適用失敗は material 全体を落とさず専用 status で通知する"""
+        self._configure_apply_inputs()
+        self.mock_view.sphere_map_path_edit.text.return_value = "sphere.spa"
+        self.mock_view.sphere_mode_combo.currentIndex.return_value = 1
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self._set_existing_mmd_attribute_query()
+
+        self.presenter.apply_changes()
+
+        statuses = [call.args[0] for call in self.mock_app_state.emit_status.call_args_list]
+        self.assertTrue(any("boom" in status for status in statuses))
+        self.assertFalse(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.apply_sphere_map", return_value=False)
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
+    def test_apply_changes_reports_sphere_map_false_result(self, mock_maya_utils, _mock_apply_sphere_map):
+        """sphere map が未適用なら例外なしでも専用 status で通知する"""
+        self._configure_apply_inputs()
+        self.mock_view.sphere_map_path_edit.text.return_value = "missing.spa"
+        self.mock_view.sphere_mode_combo.currentIndex.return_value = 1
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self._set_existing_mmd_attribute_query()
+
+        self.presenter.apply_changes()
+
+        statuses = [call.args[0] for call in self.mock_app_state.emit_status.call_args_list]
+        self.assertTrue(any("missing.spa" in status for status in statuses))
         self.assertFalse(self.presenter.has_unsaved_changes)
 
     @patch("mmd_tools.converters.mesh_converter.apply_shader_outline")

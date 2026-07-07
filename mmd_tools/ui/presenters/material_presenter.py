@@ -11,8 +11,8 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SPHERE_PATH,
     ATTR_MMD_TOON_TEXTURE_INDEX,
 )
-from mmd_tools.core.pmx_data.material import PmxSphereMode
 from mmd_tools.actions import (
+    apply_sphere_map,
     apply_shader_settings,
     shader_outline_enabled,
     transparency_mode_from_index,
@@ -710,7 +710,23 @@ class MaterialPresenter:
             sphere_path = self.view.sphere_map_path_edit.text()
             sphere_mode = self.view.sphere_mode_combo.currentIndex()
             if sphere_path and sphere_mode > 0:  # 0は「無効」
-                self._apply_sphere_map(self.current_material, sphere_path, sphere_mode)
+                try:
+                    applied_sphere = apply_sphere_map(
+                        self.current_material,
+                        sphere_path,
+                        sphere_mode,
+                        maya_adapter=self.maya_adapter,
+                    )
+                    if not applied_sphere:
+                        self.app_state.emit_status(
+                            tr_message_format(
+                                "sphere_map_apply_failed",
+                                error=f"{sphere_path} (mode={sphere_mode})",
+                            )
+                        )
+                except Exception as e:
+                    logger.error(f"Failed to apply sphere map: {e}", exc_info=True)
+                    self.app_state.emit_status(tr_message_format("sphere_map_apply_failed", error=str(e)))
 
             # リストビューの表示を更新
             for i in range(self.view.material_list.count()):
@@ -920,69 +936,6 @@ class MaterialPresenter:
         """値が変更されたときの処理"""
         if self.current_material and not self._loading_properties:
             self.has_unsaved_changes = True
-
-    def _apply_sphere_map(self, material, sphere_path, sphere_mode):
-        """スフィアマップをマテリアルに適用"""
-        try:
-            import os
-
-            if not os.path.exists(sphere_path):
-                logger.warning(f"Sphere map file not found: {sphere_path}")
-                return
-
-            # スフィアマップ用のファイルノードを作成または取得
-            sphere_file_node = None
-            file_nodes = self.maya_adapter.ls(type="file")
-            for node in file_nodes:
-                if maya_utils.get_attribute(node, "fileTextureName") == sphere_path:
-                    sphere_file_node = node
-                    break
-
-            if not sphere_file_node:
-                sphere_file_node = self.maya_adapter.shading_node("file", asTexture=True, name=f"{material}_sphere")
-                maya_utils.set_attribute(sphere_file_node, "fileTextureName", sphere_path, "str")
-
-            # Mayaでスフィアマップを近似的に再現
-            # モード: 1=乗算, 2=加算, 3=サブテクスチャ
-            if sphere_mode == PmxSphereMode.MULTIPLY:  # 乗算
-                # layeredTextureを使用して乗算合成
-                layered_texture = self.maya_adapter.shading_node("layeredTexture", asTexture=True, name=f"{material}_layered")
-
-                # ベーステクスチャを接続
-                base_file = self.maya_adapter.list_connections(f"{material}.baseColor", type="file")
-                if base_file:
-                    self.maya_adapter.connect_attr(f"{base_file[0]}.outColor", f"{layered_texture}.inputs[0].color")
-                    maya_utils.set_attribute(layered_texture, "inputs[0].blendMode", 0, "int")  # None
-
-                # スフィアマップを接続
-                self.maya_adapter.connect_attr(f"{sphere_file_node}.outColor", f"{layered_texture}.inputs[1].color")
-                maya_utils.set_attribute(layered_texture, "inputs[1].blendMode", 6, "int")  # Multiply
-
-                # マテリアルに接続
-                self.maya_adapter.connect_attr(f"{layered_texture}.outColor", f"{material}.baseColor", force=True)
-
-            elif sphere_mode == PmxSphereMode.ADDITIVE:  # 加算
-                # エミッションにスフィアマップを接続して加算効果を近似
-                self.maya_adapter.connect_attr(
-                    f"{sphere_file_node}.outColor",
-                    f"{material}.emissionColor",
-                    force=True,
-                )
-                maya_utils.set_attribute(material, "emission", 0.5, "float")  # エミッション強度
-
-            elif sphere_mode == PmxSphereMode.SUB_TEXTURE:  # サブテクスチャ
-                # スペキュラーマップとして使用
-                self.maya_adapter.connect_attr(
-                    f"{sphere_file_node}.outColor",
-                    f"{material}.specularColor",
-                    force=True,
-                )
-
-            logger.info(f"Applied sphere map to material '{material}' with mode {sphere_mode}")
-
-        except Exception as e:
-            logger.error(f"Failed to apply sphere map: {e}", exc_info=True)
-            self.app_state.emit_status(tr_message_format("sphere_map_apply_failed", error=str(e)))
 
     def on_search_text_changed(self, text):
         """検索テキストが変更されたときの処理"""
