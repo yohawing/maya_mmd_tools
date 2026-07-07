@@ -1262,6 +1262,62 @@ def maya_visual_regression(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def maya_asset_probe(session: nox.Session) -> None:
+    """Collect Maya GUI Script Editor/log output while importing PMX assets.
+
+    This is the stable local-asset diagnostic entrypoint for real Maya sessions.
+    It can attach to an already-open commandPort, or launch Maya GUI and open one.
+
+    Examples:
+        uvx nox -s maya_asset_probe -- --attach-existing --port 7721 --asset F:/MMD/pmx/model.pmx
+        uvx nox -s maya_asset_probe -- --maya 2026 --asset-list .ai/local_pmx_assets.txt --out-dir build/asset-error-probe/local
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    out = _option(session.posargs, "--out-dir", "build/asset-error-probe")
+    out_path = _require_build_path(session, out, "--out-dir")
+
+    forwarded: list[str] = []
+    flags = {"--attach-existing", "--keep-maya", "--no-physics", "--reload-mmd-tools"}
+    options = {
+        "--asset",
+        "--asset-list",
+        "--port",
+        "--timeout",
+        "--startup-timeout",
+        "--shader-backend",
+        "--launch-mode",
+    }
+    i = 0
+    while i < len(session.posargs):
+        arg = session.posargs[i]
+        if arg in {"--maya", "--out-dir"}:
+            i += 2
+            continue
+        if arg in flags:
+            forwarded.append(arg)
+            i += 1
+            continue
+        if arg in options:
+            if i + 1 >= len(session.posargs):
+                session.error(f"{arg} requires a value")
+            forwarded.extend([arg, session.posargs[i + 1]])
+            i += 2
+            continue
+        i += 1
+
+    session.run(
+        sys.executable,
+        "tests/viewport/maya_asset_error_probe.py",
+        "--maya",
+        version,
+        "--out-dir",
+        str(out_path),
+        *forwarded,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def maya_physics_collider_capture(session: nox.Session) -> None:
     """Capture MMD physics collider locator drawing in Maya GUI / DX11.
 

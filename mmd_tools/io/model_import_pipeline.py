@@ -117,6 +117,17 @@ class ModelImportPipeline:
                 parser, bone_joint_mapping, root_group
             )
         self.record_phase("physics_conversion_sec", phase_start)
+        if self.profile is not None:
+            self.profile["physics_converter"] = {
+                "created_bullet_rigid_bodies": len(physics_converter.created_bullet_rigid_bodies),
+                "created_bullet_constraints": len(physics_converter.created_bullet_constraints),
+                "bullet_visual_locator_failure_count": len(
+                    physics_converter.bullet_visual_locator_failures
+                ),
+                "bullet_visual_locator_failures": list(
+                    physics_converter.bullet_visual_locator_failures
+                ),
+            }
         self.emit_progress(86)
         self.logger.debug(
             "Physics conversion complete: nCloth=%d, Constraints=%d",

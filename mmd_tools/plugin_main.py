@@ -13,6 +13,7 @@ from mmd_tools.nodes import mmd_append_node
 from mmd_tools.nodes import mmd_bone_morph_accum_node
 from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
+from mmd_tools.nodes import mmd_rigid_body_locator_node
 
 _main_window = None
 _animator_toolset_window = None
@@ -20,6 +21,8 @@ _animator_toolset_window = None
 # Used at deregister time instead of re-checking _cpp_plugin_loaded(), which
 # is fragile if the C++ plugin loads or unloads between init and uninit.
 _python_rig_nodes_registered = False
+_shader_override_registered = False
+_rigid_body_locator_registered = False
 
 
 def maya_useNewAPI():
@@ -178,8 +181,13 @@ def initializePlugin(mobject):
     try:
         install_mmd_menu()
         install_drag_drop_importer()
+        global _shader_override_registered
         if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
             mmd_shader.initializePlugin(mobject)
+            _shader_override_registered = True
+        global _rigid_body_locator_registered
+        mmd_rigid_body_locator_node.register(plugin_fn)
+        _rigid_body_locator_registered = True
         mmd_bone_morph_accum_node.register(plugin_fn)
         mmd_material_morph_eval_node.register(plugin_fn)
         # Skip Python rig-node registration when C++ plugin already provides them
@@ -204,14 +212,22 @@ def uninitializePlugin(mobject):
         close_main_window()
         uninstall_mmd_menu()
         uninstall_drag_drop_importer()
-        if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
-            mmd_shader.uninitializePlugin(mobject)
+        global _shader_override_registered
+        if _shader_override_registered:
+            try:
+                mmd_shader.uninitializePlugin(mobject)
+            finally:
+                _shader_override_registered = False
+        global _rigid_body_locator_registered
         # Only deregister rig nodes that Python actually registered
         global _python_rig_nodes_registered
         if _python_rig_nodes_registered:
             mmd_ccd_ik_node.deregister(plugin_fn)
             mmd_append_node.deregister(plugin_fn)
             _python_rig_nodes_registered = False
+        if _rigid_body_locator_registered:
+            mmd_rigid_body_locator_node.deregister(plugin_fn)
+            _rigid_body_locator_registered = False
         mmd_material_morph_eval_node.deregister(plugin_fn)
         mmd_bone_morph_accum_node.deregister(plugin_fn)
     except Exception as e:

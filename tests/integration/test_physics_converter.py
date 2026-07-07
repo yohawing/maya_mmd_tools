@@ -9,6 +9,7 @@ Bullet が利用不可の場合はテストをスキップする。
 import math
 import os
 from pathlib import Path
+from unittest import mock
 
 from maya import cmds
 import maya.api.OpenMaya as om
@@ -18,6 +19,7 @@ from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.converters import PhysicsConverter
 from mmd_tools.nodes.mmd_rigid_body_locator_node import _read_node_state
 from mmd_tools.io.pmx_exporter import PmxExporter
+from mmd_tools.io.model_import_pipeline import ModelImportPipeline
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -205,6 +207,21 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertIsInstance(result, bool)
 
     def _require_rigid_body_locator_node(self):
+        if "mmdRigidBodyLocator" not in (cmds.allNodeTypes() or []):
+            plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+            previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+            os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+            try:
+                self.load_plugin(str(plugin_path))
+            except RuntimeError as exc:
+                self.skipTest(f"mmdRigidBodyLocator node is unavailable: {exc}")
+            finally:
+                if previous is None:
+                    os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+                else:
+                    os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
+        if "mmdRigidBodyLocator" not in (cmds.allNodeTypes() or []):
+            self.skipTest("mmdRigidBodyLocator node is unavailable")
         try:
             node = cmds.createNode("mmdRigidBodyLocator", name="availability_probe_rigidBodyLocator")
         except RuntimeError as exc:
@@ -327,6 +344,85 @@ class TestPhysicsConverter(MayaTestBase):
                         "mmd_collision_group が存在しない")
         self.assertTrue(cmds.attributeQuery("mmd_collision_mask", node=rb_transform, exists=True),
                         "mmd_collision_mask が存在しない")
+
+    def test_bullet_visual_locator_failure_is_recorded_when_created_shape_is_missing(self):
+        """表示 locator が解決できない場合は import diagnostics 用に失敗を保持する。"""
+        root = cmds.group(name="locator_failure_root", empty=True)
+        converter = PhysicsConverter()
+
+        with mock.patch.object(converter, "_is_bullet_visual_locator_type_available", return_value=True):
+            with mock.patch.object(converter, "_resolve_bullet_visual_locator", return_value=None):
+                with mock.patch(
+                    "mmd_tools.converters.physics_converter.cmds.createNode",
+                    return_value="missing_colliderLocatorShape",
+                ):
+                    converter._create_bullet_visual_locator(root, 2, [1.0, 1.0, 1.0])
+
+        self.assertEqual(len(converter.bullet_visual_locator_failures), 1)
+        failure = converter.bullet_visual_locator_failures[0]
+        self.assertEqual(failure["transform"], root)
+        self.assertEqual(failure["created_locator"], "missing_colliderLocatorShape")
+        self.assertIn("not resolvable", failure["reason"])
+
+    def test_bullet_visual_locator_failure_is_recorded_when_locator_type_is_unavailable(self):
+        """locator 型が未登録なら unknown node を作らず diagnostics に残す。"""
+        root = cmds.group(name="locator_type_unavailable_root", empty=True)
+        converter = PhysicsConverter()
+
+        with mock.patch(
+            "mmd_tools.converters.physics_converter.PhysicsConverter._is_bullet_visual_locator_type_available",
+            return_value=False,
+        ):
+            converter._create_bullet_visual_locator(root, 2, [1.0, 1.0, 1.0])
+
+        self.assertEqual(len(converter.bullet_visual_locator_failures), 1)
+        failure = converter.bullet_visual_locator_failures[0]
+        self.assertEqual(failure["transform"], root)
+        self.assertNotIn("created_locator", failure)
+        self.assertIn("node type is unavailable", failure["reason"])
+
+    def test_model_import_profile_records_bullet_visual_locator_failures(self):
+        """ModelImportPipeline は PhysicsConverter の locator diagnostics を profile に載せる。"""
+
+        class FakePhysicsConverter:
+            def __init__(self, _settings):
+                self.created_bullet_rigid_bodies = ["rb"]
+                self.created_bullet_constraints = []
+                self.bullet_visual_locator_failures = [
+                    {
+                        "transform": "|root|rb",
+                        "created_locator": "missingShape",
+                        "reason": "created locator is not resolvable: missingShape",
+                    }
+                ]
+
+            def convert_pmx_physics(self, _parser, _bone_joint_mapping, _root_group):
+                return ["rb"], []
+
+        parser = type("FakeParser", (), {"rigid_bodies": [object()], "bones": []})()
+        profile = {}
+        pipeline = ModelImportPipeline(
+            logger=mock.Mock(),
+            filepath="fake.pmx",
+            scale=1.0,
+            options={"profile": profile, "import_physics": True},
+        )
+
+        with mock.patch("mmd_tools.io.model_import_pipeline.PhysicsConverter", FakePhysicsConverter):
+            pipeline.convert_physics(
+                file_kind="pmx",
+                parser=parser,
+                maya_joints=[],
+                root_group="root",
+            )
+
+        physics_profile = profile["physics_converter"]
+        self.assertEqual(physics_profile["created_bullet_rigid_bodies"], 1)
+        self.assertEqual(physics_profile["bullet_visual_locator_failure_count"], 1)
+        self.assertEqual(
+            physics_profile["bullet_visual_locator_failures"][0]["created_locator"],
+            "missingShape",
+        )
 
     def test_pmx_mode2_rigid_body_stays_dynamic_bullet(self):
         """PMX physics_mode=2 は Bullet 上でも dynamic body として作成する。"""

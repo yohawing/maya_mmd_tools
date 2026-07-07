@@ -7,7 +7,7 @@ Nucleus/nCloth fallback 経路に graceful fallback する。
 """
 
 import math
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import maya.cmds as cmds
 
@@ -255,6 +255,8 @@ class PhysicsConverter:
         # Bullet 経路追跡
         self.created_bullet_rigid_bodies: List[str] = []
         self.created_bullet_constraints: List[str] = []
+        self.bullet_visual_locator_failures: List[Dict[str, object]] = []
+        self._bullet_visual_locator_warning_keys: Set[str] = set()
         self._bullet_rigid_body_shapes_by_index: Dict[int, str] = {}
         self.bullet_solver: Optional[str] = None
 
@@ -571,6 +573,8 @@ class PhysicsConverter:
     ) -> Tuple[List[str], List[str]]:
         self.created_bullet_rigid_bodies = []
         self.created_bullet_constraints = []
+        self.bullet_visual_locator_failures = []
+        self._bullet_visual_locator_warning_keys = set()
         self._bullet_rigid_body_shapes_by_index = {}
         self._source_joints = list(getattr(pmd_data, "joints", None) or [])
 
@@ -596,6 +600,7 @@ class PhysicsConverter:
                 except Exception as e:
                     safe_log_error(self.logger, "PMD joint 作成エラー", joint, e)
 
+        self._log_bullet_visual_locator_summary()
         self.logger.info(
             f"PMD Bullet physics conversion complete: Rb={len(self.created_bullet_rigid_bodies)} "
             f"Constraint={len(self.created_bullet_constraints)}"
@@ -611,6 +616,8 @@ class PhysicsConverter:
     ) -> Tuple[List[str], List[str]]:
         self.created_bullet_rigid_bodies = []
         self.created_bullet_constraints = []
+        self.bullet_visual_locator_failures = []
+        self._bullet_visual_locator_warning_keys = set()
         self._bullet_rigid_body_shapes_by_index = {}
         self._source_joints = list(getattr(pmx_data, "joints", None) or [])
 
@@ -636,6 +643,7 @@ class PhysicsConverter:
                 except Exception as e:
                     safe_log_error(self.logger, "PMX joint 作成エラー", joint, e)
 
+        self._log_bullet_visual_locator_summary()
         self.logger.info(
             f"PMX Bullet physics conversion complete: Rb={len(self.created_bullet_rigid_bodies)} "
             f"Constraint={len(self.created_bullet_constraints)}"
@@ -1074,14 +1082,28 @@ class PhysicsConverter:
         """
         if not cmds.objExists(transform):
             return
+        if not self._is_bullet_visual_locator_type_available():
+            self._record_bullet_visual_locator_failure(
+                transform,
+                f"{_RIGID_BODY_LOCATOR_TYPE} node type is unavailable",
+            )
+            return
 
         try:
             radius = max(float(size[0]) if size else 0.0, 0.001)
-            locator = cmds.createNode(
+            created = cmds.createNode(
                 _RIGID_BODY_LOCATOR_TYPE,
                 name=f"{transform.split('|')[-1]}_colliderLocatorShape",
                 parent=transform,
             )
+            locator = self._resolve_bullet_visual_locator(created, transform)
+            if not locator:
+                self._record_bullet_visual_locator_failure(
+                    transform,
+                    f"created locator is not resolvable: {created}",
+                    created_locator=created,
+                )
+                return
             cmds.setAttr(f"{locator}.colliderShapeType", int(bullet_shape))
             cmds.setAttr(f"{locator}.radius", radius)
             length = float(size[1]) + radius * 2.0 if len(size) > 1 else radius * 2.0
@@ -1099,7 +1121,76 @@ class PhysicsConverter:
                 cmds.setAttr(f"{locator}.boxSizeY", box_size[1])
                 cmds.setAttr(f"{locator}.boxSizeZ", box_size[2])
         except Exception as exc:
-            self.logger.warning(f"Skipped Bullet visual locator for '{transform}': {exc}")
+            self._record_bullet_visual_locator_failure(transform, str(exc))
+
+    @staticmethod
+    def _is_bullet_visual_locator_type_available() -> bool:
+        """Return whether Maya has the custom locator type registered."""
+        try:
+            return _RIGID_BODY_LOCATOR_TYPE in (cmds.allNodeTypes() or [])
+        except Exception:
+            return False
+
+    @staticmethod
+    def _resolve_bullet_visual_locator(locator: str, transform: str) -> Optional[str]:
+        """Resolve a just-created locator shape to a setAttr-safe long DAG path."""
+        if locator:
+            matches = cmds.ls(locator, long=True) or []
+            if matches:
+                return matches[0]
+        child_shapes = cmds.listRelatives(
+            transform,
+            shapes=True,
+            type=_RIGID_BODY_LOCATOR_TYPE,
+            fullPath=True,
+        ) or []
+        return child_shapes[-1] if child_shapes else None
+
+    def _record_bullet_visual_locator_failure(
+        self,
+        transform: str,
+        reason: str,
+        *,
+        created_locator: Optional[str] = None,
+    ) -> None:
+        """Record a visual-locator failure for import profile diagnostics."""
+        record: Dict[str, object] = {
+            "transform": transform,
+            "reason": reason,
+        }
+        if created_locator:
+            record["created_locator"] = created_locator
+        self.bullet_visual_locator_failures.append(record)
+        warning_key = self._bullet_visual_locator_warning_key(reason)
+        if warning_key not in self._bullet_visual_locator_warning_keys:
+            self._bullet_visual_locator_warning_keys.add(warning_key)
+            self.logger.warning(f"Skipped Bullet visual locator(s): {reason}")
+
+    @staticmethod
+    def _bullet_visual_locator_warning_key(reason: str) -> str:
+        """Group noisy per-node locator failures into stable log categories."""
+        if "node type is unavailable" in reason:
+            return "node_type_unavailable"
+        if "not resolvable" in reason:
+            return "not_resolvable"
+        if "setAttr" in reason:
+            return "set_attr_failed"
+        return reason.split(":", 1)[0]
+
+    def _log_bullet_visual_locator_summary(self) -> None:
+        """Emit one summary line for visual-locator failures."""
+        if not self.bullet_visual_locator_failures:
+            return
+        counts: Dict[str, int] = {}
+        for failure in self.bullet_visual_locator_failures:
+            key = self._bullet_visual_locator_warning_key(str(failure.get("reason", "")))
+            counts[key] = counts.get(key, 0) + 1
+        summary = ", ".join(f"{key}={count}" for key, count in sorted(counts.items()))
+        self.logger.warning(
+            "Bullet visual locator diagnostics: %d failure(s) (%s)",
+            len(self.bullet_visual_locator_failures),
+            summary,
+        )
 
     def _get_bullet_solver(self) -> Optional[str]:
         """Maya Bullet solver shape を取得または作成する。"""
