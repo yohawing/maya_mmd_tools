@@ -12,6 +12,7 @@ install_maya_stub()
 
 from mmd_tools.converters.mesh_converter import (  # noqa: E402
     MeshConverter,
+    _set_dx11_color_uniform,
     bind_dx11_texture_file_node,
 )
 from mmd_tools.core.settings import settings  # noqa: E402
@@ -96,6 +97,72 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertTrue(result)
         mock_cmds.connectAttr.assert_not_called()
         mock_set_attribute.assert_called_once_with("Face_shader", "HasMainTexture", 1, "long")
+
+    def test_set_dx11_color_uniform_skips_locked_generated_rgb_attr(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+        ) as mock_set_attribute, patch("mmd_tools.converters.mesh_converter.LOGGER.warning") as mock_warning:
+            mock_cmds.attributeQuery.return_value = True
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: (
+                plug == "Face_shader.DiffuseColorRGB" if kwargs.get("lock") else None
+            )
+            mock_cmds.listConnections.return_value = []
+
+            _set_dx11_color_uniform("Face_shader", "DiffuseColor", [0.1, 0.2, 0.3, 0.4])
+
+        mock_set_attribute.assert_called_once_with(
+            "Face_shader",
+            "DiffuseColor",
+            [0.1, 0.2, 0.3, 0.4],
+            "double4",
+        )
+        self.assertNotIn(
+            call("Face_shader.DiffuseColorRGB", 0.1, 0.2, 0.3, type="double3"),
+            mock_cmds.setAttr.call_args_list,
+        )
+        mock_warning.assert_not_called()
+
+    def test_set_dx11_color_uniform_skips_connected_generated_rgb_attr(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+        ), patch("mmd_tools.converters.mesh_converter.LOGGER.warning") as mock_warning:
+            mock_cmds.attributeQuery.return_value = True
+            mock_cmds.getAttr.return_value = False
+            mock_cmds.listConnections.side_effect = lambda plug, **_kwargs: (
+                ["mayaInternal.output"] if plug == "Face_shader.DiffuseColorRGB" else []
+            )
+
+            _set_dx11_color_uniform("Face_shader", "DiffuseColor", [0.1, 0.2, 0.3, 0.4])
+
+        self.assertNotIn(
+            call("Face_shader.DiffuseColorRGB", 0.1, 0.2, 0.3, type="double3"),
+            mock_cmds.setAttr.call_args_list,
+        )
+        mock_warning.assert_not_called()
+
+    def test_set_dx11_color_uniform_skips_protected_child_and_alpha_attrs(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_utils.set_attribute"
+        ), patch("mmd_tools.converters.mesh_converter.LOGGER.warning") as mock_warning:
+            mock_cmds.attributeQuery.return_value = True
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: (
+                plug == "Face_shader.DiffuseColorR" if kwargs.get("lock") else None
+            )
+            mock_cmds.listConnections.side_effect = lambda plug, **_kwargs: (
+                ["mayaInternal.output"] if plug == "Face_shader.DiffuseColorA" else []
+            )
+
+            _set_dx11_color_uniform("Face_shader", "DiffuseColor", [0.1, 0.2, 0.3, 0.4])
+
+        self.assertNotIn(
+            call("Face_shader.DiffuseColorRGB", 0.1, 0.2, 0.3, type="double3"),
+            mock_cmds.setAttr.call_args_list,
+        )
+        self.assertNotIn(call("Face_shader.DiffuseColorR", 0.1), mock_cmds.setAttr.call_args_list)
+        self.assertIn(call("Face_shader.DiffuseColorG", 0.2), mock_cmds.setAttr.call_args_list)
+        self.assertIn(call("Face_shader.DiffuseColorB", 0.3), mock_cmds.setAttr.call_args_list)
+        self.assertNotIn(call("Face_shader.DiffuseColorA", 0.4), mock_cmds.setAttr.call_args_list)
+        mock_warning.assert_not_called()
 
     def test_record_unresolved_texture_issue_dict_shape(self):
         converter = MeshConverter(str(self.model))

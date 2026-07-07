@@ -432,6 +432,23 @@ def _ensure_dx11_uniform_attributes(shader_node):
     _ensure_mmd_shader_uniform_attributes(shader_node)
 
 
+def _is_dx11_generated_uniform_writable(plug):
+    """Return False for generated dx11Shader attrs driven by Maya/VP2 internals."""
+    try:
+        if cmds.getAttr(plug, lock=True):
+            LOGGER.debug("Skipping locked dx11Shader generated uniform '%s'", plug)
+            return False
+    except Exception:
+        pass
+    try:
+        if cmds.listConnections(plug, source=True, destination=False, plugs=True) or []:
+            LOGGER.debug("Skipping connected dx11Shader generated uniform '%s'", plug)
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _set_dx11_color_uniform(shader_node, attr_name, values):
     """Set dx11Shader color uniforms across Maya's generated child attrs.
 
@@ -453,19 +470,29 @@ def _set_dx11_color_uniform(shader_node, attr_name, values):
     rgb_attr = f"{attr_name}RGB"
     if cmds.attributeQuery(rgb_attr, node=shader_node, exists=True):
         rgb_plug = "{}.{}".format(shader_node, rgb_attr)
-        try:
-            cmds.setAttr(rgb_plug, rgb[0], rgb[1], rgb[2], type="double3")
-        except Exception:
-            LOGGER.warning(
-                "Failed to set dx11Shader RGB uniform '%s'",
-                rgb_plug,
-                exc_info=True,
-            )
+        rgb_child_plugs = [
+            "{}.{}{}".format(shader_node, attr_name, suffix)
+            for suffix in ("R", "G", "B")
+            if cmds.attributeQuery(f"{attr_name}{suffix}", node=shader_node, exists=True)
+        ]
+        if _is_dx11_generated_uniform_writable(rgb_plug) and all(
+            _is_dx11_generated_uniform_writable(child_plug) for child_plug in rgb_child_plugs
+        ):
+            try:
+                cmds.setAttr(rgb_plug, rgb[0], rgb[1], rgb[2], type="double3")
+            except Exception:
+                LOGGER.warning(
+                    "Failed to set dx11Shader RGB uniform '%s'",
+                    rgb_plug,
+                    exc_info=True,
+                )
 
     for suffix, value in zip(("R", "G", "B"), rgb):
         child_attr = f"{attr_name}{suffix}"
         if cmds.attributeQuery(child_attr, node=shader_node, exists=True):
             child_plug = "{}.{}".format(shader_node, child_attr)
+            if not _is_dx11_generated_uniform_writable(child_plug):
+                continue
             try:
                 cmds.setAttr(child_plug, value)
             except Exception:
@@ -474,6 +501,8 @@ def _set_dx11_color_uniform(shader_node, attr_name, values):
     alpha_attr = f"{attr_name}A"
     if alpha is not None and cmds.attributeQuery(alpha_attr, node=shader_node, exists=True):
         alpha_plug = "{}.{}".format(shader_node, alpha_attr)
+        if not _is_dx11_generated_uniform_writable(alpha_plug):
+            return
         try:
             cmds.setAttr(alpha_plug, alpha)
         except Exception:
