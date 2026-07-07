@@ -401,8 +401,8 @@ class TestImportExportPresenter(unittest.TestCase):
         expected_status = UITranslator.instance().translate("status_no_issues", "texture_issues")
         self.assertIn(expected_status, app_state.statuses)
 
-    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_utils")
-    def test_collect_scene_texture_issues_filters_and_converts_file_nodes(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_material_utils")
+    def test_collect_scene_texture_issues_filters_and_converts_file_nodes(self, mock_maya_material_utils):
         view = _FakeView()
         app_state = _FakeAppState()
         maya_adapter = _FakeMayaAdapter(
@@ -439,7 +439,7 @@ class TestImportExportPresenter(unittest.TestCase):
             file_texture_path="missing.png",
             source_path=None,
         )
-        mock_maya_utils.classify_mmd_texture_file_node.side_effect = {
+        mock_maya_material_utils.classify_mmd_texture_file_node.side_effect = {
             "ok_file": ok,
             "bad_file": resolvable,
             "lost_file": unrecoverable,

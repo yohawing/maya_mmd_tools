@@ -7,7 +7,7 @@ from typing import Tuple, Union, List, Optional
 
 from mmd_tools.core.settings import settings
 from mmd_tools.core import settings_keys as setting_keys
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_material_utils, maya_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.texture_path_cache import (
     build_texture_path_diagnostics,
@@ -314,7 +314,7 @@ def _is_degenerate_face(indices):
 
 def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
     """Compatibility wrapper for the shared dx11 texture slot binder."""
-    return maya_utils.bind_dx11_texture_file_node(
+    return maya_material_utils.bind_dx11_texture_file_node(
         shader,
         file_node,
         texture_attr,
@@ -927,7 +927,7 @@ class MeshConverter:
             if all_textures:
                 if material.texture_index != -1:
                     raw_texture_path = all_textures[material.texture_index]
-                    texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
+                    texture_path = maya_material_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
 
             # マテリアルを作成
             material_start = time.perf_counter()
@@ -1094,7 +1094,7 @@ class MeshConverter:
             if all_textures:
                 if material.texture_index != -1:
                     raw_texture_path = all_textures[material.texture_index]
-                    texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
+                    texture_path = maya_material_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
 
             # マテリアルを作成 (全体割当)
             material_start = time.perf_counter()
@@ -1347,7 +1347,7 @@ class MeshConverter:
             raw_texture_path = None
             if all_textures and material.texture_index != -1:
                 raw_texture_path = all_textures[material.texture_index]
-                texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
+                texture_path = maya_material_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
 
             material_start = time.perf_counter()
             shader = self._create_material(
@@ -1680,7 +1680,7 @@ class MeshConverter:
                 cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
 
                 maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
-                maya_utils.mark_mmd_texture_file_node(
+                maya_material_utils.mark_mmd_texture_file_node(
                     file_node,
                     raw_texture_path,
                     self.model_filepath,
@@ -1818,7 +1818,7 @@ class MeshConverter:
         if source_kind != "pmx_texture" or shared_toon_id:
             mark_kwargs["source_kind"] = source_kind
             mark_kwargs["shared_toon_id"] = shared_toon_id
-        maya_utils.mark_mmd_texture_file_node(
+        maya_material_utils.mark_mmd_texture_file_node(
             file_node,
             original_path,
             self.model_filepath,

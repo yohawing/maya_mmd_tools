@@ -4,7 +4,7 @@ from ...actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
-from ...core import maya_utils, settings_keys as setting_keys
+from ...core import maya_material_utils, maya_utils, settings_keys as setting_keys
 from ...core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH, ATTR_MMD_TEXTURE_CACHE_PATH
 from ...core.logger import get_logger
 from ...services.settings_service import SettingsService
@@ -195,7 +195,7 @@ class ImportExportPresenter(QObject):
         for file_node in self.maya_adapter.ls(type="file") or []:
             if not self.maya_adapter.attribute_exists(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node):
                 continue
-            classification = maya_utils.classify_mmd_texture_file_node(file_node)
+            classification = maya_material_utils.classify_mmd_texture_file_node(file_node)
             if not classification or classification.status == "ok":
                 continue
             issues.append(self._texture_resolution_to_issue(file_node, classification))

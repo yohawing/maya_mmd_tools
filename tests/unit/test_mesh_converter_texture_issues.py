@@ -223,7 +223,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ), patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark:
             mock_cmds.attributeQuery.return_value = True
             mock_cmds.shadingNode.return_value = "Face_shader_texture"
@@ -261,7 +261,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:
@@ -320,7 +320,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ), patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:
@@ -358,7 +358,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ), patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:
@@ -402,7 +402,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:
@@ -461,7 +461,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ), patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:
@@ -499,7 +499,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ), patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:
@@ -543,7 +543,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ) as mock_set_custom_attributes, patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:
@@ -602,7 +602,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ), patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:
@@ -639,7 +639,7 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ) as mock_set_attribute, patch(
             "mmd_tools.converters.mesh_converter.maya_utils.set_custom_attributes"
         ), patch(
-            "mmd_tools.converters.mesh_converter.maya_utils.mark_mmd_texture_file_node"
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark, patch(
             "mmd_tools.converters.mesh_converter.resolve_texture_to_cache"
         ) as mock_resolve:

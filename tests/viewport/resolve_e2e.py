@@ -122,7 +122,7 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
         return payload
 
     def _snapshot(label):
-        from mmd_tools.core import maya_utils
+        from mmd_tools.core import maya_material_utils
         from mmd_tools.core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH, ATTR_MMD_TEXTURE_CACHE_PATH
         from mmd_tools.core.texture_path_cache import decode_original_texture_path
 
@@ -192,7 +192,7 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
             original = decode_original_texture_path(_attr(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH))
             current = _attr(file_node, "fileTextureName")
             cache_path = _attr(file_node, ATTR_MMD_TEXTURE_CACHE_PATH)
-            classification = maya_utils.classify_mmd_texture_file_node(file_node)
+            classification = maya_material_utils.classify_mmd_texture_file_node(file_node)
             shader, slots = _dx11_texture_state(file_node)
             color_space = ""
             try:

@@ -10,6 +10,7 @@ from mmd_tools.ui.presenters.material_presenter import MaterialPresenter  # noqa
 from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_MATERIAL_NAME,
     ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
     ATTR_MMD_SPHERE_PATH,
     ATTR_MMD_SPHERE_MODE,
     ATTR_MMD_EDGE_COLOR,
@@ -120,6 +121,18 @@ class TestMaterialPresenter(unittest.TestCase):
             self.mock_view.line_draw_check,
         ]:
             checkbox.isChecked.return_value = False
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_material_utils")
+    def test_load_texture_provenance_uses_material_utils(self, mock_maya_material_utils):
+        self.mock_maya_adapter.attribute_exists.return_value = True
+        mock_maya_material_utils.get_mmd_original_texture_path.return_value = "textures/original.png"
+
+        self.presenter._load_texture_provenance("file1")
+
+        self.mock_maya_adapter.attribute_exists.assert_called_once_with(ATTR_MMD_ORIGINAL_TEXTURE_PATH, "file1")
+        mock_maya_material_utils.get_mmd_original_texture_path.assert_called_once_with("file1")
+        self.assertEqual(self.presenter.material_data["original_pmx_texture_path"], "textures/original.png")
+        self.mock_view.original_pmx_path_edit.setText.assert_called_once_with("textures/original.png")
 
     def _set_existing_mmd_attribute_query(self, missing_attrs=()):
         missing = set(missing_attrs)

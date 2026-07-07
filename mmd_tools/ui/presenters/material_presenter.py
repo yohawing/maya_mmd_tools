@@ -1,4 +1,4 @@
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_material_utils, maya_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_EDGE_COLOR,
@@ -425,7 +425,7 @@ class MaterialPresenter:
         original_path = ""
         try:
             if self.maya_adapter.attribute_exists(ATTR_MMD_ORIGINAL_TEXTURE_PATH, file_node):
-                original_path = maya_utils.get_mmd_original_texture_path(file_node)
+                original_path = maya_material_utils.get_mmd_original_texture_path(file_node)
         except Exception:
             logger.debug("Failed to read original PMX texture path from %s", file_node, exc_info=True)
         self.material_data["original_pmx_texture_path"] = original_path
