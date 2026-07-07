@@ -5,21 +5,21 @@ from tests.common.maya_stub import install_maya_stub
 
 install_maya_stub()
 
-from mmd_tools.core import maya_utils  # noqa: E402
+from mmd_tools.core import maya_attribute_utils  # noqa: E402
 
 
 class TestMayaUtilsCompoundAttrs(unittest.TestCase):
     def setUp(self):
-        self.original_cmds = maya_utils.cmds
-        self.original_om = maya_utils.om
+        self.original_cmds = maya_attribute_utils.cmds
+        self.original_om = maya_attribute_utils.om
         self.cmds = MagicMock(name="cmds")
         self.om = MagicMock(name="om")
-        maya_utils.cmds = self.cmds
-        maya_utils.om = self.om
+        maya_attribute_utils.cmds = self.cmds
+        maya_attribute_utils.om = self.om
 
     def tearDown(self):
-        maya_utils.cmds = self.original_cmds
-        maya_utils.om = self.original_om
+        maya_attribute_utils.cmds = self.original_cmds
+        maya_attribute_utils.om = self.original_om
 
     def _configure_plug_failure(self, setter_name):
         selection_list = MagicMock(name="selection_list")
@@ -35,8 +35,8 @@ class TestMayaUtilsCompoundAttrs(unittest.TestCase):
     def test_set_attribute_double3_falls_back_to_cmds_set_attr(self):
         self._configure_plug_failure("setDouble")
 
-        with patch.object(maya_utils.logger, "error") as logger_error:
-            maya_utils.set_attribute("Mt_HairLine", "mmd_edge_color", (0.1, 0.2, 0.3), "double3")
+        with patch.object(maya_attribute_utils.logger, "error") as logger_error:
+            maya_attribute_utils.set_attribute("Mt_HairLine", "mmd_edge_color", (0.1, 0.2, 0.3), "double3")
 
         self.cmds.setAttr.assert_called_once_with(
             "Mt_HairLine.mmd_edge_color",
@@ -50,8 +50,8 @@ class TestMayaUtilsCompoundAttrs(unittest.TestCase):
     def test_set_attribute_long3_falls_back_to_cmds_set_attr(self):
         self._configure_plug_failure("setInt")
 
-        with patch.object(maya_utils.logger, "error") as logger_error:
-            maya_utils.set_attribute("node", "triple_index", (1, 2, 3), "long3")
+        with patch.object(maya_attribute_utils.logger, "error") as logger_error:
+            maya_attribute_utils.set_attribute("node", "triple_index", (1, 2, 3), "long3")
 
         self.cmds.setAttr.assert_called_once_with("node.triple_index", 1, 2, 3, type="long3")
         logger_error.assert_not_called()
@@ -59,8 +59,8 @@ class TestMayaUtilsCompoundAttrs(unittest.TestCase):
     def test_set_attribute_double4_falls_back_to_cmds_set_attr(self):
         self._configure_plug_failure("setDouble")
 
-        with patch.object(maya_utils.logger, "error") as logger_error:
-            maya_utils.set_attribute("node", "rgba", (0.1, 0.2, 0.3, 0.4), "double4")
+        with patch.object(maya_attribute_utils.logger, "error") as logger_error:
+            maya_attribute_utils.set_attribute("node", "rgba", (0.1, 0.2, 0.3, 0.4), "double4")
 
         self.cmds.setAttr.assert_called_once_with("node.rgba", 0.1, 0.2, 0.3, 0.4, type="double4")
         logger_error.assert_not_called()
@@ -68,9 +68,9 @@ class TestMayaUtilsCompoundAttrs(unittest.TestCase):
     def test_set_custom_attributes_falls_back_to_cmds_add_attr_for_double3_creation(self):
         self.cmds.attributeQuery.return_value = False
 
-        with patch.object(maya_utils, "add_typed_attribute") as add_typed_attribute:
-            with patch.object(maya_utils, "set_attribute") as set_attribute:
-                maya_utils.set_custom_attributes("Mt_HairLine", {"mmd_edge_color": (0.1, 0.2, 0.3)})
+        with patch.object(maya_attribute_utils, "add_typed_attribute") as add_typed_attribute:
+            with patch.object(maya_attribute_utils, "set_attribute") as set_attribute:
+                maya_attribute_utils.set_custom_attributes("Mt_HairLine", {"mmd_edge_color": (0.1, 0.2, 0.3)})
 
         add_typed_attribute.assert_called_once_with("Mt_HairLine", "mmd_edge_color", "double3")
         self.cmds.addAttr.assert_has_calls(
@@ -91,8 +91,8 @@ class TestMayaUtilsCompoundAttrs(unittest.TestCase):
     def test_set_custom_attributes_infers_numeric_sequence_types(self):
         self.cmds.attributeQuery.return_value = True
 
-        with patch.object(maya_utils, "set_attribute") as set_attribute:
-            maya_utils.set_custom_attributes(
+        with patch.object(maya_attribute_utils, "set_attribute") as set_attribute:
+            maya_attribute_utils.set_custom_attributes(
                 "node",
                 {
                     "all_float": (0.0, 0.0, 0.0),

@@ -11,7 +11,7 @@ from .. import settings
 from ..converters import PhysicsConverter
 from ..converters.light_converter import create_mmd_light_controller, wire_dx11_shaders_to_mmd_light
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
-from ..core import maya_utils, settings_keys as setting_keys
+from ..core import maya_attribute_utils, maya_utils, settings_keys as setting_keys
 from ..core.constants import SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
 from ..core.utils import create_bone_joint_mapping
@@ -71,7 +71,7 @@ class ModelImportPipeline:
         """Create the model root transform and attach MMD metadata."""
         root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
         self.logger.debug("Created root group: %s", root_group)
-        maya_utils.set_custom_attributes(root_group, attributes)
+        maya_attribute_utils.set_custom_attributes(root_group, attributes)
         return root_group
 
     def connect_morph_nodes_to_root(self, root_group: str, morph_result: Dict[str, Any]) -> None:

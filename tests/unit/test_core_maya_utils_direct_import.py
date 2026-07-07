@@ -116,6 +116,28 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
             ),
         )
 
+    def test_maya_attribute_utils_public_helpers_import_directly(self):
+        self._assert_callables(
+            "mmd_tools.core.maya_attribute_utils",
+            (
+                "set_custom_attributes",
+                "add_numeric_attribute",
+                "add_typed_attribute",
+                "repair_fbx_mojibake_string",
+                "set_attribute",
+                "get_attribute",
+                "attribute_exists",
+                "get_attr_safe",
+                "read_json_attr",
+                "write_json_attr",
+                "find_tagged_nodes",
+                "mark_bool_tag",
+                "disconnect_sources",
+                "connect_if_needed",
+                "get_int_array_attribute",
+            ),
+        )
+
     def test_maya_utils_animation_helpers_remain_compatibility_shims(self):
         maya_utils = importlib.import_module("mmd_tools.core.maya_utils")
         maya_animation_utils = importlib.import_module("mmd_tools.core.maya_animation_utils")
@@ -152,6 +174,26 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
         self.assertIs(maya_utils.object_exists, maya_scene_utils.object_exists)
         self.assertIs(maya_utils.parent_objects, maya_scene_utils.parent_objects)
         self.assertIs(maya_utils.list_objects, maya_scene_utils.list_objects)
+
+    def test_maya_utils_attribute_helpers_remain_compatibility_shims(self):
+        maya_utils = importlib.import_module("mmd_tools.core.maya_utils")
+        maya_attribute_utils = importlib.import_module("mmd_tools.core.maya_attribute_utils")
+
+        self.assertIs(maya_utils.set_custom_attributes, maya_attribute_utils.set_custom_attributes)
+        self.assertIs(maya_utils.add_numeric_attribute, maya_attribute_utils.add_numeric_attribute)
+        self.assertIs(maya_utils.add_typed_attribute, maya_attribute_utils.add_typed_attribute)
+        self.assertIs(maya_utils.repair_fbx_mojibake_string, maya_attribute_utils.repair_fbx_mojibake_string)
+        self.assertIs(maya_utils.set_attribute, maya_attribute_utils.set_attribute)
+        self.assertIs(maya_utils.get_attribute, maya_attribute_utils.get_attribute)
+        self.assertIs(maya_utils.attribute_exists, maya_attribute_utils.attribute_exists)
+        self.assertIs(maya_utils.get_attr_safe, maya_attribute_utils.get_attr_safe)
+        self.assertIs(maya_utils.read_json_attr, maya_attribute_utils.read_json_attr)
+        self.assertIs(maya_utils.write_json_attr, maya_attribute_utils.write_json_attr)
+        self.assertIs(maya_utils.find_tagged_nodes, maya_attribute_utils.find_tagged_nodes)
+        self.assertIs(maya_utils.mark_bool_tag, maya_attribute_utils.mark_bool_tag)
+        self.assertIs(maya_utils.disconnect_sources, maya_attribute_utils.disconnect_sources)
+        self.assertIs(maya_utils.connect_if_needed, maya_attribute_utils.connect_if_needed)
+        self.assertIs(maya_utils.get_int_array_attribute, maya_attribute_utils.get_int_array_attribute)
 
 
 if __name__ == "__main__":

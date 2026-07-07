@@ -4,7 +4,7 @@ from ...actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
-from ...core import maya_material_utils, maya_utils, settings_keys as setting_keys
+from ...core import maya_attribute_utils, maya_material_utils, settings_keys as setting_keys
 from ...core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH, ATTR_MMD_TEXTURE_CACHE_PATH
 from ...core.logger import get_logger
 from ...services.settings_service import SettingsService
@@ -171,7 +171,7 @@ class ImportExportPresenter(QObject):
         if not cache_path:
             try:
                 if self.maya_adapter.attribute_exists(ATTR_MMD_TEXTURE_CACHE_PATH, node=file_node):
-                    cache_path = maya_utils.get_attribute(file_node, ATTR_MMD_TEXTURE_CACHE_PATH) or ""
+                    cache_path = maya_attribute_utils.get_attribute(file_node, ATTR_MMD_TEXTURE_CACHE_PATH) or ""
             except Exception:
                 logger.debug("Failed to read texture cache path for file node %s", file_node, exc_info=True)
                 cache_path = ""

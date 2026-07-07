@@ -83,7 +83,7 @@ class TestBakeModeBehavior(unittest.TestCase):
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.group", return_value="model_root"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.select"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.refresh"))
-            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_utils.set_custom_attributes"))
+            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_attribute_utils.set_custom_attributes"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_utils.setup_mmd_color_management"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_utils.setup_mmd_transparency"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.sync_dx11_generated_uniforms", return_value=0))

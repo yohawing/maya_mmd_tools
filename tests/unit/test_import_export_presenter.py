@@ -473,8 +473,8 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(presenter._material_name_for_file_node("file1"), "mat1")
         self.assertEqual(maya_adapter.list_connections_calls, [("file1", {"destination": True})])
 
-    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_utils")
-    def test_texture_resolution_to_issue_prefers_resolution_cache_path(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_attribute_utils.get_attribute")
+    def test_texture_resolution_to_issue_prefers_resolution_cache_path(self, mock_get_attribute):
         view = _FakeView()
         app_state = _FakeAppState()
         maya_adapter = _FakeMayaAdapter(
@@ -496,7 +496,7 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(issue["current_path"], "cache.png")
         self.assertEqual(issue["material"], "mat1")
         self.assertNotIn((ATTR_MMD_TEXTURE_CACHE_PATH, "file1"), maya_adapter.attribute_exists_calls)
-        mock_maya_utils.get_attribute.assert_not_called()
+        mock_get_attribute.assert_not_called()
 
     def test_import_file_model_branch_uses_injected_action_and_updates_ui_state(self):
         recorded_history = []

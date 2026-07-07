@@ -3,7 +3,7 @@
 import os
 from typing import Optional
 
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.pmx_data.material import PmxSphereMode
 from mmd_tools.converters import mesh_converter
@@ -83,8 +83,8 @@ def apply_sphere_map(
 
         maya_adapter = MayaCmdsAdapter()
 
-    get_attribute = get_attribute_func or maya_utils.get_attribute
-    set_attribute = set_attribute_func or maya_utils.set_attribute
+    get_attribute = get_attribute_func or maya_attribute_utils.get_attribute
+    set_attribute = set_attribute_func or maya_attribute_utils.set_attribute
 
     sphere_file_node = None
     for node in maya_adapter.ls(type="file") or []:

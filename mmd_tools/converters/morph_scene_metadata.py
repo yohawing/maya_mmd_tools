@@ -7,8 +7,8 @@ from typing import Dict, Iterable, Iterator, Optional
 
 import maya.cmds as cmds
 
+from ..core import maya_attribute_utils
 from ..core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
-from ..core import maya_utils
 from ..core.namespace_utils import NamespaceUtils
 
 
@@ -26,12 +26,12 @@ class MorphNetworkMetadata:
 
 def read_blendshape_morph_names(blend_shape_node: str, *, ensure_attr: bool = False) -> Dict[int, str]:
     """Read blendShape weight-index to raw PMX morph-name mapping."""
-    if not maya_utils.attribute_exists(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON):
+    if not maya_attribute_utils.attribute_exists(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON):
         if ensure_attr:
             cmds.addAttr(blend_shape_node, longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, dataType="string")
         return {}
 
-    parsed = maya_utils.read_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, default={})
+    parsed = maya_attribute_utils.read_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, default={})
     if not isinstance(parsed, dict):
         return {}
 
@@ -96,13 +96,13 @@ def iter_morph_network_metadata(
 
 
 def _has_attr(node: str, attr: str) -> bool:
-    return maya_utils.attribute_exists(node, attr)
+    return maya_attribute_utils.attribute_exists(node, attr)
 
 
 def _get_string_attr(node: str, attr: str) -> str:
     if not _has_attr(node, attr):
         return ""
-    return maya_utils.get_attr_safe(node, attr, default="") or ""
+    return maya_attribute_utils.get_attr_safe(node, attr, default="") or ""
 
 
 def _get_int_attr(node: str, attr: str, *, default: int = 0) -> int:
@@ -113,4 +113,4 @@ def _get_int_attr(node: str, attr: str, *, default: int = 0) -> int:
 def _get_optional_int_attr(node: str, attr: str) -> Optional[int]:
     if not _has_attr(node, attr):
         return None
-    return maya_utils.get_attr_safe(node, attr, default=None, cast=int)
+    return maya_attribute_utils.get_attr_safe(node, attr, default=None, cast=int)
