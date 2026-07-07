@@ -4,6 +4,7 @@ import os
 
 from maya import cmds
 
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_ORIGINAL_TEXTURE_PATH,
     ATTR_MMD_SOURCE_MODEL_PATH,
@@ -18,6 +19,7 @@ from .texture_path_cache import (
     is_unreadable_file_texture_path,
     resolve_texture_to_cache,
 )
+from . import utils
 
 logger = get_logger(__name__)
 
@@ -31,10 +33,12 @@ ATTR_MMD_TEXTURE_SOURCE_KIND = "mmd_texture_source_kind"
 ATTR_MMD_SHARED_TOON_ID = "mmd_shared_toon_id"
 
 
-def _maya_utils():
-    from mmd_tools.core import maya_utils
+def _sanitize_text(name):
+    if not name:
+        return "unnamed"
 
-    return maya_utils
+    converted_name = utils.convert_utf8_to_ascii(name)
+    return converted_name or "default_name"
 
 
 def sanitize_texture_path(texture_path, texture_dir):
@@ -72,18 +76,18 @@ def mark_mmd_texture_file_node(
     }
     if shared_toon_id:
         attrs[ATTR_MMD_SHARED_TOON_ID] = shared_toon_id
-    _maya_utils().set_custom_attributes(file_node, attrs)
+    maya_attribute_utils.set_custom_attributes(file_node, attrs)
 
 
 def get_mmd_original_texture_path(file_node):
     """Return the original PMX texture path stored on a Maya file node."""
-    value = _maya_utils().get_attribute(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)
+    value = maya_attribute_utils.get_attribute(file_node, ATTR_MMD_ORIGINAL_TEXTURE_PATH)
     return decode_original_texture_path(value)
 
 
 def is_mmd_file_node_unreadable(file_node):
     """Return whether an MMD file node currently points at an unreadable texture."""
-    texture_path = _maya_utils().get_attribute(file_node, "fileTextureName")
+    texture_path = maya_attribute_utils.get_attribute(file_node, "fileTextureName")
     return is_unreadable_file_texture_path(texture_path)
 
 
@@ -110,12 +114,11 @@ def find_material_texture_file_node(material):
 
 def classify_mmd_texture_file_node(file_node):
     """Classify a Maya MMD file node for on-demand texture resolution."""
-    utils = _maya_utils()
-    if utils.get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
+    if maya_attribute_utils.get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
         return None
     original_path = get_mmd_original_texture_path(file_node)
-    model_path = utils.get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
-    file_texture_path = utils.get_attribute(file_node, "fileTextureName") or ""
+    model_path = maya_attribute_utils.get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
+    file_texture_path = maya_attribute_utils.get_attribute(file_node, "fileTextureName") or ""
     if not model_path:
         return None
     return classify_texture_resolution(
@@ -127,14 +130,13 @@ def classify_mmd_texture_file_node(file_node):
 
 def resolve_mmd_texture_file_node(file_node, workspace_root=None):
     """Resolve one MMD file node into the workspace texture cache."""
-    utils = _maya_utils()
-    if utils.get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
+    if maya_attribute_utils.get_attribute(file_node, ATTR_MMD_TEXTURE_SOURCE_KIND) == "shared_toon":
         return None
     if workspace_root is None:
         workspace_root = cmds.workspace(q=True, rootDirectory=True)
     original_path = get_mmd_original_texture_path(file_node)
-    model_path = utils.get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
-    file_texture_path = utils.get_attribute(file_node, "fileTextureName") or ""
+    model_path = maya_attribute_utils.get_attribute(file_node, ATTR_MMD_SOURCE_MODEL_PATH)
+    file_texture_path = maya_attribute_utils.get_attribute(file_node, "fileTextureName") or ""
     if not model_path:
         return None
 
@@ -145,8 +147,8 @@ def resolve_mmd_texture_file_node(file_node, workspace_root=None):
         workspace_root=workspace_root,
     )
     if resolution.status == "resolved" and resolution.cache_path:
-        utils.set_attribute(file_node, "fileTextureName", resolution.cache_path, "string")
-        utils.set_custom_attributes(
+        maya_attribute_utils.set_attribute(file_node, "fileTextureName", resolution.cache_path, "string")
+        maya_attribute_utils.set_custom_attributes(
             file_node,
             {
                 ATTR_MMD_TEXTURE_CACHE_PATH: resolution.cache_path,
@@ -154,7 +156,7 @@ def resolve_mmd_texture_file_node(file_node, workspace_root=None):
             },
         )
     elif resolution.status == "unrecoverable":
-        utils.set_custom_attributes(file_node, {ATTR_MMD_TEXTURE_UNRESOLVED: True})
+        maya_attribute_utils.set_custom_attributes(file_node, {ATTR_MMD_TEXTURE_UNRESOLVED: True})
     return resolution
 
 
@@ -162,7 +164,7 @@ def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr, cmds_
     """Bind a Maya file node to one dx11Shader texture slot."""
     destination_attr = f"{shader}.{texture_attr}"
     cmds_ref = cmds_module or cmds
-    set_attr = set_attribute_func or _maya_utils().set_attribute
+    set_attr = set_attribute_func or maya_attribute_utils.set_attribute
     try:
         existing = cmds_ref.listConnections(
             f"{file_node}.outColor",
@@ -317,14 +319,13 @@ def resolve_scene_mmd_textures(workspace_root=None):
 
 def create_material(name, color, texture_path=None, texture_dir="", model_path=None):
     """Mayaシーンにマテリアルを作成します。"""
-    utils = _maya_utils()
-    sanitized_name = utils.sanitize_text(name)
+    sanitized_name = _sanitize_text(name)
     shader = cmds.shadingNode("lambert", asShader=True, name=sanitized_name)
-    utils.set_attribute(shader, "color", color[:3], "double3")
+    maya_attribute_utils.set_attribute(shader, "color", color[:3], "double3")
     transparency = 1.0 - color[3]
-    utils.set_attribute(shader, "transparency", [transparency, transparency, transparency], "double3")
+    maya_attribute_utils.set_attribute(shader, "transparency", [transparency, transparency, transparency], "double3")
 
-    utils.set_custom_attributes(shader, {"mmd_material_name": name})
+    maya_attribute_utils.set_custom_attributes(shader, {"mmd_material_name": name})
 
     if texture_path:
         full_texture_path = os.path.normpath(os.path.join(texture_dir, texture_path))
@@ -337,7 +338,7 @@ def create_material(name, color, texture_path=None, texture_dir="", model_path=N
         cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
         cmds.connectAttr(file_node + ".outColor", shader + ".color")
 
-        utils.set_attribute(file_node, "fileTextureName", full_texture_path, "string")
+        maya_attribute_utils.set_attribute(file_node, "fileTextureName", full_texture_path, "string")
         source_model_path = model_path or os.path.join(texture_dir, "_mmd_tools_legacy_model.pmd")
         mark_mmd_texture_file_node(
             file_node,

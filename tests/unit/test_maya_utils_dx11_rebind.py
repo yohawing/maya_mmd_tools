@@ -13,10 +13,10 @@ from mmd_tools.core import maya_material_utils, maya_utils  # noqa: E402
 
 class TestMayaUtilsDx11Rebind(unittest.TestCase):
     def test_unconnected_file_node_is_inferred_from_main_texture_name(self):
-        # maya_material_utils owns DX11 slot resolution, but attribute writes
-        # still route through maya_utils until the attribute I/O bucket moves.
+        # maya_material_utils owns DX11 slot resolution and writes attributes
+        # through maya_attribute_utils directly.
         with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds, patch(
-            "mmd_tools.core.maya_utils.set_attribute"
+            "mmd_tools.core.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute:
             mock_cmds.listConnections.return_value = []
             mock_cmds.objExists.return_value = True
@@ -40,11 +40,9 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
             ("Face_shader_toon_texture", "ToonTexture", "HasToonTexture"),
         ]
         for file_node, texture_attr, has_attr in cases:
-            # See test_unconnected_file_node_is_inferred_from_main_texture_name
-            # for why the set_attribute patch is on maya_utils.
             with self.subTest(texture_attr=texture_attr), patch(
                 "mmd_tools.core.maya_material_utils.cmds"
-            ) as mock_cmds, patch("mmd_tools.core.maya_utils.set_attribute") as mock_set_attribute:
+            ) as mock_cmds, patch("mmd_tools.core.maya_attribute_utils.set_attribute") as mock_set_attribute:
                 mock_cmds.listConnections.return_value = []
                 mock_cmds.objExists.return_value = True
                 mock_cmds.nodeType.return_value = "dx11Shader"
@@ -62,10 +60,8 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
             mock_set_attribute.assert_called_once_with("Face_shader", has_attr, 1, "long")
 
     def test_existing_dx11_connection_sets_has_flag_without_duplicate_connect(self):
-        # See test_unconnected_file_node_is_inferred_from_main_texture_name
-        # for why the set_attribute patch is on maya_utils.
         with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds, patch(
-            "mmd_tools.core.maya_utils.set_attribute"
+            "mmd_tools.core.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute:
             mock_cmds.listConnections.return_value = ["Face_shader.MainTexture"]
             mock_cmds.objExists.return_value = True
