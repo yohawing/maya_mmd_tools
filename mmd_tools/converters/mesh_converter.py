@@ -10,6 +10,8 @@ from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core import maya_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.texture_path_cache import (
+    build_texture_path_diagnostics,
+    build_texture_source_candidates,
     classify_unreadable_file_texture_path,
     find_resolvable_source,
     is_unreadable_file_texture_path,
@@ -643,6 +645,12 @@ class MeshConverter:
             "reason": reason,
             "resolvable": source is not None,
             "source_path": str(source) if source is not None else "",
+            "search_candidates": build_texture_source_candidates(original_path, self.model_filepath),
+            "path_diagnostics": build_texture_path_diagnostics(
+                original_path=original_path,
+                file_texture_path=current_path,
+                model_path=self.model_filepath,
+            ),
         }
         if source is None and source_reason:
             issue["source_reason"] = source_reason

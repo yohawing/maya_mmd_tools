@@ -13,7 +13,7 @@ import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 ALLOWED_TEXTURE_EXTENSIONS = {
@@ -249,10 +249,60 @@ def find_resolvable_source(original_path, model_path) -> Tuple[Optional[Path], s
     if original.is_absolute():
         candidate = original
     else:
-        if ".." in original.parts:
+        if _has_parent_traversal(original_text):
             return None, "parent_traversal_rejected"
         candidate = model_parent / original
     return _validate_source(candidate, model_parent)
+
+
+def build_texture_source_candidates(original_path, model_path) -> List[Dict[str, object]]:
+    """Return the filesystem candidates checked for one PMX/PMD texture path."""
+
+    if not original_path:
+        return []
+    original_text = os.fspath(original_path)
+    model_parent = Path(model_path).resolve(strict=False).parent
+    original = Path(original_text)
+    if original.is_absolute():
+        candidate = original
+        kind = "absolute_original"
+        source, reason = _validate_source(candidate, model_parent)
+    else:
+        candidate = model_parent / original
+        kind = "model_relative"
+        if _has_parent_traversal(original_text):
+            source, reason = None, "parent_traversal_rejected"
+        else:
+            source, reason = _validate_source(candidate, model_parent)
+
+    return [_texture_source_candidate_record(kind, candidate, source, reason)]
+
+
+def build_texture_path_diagnostics(
+    *,
+    original_path,
+    file_texture_path,
+    model_path,
+    encoding=None,
+) -> Dict[str, object]:
+    """Return structured path diagnostics for an unresolved texture issue."""
+
+    original_text = "" if original_path is None else os.fspath(original_path)
+    current_text = "" if file_texture_path is None else os.fspath(file_texture_path)
+    original = Path(original_text) if original_text else None
+    return {
+        "model_parent": str(Path(model_path).resolve(strict=False).parent),
+        "original_path_is_absolute": bool(original and original.is_absolute()),
+        "original_path_has_parent_traversal": _has_parent_traversal(original_text),
+        "original_path_has_non_ascii": is_non_ascii_path(original_text),
+        "original_path_ansi_incompatible": is_ansi_incompatible_path(original_text, encoding=encoding),
+        "current_path_has_non_ascii": is_non_ascii_path(current_text),
+        "current_path_ansi_incompatible": is_ansi_incompatible_path(current_text, encoding=encoding),
+        "current_path_unreadable_reason": classify_unreadable_file_texture_path(
+            current_text,
+            encoding=encoding,
+        ),
+    }
 
 
 def normalize_original_texture_key(original_path, model_path) -> str:
@@ -339,3 +389,40 @@ def _validate_source(candidate: Path, model_parent: Path) -> Tuple[Optional[Path
     except OSError:
         return None, "source_not_readable"
     return candidate, ""
+
+
+def _texture_source_candidate_record(
+    kind: str,
+    candidate: Path,
+    source: Optional[Path],
+    reason: str,
+) -> Dict[str, object]:
+    return {
+        "kind": kind,
+        "path": str(candidate),
+        "accepted": source is not None,
+        "reason": reason,
+        "resolved_path": str(source) if source is not None else "",
+        "exists": _path_exists(candidate),
+        "is_file": _path_is_file(candidate),
+        "is_absolute": candidate.is_absolute(),
+    }
+
+
+def _path_exists(path: Path) -> bool:
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def _path_is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _has_parent_traversal(path_text: str) -> bool:
+    normalized = path_text.replace("\\", "/")
+    return ".." in Path(normalized).parts

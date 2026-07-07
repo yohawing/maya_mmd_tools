@@ -1,5 +1,6 @@
 """Pure-Python checks for MeshConverter texture issue reporting."""
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -185,9 +186,16 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertEqual(issue["reason"], "non_ascii_path")
         self.assertTrue(issue["resolvable"])
         self.assertEqual(Path(issue["source_path"]), self.texture)
+        self.assertEqual(len(issue["search_candidates"]), 1)
+        self.assertEqual(Path(issue["search_candidates"][0]["path"]), self.texture)
+        self.assertTrue(issue["search_candidates"][0]["accepted"])
+        self.assertTrue(issue["path_diagnostics"]["current_path_has_non_ascii"])
+        self.assertTrue(issue["path_diagnostics"]["original_path_has_non_ascii"])
+        self.assertEqual(issue["path_diagnostics"]["current_path_unreadable_reason"], "non_ascii_path")
         self.assertEqual(converter.unresolved_texture_count, 1)
         self.assertEqual(converter.profile["unresolved_texture_count"], 1)
         self.assertEqual(converter.profile["unresolved_textures"], [issue])
+        json.dumps(issue)
 
     def test_setup_dx11_shader_keeps_unreadable_main_texture_unconnected(self):
         settings.set("import.model.auto_resolve_textures", False)

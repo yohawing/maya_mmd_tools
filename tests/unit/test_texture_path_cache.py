@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import tempfile
 import unittest
@@ -111,6 +112,35 @@ class TestTexturePathCache(unittest.TestCase):
         self.assertEqual(unrecoverable.status, "unrecoverable")
         self.assertEqual(unrecoverable.reason, "source_not_found")
 
+    def test_texture_source_candidates_report_checked_model_relative_path(self):
+        candidates = cache.build_texture_source_candidates(self.texture.name, self.model)
+
+        self.assertEqual(len(candidates), 1)
+        candidate = candidates[0]
+        self.assertEqual(candidate["kind"], "model_relative")
+        self.assertEqual(Path(candidate["path"]), self.texture)
+        self.assertTrue(candidate["accepted"])
+        self.assertEqual(Path(candidate["resolved_path"]), self.texture)
+        self.assertEqual(candidate["reason"], "")
+        self.assertTrue(candidate["exists"])
+        self.assertTrue(candidate["is_file"])
+        json.dumps(candidates)
+
+    def test_texture_path_diagnostics_reports_unicode_and_safety_flags(self):
+        diagnostics = cache.build_texture_path_diagnostics(
+            original_path="../纹理.png",
+            file_texture_path=str(self.texture),
+            model_path=self.model,
+            encoding="ascii",
+        )
+
+        self.assertTrue(diagnostics["original_path_has_parent_traversal"])
+        self.assertTrue(diagnostics["original_path_has_non_ascii"])
+        self.assertTrue(diagnostics["original_path_ansi_incompatible"])
+        self.assertTrue(diagnostics["current_path_has_non_ascii"])
+        self.assertTrue(diagnostics["current_path_ansi_incompatible"])
+        self.assertEqual(diagnostics["current_path_unreadable_reason"], "non_ascii_path")
+
     def test_safety_rejects_absolute_parent_traversal_outside_and_extension(self):
         bad_ext = self.root / "texture.exe"
         bad_ext.write_bytes(b"exe")
@@ -121,6 +151,7 @@ class TestTexturePathCache(unittest.TestCase):
         cases = [
             (str(outside), "absolute_original_path_rejected"),
             ("../outside.png", "parent_traversal_rejected"),
+            (r"..\outside.png", "parent_traversal_rejected"),
             ("texture.exe", "extension_rejected"),
         ]
         for original, reason in cases:

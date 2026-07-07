@@ -172,6 +172,8 @@ def run_asset_probe(
                 "joint_count": None,
                 "shader_count": None,
                 "physics_profile": None,
+                "mesh_profile": None,
+                "texture_issues": [],
             }
             try:
                 cmds.file(new=True, force=True)
@@ -199,6 +201,8 @@ def run_asset_probe(
                 record["joint_count"] = len(cmds.ls(type="joint") or [])
                 record["shader_count"] = len(cmds.ls(type="dx11Shader") or [])
                 record["physics_profile"] = profile.get("physics_converter")
+                record["mesh_profile"] = profile.get("mesh_converter")
+                record["texture_issues"] = _texture_issues_from_profile(profile)
                 log(
                     "RESULT ok={ok} root={root} meshes={meshes} joints={joints} shaders={shaders}".format(
                         ok=record["ok"],
@@ -272,6 +276,13 @@ def _read_assets(args: argparse.Namespace) -> list[str]:
             seen.add(key)
             result.append(asset)
     return result
+
+
+def _texture_issues_from_profile(profile: dict) -> list[dict]:
+    issues = profile.get("texture_issues")
+    if issues:
+        return list(issues)
+    return list(profile.get("mesh_converter", {}).get("unresolved_textures") or [])
 
 
 def _parse_args() -> argparse.Namespace:
