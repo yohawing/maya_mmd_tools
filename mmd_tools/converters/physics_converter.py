@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Set, Tuple, Union
 
 import maya.cmds as cmds
 
-from ..core import maya_physics_utils, maya_scene_utils, maya_utils
+from ..core import maya_attribute_utils, maya_physics_utils, maya_scene_utils, maya_utils
 from ..core.constants import (
     ATTR_MMD_BONE_INDEX,
     CONSTRAINTS_GROUP,
@@ -1370,7 +1370,7 @@ class PhysicsConverter:
             attrs["mmd_collision_group"] = getattr(rb, "group", 0)
             attrs["mmd_related_bone_index"] = getattr(rb, "related_bone_index", -1)
         attrs["mmd_collision_mask"] = getattr(rb, "collision_mask", 0xFFFF)
-        maya_utils.set_custom_attributes(transform, attrs)
+        maya_attribute_utils.set_custom_attributes(transform, attrs)
 
     # ------------------------------------------------------------------
     # Bullet ジョイント作成: PMD (常に sixDOF=4)
@@ -1565,7 +1565,7 @@ class PhysicsConverter:
         if pmx_joint_type is not None:
             custom_attrs["mmd_joint_is_pmx"] = 1
 
-        maya_utils.set_custom_attributes(transform, custom_attrs)
+        maya_attribute_utils.set_custom_attributes(transform, custom_attrs)
 
         parented = cmds.parent(transform, parent_group)
         if parented:
@@ -1639,12 +1639,22 @@ class PhysicsConverter:
         }
         quality = self.settings.get(_OPT_SIMULATION_QUALITY, "medium")
         qs = quality_settings.get(quality, quality_settings["medium"])
-        maya_utils.set_attribute(self.nucleus_solver, "subSteps", qs["substeps"], "long")
-        maya_utils.set_attribute(self.nucleus_solver, "maxCollisionIterations", qs["maxCollisionIterations"], "long")
-        maya_utils.set_attribute(self.nucleus_solver, "startFrame", self.settings.get(_OPT_START_FRAME, 1), "double")
-        maya_utils.set_attribute(self.nucleus_solver, "timeScale", self.settings.get(_OPT_TIME_SCALE, 1.0), "double")
-        maya_utils.set_attribute(self.nucleus_solver, "gravity", 98.0, "double")
-        maya_utils.set_attribute(self.nucleus_solver, "gravityDirection", [0, -1, 0], "double3")
+        maya_attribute_utils.set_attribute(self.nucleus_solver, "subSteps", qs["substeps"], "long")
+        maya_attribute_utils.set_attribute(self.nucleus_solver, "maxCollisionIterations", qs["maxCollisionIterations"], "long")
+        maya_attribute_utils.set_attribute(
+            self.nucleus_solver,
+            "startFrame",
+            self.settings.get(_OPT_START_FRAME, 1),
+            "double",
+        )
+        maya_attribute_utils.set_attribute(
+            self.nucleus_solver,
+            "timeScale",
+            self.settings.get(_OPT_TIME_SCALE, 1.0),
+            "double",
+        )
+        maya_attribute_utils.set_attribute(self.nucleus_solver, "gravity", 98.0, "double")
+        maya_attribute_utils.set_attribute(self.nucleus_solver, "gravityDirection", [0, -1, 0], "double3")
         self.logger.debug(f"Nucleus solver setup complete: quality={quality}")
 
     # ------------------------------------------------------------------
@@ -1865,7 +1875,7 @@ class PhysicsConverter:
                 for attr, value in params.items():
                     if cmds.attributeQuery(attr, node=hair_system, exists=True):
                         attr_type = cmds.getAttr(f"{hair_system}.{attr}", type=True)
-                        maya_utils.set_attribute(hair_system, attr, value, attr_type)
+                        maya_attribute_utils.set_attribute(hair_system, attr, value, attr_type)
                 return hair_system
         except Exception as e:
             self.logger.error(f"nHair creation error: {e}")
@@ -1899,7 +1909,7 @@ class PhysicsConverter:
                 for attr, value in params.items():
                     if cmds.attributeQuery(attr, node=ncloth_shape, exists=True):
                         attr_type = cmds.getAttr(f"{ncloth_shape}.{attr}", type=True)
-                        maya_utils.set_attribute(ncloth_shape, attr, value, attr_type)
+                        maya_attribute_utils.set_attribute(ncloth_shape, attr, value, attr_type)
                 return ncloth_shape
         except Exception as e:
             self.logger.error(f"nCloth creation error: {e}")
@@ -1927,8 +1937,8 @@ class PhysicsConverter:
                 is_dynamic = rigid_body.physics_mode != 0
             nrigid = maya_physics_utils.apply_nrigid_to_mesh(obj, is_dynamic)
             if nrigid:
-                maya_utils.set_attribute(nrigid, "friction", rigid_body.friction, "double")
-                maya_utils.set_attribute(nrigid, "bounce", rigid_body.elasticity, "double")
+                maya_attribute_utils.set_attribute(nrigid, "friction", rigid_body.friction, "double")
+                maya_attribute_utils.set_attribute(nrigid, "bounce", rigid_body.elasticity, "double")
                 return nrigid
         except Exception as e:
             self.logger.error(f"nRigid creation error: {e}")
