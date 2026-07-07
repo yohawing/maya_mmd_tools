@@ -72,12 +72,64 @@ ORACLE_CASES = [
     },
 ]
 WORLD_POS_THRESHOLD = 0.05
+WORLD_ROT_THRESHOLD_DEG = 0.5
 VERTEX_REST_THRESHOLD = 0.05
 VERTEX_ANIM_THRESHOLD = 0.1
 
 
 def _euclidean(a, b):
     return math.sqrt(sum((ai - bi) ** 2 for ai, bi in zip(a, b)))
+
+
+def _quat_angle_deg(q1, q2):
+    dot = q1.x * q2.x + q1.y * q2.y + q1.z * q2.z + q1.w * q2.w
+    dot = max(-1.0, min(1.0, abs(dot)))
+    return math.degrees(2.0 * math.acos(dot))
+
+
+def _collect_transform_outliers(actual, oracle, frames):
+    pos_outliers = []
+    rot_outliers = []
+    common_bones = set(actual.keys()) & set(oracle.keys())
+
+    for bone_index in sorted(common_bones):
+        joint = next(iter(actual[bone_index].values()))["joint"]
+        for frame in frames:
+            actual_frame = actual[bone_index].get(frame)
+            oracle_frame = oracle[bone_index].get(frame)
+            if not actual_frame or not oracle_frame:
+                continue
+
+            dist = _euclidean(actual_frame["pos"], oracle_frame["pos"])
+            if dist > WORLD_POS_THRESHOLD:
+                pos_outliers.append((joint, bone_index, frame, dist))
+
+            angle = _quat_angle_deg(actual_frame["quat"], oracle_frame["quat"])
+            if angle > WORLD_ROT_THRESHOLD_DEG:
+                rot_outliers.append((joint, bone_index, frame, angle))
+
+    return common_bones, pos_outliers, rot_outliers
+
+
+def _format_transform_failures(label, pos_outliers, rot_outliers):
+    failures = []
+    if pos_outliers:
+        pos_outliers.sort(key=lambda x: -x[3])
+        failures.append(f"{label} world position mismatch ({len(pos_outliers)} outliers):")
+        for joint, bone_index, frame, dist in pos_outliers[:20]:
+            failures.append(
+                f"  bone[{bone_index}] {joint} @ frame {frame}: {dist:.4f} units"
+            )
+
+    if rot_outliers:
+        rot_outliers.sort(key=lambda x: -x[3])
+        failures.append(f"{label} world rotation mismatch ({len(rot_outliers)} outliers):")
+        for joint, bone_index, frame, angle in rot_outliers[:20]:
+            failures.append(
+                f"  bone[{bone_index}] {joint} @ frame {frame}: {angle:.2f} deg"
+            )
+
+    return failures
 
 
 def _get_mesh_vertices_world(mesh_shape):
@@ -248,31 +300,10 @@ class TestBakeRigBoneParity(MayaTestBase):
         actual = _capture_bone_world_transforms_by_index(frames)
         oracle = _capture_runtime_oracle_world_transforms(pmx_path, vmd_path, frames)
 
-        pos_outliers = []
-        common_bones = set(actual.keys()) & set(oracle.keys())
+        common_bones, pos_outliers, rot_outliers = _collect_transform_outliers(actual, oracle, frames)
         self.assertGreater(len(common_bones), 0, "共通ボーンが見つからない")
 
-        for bone_index in sorted(common_bones):
-            joint = next(iter(actual[bone_index].values()))["joint"]
-            for frame in frames:
-                actual_frame = actual[bone_index].get(frame)
-                oracle_frame = oracle[bone_index].get(frame)
-                if not actual_frame or not oracle_frame:
-                    continue
-
-                dist = _euclidean(actual_frame["pos"], oracle_frame["pos"])
-                if dist > WORLD_POS_THRESHOLD:
-                    pos_outliers.append((joint, bone_index, frame, dist))
-
-        failures = []
-        if pos_outliers:
-            pos_outliers.sort(key=lambda x: -x[3])
-            failures.append(f"{label} world position mismatch ({len(pos_outliers)} outliers):")
-            for joint, bone_index, frame, dist in pos_outliers[:20]:
-                failures.append(
-                    f"  bone[{bone_index}] {joint} @ frame {frame}: {dist:.4f} units"
-                )
-
+        failures = _format_transform_failures(label, pos_outliers, rot_outliers)
         if failures:
             self.fail("\n".join(failures))
 
@@ -319,29 +350,12 @@ class TestBakeRigBoneParity(MayaTestBase):
         actual = _capture_bone_world_transforms_by_index(FRAMES)
         oracle = _capture_runtime_oracle_world_transforms(PMX_FILE, VMD_FILE, FRAMES)
 
-        outliers = []
-        common_bones = set(actual.keys()) & set(oracle.keys())
+        common_bones, pos_outliers, rot_outliers = _collect_transform_outliers(actual, oracle, FRAMES)
         self.assertGreater(len(common_bones), 0, "共通ボーンが見つからない")
 
-        for bone_index in sorted(common_bones):
-            joint = next(iter(actual[bone_index].values()))["joint"]
-            for frame in FRAMES:
-                actual_frame = actual[bone_index].get(frame)
-                oracle_frame = oracle[bone_index].get(frame)
-                if not actual_frame or not oracle_frame:
-                    continue
-                dist = _euclidean(actual_frame["pos"], oracle_frame["pos"])
-                if dist > WORLD_POS_THRESHOLD:
-                    outliers.append((joint, bone_index, frame, dist))
-
-        if outliers:
-            outliers.sort(key=lambda x: -x[3])
-            msg_lines = [f"Bake runtime world position mismatch ({len(outliers)} outliers):"]
-            for joint, bone_index, frame, dist in outliers[:20]:
-                msg_lines.append(
-                    f"  bone[{bone_index}] {joint} @ frame {frame}: {dist:.4f} units"
-                )
-            self.fail("\n".join(msg_lines))
+        failures = _format_transform_failures("Bake runtime", pos_outliers, rot_outliers)
+        if failures:
+            self.fail("\n".join(failures))
 
 
 
@@ -565,27 +579,31 @@ class TestRigModeAcceptance(MayaTestBase):
         actual = _capture_bone_world_transforms_by_index(FRAMES)
         oracle = _capture_runtime_oracle_world_transforms(PMX_FILE, VMD_FILE, FRAMES)
 
-        common = set(actual.keys()) & set(oracle.keys())
+        common, pos_outliers, _rot_outliers = _collect_transform_outliers(actual, oracle, FRAMES)
         self.assertGreater(len(common), 0)
 
-        outliers = []
-        for idx in sorted(common):
-            joint = next(iter(actual[idx].values()))["joint"]
-            for frame in FRAMES:
-                af = actual[idx].get(frame)
-                of = oracle[idx].get(frame)
-                if not af or not of:
-                    continue
-                dist = _euclidean(af["pos"], of["pos"])
-                if dist > WORLD_POS_THRESHOLD:
-                    outliers.append((joint, idx, frame, dist))
+        failures = _format_transform_failures("Rig vs Oracle", pos_outliers, [])
+        if failures:
+            self.fail("\n".join(failures))
 
-        if outliers:
-            outliers.sort(key=lambda x: -x[3])
-            lines = [f"Rig vs Oracle mismatch ({len(outliers)} outliers):"]
-            for joint, idx, frame, dist in outliers[:20]:
-                lines.append(f"  bone[{idx}] {joint} @ frame {frame}: {dist:.4f}")
-            self.fail("\n".join(lines))
+    @unittest.expectedFailure
+    def test_rig_mode_world_rotations_match_oracle_known_gap(self):
+        """Rig+JO world rotation は既知差分として赤を維持し、閾値で隠さない。"""
+        _import_model_with_options(
+            PMX_FILE, VMD_FILE,
+            setup_rig=True, setup_bone_orientation=True,
+            bake_mode=False,
+        )
+
+        actual = _capture_bone_world_transforms_by_index(FRAMES)
+        oracle = _capture_runtime_oracle_world_transforms(PMX_FILE, VMD_FILE, FRAMES)
+
+        common, _pos_outliers, rot_outliers = _collect_transform_outliers(actual, oracle, FRAMES)
+        self.assertGreater(len(common), 0)
+
+        failures = _format_transform_failures("Rig vs Oracle known rotation gap", [], rot_outliers)
+        if failures:
+            self.fail("\n".join(failures))
 
     def test_sparse_keys_not_fully_baked(self):
         """Rig mode は sparse key（VMD フレーム位置のみ）で、全フレームベイクではない"""
