@@ -163,13 +163,18 @@ def _mmd_collision_group_to_bullet_filter_group(collision_group: int) -> int:
 
 
 def _mmd_collision_mask_to_bullet_filter_mask(collision_mask: int) -> int:
-    """Convert PMX/PMD non-collision flags to Bullet's collide-with bit mask."""
+    """Convert PMX/PMD collision mask to Bullet's collide-with bit mask.
+
+    Despite the PMX spec naming (非衝突グループフラグ), the field is a positive
+    collide-with mask: bit N set means this body collides with group N.
+    All reference implementations (nanoem, babylon-mmd, saba, three-mmd) pass
+    the raw value directly to Bullet.
+    """
     try:
         mask = int(collision_mask)
     except (TypeError, ValueError):
         mask = 0xFFFF
-    non_collision_bits = max(0, min(mask, 0xFFFF)) & 0xFFFF
-    return (~non_collision_bits) & 0xFFFF
+    return max(0, min(mask, 0xFFFF)) & 0xFFFF
 
 
 def _clamp_to_range(
@@ -567,6 +572,7 @@ class PhysicsConverter:
         self.created_bullet_rigid_bodies = []
         self.created_bullet_constraints = []
         self._bullet_rigid_body_shapes_by_index = {}
+        self._source_joints = list(getattr(pmd_data, "joints", None) or [])
 
         physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
         rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
@@ -606,6 +612,7 @@ class PhysicsConverter:
         self.created_bullet_rigid_bodies = []
         self.created_bullet_constraints = []
         self._bullet_rigid_body_shapes_by_index = {}
+        self._source_joints = list(getattr(pmx_data, "joints", None) or [])
 
         physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
         rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
@@ -738,10 +745,10 @@ class PhysicsConverter:
                 cmds.setAttr(f"{shape}.colliderShapeType", bullet_shape)
 
             self._create_bullet_visual_locator(transform, bullet_shape, size)
-            self._set_bullet_collision_filter(shape, rb, model_type)
 
             # bodyType
             physics_mode = getattr(rb, "physics_mode", 0)
+            self._set_bullet_collision_filter(shape, rb, model_type)
             bullet_body = _MMD_MODE_TO_BULLET.get(physics_mode, 0)
             cmds.setAttr(f"{shape}.bodyType", bullet_body)
 
@@ -764,7 +771,13 @@ class PhysicsConverter:
                 transform = parented[0]
             if physics_mode != 0:
                 self._connect_bullet_simulation_output(transform, shape)
-                self._attach_dynamic_bullet_body_to_bone(transform, rb, bone_index_map, physics_mode)
+                self._attach_dynamic_bullet_body_to_bone(
+                    transform,
+                    rb,
+                    bone_index_map,
+                    physics_mode,
+                    rigid_body_index,
+                )
             if physics_mode == 0:
                 self._attach_static_bullet_body_to_bone(transform, rb, bone_index_map)
             shapes = cmds.listRelatives(transform, shapes=True, type="bulletRigidBodyShape", fullPath=True) or []
@@ -818,6 +831,7 @@ class PhysicsConverter:
         rb,
         bone_index_map: Optional[Dict[int, str]],
         physics_mode: int,
+        rigid_body_index: Optional[int] = None,
     ) -> None:
         """Drive the related Maya joint from a simulated MMD rigid body.
 
@@ -843,7 +857,12 @@ class PhysicsConverter:
             return
 
         try:
-            constraint = self._create_physics_preview_constraint(transform, joint, physics_mode)
+            constraint = self._create_physics_preview_constraint(
+                transform,
+                joint,
+                physics_mode,
+                rigid_body_index=rigid_body_index,
+            )
             if constraint:
                 self.logger.debug(
                     f"Connected dynamic Bullet rigid body '{transform}' to drive related bone '{joint}'"
@@ -852,6 +871,25 @@ class PhysicsConverter:
             self.logger.warning(
                 f"Skipped dynamic Bullet rigid body to related-bone connection '{transform}' -> '{joint}': {exc}"
             )
+
+    def _joints_lock_rigid_body_translation(self, rigid_body_index: Optional[int]) -> bool:
+        """Return True when source joints fully lock translation for a rigid body."""
+        if rigid_body_index is None or rigid_body_index < 0:
+            return False
+
+        for joint in getattr(self, "_source_joints", ()) or ():
+            idx_a = getattr(joint, "rigid_body_a_index", getattr(joint, "rigid_body_index_a", -1))
+            idx_b = getattr(joint, "rigid_body_b_index", getattr(joint, "rigid_body_index_b", -1))
+            if rigid_body_index not in (idx_a, idx_b):
+                continue
+
+            trans_lo = getattr(joint, "translation_limit_min", None)
+            trans_hi = getattr(joint, "translation_limit_max", None)
+            if not trans_lo or not trans_hi:
+                continue
+            if all(float(lo) == float(hi) == 0.0 for lo, hi in zip(trans_lo, trans_hi)):
+                return True
+        return False
 
     def connect_existing_bullet_preview_to_bones(self, root_group: Optional[str] = None) -> int:
         """Connect existing dynamic Bullet bodies to indexed MMD joints.
@@ -891,25 +929,50 @@ class PhysicsConverter:
                 physics_mode = 1
                 if cmds.attributeQuery("mmd_physics_mode", node=transform, exists=True):
                     physics_mode = int(cmds.getAttr(f"{transform}.mmd_physics_mode"))
-                if self._has_physics_preview_constraint(transform, joint, physics_mode):
+                rigid_body_index = None
+                if cmds.attributeQuery("mmd_rigid_body_index", node=transform, exists=True):
+                    rigid_body_index = int(cmds.getAttr(f"{transform}.mmd_rigid_body_index"))
+                if self._has_physics_preview_constraint(
+                    transform,
+                    joint,
+                    physics_mode,
+                    rigid_body_index=rigid_body_index,
+                ):
                     continue
-                self._create_physics_preview_constraint(transform, joint, physics_mode)
+                self._create_physics_preview_constraint(
+                    transform,
+                    joint,
+                    physics_mode,
+                    rigid_body_index=rigid_body_index,
+                )
                 connected += 1
             except Exception as exc:
                 self.logger.warning(f"Skipped Bullet preview repair for '{shape}': {exc}")
         return connected
 
-    def _create_physics_preview_constraint(self, transform: str, joint: str, physics_mode: int) -> Optional[str]:
+    def _create_physics_preview_constraint(
+        self,
+        transform: str,
+        joint: str,
+        physics_mode: int,
+        rigid_body_index: Optional[int] = None,
+    ) -> Optional[str]:
         """Create and mark constraints that feed simulated motion into a joint.
 
         ``physics_mode=1`` is pure dynamic, so the preview feeds back simulated
         translation and rotation.  ``physics_mode=2`` is dynamic-with-bone
         alignment, so it keeps inheriting parent-joint translation and only
         receives simulated orientation.
+
+        Some mode-1 setups such as breast/chest chains lock translation in
+        their Bullet joints.  Feeding solved translation back into the related
+        bone in that case stretches the skeleton, so only orientation is driven.
         """
         self._delete_marked_preview_constraints(transform, joint)
         point_constraint = None
-        if int(physics_mode) == 1:
+        drive_translation = self._should_drive_translation(transform, physics_mode, rigid_body_index)
+        self._store_orient_only_flag(transform, not drive_translation and int(physics_mode) != 0)
+        if drive_translation:
             point = cmds.pointConstraint(transform, joint, maintainOffset=True)
             if point:
                 point_constraint = point[0]
@@ -922,16 +985,40 @@ class PhysicsConverter:
         self._mark_physics_preview_constraint(constraint_node)
         return constraint_node
 
+    def _should_drive_translation(
+        self, transform: str, physics_mode: int, rigid_body_index: Optional[int] = None,
+    ) -> bool:
+        """Decide whether translation feedback should be applied for this rigid body."""
+        if int(physics_mode) != 1:
+            return False
+        if cmds.attributeQuery("mmd_physics_orient_only", node=transform, exists=True):
+            return not cmds.getAttr(f"{transform}.mmd_physics_orient_only")
+        return not self._joints_lock_rigid_body_translation(rigid_body_index)
+
+    @staticmethod
+    def _store_orient_only_flag(transform: str, orient_only: bool) -> None:
+        """Persist the orient-only decision so the repair path can recover it."""
+        if not cmds.attributeQuery("mmd_physics_orient_only", node=transform, exists=True):
+            cmds.addAttr(transform, longName="mmd_physics_orient_only", attributeType="bool")
+        cmds.setAttr(f"{transform}.mmd_physics_orient_only", orient_only)
+
     def _mark_physics_preview_constraint(self, constraint_node: str) -> None:
         """Mark a generated physics preview constraint for future repair."""
         if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint_node, exists=True):
             cmds.addAttr(constraint_node, longName="mmd_physics_preview_constraint", attributeType="bool")
         cmds.setAttr(f"{constraint_node}.mmd_physics_preview_constraint", True)
 
-    def _has_physics_preview_constraint(self, transform: str, joint: str, physics_mode: int) -> bool:
+    def _has_physics_preview_constraint(
+        self,
+        transform: str,
+        joint: str,
+        physics_mode: int,
+        rigid_body_index: Optional[int] = None,
+    ) -> bool:
         """Return True when *transform* already drives *joint* through the expected preview constraints."""
         has_orient = self._has_marked_target_constraint(transform, joint, "orientConstraint")
-        if int(physics_mode) != 1:
+        drive_translation = self._should_drive_translation(transform, physics_mode, rigid_body_index)
+        if not drive_translation:
             return has_orient
         return has_orient and self._has_marked_target_constraint(transform, joint, "pointConstraint")
 
