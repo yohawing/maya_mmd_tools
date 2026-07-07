@@ -81,12 +81,12 @@ class MmdRuntimeModel:
 
 class MmdRuntimeClip:
     """
-
-    _get_library: Callable[[], Optional[CDLL]] = staticmethod(get_mmd_runtime_library)
     mmd-anim のアニメーションクリップ (VMD 由来)。
 
     モデルに対して解決された VMD データを保持します。
     """
+
+    _get_library: Callable[[], Optional[CDLL]] = staticmethod(get_mmd_runtime_library)
 
     def __init__(self, lib: CDLL, handle: c_void_p):
         self._lib = lib
@@ -159,12 +159,12 @@ class MmdRuntimeClip:
 
 class MmdRuntimeInstance:
     """
-
-    _get_library: Callable[[], Optional[CDLL]] = staticmethod(get_mmd_runtime_library)
     特定のモデルに対するランタイム評価インスタンス。
 
     evaluate_clip_frame() を呼び出して任意フレームの姿勢を取得できます。
     """
+
+    _get_library: Callable[[], Optional[CDLL]] = staticmethod(get_mmd_runtime_library)
 
     def __init__(self, lib: CDLL, handle: c_void_p):
         self._lib = lib

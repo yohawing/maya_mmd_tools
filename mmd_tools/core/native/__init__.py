@@ -32,7 +32,6 @@ native バイナリ (mmd_runtime_ffi.dll / libmmd_runtime_ffi.dylib) が存在�
 from .mmd_anim_runtime import (
     MmdAppendSolver,
     MmdIkChain,
-    MmdParsedModel,
     MmdRigSpec,
     MmdRuntimeClip,
     MmdRuntimeInstance,
@@ -49,6 +48,7 @@ from .mmd_anim_runtime import (
     export_pmx_from_parts,
     export_vmd_animation_json,
 )
+from .mmd_anim_runtime_parsed_model import MmdParsedModel
 from .native_pmx_parser import is_native_parser_available, parse_pmx_native
 
 __all__ = [

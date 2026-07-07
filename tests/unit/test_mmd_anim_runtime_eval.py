@@ -26,6 +26,7 @@ import unittest
 from ctypes import c_float, c_uint8
 from unittest import mock
 
+import mmd_tools.core.native as native_pkg
 import mmd_tools.core.native.mmd_anim_runtime as rt
 import mmd_tools.core.native.mmd_anim_runtime_loader as runtime_loader
 import mmd_tools.core.native.mmd_anim_runtime_sampling as runtime_sampling
@@ -779,6 +780,7 @@ class _FakeParsedLib:
 
     def __init__(self):
         self._keepalive = []  # ctypes 配列が GC されないよう保持
+        self.create_calls = []
         self.vertex_count = 2
         self.index_count = 3
         self.material_group_count = 1
@@ -788,6 +790,10 @@ class _FakeParsedLib:
         self._positions = [(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)]
         self._material_groups = [(0, 3, 5)]
         self._morph_names = ["まばたき"]
+
+    def mmd_runtime_parsed_model_create_from_pmx_bytes(self, payload, payload_len):
+        self.create_calls.append((bytes(payload[:payload_len]), int(payload_len)))
+        return 0x9901
 
     # --- counts ---
     def mmd_runtime_parsed_model_vertex_count(self, h):
@@ -1382,6 +1388,20 @@ class TestFactoryGuardsWithoutLibrary(unittest.TestCase):
     def test_parsed_model_from_empty_bytes_returns_none(self):
         runtime_loader._runtime_lib = _FakeParsedLib()
         self.assertIsNone(MmdParsedModel.from_pmx_bytes(b""))
+
+    def test_parsed_model_factory_uses_legacy_runtime_module_getter_patch(self):
+        lib = _FakeParsedLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            parsed = MmdParsedModel.from_pmx_bytes(b"pmx")
+
+        self.assertEqual(parsed.handle, 0x9901)
+        self.assertEqual(lib.create_calls, [(b"pmx", 3)])
+
+    def test_package_parser_availability_uses_legacy_runtime_module_getter_patch(self):
+        lib = _FakeParsedLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertTrue(rt.is_native_pmx_parser_available())
+            self.assertTrue(native_pkg.is_native_pmx_parser_available())
 
 
 if __name__ == "__main__":

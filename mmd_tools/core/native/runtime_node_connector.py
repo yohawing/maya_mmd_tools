@@ -251,7 +251,7 @@ def _connect_runtime_morph_outputs(cmds: Any, node: str, model_root: str, pmx_pa
 
     try:
         from mmd_tools.core.maya_utils import sanitize_text
-        from mmd_tools.core.native.mmd_anim_runtime import MmdParsedModel
+        from mmd_tools.core.native.mmd_anim_runtime_parsed_model import MmdParsedModel
         from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
         from mmd_tools.core.pmx_data.morph import PmxMorphType
 
