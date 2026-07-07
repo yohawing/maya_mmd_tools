@@ -28,6 +28,9 @@
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+constexpr short kSchemaModeAuto = 0;
+constexpr short kSchemaModeLegacy = 1;
+constexpr short kSchemaModeCompat = 2;
 }
 
 // --- Quaternion helper struct ---
@@ -266,6 +269,7 @@ MObject MmdAppendNode::aRatio;
 MObject MmdAppendNode::aAffectRotation;
 MObject MmdAppendNode::aAffectTranslation;
 MObject MmdAppendNode::aLocalAppend;
+MObject MmdAppendNode::aSchemaMode;
 
 // --- 出力: outputTranslate ---
 MObject MmdAppendNode::aOutputTranslate;
@@ -548,6 +552,15 @@ MStatus MmdAppendNode::initialize() {
     nAttr.setReadable(false);
     addAttribute(aLocalAppend);
 
+    aSchemaMode = nAttr.create("schemaMode", "sm", MFnNumericData::kShort, kSchemaModeAuto, &status);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(false);
+    nAttr.setWritable(true);
+    nAttr.setReadable(false);
+    nAttr.setMin(kSchemaModeAuto);
+    nAttr.setMax(kSchemaModeCompat);
+    addAttribute(aSchemaMode);
+
     // --- 出力: outputTranslate(double3) ---
     aOutputTranslate = createDouble3Attribute(
         "outputTranslate", "ot",
@@ -608,7 +621,7 @@ MStatus MmdAppendNode::initialize() {
     for (MObject input : {
              aBaseTranslateX, aBaseTranslateY, aBaseTranslateZ,
              aSourceTranslateX, aSourceTranslateY, aSourceTranslateZ,
-             aRatio, aAffectTranslation, aLocalAppend}) {
+             aRatio, aAffectTranslation, aLocalAppend, aSchemaMode}) {
         attributeAffects(input, aOutputTranslateX);
         attributeAffects(input, aOutputTranslateY);
         attributeAffects(input, aOutputTranslateZ);
@@ -622,7 +635,7 @@ MStatus MmdAppendNode::initialize() {
              aSourceRotateX, aSourceRotateY, aSourceRotateZ,
              aSourceJointOrientX, aSourceJointOrientY, aSourceJointOrientZ,
              aTargetJointOrientX, aTargetJointOrientY, aTargetJointOrientZ,
-             aRatio, aAffectRotation, aLocalAppend}) {
+             aRatio, aAffectRotation, aLocalAppend, aSchemaMode}) {
         attributeAffects(input, aOutputRotateX);
         attributeAffects(input, aOutputRotateY);
         attributeAffects(input, aOutputRotateZ);
@@ -668,14 +681,21 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
     float ratio = data.inputValue(aRatio, &status).asFloat();
     bool affectRot = data.inputValue(aAffectRotation, &status).asBool();
     bool affectTrans = data.inputValue(aAffectTranslation, &status).asBool();
-    bool compatInputsActive = isAppendTranslate || isAppendRotate ||
-                              isVectorNonZero(baseT) || isVectorNonZero(sourceT) ||
-                              isVectorNonZero(baseR) || isVectorNonZero(sourceR) ||
-                              isVectorNonZero(sourceJo) || isVectorNonZero(targetJo) ||
-                              std::abs(ratio - 1.0f) > 1e-6f ||
-                              affectTrans || !affectRot;
+    short schemaMode = data.inputValue(aSchemaMode, &status).asShort();
+    bool autoCompatInputsActive = isAppendTranslate || isAppendRotate ||
+                                  isVectorNonZero(baseT) || isVectorNonZero(sourceT) ||
+                                  isVectorNonZero(baseR) || isVectorNonZero(sourceR) ||
+                                  isVectorNonZero(sourceJo) || isVectorNonZero(targetJo) ||
+                                  std::abs(ratio - 1.0f) > 1e-6f ||
+                                  affectTrans || !affectRot;
+    bool useCompatSchema = autoCompatInputsActive;
+    if (schemaMode == kSchemaModeLegacy) {
+        useCompatSchema = isAppendTranslate || isAppendRotate;
+    } else if (schemaMode == kSchemaModeCompat) {
+        useCompatSchema = true;
+    }
 
-    if (compatInputsActive) {
+    if (useCompatSchema) {
         const double srcRx = data.inputValue(aSourceRotateX).asAngle().asRadians();
         const double srcRy = data.inputValue(aSourceRotateY).asAngle().asRadians();
         const double srcRz = data.inputValue(aSourceRotateZ).asAngle().asRadians();

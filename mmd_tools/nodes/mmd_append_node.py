@@ -61,6 +61,7 @@ class MmdAppendNode(om.MPxNode):
     aRatio = None
     aAffectRotation = None
     aAffectTranslation = None
+    aSchemaMode = None
 
     aOutputRotate = None
     aOutputRotateX = None
@@ -352,6 +353,12 @@ def initialize():
     MmdAppendNode.aLocalAppend = nAttr.create("localAppend", "lap", om.MFnNumericData.kBoolean, False)
     MmdAppendNode.addAttribute(MmdAppendNode.aLocalAppend)
 
+    MmdAppendNode.aSchemaMode = nAttr.create("schemaMode", "sm", om.MFnNumericData.kShort, 0)
+    nAttr.keyable = False
+    nAttr.setMin(0)
+    nAttr.setMax(2)
+    MmdAppendNode.addAttribute(MmdAppendNode.aSchemaMode)
+
     # --- Output Rotate (angle) ---
     MmdAppendNode.aOutputRotateX = uAttr.create("outputRotateX", "orx", om.MFnUnitAttribute.kAngle, 0.0)
     uAttr.writable = False
@@ -482,6 +489,7 @@ def initialize():
 
     for out_attr in output_rotate_attrs + append_rotate_attrs + output_translate_attrs + append_translate_attrs:
         MmdAppendNode.attributeAffects(MmdAppendNode.aRatio, out_attr)
+        MmdAppendNode.attributeAffects(MmdAppendNode.aSchemaMode, out_attr)
 
     for out_attr in output_rotate_attrs + append_rotate_attrs:
         MmdAppendNode.attributeAffects(MmdAppendNode.aAffectRotation, out_attr)

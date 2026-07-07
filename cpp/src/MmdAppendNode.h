@@ -99,6 +99,7 @@ public:
     static MObject aAffectRotation;
     static MObject aAffectTranslation;
     static MObject aLocalAppend;
+    static MObject aSchemaMode;
 
     // --- 出力 ---
     // outputTranslate(double3)

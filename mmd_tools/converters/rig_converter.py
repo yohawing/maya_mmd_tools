@@ -12,6 +12,8 @@ from types import SimpleNamespace
 from mmd_tools.core.logger import get_logger, safe_log_error
 from mmd_tools.core.native.mmd_anim_runtime import is_rig_primitive_available
 
+MMD_APPEND_SCHEMA_MODE_COMPAT = 2
+
 
 def _node_leaf_name(node_name: str) -> str:
     """Return the DAG leaf name, preserving namespace but dropping parent paths."""
@@ -826,6 +828,8 @@ class RigConverter:
                 cmds.setAttr(f"{node}.affectTranslation", affect_translation)
                 if cmds.attributeQuery("localAppend", node=node, exists=True):
                     cmds.setAttr(f"{node}.localAppend", bool(local_append))
+                if cmds.attributeQuery("schemaMode", node=node, exists=True):
+                    cmds.setAttr(f"{node}.schemaMode", MMD_APPEND_SCHEMA_MODE_COMPAT)
 
                 source_append_node = append_nodes_by_target.get(source_joint)
 

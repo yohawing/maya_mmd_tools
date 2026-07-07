@@ -480,7 +480,7 @@ def main() -> int:
             "baseTranslate", "baseRotate",
             "sourceTranslate", "sourceRotate",
             "sourceJointOrient", "targetJointOrient",
-            "ratio", "affectRotation", "affectTranslation", "localAppend",
+            "ratio", "affectRotation", "affectTranslation", "localAppend", "schemaMode",
             "appendTranslate", "appendRotate",
         ]
         for attr in common_attrs:
@@ -531,6 +531,9 @@ def main() -> int:
 
         # Legacy Phase B compute tests (only when C++ registered the node)
         if cpp_registered_append:
+            actual_schema_mode = cmds.getAttr(f"{append_node}.schemaMode")
+            if actual_schema_mode != 0:
+                raise RuntimeError(f"schemaMode default should be 0 (auto), got {actual_schema_mode}")
             actual_grant = cmds.getAttr(f"{append_node}.grantRate")
             if abs(actual_grant - 0.0) > 1e-9:
                 raise RuntimeError(f"grantRate default should be 0.0, got {actual_grant}")
@@ -590,6 +593,21 @@ def main() -> int:
             expected_xonly = (92.5, 0.0, 0.0)
             if any(abs(actual - expected) > 1e-9 for actual, expected in zip(out_xonly, expected_xonly)):
                 raise RuntimeError(f"outputRotate X-only mismatch: expected {expected_xonly}, got {out_xonly}")
+
+            cmds.setAttr(f"{append_node}.schemaMode", 1)
+            cmds.setAttr(f"{append_node}.baseTranslate", 100.0, 200.0, 300.0, type="double3")
+            legacy_override_t = cmds.getAttr(f"{append_node}.outputTranslate")[0]
+            expected_override_t = (10.5, 21.0, 31.5)
+            if any(
+                abs(actual - expected) > 1e-9
+                for actual, expected in zip(legacy_override_t, expected_override_t)
+            ):
+                raise RuntimeError(
+                    "schemaMode=legacy should ignore compat translate inputs: "
+                    f"expected {expected_override_t}, got {legacy_override_t}"
+                )
+            cmds.setAttr(f"{append_node}.schemaMode", 0)
+            cmds.setAttr(f"{append_node}.baseTranslate", 0.0, 0.0, 0.0, type="double3")
             print(f"OK: {APPEND_NODE_TYPE} legacy Phase B compute verified (C++ registered)")
         else:
             print(f"SKIP: {APPEND_NODE_TYPE} legacy Phase B compute (Python registered, C++ skipped)")
@@ -678,6 +696,7 @@ def main() -> int:
             "affect_translation": True,
         }
         expected_at, expected_ar, expected_ot, expected_or = _expected_append_outputs(**compat_case)
+        cmds.setAttr(f"{append_node}.schemaMode", 2)
         cmds.setAttr(f"{append_node}.baseTranslate", *compat_case["base_translate"], type="double3")
         cmds.setAttr(f"{append_node}.baseRotate", *compat_case["base_rotate_deg"], type="double3")
         cmds.setAttr(f"{append_node}.sourceTranslate", *compat_case["source_translate"], type="double3")
