@@ -36,12 +36,16 @@ import argparse
 import hashlib
 import json
 import logging
-import os
-import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from tests.common import maya_commandport
 
 # Lazily imported for PMX fixture generation (requires mmd_tools on sys.path)
 # from mmd_tools.core.pmx_data import PmxData
@@ -212,128 +216,6 @@ def _ensure_edge_pmx_fixture(project_root: Path, model_arg: str) -> Path:
     pmx.write_file(str(model_path))
     logger.info("Wrote edge-enabled fixture to %s", model_path)
     return model_path
-
-
-def _find_maya_executable(maya_version: str) -> str:
-    """Find Maya bin/maya.exe path."""
-    loc = os.environ.get(f"MAYA_LOCATION_{maya_version}") or os.environ.get(
-        "MAYA_LOCATION"
-    )
-    if loc:
-        exe = Path(loc) / "bin" / "maya.exe"
-        if exe.is_file():
-            return str(exe)
-    for base in [
-        Path(os.environ.get("ProgramFiles", "C:/Program Files")),
-        Path(os.environ.get("ProgramW6432", "C:/Program Files")),
-    ]:
-        exe = base / f"Autodesk/Maya{maya_version}/bin/maya.exe"
-        if exe.is_file():
-            return str(exe)
-    raise FileNotFoundError(
-        f"Maya {maya_version} not found. Set MAYA_LOCATION environment variable."
-    )
-
-
-def _launch_maya(
-    maya_path: str, project_root: Path, output_dir: Path, port: int
-) -> subprocess.Popen:
-    """Launch Maya GUI with commandPort and DX11 device override.
-
-    MAYA_VP2_DEVICE_OVERRIDE=VirtualDeviceDx11 is set in the subprocess
-    environment to force Viewport 2.0 to use the DirectX 11 device,
-    which is required for dx11Shader rendering.
-    """
-    logger.info("Launching Maya GUI (DX11 device override)...")
-    cmd = [
-        maya_path,
-        "-command",
-        f'commandPort -name ":{port}" -sourceType "python";',
-    ]
-    env = os.environ.copy()
-    env["MAYA_VP2_DEVICE_OVERRIDE"] = "VirtualDeviceDx11"
-    # Ensure project root is on Maya's PYTHONPATH
-    pythonpath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{project_root};{pythonpath}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stdout_handle = open(output_dir / "maya_gui_stdout.log", "w", encoding="utf-8", errors="replace")
-    stderr_handle = open(output_dir / "maya_gui_stderr.log", "w", encoding="utf-8", errors="replace")
-    proc = subprocess.Popen(cmd, env=env, stdout=stdout_handle, stderr=stderr_handle)
-    proc._stdout_handle = stdout_handle  # type: ignore[attr-defined]
-    proc._stderr_handle = stderr_handle  # type: ignore[attr-defined]
-    proc._stdout_path = output_dir / "maya_gui_stdout.log"  # type: ignore[attr-defined]
-    proc._stderr_path = output_dir / "maya_gui_stderr.log"  # type: ignore[attr-defined]
-    logger.info("Maya PID=%d (MAYA_VP2_DEVICE_OVERRIDE=VirtualDeviceDx11)", proc.pid)
-    return proc
-
-
-def _close_process_logs(process: subprocess.Popen) -> None:
-    """Close log handles attached by _launch_maya."""
-    for attr in ("_stdout_handle", "_stderr_handle"):
-        handle = getattr(process, attr, None)
-        if handle:
-            try:
-                handle.close()
-            except Exception:
-                pass
-
-
-def _process_log_hint(process: subprocess.Popen | None) -> str:
-    """Return a short diagnostic hint for Maya process startup failures."""
-    if process is None:
-        return ""
-    parts: list[str] = []
-    for label, attr in [("stdout", "_stdout_path"), ("stderr", "_stderr_path")]:
-        path = getattr(process, attr, None)
-        if not path:
-            continue
-        path = Path(path)
-        parts.append(f"{label}: {path}")
-        if path.is_file() and path.stat().st_size:
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")
-                tail = text[-1200:].strip()
-                if tail:
-                    parts.append(f"{label} tail:\n{tail}")
-            except Exception as exc:
-                parts.append(f"{label} tail unavailable: {exc}")
-    temp_dir = os.environ.get("TEMP") or os.environ.get("TMP") or "%TEMP%"
-    parts.append(f"licensing logs: {temp_dir}\\MayaCLM-*.log")
-    return "\n".join(parts)
-
-
-def _wait_for_command_port(port: int, timeout: int, process: subprocess.Popen | None = None) -> None:
-    """Wait until Maya commandPort :port accepts connections."""
-    logger.info("Waiting for commandPort :%d ...", port)
-    start = time.time()
-    while time.time() - start < timeout:
-        if process is not None and process.poll() is not None:
-            raise RuntimeError(
-                f"Maya exited before commandPort opened (exit code {process.returncode}).\n"
-                + _process_log_hint(process)
-            )
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                logger.info("commandPort :%d is open.", port)
-                return
-        except (socket.timeout, ConnectionRefusedError):
-            time.sleep(1)
-    raise TimeoutError(
-        f"Timed out after {timeout}s waiting for commandPort :{port}.\n"
-        + _process_log_hint(process)
-    )
-
-
-def _send_command(port: int, command: str) -> None:
-    """Send a Python command string to Maya via commandPort."""
-    logger.info("Sending command to Maya (port=%d, %d bytes)...", port, len(command))
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-            sock.sendall(command.encode("utf-8"))
-        logger.info("Command sent.")
-    except Exception as exc:
-        logger.error("Failed to send command: %s", exc)
-        raise
 
 
 def _monitor_log(log_path: Path, timeout: int) -> bool:
@@ -1029,7 +911,9 @@ def main() -> int:
     can_run = sys.platform == "win32"
     if can_run:
         try:
-            maya_exe = _find_maya_executable(args.maya_version)
+            maya_exe = maya_commandport.maya_exe(args.maya_version)
+            if not maya_exe.is_file():
+                raise FileNotFoundError(f"maya.exe not found: {maya_exe}")
             logger.info("Maya executable: %s", maya_exe)
         except FileNotFoundError as exc:
             logger.warning("Maya not found: %s", exc)
@@ -1062,8 +946,15 @@ def main() -> int:
     # -- Actually run Maya GUI --
     maya_process = None
     try:
-        maya_process = _launch_maya(maya_exe, project_root, output_dir, args.port)
-        _wait_for_command_port(args.port, MAYA_START_TIMEOUT, maya_process)
+        maya_process = maya_commandport.launch_maya(
+            version=args.maya_version,
+            project_root=project_root,
+            output_dir=output_dir,
+            port=args.port,
+            launch_mode="direct",
+            env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
+        )
+        maya_commandport.wait_for_port(args.port, MAYA_START_TIMEOUT, maya_process)
 
         # Build the Maya-side capture command
         maya_cmd = _build_maya_command(
@@ -1093,7 +984,7 @@ def main() -> int:
             f"exec(compile(open(r'{cmd_file_posix}', encoding='utf-8').read(), "
             f"r'{cmd_file_posix}', 'exec'))"
         )
-        _send_command(args.port, one_liner)
+        maya_commandport.send_python(args.port, one_liner, label="<gui-dx11-edge-command>")
 
         # Monitor for completion
         _monitor_log(log_path, CAPTURE_TIMEOUT)
@@ -1109,16 +1000,13 @@ def main() -> int:
             logger.info("Terminating Maya...")
             try:
                 # Try graceful quit
-                _send_command(
-                    args.port,
-                    'import maya.cmds as cmds; cmds.quit(force=True)',
-                )
+                maya_commandport.quit_maya(args.port)
                 maya_process.wait(timeout=30)
             except Exception:
                 logger.warning("Force-killing Maya process...")
                 maya_process.kill()
             logger.info("Maya terminated.")
-            _close_process_logs(maya_process)
+            maya_commandport.close_process_logs(maya_process)
 
     return 0
 

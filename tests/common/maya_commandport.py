@@ -117,6 +117,7 @@ def launch_maya(
     output_dir: Path,
     port: int,
     launch_mode: str = "powershell",
+    env_overrides: Optional[dict[str, str]] = None,
 ) -> Optional[subprocess.Popen]:
     """Launch Maya GUI with a Python commandPort.
 
@@ -132,7 +133,8 @@ def launch_maya(
     env = os.environ.copy()
     _prepend_env_path(env, "PYTHONPATH", project_root)
     _prepend_env_path(env, "MAYA_MODULE_PATH", project_root)
-    env.setdefault("MAYA_VP2_DEVICE_OVERRIDE", "VirtualDeviceDx11")
+    if env_overrides:
+        env.update(env_overrides)
 
     command = [str(executable), "-command", f'commandPort -name ":{port}" -sourceType "python";']
     if platform.system() == "Windows" and launch_mode == "powershell":

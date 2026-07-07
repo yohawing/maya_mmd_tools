@@ -12,19 +12,21 @@ import argparse
 import json
 import logging
 import os
-import socket
 import struct
-import subprocess
 import sys
 import time
 import zlib
 from pathlib import Path
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from tests.common import maya_commandport
 
 DEFAULT_MAYA_VERSION = "2024"
 COMMAND_PORT = 7726
 COMPLETION_MARKER = "//-- PHYSICS COLLIDER CAPTURE FINISHED --//"
-MAYA_START_TIMEOUT = 120
 CAPTURE_TIMEOUT = 600
 LOG_POLL_INTERVAL = 1
 
@@ -37,19 +39,6 @@ def _force_utf8_stdio() -> None:
         sys.stdout = open(sys.stdout.fileno(), mode="w", encoding="utf-8", errors="replace", closefd=False)
     if hasattr(sys.stderr, "buffer"):
         sys.stderr = open(sys.stderr.fileno(), mode="w", encoding="utf-8", errors="replace", closefd=False)
-
-
-def _find_maya(version: str) -> str:
-    loc = os.environ.get(f"MAYA_LOCATION_{version}") or os.environ.get("MAYA_LOCATION")
-    candidates: list[Path] = []
-    if loc:
-        candidates.append(Path(loc) / "bin" / "maya.exe")
-    for base in (os.environ.get("ProgramFiles", "C:/Program Files"), os.environ.get("ProgramW6432", "C:/Program Files")):
-        candidates.append(Path(base) / f"Autodesk/Maya{version}" / "bin" / "maya.exe")
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    raise FileNotFoundError(f"Maya {version} not found")
 
 
 def _actual_playblast_path(target: Path) -> Path | None:
@@ -291,11 +280,6 @@ def run_capture(log_path: str, model_path: str, out_png: str, diag_json: str, wi
         Path(diag_json).write_text(json.dumps(diag, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _send_command(port: int, command: str) -> None:
-    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-        sock.sendall(command.encode("utf-8"))
-
-
 def _tail_until_marker(log_path: Path, timeout: int) -> None:
     if not log_path.exists():
         log_path.touch()
@@ -366,37 +350,25 @@ def main() -> int:
         if path.exists():
             path.unlink()
 
-    maya_exe = _find_maya(args.maya)
-    env = os.environ.copy()
-    env["MAYA_VP2_DEVICE_OVERRIDE"] = "VirtualDeviceDx11"
-    env["PYTHONPATH"] = f"{project_root};{env.get('PYTHONPATH', '')}"
-    env["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
-    stdout_path = output_dir / "maya_gui_stdout.log"
-    stderr_path = output_dir / "maya_gui_stderr.log"
-    stdout_handle = None
-    stderr_handle = None
+    maya_exe = maya_commandport.maya_exe(args.maya)
+    logger.info("Maya executable: %s", maya_exe)
+    stdout_path = output_dir / "maya_stdout.log"
+    stderr_path = output_dir / "maya_stderr.log"
     proc = None
     try:
         if not args.attach_existing:
-            stdout_handle = open(stdout_path, "w", encoding="utf-8", errors="replace")
-            stderr_handle = open(stderr_path, "w", encoding="utf-8", errors="replace")
-            proc = subprocess.Popen(
-                [maya_exe, "-command", f'commandPort -name ":{args.port}" -sourceType "python";'],
-                env=env,
-                stdout=stdout_handle,
-                stderr=stderr_handle,
+            proc = maya_commandport.launch_maya(
+                version=args.maya,
+                project_root=project_root,
+                output_dir=output_dir,
+                port=args.port,
+                launch_mode="direct",
+                env_overrides={
+                    "MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11",
+                    "MMD_TOOLS_SKIP_SHADER_OVERRIDE": "1",
+                },
             )
-        start = time.time()
-        while time.time() - start < MAYA_START_TIMEOUT:
-            if proc is not None and proc.poll() is not None:
-                raise RuntimeError(f"Maya exited before commandPort opened ({proc.returncode})")
-            try:
-                with socket.create_connection(("127.0.0.1", args.port), timeout=1):
-                    break
-            except (ConnectionRefusedError, socket.timeout):
-                time.sleep(1)
-        else:
-            raise TimeoutError(f"commandPort :{args.port} never opened")
+        maya_commandport.wait_for_port(args.port, timeout=120, process=proc)
         logger.info("commandPort :%d open", args.port)
 
         command = (
@@ -409,7 +381,7 @@ def main() -> int:
             f"run_capture(r'{log_path.as_posix()}', r'{model_path.as_posix()}', "
             f"r'{out_path.as_posix()}', r'{diag_path.as_posix()}', {args.width}, {args.height})\n"
         )
-        _send_command(args.port, command)
+        maya_commandport.send_python(args.port, command, label="<physics-collider-command>")
         logger.info("capture command sent (%d bytes)", len(command))
         _tail_until_marker(log_path, CAPTURE_TIMEOUT)
         diag = _validate_diag(diag_path)
@@ -418,21 +390,13 @@ def main() -> int:
         return 0
     finally:
         if not args.leave_open:
-            try:
-                _send_command(args.port, "import maya.cmds as cmds; cmds.quit(force=True)")
-            except Exception:
-                pass
+            maya_commandport.quit_maya(args.port)
         if proc is not None:
             try:
                 proc.wait(timeout=30)
             except Exception:
                 proc.kill()
-        for handle in (stdout_handle, stderr_handle):
-            try:
-                if handle:
-                    handle.close()
-            except Exception:
-                pass
+        maya_commandport.close_process_logs(proc)
         for label, path in (("MAYA STDOUT", stdout_path), ("MAYA STDERR", stderr_path)):
             try:
                 text = path.read_text(encoding="utf-8", errors="replace").strip()

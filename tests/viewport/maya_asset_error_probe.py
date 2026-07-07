@@ -359,6 +359,7 @@ def main() -> int:
             output_dir=out_dir,
             port=args.port,
             launch_mode=args.launch_mode,
+            env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
         )
         launched = True
         print(f"launched Maya {args.maya} via {args.launch_mode}")

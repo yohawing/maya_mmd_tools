@@ -12,16 +12,18 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
-import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from tests.common import maya_commandport
+
 COMMAND_PORT = 7724
 COMPLETION_MARKER = "//-- NATIVE_RIG_E2E_DONE --//"
-MAYA_START_TIMEOUT = 120
 TEST_TIMEOUT = 300
 LOG_POLL_INTERVAL = 1
 
@@ -180,22 +182,6 @@ def run_e2e_check(log_path: str, model_path: str) -> None:
 # ===================================================================
 # Host-side
 # ===================================================================
-def _find_maya(version: str) -> str:
-    loc = os.environ.get(f"MAYA_LOCATION_{version}") or os.environ.get("MAYA_LOCATION")
-    cands = []
-    if loc:
-        cands.append(Path(loc) / "bin" / "maya.exe")
-    for base in [
-        os.environ.get("ProgramFiles", "C:/Program Files"),
-        os.environ.get("ProgramW6432", "C:/Program Files"),
-    ]:
-        cands.append(Path(base) / f"Autodesk/Maya{version}" / "bin" / "maya.exe")
-    for c in cands:
-        if c.is_file():
-            return str(c)
-    raise FileNotFoundError(f"Maya {version} not found")
-
-
 def main() -> int:
     import io
     if hasattr(sys.stdout, "buffer"):
@@ -215,36 +201,21 @@ def main() -> int:
         log_path.unlink()
 
     model_posix = Path(args.model).resolve().as_posix()
-    maya_exe = _find_maya(args.maya)
+    maya_exe = maya_commandport.maya_exe(args.maya)
     logger.info("Maya: %s", maya_exe)
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"{project_root};{env.get('PYTHONPATH', '')}"
-
+    proc = maya_commandport.launch_maya(
+        version=args.maya,
+        project_root=project_root,
+        output_dir=log_dir,
+        port=args.port,
+        launch_mode="direct",
+    )
     maya_out = log_dir / "maya_stdout.log"
     maya_err = log_dir / "maya_stderr.log"
-    out_fh = open(maya_out, "w", encoding="utf-8", errors="replace")
-    err_fh = open(maya_err, "w", encoding="utf-8", errors="replace")
-
-    proc = subprocess.Popen(
-        [maya_exe, "-command", f'commandPort -name ":{args.port}" -sourceType "python";'],
-        env=env, stdout=out_fh, stderr=err_fh,
-    )
 
     try:
-        start = time.time()
-        opened = False
-        while time.time() - start < MAYA_START_TIMEOUT:
-            if proc.poll() is not None:
-                raise RuntimeError(f"Maya exited early ({proc.returncode})")
-            try:
-                with socket.create_connection(("127.0.0.1", args.port), timeout=1):
-                    opened = True
-                    break
-            except (socket.timeout, ConnectionRefusedError):
-                time.sleep(1)
-        if not opened:
-            raise TimeoutError(f"commandPort :{args.port} never opened")
+        maya_commandport.wait_for_port(args.port, timeout=120, process=proc)
         logger.info("commandPort :%d ready", args.port)
 
         command = (
@@ -257,8 +228,7 @@ def main() -> int:
             "from tests.viewport.e2e_native_rig import run_e2e_check\n"
             f"run_e2e_check(r'{log_path.as_posix()}', r'{model_posix}')\n"
         )
-        with socket.create_connection(("127.0.0.1", args.port), timeout=10) as sock:
-            sock.sendall(command.encode("utf-8"))
+        maya_commandport.send_python(args.port, command, label="<native-rig-e2e-command>")
         logger.info("command sent (%d bytes)", len(command))
 
         if not log_path.exists():
@@ -297,16 +267,11 @@ def main() -> int:
         return 1
 
     finally:
-        try:
-            with socket.create_connection(("127.0.0.1", args.port), timeout=5) as sock:
-                sock.sendall(b"import maya.cmds as cmds; cmds.quit(force=True)\n")
-        except Exception:
-            pass
+        maya_commandport.quit_maya(args.port)
         time.sleep(3)
-        if proc.poll() is None:
+        if proc is not None and proc.poll() is None:
             proc.terminate()
-        out_fh.close()
-        err_fh.close()
+        maya_commandport.close_process_logs(proc)
 
         for lf in [maya_out, maya_err]:
             if lf.exists() and lf.stat().st_size > 0:

@@ -11,17 +11,20 @@ from __future__ import annotations
 import json
 import logging
 import os
-import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from tests.common import maya_commandport
+
 DEFAULT_MAYA_VERSION = "2026"
 COMMAND_PORT = 7723
 COMPLETION_MARKER = "RESOLVE_E2E_DONE"
-MAYA_START_TIMEOUT = 120
 RESOLVE_TIMEOUT = 600
 LOG_POLL_INTERVAL = 1
 CAPTURE_WIDTH = 1280
@@ -327,19 +330,6 @@ def run(model_path: str, log_path: Optional[str] = None) -> int:
         return 1
 
 
-def _find_maya(version: str) -> str:
-    loc = os.environ.get(f"MAYA_LOCATION_{version}") or os.environ.get("MAYA_LOCATION")
-    candidates = []
-    if loc:
-        candidates.append(Path(loc) / "bin" / "maya.exe")
-    for base in (os.environ.get("ProgramFiles", "C:/Program Files"), os.environ.get("ProgramW6432", "C:/Program Files")):
-        candidates.append(Path(base) / f"Autodesk/Maya{version}" / "bin" / "maya.exe")
-    for candidate in candidates:
-        if candidate.is_file():
-            return str(candidate)
-    raise FileNotFoundError(f"Maya {version} not found (set MAYA_LOCATION).")
-
-
 def main() -> int:
     """Launch Maya GUI and call ``run()`` with ``MMD_E2E_MODEL_PATH``."""
 
@@ -361,35 +351,21 @@ def main() -> int:
 
     maya_version = os.environ.get("MMD_E2E_MAYA_VERSION", DEFAULT_MAYA_VERSION)
     port = int(os.environ.get("MMD_E2E_COMMAND_PORT", str(COMMAND_PORT)))
-    maya_exe = _find_maya(maya_version)
+    maya_exe = maya_commandport.maya_exe(maya_version)
     logger.info("Maya executable: %s", maya_exe)
 
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"{project_root};{env.get('PYTHONPATH', '')}"
-    env["MAYA_VP2_DEVICE_OVERRIDE"] = "VirtualDeviceDx11"
-
-    maya_out_path = out_dir / "maya_gui_stdout.log"
-    maya_err_path = out_dir / "maya_gui_stderr.log"
-    out_fh = open(maya_out_path, "w", encoding="utf-8", errors="replace")
-    err_fh = open(maya_err_path, "w", encoding="utf-8", errors="replace")
-    proc = subprocess.Popen(
-        [maya_exe, "-command", f'commandPort -name ":{port}" -sourceType "python";'],
-        env=env,
-        stdout=out_fh,
-        stderr=err_fh,
+    proc = maya_commandport.launch_maya(
+        version=maya_version,
+        project_root=project_root,
+        output_dir=out_dir,
+        port=port,
+        launch_mode="direct",
+        env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
     )
+    maya_out_path = out_dir / "maya_stdout.log"
+    maya_err_path = out_dir / "maya_stderr.log"
     try:
-        start = time.time()
-        while time.time() - start < MAYA_START_TIMEOUT:
-            if proc.poll() is not None:
-                raise RuntimeError(f"Maya exited before commandPort opened ({proc.returncode})")
-            try:
-                with socket.create_connection(("127.0.0.1", port), timeout=1):
-                    break
-            except (socket.timeout, ConnectionRefusedError):
-                time.sleep(1)
-        else:
-            raise TimeoutError(f"commandPort :{port} never opened")
+        maya_commandport.wait_for_port(port, timeout=120, process=proc)
 
         command = (
             "import sys\n"
@@ -400,8 +376,7 @@ def main() -> int:
             "from tests.viewport.resolve_e2e import run\n"
             f"run({json.dumps(model_path, ensure_ascii=True)}, {json.dumps(log_path.as_posix())})\n"
         )
-        with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-            sock.sendall(command.encode("utf-8"))
+        maya_commandport.send_python(port, command, label="<resolve-e2e-command>")
 
         if not log_path.exists():
             log_path.touch()
@@ -427,20 +402,14 @@ def main() -> int:
             raise TimeoutError(f"resolve E2E did not finish within {RESOLVE_TIMEOUT}s")
         return exit_code
     finally:
+        maya_commandport.quit_maya(port)
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-                sock.sendall(b"import maya.cmds as cmds; cmds.quit(force=True)")
+            if proc is not None:
+                proc.wait(timeout=30)
         except Exception:
-            pass
-        try:
-            proc.wait(timeout=30)
-        except Exception:
-            proc.kill()
-        for handle in (out_fh, err_fh):
-            try:
-                handle.close()
-            except Exception:
-                pass
+            if proc is not None:
+                proc.kill()
+        maya_commandport.close_process_logs(proc)
         for label, path in (("MAYA STDOUT", maya_out_path), ("MAYA STDERR", maya_err_path)):
             text = path.read_text(encoding="utf-8", errors="replace").strip() if path.exists() else ""
             if text:

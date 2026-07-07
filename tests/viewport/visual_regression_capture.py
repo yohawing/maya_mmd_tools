@@ -19,10 +19,16 @@ import json
 import logging
 import os
 import shutil
-import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from tests.common import maya_commandport
 
 
 DEFAULT_MAYA_VERSION = "2024"
@@ -36,13 +42,6 @@ LOGGER = logging.getLogger(__name__)
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
-
-
-def _maya_exe(version: str) -> Path:
-    env = os.environ.get(f"MAYA_LOCATION_{version}") or os.environ.get("MAYA_LOCATION")
-    if env:
-        return Path(env) / "bin" / "maya.exe"
-    return Path(f"C:/Program Files/Autodesk/Maya{version}/bin/maya.exe")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -170,82 +169,6 @@ def _prepare_shader(project_root: Path, output_dir: Path, shader_fx: str = "") -
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, dest)
     return dest
-
-
-def _launch_maya(
-    maya_path: Path,
-    project_root: Path,
-    output_dir: Path,
-    port: int,
-    launch_mode: str,
-) -> subprocess.Popen | None:
-    if not maya_path.exists():
-        raise FileNotFoundError(f"maya.exe not found: {maya_path}")
-
-    env = os.environ.copy()
-    env["MAYA_VP2_DEVICE_OVERRIDE"] = "VirtualDeviceDx11"
-    env["PYTHONPATH"] = f"{project_root};{env.get('PYTHONPATH', '')}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    cmd = [str(maya_path), "-command", f'commandPort -name ":{port}" -sourceType "python";']
-    if launch_mode == "powershell":
-        args = "@(" + ", ".join("'" + c.replace("'", "''") + "'" for c in cmd[1:]) + ")"
-        ps = [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            f"Start-Process -FilePath '{str(maya_path).replace(chr(39), chr(39)+chr(39))}' -ArgumentList {args}",
-        ]
-        subprocess.run(ps, cwd=str(project_root), check=True)
-        LOGGER.info("Launched Maya via PowerShell Start-Process")
-        return None
-
-    stdout = open(output_dir / "maya_stdout.log", "w", encoding="utf-8", errors="replace")
-    stderr = open(output_dir / "maya_stderr.log", "w", encoding="utf-8", errors="replace")
-    proc = subprocess.Popen(cmd, env=env, stdout=stdout, stderr=stderr)
-    proc._stdout_handle = stdout  # type: ignore[attr-defined]
-    proc._stderr_handle = stderr  # type: ignore[attr-defined]
-    LOGGER.info("Launched Maya PID=%s with DX11 VP2 override", proc.pid)
-    return proc
-
-
-def _close_process_logs(proc: subprocess.Popen) -> None:
-    for attr in ("_stdout_handle", "_stderr_handle"):
-        handle = getattr(proc, attr, None)
-        if handle:
-            try:
-                handle.close()
-            except Exception:
-                pass
-
-
-def _wait_for_port(port: int, timeout: int, proc: subprocess.Popen | None) -> None:
-    start = time.time()
-    while time.time() - start < timeout:
-        if proc is not None and proc.poll() is not None:
-            raise RuntimeError(f"Maya exited before commandPort opened: {proc.returncode}")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                return
-        except OSError:
-            time.sleep(1)
-    raise TimeoutError(f"Timed out waiting for commandPort :{port}")
-
-
-def _send_command(port: int, code: str) -> None:
-    command = "_vr_ns={}; exec(compile(" + repr(code) + ", '<maya-visual-regression>', 'exec'), _vr_ns, _vr_ns)\n"
-    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-        sock.sendall(command.encode("utf-8"))
-        sock.shutdown(socket.SHUT_WR)
-
-
-def _send_quit(port: int) -> None:
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-            sock.sendall(b"import maya.cmds as cmds; cmds.quit(force=True)\n")
-            sock.shutdown(socket.SHUT_WR)
-    except OSError:
-        pass
 
 
 def _monitor_log(log_path: Path, timeout: int) -> None:
@@ -919,8 +842,16 @@ def main() -> int:
         if args.attach_existing:
             LOGGER.info("Attaching to existing Maya commandPort :%d", args.port)
         else:
-            proc = _launch_maya(_maya_exe(args.maya), project_root, output_dir, args.port, args.launch_mode)
-        _wait_for_port(args.port, args.timeout, proc)
+            LOGGER.info("Maya executable: %s", maya_commandport.maya_exe(args.maya))
+            proc = maya_commandport.launch_maya(
+                version=args.maya,
+                project_root=project_root,
+                output_dir=output_dir,
+                port=args.port,
+                launch_mode=args.launch_mode,
+                env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
+            )
+        maya_commandport.wait_for_port(args.port, args.timeout, proc)
         code = _build_maya_code(
             project_root=project_root,
             cases=cases,
@@ -933,11 +864,11 @@ def main() -> int:
             debug_lambert_control=args.debug_lambert_control,
             hide_orig_shapes=args.hide_orig_shapes,
         )
-        _send_command(args.port, code)
+        maya_commandport.send_python(args.port, code, label="<maya-visual-regression>")
         _monitor_log(log_path, args.timeout)
     finally:
         if proc is None and not args.attach_existing and not args.keep_maya:
-            _send_quit(args.port)
+            maya_commandport.quit_maya(args.port)
         if proc is not None and not args.keep_maya:
             proc.terminate()
             try:
@@ -945,7 +876,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=20)
-            _close_process_logs(proc)
+            maya_commandport.close_process_logs(proc)
 
     if not report_path.is_file():
         raise RuntimeError(f"Maya-side report was not written: {report_path}")

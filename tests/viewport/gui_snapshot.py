@@ -25,17 +25,19 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
-import socket
-import subprocess
 import sys
 import time
 from pathlib import Path
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from tests.common import maya_commandport
+
 DEFAULT_MAYA_VERSION = "2026"  # the user's DX11-enabled Maya
 COMMAND_PORT = 7722
 COMPLETION_MARKER = "//-- SNAPSHOT FINISHED --//"
-MAYA_START_TIMEOUT = 120  # seconds
 CAPTURE_TIMEOUT = 600  # seconds (full character models are slow to import)
 LOG_POLL_INTERVAL = 1  # second
 
@@ -268,23 +270,6 @@ def run_snapshot(
 # ===================================================================
 # Host-side
 # ===================================================================
-def _find_maya(version: str) -> str:
-    """Return the path to maya.exe for *version*."""
-    loc = os.environ.get(f"MAYA_LOCATION_{version}") or os.environ.get("MAYA_LOCATION")
-    cands = []
-    if loc:
-        cands.append(Path(loc) / "bin" / "maya.exe")
-    for base in [
-        os.environ.get("ProgramFiles", "C:/Program Files"),
-        os.environ.get("ProgramW6432", "C:/Program Files"),
-    ]:
-        cands.append(Path(base) / f"Autodesk/Maya{version}" / "bin" / "maya.exe")
-    for c in cands:
-        if c.is_file():
-            return str(c)
-    raise FileNotFoundError(f"Maya {version} not found (set MAYA_LOCATION).")
-
-
 def main() -> int:
     """Launch Maya GUI, drive a single snapshot via commandPort, then quit."""
     import io
@@ -317,44 +302,24 @@ def main() -> int:
 
     model_posix = Path(args.model).resolve().as_posix()
     vt_list = [s.strip() for s in args.view_transforms.split(",") if s.strip()]
-    maya_exe = _find_maya(args.maya)
+    maya_exe = maya_commandport.maya_exe(args.maya)
     logger.info("Maya executable: %s", maya_exe)
-
-    env = os.environ.copy()
-    env["PYTHONPATH"] = f"{project_root};{env.get('PYTHONPATH', '')}"
-    # Force VP2 to the DX11 device. Without this, the offscreen playblast render
-    # context cannot evaluate the dx11Shader effect and VP2 falls back to a flat
-    # green "shader failed" silhouette.
-    env["MAYA_VP2_DEVICE_OVERRIDE"] = "VirtualDeviceDx11"
 
     # Capture Maya GUI's native stdout/stderr to files so plugin/MEL/VP2/import
     # errors are not lost (Maya GUI detaches its console on Windows). Their tails
     # are echoed to the CLI on exit -- see the finally block.
-    maya_out_path = out_path.parent / "maya_gui_stdout.log"
-    maya_err_path = out_path.parent / "maya_gui_stderr.log"
-    out_fh = open(maya_out_path, "w", encoding="utf-8", errors="replace")
-    err_fh = open(maya_err_path, "w", encoding="utf-8", errors="replace")
-    proc = subprocess.Popen(
-        [maya_exe, "-command", f'commandPort -name ":{args.port}" -sourceType "python";'],
-        env=env,
-        stdout=out_fh,
-        stderr=err_fh,
+    proc = maya_commandport.launch_maya(
+        version=args.maya,
+        project_root=project_root,
+        output_dir=out_path.parent,
+        port=args.port,
+        launch_mode="direct",
+        env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
     )
+    maya_out_path = out_path.parent / "maya_stdout.log"
+    maya_err_path = out_path.parent / "maya_stderr.log"
     try:
-        # -- wait for the commandPort --
-        start = time.time()
-        opened = False
-        while time.time() - start < MAYA_START_TIMEOUT:
-            if proc.poll() is not None:
-                raise RuntimeError(f"Maya exited before commandPort opened ({proc.returncode})")
-            try:
-                with socket.create_connection(("127.0.0.1", args.port), timeout=1):
-                    opened = True
-                    break
-            except (socket.timeout, ConnectionRefusedError):
-                time.sleep(1)
-        if not opened:
-            raise TimeoutError(f"commandPort :{args.port} never opened")
+        maya_commandport.wait_for_port(args.port, timeout=120, process=proc)
         logger.info("commandPort :%d open", args.port)
 
         # -- send the short import+call (proven run_gui_tests.py shape) --
@@ -370,8 +335,7 @@ def main() -> int:
             f"r'{out_path.as_posix()}', {args.width}, {args.height}, "
             f"view_transforms={vt_list!r})\n"
         )
-        with socket.create_connection(("127.0.0.1", args.port), timeout=10) as sock:
-            sock.sendall(command.encode("utf-8"))
+        maya_commandport.send_python(args.port, command, label="<gui-snapshot-command>")
         logger.info("snapshot command sent (%d bytes)", len(command))
 
         # -- tail the log for the completion marker --
@@ -395,22 +359,16 @@ def main() -> int:
         logger.info("snapshot finished; PNG at %s", out_path)
         return 0
     finally:
+        maya_commandport.quit_maya(args.port)
         try:
-            with socket.create_connection(("127.0.0.1", args.port), timeout=5) as sock:
-                sock.sendall(b"import maya.cmds as cmds; cmds.quit(force=True)")
+            if proc is not None:
+                proc.wait(timeout=30)
         except Exception:
-            pass
-        try:
-            proc.wait(timeout=30)
-        except Exception:
-            proc.kill()
+            if proc is not None:
+                proc.kill()
         # Surface Maya's native stdout/stderr in the CLI so plugin/MEL/VP2 errors
         # are never lost (this is what was invisible before).
-        for fh in (out_fh, err_fh):
-            try:
-                fh.close()
-            except Exception:
-                pass
+        maya_commandport.close_process_logs(proc)
         for label, path in (("MAYA STDOUT", maya_out_path), ("MAYA STDERR", maya_err_path)):
             try:
                 text = path.read_text(encoding="utf-8", errors="replace").strip()
