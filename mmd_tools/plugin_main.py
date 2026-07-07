@@ -86,6 +86,14 @@ def open_main_window(dockable=False):
     main_window = MainWindow()
     main_window.show_window(dockable=dockable)
     _main_window = main_window
+    return main_window
+
+
+def _open_animator_toolset(*_args):
+    """Open the main window and switch to the Animation tab."""
+    window = open_main_window(dockable=False)
+    if window.animation_tab is not None:
+        window.tab_widget.setCurrentWidget(window.animation_tab)
 
 
 def install_mmd_menu():
@@ -93,9 +101,9 @@ def install_mmd_menu():
     if not cmds.menu("MMD", exists=True):
         cmds.menu("MMD", parent="MayaWindow")
 
-    # Keep menu installation idempotent across userSetup, reloads, and plug-in toggles.
+    _LABELS = ("MMD Tools", "Animator Toolset")
     for item in cmds.menu("MMD", query=True, itemArray=True) or []:
-        if cmds.menuItem(item, query=True, label=True) == "MMD Tools":
+        if cmds.menuItem(item, query=True, label=True) in _LABELS:
             cmds.deleteUI(item)
 
     cmds.menuItem(
@@ -104,6 +112,16 @@ def install_mmd_menu():
         command=lambda *args: open_main_window(dockable=False),
         parent="MMD",
     )
+
+    from mmd_tools.services.settings_service import SettingsService
+
+    if SettingsService().is_development_mode():
+        cmds.menuItem(
+            "MMDAnimatorToolsetMenuItem",
+            label="Animator Toolset",
+            command=_open_animator_toolset,
+            parent="MMD",
+        )
 
 
 def uninstall_mmd_menu():
