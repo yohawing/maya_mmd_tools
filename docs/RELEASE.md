@@ -148,7 +148,7 @@ If a bundled Maya version cannot run in the local environment, run at least `cpp
 uvx nox -s cpp_build -- --maya <version> --config Release
 ```
 
-`release_camera_motion_oracle` is a local GoldenOracle gate for `F:\Develop\MMDDev\GoldenOracle\manifests\camera_motion.json`. By default it gates the stable generated camera cases (`camera-edge-generated-vmd` and `camera-interpolation-isolated-vmd`). It runs Bake mode as a strict current/keyframe comparison, and Sparse mode as a keyframe gate with current playback recorded report-only because the editable sparse camera rig uses Maya curves between sparse keys. Use `--all-cases` for a full local audit after refreshing or accepting the nanoem camera baselines.
+`release_camera_motion_oracle` is a camera-motion gate with a repo-local generated fixture by default (`tests/data/camera_motion/manifest.json`), so the release gate does not silently skip when the local GoldenOracle checkout is absent. It runs Bake mode as a strict current/keyframe comparison, and Sparse mode as a keyframe gate with current playback recorded report-only because the editable sparse camera rig uses Maya curves between sparse keys. Pass `--manifest F:\Develop\MMDDev\GoldenOracle\manifests\camera_motion.json` and `--all-cases` for a full local audit after refreshing or accepting the nanoem camera baselines.
 
 If GUI, viewport, or Rig/Bake parity behavior changed, add the relevant viewport / commandPort smoke result to the PR notes. Local asset manifests must be passed by CLI argument or a local-only release gate and should not be added to CI-only tests.
 

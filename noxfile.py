@@ -1698,7 +1698,7 @@ def release_gate(session: nox.Session) -> None:
     camera_manifest = _option(
         args,
         "--camera-manifest",
-        "F:/Develop/MMDDev/GoldenOracle/manifests/camera_motion.json",
+        "tests/data/camera_motion/manifest.json",
     )
     local_parity_manifest = _option(args, "--local-parity-manifest", "local-parity-manifest.json")
     results: list[dict[str, object]] = []
@@ -2087,7 +2087,7 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
     manifest = _option(
         session.posargs,
         "--manifest",
-        "F:/Develop/MMDDev/GoldenOracle/manifests/camera_motion.json",
+        "tests/data/camera_motion/manifest.json",
     )
     out_dir = _require_build_path(
         session,

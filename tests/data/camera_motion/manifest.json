@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "camera-motion",
+  "backend": "repo-fixture",
+  "defaults": {
+    "assets": {
+      "cameraMotion": "camera-edge-generated.vmd"
+    },
+    "compare": {
+      "epsilon": 0.0005
+    }
+  },
+  "cases": [
+    {
+      "name": "camera-edge-generated-vmd",
+      "kind": "camera-numeric-dump",
+      "oracle": {
+        "path": "camera-edge-generated.oracle.jsonl",
+        "format": "jsonl"
+      },
+      "frames": [0, 1, 2, 8, 15, 22, 30, 37, 45, 52, 60],
+      "metadata": {
+        "title": "repo-local synthetic camera edge fixture"
+      }
+    },
+    {
+      "name": "camera-interpolation-isolated-vmd",
+      "kind": "camera-numeric-dump",
+      "assets": {
+        "cameraMotion": "camera-interpolation-isolated.vmd"
+      },
+      "oracle": {
+        "path": "camera-interpolation-isolated.oracle.jsonl",
+        "format": "jsonl"
+      },
+      "metadata": {
+        "title": "repo-local synthetic camera interpolation fixture"
+      }
+    }
+  ]
+}
