@@ -34,6 +34,8 @@ class AnimatorToolsetWindow(QWidget):
         )
         layout.addWidget(self.animation_tab)
 
+        self.app_state.refresh_model_list()
+
     def show_window(self, dockable=True):
         """Show as a dockable Maya panel or a floating window."""
         if dockable:

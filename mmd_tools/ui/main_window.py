@@ -303,6 +303,10 @@ class MainWindow(QMainWindow):
             self.physics_tab = None
             self.physics_presenter = None
 
+        from mmd_tools.plugin_main import install_mmd_menu
+
+        install_mmd_menu()
+
     def retranslate_all_tabs(self):
         """すべてのタブのUIテキストを再翻訳"""
         from .translations import UITranslator
