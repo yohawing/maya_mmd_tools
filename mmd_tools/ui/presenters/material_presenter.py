@@ -1,4 +1,5 @@
-from mmd_tools.core import maya_material_utils, maya_utils
+from mmd_tools.core import maya_attribute_utils as maya_utils
+from mmd_tools.core import maya_material_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_EDGE_COLOR,
