@@ -5,6 +5,7 @@ from maya import cmds
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters import BoneConverter, MeshConverter
 from mmd_tools.core import VmdData
+from tests.common.vmd_mock import VmdMock
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core import settings
@@ -165,3 +166,27 @@ class TestVmdConverter(MayaTestBase):
         # 39フレーム目の回転値を確認
         cmds.currentTime(39, edit=True)
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), -45.0, delta=0.1)
+
+    def test_camera_vmd_conversion_creates_scene_keys(self):
+        """公開 convert() 経由でカメラ VMD が scene に key を作ることを確認する"""
+        vmd_path = self.fixture_provider.create_temp_file(VmdMock.create_camera_vmd(), ".vmd")
+        vmd_data = VmdData().parse_file(vmd_path)
+
+        result = self.converter.convert(vmd_data)
+
+        self.assertTrue(result)
+        cameras = cmds.ls("*.mmd_camera", objectsOnly=True) or []
+        self.assertEqual(len(cameras), 1)
+        camera = cameras[0]
+        targets = cmds.listConnections(f"{camera}.mmd_camera_target_node", source=True, destination=False) or []
+        self.assertEqual(len(targets), 1)
+        target = targets[0]
+
+        camera_translate_keys = cmds.keyframe(f"{camera}.translateZ", query=True, keyframeCount=True)
+        target_translate_keys = cmds.keyframe(f"{target}.translateY", query=True, keyframeCount=True)
+        self.assertGreater(camera_translate_keys, 0, "mmd_camera.translateZ に key がありません")
+        self.assertGreater(target_translate_keys, 0, "mmd_camera_target.translateY に key がありません")
+
+        cmds.currentTime(0, edit=True)
+        self.assertAlmostEqual(cmds.getAttr(f"{camera}.translateZ"), -30.0, delta=0.1)
+        self.assertAlmostEqual(cmds.getAttr(f"{target}.translateY"), 10.0, delta=0.1)
