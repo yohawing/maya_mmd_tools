@@ -5,7 +5,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME,
 )
 from ...core.logger import get_logger
-from ...core.maya_utils import (
+from ...core.maya_attribute_utils import (
     set_custom_attributes,
 )
 from ..combo_box_utils import add_combo_item_with_tooltip
