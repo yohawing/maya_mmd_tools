@@ -5,10 +5,6 @@ from maya.api import OpenMaya as om
 from maya.api import OpenMayaAnim as oma
 
 
-from mmd_tools.core.constants import (
-    ATTR_MMD_MODEL_NAME,
-    ATTR_MMD_MODEL_NAME_EN,
-)
 
 from . import maya_material_utils as _maya_material_utils
 from . import maya_mesh_utils as _maya_mesh_utils
@@ -966,26 +962,7 @@ def find_all_mmd_models():
     Returns:
         list: MMDモデルのルートノード名のリスト
     """
-    from ..core.constants import SCENE_ROOT_SUFFIX
-
-    # *_rootという名前のトランスフォームノードを検索
-    # namespace対応のため、ワイルドカードパターンを使用
-    all_transforms = cmds.ls("*:*{}".format(SCENE_ROOT_SUFFIX), type="transform") + cmds.ls(
-        "*{}".format(SCENE_ROOT_SUFFIX), type="transform"
-    )
-
-    # 重複を削除
-    all_transforms = list(set(all_transforms))
-
-    mmd_models = []
-    for transform in all_transforms:
-        # MMD関連のアトリビュートがあるか確認
-        if cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=transform, exists=True) or cmds.attributeQuery(
-            ATTR_MMD_MODEL_NAME_EN, node=transform, exists=True
-        ):
-            mmd_models.append(transform)
-
-    return sorted(mmd_models)  # 名前順でソート
+    return _scene_model_service().list_mmd_models()
 
 
 def get_parent_mmd_root(node_name):
@@ -998,30 +975,7 @@ def get_parent_mmd_root(node_name):
     Returns:
         str: MMDモデルのルートノード名。見つからない場合はNone
     """
-    from ..core.constants import SCENE_ROOT_SUFFIX
-
-    try:
-        # 現在のノードから親を辿る
-        current = node_name
-        while current:
-            # ルートサフィックスを持ち、MMDアトリビュートがあるか確認
-            if current.endswith(SCENE_ROOT_SUFFIX) and (
-                cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=current, exists=True)
-                or cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=current, exists=True)
-            ):
-                return current
-
-            # 親ノードを取得
-            parents = cmds.listRelatives(current, parent=True, fullPath=True)
-            if parents:
-                current = parents[0]
-            else:
-                break
-
-    except Exception as e:
-        logger.warning(f"Failed to find parent MMD root for {node_name}: {e}")
-
-    return None
+    return _scene_model_service().get_parent_mmd_root(node_name)
 
 
 def get_mmd_model_display_name(root_node):
@@ -1034,24 +988,14 @@ def get_mmd_model_display_name(root_node):
     Returns:
         str: 表示名（日本語名があれば優先、なければノード名）
     """
-    try:
-        if cmds.attributeQuery(ATTR_MMD_MODEL_NAME, node=root_node, exists=True):
-            name_jp = cmds.getAttr(f"{root_node}.{ATTR_MMD_MODEL_NAME}")
-            if name_jp:
-                return name_jp
+    return _scene_model_service().get_model_display_name(root_node)
 
-        if cmds.attributeQuery(ATTR_MMD_MODEL_NAME_EN, node=root_node, exists=True):
-            name_en = cmds.getAttr(f"{root_node}.{ATTR_MMD_MODEL_NAME_EN}")
-            if name_en:
-                return name_en
 
-    except Exception:
-        pass
+def _scene_model_service():
+    """Return a service bound to this module's patchable Maya cmds object."""
+    from ..services.scene_model_service import SceneModelService
 
-    # アトリビュートがない場合はノード名から_rootを除いて返す
-    from ..core.constants import SCENE_ROOT_SUFFIX
-
-    return root_node.replace(SCENE_ROOT_SUFFIX, "")
+    return SceneModelService(cmds_module=cmds)
 
 
 def select_objects(objects=None, clear=True, add=False, replace=True):

@@ -148,6 +148,17 @@ class TestSceneModelService(unittest.TestCase):
 
         self.assertEqual(service.list_mmd_models(), ["b_root", "ns:a_root"])
 
+    def test_list_mmd_models_tolerates_none_ls_results(self):
+        class _NoneLsCmds(_FakeCmds):
+            def ls(self, *args, **kwargs):
+                if kwargs.get("type") == "transform":
+                    return None
+                return super().ls(*args, **kwargs)
+
+        service = SceneModelService(cmds_module=_NoneLsCmds())
+
+        self.assertEqual(service.list_mmd_models(), [])
+
     def test_resolve_model_from_selection_prefers_available_full_path_then_short_name(self):
         cmds = _FakeCmds()
         cmds.selection = ["|grp|child"]
@@ -157,6 +168,15 @@ class TestSceneModelService(unittest.TestCase):
 
         self.assertEqual(service.resolve_model_from_selection(["|grp|model_root"]), "|grp|model_root")
         self.assertEqual(service.resolve_model_from_selection(["model_root"]), "model_root")
+
+    def test_get_parent_mmd_root_returns_none_when_parent_lookup_raises(self):
+        class _FailingRelativesCmds(_FakeCmds):
+            def listRelatives(self, node, **kwargs):
+                raise RuntimeError("listRelatives failed")
+
+        service = SceneModelService(cmds_module=_FailingRelativesCmds())
+
+        self.assertIsNone(service.get_parent_mmd_root("|grp|child"))
 
     def test_get_model_display_name_uses_japanese_then_english_then_node_name(self):
         cmds = _FakeCmds()
