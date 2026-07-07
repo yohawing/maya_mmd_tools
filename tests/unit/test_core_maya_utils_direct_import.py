@@ -95,6 +95,16 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
             ),
         )
 
+    def test_maya_rig_utils_public_helpers_import_directly(self):
+        self._assert_callables(
+            "mmd_tools.core.maya_rig_utils",
+            (
+                "create_ik_handle",
+                "set_joint_limits",
+                "create_pole_vector_constraint",
+            ),
+        )
+
     def test_maya_utils_animation_helpers_remain_compatibility_shims(self):
         maya_utils = importlib.import_module("mmd_tools.core.maya_utils")
         maya_animation_utils = importlib.import_module("mmd_tools.core.maya_animation_utils")
@@ -114,6 +124,14 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
         maya_viewport_utils = importlib.import_module("mmd_tools.core.maya_viewport_utils")
 
         self.assertIs(maya_utils.set_viewport_backface_culling, maya_viewport_utils.set_viewport_backface_culling)
+
+    def test_maya_utils_rig_helpers_remain_compatibility_shims(self):
+        maya_utils = importlib.import_module("mmd_tools.core.maya_utils")
+        maya_rig_utils = importlib.import_module("mmd_tools.core.maya_rig_utils")
+
+        self.assertIs(maya_utils.create_ik_handle, maya_rig_utils.create_ik_handle)
+        self.assertIs(maya_utils.set_joint_limits, maya_rig_utils.set_joint_limits)
+        self.assertIs(maya_utils.create_pole_vector_constraint, maya_rig_utils.create_pole_vector_constraint)
 
 
 if __name__ == "__main__":

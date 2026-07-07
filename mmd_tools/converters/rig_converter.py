@@ -6,7 +6,7 @@ import maya.cmds as cmds
 
 from mmd_tools.config.bone_aliases import get_bone_aliases, get_original_bone_name_aliases
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_rig_utils, maya_utils
 from types import SimpleNamespace
 
 from mmd_tools.core.logger import get_logger, safe_log_error
@@ -313,7 +313,7 @@ class RigConverter:
 
             try:
                 # ikHandleを作成
-                ik_handle, _ = maya_utils.create_ik_handle(
+                ik_handle, _ = maya_rig_utils.create_ik_handle(
                     start_joint=start_joint,
                     end_joint=end_joint,
                     solver="ikRPsolver",  # MMDは通常RPソルバーを使用

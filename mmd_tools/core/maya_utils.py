@@ -9,6 +9,7 @@ from . import maya_animation_utils as _maya_animation_utils
 from . import maya_material_utils as _maya_material_utils
 from . import maya_mesh_utils as _maya_mesh_utils
 from . import maya_physics_utils as _maya_physics_utils
+from . import maya_rig_utils as _maya_rig_utils
 from . import maya_transform_utils as _maya_transform_utils
 from . import maya_viewport_utils as _maya_viewport_utils
 from . import utils
@@ -574,109 +575,9 @@ def get_int_array_attribute(object_name, attr_name):
 set_viewport_backface_culling = _maya_viewport_utils.set_viewport_backface_culling
 
 
-def create_ik_handle(start_joint, end_joint, solver="ikRPsolver", name=None):
-    """
-    IKハンドルを作成する。
-
-    Args:
-        start_joint (str): IKチェーンの開始ジョイント名
-        end_joint (str): IKチェーンの終了ジョイント名
-        solver (str): 使用するIKソルバー ("ikRPsolver", "ikSCsolver", "ikSplineSolver")
-        name (str): IKハンドルの名前（Noneの場合は自動生成）
-
-    Returns:
-        tuple: (ik_handle, effector) IKハンドル名とエフェクター名のタプル
-
-    Raises:
-        ValueError: ジョイントが存在しない場合やソルバーが無効な場合
-    """
-    # ジョイントの存在確認
-    if not cmds.objExists(start_joint):
-        raise ValueError(f"Start joint '{start_joint}' does not exist")
-    if not cmds.objExists(end_joint):
-        raise ValueError(f"End joint '{end_joint}' does not exist")
-
-    # ソルバーの妥当性確認
-    valid_solvers = ["ikRPsolver", "ikSCsolver", "ikSplineSolver"]
-    if solver not in valid_solvers:
-        raise ValueError(f"Invalid solver '{solver}'. Must be one of: {valid_solvers}")
-
-    try:
-        # IKハンドルの作成
-        ik_handle_result = cmds.ikHandle(
-            startJoint=start_joint,
-            endEffector=end_joint,
-            solver=solver,
-            name=name if name else f"{end_joint}_ikHandle",
-        )
-
-        ik_handle = ik_handle_result[0]
-        effector = ik_handle_result[1]
-
-        logger.info(f"Created IK handle '{ik_handle}' from '{start_joint}' to '{end_joint}'")
-        return ik_handle, effector
-
-    except Exception as e:
-        logger.error(f"Failed to create IK handle: {e}")
-        raise
-
-
-def set_joint_limits(joint, limit_min=None, limit_max=None, enable_limits=True):
-    """
-    ジョイントの回転制限を設定する。
-
-    Args:
-        joint (str): ジョイント名
-        limit_min (list): 最小回転制限 [x, y, z] ラジアン単位
-        limit_max (list): 最大回転制限 [x, y, z] ラジアン単位
-        enable_limits (bool): 制限を有効にするかどうか
-    """
-
-    # 回転制限の設定（ラジアンから度数に変換）
-    if limit_min:
-        set_attribute(joint, "minRotLimit", limit_min, "double3")
-
-    if limit_max:
-        set_attribute(joint, "maxRotLimit", limit_max, "double3")
-
-    # 制限の有効化/無効化
-    if limit_min:
-        cmds.setAttr(f"{joint}.minRotXLimitEnable", enable_limits)
-        cmds.setAttr(f"{joint}.minRotYLimitEnable", enable_limits)
-        cmds.setAttr(f"{joint}.minRotZLimitEnable", enable_limits)
-
-    if limit_max:
-        cmds.setAttr(f"{joint}.maxRotXLimitEnable", enable_limits)
-        cmds.setAttr(f"{joint}.maxRotYLimitEnable", enable_limits)
-        cmds.setAttr(f"{joint}.maxRotZLimitEnable", enable_limits)
-
-
-def create_pole_vector_constraint(ik_handle, pole_vector_object, maintain_offset=True):
-    """
-    IKハンドルにポールベクターコンストレイントを作成する。
-
-    Args:
-        ik_handle (str): IKハンドル名
-        pole_vector_object (str): ポールベクターコントロールオブジェクト名
-        maintain_offset (bool): オフセットを維持するかどうか
-
-    Returns:
-        str: 作成されたコンストレイントノード名
-    """
-    if not cmds.objExists(ik_handle):
-        raise ValueError(f"IK handle '{ik_handle}' does not exist")
-    if not cmds.objExists(pole_vector_object):
-        raise ValueError(f"Pole vector object '{pole_vector_object}' does not exist")
-
-    try:
-        constraint = cmds.poleVectorConstraint(pole_vector_object, ik_handle, maintainOffset=maintain_offset)[0]
-
-        logger.info(f"Created pole vector constraint from '{pole_vector_object}' to '{ik_handle}'")
-        return constraint
-
-    except Exception as e:
-        logger.error(f"Failed to create pole vector constraint: {e}")
-        raise
+create_ik_handle = _maya_rig_utils.create_ik_handle
+set_joint_limits = _maya_rig_utils.set_joint_limits
+create_pole_vector_constraint = _maya_rig_utils.create_pole_vector_constraint
 
 
 create_matrix_from_axes = _maya_transform_utils.create_matrix_from_axes
