@@ -128,6 +128,8 @@ try:
         MmdRuntimeModel,
         MmdRuntimeClip,
         MmdRuntimeInstance,
+    )
+    from ..core.native.mmd_anim_runtime_local_channels import (
         compute_maya_local_channels,
         compute_maya_local_channels_batch,
     )
