@@ -10,6 +10,7 @@ from . import maya_material_utils as _maya_material_utils
 from . import maya_mesh_utils as _maya_mesh_utils
 from . import maya_physics_utils as _maya_physics_utils
 from . import maya_transform_utils as _maya_transform_utils
+from . import maya_viewport_utils as _maya_viewport_utils
 from . import utils
 from .logger import get_logger
 
@@ -570,40 +571,7 @@ def get_int_array_attribute(object_name, attr_name):
         return None
 
 
-def set_viewport_backface_culling(enabled=True, panel_name=None) -> bool:
-    """
-    ビューポートのバックフェイスカリングを設定する。
-
-    Args:
-        enabled (bool): バックフェイスカリングを有効にするかどうか
-        panel_name (str): 対象のパネル名。Noneの場合はアクティブなパネルを使用
-
-    Returns:
-        bool: 設定が成功したかどうか
-    """
-    try:
-        # パネル名が指定されていない場合、アクティブなパネルを取得
-        if panel_name is None:
-            panel_name = cmds.getPanel(withFocus=True)
-
-            # アクティブパネルがモデルパネルでない場合、デフォルトのパネルを使用
-            if not cmds.getPanel(typeOf=panel_name) == "modelPanel":
-                panels = cmds.getPanel(type="modelPanel")
-                if panels:
-                    panel_name = panels[0]
-                else:
-                    logger.warning("No model panels found")
-                    return False
-
-        # バックフェイスカリングを設定
-        cmds.modelEditor(panel_name, edit=True, backfaceCulling=enabled)
-
-        logger.info(f"Backface culling {'enabled' if enabled else 'disabled'} for panel: {panel_name}")
-        return True
-
-    except Exception as e:
-        logger.error(f"Failed to set backface culling: {e}")
-        return False
+set_viewport_backface_culling = _maya_viewport_utils.set_viewport_backface_culling
 
 
 def create_ik_handle(start_joint, end_joint, solver="ikRPsolver", name=None):

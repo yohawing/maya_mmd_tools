@@ -7,7 +7,7 @@ from typing import Tuple, Union, List, Optional
 
 from mmd_tools.core.settings import settings
 from mmd_tools.core import settings_keys as setting_keys
-from mmd_tools.core import maya_material_utils, maya_mesh_utils, maya_utils
+from mmd_tools.core import maya_material_utils, maya_mesh_utils, maya_utils, maya_viewport_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.texture_path_cache import (
     build_texture_path_diagnostics,
@@ -961,7 +961,7 @@ class MeshConverter:
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
         disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
         if disable_backface_culling:
-            maya_utils.set_viewport_backface_culling(False)
+            maya_viewport_utils.set_viewport_backface_culling(False)
 
         return created_mesh
 
@@ -1128,7 +1128,7 @@ class MeshConverter:
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
         disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
         if disable_backface_culling:
-            maya_utils.set_viewport_backface_culling(False)
+            maya_viewport_utils.set_viewport_backface_culling(False)
 
         return mesh_names
 
@@ -1221,7 +1221,7 @@ class MeshConverter:
 
         disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
         if disable_backface_culling:
-            maya_utils.set_viewport_backface_culling(False)
+            maya_viewport_utils.set_viewport_backface_culling(False)
 
         return mesh_names
 
