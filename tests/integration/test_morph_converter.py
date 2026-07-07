@@ -6,7 +6,7 @@ from maya import cmds
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.converters import MorphConverter, MeshConverter
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_mesh_utils, maya_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
@@ -304,7 +304,7 @@ class TestMorphConverter(MayaTestBase):
 
     def test_compact_material_split_mesh_maps_vertex_morph_source_indices(self):
         """compact split mesh では PMX source vertex index を local vertex index に写して morph を適用する。"""
-        mesh = maya_utils.create_mesh_with_uvs(
+        mesh = maya_mesh_utils.create_mesh_with_uvs(
             "compact_split_mesh",
             [(0, 0, 0), (1, 0, 0), (1, 1, 0)],
             [3],
@@ -709,6 +709,13 @@ class TestMorphConverter(MayaTestBase):
         uvs = [0, 0, 1, 0, 1, 1, 0, 1]
         face_uv_connects = [0, 1, 2, 3]
 
-        mesh_name = maya_utils.create_mesh_with_uvs("test_mesh", vertices, face_counts, face_connects, uvs, face_uv_connects)
+        mesh_name = maya_mesh_utils.create_mesh_with_uvs(
+            "test_mesh",
+            vertices,
+            face_counts,
+            face_connects,
+            uvs,
+            face_uv_connects,
+        )
 
         return mesh_name

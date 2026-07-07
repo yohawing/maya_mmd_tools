@@ -25,7 +25,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
 )
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_mesh_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
 
@@ -498,7 +498,7 @@ def _apply_fast_skeleton_skin(
         weights_list.append(vw)
 
     try:
-        maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights_list)
+        maya_mesh_utils.apply_vertex_weights(skin_cluster, mesh_node, weights_list)
     except Exception as exc:
         logger.info("Failed to apply vertex weights: %s", exc)
 

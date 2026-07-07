@@ -10,7 +10,7 @@ from maya import cmds
 
 from mmd_tools.converters import MorphConverter
 from mmd_tools.converters.material_morph_runtime import build_material_morph_graph
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_mesh_utils, maya_utils
 from mmd_tools.core.constants import (
     SCENE_ROOT_SUFFIX,
     ATTR_MMD_MODEL_NAME,
@@ -54,7 +54,7 @@ class TestMaterialMorphModelRootConnection(MayaTestBase):
         root = cmds.group(empty=True, name=f"test_model{SCENE_ROOT_SUFFIX}")
         maya_utils.set_custom_attributes(root, {ATTR_MMD_MODEL_NAME: "test"})
 
-        mesh = maya_utils.create_mesh_with_uvs(
+        mesh = maya_mesh_utils.create_mesh_with_uvs(
             "test_mesh",
             [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
             [4], [0, 1, 2, 3],
@@ -170,7 +170,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         root = cmds.group(empty=True, name=f"mat_morph_test{SCENE_ROOT_SUFFIX}")
         maya_utils.set_custom_attributes(root, {ATTR_MMD_MODEL_NAME: "test"})
 
-        mesh = maya_utils.create_mesh_with_uvs(
+        mesh = maya_mesh_utils.create_mesh_with_uvs(
             "mat_test_mesh",
             [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
             [4], [0, 1, 2, 3],

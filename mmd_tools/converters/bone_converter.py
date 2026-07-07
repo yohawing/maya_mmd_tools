@@ -7,7 +7,7 @@ import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
-from ..core import maya_utils
+from ..core import maya_mesh_utils, maya_utils
 from ..core.mmd_bone_names import has_semistandard_mmd_bone_name
 from ..core.pmx_data import PmxData
 from ..core.constants import (
@@ -662,7 +662,7 @@ class BoneConverter:
                 flat_weights[row_start : row_start + joint_count]
                 for row_start in range(0, len(flat_weights), joint_count)
             ]
-            maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
+            maya_mesh_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
         self._add_profile_time("set_weights_sec", set_weights_start)
 
     def _get_mesh_source_vertex_indices(self, mesh_node):

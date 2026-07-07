@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 from maya import cmds
 from maya.api import OpenMaya as om
 
-from mmd_tools.core import maya_utils, settings_keys as setting_keys
+from mmd_tools.core import maya_mesh_utils, maya_utils, settings_keys as setting_keys
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_MATERIAL_INDEX,
@@ -536,7 +536,7 @@ class MorphConverter:
                 template_ctx["mesh_fn"] = mesh_fn
                 template_ctx["base_points"] = mesh_fn.getPoints(om.MSpace.kObject)
                 template_ctx["source_to_local"] = self._get_mesh_source_vertex_map(mesh_node)
-                template_ctx["blend_shape_node"] = maya_utils.find_or_create_blendshape_node(mesh_node)
+                template_ctx["blend_shape_node"] = maya_mesh_utils.find_or_create_blendshape_node(mesh_node)
                 template_ctx["next_target_index"] = 0
                 template_ctx["existing_aliases"] = self._existing_blendshape_aliases(
                     template_ctx["blend_shape_node"],
@@ -569,7 +569,7 @@ class MorphConverter:
             target_points_start = time.perf_counter()
             self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
             self._add_profile_time("target_points_sec", target_points_start)
-            blend_shape_node = maya_utils.find_or_create_blendshape_node(mesh_node)
+            blend_shape_node = maya_mesh_utils.find_or_create_blendshape_node(mesh_node)
             target_count = cmds.blendShape(blend_shape_node, query=True, target=True)
             target_index = len(target_count) if target_count else 0
 

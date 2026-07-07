@@ -501,7 +501,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(weights[2], (3, 0.2))
         self.assertEqual(weights[3], (4, 0.1))
 
-    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
+    @patch("mmd_tools.converters.bone_converter.maya_mesh_utils.apply_vertex_weights")
     def test_apply_pmx_vertex_weights_uses_source_vertex_indices_for_compact_split(self, mock_apply_weights):
         """compact material split mesh では local vertex 順に対応する元 PMX vertex の weight を適用する。"""
         pmx_data = Mock()

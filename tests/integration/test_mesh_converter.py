@@ -7,7 +7,7 @@ from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.settings import settings
 from mmd_tools.converters import mesh_converter as mesh_converter_module
 from mmd_tools.converters import MeshConverter
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_mesh_utils, maya_utils
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import (
@@ -134,7 +134,7 @@ class TestMeshConverter(MayaTestBase):
         mesh_group, mesh_name = converter.convert_pmx_mesh(pmx_data, root_group)
 
         # メッシュに割り当てられているマテリアルを取得
-        assigned_materials = maya_utils.get_materials_from_mesh(mesh_name)
+        assigned_materials = maya_mesh_utils.get_materials_from_mesh(mesh_name)
 
         # 重複を除去し、mmd_material_indexを持つマテリアルのみを取得
         unique_materials = []

@@ -348,7 +348,7 @@ class TestFastSkeletonSkin(unittest.TestCase):
         self.mock_read_bytes.return_value = b"fake pmx bytes"
 
         self.mock_apply_weights_patcher = patch(
-            "mmd_tools.io.cpp_fast_importer.maya_utils.apply_vertex_weights"
+            "mmd_tools.io.cpp_fast_importer.maya_mesh_utils.apply_vertex_weights"
         )
         self.mock_apply_weights = self.mock_apply_weights_patcher.start()
 

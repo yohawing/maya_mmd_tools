@@ -7,7 +7,7 @@ from typing import Tuple, Union, List, Optional
 
 from mmd_tools.core.settings import settings
 from mmd_tools.core import settings_keys as setting_keys
-from mmd_tools.core import maya_material_utils, maya_utils
+from mmd_tools.core import maya_material_utils, maya_mesh_utils, maya_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.texture_path_cache import (
     build_texture_path_diagnostics,
@@ -898,7 +898,7 @@ class MeshConverter:
 
         # 統合メッシュを作成
         create_start = time.perf_counter()
-        created_mesh = maya_utils.create_mesh_with_uvs(
+        created_mesh = maya_mesh_utils.create_mesh_with_uvs(
             name=mesh_name,
             vertices=vertices,
             face_counts=face_counts,
@@ -946,7 +946,7 @@ class MeshConverter:
             # 面の範囲を選択してマテリアルを割り当て
             face_selection = f"{created_mesh}.f[{start_face}:{end_face - 1}]"
             assign_start = time.perf_counter()
-            maya_utils.assign_material_to_faces(created_mesh, shader, face_selection)
+            maya_material_utils.assign_material_to_faces(created_mesh, shader, face_selection)
             self._add_profile_time("material_assign_sec", assign_start)
 
         # A unified shape can contain multiple materials, so per-material
@@ -1057,7 +1057,7 @@ class MeshConverter:
             sub_mesh_name = maya_utils.sanitize_text(f"{model_name}_{mat_name}_mesh")
 
             create_start = time.perf_counter()
-            created_mesh = maya_utils.create_mesh_with_uvs(
+            created_mesh = maya_mesh_utils.create_mesh_with_uvs(
                 name=sub_mesh_name,
                 vertices=mesh_vertices,
                 face_counts=sub_face_counts,
@@ -1112,7 +1112,7 @@ class MeshConverter:
 
             # 全 face にマテリアルを割り当て
             assign_start = time.perf_counter()
-            maya_utils.assign_material_to_faces(
+            maya_material_utils.assign_material_to_faces(
                 created_mesh, shader, f"{created_mesh}.f[0:{num_material_faces - 1}]"
             )
             self._add_profile_time("material_assign_sec", assign_start)
@@ -1310,7 +1310,7 @@ class MeshConverter:
             mesh_uvs.extend(uvs[index * 2 : index * 2 + 2])
 
         create_start = time.perf_counter()
-        created_mesh = maya_utils.create_mesh_with_uvs(
+        created_mesh = maya_mesh_utils.create_mesh_with_uvs(
             name=mesh_name,
             vertices=mesh_vertices,
             face_counts=face_counts,
@@ -1363,7 +1363,9 @@ class MeshConverter:
             self.profile["material_count_processed"] += 1
 
             assign_start = time.perf_counter()
-            maya_utils.assign_material_to_faces(created_mesh, shader, f"{created_mesh}.f[{start_face}:{end_face - 1}]")
+            maya_material_utils.assign_material_to_faces(
+                created_mesh, shader, f"{created_mesh}.f[{start_face}:{end_face - 1}]"
+            )
             self._add_profile_time("material_assign_sec", assign_start)
 
         parent_start = time.perf_counter()
