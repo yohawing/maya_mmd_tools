@@ -138,8 +138,8 @@ class TestMaterialPresenter(unittest.TestCase):
         missing = set(missing_attrs)
         self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, node: attr not in missing
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_load_materials_with_no_model(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_materials_with_no_model(self, mock_maya_attribute_utils):
         """モデルが選択されていない場合のマテリアル読み込みテスト"""
         self.presenter.load_materials()
 
@@ -150,8 +150,8 @@ class TestMaterialPresenter(unittest.TestCase):
         # プレースホルダーが表示されることを確認
         self.mock_view._show_placeholder.assert_called_once()
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_load_materials_with_model(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_materials_with_model(self, mock_maya_attribute_utils):
         """モデルが選択されている場合のマテリアル読み込みテスト"""
         # モデルが存在する設定
         self.mock_app_state.current_model_root = "test_model"
@@ -169,7 +169,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.list_connections.side_effect = mock_list_connections
         self.mock_maya_adapter.ls.return_value = ["mat1"]
         self.mock_maya_adapter.attribute_exists.return_value = True
-        mock_maya_utils.get_attribute.side_effect = lambda node, attr: {
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
             "mmd_material_name": "Material 1",
             "mmd_material_name_en": "Material 1 EN",
         }.get(attr, "")
@@ -189,8 +189,8 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.ls.assert_called_with(["mat1"], materials=True)
         self.mock_maya_adapter.attribute_exists.assert_called_with(ATTR_MMD_MATERIAL_NAME, "mat1")
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_on_material_selected(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_on_material_selected(self, mock_maya_attribute_utils):
         """マテリアル選択時の処理テスト"""
         # モックアイテムを作成
         mock_item = Mock()
@@ -207,8 +207,8 @@ class TestMaterialPresenter(unittest.TestCase):
         # 詳細が有効化されることを確認
         self.mock_view._set_details_enabled.assert_called_with(True)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_load_material_properties_dx11shader(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_material_properties_dx11shader(self, mock_maya_attribute_utils):
         """dx11Shaderのプロパティ読み込みテスト"""
         material_name = "test_material"
         self.mock_maya_adapter.node_type.return_value = "dx11Shader"
@@ -223,7 +223,7 @@ class TestMaterialPresenter(unittest.TestCase):
         )
 
         # 色データの設定
-        mock_maya_utils.get_attribute.side_effect = lambda node, attr: {
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda node, attr: {
             ATTR_MMD_MATERIAL_NAME: "テストマテリアル",
             ATTR_MMD_MATERIAL_NAME_EN: "Test Material",
             "DiffuseColorRGB": (1.0, 0.5, 0.0),
@@ -273,8 +273,8 @@ class TestMaterialPresenter(unittest.TestCase):
         widget.setStyleSheet.assert_called_with("background-color: rgb(128, 128, 128); border: 1px solid black;")
 
     @patch("mmd_tools.ui.presenters.material_presenter.apply_sphere_map", return_value=True)
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_changes(self, mock_maya_utils, mock_apply_sphere_map):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_changes(self, mock_maya_attribute_utils, mock_apply_sphere_map):
         """変更適用のテスト"""
         self.presenter.current_material = "test_material"
         self.presenter.material_data = {
@@ -312,7 +312,7 @@ class TestMaterialPresenter(unittest.TestCase):
         self.presenter.apply_changes()
 
         # カスタムアトリビュートが設定されることを確認
-        mock_maya_utils.set_custom_attributes.assert_called()
+        mock_maya_attribute_utils.set_custom_attributes.assert_called()
         mock_apply_sphere_map.assert_called_once_with(
             "test_material",
             "sphere.spa",
@@ -325,10 +325,10 @@ class TestMaterialPresenter(unittest.TestCase):
 
     @patch("mmd_tools.converters.mesh_converter.apply_shader_outline")
     @patch("mmd_tools.converters.mesh_converter.apply_transparency_mode")
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_apply_changes_skips_dx11_missing_specular_and_transparency(
         self,
-        mock_maya_utils,
+        mock_maya_attribute_utils,
         mock_apply_mode,
         mock_apply_outline,
     ):
@@ -339,10 +339,10 @@ class TestMaterialPresenter(unittest.TestCase):
 
         self.presenter.apply_changes()
 
-        set_attr_names = [call[0][1] for call in mock_maya_utils.set_attribute.call_args_list]
+        set_attr_names = [call[0][1] for call in mock_maya_attribute_utils.set_attribute.call_args_list]
         self.assertNotIn("specularColor", set_attr_names)
         self.assertNotIn("transparency", set_attr_names)
-        mock_maya_utils.set_attribute.assert_any_call(
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
             "test_material",
             "mmd_edge_color",
             [0.1, 0.2, 0.3],
@@ -352,8 +352,8 @@ class TestMaterialPresenter(unittest.TestCase):
         mock_apply_outline.assert_called_once_with("test_material", False, 1.5)
         self.assertFalse(self.presenter.has_unsaved_changes)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_changes_routes_standard_surface_opacity_and_specular(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_changes_routes_standard_surface_opacity_and_specular(self, mock_maya_attribute_utils):
         """standardSurfaceは透過をopacityへ変換し、存在するspecularColorだけ設定する"""
         self._configure_apply_inputs()
         self.mock_maya_adapter.node_type.return_value = "standardSurface"
@@ -361,13 +361,13 @@ class TestMaterialPresenter(unittest.TestCase):
 
         self.presenter.apply_changes()
 
-        mock_maya_utils.set_attribute.assert_any_call(
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
             "test_material",
             "opacity",
             [0.75, 0.75, 0.75],
             "double3",
         )
-        mock_maya_utils.set_attribute.assert_any_call(
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
             "test_material",
             "specularColor",
             (0.8, 0.8, 0.8),
@@ -375,8 +375,8 @@ class TestMaterialPresenter(unittest.TestCase):
         )
         self.assertFalse(self.presenter.has_unsaved_changes)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_changes_routes_transparency_when_attribute_exists(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_changes_routes_transparency_when_attribute_exists(self, mock_maya_attribute_utils):
         """transparency属性を持つ非standardSurface shaderでは従来通りtransparencyを設定する"""
         self._configure_apply_inputs()
         self.mock_maya_adapter.node_type.return_value = "blinn"
@@ -384,13 +384,13 @@ class TestMaterialPresenter(unittest.TestCase):
 
         self.presenter.apply_changes()
 
-        mock_maya_utils.set_attribute.assert_any_call(
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
             "test_material",
             "transparency",
             [0.25, 0.25, 0.25],
             "double3",
         )
-        mock_maya_utils.set_attribute.assert_any_call(
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
             "test_material",
             "specularColor",
             (0.8, 0.8, 0.8),
@@ -399,8 +399,8 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertFalse(self.presenter.has_unsaved_changes)
 
     @patch("mmd_tools.ui.presenters.material_presenter.apply_sphere_map", side_effect=RuntimeError("boom"))
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_changes_reports_sphere_map_exception(self, mock_maya_utils, _mock_apply_sphere_map):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_changes_reports_sphere_map_exception(self, mock_maya_attribute_utils, _mock_apply_sphere_map):
         """sphere map 適用失敗は material 全体を落とさず専用 status で通知する"""
         self._configure_apply_inputs()
         self.mock_view.sphere_map_path_edit.text.return_value = "sphere.spa"
@@ -415,8 +415,8 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertFalse(self.presenter.has_unsaved_changes)
 
     @patch("mmd_tools.ui.presenters.material_presenter.apply_sphere_map", return_value=False)
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_changes_reports_sphere_map_false_result(self, mock_maya_utils, _mock_apply_sphere_map):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_changes_reports_sphere_map_false_result(self, mock_maya_attribute_utils, _mock_apply_sphere_map):
         """sphere map が未適用なら例外なしでも専用 status で通知する"""
         self._configure_apply_inputs()
         self.mock_view.sphere_map_path_edit.text.return_value = "missing.spa"
@@ -448,8 +448,8 @@ class TestMaterialPresenter(unittest.TestCase):
         mock_apply_mode.assert_called_once()
         mock_apply_outline.assert_called_once_with("dx11_mat", True, 1.25)
 
-    @patch("mmd_tools.ui.presenters.material_presenter.maya_utils")
-    def test_apply_mmd_attributes_preserves_raw_edge_size_when_spin_unchanged(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_mmd_attributes_preserves_raw_edge_size_when_spin_unchanged(self, mock_maya_attribute_utils):
         """UI上限を超える元のエッジサイズは未変更なら保持する"""
         self.presenter.current_material = "test_material"
         self.presenter.material_data = {"edge_size": 2.5, "edge_size_view": 2.0}
@@ -473,7 +473,7 @@ class TestMaterialPresenter(unittest.TestCase):
 
         self.presenter._apply_mmd_attributes()
 
-        mock_maya_utils.set_attribute.assert_any_call("test_material", "mmd_edge_size", 2.5, "float")
+        mock_maya_attribute_utils.set_attribute.assert_any_call("test_material", "mmd_edge_size", 2.5, "float")
 
     def test_on_search_text_changed(self):
         """検索機能のテスト"""

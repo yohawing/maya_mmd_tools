@@ -1,4 +1,4 @@
-from mmd_tools.core import maya_attribute_utils as maya_utils
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core import maya_material_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_DRAW_FLAGS,
@@ -155,8 +155,8 @@ class MaterialPresenter:
             # Add materials to list with index, Japanese and English names
             for idx, mat in enumerate(sorted(unique_materials)):
                 # 日本語名と英語名を取得
-                jp_name = maya_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME)
-                en_name = maya_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME_EN)
+                jp_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME)
+                en_name = maya_attribute_utils.get_attribute(mat, ATTR_MMD_MATERIAL_NAME_EN)
 
                 # リストアイテムの表示形式: "番号:日本語名（Maya名）[英語名]"
                 if jp_name:
@@ -248,12 +248,12 @@ class MaterialPresenter:
             self.material_data = {}
 
             # Japanese name
-            jp_name = maya_utils.get_attribute(material_name, ATTR_MMD_MATERIAL_NAME)
+            jp_name = maya_attribute_utils.get_attribute(material_name, ATTR_MMD_MATERIAL_NAME)
             self.view.material_jp_name_edit.setText(jp_name if jp_name else "")
             self.material_data["jp_name"] = jp_name if jp_name else ""
 
             # English name
-            en_name = maya_utils.get_attribute(material_name, ATTR_MMD_MATERIAL_NAME_EN)
+            en_name = maya_attribute_utils.get_attribute(material_name, ATTR_MMD_MATERIAL_NAME_EN)
             self.view.material_en_name_edit.setText(en_name if en_name else "")
             self.material_data["en_name"] = en_name if en_name else ""
 
@@ -263,20 +263,20 @@ class MaterialPresenter:
 
             # Get diffuse color based on shader type
             if shader_type == "standardSurface":
-                diffuse_color = maya_utils.get_attribute(material_name, "baseColor")
+                diffuse_color = maya_attribute_utils.get_attribute(material_name, "baseColor")
             elif shader_type == "dx11Shader":
                 # dx11Shaderの場合、DiffuseColorRGBまたはg_Diffuseを試す
                 if self.maya_adapter.attribute_exists("DiffuseColorRGB", material_name):
-                    diffuse_color = maya_utils.get_attribute(material_name, "DiffuseColorRGB")
+                    diffuse_color = maya_attribute_utils.get_attribute(material_name, "DiffuseColorRGB")
                 elif self.maya_adapter.attribute_exists("g_Diffuse", material_name):
-                    diffuse_color = maya_utils.get_attribute(material_name, "g_Diffuse")
+                    diffuse_color = maya_attribute_utils.get_attribute(material_name, "g_Diffuse")
                 else:
                     diffuse_color = (0.5, 0.5, 0.5)
                 # タプルが正しい形式であることを確認
                 if not isinstance(diffuse_color, (list, tuple)) or len(diffuse_color) < 3:
                     diffuse_color = (0.5, 0.5, 0.5)
             elif self.maya_adapter.attribute_exists("color", material_name):
-                diffuse_color = maya_utils.get_attribute(material_name, "color")
+                diffuse_color = maya_attribute_utils.get_attribute(material_name, "color")
             else:
                 diffuse_color = (0.5, 0.5, 0.5)
             self.material_data["diffuse"] = diffuse_color
@@ -284,9 +284,9 @@ class MaterialPresenter:
 
             # Get specular color
             if shader_type == "dx11Shader" and self.maya_adapter.attribute_exists("SpecularColor", material_name):
-                specular_color = maya_utils.get_attribute(material_name, "SpecularColor")
+                specular_color = maya_attribute_utils.get_attribute(material_name, "SpecularColor")
             elif self.maya_adapter.attribute_exists("specularColor", material_name):
-                specular_color = maya_utils.get_attribute(material_name, "specularColor")
+                specular_color = maya_attribute_utils.get_attribute(material_name, "specularColor")
             else:
                 specular_color = (0.5, 0.5, 0.5)
 
@@ -299,9 +299,9 @@ class MaterialPresenter:
 
             # Get ambient - Maya doesn't have ambient by default, check if attr exists
             if shader_type == "dx11Shader" and self.maya_adapter.attribute_exists("AmbientColor", material_name):
-                ambient_color = maya_utils.get_attribute(material_name, "AmbientColor")
+                ambient_color = maya_attribute_utils.get_attribute(material_name, "AmbientColor")
             elif self.maya_adapter.attribute_exists("ambientColor", material_name):
-                ambient_color = maya_utils.get_attribute(material_name, "ambientColor")
+                ambient_color = maya_attribute_utils.get_attribute(material_name, "ambientColor")
             else:
                 ambient_color = (0.5, 0.5, 0.5)
 
@@ -314,10 +314,10 @@ class MaterialPresenter:
 
             # Get specular coefficient (MMD style)
             if self.maya_adapter.attribute_exists("mmd_specular_coefficient", material_name):
-                specular_coefficient = maya_utils.get_attribute(material_name, "mmd_specular_coefficient")
+                specular_coefficient = maya_attribute_utils.get_attribute(material_name, "mmd_specular_coefficient")
             elif self.maya_adapter.attribute_exists("specular", material_name):
                 # StandardSurfaceの場合、specular値を係数に変換
-                specular_weight = maya_utils.get_attribute(material_name, "specular")
+                specular_weight = maya_attribute_utils.get_attribute(material_name, "specular")
                 specular_coefficient = specular_weight
             else:
                 specular_coefficient = 0.5
@@ -327,10 +327,10 @@ class MaterialPresenter:
             # Get transparency (PMX style)
             if self.maya_adapter.attribute_exists("opacity", material_name):
                 # StandardSurfaceの場合
-                opacity = maya_utils.get_attribute(material_name, "opacity")
+                opacity = maya_attribute_utils.get_attribute(material_name, "opacity")
                 transparency = 1.0 - opacity[0]  # Convert opacity to transparency
             elif self.maya_adapter.attribute_exists("transparency", material_name):
-                transparency_val = maya_utils.get_attribute(material_name, "transparency")
+                transparency_val = maya_attribute_utils.get_attribute(material_name, "transparency")
                 transparency = transparency_val[0]
             else:
                 transparency = 0.0
@@ -384,7 +384,7 @@ class MaterialPresenter:
                             break
 
             if file_node:
-                texture_path = maya_utils.get_attribute(file_node[0], "fileTextureName")
+                texture_path = maya_attribute_utils.get_attribute(file_node[0], "fileTextureName")
                 self.material_data["texture"] = texture_path
                 self.view.texture_path_edit.setText(texture_path)
                 self._load_texture_provenance(file_node[0])
@@ -526,7 +526,7 @@ class MaterialPresenter:
     def _get_attr_safe(self, node, attr, default):
         """Get attribute value safely, return default if not exists"""
         if self.maya_adapter.attribute_exists(attr, node):
-            return maya_utils.get_attribute(node, attr)
+            return maya_attribute_utils.get_attribute(node, attr)
         return default
 
     def _update_color_widget(self, widget, color):
@@ -620,7 +620,7 @@ class MaterialPresenter:
             en_name = self.view.material_en_name_edit.text()
 
             # Ensure MMD attributes exist
-            maya_utils.set_custom_attributes(
+            maya_attribute_utils.set_custom_attributes(
                 self.current_material,
                 {ATTR_MMD_MATERIAL_NAME: jp_name, ATTR_MMD_MATERIAL_NAME_EN: en_name},
             )
@@ -629,14 +629,14 @@ class MaterialPresenter:
             if "diffuse" in self.material_data:
                 shader_type = self.maya_adapter.node_type(self.current_material)
                 if shader_type == "standardSurface":
-                    maya_utils.set_attribute(
+                    maya_attribute_utils.set_attribute(
                         self.current_material,
                         "baseColor",
                         self.material_data["diffuse"],
                         "double3",
                     )
                 elif self.maya_adapter.attribute_exists("color", self.current_material):
-                    maya_utils.set_attribute(
+                    maya_attribute_utils.set_attribute(
                         self.current_material,
                         "color",
                         self.material_data["diffuse"],
@@ -646,7 +646,7 @@ class MaterialPresenter:
             if "specular" in self.material_data and self.maya_adapter.attribute_exists(
                 "specularColor", self.current_material
             ):
-                maya_utils.set_attribute(
+                maya_attribute_utils.set_attribute(
                     self.current_material,
                     "specularColor",
                     self.material_data["specular"],
@@ -658,7 +658,7 @@ class MaterialPresenter:
             # StandardSurfaceの場合はopacityに変換
             if self.maya_adapter.node_type(self.current_material) == "standardSurface":
                 opacity = 1.0 - transparency
-                maya_utils.set_attribute(
+                maya_attribute_utils.set_attribute(
                     self.current_material,
                     "opacity",
                     [opacity, opacity, opacity],
@@ -666,7 +666,7 @@ class MaterialPresenter:
                 )
             elif self.maya_adapter.attribute_exists("transparency", self.current_material):
                 # その他のシェーダーの場合
-                maya_utils.set_attribute(
+                maya_attribute_utils.set_attribute(
                     self.current_material,
                     "transparency",
                     [transparency, transparency, transparency],
@@ -676,7 +676,7 @@ class MaterialPresenter:
             # Apply specular coefficient
             specular_coefficient = self.view.specular_coefficient_spin.value()
             # MMD係数として保存
-            maya_utils.set_custom_attributes(
+            maya_attribute_utils.set_custom_attributes(
                 self.current_material,
                 {"mmd_specular_coefficient": specular_coefficient},
             )
@@ -684,7 +684,7 @@ class MaterialPresenter:
             # StandardSurfaceの場合はspecularに変換
             if self.maya_adapter.node_type(self.current_material) == "standardSurface":
                 specular_weight = min(1.0, specular_coefficient / 100.0)
-                maya_utils.set_attribute(self.current_material, "specular", specular_weight, "float")
+                maya_attribute_utils.set_attribute(self.current_material, "specular", specular_weight, "float")
 
             # Apply textures
             texture_path = self.view.texture_path_edit.text()
@@ -776,7 +776,7 @@ class MaterialPresenter:
             file_node = self.maya_adapter.shading_node("file", asTexture=True, name=f"{material}_texture")
             self.maya_adapter.connect_attr(f"{file_node}.outColor", color_attr, force=True)
 
-        maya_utils.set_attribute(file_node, "fileTextureName", texture_path, "str")
+        maya_attribute_utils.set_attribute(file_node, "fileTextureName", texture_path, "str")
 
     def _apply_mmd_attributes(self):
         """Apply MMD-specific attributes"""
@@ -785,10 +785,10 @@ class MaterialPresenter:
 
         # Sphere map path
         sphere_path = self.view.sphere_map_path_edit.text()
-        maya_utils.set_attribute(self.current_material, "mmd_sphere_path", sphere_path, "str")
+        maya_attribute_utils.set_attribute(self.current_material, "mmd_sphere_path", sphere_path, "str")
 
         # Sphere mode
-        maya_utils.set_attribute(
+        maya_attribute_utils.set_attribute(
             self.current_material,
             "mmd_sphere_mode",
             self.view.sphere_mode_combo.currentIndex(),
@@ -796,7 +796,7 @@ class MaterialPresenter:
         )
 
         # Toon index
-        maya_utils.set_attribute(
+        maya_attribute_utils.set_attribute(
             self.current_material,
             "mmd_toon_index",
             self.view.toon_texture_combo.currentIndex(),
@@ -822,12 +822,12 @@ class MaterialPresenter:
         if self.view.line_draw_check.isChecked():
             draw_flags |= 0x80
 
-        maya_utils.set_attribute(self.current_material, "mmd_draw_flags", draw_flags, "int")
+        maya_attribute_utils.set_attribute(self.current_material, "mmd_draw_flags", draw_flags, "int")
 
         # Edge properties
         if "edge_color" in self.material_data:
             edge_color = self.material_data["edge_color"]
-            maya_utils.set_attribute(
+            maya_attribute_utils.set_attribute(
                 self.current_material,
                 "mmd_edge_color",
                 [edge_color[0], edge_color[1], edge_color[2]],
@@ -838,13 +838,13 @@ class MaterialPresenter:
         if abs(edge_size_value - float(self.material_data.get("edge_size_view", edge_size_value))) < 1e-6:
             edge_size_value = float(self.material_data.get("edge_size", edge_size_value))
 
-        maya_utils.set_attribute(
+        maya_attribute_utils.set_attribute(
             self.current_material,
             "mmd_edge_size",
             edge_size_value,
             "float",
         )
-        maya_utils.set_attribute(
+        maya_attribute_utils.set_attribute(
             self.current_material,
             ATTR_MMD_SHADER_OUTLINE_ENABLED,
             self.view.shader_outline_check.isChecked(),
@@ -874,7 +874,7 @@ class MaterialPresenter:
 
         # 一括で作成・設定
         if attrs_to_create:
-            maya_utils.set_custom_attributes(material, attrs_to_create)
+            maya_attribute_utils.set_custom_attributes(material, attrs_to_create)
 
     def apply_transparency_mode_to_selected(self):
         """Apply the chosen transparency and outline settings to selected materials."""
@@ -953,8 +953,8 @@ class MaterialPresenter:
         return (
             item.text(),
             material,
-            maya_utils.get_attribute(material, ATTR_MMD_MATERIAL_NAME) if material else "",
-            maya_utils.get_attribute(material, ATTR_MMD_MATERIAL_NAME_EN) if material else "",
+            maya_attribute_utils.get_attribute(material, ATTR_MMD_MATERIAL_NAME) if material else "",
+            maya_attribute_utils.get_attribute(material, ATTR_MMD_MATERIAL_NAME_EN) if material else "",
         )
 
     def on_selection_changed_maya(self):
