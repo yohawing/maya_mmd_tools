@@ -69,6 +69,22 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
             ),
         )
 
+    def test_maya_animation_utils_public_helpers_import_directly(self):
+        self._assert_callables(
+            "mmd_tools.core.maya_animation_utils",
+            (
+                "create_animation_curves",
+                "set_keyframes_batch",
+            ),
+        )
+
+    def test_maya_utils_animation_helpers_remain_compatibility_shims(self):
+        maya_utils = importlib.import_module("mmd_tools.core.maya_utils")
+        maya_animation_utils = importlib.import_module("mmd_tools.core.maya_animation_utils")
+
+        self.assertIs(maya_utils.create_animation_curves, maya_animation_utils.create_animation_curves)
+        self.assertIs(maya_utils.set_keyframes_batch, maya_animation_utils.set_keyframes_batch)
+
 
 if __name__ == "__main__":
     unittest.main()

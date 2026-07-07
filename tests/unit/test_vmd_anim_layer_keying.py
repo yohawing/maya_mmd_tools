@@ -388,7 +388,10 @@ class TestVmdAnimLayerKeying(MayaTestBase):
             "rotateX": om.MDoubleArray([math.radians(40.0), math.radians(50.0)]),
         }
 
-        with patch("mmd_tools.converters.vmd_scene_keying.maya_utils.create_animation_curves", side_effect=fake_create):
+        with patch(
+            "mmd_tools.converters.vmd_scene_keying.maya_animation_utils.create_animation_curves",
+            side_effect=fake_create,
+        ):
             keyed, skipped = self.converter._batch_create_and_key_curve_arrays(
                 joint,
                 channel_values,
@@ -427,7 +430,7 @@ class TestVmdAnimLayerKeying(MayaTestBase):
             times.append(om.MTime(frame, om.MTime.uiUnit()))
 
         with patch(
-            "mmd_tools.converters.vmd_scene_keying.maya_utils.create_animation_curves",
+            "mmd_tools.converters.vmd_scene_keying.maya_animation_utils.create_animation_curves",
             return_value={"translateY": FakeCurve("translateY")},
         ):
             keyed, skipped = self.converter._batch_create_and_key_curve_arrays(
