@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Set, Union
 from maya import cmds
 from maya.api import OpenMaya as om
 
-from mmd_tools.core import maya_mesh_utils, maya_utils, settings_keys as setting_keys
+from mmd_tools.core import maya_attribute_utils, maya_mesh_utils, maya_utils, settings_keys as setting_keys
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
     ATTR_MMD_MATERIAL_INDEX,
@@ -176,7 +176,7 @@ class MorphConverter:
                 }
             )
 
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             morph_node,
             {
                 "mmd_morph_name": str(morph_name),
@@ -233,7 +233,7 @@ class MorphConverter:
                 return None
             if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh_node, exists=True):
                 return None
-            source_indices = maya_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
+            source_indices = maya_attribute_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
             if not source_indices:
                 return None
             return {source_index: local_index for local_index, source_index in enumerate(source_indices)}
@@ -371,7 +371,7 @@ class MorphConverter:
         if not template_ctx.get("morph_name_mapping_dirty") or not blend_shape_node or not names:
             return
         start = time.perf_counter()
-        maya_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
+        maya_attribute_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
         self._add_profile_time("morph_name_store_sec", start)
         template_ctx["morph_name_mapping_dirty"] = False
 
@@ -379,10 +379,10 @@ class MorphConverter:
         """blendShape ノードに weight index → 生モーフ名 の対応を JSON で保存する。"""
         if not raw_name:
             return
-        parsed = maya_utils.read_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, default={})
+        parsed = maya_attribute_utils.read_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, default={})
         names: Dict[str, str] = {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
         names[str(target_index)] = str(raw_name)
-        maya_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
+        maya_attribute_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
 
     def _convert_bone_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXボーンモーフをMayaのnetwork nodeとしてインポートする。
@@ -408,7 +408,7 @@ class MorphConverter:
                 }
             )
 
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             morph_node,
             {
                 "mmd_morph_name": str(morph_name),
@@ -462,7 +462,7 @@ class MorphConverter:
                 }
             )
 
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             morph_node,
             {
                 "mmd_morph_name": str(morph_name),
@@ -526,7 +526,7 @@ class MorphConverter:
             if "target_mesh" not in template_ctx:
                 target_mesh = cmds.duplicate(mesh_node)[0]
                 target_mesh = cmds.rename(target_mesh, "_morph_template")
-                maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
+                maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
                 sel = om.MSelectionList()
                 sel.add(target_mesh)
                 dag = sel.getDagPath(0)
@@ -557,14 +557,14 @@ class MorphConverter:
 
             target_mesh = cmds.duplicate(template_ctx["target_mesh"])[0]
             target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
-            maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
+            maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
             blend_shape_node = template_ctx["blend_shape_node"]
             target_index = template_ctx["next_target_index"]
             template_ctx["next_target_index"] = target_index + 1
         else:
             target_mesh = cmds.duplicate(mesh_node)[0]
             target_mesh = cmds.rename(target_mesh, f"{morph_name}_target")
-            maya_utils.set_attribute(target_mesh, "visibility", 0, "bool")
+            maya_attribute_utils.set_attribute(target_mesh, "visibility", 0, "bool")
             source_to_local = self._get_mesh_source_vertex_map(mesh_node)
             target_points_start = time.perf_counter()
             self._apply_vertex_offsets_pmx(target_mesh, morph, source_to_local=source_to_local)
