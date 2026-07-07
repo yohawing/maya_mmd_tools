@@ -8,7 +8,7 @@ import maya.cmds as cmds
 from ..core.constants import ATTR_MMD_LIGHT, DEFAULT_LIGHT_NAME
 
 try:
-    from ..core.native.mmd_anim_runtime import sample_vmd_light_frames
+    from ..core.native.mmd_anim_runtime_sampling import sample_vmd_light_frames
 except Exception:
     sample_vmd_light_frames = None  # type: ignore
 

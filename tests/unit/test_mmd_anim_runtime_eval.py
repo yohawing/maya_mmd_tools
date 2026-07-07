@@ -28,6 +28,7 @@ from unittest import mock
 
 import mmd_tools.core.native.mmd_anim_runtime as rt
 import mmd_tools.core.native.mmd_anim_runtime_loader as runtime_loader
+import mmd_tools.core.native.mmd_anim_runtime_sampling as runtime_sampling
 from mmd_tools.core.native.mmd_anim_runtime import (
     MmdParsedModel,
     MmdRuntimeBatchEvaluation,
@@ -517,6 +518,94 @@ class TestComputeMayaLocalChannelsBatch(unittest.TestCase):
                     rotate_orders=[0],
                 )
             )
+
+
+class _FakeVmdSamplerLib:
+    def __init__(self):
+        self.free_calls = []
+        self.camera_payload_len = None
+        self.light_payload_len = None
+
+    def mmd_runtime_vmd_camera_track_create_from_vmd_bytes(self, _payload, payload_len):
+        self.camera_payload_len = int(payload_len)
+        return 101
+
+    def mmd_runtime_vmd_camera_track_sample(self, track, frame, out, out_len):
+        if track != 101 or int(out_len.value) != 9:
+            return False
+        base = float(frame.value)
+        values = [30.0 + base, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 45.0, 1.0]
+        for index, value in enumerate(values):
+            out[index] = value
+        return True
+
+    def mmd_runtime_vmd_camera_track_free(self, track):
+        self.free_calls.append(("camera", track))
+
+    def mmd_runtime_vmd_light_track_create_from_vmd_bytes(self, _payload, payload_len):
+        self.light_payload_len = int(payload_len)
+        return 202
+
+    def mmd_runtime_vmd_light_track_sample(self, track, frame, out, out_len):
+        if track != 202 or int(out_len.value) != 6:
+            return False
+        base = float(frame.value)
+        values = [1.0, 0.5, 0.25, base, -1.0, 2.0]
+        for index, value in enumerate(values):
+            out[index] = value
+        return True
+
+    def mmd_runtime_vmd_light_track_free(self, track):
+        self.free_calls.append(("light", track))
+
+
+class TestVmdRuntimeSampling(unittest.TestCase):
+    def test_camera_sampler_returns_samples_and_frees_track(self):
+        lib = _FakeVmdSamplerLib()
+
+        samples = runtime_sampling.sample_vmd_camera_frames(
+            b"camera-vmd",
+            start_frame=10.0,
+            frame_step=0.5,
+            frame_count=2,
+            get_library=lambda: lib,
+        )
+
+        self.assertEqual(lib.camera_payload_len, len(b"camera-vmd"))
+        self.assertEqual(lib.free_calls, [("camera", 101)])
+        self.assertEqual(samples[0]["frame"], 10.0)
+        self.assertEqual(samples[1]["frame"], 10.5)
+        self.assertEqual(samples[0]["distance"], 40.0)
+        self.assertEqual(samples[0]["position"], (1.0, 2.0, 3.0))
+        self.assertTrue(samples[0]["perspective"])
+
+    def test_light_sampler_returns_samples_and_frees_track(self):
+        lib = _FakeVmdSamplerLib()
+
+        samples = runtime_sampling.sample_vmd_light_frames(
+            b"light-vmd",
+            start_frame=3.0,
+            frame_step=1.0,
+            frame_count=1,
+            get_library=lambda: lib,
+        )
+
+        self.assertEqual(lib.light_payload_len, len(b"light-vmd"))
+        self.assertEqual(lib.free_calls, [("light", 202)])
+        self.assertEqual(samples, [{"frame": 3.0, "color": (1.0, 0.5, 0.25), "position": (3.0, -1.0, 2.0)}])
+
+    def test_legacy_runtime_module_proxy_uses_patchable_library_getter(self):
+        lib = _FakeVmdSamplerLib()
+
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            samples = rt.sample_vmd_camera_frames(b"camera-vmd", 1.0, 1.0, 1)
+
+        self.assertEqual(samples[0]["frame"], 1.0)
+        self.assertEqual(lib.free_calls, [("camera", 101)])
+
+    def test_sampler_returns_none_without_library_or_payload(self):
+        self.assertIsNone(runtime_sampling.sample_vmd_camera_frames(b"", 0.0, 1.0, 1, get_library=lambda: None))
+        self.assertIsNone(runtime_sampling.sample_vmd_light_frames(b"vmd", 0.0, 1.0, 0, get_library=lambda: None))
 
 
 # ----------------------------------------------------------------------

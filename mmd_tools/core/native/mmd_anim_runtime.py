@@ -54,6 +54,7 @@ from mmd_tools.core.native.mmd_anim_runtime_signatures import (
     set_sig as _signature_set_sig,
 )
 from mmd_tools.core.native import mmd_anim_runtime_export as _runtime_export
+from mmd_tools.core.native import mmd_anim_runtime_sampling as _runtime_sampling
 
 logger = get_logger(__name__)
 MMD_RUNTIME_RIG_BONE_FIXED_AXIS = _MMD_RUNTIME_RIG_BONE_FIXED_AXIS
@@ -149,44 +150,7 @@ def sample_vmd_camera_frames(
     frame_count: int,
 ) -> Optional[List[Dict[str, Any]]]:
     """Sample VMD camera state through mmd-anim's camera interpolation logic."""
-    lib = get_mmd_runtime_library()
-    if lib is None or not vmd_bytes or frame_count <= 0:
-        return None
-    create_track = getattr(lib, "mmd_runtime_vmd_camera_track_create_from_vmd_bytes", None)
-    sample_track = getattr(lib, "mmd_runtime_vmd_camera_track_sample", None)
-    free_track = getattr(lib, "mmd_runtime_vmd_camera_track_free", None)
-    if create_track is None or sample_track is None or free_track is None:
-        return None
-
-    track = None
-    try:
-        buf = (c_uint8 * len(vmd_bytes)).from_buffer_copy(vmd_bytes)
-        track = create_track(buf, len(vmd_bytes))
-        if not track:
-            return None
-        out = (c_float * 9)()
-        samples: List[Dict[str, Any]] = []
-        for index in range(int(frame_count)):
-            frame = float(start_frame) + float(frame_step) * index
-            if not sample_track(track, c_float(frame), out, c_size_t(9)):
-                continue
-            samples.append(
-                {
-                    "frame": frame,
-                    "distance": float(out[0]),
-                    "position": (float(out[1]), float(out[2]), float(out[3])),
-                    "rotation": (float(out[4]), float(out[5]), float(out[6])),
-                    "fov": float(out[7]),
-                    "perspective": bool(out[8] != 0.0),
-                }
-            )
-        return samples or None
-    except Exception as e:
-        logger.error(f"sample_vmd_camera_frames failed: {e}", exc_info=True)
-        return None
-    finally:
-        if track:
-            free_track(track)
+    return _runtime_sampling.sample_vmd_camera_frames(vmd_bytes, start_frame, frame_step, frame_count, get_mmd_runtime_library)
 
 
 def sample_vmd_light_frames(
@@ -196,41 +160,7 @@ def sample_vmd_light_frames(
     frame_count: int,
 ) -> Optional[List[Dict[str, Any]]]:
     """Sample VMD light state through mmd-anim's light interpolation logic."""
-    lib = get_mmd_runtime_library()
-    if lib is None or not vmd_bytes or frame_count <= 0:
-        return None
-    create_track = getattr(lib, "mmd_runtime_vmd_light_track_create_from_vmd_bytes", None)
-    sample_track = getattr(lib, "mmd_runtime_vmd_light_track_sample", None)
-    free_track = getattr(lib, "mmd_runtime_vmd_light_track_free", None)
-    if create_track is None or sample_track is None or free_track is None:
-        return None
-
-    track = None
-    try:
-        buf = (c_uint8 * len(vmd_bytes)).from_buffer_copy(vmd_bytes)
-        track = create_track(buf, len(vmd_bytes))
-        if not track:
-            return None
-        out = (c_float * 6)()
-        samples: List[Dict[str, Any]] = []
-        for index in range(int(frame_count)):
-            frame = float(start_frame) + float(frame_step) * index
-            if not sample_track(track, c_float(frame), out, c_size_t(6)):
-                continue
-            samples.append(
-                {
-                    "frame": frame,
-                    "color": (float(out[0]), float(out[1]), float(out[2])),
-                    "position": (float(out[3]), float(out[4]), float(out[5])),
-                }
-            )
-        return samples or None
-    except Exception as e:
-        logger.error(f"sample_vmd_light_frames failed: {e}", exc_info=True)
-        return None
-    finally:
-        if track:
-            free_track(track)
+    return _runtime_sampling.sample_vmd_light_frames(vmd_bytes, start_frame, frame_step, frame_count, get_mmd_runtime_library)
 
 
 def get_mmd_runtime_library() -> Optional[CDLL]:

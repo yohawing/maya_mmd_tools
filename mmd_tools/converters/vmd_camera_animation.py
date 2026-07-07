@@ -38,7 +38,7 @@ MMD_CAMERA_EXPR_SHAPE_ATTR = "mmd_camera_shape"
 MMD_CAMERA_EXPR_SCALE_ATTR = "mmd_camera_motion_scale"
 
 try:
-    from ..core.native.mmd_anim_runtime import sample_vmd_camera_frames
+    from ..core.native.mmd_anim_runtime_sampling import sample_vmd_camera_frames
 except Exception:
     sample_vmd_camera_frames = None  # type: ignore
 
