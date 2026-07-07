@@ -84,6 +84,9 @@ class _FakeRuntimeLib:
         self.evaluate_calls = []
         self.ik_option_calls = []
         self.batch_calls = []
+        self.model_create_calls = []
+        self.clip_create_calls = []
+        self.instance_create_calls = []
 
     # --- 評価 ---
     def mmd_runtime_instance_evaluate_clip_frame(self, instance_handle, clip_handle, frame):
@@ -242,6 +245,19 @@ class _FakeRuntimeLib:
         for i in range(min(n, len(self._ik))):
             out_buf[i] = self._ik[i]
         return True
+
+    # --- handle factory ---
+    def mmd_runtime_model_create_from_pmx_bytes(self, payload, payload_len):
+        self.model_create_calls.append((bytes(payload[:payload_len]), int(payload_len)))
+        return 0x1001
+
+    def mmd_runtime_clip_create_from_vmd_bytes_for_model(self, model_handle, payload, payload_len):
+        self.clip_create_calls.append((model_handle, bytes(payload[:payload_len]), int(payload_len)))
+        return 0x2002
+
+    def mmd_runtime_instance_create_for_model(self, model_handle):
+        self.instance_create_calls.append(model_handle)
+        return 0x3003
 
     # --- free 系 (no-op) ---
     def mmd_runtime_instance_free(self, handle):
@@ -1348,6 +1364,20 @@ class TestFactoryGuardsWithoutLibrary(unittest.TestCase):
     def test_instance_for_none_model_returns_none(self):
         runtime_loader._runtime_lib = _FakeRuntimeLib()
         self.assertIsNone(MmdRuntimeInstance.for_model(None))
+
+    def test_handle_factories_use_legacy_runtime_module_getter_patch(self):
+        lib = _FakeRuntimeLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            model = MmdRuntimeModel.from_pmx_bytes(b"pmx")
+            clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, b"vmd")
+            instance = MmdRuntimeInstance.for_model(model)
+
+        self.assertEqual(model.handle, 0x1001)
+        self.assertEqual(clip.handle, 0x2002)
+        self.assertEqual(instance.handle, 0x3003)
+        self.assertEqual(lib.model_create_calls, [(b"pmx", 3)])
+        self.assertEqual(lib.clip_create_calls, [(0x1001, b"vmd", 3)])
+        self.assertEqual(lib.instance_create_calls, [0x1001])
 
     def test_parsed_model_from_empty_bytes_returns_none(self):
         runtime_loader._runtime_lib = _FakeParsedLib()
