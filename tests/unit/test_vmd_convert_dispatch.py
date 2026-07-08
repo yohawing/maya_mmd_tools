@@ -7,6 +7,7 @@ from unittest.mock import patch
 from mmd_tools.converters.vmd_context import (
     VmdCameraAnimationContext,
     VmdImportContext,
+    VmdImportStateContext,
     VmdIkEnabledAnimationContext,
     VmdLightAnimationContext,
     VmdMorphAnimationContext,
@@ -87,6 +88,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
         timeline_context = self.converter._timeline_context()
         ik_context = self.converter._ik_enabled_animation_context()
         name_context = self.converter._name_mapping_context()
+        import_state_context = self.converter._import_state_context()
 
         self.assertIsInstance(cache_context, VmdRuntimeCacheCollectContext)
         self.assertIsInstance(apply_context, VmdRuntimeSceneApplyContext)
@@ -96,6 +98,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertIsInstance(timeline_context, VmdTimelineContext)
         self.assertIsInstance(ik_context, VmdIkEnabledAnimationContext)
         self.assertIsInstance(name_context, VmdNameMappingContext)
+        self.assertIsInstance(import_state_context, VmdImportStateContext)
         self.assertEqual(cache_context.get_anim_layer(), "VMD_Layer")
         self.assertTrue(cache_context.outer_refresh_suspended)
         self.assertTrue(apply_context.outer_refresh_suspended)
@@ -109,6 +112,10 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertIs(ik_context.vmd_frame_to_maya_time.__self__, self.converter)
         self.assertIs(name_context.bone_name_mapping, self.converter.bone_name_mapping)
         self.assertIs(name_context.build_morph_mappings.__self__, self.converter)
+        self.assertIs(import_state_context.bone_name_mapping, self.converter.bone_name_mapping)
+        self.assertIs(import_state_context.bone_bind_poses, self.converter._bone_bind_poses)
+        self.assertIs(import_state_context.collect_append_info, self.converter._collect_append_info)
+        self.assertIs(import_state_context.iter_morph_mappings, self.converter._iter_morph_mappings)
         self.assertIs(camera_context.get_or_create_camera.__self__, self.converter)
         self.assertIs(light_context.get_or_create_light.__self__, self.converter)
         self.assertIs(morph_context.batch_key_scalar_channels.__self__, self.converter)

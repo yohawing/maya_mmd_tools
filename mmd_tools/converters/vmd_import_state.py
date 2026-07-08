@@ -1,17 +1,35 @@
 """Import state and cleanup helpers for VMD conversion."""
 
 import json
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import maya.cmds as cmds
 
 from ..core.constants import ATTR_MMD_CAMERA, ATTR_MMD_LIGHT
 from ..core.logger import get_logger
 from ..core.namespace_utils import NamespaceUtils
+from .vmd_context import VmdImportStateContext
 from .vmd_runtime_rig_helper import _ls_mmd_ccd_ik_nodes
 
 _ATTR_VMD_BIND_TRANSLATE = "mmd_vmd_bind_translate"
 _LOGGER = get_logger(__name__)
+
+
+def _resolve_import_state_context(converter_or_context: Union[Any, VmdImportStateContext]) -> VmdImportStateContext:
+    if isinstance(converter_or_context, VmdImportStateContext):
+        return converter_or_context
+    factory = getattr(converter_or_context, "_import_state_context", None)
+    if callable(factory):
+        return factory()
+    return VmdImportStateContext(
+        logger=converter_or_context.logger,
+        bone_name_mapping=converter_or_context.bone_name_mapping,
+        bone_bind_poses=converter_or_context._bone_bind_poses,
+        morph_name_mapping=converter_or_context.morph_name_mapping,
+        collect_append_info=converter_or_context._collect_append_info,
+        iter_morph_mappings=converter_or_context._iter_morph_mappings,
+        set_refresh_suspended=lambda value: setattr(converter_or_context, "_vmd_import_refresh_suspended", value),
+    )
 
 
 def restore_import_timeline_state(current_time: Optional[float], logger: Optional[Any] = None) -> None:
@@ -29,43 +47,49 @@ def restore_import_timeline_state(current_time: Optional[float], logger: Optiona
             logger.debug("Failed to stop Maya playback after VMD import: %s", exc)
 
 
-def suspend_import_scene_updates(converter: Any) -> Tuple[bool, bool]:
+def suspend_import_scene_updates(converter_or_context: Union[Any, VmdImportStateContext]) -> Tuple[bool, bool]:
     """Suppress Maya undo recording and viewport refresh during VMD import."""
+    context = _resolve_import_state_context(converter_or_context)
     undo_was_enabled = True
     refresh_suspended = False
     try:
         undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
     except Exception as exc:
-        converter.logger.debug("Failed to query Maya undo state before VMD import: %s", exc)
+        context.logger.debug("Failed to query Maya undo state before VMD import: %s", exc)
         undo_was_enabled = True
     try:
         cmds.undoInfo(stateWithoutFlush=False)
     except Exception as exc:
-        converter.logger.debug("Failed to disable Maya undo during VMD import: %s", exc)
+        context.logger.debug("Failed to disable Maya undo during VMD import: %s", exc)
     try:
         cmds.refresh(suspend=True)
         refresh_suspended = True
-        converter._vmd_import_refresh_suspended = True
+        context.set_refresh_suspended(True)
     except Exception as exc:
-        converter.logger.debug("Failed to suspend Maya refresh during VMD import: %s", exc)
+        context.logger.debug("Failed to suspend Maya refresh during VMD import: %s", exc)
         refresh_suspended = False
-        converter._vmd_import_refresh_suspended = False
+        context.set_refresh_suspended(False)
     return undo_was_enabled, refresh_suspended
 
 
-def restore_import_scene_updates(converter: Any, undo_was_enabled: bool, refresh_suspended: bool) -> None:
+def restore_import_scene_updates(
+    converter_or_context: Union[Any, VmdImportStateContext],
+    undo_was_enabled: bool,
+    refresh_suspended: bool,
+) -> None:
     """Restore viewport refresh and undo state after VMD import."""
+    context = _resolve_import_state_context(converter_or_context)
     if refresh_suspended:
         try:
             cmds.refresh(suspend=False)
         except Exception as exc:
-            converter.logger.debug("Failed to restore Maya refresh after VMD import: %s", exc)
-    converter._vmd_import_refresh_suspended = False
+            context.logger.debug("Failed to restore Maya refresh after VMD import: %s", exc)
+    context.set_refresh_suspended(False)
     if undo_was_enabled:
         try:
             cmds.undoInfo(stateWithoutFlush=True)
         except Exception as exc:
-            converter.logger.debug("Failed to restore Maya undo after VMD import: %s", exc)
+            context.logger.debug("Failed to restore Maya undo after VMD import: %s", exc)
 
 
 def capture_anim_layer_selection() -> Dict[str, bool]:
@@ -84,17 +108,18 @@ def capture_anim_layer_selection() -> Dict[str, bool]:
     return selection
 
 
-def record_bind_poses(converter: Any) -> None:
+def record_bind_poses(converter_or_context: Union[Any, VmdImportStateContext]) -> None:
     """Record current joint translates as VMD bind-pose fallback metadata."""
-    converter.logger.info("Recording initial bone positions")
+    context = _resolve_import_state_context(converter_or_context)
+    context.logger.info("Recording initial bone positions")
 
-    for vmd_bone_name, maya_joint in converter.bone_name_mapping.items():
+    for vmd_bone_name, maya_joint in context.bone_name_mapping.items():
         try:
             translate = cmds.getAttr(f"{maya_joint}.translate")[0]
-            converter._bone_bind_poses[vmd_bone_name] = translate
+            context.bone_bind_poses[vmd_bone_name] = translate
             store_bind_translate(maya_joint, translate)
         except Exception as exc:
-            converter.logger.warning("Failed to get bind pose for %s: %s", vmd_bone_name, exc)
+            context.logger.warning("Failed to get bind pose for %s: %s", vmd_bone_name, exc)
 
 
 def restore_anim_layer_selection(selection: Optional[Dict[str, bool]]) -> None:
@@ -113,19 +138,24 @@ def restore_anim_layer_selection(selection: Optional[Dict[str, bool]]) -> None:
             _LOGGER.debug("Failed to restore animLayer selection for %s: %s", layer, exc)
 
 
-def clear_existing_motion(converter, layer_name: str, target_namespace: Optional[str] = None) -> None:
+def clear_existing_motion(
+    converter_or_context: Union[Any, VmdImportStateContext],
+    layer_name: str,
+    target_namespace: Optional[str] = None,
+) -> None:
     """Delete existing VMD motion keys/layer for the target model."""
+    context = _resolve_import_state_context(converter_or_context)
     cleared = 0
 
-    mapped_joints = set(converter.bone_name_mapping.values())
-    fallback_translates = _capture_fallback_rest_translates(mapped_joints, converter.logger)
+    mapped_joints = set(context.bone_name_mapping.values())
+    fallback_translates = _capture_fallback_rest_translates(mapped_joints, context.logger)
     for joint in mapped_joints:
         cleared += cut_keyable_attrs(
             joint,
             ("translateX", "translateY", "translateZ", "rotateX", "rotateY", "rotateZ"),
         )
 
-    for target_joint, info in converter._collect_append_info().items():
+    for target_joint, info in context.collect_append_info().items():
         append_node = info.get("node")
         if append_node and (
             node_matches_target_namespace(target_joint, target_namespace)
@@ -148,8 +178,8 @@ def clear_existing_motion(converter, layer_name: str, target_namespace: Optional
             cleared += cut_keyable_attrs(ik_node, ("enabled", "inputRotate"))
 
     morph_nodes = set()
-    for mapping_entry in converter.morph_name_mapping.values():
-        for morph_node, weight_attr, _morph_name in converter._iter_morph_mappings(mapping_entry):
+    for mapping_entry in context.morph_name_mapping.values():
+        for morph_node, weight_attr, _morph_name in context.iter_morph_mappings(mapping_entry):
             if node_matches_target_namespace(morph_node, target_namespace):
                 cleared += cut_keyable_attrs(morph_node, (weight_attr,))
                 morph_nodes.add(morph_node)
@@ -159,13 +189,13 @@ def clear_existing_motion(converter, layer_name: str, target_namespace: Optional
             cmds.delete(layer_name)
             cleared += 1
         except Exception as exc:
-            converter.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
+            context.logger.debug(f"failed to delete existing animLayer {layer_name}: {exc}")
 
     # cutKey はアニメーション曲線を削除するが joint の attribute 値はポーズのまま残る。
     # 後続の _record_bind_poses が正しい rest position を取得できるよう dagPose で復元する。
-    _restore_joints_to_rest(mapped_joints, fallback_translates, converter.logger)
+    _restore_joints_to_rest(mapped_joints, fallback_translates, context.logger)
 
-    converter.logger.info(
+    context.logger.info(
         "Cleared existing VMD motion: keys_or_layers=%d joints=%d morph_nodes=%d",
         cleared,
         len(mapped_joints),

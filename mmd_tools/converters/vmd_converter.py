@@ -47,6 +47,7 @@ from .vmd_context import (
     VmdBoneAnimationContext,
     VmdCameraAnimationContext,
     VmdImportContext,
+    VmdImportStateContext,
     VmdIkEnabledAnimationContext,
     VmdKeyingContext,
     VmdLightAnimationContext,
@@ -383,6 +384,21 @@ class VmdConverter:
             build_morph_mappings=self._build_morph_mappings,
         )
 
+    def _import_state_context(self) -> VmdImportStateContext:
+        """Return import cleanup state for split VMD helper modules."""
+        return VmdImportStateContext(
+            logger=self.logger,
+            bone_name_mapping=self.bone_name_mapping,
+            bone_bind_poses=self._bone_bind_poses,
+            morph_name_mapping=self.morph_name_mapping,
+            collect_append_info=self._collect_append_info,
+            iter_morph_mappings=self._iter_morph_mappings,
+            set_refresh_suspended=self._set_vmd_import_refresh_suspended,
+        )
+
+    def _set_vmd_import_refresh_suspended(self, value: bool) -> None:
+        self._vmd_import_refresh_suspended = bool(value)
+
     def _light_animation_context(self) -> VmdLightAnimationContext:
         """Return light-animation state for split VMD helper modules."""
         return VmdLightAnimationContext(
@@ -618,11 +634,11 @@ class VmdConverter:
 
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
-        return suspend_import_scene_updates(self)
+        return suspend_import_scene_updates(self._import_state_context())
 
     def _restore_import_scene_updates(self, undo_was_enabled: bool, refresh_suspended: bool) -> None:
         """Restore viewport refresh and undo state after VMD import."""
-        restore_import_scene_updates(self, undo_was_enabled, refresh_suspended)
+        restore_import_scene_updates(self._import_state_context(), undo_was_enabled, refresh_suspended)
 
     @staticmethod
     def _restore_import_timeline_state(current_time: Optional[float]) -> None:
@@ -657,7 +673,7 @@ class VmdConverter:
 
     def _clear_existing_motion(self, layer_name: str, target_namespace: Optional[str] = None) -> None:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
-        clear_existing_motion(self, layer_name, target_namespace)
+        clear_existing_motion(self._import_state_context(), layer_name, target_namespace)
 
     def _clear_existing_camera_motion(self) -> None:
         """既存のMMDカメラアニメーションキーを削除する。"""
@@ -1210,7 +1226,7 @@ class VmdConverter:
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
-        record_bind_poses(self)
+        record_bind_poses(self._import_state_context())
 
     def _setup_timeline(self, vmd_data: VmdData):
         """タイムラインの設定

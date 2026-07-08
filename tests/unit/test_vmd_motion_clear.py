@@ -2,7 +2,9 @@
 
 import maya.cmds as cmds
 
+from mmd_tools.converters.vmd_context import VmdImportStateContext
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_import_state import clear_existing_motion, record_bind_poses
 from mmd_tools.core.constants import ATTR_MMD_BONE_NAME
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from tests.common.maya_test_base import MayaTestBase
@@ -23,6 +25,17 @@ class TestVmdMotionClear(MayaTestBase):
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def _import_state_context(self) -> VmdImportStateContext:
+        return VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping=self.converter.bone_name_mapping,
+            bone_bind_poses=self.converter._bone_bind_poses,
+            morph_name_mapping=self.converter.morph_name_mapping,
+            collect_append_info=lambda: {},
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
 
     def test_anim_layer_selection_restore_deselects_new_vmd_layer(self):
         """VMD import 中に作られた layer を selected のまま残さない。"""
@@ -54,7 +67,7 @@ class TestVmdMotionClear(MayaTestBase):
         self.converter.bone_name_mapping = {"センター": joint}
         self.converter.morph_name_mapping = {"smile": (blend_shape, "weight[0]", "smile")}
 
-        self.converter._clear_existing_motion(layer, target_namespace=None)
+        clear_existing_motion(self._import_state_context(), layer, target_namespace=None)
 
         self.assertIsNone(cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True))
         self.assertIsNone(cmds.keyframe(joint, attribute="rotateY", query=True, timeChange=True))
@@ -69,7 +82,7 @@ class TestVmdMotionClear(MayaTestBase):
         rest_tx = cmds.getAttr(f"{joint}.translateX")
 
         self.converter.bone_name_mapping = {"test_bone": joint}
-        self.converter._record_bind_poses()
+        record_bind_poses(self._import_state_context())
 
         cmds.setKeyframe(joint, attribute="translateX", time=1, value=rest_tx + 5.0)
         cmds.setKeyframe(joint, attribute="rotateX", time=1, value=45.0)
@@ -78,7 +91,7 @@ class TestVmdMotionClear(MayaTestBase):
 
         self.converter.morph_name_mapping = {}
         layer = cmds.animLayer("VMD_Motion_restore_test", override=False, weight=1.0)
-        self.converter._clear_existing_motion(layer, target_namespace=None)
+        clear_existing_motion(self._import_state_context(), layer, target_namespace=None)
 
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.rotateX"), 0.0, places=4)
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateX"), rest_tx, places=4)
@@ -99,7 +112,7 @@ class TestVmdMotionClear(MayaTestBase):
         self.converter.morph_name_mapping = {}
         layer = cmds.animLayer("VMD_Motion_model_only_clear_test", override=False, weight=1.0)
 
-        self.converter._clear_existing_motion(layer, target_namespace=None)
+        clear_existing_motion(self._import_state_context(), layer, target_namespace=None)
 
         self.assertEqual(cmds.keyframe(camera, attribute="translateX", query=True, timeChange=True), [2.0])
         self.assertEqual(cmds.keyframe(camera_shape, attribute="focalLength", query=True, timeChange=True), [2.0])

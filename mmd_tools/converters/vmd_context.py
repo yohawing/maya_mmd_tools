@@ -204,6 +204,19 @@ class VmdNameMappingContext:
 
 
 @dataclass(frozen=True)
+class VmdImportStateContext:
+    """Mutable state and callbacks needed by VMD import cleanup helpers."""
+
+    logger: Any
+    bone_name_mapping: Mapping[str, str]
+    bone_bind_poses: MutableMapping[str, Tuple[float, float, float]]
+    morph_name_mapping: Mapping[str, Any]
+    collect_append_info: Callable[[], Dict[str, dict]]
+    iter_morph_mappings: Callable[[Any], List[Tuple[str, str, str]]]
+    set_refresh_suspended: Callable[[bool], None]
+
+
+@dataclass(frozen=True)
 class VmdMorphAnimationContext:
     """State and keying operations needed by VMD morph import and runtime morph bake."""
 
