@@ -193,6 +193,17 @@ class VmdIkEnabledAnimationContext:
 
 
 @dataclass(frozen=True)
+class VmdNameMappingContext:
+    """Mutable mapping state needed to bind VMD names to Maya scene nodes."""
+
+    logger: Any
+    bone_name_mapping: MutableMapping[str, str]
+    bone_name_to_index: MutableMapping[str, int]
+    bone_index_to_joint: MutableMapping[int, str]
+    build_morph_mappings: Callable[[], None]
+
+
+@dataclass(frozen=True)
 class VmdMorphAnimationContext:
     """State and keying operations needed by VMD morph import and runtime morph bake."""
 

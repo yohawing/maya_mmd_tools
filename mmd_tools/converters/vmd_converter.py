@@ -51,6 +51,7 @@ from .vmd_context import (
     VmdKeyingContext,
     VmdLightAnimationContext,
     VmdMorphAnimationContext,
+    VmdNameMappingContext,
     VmdRuntimeCacheCollectContext,
     VmdRuntimeLocalDecomposeContext,
     VmdRuntimeRigContext,
@@ -366,6 +367,20 @@ class VmdConverter:
             collect_ik_nodes_by_bone_name=self._collect_ik_nodes_by_bone_name,
             get_animation_frame_range=self._get_animation_frame_range,
             vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+        )
+
+    def _name_mapping_context(self) -> VmdNameMappingContext:
+        """Return mutable scene name-mapping state for split VMD helper modules."""
+        if not hasattr(self, "bone_name_to_index"):
+            self.bone_name_to_index = {}
+        if not hasattr(self, "bone_index_to_joint"):
+            self.bone_index_to_joint = {}
+        return VmdNameMappingContext(
+            logger=self.logger,
+            bone_name_mapping=self.bone_name_mapping,
+            bone_name_to_index=self.bone_name_to_index,
+            bone_index_to_joint=self.bone_index_to_joint,
+            build_morph_mappings=self._build_morph_mappings,
         )
 
     def _light_animation_context(self) -> VmdLightAnimationContext:
@@ -1191,7 +1206,7 @@ class VmdConverter:
         これにより mmd-anim の world_matrices (PMXボーン順) を Maya ジョイントに
         正しく対応づけられる。
         """
-        build_name_mappings(self, target_namespace)
+        build_name_mappings(self._name_mapping_context(), target_namespace)
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""

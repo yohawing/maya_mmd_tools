@@ -10,6 +10,7 @@ from mmd_tools.converters.vmd_context import (
     VmdIkEnabledAnimationContext,
     VmdLightAnimationContext,
     VmdMorphAnimationContext,
+    VmdNameMappingContext,
     VmdRuntimeCacheCollectContext,
     VmdRuntimeSceneApplyContext,
     VmdTimelineContext,
@@ -85,6 +86,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
         morph_context = self.converter._morph_animation_context()
         timeline_context = self.converter._timeline_context()
         ik_context = self.converter._ik_enabled_animation_context()
+        name_context = self.converter._name_mapping_context()
 
         self.assertIsInstance(cache_context, VmdRuntimeCacheCollectContext)
         self.assertIsInstance(apply_context, VmdRuntimeSceneApplyContext)
@@ -93,6 +95,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertIsInstance(morph_context, VmdMorphAnimationContext)
         self.assertIsInstance(timeline_context, VmdTimelineContext)
         self.assertIsInstance(ik_context, VmdIkEnabledAnimationContext)
+        self.assertIsInstance(name_context, VmdNameMappingContext)
         self.assertEqual(cache_context.get_anim_layer(), "VMD_Layer")
         self.assertTrue(cache_context.outer_refresh_suspended)
         self.assertTrue(apply_context.outer_refresh_suspended)
@@ -104,6 +107,8 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertIs(ik_context.collect_ik_nodes_by_bone_name.__self__, self.converter)
         self.assertIs(ik_context.get_animation_frame_range.__self__, self.converter)
         self.assertIs(ik_context.vmd_frame_to_maya_time.__self__, self.converter)
+        self.assertIs(name_context.bone_name_mapping, self.converter.bone_name_mapping)
+        self.assertIs(name_context.build_morph_mappings.__self__, self.converter)
         self.assertIs(camera_context.get_or_create_camera.__self__, self.converter)
         self.assertIs(light_context.get_or_create_light.__self__, self.converter)
         self.assertIs(morph_context.batch_key_scalar_channels.__self__, self.converter)
