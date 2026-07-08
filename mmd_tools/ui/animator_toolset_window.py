@@ -9,6 +9,19 @@ from .tabs.animation_tab import AnimationTab
 from .presenters.animation_presenter import AnimationPresenter
 
 
+def _raise_workspace_control(name: str) -> None:
+    """Make an existing Maya workspaceControl visible and active when possible."""
+    for kwargs in (
+        {"visible": True},
+        {"restore": True},
+        {"raise": True},
+    ):
+        try:
+            cmds.workspaceControl(name, e=True, **kwargs)
+        except Exception:
+            pass
+
+
 class AnimatorToolsetWindow(QWidget):
     """Dockable Animator Toolset window, independent of the main MMD Tools window."""
 
@@ -52,7 +65,6 @@ class AnimatorToolsetWindow(QWidget):
             cmds.workspaceControl(
                 ws,
                 label="Animator Toolset",
-                tabToControl=["AttributeEditor", -1],
                 initialWidth=420,
                 initialHeight=700,
                 widthProperty="preferred",
@@ -60,10 +72,18 @@ class AnimatorToolsetWindow(QWidget):
                 floating=True,
             )
             cmds.control(self.WINDOW_NAME, e=True, parent=ws)
+            self.show()
+            try:
+                cmds.control(self.WINDOW_NAME, e=True, visible=True)
+            except Exception:
+                pass
+            _raise_workspace_control(ws)
         else:
             self.setWindowFlags(Qt.Window)
             self.resize(420, 700)
             self.show()
+            self.raise_()
+            self.activateWindow()
 
     def close_window(self):
         """Close and clean up the workspace control."""

@@ -1,4 +1,5 @@
 import os
+import traceback
 
 from maya import cmds
 import maya.api.OpenMaya as om
@@ -116,14 +117,20 @@ def open_animator_toolset(dockable=True):
     """Open the standalone Animator Toolset window."""
     global _animator_toolset_window
 
-    close_animator_toolset()
+    try:
+        close_animator_toolset()
 
-    from mmd_tools.ui.animator_toolset_window import AnimatorToolsetWindow
+        from mmd_tools.ui.animator_toolset_window import AnimatorToolsetWindow
 
-    window = AnimatorToolsetWindow()
-    window.show_window(dockable=dockable)
-    _animator_toolset_window = window
-    return window
+        window = AnimatorToolsetWindow()
+        window.show_window(dockable=dockable)
+        _animator_toolset_window = window
+        return window
+    except Exception as exc:
+        message = f"Animator Toolset failed to open: {exc}"
+        om.MGlobal.displayError(message)
+        om.MGlobal.displayError(traceback.format_exc())
+        raise
 
 
 def install_mmd_menu():
