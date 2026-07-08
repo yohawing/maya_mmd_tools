@@ -18,6 +18,7 @@ from ..qt_compat import (
     QCheckBox,
 )
 from ..base_tab import BaseTab
+from .translation_registry import apply_translation_registry
 
 
 class MorphTab(BaseTab):
@@ -435,7 +436,7 @@ class MorphTab(BaseTab):
 
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
-        self._apply_translation_registry(self._TRANSLATION_REGISTRY)
+        apply_translation_registry(self, self._TRANSLATION_REGISTRY)
 
         # Tab widget texts
         if self.detail_tabs.count() >= 3:

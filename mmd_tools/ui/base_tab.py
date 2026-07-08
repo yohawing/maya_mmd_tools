@@ -33,13 +33,3 @@ class BaseTab(QWidget):
         各タブクラスでオーバーライドして実装する
         """
         pass
-
-    def _apply_translation_registry(self, registry):
-        """Apply declarative widget translation entries.
-
-        Each entry is ``(attribute_name, setter_name, key, category)``.
-        """
-        for attr_name, setter_name, key, category in registry:
-            widget = getattr(self, attr_name)
-            setter = getattr(widget, setter_name)
-            setter(self.tr(key, category))
