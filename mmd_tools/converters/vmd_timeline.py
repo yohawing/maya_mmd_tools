@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Union
 
 import maya.cmds as cmds
+
+from .vmd_context import VmdTimelineContext
 
 
 FPS_TIME_UNIT_MAPPING = {
@@ -65,12 +67,28 @@ def set_scene_fps(fps: float, logger: Any) -> None:
     cmds.currentUnit(time="ntsc")
 
 
-def setup_timeline(converter: Any, vmd_data: Any) -> None:
+def _resolve_timeline_context(
+    converter_or_context: Union[Any, VmdTimelineContext],
+) -> VmdTimelineContext:
+    if isinstance(converter_or_context, VmdTimelineContext):
+        return converter_or_context
+    factory = getattr(converter_or_context, "_timeline_context", None)
+    if callable(factory):
+        return factory()
+    return VmdTimelineContext(
+        logger=converter_or_context.logger,
+        fps=converter_or_context.fps,
+        vmd_frame_to_maya_time=converter_or_context.vmd_frame_to_maya_time,
+    )
+
+
+def setup_timeline(converter_or_context: Union[Any, VmdTimelineContext], vmd_data: Any) -> None:
     """Apply FPS and playback range for a VMD import."""
-    set_scene_fps(converter.fps, converter.logger)
+    context = _resolve_timeline_context(converter_or_context)
+    set_scene_fps(context.fps, context.logger)
 
     max_frame = get_max_bone_frame(vmd_data)
     if max_frame > 0:
-        max_time = converter.vmd_frame_to_maya_time(max_frame)
+        max_time = context.vmd_frame_to_maya_time(max_frame)
         cmds.playbackOptions(min=0, max=max_time, animationStartTime=0, animationEndTime=max_time)
-        converter.logger.info(f"Set timeline range: 0 - {max_time}")
+        context.logger.info(f"Set timeline range: 0 - {max_time}")

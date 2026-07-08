@@ -54,6 +54,7 @@ from .vmd_context import (
     VmdRuntimeLocalDecomposeContext,
     VmdRuntimeRigContext,
     VmdRuntimeSceneApplyContext,
+    VmdTimelineContext,
 )
 from .vmd_import_state import (
     capture_anim_layer_selection,
@@ -347,6 +348,14 @@ class VmdConverter:
             batch_key_scalar_channels=self._batch_key_scalar_channels,
             apply_vmd_bezier_tangents=self._apply_vmd_bezier_tangents,
             get_frame_number=self._get_frame_number,
+        )
+
+    def _timeline_context(self) -> VmdTimelineContext:
+        """Return timeline state for split VMD helper modules."""
+        return VmdTimelineContext(
+            logger=self.logger,
+            fps=self.fps,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
         )
 
     def _light_animation_context(self) -> VmdLightAnimationContext:
@@ -1184,7 +1193,7 @@ class VmdConverter:
         Args:
             vmd_data: パース済みのVMDデータ
         """
-        setup_timeline(self, vmd_data)
+        setup_timeline(self._timeline_context(), vmd_data)
 
     def _convert_bone_animation(self, bone_frames: List) -> bool:
         """ボーンアニメーションを変換

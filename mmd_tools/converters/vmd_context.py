@@ -174,6 +174,15 @@ class VmdLightAnimationContext:
 
 
 @dataclass(frozen=True)
+class VmdTimelineContext:
+    """State and operations needed by VMD timeline setup."""
+
+    logger: Any
+    fps: float
+    vmd_frame_to_maya_time: Callable[[float], float]
+
+
+@dataclass(frozen=True)
 class VmdMorphAnimationContext:
     """State and keying operations needed by VMD morph import and runtime morph bake."""
 
