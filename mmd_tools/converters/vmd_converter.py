@@ -48,6 +48,8 @@ from .vmd_context import (
     VmdCameraAnimationContext,
     VmdImportContext,
     VmdKeyingContext,
+    VmdLightAnimationContext,
+    VmdMorphAnimationContext,
     VmdRuntimeCacheCollectContext,
     VmdRuntimeLocalDecomposeContext,
     VmdRuntimeRigContext,
@@ -345,6 +347,33 @@ class VmdConverter:
             batch_key_scalar_channels=self._batch_key_scalar_channels,
             apply_vmd_bezier_tangents=self._apply_vmd_bezier_tangents,
             get_frame_number=self._get_frame_number,
+        )
+
+    def _light_animation_context(self) -> VmdLightAnimationContext:
+        """Return light-animation state for split VMD helper modules."""
+        return VmdLightAnimationContext(
+            logger=self.logger,
+            anim_layer=self.anim_layer,
+            use_animation_layers=self.use_animation_layers,
+            get_or_create_light=self._get_or_create_light,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            maya_time_to_vmd_frame=self.maya_time_to_vmd_frame,
+            add_attrs_to_anim_layer=self._add_attrs_to_anim_layer,
+            samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=self._batch_key_scalar_channels,
+        )
+
+    def _morph_animation_context(self) -> VmdMorphAnimationContext:
+        """Return morph-animation state for split VMD helper modules."""
+        return VmdMorphAnimationContext(
+            logger=self.logger,
+            morph_name_mapping=self.morph_name_mapping,
+            anim_layer=self.anim_layer,
+            use_animation_layers=self.use_animation_layers,
+            iter_morph_mappings=self._iter_morph_mappings,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=self._batch_key_scalar_channels,
         )
 
     def convert(
@@ -1100,7 +1129,7 @@ class VmdConverter:
         pmx_morph_names: List[str] = None,
     ):
         """runtime から得た PMX morph 順のウェイトを Maya blendShape にベイク"""
-        bake_morph_weights_from_runtime(self, frame, morph_weights, pmx_morph_names)
+        bake_morph_weights_from_runtime(self._morph_animation_context(), frame, morph_weights, pmx_morph_names)
 
     def _bake_morph_weight_cache_from_runtime(
         self,
@@ -1108,7 +1137,7 @@ class VmdConverter:
         pmx_morph_names: List[str] = None,
     ) -> None:
         """runtime 評価済み morph weight cache を blendShape/network weight へ一括キーイングする。"""
-        bake_morph_weight_cache_from_runtime(self, morph_cache, pmx_morph_names)
+        bake_morph_weight_cache_from_runtime(self._morph_animation_context(), morph_cache, pmx_morph_names)
 
     def _disable_mmd_rig_constraints_for_runtime_bake(self):
         """runtime bake と二重評価になる PMX 付与constraint/IK solverを無効化する。"""
@@ -1333,7 +1362,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_light_animation(self, light_frames, vmd_bytes=vmd_bytes)
+        return convert_light_animation(self._light_animation_context(), light_frames, vmd_bytes=vmd_bytes)
 
     def _convert_morph_animation(self, morph_frames: List) -> bool:
         """モーフアニメーションを変換
@@ -1344,7 +1373,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_morph_animation(self, morph_frames)
+        return convert_morph_animation(self._morph_animation_context(), morph_frames)
 
     @staticmethod
     def _iter_morph_mappings(mapping_entry):

@@ -7,6 +7,8 @@ from unittest.mock import patch
 from mmd_tools.converters.vmd_context import (
     VmdCameraAnimationContext,
     VmdImportContext,
+    VmdLightAnimationContext,
+    VmdMorphAnimationContext,
     VmdRuntimeCacheCollectContext,
     VmdRuntimeSceneApplyContext,
 )
@@ -77,15 +79,23 @@ class TestVmdConvertDispatch(unittest.TestCase):
         cache_context = self.converter._runtime_cache_collect_context()
         apply_context = self.converter._runtime_scene_apply_context()
         camera_context = self.converter._camera_animation_context()
+        light_context = self.converter._light_animation_context()
+        morph_context = self.converter._morph_animation_context()
 
         self.assertIsInstance(cache_context, VmdRuntimeCacheCollectContext)
         self.assertIsInstance(apply_context, VmdRuntimeSceneApplyContext)
         self.assertIsInstance(camera_context, VmdCameraAnimationContext)
+        self.assertIsInstance(light_context, VmdLightAnimationContext)
+        self.assertIsInstance(morph_context, VmdMorphAnimationContext)
         self.assertEqual(cache_context.get_anim_layer(), "VMD_Layer")
         self.assertTrue(cache_context.outer_refresh_suspended)
         self.assertTrue(apply_context.outer_refresh_suspended)
         self.assertEqual(camera_context.anim_layer, "VMD_Layer")
+        self.assertEqual(light_context.anim_layer, "VMD_Layer")
+        self.assertEqual(morph_context.anim_layer, "VMD_Layer")
         self.assertIs(camera_context.get_or_create_camera.__self__, self.converter)
+        self.assertIs(light_context.get_or_create_light.__self__, self.converter)
+        self.assertIs(morph_context.batch_key_scalar_channels.__self__, self.converter)
         self.assertIs(cache_context.compute_all_bone_locals.__self__, self.converter)
         self.assertIs(apply_context.batch_create_and_key_curve_arrays.__self__, self.converter)
 

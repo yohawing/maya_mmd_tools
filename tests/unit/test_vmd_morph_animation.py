@@ -2,7 +2,9 @@
 
 import maya.cmds as cmds
 
+from mmd_tools.converters.vmd_context import VmdMorphAnimationContext
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_morph_animation import convert_morph_animation
 from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
 from tests.common.maya_test_base import MayaTestBase
 
@@ -47,6 +49,33 @@ class TestVmdMorphAnimation(MayaTestBase):
         self.assertEqual(len(keyframes), 3)
 
         cmds.delete(cube)
+
+    def test_convert_morph_animation_accepts_direct_context(self):
+        """Direct morph contexts key through their provided mapping and keying hooks."""
+        captured = []
+        mapping = object()
+
+        def iter_morph_mappings(mapping_value):
+            self.assertIs(mapping_value, mapping)
+            return [("direct_context_morph", "weight", "smile")]
+
+        def fake_batch_key_scalar_channels(node_name, channel_samples, animation_layer):
+            captured.append((node_name, channel_samples, animation_layer))
+            return True
+
+        context = VmdMorphAnimationContext(
+            logger=self.converter.logger,
+            morph_name_mapping={"smile": mapping},
+            anim_layer=None,
+            use_animation_layers=False,
+            iter_morph_mappings=iter_morph_mappings,
+            vmd_frame_to_maya_time=self.converter.vmd_frame_to_maya_time,
+            samples_as_anim_layer_deltas=self.converter._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=fake_batch_key_scalar_channels,
+        )
+
+        self.assertTrue(convert_morph_animation(context, [_morph_frame("smile", 5, 0.75)]))
+        self.assertEqual(captured, [("direct_context_morph", {"weight": [(5.0, 0.75)]}, None)])
 
     def test_convert_morph_animation_with_split_mesh_aliases(self):
         """The same morph alias on multiple meshes keys every mapping."""

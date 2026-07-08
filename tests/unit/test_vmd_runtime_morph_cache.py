@@ -8,7 +8,9 @@ from unittest.mock import patch
 
 import maya.cmds as cmds
 
+from mmd_tools.converters.vmd_context import VmdMorphAnimationContext
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_runtime_morph_bake import bake_morph_weight_cache_from_runtime
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -46,6 +48,40 @@ class TestVmdRuntimeMorphCache(MayaTestBase):
         self.assertEqual(captured[0][1], {"weight": [(3.0, 0.5)]})
 
         cmds.delete(node)
+
+    def test_runtime_morph_cache_accepts_direct_context(self):
+        """Direct morph contexts can drive runtime-cache delta conversion and batch keying."""
+        mapping = object()
+        captured_deltas = []
+        captured_keys = []
+
+        def iter_morph_mappings(mapping_value):
+            self.assertIs(mapping_value, mapping)
+            return [("direct_context_runtime_morph", "weight", "smile")]
+
+        def fake_samples_as_anim_layer_deltas(node_name, channel_samples):
+            captured_deltas.append((node_name, channel_samples))
+            return {"weight": [(3.0, 0.5)]}
+
+        def fake_batch_key_scalar_channels(node_name, channel_samples, animation_layer):
+            captured_keys.append((node_name, channel_samples, animation_layer))
+            return True
+
+        context = VmdMorphAnimationContext(
+            logger=self.converter.logger,
+            morph_name_mapping={"笑い": mapping},
+            anim_layer="runtime_morph_layer",
+            use_animation_layers=True,
+            iter_morph_mappings=iter_morph_mappings,
+            vmd_frame_to_maya_time=self.converter.vmd_frame_to_maya_time,
+            samples_as_anim_layer_deltas=fake_samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=fake_batch_key_scalar_channels,
+        )
+
+        bake_morph_weight_cache_from_runtime(context, [(3.0, [0.75])], ["笑い"])
+
+        self.assertEqual(captured_deltas, [("direct_context_runtime_morph", {"weight": [(3.0, 0.75)]})])
+        self.assertEqual(captured_keys, [("direct_context_runtime_morph", {"weight": [(3.0, 0.5)]}, "runtime_morph_layer")])
 
     def test_runtime_morph_cache_keys_blendshape_weight_on_anim_layer(self):
         """Runtime morph cache can key blendShape weight aliases on animLayers."""

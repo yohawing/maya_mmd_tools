@@ -156,3 +156,32 @@ class VmdCameraAnimationContext:
     batch_key_scalar_channels: Callable[[str, Dict[str, List[Tuple[float, float]]], Optional[str]], bool]
     apply_vmd_bezier_tangents: Callable[..., None]
     get_frame_number: Callable[[Any], float]
+
+
+@dataclass(frozen=True)
+class VmdLightAnimationContext:
+    """State and keying operations needed by VMD light import."""
+
+    logger: Any
+    anim_layer: Optional[str]
+    use_animation_layers: bool
+    get_or_create_light: Callable[[], str]
+    vmd_frame_to_maya_time: Callable[[float], float]
+    maya_time_to_vmd_frame: Callable[[float], float]
+    add_attrs_to_anim_layer: Callable[[str, List[str]], None]
+    samples_as_anim_layer_deltas: Callable[[str, Dict[str, List[Tuple[float, float]]]], Dict[str, List[Tuple[float, float]]]]
+    batch_key_scalar_channels: Callable[[str, Dict[str, List[Tuple[float, float]]], Optional[str]], bool]
+
+
+@dataclass(frozen=True)
+class VmdMorphAnimationContext:
+    """State and keying operations needed by VMD morph import and runtime morph bake."""
+
+    logger: Any
+    morph_name_mapping: Mapping[str, Any]
+    anim_layer: Optional[str]
+    use_animation_layers: bool
+    iter_morph_mappings: Callable[[Any], List[Tuple[str, str, str]]]
+    vmd_frame_to_maya_time: Callable[[float], float]
+    samples_as_anim_layer_deltas: Callable[[str, Dict[str, List[Tuple[float, float]]]], Dict[str, List[Tuple[float, float]]]]
+    batch_key_scalar_channels: Callable[[str, Dict[str, List[Tuple[float, float]]], Optional[str]], bool]

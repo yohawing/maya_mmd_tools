@@ -10,7 +10,9 @@ import maya.cmds as cmds
 
 import mmd_tools.converters.vmd_light_animation as vmd_light_animation_module
 from mmd_tools.converters.light_converter import create_mmd_light_controller
+from mmd_tools.converters.vmd_context import VmdLightAnimationContext
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_light_animation import convert_light_animation
 from mmd_tools.core.constants import DEFAULT_LIGHT_NAME
 from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
@@ -129,6 +131,35 @@ class TestVmdLightAnimation(MayaTestBase):
 
         cmds.currentTime(10, edit=True)
         self.assertAlmostEqual(cmds.getAttr(f"{light_shape}.colorR"), 0.5, places=6)
+
+    def test_convert_light_animation_accepts_direct_context(self):
+        """Direct light contexts key through their provided collaborators."""
+        frames = [_light_frame(0, (0.5, -1.0, 1.0), (0.25, 0.5, 0.75))]
+        self.converter.anim_layer = cmds.animLayer("direct_light_context_layer", override=False, weight=1.0)
+        captured = []
+
+        def fake_batch_key_scalar_channels(node_name, channel_samples, animation_layer):
+            captured.append((node_name, channel_samples, animation_layer))
+            return True
+
+        context = VmdLightAnimationContext(
+            logger=self.converter.logger,
+            anim_layer=self.converter.anim_layer,
+            use_animation_layers=True,
+            get_or_create_light=self.converter._get_or_create_light,
+            vmd_frame_to_maya_time=self.converter.vmd_frame_to_maya_time,
+            maya_time_to_vmd_frame=self.converter.maya_time_to_vmd_frame,
+            add_attrs_to_anim_layer=self.converter._add_attrs_to_anim_layer,
+            samples_as_anim_layer_deltas=self.converter._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=fake_batch_key_scalar_channels,
+        )
+
+        self.assertTrue(convert_light_animation(context, frames))
+
+        self.assertEqual(len(captured), 2)
+        self.assertTrue(cmds.objExists(DEFAULT_LIGHT_NAME))
+        self.assertEqual(captured[0][2], self.converter.anim_layer)
+        self.assertEqual(captured[1][2], self.converter.anim_layer)
 
     def test_convert_light_animation_drives_mmd_light_controller_color(self):
         """PMX light controllers receive shader-facing color keys."""
