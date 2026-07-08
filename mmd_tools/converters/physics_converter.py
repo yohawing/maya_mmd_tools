@@ -14,6 +14,8 @@ import maya.cmds as cmds
 from ..core import maya_attribute_utils, maya_name_utils, maya_physics_utils, maya_scene_utils
 from ..core.constants import (
     ATTR_MMD_BONE_INDEX,
+    ATTR_MMD_BONE_NAME,
+    ATTR_MMD_BONE_NAME_EN,
     CONSTRAINTS_GROUP,
     PHYSICS_GROUP,
     PHYSICS_TYPE_CLOTH,
@@ -21,6 +23,7 @@ from ..core.constants import (
     PHYSICS_TYPE_RIGID,
     PHYSICS_TYPE_SOFT,
     RIGID_BODIES_GROUP,
+    SKELETON_GROUP,
 )
 from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ..core.coordinate_transform import (
@@ -82,6 +85,7 @@ _OPT_BULLET_FIXED_FRAME_RATE = "bullet_fixed_frame_rate"
 _OPT_SPLIT_IMPULSE = "split_impulse"
 _OPT_CREATE_PHYSICS_JOINTS = "create_physics_joints"
 _OPT_SCALE = "scale"
+_MODEL_MOTION_PARENT_NAMES = {"master", "全ての親", "マスター"}
 
 
 def _has_nonzero_spring(*spring_vectors) -> bool:
@@ -591,6 +595,7 @@ class PhysicsConverter:
         ensure_visibility_attrs(MayaCmdsAdapter(cmds), root_group)
 
         bone_index_map = self._create_bone_index_mapping(pmd_data.bones, bone_joints)
+        self._attach_physics_group_to_model_motion_parent(physics_group, root_group, bone_index_map)
 
         if hasattr(pmd_data, "rigid_bodies") and pmd_data.rigid_bodies:
             for idx, rb in enumerate(pmd_data.rigid_bodies):
@@ -636,6 +641,7 @@ class PhysicsConverter:
         ensure_visibility_attrs(MayaCmdsAdapter(cmds), root_group)
 
         bone_index_map = self._create_bone_index_mapping(pmx_data.bones, bone_joints)
+        self._attach_physics_group_to_model_motion_parent(physics_group, root_group, bone_index_map)
 
         if hasattr(pmx_data, "rigid_bodies") and pmx_data.rigid_bodies:
             for idx, rb in enumerate(pmx_data.rigid_bodies):
@@ -1392,6 +1398,88 @@ class PhysicsConverter:
             attrs["mmd_related_bone_index"] = getattr(rb, "related_bone_index", -1)
         attrs["mmd_collision_mask"] = getattr(rb, "collision_mask", 0xFFFF)
         maya_attribute_utils.set_custom_attributes(transform, attrs)
+
+    def _attach_physics_group_to_model_motion_parent(
+        self,
+        physics_group: str,
+        root_group: str,
+        bone_index_map: Dict[int, str],
+    ) -> None:
+        """Make model-level MMD motion, such as 全ての親, carry physics nodes."""
+        motion_parent = self._find_model_motion_parent(root_group, bone_index_map)
+        if not motion_parent or not cmds.objExists(motion_parent):
+            return
+        if motion_parent == physics_group:
+            return
+        try:
+            constraint = cmds.parentConstraint(motion_parent, physics_group, maintainOffset=True)
+            if constraint:
+                self.logger.debug(
+                    "Connected physics group '%s' to model motion parent '%s'",
+                    physics_group,
+                    motion_parent,
+                )
+        except Exception as exc:
+            self.logger.warning(
+                "Skipped physics group model-motion follow connection '%s' -> '%s': %s",
+                motion_parent,
+                physics_group,
+                exc,
+            )
+
+    def _find_model_motion_parent(
+        self,
+        root_group: str,
+        bone_index_map: Dict[int, str],
+    ) -> Optional[str]:
+        """Find the imported all-parent/master transform within one model root."""
+        seen = set()
+        for node in self._iter_model_motion_parent_candidates(root_group, bone_index_map):
+            if not node or node in seen or not cmds.objExists(node):
+                continue
+            seen.add(node)
+            if self._is_model_motion_parent(node):
+                return node
+        return None
+
+    def _iter_model_motion_parent_candidates(
+        self,
+        root_group: str,
+        bone_index_map: Dict[int, str],
+    ) -> List[str]:
+        """Return only skeleton-scoped candidates for model-level motion."""
+        candidates = list(bone_index_map.values())
+        if not root_group or not cmds.objExists(root_group):
+            return candidates
+
+        root_children = cmds.listRelatives(root_group, children=True, fullPath=True, type="transform") or []
+        skeleton_groups = [
+            child for child in root_children
+            if self._short_node_name(child) == SKELETON_GROUP
+        ]
+        for skeleton_group in skeleton_groups:
+            candidates.extend(cmds.listRelatives(skeleton_group, allDescendents=True, fullPath=True) or [])
+        return candidates
+
+    @staticmethod
+    def _is_model_motion_parent(node: str) -> bool:
+        short_name = PhysicsConverter._short_node_name(node)
+        if short_name in _MODEL_MOTION_PARENT_NAMES:
+            return True
+
+        for attr in (ATTR_MMD_BONE_NAME, ATTR_MMD_BONE_NAME_EN):
+            try:
+                if cmds.attributeQuery(attr, node=node, exists=True):
+                    value = cmds.getAttr(f"{node}.{attr}")
+                    if value in _MODEL_MOTION_PARENT_NAMES:
+                        return True
+            except Exception:
+                continue
+        return False
+
+    @staticmethod
+    def _short_node_name(node: str) -> str:
+        return node.split("|")[-1].split(":")[-1]
 
     # ------------------------------------------------------------------
     # Bullet ジョイント作成: PMD (常に sixDOF=4)

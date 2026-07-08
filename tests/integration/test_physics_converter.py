@@ -606,6 +606,117 @@ class TestPhysicsConverter(MayaTestBase):
         after = cmds.xform(joint, query=True, worldSpace=True, translation=True)
         self.assertAlmostEqual(after[1] - before[1], 3.0, places=4)
 
+    def test_pmx_dynamic_rigid_body_follows_master_model_motion(self):
+        """全ての親/master のモデル全体移動は dynamic 剛体にも伝播する。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        skeleton = cmds.group(name="Skeleton", empty=True, parent=root)
+        master = cmds.group(name="master", empty=True, parent=skeleton)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="dynamic_follow_bone", position=(0.0, 10.0, 0.0))
+        cmds.parent(joint, master)
+
+        rb = self._make_fake_pmx_rigid_body(
+            name="dynamic_follow_master",
+            related_bone_index=0,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=2,
+            mass=1.0,
+        )
+        data = self._make_fake_pmx_data(
+            rigid_bodies=[rb],
+            bones=[self._make_fake_bone("dynamic_follow_bone")],
+        )
+
+        converter = PhysicsConverter({"create_physics_joints": False})
+        rbs, _ = converter.convert_pmx_physics(data, {"dynamic_follow_bone": joint}, root)
+
+        self.assertGreaterEqual(len(rbs), 1)
+        physics_groups = cmds.listRelatives(root, children=True, type="transform") or []
+        physics_group = next((node for node in physics_groups if node.endswith("Physics")), None)
+        self.assertIsNotNone(physics_group, "Physics group が作成されていない")
+        follow_constraints = cmds.listConnections(
+            physics_group, source=True, destination=False, type="parentConstraint"
+        ) or []
+        self.assertTrue(follow_constraints, "Physics group が master に追従していない")
+
+        before = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)
+        cmds.move(0.0, 4.0, 0.0, master, relative=True, worldSpace=True)
+        after = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)
+        self.assertAlmostEqual(after[1] - before[1], 4.0, places=4)
+
+    def test_pmx_dynamic_rigid_body_master_animation_is_not_double_transformed(self):
+        """再生中の master 移動は dynamic 剛体へ一重にだけ伝播する。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        skeleton = cmds.group(name="Skeleton", empty=True, parent=root)
+        master = cmds.group(name="master", empty=True, parent=skeleton)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="dynamic_follow_bone", position=(0.0, 10.0, 0.0))
+        cmds.parent(joint, master)
+
+        rb = self._make_fake_pmx_rigid_body(
+            name="dynamic_follow_master_anim",
+            related_bone_index=0,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 10.0, 0.0),
+            physics_mode=2,
+            mass=1.0,
+            velocity_attenuation=1.0,
+            rotation_attenuation=1.0,
+        )
+        data = self._make_fake_pmx_data(
+            rigid_bodies=[rb],
+            bones=[self._make_fake_bone("dynamic_follow_bone")],
+        )
+
+        converter = PhysicsConverter({"create_physics_joints": False, "gravity": 0.0})
+        rbs, _ = converter.convert_pmx_physics(data, {"dynamic_follow_bone": joint}, root)
+
+        self.assertGreaterEqual(len(rbs), 1)
+        cmds.playbackOptions(min=1, max=30, animationStartTime=1, animationEndTime=30)
+        cmds.currentTime(1, edit=True)
+        cmds.setAttr(f"{master}.translateY", 0.0)
+        cmds.setKeyframe(master, attribute="translateY", time=1)
+        cmds.currentTime(30, edit=True)
+        cmds.setAttr(f"{master}.translateY", 4.0)
+        cmds.setKeyframe(master, attribute="translateY", time=30)
+        cmds.keyTangent(master, attribute="translateY", edit=True, inTangentType="linear", outTangentType="linear")
+
+        cmds.currentTime(1, edit=True, update=True)
+        start_master_y = cmds.xform(master, query=True, worldSpace=True, translation=True)[1]
+        start_y = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)[1]
+        for frame in range(2, 31):
+            cmds.currentTime(frame, edit=True, update=True)
+        end_master_y = cmds.xform(master, query=True, worldSpace=True, translation=True)[1]
+        end_y = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)[1]
+
+        self.assertAlmostEqual(end_master_y - start_master_y, 4.0, places=4)
+        delta = end_y - start_y
+        self.assertGreater(delta, 3.5)
+        self.assertLess(delta, 4.5, f"master motion appears double-transformed: delta={delta}")
+
+    def test_model_motion_parent_detection_is_skeleton_scoped(self):
+        """同名 transform があっても Skeleton 配下の master だけを物理追従元にする。"""
+        root = cmds.group(name="test_root", empty=True)
+        geometry = cmds.group(name="Geometry", empty=True, parent=root)
+        geometry_master = cmds.group(name="master", empty=True, parent=geometry)
+        skeleton = cmds.group(name="Skeleton", empty=True, parent=root)
+        skeleton_master = cmds.group(name="master", empty=True, parent=skeleton)
+
+        converter = PhysicsConverter({"create_physics_joints": False})
+        resolved = converter._find_model_motion_parent(root, {})
+
+        self.assertNotEqual(resolved, geometry_master)
+        self.assertEqual(cmds.ls(resolved, long=True)[0], cmds.ls(skeleton_master, long=True)[0])
+
     def test_pmx_mode1_rigid_body_drives_related_bone_translation_preview(self):
         """PMX physics_mode=1 は Bullet solved translation も関連ボーンへ戻す。"""
         if not PhysicsConverter.is_bullet_available():
