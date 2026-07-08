@@ -183,6 +183,16 @@ class VmdTimelineContext:
 
 
 @dataclass(frozen=True)
+class VmdIkEnabledAnimationContext:
+    """State and scene queries needed by VMD IK enabled-state keying."""
+
+    logger: Any
+    collect_ik_nodes_by_bone_name: Callable[[Optional[str]], Dict[str, str]]
+    get_animation_frame_range: Callable[[Any], Tuple[int, int]]
+    vmd_frame_to_maya_time: Callable[[float], float]
+
+
+@dataclass(frozen=True)
 class VmdMorphAnimationContext:
     """State and keying operations needed by VMD morph import and runtime morph bake."""
 

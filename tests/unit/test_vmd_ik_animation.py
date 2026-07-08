@@ -4,7 +4,10 @@ import json
 
 import maya.cmds as cmds
 
+from mmd_tools.converters.vmd_context import VmdIkEnabledAnimationContext
 from mmd_tools.converters.vmd_converter import VmdConverter
+from mmd_tools.converters.vmd_ik_enabled_animation import apply_ik_enabled_animation, collect_ik_nodes_by_bone_name
+from mmd_tools.converters.vmd_timeline import get_animation_frame_range
 from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.vmd_mock import create_test_vmd_data
@@ -16,6 +19,14 @@ class TestVmdIkAnimation(MayaTestBase):
     def setUp(self):
         super().setUp()
         self.converter = VmdConverter()
+
+    def _ik_enabled_context(self) -> VmdIkEnabledAnimationContext:
+        return VmdIkEnabledAnimationContext(
+            logger=self.converter.logger,
+            collect_ik_nodes_by_bone_name=collect_ik_nodes_by_bone_name,
+            get_animation_frame_range=get_animation_frame_range,
+            vmd_frame_to_maya_time=self.converter.vmd_frame_to_maya_time,
+        )
 
     def test_apply_ik_enabled_animation_defaults_all_ik_on_before_property_keys(self):
         """IK property frame が一部だけでも未指定 IK と初期区間は default ON で評価する"""
@@ -33,7 +44,7 @@ class TestVmdIkAnimation(MayaTestBase):
         frame.ik_states = [("左足ＩＫ", 0)]
         vmd_data.ik_show_hide_frames = [frame]
 
-        self.converter._apply_ik_enabled_animation(vmd_data)
+        apply_ik_enabled_animation(self._ik_enabled_context(), vmd_data)
 
         self.assertEqual(cmds.getAttr(f"{left}.enabled"), False)
         self.assertEqual(cmds.getAttr(f"{right}.enabled"), True)
@@ -63,7 +74,7 @@ class TestVmdIkAnimation(MayaTestBase):
         frame.ik_states = [("左足ＩＫ", 0)]
         vmd_data.ik_show_hide_frames = [frame]
 
-        self.converter._apply_ik_enabled_animation(vmd_data, target_namespace="ModelA")
+        apply_ik_enabled_animation(self._ik_enabled_context(), vmd_data, target_namespace="ModelA")
 
         self.assertIn(0.0, cmds.keyframe(f"{node_a}.enabled", query=True, timeChange=True) or [])
         self.assertEqual(cmds.keyframe(f"{node_b}.enabled", query=True, timeChange=True), None)

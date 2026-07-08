@@ -47,6 +47,7 @@ from .vmd_context import (
     VmdBoneAnimationContext,
     VmdCameraAnimationContext,
     VmdImportContext,
+    VmdIkEnabledAnimationContext,
     VmdKeyingContext,
     VmdLightAnimationContext,
     VmdMorphAnimationContext,
@@ -355,6 +356,15 @@ class VmdConverter:
         return VmdTimelineContext(
             logger=self.logger,
             fps=self.fps,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+        )
+
+    def _ik_enabled_animation_context(self) -> VmdIkEnabledAnimationContext:
+        """Return IK enabled-state keying state for split VMD helper modules."""
+        return VmdIkEnabledAnimationContext(
+            logger=self.logger,
+            collect_ik_nodes_by_bone_name=self._collect_ik_nodes_by_bone_name,
+            get_animation_frame_range=self._get_animation_frame_range,
             vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
         )
 
@@ -1223,7 +1233,7 @@ class VmdConverter:
 
     def _collect_ik_nodes_by_bone_name(self, target_namespace: str = None) -> Dict[str, str]:
         """mmdCcdIk ノードを PMX IK ボーン名で引けるように収集する。"""
-        return collect_ik_nodes_by_bone_name(self, target_namespace)
+        return collect_ik_nodes_by_bone_name(target_namespace, self._node_namespace)
 
     def _apply_ik_enabled_animation(self, vmd_data: VmdData, target_namespace: str = None) -> None:
         """VMD の IK 表示/非表示フレームを mmdCcdIk.enabled に反映する。
@@ -1233,7 +1243,7 @@ class VmdConverter:
         property frame がないモデルモーションでは、従来互換として全 IK を
         評価範囲の先頭で有効にする。
         """
-        apply_ik_enabled_animation(self, vmd_data, target_namespace)
+        apply_ik_enabled_animation(self._ik_enabled_animation_context(), vmd_data, target_namespace)
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""
