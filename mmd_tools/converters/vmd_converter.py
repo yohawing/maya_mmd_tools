@@ -45,10 +45,13 @@ from .vmd_camera_animation import (
 )
 from .vmd_context import (
     VmdBoneAnimationContext,
+    VmdCameraAnimationContext,
     VmdImportContext,
     VmdKeyingContext,
+    VmdRuntimeCacheCollectContext,
     VmdRuntimeLocalDecomposeContext,
     VmdRuntimeRigContext,
+    VmdRuntimeSceneApplyContext,
 )
 from .vmd_import_state import (
     capture_anim_layer_selection,
@@ -288,6 +291,60 @@ class VmdConverter:
             bone_name_mapping=self.bone_name_mapping,
             bone_bind_poses=self._bone_bind_poses,
             runtime_joint_attrs=self._runtime_joint_attrs,
+        )
+
+    def _ensure_bone_hierarchy_maps_for_cache_collect(self) -> None:
+        """Build bone hierarchy maps when runtime cache collection needs them."""
+        if not hasattr(self, "_bone_parent_map") or len(getattr(self, "_bone_parent_map", {})) == 0:
+            self._build_bone_hierarchy_and_order_maps()
+
+    def _runtime_cache_collect_context(self) -> VmdRuntimeCacheCollectContext:
+        """Return runtime cache collection state for split VMD helper modules."""
+        return VmdRuntimeCacheCollectContext(
+            logger=self.logger,
+            bone_index_to_joint=getattr(self, "bone_index_to_joint", {}),
+            outer_refresh_suspended=bool(getattr(self, "_vmd_import_refresh_suspended", False)),
+            get_anim_layer=lambda: self.anim_layer,
+            set_anim_layer=lambda value: setattr(self, "anim_layer", value),
+            create_runtime_joint_channel_arrays=self._create_runtime_joint_channel_arrays,
+            create_runtime_joint_channel_static_state=self._create_runtime_joint_channel_static_state,
+            compute_native_local_channel_batch=self._compute_native_local_channel_batch,
+            runtime_batch_morph_weights_for_frame=self._runtime_batch_morph_weights_for_frame,
+            ensure_bone_hierarchy_maps=self._ensure_bone_hierarchy_maps_for_cache_collect,
+            native_local_channel_batch_for_frame=self._native_local_channel_batch_for_frame,
+            runtime_batch_world_matrices_for_frame=self._runtime_batch_world_matrices_for_frame,
+            compute_all_bone_locals=self._compute_all_bone_locals,
+            append_bone_locals_to_channel_arrays=self._append_bone_locals_to_channel_arrays,
+        )
+
+    def _runtime_scene_apply_context(self) -> VmdRuntimeSceneApplyContext:
+        """Return runtime scene-apply state for split VMD helper modules."""
+        return VmdRuntimeSceneApplyContext(
+            logger=self.logger,
+            outer_refresh_suspended=bool(getattr(self, "_vmd_import_refresh_suspended", False)),
+            collect_append_info=self._collect_append_info,
+            collect_mmd_ik_passthrough_info=self._collect_mmd_ik_passthrough_info,
+            decompose_append_rotations_for_scene=self._decompose_append_rotations_for_scene,
+            decompose_append_translations_for_scene=self._decompose_append_translations_for_scene,
+            key_mmd_ik_passthrough_rotation=self._key_mmd_ik_passthrough_rotation,
+            batch_create_and_key_curve_arrays=self._batch_create_and_key_curve_arrays,
+            bake_morph_weight_cache_from_runtime=self._bake_morph_weight_cache_from_runtime,
+        )
+
+    def _camera_animation_context(self) -> VmdCameraAnimationContext:
+        """Return camera-animation state for split VMD helper modules."""
+        return VmdCameraAnimationContext(
+            motion_scale=self.motion_scale,
+            anim_layer=self.anim_layer,
+            use_animation_layers=self.use_animation_layers,
+            get_or_create_camera=self._get_or_create_camera,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            maya_time_to_vmd_frame=self.maya_time_to_vmd_frame,
+            add_attrs_to_anim_layer=self._add_attrs_to_anim_layer,
+            samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=self._batch_key_scalar_channels,
+            apply_vmd_bezier_tangents=self._apply_vmd_bezier_tangents,
+            get_frame_number=self._get_frame_number,
         )
 
     def convert(
@@ -640,7 +697,12 @@ class VmdConverter:
                 self._build_runtime_bind_world_maps()
 
             # キャッシュ収集: 評価結果を API 配列へ直接保持（cmds.xform / setKeyframe を内側ループから排除）
-            runtime_cache = collect_runtime_bake_cache(self, instance, clip, bake_samples)
+            runtime_cache = collect_runtime_bake_cache(
+                self._runtime_cache_collect_context(),
+                instance,
+                clip,
+                bake_samples,
+            )
             self.logger.info(
                 f"mmd-anim runtime pose evaluation and cache completed "
                 f"(frames={len(runtime_cache.baked_frames)}, elapsed={runtime_cache.eval_elapsed:.3f}s)"
@@ -658,7 +720,7 @@ class VmdConverter:
             if runtime_cache.baked_frames:
                 apply_start = time.perf_counter()
                 apply_runtime_channel_arrays_to_scene_with_undo_disabled(
-                    self,
+                    self._runtime_scene_apply_context(),
                     runtime_cache.joint_channel_values,
                     runtime_cache.joint_channel_static,
                     runtime_cache.bake_times,
@@ -946,7 +1008,7 @@ class VmdConverter:
     ) -> None:
         """API配列へ収集済みのruntime bake結果をMaya sceneへ一括適用する。"""
         apply_runtime_channel_arrays_to_scene(
-            self,
+            self._runtime_scene_apply_context(),
             joint_channel_values,
             joint_channel_static,
             bake_times,
@@ -1250,7 +1312,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_camera_animation(self, camera_frames, vmd_bytes=vmd_bytes)
+        return convert_camera_animation(self._camera_animation_context(), camera_frames, vmd_bytes=vmd_bytes)
 
     def _detect_vmd_motion_kind(self, vmd_data: VmdData) -> str:
         """VMD内容から大まかなモーション種別を判定する。"""

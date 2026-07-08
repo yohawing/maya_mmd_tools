@@ -4,7 +4,12 @@ import unittest
 from contextlib import ExitStack
 from unittest.mock import patch
 
-from mmd_tools.converters.vmd_context import VmdImportContext
+from mmd_tools.converters.vmd_context import (
+    VmdCameraAnimationContext,
+    VmdImportContext,
+    VmdRuntimeCacheCollectContext,
+    VmdRuntimeSceneApplyContext,
+)
 from mmd_tools.converters.vmd_converter import VmdConverter
 
 
@@ -62,6 +67,27 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertIs(context.progress_callback, progress_callback)
         self.assertFalse(context.import_camera_animation)
         self.assertTrue(context.import_light_animation)
+
+    def test_split_helper_context_factories_bind_current_converter_state(self):
+        """VMD helper contexts expose explicit state and callables for split modules."""
+        self.converter.anim_layer = "VMD_Layer"
+        self.converter.use_animation_layers = True
+        self.converter._vmd_import_refresh_suspended = True
+
+        cache_context = self.converter._runtime_cache_collect_context()
+        apply_context = self.converter._runtime_scene_apply_context()
+        camera_context = self.converter._camera_animation_context()
+
+        self.assertIsInstance(cache_context, VmdRuntimeCacheCollectContext)
+        self.assertIsInstance(apply_context, VmdRuntimeSceneApplyContext)
+        self.assertIsInstance(camera_context, VmdCameraAnimationContext)
+        self.assertEqual(cache_context.get_anim_layer(), "VMD_Layer")
+        self.assertTrue(cache_context.outer_refresh_suspended)
+        self.assertTrue(apply_context.outer_refresh_suspended)
+        self.assertEqual(camera_context.anim_layer, "VMD_Layer")
+        self.assertIs(camera_context.get_or_create_camera.__self__, self.converter)
+        self.assertIs(cache_context.compute_all_bone_locals.__self__, self.converter)
+        self.assertIs(apply_context.batch_create_and_key_curve_arrays.__self__, self.converter)
 
     def test_runtime_bake_success_still_converts_camera_and_light(self):
         """Normal runtime bake leaves camera/light on the sparse scene path."""
