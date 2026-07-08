@@ -22,6 +22,7 @@ from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadat
 logger = get_logger(__name__)
 
 EVAL_NODE_TYPE = "mmdMaterialMorphEval"
+_REQUIRED_EVAL_ATTRS = ("contribution", "baseDiffuse", "outputDiffuse")
 
 
 def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
@@ -63,7 +64,7 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
     existing_by_shader = _collect_existing_evaluators()
     for shader, contributions in contributions_by_shader.items():
         node = existing_by_shader.get(shader)
-        if node and cmds.objExists(node):
+        if node and _is_valid_evaluator(node):
             result["reused"] += 1
         else:
             node = _create_evaluator(shader)
@@ -190,6 +191,8 @@ def _offset_to_contribution(
 def _collect_existing_evaluators() -> Dict[str, str]:
     evaluators: Dict[str, str] = {}
     for node in cmds.ls(type=EVAL_NODE_TYPE) or []:
+        if not _is_valid_evaluator(node):
+            continue
         if not cmds.attributeQuery("mmd_target_shader", node=node, exists=True):
             continue
         try:
@@ -204,10 +207,35 @@ def _collect_existing_evaluators() -> Dict[str, str]:
 def _create_evaluator(shader: str) -> Optional[str]:
     node_name = f"{shader.split('|')[-1]}_materialMorphEval"
     try:
-        return cmds.createNode(EVAL_NODE_TYPE, name=node_name)
+        node = cmds.createNode(EVAL_NODE_TYPE, name=node_name)
     except Exception as exc:
         logger.warning("Failed to create %s for %s: %s", EVAL_NODE_TYPE, shader, exc)
         return None
+    if _is_valid_evaluator(node):
+        return node
+    logger.warning(
+        "Created %s for %s, but required attributes are unavailable; skipping material morph runtime",
+        EVAL_NODE_TYPE,
+        shader,
+    )
+    try:
+        if cmds.objExists(node):
+            cmds.delete(node)
+    except Exception:
+        logger.debug("Failed to delete invalid %s node %s", EVAL_NODE_TYPE, node, exc_info=True)
+    return None
+
+
+def _is_valid_evaluator(node: str) -> bool:
+    """Return whether *node* is a usable mmdMaterialMorphEval instance."""
+    if not node or not cmds.objExists(node):
+        return False
+    try:
+        if cmds.nodeType(node) != EVAL_NODE_TYPE:
+            return False
+        return all(cmds.attributeQuery(attr, node=node, exists=True) for attr in _REQUIRED_EVAL_ATTRS)
+    except Exception:
+        return False
 
 
 def _mark_evaluator(node: str, shader: str) -> None:

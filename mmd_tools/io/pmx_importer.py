@@ -192,6 +192,7 @@ def import_pmx_file(
                     ),
                 }
                 pipeline.profile["bone_morph_runtime"] = bone_morph_runtime_result
+                pipeline.profile["material_morph_runtime"] = material_morph_runtime_result
                 logger.info("PMX import phase timings: %s", pipeline.profile["phase_timings"])
                 logger.info("Mesh converter profile: %s", pipeline.profile["mesh_converter"])
                 logger.info("Morph converter profile: %s", pipeline.profile["morph_converter"])
