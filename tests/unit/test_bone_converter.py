@@ -658,6 +658,50 @@ class TestBoneConverterMaya(unittest.TestCase):
         for actual, expected in zip(child_world_pos, [2.0, 3.0, -4.0]):
             self.assertAlmostEqual(actual, expected, places=5)
 
+    def test_create_maya_joints_local_axis_out_of_order_parent_keeps_positions(self):
+        """親indexが子より後ろでもJO設定後のworld位置をPMX位置に保つ"""
+        root = self._create_mock_pmx_bone(
+            0,
+            "root",
+            position=(0.0, 0.0, 0.0),
+        )
+        child_before_parent = self._create_mock_pmx_bone(
+            1,
+            "child_before_parent",
+            parent_index=2,
+            position=(1.0, 0.0, 0.0),
+        )
+        local_axis_parent = self._create_mock_pmx_bone(
+            2,
+            "local_axis_parent",
+            parent_index=0,
+            position=(0.0, 0.0, 0.0),
+            bone_flag=PmxBoneFlag.LOCAL_AXIS,
+        )
+        local_axis_parent.x_axis_direction = (0.0, 0.0, -1.0)
+        local_axis_parent.z_axis_direction = (1.0, 0.0, 0.0)
+        grandchild = self._create_mock_pmx_bone(
+            3,
+            "grandchild",
+            parent_index=1,
+            position=(2.0, 0.0, 0.0),
+        )
+
+        bones = [root, child_before_parent, local_axis_parent, grandchild]
+        skeleton_group = cmds.group(empty=True, name="skeleton_out_of_order_local_axis_grp")
+        maya_joints = self.converter._create_maya_joints(
+            bones,
+            {0: "root", 1: "child_before_parent", 2: "local_axis_parent", 3: "grandchild"},
+            "pmx",
+            skeleton_group,
+        )
+
+        for joint, bone in zip(maya_joints, bones):
+            world_pos = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+            expected = (bone.position[0], bone.position[1], -bone.position[2])
+            for actual, expected_value in zip(world_pos, expected):
+                self.assertAlmostEqual(actual, expected_value, places=5)
+
 
 if __name__ == "__main__":
     unittest.main()

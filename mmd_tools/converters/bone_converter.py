@@ -713,7 +713,8 @@ class BoneConverter:
                 [0, 0, 0, 1],
             ])
 
-        for i, bone in enumerate(bones):
+        for i in self._parent_first_bone_indices(bones):
+            bone = bones[i]
             pidx = bone.parent_bone_index
 
             # --- JO 設定 (LOCAL_AXIS ボーンのみ) ---
