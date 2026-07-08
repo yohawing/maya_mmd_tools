@@ -69,6 +69,9 @@ class _FakeCheck:
         self._checked = checked
         self.toggled.emit(checked)
 
+    def setChecked(self, checked):
+        self._checked = checked
+
 
 class _FakeLabel:
     def __init__(self):
@@ -102,6 +105,8 @@ class _FakeMayaAdapter:
         self.exists = exists
         self.existing_nodes = set(existing_nodes or [])
         self.calls = []
+        self.attrs = {}
+        self.incoming_connections = {}
 
     def object_exists(self, node):
         self.calls.append(("object_exists", node))
@@ -112,6 +117,33 @@ class _FakeMayaAdapter:
 
     def set_attr(self, *args, **kwargs):
         self.calls.append(("set_attr", args, kwargs))
+        node, attr = args[0].rsplit(".", 1)
+        self.attrs[(node, attr)] = args[1]
+
+    def get_attr(self, attr_path):
+        node, attr = attr_path.rsplit(".", 1)
+        return self.attrs[(node, attr)]
+
+    def attribute_exists(self, attr, node):
+        return (node, attr) in self.attrs
+
+    def add_attr(self, node, longName=None, attributeType=None, **kwargs):
+        self.calls.append(("add_attr", node, longName, attributeType))
+        self.attrs[(node, longName)] = False
+
+    def list_relatives(self, node, **kwargs):
+        if kwargs.get("type") == "mmdRigidBodyLocator":
+            return [item for item in self.existing_nodes if item.startswith(node)]
+        return []
+
+    def list_connections(self, node, **kwargs):
+        if kwargs.get("source") and kwargs.get("plugs"):
+            return self.incoming_connections.get(node, [])
+        return []
+
+    def connect_attr(self, source, destination, force=False):
+        self.calls.append(("connect_attr", source, destination, force))
+        self.incoming_connections[destination] = [source]
 
 
 class _FakePhysicsReader:
@@ -198,7 +230,7 @@ class TestPhysicsPresenter(unittest.TestCase):
 
         presenter.load_physics()
 
-        self.assertEqual(adapter.calls, [("object_exists", TEST_MODEL)])
+        self.assertEqual(adapter.calls[0], ("object_exists", TEST_MODEL))
         self.assertEqual(reader.calls, [TEST_MODEL])
         self.assertEqual([item.text() for item in view.rigid_body_list.items], [
             "2: skirt (box, mode=2, bone=9)",
@@ -265,11 +297,16 @@ class TestPhysicsPresenter(unittest.TestCase):
         view.collider_visible_check.set_checked(False)
 
         self.assertIn(
-            ("set_attr", ("|root|rb2|mmdRigidBodyLocator.visibility", False), {}),
+            ("set_attr", (f"{TEST_MODEL}.mmd_show_physics_colliders", False), {}),
             adapter.calls,
         )
-        self.assertNotIn(
-            ("set_attr", ("|root|rb5|mmdRigidBodyLocator.visibility", False), {}),
+        self.assertIn(
+            (
+                "connect_attr",
+                f"{TEST_MODEL}.mmd_show_physics_colliders",
+                "|root|rb2|mmdRigidBodyLocator.drawEnabled",
+                False,
+            ),
             adapter.calls,
         )
 

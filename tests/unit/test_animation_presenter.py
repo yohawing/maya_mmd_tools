@@ -276,6 +276,10 @@ class _FakeAdapter:
         self._bone_names = bone_names or {}
         self.selected = []
         self._set_attrs = {}
+        self._attrs: dict[tuple[str, str], object] = {}
+        self._connections: list[tuple[str, str, bool]] = []
+        self._incoming_connections: dict[str, list[str]] = {}
+        self._node_types: dict[str, str] = {}
         self._transforms: dict[str, tuple[list, list]] = {}
         self._undo_chunks: list[str] = []
 
@@ -296,6 +300,8 @@ class _FakeAdapter:
         return list(self._blend_shapes.get(node, {}).keys())
 
     def node_type(self, node):
+        if node in self._node_types:
+            return self._node_types[node]
         for mesh_bs in self._blend_shapes.values():
             if node in mesh_bs:
                 return mesh_bs[node]["type"]
@@ -318,10 +324,14 @@ class _FakeAdapter:
             for mesh_bs in self._blend_shapes.values():
                 if node in mesh_bs and "morph_json" in mesh_bs[node]:
                     return True
+        if (node, attr) in self._attrs:
+            return True
         return False
 
     def get_attr(self, attr_path):
         node, attr = attr_path.rsplit(".", 1)
+        if (node, attr) in self._attrs:
+            return self._attrs[(node, attr)]
         if attr == "mmd_bone_index":
             for idx, name in self._joints_by_index.items():
                 if name == node:
@@ -339,6 +349,20 @@ class _FakeAdapter:
 
     def set_attr(self, attr_path, value):
         self._set_attrs[attr_path] = value
+        node, attr = attr_path.rsplit(".", 1)
+        self._attrs[(node, attr)] = value
+
+    def add_attr(self, node, longName=None, attributeType=None, **kwargs):
+        self._attrs[(node, longName)] = False
+
+    def connect_attr(self, source, destination, force=False):
+        self._connections.append((source, destination, force))
+        self._incoming_connections[destination] = [source]
+
+    def list_connections(self, node, **kwargs):
+        if kwargs.get("source") and kwargs.get("plugs"):
+            return self._incoming_connections.get(node, [])
+        return []
 
     def select(self, nodes, replace=True):
         self.selected = list(nodes)
@@ -620,6 +644,8 @@ class TestAnimationPresenterMorph(unittest.TestCase):
         adapter = _FakeAdapter(blend_shapes=blend_shapes or {})
         with patch(self._POPULATE_PATH):
             presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
+        adapter._set_attrs.clear()
+        adapter._connections.clear()
         return presenter, view, app_state, adapter
 
     def test_collect_morph_infos(self):
@@ -722,11 +748,57 @@ class TestVisibilityToggle(unittest.TestCase):
     def test_visibility_toggle_sets_attr(self):
         presenter, _, _, adapter = self._make_with_model()
         presenter._on_visibility_changed("joints", False)
-        self.assertIn("head_jnt.visibility", adapter._set_attrs)
-        self.assertEqual(adapter._set_attrs["head_jnt.visibility"], False)
+        self.assertEqual(adapter._set_attrs["test_model.mmd_show_joints"], False)
+        self.assertIn(
+            ("test_model.mmd_show_joints", "head_jnt.visibility", False),
+            adapter._connections,
+        )
+
+    def test_collider_visibility_uses_root_attr_and_draw_enabled(self):
+        presenter, _, _, adapter = self._make_with_model()
+        adapter._joints_by_index = {0: "head_jnt", 1: "rb_locator_shape"}
+
+        presenter._on_visibility_changed("colliders", False)
+
+        self.assertEqual(adapter._set_attrs["test_model.mmd_show_physics_colliders"], False)
+        self.assertIn(
+            ("test_model.mmd_show_physics_colliders", "rb_locator_shape.drawEnabled", False),
+            adapter._connections,
+        )
+
+    def test_visibility_sync_preserves_existing_visibility_driver(self):
+        presenter, _, _, adapter = self._make_with_model()
+        adapter._connections.clear()
+        adapter._incoming_connections["head_jnt.visibility"] = ["animCurve1.output"]
+
+        presenter._on_visibility_changed("joints", False)
+
+        self.assertNotIn(
+            ("test_model.mmd_show_joints", "head_jnt.visibility", False),
+            adapter._connections,
+        )
+
+    def test_controller_visibility_skips_rigid_body_locators(self):
+        presenter, _, _, adapter = self._make_with_model()
+        adapter._joints_by_index = {0: "ctrl_locator", 1: "rb_locator_shape"}
+        adapter._node_types["ctrl_locator"] = "locator"
+        adapter._node_types["rb_locator_shape"] = "mmdRigidBodyLocator"
+        adapter._connections.clear()
+
+        presenter._on_visibility_changed("controllers", False)
+
+        self.assertIn(
+            ("test_model.mmd_show_controllers", "ctrl_locator.visibility", False),
+            adapter._connections,
+        )
+        self.assertNotIn(
+            ("test_model.mmd_show_controllers", "rb_locator_shape.visibility", False),
+            adapter._connections,
+        )
 
     def test_visibility_morphs_is_noop(self):
         presenter, _, _, adapter = self._make_with_model()
+        adapter._set_attrs.clear()
         presenter._on_visibility_changed("morphs", False)
         self.assertEqual(len(adapter._set_attrs), 0)
 

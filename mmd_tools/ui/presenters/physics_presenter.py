@@ -1,6 +1,11 @@
 from ...core.physics_scene_query import MayaPhysicsSceneReader, JointSceneRef, RigidBodySceneRef
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
+from ...core.visibility_state import (
+    connect_visibility_attr_to_node,
+    get_visibility_category,
+    set_visibility_category,
+)
 from ..qt_compat import QListWidgetItem, Qt
 from .list_presenter_helpers import reload_for_current_model_change, select_existing_user_role_nodes
 
@@ -58,7 +63,8 @@ class PhysicsPresenter:
         for joint in refs.joints:
             self._joints_by_transform[joint.transform] = joint
             self.view.joint_list.addItem(_joint_item(joint))
-        self._apply_collider_visibility(self._colliders_visible())
+        self._sync_collider_visibility_control(current_model_root)
+        self._apply_collider_visibility(self._colliders_visible(current_model_root))
 
     def on_rigid_body_selection_changed(self):
         """Select the selected rigid body transforms in Maya."""
@@ -102,23 +108,64 @@ class PhysicsPresenter:
 
     def on_collider_visibility_toggled(self, visible):
         """Toggle display-only collider locator shapes."""
+        model_root = self.app_state.current_model_root
+        if model_root:
+            try:
+                set_visibility_category(self.maya_adapter, model_root, "colliders", bool(visible))
+            except Exception as exc:
+                logger.debug("Could not update collider root visibility attr: %s", exc)
         self._apply_collider_visibility(bool(visible))
 
     def _apply_collider_visibility(self, visible: bool):
+        model_root = self.app_state.current_model_root
+        if model_root:
+            try:
+                for rigid_body in self._rigid_bodies_by_transform.values():
+                    locator = rigid_body.locator_shape
+                    if not locator:
+                        continue
+                    connect_visibility_attr_to_node(
+                        self.maya_adapter,
+                        model_root,
+                        "colliders",
+                        locator,
+                        target_attr="drawEnabled",
+                    )
+                return
+            except Exception as exc:
+                logger.debug("Could not sync collider drawEnabled connections: %s", exc)
         for rigid_body in self._rigid_bodies_by_transform.values():
             locator = rigid_body.locator_shape
             if not locator or not self.maya_adapter.object_exists(locator):
                 continue
             try:
-                self.maya_adapter.set_attr(f"{locator}.visibility", bool(visible))
+                self.maya_adapter.set_attr(f"{locator}.drawEnabled", bool(visible))
             except Exception as exc:
                 logger.warning("Could not set collider locator visibility for %s: %s", locator, exc)
 
-    def _colliders_visible(self) -> bool:
+    def _colliders_visible(self, model_root: str | None = None) -> bool:
+        if model_root:
+            try:
+                return get_visibility_category(self.maya_adapter, model_root, "colliders")
+            except Exception:
+                pass
         collider_visible_check = getattr(self.view, "collider_visible_check", None)
         if collider_visible_check is None or not hasattr(collider_visible_check, "isChecked"):
             return True
         return bool(collider_visible_check.isChecked())
+
+    def _sync_collider_visibility_control(self, model_root: str):
+        visible = self._colliders_visible(model_root)
+        collider_visible_check = getattr(self.view, "collider_visible_check", None)
+        if collider_visible_check is None:
+            return
+        try:
+            if hasattr(collider_visible_check, "setChecked"):
+                collider_visible_check.setChecked(visible)
+            elif hasattr(collider_visible_check, "set_checked"):
+                collider_visible_check.set_checked(visible)
+        except Exception:
+            pass
 
     def _selected_ref(self, list_widget, ref_by_transform):
         selected_items = list_widget.selectedItems()

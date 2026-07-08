@@ -22,6 +22,7 @@ from ..core.constants import (
     PHYSICS_TYPE_SOFT,
     RIGID_BODIES_GROUP,
 )
+from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ..core.coordinate_transform import (
     maya_point_to_mmd,
     mmd_point_to_maya,
@@ -29,6 +30,10 @@ from ..core.coordinate_transform import (
 from ..core.logger import get_logger, safe_log_error
 from ..core.pmd_data.rigid_body import PmdRigidBody
 from ..core.pmx_data.rigid_body import PmxRigidBody
+from ..core.visibility_state import (
+    connect_visibility_attr_to_node,
+    ensure_visibility_attrs,
+)
 
 # ---------------------------------------------------------------------------
 # Maya Bullet の enum 値 (Maya 2024 mayapy 実機確認)
@@ -259,6 +264,7 @@ class PhysicsConverter:
         self._bullet_visual_locator_warning_keys: Set[str] = set()
         self._bullet_rigid_body_shapes_by_index: Dict[int, str] = {}
         self.bullet_solver: Optional[str] = None
+        self._current_model_root: Optional[str] = None
 
         self._bullet_available: Optional[bool] = None
 
@@ -581,6 +587,8 @@ class PhysicsConverter:
         physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
         rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
         constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
+        self._current_model_root = root_group
+        ensure_visibility_attrs(MayaCmdsAdapter(cmds), root_group)
 
         bone_index_map = self._create_bone_index_mapping(pmd_data.bones, bone_joints)
 
@@ -624,6 +632,8 @@ class PhysicsConverter:
         physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
         rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
         constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
+        self._current_model_root = root_group
+        ensure_visibility_attrs(MayaCmdsAdapter(cmds), root_group)
 
         bone_index_map = self._create_bone_index_mapping(pmx_data.bones, bone_joints)
 
@@ -1120,6 +1130,17 @@ class PhysicsConverter:
                 cmds.setAttr(f"{locator}.boxSizeX", box_size[0])
                 cmds.setAttr(f"{locator}.boxSizeY", box_size[1])
                 cmds.setAttr(f"{locator}.boxSizeZ", box_size[2])
+            root = self._current_model_root
+            if root and cmds.objExists(root):
+                connect_visibility_attr_to_node(
+                    MayaCmdsAdapter(cmds),
+                    root,
+                    "colliders",
+                    locator,
+                    target_attr="drawEnabled",
+                )
+            else:
+                cmds.setAttr(f"{locator}.drawEnabled", False)
         except Exception as exc:
             self._record_bullet_visual_locator_failure(transform, str(exc))
 

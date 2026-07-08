@@ -26,6 +26,13 @@ ATTR_MMD_COMMENT = "mmd_comment"
 ATTR_MMD_COMMENT_EN = "mmd_comment_en"
 ATTR_MMD_DISPLAY_FRAMES_JSON = "mmd_display_frames_json"
 
+# Animator Toolset viewport visibility state on the imported model root.
+ATTR_MMD_SHOW_MESH = "mmd_show_mesh"
+ATTR_MMD_SHOW_JOINTS = "mmd_show_joints"
+ATTR_MMD_SHOW_IK = "mmd_show_ik"
+ATTR_MMD_SHOW_CONTROLLERS = "mmd_show_controllers"
+ATTR_MMD_SHOW_PHYSICS_COLLIDERS = "mmd_show_physics_colliders"
+
 # マテリアルカスタムアトリビュート名
 ATTR_MMD_MATERIAL = "mmd_material"
 ATTR_MMD_MATERIAL_NAME = "mmd_material_name"

@@ -20,6 +20,11 @@ from ...core.morph_metadata_reader import (
     read_morph_list_from_blendshape_json,
     PANEL_NAMES,
 )
+from ...core.visibility_state import (
+    get_visibility_category,
+    set_visibility_category,
+    sync_visibility_connections,
+)
 from ..combo_box_utils import add_combo_item_with_tooltip
 
 if TYPE_CHECKING:
@@ -196,38 +201,15 @@ class AnimationPresenter:
 
     # -- Visibility -------------------------------------------------------
 
-    _VIS_NODE_TYPES = {
-        "mesh": "mesh",
-        "joints": "joint",
-        "ik": "ikHandle",
-        "controllers": "locator",
-        "colliders": "mmdRigidBodyLocator",
-    }
-
     def _on_visibility_changed(self, category: str, visible: bool):
         model_root = self.app_state.current_model_root
         if not model_root:
             return
         if category == "morphs":
             return
-        node_type = self._VIS_NODE_TYPES.get(category)
-        if not node_type:
-            return
         try:
-            descendants = self.maya_adapter.list_relatives(
-                model_root, allDescendents=True, type=node_type
-            ) or []
-            if node_type == "mesh":
-                transforms = []
-                for mesh in descendants:
-                    parents = self.maya_adapter.list_relatives(mesh, parent=True) or []
-                    transforms.extend(parents)
-                descendants = transforms
-            for node in descendants:
-                try:
-                    self.maya_adapter.set_attr(f"{node}.visibility", visible)
-                except Exception:
-                    continue
+            set_visibility_category(self.maya_adapter, model_root, category, visible)
+            sync_visibility_connections(self.maya_adapter, model_root, category)
         except Exception as exc:
             logger.debug("Visibility toggle failed for %s: %s", category, exc)
 
@@ -240,6 +222,7 @@ class AnimationPresenter:
         self._picker_groups = resolve_display_frames(display_json, bone_map)
         self._populate_display_frame_tree(self._picker_groups)
         self._reload_morph_tab(model_root)
+        self._sync_visibility_controls(model_root)
         self.view.status_label.setText("")
 
     def _clear_all(self):
@@ -248,6 +231,16 @@ class AnimationPresenter:
         self.view.display_frame_tree.clear()
         self._clear_morph_tab()
         self.view.status_label.setText("")
+
+    def _sync_visibility_controls(self, model_root: str):
+        try:
+            sync_visibility_connections(self.maya_adapter, model_root)
+            for key, cb in self.view.vis_checkboxes.items():
+                if key == "morphs":
+                    continue
+                cb.setChecked(get_visibility_category(self.maya_adapter, model_root, key))
+        except Exception as exc:
+            logger.debug("Visibility control sync failed: %s", exc)
 
     def _update_model_combo(self, models: list):
         combo = self.view.model_combo

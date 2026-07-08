@@ -294,6 +294,12 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertEqual(len(locator_shapes), 1, "DX11 表示用 mmdRigidBodyLocator が作成されていない")
         locator = locator_shapes[0]
         self.assertEqual(cmds.getAttr(f"{locator}.colliderShapeType"), expected_bullet_shape)
+        self.assertTrue(cmds.attributeQuery("mmd_show_physics_colliders", node=root, exists=True))
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_show_physics_colliders"))
+        self.assertFalse(cmds.getAttr(f"{locator}.drawEnabled"))
+        self.assertTrue(
+            cmds.isConnected(f"{root}.mmd_show_physics_colliders", f"{locator}.drawEnabled")
+        )
         self.assertAlmostEqual(cmds.getAttr(f"{locator}.radius"), 2.0, places=4)
         locator_state = _read_node_state(self._dependency_object(locator))
         self.assertEqual(locator_state[0], expected_bullet_shape)
