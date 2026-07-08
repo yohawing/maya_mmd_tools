@@ -45,11 +45,13 @@ class VpdConverter:
 
         logger.info("Starting VPD pose conversion")
 
+        target_model = options.get("target_model")
+
         # ボーン名マッピングを構築
-        self._build_name_mappings(target_namespace)
+        self._build_name_mappings(target_namespace, target_model)
 
         # ジョイントのリストを取得
-        joints = self._get_target_joints(target_namespace)
+        joints = self._get_target_joints(target_namespace, target_model)
         if not joints:
             logger.warning("Target joint not found")
             return False
@@ -82,15 +84,22 @@ class VpdConverter:
 
         return applied_count > 0
 
-    def _get_target_joints(self, namespace: Optional[str] = None) -> List[str]:
+    def _get_target_joints(self, namespace: Optional[str] = None, target_model: Optional[str] = None) -> List[str]:
         """ターゲットのジョイントを取得
 
         Args:
             namespace (str): ネームスペース
+            target_model (str): 対象モデルの root transform
 
         Returns:
             list: ジョイントのリスト
         """
+        if target_model and cmds.objExists(target_model):
+            joints = cmds.listRelatives(target_model, allDescendents=True, type="joint", fullPath=True) or []
+            if cmds.nodeType(target_model) == "joint":
+                joints.append(target_model)
+            return joints
+
         if namespace:
             pattern = f"{namespace}:*"
         else:
@@ -99,17 +108,20 @@ class VpdConverter:
         joints = cmds.ls(pattern, type="joint")
         return joints
 
-    def _build_name_mappings(self, target_namespace: Optional[str] = None) -> None:
+    def _build_name_mappings(
+        self, target_namespace: Optional[str] = None, target_model: Optional[str] = None
+    ) -> None:
         """ボーン名マッピングを構築
 
         Args:
             target_namespace (str): ターゲットのネームスペース
+            target_model (str): 対象モデルの root transform
         """
         logger.debug("Building bone name mapping")
         self.bone_name_mapping = {}
 
         # ジョイントのリストを取得
-        joints = self._get_target_joints(target_namespace)
+        joints = self._get_target_joints(target_namespace, target_model)
 
         # CustomAttributesから元のボーン名を取得
         for joint in joints:
@@ -139,7 +151,8 @@ class VpdConverter:
 
         # 完全一致を試す（ジョイント名がそのままMMDボーン名と一致する場合）
         for joint in joints:
-            joint_name = joint.split(":")[-1] if ":" in joint else joint
+            joint_leaf = joint.rsplit("|", 1)[-1]
+            joint_name = joint_leaf.split(":")[-1] if ":" in joint_leaf else joint_leaf
             if joint_name == mmd_bone_name:
                 return joint
 

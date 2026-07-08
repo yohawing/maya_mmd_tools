@@ -1,7 +1,7 @@
-"""Drag-and-drop import support for PMX/PMD/VMD files in Maya.
+"""Drag-and-drop import support for PMX/PMD/VMD/VPD files in Maya.
 
 The module installs a Qt event filter on Maya's main window and routes dropped
-MMD files through the same importer entry points used by the Import/Export tab.
+MMD files through the importer entry points used by the UI.
 """
 
 from __future__ import annotations
@@ -16,7 +16,9 @@ import maya.api.OpenMaya as om
 
 from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME, ATTR_MMD_MODEL_NAME_EN
 from mmd_tools.core.logger import get_logger
+from mmd_tools.core.mmd_parser import parse_mmd_file
 from mmd_tools.io.mmd_importer import import_mmd_file
+from mmd_tools.io.vpd_importer import import_vpd_file
 from mmd_tools.services.scene_model_service import SceneModelService
 from mmd_tools.services.settings_service import SettingsService
 
@@ -24,7 +26,8 @@ logger = get_logger(__name__)
 
 _MODEL_EXTENSIONS = {".pmx", ".pmd"}
 _MOTION_EXTENSIONS = {".vmd"}
-_SUPPORTED_EXTENSIONS = _MODEL_EXTENSIONS | _MOTION_EXTENSIONS
+_POSE_EXTENSIONS = {".vpd"}
+_SUPPORTED_EXTENSIONS = _MODEL_EXTENSIONS | _MOTION_EXTENSIONS | _POSE_EXTENSIONS
 _DROP_FILTER = None
 
 
@@ -66,7 +69,7 @@ def path_from_drop_url(value: str) -> str:
 
 
 def supported_mmd_files(paths: Iterable[str]) -> List[str]:
-    """Return existing PMX/PMD/VMD file paths in import order."""
+    """Return existing PMX/PMD/VMD/VPD file paths in drop order."""
     result: List[str] = []
     seen = set()
     for raw_path in paths:
@@ -106,23 +109,30 @@ def import_dropped_files(
     paths: Iterable[str],
     *,
     importer: Optional[Callable[..., object]] = None,
+    pose_importer: Optional[Callable[..., object]] = None,
+    parser: Optional[Callable[[str], object]] = None,
     settings_service: Optional[SettingsService] = None,
 ) -> bool:
-    """Import dropped PMX/PMD/VMD files.
+    """Import dropped PMX/PMD/VMD files and apply dropped VPD pose files.
 
     Models are imported before motions.  If a model and VMD are dropped
     together, the VMD targets the last imported model and receives that PMX path
     for runtime bake.  If only VMD files are dropped, an existing selected MMD
     model root is used; without a loaded model the drop fails with a warning.
+    VPD files are pose-apply operations: they target the selected/current MMD
+    model or the model imported by the same drop, then key the current frame.
     """
     files = supported_mmd_files(paths)
     if not files:
         return False
 
     importer = importer or import_mmd_file
+    pose_importer = pose_importer or import_vpd_file
+    parser = parser or parse_mmd_file
     settings_service = settings_service or SettingsService()
     model_files = [p for p in files if Path(p).suffix.lower() in _MODEL_EXTENSIONS]
     motion_files = [p for p in files if Path(p).suffix.lower() in _MOTION_EXTENSIONS]
+    pose_files = [p for p in files if Path(p).suffix.lower() in _POSE_EXTENSIONS]
 
     _display_info(f"Maya MMD Tools: importing dropped file(s): {len(files)}")
     last_model_root: Optional[str] = None
@@ -160,6 +170,32 @@ def import_dropped_files(
             _display_info(f"Maya MMD Tools: imported motion {Path(motion_path).name}")
         else:
             _display_warning(f"Maya MMD Tools: VMD import failed: {motion_path}")
+
+    for pose_path in pose_files:
+        target_model = last_model_root or _selected_model_root()
+        if not target_model:
+            _display_warning("Maya MMD Tools: select or drop a PMX/PMD model before dropping VPD pose files.")
+            continue
+        try:
+            pose_data = parser(pose_path)
+            success = bool(
+                pose_importer(
+                    pose_data,
+                    pose_path,
+                    {
+                        "target_model": target_model,
+                        "create_keyframe": True,
+                    },
+                )
+            )
+        except Exception as exc:
+            logger.warning("VPD pose apply failed for dropped file '%s': %s", pose_path, exc, exc_info=True)
+            success = False
+        if success:
+            imported_any = True
+            _display_info(f"Maya MMD Tools: applied pose {Path(pose_path).name}")
+        else:
+            _display_warning(f"Maya MMD Tools: VPD pose apply failed: {pose_path}")
 
     return imported_any
 

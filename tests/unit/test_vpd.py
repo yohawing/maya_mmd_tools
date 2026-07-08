@@ -225,6 +225,18 @@ class TestVpdConverter(unittest.TestCase):
         self.assertEqual(joints, ["model:センター"])
         ls.assert_called_once_with("model:*", type="joint")
 
+    def test_get_target_joints_scopes_to_target_model_descendants(self):
+        with patch("mmd_tools.converters.vpd_converter.cmds.objExists", return_value=True):
+            with patch("mmd_tools.converters.vpd_converter.cmds.nodeType", return_value="transform"):
+                with patch(
+                    "mmd_tools.converters.vpd_converter.cmds.listRelatives",
+                    return_value=["|root|センター"],
+                ) as list_relatives:
+                    joints = self.converter._get_target_joints(None, "root")
+
+        self.assertEqual(joints, ["|root|センター"])
+        list_relatives.assert_called_once_with("root", allDescendents=True, type="joint", fullPath=True)
+
     def test_find_maya_joint_uses_mmd_bone_attribute_mapping_first(self):
         self.converter.bone_name_mapping = {"センター": "model:center_joint"}
 
@@ -236,6 +248,11 @@ class TestVpdConverter(unittest.TestCase):
         joint = self.converter._find_maya_joint("上半身", ["model:センター", "model:上半身"])
 
         self.assertEqual(joint, "model:上半身")
+
+    def test_find_maya_joint_falls_back_to_dag_leaf_basename(self):
+        joint = self.converter._find_maya_joint("上半身", ["|root|センター", "|root|上半身"])
+
+        self.assertEqual(joint, "|root|上半身")
 
     def test_find_maya_joint_returns_none_when_unmatched(self):
         joint = self.converter._find_maya_joint("左腕", ["model:センター"])
@@ -261,7 +278,7 @@ class TestVpdConverter(unittest.TestCase):
                 result = self.converter.convert(vpd_data, "model")
 
         self.assertFalse(result)
-        build_mappings.assert_called_once_with("model")
+        build_mappings.assert_called_once_with("model", None)
 
 
 class TestVpdImporter(unittest.TestCase):
@@ -277,7 +294,7 @@ class TestVpdImporter(unittest.TestCase):
 
         with patch("mmd_tools.io.vpd_importer.NamespaceUtils.get_namespace_from_node", return_value="model"):
             with patch("mmd_tools.io.vpd_importer.cmds.currentTime", return_value=12):
-                with patch("mmd_tools.io.vpd_importer._create_keyframes_for_namespace") as create_keyframes:
+                with patch("mmd_tools.io.vpd_importer._create_keyframes_for_target") as create_keyframes:
                     with patch("mmd_tools.io.vpd_importer.cmds.inViewMessage") as in_view_message:
                         with patch("mmd_tools.io.vpd_importer.VpdConverter") as converter_class:
                             converter = converter_class.return_value
@@ -291,8 +308,26 @@ class TestVpdImporter(unittest.TestCase):
 
         self.assertTrue(result)
         converter.convert.assert_called_once_with(parser, "model", {"target_model": "model:root", "create_keyframe": True})
-        create_keyframes.assert_called_once_with("model", 12)
+        create_keyframes.assert_called_once_with("model:root", "model", 12)
         in_view_message.assert_called_once()
+
+    def test_import_uses_target_model_scope_without_namespace(self):
+        parser = SimpleNamespace(bone_poses=[])
+        options = {"target_model": "root", "create_keyframe": True}
+
+        with patch("mmd_tools.io.vpd_importer.NamespaceUtils.get_namespace_from_node", return_value=None):
+            with patch("mmd_tools.io.vpd_importer.cmds.currentTime", return_value=12):
+                with patch("mmd_tools.io.vpd_importer._create_keyframes_for_target") as create_keyframes:
+                    with patch("mmd_tools.io.vpd_importer.cmds.inViewMessage"):
+                        with patch("mmd_tools.io.vpd_importer.VpdConverter") as converter_class:
+                            converter = converter_class.return_value
+                            converter.convert.return_value = True
+
+                            result = vpd_importer.import_vpd_file(parser, "pose.vpd", options)
+
+        self.assertTrue(result)
+        converter.convert.assert_called_once_with(parser, None, options)
+        create_keyframes.assert_called_once_with("root", None, 12)
 
     def test_import_warns_when_no_target_selection(self):
         parser = SimpleNamespace(bone_poses=[])
