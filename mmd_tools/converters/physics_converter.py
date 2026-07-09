@@ -1061,7 +1061,7 @@ class PhysicsConverter:
             return False
         if cmds.attributeQuery("mmd_physics_orient_only", node=transform, exists=True):
             return not cmds.getAttr(f"{transform}.mmd_physics_orient_only")
-        return not self._joints_lock_rigid_body_translation(rigid_body_index)
+        return True
 
     @staticmethod
     def _store_orient_only_flag(transform: str, orient_only: bool) -> None:
@@ -1113,7 +1113,8 @@ class PhysicsConverter:
             ("orientConstraint", lambda c: cmds.orientConstraint(c, query=True, targetList=True) or []),
             ("pointConstraint", lambda c: cmds.pointConstraint(c, query=True, targetList=True) or []),
         ):
-            constraints = cmds.listConnections(joint, source=True, destination=False, type=ctype) or []
+            constraints = set(cmds.listConnections(joint, source=True, destination=False, type=ctype) or [])
+            constraints.update(cmds.ls("*.mmd_physics_preview_constraint", objectsOnly=True, type=ctype) or [])
             for constraint in constraints:
                 try:
                     if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint, exists=True):

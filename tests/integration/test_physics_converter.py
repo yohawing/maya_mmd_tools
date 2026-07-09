@@ -805,6 +805,62 @@ class TestPhysicsConverter(MayaTestBase):
         end_y = cmds.xform(joint, query=True, worldSpace=True, translation=True)[1]
         self.assertLess(end_y, start_y - 0.1)
 
+    def test_pmx_mode1_zero_linear_limit_still_drives_translation_preview(self):
+        """Bullet joint の linear limit 0 は bone feedback translation 抑止条件にしない。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        cmds.select(clear=True)
+        parent_joint = cmds.joint(name="physics_parent_bone", position=(0.0, 10.0, 0.0))
+        child_joint = cmds.joint(name="physics_child_bone", position=(0.0, 8.0, 0.0))
+        cmds.parent(parent_joint, root)
+
+        rb_parent = self._make_fake_pmx_rigid_body(
+            name="static_anchor",
+            related_bone_index=0,
+            shape_type=0,
+            position=(0.0, 10.0, 0.0),
+            physics_mode=0,
+            mass=0.0,
+        )
+        rb_child = self._make_fake_pmx_rigid_body(
+            name="dynamic_skirt_like",
+            related_bone_index=1,
+            shape_type=0,
+            position=(0.0, 8.0, 0.0),
+            physics_mode=1,
+            mass=1.0,
+        )
+        locked_joint = self._make_fake_pmx_joint(
+            name="locked_linear_joint",
+            rigid_body_a_index=0,
+            rigid_body_b_index=1,
+            translation_limit_min=(0.0, 0.0, 0.0),
+            translation_limit_max=(0.0, 0.0, 0.0),
+        )
+        data = self._make_fake_pmx_data(
+            rigid_bodies=[rb_parent, rb_child],
+            joints=[locked_joint],
+            bones=[self._make_fake_bone("physics_parent_bone"), self._make_fake_bone("physics_child_bone")],
+        )
+
+        converter = PhysicsConverter({"create_physics_joints": True, "gravity": 120.0})
+        rbs, _ = converter.convert_pmx_physics(
+            data,
+            {
+                "physics_parent_bone": parent_joint,
+                "physics_child_bone": child_joint,
+            },
+            root,
+        )
+
+        point_constraints = cmds.listConnections(child_joint, source=True, destination=False, type="pointConstraint") or []
+        orient_constraints = cmds.listConnections(child_joint, source=True, destination=False, type="orientConstraint") or []
+        self.assertTrue(point_constraints, "mode=1 dynamic body の point feedback が抑止されている")
+        self.assertTrue(orient_constraints, "mode=1 dynamic body の orient feedback が作成されていない")
+        self.assertFalse(cmds.getAttr(f"{rbs[1]}.mmd_physics_orient_only"))
+
     def test_pmx_dynamic_rigid_body_maps_related_bone_by_metadata_index(self):
         """関連ボーン接続は sanitize 名ではなく mmd_bone_index を優先する。"""
         if not PhysicsConverter.is_bullet_available():

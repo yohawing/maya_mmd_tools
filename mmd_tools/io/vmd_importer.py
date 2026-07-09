@@ -14,6 +14,22 @@ from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
 
 
+def _repair_physics_preview_feedback(target_model: Optional[str], logger) -> int:
+    """Reconnect Bullet preview feedback that VMD keying may have replaced."""
+    if not target_model or not cmds.objExists(target_model):
+        return 0
+    try:
+        from ..converters import PhysicsConverter
+
+        repaired = PhysicsConverter().connect_existing_bullet_preview_to_bones(target_model)
+        if repaired:
+            logger.info("Repaired %d Bullet physics preview feedback connection(s) after VMD import", repaired)
+        return repaired
+    except Exception as exc:
+        logger.warning(f"Failed to repair Bullet physics preview feedback after VMD import: {exc}")
+        return 0
+
+
 def import_vmd_file(
     parser: Any,
     filepath: str,
@@ -159,6 +175,9 @@ def import_vmd_file(
 
         if success:
             logger.info("VMD file import completed")
+            repaired_physics = _repair_physics_preview_feedback(target_model, logger)
+            if repaired_physics:
+                profile["physics_preview_repaired"] = repaired_physics
             if is_mmd_runtime_available():
                 # Phase 2: ライブノードの自動作成オプション
                 if options.get("use_live_runtime", False) and target_model:

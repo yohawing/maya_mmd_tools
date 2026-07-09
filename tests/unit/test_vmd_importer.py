@@ -77,6 +77,28 @@ class TestVmdImporter(MayaTestBase):
         self.assertIsInstance(options["profile"], dict)
         self.assertIs(converter.convert.call_args.kwargs["profile"], options["profile"])
 
+    def test_successful_import_repairs_physics_preview_feedback(self):
+        target_model = cmds.group(empty=True, name="mmd_model_root")
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+        options = {"target_model": target_model}
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+            "mmd_tools.converters.PhysicsConverter"
+        ) as physics_converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = True
+            physics_converter = physics_converter_class.return_value
+            physics_converter.connect_existing_bullet_preview_to_bones.return_value = 3
+
+            result = import_vmd_file(object(), vmd_path, options)
+
+        self.assertTrue(result)
+        physics_converter.connect_existing_bullet_preview_to_bones.assert_called_once_with(target_model)
+        self.assertEqual(options["profile"]["physics_preview_repaired"], 3)
+
     def test_camera_light_import_options_are_applied_to_converter(self):
         temp_root = Path(tempfile.mkdtemp())
         vmd_path = str(temp_root / "motion.vmd")
