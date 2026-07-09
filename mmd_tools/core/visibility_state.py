@@ -42,9 +42,11 @@ def ensure_visibility_attrs(adapter, model_root: str) -> None:
     for attr, default in DEFAULT_VISIBILITY_ATTR_VALUES.items():
         try:
             if adapter.attribute_exists(attr, model_root):
+                _show_bool_attr(adapter, model_root, attr)
                 continue
             _add_bool_attr(adapter, model_root, attr)
             adapter.set_attr(f"{model_root}.{attr}", bool(default))
+            _show_bool_attr(adapter, model_root, attr)
         except Exception:
             continue
 
@@ -158,11 +160,24 @@ def _iter_category_targets(adapter, model_root: str, category: str):
 
 def _add_bool_attr(adapter, node: str, attr: str) -> None:
     if hasattr(adapter, "add_attr"):
-        adapter.add_attr(node, longName=attr, attributeType="bool")
+        adapter.add_attr(node, longName=attr, attributeType="bool", keyable=True)
         return
     cmds_module = getattr(adapter, "_cmds", None)
     if cmds_module is not None:
-        cmds_module.addAttr(node, longName=attr, attributeType="bool")
+        cmds_module.addAttr(node, longName=attr, attributeType="bool", keyable=True)
+
+
+def _show_bool_attr(adapter, node: str, attr: str) -> None:
+    attr_path = f"{node}.{attr}"
+    try:
+        value = bool(adapter.get_attr(attr_path))
+        adapter.set_attr(attr_path, value, keyable=True)
+        return
+    except Exception:
+        pass
+    cmds_module = getattr(adapter, "_cmds", None)
+    if cmds_module is not None:
+        cmds_module.setAttr(attr_path, edit=True, keyable=True)
 
 
 def _source_connections(adapter, destination: str) -> list[str]:

@@ -295,6 +295,7 @@ class TestPhysicsConverter(MayaTestBase):
         locator = locator_shapes[0]
         self.assertEqual(cmds.getAttr(f"{locator}.colliderShapeType"), expected_bullet_shape)
         self.assertTrue(cmds.attributeQuery("mmd_show_physics_colliders", node=root, exists=True))
+        self.assertTrue(cmds.getAttr(f"{root}.mmd_show_physics_colliders", keyable=True))
         self.assertFalse(cmds.getAttr(f"{root}.mmd_show_physics_colliders"))
         self.assertFalse(cmds.getAttr(f"{locator}.drawEnabled"))
         self.assertTrue(
