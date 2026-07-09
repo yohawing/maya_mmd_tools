@@ -75,6 +75,24 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.setAttr.assert_called_once_with("pCube1.translateX", 3.0, lock=True)
         self.assertIs(result, expected)
 
+    def test_create_node_delegates_args_and_kwargs(self):
+        expected = "pCubeShape1"
+        self.cmds.createNode.return_value = expected
+
+        result = self.adapter.create_node("mesh", name="pCubeShape1", parent="pCube1")
+
+        self.cmds.createNode.assert_called_once_with("mesh", name="pCubeShape1", parent="pCube1")
+        self.assertIs(result, expected)
+
+    def test_all_node_types_delegates_args_and_kwargs(self):
+        expected = ["transform", "mesh"]
+        self.cmds.allNodeTypes.return_value = expected
+
+        result = self.adapter.all_node_types(includeAbstract=True)
+
+        self.cmds.allNodeTypes.assert_called_once_with(includeAbstract=True)
+        self.assertIs(result, expected)
+
     def test_list_relatives_delegates_kwargs(self):
         expected = ["root|pCube1"]
         self.cmds.listRelatives.return_value = expected

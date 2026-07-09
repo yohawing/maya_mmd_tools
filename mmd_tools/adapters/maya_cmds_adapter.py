@@ -39,6 +39,14 @@ class MayaCmdsAdapter:
         """Pass through to maya.cmds.addAttr."""
         return self._cmds.addAttr(*args, **kwargs)
 
+    def create_node(self, *args, **kwargs):
+        """Pass through to maya.cmds.createNode."""
+        return self._cmds.createNode(*args, **kwargs)
+
+    def all_node_types(self, *args, **kwargs):
+        """Pass through to maya.cmds.allNodeTypes."""
+        return self._cmds.allNodeTypes(*args, **kwargs)
+
     def list_relatives(self, node, **kwargs):
         """Pass through to maya.cmds.listRelatives."""
         return self._cmds.listRelatives(node, **kwargs)

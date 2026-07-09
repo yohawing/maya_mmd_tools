@@ -1,4 +1,7 @@
-from ...core.physics_scene_query import MayaPhysicsSceneReader, JointSceneRef, RigidBodySceneRef
+from dataclasses import replace
+from typing import Optional
+
+from ...core.physics_scene_query import MayaPhysicsSceneReader, JointSceneRef, PhysicsSceneRefs, RigidBodySceneRef
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ...core.visibility_state import (
@@ -55,7 +58,10 @@ class PhysicsPresenter:
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             return
 
-        refs = self.physics_reader.collect(current_model_root)
+        refs = self._ensure_collider_locators(
+            self.physics_reader.collect(current_model_root),
+            current_model_root,
+        )
         for rigid_body in refs.rigid_bodies:
             self._rigid_bodies_by_transform[rigid_body.transform] = rigid_body
             self.view.rigid_body_list.addItem(_rigid_body_item(rigid_body))
@@ -142,6 +148,86 @@ class PhysicsPresenter:
                 self.maya_adapter.set_attr(f"{locator}.drawEnabled", bool(visible))
             except Exception as exc:
                 logger.warning("Could not set collider locator visibility for %s: %s", locator, exc)
+
+    def _ensure_collider_locators(self, refs: PhysicsSceneRefs, model_root: str) -> PhysicsSceneRefs:
+        repaired = []
+        changed = False
+        for rigid_body in refs.rigid_bodies:
+            if rigid_body.locator_shape:
+                repaired.append(rigid_body)
+                continue
+            locator = self._create_collider_locator(rigid_body, model_root)
+            if locator:
+                repaired.append(replace(rigid_body, locator_shape=locator))
+                changed = True
+            else:
+                repaired.append(rigid_body)
+        if not changed:
+            return refs
+        return PhysicsSceneRefs(rigid_bodies=tuple(repaired), joints=refs.joints)
+
+    def _create_collider_locator(self, rigid_body: RigidBodySceneRef, model_root: str) -> Optional[str]:
+        if not hasattr(self.maya_adapter, "create_node"):
+            return None
+        try:
+            if hasattr(self.maya_adapter, "all_node_types"):
+                node_types = self.maya_adapter.all_node_types() or []
+                if "mmdRigidBodyLocator" not in node_types:
+                    return None
+            created = self.maya_adapter.create_node(
+                "mmdRigidBodyLocator",
+                name=f"{rigid_body.transform.rsplit('|', 1)[-1]}_colliderLocatorShape",
+                parent=rigid_body.transform,
+            )
+            locator = self._resolve_collider_locator(rigid_body.transform, created)
+            if not locator:
+                return None
+            self._seed_collider_locator_attrs(locator, rigid_body.bullet_shape)
+            connect_visibility_attr_to_node(
+                self.maya_adapter,
+                model_root,
+                "colliders",
+                locator,
+                target_attr="drawEnabled",
+            )
+            return locator
+        except Exception as exc:
+            logger.debug("Could not create collider locator for %s: %s", rigid_body.transform, exc)
+            return None
+
+    def _resolve_collider_locator(self, transform: str, created: Optional[str]) -> Optional[str]:
+        try:
+            locators = self.maya_adapter.list_relatives(
+                transform,
+                shapes=True,
+                type="mmdRigidBodyLocator",
+                fullPath=True,
+            ) or []
+        except Exception:
+            locators = []
+        if not locators:
+            return created
+        if created:
+            created_short = created.rsplit("|", 1)[-1]
+            for locator in locators:
+                if locator == created or locator.rsplit("|", 1)[-1] == created_short:
+                    return locator
+        return locators[0]
+
+    def _seed_collider_locator_attrs(self, locator: str, bullet_shape: str) -> None:
+        for source_attr, target_attr in (
+            ("colliderShapeType", "colliderShapeType"),
+            ("radius", "radius"),
+            ("length", "length"),
+            ("colliderShapeSizeX", "boxSizeX"),
+            ("colliderShapeSizeY", "boxSizeY"),
+            ("colliderShapeSizeZ", "boxSizeZ"),
+        ):
+            try:
+                value = self.maya_adapter.get_attr(f"{bullet_shape}.{source_attr}")
+                self.maya_adapter.set_attr(f"{locator}.{target_attr}", value)
+            except Exception:
+                continue
 
     def _colliders_visible(self, model_root: str | None = None) -> bool:
         if model_root:

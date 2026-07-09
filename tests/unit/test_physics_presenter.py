@@ -107,6 +107,7 @@ class _FakeMayaAdapter:
         self.calls = []
         self.attrs = {}
         self.incoming_connections = {}
+        self.created_nodes = []
 
     def object_exists(self, node):
         self.calls.append(("object_exists", node))
@@ -122,6 +123,14 @@ class _FakeMayaAdapter:
 
     def get_attr(self, attr_path):
         node, attr = attr_path.rsplit(".", 1)
+        if attr == "colliderShapeType":
+            return 3
+        if attr == "radius":
+            return 0.5
+        if attr == "length":
+            return 2.5
+        if attr.startswith("colliderShapeSize"):
+            return 1.0
         return self.attrs[(node, attr)]
 
     def attribute_exists(self, attr, node):
@@ -130,6 +139,16 @@ class _FakeMayaAdapter:
     def add_attr(self, node, longName=None, attributeType=None, **kwargs):
         self.calls.append(("add_attr", node, longName, attributeType))
         self.attrs[(node, longName)] = False
+
+    def create_node(self, node_type, name=None, parent=None):
+        created = f"{parent}|{name or node_type}"
+        self.calls.append(("create_node", node_type, name, parent))
+        self.existing_nodes.add(created)
+        self.created_nodes.append(created)
+        return created
+
+    def all_node_types(self):
+        return ["mmdRigidBodyLocator"]
 
     def list_relatives(self, node, **kwargs):
         if kwargs.get("type") == "mmdRigidBodyLocator":
@@ -305,6 +324,33 @@ class TestPhysicsPresenter(unittest.TestCase):
                 "connect_attr",
                 f"{TEST_MODEL}.mmd_show_physics_colliders",
                 "|root|rb2|mmdRigidBodyLocator.drawEnabled",
+                False,
+            ),
+            adapter.calls,
+        )
+
+    def test_load_physics_repairs_missing_collider_locator(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(
+                _rigid("|root|rb5", 5, "hair", shape_type=2, locator_shape=None),
+            ),
+            joints=(),
+        )
+        presenter, _, _, adapter, _ = _make_presenter(reader=_FakePhysicsReader(refs))
+
+        presenter.load_physics()
+
+        created = "|root|rb5|rb5_colliderLocatorShape"
+        self.assertIn(("create_node", "mmdRigidBodyLocator", "rb5_colliderLocatorShape", "|root|rb5"), adapter.calls)
+        self.assertEqual(presenter._rigid_bodies_by_transform["|root|rb5"].locator_shape, created)
+        self.assertIn(("set_attr", (f"{created}.colliderShapeType", 3), {}), adapter.calls)
+        self.assertIn(("set_attr", (f"{created}.radius", 0.5), {}), adapter.calls)
+        self.assertIn(("set_attr", (f"{created}.length", 2.5), {}), adapter.calls)
+        self.assertIn(
+            (
+                "connect_attr",
+                f"{TEST_MODEL}.mmd_show_physics_colliders",
+                f"{created}.drawEnabled",
                 False,
             ),
             adapter.calls,
