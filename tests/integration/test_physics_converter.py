@@ -7,7 +7,6 @@ Bullet が利用不可の場合はテストをスキップする。
 """
 
 import math
-import os
 from pathlib import Path
 from unittest import mock
 
@@ -206,38 +205,40 @@ class TestPhysicsConverter(MayaTestBase):
         result = PhysicsConverter.is_bullet_available()
         self.assertIsInstance(result, bool)
 
+    def test_visual_locator_availability_loads_python_plugin_when_needed(self):
+        """mmdRigidBodyLocator 未登録時は Python plugin をロードして再判定する。"""
+        with mock.patch.object(
+            cmds,
+            "allNodeTypes",
+            side_effect=[[], ["mmdRigidBodyLocator"]],
+        ) as all_node_types:
+            with mock.patch.object(cmds, "loadPlugin") as load_plugin:
+                self.assertTrue(PhysicsConverter._is_bullet_visual_locator_type_available())
+
+        self.assertEqual(all_node_types.call_count, 2)
+        self.assertEqual(load_plugin.call_count, 1)
+        plugin_path = Path(load_plugin.call_args.args[0])
+        self.assertEqual(plugin_path.name, "mmd_rigid_body_locator_plugin.py")
+        self.assertEqual(plugin_path.parent.name, "nodes")
+
     def _require_rigid_body_locator_node(self):
         if "mmdRigidBodyLocator" not in (cmds.allNodeTypes() or []):
-            plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
-            previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
-            os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+            plugin_path = (
+                Path(__file__).resolve().parents[2]
+                / "mmd_tools"
+                / "nodes"
+                / "mmd_rigid_body_locator_plugin.py"
+            )
             try:
                 self.load_plugin(str(plugin_path))
             except RuntimeError as exc:
                 self.skipTest(f"mmdRigidBodyLocator node is unavailable: {exc}")
-            finally:
-                if previous is None:
-                    os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
-                else:
-                    os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
         if "mmdRigidBodyLocator" not in (cmds.allNodeTypes() or []):
             self.skipTest("mmdRigidBodyLocator node is unavailable")
         try:
             node = cmds.createNode("mmdRigidBodyLocator", name="availability_probe_rigidBodyLocator")
         except RuntimeError as exc:
-            plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
-            previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
-            os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
-            try:
-                self.load_plugin(str(plugin_path))
-                node = cmds.createNode("mmdRigidBodyLocator", name="availability_probe_rigidBodyLocator")
-            except RuntimeError:
-                self.skipTest(f"mmdRigidBodyLocator node is unavailable: {exc}")
-            finally:
-                if previous is None:
-                    os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
-                else:
-                    os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
+            self.skipTest(f"mmdRigidBodyLocator node is unavailable: {exc}")
         cmds.delete(node)
 
     @staticmethod

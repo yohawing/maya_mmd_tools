@@ -85,14 +85,20 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             "mmd_tools.nodes.mmd_bone_morph_accum_node",
             "mmd_tools.nodes.mmd_ccd_ik_node",
             "mmd_tools.nodes.mmd_material_morph_eval_node",
-            "mmd_tools.nodes.mmd_rigid_body_locator_node",
         ):
             mod = types.ModuleType(name)
             mod.register = MagicMock()
             mod.deregister = MagicMock()
             sys.modules[name] = mod
 
+        locator_mod = types.ModuleType("mmd_tools.nodes.mmd_rigid_body_locator_node")
+        locator_mod.register = MagicMock()
+        locator_mod.deregister = MagicMock()
+        locator_mod.MmdRigidBodyLocatorNode = types.SimpleNamespace(kTypeName="mmdRigidBodyLocator")
+        sys.modules["mmd_tools.nodes.mmd_rigid_body_locator_node"] = locator_mod
+
         self.plugin_main = importlib.import_module("mmd_tools.plugin_main")
+        self.plugin_main.mmd_shader = shader_mod
         self.plugin_main.cmds = MagicMock()
         self.plugin_main.cmds.window.return_value = False
         self.plugin_main.cmds.workspaceControl.return_value = False
@@ -120,6 +126,17 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         self.assertTrue(window.closed)
         self.assertTrue(window.deleted)
         self.assertIsNone(self.plugin_main._main_window)
+
+    def test_initialize_skips_locator_registration_when_already_registered(self):
+        self.plugin_main.install_mmd_menu = MagicMock()
+        self.plugin_main.install_drag_drop_importer = MagicMock()
+        self.plugin_main.cmds.allNodeTypes.return_value = ["mmdRigidBodyLocator"]
+        self.plugin_main.cmds.pluginInfo.return_value = []
+
+        self.plugin_main.initializePlugin(MagicMock())
+
+        locator_mod = sys.modules["mmd_tools.nodes.mmd_rigid_body_locator_node"]
+        locator_mod.register.assert_not_called()
 
 
 if __name__ == "__main__":

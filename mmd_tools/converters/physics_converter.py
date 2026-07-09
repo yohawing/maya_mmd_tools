@@ -7,6 +7,7 @@ Nucleus/nCloth fallback 経路に graceful fallback する。
 """
 
 import math
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 import maya.cmds as cmds
@@ -1197,6 +1198,11 @@ class PhysicsConverter:
     def _is_bullet_visual_locator_type_available() -> bool:
         """Return whether Maya has the custom locator type registered."""
         try:
+            if _RIGID_BODY_LOCATOR_TYPE in (cmds.allNodeTypes() or []):
+                return True
+            plugin_path = Path(__file__).resolve().parents[1] / "nodes" / "mmd_rigid_body_locator_plugin.py"
+            if plugin_path.exists():
+                cmds.loadPlugin(str(plugin_path), quiet=True)
             return _RIGID_BODY_LOCATOR_TYPE in (cmds.allNodeTypes() or [])
         except Exception:
             return False

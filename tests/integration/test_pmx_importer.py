@@ -3,14 +3,18 @@ PMXインポーターの統合テスト
 """
 
 import os
+from pathlib import Path
 
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
+from mmd_tools.converters import PhysicsConverter
 from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
+
+HAIR_PHYSICS_FIXTURE = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
 
 
 class TestPmxImporter(MayaTestBase):
@@ -113,6 +117,32 @@ class TestPmxImporter(MayaTestBase):
         if bullet_loaded:
             self.assertFalse(cmds.ls(type="bulletRigidBodyShape") or [])
             self.assertFalse(cmds.ls(type="bulletRigidBodyConstraintShape") or [])
+
+    def test_import_pmx_with_physics_creates_collider_locators(self):
+        """通常 PMX import でも物理 collider 表示 locator を生成する。"""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet plugin is unavailable")
+
+        profile = {}
+        parser = parse_pmx_file(str(HAIR_PHYSICS_FIXTURE))
+
+        result = import_pmx_file(
+            parser,
+            str(HAIR_PHYSICS_FIXTURE),
+            options={"profile": profile, "import_physics": True},
+        )
+
+        self.assertTrue(result)
+        locator_shapes = cmds.listRelatives(
+            result,
+            allDescendents=True,
+            type="mmdRigidBodyLocator",
+            fullPath=True,
+        ) or []
+        self.assertGreater(len(locator_shapes), 0, "物理 collider locator が生成されていません")
+        physics_profile = profile.get("physics_converter") or {}
+        self.assertGreater(physics_profile.get("created_bullet_rigid_bodies", 0), 0)
+        self.assertEqual(physics_profile.get("bullet_visual_locator_failure_count"), 0)
 
     def test_import_pmx_multiple_files(self):
         """全てのPMXモデルが基本的にロード可能かテスト"""

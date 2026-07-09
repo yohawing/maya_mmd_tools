@@ -176,6 +176,14 @@ def _cpp_plugin_loaded() -> bool:
     return "mmd_tools_cpp" in loaded
 
 
+def _node_type_registered(type_name: str) -> bool:
+    """Return True if Maya already has the given node type registered."""
+    try:
+        return type_name in (cmds.allNodeTypes() or [])
+    except Exception:
+        return False
+
+
 def initializePlugin(mobject):
     """
     Plugin entry point.
@@ -193,8 +201,9 @@ def initializePlugin(mobject):
             mmd_shader.initializePlugin(mobject)
             _shader_override_registered = True
         global _rigid_body_locator_registered
-        mmd_rigid_body_locator_node.register(plugin_fn)
-        _rigid_body_locator_registered = True
+        if not _node_type_registered(mmd_rigid_body_locator_node.MmdRigidBodyLocatorNode.kTypeName):
+            mmd_rigid_body_locator_node.register(plugin_fn)
+            _rigid_body_locator_registered = True
         mmd_bone_morph_accum_node.register(plugin_fn)
         mmd_material_morph_eval_node.register(plugin_fn)
         # Skip Python rig-node registration when C++ plugin already provides them
