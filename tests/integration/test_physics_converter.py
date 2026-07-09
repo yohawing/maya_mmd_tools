@@ -333,8 +333,8 @@ class TestPhysicsConverter(MayaTestBase):
             locator_state = _read_node_state(self._dependency_object(locator))
             self.assertAlmostEqual(locator_state[1], 3.0, places=4)
         if expected_bullet_shape == 3:
-            self.assertAlmostEqual(cmds.getAttr(f"{locator}.length"), 2.0, places=4)
-            self.assertAlmostEqual(locator_state[2], 2.0, places=4)
+            self.assertAlmostEqual(cmds.getAttr(f"{locator}.length"), 6.0, places=4)
+            self.assertAlmostEqual(locator_state[2], 6.0, places=4)
         self.assertFalse(
             cmds.listRelatives(rb_transform, shapes=True, type="mesh", fullPath=True) or [],
             "暫定 collider mesh proxy が残っている",
@@ -839,8 +839,8 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertTrue(constraints, "mmd_bone_index による dynamic preview 接続が作成されていない")
         self.assertTrue(point_constraints, "mmd_bone_index による mode-1 translation preview 接続が作成されていない")
 
-    def test_pmx_rigid_body_applies_collision_filter_and_capsule_length(self):
-        """PMX capsule sizeY は Maya Bullet length に直接対応させる。"""
+    def test_pmx_rigid_body_applies_collision_filter_and_capsule_total_length(self):
+        """PMX capsule sizeY は Maya Bullet の円柱部高さとして扱う。"""
         if not PhysicsConverter.is_bullet_available():
             self.skipTest("Bullet プラグインが利用できません")
 
@@ -864,7 +864,7 @@ class TestPhysicsConverter(MayaTestBase):
         shape = cmds.listRelatives(rbs[0], shapes=True, type="bulletRigidBodyShape")[0]
         self.assertEqual(cmds.getAttr(f"{shape}.colliderShapeType"), 3)
         self.assertAlmostEqual(cmds.getAttr(f"{shape}.radius"), 0.5, places=4)
-        self.assertAlmostEqual(cmds.getAttr(f"{shape}.length"), 2.5, places=4)
+        self.assertAlmostEqual(cmds.getAttr(f"{shape}.length"), 3.5, places=4)
         self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterGroup"), 0x0002)
         self.assertEqual(cmds.getAttr(f"{shape}.collisionFilterMask"), 0xFFFD)
 
@@ -901,7 +901,7 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertAlmostEqual(translate[1], 0.2, places=4)
         self.assertAlmostEqual(translate[2], -0.3, places=4)
         self.assertAlmostEqual(cmds.getAttr(f"{shape}.radius"), 0.05, places=4)
-        self.assertAlmostEqual(cmds.getAttr(f"{shape}.length"), 0.25, places=4)
+        self.assertAlmostEqual(cmds.getAttr(f"{shape}.length"), 0.35, places=4)
 
     def test_connect_existing_bullet_preview_to_bones_repairs_imported_scene(self):
         """既存 Bullet scene は mmd index metadata から preview 接続を後付けできる。"""

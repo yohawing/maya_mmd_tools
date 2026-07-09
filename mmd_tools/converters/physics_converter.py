@@ -391,7 +391,7 @@ class PhysicsConverter:
                 elif collider_shape_type == 3:
                     radius = _safe_to_float(_safe_get_attr(f"{shape}.radius", 0.0), 0.0)
                     length = _safe_to_float(_safe_get_attr(f"{shape}.length", 0.0), 0.0)
-                    size = [radius, max(0.0, length), radius]
+                    size = [radius, max(0.0, length - radius * 2.0), radius]
                 else:
                     scale = cmds.xform(rb_transform, query=True, worldSpace=True, scale=True) or [1.0, 1.0, 1.0]
                     size = [_safe_to_float(scale[0], 1.0) * 0.5, _safe_to_float(scale[1], 1.0) * 0.5, _safe_to_float(scale[2], 1.0) * 0.5]
@@ -752,9 +752,9 @@ class PhysicsConverter:
                 cmds.setAttr(f"{shape}.radius", size[0])
             elif bullet_shape == 3:  # capsule
                 cmds.setAttr(f"{shape}.radius", size[0])
-                # Maya Bullet interprets capsule length as the full height.
-                # PMX sizeY maps directly; adding hemispheres inflates legs.
-                cmds.setAttr(f"{shape}.length", max(size[1], 0.001))
+                # PMX/MMD sizeY maps to Bullet's cylinder height. Maya Bullet's
+                # length attr is the full capsule height shown in the bbox.
+                cmds.setAttr(f"{shape}.length", size[1] + size[0] * 2.0)
             elif bullet_shape == 1:  # box: scale transform
                 cmds.setAttr(f"{shape}.colliderShapeType", bullet_shape)
                 cmds.xform(transform, ws=True, s=[size[0] * 2.0, size[1] * 2.0, size[2] * 2.0], relative=True)
@@ -1166,8 +1166,8 @@ class PhysicsConverter:
                 return
             cmds.setAttr(f"{locator}.colliderShapeType", int(bullet_shape))
             cmds.setAttr(f"{locator}.radius", radius)
-            length = float(size[1]) if len(size) > 1 else radius * 2.0
-            cmds.setAttr(f"{locator}.length", max(length, 0.001))
+            length = float(size[1]) + radius * 2.0 if len(size) > 1 else radius * 2.0
+            cmds.setAttr(f"{locator}.length", max(length, radius * 2.0))
             if len(size) >= 3:
                 # Box rigid bodies encode their full extents in the parent
                 # transform scale.  The locator shape must stay unit-sized so
@@ -1180,7 +1180,7 @@ class PhysicsConverter:
                 cmds.setAttr(f"{locator}.boxSizeX", box_size[0])
                 cmds.setAttr(f"{locator}.boxSizeY", box_size[1])
                 cmds.setAttr(f"{locator}.boxSizeZ", box_size[2])
-            self._create_bullet_visual_curves(transform, locator, int(bullet_shape), radius, max(length, 0.001), size)
+            self._create_bullet_visual_curves(transform, locator, int(bullet_shape), radius, max(length, radius * 2.0), size)
             root = self._current_model_root
             if root and cmds.objExists(root):
                 connect_visibility_attr_to_node(
