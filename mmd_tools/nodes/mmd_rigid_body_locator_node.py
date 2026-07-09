@@ -118,7 +118,7 @@ class MmdRigidBodyLocatorDrawOverride(omr.MPxDrawOverride):
 def _read_node_state(node_obj):
     shape = _plug_int(node_obj, MmdRigidBodyLocatorNode.aColliderShapeType, _SHAPE_SPHERE)
     radius = max(_plug_double(node_obj, MmdRigidBodyLocatorNode.aRadius, 1.0), 0.001)
-    length = max(_plug_double(node_obj, MmdRigidBodyLocatorNode.aLength, radius * 2.0), radius * 2.0)
+    length = max(_plug_double(node_obj, MmdRigidBodyLocatorNode.aLength, radius * 2.0), 0.001)
     box_size = (
         max(_plug_double(node_obj, MmdRigidBodyLocatorNode.aBoxSizeX, radius * 2.0), 0.001),
         max(_plug_double(node_obj, MmdRigidBodyLocatorNode.aBoxSizeY, radius * 2.0), 0.001),
@@ -154,7 +154,7 @@ def _read_bullet_sibling_state(
 
         shape = int(shape_plug.asInt())
         radius = max(_named_plug_double(child_fn, "radius", fallback_radius), 0.001)
-        length = max(_named_plug_double(child_fn, "length", fallback_length), radius * 2.0)
+        length = max(_named_plug_double(child_fn, "length", fallback_length), 0.001)
         box_size = fallback_box_size
         if shape == _SHAPE_BOX:
             # The Bullet box path stores full extents in the parent transform
@@ -211,7 +211,7 @@ def _bounds_for_shape(shape: int, radius: float, length: float, box_size: tuple[
         half_z = box_size[2] * 0.5
         return om.MPoint(-half_x, -half_y, -half_z), om.MPoint(half_x, half_y, half_z)
     if shape == _SHAPE_CAPSULE:
-        half_y = length * 0.5
+        half_y = max(length * 0.5, radius)
         return om.MPoint(-radius, -half_y, -radius), om.MPoint(radius, half_y, radius)
     return om.MPoint(-radius, -radius, -radius), om.MPoint(radius, radius, radius)
 
@@ -244,6 +244,7 @@ def _draw_sphere(draw_manager, radius: float) -> None:
 
 
 def _draw_capsule(draw_manager, radius: float, length: float) -> None:
+    # Maya Bullet length is full capsule height, not cylinder-only height.
     cylinder_half = max((length - radius * 2.0) * 0.5, 0.0)
     top_y = cylinder_half
     bottom_y = -cylinder_half
