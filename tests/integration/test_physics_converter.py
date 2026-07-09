@@ -302,9 +302,22 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertTrue(
             cmds.isConnected(f"{root}.mmd_show_physics_colliders", f"{locator}.drawEnabled")
         )
+        curve_groups = [
+            node for node in (cmds.listRelatives(rb_transform, children=True, type="transform", fullPath=True) or [])
+            if node.endswith("_colliderCurve")
+        ]
+        self.assertEqual(len(curve_groups), 1)
+        curve_group = curve_groups[0]
+        self.assertFalse(cmds.getAttr(f"{curve_group}.visibility"))
+        self.assertTrue(
+            cmds.isConnected(f"{root}.mmd_show_physics_colliders", f"{curve_group}.visibility")
+        )
         cmds.setAttr(f"{root}.mmd_show_physics_colliders", True)
         self.assertTrue(cmds.getAttr(f"{locator}.drawEnabled"))
+        self.assertTrue(cmds.getAttr(f"{curve_group}.visibility"))
         cmds.setAttr(f"{root}.mmd_show_physics_colliders", False)
+        self.assertFalse(cmds.getAttr(f"{locator}.drawEnabled"))
+        self.assertFalse(cmds.getAttr(f"{curve_group}.visibility"))
         self.assertAlmostEqual(cmds.getAttr(f"{locator}.radius"), 2.0, places=4)
         locator_state = _read_node_state(self._dependency_object(locator))
         self.assertEqual(locator_state[0], expected_bullet_shape)

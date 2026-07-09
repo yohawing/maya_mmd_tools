@@ -101,9 +101,11 @@ class MmdRigidBodyLocatorDrawOverride(omr.MPxDrawOverride):
         shape, radius, length, box_size, enabled = self._state
         if not enabled:
             return
-        draw_manager.beginDrawable()
+        draw_manager.beginDrawInXray()
         try:
+            draw_manager.beginDrawable()
             draw_manager.setColor(om.MColor((0.1, 0.8, 1.0, 1.0)))
+            draw_manager.setDepthPriority(omr.MRenderItem.sActiveWireDepthPriority)
             draw_manager.setLineWidth(1.0)
             if shape == _SHAPE_BOX:
                 _draw_box(draw_manager, box_size)
@@ -113,6 +115,7 @@ class MmdRigidBodyLocatorDrawOverride(omr.MPxDrawOverride):
                 _draw_sphere(draw_manager, radius)
         finally:
             draw_manager.endDrawable()
+            draw_manager.endDrawInXray()
 
 
 def _read_node_state(node_obj):
@@ -230,11 +233,22 @@ def _circle_points(axis: str, radius: float, offset_y: float = 0.0, segments: in
 
 
 def _draw_polyline(draw_manager, points: Iterable[om.MPoint]) -> None:
+    line_points = om.MPointArray()
     previous = None
     for point in points:
         if previous is not None:
-            draw_manager.line(previous, point)
+            line_points.append(previous)
+            line_points.append(point)
         previous = point
+    if len(line_points) > 0:
+        draw_manager.mesh(omr.MUIDrawManager.kLines, line_points)
+
+
+def _draw_line(draw_manager, start: om.MPoint, end: om.MPoint) -> None:
+    points = om.MPointArray()
+    points.append(start)
+    points.append(end)
+    draw_manager.mesh(omr.MUIDrawManager.kLines, points)
 
 
 def _draw_sphere(draw_manager, radius: float) -> None:
@@ -251,7 +265,7 @@ def _draw_capsule(draw_manager, radius: float, length: float) -> None:
     _draw_polyline(draw_manager, _circle_points("xz", radius, top_y))
     _draw_polyline(draw_manager, _circle_points("xz", radius, bottom_y))
     for x, z in ((radius, 0.0), (-radius, 0.0), (0.0, radius), (0.0, -radius)):
-        draw_manager.line(om.MPoint(x, bottom_y, z), om.MPoint(x, top_y, z))
+        _draw_line(draw_manager, om.MPoint(x, bottom_y, z), om.MPoint(x, top_y, z))
     _draw_polyline(draw_manager, _circle_points("xy", radius, top_y))
     _draw_polyline(draw_manager, _circle_points("xy", radius, bottom_y))
     _draw_polyline(draw_manager, _circle_points("yz", radius, top_y))
@@ -275,7 +289,7 @@ def _draw_box(draw_manager, box_size: tuple[float, float, float]) -> None:
         (4, 5), (5, 6), (6, 7), (7, 4),
         (0, 4), (1, 5), (2, 6), (3, 7),
     ):
-        draw_manager.line(corners[start], corners[end])
+        _draw_line(draw_manager, corners[start], corners[end])
 
 
 def creator():

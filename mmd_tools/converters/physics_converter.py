@@ -1180,6 +1180,7 @@ class PhysicsConverter:
                 cmds.setAttr(f"{locator}.boxSizeX", box_size[0])
                 cmds.setAttr(f"{locator}.boxSizeY", box_size[1])
                 cmds.setAttr(f"{locator}.boxSizeZ", box_size[2])
+            self._create_bullet_visual_curves(transform, locator, int(bullet_shape), radius, max(length, 0.001), size)
             root = self._current_model_root
             if root and cmds.objExists(root):
                 connect_visibility_attr_to_node(
@@ -1193,6 +1194,124 @@ class PhysicsConverter:
                 cmds.setAttr(f"{locator}.drawEnabled", False)
         except Exception as exc:
             self._record_bullet_visual_locator_failure(transform, str(exc))
+
+    def _create_bullet_visual_curves(
+        self,
+        transform: str,
+        locator: str,
+        bullet_shape: int,
+        radius: float,
+        length: float,
+        size: List[float],
+    ) -> None:
+        """Create always-on-top curve wires as a VP2/DX11-friendly display path."""
+        try:
+            curves_group = cmds.group(empty=True, name=f"{transform.split('|')[-1]}_colliderCurve", parent=transform)
+            cmds.setAttr(f"{curves_group}.inheritsTransform", True)
+            curve_paths = []
+            if bullet_shape == 1:
+                curve_paths.extend(self._create_box_curves(curves_group))
+            elif bullet_shape == 3:
+                curve_paths.extend(self._create_capsule_curves(curves_group, radius, length))
+            else:
+                curve_paths.extend(self._create_sphere_curves(curves_group, radius))
+            for curve in curve_paths:
+                self._style_collider_curve(curve)
+            root = self._current_model_root
+            if root and cmds.objExists(root):
+                connect_visibility_attr_to_node(
+                    MayaCmdsAdapter(cmds),
+                    root,
+                    "colliders",
+                    curves_group,
+                    target_attr="visibility",
+                )
+            else:
+                cmds.setAttr(f"{curves_group}.visibility", bool(cmds.getAttr(f"{locator}.drawEnabled")))
+        except Exception:
+            return
+
+    @staticmethod
+    def _create_curve(parent: str, name: str, points: List[Tuple[float, float, float]]) -> List[str]:
+        curve = cmds.curve(degree=1, point=points, name=name)
+        curve = cmds.parent(curve, parent, relative=True)[0]
+        return [curve]
+
+    def _create_sphere_curves(self, parent: str, radius: float) -> List[str]:
+        return (
+            self._create_curve(parent, "colliderSphereXY", self._circle_points("xy", radius))
+            + self._create_curve(parent, "colliderSphereXZ", self._circle_points("xz", radius))
+            + self._create_curve(parent, "colliderSphereYZ", self._circle_points("yz", radius))
+        )
+
+    def _create_capsule_curves(self, parent: str, radius: float, length: float) -> List[str]:
+        cylinder_half = max((length - radius * 2.0) * 0.5, 0.0)
+        top_y = cylinder_half
+        bottom_y = -cylinder_half
+        curves = []
+        curves += self._create_curve(parent, "colliderCapsuleTop", self._circle_points("xz", radius, top_y))
+        curves += self._create_curve(parent, "colliderCapsuleBottom", self._circle_points("xz", radius, bottom_y))
+        curves += self._create_curve(parent, "colliderCapsuleXYTop", self._circle_points("xy", radius, top_y))
+        curves += self._create_curve(parent, "colliderCapsuleXYBottom", self._circle_points("xy", radius, bottom_y))
+        curves += self._create_curve(parent, "colliderCapsuleYZTop", self._circle_points("yz", radius, top_y))
+        curves += self._create_curve(parent, "colliderCapsuleYZBottom", self._circle_points("yz", radius, bottom_y))
+        for index, (x, z) in enumerate(((radius, 0.0), (-radius, 0.0), (0.0, radius), (0.0, -radius))):
+            curves += self._create_curve(parent, f"colliderCapsuleSide{index}", [(x, bottom_y, z), (x, top_y, z)])
+        return curves
+
+    def _create_box_curves(self, parent: str) -> List[str]:
+        corners = [
+            (-0.5, -0.5, -0.5),
+            (0.5, -0.5, -0.5),
+            (0.5, -0.5, 0.5),
+            (-0.5, -0.5, 0.5),
+            (-0.5, 0.5, -0.5),
+            (0.5, 0.5, -0.5),
+            (0.5, 0.5, 0.5),
+            (-0.5, 0.5, 0.5),
+        ]
+        edges = [
+            (0, 1), (1, 2), (2, 3), (3, 0),
+            (4, 5), (5, 6), (6, 7), (7, 4),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        return [
+            curve
+            for index, (start, end) in enumerate(edges)
+            for curve in self._create_curve(parent, f"colliderBoxEdge{index}", [corners[start], corners[end]])
+        ]
+
+    @staticmethod
+    def _circle_points(
+        axis: str,
+        radius: float,
+        offset_y: float = 0.0,
+        segments: int = 32,
+    ) -> List[Tuple[float, float, float]]:
+        points = []
+        for index in range(segments + 1):
+            angle = 2.0 * math.pi * index / segments
+            a = math.cos(angle) * radius
+            b = math.sin(angle) * radius
+            if axis == "xy":
+                points.append((a, b + offset_y, 0.0))
+            elif axis == "xz":
+                points.append((a, offset_y, b))
+            else:
+                points.append((0.0, a + offset_y, b))
+        return points
+
+    @staticmethod
+    def _style_collider_curve(curve: str) -> None:
+        cmds.setAttr(f"{curve}.overrideEnabled", True)
+        cmds.setAttr(f"{curve}.overrideRGBColors", True)
+        cmds.setAttr(f"{curve}.overrideColorRGB", 0.1, 0.8, 1.0, type="double3")
+        for shape in cmds.listRelatives(curve, shapes=True, fullPath=True) or []:
+            cmds.setAttr(f"{shape}.overrideEnabled", True)
+            cmds.setAttr(f"{shape}.overrideRGBColors", True)
+            cmds.setAttr(f"{shape}.overrideColorRGB", 0.1, 0.8, 1.0, type="double3")
+            if cmds.attributeQuery("alwaysDrawOnTop", node=shape, exists=True):
+                cmds.setAttr(f"{shape}.alwaysDrawOnTop", True)
 
     @staticmethod
     def _is_bullet_visual_locator_type_available() -> bool:

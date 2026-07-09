@@ -220,7 +220,7 @@ def run_capture(log_path: str, model_path: str, out_png: str, diag_json: str, wi
                 locators=True,
                 dynamics=True,
                 joints=False,
-                nurbsCurves=False,
+                nurbsCurves=True,
                 handles=False,
                 ikHandles=False,
                 deformers=False,
