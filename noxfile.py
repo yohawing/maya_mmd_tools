@@ -913,7 +913,10 @@ def native_smoke(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none")
 def native_export_smoke(session: nox.Session) -> None:
-    """Verify native VMD/PMD/PMX export writer symbols when the DLL is current.
+    """Verify native export writer symbols when the DLL is current.
+
+    PMX parts export is required. VMD/PMD JSON writer symbols are optional in
+    newer mmd-anim builds and are exercised only when present.
 
     Examples:
         uvx nox -s native_export_smoke
@@ -1718,12 +1721,12 @@ def release_gate(session: nox.Session) -> None:
     if not quick:
         ffi_build_command = ["uvx", "nox", "-s", "ffi_build"]
         native_smoke_command = ["uvx", "nox", "-s", "native_smoke"]
-        native_export_smoke_command = ["uvx", "nox", "-s", "native_export_smoke"]
+        native_export_smoke_command = ["uvx", "nox", "-s", "native_export_smoke", "--", "--strict"]
         if ffi_cargo_target_dir:
             ffi_build_command.extend(["--", "--release", "--cargo-target-dir", ffi_cargo_target_dir])
         if ffi_path:
             native_smoke_command.extend(["--", "--ffi-path", ffi_path])
-            native_export_smoke_command.extend(["--", "--strict", "--ffi-path", ffi_path])
+            native_export_smoke_command.extend(["--ffi-path", ffi_path])
         tier1_commands.extend(
             [
                 ("tier1:ffi_build", ffi_build_command),

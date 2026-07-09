@@ -114,6 +114,11 @@ uvx nox -s ffi_build -- --release --cargo-target-dir build/mmd-anim-unlocked-tar
 uvx nox -s native_export_smoke -- --strict --ffi-path build/mmd-anim-unlocked-target/release
 ```
 
+`native_export_smoke --strict` requires the PMX parts export ABI. If the JSON
+writer ABIs for VMD/PMD are not present in the native runtime, the smoke reports
+them in `skippedOptional` and still passes because Python keeps the fallback
+writer path for those formats.
+
 For the aggregate gate, pass the same alternate target once:
 
 ```powershell
