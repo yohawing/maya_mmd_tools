@@ -174,11 +174,19 @@ def run_capture(log_path: str, model_path: str, out_png: str, diag_json: str, wi
             },
         )
         _log(f"imported root: {scene_root}")
+        if scene_root and cmds.objExists(scene_root) and cmds.attributeQuery(
+            "mmd_show_physics_colliders",
+            node=scene_root,
+            exists=True,
+        ):
+            cmds.setAttr(f"{scene_root}.mmd_show_physics_colliders", True)
+            _log("enabled root mmd_show_physics_colliders for capture")
 
         locators = cmds.ls(type="mmdRigidBodyLocator", long=True) or []
         rigid_bodies = cmds.ls(type="bulletRigidBodyShape", long=True) or []
         diag["locator_count"] = len(locators)
         diag["bullet_rigid_body_shape_count"] = len(rigid_bodies)
+        diag["draw_enabled_count"] = sum(1 for locator in locators if cmds.getAttr(f"{locator}.drawEnabled"))
         if not locators:
             diag["capture_failed"] = True
             _log("ERROR: no mmdRigidBodyLocator shapes found")

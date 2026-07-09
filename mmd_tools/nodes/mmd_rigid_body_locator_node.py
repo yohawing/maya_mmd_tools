@@ -47,6 +47,23 @@ class MmdRigidBodyLocatorNode(omui.MPxLocatorNode):
         min_point, max_point = _bounds_for_shape(shape, radius, length, box_size)
         return om.MBoundingBox(min_point, max_point)
 
+    def setDependentsDirty(self, plug, affected_plugs):
+        try:
+            changed_attr = plug.attribute()
+            draw_affecting_attrs = (
+                self.aDrawEnabled,
+                self.aColliderShapeType,
+                self.aRadius,
+                self.aLength,
+                self.aBoxSizeX,
+                self.aBoxSizeY,
+                self.aBoxSizeZ,
+            )
+            if any(changed_attr == attr for attr in draw_affecting_attrs):
+                omr.MRenderer.setGeometryDrawDirty(self.thisMObject(), False)
+        except Exception:
+            pass
+
 
 class MmdRigidBodyLocatorDrawOverride(omr.MPxDrawOverride):
     """Draw override that renders collider wireframes with MUIDrawManager."""

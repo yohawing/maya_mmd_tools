@@ -794,7 +794,14 @@ class PhysicsConverter:
             if parented:
                 transform = parented[0]
             if physics_mode != 0:
-                self._connect_bullet_simulation_output(transform, shape)
+                drive_solved_translation = int(physics_mode) != 2
+                self._connect_bullet_simulation_output(
+                    transform,
+                    shape,
+                    drive_translation=drive_solved_translation,
+                )
+                if int(physics_mode) == 2:
+                    self._attach_mode2_bullet_body_translation_to_bone(transform, rb, bone_index_map)
                 self._attach_dynamic_bullet_body_to_bone(
                     transform,
                     rb,
@@ -847,6 +854,40 @@ class PhysicsConverter:
         except Exception as exc:
             self.logger.warning(
                 f"Skipped related-bone follow connection for physics_mode=0 Bullet rigid body '{transform}': {exc}"
+            )
+
+    def _attach_mode2_bullet_body_translation_to_bone(
+        self,
+        transform: str,
+        rb,
+        bone_index_map: Optional[Dict[int, str]],
+    ) -> None:
+        """Keep physics_mode=2 rigid-body translation aligned with its related bone."""
+        if not bone_index_map:
+            return
+
+        bone_index = None
+        if hasattr(rb, "bone_index"):
+            bone_index = getattr(rb, "bone_index")
+        elif hasattr(rb, "related_bone_index"):
+            bone_index = getattr(rb, "related_bone_index")
+
+        if bone_index is None or bone_index < 0:
+            return
+
+        joint = bone_index_map.get(bone_index)
+        if not joint or not cmds.objExists(joint):
+            return
+
+        try:
+            constraint = cmds.pointConstraint(joint, transform, maintainOffset=True)
+            if constraint:
+                self.logger.debug(
+                    f"Connected physics_mode=2 Bullet rigid body '{transform}' translation to related bone '{joint}'"
+                )
+        except Exception as exc:
+            self.logger.warning(
+                f"Skipped physics_mode=2 related-bone translation alignment '{joint}' -> '{transform}': {exc}"
             )
 
     def _attach_dynamic_bullet_body_to_bone(
@@ -1351,7 +1392,7 @@ class PhysicsConverter:
         cmds.setAttr(f"{shape}.initialRotateY", math.radians(rotate[1]))
         cmds.setAttr(f"{shape}.initialRotateZ", math.radians(rotate[2]))
 
-    def _connect_bullet_simulation_output(self, transform: str, shape: str) -> None:
+    def _connect_bullet_simulation_output(self, transform: str, shape: str, *, drive_translation: bool = True) -> None:
         """Drive a dynamic Bullet rigid body transform from solved output."""
         if not cmds.objExists(transform) or not cmds.objExists(shape):
             return
@@ -1371,12 +1412,14 @@ class PhysicsConverter:
         self._connect_attr_if_possible(f"{shape}.outSolvedRotate", f"{pair_blend}.inRotate2")
         self._connect_attr_if_possible(f"{transform}.isDrivenBySimulation", f"{pair_blend}.weight")
 
+        if drive_translation:
+            for axis in "XYZ":
+                self._connect_attr_if_possible(
+                    f"{pair_blend}.outTranslate{axis}",
+                    f"{transform}.translate{axis}",
+                    force=True,
+                )
         for axis in "XYZ":
-            self._connect_attr_if_possible(
-                f"{pair_blend}.outTranslate{axis}",
-                f"{transform}.translate{axis}",
-                force=True,
-            )
             self._connect_attr_if_possible(
                 f"{pair_blend}.outRotate{axis}",
                 f"{transform}.rotate{axis}",

@@ -300,6 +300,9 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertTrue(
             cmds.isConnected(f"{root}.mmd_show_physics_colliders", f"{locator}.drawEnabled")
         )
+        cmds.setAttr(f"{root}.mmd_show_physics_colliders", True)
+        self.assertTrue(cmds.getAttr(f"{locator}.drawEnabled"))
+        cmds.setAttr(f"{root}.mmd_show_physics_colliders", False)
         self.assertAlmostEqual(cmds.getAttr(f"{locator}.radius"), 2.0, places=4)
         locator_state = _read_node_state(self._dependency_object(locator))
         self.assertEqual(locator_state[0], expected_bullet_shape)
@@ -594,6 +597,23 @@ class TestPhysicsConverter(MayaTestBase):
         rbs, _ = converter.convert_pmx_physics(data, {"dynamic_follow_bone": joint}, root)
 
         self.assertGreaterEqual(len(rbs), 1)
+        rb_translate_drivers = cmds.listConnections(
+            f"{rbs[0]}.translateY",
+            source=True,
+            destination=False,
+            type="pairBlend",
+        ) or []
+        self.assertFalse(
+            rb_translate_drivers,
+            "physics_mode=2 剛体の translate は Bullet solved output ではなく関連ボーンに追従する",
+        )
+        rb_point_constraints = cmds.listConnections(
+            rbs[0],
+            source=True,
+            destination=False,
+            type="pointConstraint",
+        ) or []
+        self.assertTrue(rb_point_constraints, "physics_mode=2 剛体 translate の関連ボーン追従が作成されていない")
         constraints = cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or []
         self.assertTrue(constraints, "dynamic 剛体から関連ボーンへの orientConstraint が作成されていない")
         self.assertTrue(
@@ -693,15 +713,23 @@ class TestPhysicsConverter(MayaTestBase):
         cmds.currentTime(1, edit=True, update=True)
         start_master_y = cmds.xform(master, query=True, worldSpace=True, translation=True)[1]
         start_y = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)[1]
+        start_joint_y = cmds.xform(joint, query=True, worldSpace=True, translation=True)[1]
         for frame in range(2, 31):
             cmds.currentTime(frame, edit=True, update=True)
         end_master_y = cmds.xform(master, query=True, worldSpace=True, translation=True)[1]
         end_y = cmds.xform(rbs[0], query=True, worldSpace=True, translation=True)[1]
+        end_joint_y = cmds.xform(joint, query=True, worldSpace=True, translation=True)[1]
 
         self.assertAlmostEqual(end_master_y - start_master_y, 4.0, places=4)
         delta = end_y - start_y
         self.assertGreater(delta, 3.5)
         self.assertLess(delta, 4.5, f"master motion appears double-transformed: delta={delta}")
+        self.assertAlmostEqual(
+            delta,
+            end_joint_y - start_joint_y,
+            places=4,
+            msg="physics_mode=2 rigid-body translation should preserve related-bone motion delta",
+        )
 
     def test_model_motion_parent_detection_is_skeleton_scoped(self):
         """同名 transform があっても Skeleton 配下の master だけを物理追従元にする。"""
