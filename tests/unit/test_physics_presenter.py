@@ -152,7 +152,9 @@ class _FakeMayaAdapter:
 
     def list_relatives(self, node, **kwargs):
         if kwargs.get("type") == "mmdRigidBodyLocator":
-            return [item for item in self.existing_nodes if item.startswith(node)]
+            return [item for item in self.existing_nodes if "mmdRigidBodyLocator" in item or item.endswith("_colliderLocatorShape")]
+        if kwargs.get("type") == "transform":
+            return [item for item in self.existing_nodes if item.endswith("_colliderCurve")]
         return []
 
     def list_connections(self, node, **kwargs):

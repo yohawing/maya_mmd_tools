@@ -8,6 +8,7 @@ from ...core.visibility_state import (
     connect_visibility_attr_to_node,
     get_visibility_category,
     set_visibility_category,
+    sync_visibility_connections,
 )
 from ..qt_compat import QListWidgetItem, Qt
 from .list_presenter_helpers import reload_for_current_model_change, select_existing_user_role_nodes
@@ -126,17 +127,7 @@ class PhysicsPresenter:
         model_root = self.app_state.current_model_root
         if model_root:
             try:
-                for rigid_body in self._rigid_bodies_by_transform.values():
-                    locator = rigid_body.locator_shape
-                    if not locator:
-                        continue
-                    connect_visibility_attr_to_node(
-                        self.maya_adapter,
-                        model_root,
-                        "colliders",
-                        locator,
-                        target_attr="drawEnabled",
-                    )
+                sync_visibility_connections(self.maya_adapter, model_root, "colliders")
                 return
             except Exception as exc:
                 logger.debug("Could not sync collider drawEnabled connections: %s", exc)

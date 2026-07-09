@@ -1,13 +1,15 @@
 import unittest
 
 from mmd_tools.core.constants import ATTR_MMD_SHOW_PHYSICS_COLLIDERS
-from mmd_tools.core.visibility_state import ensure_visibility_attrs
+from mmd_tools.core.visibility_state import ensure_visibility_attrs, sync_visibility_connections
 
 
 class _FakeAdapter:
     def __init__(self, existing_attrs=None):
         self.attrs = dict(existing_attrs or {})
         self.calls = []
+        self.relatives = {}
+        self.connections = {}
 
     def attribute_exists(self, attr, node):
         return (node, attr) in self.attrs
@@ -24,6 +26,18 @@ class _FakeAdapter:
         self.calls.append(("set_attr", attr_path, value, kwargs))
         node, attr = attr_path.rsplit(".", 1)
         self.attrs[(node, attr)] = value
+
+    def list_relatives(self, node, **kwargs):
+        return self.relatives.get((node, kwargs.get("type")), [])
+
+    def list_connections(self, node, **kwargs):
+        if kwargs.get("source") and kwargs.get("plugs"):
+            return self.connections.get(node, [])
+        return []
+
+    def connect_attr(self, source, destination, force=False):
+        self.calls.append(("connect_attr", source, destination, force))
+        self.connections[destination] = [source]
 
 
 class TestVisibilityState(unittest.TestCase):
@@ -48,6 +62,35 @@ class TestVisibilityState(unittest.TestCase):
                 f"model_root.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}",
                 True,
                 {"keyable": True},
+            ),
+            adapter.calls,
+        )
+
+    def test_sync_colliders_connects_locator_and_curve_group_to_root_attr(self):
+        adapter = _FakeAdapter({("model_root", ATTR_MMD_SHOW_PHYSICS_COLLIDERS): False})
+        adapter.relatives[("model_root", "mmdRigidBodyLocator")] = ["|model_root|rb|rb_colliderLocatorShape"]
+        adapter.relatives[("model_root", "transform")] = [
+            "|model_root|rb",
+            "|model_root|rb|rb_colliderCurve",
+        ]
+
+        sync_visibility_connections(adapter, "model_root", "colliders")
+
+        self.assertIn(
+            (
+                "connect_attr",
+                f"model_root.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}",
+                "|model_root|rb|rb_colliderLocatorShape.drawEnabled",
+                False,
+            ),
+            adapter.calls,
+        )
+        self.assertIn(
+            (
+                "connect_attr",
+                f"model_root.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}",
+                "|model_root|rb|rb_colliderCurve.visibility",
+                False,
             ),
             adapter.calls,
         )

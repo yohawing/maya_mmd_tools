@@ -126,6 +126,10 @@ def connect_visibility_attr_to_node(
 
 
 def _iter_category_targets(adapter, model_root: str, category: str):
+    if category == "colliders":
+        yield from _iter_collider_targets(adapter, model_root)
+        return
+
     node_type = _VIS_NODE_TYPES.get(category)
     if not node_type:
         return
@@ -156,6 +160,33 @@ def _iter_category_targets(adapter, model_root: str, category: str):
         if category == "controllers" and _node_type(adapter, node) == "mmdRigidBodyLocator":
             continue
         yield node, target_attr
+
+
+def _iter_collider_targets(adapter, model_root: str):
+    try:
+        locators = adapter.list_relatives(
+            model_root,
+            allDescendents=True,
+            type="mmdRigidBodyLocator",
+            fullPath=True,
+        ) or []
+    except Exception:
+        locators = []
+    for locator in locators:
+        yield locator, "drawEnabled"
+
+    try:
+        transforms = adapter.list_relatives(
+            model_root,
+            allDescendents=True,
+            type="transform",
+            fullPath=True,
+        ) or []
+    except Exception:
+        transforms = []
+    for node in transforms:
+        if node.rsplit("|", 1)[-1].endswith("_colliderCurve"):
+            yield node, "visibility"
 
 
 def _add_bool_attr(adapter, node: str, attr: str) -> None:
