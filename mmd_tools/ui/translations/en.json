@@ -14,7 +14,9 @@
     "maya_connection": "Maya Connection",
     "general_settings": "General",
     "import_settings": "Import",
-    "export_settings": "Export"
+    "export_settings": "Export",
+    "rigid_bodies": "Rigid Bodies",
+    "joints": "Joints"
   },
   "menus": {
     "view": "View"
@@ -257,7 +259,9 @@
     "dev_tools": "Development Tools",
     "model_settings": "Model Settings",
     "physics_settings": "Physics Settings",
-    "other_settings": "Other"
+    "other_settings": "Other",
+    "physics_objects": "Physics Objects",
+    "details": "Details"
   },
   "checkboxes": {
     "use_namespace": "Use Namespace",
@@ -281,7 +285,8 @@
     "show_advanced_options": "Show Advanced Options",
     "enable_logging": "Enable Logging",
     "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)",
-    "auto_resolve_textures": "Auto-resolve textures"
+    "auto_resolve_textures": "Auto-resolve textures",
+    "show_colliders": "Show Colliders"
   },
   "fields": {
     "import_scale": "Import Scale:",
@@ -349,7 +354,10 @@
     "export_format": "Export Format:",
     "transparency_mode": "Transparency Mode:",
     "transparency_opaque_threshold": "Opaque alpha threshold:",
-    "original_texture_path": "Original Texture Path:"
+    "original_texture_path": "Original Texture Path:",
+    "name": "Name:",
+    "shape": "Shape:",
+    "bodies": "Bodies:"
   },
   "actions": {
     "import_model": "Import Model",
@@ -375,7 +383,9 @@
     "no_materials_found": "No materials found",
     "select_material": "Please select a material from the list on the left",
     "search_bone_name": "Search bone name...",
-    "search_morph_name": "Search morph name..."
+    "search_morph_name": "Search morph name...",
+    "search_rigid_bodies": "Search rigid bodies...",
+    "search_joints": "Search joints..."
   },
   "sphere_modes": {
     "disabled": "Disabled",

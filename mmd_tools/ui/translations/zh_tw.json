@@ -14,7 +14,9 @@
     "maya_connection": "Maya連接",
     "general_settings": "一般設定",
     "import_settings": "匯入設定",
-    "export_settings": "匯出設定"
+    "export_settings": "匯出設定",
+    "rigid_bodies": "剛體",
+    "joints": "關節"
   },
   "menus": {
     "view": "檢視"
@@ -198,7 +200,9 @@
     "dev_tools": "開發工具",
     "model_settings": "模型設定",
     "physics_settings": "物理設定",
-    "other_settings": "其他設定"
+    "other_settings": "其他設定",
+    "physics_objects": "物理物件",
+    "details": "詳細資訊"
   },
   "checkboxes": {
     "use_namespace": "使用命名空間",
@@ -220,7 +224,8 @@
     "enable_logging": "啟用記錄",
     "auto_classify_transparency": "自動分類透明 (掃描紋理α)",
     "auto_resolve_textures": "自動修復貼圖",
-    "custom_namespace": "自訂命名空間:"
+    "custom_namespace": "自訂命名空間:",
+    "show_colliders": "顯示碰撞體"
   },
   "fields": {
     "import_scale": "匯入縮放:",
@@ -287,7 +292,10 @@
     "export_format": "匯出格式:",
     "transparency_mode": "透明模式:",
     "transparency_opaque_threshold": "不透明α閾值:",
-    "original_texture_path": "原始紋理路徑:"
+    "original_texture_path": "原始紋理路徑:",
+    "name": "名稱:",
+    "shape": "形狀:",
+    "bodies": "剛體:"
   },
   "actions": {
     "import_model": "匯入模型",
@@ -313,7 +321,9 @@
     "no_materials_found": "未找到材質",
     "select_material": "請從左側清單中選擇材質",
     "search_bone_name": "搜尋骨骼名稱...",
-    "search_morph_name": "搜尋表情名稱..."
+    "search_morph_name": "搜尋表情名稱...",
+    "search_rigid_bodies": "搜尋剛體...",
+    "search_joints": "搜尋關節..."
   },
   "sphere_modes": {
     "disabled": "停用",

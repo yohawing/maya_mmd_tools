@@ -137,6 +137,38 @@ class TestMainWindow(GuiTestBase):
             self.assertEqual(dev_window.tab_widget.count(), 7)
             self.assertIsNotNone(dev_window.physics_tab)
             self.assertIsNotNone(dev_window.physics_presenter)
+
+            tab = dev_window.physics_tab
+            # Slice A shell: splitter / list tabs / search / scroll / buttons
+            self.assertIsNotNone(tab.splitter)
+            self.assertIsNotNone(tab.list_tabs)
+            self.assertEqual(tab.list_tabs.count(), 2)
+            self.assertIsNotNone(tab.rigid_body_search_edit)
+            self.assertIsNotNone(tab.joint_search_edit)
+            self.assertIsNotNone(tab.details_scroll_area)
+            self.assertTrue(tab.details_scroll_area.widgetResizable())
+            self.assertIsNotNone(tab.apply_btn)
+            self.assertIsNotNone(tab.reset_btn)
+
+            # Legacy presenter-facing attributes
+            for attr in (
+                "refresh_btn",
+                "collider_visible_check",
+                "rigid_body_list",
+                "joint_list",
+                "detail_name_value",
+                "detail_type_value",
+                "detail_shape_value",
+                "detail_bodies_value",
+                "detail_node_value",
+            ):
+                self.assertTrue(hasattr(tab, attr), f"missing attribute: {attr}")
+
+            # Defaults: collider off, details/buttons disabled
+            self.assertFalse(tab.collider_visible_check.isChecked())
+            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertFalse(tab.reset_btn.isEnabled())
+            self.assertFalse(tab.physics_details_content.isEnabled())
         finally:
             _s.set("ui.general.development_mode", False)
             if dev_window is not None:

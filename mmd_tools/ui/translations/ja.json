@@ -14,7 +14,9 @@
     "maya_connection": "Maya連携",
     "general_settings": "全般設定",
     "import_settings": "インポート設定",
-    "export_settings": "エクスポート設定"
+    "export_settings": "エクスポート設定",
+    "rigid_bodies": "剛体",
+    "joints": "ジョイント"
   },
   "menus": {
     "view": "表示"
@@ -257,7 +259,9 @@
     "dev_tools": "開発ツール",
     "model_settings": "モデル設定",
     "physics_settings": "物理設定",
-    "other_settings": "その他"
+    "other_settings": "その他",
+    "physics_objects": "物理オブジェクト",
+    "details": "詳細"
   },
   "checkboxes": {
     "use_namespace": "ネームスペースを使用",
@@ -281,7 +285,8 @@
     "show_advanced_options": "詳細オプションを表示",
     "enable_logging": "ログを有効にする",
     "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
-    "auto_resolve_textures": "テクスチャを自動修復"
+    "auto_resolve_textures": "テクスチャを自動修復",
+    "show_colliders": "コライダーを表示"
   },
   "fields": {
     "import_scale": "インポートスケール:",
@@ -349,7 +354,10 @@
     "export_format": "エクスポート形式:",
     "transparency_mode": "透過モード:",
     "transparency_opaque_threshold": "不透明とみなすα閾値:",
-    "original_texture_path": "元テクスチャパス:"
+    "original_texture_path": "元テクスチャパス:",
+    "name": "名前:",
+    "shape": "形状:",
+    "bodies": "ボディ:"
   },
   "actions": {
     "import_model": "モデルをインポート",
@@ -375,7 +383,9 @@
     "no_materials_found": "マテリアルが見つかりません",
     "select_material": "左のリストからマテリアルを選択してください",
     "search_bone_name": "ボーン名を検索...",
-    "search_morph_name": "モーフ名を検索..."
+    "search_morph_name": "モーフ名を検索...",
+    "search_rigid_bodies": "剛体を検索...",
+    "search_joints": "ジョイントを検索..."
   },
   "sphere_modes": {
     "disabled": "無効",

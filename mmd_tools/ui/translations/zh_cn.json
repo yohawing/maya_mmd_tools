@@ -14,7 +14,9 @@
     "maya_connection": "Maya连接",
     "general_settings": "常规设置",
     "import_settings": "导入设置",
-    "export_settings": "导出设置"
+    "export_settings": "导出设置",
+    "rigid_bodies": "刚体",
+    "joints": "关节"
   },
   "menus": {
     "view": "查看"
@@ -198,7 +200,9 @@
     "dev_tools": "开发工具",
     "model_settings": "模型设置",
     "physics_settings": "物理设置",
-    "other_settings": "其他设置"
+    "other_settings": "其他设置",
+    "physics_objects": "物理对象",
+    "details": "详细信息"
   },
   "checkboxes": {
     "use_namespace": "使用命名空间",
@@ -220,7 +224,8 @@
     "enable_logging": "启用日志记录",
     "auto_classify_transparency": "自动分类透明 (扫描纹理α)",
     "auto_resolve_textures": "自动修复贴图",
-    "custom_namespace": "自定义命名空间:"
+    "custom_namespace": "自定义命名空间:",
+    "show_colliders": "显示碰撞体"
   },
   "fields": {
     "import_scale": "导入缩放:",
@@ -287,7 +292,10 @@
     "export_format": "导出格式:",
     "transparency_mode": "透明模式:",
     "transparency_opaque_threshold": "不透明α阈值:",
-    "original_texture_path": "原始纹理路径:"
+    "original_texture_path": "原始纹理路径:",
+    "name": "名称:",
+    "shape": "形状:",
+    "bodies": "刚体:"
   },
   "actions": {
     "import_model": "导入模型",
@@ -313,7 +321,9 @@
     "no_materials_found": "未找到材质",
     "select_material": "请从左侧列表中选择材质",
     "search_bone_name": "搜索骨骼名称...",
-    "search_morph_name": "搜索表情名称..."
+    "search_morph_name": "搜索表情名称...",
+    "search_rigid_bodies": "搜索刚体...",
+    "search_joints": "搜索关节..."
   },
   "sphere_modes": {
     "disabled": "禁用",
