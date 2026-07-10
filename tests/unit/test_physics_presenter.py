@@ -12,6 +12,7 @@ from mmd_tools.core.physics_scene_query import (  # noqa: E402
     RigidBodySceneRef,
 )
 from mmd_tools.core.physics_form_validation import JointFormValues, RigidBodyFormValues  # noqa: E402
+from mmd_tools.core.physics_scene_writer import PhysicsSceneWriteError  # noqa: E402
 from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter  # noqa: E402
 from mmd_tools.ui.qt_compat import Qt  # noqa: E402
 
@@ -188,7 +189,7 @@ class _FakeView:
     def set_physics_dirty(self, dirty, valid=False):
         self.form_dirty = bool(dirty)
         enabled = self.form_dirty and bool(self.details_enabled)
-        self.apply_btn.setEnabled(False)
+        self.apply_btn.setEnabled(enabled and bool(valid))
         self.reset_btn.setEnabled(enabled)
 
     def set_physics_validation_error(self, field_key=None, message_key=None, params=None):
@@ -283,6 +284,22 @@ class _FakePhysicsReader:
         return self.refs
 
 
+class _FakePhysicsWriter:
+    def __init__(self, error=None):
+        self.error = error
+        self.calls = []
+
+    def apply_rigid_body(self, ref, values):
+        self.calls.append(("rigid", ref, values))
+        if self.error is not None:
+            raise self.error
+
+    def apply_joint(self, ref, values):
+        self.calls.append(("joint", ref, values))
+        if self.error is not None:
+            raise self.error
+
+
 def _rigid(
     transform,
     index,
@@ -321,12 +338,18 @@ def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1, name_english=Non
     )
 
 
-def _make_presenter(model=TEST_MODEL, adapter=None, reader=None):
+def _make_presenter(model=TEST_MODEL, adapter=None, reader=None, writer=None):
     view = _FakeView()
     app_state = _FakeAppState(model)
     adapter = adapter or _FakeMayaAdapter()
     reader = reader or _FakePhysicsReader()
-    presenter = PhysicsPresenter(view, app_state, maya_adapter=adapter, physics_reader=reader)
+    presenter = PhysicsPresenter(
+        view,
+        app_state,
+        maya_adapter=adapter,
+        physics_reader=reader,
+        physics_writer=writer,
+    )
     return presenter, view, app_state, adapter, reader
 
 
@@ -457,7 +480,7 @@ class TestPhysicsPresenter(unittest.TestCase):
         view.form_values["mass"] = 9.0
         view.physics_form_changed.emit()
         self.assertTrue(view.form_dirty)
-        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertTrue(view.apply_btn.isEnabled())
         self.assertTrue(view.reset_btn.isEnabled())
         self.assertIsInstance(presenter.validated_form_values, RigidBodyFormValues)
         self.assertEqual(presenter.validated_form_values.mass, 9.0)
@@ -522,7 +545,7 @@ class TestPhysicsPresenter(unittest.TestCase):
 
         view.form_values["linear_constraint_states"] = "0, 2, 1"
         view.physics_form_changed.emit()
-        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertTrue(view.apply_btn.isEnabled())
         self.assertIsInstance(presenter.validated_form_values, JointFormValues)
         self.assertEqual(presenter.validated_form_values.linear_constraint_states, (0, 2, 1))
 
@@ -534,6 +557,79 @@ class TestPhysicsPresenter(unittest.TestCase):
             view.validation_error[:2],
             ("spring_rotation_enabled", "physics_validation_bool"),
         )
+
+    def test_apply_valid_rigid_form_writes_then_recollects_scene(self):
+        rigid = _rigid("|root|rb2", 2, "skirt", mass=2.5)
+        reader = _FakePhysicsReader(PhysicsSceneRefs((rigid,), ()))
+        writer = _FakePhysicsWriter()
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2"})
+        presenter, view, _, _, _ = _make_presenter(
+            adapter=adapter,
+            reader=reader,
+            writer=writer,
+        )
+        presenter.load_physics()
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+        view.form_values["mass"] = "3.25"
+        view.physics_form_changed.emit()
+
+        view.apply_btn.clicked.emit()
+
+        self.assertEqual(len(writer.calls), 1)
+        self.assertEqual(writer.calls[0][0], "rigid")
+        self.assertEqual(writer.calls[0][2].mass, 3.25)
+        self.assertEqual(reader.calls, [TEST_MODEL, TEST_MODEL])
+        self.assertIsNone(presenter.validated_form_values)
+        self.assertIsNone(view.validation_error)
+        self.assertFalse(view.form_dirty)
+        self.assertFalse(view.details_enabled)
+
+    def test_apply_failure_keeps_dirty_and_shows_error_without_recollect(self):
+        rigid = _rigid("|root|rb2", 2, "skirt", mass=2.5)
+        reader = _FakePhysicsReader(PhysicsSceneRefs((rigid,), ()))
+        writer = _FakePhysicsWriter(
+            PhysicsSceneWriteError("mass", "physics_write_failed", error="setAttr failed")
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2"})
+        presenter, view, _, _, _ = _make_presenter(
+            adapter=adapter,
+            reader=reader,
+            writer=writer,
+        )
+        presenter.load_physics()
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+        view.form_values["mass"] = "3.25"
+        view.physics_form_changed.emit()
+
+        view.apply_btn.clicked.emit()
+
+        self.assertEqual(len(writer.calls), 1)
+        self.assertEqual(reader.calls, [TEST_MODEL])
+        self.assertTrue(view.form_dirty)
+        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertTrue(view.reset_btn.isEnabled())
+        self.assertEqual(view.validation_error[:2], ("mass", "physics_write_failed"))
+        self.assertIsInstance(presenter.validated_form_values, RigidBodyFormValues)
+
+    def test_apply_rejects_stale_validated_ref_identity(self):
+        rigid = _rigid("|root|rb2", 2, "skirt", mass=2.5)
+        writer = _FakePhysicsWriter()
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2"})
+        presenter, view, _, _, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(PhysicsSceneRefs((rigid,), ())),
+            writer=writer,
+        )
+        presenter.load_physics()
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+        view.form_values["mass"] = "3.25"
+        view.physics_form_changed.emit()
+        presenter._current_physics_ref = _rigid("|root|rb2", 2, "skirt", mass=2.5)
+
+        presenter.apply_physics_form()
+
+        self.assertEqual(writer.calls, [])
+        self.assertEqual(view.validation_error[:2], ("node", "physics_write_stale_form"))
 
     def test_rigid_body_selection_selects_user_role_transform(self):
         refs = PhysicsSceneRefs(rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),), joints=())

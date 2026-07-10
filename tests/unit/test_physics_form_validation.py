@@ -138,6 +138,14 @@ class TestPhysicsValidationTranslations(unittest.TestCase):
             "physics_validation_range",
             "physics_validation_vector_length",
             "physics_validation_bool",
+            "physics_write_node_missing",
+            "physics_write_attribute_missing",
+            "physics_write_failed",
+            "physics_write_rollback_failed",
+            "physics_write_stale_form",
+            "physics_write_preflight_failed",
+            "physics_write_undo_disabled",
+            "physics_write_attribute_not_settable",
         }
         translations = Path("mmd_tools/ui/translations")
         for locale in ("en", "ja", "zh_cn", "zh_tw"):

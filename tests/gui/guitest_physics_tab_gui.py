@@ -29,6 +29,8 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertTrue(tab.details_scroll_area.widgetResizable())
             self.assertIsNotNone(tab.apply_btn)
             self.assertIsNotNone(tab.reset_btn)
+            self.assertTrue(tab.joint_body_a_spin.isReadOnly())
+            self.assertTrue(tab.joint_body_b_spin.isReadOnly())
 
             for attr in (
                 "refresh_btn",
@@ -47,6 +49,14 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertFalse(tab.apply_btn.isEnabled())
             self.assertFalse(tab.reset_btn.isEnabled())
             self.assertFalse(tab.physics_details_content.isEnabled())
+            self.assertFalse(tab.rigid_shape_combo.isEnabled())
+            self.assertFalse(tab.rigid_physics_mode_combo.isEnabled())
+            self.assertTrue(tab.rigid_related_bone_spin.isReadOnly())
+            self.assertTrue(tab.rigid_collision_group_spin.isReadOnly())
+            self.assertTrue(tab.rigid_collision_mask_spin.isReadOnly())
+            self.assertTrue(tab.joint_type_spin.isReadOnly())
+            self.assertTrue(tab.joint_body_a_spin.isReadOnly())
+            self.assertTrue(tab.joint_body_b_spin.isReadOnly())
 
             tab.set_physics_details_enabled(True)
             self.assertFalse(tab.apply_btn.isEnabled())
@@ -55,7 +65,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertFalse(tab.apply_btn.isEnabled())
             self.assertTrue(tab.reset_btn.isEnabled())
             tab.set_physics_dirty(True, valid=True)
-            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertTrue(tab.apply_btn.isEnabled())
             tab.set_physics_details_enabled(False)
             self.assertFalse(tab.apply_btn.isEnabled())
         finally:
@@ -98,7 +108,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             QApplication.processEvents()
             self.assertEqual(changes, [True])
             tab.set_physics_dirty(True, valid=True)
-            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertTrue(tab.apply_btn.isEnabled())
             self.assertTrue(tab.reset_btn.isEnabled())
             self.assertEqual(tab.get_physics_form_values("rigid")["mass"], "3.0")
 

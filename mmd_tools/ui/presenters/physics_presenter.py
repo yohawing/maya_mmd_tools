@@ -2,6 +2,7 @@ from dataclasses import replace
 from typing import Optional
 
 from ...core.physics_scene_query import MayaPhysicsSceneReader, JointSceneRef, PhysicsSceneRefs, RigidBodySceneRef
+from ...core.physics_scene_writer import MayaPhysicsSceneWriter, PhysicsSceneWriteError
 from ...core.physics_form_validation import (
     PhysicsFormValidationError,
     parse_joint_form,
@@ -32,15 +33,17 @@ _SHAPE_LABELS = {
 
 
 class PhysicsPresenter:
-    def __init__(self, view, app_state, maya_adapter=None, physics_reader=None):
+    def __init__(self, view, app_state, maya_adapter=None, physics_reader=None, physics_writer=None):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.physics_reader = physics_reader or MayaPhysicsSceneReader(self.maya_adapter)
+        self.physics_writer = physics_writer or MayaPhysicsSceneWriter(self.maya_adapter)
         self._rigid_bodies_by_transform = {}
         self._joints_by_transform = {}
         self._current_physics_ref = None
         self._validated_form_values = None
+        self._validated_form_ref = None
         self.connect_signals()
 
     @property
@@ -78,6 +81,9 @@ class PhysicsPresenter:
         reset_btn = getattr(self.view, "reset_btn", None)
         if reset_btn is not None and hasattr(reset_btn, "clicked"):
             reset_btn.clicked.connect(self.reset_physics_form)
+        apply_btn = getattr(self.view, "apply_btn", None)
+        if apply_btn is not None and hasattr(apply_btn, "clicked"):
+            apply_btn.clicked.connect(self.apply_physics_form)
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
@@ -210,10 +216,12 @@ class PhysicsPresenter:
                 parsed = parse_joint_form(raw_values)
         except PhysicsFormValidationError as exc:
             self._validated_form_values = None
+            self._validated_form_ref = None
             self._set_validation_error(exc)
             valid = False
         else:
             self._validated_form_values = parsed
+            self._validated_form_ref = current
             self._clear_validation_error()
             valid = True
         setter = getattr(self.view, "set_physics_dirty", None)
@@ -227,6 +235,31 @@ class PhysicsPresenter:
             self._populate_rigid_body_form(current)
         elif isinstance(current, JointSceneRef):
             self._populate_joint_form(current)
+
+    def apply_physics_form(self):
+        """Atomically write the validated dirty form, then re-read the scene."""
+        current = self._current_physics_ref
+        values = self._validated_form_values
+        if current is None or values is None or self._validated_form_ref is not current:
+            self._set_write_error(
+                PhysicsSceneWriteError("node", "physics_write_stale_form")
+            )
+            return
+        try:
+            if isinstance(current, RigidBodySceneRef):
+                self.physics_writer.apply_rigid_body(current, values)
+            elif isinstance(current, JointSceneRef):
+                self.physics_writer.apply_joint(current, values)
+            else:
+                raise PhysicsSceneWriteError("node", "physics_write_stale_form")
+        except PhysicsSceneWriteError as exc:
+            self._set_write_error(exc)
+            return
+
+        self._validated_form_values = None
+        self._validated_form_ref = None
+        self._clear_validation_error()
+        self.load_physics()
 
     def on_collider_visibility_toggled(self, visible):
         """Toggle display-only collider locator shapes."""
@@ -432,6 +465,7 @@ class PhysicsPresenter:
         """Clear detail labels and disable the details panel."""
         self._current_physics_ref = None
         self._validated_form_values = None
+        self._validated_form_ref = None
         self._set_details("None", "", "", "")
         set_form = getattr(self.view, "set_physics_form", None)
         if callable(set_form):
@@ -481,6 +515,7 @@ class PhysicsPresenter:
 
     def _set_cached_form(self, kind, values):
         self._validated_form_values = None
+        self._validated_form_ref = None
         set_form = getattr(self.view, "set_physics_form", None)
         if callable(set_form):
             set_form(kind, values)
@@ -494,6 +529,12 @@ class PhysicsPresenter:
         setter = getattr(self.view, "set_physics_validation_error", None)
         if callable(setter):
             setter()
+
+    def _set_write_error(self, error):
+        self._set_validation_error(error)
+        setter = getattr(self.view, "set_physics_dirty", None)
+        if callable(setter):
+            setter(True, valid=False)
 
     def _set_details(self, name: str, kind: str, shape_or_type: str, bodies: str, node: str = ""):
         label_values = {

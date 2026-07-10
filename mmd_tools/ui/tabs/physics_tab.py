@@ -197,16 +197,21 @@ class PhysicsTab(BaseTab):
             "shape",
             ["physics_shape_sphere", "physics_shape_box", "physics_shape_capsule"],
         )
+        self.rigid_shape_combo.setEnabled(False)
         self._add_editor_row(layout, "shape", "rigid_shape", self.rigid_shape_combo)
         self.rigid_physics_mode_combo = self._combo_editor(
             "rigid_physics_mode",
             "physics_mode",
             ["physics_mode_bone", "physics_mode_physics", "physics_mode_physics_bone"],
         )
+        self.rigid_physics_mode_combo.setEnabled(False)
         self._add_editor_row(layout, "physics_mode", "rigid_physics_mode", self.rigid_physics_mode_combo)
         self.rigid_related_bone_spin = self._int_editor("rigid_related_bone", "related_bone", -1, 999999)
         self.rigid_collision_group_spin = self._int_editor("rigid_collision_group", "collision_group", 0, 15)
         self.rigid_collision_mask_spin = self._int_editor("rigid_collision_mask", "collision_mask", 0, 0xFFFF)
+        self.rigid_related_bone_spin.setReadOnly(True)
+        self.rigid_collision_group_spin.setReadOnly(True)
+        self.rigid_collision_mask_spin.setReadOnly(True)
         self.rigid_mass_edit = self._line_editor("rigid_mass", "mass")
         self.rigid_linear_damping_edit = self._line_editor("rigid_linear_damping", "linear_damping")
         self.rigid_angular_damping_edit = self._line_editor("rigid_angular_damping", "angular_damping")
@@ -232,8 +237,12 @@ class PhysicsTab(BaseTab):
         self.joint_name_edit = self._line_editor("joint_name", "name")
         self.joint_name_english_edit = self._line_editor("joint_name_english", "name_english")
         self.joint_type_spin = self._int_editor("joint_type", "joint_type", 0, 6)
+        self.joint_type_spin.setReadOnly(True)
         self.joint_body_a_spin = self._int_editor("joint_body_a", "rigid_body_a", -1, 999999)
         self.joint_body_b_spin = self._int_editor("joint_body_b", "rigid_body_b", -1, 999999)
+        # Reconnecting constraint bodies changes the solver graph and is outside D2b.
+        self.joint_body_a_spin.setReadOnly(True)
+        self.joint_body_b_spin.setReadOnly(True)
         for key, field_key in (
             ("joint_linear_states", "linear_constraint_states"),
             ("joint_angular_states", "angular_constraint_states"),
@@ -333,8 +342,7 @@ class PhysicsTab(BaseTab):
 
     def set_physics_dirty(self, dirty, valid=False):
         enabled = bool(dirty) and self.physics_details_content.isEnabled()
-        # D2a only exposes validation state; D2b enables Apply with a real writer.
-        self.apply_btn.setEnabled(False)
+        self.apply_btn.setEnabled(enabled and bool(valid))
         self.reset_btn.setEnabled(enabled)
 
     def set_physics_validation_error(self, field_key=None, message_key=None, params=None):

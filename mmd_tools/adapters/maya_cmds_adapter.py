@@ -27,9 +27,27 @@ class MayaCmdsAdapter:
         """Return whether a Maya node has an attribute."""
         return self._cmds.attributeQuery(attr, node=node, exists=True)
 
+    def attribute_range(self, attr, node):
+        """Return Maya attribute min/max bounds as optional floats."""
+        minimum = None
+        maximum = None
+        if self._cmds.attributeQuery(attr, node=node, minExists=True):
+            values = self._cmds.attributeQuery(attr, node=node, minimum=True)
+            if values:
+                minimum = float(values[0])
+        if self._cmds.attributeQuery(attr, node=node, maxExists=True):
+            values = self._cmds.attributeQuery(attr, node=node, maximum=True)
+            if values:
+                maximum = float(values[0])
+        return minimum, maximum
+
     def get_attr(self, attr_path):
         """Pass through to maya.cmds.getAttr."""
         return self._cmds.getAttr(attr_path)
+
+    def is_attr_settable(self, attr_path):
+        """Return whether a Maya plug is unlocked and has no blocking input."""
+        return bool(self._cmds.getAttr(attr_path, settable=True))
 
     def set_attr(self, *args, **kwargs):
         """Pass through to maya.cmds.setAttr."""
@@ -110,3 +128,7 @@ class MayaCmdsAdapter:
     def undo_info(self, **kwargs):
         """Pass through to maya.cmds.undoInfo."""
         return self._cmds.undoInfo(**kwargs)
+
+    def undo(self):
+        """Undo the most recent Maya operation or closed chunk."""
+        return self._cmds.undo()
