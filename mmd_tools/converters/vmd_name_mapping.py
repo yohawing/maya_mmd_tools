@@ -33,7 +33,7 @@ def _resolve_name_mapping_context(converter_or_context: Union[Any, VmdNameMappin
 def build_name_mappings(converter_or_context: Union[Any, VmdNameMappingContext], target_namespace: Optional[str] = None) -> None:
     """Build bone name/index mappings and refresh morph mappings for a scene."""
     context = _resolve_name_mapping_context(converter_or_context)
-    context.logger.info("Building name mapping")
+    context.logger.debug("Building name mapping")
 
     context.bone_name_to_index.clear()
     context.bone_index_to_joint.clear()
@@ -59,7 +59,7 @@ def build_name_mappings(converter_or_context: Union[Any, VmdNameMappingContext],
                     except Exception:
                         pass
 
-    context.logger.info(
+    context.logger.debug(
         f"Built {len(context.bone_name_mapping)} bone mappings "
         f"(index mappings: {len(context.bone_index_to_joint)})"
     )

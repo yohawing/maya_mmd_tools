@@ -111,7 +111,7 @@ def capture_anim_layer_selection() -> Dict[str, bool]:
 def record_bind_poses(converter_or_context: Union[Any, VmdImportStateContext]) -> None:
     """Record current joint translates as VMD bind-pose fallback metadata."""
     context = _resolve_import_state_context(converter_or_context)
-    context.logger.info("Recording initial bone positions")
+    context.logger.debug("Recording initial bone positions")
 
     for vmd_bone_name, maya_joint in context.bone_name_mapping.items():
         try:

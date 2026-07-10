@@ -53,7 +53,7 @@ def convert_bone_animation(context: VmdBoneAnimationContext, bone_frames: List) 
                 context.failed_bones.add(vmd_bone_name)
         else:
             if vmd_bone_name not in context.failed_bones:
-                context.logger.info(f"Bone '{vmd_bone_name}' not found")
+                context.logger.debug(f"Bone '{vmd_bone_name}' not found")
                 context.failed_bones.add(vmd_bone_name)
 
     if context.use_animation_layers and context.anim_layer and animated_joints:

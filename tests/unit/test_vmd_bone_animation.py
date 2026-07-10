@@ -1,10 +1,12 @@
 """VMD bone keying and quaternion conversion tests."""
 
 import math
+from unittest.mock import MagicMock
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from mmd_tools.converters.vmd_bone_animation import convert_bone_animation
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdBoneAnimationContext
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
@@ -41,6 +43,40 @@ class TestVmdBoneAnimation(MayaTestBase):
         self.assertIs(context.failed_bones, self.converter._failed_bones)
         self.assertEqual(context.motion_scale, self.converter.motion_scale)
         self.assertEqual(context.vmd_frame_to_maya_time(30), self.converter.vmd_frame_to_maya_time(30))
+
+    def test_missing_bone_detail_is_debug_while_converted_aggregate_is_info(self):
+        """Per-missing-bone detail is DEBUG; Converted aggregate stays INFO."""
+        logger_mock = MagicMock()
+        self.converter.logger = logger_mock
+        self.converter.bone_name_mapping = {}
+        self.converter._failed_bones = set()
+        self.converter.use_animation_layers = False
+
+        frames = [_bone_frame("存在しないボーン", 0, (1.0, 2.0, 3.0))]
+        result = convert_bone_animation(self.converter._bone_animation_context(), frames)
+
+        self.assertFalse(result)
+        self.assertIn("存在しないボーン", self.converter._failed_bones)
+
+        debug_msgs = [call[0][0] for call in logger_mock.debug.call_args_list if call[0]]
+        info_msgs = [call[0][0] for call in logger_mock.info.call_args_list if call[0]]
+        missing_detail = "Bone '存在しないボーン' not found"
+        self.assertIn(missing_detail, debug_msgs)
+        self.assertNotIn(missing_detail, info_msgs)
+        self.assertTrue(
+            any(
+                isinstance(msg, str) and msg.startswith("Converted ") and "bone animations" in msg
+                for msg in info_msgs
+            ),
+            "expected INFO aggregate Converted log, got %r" % (info_msgs,),
+        )
+        self.assertFalse(
+            any(
+                isinstance(msg, str) and msg.startswith("Converted ") and "bone animations" in msg
+                for msg in debug_msgs
+            ),
+            "Converted aggregate must remain INFO, not DEBUG",
+        )
 
     def test_legacy_bone_keyframes_use_bind_pose_without_accumulation(self):
         """レガシー VMD パスは現在フレーム値ではなく bind pose + VMD offset を key する。"""

@@ -1,5 +1,7 @@
 """VMD existing-motion clearing and layer selection tests."""
 
+from unittest.mock import MagicMock
+
 import maya.cmds as cmds
 
 from mmd_tools.converters.vmd_context import VmdImportStateContext
@@ -82,7 +84,23 @@ class TestVmdMotionClear(MayaTestBase):
         rest_tx = cmds.getAttr(f"{joint}.translateX")
 
         self.converter.bone_name_mapping = {"test_bone": joint}
-        record_bind_poses(self._import_state_context())
+        logger_mock = MagicMock()
+        # Keep shared mapping state; only swap logger for level assertions.
+        context = VmdImportStateContext(
+            logger=logger_mock,
+            bone_name_mapping=self.converter.bone_name_mapping,
+            bone_bind_poses=self.converter._bone_bind_poses,
+            morph_name_mapping=self.converter.morph_name_mapping,
+            collect_append_info=lambda: {},
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+        record_bind_poses(context)
+
+        debug_msgs = [call[0][0] for call in logger_mock.debug.call_args_list if call[0]]
+        info_msgs = [call[0][0] for call in logger_mock.info.call_args_list if call[0]]
+        self.assertIn("Recording initial bone positions", debug_msgs)
+        self.assertNotIn("Recording initial bone positions", info_msgs)
 
         cmds.setKeyframe(joint, attribute="translateX", time=1, value=rest_tx + 5.0)
         cmds.setKeyframe(joint, attribute="rotateX", time=1, value=45.0)
