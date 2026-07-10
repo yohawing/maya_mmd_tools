@@ -175,6 +175,6 @@ class InfoPresenter:
         if root_node and self.scene_model_service.object_exists(root_node):
             # ApplicationStateを更新
             self.app_state.current_model_root = root_node
-            logger.info(f"Selected MMD model: {root_node}")
+            logger.debug(f"Selected MMD model: {root_node}")
         else:
             self.app_state.current_model_root = None

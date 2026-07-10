@@ -293,9 +293,18 @@ class TestRefreshAndSelect(unittest.TestCase):
         self.view.model_combo.itemData.return_value = TEST_MODEL
 
         self.app_state.scene_model_service.exists = True
-        self.presenter.on_model_selected("Test Model (test_mmd_model)")
+        with patch(f"{_MOD}.logger") as mock_logger:
+            self.presenter.on_model_selected("Test Model (test_mmd_model)")
 
         self.assertEqual(self.app_state.current_model_root, TEST_MODEL)
+
+        # 選択ログは DEBUG のみ（INFO には出さない）
+        # Python 3.7 互換: call[0] で位置引数タプルを取る（_Call.args は使わない）
+        expected = f"Selected MMD model: {TEST_MODEL}"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_model_selected_invalid_sets_none(self):
         self.view.model_combo.currentIndex.return_value = 0
