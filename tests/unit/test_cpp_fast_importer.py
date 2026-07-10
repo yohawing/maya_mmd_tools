@@ -25,9 +25,12 @@ install_maya_stub()
 # Now safe to import the module under test
 from mmd_tools.io.mmd_importer import import_mmd_file
 from mmd_tools.core.settings import settings
+from mmd_tools.io import cpp_fast_importer
 from mmd_tools.io.cpp_fast_importer import (
+    _apply_basic_materials,
     _apply_fast_skeleton_skin,
     _sanitize_node_name,
+    fast_import,
 )
 
 
@@ -609,6 +612,105 @@ class TestSanitizeNodeName(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(_sanitize_node_name(""), "")
+
+
+class TestCppFastImporterDebugLogging(unittest.TestCase):
+    """Internal cpp_fast_importer diagnostics must use DEBUG, not INFO.
+
+    Outer mmd_importer already owns the user-facing INFO success/fallback
+    summary; this module should only emit internal detail at DEBUG.
+    """
+
+    @staticmethod
+    def _message_templates(mock_log):
+        # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+)
+        return [call[0][0] for call in mock_log.call_args_list if call[0]]
+
+    def test_fallback_reason_uses_debug_not_info(self):
+        """Top-level fallback (plugin missing) is DEBUG-only."""
+        missing = Path("nonexistent_mmd_tools_cpp.mll")
+        with patch.object(
+            cpp_fast_importer, "logger"
+        ) as mock_logger, patch.object(
+            cpp_fast_importer,
+            "_candidate_plugin_paths",
+            return_value=[missing],
+        ):
+            result = fast_import("model.pmx")
+
+        self.assertIsNone(result)
+        debug_messages = self._message_templates(mock_logger.debug)
+        info_messages = self._message_templates(mock_logger.info)
+        expected = (
+            "C++ plugin not found – falling back to Python importer. "
+            "Checked paths:\n%s"
+        )
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
+
+    def test_success_completion_uses_debug_not_info(self):
+        """Successful internal completion is DEBUG-only."""
+        import sys
+
+        plugin_path = Path("fake_plugin_dir") / "mmd_tools_cpp.mll"
+        # Work with whatever maya.cmds is present (stub MagicMock or real mayapy).
+        cmds_mod = sys.modules.get("maya.cmds")
+        if cmds_mod is None:
+            import maya.cmds as cmds_mod  # noqa: F401
+
+            cmds_mod = sys.modules["maya.cmds"]
+
+        with patch.object(
+            cpp_fast_importer, "logger"
+        ) as mock_logger, patch.object(
+            cpp_fast_importer,
+            "_candidate_plugin_paths",
+            return_value=[plugin_path],
+        ), patch.object(
+            Path, "exists", return_value=True
+        ), patch.object(
+            cpp_fast_importer, "_setup_plugin_directory"
+        ), patch.object(
+            cpp_fast_importer, "_apply_basic_materials"
+        ), patch.object(
+            cmds_mod,
+            "mmdFastLoad",
+            create=True,
+            return_value=["root_xform", "meshShape1"],
+        ), patch.object(
+            cmds_mod,
+            "loadPlugin",
+            create=True,
+        ):
+            result = fast_import("model.pmx", base_name="demo", mesh_only=True)
+
+        self.assertEqual(result, "root_xform")
+        debug_messages = self._message_templates(mock_logger.debug)
+        info_messages = self._message_templates(mock_logger.info)
+        expected = "Fast import succeeded: transform node = %s"
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
+
+    def test_material_detail_uses_debug_not_info(self):
+        """Optional material detail path is DEBUG-only."""
+        with patch.object(
+            cpp_fast_importer, "logger"
+        ) as mock_logger, patch.object(
+            Path, "read_bytes", return_value=b"fake"
+        ), patch.object(
+            cpp_fast_importer, "_mmd_parsed_model_class"
+        ) as mock_cls:
+            mock_cls.return_value.from_pmx_bytes.return_value = None
+            _apply_basic_materials("model.pmx", "mesh1", MagicMock())
+
+        debug_messages = self._message_templates(mock_logger.debug)
+        info_messages = self._message_templates(mock_logger.info)
+        expected = (
+            "Native parsed-model metadata unavailable; "
+            "skipping fast material assignment"
+        )
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
 
 if __name__ == "__main__":
