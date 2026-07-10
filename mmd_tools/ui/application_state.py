@@ -53,7 +53,7 @@ class ApplicationState(QObject):
                 invalid_model_root = True
 
             if old_value != self._current_model_root or invalid_model_root:
-                logger.info(f"Current model changed: {old_value} -> {self._current_model_root}")
+                logger.debug(f"Current model changed: {old_value} -> {self._current_model_root}")
                 self.current_model_changed.emit(self._current_model_root or "")
 
                 # モデル情報をキャッシュ
@@ -72,7 +72,7 @@ class ApplicationState(QObject):
             self._available_models = self._scene_model_service.list_mmd_models()
 
             if old_models != self._available_models:
-                logger.info(f"Model list updated: {len(self._available_models)} models found")
+                logger.debug(f"Model list updated: {len(self._available_models)} models found")
                 self.model_list_updated.emit(self._available_models)
 
             # 現在のモデルがリストにない場合はクリア

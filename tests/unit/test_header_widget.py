@@ -1,11 +1,13 @@
 """HeaderWidget の再翻訳ロジックを headless に検証する。"""
 
 import unittest
+from unittest.mock import patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
 
+from mmd_tools.ui.components import header_widget as header_widget_module  # noqa: E402
 from mmd_tools.ui.components.header_widget import HeaderWidget  # noqa: E402
 from mmd_tools.ui.translations import UITranslator  # noqa: E402
 
@@ -29,9 +31,11 @@ class _FakeButton:
 class _FakeCombo:
     def __init__(self):
         self.items = []
+        self._current_index = -1
 
     def clear(self):
         self.items.clear()
+        self._current_index = -1
 
     def addItem(self, text, userData=None):
         self.items.append([text, userData])
@@ -45,9 +49,16 @@ class _FakeCombo:
     def setItemText(self, index, text):
         self.items[index][0] = text
 
+    def currentIndex(self):
+        return self._current_index
+
+    def setCurrentIndex(self, index):
+        self._current_index = index
+
 
 class _FakeAppState:
-    current_model_root = None
+    def __init__(self):
+        self.current_model_root = None
 
     def get_model_info(self, _model):
         return None
@@ -85,6 +96,40 @@ class TestHeaderWidgetTranslation(unittest.TestCase):
         HeaderWidget.retranslateUi(self.widget)
 
         self.assertEqual(self.widget.model_combo.items, [["No MMD models found", None]])
+
+
+class TestHeaderWidgetModelSelectionLogging(unittest.TestCase):
+    """コンボ選択の副作用とログ境界を headless で検証する。"""
+
+    @staticmethod
+    def _call_messages(mock_method):
+        """Python 3.7 互換: call_args_list から第1位置引数のメッセージを集める。"""
+        messages = []
+        for call in mock_method.call_args_list:
+            args = call[0]
+            if args:
+                messages.append(args[0])
+        return messages
+
+    def setUp(self):
+        self.widget = HeaderWidget.__new__(HeaderWidget)
+        self.widget.app_state = _FakeAppState()
+        self.widget.model_combo = _FakeCombo()
+        self.widget.is_updating = False
+        self.widget.model_combo.addItem("Model A [model_a_root]", userData="model_a_root")
+        self.widget.model_combo.setCurrentIndex(0)
+
+    def test_combo_selection_logs_at_debug_not_info(self):
+        with patch.object(header_widget_module, "logger") as mock_logger:
+            HeaderWidget.on_combo_selection_changed(self.widget, "Model A [model_a_root]")
+
+        self.assertEqual(self.widget.app_state.current_model_root, "model_a_root")
+
+        expected = "HeaderWidget: Model selected from combo: model_a_root"
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
 
 if __name__ == "__main__":
