@@ -1,7 +1,8 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import json
 from maya import cmds
+from mmd_tools.ui.presenters import morph_presenter as morph_presenter_module
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.translations import UITranslator
 from tests.common.mock_ui import attach_mocks
@@ -12,6 +13,16 @@ UITranslator.instance().set_language("en")
 
 class TestMorphPresenter(MayaTestBase):
     """MorphPresenterのテストクラス"""
+
+    @staticmethod
+    def _call_messages(mock_method):
+        """Python 3.7 互換: call_args_list から第1位置引数のメッセージを集める。"""
+        messages = []
+        for call in mock_method.call_args_list:
+            args = call[0]
+            if args:
+                messages.append(args[0])
+        return messages
 
     def setUp(self):
         """テストのセットアップ"""
@@ -138,7 +149,8 @@ class TestMorphPresenter(MayaTestBase):
         # モーフ選択をシミュレート
         mock_item = MagicMock()
         mock_item.text.return_value = "test_morph"
-        self.presenter.on_morph_selected(mock_item, None)
+        with patch.object(morph_presenter_module, "logger") as mock_logger:
+            self.presenter.on_morph_selected(mock_item, None)
 
         # 結果を確認
         self.assertEqual(self.presenter.current_morph, "test_morph")
@@ -148,6 +160,39 @@ class TestMorphPresenter(MayaTestBase):
         self.mock_view.panel_combo.setCurrentIndex.assert_called_with(1)
         self.mock_view.morph_type_combo.setCurrentIndex.assert_called_with(0)
         self.mock_view.group_combo.setCurrentText.assert_called_with("目")
+
+        expected = "Selected morph: test_morph"
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
+
+    def test_select_morph_in_maya_logs_at_debug_not_info(self):
+        """Maya 上のブレンドシェイプ選択は DEBUG で、選択と status 副作用は維持する。"""
+        mesh = cmds.polyCube(name="test_mesh")[0]
+        target = cmds.polyCube(name="test_target")[0]
+        blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
+        cmds.delete(target)
+
+        self.presenter.current_morph = "test_morph"
+        self.presenter.morph_data = {
+            "test_morph": {
+                "blend_shape_node": blend_shape,
+                "blend_shape_target": "test_target",
+            }
+        }
+
+        with patch.object(morph_presenter_module, "logger") as mock_logger:
+            self.presenter.select_morph_in_maya()
+
+        self.assertEqual(cmds.ls(selection=True), [blend_shape])
+        self.mock_app_state.emit_status.assert_called()
+
+        expected = f"Selected blend shape node in Maya: {blend_shape}"
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_on_morph_slider_changed(self):
         """スライダー変更時の処理のテスト"""

@@ -325,7 +325,7 @@ class MorphPresenter:
 
         morph_name = current.text()
         self.current_morph = morph_name
-        logger.info(f"Selected morph: {morph_name}")
+        logger.debug(f"Selected morph: {morph_name}")
 
         self.view.set_morph_details_enabled(True)
         self.load_morph_details(morph_name)
@@ -448,7 +448,7 @@ class MorphPresenter:
 
         if blend_shape_node and self.maya_adapter.object_exists(blend_shape_node):
             self.maya_adapter.select(blend_shape_node, replace=True)
-            logger.info(f"Selected blend shape node in Maya: {blend_shape_node}")
+            logger.debug(f"Selected blend shape node in Maya: {blend_shape_node}")
             self.app_state.emit_status(tr_message_format("blend_shape_node_selected", node=blend_shape_node))
 
     def reset_current_morph(self):
