@@ -16,7 +16,6 @@ _SETTINGS_EXPORT_CATEGORIES = ("import", "export", "logging", "ui")
 # In dev mode the saved setting is used instead.
 _NORMAL_MODE_IMPORT_OVERRIDES = {
     "import_models": True,
-    "import_physics": False,
     "separate_meshes_by_material": False,
     "auto_classify_transparency": False,
     "disable_backface_culling": True,
@@ -146,7 +145,7 @@ class SettingsService:
             "disable_backface_culling": self.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True),
             "uv_set_name": self.get(setting_keys.IMPORT_MODEL_UV_SET_NAME, "map#"),
             "texture_search_path": self.get(setting_keys.IMPORT_MODEL_TEXTURE_SEARCH_PATH, ""),
-            "import_physics": self.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, False),
+            "import_physics": self.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, True),
             "import_morphs": self.get(setting_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
             "add_semi_standard_bones": self.get(setting_keys.IMPORT_RIG_ADD_SEMI_STANDARD_BONES, False),
             "translate_names": self.get(setting_keys.IMPORT_NAMING_TRANSLATE_NAMES, True),

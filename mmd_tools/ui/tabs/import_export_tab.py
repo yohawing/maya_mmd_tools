@@ -222,7 +222,7 @@ class ImportExportTab(BaseTab):
         self.import_physics_check = self._bind_checkbox(
             "import_physics",
             setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS,
-            False,
+            True,
             morph_physics_layout,
             tooltip_key="import_physics",
         )
