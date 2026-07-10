@@ -147,6 +147,12 @@ class PhysicsPresenter:
             if rigid_body.locator_shape:
                 repaired.append(rigid_body)
                 continue
+            # Normal Bullet path is structural bulletRigidBodyShape existence.
+            # Only repair locators when the Bullet shape is structurally absent.
+            bullet_shape = rigid_body.bullet_shape
+            if bullet_shape and self.maya_adapter.object_exists(bullet_shape):
+                repaired.append(rigid_body)
+                continue
             locator = self._create_collider_locator(rigid_body, model_root)
             if locator:
                 repaired.append(replace(rigid_body, locator_shape=locator))

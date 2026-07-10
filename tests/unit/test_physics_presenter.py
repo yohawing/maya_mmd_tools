@@ -331,14 +331,43 @@ class TestPhysicsPresenter(unittest.TestCase):
             adapter.calls,
         )
 
-    def test_load_physics_repairs_missing_collider_locator(self):
+    def test_load_physics_does_not_create_locator_when_bullet_shape_exists(self):
         refs = PhysicsSceneRefs(
             rigid_bodies=(
                 _rigid("|root|rb5", 5, "hair", shape_type=2, locator_shape=None),
             ),
             joints=(),
         )
-        presenter, _, _, adapter, _ = _make_presenter(reader=_FakePhysicsReader(refs))
+        adapter = _FakeMayaAdapter(
+            existing_nodes={
+                TEST_MODEL,
+                "|root|rb5",
+                "|root|rb5|bulletRigidBodyShape",
+            }
+        )
+        presenter, _, _, adapter, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(refs),
+        )
+
+        presenter.load_physics()
+
+        self.assertFalse(any(call[0] == "create_node" for call in adapter.calls))
+        self.assertIsNone(presenter._rigid_bodies_by_transform["|root|rb5"].locator_shape)
+
+    def test_load_physics_repairs_missing_collider_locator_when_bullet_shape_absent(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(
+                _rigid("|root|rb5", 5, "hair", shape_type=2, locator_shape=None),
+            ),
+            joints=(),
+        )
+        # Bullet shape path is not present in existing_nodes => structurally absent.
+        adapter = _FakeMayaAdapter(existing_nodes={TEST_MODEL, "|root|rb5"})
+        presenter, _, _, adapter, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(refs),
+        )
 
         presenter.load_physics()
 

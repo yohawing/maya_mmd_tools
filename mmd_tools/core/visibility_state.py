@@ -163,6 +163,22 @@ def _iter_category_targets(adapter, model_root: str, category: str):
 
 
 def _iter_collider_targets(adapter, model_root: str):
+    # Primary display target: the model root's direct Physics group.
+    try:
+        children = adapter.list_relatives(
+            model_root,
+            children=True,
+            type="transform",
+            fullPath=True,
+        ) or []
+    except Exception:
+        children = []
+    for child in children:
+        if child.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "Physics":
+            yield child, "visibility"
+            break
+
+    # Legacy/fallback targets: per-rigid-body locators and curve groups.
     try:
         locators = adapter.list_relatives(
             model_root,

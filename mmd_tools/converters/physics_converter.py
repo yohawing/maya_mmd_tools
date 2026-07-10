@@ -614,6 +614,13 @@ class PhysicsConverter:
         constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
         self._current_model_root = root_group
         ensure_visibility_attrs(MayaCmdsAdapter(cmds), root_group)
+        connect_visibility_attr_to_node(
+            MayaCmdsAdapter(cmds),
+            root_group,
+            "colliders",
+            physics_group,
+            target_attr="visibility",
+        )
         self.ensure_legacy_bullet_enabled_control(root_group)
 
         bone_index_map = self._create_bone_index_mapping(pmd_data.bones, bone_joints)
@@ -661,6 +668,13 @@ class PhysicsConverter:
         constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
         self._current_model_root = root_group
         ensure_visibility_attrs(MayaCmdsAdapter(cmds), root_group)
+        connect_visibility_attr_to_node(
+            MayaCmdsAdapter(cmds),
+            root_group,
+            "colliders",
+            physics_group,
+            target_attr="visibility",
+        )
         self.ensure_legacy_bullet_enabled_control(root_group)
 
         bone_index_map = self._create_bone_index_mapping(pmx_data.bones, bone_joints)
@@ -793,7 +807,9 @@ class PhysicsConverter:
             if bullet_shape != 1:
                 cmds.setAttr(f"{shape}.colliderShapeType", bullet_shape)
 
-            self._create_bullet_visual_locator(transform, bullet_shape, size)
+            # Normal Bullet path is structural bulletRigidBodyShape only.
+            # Locators/curves remain available via _create_bullet_visual_locator
+            # for explicit fallback/legacy repair paths.
 
             # bodyType
             physics_mode = getattr(rb, "physics_mode", 0)

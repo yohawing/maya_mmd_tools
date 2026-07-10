@@ -251,7 +251,6 @@ class TestPhysicsConverter(MayaTestBase):
         """Bullet 剛体作成の共通テスト。"""
         if not PhysicsConverter.is_bullet_available():
             self.skipTest("Bullet プラグインが利用できません")
-        self._require_rigid_body_locator_node()
 
         root = cmds.group(name="test_root", empty=True)
         bone_joints: dict = {}
@@ -291,13 +290,42 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertEqual(cst, expected_bullet_shape,
                          f"colliderShapeType mismatch: expected {expected_bullet_shape}, got {cst}")
 
+        # Normal Bullet path: structural shape only — no locators/curves at conversion time.
         locator_shapes = cmds.listRelatives(rb_transform, shapes=True, type="mmdRigidBodyLocator", fullPath=True) or []
-        self.assertEqual(len(locator_shapes), 1, "DX11 表示用 mmdRigidBodyLocator が作成されていない")
-        locator = locator_shapes[0]
-        self.assertEqual(cmds.getAttr(f"{locator}.colliderShapeType"), expected_bullet_shape)
+        self.assertEqual(len(locator_shapes), 0, "通常 Bullet 経路では mmdRigidBodyLocator を作らない")
+        curve_groups = [
+            node for node in (cmds.listRelatives(rb_transform, children=True, type="transform", fullPath=True) or [])
+            if node.endswith("_colliderCurve")
+        ]
+        self.assertEqual(len(curve_groups), 0, "通常 Bullet 経路では *_colliderCurve を作らない")
+
+        physics_groups = [
+            child
+            for child in (cmds.listRelatives(root, children=True, type="transform", fullPath=True) or [])
+            if child.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "Physics"
+        ]
+        self.assertEqual(len(physics_groups), 1, "model root 直下に Physics グループが必要")
+        physics_group = physics_groups[0]
         self.assertTrue(cmds.attributeQuery("mmd_show_physics_colliders", node=root, exists=True))
         self.assertTrue(cmds.getAttr(f"{root}.mmd_show_physics_colliders", keyable=True))
         self.assertFalse(cmds.getAttr(f"{root}.mmd_show_physics_colliders"))
+        self.assertTrue(
+            cmds.isConnected(f"{root}.mmd_show_physics_colliders", f"{physics_group}.visibility"),
+            "root mmd_show_physics_colliders が Physics.visibility に接続されていること",
+        )
+        self.assertFalse(cmds.getAttr(f"{physics_group}.visibility"))
+        cmds.setAttr(f"{root}.mmd_show_physics_colliders", True)
+        self.assertTrue(cmds.getAttr(f"{physics_group}.visibility"))
+        cmds.setAttr(f"{root}.mmd_show_physics_colliders", False)
+        self.assertFalse(cmds.getAttr(f"{physics_group}.visibility"))
+
+        # Explicit fallback helper coverage (not part of the normal import path).
+        self._require_rigid_body_locator_node()
+        converter._create_bullet_visual_locator(rb_transform, expected_bullet_shape, [2.0, 2.0, 2.0])
+        locator_shapes = cmds.listRelatives(rb_transform, shapes=True, type="mmdRigidBodyLocator", fullPath=True) or []
+        self.assertEqual(len(locator_shapes), 1, "fallback _create_bullet_visual_locator が locator を作成すること")
+        locator = locator_shapes[0]
+        self.assertEqual(cmds.getAttr(f"{locator}.colliderShapeType"), expected_bullet_shape)
         self.assertFalse(cmds.getAttr(f"{locator}.drawEnabled"))
         self.assertTrue(
             cmds.isConnected(f"{root}.mmd_show_physics_colliders", f"{locator}.drawEnabled")
