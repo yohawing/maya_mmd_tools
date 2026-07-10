@@ -2,9 +2,10 @@
 
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from mmd_tools.core.exceptions import MMDImportException, MMDParseException
 from mmd_tools.core.vpd_data import VpdData
@@ -12,6 +13,23 @@ from mmd_tools.core.vpd_data.bone_pose import BonePose
 from mmd_tools.core.vpd_data.header import VpdHeader
 from mmd_tools.converters.vpd_converter import VpdConverter
 from mmd_tools.io import vpd_importer
+
+_IMP = "mmd_tools.io.vpd_importer"
+_CVT = "mmd_tools.converters.vpd_converter"
+
+
+def _msgs(mock_log):
+    # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+).
+    return [c[0][0] for c in mock_log.call_args_list if c[0]]
+
+
+def _assert_level(testcase, mock_logger, messages, on_debug):
+    """Assert each message appears only on DEBUG (on_debug=True) or only on INFO."""
+    debug_msgs, info_msgs = _msgs(mock_logger.debug), _msgs(mock_logger.info)
+    primary, other = (debug_msgs, info_msgs) if on_debug else (info_msgs, debug_msgs)
+    for msg in messages:
+        testcase.assertIn(msg, primary)
+        testcase.assertNotIn(msg, other)
 
 
 class TestVpdHeader(unittest.TestCase):
@@ -280,9 +298,100 @@ class TestVpdConverter(unittest.TestCase):
         self.assertFalse(result)
         build_mappings.assert_called_once_with("model", None)
 
+    def test_build_name_mappings_summary_is_debug_not_info(self):
+        """Mapping summary stays DEBUG; mapping side effect is unchanged."""
+        log = MagicMock()
+        with ExitStack() as s:
+            s.enter_context(patch(_CVT + ".logger", log))
+            s.enter_context(patch.object(self.converter, "_get_target_joints", return_value=["model:center"]))
+            s.enter_context(patch(_CVT + ".cmds.attributeQuery", return_value=True))
+            s.enter_context(patch(_CVT + ".cmds.getAttr", return_value="センター"))
+            self.converter._build_name_mappings("model")
+        self.assertEqual(self.converter.bone_name_mapping, {"センター": "model:center"})
+        _assert_level(self, log, ["Built 1 bone mappings", "Building bone name mapping"], on_debug=True)
+
+    def test_setup_animation_layer_details_are_debug_not_info(self):
+        """Existing reuse and new layer creation stay DEBUG; behavior unchanged."""
+        cases = (
+            (["VPD_Pose", "BaseAnimation"], None, "Using existing animation layer: VPD_Pose", False),
+            ([], "VPD_Pose", "Created new animation layer: VPD_Pose", True),
+        )
+        for existing, create_ret, msg, creates in cases:
+            with self.subTest(msg=msg):
+                conv, log = VpdConverter(), MagicMock()
+                with ExitStack() as s:
+                    s.enter_context(patch(_CVT + ".logger", log))
+                    s.enter_context(patch(_CVT + ".cmds.ls", return_value=existing))
+                    anim = s.enter_context(patch(_CVT + ".cmds.animLayer", return_value=create_ret))
+                    conv._setup_animation_layer("VPD_Pose")
+                self.assertEqual(conv.anim_layer, "VPD_Pose")
+                if creates:
+                    anim.assert_called_once_with("VPD_Pose", override=False, weight=1.0)
+                else:
+                    anim.assert_not_called()
+                _assert_level(self, log, [msg], on_debug=True)
+
+    def test_convert_start_and_completion_remain_info(self):
+        """Outer conversion start/completion stay INFO."""
+        bone = BonePose()
+        bone.bone_name = "上半身"
+        log = MagicMock()
+        with ExitStack() as s:
+            s.enter_context(patch(_CVT + ".logger", log))
+            s.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            s.enter_context(patch.object(self.converter, "_get_target_joints", return_value=["model:上半身"]))
+            s.enter_context(patch(_CVT + ".cmds.currentTime", return_value=1.0))
+            s.enter_context(patch.object(self.converter, "_setup_animation_layer"))
+            s.enter_context(patch.object(self.converter, "_apply_bone_pose", return_value="model:上半身"))
+            s.enter_context(patch.object(self.converter, "_add_objects_to_layer"))
+            result = self.converter.convert(SimpleNamespace(bone_poses=[bone]), "model", {"create_keyframe": True})
+        self.assertTrue(result)
+        _assert_level(
+            self,
+            log,
+            ["Starting VPD pose conversion", "VPD pose conversion completed: applied 1/1 bones"],
+            on_debug=False,
+        )
+
 
 class TestVpdImporter(unittest.TestCase):
     """VPD importer selection and namespace dispatch behavior."""
+
+    def _import_logged(self, options, *extra, convert_return=True, convert_side_effect=None):
+        """import_vpd_file under logger + common stubs. Returns (ok, log, converter)."""
+        log, parser = MagicMock(), SimpleNamespace(bone_poses=[])
+        with ExitStack() as s:
+            s.enter_context(patch(_IMP + ".logger", log))
+            for target, kwargs in extra:
+                s.enter_context(patch(target, **kwargs))
+            s.enter_context(patch(_IMP + ".cmds.currentTime", return_value=1))
+            s.enter_context(patch(_IMP + "._create_keyframes_for_target"))
+            s.enter_context(patch(_IMP + ".cmds.inViewMessage"))
+            conv_cls = s.enter_context(patch(_IMP + ".VpdConverter"))
+            conv = conv_cls.return_value
+            if convert_side_effect is not None:
+                conv.convert.side_effect = convert_side_effect
+            else:
+                conv.convert.return_value = convert_return
+            ok = vpd_importer.import_vpd_file(parser, "pose.vpd", options)
+        return ok, log, conv, parser
+
+    def _assert_import_boundaries(self, log, debug_msgs=(), info_msgs=(), info_prefixes=()):
+        if debug_msgs:
+            _assert_level(self, log, list(debug_msgs), on_debug=True)
+        if info_msgs:
+            _assert_level(self, log, list(info_msgs), on_debug=False)
+        info = _msgs(log.info)
+        debug = _msgs(log.debug)
+        for prefix in info_prefixes:
+            self.assertTrue(
+                any(isinstance(m, str) and m.startswith(prefix) for m in info),
+                "expected INFO starting with %r, got %r" % (prefix, info),
+            )
+            self.assertFalse(
+                any(isinstance(m, str) and m.startswith(prefix) for m in debug),
+                "prefix %r must remain INFO, not DEBUG" % (prefix,),
+            )
 
     def test_is_movable_joint_matches_base_name_keywords(self):
         self.assertTrue(vpd_importer._is_movable_joint("model:Center"))
@@ -353,8 +462,9 @@ class TestVpdImporter(unittest.TestCase):
                         result = vpd_importer.import_vpd_file(parser, "pose.vpd", options)
 
         self.assertTrue(result)
-        self.assertEqual(converter.convert.call_args_list[0].args, (parser, "model_a", options))
-        self.assertEqual(converter.convert.call_args_list[1].args, (parser, "model_b", options))
+        # Python 3.7 互換: call[0] で位置引数タプルを取る（_Call.args は使わない）
+        self.assertEqual(converter.convert.call_args_list[0][0], (parser, "model_a", options))
+        self.assertEqual(converter.convert.call_args_list[1][0], (parser, "model_b", options))
 
     def test_import_raises_import_exception_on_unexpected_error(self):
         parser = SimpleNamespace(bone_poses=[])
@@ -362,6 +472,51 @@ class TestVpdImporter(unittest.TestCase):
         with patch("mmd_tools.io.vpd_importer.NamespaceUtils.get_namespace_from_node", side_effect=RuntimeError("boom")):
             with self.assertRaises(MMDImportException):
                 vpd_importer.import_vpd_file(parser, "pose.vpd", {"target_model": "model:root"})
+
+    def test_target_namespace_route_detail_is_debug_not_info(self):
+        """Explicit target_model namespace is DEBUG; import start/completion stay INFO."""
+        ok, log, _conv, _p = self._import_logged(
+            {"target_model": "model:root", "create_keyframe": True},
+            (_IMP + ".NamespaceUtils.get_namespace_from_node", {"return_value": "model"}),
+        )
+        self.assertTrue(ok)
+        self._assert_import_boundaries(
+            log,
+            debug_msgs=["Target namespace: model"],
+            info_msgs=["VPD file import completed"],
+            info_prefixes=["Starting VPD file import:"],
+        )
+
+    def test_selected_object_namespace_route_detail_is_debug_not_info(self):
+        """Selected-object namespace is DEBUG; convert dispatch unchanged."""
+        options = {"create_keyframe": True}
+        ok, log, conv, parser = self._import_logged(
+            options,
+            (_IMP + ".cmds.ls", {"return_value": ["model:center"]}),
+            (_IMP + ".cmds.nodeType", {"side_effect": lambda n: "joint" if n == "model:center" else "transform"}),
+            (_IMP + ".NamespaceUtils.get_namespace_from_node", {"return_value": "model"}),
+        )
+        self.assertTrue(ok)
+        conv.convert.assert_called_once_with(parser, "model", options)
+        self._assert_import_boundaries(
+            log,
+            debug_msgs=["Target namespace from selected object: model"],
+            info_msgs=["VPD file import completed"],
+            info_prefixes=["Starting VPD file import:"],
+        )
+
+    def test_import_apply_to_all_start_and_aggregate_remain_info(self):
+        """apply_to_all start and aggregate success stay INFO."""
+        ok, log, _conv, _p = self._import_logged(
+            {"apply_to_all": True, "create_keyframe": False},
+            (_IMP + ".NamespaceUtils.list_model_namespaces", {"return_value": ["model_a", "model_b"]}),
+            convert_side_effect=[True, True],
+        )
+        self.assertTrue(ok)
+        self._assert_import_boundaries(
+            log,
+            info_msgs=["Applying pose to all models", "Applied pose to 2 model(s)", "VPD file import completed"],
+        )
 
 
 if __name__ == "__main__":

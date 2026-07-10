@@ -132,7 +132,7 @@ class VpdConverter:
                     self.bone_name_mapping[original_name] = joint
                     logger.debug(f"Bone mapping: {original_name} -> {joint}")
 
-        logger.info(f"Built {len(self.bone_name_mapping)} bone mappings")
+        logger.debug(f"Built {len(self.bone_name_mapping)} bone mappings")
 
     def _find_maya_joint(self, mmd_bone_name: str, joints: Sequence[str], namespace: Optional[str] = None) -> Optional[str]:
         """MMDボーン名に対応するMayaジョイントを探す
@@ -305,11 +305,11 @@ class VpdConverter:
         if layer_name in existing_layers:
             # 既存のレイヤーを使用
             self.anim_layer = layer_name
-            logger.info(f"Using existing animation layer: {layer_name}")
+            logger.debug(f"Using existing animation layer: {layer_name}")
         else:
             # 新しいレイヤーを作成
             self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
-            logger.info(f"Created new animation layer: {layer_name}")
+            logger.debug(f"Created new animation layer: {layer_name}")
 
     def _add_objects_to_layer(self, objects: Sequence[str]) -> None:
         """オブジェクトをアニメーションレイヤーに追加

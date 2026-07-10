@@ -46,7 +46,7 @@ def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]
             # ターゲットモデルからネームスペースを取得
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
             if target_namespace:
-                logger.info(f"Target namespace: {target_namespace}")
+                logger.debug(f"Target namespace: {target_namespace}")
         else:
             # 選択されているオブジェクトからターゲットを取得
             selected = cmds.ls(selection=True)
@@ -56,7 +56,7 @@ def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]
                     if cmds.nodeType(sel) == "joint" or cmds.nodeType(sel) == "transform":
                         target_namespace = NamespaceUtils.get_namespace_from_node(sel)
                         if target_namespace:
-                            logger.info(f"Target namespace from selected object: {target_namespace}")
+                            logger.debug(f"Target namespace from selected object: {target_namespace}")
                             break
 
             if not target_namespace and not apply_to_all:
