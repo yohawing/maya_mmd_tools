@@ -295,6 +295,11 @@ class ImportExportPresenter(QObject):
             self.app_state.emit_progress(0)
 
     def export_file(self):
+        if not self.settings_service.is_development_mode():
+            # Export is intentionally develop-mode only; UI is also hidden in normal mode.
+            self.app_state.emit_status(tr_message("export_dev_mode_required"))
+            return
+
         file_path = self.view.export_path_edit.text().strip()
         if not file_path:
             self.app_state.emit_status(tr_message("enter_file_path"))

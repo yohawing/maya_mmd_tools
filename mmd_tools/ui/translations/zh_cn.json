@@ -104,19 +104,10 @@
     "bake_mode": "将所有帧烘焙为关键帧。不创建IK/附加绑定",
     "start_frame": "在Maya时间线上指定VMD动画的起始帧",
     "vmd_fps": "VMD文件的帧率。MMD标准为30fps",
-    "import_bone_animation": "导入骨骼关键帧动画",
-    "import_morph_animation": "导入表情变形关键帧动画",
-    "import_camera_animation": "导入摄像机运动",
-    "import_light_animation": "导入灯光动画",
     "separate_meshes": "按材质分割网格",
-    "split_by_morph_groups": "按变形组分割网格",
     "auto_classify_transparency": "通过UV Alpha扫描自动分类透明材质",
-    "hide_hidden_geometry": "隐藏PMX中标记为隐藏的几何体",
     "disable_backface_culling": "禁用背面剔除以实现双面渲染",
-    "import_physics": "导入刚体和关节用于物理模拟",
-    "add_semi_standard_bones": "按照准标准骨骼定义添加骨骼",
-    "translate_names": "使用字典翻译骨骼/变形名称",
-    "resample_curves": "重采样动画曲线以获得更平滑的播放效果"
+    "import_physics": "导入刚体和关节用于物理模拟"
   },
   "messages": {
     "import_success": "导入完成",
@@ -138,7 +129,8 @@
     "humanik_rig_failed": "创建 HumanIK 绑定失败: {error}",
     "loading": "加载中...",
     "saving": "保存中...",
-    "processing": "处理中..."
+    "processing": "处理中...",
+    "export_dev_mode_required": "导出仅在开发模式下可用"
   },
   "options": {
     "import_mesh": "导入网格",
@@ -212,22 +204,11 @@
     "import_models": "导入模型",
     "create_mmd_shaders": "创建MMD着色器",
     "separate_meshes": "按材质分离网格",
-    "hide_hidden_geometry": "隐藏隐藏的几何体",
     "joint_name_conversion": "将关节名称转换为英文",
     "disable_backface_culling": "禁用背面剔除",
     "import_morphs": "导入表情",
     "import_physics": "导入物理",
-    "create_rigid_bodies": "创建刚体",
-    "create_physics_joints": "创建物理关节",
-    "group_physics_objects": "分组物理对象",
-    "add_semi_standard_bones": "添加准标准骨骼",
-    "bake_mode": "烘焙模式",
-    "translate_names": "翻译名称",
-    "import_bone_animation": "导入骨骼动画",
-    "import_morph_animation": "导入表情动画",
-    "import_camera_animation": "导入相机动画",
-    "import_light_animation": "导入灯光动画",
-    "resample_curves": "重采样动画曲线",
+    "bake_mode": "烘焙动作",
     "apply_scale": "应用缩放",
     "new_file": "新建文件",
     "enable_ik": "启用IK",
@@ -237,7 +218,6 @@
     "enable_logging": "启用日志记录",
     "auto_classify_transparency": "自动分类透明 (扫描纹理α)",
     "auto_resolve_textures": "自动修复贴图",
-    "split_meshes_by_morph_groups": "【实验性】按表情组分离网格",
     "custom_namespace": "自定义命名空间:"
   },
   "fields": {

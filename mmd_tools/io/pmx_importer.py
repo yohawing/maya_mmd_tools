@@ -186,10 +186,6 @@ def import_pmx_file(
                         "vertex_morphs_skipped_by_material",
                         0,
                     ),
-                    "vertex_morphs_skipped_by_group": morph_result.get(
-                        "vertex_morphs_skipped_by_group",
-                        0,
-                    ),
                 }
                 pipeline.profile["bone_morph_runtime"] = bone_morph_runtime_result
                 pipeline.profile["material_morph_runtime"] = material_morph_runtime_result

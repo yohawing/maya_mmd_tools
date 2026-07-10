@@ -176,30 +176,40 @@ class TestImportExportTabDevModeVisibility(unittest.TestCase):
 
 
 class TestImportExportTabExportVisibility(unittest.TestCase):
-    def _make_tab(self):
+    def _make_tab(self, development_mode=True):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
         tab.export_group = _FakeWidget()
-        tab.settings_service = _FakeSettingsService()
+        tab.settings_service = _FakeSettingsService(
+            {"ui.general.development_mode": development_mode}
+        )
         return tab
 
-    def test_export_group_is_shown_for_pmx_format(self):
-        tab = self._make_tab()
+    def test_export_group_is_shown_for_pmx_format_in_dev_mode(self):
+        tab = self._make_tab(development_mode=True)
 
         tab.settings_service.set("export.general.export_format", "pmx")
         import_export_tab.ImportExportTab._apply_export_visibility(tab)
 
         self.assertTrue(tab.export_group.visible)
 
-    def test_export_group_is_shown_for_vmd_format(self):
-        tab = self._make_tab()
+    def test_export_group_is_shown_for_vmd_format_in_dev_mode(self):
+        tab = self._make_tab(development_mode=True)
 
         tab.settings_service.set("export.general.export_format", "vmd")
         import_export_tab.ImportExportTab._apply_export_visibility(tab)
 
         self.assertTrue(tab.export_group.visible)
 
+    def test_export_group_is_hidden_in_normal_mode(self):
+        tab = self._make_tab(development_mode=False)
+
+        tab.settings_service.set("export.general.export_format", "pmx")
+        import_export_tab.ImportExportTab._apply_export_visibility(tab)
+
+        self.assertFalse(tab.export_group.visible)
+
     def test_export_format_change_updates_settings_and_visibility(self):
-        tab = self._make_tab()
+        tab = self._make_tab(development_mode=True)
 
         import_export_tab.ImportExportTab._on_export_format_changed(tab, "vmd")
 

@@ -139,14 +139,6 @@ class ImportExportTab(BaseTab):
             tooltip_key="separate_meshes",
         )
 
-        self.split_by_morph_groups_check = self._bind_checkbox(
-            "split_meshes_by_morph_groups",
-            setting_keys.IMPORT_MODEL_SPLIT_MESHES_BY_MORPH_GROUPS,
-            False,
-            model_layout,
-            tooltip_key="split_by_morph_groups",
-        )
-
         # Auto-classify transparency (opt-in): scan each material's used-UV texture
         # alpha to assign cutout/blend. Off by default -> materials import opaque
         # and the user assigns blend manually in the Material tab.
@@ -182,14 +174,6 @@ class ImportExportTab(BaseTab):
         transparency_threshold_layout.addWidget(self.transparency_threshold_spin)
         transparency_threshold_layout.addStretch()
         model_layout.addWidget(self.transparency_threshold_row)
-
-        self.hide_hidden_geometry_check = self._bind_checkbox(
-            "hide_hidden_geometry",
-            setting_keys.IMPORT_MODEL_HIDE_HIDDEN_GEOMETRY,
-            True,
-            model_layout,
-            tooltip_key="hide_hidden_geometry",
-        )
 
         self.disable_backface_culling_check = self._bind_checkbox(
             "disable_backface_culling",
@@ -243,40 +227,12 @@ class ImportExportTab(BaseTab):
             tooltip_key="import_physics",
         )
 
-        self.create_rigid_bodies_check = self._bind_checkbox(
-            "create_rigid_bodies", setting_keys.IMPORT_PHYSICS_CREATE_RIGID_BODIES, True, morph_physics_layout
-        )
-
-        self.create_physics_joints_check = self._bind_checkbox(
-            "create_physics_joints", setting_keys.IMPORT_PHYSICS_CREATE_PHYSICS_JOINTS, True, morph_physics_layout
-        )
-
-        self.group_physics_objects_check = self._bind_checkbox(
-            "group_physics_objects", setting_keys.IMPORT_PHYSICS_GROUP_PHYSICS_OBJECTS, True, morph_physics_layout
-        )
-
         self.morph_physics_group.setLayout(morph_physics_layout)
         model_settings_layout.addWidget(self.morph_physics_group)
 
-        # Other Settings Group
+        # Other Settings Group (dev-only advanced toggles)
         self.other_group = QGroupBox(self.tr("other", "groups"))
         other_layout = QVBoxLayout()
-
-        self.add_semi_standard_bones_check = self._bind_checkbox(
-            "add_semi_standard_bones",
-            setting_keys.IMPORT_RIG_ADD_SEMI_STANDARD_BONES,
-            False,
-            other_layout,
-            tooltip_key="add_semi_standard_bones",
-        )
-
-        self.translate_names_check = self._bind_checkbox(
-            "translate_names",
-            setting_keys.IMPORT_NAMING_TRANSLATE_NAMES,
-            True,
-            other_layout,
-            tooltip_key="translate_names",
-        )
 
         self.use_cpp_rig_nodes_check = self._bind_checkbox(
             "use_cpp_rig_nodes",
@@ -334,48 +290,6 @@ class ImportExportTab(BaseTab):
 
         self.bake_mode_check = self._bind_checkbox(
             "bake_mode", setting_keys.IMPORT_RIG_BAKE_MODE, False, anim_settings_layout, tooltip_key="bake_mode"
-        )
-
-        # Animation type checkboxes
-        self.import_bone_animation_check = self._bind_checkbox(
-            "import_bone_animation",
-            setting_keys.IMPORT_ANIMATION_IMPORT_ANIMATIONS,
-            True,
-            anim_settings_layout,
-            tooltip_key="import_bone_animation",
-        )
-
-        self.import_morph_animation_check = self._bind_checkbox(
-            "import_morph_animation",
-            setting_keys.IMPORT_ANIMATION_IMPORT_MORPH_ANIMATION,
-            True,
-            anim_settings_layout,
-            tooltip_key="import_morph_animation",
-        )
-
-        self.import_camera_animation_check = self._bind_checkbox(
-            "import_camera_animation",
-            setting_keys.IMPORT_ANIMATION_IMPORT_CAMERA_ANIMATION,
-            True,
-            anim_settings_layout,
-            tooltip_key="import_camera_animation",
-        )
-
-        self.import_light_animation_check = self._bind_checkbox(
-            "import_light_animation",
-            setting_keys.IMPORT_ANIMATION_IMPORT_LIGHT_ANIMATION,
-            True,
-            anim_settings_layout,
-            tooltip_key="import_light_animation",
-        )
-
-        # Resample curves
-        self.resample_curves_check = self._bind_checkbox(
-            "resample_curves",
-            setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES,
-            False,
-            anim_settings_layout,
-            tooltip_key="resample_curves",
         )
 
         self.animation_settings_group.setLayout(anim_settings_layout)
@@ -546,33 +460,23 @@ class ImportExportTab(BaseTab):
 
         main_layout.addWidget(splitter)
 
-        self._apply_export_visibility()
         # import_models is always ON in behavior; checkbox removed from UI.
         self.import_models_check.setVisible(False)
 
         # Dev-only controls: shown only when development_mode=True.
+        # Export UI/entry is also develop-mode only (export_group via _apply_export_visibility).
         self._dev_only_widgets = [
             self.separate_meshes_check,
-            self.split_by_morph_groups_check,
             self.auto_classify_transparency_check,
             self.transparency_threshold_row,
-            self.hide_hidden_geometry_check,
             self.disable_backface_culling_check,
             self.texture_row,
             self.uv_row,
             self.import_physics_check,
-            self.create_rigid_bodies_check,
-            self.create_physics_joints_check,
-            self.group_physics_objects_check,
             self.morph_physics_group,
             self.other_group,
             self.use_cpp_rig_nodes_check,
             self.motion_scale_row,
-            self.resample_curves_check,
-            self.import_bone_animation_check,
-            self.import_morph_animation_check,
-            self.import_camera_animation_check,
-            self.import_light_animation_check,
             self._export_settings_tab,
         ]
         self._apply_dev_mode_visibility()
@@ -591,6 +495,8 @@ class ImportExportTab(BaseTab):
         is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
         for widget in self._dev_only_widgets:
             widget.setVisible(is_dev)
+        # Export entry also depends on develop mode.
+        self._apply_export_visibility()
 
     def _on_export_format_changed(self, export_format):
         """エクスポート形式を保存し、利用可能な export UI だけを表示する。"""
@@ -598,10 +504,12 @@ class ImportExportTab(BaseTab):
         self._apply_export_visibility()
 
     def _apply_export_visibility(self):
-        """対応済み export 形式の操作群を表示する。"""
-        if hasattr(self, "export_group"):
-            export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
-            self.export_group.setVisible(export_format in {"pmx", "vmd"})
+        """Develop モードかつ対応済み export 形式のときだけ export UI を表示する。"""
+        if not hasattr(self, "export_group"):
+            return
+        is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
+        export_format = self.settings_service.get(setting_keys.EXPORT_GENERAL_EXPORT_FORMAT, "pmx")
+        self.export_group.setVisible(bool(is_dev) and export_format in {"pmx", "vmd"})
 
     def set_target_model_items(self, model_items, restore_selection=False):
         """Presenter から渡されたモデル候補で target combo を更新する。"""
@@ -713,28 +621,16 @@ class ImportExportTab(BaseTab):
         self.import_models_check.setText(self.tr("import_models", "checkboxes"))
         self.create_mmd_shaders_check.setText(self.tr("create_mmd_shaders", "checkboxes"))
         self.separate_meshes_check.setText(self.tr("separate_meshes", "checkboxes"))
-        self.split_by_morph_groups_check.setText(self.tr("split_meshes_by_morph_groups", "checkboxes"))
         if hasattr(self, "auto_classify_transparency_check"):
             self.auto_classify_transparency_check.setText(self.tr("auto_classify_transparency", "checkboxes"))
         if hasattr(self, "auto_resolve_textures_check"):
             self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
-        self.hide_hidden_geometry_check.setText(self.tr("hide_hidden_geometry", "checkboxes"))
         self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
         self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))
-        self.create_rigid_bodies_check.setText(self.tr("create_rigid_bodies", "checkboxes"))
-        self.create_physics_joints_check.setText(self.tr("create_physics_joints", "checkboxes"))
-        self.group_physics_objects_check.setText(self.tr("group_physics_objects", "checkboxes"))
-        self.add_semi_standard_bones_check.setText(self.tr("add_semi_standard_bones", "checkboxes"))
         self.bake_mode_check.setText(self.tr("bake_mode", "checkboxes"))
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
         self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
-        self.translate_names_check.setText(self.tr("translate_names", "checkboxes"))
-        self.import_bone_animation_check.setText(self.tr("import_bone_animation", "checkboxes"))
-        self.import_morph_animation_check.setText(self.tr("import_morph_animation", "checkboxes"))
-        self.import_camera_animation_check.setText(self.tr("import_camera_animation", "checkboxes"))
-        self.import_light_animation_check.setText(self.tr("import_light_animation", "checkboxes"))
-        self.resample_curves_check.setText(self.tr("resample_curves", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
         self.new_file_check.setText(self.tr("new_file", "checkboxes"))
 
@@ -743,26 +639,17 @@ class ImportExportTab(BaseTab):
         self.use_namespace_check.setToolTip(self.tr("use_namespace", "tooltips"))
         self.create_mmd_shaders_check.setToolTip(self.tr("create_mmd_shaders", "tooltips"))
         self.separate_meshes_check.setToolTip(self.tr("separate_meshes", "tooltips"))
-        self.split_by_morph_groups_check.setToolTip(self.tr("split_by_morph_groups", "tooltips"))
         self.auto_classify_transparency_check.setToolTip(self.tr("auto_classify_transparency", "tooltips"))
         self.auto_resolve_textures_check.setToolTip(self.tr("auto_resolve_textures", "tooltips"))
-        self.hide_hidden_geometry_check.setToolTip(self.tr("hide_hidden_geometry", "tooltips"))
         self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))
         self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
-        self.add_semi_standard_bones_check.setToolTip(self.tr("add_semi_standard_bones", "tooltips"))
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
-        self.translate_names_check.setToolTip(self.tr("translate_names", "tooltips"))
         if hasattr(self, "animation_start_frame"):
             self.animation_start_frame.setToolTip(self.tr("start_frame", "tooltips"))
         self.vmd_fps_combo.setToolTip(self.tr("vmd_fps", "tooltips"))
         self.motion_scale_spin.setToolTip(self.tr("motion_scale", "tooltips"))
-        self.import_bone_animation_check.setToolTip(self.tr("import_bone_animation", "tooltips"))
-        self.import_morph_animation_check.setToolTip(self.tr("import_morph_animation", "tooltips"))
-        self.import_camera_animation_check.setToolTip(self.tr("import_camera_animation", "tooltips"))
-        self.import_light_animation_check.setToolTip(self.tr("import_light_animation", "tooltips"))
-        self.resample_curves_check.setToolTip(self.tr("resample_curves", "tooltips"))
 
         # Buttons
         self.import_path_button.setText(self.tr("browse", "buttons"))

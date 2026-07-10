@@ -12,12 +12,10 @@
       "separate_meshes_by_material": false,
       "auto_classify_transparency": false,
       "auto_resolve_textures": true,
-      "split_meshes_by_morph_groups": false,
       "create_mmd_shaders": false,
       "mmd_shader_backend": "auto",
       "texture_search_path": "",
       "show_texture_issue_dialog": true,
-      "hide_hidden_geometry": false,
       "uv_set_name": "map#",
       "disable_backface_culling": true
     },

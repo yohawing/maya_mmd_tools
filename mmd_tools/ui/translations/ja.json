@@ -106,20 +106,11 @@
     "start_frame": "VMDアニメーションの開始フレームをMayaタイムライン上で指定します",
     "vmd_fps": "VMDファイルのフレームレート。MMDは30fpsが標準です",
     "motion_scale": "VMDのボーン移動量とカメラ位置・距離に適用する倍率です",
-    "import_bone_animation": "ボーンのキーフレームアニメーションをインポートします",
-    "import_morph_animation": "表情モーフのキーフレームアニメーションをインポートします",
-    "import_camera_animation": "カメラモーションをインポートします",
-    "import_light_animation": "照明アニメーションをインポートします",
     "separate_meshes": "マテリアルごとにメッシュを分割します",
-    "split_by_morph_groups": "モーフグループごとにメッシュを分割します",
     "auto_classify_transparency": "UVアルファスキャンで透過マテリアルを自動分類します",
-    "hide_hidden_geometry": "PMXの非表示フラグが付いたジオメトリを非表示にします",
     "disable_backface_culling": "バックフェースカリングを無効にして両面描画にします",
     "import_physics": "剛体・ジョイントなどの物理オブジェクトをインポートします",
-    "add_semi_standard_bones": "準標準ボーン定義に従ってボーンを追加します",
-    "translate_names": "ボーン名・モーフ名を辞書で翻訳します",
-    "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします",
-    "resample_curves": "アニメーションカーブをリサンプルして滑らかにします"
+    "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
     "import_success": "インポートが完了しました",
@@ -197,7 +188,8 @@
     "preset_deleted": "プリセット '{preset}' を削除しました",
     "loading": "読み込み中...",
     "saving": "保存中...",
-    "processing": "処理中..."
+    "processing": "処理中...",
+    "export_dev_mode_required": "エクスポートは開発モードでのみ利用できます"
   },
   "options": {
     "import_mesh": "メッシュをインポート",
@@ -272,24 +264,13 @@
     "import_models": "モデルをインポート",
     "create_mmd_shaders": "MMDシェーダーを作成",
     "separate_meshes": "マテリアルごとにメッシュを分割",
-    "hide_hidden_geometry": "非表示ジオメトリを隠す",
     "joint_name_conversion": "ジョイント名を英語に変換",
     "disable_backface_culling": "バックフェースカリングを無効化",
     "import_morphs": "モーフをインポート",
     "import_physics": "物理をインポート",
-    "create_rigid_bodies": "剛体を作成",
-    "create_physics_joints": "物理ジョイントを作成",
-    "group_physics_objects": "物理オブジェクトをグループ化",
-    "add_semi_standard_bones": "準標準ボーンを追加",
-    "bake_mode": "ベイクモード",
+    "bake_mode": "モーションをベイク",
     "clear_existing_motion": "既存モーションをクリア",
     "use_cpp_rig_nodes": "C++リグノードを使用（実験的）",
-    "translate_names": "名前を翻訳",
-    "import_bone_animation": "ボーンアニメーションをインポート",
-    "import_morph_animation": "モーフアニメーションをインポート",
-    "import_camera_animation": "カメラアニメーションをインポート",
-    "import_light_animation": "ライトアニメーションをインポート",
-    "resample_curves": "アニメーションカーブをリサンプル",
     "apply_scale": "スケールを適用",
     "new_file": "新規ファイル",
     "enable_ik": "IKを有効にする",
@@ -298,8 +279,7 @@
     "show_advanced_options": "詳細オプションを表示",
     "enable_logging": "ログを有効にする",
     "auto_classify_transparency": "透過を自動分類 (テクスチャαを走査)",
-    "auto_resolve_textures": "テクスチャを自動修復",
-    "split_meshes_by_morph_groups": "【実験的】モーフグループでメッシュを分割"
+    "auto_resolve_textures": "テクスチャを自動修復"
   },
   "fields": {
     "import_scale": "インポートスケール:",

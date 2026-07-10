@@ -823,14 +823,35 @@ class TestExportFile(unittest.TestCase):
     _KEYS_TO_PRESERVE = (
         "export.general.export_format",
         "export.general.apply_scale",
+        "ui.general.development_mode",
     )
 
     def setUp(self):
         self._saved = {k: settings.get(k) for k in self._KEYS_TO_PRESERVE}
+        # Export is develop-mode only.
+        settings.set("ui.general.development_mode", True)
 
     def tearDown(self):
         for k, v in self._saved.items():
             settings.set(k, v)
+
+    def test_export_blocked_in_normal_mode(self):
+        settings.set("ui.general.development_mode", False)
+        view = _FakeView()
+        view.export_path_edit = _FakeLineEdit("out.pmx")
+        app_state = _FakeAppState()
+        action = _RecordingExportModelAction(ExportModelResult(exported_path="out.pmx", succeeded=True))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            export_model_action=action,
+            export_vmd_action=_FailingExportVmdAction(),
+        )
+
+        presenter.export_file()
+
+        self.assertEqual(action.requests, [])
+        self.assertTrue(any("Development Mode" in s or "開発モード" in s for s in app_state.statuses))
 
     def test_empty_path_guard(self):
         view = _FakeView()
@@ -999,8 +1020,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         "import.model.import_models",
         "import.physics.import_physics",
         "import.model.separate_meshes_by_material",
-        "import.model.split_meshes_by_morph_groups",
-        "import.model.hide_hidden_geometry",
         "import.model.auto_classify_transparency",
         "import.model.auto_resolve_textures",
         "import.model.disable_backface_culling",
@@ -1053,12 +1072,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         settings.set("import.model.separate_meshes_by_material", True)
         opts = self._run_import()
         self.assertFalse(opts["separate_meshes_by_material"])
-
-    def test_normal_mode_forces_hide_hidden_geometry_false(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.model.hide_hidden_geometry", True)
-        opts = self._run_import()
-        self.assertFalse(opts["hide_hidden_geometry"])
 
     def test_normal_mode_bake_mode_does_not_disable_model_rig_options(self):
         # bake_mode is an animation-import setting and must not suppress model rig creation.
@@ -1127,19 +1140,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         settings.set("import.model.auto_resolve_textures", False)
         opts = self._run_import()
         self.assertFalse(opts["auto_resolve_textures"])
-
-    def test_normal_mode_forces_split_meshes_by_morph_groups_false(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.model.split_meshes_by_morph_groups", True)
-        opts = self._run_import()
-        self.assertFalse(opts["split_meshes_by_morph_groups"])
-
-    def test_dev_mode_preserves_split_meshes_by_morph_groups_true(self):
-        settings.set("ui.general.development_mode", True)
-        settings.set("import.model.split_meshes_by_morph_groups", True)
-        opts = self._run_import()
-        self.assertTrue(opts["split_meshes_by_morph_groups"])
-
 
 if __name__ == "__main__":
     unittest.main()

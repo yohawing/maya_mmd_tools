@@ -1,6 +1,5 @@
 import os
 import time
-import json
 
 from maya import cmds
 from typing import Tuple, Union, List, Optional
@@ -18,7 +17,6 @@ from mmd_tools.core.texture_path_cache import (
     resolve_texture_to_cache,
 )
 from mmd_tools.core.pmx_data import PmxData
-from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
@@ -43,8 +41,6 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
-    ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
-    ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
 )
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
@@ -758,7 +754,6 @@ class MeshConverter:
 
         # 設定からマテリアルごとのメッシュ分割設定を取得
         separate_by_material = settings.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False)
-        split_by_morph_groups = settings.get(setting_keys.IMPORT_MODEL_SPLIT_MESHES_BY_MORPH_GROUPS, False)
 
         if separate_by_material:
             created_mesh = self._create_material_split_meshes(
@@ -769,16 +764,6 @@ class MeshConverter:
                 all_textures,
                 geo_group,
                 is_pmd=False,
-            )
-        elif split_by_morph_groups:
-            created_mesh = self._create_morph_group_split_meshes(
-                model_name,
-                all_vertices,
-                all_faces,
-                all_materials,
-                all_textures,
-                pmx_data.morphs,
-                geo_group,
             )
         else:
             created_mesh = self._create_unified_mesh(
@@ -1131,247 +1116,6 @@ class MeshConverter:
             maya_viewport_utils.set_viewport_backface_culling(False)
 
         return mesh_names
-
-    def _create_morph_group_split_meshes(
-        self,
-        model_name,
-        all_vertices,
-        all_faces,
-        all_materials,
-        all_textures,
-        all_morphs,
-        geo_group,
-    ):
-        """Create compact PMX meshes grouped by identical vertex morph material sets."""
-        if not all_vertices or len(all_vertices) == 0:
-            self.logger.warning(f"Mesh has zero vertices; skipping mesh creation: {model_name}")
-            return []
-
-        material_vertex_sets = self._build_material_vertex_sets(all_faces, all_materials)
-
-        vertex_to_materials = {}
-        for material_index, vertex_indices in material_vertex_sets.items():
-            for vi in vertex_indices:
-                vertex_to_materials.setdefault(vi, set()).add(material_index)
-
-        morph_names_by_material_set = {}
-        touched_materials = set()
-
-        for morph in all_morphs or []:
-            if getattr(morph, "morph_type", None) != PmxMorphType.VertexMorph:
-                continue
-
-            morph_materials = set()
-            for offset in getattr(morph, "offsets", []) or []:
-                try:
-                    vertex_index = int(offset.get("vertex_index"))
-                except Exception:
-                    continue
-                morph_materials.update(vertex_to_materials.get(vertex_index, set()))
-
-            if not morph_materials:
-                continue
-
-            key = tuple(sorted(morph_materials))
-            morph_names_by_material_set.setdefault(key, []).append(morph.get_name())
-            touched_materials.update(morph_materials)
-
-        if not morph_names_by_material_set:
-            self.logger.info("No vertex morph material groups found; falling back to unified mesh import.")
-            return self._create_unified_mesh(
-                model_name,
-                all_vertices,
-                all_faces,
-                all_materials,
-                all_textures,
-                geo_group,
-            )
-
-        material_sets = [(key, morph_names) for key, morph_names in sorted(morph_names_by_material_set.items())]
-        static_materials = tuple(
-            i for i, material in enumerate(all_materials) if material.face_count > 0 and i not in touched_materials
-        )
-        if static_materials:
-            material_sets.append((static_materials, []))
-
-        mesh_names = []
-        for group_index, (material_indices, vertex_morph_names) in enumerate(material_sets):
-            suffix = f"morphGroup_{group_index}" if vertex_morph_names else "morphGroup_static"
-            mesh_name = maya_name_utils.sanitize_text(f"{model_name}_{suffix}_mesh")
-            created_mesh = self._create_compact_material_subset_mesh(
-                mesh_name,
-                all_vertices,
-                all_faces,
-                all_materials,
-                all_textures,
-                geo_group,
-                material_indices,
-                material_index_attr=None,
-                extra_attrs={
-                    ATTR_MMD_MORPH_GROUP_SPLIT_MESH: True,
-                    ATTR_MMD_VERTEX_MORPH_NAMES_JSON: json.dumps(
-                        vertex_morph_names,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                },
-            )
-            if created_mesh:
-                mesh_names.append(created_mesh)
-
-        disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
-        if disable_backface_culling:
-            maya_viewport_utils.set_viewport_backface_culling(False)
-
-        return mesh_names
-
-    def _build_material_vertex_sets(self, all_faces, all_materials):
-        """Return source vertex indices referenced by each material face range."""
-        material_vertex_sets = {}
-        face_offset = 0
-        for i, material in enumerate(all_materials):
-            num_material_faces = material.face_count // 3
-            vertices = set()
-            for j in range(face_offset, face_offset + num_material_faces):
-                face = all_faces[j]
-                vertices.update(int(index) for index in face.indices)
-            material_vertex_sets[i] = vertices
-            face_offset += num_material_faces
-        return material_vertex_sets
-
-    def _create_compact_material_subset_mesh(
-        self,
-        mesh_name,
-        all_vertices,
-        all_faces,
-        all_materials,
-        all_textures,
-        geo_group,
-        material_indices,
-        material_index_attr=None,
-        extra_attrs=None,
-    ):
-        """Create a compact PMX mesh from one or more material face ranges."""
-        vertices = [self._mmd_vertex_to_maya(v.position) for v in all_vertices]
-        normals = [(v.normal[0], v.normal[1], -v.normal[2]) for v in all_vertices]
-        uvs = []
-        for vertex in all_vertices:
-            flipped_uv = (vertex.uv[0], 1.0 - vertex.uv[1])
-            uvs.extend(flipped_uv)
-
-        material_face_offsets = []
-        face_offset = 0
-        for material in all_materials:
-            num_material_faces = material.face_count // 3
-            material_face_offsets.append((face_offset, num_material_faces))
-            face_offset += num_material_faces
-
-        source_vertex_indices = []
-        source_to_local = {}
-        face_counts = []
-        face_connects = []
-        face_uv_connects = []
-        local_material_ranges = []
-
-        def get_local_vertex_index(source_index):
-            source_index = int(source_index)
-            if source_index not in source_to_local:
-                source_to_local[source_index] = len(source_vertex_indices)
-                source_vertex_indices.append(source_index)
-            return source_to_local[source_index]
-
-        for material_index in material_indices:
-            material = all_materials[material_index]
-            source_face_start, num_material_faces = material_face_offsets[material_index]
-            if num_material_faces == 0:
-                continue
-
-            local_face_start = len(face_counts)
-            for j in range(source_face_start, source_face_start + num_material_faces):
-                face = all_faces[j]
-                reversed_indices = face.indices[::-1]
-                if _is_degenerate_face(reversed_indices):
-                    continue
-                local_indices = [get_local_vertex_index(index) for index in reversed_indices]
-                face_connects.extend(local_indices)
-                face_counts.append(len(reversed_indices))
-                face_uv_connects.extend(local_indices)
-            local_face_end = len(face_counts)
-            if local_face_start != local_face_end:
-                local_material_ranges.append((material_index, material, local_face_start, local_face_end))
-
-        if not face_counts:
-            return None
-
-        mesh_vertices = [vertices[index] for index in source_vertex_indices]
-        mesh_normals = [normals[index] for index in source_vertex_indices]
-        mesh_uvs = []
-        for index in source_vertex_indices:
-            mesh_uvs.extend(uvs[index * 2 : index * 2 + 2])
-
-        create_start = time.perf_counter()
-        created_mesh = maya_mesh_utils.create_mesh_with_uvs(
-            name=mesh_name,
-            vertices=mesh_vertices,
-            face_counts=face_counts,
-            face_connects=face_connects,
-            uvs=mesh_uvs,
-            face_uv_connects=face_uv_connects,
-            normals=mesh_normals,
-        )
-        self._add_profile_time("mesh_create_sec", create_start)
-        self.profile["created_mesh_count"] += 1
-        self.profile["source_vertex_count"] = len(vertices)
-        self.profile["mesh_vertex_slots_estimated"] += len(mesh_vertices)
-        self.profile["face_count"] += len(face_counts)
-
-        attrs = dict(extra_attrs or {})
-        if material_index_attr is not None:
-            attrs[ATTR_MMD_MATERIAL_INDEX] = material_index_attr
-            attrs["mmd_material_split_mesh"] = True
-        if attrs:
-            maya_attribute_utils.set_custom_attributes(created_mesh, attrs)
-        maya_attribute_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_attribute_utils.set_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, source_vertex_indices, "longArray")
-
-        if len(local_material_ranges) == 1:
-            _set_mesh_double_sided(created_mesh, _material_is_double_sided(local_material_ranges[0][1]))
-        else:
-            # A subset with multiple materials is still a combined shape:
-            # per-material culling cannot be represented by one doubleSided
-            # attribute, so leave it to the viewport backface override.
-            pass
-
-        for material_index, material, start_face, end_face in local_material_ranges:
-            texture_path = None
-            raw_texture_path = None
-            if all_textures and material.texture_index != -1:
-                raw_texture_path = all_textures[material.texture_index]
-                texture_path = maya_material_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
-
-            material_start = time.perf_counter()
-            shader = self._create_material(
-                material=material,
-                texture_path=texture_path,
-                all_textures=all_textures,
-                is_pmd=False,
-                material_index=material_index,
-                original_texture_path=raw_texture_path,
-            )
-            self._add_profile_time("material_create_sec", material_start)
-            self._record_created_shader(shader)
-            self.profile["material_count_processed"] += 1
-
-            assign_start = time.perf_counter()
-            maya_material_utils.assign_material_to_faces(
-                created_mesh, shader, f"{created_mesh}.f[{start_face}:{end_face - 1}]"
-            )
-            self._add_profile_time("material_assign_sec", assign_start)
-
-        parent_start = time.perf_counter()
-        created_mesh = self._parent_mesh_to_group(created_mesh, geo_group)
-        self._add_profile_time("parent_sec", parent_start)
-        return created_mesh
 
     def _create_material(
         self,

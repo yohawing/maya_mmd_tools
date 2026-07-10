@@ -20,8 +20,6 @@ class _FakeSettingsStore:
                     "import_models": False,
                     "create_mmd_shaders": False,
                     "separate_meshes_by_material": True,
-                    "split_meshes_by_morph_groups": True,
-                    "hide_hidden_geometry": True,
                     "auto_classify_transparency": True,
                     "auto_resolve_textures": True,
                     "disable_backface_culling": False,
@@ -188,8 +186,8 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["import_models"])
         self.assertFalse(options["import_physics"])
         self.assertFalse(options["separate_meshes_by_material"])
-        self.assertFalse(options["split_meshes_by_morph_groups"])
-        self.assertFalse(options["hide_hidden_geometry"])
+        self.assertNotIn("split_meshes_by_morph_groups", options)
+        self.assertNotIn("hide_hidden_geometry", options)
         self.assertFalse(options["auto_classify_transparency"])
         self.assertTrue(options["auto_resolve_textures"])
         self.assertTrue(options["disable_backface_culling"])
@@ -211,8 +209,8 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["import_models"])
         self.assertTrue(options["import_physics"])
         self.assertTrue(options["separate_meshes_by_material"])
-        self.assertTrue(options["split_meshes_by_morph_groups"])
-        self.assertTrue(options["hide_hidden_geometry"])
+        self.assertNotIn("split_meshes_by_morph_groups", options)
+        self.assertNotIn("hide_hidden_geometry", options)
         self.assertTrue(options["auto_classify_transparency"])
         self.assertTrue(options["auto_resolve_textures"])
         self.assertFalse(options["disable_backface_culling"])

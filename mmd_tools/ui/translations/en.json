@@ -106,20 +106,11 @@
     "start_frame": "Starting frame on the Maya timeline for the VMD animation",
     "vmd_fps": "Frame rate for the VMD file. MMD standard is 30 fps",
     "motion_scale": "Scale VMD bone translations and camera position/distance",
-    "import_bone_animation": "Import bone keyframe animation",
-    "import_morph_animation": "Import facial morph keyframe animation",
-    "import_camera_animation": "Import camera motion",
-    "import_light_animation": "Import light animation",
     "separate_meshes": "Split mesh per material",
-    "split_by_morph_groups": "Split mesh by morph groups",
     "auto_classify_transparency": "Auto-classify transparent materials via UV alpha scan",
-    "hide_hidden_geometry": "Hide geometry flagged as hidden in PMX",
     "disable_backface_culling": "Disable backface culling for double-sided rendering",
     "import_physics": "Import rigid bodies and joints for physics simulation",
-    "add_semi_standard_bones": "Add bones following the semi-standard bone definition",
-    "translate_names": "Translate bone/morph names using the dictionary",
-    "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable",
-    "resample_curves": "Resample animation curves for smoother playback"
+    "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
   },
   "messages": {
     "import_success": "Import completed successfully",
@@ -197,7 +188,8 @@
     "preset_deleted": "Deleted preset '{preset}'",
     "loading": "Loading...",
     "saving": "Saving...",
-    "processing": "Processing..."
+    "processing": "Processing...",
+    "export_dev_mode_required": "Export is available only in Development Mode"
   },
   "options": {
     "import_mesh": "Import Mesh",
@@ -272,24 +264,13 @@
     "import_models": "Import Models",
     "create_mmd_shaders": "Create MMD Shaders",
     "separate_meshes": "Separate Meshes by Material",
-    "hide_hidden_geometry": "Hide Hidden Geometry",
     "joint_name_conversion": "Convert Joint Names to English",
     "disable_backface_culling": "Disable Backface Culling",
     "import_morphs": "Import Morphs",
     "import_physics": "Import Physics",
-    "create_rigid_bodies": "Create Rigid Bodies",
-    "create_physics_joints": "Create Physics Joints",
-    "group_physics_objects": "Group Physics Objects",
-    "add_semi_standard_bones": "Add Semi-Standard Bones",
-    "bake_mode": "Bake Mode",
+    "bake_mode": "Bake Motion",
     "clear_existing_motion": "Clear Existing Motion",
     "use_cpp_rig_nodes": "Use C++ Rig Nodes (Experimental)",
-    "translate_names": "Translate Names",
-    "import_bone_animation": "Import Bone Animation",
-    "import_morph_animation": "Import Morph Animation",
-    "import_camera_animation": "Import Camera Animation",
-    "import_light_animation": "Import Light Animation",
-    "resample_curves": "Resample Animation Curves",
     "apply_scale": "Apply Scale",
     "new_file": "New File",
     "enable_ik": "Enable IK",
@@ -298,8 +279,7 @@
     "show_advanced_options": "Show Advanced Options",
     "enable_logging": "Enable Logging",
     "auto_classify_transparency": "Auto-classify transparency (scan texture alpha)",
-    "auto_resolve_textures": "Auto-resolve textures",
-    "split_meshes_by_morph_groups": "[Experimental] Split meshes by morph groups"
+    "auto_resolve_textures": "Auto-resolve textures"
   },
   "fields": {
     "import_scale": "Import Scale:",

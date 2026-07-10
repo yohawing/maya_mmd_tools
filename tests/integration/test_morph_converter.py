@@ -9,9 +9,7 @@ from mmd_tools.converters import MorphConverter, MeshConverter
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
-    ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
-    ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
 )
 from mmd_tools.core.settings import settings
 from mmd_tools.core.pmx_data.morph import PmxMorphType
@@ -369,57 +367,6 @@ class TestMorphConverter(MayaTestBase):
         self.assertAlmostEqual(moved_position[0], 1.25, places=5)
         self.assertAlmostEqual(unchanged_position[0], 0.0, places=5)
         cmds.setAttr(f"{bs_node}.{alias}", 0.0)
-
-    def test_morph_group_split_mesh_filters_vertex_morphs_by_name(self):
-        """morph group split mesh では許可された vertex morph だけ blendShape target を作る。"""
-        mesh = self._create_test_mesh()
-        maya_attribute_utils.set_custom_attributes(
-            mesh,
-            {
-                ATTR_MMD_MORPH_GROUP_SPLIT_MESH: True,
-                ATTR_MMD_VERTEX_MORPH_NAMES_JSON: json.dumps(["allowed_morph"]),
-            },
-        )
-        maya_attribute_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_attribute_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 1, 2, 3], "longArray")
-
-        class FakeVertexMorph:
-            morph_type = PmxMorphType.VertexMorph
-            panel = 1
-
-            def __init__(self, name, vertex_index):
-                self.name = name
-                self.offsets = [
-                    {
-                        "vertex_index": vertex_index,
-                        "position_offset": (0.1, 0.0, 0.0),
-                    }
-                ]
-
-            def get_name(self):
-                return self.name
-
-        fake_data = type(
-            "FakePmxData",
-            (),
-            {
-                "faces": [],
-                "materials": [],
-                "morphs": [
-                    FakeVertexMorph("allowed_morph", 1),
-                    FakeVertexMorph("blocked_morph", 2),
-                ],
-            },
-        )()
-
-        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
-
-        self.assertTrue(result.get("success", False))
-        self.assertEqual(result.get("morphs_converted"), 1)
-        self.assertEqual(result.get("vertex_morphs_skipped_by_group"), 1)
-        aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
-        self.assertIn("allowed_morph", aliases)
-        self.assertNotIn("blocked_morph", aliases)
 
     def test_vertex_morph_stores_raw_name_and_uniquifies_colliding_alias(self):
         """sanitize が衝突する別モーフでも一意 alias を割り当て、生名を JSON に保存する。
