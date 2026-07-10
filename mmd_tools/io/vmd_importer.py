@@ -98,19 +98,19 @@ def import_vmd_file(
         if target_model:
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
             if target_namespace:
-                logger.info(f"Target namespace: {target_namespace}")
+                logger.debug(f"Target namespace: {target_namespace}")
         else:
             selected = cmds.ls(selection=True)
             if selected:
                 for sel in selected:
                     target_namespace = NamespaceUtils.get_namespace_from_node(sel)
                     if target_namespace:
-                        logger.info(f"Target namespace: {target_namespace}")
+                        logger.debug(f"Target namespace: {target_namespace}")
                         target_model = sel
                         break
                 if not target_model:
                     target_model = selected[0]
-                    logger.info(f"Target model without namespace: {target_model}")
+                    logger.debug(f"Target model without namespace: {target_model}")
             else:
                 logger.warning("Target model is not specified.")
 
@@ -138,7 +138,7 @@ def import_vmd_file(
                     stored = cmds.getAttr(f"{target_model}.mmd_source_file")
                     if stored and os.path.exists(stored):
                         pmx_path = stored
-                        logger.info(f"Restored PMX source from model: {pmx_path}")
+                        logger.debug(f"Restored PMX source from model: {pmx_path}")
             except Exception:
                 logger.debug("Failed to restore PMX source from target model", exc_info=True)
 
@@ -263,7 +263,7 @@ def import_vmd_file(
                                 create_runtime_node_for_model,
                             )
                             node = create_runtime_node_for_model(target_model, pmx_path, filepath)
-                            logger.info(f"Created live runtime node: {node}")
+                            logger.debug(f"Created live runtime node: {node}")
                             dg_result = connect_runtime_node_outputs_to_model(node, target_model, pmx_path=pmx_path)
                             logger.info(
                                 "Live runtime DG connection: bones=%d morphs=%d skipped=%d warnings=%d",
