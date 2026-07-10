@@ -203,27 +203,39 @@ class TestMorphPresenter(MayaTestBase):
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
 
-    def test_on_morph_slider_changed(self):
-        """スライダー変更時の処理のテスト"""
+    def test_mouth_alias_slider_writes_canonical_weight_plug(self):
+        """Mouth_A01 alias の slider は canonical weight[0] を更新する。"""
         # ブレンドシェイプを作成
         mesh = cmds.polyCube(name="test_mesh")[0]
         target = cmds.polyCube(name="test_target")[0]
         blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
 
         # ブレンドシェイプのエイリアスを設定
-        cmds.aliasAttr("test_morph_alias", f"{blend_shape}.weight[0]")
+        cmds.aliasAttr("Mouth_A01", f"{blend_shape}.weight[0]")
         cmds.delete(target)
 
         # モーフデータを設定
-        self.presenter.current_morph = "test_morph"
-        self.presenter.morph_data = {"test_morph": {"blend_shape_node": blend_shape, "blend_shape_target": "test_morph_alias"}}
+        self.presenter.current_morph = "あ"
+        self.presenter.morph_data = {
+            "あ": {
+                "blend_shape_node": blend_shape,
+                "blend_shape_target": "Mouth_A01",
+                "blend_shape_weight_attr": "weight[0]",
+            }
+        }
 
         # スライダー変更をシミュレート
-        self.presenter.on_morph_slider_changed(50)
+        with patch.object(
+            self.presenter.maya_adapter,
+            "set_attr",
+            wraps=self.presenter.maya_adapter.set_attr,
+        ) as set_attr:
+            self.presenter.on_morph_slider_changed(50)
 
         # 結果を確認
         self.mock_view.morph_value_label.setText.assert_called_with("50%")
-        weight = cmds.getAttr(f"{blend_shape}.test_morph_alias")
+        set_attr.assert_called_once_with(f"{blend_shape}.weight[0]", 0.5)
+        weight = cmds.getAttr(f"{blend_shape}.weight[0]")
         self.assertAlmostEqual(weight, 0.5, places=5)
 
     def test_reset_all_morphs(self):

@@ -241,6 +241,7 @@ class MorphPresenter:
         # 既存 UI/保存ロジックとの互換用に先頭 target を従来フィールドへも保持する。
         data.setdefault("blend_shape_node", blend_shape_node)
         data.setdefault("blend_shape_target", target)
+        data.setdefault("blend_shape_weight_attr", target_attr or target)
 
     def _parse_weight_index(self, weight_attr):
         """aliasAttr の weight[0]/w[0] 形式から index を取得する。"""
@@ -268,15 +269,87 @@ class MorphPresenter:
         if node and target:
             yield node, target
 
-    def _get_first_weight(self, data, default=0.0):
-        """UI 表示用に最初に見つかった morph weight を取得する。"""
-        for blend_shape_node, target in self._iter_blend_shape_targets(data):
-            if not self.maya_adapter.object_exists(blend_shape_node):
+    def _canonical_weight_attr(self, blend_shape_node, target, stored_weight_attr=None):
+        """Return canonical ``weight[n]`` for a target alias or stored plug."""
+        target_weight_index = self._parse_weight_index(target)
+        if target_weight_index is not None:
+            return f"weight[{target_weight_index}]"
+
+        aliases = self.maya_adapter.alias_attr(blend_shape_node, query=True) or []
+        for index in range(0, len(aliases), 2):
+            alias = aliases[index]
+            alias_attr = aliases[index + 1] if index + 1 < len(aliases) else ""
+            if alias != target:
                 continue
+            weight_index = self._parse_weight_index(alias_attr)
+            if weight_index is not None:
+                return f"weight[{weight_index}]"
+
+        # A stored index is only a cache. If the alias no longer resolves, using
+        # it could silently drive a different morph after scene edits.
+        return None
+
+    def _iter_blend_shape_weight_plugs(self, data, morph_name):
+        """Yield validated canonical blendShape weight plugs for one morph."""
+        targets = data.get("blend_shape_targets") or []
+        if targets:
+            entries = (
+                (
+                    target_info.get("node"),
+                    target_info.get("target"),
+                    target_info.get("weight_attr"),
+                )
+                for target_info in targets
+            )
+        else:
+            entries = (
+                (
+                    data.get("blend_shape_node"),
+                    data.get("blend_shape_target"),
+                    data.get("blend_shape_weight_attr"),
+                ),
+            )
+
+        for blend_shape_node, target, stored_weight_attr in entries:
+            if not blend_shape_node or not target or not self.maya_adapter.object_exists(blend_shape_node):
+                continue
+            weight_attr = self._canonical_weight_attr(
+                blend_shape_node,
+                target,
+                stored_weight_attr,
+            )
+            unresolved_plug = stored_weight_attr or target
+            if weight_attr is None:
+                logger.warning(
+                    "Skipping stale blendShape morph mapping: morph=%s node=%s plug=%s",
+                    morph_name,
+                    blend_shape_node,
+                    unresolved_plug,
+                )
+                continue
+            plug = f"{blend_shape_node}.{weight_attr}"
+            if not self.maya_adapter.object_exists(plug):
+                logger.warning(
+                    "Skipping missing blendShape weight plug: morph=%s node=%s plug=%s",
+                    morph_name,
+                    blend_shape_node,
+                    plug,
+                )
+                continue
+            yield plug
+
+    def _get_first_weight(self, data, morph_name="<unknown>", default=0.0):
+        """UI 表示用に最初に見つかった morph weight を取得する。"""
+        for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
             try:
-                return self.maya_adapter.get_attr(f"{blend_shape_node}.{target}")
+                return self.maya_adapter.get_attr(plug)
             except Exception as e:
-                logger.debug(f"Failed to get blend shape weight: {blend_shape_node}.{target}: {e}")
+                logger.warning(
+                    "Failed to read blendShape weight: morph=%s plug=%s error=%s",
+                    morph_name,
+                    plug,
+                    e,
+                )
 
         morph_node = data.get("morph_node")
         weight_attr = data.get("morph_weight_attr")
@@ -288,15 +361,18 @@ class MorphPresenter:
 
         return default
 
-    def _set_blend_shape_weight(self, data, weight):
+    def _set_blend_shape_weight(self, data, weight, morph_name="<unknown>"):
         """接続済み blendShape target 全てに weight を設定する。"""
-        for blend_shape_node, target in self._iter_blend_shape_targets(data):
-            if not self.maya_adapter.object_exists(blend_shape_node):
-                continue
+        for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
             try:
-                self.maya_adapter.set_attr(f"{blend_shape_node}.{target}", weight)
+                self.maya_adapter.set_attr(plug, weight)
             except Exception as e:
-                logger.error(f"Failed to set blend shape weight: {blend_shape_node}.{target}: {e}")
+                logger.warning(
+                    "Failed to set blendShape weight: morph=%s plug=%s error=%s",
+                    morph_name,
+                    plug,
+                    e,
+                )
 
     def _organize_morphs_by_group(self):
         """グループごとにモーフを整理"""
@@ -354,7 +430,7 @@ class MorphPresenter:
             self.view.connection_status_label.setStyleSheet("color: green;")
 
             # 現在の値を取得
-            weight = self._get_first_weight(data)
+            weight = self._get_first_weight(data, morph_name)
             self.view.morph_slider.setValue(int(weight * 100))
             self.view.morph_value_label.setText(f"{int(weight * 100)}%")
         elif data.get("morph_node") and self.maya_adapter.object_exists(data["morph_node"]):
@@ -362,7 +438,7 @@ class MorphPresenter:
             self.view.target_name_edit.setText(data.get("morph_weight_attr", "weight"))
             self.view.connection_status_label.setText("Metadata only")
             self.view.connection_status_label.setStyleSheet("color: #a66a00;")
-            weight = self._get_first_weight(data)
+            weight = self._get_first_weight(data, morph_name)
             self.view.morph_slider.setValue(int(weight * 100))
             self.view.morph_value_label.setText(f"{int(weight * 100)}%")
         else:
@@ -408,7 +484,7 @@ class MorphPresenter:
                     weight = 1.0 - weight
                 weight *= self.view.multiplier_spin.value()
 
-                self._set_blend_shape_weight(data, weight)
+                self._set_blend_shape_weight(data, weight, self.current_morph)
 
     def on_group_selected(self, current, previous):
         """グループが選択されたときの処理"""
@@ -459,16 +535,19 @@ class MorphPresenter:
         """全てのモーフをリセット"""
         reset_count = 0
         for morph_name, data in self.morph_data.items():
-            for blend_shape_node, target in self._iter_blend_shape_targets(data):
-                if not self.maya_adapter.object_exists(blend_shape_node):
-                    continue
+            for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
                 try:
-                    current_value = self.maya_adapter.get_attr(f"{blend_shape_node}.{target}")
+                    current_value = self.maya_adapter.get_attr(plug)
                     if current_value != 0:
-                        self.maya_adapter.set_attr(f"{blend_shape_node}.{target}", 0)
+                        self.maya_adapter.set_attr(plug, 0)
                         reset_count += 1
                 except Exception as e:
-                    logger.debug(f"Failed to reset morph: {e}")
+                    logger.warning(
+                        "Failed to reset blendShape weight: morph=%s plug=%s error=%s",
+                        morph_name,
+                        plug,
+                        e,
+                    )
 
         # 現在のスライダーもリセット
         self.view.morph_slider.setValue(0)
@@ -541,10 +620,17 @@ class MorphPresenter:
             return
 
         # 連携を設定
+        weight_attr = self._canonical_weight_attr(blend_shape_node, target_name)
+        if weight_attr is None or not self.maya_adapter.object_exists(f"{blend_shape_node}.{weight_attr}"):
+            self.app_state.emit_status(tr_message_format("target_not_found", target=target_name), "error")
+            return
         data = self.morph_data[self.current_morph]
         data["blend_shape_node"] = blend_shape_node
         data["blend_shape_target"] = target_name
-        data["blend_shape_targets"] = [{"node": blend_shape_node, "target": target_name, "weight_attr": target_name}]
+        data["blend_shape_weight_attr"] = weight_attr
+        data["blend_shape_targets"] = [
+            {"node": blend_shape_node, "target": target_name, "weight_attr": weight_attr}
+        ]
 
         # UIを更新
         self.load_morph_details(self.current_morph)
@@ -560,6 +646,7 @@ class MorphPresenter:
         if self.current_morph in self.morph_data:
             self.morph_data[self.current_morph].pop("blend_shape_node", None)
             self.morph_data[self.current_morph].pop("blend_shape_target", None)
+            self.morph_data[self.current_morph].pop("blend_shape_weight_attr", None)
             self.morph_data[self.current_morph].pop("blend_shape_targets", None)
             self.load_morph_details(self.current_morph)
             self.app_state.emit_status(tr_message("blend_shape_disconnected"))
@@ -600,6 +687,7 @@ class MorphPresenter:
                 aliases = self.maya_adapter.alias_attr(bs_node, query=True) or []
                 for i in range(0, len(aliases), 2):
                     target_name = aliases[i]
+                    target_attr = aliases[i + 1] if i + 1 < len(aliases) else ""
 
                     # 名前が一致するか確認
                     for search_name in search_names:
@@ -611,8 +699,17 @@ class MorphPresenter:
                             # 連携を設定
                             data["blend_shape_node"] = bs_node
                             data["blend_shape_target"] = target_name
+                            data["blend_shape_weight_attr"] = self._canonical_weight_attr(
+                                bs_node,
+                                target_name,
+                                target_attr,
+                            )
                             data["blend_shape_targets"] = [
-                                {"node": bs_node, "target": target_name, "weight_attr": target_name}
+                                {
+                                    "node": bs_node,
+                                    "target": target_name,
+                                    "weight_attr": data["blend_shape_weight_attr"],
+                                }
                             ]
                             connected_count += 1
                             logger.debug(f"Auto-connect succeeded: {morph_name} -> {bs_node}.{target_name}")
@@ -694,16 +791,19 @@ class MorphPresenter:
         # 現在のモーフ値を収集
         preset_data = {}
         for morph_name, data in self.morph_data.items():
-            for blend_shape_node, target in self._iter_blend_shape_targets(data):
-                if not self.maya_adapter.object_exists(blend_shape_node):
-                    continue
+            for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
                 try:
-                    value = self.maya_adapter.get_attr(f"{blend_shape_node}.{target}")
+                    value = self.maya_adapter.get_attr(plug)
                     if value != 0:  # 0以外の値のみ保存
                         preset_data[morph_name] = value
                     break
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(
+                        "Failed to read preset blendShape weight: morph=%s plug=%s error=%s",
+                        morph_name,
+                        plug,
+                        e,
+                    )
 
         if not preset_data:
             self.app_state.emit_status(tr_message("no_morph_values_to_save"), "warning")
@@ -773,15 +873,20 @@ class MorphPresenter:
             for morph_name, value in preset_data.items():
                 if morph_name in self.morph_data:
                     data = self.morph_data[morph_name]
-                    blend_shape_node = data.get("blend_shape_node")
-                    target = data.get("blend_shape_target")
-
-                    if blend_shape_node and target and self.maya_adapter.object_exists(blend_shape_node):
+                    applied = False
+                    for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
                         try:
-                            self.maya_adapter.set_attr(f"{blend_shape_node}.{target}", value)
-                            applied_count += 1
-                        except Exception:
-                            pass
+                            self.maya_adapter.set_attr(plug, value)
+                            applied = True
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to apply preset blendShape weight: morph=%s plug=%s error=%s",
+                                morph_name,
+                                plug,
+                                e,
+                            )
+                    if applied:
+                        applied_count += 1
 
             # 現在のモーフのスライダーを更新
             if self.current_morph and self.current_morph in preset_data:

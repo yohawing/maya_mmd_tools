@@ -385,7 +385,15 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
     def test_load_morphs_falls_back_to_blendshape_raw_names_and_split_targets(self):
         adapter = _FakeMayaAdapter()
-        adapter.existing.update({TEST_MODEL, "faceBlendShapeA", "faceBlendShapeB"})
+        adapter.existing.update(
+            {
+                TEST_MODEL,
+                "faceBlendShapeA",
+                "faceBlendShapeA.weight[0]",
+                "faceBlendShapeB",
+                "faceBlendShapeB.weight[0]",
+            }
+        )
         mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
         adapter.relatives[(TEST_MODEL, mesh_kwargs)] = ["faceShapeA", "faceShapeB"]
         adapter.history["faceShapeA"] = ["faceBlendShapeA"]
@@ -402,8 +410,8 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             {
                 "faceBlendShapeA.mmd_blendshape_morph_names_json": json.dumps({"0": "笑顔"}, ensure_ascii=False),
                 "faceBlendShapeB.mmd_blendshape_morph_names_json": json.dumps({"0": "笑顔"}, ensure_ascii=False),
-                "faceBlendShapeA.smile_alias": 0.4,
-                "faceBlendShapeB.smile_alias_split": 0.4,
+                "faceBlendShapeA.weight[0]": 0.4,
+                "faceBlendShapeB.weight[0]": 0.4,
             }
         )
         adapter.aliases["faceBlendShapeA"] = ["smile_alias", "weight[0]"]
@@ -423,8 +431,42 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 {"node": "faceBlendShapeB", "target": "smile_alias_split", "weight_attr": "weight[0]"},
             ],
         )
-        self.assertIn(("set_attr", "faceBlendShapeA.smile_alias", 0.65), adapter.calls)
-        self.assertIn(("set_attr", "faceBlendShapeB.smile_alias_split", 0.65), adapter.calls)
+        self.assertIn(("set_attr", "faceBlendShapeA.weight[0]", 0.65), adapter.calls)
+        self.assertIn(("set_attr", "faceBlendShapeB.weight[0]", 0.65), adapter.calls)
+
+    def test_stale_blendshape_alias_is_skipped_with_actionable_warning(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.add("faceBlendShape")
+        presenter, _, _, _ = _make_presenter(adapter=adapter)
+        data = {
+            "blend_shape_node": "faceBlendShape",
+            "blend_shape_target": "Mouth_A01",
+        }
+
+        with self.assertLogs(morph_presenter_module.logger.name, level="WARNING") as logs:
+            presenter._set_blend_shape_weight(data, 0.5, "あ")
+
+        message = "\n".join(logs.output)
+        self.assertIn("morph=あ", message)
+        self.assertIn("node=faceBlendShape", message)
+        self.assertIn("plug=Mouth_A01", message)
+        self.assertNotIn(("set_attr", "faceBlendShape.Mouth_A01", 0.5), adapter.calls)
+
+    def test_reassigned_alias_uses_current_weight_index_not_stored_index(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update({"faceBlendShape", "faceBlendShape.weight[2]"})
+        adapter.aliases["faceBlendShape"] = ["Mouth_A01", "weight[2]"]
+        presenter, _, _, _ = _make_presenter(adapter=adapter)
+        data = {
+            "blend_shape_node": "faceBlendShape",
+            "blend_shape_target": "Mouth_A01",
+            "blend_shape_weight_attr": "weight[0]",
+        }
+
+        presenter._set_blend_shape_weight(data, 0.75, "あ")
+
+        self.assertIn(("set_attr", "faceBlendShape.weight[2]", 0.75), adapter.calls)
+        self.assertNotIn(("set_attr", "faceBlendShape.weight[0]", 0.75), adapter.calls)
 
     def test_load_morphs_falls_back_to_network_morph_nodes_for_display(self):
         adapter = _FakeMayaAdapter()
@@ -495,8 +537,9 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
     def test_on_morph_selected_loads_details_via_adapter_and_updates_view(self):
         adapter = _FakeMayaAdapter()
-        adapter.existing.add("faceBlendShape")
-        adapter.attr_values["faceBlendShape.smile"] = 0.42
+        adapter.existing.update({"faceBlendShape", "faceBlendShape.weight[0]"})
+        adapter.attr_values["faceBlendShape.weight[0]"] = 0.42
+        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
         presenter, view, _, _ = _make_presenter(adapter=adapter)
         presenter.morph_data = {
             "smile": {
@@ -507,6 +550,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 "group": "目",
                 "blend_shape_node": "faceBlendShape",
                 "blend_shape_target": "smile",
+                "blend_shape_weight_attr": "weight[0]",
             }
         }
 
@@ -526,46 +570,70 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(view.offset_table.row_count_calls, [0])
         self.assertEqual(view.offset_count_label.text, "labels:offset_not_supported")
         self.assertIn(("object_exists", "faceBlendShape"), adapter.calls)
-        self.assertIn(("get_attr", "faceBlendShape.smile"), adapter.calls)
+        self.assertIn(("get_attr", "faceBlendShape.weight[0]"), adapter.calls)
 
     def test_reset_all_morphs_only_sets_nonzero_existing_targets(self):
         adapter = _FakeMayaAdapter()
-        adapter.existing.add("faceBlendShape")
-        adapter.attr_values.update({"faceBlendShape.smile": 0.8, "faceBlendShape.blink": 0.0})
+        adapter.existing.update(
+            {"faceBlendShape", "faceBlendShape.weight[0]", "faceBlendShape.weight[1]"}
+        )
+        adapter.attr_values.update(
+            {"faceBlendShape.weight[0]": 0.8, "faceBlendShape.weight[1]": 0.0}
+        )
+        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]", "blink", "weight[1]"]
         presenter, view, app_state, _ = _make_presenter(adapter=adapter)
         presenter.morph_data = {
-            "smile": {"blend_shape_node": "faceBlendShape", "blend_shape_target": "smile"},
-            "blink": {"blend_shape_node": "faceBlendShape", "blend_shape_target": "blink"},
+            "smile": {
+                "blend_shape_node": "faceBlendShape",
+                "blend_shape_target": "smile",
+                "blend_shape_weight_attr": "weight[0]",
+            },
+            "blink": {
+                "blend_shape_node": "faceBlendShape",
+                "blend_shape_target": "blink",
+                "blend_shape_weight_attr": "weight[1]",
+            },
             "missing": {"blend_shape_node": "missingBlendShape", "blend_shape_target": "missing"},
             "unconnected": {},
         }
 
         presenter.reset_all_morphs()
 
-        self.assertIn(("get_attr", "faceBlendShape.smile"), adapter.calls)
-        self.assertIn(("get_attr", "faceBlendShape.blink"), adapter.calls)
+        self.assertIn(("get_attr", "faceBlendShape.weight[0]"), adapter.calls)
+        self.assertIn(("get_attr", "faceBlendShape.weight[1]"), adapter.calls)
         self.assertIn(("object_exists", "missingBlendShape"), adapter.calls)
-        self.assertIn(("set_attr", "faceBlendShape.smile", 0), adapter.calls)
-        self.assertNotIn(("set_attr", "faceBlendShape.blink", 0), adapter.calls)
+        self.assertIn(("set_attr", "faceBlendShape.weight[0]", 0), adapter.calls)
+        self.assertNotIn(("set_attr", "faceBlendShape.weight[1]", 0), adapter.calls)
         self.assertEqual(view.morph_slider.set_value_calls, [0])
         self.assertEqual(app_state.statuses, [("Reset 1 morph(s)", None)])
 
     def test_save_preset_serializes_nonzero_values_and_preserves_existing_presets(self):
         adapter = _FakeMayaAdapter()
-        adapter.existing.update({TEST_MODEL, "faceBlendShape"})
+        adapter.existing.update(
+            {TEST_MODEL, "faceBlendShape", "faceBlendShape.weight[0]", "faceBlendShape.weight[1]"}
+        )
         adapter.attr_exists.add((TEST_MODEL, "mmdMorphPresets"))
         adapter.attr_values.update(
             {
-                "faceBlendShape.smile": 0.8,
-                "faceBlendShape.blink": 0.0,
+                "faceBlendShape.weight[0]": 0.8,
+                "faceBlendShape.weight[1]": 0.0,
                 f"{TEST_MODEL}.mmdMorphPresets": json.dumps({"old_pose": {"smile": 0.2}}),
             }
         )
+        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]", "blink", "weight[1]"]
         presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
         view.preset_combo.setCurrentText("custom_pose")
         presenter.morph_data = {
-            "smile": {"blend_shape_node": "faceBlendShape", "blend_shape_target": "smile"},
-            "blink": {"blend_shape_node": "faceBlendShape", "blend_shape_target": "blink"},
+            "smile": {
+                "blend_shape_node": "faceBlendShape",
+                "blend_shape_target": "smile",
+                "blend_shape_weight_attr": "weight[0]",
+            },
+            "blink": {
+                "blend_shape_node": "faceBlendShape",
+                "blend_shape_target": "blink",
+                "blend_shape_weight_attr": "weight[1]",
+            },
         }
 
         with patch.object(morph_presenter_module, "set_attribute") as set_attribute, patch.object(
@@ -580,24 +648,29 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(set_attribute_args[3], "string")
         saved_presets = json.loads(set_attribute_args[2])
         self.assertEqual(saved_presets, {"old_pose": {"smile": 0.2}, "custom_pose": {"smile": 0.8}})
-        self.assertIn(("get_attr", "faceBlendShape.smile"), adapter.calls)
-        self.assertIn(("get_attr", "faceBlendShape.blink"), adapter.calls)
+        self.assertIn(("get_attr", "faceBlendShape.weight[0]"), adapter.calls)
+        self.assertIn(("get_attr", "faceBlendShape.weight[1]"), adapter.calls)
         self.assertIn(("get_attr", f"{TEST_MODEL}.mmdMorphPresets"), adapter.calls)
         self.assertIn("custom_pose", view.preset_combo.items)
         self.assertEqual(app_state.statuses, [("Saved preset 'custom_pose'", None)])
 
     def test_load_preset_parses_json_and_applies_existing_connected_morphs(self):
         adapter = _FakeMayaAdapter()
-        adapter.existing.update({TEST_MODEL, "faceBlendShape"})
+        adapter.existing.update({TEST_MODEL, "faceBlendShape", "faceBlendShape.weight[0]"})
         adapter.attr_exists.add((TEST_MODEL, "mmdMorphPresets"))
         adapter.attr_values[f"{TEST_MODEL}.mmdMorphPresets"] = json.dumps(
             {"custom_pose": {"smile": 0.75, "blink": 0.5, "unknown": 1.0}}
         )
+        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
         presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
         view.preset_combo.setCurrentText("custom_pose")
         presenter.current_morph = "smile"
         presenter.morph_data = {
-            "smile": {"blend_shape_node": "faceBlendShape", "blend_shape_target": "smile"},
+            "smile": {
+                "blend_shape_node": "faceBlendShape",
+                "blend_shape_target": "smile",
+                "blend_shape_weight_attr": "weight[0]",
+            },
             "blink": {"blend_shape_node": "missingBlendShape", "blend_shape_target": "blink"},
         }
 
@@ -606,7 +679,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertIn(("object_exists", TEST_MODEL), adapter.calls)
         self.assertIn(("attribute_exists", "mmdMorphPresets", TEST_MODEL), adapter.calls)
         self.assertIn(("get_attr", f"{TEST_MODEL}.mmdMorphPresets"), adapter.calls)
-        self.assertIn(("set_attr", "faceBlendShape.smile", 0.75), adapter.calls)
+        self.assertIn(("set_attr", "faceBlendShape.weight[0]", 0.75), adapter.calls)
         self.assertNotIn(("set_attr", "missingBlendShape.blink", 0.5), adapter.calls)
         self.assertEqual(view.morph_slider.set_value_calls, [75])
         self.assertEqual(app_state.statuses, [("Applied preset 'custom_pose'", None)])
