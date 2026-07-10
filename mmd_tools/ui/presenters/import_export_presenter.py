@@ -85,7 +85,7 @@ class ImportExportPresenter(QObject):
             return self.view.target_model_combo.itemData(current_index)
         if getattr(self.app_state, "current_model_root", None):
             target_model = self.app_state.current_model_root
-            logger.info(f"Auto-selected current model root for VMD import: {target_model}")
+            logger.debug(f"Auto-selected current model root for VMD import: {target_model}")
             return target_model
         return None
 
@@ -338,7 +338,7 @@ class ImportExportPresenter(QObject):
 
         logger.info(f"Importing VMD file: {file_path}")
         if target_model:
-            logger.info(f"Target model: {target_model}")
+            logger.debug(f"Target model: {target_model}")
 
         self.app_state.emit_progress(0)
         self.app_state.emit_status(tr_message_format("importing_vmd", file_path=file_path))

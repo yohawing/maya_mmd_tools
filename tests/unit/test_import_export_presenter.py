@@ -740,7 +740,11 @@ class TestVmdImportOptions(unittest.TestCase):
         app_state = _FakeAppState()
         app_state.current_model_root = "current_model"
         presenter, _, _ = self._make_presenter(view, app_state)
-        self.assertEqual(presenter._get_vmd_target_model(), "current_model")
+        with patch("mmd_tools.ui.presenters.import_export_presenter.logger") as mock_logger:
+            self.assertEqual(presenter._get_vmd_target_model(), "current_model")
+        detail = "Auto-selected current model root for VMD import: current_model"
+        self.assertIn(detail, [call[0][0] for call in mock_logger.debug.call_args_list])
+        self.assertNotIn(detail, [call[0][0] for call in mock_logger.info.call_args_list])
 
     def test_get_vmd_target_model_returns_none_when_nothing_selected(self):
         view = _FakeView()
@@ -782,6 +786,28 @@ class TestVmdImportOptions(unittest.TestCase):
         self.assertEqual(action.requests[0].progress_callback, app_state.emit_progress)
         self.assertEqual(recorded, ["dance.vmd"])
         self.assertIn(100, app_state.progress)
+
+    def test_import_vmd_keeps_operation_boundaries_info_and_target_route_debug(self):
+        view = _FakeView()
+        view.vmd_path_edit = _FakeLineEdit("dance.vmd")
+        app_state = _FakeAppState()
+        app_state.current_model_root = "current_model"
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        with patch("mmd_tools.ui.presenters.import_export_presenter.logger") as mock_logger:
+            presenter.import_vmd_file()
+
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list]
+        for detail in (
+            "Auto-selected current model root for VMD import: current_model",
+            "Target model: current_model",
+        ):
+            self.assertIn(detail, debug_messages)
+            self.assertNotIn(detail, info_messages)
+        self.assertIn("Importing VMD file: dance.vmd", info_messages)
+        self.assertIn("VMD import successful.", info_messages)
 
     def test_import_vmd_failure_result_emits_failure_and_skips_history(self):
         recorded = []
