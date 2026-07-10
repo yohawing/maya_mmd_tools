@@ -6,7 +6,9 @@ Unicode文字列変換機能のテスト
 import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 
 # テスト対象モジュールのパスを追加
@@ -19,7 +21,16 @@ from mmd_tools.core.mmd_bone_names import (
     has_semistandard_mmd_bone_name,
     normalize_mmd_bone_name,
 )
-from mmd_tools.core.unicode_converter import UnicodeToAsciiConverter, get_converter
+from mmd_tools.core.unicode_converter import (
+    UnicodeToAsciiConverter,
+    _DictionaryLoader,
+    get_converter,
+)
+
+
+def _msgs(mock_log):
+    # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+).
+    return [c[0][0] for c in mock_log.call_args_list if c[0]]
 
 
 class TestUnicodeToAsciiConverter(unittest.TestCase):
@@ -348,6 +359,49 @@ class TestSingletonPattern(unittest.TestCase):
         # 辞書エントリを追加して、シングルトンであることを確認
         converter1.add_dictionary_entry("シングルトンテスト", "singleton_test")
         self.assertEqual(converter2.convert("シングルトンテスト"), "singleton_test")
+
+
+class TestDictionaryLoaderDefaultFallbackLogging(unittest.TestCase):
+    """Default-dictionary fallback detail is DEBUG; WARNING/ERROR stay actionable."""
+
+    def test_missing_dictionary_file_uses_debug_for_default_fallback(self):
+        logger = MagicMock()
+        missing_path = os.path.join(tempfile.gettempdir(), "mmd_tools_missing_dict_xyz.json")
+        if os.path.exists(missing_path):
+            os.remove(missing_path)
+
+        state = _DictionaryLoader.load(missing_path, logger)
+
+        self.assertIsNotNone(state)
+        self.assertTrue(state.unicode_to_ascii)
+        warning_msgs = _msgs(logger.warning)
+        self.assertTrue(
+            any("Dictionary file not found" in str(m) for m in warning_msgs),
+            "missing-file WARNING must remain: %r" % (warning_msgs,),
+        )
+        self.assertIn("Using default dictionary", _msgs(logger.debug))
+        self.assertNotIn("Using default dictionary", _msgs(logger.info))
+
+    def test_corrupt_dictionary_file_uses_debug_for_default_fallback(self):
+        logger = MagicMock()
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            os.write(fd, b"{not valid json")
+            os.close(fd)
+            state = _DictionaryLoader.load(path, logger)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+        self.assertIsNotNone(state)
+        self.assertTrue(state.unicode_to_ascii)
+        error_msgs = _msgs(logger.error)
+        self.assertTrue(
+            any("Failed to load dictionary file" in str(m) for m in error_msgs),
+            "load-failure ERROR must remain: %r" % (error_msgs,),
+        )
+        self.assertIn("Using default dictionary", _msgs(logger.debug))
+        self.assertNotIn("Using default dictionary", _msgs(logger.info))
 
 
 if __name__ == "__main__":

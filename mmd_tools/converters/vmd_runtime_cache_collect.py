@@ -345,7 +345,7 @@ def _collect_runtime_bake_cache(
                 append_elapsed += time.perf_counter() - append_start
         else:
             if bake_samples:
-                context.logger.info("mmd-anim runtime batch evaluation unavailable; using per-frame ABI")
+                context.logger.debug("mmd-anim runtime batch evaluation unavailable; using per-frame ABI")
             for maya_time, vmd_frame in bake_samples:
                 eval_copy_start = time.perf_counter()
                 if not instance.evaluate_clip_frame(clip, float(vmd_frame)):

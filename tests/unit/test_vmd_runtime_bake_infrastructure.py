@@ -7,13 +7,18 @@ keeps the cache/apply infrastructure tests small and isolated.
 import ctypes
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import maya.api.OpenMaya as om
 
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_runtime_cache_collect import collect_runtime_bake_cache
 from mmd_tools.converters.vmd_runtime_scene_apply import apply_runtime_channel_arrays_to_scene_with_undo_disabled
+
+
+def _msgs(mock_log):
+    # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+).
+    return [c[0][0] for c in mock_log.call_args_list if c[0]]
 
 
 class TestVmdRuntimeBakeInfrastructure(unittest.TestCase):
@@ -175,11 +180,12 @@ class TestVmdRuntimeBakeInfrastructure(unittest.TestCase):
         """When batch is unavailable, per-frame ABI stores successful samples."""
         appended = []
         evaluated = []
+        logger = MagicMock()
 
         converter = SimpleNamespace(
             anim_layer="runtime_layer",
             bone_index_to_joint={},
-            logger=SimpleNamespace(info=lambda *_args, **_kwargs: None),
+            logger=logger,
             _create_runtime_joint_channel_arrays=lambda: {},
             _create_runtime_joint_channel_static_state=lambda: {},
             _append_bone_locals_to_channel_arrays=lambda bone_locals, values, static: appended.append(
@@ -212,6 +218,54 @@ class TestVmdRuntimeBakeInfrastructure(unittest.TestCase):
         self.assertEqual(cache.morph_cache, [(10.0, [0.25, 0.75]), (12.0, [0.25, 0.75])])
         self.assertEqual(appended, [({}, {}, {}), ({}, {}, {})])
         self.assertEqual(converter.anim_layer, "runtime_layer")
+
+        # Internal path choice: DEBUG only (not a user-facing warning).
+        fallback_msg = "mmd-anim runtime batch evaluation unavailable; using per-frame ABI"
+        self.assertIn(fallback_msg, _msgs(logger.debug))
+        self.assertNotIn(fallback_msg, _msgs(logger.info))
+
+    def test_collect_runtime_bake_cache_batch_success_stays_info(self):
+        """Successful batch route summary remains INFO; per-frame fallback is not logged."""
+        class BatchResult:
+            frame_count = 1
+            bone_count = 0
+            morph_count = 1
+
+        logger = MagicMock()
+        converter = SimpleNamespace(
+            anim_layer="runtime_layer",
+            bone_index_to_joint={},
+            logger=logger,
+            _create_runtime_joint_channel_arrays=lambda: {},
+            _create_runtime_joint_channel_static_state=lambda: {},
+            _compute_native_local_channel_batch=lambda _batch_result: None,
+            _runtime_batch_morph_weights_for_frame=lambda _batch_result, frame_index: [0.5],
+            _append_bone_locals_to_channel_arrays=lambda *_args: None,
+        )
+        instance = SimpleNamespace(
+            evaluate_clip_frame_batch=lambda *_args, **_kwargs: BatchResult()
+        )
+
+        with patch("mmd_tools.converters.vmd_runtime_cache_collect.cmds.refresh"):
+            cache = collect_runtime_bake_cache(
+                converter,
+                instance,
+                clip=object(),
+                bake_samples=[(1.0, 0.0)],
+            )
+
+        self.assertTrue(cache.batch_mode)
+        info_msgs = _msgs(logger.info)
+        self.assertTrue(
+            any(
+                isinstance(m, str) and m.startswith("Using mmd-anim runtime batch evaluation")
+                for m in info_msgs
+            ),
+            "batch success summary must remain INFO: %r" % (info_msgs,),
+        )
+        fallback_msg = "mmd-anim runtime batch evaluation unavailable; using per-frame ABI"
+        self.assertNotIn(fallback_msg, _msgs(logger.debug))
+        self.assertNotIn(fallback_msg, _msgs(logger.info))
 
     def test_collect_runtime_bake_cache_physics_opt_in_uses_explicit_dt_60fps(self):
         """60fps samples: VMD step 0.5 must pair with dt 1/60, not 1/120."""

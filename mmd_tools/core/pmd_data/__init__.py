@@ -139,7 +139,12 @@ class PmdData:
                 try:
                     # English Header
                     logger.debug("Parsing extended data")
-                    has_english_header = struct.unpack("<B", f.read(1))[0]
+                    english_header_flag = f.read(1)
+                    if not english_header_flag:
+                        logger.debug("No PMD extended data")
+                        logger.info("PMD file parsing completed")
+                        return self
+                    has_english_header = struct.unpack("<B", english_header_flag)[0]
                     if has_english_header:
                         logger.debug("Parsing English header")
                         self.header.parse_english(f)
@@ -183,8 +188,8 @@ class PmdData:
                         joint.parse(f)
                         self.joints.append(joint)
 
-                except Exception:
-                    logger.info("No extended data, or extended data parsing ended")
+                except Exception as e:
+                    logger.warning("PMD extended data parsing failed; imported base model data only: %s", e)
                     return self
 
             except struct.error as e:

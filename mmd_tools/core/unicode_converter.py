@@ -195,12 +195,12 @@ class _DictionaryLoader:
                 return state
 
             logger.warning(f"Dictionary file not found: {dictionary_path}")
-            logger.info("Using default dictionary")
+            logger.debug("Using default dictionary")
             return _DictionaryLoader.load_default_dictionary()
 
         except Exception as e:
             logger.error(f"Failed to load dictionary file: {e}")
-            logger.info("Using default dictionary")
+            logger.debug("Using default dictionary")
             return _DictionaryLoader.load_default_dictionary()
 
 
