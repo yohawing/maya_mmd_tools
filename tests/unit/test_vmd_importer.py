@@ -99,6 +99,208 @@ class TestVmdImporter(MayaTestBase):
         physics_converter.connect_existing_bullet_preview_to_bones.assert_called_once_with(target_model)
         self.assertEqual(options["profile"]["physics_preview_repaired"], 3)
 
+    def test_native_physics_bake_used_disables_legacy_preview_feedback(self):
+        """Native bake disables existing Bullet-to-bone feedback without deleting setup."""
+        target_model = cmds.group(empty=True, name="mmd_model_root")
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+        options = {
+            "target_model": target_model,
+            "use_native_physics_bake": True,
+            "bake_mode": True,
+        }
+
+        def _convert_side_effect(*_args, **kwargs):
+            profile = kwargs["profile"]
+            profile.setdefault("vmd_converter", {})["native_physics_bake"] = {
+                "requested": True,
+                "used": True,
+            }
+            return True
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+            "mmd_tools.converters.PhysicsConverter"
+        ) as physics_converter_class:
+            converter = converter_class.return_value
+            converter.convert.side_effect = _convert_side_effect
+            physics_converter = physics_converter_class.return_value
+            physics_converter.connect_existing_bullet_preview_to_bones.return_value = 3
+            physics_converter.set_existing_bullet_preview_feedback_enabled.return_value = 0
+
+            result = import_vmd_file(object(), vmd_path, options)
+
+        self.assertTrue(result)
+        physics_converter.connect_existing_bullet_preview_to_bones.assert_not_called()
+        physics_converter.set_existing_bullet_preview_feedback_enabled.assert_called_once_with(target_model, False)
+        self.assertEqual(
+            options["profile"]["physics_preview_repair_skipped"],
+            "native_physics_bake_used",
+        )
+        self.assertEqual(options["profile"]["legacy_physics_preview_disabled"], 0)
+        self.assertNotIn("physics_preview_repaired", options["profile"])
+        self.assertTrue(converter.convert.call_args.kwargs["use_native_physics_bake"])
+
+    def test_native_physics_bake_requested_but_not_used_repairs_preview(self):
+        """When native bake is requested but falls back, retain preview repair."""
+        target_model = cmds.group(empty=True, name="mmd_model_root")
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+        options = {
+            "target_model": target_model,
+            "use_native_physics_bake": True,
+            "bake_mode": True,
+        }
+
+        def _convert_side_effect(*_args, **kwargs):
+            profile = kwargs["profile"]
+            profile.setdefault("vmd_converter", {})["native_physics_bake"] = {
+                "requested": True,
+                "used": False,
+                "reason": "runtime_unavailable",
+            }
+            return True
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+            "mmd_tools.converters.PhysicsConverter"
+        ) as physics_converter_class:
+            converter = converter_class.return_value
+            converter.convert.side_effect = _convert_side_effect
+            physics_converter = physics_converter_class.return_value
+            physics_converter.connect_existing_bullet_preview_to_bones.return_value = 2
+            physics_converter_class.get_legacy_bullet_enabled.return_value = True
+
+            result = import_vmd_file(object(), vmd_path, options)
+
+        self.assertTrue(result)
+        physics_converter.set_existing_bullet_preview_feedback_enabled.assert_called_once_with(target_model, True)
+        physics_converter.connect_existing_bullet_preview_to_bones.assert_called_once_with(target_model)
+        self.assertEqual(options["profile"]["physics_preview_repaired"], 2)
+        self.assertNotIn("physics_preview_repair_skipped", options["profile"])
+        self.assertTrue(options["profile"]["legacy_bullet_enabled"])
+        self.assertTrue(converter.convert.call_args.kwargs["use_native_physics_bake"])
+
+    def test_legacy_bullet_disabled_preference_reapplies_full_suspend_on_vmd_import(self):
+        """Root mmd_legacy_bullet_enabled=False restores full legacy OFF after reload."""
+        target_model = cmds.group(empty=True, name="mmd_model_root")
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+        options = {"target_model": target_model, "bake_mode": False}
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+            "mmd_tools.converters.PhysicsConverter"
+        ) as physics_converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = True
+            physics_converter = physics_converter_class.return_value
+            physics_converter_class.get_legacy_bullet_enabled.return_value = False
+            physics_converter_class.apply_legacy_bullet_enabled_from_attr.return_value = 1
+
+            result = import_vmd_file(object(), vmd_path, options)
+
+        self.assertTrue(result)
+        physics_converter_class.ensure_legacy_bullet_enabled_control.assert_called_once_with(
+            target_model
+        )
+        physics_converter_class.get_legacy_bullet_enabled.assert_called_once_with(target_model)
+        physics_converter_class.apply_legacy_bullet_enabled_from_attr.assert_called_once_with(
+            target_model
+        )
+        physics_converter.connect_existing_bullet_preview_to_bones.assert_not_called()
+        self.assertEqual(options["profile"]["physics_preview_repair_skipped"], "legacy_bullet_disabled")
+        self.assertEqual(options["profile"]["legacy_physics_preview_disabled"], 1)
+        self.assertFalse(options["profile"]["legacy_bullet_enabled"])
+        self.assertNotIn("physics_preview_repaired", options["profile"])
+        self.assertNotIn("legacy_physics_preview_restored", options["profile"])
+
+    def test_vmd_import_ensures_legacy_bullet_control_without_overwriting_pref(self):
+        """VMD path ensures Root attr/watch; existing user preference is left alone."""
+        target_model = cmds.group(empty=True, name="mmd_model_root")
+        cmds.addAttr(target_model, longName="mmd_legacy_bullet_enabled", attributeType="bool")
+        cmds.setAttr(f"{target_model}.mmd_legacy_bullet_enabled", False)
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+        options = {"target_model": target_model, "bake_mode": False}
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+            "mmd_tools.converters.PhysicsConverter"
+        ) as physics_converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = True
+            physics_converter = physics_converter_class.return_value
+            # Real preference read would be True without ensure; force disabled path
+            # after ensure so we assert ensure was called and value not written by importer.
+            physics_converter_class.get_legacy_bullet_enabled.return_value = False
+            physics_converter.set_existing_bullet_preview_feedback_enabled.return_value = 0
+            physics_converter_class.set_legacy_bullet_enabled.return_value = 0
+
+            result = import_vmd_file(object(), vmd_path, options)
+
+        self.assertTrue(result)
+        physics_converter_class.ensure_legacy_bullet_enabled_control.assert_called_once_with(
+            target_model
+        )
+        physics_converter_class.set_legacy_bullet_enabled.assert_not_called()
+        # Scene attr must remain the user's False; ensure control is non-destructive.
+        self.assertFalse(cmds.getAttr(f"{target_model}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(options["profile"]["physics_preview_repair_skipped"], "legacy_bullet_disabled")
+
+    def test_native_physics_bake_does_not_read_or_write_legacy_preference(self):
+        """Native bake exclusion is separate from the Root user preference."""
+        target_model = cmds.group(empty=True, name="mmd_model_root")
+        cmds.addAttr(target_model, longName="mmd_legacy_bullet_enabled", attributeType="bool")
+        cmds.setAttr(f"{target_model}.mmd_legacy_bullet_enabled", True)
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+        options = {
+            "target_model": target_model,
+            "use_native_physics_bake": True,
+            "bake_mode": True,
+        }
+
+        def _convert_side_effect(*_args, **kwargs):
+            profile = kwargs["profile"]
+            profile.setdefault("vmd_converter", {})["native_physics_bake"] = {
+                "requested": True,
+                "used": True,
+            }
+            return True
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+            "mmd_tools.converters.PhysicsConverter"
+        ) as physics_converter_class:
+            converter = converter_class.return_value
+            converter.convert.side_effect = _convert_side_effect
+            physics_converter = physics_converter_class.return_value
+            physics_converter.set_existing_bullet_preview_feedback_enabled.return_value = 2
+            physics_converter.set_legacy_bullet_enabled.return_value = 0
+
+            result = import_vmd_file(object(), vmd_path, options)
+
+        self.assertTrue(result)
+        # Live control is ensured for older models, but native path still does not
+        # read/write the preference value itself.
+        physics_converter_class.ensure_legacy_bullet_enabled_control.assert_called_once_with(
+            target_model
+        )
+        physics_converter_class.get_legacy_bullet_enabled.assert_not_called()
+        physics_converter.set_legacy_bullet_enabled.assert_not_called()
+        physics_converter.set_existing_bullet_preview_feedback_enabled.assert_called_once_with(
+            target_model, False
+        )
+        # Scene attr must remain the user's value (True); native path never writes it.
+        self.assertTrue(cmds.getAttr(f"{target_model}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(options["profile"]["physics_preview_repair_skipped"], "native_physics_bake_used")
+
     def test_camera_light_import_options_are_applied_to_converter(self):
         temp_root = Path(tempfile.mkdtemp())
         vmd_path = str(temp_root / "motion.vmd")

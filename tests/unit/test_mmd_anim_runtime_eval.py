@@ -36,6 +36,7 @@ from mmd_tools.core.native.mmd_anim_runtime import (
     MmdRuntimeClip,
     MmdRuntimeInstance,
     MmdRuntimeModel,
+    MmdRuntimePhysicsWorld,
     MmdRuntimeFfiByteBuffer,
     compute_maya_local_channels,
     compute_maya_local_channels_batch,
@@ -1402,6 +1403,508 @@ class TestFactoryGuardsWithoutLibrary(unittest.TestCase):
         with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
             self.assertTrue(rt.is_native_pmx_parser_available())
             self.assertTrue(native_pkg.is_native_pmx_parser_available())
+
+
+class _FakePhysicsLib:
+    """Fake CDLL covering physics world create/reset/step/bake ABI."""
+
+    def __init__(
+        self,
+        *,
+        feature_flags=0,
+        create_status=0,
+        world_handle=0x4404,
+        bake_status=0,
+        step_status=0,
+        set_mode_status=0,
+        rest_pose_ok=True,
+        bone_count=2,
+        morph_count=1,
+        batch_world_matrices=None,
+        batch_morph_weights=None,
+        missing_symbols=None,
+    ):
+        self.feature_flags = feature_flags
+        self.create_status = create_status
+        self.world_handle = world_handle
+        self.bake_status = bake_status
+        self.step_status = step_status
+        self.set_mode_status = set_mode_status
+        self.rest_pose_ok = rest_pose_ok
+        self.bone_count = bone_count
+        self.morph_count = morph_count
+        self._batch_world = (
+            list(batch_world_matrices) if batch_world_matrices is not None else None
+        )
+        self._batch_morph = (
+            list(batch_morph_weights) if batch_morph_weights is not None else None
+        )
+        self._missing_symbols = set(missing_symbols or ())
+        self.create_calls = []
+        self.reset_calls = []
+        self.count_calls = []
+        self.free_calls = []
+        self.set_mode_calls = []
+        self.rest_pose_calls = []
+        self.step_calls = []
+        self.bake_calls = []
+        self.physics_mode = 0
+
+    def __getattribute__(self, name):
+        if name.startswith("mmd_runtime_"):
+            missing = object.__getattribute__(self, "_missing_symbols")
+            if name in missing:
+                raise AttributeError(name)
+        return object.__getattribute__(self, name)
+
+    def mmd_runtime_feature_flags(self):
+        return self.feature_flags
+
+    def mmd_runtime_physics_world_create_from_pmx_bytes(self, pmx_data, pmx_len, out_world):
+        self.create_calls.append(bytes(pmx_data[:pmx_len]))
+        if self.create_status == rt.MMD_RUNTIME_STATUS_OK and self.world_handle:
+            out_world._obj.value = self.world_handle
+        return self.create_status
+
+    def mmd_runtime_physics_world_reset(self, world, instance, out_seeded):
+        self.reset_calls.append((world.value, instance.value))
+        out_seeded._obj.value = 7
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_physics_world_rigidbody_count(self, world, out_count):
+        self.count_calls.append(world.value)
+        out_count._obj.value = 9
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_physics_world_free(self, world):
+        self.free_calls.append(world.value)
+
+    def mmd_runtime_instance_set_physics_mode(self, instance, mode):
+        mode_value = int(getattr(mode, "value", mode))
+        self.set_mode_calls.append((instance.value, mode_value))
+        if self.set_mode_status == rt.MMD_RUNTIME_STATUS_OK:
+            self.physics_mode = mode_value
+        return self.set_mode_status
+
+    def mmd_runtime_instance_get_physics_mode(self, instance, out_mode):
+        out_mode._obj.value = self.physics_mode
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_instance_evaluate_rest_pose(self, instance):
+        self.rest_pose_calls.append(instance.value)
+        return self.rest_pose_ok
+
+    def mmd_runtime_physics_world_step_runtime(self, world, instance, dt_seconds, out_report):
+        self.step_calls.append(
+            (world.value, instance.value, float(getattr(dt_seconds, "value", dt_seconds)))
+        )
+        if self.step_status == rt.MMD_RUNTIME_STATUS_OK and out_report:
+            report = out_report._obj
+            report.tick.input_dt_seconds = float(getattr(dt_seconds, "value", dt_seconds))
+            report.tick.clamped_dt_seconds = float(getattr(dt_seconds, "value", dt_seconds))
+            report.tick.substeps = 2
+            report.tick.accumulator_seconds = 0.0
+            report.kinematic_rigidbodies_fed = 1
+            report.bones_written_back = self.bone_count
+        return self.step_status
+
+    def mmd_runtime_instance_clip_frame_batch_world_matrix_f32_len(self, handle, frame_count):
+        count = int(getattr(frame_count, "value", frame_count))
+        if self._batch_world is not None:
+            return len(self._batch_world)
+        return self.bone_count * 16 * count
+
+    def mmd_runtime_instance_clip_frame_batch_morph_weight_f32_len(self, handle, frame_count):
+        count = int(getattr(frame_count, "value", frame_count))
+        if self._batch_morph is not None:
+            return len(self._batch_morph)
+        return self.morph_count * count
+
+    def mmd_runtime_physics_world_bake_clip_frames(
+        self,
+        world,
+        instance,
+        clip,
+        start_frame,
+        frame_step,
+        dt_seconds,
+        frame_count,
+        out_world,
+        out_world_len,
+        out_morph,
+        out_morph_len,
+        out_last_report,
+    ):
+        call = (
+            world.value,
+            instance.value,
+            clip.value,
+            float(getattr(start_frame, "value", start_frame)),
+            float(getattr(frame_step, "value", frame_step)),
+            float(getattr(dt_seconds, "value", dt_seconds)),
+            int(getattr(frame_count, "value", frame_count)),
+            int(getattr(out_world_len, "value", out_world_len)),
+            int(getattr(out_morph_len, "value", out_morph_len)),
+        )
+        self.bake_calls.append(call)
+        if self.bake_status != rt.MMD_RUNTIME_STATUS_OK:
+            return self.bake_status
+        count = int(getattr(frame_count, "value", frame_count))
+        world_len = int(getattr(out_world_len, "value", out_world_len))
+        morph_len = int(getattr(out_morph_len, "value", out_morph_len))
+        if self._batch_world is not None:
+            values = self._batch_world
+        else:
+            values = [float(i + 1) for i in range(world_len)]
+        for i in range(min(world_len, len(values))):
+            out_world[i] = values[i]
+        if morph_len:
+            if self._batch_morph is not None:
+                morph_values = self._batch_morph
+            else:
+                morph_values = [0.1 * (i + 1) for i in range(morph_len)]
+            for i in range(min(morph_len, len(morph_values))):
+                out_morph[i] = morph_values[i]
+        if out_last_report:
+            report = out_last_report._obj
+            report.tick.input_dt_seconds = float(getattr(dt_seconds, "value", dt_seconds))
+            report.tick.clamped_dt_seconds = float(getattr(dt_seconds, "value", dt_seconds))
+            report.tick.substeps = count
+            report.tick.accumulator_seconds = 0.0
+            report.kinematic_rigidbodies_fed = 1
+            report.bones_written_back = self.bone_count
+        return self.bake_status
+
+
+class TestNativePhysicsFoundation(unittest.TestCase):
+    def test_feature_flags_are_zero_without_library(self):
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=None):
+            self.assertEqual(rt.get_runtime_feature_flags(), 0)
+            self.assertFalse(rt.is_native_physics_available())
+            self.assertFalse(native_pkg.is_native_physics_available())
+
+    def test_feature_flags_source_of_truth(self):
+        split_only = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=split_only):
+            self.assertEqual(rt.get_runtime_feature_flags(), rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION)
+            self.assertFalse(rt.is_native_physics_available())
+
+        full = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=full):
+            self.assertEqual(rt.get_runtime_feature_flags(), rt.MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS)
+            self.assertTrue(rt.is_native_physics_available())
+
+    def test_physics_world_requires_feature_flags(self):
+        lib = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertIsNone(MmdRuntimePhysicsWorld.from_pmx_bytes(b"pmx"))
+        self.assertEqual(lib.create_calls, [])
+
+    def test_physics_world_create_reset_count_and_free(self):
+        lib = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS)
+        instance = MmdRuntimeInstance(lib, ctypes.c_void_p(0x3003))
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            world = MmdRuntimePhysicsWorld.from_pmx_bytes(b"pmx")
+
+        self.assertIsNotNone(world)
+        self.assertEqual(world.handle.value, 0x4404)
+        self.assertEqual(lib.create_calls, [b"pmx"])
+        self.assertEqual(world.reset(instance), 7)
+        self.assertEqual(world.rigidbody_count(), 9)
+        world.free()
+        self.assertEqual(lib.reset_calls, [(0x4404, 0x3003)])
+        self.assertEqual(lib.count_calls, [0x4404])
+        self.assertEqual(lib.free_calls, [0x4404])
+        self.assertIsNone(world.handle)
+
+
+class TestNativePhysicsBake(unittest.TestCase):
+    """Focused fake-CDLL coverage for sequential physics bake wrapper."""
+
+    def _full_lib(self, **kwargs):
+        kwargs.setdefault("feature_flags", rt.MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS)
+        return _FakePhysicsLib(**kwargs)
+
+    def _world_and_handles(self, lib):
+        world = MmdRuntimePhysicsWorld(lib, ctypes.c_void_p(0x4404))
+        instance = MmdRuntimeInstance(lib, ctypes.c_void_p(0x3003))
+        clip = MmdRuntimeClip(lib, ctypes.c_void_p(0x2002))
+        return world, instance, clip
+
+    def test_prepare_for_sequential_bake_mode_rest_reset_order(self):
+        lib = self._full_lib()
+        world, instance, _clip = self._world_and_handles(lib)
+
+        self.assertTrue(world.prepare_for_sequential_bake(instance))
+        self.assertEqual(lib.set_mode_calls, [(0x3003, rt.MMD_RUNTIME_PHYSICS_MODE_LIVE)])
+        self.assertEqual(lib.rest_pose_calls, [0x3003])
+        self.assertEqual(lib.reset_calls, [(0x4404, 0x3003)])
+        self.assertEqual(instance.get_physics_mode(), rt.MMD_RUNTIME_PHYSICS_MODE_LIVE)
+
+    def test_prepare_fails_without_feature_flags(self):
+        lib = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION)
+        world, instance, _clip = self._world_and_handles(lib)
+
+        self.assertFalse(world.prepare_for_sequential_bake(instance))
+        self.assertEqual(lib.set_mode_calls, [])
+        self.assertEqual(lib.rest_pose_calls, [])
+        self.assertEqual(lib.reset_calls, [])
+
+    def test_bake_clip_frames_with_physics_contract_and_layout(self):
+        frame_count = 3
+        bone_count = 2
+        morph_count = 1
+        world_values = [float(i) for i in range(frame_count * bone_count * 16)]
+        morph_values = [0.25 * (i + 1) for i in range(frame_count * morph_count)]
+        lib = self._full_lib(
+            bone_count=bone_count,
+            morph_count=morph_count,
+            batch_world_matrices=world_values,
+            batch_morph_weights=morph_values,
+        )
+        world, instance, clip = self._world_and_handles(lib)
+
+        result = world.bake_clip_frames_with_physics(
+            instance,
+            clip,
+            start_frame=0.0,
+            frame_step=1.0,
+            frame_count=frame_count,
+            dt_seconds=1.0 / 30.0,
+        )
+
+        self.assertIsInstance(result, MmdRuntimeBatchEvaluation)
+        self.assertEqual(result.frame_count, frame_count)
+        self.assertEqual(result.bone_count, bone_count)
+        self.assertEqual(result.morph_count, morph_count)
+        self.assertEqual(len(result.world_matrices), frame_count * bone_count * 16)
+        self.assertEqual(len(result.morph_weights), frame_count * morph_count)
+        self.assertEqual(list(result.world_matrices), world_values)
+        self.assertEqual(list(result.morph_weights), morph_values)
+
+        # LIVE → rest → reset before bake
+        self.assertEqual(lib.set_mode_calls, [(0x3003, rt.MMD_RUNTIME_PHYSICS_MODE_LIVE)])
+        self.assertEqual(lib.rest_pose_calls, [0x3003])
+        self.assertEqual(lib.reset_calls, [(0x4404, 0x3003)])
+        self.assertEqual(len(lib.bake_calls), 1)
+        call = lib.bake_calls[0]
+        self.assertEqual(call[0], 0x4404)  # world
+        self.assertEqual(call[1], 0x3003)  # instance
+        self.assertEqual(call[2], 0x2002)  # clip
+        self.assertEqual(call[3], 0.0)  # start_frame
+        self.assertEqual(call[4], 1.0)  # frame_step (VMD units)
+        self.assertAlmostEqual(call[5], 1.0 / 30.0)  # explicit dt_seconds
+        self.assertEqual(call[6], frame_count)
+        self.assertEqual(call[7], frame_count * bone_count * 16)
+        self.assertEqual(call[8], frame_count * morph_count)
+
+    def test_bake_accepts_vmd_half_step_with_explicit_maya_60fps_dt(self):
+        """VMD frame_step 0.5 at Maya 60fps must pass dt=1/60, not 0.5/60=1/120.
+
+        frame_step is VMD timeline units (fixed 30fps). Maya sampling at 60fps
+        advances 0.5 VMD frames per output sample, but real elapsed time is
+        1/60 s. The old inferred expression ``frame_step / scene_fps`` wrongly
+        yielded 1/120. Callers must pass the actual sample dt in seconds.
+        """
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance,
+            clip,
+            start_frame=0.0,
+            frame_step=0.5,
+            frame_count=2,
+            dt_seconds=1.0 / 60.0,
+            prepare=False,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(len(lib.bake_calls), 1)
+        call = lib.bake_calls[0]
+        self.assertAlmostEqual(call[4], 0.5)  # VMD sample step unchanged
+        self.assertAlmostEqual(call[5], 1.0 / 60.0)  # correct wall dt
+        # Prove the forbidden inference is NOT what was passed.
+        self.assertNotAlmostEqual(call[5], 0.5 / 60.0)
+
+    def test_bake_rejects_non_positive_dt_step_count(self):
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 1.0, 3, dt_seconds=0.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 1.0, 3, dt_seconds=-1.0 / 30.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 0.0, 3, dt_seconds=1.0 / 30.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, -1.0, 3, dt_seconds=1.0 / 30.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 1.0, 0, dt_seconds=1.0 / 30.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 1.0, -1, dt_seconds=1.0 / 30.0)
+        )
+        self.assertEqual(lib.bake_calls, [])
+        # Invalid inputs must not reach prepare either (LIVE / rest / reset).
+        self.assertEqual(lib.set_mode_calls, [])
+        self.assertEqual(lib.rest_pose_calls, [])
+        self.assertEqual(lib.reset_calls, [])
+
+    def test_bake_rejects_non_finite_time_and_dt_inputs(self):
+        """NaN / ±inf for dt_seconds, frame_step, start_frame must not call native bake."""
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        cases = [
+            # dt_seconds
+            {"start_frame": 0.0, "frame_step": 1.0, "frame_count": 2, "dt_seconds": float("inf")},
+            {"start_frame": 0.0, "frame_step": 1.0, "frame_count": 2, "dt_seconds": float("-inf")},
+            {"start_frame": 0.0, "frame_step": 1.0, "frame_count": 2, "dt_seconds": float("nan")},
+            # frame_step
+            {"start_frame": 0.0, "frame_step": float("inf"), "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            {"start_frame": 0.0, "frame_step": float("-inf"), "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            {"start_frame": 0.0, "frame_step": float("nan"), "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            # start_frame
+            {"start_frame": float("inf"), "frame_step": 1.0, "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            {"start_frame": float("-inf"), "frame_step": 1.0, "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            {"start_frame": float("nan"), "frame_step": 1.0, "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+        ]
+        for kwargs in cases:
+            with self.subTest(**kwargs):
+                self.assertIsNone(
+                    world.bake_clip_frames_with_physics(instance, clip, **kwargs)
+                )
+        self.assertEqual(lib.bake_calls, [])
+        self.assertEqual(lib.step_calls, [])
+        self.assertEqual(lib.set_mode_calls, [])
+        self.assertEqual(lib.rest_pose_calls, [])
+        self.assertEqual(lib.reset_calls, [])
+
+    def test_bake_rejects_lossy_frame_count_coercion(self):
+        """Fractional floats and bools must not be silently truncated into frame_count."""
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        for frame_count in (1.5, 2.9, True, False, 0.0, -3.0, float("inf"), float("nan")):
+            with self.subTest(frame_count=frame_count):
+                self.assertIsNone(
+                    world.bake_clip_frames_with_physics(
+                        instance, clip, 0.0, 1.0, frame_count, dt_seconds=1.0 / 30.0
+                    )
+                )
+        # Exact integer-like floats remain acceptable.
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2.0, dt_seconds=1.0 / 30.0, prepare=False
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(len(lib.bake_calls), 1)
+        self.assertEqual(lib.bake_calls[0][6], 2)
+
+    def test_bake_fail_closed_without_feature_flags(self):
+        lib = _FakePhysicsLib(
+            feature_flags=rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION,
+        )
+        world, instance, clip = self._world_and_handles(lib)
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(
+                instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0
+            )
+        )
+        self.assertEqual(lib.bake_calls, [])
+
+    def test_bake_fail_closed_when_bake_symbol_missing(self):
+        lib = self._full_lib(missing_symbols={"mmd_runtime_physics_world_bake_clip_frames"})
+        world, instance, clip = self._world_and_handles(lib)
+        # prepare still runs when bake symbol is missing only after prepare path...
+        # bake checks bake_func before prepare when feature flags pass.
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0, prepare=False
+        )
+        self.assertIsNone(result)
+        self.assertEqual(lib.bake_calls, [])
+
+    def test_bake_returns_none_on_unsupported_status(self):
+        lib = self._full_lib(bake_status=rt.MMD_RUNTIME_STATUS_UNSUPPORTED)
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0
+        )
+        self.assertIsNone(result)
+        self.assertEqual(len(lib.bake_calls), 1)
+
+    def test_bake_returns_none_on_error_status(self):
+        lib = self._full_lib(bake_status=rt.MMD_RUNTIME_STATUS_ERROR)
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0
+        )
+        self.assertIsNone(result)
+        self.assertEqual(len(lib.bake_calls), 1)
+
+    def test_bake_skips_prepare_when_requested(self):
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance,
+            clip,
+            start_frame=10.0,
+            frame_step=2.0,
+            frame_count=2,
+            dt_seconds=2.0 / 30.0,
+            prepare=False,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(lib.set_mode_calls, [])
+        self.assertEqual(lib.rest_pose_calls, [])
+        self.assertEqual(lib.reset_calls, [])
+        self.assertAlmostEqual(lib.bake_calls[0][4], 2.0)
+        self.assertAlmostEqual(lib.bake_calls[0][5], 2.0 / 30.0)
+
+    def test_step_runtime_contract(self):
+        lib = self._full_lib()
+        world, instance, _clip = self._world_and_handles(lib)
+        report = world.step_runtime(instance, 1.0 / 30.0)
+        self.assertIsNotNone(report)
+        self.assertAlmostEqual(report.tick.input_dt_seconds, 1.0 / 30.0, places=6)
+        self.assertEqual(report.tick.substeps, 2)
+        self.assertEqual(report.bones_written_back, 2)
+        self.assertEqual(len(lib.step_calls), 1)
+        self.assertEqual(lib.step_calls[0][:2], (0x4404, 0x3003))
+        self.assertAlmostEqual(lib.step_calls[0][2], 1.0 / 30.0, places=6)
+
+    def test_step_runtime_rejects_non_finite_or_negative_dt(self):
+        """NaN / ±inf / negative dt_seconds must not issue native step_runtime."""
+        lib = self._full_lib()
+        world, instance, _clip = self._world_and_handles(lib)
+        for dt in (float("inf"), float("-inf"), float("nan"), -0.001, "not-a-number"):
+            with self.subTest(dt=dt):
+                self.assertIsNone(world.step_runtime(instance, dt))
+        self.assertEqual(lib.step_calls, [])
+
+    def test_step_runtime_fail_closed_without_features(self):
+        lib = _FakePhysicsLib(feature_flags=0)
+        world, instance, _clip = self._world_and_handles(lib)
+        self.assertIsNone(world.step_runtime(instance, 1.0 / 30.0))
+        self.assertEqual(lib.step_calls, [])
+
+    def test_explicit_free_after_bake(self):
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0
+        )
+        self.assertIsNotNone(result)
+        world.free()
+        self.assertEqual(lib.free_calls, [0x4404])
+        self.assertIsNone(world.handle)
+        # Buffers remain usable after world free (caller-owned)
+        self.assertEqual(len(result.world_matrices), 2 * 2 * 16)
+
+    def test_set_physics_mode_fail_closed_without_symbol(self):
+        lib = self._full_lib(missing_symbols={"mmd_runtime_instance_set_physics_mode"})
+        instance = MmdRuntimeInstance(lib, ctypes.c_void_p(0x3003))
+        self.assertFalse(instance.set_physics_mode(rt.MMD_RUNTIME_PHYSICS_MODE_LIVE))
 
 
 if __name__ == "__main__":

@@ -38,6 +38,7 @@ from tests.common.maya_location import resolve_path_for_maya_process as _resolve
 DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_CMAKE_CONFIG = "Debug"
 DEFAULT_CPP_VERIFY_MAYA_VERSIONS = ("2024", "2025", "2026", "2027")
+MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = 0x3
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
 RELEASE_ADDICTION_INTERPOLATION_EYE_MAX = "2.0"
 RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG = "5.0"
@@ -110,6 +111,62 @@ def _without_option(args: list[str], name: str) -> list[str]:
 def _has_flag(args: list[str], name: str) -> bool:
     """Return True if a boolean flag is present in positional arguments."""
     return name in args
+
+
+def _cargo_args_with_physics_feature(args: list[str]) -> list[str]:
+    """Return cargo args that enable the native Bullet physics runtime feature."""
+    feature = "physics-bullet-native"
+    cargo_args = list(args)
+    for index, value in enumerate(cargo_args):
+        if value == "--features":
+            if index + 1 >= len(cargo_args):
+                raise ValueError("--features requires a value")
+            features = cargo_args[index + 1].replace(",", " ").split()
+            if feature not in features:
+                features.append(feature)
+                cargo_args[index + 1] = " ".join(features)
+            return cargo_args
+        if value.startswith("--features="):
+            features = value.split("=", 1)[1].replace(",", " ").split()
+            if feature not in features:
+                features.append(feature)
+                cargo_args[index] = "--features=" + " ".join(features)
+            return cargo_args
+    cargo_args.extend(["--features", feature])
+    return cargo_args
+
+
+def _native_runtime_smoke_code() -> str:
+    """Return Python code that verifies the runtime ABI and required features."""
+    return (
+        "from mmd_tools.core.native.mmd_anim_runtime import "
+        "get_mmd_runtime_library, get_runtime_library_path; "
+        "required = "
+        f"{MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS}; "
+        "lib = get_mmd_runtime_library(); "
+        "path = get_runtime_library_path(); "
+        "flags = lib.mmd_runtime_feature_flags() if lib and hasattr(lib, 'mmd_runtime_feature_flags') else 0; "
+        "abi = lib.mmd_runtime_abi_version() if lib else 0; "
+        "print(path); "
+        "print({'abi': abi, 'featureFlags': hex(flags), 'requiredFeatureFlags': hex(required)}); "
+        "raise SystemExit(0 if lib and abi == 2 and (flags & required) == required else 1)"
+    )
+
+
+def _configure_bullet3_dir(session: nox.Session, env: dict[str, str]) -> None:
+    """Set a local Bullet checkout for physics-enabled mmd-anim builds when available."""
+    if env.get("MMD_ANIM_BULLET3_DIR"):
+        return
+    candidates = [
+        ROOT / "external" / "mmd-anim" / "bullet3",
+        ROOT.parent / "MMDDev" / "bullet3",
+        ROOT.parent / "bullet3",
+    ]
+    for candidate in candidates:
+        if (candidate / "src").exists():
+            env["MMD_ANIM_BULLET3_DIR"] = str(candidate.resolve())
+            session.log(f"Using Bullet sources: {env['MMD_ANIM_BULLET3_DIR']}")
+            return
 
 
 def _require_build_path(session: nox.Session, value: str, option_name: str) -> Path:
@@ -855,6 +912,7 @@ def ffi_build(session: nox.Session) -> None:
     args = session.posargs or ["--release"]
     cargo_target_dir_raw = _option(args, "--cargo-target-dir", "")
     cargo_args = _without_option(args, "--cargo-target-dir") if cargo_target_dir_raw else list(args)
+    cargo_args = _cargo_args_with_physics_feature(cargo_args)
     cargo_target_dir = None
     if cargo_target_dir_raw:
         cargo_target_dir = _require_build_path(session, cargo_target_dir_raw, "--cargo-target-dir")
@@ -875,6 +933,7 @@ def ffi_build(session: nox.Session) -> None:
     env = os.environ.copy()
     if cargo_target_dir is not None:
         env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+    _configure_bullet3_dir(session, env)
     session.run(
         "cargo",
         "build",
@@ -901,14 +960,7 @@ def native_smoke(session: nox.Session) -> None:
     env = os.environ.copy()
     if ffi_path:
         env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
-    code = (
-        "from mmd_tools.core.native.mmd_anim_runtime import "
-        "get_mmd_runtime_library, get_runtime_library_path; "
-        "lib = get_mmd_runtime_library(); "
-        "print(get_runtime_library_path()); "
-        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
-    )
-    session.run(sys.executable, "-c", code, env=env, external=True)
+    session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=env, external=True)
 
 
 @nox.session(venv_backend="none")
@@ -1017,6 +1069,150 @@ def maya_viewport_capture(session: nox.Session) -> None:
         width,
         "--height",
         height,
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def native_physics_bake_capture(session: nox.Session) -> None:
+    """Import PMX+VMD with native physics bake and capture a mayapy PNG + report.
+
+    Requires a physics-feature-enabled mmd-anim-ffi via ``--ffi-path`` (sets
+    ``MMD_ANIM_FFI_PATH``). Uses mayapy only — no Maya GUI.
+
+    The runner imports with ``bake_mode=True, use_native_physics_bake=True``,
+    writes a non-empty PNG playblast and a JSON report with feature flags,
+    physics routing outcome, joint matrix samples, and output paths.
+
+    Examples:
+        uvx nox -s native_physics_bake_capture -- --ffi-path build/mmd-anim-physics-target/debug
+        uvx nox -s native_physics_bake_capture -- --maya 2024 --ffi-path build/mmd-anim-physics-target/debug \\
+            --pmx tests/data/mmt_test_model.pmx --vmd tests/data/mmt_test_model_test_motion.vmd \\
+            --out build/captures/native_physics_bake.png \\
+            --report build/reports/native_physics_bake_capture.json --frame 0
+    """
+    args = list(session.posargs)
+    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    ffi_path = _option(args, "--ffi-path", "")
+    if not ffi_path:
+        raise ValueError(
+            "native_physics_bake_capture requires --ffi-path pointing to a "
+            "physics-feature-enabled mmd-anim-ffi directory or DLL"
+        )
+    pmx = _option(args, "--pmx", str(ROOT / "tests/data/mmt_test_model.pmx"))
+    vmd = _option(args, "--vmd", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd"))
+    out = _option(args, "--out", str(ROOT / "build/captures/native_physics_bake.png"))
+    report = _option(args, "--report", str(ROOT / "build/reports/native_physics_bake_capture.json"))
+    frame = _option(args, "--frame", "0")
+    fps = _option(args, "--fps", "30")
+    width = _option(args, "--width", "640")
+    height = _option(args, "--height", "480")
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    resolved_ffi = _resolve_existing_or_repo_path(ffi_path)
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_ANIM_FFI_PATH=str(resolved_ffi),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/native_physics_bake_capture.py"),
+        "--pmx",
+        _mayapy_arg_path(mayapy, pmx),
+        "--vmd",
+        _mayapy_arg_path(mayapy, vmd),
+        "--out",
+        _mayapy_arg_path(mayapy, out),
+        "--report",
+        _mayapy_arg_path(mayapy, report),
+        "--frame",
+        frame,
+        "--fps",
+        fps,
+        "--width",
+        width,
+        "--height",
+        height,
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def native_physics_bake_route_e2e(session: nox.Session) -> None:
+    """Dual-import E2E gate: native physics bake vs baseline bake routing.
+
+    Requires a physics-feature-enabled mmd-anim-ffi via ``--ffi-path`` (sets
+    ``MMD_ANIM_FFI_PATH``). Imports a real physics PMX twice in clean scenes:
+
+    1. baseline: ``bake_mode=True``, ``use_native_physics_bake=False``
+    2. native:   ``bake_mode=True``, ``use_native_physics_bake=True``
+
+    Fails unless native routing was used, at least one physics-controlled bone
+    has a measurable local-transform delta vs baseline, and every model-scoped
+    ``mmd_physics_preview_constraint`` is ``nodeState == 2`` after native import.
+
+    Defaults to the hair physics fixture + known short motion. Does not change
+    the single-import PNG capture session.
+
+    Examples:
+        uvx nox -s native_physics_bake_route_e2e -- --ffi-path build/mmd-anim-physics-target/debug
+        uvx nox -s native_physics_bake_route_e2e -- --maya 2024 --ffi-path build/mmd-anim-physics-target/debug \\
+            --pmx tests/data/physics/test_hair_physics.pmx \\
+            --vmd tests/data/mmt_test_model_test_motion.vmd \\
+            --eval-frames 0,1,2,3,4,5 \\
+            --report build/reports/native_physics_bake_route_e2e.json
+    """
+    args = list(session.posargs)
+    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    ffi_path = _option(args, "--ffi-path", "")
+    if not ffi_path:
+        raise ValueError(
+            "native_physics_bake_route_e2e requires --ffi-path pointing to a "
+            "physics-feature-enabled mmd-anim-ffi directory or DLL"
+        )
+    pmx = _option(args, "--pmx", str(ROOT / "tests/data/physics/test_hair_physics.pmx"))
+    vmd = _option(args, "--vmd", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd"))
+    report = _option(
+        args,
+        "--report",
+        str(ROOT / "build/reports/native_physics_bake_route_e2e.json"),
+    )
+    eval_frames = _option(args, "--eval-frames", "0,1,2,3,4,5")
+    delta_epsilon = _option(args, "--delta-epsilon", "0.001")
+    fps = _option(args, "--fps", "30")
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    resolved_ffi = _resolve_existing_or_repo_path(ffi_path)
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_ANIM_FFI_PATH=str(resolved_ffi),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/native_physics_bake_capture.py"),
+        "--verify-bake-route",
+        "--pmx",
+        _mayapy_arg_path(mayapy, pmx),
+        "--vmd",
+        _mayapy_arg_path(mayapy, vmd),
+        "--report",
+        _mayapy_arg_path(mayapy, report),
+        "--eval-frames",
+        eval_frames,
+        "--delta-epsilon",
+        delta_epsilon,
+        "--fps",
+        fps,
         env=env,
         external=True,
     )
@@ -1610,6 +1806,8 @@ def cpp_verify(session: nox.Session) -> None:
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
 
+    env = os.environ.copy()
+    _configure_bullet3_dir(session, env)
     session.run(
         "cargo",
         "build",
@@ -1618,17 +1816,15 @@ def cpp_verify(session: nox.Session) -> None:
         "--manifest-path",
         "external/mmd-anim/Cargo.toml",
         "--release",
+        "--features",
+        "physics-bullet-native",
+        env=env,
         external=True,
     )
 
-    code = (
-        "from mmd_tools.core.native.mmd_anim_runtime import "
-        "get_mmd_runtime_library, get_runtime_library_path; "
-        "lib = get_mmd_runtime_library(); "
-        "print(get_runtime_library_path()); "
-        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
-    )
-    session.run(sys.executable, "-c", code, external=True)
+    runtime_env = os.environ.copy()
+    runtime_env["MMD_ANIM_FFI_PATH"] = str((ROOT / "external" / "mmd-anim" / "target" / "release").resolve())
+    session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=runtime_env, external=True)
 
     _cmake_configure(session, version, config)
     _cmake_build(session, version, config)
@@ -1644,7 +1840,12 @@ def cpp_verify(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_TOOLS_CPP_CONFIG=config,
+        MMD_ANIM_FFI_PATH=runtime_env["MMD_ANIM_FFI_PATH"],
+    )
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),

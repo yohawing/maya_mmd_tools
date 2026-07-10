@@ -140,9 +140,12 @@ from . import vmd_profile
 try:
     from ..core.native.mmd_anim_runtime import (
         is_mmd_runtime_available,
+        is_native_physics_available,
         MmdRuntimeModel,
         MmdRuntimeClip,
         MmdRuntimeInstance,
+        MmdRuntimePhysicsWorld,
+        get_runtime_feature_flags,
     )
     from ..core.native.mmd_anim_runtime_local_channels import (
         compute_maya_local_channels,
@@ -153,7 +156,14 @@ except Exception:
     HAS_MMD_RUNTIME = False
     def is_mmd_runtime_available():
         return False
-    MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = None  # type: ignore
+
+    def is_native_physics_available():
+        return False
+
+    def get_runtime_feature_flags():
+        return 0
+
+    MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = MmdRuntimePhysicsWorld = None  # type: ignore
     compute_maya_local_channels = None  # type: ignore
     compute_maya_local_channels_batch = None  # type: ignore
 
@@ -240,6 +250,7 @@ class VmdConverter:
         pmx_path: str = None,
         profile: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
+        use_native_physics_bake: bool = False,
     ) -> VmdImportContext:
         """Return import-run state for convert() dispatch and split helpers."""
         return VmdImportContext(
@@ -255,6 +266,7 @@ class VmdConverter:
             progress_callback=progress_callback,
             import_camera_animation=bool(self.import_camera_animation),
             import_light_animation=bool(self.import_light_animation),
+            use_native_physics_bake=bool(use_native_physics_bake),
         )
 
     def _runtime_local_decompose_context(self) -> VmdRuntimeLocalDecomposeContext:
@@ -438,6 +450,7 @@ class VmdConverter:
         pmx_path: str = None,
         profile: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
+        use_native_physics_bake: bool = False,
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
@@ -456,6 +469,8 @@ class VmdConverter:
             pmx_path: PMX ファイルパス（pmx_bytes がない場合に読み込みに使用）
             profile: import action へ返す診断を書き込む mutable dict
             progress_callback: フェーズ進捗通知コールバック
+            use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する
+                （デフォルト OFF。feature 不足や失敗時は既存 runtime batch へ fallback）
 
         Returns:
             変換が成功した場合True、失敗した場合False
@@ -475,6 +490,7 @@ class VmdConverter:
             pmx_path=pmx_path,
             profile=profile,
             progress_callback=progress_callback,
+            use_native_physics_bake=use_native_physics_bake,
         )
 
         def _emit_progress(value: int) -> None:
@@ -547,11 +563,17 @@ class VmdConverter:
                 import_context.bake_mode,
             ):
                 self.logger.info("Converting with mmd-anim runtime high-precision bake path")
+                # Native physics bake is opt-in and only active when both bake_mode
+                # and use_native_physics_bake are True; otherwise existing path.
                 runtime_success = self._convert_using_mmd_runtime(
                     vmd_data=import_context.vmd_data,
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,
+                    use_native_physics_bake=bool(
+                        import_context.bake_mode and import_context.use_native_physics_bake
+                    ),
+                    profile=import_context.profile,
                 )
                 if runtime_success:
                     self.logger.info("mmd-anim runtime high-precision bake completed")
@@ -720,10 +742,17 @@ class VmdConverter:
         vmd_bytes: bytes,
         pmx_bytes: bytes,
         pmx_path: str,
+        use_native_physics_bake: bool = False,
+        profile: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         mmd-anim runtime を使って全フレームを評価し、正確なポーズをベイクする。
         付与変形・IK・MMDベジェ補間はすべて runtime 側で解決済み。
+
+        ``use_native_physics_bake`` が True のときは、feature flags / world 作成が
+        成功しサンプルが一様な場合に限って sequential physics bake を試行し、
+        結果は既存の matrix/morph キャッシュ適用経路へ流す。失敗時は物理なし
+        runtime batch へ silent fallback する（例外にしない）。
         """
         resolved_pmx_bytes, pmx_morph_names = resolve_runtime_pmx_bytes_and_morph_names(
             pmx_bytes,
@@ -754,6 +783,7 @@ class VmdConverter:
             model.free()
             return False
 
+        physics_world = None
         try:
             runtime_start = time.perf_counter()
             # フレーム範囲の決定。Python VMD parser が空/失敗でも、
@@ -775,20 +805,61 @@ class VmdConverter:
             if self.bone_index_to_joint:
                 self._build_runtime_bind_world_maps()
 
+            physics_routing: Dict[str, Any] = {
+                "requested": bool(use_native_physics_bake),
+                "used": False,
+                "feature_flags": int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
+                "fps": float(self.fps),
+            }
+            if use_native_physics_bake:
+                if not HAS_MMD_RUNTIME or MmdRuntimePhysicsWorld is None:
+                    physics_routing["reason"] = "runtime_unavailable"
+                    self.logger.warning(
+                        "Native physics bake requested but mmd-anim runtime is unavailable; "
+                        "falling back to non-physics runtime batch"
+                    )
+                elif not is_native_physics_available():
+                    physics_routing["reason"] = "feature_flags_unavailable"
+                    self.logger.warning(
+                        "Native physics bake requested but feature flags missing "
+                        "(flags=0x%x); falling back to non-physics runtime batch",
+                        physics_routing["feature_flags"],
+                    )
+                else:
+                    physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(resolved_pmx_bytes)
+                    if physics_world is None:
+                        physics_routing["reason"] = "physics_world_create_failed"
+                        self.logger.warning(
+                            "Native physics world could not be created from PMX bytes; "
+                            "falling back to non-physics runtime batch"
+                        )
+                    else:
+                        physics_routing["world_created"] = True
+
             # キャッシュ収集: 評価結果を API 配列へ直接保持（cmds.xform / setKeyframe を内側ループから排除）
+            # Native physics batch (when used) reuses the same matrix/morph → channel apply path.
             runtime_cache = collect_runtime_bake_cache(
                 self._runtime_cache_collect_context(),
                 instance,
                 clip,
                 bake_samples,
+                physics_world=physics_world,
+                fps=float(self.fps),
+                use_native_physics_bake=bool(use_native_physics_bake and physics_world is not None),
             )
+            if getattr(runtime_cache, "physics_bake", None):
+                physics_routing.update(runtime_cache.physics_bake)
+            if isinstance(profile, dict):
+                profile.setdefault("vmd_converter", {})["native_physics_bake"] = dict(physics_routing)
             self.logger.info(
                 f"mmd-anim runtime pose evaluation and cache completed "
-                f"(frames={len(runtime_cache.baked_frames)}, elapsed={runtime_cache.eval_elapsed:.3f}s)"
+                f"(frames={len(runtime_cache.baked_frames)}, elapsed={runtime_cache.eval_elapsed:.3f}s, "
+                f"physics_used={physics_routing.get('used', False)})"
             )
             self.logger.info(
                 "runtime bake cache timings: "
                 f"mode={'batch' if runtime_cache.batch_mode else 'per-frame'}, "
+                f"physics={'yes' if physics_routing.get('used') else 'no'}, "
                 f"eval_copy={runtime_cache.eval_copy_elapsed:.3f}s, "
                 f"batch_unpack={runtime_cache.batch_unpack_elapsed:.3f}s, "
                 f"local_decompose={runtime_cache.local_elapsed:.3f}s, "
@@ -818,6 +889,12 @@ class VmdConverter:
             return True
 
         finally:
+            # Explicit physics world lifetime: free before instance/clip/model.
+            if physics_world is not None:
+                try:
+                    physics_world.free()
+                except Exception:
+                    self.logger.debug("physics world free failed", exc_info=True)
             # リソース解放
             instance.free()
             clip.free()

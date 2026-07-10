@@ -49,6 +49,7 @@
       "motion_scale": 1.0,
       "clear_existing_motion": false,
       "resample_curves": false,
+      "use_native_physics_bake": false,
       "import_camera_animation": true,
       "import_light_animation": true,
       "use_mmd_runtime_bake": true,

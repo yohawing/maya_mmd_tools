@@ -9,10 +9,11 @@ PMX モデルと VMD モーションの忠実なランタイム評価を提供�
 - VMD バイト列 + モデルからのクリップ構築
 - 任意フレーム (float) での評価
 - 連続フレーム範囲の batch 評価 (対応 DLL のみ)
+- 実験的な native physics world feature 判定と world handle 作成
 - ワールド行列、スキニング行列、モーフウェイト、IK 状態の取得
 
 注意:
-- 物理演算は mmd-anim 側で提供されません (ホスト側で別途対応)。
+- 物理演算 ABI は実験的で、feature flags が揃う DLL でのみ使用します。
 - 事前ビルドされた mmd_runtime_ffi.dll (Windows) / libmmd_runtime_ffi.dylib (macOS) が必要です。
 - ライブラリが見つからない場合、すべての公開 API は安全に失敗 (None / False) します。
 
@@ -31,11 +32,22 @@ from typing import Any, Dict, List, Optional, Tuple
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native import mmd_anim_runtime_loader as _runtime_loader
 from mmd_tools.core.native.mmd_anim_runtime_types import (
+    MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE as _MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE,
+    MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION as _MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION,
+    MMD_RUNTIME_PHYSICS_MODE_LIVE as _MMD_RUNTIME_PHYSICS_MODE_LIVE,
     MMD_RUNTIME_RIG_BONE_FIXED_AXIS as _MMD_RUNTIME_RIG_BONE_FIXED_AXIS,
+    MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS as _MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS,
+    MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL as _MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL,
+    MMD_RUNTIME_STATUS_ERROR as _MMD_RUNTIME_STATUS_ERROR,
+    MMD_RUNTIME_STATUS_INVALID_INPUT as _MMD_RUNTIME_STATUS_INVALID_INPUT,
+    MMD_RUNTIME_STATUS_OK as _MMD_RUNTIME_STATUS_OK,
+    MMD_RUNTIME_STATUS_UNSUPPORTED as _MMD_RUNTIME_STATUS_UNSUPPORTED,
     MmdRuntimeBatchEvaluation as MmdRuntimeBatchEvaluation,
     MmdRuntimeFfiAppendConfig as MmdRuntimeFfiAppendConfig,
     MmdRuntimeFfiByteBuffer as MmdRuntimeFfiByteBuffer,
     MmdRuntimeFfiIkSolveStats as MmdRuntimeFfiIkSolveStats,
+    MmdRuntimeFfiPhysicsStepStats as MmdRuntimeFfiPhysicsStepStats,
+    MmdRuntimeFfiPhysicsWorldStepReport as MmdRuntimeFfiPhysicsWorldStepReport,
     MmdRuntimeFfiRigBone as MmdRuntimeFfiRigBone,
     MmdRuntimeFfiRigIkLink as MmdRuntimeFfiRigIkLink,
     MmdRuntimeLocalChannelBatch,
@@ -48,6 +60,7 @@ from mmd_tools.core.native.mmd_anim_runtime_handles import (
     MmdRuntimeClip,
     MmdRuntimeInstance,
     MmdRuntimeModel,
+    MmdRuntimePhysicsWorld,
 )
 from mmd_tools.core.native import mmd_anim_runtime_local_channels as _runtime_local_channels
 from mmd_tools.core.native.mmd_anim_runtime_parsed_model import MmdParsedModel
@@ -67,6 +80,15 @@ MMD_RUNTIME_RIG_BONE_FIXED_AXIS = _MMD_RUNTIME_RIG_BONE_FIXED_AXIS
 # ABI 定数 (mmd_runtime.h より)
 # ------------------------------------------------------------------
 MMD_RUNTIME_ABI_VERSION = 2
+MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION = _MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION
+MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE = _MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE
+MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = _MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS
+MMD_RUNTIME_PHYSICS_MODE_LIVE = _MMD_RUNTIME_PHYSICS_MODE_LIVE
+MMD_RUNTIME_STATUS_OK = _MMD_RUNTIME_STATUS_OK
+MMD_RUNTIME_STATUS_INVALID_INPUT = _MMD_RUNTIME_STATUS_INVALID_INPUT
+MMD_RUNTIME_STATUS_UNSUPPORTED = _MMD_RUNTIME_STATUS_UNSUPPORTED
+MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL = _MMD_RUNTIME_STATUS_BUFFER_TOO_SMALL
+MMD_RUNTIME_STATUS_ERROR = _MMD_RUNTIME_STATUS_ERROR
 
 def _find_library() -> Optional[Path]:
     """Compatibility wrapper for runtime library discovery."""
@@ -172,6 +194,25 @@ def is_mmd_runtime_available() -> bool:
     return _runtime_loader.is_mmd_runtime_available()
 
 
+def get_runtime_feature_flags() -> int:
+    """Return mmd-anim runtime feature flags, or 0 when unavailable."""
+    lib = get_mmd_runtime_library()
+    flags_func = getattr(lib, "mmd_runtime_feature_flags", None) if lib is not None else None
+    if flags_func is None:
+        return 0
+    try:
+        return int(flags_func())
+    except Exception as exc:
+        logger.error("mmd_runtime_feature_flags failed: %s", exc, exc_info=True)
+        return 0
+
+
+def is_native_physics_available() -> bool:
+    """Return True when the loaded runtime advertises all required physics features."""
+    flags = get_runtime_feature_flags()
+    return (flags & MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS) == MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS
+
+
 def compute_maya_local_channels(
     world_matrices: List[float],
     parent_indices: List[int],
@@ -235,6 +276,7 @@ def compute_maya_local_channels_batch(
 MmdRuntimeModel._get_library = staticmethod(lambda: get_mmd_runtime_library())
 MmdRuntimeClip._get_library = staticmethod(lambda: get_mmd_runtime_library())
 MmdRuntimeInstance._get_library = staticmethod(lambda: get_mmd_runtime_library())
+MmdRuntimePhysicsWorld._get_library = staticmethod(lambda: get_mmd_runtime_library())
 
 
 # ------------------------------------------------------------------

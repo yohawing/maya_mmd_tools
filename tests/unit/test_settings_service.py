@@ -46,6 +46,7 @@ class _FakeSettingsStore:
                     "motion_scale": 2.5,
                     "clear_existing_motion": True,
                     "resample_curves": True,
+                    "use_native_physics_bake": True,
                 },
             },
             "export": {"general": {"export_format": "pmd", "apply_scale": False}},
@@ -234,6 +235,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["clear_existing_motion"])
         self.assertFalse(options["resample_curves"])
         self.assertFalse(options["bake_mode"])
+        self.assertTrue(options["use_native_physics_bake"])
         self.assertEqual(options["target_model"], "model")
 
     def test_build_vmd_import_options_preserves_resample_curves_in_dev_mode(self):
@@ -243,6 +245,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
 
         self.assertTrue(options["resample_curves"])
         self.assertFalse(options["bake_mode"])
+        self.assertTrue(options["use_native_physics_bake"])
         self.assertIsNone(options["target_model"])
 
     def test_build_export_options_and_texture_dialog_setting(self):

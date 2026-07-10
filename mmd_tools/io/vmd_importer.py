@@ -30,6 +30,23 @@ def _repair_physics_preview_feedback(target_model: Optional[str], logger) -> int
         return 0
 
 
+def _set_physics_preview_feedback_enabled(target_model: Optional[str], enabled: bool, logger) -> int:
+    """Toggle only generated Bullet preview constraints for one model."""
+    if not target_model or not cmds.objExists(target_model):
+        return 0
+    try:
+        from ..converters import PhysicsConverter
+
+        changed = PhysicsConverter().set_existing_bullet_preview_feedback_enabled(target_model, enabled)
+        if changed:
+            action = "Restored" if enabled else "Disabled"
+            logger.info("%s %d Bullet physics preview feedback connection(s) after VMD import", action, changed)
+        return changed
+    except Exception as exc:
+        logger.warning(f"Failed to toggle Bullet physics preview feedback after VMD import: {exc}")
+        return 0
+
+
 def import_vmd_file(
     parser: Any,
     filepath: str,
@@ -49,6 +66,7 @@ def import_vmd_file(
             - pmx_path: 対応する PMX ファイルのパス
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
+            - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
             - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
@@ -157,6 +175,7 @@ def import_vmd_file(
         if not isinstance(profile, dict):
             profile = {}
             options["profile"] = profile
+        use_native_physics_bake = bool(options.get("use_native_physics_bake", False))
         try:
             with vmd_profile.scope("vmd_converter_convert"):
                 success = converter.convert(
@@ -169,15 +188,67 @@ def import_vmd_file(
                     pmx_path=pmx_path,
                     profile=profile,
                     progress_callback=progress_callback,
+                    use_native_physics_bake=use_native_physics_bake,
                 )
         finally:
             vmd_profile.flush("import_vmd_file")
 
         if success:
             logger.info("VMD file import completed")
-            repaired_physics = _repair_physics_preview_feedback(target_model, logger)
-            if repaired_physics:
-                profile["physics_preview_repaired"] = repaired_physics
+            # Ensure Root preference attr + live AE watch for older models that
+            # enter the VMD path without a prior physics-setup rewrite. Never
+            # overwrites an existing user value. Native bake exclusion is still
+            # temporary and must not write this preference.
+            from ..converters import PhysicsConverter
+
+            if target_model:
+                try:
+                    PhysicsConverter.ensure_legacy_bullet_enabled_control(target_model)
+                except Exception as exc:
+                    logger.warning(
+                        f"Failed to ensure Root mmd_legacy_bullet_enabled control: {exc}"
+                    )
+
+            # Native physics bake writes final joint animation curves. Do not reconnect
+            # Bullet preview/constraint feedback that would overwrite the baked result.
+            # Skip only when the converter actually used native physics bake — not merely
+            # when the caller requested it (fallback still needs preview repair).
+            # Native bake exclusion is temporary and must not overwrite the user's
+            # Root.mmd_legacy_bullet_enabled preference.
+            native_physics_used = bool(
+                (profile.get("vmd_converter") or {})
+                .get("native_physics_bake", {})
+                .get("used")
+            )
+            if native_physics_used:
+                disabled_physics = _set_physics_preview_feedback_enabled(target_model, False, logger)
+                logger.info(
+                    "Native physics bake owns final joint animation; Bullet preview feedback is disabled for this model"
+                )
+                profile["physics_preview_repair_skipped"] = "native_physics_bake_used"
+                profile["legacy_physics_preview_disabled"] = disabled_physics
+            else:
+                legacy_bullet_enabled = PhysicsConverter.get_legacy_bullet_enabled(target_model)
+                profile["legacy_bullet_enabled"] = bool(legacy_bullet_enabled)
+                if not legacy_bullet_enabled:
+                    # User turned off the complete legacy Maya Bullet setup for
+                    # this model. Re-apply the persistent Root state here as
+                    # scriptJobs do not survive reopening a saved scene.
+                    disabled_physics = PhysicsConverter.apply_legacy_bullet_enabled_from_attr(
+                        target_model
+                    )
+                    logger.info(
+                        "Root mmd_legacy_bullet_enabled is False; leaving legacy Bullet setup suspended"
+                    )
+                    profile["physics_preview_repair_skipped"] = "legacy_bullet_disabled"
+                    profile["legacy_physics_preview_disabled"] = disabled_physics
+                else:
+                    restored_physics = _set_physics_preview_feedback_enabled(target_model, True, logger)
+                    if restored_physics:
+                        profile["legacy_physics_preview_restored"] = restored_physics
+                    repaired_physics = _repair_physics_preview_feedback(target_model, logger)
+                    if repaired_physics:
+                        profile["physics_preview_repaired"] = repaired_physics
             if is_mmd_runtime_available():
                 # Phase 2: ライブノードの自動作成オプション
                 if options.get("use_live_runtime", False) and target_model:

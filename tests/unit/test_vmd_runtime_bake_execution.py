@@ -147,7 +147,15 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
 
         apply_calls = []
 
-        def capture_apply(_joint_values, _joint_static, _bake_times, baked_frames, morph_cache, _pmx_morph_names):
+        def capture_apply(
+            _context,
+            _joint_values,
+            _joint_static,
+            _bake_times,
+            baked_frames,
+            morph_cache,
+            _pmx_morph_names,
+        ):
             apply_calls.append((list(baked_frames), list(morph_cache)))
 
         undo_calls = []
@@ -166,8 +174,8 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
             "MmdRuntimeClip",
             FakeClip,
         ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
-            self.converter,
-            "_apply_runtime_channel_arrays_to_scene",
+            vmd_converter_module,
+            "apply_runtime_channel_arrays_to_scene_with_undo_disabled",
             side_effect=capture_apply,
         ), patch.object(
             vmd_converter_module.cmds,
@@ -186,14 +194,8 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         self.assertEqual(apply_calls[0][0][0], 0.0)
         self.assertEqual(apply_calls[0][0][-1], 200.0)
         self.assertEqual(len(apply_calls[0][0]), 201)
-        self.assertEqual(
-            undo_calls,
-            [
-                {"q": True, "state": True},
-                {"stateWithoutFlush": False},
-                {"stateWithoutFlush": True},
-            ],
-        )
+        # undo is handled inside the apply helper; with the helper mocked it is not invoked here.
+        self.assertEqual(undo_calls, [])
 
     def test_runtime_bake_uses_clip_frame_range_when_python_vmd_is_empty(self):
         """Python VMD parser が空でも runtime clip の frame range で bake 範囲を決める。"""
@@ -251,7 +253,15 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
 
         apply_calls = []
 
-        def capture_apply(_joint_values, _joint_static, _bake_times, baked_frames, _morph_cache, _pmx_morph_names):
+        def capture_apply(
+            _context,
+            _joint_values,
+            _joint_static,
+            _bake_times,
+            baked_frames,
+            _morph_cache,
+            _pmx_morph_names,
+        ):
             apply_calls.append(list(baked_frames))
 
         self.converter.bone_index_to_joint = {}
@@ -261,8 +271,8 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
             "MmdRuntimeClip",
             FakeClip,
         ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
-            self.converter,
-            "_apply_runtime_channel_arrays_to_scene",
+            vmd_converter_module,
+            "apply_runtime_channel_arrays_to_scene_with_undo_disabled",
             side_effect=capture_apply,
         ):
             result = self.converter._convert_using_mmd_runtime(
@@ -332,7 +342,15 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
 
         apply_calls = []
 
-        def capture_apply(_joint_values, _joint_static, _bake_times, baked_frames, _morph_cache, _pmx_morph_names):
+        def capture_apply(
+            _context,
+            _joint_values,
+            _joint_static,
+            _bake_times,
+            baked_frames,
+            _morph_cache,
+            _pmx_morph_names,
+        ):
             apply_calls.append(list(baked_frames))
 
         self.converter.fps = 60.0
@@ -343,8 +361,8 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
             "MmdRuntimeClip",
             FakeClip,
         ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
-            self.converter,
-            "_apply_runtime_channel_arrays_to_scene",
+            vmd_converter_module,
+            "apply_runtime_channel_arrays_to_scene_with_undo_disabled",
             side_effect=capture_apply,
         ):
             result = self.converter._convert_using_mmd_runtime(
@@ -452,14 +470,489 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         build_bind_maps.assert_called_once_with()
         direct_bake.assert_not_called()
         collect_cache.assert_called_once()
-        self.assertEqual(collect_cache.call_args.args[0], self.converter)
         self.assertEqual(collect_cache.call_args.args[3], [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
-        apply_cache.assert_called_once_with(
-            self.converter,
-            runtime_cache.joint_channel_values,
-            runtime_cache.joint_channel_static,
-            runtime_cache.bake_times,
-            runtime_cache.baked_frames,
-            runtime_cache.morph_cache,
-            [],
+        self.assertFalse(collect_cache.call_args.kwargs.get("use_native_physics_bake", False))
+        apply_cache.assert_called_once()
+        self.assertEqual(
+            apply_cache.call_args.args[1:],
+            (
+                runtime_cache.joint_channel_values,
+                runtime_cache.joint_channel_static,
+                runtime_cache.bake_times,
+                runtime_cache.baked_frames,
+                runtime_cache.morph_cache,
+                [],
+            ),
         )
+
+    def test_native_physics_bake_opt_in_dispatches_with_explicit_dt_at_60fps(self):
+        """use_native_physics_bake=True は frame_step=0.5 と dt=1/60 で physics bake を呼ぶ。"""
+
+        class Frame:
+            frame_number = 2
+
+        class VmdDataLike:
+            bone_frames = [Frame()]
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class BatchResult:
+            frame_count = 5
+            bone_count = 0
+            morph_count = 0
+            world_matrices = (ctypes.c_float * 0)()
+            morph_weights = (ctypes.c_float * 0)()
+
+        class FakeInstance:
+            last = None
+
+            def __init__(self):
+                self.batch_calls = []
+
+            @classmethod
+            def for_model(cls, _model):
+                cls.last = cls()
+                return cls.last
+
+            def evaluate_clip_frame_batch(self, *_args, **_kwargs):
+                self.batch_calls.append((_args, _kwargs))
+                raise AssertionError("non-physics batch must not run when physics bake succeeds")
+
+            def free(self):
+                pass
+
+        class FakePhysicsWorld:
+            last = None
+            free_calls = 0
+
+            def __init__(self):
+                self.bake_calls = []
+
+            @classmethod
+            def from_pmx_bytes(cls, pmx_bytes):
+                self = cls()
+                self.pmx_bytes = pmx_bytes
+                cls.last = self
+                return self
+
+            def bake_clip_frames_with_physics(
+                self,
+                instance,
+                clip,
+                start_frame,
+                frame_step,
+                frame_count,
+                dt_seconds,
+                *,
+                prepare=True,
+            ):
+                self.bake_calls.append(
+                    {
+                        "instance": instance,
+                        "clip": clip,
+                        "start_frame": start_frame,
+                        "frame_step": frame_step,
+                        "frame_count": frame_count,
+                        "dt_seconds": dt_seconds,
+                        "prepare": prepare,
+                    }
+                )
+                return BatchResult()
+
+            def free(self):
+                type(self).free_calls += 1
+
+        apply_calls = []
+
+        def capture_apply(
+            _context,
+            _joint_values,
+            _joint_static,
+            _bake_times,
+            baked_frames,
+            _morph_cache,
+            _pmx_morph_names,
+        ):
+            apply_calls.append(list(baked_frames))
+
+        self.converter.fps = 60.0
+        self.converter.bone_index_to_joint = {}
+        self.converter.bone_name_to_index = {}
+        profile = {}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
+            vmd_converter_module,
+            "MmdRuntimePhysicsWorld",
+            FakePhysicsWorld,
+        ), patch.object(
+            vmd_converter_module,
+            "is_native_physics_available",
+            return_value=True,
+        ), patch.object(
+            vmd_converter_module,
+            "get_runtime_feature_flags",
+            return_value=0x3,
+        ), patch.object(
+            vmd_converter_module,
+            "HAS_MMD_RUNTIME",
+            True,
+        ), patch.object(
+            vmd_converter_module,
+            "apply_runtime_channel_arrays_to_scene_with_undo_disabled",
+            side_effect=capture_apply,
+        ):
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx-bytes",
+                pmx_path="",
+                use_native_physics_bake=True,
+                profile=profile,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(len(FakePhysicsWorld.last.bake_calls), 1)
+        bake_call = FakePhysicsWorld.last.bake_calls[0]
+        self.assertEqual(bake_call["start_frame"], 0.0)
+        self.assertAlmostEqual(bake_call["frame_step"], 0.5)
+        self.assertEqual(bake_call["frame_count"], 5)
+        self.assertAlmostEqual(bake_call["dt_seconds"], 1.0 / 60.0)
+        self.assertEqual(FakeInstance.last.batch_calls, [])
+        self.assertEqual(apply_calls[0], [0.0, 1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(FakePhysicsWorld.free_calls, 1)
+        routing = profile["vmd_converter"]["native_physics_bake"]
+        self.assertTrue(routing["requested"])
+        self.assertTrue(routing["used"])
+        self.assertAlmostEqual(routing["dt_seconds"], 1.0 / 60.0)
+        self.assertAlmostEqual(routing["frame_step"], 0.5)
+
+    def test_native_physics_bake_default_stays_on_non_physics_batch(self):
+        """use_native_physics_bake 未指定時は既存 evaluate_clip_frame_batch を使う。"""
+
+        class Frame:
+            frame_number = 2
+
+        class VmdDataLike:
+            bone_frames = [Frame()]
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class BatchResult:
+            frame_count = 3
+            bone_count = 0
+            morph_count = 0
+            world_matrices = (ctypes.c_float * 0)()
+            morph_weights = (ctypes.c_float * 0)()
+
+        class FakeInstance:
+            last = None
+
+            def __init__(self):
+                self.batch_calls = []
+
+            @classmethod
+            def for_model(cls, _model):
+                cls.last = cls()
+                return cls.last
+
+            def evaluate_clip_frame_batch(self, _clip, start_frame, frame_step, frame_count, *, worker_count=0):
+                self.batch_calls.append((start_frame, frame_step, frame_count, worker_count))
+                return BatchResult
+
+            def free(self):
+                pass
+
+        class FakePhysicsWorld:
+            created = 0
+
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                cls.created += 1
+                raise AssertionError("physics world must not be created when opt-in is off")
+
+        self.converter.bone_index_to_joint = {}
+        self.converter.bone_name_to_index = {}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
+            vmd_converter_module,
+            "MmdRuntimePhysicsWorld",
+            FakePhysicsWorld,
+        ), patch.object(
+            vmd_converter_module,
+            "is_native_physics_available",
+            return_value=True,
+        ):
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                pmx_path="",
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(FakeInstance.last.batch_calls, [(0.0, 1.0, 3, 0)])
+        self.assertEqual(FakePhysicsWorld.created, 0)
+
+    def test_native_physics_bake_failure_falls_back_to_runtime_batch(self):
+        """physics bake が None を返したら既存 runtime batch へ fallback する。"""
+
+        class Frame:
+            frame_number = 2
+
+        class VmdDataLike:
+            bone_frames = [Frame()]
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class BatchResult:
+            frame_count = 3
+            bone_count = 0
+            morph_count = 0
+            world_matrices = (ctypes.c_float * 0)()
+            morph_weights = (ctypes.c_float * 0)()
+
+        class FakeInstance:
+            last = None
+
+            def __init__(self):
+                self.batch_calls = []
+
+            @classmethod
+            def for_model(cls, _model):
+                cls.last = cls()
+                return cls.last
+
+            def evaluate_clip_frame_batch(self, _clip, start_frame, frame_step, frame_count, *, worker_count=0):
+                self.batch_calls.append((start_frame, frame_step, frame_count, worker_count))
+                return BatchResult
+
+            def free(self):
+                pass
+
+        class FakePhysicsWorld:
+            last = None
+            free_calls = 0
+
+            def __init__(self):
+                self.bake_calls = []
+
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                cls.last = cls()
+                return cls.last
+
+            def bake_clip_frames_with_physics(self, *args, **kwargs):
+                self.bake_calls.append((args, kwargs))
+                return None
+
+            def free(self):
+                type(self).free_calls += 1
+
+        self.converter.bone_index_to_joint = {}
+        self.converter.bone_name_to_index = {}
+        profile = {}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
+            vmd_converter_module,
+            "MmdRuntimePhysicsWorld",
+            FakePhysicsWorld,
+        ), patch.object(
+            vmd_converter_module,
+            "is_native_physics_available",
+            return_value=True,
+        ), patch.object(
+            vmd_converter_module,
+            "get_runtime_feature_flags",
+            return_value=0x3,
+        ), patch.object(
+            vmd_converter_module,
+            "HAS_MMD_RUNTIME",
+            True,
+        ):
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                pmx_path="",
+                use_native_physics_bake=True,
+                profile=profile,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(len(FakePhysicsWorld.last.bake_calls), 1)
+        self.assertEqual(FakeInstance.last.batch_calls, [(0.0, 1.0, 3, 0)])
+        self.assertEqual(FakePhysicsWorld.free_calls, 1)
+        routing = profile["vmd_converter"]["native_physics_bake"]
+        self.assertTrue(routing["requested"])
+        self.assertFalse(routing["used"])
+        self.assertEqual(routing["reason"], "physics_bake_failed_or_unsupported")
+
+    def test_native_physics_bake_reuses_channel_application_helper(self):
+        """physics bake 成功時も apply_runtime_channel_arrays 経路を再利用する。"""
+
+        class Frame:
+            frame_number = 1
+
+        class VmdDataLike:
+            bone_frames = [Frame()]
+            morph_frames = []
+            camera_frames = []
+            light_frames = []
+
+        class FakeModel:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeClip:
+            @classmethod
+            def from_vmd_bytes_for_model(cls, _model, _vmd_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakeInstance:
+            @classmethod
+            def for_model(cls, _model):
+                return cls()
+
+            def free(self):
+                pass
+
+        class FakePhysicsWorld:
+            @classmethod
+            def from_pmx_bytes(cls, _pmx_bytes):
+                return cls()
+
+            def free(self):
+                pass
+
+        runtime_cache = SimpleNamespace(
+            baked_frames=[0.0, 1.0],
+            bake_times=object(),
+            joint_channel_values={"j": {}},
+            joint_channel_static={"j": {}},
+            morph_cache=[(0.0, [])],
+            batch_mode=True,
+            eval_elapsed=0.01,
+            eval_copy_elapsed=0.0,
+            batch_unpack_elapsed=0.0,
+            local_elapsed=0.0,
+            append_elapsed=0.0,
+            physics_bake={"requested": True, "used": True, "reason": "ok", "dt_seconds": 1.0 / 30.0},
+        )
+
+        self.converter.bone_index_to_joint = {0: "j"}
+        self.converter.bone_name_to_index = {"センター": 0}
+        with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
+            vmd_converter_module,
+            "MmdRuntimeClip",
+            FakeClip,
+        ), patch.object(vmd_converter_module, "MmdRuntimeInstance", FakeInstance), patch.object(
+            vmd_converter_module,
+            "MmdRuntimePhysicsWorld",
+            FakePhysicsWorld,
+        ), patch.object(
+            vmd_converter_module,
+            "is_native_physics_available",
+            return_value=True,
+        ), patch.object(
+            vmd_converter_module,
+            "HAS_MMD_RUNTIME",
+            True,
+        ), patch.object(
+            self.converter,
+            "_disable_mmd_rig_constraints_for_runtime_bake",
+        ), patch.object(
+            self.converter,
+            "_restore_joints_to_bind_pose_for_runtime_bake",
+        ), patch.object(
+            self.converter,
+            "_build_runtime_bind_world_maps",
+        ), patch.object(
+            vmd_converter_module,
+            "collect_runtime_bake_cache",
+            return_value=runtime_cache,
+        ) as collect_cache, patch.object(
+            vmd_converter_module,
+            "apply_runtime_channel_arrays_to_scene_with_undo_disabled",
+        ) as apply_cache:
+            result = self.converter._convert_using_mmd_runtime(
+                VmdDataLike(),
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                pmx_path="",
+                use_native_physics_bake=True,
+            )
+
+        self.assertTrue(result)
+        collect_cache.assert_called_once()
+        self.assertTrue(collect_cache.call_args.kwargs["use_native_physics_bake"])
+        self.assertIsNotNone(collect_cache.call_args.kwargs["physics_world"])
+        apply_cache.assert_called_once()
+        self.assertEqual(apply_cache.call_args.args[1], runtime_cache.joint_channel_values)
+        self.assertEqual(apply_cache.call_args.args[4], runtime_cache.baked_frames)

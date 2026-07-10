@@ -127,6 +127,7 @@ class SettingsService:
             "clear_existing_motion": self.get(setting_keys.IMPORT_ANIMATION_CLEAR_EXISTING_MOTION, False),
             "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
             "bake_mode": self.get(setting_keys.IMPORT_RIG_BAKE_MODE, False),
+            "use_native_physics_bake": self.get(setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE, False),
             "target_model": target_model,
         }
 

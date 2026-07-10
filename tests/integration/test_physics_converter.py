@@ -995,6 +995,428 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertTrue(cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or [])
         self.assertTrue(cmds.listConnections(joint, source=True, destination=False, type="pointConstraint") or [])
 
+    def test_native_bake_preview_feedback_toggle_is_scoped_and_reversible(self):
+        """Native bake disables only marked feedback and restores its own change."""
+        root = cmds.group(name="test_root", empty=True)
+        driver = cmds.group(name="preview_driver", empty=True, parent=root)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="preview_target_bone")
+        cmds.parent(joint, root)
+        marked = cmds.orientConstraint(driver, joint, maintainOffset=True)[0]
+        unmarked = cmds.pointConstraint(driver, joint, maintainOffset=True)[0]
+        converter = PhysicsConverter()
+        converter._mark_physics_preview_constraint(marked)
+
+        disabled = converter.set_existing_bullet_preview_feedback_enabled(root, False)
+
+        self.assertEqual(disabled, 1)
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 2)
+        self.assertEqual(cmds.getAttr(f"{unmarked}.nodeState"), 0)
+        self.assertTrue(cmds.getAttr(f"{marked}.mmd_native_physics_bake_disabled"))
+
+        restored = converter.set_existing_bullet_preview_feedback_enabled(root, True)
+
+        self.assertEqual(restored, 1)
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 0)
+        self.assertFalse(cmds.getAttr(f"{marked}.mmd_native_physics_bake_disabled"))
+
+    def test_physics_setup_creates_legacy_bullet_enabled_attr_default_true(self):
+        """PMX Bullet physics setup adds Root.mmd_legacy_bullet_enabled=True by default."""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        rb = self._make_fake_pmx_rigid_body(
+            name="legacy_pref_rb",
+            related_bone_index=0,
+            shape_type=0,
+            size=(0.5, 0.5, 0.5),
+            position=(0.0, 5.0, 0.0),
+            physics_mode=1,
+            mass=1.0,
+        )
+        data = self._make_fake_pmx_data(
+            rigid_bodies=[rb],
+            bones=[self._make_fake_bone("bone_0")],
+        )
+        converter = PhysicsConverter({"create_physics_joints": False})
+
+        converter.convert_pmx_physics(data, {}, root)
+
+        self.assertTrue(
+            cmds.attributeQuery("mmd_legacy_bullet_enabled", node=root, exists=True),
+            "Root should gain mmd_legacy_bullet_enabled during physics setup",
+        )
+        self.assertTrue(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertTrue(PhysicsConverter.get_legacy_bullet_enabled(root))
+
+        # Re-running ensure / setup must not clobber an existing user value.
+        cmds.setAttr(f"{root}.mmd_legacy_bullet_enabled", False)
+        PhysicsConverter.ensure_legacy_bullet_enabled_attr(root)
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+
+    def test_legacy_bullet_preference_survives_native_bake_exclusion(self):
+        """Native bake temporary exclusion must not overwrite preference or re-enable setup."""
+        root = cmds.group(name="test_root", empty=True)
+        driver = cmds.group(name="preview_driver", empty=True, parent=root)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="preview_target_bone")
+        cmds.parent(joint, root)
+        marked = cmds.orientConstraint(driver, joint, maintainOffset=True)[0]
+        converter = PhysicsConverter()
+        converter._mark_physics_preview_constraint(marked)
+
+        # User turns legacy Bullet setup off (persistent preference + dedicated metadata).
+        changed = converter.set_legacy_bullet_enabled(root, False)
+        self.assertEqual(changed, 1)
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 2)
+        self.assertTrue(cmds.getAttr(f"{marked}.mmd_legacy_bullet_disabled"))
+        self.assertFalse(
+            cmds.attributeQuery("mmd_native_physics_bake_disabled", node=marked, exists=True)
+        )
+
+        # Native bake exclusion is feedback-only and must not rewrite the preference.
+        native_disabled = converter.set_existing_bullet_preview_feedback_enabled(root, False)
+        self.assertEqual(native_disabled, 0)  # already suspended by legacy OFF
+        self.assertFalse(
+            cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"),
+            "native bake must not rewrite mmd_legacy_bullet_enabled",
+        )
+
+        # Temporary restore for bake exclusion must not flip user preference or
+        # re-enable nodes suspended by the Root legacy control.
+        converter.set_existing_bullet_preview_feedback_enabled(root, True)
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertFalse(PhysicsConverter.get_legacy_bullet_enabled(root))
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 2)
+        self.assertTrue(cmds.getAttr(f"{marked}.mmd_legacy_bullet_disabled"))
+
+        # User preference helper re-applies disable without recreating attr wrong.
+        converter.set_legacy_bullet_enabled(root, False)
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 2)
+
+    def test_set_legacy_bullet_enabled_is_scoped_and_reversible(self):
+        """Root preference helper toggles only this root's marked preview constraints."""
+        root = cmds.group(name="test_root", empty=True)
+        other_root = cmds.group(name="other_root", empty=True)
+        driver = cmds.group(name="preview_driver", empty=True, parent=root)
+        other_driver = cmds.group(name="other_driver", empty=True, parent=other_root)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="preview_target_bone")
+        cmds.parent(joint, root)
+        other_joint = cmds.joint(name="other_target_bone")
+        cmds.parent(other_joint, other_root)
+        marked = cmds.orientConstraint(driver, joint, maintainOffset=True)[0]
+        other_marked = cmds.orientConstraint(other_driver, other_joint, maintainOffset=True)[0]
+        converter = PhysicsConverter()
+        converter._mark_physics_preview_constraint(marked)
+        converter._mark_physics_preview_constraint(other_marked)
+
+        disabled = converter.set_legacy_bullet_enabled(root, False)
+
+        self.assertEqual(disabled, 1)
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 2)
+        self.assertTrue(cmds.getAttr(f"{marked}.mmd_legacy_bullet_disabled"))
+        self.assertEqual(cmds.getAttr(f"{other_marked}.nodeState"), 0)
+        self.assertFalse(
+            cmds.attributeQuery("mmd_legacy_bullet_enabled", node=other_root, exists=True)
+        )
+
+        restored = converter.set_legacy_bullet_enabled(root, True)
+
+        self.assertEqual(restored, 1)
+        self.assertTrue(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 0)
+        self.assertFalse(cmds.getAttr(f"{marked}.mmd_legacy_bullet_disabled"))
+        self.assertEqual(cmds.getAttr(f"{other_marked}.nodeState"), 0)
+
+    def test_apply_legacy_bullet_enabled_from_attr_is_live_control(self):
+        """Attr-change callback applies root-scoped full setup toggle without rewriting attr."""
+        from mmd_tools.converters import physics_converter as physics_converter_mod
+
+        root = cmds.group(name="test_root", empty=True)
+        driver = cmds.group(name="preview_driver", empty=True, parent=root)
+        cmds.select(clear=True)
+        joint = cmds.joint(name="preview_target_bone")
+        cmds.parent(joint, root)
+        marked = cmds.orientConstraint(driver, joint, maintainOffset=True)[0]
+        converter = PhysicsConverter()
+        converter._mark_physics_preview_constraint(marked)
+        PhysicsConverter.ensure_legacy_bullet_enabled_attr(root)
+
+        # Simulate AE toggle OFF (setAttr only — no set_legacy_bullet_enabled helper).
+        cmds.setAttr(f"{root}.mmd_legacy_bullet_enabled", False)
+        changed = PhysicsConverter.apply_legacy_bullet_enabled_from_attr(root)
+
+        self.assertEqual(changed, 1)
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 2)
+        self.assertTrue(cmds.getAttr(f"{marked}.mmd_legacy_bullet_disabled"))
+        self.assertFalse(
+            cmds.attributeQuery("mmd_native_physics_bake_disabled", node=marked, exists=True)
+        )
+
+        # Simulate AE toggle ON.
+        cmds.setAttr(f"{root}.mmd_legacy_bullet_enabled", True)
+        restored = PhysicsConverter.apply_legacy_bullet_enabled_from_attr(root)
+
+        self.assertEqual(restored, 1)
+        self.assertTrue(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 0)
+        self.assertFalse(cmds.getAttr(f"{marked}.mmd_legacy_bullet_disabled"))
+
+        # apply never creates jobs; batch path must stay silent.
+        self.assertIsNone(physics_converter_mod._LEGACY_BULLET_WATCH_JOBS.get(cmds.ls(root, long=True)[0]))
+
+    def test_legacy_bullet_off_suspends_full_setup_scoped_and_reversible(self):
+        """Root OFF suspends preview feedback + Bullet RB/joint shapes for that root only."""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        other_root = cmds.group(name="other_root", empty=True)
+
+        rb_a = self._make_fake_pmx_rigid_body(
+            name="scope_rb_a", related_bone_index=0, shape_type=0, position=(0, 5, 0), physics_mode=1
+        )
+        rb_b = self._make_fake_pmx_rigid_body(
+            name="scope_rb_b", related_bone_index=1, shape_type=0, position=(0, 10, 0), physics_mode=1
+        )
+        joint = self._make_fake_pmx_joint(
+            name="scope_joint",
+            joint_type=0,
+            rigid_body_a_index=0,
+            rigid_body_b_index=1,
+            position=(0, 7.5, 0),
+        )
+        data = self._make_fake_pmx_data(rigid_bodies=[rb_a, rb_b], joints=[joint])
+        converter = PhysicsConverter({"create_physics_joints": True})
+        rbs, cons = converter.convert_pmx_physics(data, {}, root)
+        self.assertGreaterEqual(len(rbs), 2)
+        self.assertGreaterEqual(len(cons), 1)
+
+        other_rb = self._make_fake_pmx_rigid_body(
+            name="other_rb", related_bone_index=0, shape_type=0, position=(5, 5, 0), physics_mode=1
+        )
+        other_data = self._make_fake_pmx_data(rigid_bodies=[other_rb])
+        other_rbs, _ = converter.convert_pmx_physics(other_data, {}, other_root)
+        self.assertGreaterEqual(len(other_rbs), 1)
+
+        # Marked preview feedback under root.
+        driver = cmds.group(name="preview_driver", empty=True, parent=root)
+        cmds.select(clear=True)
+        bone = cmds.joint(name="preview_target_bone")
+        cmds.parent(bone, root)
+        marked = cmds.orientConstraint(driver, bone, maintainOffset=True)[0]
+        converter._mark_physics_preview_constraint(marked)
+
+        rb_shape = cmds.listRelatives(rbs[0], shapes=True, type="bulletRigidBodyShape", fullPath=True)[0]
+        rb_shape_b = cmds.listRelatives(rbs[1], shapes=True, type="bulletRigidBodyShape", fullPath=True)[0]
+        constr_shape = cmds.listRelatives(
+            cons[0], shapes=True, type="bulletRigidBodyConstraintShape", fullPath=True
+        )[0]
+        other_shape = cmds.listRelatives(
+            other_rbs[0], shapes=True, type="bulletRigidBodyShape", fullPath=True
+        )[0]
+        solvers_before = cmds.ls(type="bulletSolverShape", long=True) or []
+
+        disabled = converter.set_legacy_bullet_enabled(root, False)
+
+        # preview + 2 rigid bodies + 1 bullet joint under root
+        self.assertEqual(disabled, 4)
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        for node in (marked, rb_shape, rb_shape_b, constr_shape):
+            self.assertEqual(cmds.getAttr(f"{node}.nodeState"), 2, node)
+            self.assertTrue(cmds.getAttr(f"{node}.mmd_legacy_bullet_disabled"), node)
+            self.assertEqual(cmds.getAttr(f"{node}.mmd_legacy_bullet_previous_node_state"), 0, node)
+        self.assertEqual(cmds.getAttr(f"{other_shape}.nodeState"), 0)
+        self.assertFalse(
+            cmds.attributeQuery("mmd_legacy_bullet_disabled", node=other_shape, exists=True)
+            and cmds.getAttr(f"{other_shape}.mmd_legacy_bullet_disabled")
+        )
+        solvers_after = cmds.ls(type="bulletSolverShape", long=True) or []
+        self.assertEqual(solvers_before, solvers_after)
+        for solver in solvers_after:
+            self.assertEqual(cmds.getAttr(f"{solver}.nodeState"), 0)
+
+        # Native bake feedback toggle must not touch suspended solver nodes.
+        native_changed = converter.set_existing_bullet_preview_feedback_enabled(root, False)
+        self.assertEqual(native_changed, 0)
+        self.assertEqual(cmds.getAttr(f"{rb_shape}.nodeState"), 2)
+        self.assertTrue(cmds.getAttr(f"{rb_shape}.mmd_legacy_bullet_disabled"))
+        self.assertFalse(
+            cmds.attributeQuery("mmd_native_physics_bake_disabled", node=rb_shape, exists=True)
+        )
+
+        restored = converter.set_legacy_bullet_enabled(root, True)
+        self.assertEqual(restored, 4)
+        self.assertTrue(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        for node in (marked, rb_shape, rb_shape_b, constr_shape):
+            self.assertEqual(cmds.getAttr(f"{node}.nodeState"), 0, node)
+            self.assertFalse(cmds.getAttr(f"{node}.mmd_legacy_bullet_disabled"), node)
+        self.assertEqual(cmds.getAttr(f"{other_shape}.nodeState"), 0)
+
+    def test_legacy_bullet_off_preserves_user_disabled_node_state(self):
+        """Root OFF must not clobber pre-existing non-default nodeState values."""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        rb = self._make_fake_pmx_rigid_body(
+            name="user_disabled_rb",
+            related_bone_index=0,
+            shape_type=0,
+            position=(0, 5, 0),
+            physics_mode=1,
+        )
+        data = self._make_fake_pmx_data(rigid_bodies=[rb])
+        converter = PhysicsConverter({"create_physics_joints": False})
+        rbs, _ = converter.convert_pmx_physics(data, {}, root)
+        self.assertGreaterEqual(len(rbs), 1)
+        rb_shape = cmds.listRelatives(rbs[0], shapes=True, type="bulletRigidBodyShape", fullPath=True)[0]
+
+        driver = cmds.group(name="preview_driver", empty=True, parent=root)
+        cmds.select(clear=True)
+        bone = cmds.joint(name="preview_target_bone")
+        cmds.parent(bone, root)
+        marked = cmds.orientConstraint(driver, bone, maintainOffset=True)[0]
+        converter._mark_physics_preview_constraint(marked)
+
+        # User had already disabled the rigid body (non-default nodeState).
+        cmds.setAttr(f"{rb_shape}.nodeState", 2)
+        self.assertEqual(cmds.getAttr(f"{rb_shape}.nodeState"), 2)
+
+        disabled = converter.set_legacy_bullet_enabled(root, False)
+        self.assertEqual(disabled, 1)  # only the active marked preview constraint
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 2)
+        self.assertTrue(cmds.getAttr(f"{marked}.mmd_legacy_bullet_disabled"))
+        self.assertEqual(cmds.getAttr(f"{rb_shape}.nodeState"), 2)
+        self.assertFalse(
+            cmds.attributeQuery("mmd_legacy_bullet_disabled", node=rb_shape, exists=True)
+            and cmds.getAttr(f"{rb_shape}.mmd_legacy_bullet_disabled")
+        )
+
+        # Restore must only reverse what this feature suspended.
+        restored = converter.set_legacy_bullet_enabled(root, True)
+        self.assertEqual(restored, 1)
+        self.assertEqual(cmds.getAttr(f"{marked}.nodeState"), 0)
+        self.assertEqual(
+            cmds.getAttr(f"{rb_shape}.nodeState"),
+            2,
+            "user-disabled rigid body must stay disabled after legacy ON",
+        )
+
+    def test_apply_legacy_bullet_enabled_from_attr_suspends_solver_nodes(self):
+        """Direct attr callback (AE path) suspends Bullet RB/joint shapes under Root."""
+        if not PhysicsConverter.is_bullet_available():
+            self.skipTest("Bullet プラグインが利用できません")
+
+        root = cmds.group(name="test_root", empty=True)
+        rb_a = self._make_fake_pmx_rigid_body(
+            name="attr_rb_a", related_bone_index=0, shape_type=0, position=(0, 5, 0), physics_mode=1
+        )
+        rb_b = self._make_fake_pmx_rigid_body(
+            name="attr_rb_b", related_bone_index=1, shape_type=0, position=(0, 10, 0), physics_mode=1
+        )
+        joint = self._make_fake_pmx_joint(
+            name="attr_joint",
+            joint_type=0,
+            rigid_body_a_index=0,
+            rigid_body_b_index=1,
+            position=(0, 7.5, 0),
+        )
+        data = self._make_fake_pmx_data(rigid_bodies=[rb_a, rb_b], joints=[joint])
+        converter = PhysicsConverter({"create_physics_joints": True})
+        rbs, cons = converter.convert_pmx_physics(data, {}, root)
+        rb_shape = cmds.listRelatives(rbs[0], shapes=True, type="bulletRigidBodyShape", fullPath=True)[0]
+        constr_shape = cmds.listRelatives(
+            cons[0], shapes=True, type="bulletRigidBodyConstraintShape", fullPath=True
+        )[0]
+        PhysicsConverter.ensure_legacy_bullet_enabled_attr(root)
+
+        cmds.setAttr(f"{root}.mmd_legacy_bullet_enabled", False)
+        changed = PhysicsConverter.apply_legacy_bullet_enabled_from_attr(root)
+
+        self.assertGreaterEqual(changed, 3)  # 2 RB + 1 joint (plus optional preview)
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertEqual(cmds.getAttr(f"{rb_shape}.nodeState"), 2)
+        self.assertTrue(cmds.getAttr(f"{rb_shape}.mmd_legacy_bullet_disabled"))
+        self.assertEqual(cmds.getAttr(f"{constr_shape}.nodeState"), 2)
+        self.assertTrue(cmds.getAttr(f"{constr_shape}.mmd_legacy_bullet_disabled"))
+
+        cmds.setAttr(f"{root}.mmd_legacy_bullet_enabled", True)
+        restored = PhysicsConverter.apply_legacy_bullet_enabled_from_attr(root)
+        self.assertEqual(restored, changed)
+        self.assertEqual(cmds.getAttr(f"{rb_shape}.nodeState"), 0)
+        self.assertFalse(cmds.getAttr(f"{rb_shape}.mmd_legacy_bullet_disabled"))
+        self.assertEqual(cmds.getAttr(f"{constr_shape}.nodeState"), 0)
+        self.assertFalse(cmds.getAttr(f"{constr_shape}.mmd_legacy_bullet_disabled"))
+
+    def test_ensure_legacy_bullet_enabled_watch_is_idempotent_and_batch_safe(self):
+        """Watch registration is idempotent; batch mode skips scriptJob without failing."""
+        from mmd_tools.converters import physics_converter as physics_converter_mod
+
+        root = cmds.group(name="test_root", empty=True)
+        root_long = cmds.ls(root, long=True)[0]
+        physics_converter_mod._LEGACY_BULLET_WATCH_JOBS.pop(root_long, None)
+
+        # mayapy is batch: live job is skipped, attr is still ensured.
+        job_batch = PhysicsConverter.ensure_legacy_bullet_enabled_watch(root)
+        self.assertIsNone(job_batch)
+        self.assertTrue(
+            cmds.attributeQuery("mmd_legacy_bullet_enabled", node=root, exists=True)
+        )
+
+        # Interactive seam: about(batch=True) -> False, scriptJob is mockable.
+        script_job_calls = []
+
+        def _fake_script_job(*_args, **kwargs):
+            if "exists" in kwargs:
+                return kwargs["exists"] in physics_converter_mod._LEGACY_BULLET_WATCH_JOBS.values()
+            job_id = 9000 + len(script_job_calls)
+            script_job_calls.append(kwargs)
+            return job_id
+
+        try:
+            with mock.patch.object(physics_converter_mod.cmds, "about", return_value=False), mock.patch.object(
+                physics_converter_mod.cmds, "scriptJob", side_effect=_fake_script_job
+            ):
+                first = PhysicsConverter.ensure_legacy_bullet_enabled_watch(root)
+                second = PhysicsConverter.ensure_legacy_bullet_enabled_watch(root)
+                third = PhysicsConverter.ensure_legacy_bullet_enabled_control(root)
+
+            self.assertEqual(first, 9000)
+            self.assertEqual(second, 9000)
+            self.assertEqual(third, 9000)
+            self.assertEqual(len(script_job_calls), 1)
+            self.assertTrue(script_job_calls[0].get("killWithScene"))
+            attr_change = script_job_calls[0].get("attributeChange")
+            self.assertIsInstance(attr_change, (list, tuple))
+            self.assertEqual(attr_change[0], f"{root_long}.mmd_legacy_bullet_enabled")
+            self.assertTrue(callable(attr_change[1]))
+
+            # Invoke the registered callback seam (AE change without GUI).
+            cmds.setAttr(f"{root}.mmd_legacy_bullet_enabled", False)
+            attr_change[1]()
+            self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        finally:
+            physics_converter_mod._LEGACY_BULLET_WATCH_JOBS.pop(root_long, None)
+
+    def test_ensure_legacy_bullet_control_preserves_user_value(self):
+        """ensure_legacy_bullet_enabled_control never overwrites an existing preference."""
+        root = cmds.group(name="test_root", empty=True)
+        PhysicsConverter.ensure_legacy_bullet_enabled_attr(root)
+        cmds.setAttr(f"{root}.mmd_legacy_bullet_enabled", False)
+
+        PhysicsConverter.ensure_legacy_bullet_enabled_control(root)
+        PhysicsConverter.ensure_legacy_bullet_enabled_control(root)
+
+        self.assertFalse(cmds.getAttr(f"{root}.mmd_legacy_bullet_enabled"))
+        self.assertFalse(PhysicsConverter.get_legacy_bullet_enabled(root))
+
     def test_connect_existing_bullet_preview_replaces_stale_parent_constraint(self):
         """古い parentConstraint preview は mode 別 preview constraint へ置換する。"""
         if not PhysicsConverter.is_bullet_available():

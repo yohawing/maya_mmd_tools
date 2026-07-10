@@ -291,6 +291,15 @@ class ImportExportTab(BaseTab):
         self.bake_mode_check = self._bind_checkbox(
             "bake_mode", setting_keys.IMPORT_RIG_BAKE_MODE, False, anim_settings_layout, tooltip_key="bake_mode"
         )
+        self.native_physics_bake_check = self._bind_checkbox(
+            "native_physics_bake",
+            setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE,
+            False,
+            anim_settings_layout,
+            tooltip_key="native_physics_bake",
+        )
+        self.bake_mode_check.toggled.connect(self._sync_native_physics_bake_enabled)
+        self._sync_native_physics_bake_enabled(self.bake_mode_check.isChecked())
 
         self.animation_settings_group.setLayout(anim_settings_layout)
         model_settings_layout.addWidget(self.animation_settings_group)
@@ -490,6 +499,10 @@ class ImportExportTab(BaseTab):
         layout.addWidget(cb)
         return cb
 
+    def _sync_native_physics_bake_enabled(self, bake_mode_enabled):
+        """Native physics bake is a VMD bake-mode option, not a model import option."""
+        self.native_physics_bake_check.setEnabled(bool(bake_mode_enabled))
+
     def _apply_dev_mode_visibility(self):
         """dev-only UI controls の表示/非表示を development_mode 設定に合わせる。"""
         is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
@@ -629,6 +642,7 @@ class ImportExportTab(BaseTab):
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
         self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))
         self.bake_mode_check.setText(self.tr("bake_mode", "checkboxes"))
+        self.native_physics_bake_check.setText(self.tr("native_physics_bake", "checkboxes"))
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
         self.use_cpp_rig_nodes_check.setText(self.tr("use_cpp_rig_nodes", "checkboxes"))
         self.apply_scale_check.setText(self.tr("apply_scale", "checkboxes"))
@@ -644,6 +658,7 @@ class ImportExportTab(BaseTab):
         self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))
         self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
+        self.native_physics_bake_check.setToolTip(self.tr("native_physics_bake", "tooltips"))
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))
         self.use_cpp_rig_nodes_check.setToolTip(self.tr("use_cpp_rig_nodes", "tooltips"))
         if hasattr(self, "animation_start_frame"):

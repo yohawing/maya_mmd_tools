@@ -213,6 +213,170 @@ class TestVmdRuntimeBakeInfrastructure(unittest.TestCase):
         self.assertEqual(appended, [({}, {}, {}), ({}, {}, {})])
         self.assertEqual(converter.anim_layer, "runtime_layer")
 
+    def test_collect_runtime_bake_cache_physics_opt_in_uses_explicit_dt_60fps(self):
+        """60fps samples: VMD step 0.5 must pair with dt 1/60, not 1/120."""
+        from mmd_tools.converters.vmd_runtime_cache_collect import _physics_dt_and_frame_step
+
+        samples = [(0.0, 0.0), (1.0, 0.5), (2.0, 1.0), (3.0, 1.5), (4.0, 2.0)]
+        start, step, dt = _physics_dt_and_frame_step(samples, 60.0)
+        self.assertAlmostEqual(start, 0.0)
+        self.assertAlmostEqual(step, 0.5)
+        self.assertAlmostEqual(dt, 1.0 / 60.0)
+
+        bake_calls = []
+        batch_calls = []
+
+        class BatchResult:
+            frame_count = 5
+            bone_count = 0
+            morph_count = 0
+
+        converter = SimpleNamespace(
+            anim_layer="runtime_layer",
+            bone_index_to_joint={},
+            logger=SimpleNamespace(
+                info=lambda *_args, **_kwargs: None,
+                warning=lambda *_args, **_kwargs: None,
+            ),
+            _create_runtime_joint_channel_arrays=lambda: {},
+            _create_runtime_joint_channel_static_state=lambda: {},
+            _compute_native_local_channel_batch=lambda _batch_result: None,
+            _runtime_batch_morph_weights_for_frame=lambda _batch_result, frame_index: [frame_index],
+            _append_bone_locals_to_channel_arrays=lambda *_args: None,
+        )
+
+        class PhysicsWorld:
+            def bake_clip_frames_with_physics(
+                self,
+                instance,
+                clip,
+                start_frame,
+                frame_step,
+                frame_count,
+                dt_seconds,
+                *,
+                prepare=True,
+            ):
+                bake_calls.append((start_frame, frame_step, frame_count, dt_seconds, prepare))
+                return BatchResult()
+
+        instance = SimpleNamespace(
+            evaluate_clip_frame_batch=lambda *args, **kwargs: batch_calls.append((args, kwargs)) or None
+        )
+
+        with patch("mmd_tools.converters.vmd_runtime_cache_collect.cmds.refresh"):
+            cache = collect_runtime_bake_cache(
+                converter,
+                instance,
+                clip=object(),
+                bake_samples=samples,
+                physics_world=PhysicsWorld(),
+                fps=60.0,
+                use_native_physics_bake=True,
+            )
+
+        self.assertTrue(cache.batch_mode)
+        self.assertTrue(cache.physics_bake["used"])
+        self.assertEqual(bake_calls, [(0.0, 0.5, 5, 1.0 / 60.0, True)])
+        self.assertEqual(batch_calls, [])
+        self.assertEqual(cache.baked_frames, [0.0, 1.0, 2.0, 3.0, 4.0])
+
+    def test_collect_runtime_bake_cache_physics_failure_falls_back_to_batch(self):
+        """physics bake 失敗時は evaluate_clip_frame_batch へ fallback する。"""
+        bake_calls = []
+        batch_calls = []
+
+        class BatchResult:
+            frame_count = 2
+            bone_count = 0
+            morph_count = 0
+
+        converter = SimpleNamespace(
+            anim_layer="runtime_layer",
+            bone_index_to_joint={},
+            logger=SimpleNamespace(
+                info=lambda *_args, **_kwargs: None,
+                warning=lambda *_args, **_kwargs: None,
+            ),
+            _create_runtime_joint_channel_arrays=lambda: {},
+            _create_runtime_joint_channel_static_state=lambda: {},
+            _compute_native_local_channel_batch=lambda _batch_result: None,
+            _runtime_batch_morph_weights_for_frame=lambda _batch_result, frame_index: [frame_index],
+            _append_bone_locals_to_channel_arrays=lambda *_args: None,
+        )
+
+        class PhysicsWorld:
+            def bake_clip_frames_with_physics(self, *args, **kwargs):
+                bake_calls.append((args, kwargs))
+                return None
+
+        instance = SimpleNamespace(
+            evaluate_clip_frame_batch=lambda clip, start, step, count, worker_count=0: (
+                batch_calls.append((start, step, count, worker_count)) or BatchResult()
+            )
+        )
+
+        with patch("mmd_tools.converters.vmd_runtime_cache_collect.cmds.refresh"):
+            cache = collect_runtime_bake_cache(
+                converter,
+                instance,
+                clip=object(),
+                bake_samples=[(1.0, 0.0), (2.0, 1.0)],
+                physics_world=PhysicsWorld(),
+                fps=30.0,
+                use_native_physics_bake=True,
+            )
+
+        self.assertTrue(cache.batch_mode)
+        self.assertFalse(cache.physics_bake["used"])
+        self.assertEqual(cache.physics_bake["reason"], "physics_bake_failed_or_unsupported")
+        self.assertEqual(len(bake_calls), 1)
+        self.assertEqual(batch_calls, [(0.0, 1.0, 2, 0)])
+
+    def test_collect_runtime_bake_cache_default_ignores_physics_world(self):
+        """opt-in OFF では physics world があっても非物理 batch を使う。"""
+        bake_calls = []
+
+        class BatchResult:
+            frame_count = 2
+            bone_count = 0
+            morph_count = 0
+
+        converter = SimpleNamespace(
+            anim_layer="runtime_layer",
+            bone_index_to_joint={},
+            logger=SimpleNamespace(info=lambda *_args, **_kwargs: None),
+            _create_runtime_joint_channel_arrays=lambda: {},
+            _create_runtime_joint_channel_static_state=lambda: {},
+            _compute_native_local_channel_batch=lambda _batch_result: None,
+            _runtime_batch_morph_weights_for_frame=lambda _batch_result, frame_index: [0],
+            _append_bone_locals_to_channel_arrays=lambda *_args: None,
+        )
+
+        class PhysicsWorld:
+            def bake_clip_frames_with_physics(self, *args, **kwargs):
+                bake_calls.append(True)
+                raise AssertionError("physics bake must not run when opt-in is off")
+
+        instance = SimpleNamespace(
+            evaluate_clip_frame_batch=lambda *_args, **_kwargs: BatchResult()
+        )
+
+        with patch("mmd_tools.converters.vmd_runtime_cache_collect.cmds.refresh"):
+            cache = collect_runtime_bake_cache(
+                converter,
+                instance,
+                clip=object(),
+                bake_samples=[(1.0, 0.0), (2.0, 1.0)],
+                physics_world=PhysicsWorld(),
+                fps=30.0,
+                use_native_physics_bake=False,
+            )
+
+        self.assertTrue(cache.batch_mode)
+        self.assertFalse(cache.physics_bake.get("requested"))
+        self.assertEqual(bake_calls, [])
+
 
 if __name__ == "__main__":
     unittest.main()

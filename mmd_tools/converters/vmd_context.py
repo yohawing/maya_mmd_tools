@@ -31,6 +31,9 @@ class VmdImportContext:
     progress_callback: Optional[Callable[[int], None]]
     import_camera_animation: bool
     import_light_animation: bool
+    # Explicit programmatic opt-in only (default OFF). Requires bake_mode=True
+    # to take effect; does not change UI/settings schema.
+    use_native_physics_bake: bool = False
 
 
 @dataclass(frozen=True)

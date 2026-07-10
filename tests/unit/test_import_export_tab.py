@@ -61,9 +61,13 @@ class _FakeSettingsService:
 class _FakeWidget:
     def __init__(self):
         self.visible = None
+        self.enabled = None
 
     def setVisible(self, visible):
         self.visible = visible
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
 
 
 class _FakePresenter:
@@ -173,6 +177,18 @@ class TestImportExportTabDevModeVisibility(unittest.TestCase):
         self.assertTrue(cpp_rig_nodes_check.visible)
         self.assertTrue(motion_scale_row.visible)
         self.assertTrue(export_settings_tab.visible)
+
+
+class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):
+    def test_native_physics_bake_control_follows_motion_bake(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.native_physics_bake_check = _FakeWidget()
+
+        import_export_tab.ImportExportTab._sync_native_physics_bake_enabled(tab, False)
+        self.assertFalse(tab.native_physics_bake_check.enabled)
+
+        import_export_tab.ImportExportTab._sync_native_physics_bake_enabled(tab, True)
+        self.assertTrue(tab.native_physics_bake_check.enabled)
 
 
 class TestImportExportTabExportVisibility(unittest.TestCase):

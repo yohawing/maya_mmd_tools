@@ -87,6 +87,26 @@ _OPT_SPLIT_IMPULSE = "split_impulse"
 _OPT_CREATE_PHYSICS_JOINTS = "create_physics_joints"
 _OPT_SCALE = "scale"
 _MODEL_MOTION_PARENT_NAMES = {"master", "全ての親", "マスター"}
+_PREVIEW_CONSTRAINT_ATTR = "mmd_physics_preview_constraint"
+_NATIVE_BAKE_DISABLED_ATTR = "mmd_native_physics_bake_disabled"
+_NATIVE_BAKE_PREVIOUS_NODE_STATE_ATTR = "mmd_native_physics_bake_previous_node_state"
+_NODE_STATE_BLOCKING = 2
+# Persistent per-model preference for the full legacy Maya Bullet setup under Root.
+# Native physics bake exclusion is temporary feedback-only and must not overwrite this.
+_LEGACY_BULLET_ENABLED_ATTR = "mmd_legacy_bullet_enabled"
+# Per-node metadata used when Root.mmd_legacy_bullet_enabled suspends the legacy setup.
+# Named separately from mmd_native_physics_bake_* so bake exclusion cannot re-enable
+# nodes the user turned off, and cannot touch rigid bodies / Bullet joints.
+_LEGACY_BULLET_DISABLED_ATTR = "mmd_legacy_bullet_disabled"
+_LEGACY_BULLET_PREVIOUS_NODE_STATE_ATTR = "mmd_legacy_bullet_previous_node_state"
+# Bullet solver evaluation nodes suspended by legacy OFF (never bulletSolver itself).
+_LEGACY_BULLET_SOLVER_NODE_TYPES = (
+    "bulletRigidBodyShape",
+    "bulletRigidBodyConstraintShape",
+)
+# Live Attribute Editor control: root long path → scriptJob id.
+# killWithScene jobs die with the scene; this map keeps registration idempotent.
+_LEGACY_BULLET_WATCH_JOBS: Dict[str, int] = {}
 
 
 def _has_nonzero_spring(*spring_vectors) -> bool:
@@ -594,6 +614,7 @@ class PhysicsConverter:
         constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
         self._current_model_root = root_group
         ensure_visibility_attrs(MayaCmdsAdapter(cmds), root_group)
+        self.ensure_legacy_bullet_enabled_control(root_group)
 
         bone_index_map = self._create_bone_index_mapping(pmd_data.bones, bone_joints)
         self._attach_physics_group_to_model_motion_parent(physics_group, root_group, bone_index_map)
@@ -640,6 +661,7 @@ class PhysicsConverter:
         constraints_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
         self._current_model_root = root_group
         ensure_visibility_attrs(MayaCmdsAdapter(cmds), root_group)
+        self.ensure_legacy_bullet_enabled_control(root_group)
 
         bone_index_map = self._create_bone_index_mapping(pmx_data.bones, bone_joints)
         self._attach_physics_group_to_model_motion_parent(physics_group, root_group, bone_index_map)
@@ -1018,6 +1040,362 @@ class PhysicsConverter:
                 self.logger.warning(f"Skipped Bullet preview repair for '{shape}': {exc}")
         return connected
 
+    @staticmethod
+    def ensure_legacy_bullet_enabled_attr(root_group: Optional[str]) -> None:
+        """Ensure Root.mmd_legacy_bullet_enabled exists (default True).
+
+        Creates the attribute only when missing. Never overwrites a value the
+        user already chose — including after native physics bake exclusion.
+        """
+        if not root_group or not cmds.objExists(root_group):
+            return
+        try:
+            if cmds.attributeQuery(_LEGACY_BULLET_ENABLED_ATTR, node=root_group, exists=True):
+                return
+            cmds.addAttr(
+                root_group,
+                longName=_LEGACY_BULLET_ENABLED_ATTR,
+                attributeType="bool",
+                defaultValue=True,
+                keyable=True,
+            )
+            cmds.setAttr(f"{root_group}.{_LEGACY_BULLET_ENABLED_ATTR}", True)
+        except Exception:
+            return
+
+    @classmethod
+    def ensure_legacy_bullet_enabled_control(cls, root_group: Optional[str]) -> Optional[int]:
+        """Ensure the Root preference attr exists and its live AE control is registered.
+
+        Safe entry point for physics setup and VMD import. Never overwrites an
+        existing user value. Returns the scriptJob id when a live watch is
+        active, or None when skipped (batch mode / missing root / job failure).
+        """
+        cls.ensure_legacy_bullet_enabled_attr(root_group)
+        return cls.ensure_legacy_bullet_enabled_watch(root_group)
+
+    @classmethod
+    def ensure_legacy_bullet_enabled_watch(cls, root_group: Optional[str]) -> Optional[int]:
+        """Register an idempotent attributeChange job for live AE control.
+
+        When the user toggles ``mmd_legacy_bullet_enabled`` in the Attribute
+        Editor, immediately apply the root-scoped full legacy Bullet setup
+        suspension (preview feedback + rigid bodies / Bullet joints).
+        Jobs use ``killWithScene`` so they do not outlive the scene.
+
+        In mayapy / batch mode, scriptJob is skipped: the persistent attribute
+        plus VMD-import evaluation remains sufficient. Callers and tests can
+        still invoke :meth:`apply_legacy_bullet_enabled_from_attr` directly.
+        """
+        if not root_group or not cmds.objExists(root_group):
+            return None
+        try:
+            root_long = (cmds.ls(root_group, long=True) or [root_group])[0]
+        except Exception:
+            root_long = root_group
+
+        cls.ensure_legacy_bullet_enabled_attr(root_long)
+
+        existing = _LEGACY_BULLET_WATCH_JOBS.get(root_long)
+        if existing is not None:
+            try:
+                if cmds.scriptJob(exists=existing):
+                    return existing
+            except Exception:
+                pass
+            _LEGACY_BULLET_WATCH_JOBS.pop(root_long, None)
+
+        # Batch/mayapy: avoid scriptJob failures; attr + import-time eval is enough.
+        try:
+            if cmds.about(batch=True):
+                return None
+        except Exception:
+            return None
+
+        attr_path = f"{root_long}.{_LEGACY_BULLET_ENABLED_ATTR}"
+
+        def _on_attr_changed(*_args, _root=root_long):
+            cls.apply_legacy_bullet_enabled_from_attr(_root)
+
+        try:
+            job_id = int(
+                cmds.scriptJob(
+                    attributeChange=[attr_path, _on_attr_changed],
+                    killWithScene=True,
+                )
+            )
+        except Exception:
+            return None
+
+        _LEGACY_BULLET_WATCH_JOBS[root_long] = job_id
+        return job_id
+
+    @classmethod
+    def apply_legacy_bullet_enabled_from_attr(cls, root_group: Optional[str]) -> int:
+        """Apply the current Root ``mmd_legacy_bullet_enabled`` to the full legacy setup.
+
+        Intended for the live AE attributeChange callback and for focused tests
+        that cannot rely on GUI interaction. Does not write the preference.
+        Suspends or restores marked preview feedback and Bullet rigid-body /
+        rigid-body-constraint nodes under this root only.
+        """
+        if not root_group or not cmds.objExists(root_group):
+            return 0
+        try:
+            enabled = cls.get_legacy_bullet_enabled(root_group)
+            return cls().set_legacy_bullet_setup_enabled(root_group, enabled)
+        except Exception as exc:
+            try:
+                get_logger(cls.__name__).warning(
+                    f"Failed to apply {_LEGACY_BULLET_ENABLED_ATTR} on '{root_group}': {exc}"
+                )
+            except Exception:
+                pass
+            return 0
+
+    @staticmethod
+    def get_legacy_bullet_enabled(root_group: Optional[str]) -> bool:
+        """Read the persistent legacy Maya Bullet setup preference.
+
+        Missing attribute or unreadable root means the legacy setup is allowed
+        (default True), matching historical VMD import behaviour.
+        """
+        if not root_group or not cmds.objExists(root_group):
+            return True
+        try:
+            if not cmds.attributeQuery(_LEGACY_BULLET_ENABLED_ATTR, node=root_group, exists=True):
+                return True
+            return bool(cmds.getAttr(f"{root_group}.{_LEGACY_BULLET_ENABLED_ATTR}"))
+        except Exception:
+            return True
+
+    def set_legacy_bullet_enabled(self, root_group: Optional[str], enabled: bool) -> int:
+        """Persist the user's legacy Bullet setup preference and apply it.
+
+        This is the reversible, root-scoped user control. It updates
+        ``mmd_legacy_bullet_enabled`` and suspends or restores the full legacy
+        Maya Bullet setup for that root only (marked Bullet-to-bone preview
+        constraints plus ``bulletRigidBodyShape`` /
+        ``bulletRigidBodyConstraintShape`` descendants). It never disables the
+        global ``bulletSolver``.
+
+        Native physics bake must use
+        :meth:`set_existing_bullet_preview_feedback_enabled` instead so it does
+        not overwrite this preference or touch Bullet solver nodes.
+        """
+        if not root_group or not cmds.objExists(root_group):
+            return 0
+        self.ensure_legacy_bullet_enabled_control(root_group)
+        try:
+            cmds.setAttr(f"{root_group}.{_LEGACY_BULLET_ENABLED_ATTR}", bool(enabled))
+        except Exception as exc:
+            self.logger.warning(
+                f"Failed to set {_LEGACY_BULLET_ENABLED_ATTR} on '{root_group}': {exc}"
+            )
+        return self.set_legacy_bullet_setup_enabled(root_group, bool(enabled))
+
+    def set_legacy_bullet_setup_enabled(self, root_group: Optional[str], enabled: bool) -> int:
+        """Suspend or restore the full legacy Bullet setup under one model root.
+
+        Targets, root-scoped only:
+
+        * marked Bullet-to-bone preview constraints
+        * ``bulletRigidBodyShape`` and ``bulletRigidBodyConstraintShape`` nodes
+
+        Uses ``mmd_legacy_bullet_disabled`` / previous-state metadata so restore
+        only re-enables nodes this path suspended. Pre-existing non-zero
+        ``nodeState`` values (user-disabled) are left alone. Does not write
+        ``mmd_legacy_bullet_enabled``, does not touch ``bulletSolver``, and does
+        not use the native-bake metadata attrs.
+        """
+        if not root_group or not cmds.objExists(root_group):
+            return 0
+        root_long = self._root_long_name(root_group)
+        descendants = self._root_descendant_set(root_group)
+        if descendants is None:
+            return 0
+
+        changed = 0
+        for node in self._iter_legacy_bullet_setup_nodes(root_long, descendants):
+            try:
+                if self._set_node_legacy_bullet_suspended(node, suspend=not enabled):
+                    changed += 1
+            except Exception as exc:
+                self.logger.warning(f"Skipped legacy Bullet setup toggle for '{node}': {exc}")
+        return changed
+
+    def set_existing_bullet_preview_feedback_enabled(self, root_group: Optional[str], enabled: bool) -> int:
+        """Toggle this model's marked Bullet-to-bone preview constraints reversibly.
+
+        Temporary exclusion for native physics bake (and similar automatic
+        paths). Disables only generated preview constraints, without suspending
+        Bullet rigid bodies / joints, deleting the legacy Bullet setup, or
+        changing ``mmd_legacy_bullet_enabled``. A later restore only re-enables
+        constraints this method disabled, and still respects user-disabled
+        (non-zero nodeState) nodes.
+        """
+        descendants = self._root_descendant_set(root_group)
+
+        changed = 0
+        for constraint in self._iter_marked_preview_constraints(descendants):
+            try:
+                if enabled:
+                    if not cmds.attributeQuery(_NATIVE_BAKE_DISABLED_ATTR, node=constraint, exists=True):
+                        continue
+                    if not cmds.getAttr(f"{constraint}.{_NATIVE_BAKE_DISABLED_ATTR}"):
+                        continue
+                    previous_state = 0
+                    if cmds.attributeQuery(_NATIVE_BAKE_PREVIOUS_NODE_STATE_ATTR, node=constraint, exists=True):
+                        previous_state = int(cmds.getAttr(f"{constraint}.{_NATIVE_BAKE_PREVIOUS_NODE_STATE_ATTR}"))
+                    cmds.setAttr(f"{constraint}.nodeState", previous_state)
+                    cmds.setAttr(f"{constraint}.{_NATIVE_BAKE_DISABLED_ATTR}", False)
+                    changed += 1
+                    continue
+
+                if cmds.attributeQuery(_NATIVE_BAKE_DISABLED_ATTR, node=constraint, exists=True) and cmds.getAttr(
+                    f"{constraint}.{_NATIVE_BAKE_DISABLED_ATTR}"
+                ):
+                    continue
+                previous_state = int(cmds.getAttr(f"{constraint}.nodeState"))
+                # Respect a user-disabled constraint. Only normally active
+                # generated preview feedback is suspended for native bake.
+                if previous_state != 0:
+                    continue
+                if not cmds.attributeQuery(_NATIVE_BAKE_PREVIOUS_NODE_STATE_ATTR, node=constraint, exists=True):
+                    cmds.addAttr(constraint, longName=_NATIVE_BAKE_PREVIOUS_NODE_STATE_ATTR, attributeType="long")
+                if not cmds.attributeQuery(_NATIVE_BAKE_DISABLED_ATTR, node=constraint, exists=True):
+                    cmds.addAttr(constraint, longName=_NATIVE_BAKE_DISABLED_ATTR, attributeType="bool")
+                cmds.setAttr(f"{constraint}.{_NATIVE_BAKE_PREVIOUS_NODE_STATE_ATTR}", previous_state)
+                # Constraints do not support nodeState=1 (pass-through); Maya
+                # converts that request to blocking anyway. Use blocking
+                # explicitly so the baked joint channels have no Bullet input.
+                cmds.setAttr(f"{constraint}.nodeState", _NODE_STATE_BLOCKING)
+                cmds.setAttr(f"{constraint}.{_NATIVE_BAKE_DISABLED_ATTR}", True)
+                changed += 1
+            except Exception as exc:
+                self.logger.warning(f"Skipped Bullet preview feedback toggle for '{constraint}': {exc}")
+        return changed
+
+    @staticmethod
+    def _root_long_name(root_group: str) -> str:
+        """Return the long DAG path for a root group."""
+        try:
+            return (cmds.ls(root_group, long=True) or [root_group])[0]
+        except Exception:
+            return root_group
+
+    @classmethod
+    def _root_descendant_set(cls, root_group: Optional[str]) -> Optional[Set[str]]:
+        """Return long-path descendants (transforms + shapes) for a model root.
+
+        Returns None when unscoped / missing. Shape nodes are included explicitly
+        because ``listRelatives(allDescendents=True)`` omits shapes by default,
+        and legacy OFF must reach ``bulletRigidBodyShape`` nodes.
+        """
+        if not root_group or not cmds.objExists(root_group):
+            return None
+        root_long = cls._root_long_name(root_group)
+        descendants = set(cmds.listRelatives(root_group, allDescendents=True, fullPath=True) or [])
+        descendants.update(
+            cmds.listRelatives(root_group, allDescendents=True, fullPath=True, shapes=True) or []
+        )
+        descendants.add(root_long)
+        return descendants
+
+    @classmethod
+    def _node_is_under_root(cls, node: str, root_long: str, descendants: Set[str]) -> bool:
+        """Return whether *node* belongs under the model root hierarchy."""
+        if node in descendants:
+            return True
+        # Fallback for long-path prefix matching (shapes / renamed paths).
+        return node == root_long or node.startswith(root_long + "|")
+
+    def _iter_marked_preview_constraints(self, descendants: Optional[Set[str]]):
+        """Yield marked preview constraints scoped to *descendants* when given."""
+        constraints = []
+        for constraint_type in ("orientConstraint", "pointConstraint"):
+            constraints.extend(cmds.ls(type=constraint_type, long=True) or [])
+        for constraint in constraints:
+            try:
+                if not cmds.attributeQuery(_PREVIEW_CONSTRAINT_ATTR, node=constraint, exists=True):
+                    continue
+                if not cmds.getAttr(f"{constraint}.{_PREVIEW_CONSTRAINT_ATTR}"):
+                    continue
+                if descendants is not None and not self._preview_constraint_targets_descendants(
+                    constraint, descendants
+                ):
+                    continue
+            except Exception:
+                continue
+            yield constraint
+
+    def _iter_legacy_bullet_solver_nodes(self, root_long: str, descendants: Set[str]):
+        """Yield Bullet rigid-body / joint shapes that live under the model root."""
+        # Querying an unloaded Bullet node type emits Maya warnings. A model
+        # without the Bullet plug-in cannot have nodes that need suspension.
+        if not self.is_bullet_available():
+            return
+        for node_type in _LEGACY_BULLET_SOLVER_NODE_TYPES:
+            for node in cmds.ls(type=node_type, long=True) or []:
+                if self._node_is_under_root(node, root_long, descendants):
+                    yield node
+
+    def _iter_legacy_bullet_setup_nodes(self, root_long: str, descendants: Set[str]):
+        """Yield every node the Root legacy-OFF control may suspend."""
+        seen: Set[str] = set()
+        for node in self._iter_marked_preview_constraints(descendants):
+            if node not in seen:
+                seen.add(node)
+                yield node
+        for node in self._iter_legacy_bullet_solver_nodes(root_long, descendants):
+            if node not in seen:
+                seen.add(node)
+                yield node
+
+    def _set_node_legacy_bullet_suspended(self, node: str, suspend: bool) -> bool:
+        """Suspend or restore one node via ``mmd_legacy_bullet_*`` metadata.
+
+        Returns True when this call changed nodeState / metadata.
+        """
+        if suspend:
+            if cmds.attributeQuery(_LEGACY_BULLET_DISABLED_ATTR, node=node, exists=True) and cmds.getAttr(
+                f"{node}.{_LEGACY_BULLET_DISABLED_ATTR}"
+            ):
+                return False
+            previous_state = int(cmds.getAttr(f"{node}.nodeState"))
+            # Preserve pre-existing user-disabled / non-default evaluation state.
+            if previous_state != 0:
+                return False
+            if not cmds.attributeQuery(_LEGACY_BULLET_PREVIOUS_NODE_STATE_ATTR, node=node, exists=True):
+                cmds.addAttr(node, longName=_LEGACY_BULLET_PREVIOUS_NODE_STATE_ATTR, attributeType="long")
+            if not cmds.attributeQuery(_LEGACY_BULLET_DISABLED_ATTR, node=node, exists=True):
+                cmds.addAttr(node, longName=_LEGACY_BULLET_DISABLED_ATTR, attributeType="bool")
+            cmds.setAttr(f"{node}.{_LEGACY_BULLET_PREVIOUS_NODE_STATE_ATTR}", previous_state)
+            cmds.setAttr(f"{node}.nodeState", _NODE_STATE_BLOCKING)
+            cmds.setAttr(f"{node}.{_LEGACY_BULLET_DISABLED_ATTR}", True)
+            return True
+
+        if not cmds.attributeQuery(_LEGACY_BULLET_DISABLED_ATTR, node=node, exists=True):
+            return False
+        if not cmds.getAttr(f"{node}.{_LEGACY_BULLET_DISABLED_ATTR}"):
+            return False
+        previous_state = 0
+        if cmds.attributeQuery(_LEGACY_BULLET_PREVIOUS_NODE_STATE_ATTR, node=node, exists=True):
+            previous_state = int(cmds.getAttr(f"{node}.{_LEGACY_BULLET_PREVIOUS_NODE_STATE_ATTR}"))
+        cmds.setAttr(f"{node}.nodeState", previous_state)
+        cmds.setAttr(f"{node}.{_LEGACY_BULLET_DISABLED_ATTR}", False)
+        return True
+
+    @staticmethod
+    def _preview_constraint_targets_descendants(constraint: str, descendants: Set[str]) -> bool:
+        """Return whether a preview constraint drives a node below the model root."""
+        targets = cmds.listConnections(constraint, source=False, destination=True, shapes=False) or []
+        for target in targets:
+            long_names = cmds.ls(target, long=True) or [target]
+            if any(long_name in descendants for long_name in long_names):
+                return True
+        return False
+
     def _create_physics_preview_constraint(
         self,
         transform: str,
@@ -1072,9 +1450,9 @@ class PhysicsConverter:
 
     def _mark_physics_preview_constraint(self, constraint_node: str) -> None:
         """Mark a generated physics preview constraint for future repair."""
-        if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint_node, exists=True):
-            cmds.addAttr(constraint_node, longName="mmd_physics_preview_constraint", attributeType="bool")
-        cmds.setAttr(f"{constraint_node}.mmd_physics_preview_constraint", True)
+        if not cmds.attributeQuery(_PREVIEW_CONSTRAINT_ATTR, node=constraint_node, exists=True):
+            cmds.addAttr(constraint_node, longName=_PREVIEW_CONSTRAINT_ATTR, attributeType="bool")
+        cmds.setAttr(f"{constraint_node}.{_PREVIEW_CONSTRAINT_ATTR}", True)
 
     def _has_physics_preview_constraint(
         self,

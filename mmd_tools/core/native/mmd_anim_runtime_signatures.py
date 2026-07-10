@@ -8,7 +8,7 @@ classes and Maya scene utilities.
 
 from __future__ import annotations
 
-from ctypes import CDLL, POINTER, c_bool, c_float, c_int32, c_size_t, c_uint8, c_uint32, c_void_p
+from ctypes import CDLL, POINTER, c_bool, c_char_p, c_float, c_int32, c_size_t, c_uint8, c_uint32, c_void_p
 from typing import Any, List
 
 from mmd_tools.core.logger import get_logger
@@ -16,6 +16,8 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiAppendConfig,
     MmdRuntimeFfiByteBuffer,
     MmdRuntimeFfiIkSolveStats,
+    MmdRuntimeFfiPhysicsStepStats,
+    MmdRuntimeFfiPhysicsWorldStepReport,
     MmdRuntimeFfiRigBone,
     MmdRuntimeFfiRigIkLink,
 )
@@ -27,6 +29,7 @@ def setup_function_signatures(lib: CDLL) -> None:
     """Set ctypes argtypes/restype for the core runtime ABI."""
     lib.mmd_runtime_abi_version.restype = c_uint32
     lib.mmd_runtime_abi_version.argtypes = []
+    set_sig(lib, "mmd_runtime_feature_flags", c_uint32, [])
 
     lib.mmd_runtime_model_free.restype = None
     lib.mmd_runtime_model_free.argtypes = [c_void_p]
@@ -180,6 +183,73 @@ def setup_function_signatures(lib: CDLL) -> None:
 
     setup_parsed_model_signatures(lib)
     setup_rig_primitive_signatures(lib)
+    setup_physics_signatures(lib)
+
+
+def setup_physics_signatures(lib: CDLL) -> None:
+    """Safely set optional native physics ABI signatures."""
+    try:
+        set_sig(lib, "mmd_runtime_last_error_message", c_char_p, [])
+        set_sig(lib, "mmd_runtime_instance_get_physics_mode", c_uint32, [c_void_p, POINTER(c_uint32)])
+        set_sig(lib, "mmd_runtime_instance_set_physics_mode", c_uint32, [c_void_p, c_uint32])
+        set_sig(lib, "mmd_runtime_instance_reset_physics_tick", c_uint32, [c_void_p])
+        set_sig(lib, "mmd_runtime_instance_evaluate_clip_frame_before_physics", c_uint32, [c_void_p, c_void_p, c_float])
+        set_sig(
+            lib,
+            "mmd_runtime_instance_evaluate_clip_frame_before_physics_with_ik_options",
+            c_uint32,
+            [c_void_p, c_void_p, c_float, c_float, c_uint32],
+        )
+        set_sig(lib, "mmd_runtime_instance_evaluate_current_pose_before_physics", c_uint32, [c_void_p])
+        set_sig(lib, "mmd_runtime_instance_evaluate_current_pose_after_physics", c_uint32, [c_void_p])
+        set_sig(
+            lib,
+            "mmd_runtime_instance_evaluate_current_pose_after_physics_with_ik_options",
+            c_uint32,
+            [c_void_p, c_float, c_uint32],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_instance_advance_physics_tick_clock",
+            c_uint32,
+            [c_void_p, c_float, POINTER(MmdRuntimeFfiPhysicsStepStats)],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_physics_world_create_from_pmx_bytes",
+            c_uint32,
+            [POINTER(c_uint8), c_size_t, POINTER(c_void_p)],
+        )
+        set_sig(lib, "mmd_runtime_physics_world_free", None, [c_void_p])
+        set_sig(lib, "mmd_runtime_physics_world_reset", c_uint32, [c_void_p, c_void_p, POINTER(c_size_t)])
+        set_sig(
+            lib,
+            "mmd_runtime_physics_world_step_runtime",
+            c_uint32,
+            [c_void_p, c_void_p, c_float, POINTER(MmdRuntimeFfiPhysicsWorldStepReport)],
+        )
+        set_sig(lib, "mmd_runtime_physics_world_rigidbody_count", c_uint32, [c_void_p, POINTER(c_size_t)])
+        set_sig(
+            lib,
+            "mmd_runtime_physics_world_bake_clip_frames",
+            c_uint32,
+            [
+                c_void_p,
+                c_void_p,
+                c_void_p,
+                c_float,
+                c_float,
+                c_float,
+                c_size_t,
+                POINTER(c_float),
+                c_size_t,
+                POINTER(c_float),
+                c_size_t,
+                POINTER(MmdRuntimeFfiPhysicsWorldStepReport),
+            ],
+        )
+    except Exception as exc:
+        logger.debug("Error while setting native physics ABI signatures: %s", exc)
 
 
 def setup_parsed_model_signatures(lib: CDLL) -> None:
