@@ -178,7 +178,7 @@ class MaterialPresenter:
             if self.view.material_list.count() == 0:
                 self.view._show_placeholder()
 
-            logger.info(f"Loaded {self.view.material_list.count()} MMD materials for model: {current_model_root}")
+            logger.debug(f"Loaded {self.view.material_list.count()} MMD materials for model: {current_model_root}")
 
         except Exception as e:
             logger.error(f"Failed to load materials: {e}", exc_info=True)
@@ -388,7 +388,7 @@ class MaterialPresenter:
                 self.material_data["texture"] = texture_path
                 self.view.texture_path_edit.setText(texture_path)
                 self._load_texture_provenance(file_node[0])
-                logger.info(f"Loaded texture: {texture_path}")
+                logger.debug(f"Loaded texture: {texture_path}")
             else:
                 # Check if there's a stored texture path in MMD attributes
                 mmd_texture_path = self._get_attr_safe(material_name, "mmd_texture_path", "")
@@ -396,12 +396,12 @@ class MaterialPresenter:
                     self.material_data["texture"] = mmd_texture_path
                     self.view.texture_path_edit.setText(mmd_texture_path)
                     self._set_texture_provenance_fields("")
-                    logger.info(f"Loaded texture from MMD attribute: {mmd_texture_path}")
+                    logger.debug(f"Loaded texture from MMD attribute: {mmd_texture_path}")
                 else:
                     self.material_data["texture"] = ""
                     self.view.texture_path_edit.clear()
                     self._set_texture_provenance_fields("")
-                    logger.info(f"No texture found for material: {material_name}")
+                    logger.debug(f"No texture found for material: {material_name}")
 
             # Get MMD-specific attributes if they exist
             self._load_mmd_attributes(material_name)

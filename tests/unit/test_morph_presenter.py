@@ -124,12 +124,21 @@ class TestMorphPresenter(MayaTestBase):
         cmds.delete(target)
 
         # モーフをロード
-        self.presenter.load_morphs()
+        self.mock_view.morph_list.count.return_value = 1
+        with patch.object(morph_presenter_module, "logger") as mock_logger:
+            self.presenter.load_morphs()
 
         # 結果を確認
         self.mock_view.morph_list.clear.assert_called()
         self.assertIn("test_target", self.presenter.morph_data)
         self.assertEqual(self.presenter.blend_shape_node, blend_shape)
+
+        # 一覧ロード詳細は DEBUG のみ（INFO には出さない）
+        expected = f"Loaded 1 morphs for model: {test_model}"
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_on_morph_selected(self):
         """モーフ選択時の処理のテスト"""
@@ -367,7 +376,8 @@ class TestMorphPresenter(MayaTestBase):
         }
 
         # 自動連携を実行
-        self.presenter.auto_connect_blend_shapes()
+        with patch.object(morph_presenter_module, "logger") as mock_logger:
+            self.presenter.auto_connect_blend_shapes()
 
         # 結果を確認
         for name in target_names:
@@ -376,6 +386,15 @@ class TestMorphPresenter(MayaTestBase):
             self.assertIn("blend_shape_target", self.presenter.morph_data[name])
 
         self.mock_app_state.emit_status.assert_called()
+
+        # 開始・完了は INFO、per-item 成功は DEBUG のみ
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn("Starting auto-connect", info_messages)
+        self.assertIn("Auto-connect complete: connected 3 morph(s)", info_messages)
+        per_item = f"Auto-connect succeeded: smile -> {blend_shape}."
+        self.assertTrue(any(msg.startswith(per_item) for msg in debug_messages))
+        self.assertFalse(any(msg.startswith("Auto-connect succeeded:") for msg in info_messages))
 
     def test_organize_morphs_by_group(self):
         """グループごとのモーフ整理のテスト"""

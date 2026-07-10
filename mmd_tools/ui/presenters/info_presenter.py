@@ -87,7 +87,7 @@ class InfoPresenter:
             self.view.comment_jp_edit.setPlainText(comment_jp)  # QTextEditはsetPlainTextを使用
             self.view.comment_en_edit.setPlainText(comment_en)
 
-            logger.info(f"Loaded model info for {current_model_root}")
+            logger.debug(f"Loaded model info for {current_model_root}")
         except Exception as e:
             logger.error(f"Failed to load model info: {e}", exc_info=True)
             # エラー時もフィールドをクリア

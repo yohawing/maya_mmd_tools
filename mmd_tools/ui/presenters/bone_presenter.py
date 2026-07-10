@@ -173,7 +173,7 @@ class BonePresenter:
             self.view.bone_list.addItem(item)
             self.bone_list_items[joint] = item
 
-        logger.info(f"Loaded {len(joints)} bones for model: {current_model_root}")
+        logger.debug(f"Loaded {len(joints)} bones for model: {current_model_root}")
 
     def create_humanik_rig(self):
         """Create a HumanIK definition and control rig for the current model."""

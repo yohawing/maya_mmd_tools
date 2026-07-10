@@ -106,7 +106,7 @@ class MorphPresenter:
         # プリセットを読み込み
         self._load_presets(current_model_root)
 
-        logger.info(f"Loaded {self.view.morph_list.count()} morphs for model: {current_model_root}")
+        logger.debug(f"Loaded {self.view.morph_list.count()} morphs for model: {current_model_root}")
 
     def _load_mmd_morphs(self, model_root):
         """MMDモーフデータをロード"""
@@ -615,7 +615,7 @@ class MorphPresenter:
                                 {"node": bs_node, "target": target_name, "weight_attr": target_name}
                             ]
                             connected_count += 1
-                            logger.info(f"Auto-connect succeeded: {morph_name} -> {bs_node}.{target_name}")
+                            logger.debug(f"Auto-connect succeeded: {morph_name} -> {bs_node}.{target_name}")
                             break
 
                     if data.get("blend_shape_node"):

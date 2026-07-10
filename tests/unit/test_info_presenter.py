@@ -151,12 +151,20 @@ class TestLoadModelInfo(unittest.TestCase):
 
     def test_sets_text_fields_from_scene_model_service_attrs(self):
         self.app_state.scene_model_service.attr_values = _ATTR_VALUES
-        self.presenter.load_model_info()
+        with patch(f"{_MOD}.logger") as mock_logger:
+            self.presenter.load_model_info()
 
         self.view.model_name_jp_edit.setText.assert_called_with("テストモデル")
         self.view.model_name_en_edit.setText.assert_called_with("Test Model")
         self.view.comment_jp_edit.setPlainText.assert_called_with("テストコメント")
         self.view.comment_en_edit.setPlainText.assert_called_with("Test Comment")
+
+        # モデル info ロード詳細は DEBUG のみ（INFO には出さない）
+        expected = f"Loaded model info for {TEST_MODEL}"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_clears_fields_when_no_model(self):
         self.app_state._current_model_root = None

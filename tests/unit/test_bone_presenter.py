@@ -264,7 +264,8 @@ class TestBonePresenter(MayaTestBase):
         self.mock_app_state.current_model_root = self.test_model
 
         # ボーンを読み込み
-        self.presenter.load_bones()
+        with patch("mmd_tools.ui.presenters.bone_presenter.logger") as mock_logger:
+            self.presenter.load_bones()
 
         # リストがクリアされたことを確認
         self.mock_view.bone_list.clear.assert_called()
@@ -274,6 +275,13 @@ class TestBonePresenter(MayaTestBase):
         self.assertIn(self.test_bone1, self.presenter.bone_list_items)
         self.assertIn(self.test_bone2, self.presenter.bone_list_items)
         self.assertIn(self.test_bone3, self.presenter.bone_list_items)
+
+        # 一覧ロード詳細は DEBUG のみ（INFO には出さない）
+        expected = f"Loaded 3 bones for model: {self.test_model}"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_bone_flag_calculation(self):
         """ボーンフラグ計算のテスト"""

@@ -150,8 +150,9 @@ class TestMaterialPresenter(unittest.TestCase):
         # プレースホルダーが表示されることを確認
         self.mock_view._show_placeholder.assert_called_once()
 
+    @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_materials_with_model(self, mock_maya_attribute_utils):
+    def test_load_materials_with_model(self, mock_maya_attribute_utils, mock_logger):
         """モデルが選択されている場合のマテリアル読み込みテスト"""
         # モデルが存在する設定
         self.mock_app_state.current_model_root = "test_model"
@@ -173,6 +174,8 @@ class TestMaterialPresenter(unittest.TestCase):
             "mmd_material_name": "Material 1",
             "mmd_material_name_en": "Material 1 EN",
         }.get(attr, "")
+        # count() は addItem 後の件数を返す想定
+        self.mock_view.material_list.count.return_value = 1
 
         self.presenter.load_materials()
 
@@ -188,6 +191,13 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.list_connections.assert_any_call(["meshShape"], type="shadingEngine")
         self.mock_maya_adapter.ls.assert_called_with(["mat1"], materials=True)
         self.mock_maya_adapter.attribute_exists.assert_called_with(ATTR_MMD_MATERIAL_NAME, "mat1")
+
+        # 一覧ロード詳細は DEBUG のみ（INFO には出さない）
+        expected = "Loaded 1 MMD materials for model: test_model"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
@@ -215,8 +225,9 @@ class TestMaterialPresenter(unittest.TestCase):
         self.assertIn(expected, debug_messages)
         self.assertNotIn(expected, info_messages)
 
+    @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_load_material_properties_dx11shader(self, mock_maya_attribute_utils):
+    def test_load_material_properties_dx11shader(self, mock_maya_attribute_utils, mock_logger):
         """dx11Shaderのプロパティ読み込みテスト"""
         material_name = "test_material"
         self.mock_maya_adapter.node_type.return_value = "dx11Shader"
@@ -246,6 +257,7 @@ class TestMaterialPresenter(unittest.TestCase):
             ATTR_MMD_EDGE_SIZE: 1.0,
             ATTR_MMD_SHADER_OUTLINE_ENABLED: False,
             ATTR_MMD_TOON_TEXTURE_INDEX: 0,
+            "fileTextureName": "textures/main.png",
         }.get(attr, None)
 
         # テクスチャ接続の設定
@@ -257,6 +269,35 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_view.material_jp_name_edit.setText.assert_called_with("テストマテリアル")
         self.mock_view.material_en_name_edit.setText.assert_called_with("Test Material")
         self.mock_view.specular_coefficient_spin.setValue.assert_called_with(0.5)
+        self.mock_view.texture_path_edit.setText.assert_called_with("textures/main.png")
+
+        # テクスチャロード詳細は DEBUG のみ（INFO には出さない）
+        expected = "Loaded texture: textures/main.png"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.logger")
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_material_properties_no_texture_logs_debug(self, mock_maya_attribute_utils, mock_logger):
+        """テクスチャ未検出の詳細ログは DEBUG のみ。"""
+        material_name = "test_material"
+        self.mock_maya_adapter.node_type.return_value = "lambert"
+        self.mock_maya_adapter.attribute_exists.return_value = False
+        self.mock_maya_adapter.list_connections.return_value = None
+        mock_maya_attribute_utils.get_attribute.return_value = None
+
+        self.presenter.load_material_properties(material_name)
+
+        self.assertEqual(self.presenter.material_data.get("texture"), "")
+        self.mock_view.texture_path_edit.clear.assert_called()
+
+        expected = f"No texture found for material: {material_name}"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_update_color_widget_with_valid_color(self):
         """有効な色データでのカラーウィジェット更新テスト"""
