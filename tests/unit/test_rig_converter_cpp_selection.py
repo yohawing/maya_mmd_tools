@@ -8,7 +8,7 @@ which plugin is loaded.
 from contextlib import ExitStack
 import unittest
 from types import SimpleNamespace
-from unittest.mock import call, patch
+from unittest.mock import MagicMock, call, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -48,6 +48,7 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
 
     def test_create_append_nodes_sets_explicit_compat_schema_mode(self):
         converter = RigConverter()
+        converter.logger = MagicMock()
         manifest = SimpleNamespace(
             grants=[
                 {
@@ -92,6 +93,19 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
                 call("target_mmdAppend.schemaMode", rig_converter.MMD_APPEND_SCHEMA_MODE_COMPAT),
             ]
         )
+
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call_args[0][0] for call_args in converter.logger.debug.call_args_list if call_args[0]
+        ]
+        info_messages = [
+            call_args[0][0] for call_args in converter.logger.info.call_args_list if call_args[0]
+        ]
+        expected_append_detail = (
+            "mmdAppend node 'target_mmdAppend': source_joint -> target_joint (ratio=0.5)"
+        )
+        self.assertIn(expected_append_detail, debug_messages)
+        self.assertNotIn(expected_append_detail, info_messages)
 
 
 if __name__ == "__main__":

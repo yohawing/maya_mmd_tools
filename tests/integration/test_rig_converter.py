@@ -1,7 +1,7 @@
 import json
 import math
 import unittest
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 import maya.cmds as cmds
 
 from mmd_tools.converters.rig_converter import RigConverter
@@ -111,6 +111,7 @@ class TestRigConverterMaya(unittest.TestCase):
             }],
         })
 
+        self.converter.logger = MagicMock()
         nodes = self.converter._create_ik_nodes_from_manifest(manifest, maya_joints)
 
         self.assertEqual(len(nodes), 1)
@@ -137,6 +138,17 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertEqual(
             cmds.listRelatives(controller, shapes=True, type="nurbsCurve") or [], []
         )
+
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call[0][0] for call in self.converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in self.converter.logger.info.call_args_list if call[0]
+        ]
+        expected_ik_detail = f"mmdCcdIk node '{node}': controller={controller}, 1 links"
+        self.assertIn(expected_ik_detail, debug_messages)
+        self.assertNotIn(expected_ik_detail, info_messages)
 
     def test_extract_ik_chains_pmx(self):
         """PMXボーンからのIKチェーン抽出テスト"""
@@ -210,6 +222,7 @@ class TestRigConverterMaya(unittest.TestCase):
             }
         ]
 
+        self.converter.logger = MagicMock()
         ik_handles = self.converter._create_maya_ik_handles(ik_chains)
 
         self.assertEqual(len(ik_handles), 1)
@@ -225,6 +238,20 @@ class TestRigConverterMaya(unittest.TestCase):
         # IKハンドルが非表示になっているか確認
         visibility = cmds.getAttr(f"{handle_info['ik_handle']}.visibility")
         self.assertEqual(visibility, 0)
+
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call[0][0] for call in self.converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in self.converter.logger.info.call_args_list if call[0]
+        ]
+        expected_handle_detail = (
+            f"Created IK handle '{handle_info['ik_handle']}' "
+            f"({joints[1]} -> {joints[3]})"
+        )
+        self.assertIn(expected_handle_detail, debug_messages)
+        self.assertNotIn(expected_handle_detail, info_messages)
 
     def test_import_fix_axis_bones(self):
         """fix_axis fixture のボーンをインポートできることを確認する。"""
@@ -556,6 +583,7 @@ class TestRigConverterMaya(unittest.TestCase):
         child_bone.grant_rate = 0.5
         parent_bone = self._create_mock_pmx_bone(1, "ParentBone")
 
+        self.converter.logger = MagicMock()
         constraints = self.converter._setup_grant_bones([child_bone, parent_bone], [child_joint, parent_joint])
 
         self.assertEqual(len(constraints), 1)
@@ -569,6 +597,55 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertEqual(len(weights), 2)
         weight_sum = sum(cmds.getAttr(f"{constraint}.{w}") for w in weights)
         self.assertAlmostEqual(weight_sum, 1.0, places=4)
+
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call[0][0] for call in self.converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in self.converter.logger.info.call_args_list if call[0]
+        ]
+        expected_rotation_detail = (
+            f"Configured rotation append (global append): "
+            f"{child_joint} <- {parent_joint} (rate=0.5, layer=0)"
+        )
+        self.assertIn(expected_rotation_detail, debug_messages)
+        self.assertNotIn(expected_rotation_detail, info_messages)
+
+    def test_translation_grant_detail_logs_at_debug_not_info(self):
+        """移動付与の成功詳細は debug に出し、info には出さない。"""
+        cmds.select(clear=True)
+        parent_joint = cmds.joint(name="parent_joint", position=[0, 0, 0])
+        cmds.select(clear=True)
+        child_joint = cmds.joint(name="child_joint", position=[5, 0, 0])
+
+        child_bone = self._create_mock_pmx_bone(0, "ChildBone", bone_flag=PmxBoneFlag.GRANT_PARENT_MOVE)
+        child_bone.grant_parent_bone_index = 1
+        child_bone.grant_rate = 0.5
+        parent_bone = self._create_mock_pmx_bone(1, "ParentBone")
+
+        self.converter.logger = MagicMock()
+        constraints = self.converter._setup_grant_bones(
+            [child_bone, parent_bone],
+            [child_joint, parent_joint],
+        )
+
+        self.assertEqual(len(constraints), 1)
+        self.assertEqual(cmds.nodeType(constraints[0]), "pointConstraint")
+
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call[0][0] for call in self.converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in self.converter.logger.info.call_args_list if call[0]
+        ]
+        expected_translation_detail = (
+            f"Configured translation append (global append): "
+            f"{child_joint} <- {parent_joint} (rate=0.5, layer=0)"
+        )
+        self.assertIn(expected_translation_detail, debug_messages)
+        self.assertNotIn(expected_translation_detail, info_messages)
 
     def test_negative_rate_rotation_grant_uses_negative_weight(self):
         """負の付与率(-0.5)が単一ターゲットの負ウェイト orientConstraint になることを確認。

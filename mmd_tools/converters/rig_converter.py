@@ -339,7 +339,7 @@ class RigConverter:
                 }
 
                 ik_handles.append(ik_handle_info)
-                self.logger.info(f"Created IK handle '{ik_handle}' ({start_joint} -> {end_joint})")
+                self.logger.debug(f"Created IK handle '{ik_handle}' ({start_joint} -> {end_joint})")
 
             except Exception as e:
                 safe_log_error(
@@ -612,7 +612,7 @@ class RigConverter:
 
                     constraints.append(constraint)
                     given_type = "local append" if is_local_given else "global append"
-                    self.logger.info(
+                    self.logger.debug(
                         f"Configured rotation append ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
                     )
 
@@ -628,7 +628,7 @@ class RigConverter:
 
                     constraints.append(constraint)
                     given_type = "local append" if is_local_given else "global append"
-                    self.logger.info(
+                    self.logger.debug(
                         f"Configured translation append ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
                     )
 
@@ -922,7 +922,7 @@ class RigConverter:
 
                 nodes.append(node)
                 append_nodes_by_target[target_joint] = node
-                self.logger.info(
+                self.logger.debug(
                     f"{self._append_node_type()} node '{node}': {source_joint} -> {target_joint} (ratio={ratio})"
                 )
             except Exception as e:
@@ -1262,7 +1262,7 @@ class RigConverter:
                         pass
 
                 nodes.append(node)
-                self.logger.info(
+                self.logger.debug(
                     f"{self._ccd_ik_node_type()} node '{node}': controller={controller_joint}, "
                     f"{len(links_for_json)} links"
                 )
