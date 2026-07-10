@@ -375,10 +375,10 @@ class RigConverter:
         if not existing_master:
             master = cmds.group(empty=True, name="master", parent=skeleton_group)
             semi_standard_bones["master"] = master
-            self.logger.info(f"Added master bone: {master}")
+            self.logger.debug(f"Added master bone: {master}")
         else:
             master = existing_master
-            self.logger.info(f"Using existing master bone: {existing_master}")
+            self.logger.debug(f"Using existing master bone: {existing_master}")
 
         # スケルトングループ直下のルートジョイントを全ての親の子にする
         if "master" in semi_standard_bones or existing_master:
@@ -416,9 +416,9 @@ class RigConverter:
 
             # センターをグルーブの子にする
             maya_scene_utils.parent_objects(center_joint, groove)
-            self.logger.info(f"Added groove bone: {groove}")
+            self.logger.debug(f"Added groove bone: {groove}")
         elif existing_groove:
-            self.logger.info(f"Using existing groove bone: {existing_groove}")
+            self.logger.debug(f"Using existing groove bone: {existing_groove}")
 
         # 腰ボーン（下半身と足の間）
         # 既存の腰ボーンを日本語名でチェック
@@ -457,10 +457,10 @@ class RigConverter:
             if right_leg_joint:
                 maya_scene_utils.parent_objects(right_leg_joint, waist)
 
-            self.logger.info(f"Added waist bone: {waist}")
+            self.logger.debug(f"Added waist bone: {waist}")
         elif existing_waist:
             # 既存の腰ボーンを使用（新規作成しないので辞書には追加しない）
-            self.logger.info(f"Using existing waist bone: {existing_waist}")
+            self.logger.debug(f"Using existing waist bone: {existing_waist}")
 
         return semi_standard_bones
 
@@ -681,7 +681,7 @@ class RigConverter:
         if not maya_scene_utils.object_exists(reference):
             reference = cmds.group(empty=True, name=reference)
             maya_attribute_utils.set_attribute(reference, "visibility", False, "bool")
-            self.logger.info(f"Added reference node for rotation append: {reference}")
+            self.logger.debug(f"Added reference node for rotation append: {reference}")
 
         return reference
 

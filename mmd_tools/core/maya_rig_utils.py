@@ -59,7 +59,7 @@ def create_ik_handle(start_joint, end_joint, solver="ikRPsolver", name=None):
         ik_handle = ik_handle_result[0]
         effector = ik_handle_result[1]
 
-        logger.info(f"Created IK handle '{ik_handle}' from '{start_joint}' to '{end_joint}'")
+        logger.debug(f"Created IK handle '{ik_handle}' from '{start_joint}' to '{end_joint}'")
         return ik_handle, effector
 
     except Exception as e:
@@ -115,7 +115,7 @@ def create_pole_vector_constraint(ik_handle, pole_vector_object, maintain_offset
     try:
         constraint = cmds.poleVectorConstraint(pole_vector_object, ik_handle, maintainOffset=maintain_offset)[0]
 
-        logger.info(f"Created pole vector constraint from '{pole_vector_object}' to '{ik_handle}'")
+        logger.debug(f"Created pole vector constraint from '{pole_vector_object}' to '{ik_handle}'")
         return constraint
 
     except Exception as e:

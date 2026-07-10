@@ -303,11 +303,13 @@ class TestRigConverterMaya(unittest.TestCase):
         # centerをスケルトングループの子にする
         cmds.parent(center, skeleton_group)
 
+        self.converter.logger = MagicMock()
         result = self.converter._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
 
         # 追加されたボーンの確認
         self.assertIn("master", result)
         self.assertIn("groove", result)
+        self.assertIn("waist", result)
 
         # masterが存在するか
         self.assertTrue(cmds.objExists(result["master"]))
@@ -323,6 +325,23 @@ class TestRigConverterMaya(unittest.TestCase):
             # 腰が下半身の子、足の親になっているか
             parent_of_waist = cmds.listRelatives(result["waist"], parent=True)[0]
             self.assertEqual(parent_of_waist, lower_body)
+
+        # creation-path detail logs at DEBUG, not INFO
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call[0][0] for call in self.converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in self.converter.logger.info.call_args_list if call[0]
+        ]
+        expected_details = [
+            f"Added master bone: {result['master']}",
+            f"Added groove bone: {result['groove']}",
+            f"Added waist bone: {result['waist']}",
+        ]
+        for detail in expected_details:
+            self.assertIn(detail, debug_messages)
+            self.assertNotIn(detail, info_messages)
 
     def test_given_bones_with_pmx(self):
         """実際のPMXデータを使用した付与ボーンのテスト（構造検証）。
@@ -434,6 +453,7 @@ class TestRigConverterMaya(unittest.TestCase):
         bones = [bone, parent_bone]
         maya_joints = [child_joint, parent_joint]
 
+        self.converter.logger = MagicMock()
         constraints = self.converter._setup_grant_bones(bones, maya_joints)
 
         self.assertEqual(len(constraints), 1)
@@ -442,6 +462,18 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertTrue(cmds.getAttr(f"{constraint}.mmd_grant_constraint"))
         # 部分付与(rate=0.5)では中立リファレンスノードが作成される
         self.assertTrue(cmds.objExists("mmd_grant_reference"))
+
+        # reference-path detail logs at DEBUG, not INFO
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call[0][0] for call in self.converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in self.converter.logger.info.call_args_list if call[0]
+        ]
+        expected_ref_detail = "Added reference node for rotation append: mmd_grant_reference"
+        self.assertIn(expected_ref_detail, debug_messages)
+        self.assertNotIn(expected_ref_detail, info_messages)
 
     def test_setup_grant_bones_without_master_reference(self):
         """masterが存在しないPMXでも部分回転付与を設定できることを確認"""
@@ -771,6 +803,7 @@ class TestRigConverterMaya(unittest.TestCase):
         skeleton_group = cmds.group(empty=True, name="skeleton_grp")
         cmds.parent(master_existing, skeleton_group)
 
+        self.converter.logger = MagicMock()
         result = self.converter._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
 
         # 既存のボーンが使用され、新しく作成されていないことを確認
@@ -816,6 +849,7 @@ class TestRigConverterMaya(unittest.TestCase):
             3: "waist",
         }
 
+        self.converter.logger = MagicMock()
         result = self.converter._add_semi_standard_bones(maya_joints, bone_map, skeleton_group)
 
         # 既存のボーンは新しく作成されない
@@ -831,6 +865,21 @@ class TestRigConverterMaya(unittest.TestCase):
         self.assertEqual(len(all_masters), 1)  # 1つのみ（既存のもの）
         self.assertEqual(len(all_grooves), 1)  # 1つのみ（既存のもの）
         self.assertEqual(len(all_waists), 1)  # 1つのみ（既存のもの）
+
+        debug_messages = [
+            call[0][0] for call in self.converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in self.converter.logger.info.call_args_list if call[0]
+        ]
+        expected_details = [
+            f"Using existing master bone: {master_existing}",
+            f"Using existing groove bone: {groove_existing}",
+            f"Using existing waist bone: {waist_existing}",
+        ]
+        for detail in expected_details:
+            self.assertIn(detail, debug_messages)
+            self.assertNotIn(detail, info_messages)
 
     def test_setup_pmx_rig_integration(self):
         """PMXリグセットアップの統合テスト（現行 setup_pmx_rig の挙動）。

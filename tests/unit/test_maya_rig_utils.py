@@ -23,13 +23,15 @@ class TestMayaRigUtils(unittest.TestCase):
     def test_create_ik_handle_calls_maya_with_explicit_name(self):
         self.cmds.objExists.return_value = True
         self.cmds.ikHandle.return_value = ["ankle_ikHandle", "ankle_effector"]
+        mock_logger = MagicMock()
 
-        ik_handle, effector = maya_rig_utils.create_ik_handle(
-            start_joint="knee_jnt",
-            end_joint="ankle_jnt",
-            solver="ikRPsolver",
-            name="ankle_ikHandle",
-        )
+        with patch.object(maya_rig_utils, "logger", mock_logger):
+            ik_handle, effector = maya_rig_utils.create_ik_handle(
+                start_joint="knee_jnt",
+                end_joint="ankle_jnt",
+                solver="ikRPsolver",
+                name="ankle_ikHandle",
+            )
 
         self.assertEqual(ik_handle, "ankle_ikHandle")
         self.assertEqual(effector, "ankle_effector")
@@ -39,6 +41,12 @@ class TestMayaRigUtils(unittest.TestCase):
             solver="ikRPsolver",
             name="ankle_ikHandle",
         )
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        expected = "Created IK handle 'ankle_ikHandle' from 'knee_jnt' to 'ankle_jnt'"
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_create_ik_handle_uses_default_name(self):
         self.cmds.objExists.return_value = True
@@ -148,12 +156,14 @@ class TestMayaRigUtils(unittest.TestCase):
     def test_create_pole_vector_constraint_returns_first_constraint(self):
         self.cmds.objExists.return_value = True
         self.cmds.poleVectorConstraint.return_value = ["poleVectorConstraint1"]
+        mock_logger = MagicMock()
 
-        constraint = maya_rig_utils.create_pole_vector_constraint(
-            "leg_ikHandle",
-            "leg_pole_ctrl",
-            maintain_offset=False,
-        )
+        with patch.object(maya_rig_utils, "logger", mock_logger):
+            constraint = maya_rig_utils.create_pole_vector_constraint(
+                "leg_ikHandle",
+                "leg_pole_ctrl",
+                maintain_offset=False,
+            )
 
         self.assertEqual(constraint, "poleVectorConstraint1")
         self.cmds.poleVectorConstraint.assert_called_once_with(
@@ -161,6 +171,12 @@ class TestMayaRigUtils(unittest.TestCase):
             "leg_ikHandle",
             maintainOffset=False,
         )
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        expected = "Created pole vector constraint from 'leg_pole_ctrl' to 'leg_ikHandle'"
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_create_pole_vector_constraint_rejects_missing_object(self):
         self.cmds.objExists.side_effect = lambda node: node != "missing_ctrl"
