@@ -11,6 +11,7 @@ from mmd_tools.core.physics_scene_query import (  # noqa: E402
     PhysicsSceneRefs,
     RigidBodySceneRef,
 )
+from mmd_tools.core.physics_form_validation import JointFormValues, RigidBodyFormValues  # noqa: E402
 from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter  # noqa: E402
 from mmd_tools.ui.qt_compat import Qt  # noqa: E402
 
@@ -165,6 +166,7 @@ class _FakeView:
         self.form_kind = None
         self.form_values = {}
         self.form_dirty = False
+        self.validation_error = None
         self.details_enabled = None
         self.details_enabled_calls = []
 
@@ -178,12 +180,22 @@ class _FakeView:
         self.form_kind = kind
         self.form_values = dict(values)
         self.set_physics_dirty(False)
+        self.set_physics_validation_error()
 
-    def set_physics_dirty(self, dirty):
+    def get_physics_form_values(self, _kind):
+        return dict(self.form_values)
+
+    def set_physics_dirty(self, dirty, valid=False):
         self.form_dirty = bool(dirty)
         enabled = self.form_dirty and bool(self.details_enabled)
         self.apply_btn.setEnabled(False)
         self.reset_btn.setEnabled(enabled)
+
+    def set_physics_validation_error(self, field_key=None, message_key=None, params=None):
+        if not field_key or not message_key:
+            self.validation_error = None
+        else:
+            self.validation_error = (field_key, message_key, dict(params or {}))
 
 
 class _FakeAppState:
@@ -447,11 +459,23 @@ class TestPhysicsPresenter(unittest.TestCase):
         self.assertTrue(view.form_dirty)
         self.assertFalse(view.apply_btn.isEnabled())
         self.assertTrue(view.reset_btn.isEnabled())
+        self.assertIsInstance(presenter.validated_form_values, RigidBodyFormValues)
+        self.assertEqual(presenter.validated_form_values.mass, 9.0)
+        self.assertIsNone(view.validation_error)
+
+        view.form_values["mass"] = "nan"
+        view.physics_form_changed.emit()
+        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertTrue(view.reset_btn.isEnabled())
+        self.assertIsNone(presenter.validated_form_values)
+        self.assertEqual(view.validation_error[:2], ("mass", "physics_validation_finite"))
 
         view.reset_btn.clicked.emit()
         self.assertEqual(view.form_values["mass"], 2.5)
         self.assertFalse(view.form_dirty)
         self.assertFalse(view.apply_btn.isEnabled())
+        self.assertIsNone(view.validation_error)
+        self.assertIsNone(presenter.validated_form_values)
         writes_after = sum(1 for call in adapter.calls if call[0] == "set_attr")
         self.assertEqual(writes_after, writes_before)
 
@@ -495,6 +519,21 @@ class TestPhysicsPresenter(unittest.TestCase):
         self.assertEqual(view.form_values["spring_translation"], "0.12345678901234566, 0.2, 0.3")
         self.assertEqual(view.form_values["spring_rotation_enabled"], "0, 1, 0")
         self.assertFalse(view.form_dirty)
+
+        view.form_values["linear_constraint_states"] = "0, 2, 1"
+        view.physics_form_changed.emit()
+        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertIsInstance(presenter.validated_form_values, JointFormValues)
+        self.assertEqual(presenter.validated_form_values.linear_constraint_states, (0, 2, 1))
+
+        view.form_values["spring_rotation_enabled"] = "0, true, 1"
+        view.physics_form_changed.emit()
+        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertTrue(view.reset_btn.isEnabled())
+        self.assertEqual(
+            view.validation_error[:2],
+            ("spring_rotation_enabled", "physics_validation_bool"),
+        )
 
     def test_rigid_body_selection_selects_user_role_transform(self):
         refs = PhysicsSceneRefs(rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),), joints=())

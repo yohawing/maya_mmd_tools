@@ -55,6 +55,7 @@ class PhysicsTab(BaseTab):
         self._form_labels = {}
         self._physics_editors = {}
         self._combo_options = {}
+        self._validation_error = None
 
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
@@ -162,6 +163,11 @@ class PhysicsTab(BaseTab):
         content_layout.addWidget(self.joint_form_group)
         self.rigid_body_form_group.hide()
         self.joint_form_group.hide()
+        self.validation_error_label = QLabel("")
+        self.validation_error_label.setWordWrap(True)
+        self.validation_error_label.setStyleSheet("color: #d05050;")
+        self.validation_error_label.hide()
+        content_layout.addWidget(self.validation_error_label)
         content_layout.addStretch()
 
         self.details_scroll_area.setWidget(self.physics_details_content)
@@ -308,12 +314,42 @@ class PhysicsTab(BaseTab):
             finally:
                 editor.blockSignals(previous)
         self.set_physics_dirty(False)
+        self.set_physics_validation_error()
 
-    def set_physics_dirty(self, dirty):
+    def get_physics_form_values(self, kind):
+        """Return raw current widget values for Maya-independent validation."""
+        prefix = f"{kind}_"
+        values = {}
+        for editor_key, (field_key, editor) in self._physics_editors.items():
+            if not editor_key.startswith(prefix):
+                continue
+            if isinstance(editor, QLineEdit):
+                values[field_key] = editor.text()
+            elif isinstance(editor, QComboBox):
+                values[field_key] = editor.currentIndex()
+            else:
+                values[field_key] = editor.value()
+        return values
+
+    def set_physics_dirty(self, dirty, valid=False):
         enabled = bool(dirty) and self.physics_details_content.isEnabled()
-        # D1 keeps Apply disabled until D2 connects validated scene writes.
+        # D2a only exposes validation state; D2b enables Apply with a real writer.
         self.apply_btn.setEnabled(False)
         self.reset_btn.setEnabled(enabled)
+
+    def set_physics_validation_error(self, field_key=None, message_key=None, params=None):
+        """Show or clear one localized validation error."""
+        if not field_key or not message_key:
+            self._validation_error = None
+            self.validation_error_label.clear()
+            self.validation_error_label.hide()
+            return
+        self._validation_error = (field_key, message_key, dict(params or {}))
+        field = self.tr(field_key, "fields").rstrip(":：")
+        reason = self.tr(message_key, "messages").format(**(params or {}))
+        message = self.tr("physics_validation_error", "messages").format(field=field, reason=reason)
+        self.validation_error_label.setText(message)
+        self.validation_error_label.show()
 
     def set_physics_details_enabled(self, enabled):
         """Enable or disable the details content and Apply/Reset buttons."""
@@ -332,6 +368,8 @@ class PhysicsTab(BaseTab):
             editor = self._physics_editors[editor_key][1]
             for index, option_key in enumerate(option_keys):
                 editor.setItemText(index, self.tr(option_key, "options"))
+        if self._validation_error is not None:
+            self.set_physics_validation_error(*self._validation_error)
         if self.list_tabs.count() >= 2:
             self.list_tabs.setTabText(0, self.tr("rigid_bodies", "tabs"))
             self.list_tabs.setTabText(1, self.tr("joints", "tabs"))

@@ -54,6 +54,8 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.set_physics_dirty(True)
             self.assertFalse(tab.apply_btn.isEnabled())
             self.assertTrue(tab.reset_btn.isEnabled())
+            tab.set_physics_dirty(True, valid=True)
+            self.assertFalse(tab.apply_btn.isEnabled())
             tab.set_physics_details_enabled(False)
             self.assertFalse(tab.apply_btn.isEnabled())
         finally:
@@ -95,9 +97,20 @@ class TestPhysicsTabGUI(GuiTestBase):
             tab.rigid_mass_edit.setText("3.0")
             QApplication.processEvents()
             self.assertEqual(changes, [True])
-            tab.set_physics_dirty(True)
+            tab.set_physics_dirty(True, valid=True)
             self.assertFalse(tab.apply_btn.isEnabled())
             self.assertTrue(tab.reset_btn.isEnabled())
+            self.assertEqual(tab.get_physics_form_values("rigid")["mass"], "3.0")
+
+            tab.set_physics_validation_error(
+                "mass",
+                "physics_validation_finite",
+            )
+            tab.set_physics_dirty(True, valid=False)
+            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertTrue(tab.reset_btn.isEnabled())
+            self.assertFalse(tab.validation_error_label.isHidden())
+            self.assertIn("Mass", tab.validation_error_label.text())
 
             tab.set_physics_form(
                 "joint",
@@ -123,6 +136,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertFalse(tab.joint_form_group.isHidden())
             self.assertEqual(tab.joint_rotation_max_edit.text(), "10, 20, 30")
             self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertTrue(tab.validation_error_label.isHidden())
         finally:
             tab.deleteLater()
             QApplication.processEvents()
@@ -141,6 +155,8 @@ class TestPhysicsTabGUI(GuiTestBase):
             en_search = tab.rigid_body_search_edit.placeholderText()
             en_mass = tab._form_labels["rigid_mass"][1].text()
             en_shape_option = tab.rigid_shape_combo.itemText(0)
+            tab.set_physics_validation_error("mass", "physics_validation_finite")
+            en_validation = tab.validation_error_label.text()
 
             translator.set_language("ja")
             tab.retranslateUi()
@@ -162,6 +178,8 @@ class TestPhysicsTabGUI(GuiTestBase):
                 tab.rigid_shape_combo.itemText(0),
                 translator.translate("physics_shape_sphere", "options"),
             )
+            self.assertNotEqual(tab.validation_error_label.text(), en_validation)
+            self.assertIn("質量", tab.validation_error_label.text())
 
             translator.set_language("en")
             tab.retranslateUi()

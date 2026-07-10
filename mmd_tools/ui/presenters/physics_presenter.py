@@ -2,6 +2,11 @@ from dataclasses import replace
 from typing import Optional
 
 from ...core.physics_scene_query import MayaPhysicsSceneReader, JointSceneRef, PhysicsSceneRefs, RigidBodySceneRef
+from ...core.physics_form_validation import (
+    PhysicsFormValidationError,
+    parse_joint_form,
+    parse_rigid_body_form,
+)
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ...core.visibility_state import (
@@ -35,7 +40,13 @@ class PhysicsPresenter:
         self._rigid_bodies_by_transform = {}
         self._joints_by_transform = {}
         self._current_physics_ref = None
+        self._validated_form_values = None
         self.connect_signals()
+
+    @property
+    def validated_form_values(self):
+        """Typed dirty values reserved for the later explicit writer slice."""
+        return self._validated_form_values
 
     def connect_signals(self):
         # ApplicationStateのシグナル
@@ -183,12 +194,31 @@ class PhysicsPresenter:
             self._reset_details()
 
     def on_physics_form_changed(self, *_args):
-        """Mark the cached form dirty without writing to the Maya scene."""
-        if self._current_physics_ref is None:
+        """Validate dirty widgets and cache typed values without scene writes."""
+        current = self._current_physics_ref
+        if current is None:
             return
+        getter = getattr(self.view, "get_physics_form_values", None)
+        if not callable(getter):
+            return
+        kind = "rigid" if isinstance(current, RigidBodySceneRef) else "joint"
+        try:
+            raw_values = getter(kind)
+            if kind == "rigid":
+                parsed = parse_rigid_body_form(raw_values)
+            else:
+                parsed = parse_joint_form(raw_values)
+        except PhysicsFormValidationError as exc:
+            self._validated_form_values = None
+            self._set_validation_error(exc)
+            valid = False
+        else:
+            self._validated_form_values = parsed
+            self._clear_validation_error()
+            valid = True
         setter = getattr(self.view, "set_physics_dirty", None)
         if callable(setter):
-            setter(True)
+            setter(True, valid=valid)
 
     def reset_physics_form(self):
         """Restore widgets from the selected cached scene reference."""
@@ -401,6 +431,7 @@ class PhysicsPresenter:
     def _reset_details(self):
         """Clear detail labels and disable the details panel."""
         self._current_physics_ref = None
+        self._validated_form_values = None
         self._set_details("None", "", "", "")
         set_form = getattr(self.view, "set_physics_form", None)
         if callable(set_form):
@@ -449,9 +480,20 @@ class PhysicsPresenter:
         )
 
     def _set_cached_form(self, kind, values):
+        self._validated_form_values = None
         set_form = getattr(self.view, "set_physics_form", None)
         if callable(set_form):
             set_form(kind, values)
+
+    def _set_validation_error(self, error):
+        setter = getattr(self.view, "set_physics_validation_error", None)
+        if callable(setter):
+            setter(error.field_key, error.message_key, error.params)
+
+    def _clear_validation_error(self):
+        setter = getattr(self.view, "set_physics_validation_error", None)
+        if callable(setter):
+            setter()
 
     def _set_details(self, name: str, kind: str, shape_or_type: str, bodies: str, node: str = ""):
         label_values = {
