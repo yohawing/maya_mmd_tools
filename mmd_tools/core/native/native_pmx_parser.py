@@ -122,7 +122,7 @@ def parse_pmx_native(file_path: str) -> Optional[PmxData]:
             _preserve_soft_bodies_from_legacy(file_path, pmx)
         return pmx
     except Exception as exc:
-        logger.info("Native PMX parse failed, will fallback: %s", exc)
+        logger.debug("Native PMX parse failed, will fallback: %s", exc)
         return None
 
 

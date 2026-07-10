@@ -93,6 +93,28 @@ class TestNativePmxParserBuilders(unittest.TestCase):
         ):
             self.assertIs(parse_pmx_native("cloth.pmx"), native_pmx)
 
+    def test_parse_pmx_native_failure_returns_none_and_logs_fallback_at_debug(self):
+        """Optional native failure detail is DEBUG-only; caller falls back."""
+        from mmd_tools.core.native import native_pmx_parser as native_mod
+
+        lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())
+
+        with patch("mmd_tools.core.native.mmd_anim_runtime.get_mmd_runtime_library", return_value=lib), patch(
+            "mmd_tools.core.native.native_pmx_parser.Path.read_bytes", return_value=b"pmx"
+        ), patch(
+            "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes",
+            side_effect=RuntimeError("native boom"),
+        ), patch.object(native_mod, "logger") as mock_logger:
+            result = parse_pmx_native("broken.pmx")
+
+        self.assertIsNone(result)
+        # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+)
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        expected = "Native PMX parse failed, will fallback: %s"
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
+
     def test_parse_pmx_native_soft_body_copy_survives_write_reparse(self):
         native_pmx = _make_minimal_pmx21_data()
         legacy_pmx = _make_minimal_pmx21_data()
