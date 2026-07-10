@@ -314,13 +314,20 @@ class TestImportExportPresenter(unittest.TestCase):
             side_effect=fake_import,
         ) as mock_import, patch(
             "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
-        ) as mock_dialog:
+        ) as mock_dialog, patch.object(
+            presenter,
+            "_show_import_partial_warning",
+        ) as mock_generic:
             presenter.import_file()
 
         options = mock_import.call_args.kwargs["options"]
         self.assertIn("profile", options)
+        # Texture-only partial: one texture repair modal, no generic partial modal.
         mock_dialog.assert_called_once_with([issue], model_path="model.pmx", app_state=app_state, parent=view)
         mock_dialog.return_value.exec.assert_called_once()
+        mock_generic.assert_not_called()
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        self.assertTrue(any("warning" in s.lower() for s in app_state.statuses))
 
     def test_import_file_skips_texture_issue_dialog_when_setting_disabled(self):
         settings.set("import.model.show_texture_issue_dialog", False)
@@ -336,10 +343,15 @@ class TestImportExportPresenter(unittest.TestCase):
         with patch(
             "mmd_tools.actions.import_model_action.import_mmd_file",
             side_effect=fake_import,
-        ), patch("mmd_tools.ui.texture_issue_dialog.TextureIssueDialog") as mock_dialog:
+        ), patch("mmd_tools.ui.texture_issue_dialog.TextureIssueDialog") as mock_dialog, patch.object(
+            presenter,
+            "_show_import_partial_warning",
+        ) as mock_generic:
             presenter.import_file()
 
         mock_dialog.assert_not_called()
+        # Texture dialog setting off: still no generic modal (status-only partial).
+        mock_generic.assert_not_called()
 
     def test_connect_signals_connects_fix_texture_path_button_when_present(self):
         view = _FakeView()
@@ -507,7 +519,9 @@ class TestImportExportPresenter(unittest.TestCase):
 
         view = _RecordingView()
         app_state = _FakeAppState()
-        action = _RecordingImportModelAction(ImportModelResult(root_node="model_root", succeeded=True))
+        action = _RecordingImportModelAction(
+            ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+        )
         presenter = ImportExportPresenter(
             view,
             app_state,
@@ -527,6 +541,304 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn(100, app_state.progress)
         self.assertEqual(view.model_items, [])
         self.assertEqual(recorded_history, ["model.pmx"])
+
+    def test_import_file_model_partial_retains_root_and_one_warning_outcome(self):
+        recorded_history = []
+        warnings = [{"code": "node_type_unavailable", "reason": "node_type_unavailable"}]
+
+        class _RecordingView(_FakeView):
+            def add_import_path_to_history(self, path):
+                recorded_history.append(path)
+
+        view = _RecordingView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "previous_root"
+        action = _RecordingImportModelAction(
+            ImportModelResult(
+                root_node="model_root",
+                succeeded=True,
+                warnings=warnings,
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_present_import_partial_outcome", return_value="partial-msg") as mock_partial:
+            presenter.import_file()
+
+        self.assertEqual(app_state.current_model_root, "model_root")
+        self.assertEqual(recorded_history, ["model.pmx"])
+        self.assertIn(100, app_state.progress)
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        mock_partial.assert_called_once_with(
+            warnings,
+            file_path="model.pmx",
+            root_node="model_root",
+            kind="model",
+            show_dialog=True,
+        )
+
+    def test_import_file_model_partial_texture_only_shows_texture_dialog_only(self):
+        settings.set("import.model.show_texture_issue_dialog", True)
+        issue = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
+        view = _FakeView()
+        app_state = _FakeAppState()
+
+        class _TexturePartialAction:
+            def __init__(self):
+                self.requests = []
+
+            def execute(self, request):
+                self.requests.append(request)
+                # Mirror real importers: write texture issues into the shared profile.
+                request.options.setdefault("profile", {})["texture_issues"] = [issue]
+                return ImportModelResult(
+                    root_node="model_root",
+                    succeeded=True,
+                    warnings=[issue],
+                    outcome="partial",
+                )
+
+        action = _TexturePartialAction()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_generic, patch.object(
+            presenter,
+            "_show_texture_issue_dialog",
+        ) as mock_texture:
+            presenter.import_file()
+
+        mock_generic.assert_not_called()
+        mock_texture.assert_called_once_with([issue], model_path="model.pmx")
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        self.assertTrue(any("warning" in s.lower() for s in app_state.statuses))
+
+    def test_import_file_model_partial_non_texture_shows_generic_dialog_only(self):
+        settings.set("import.model.show_texture_issue_dialog", True)
+        non_texture = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
+        texture = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
+        view = _FakeView()
+        app_state = _FakeAppState()
+
+        class _MixedPartialAction:
+            def __init__(self):
+                self.requests = []
+
+            def execute(self, request):
+                self.requests.append(request)
+                # Profile may still contain texture issues; non-texture partial must prefer
+                # the generic operation-level dialog and suppress the texture modal.
+                profile = request.options.setdefault("profile", {})
+                profile["texture_issues"] = [texture]
+                profile["bone_morph_runtime"] = {"warnings": [non_texture]}
+                return ImportModelResult(
+                    root_node="model_root",
+                    succeeded=True,
+                    warnings=[non_texture, texture],
+                    outcome="partial",
+                )
+
+        action = _MixedPartialAction()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_generic, patch.object(
+            presenter,
+            "_show_texture_issue_dialog",
+        ) as mock_texture:
+            presenter.import_file()
+
+        mock_generic.assert_called_once()
+        mock_texture.assert_not_called()
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+
+    def test_import_file_model_partial_node_type_unavailable_suppresses_texture_dialog(self):
+        settings.set("import.model.show_texture_issue_dialog", True)
+        non_texture = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
+        view = _FakeView()
+        app_state = _FakeAppState()
+
+        class _NonTexturePartialAction:
+            def __init__(self):
+                self.requests = []
+
+            def execute(self, request):
+                self.requests.append(request)
+                request.options.setdefault("profile", {})["texture_issues"] = [{"file_node": "file1"}]
+                return ImportModelResult(
+                    root_node="model_root",
+                    succeeded=True,
+                    warnings=[non_texture],
+                    outcome="partial",
+                )
+
+        action = _NonTexturePartialAction()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_generic, patch.object(
+            presenter,
+            "_show_texture_issue_dialog",
+        ) as mock_texture:
+            presenter.import_file()
+
+        mock_generic.assert_called_once()
+        mock_texture.assert_not_called()
+
+    def test_import_file_model_fatal_does_not_update_model_or_history(self):
+        recorded_history = []
+
+        class _RecordingView(_FakeView):
+            def add_import_path_to_history(self, path):
+                recorded_history.append(path)
+
+        view = _RecordingView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "previous_root"
+        action = _RecordingImportModelAction(
+            ImportModelResult(root_node=None, succeeded=False, outcome="fatal")
+        )
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_present_import_partial_outcome") as mock_partial:
+            presenter.import_file()
+
+        self.assertEqual(app_state.current_model_root, "previous_root")
+        self.assertEqual(recorded_history, [])
+        self.assertIn("Import failed", app_state.statuses)
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        self.assertIn(0, app_state.progress)
+        mock_partial.assert_not_called()
+
+    def test_import_file_model_fatal_error_does_not_emit_success(self):
+        recorded_history = []
+
+        class _RecordingView(_FakeView):
+            def add_import_path_to_history(self, path):
+                recorded_history.append(path)
+
+        view = _RecordingView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "previous_root"
+        action = _RecordingImportModelAction(
+            ImportModelResult(error=RuntimeError("boom"), outcome="fatal")
+        )
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        presenter.import_file()
+
+        self.assertEqual(app_state.current_model_root, "previous_root")
+        self.assertEqual(recorded_history, [])
+        self.assertTrue(any("Import error: boom" in s for s in app_state.statuses))
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+
+    def test_import_file_vmd_partial_uses_one_warning_outcome(self):
+        recorded_history = []
+        warnings = [{"message": "runtime fallback"}]
+
+        class _RecordingView(_FakeView):
+            def add_import_path_to_history(self, path):
+                recorded_history.append(path)
+
+        view = _RecordingView()
+        view.import_path_edit = _FakeLineEdit("motion.vmd")
+        app_state = _FakeAppState()
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(
+                root_node=True,
+                succeeded=True,
+                warnings=warnings,
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_FailingImportModelAction(),
+            import_vmd_action=action,
+        )
+
+        with patch.object(presenter, "_present_import_partial_outcome", return_value="partial-vmd") as mock_partial:
+            presenter.import_file()
+
+        self.assertEqual(recorded_history, ["motion.vmd"])
+        self.assertEqual(app_state.current_model_root, True)
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        mock_partial.assert_called_once_with(
+            warnings,
+            file_path="motion.vmd",
+            root_node=True,
+            kind="vmd",
+            show_dialog=True,
+        )
+
+    def test_present_import_partial_outcome_emits_status_and_one_dialog(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+        warnings = [{"code": "a"}, {"code": "b"}]
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_dialog:
+            message = presenter._present_import_partial_outcome(
+                warnings,
+                file_path="model.pmx",
+                root_node="model_root",
+                kind="model",
+            )
+
+        self.assertIn("warnings", message.lower())
+        self.assertIn("model_root", message)
+        self.assertIn(message, app_state.statuses)
+        mock_dialog.assert_called_once()
+        title, dialog_message, dialog_warnings = mock_dialog.call_args[0]
+        self.assertEqual(dialog_message, message)
+        self.assertIs(dialog_warnings, warnings)
+        self.assertTrue(title)
+
+    def test_present_import_partial_outcome_can_suppress_dialog(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_dialog:
+            message = presenter._present_import_partial_outcome(
+                [{"file_node": "file1"}],
+                file_path="model.pmx",
+                root_node="model_root",
+                kind="model",
+                show_dialog=False,
+            )
+
+        self.assertIn(message, app_state.statuses)
+        mock_dialog.assert_not_called()
 
     def test_import_file_vmd_branch_does_not_use_model_action(self):
         view = _FakeView()
@@ -819,7 +1131,9 @@ class TestVmdImportOptions(unittest.TestCase):
         view = _RecordingView()
         view.vmd_path_edit = _FakeLineEdit("dance.vmd")
         app_state = _FakeAppState()
-        action = _RecordingImportVmdAction(ImportVmdResult(root_node=None, succeeded=False))
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(root_node=None, succeeded=False, outcome="fatal")
+        )
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
         presenter.import_vmd_file()
@@ -833,7 +1147,9 @@ class TestVmdImportOptions(unittest.TestCase):
         view = _FakeView()
         view.vmd_path_edit = _FakeLineEdit("dance.vmd")
         app_state = _FakeAppState()
-        action = _RecordingImportVmdAction(ImportVmdResult(error=RuntimeError("boom")))
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(error=RuntimeError("boom"), outcome="fatal")
+        )
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
         presenter.import_vmd_file()
@@ -841,6 +1157,67 @@ class TestVmdImportOptions(unittest.TestCase):
         self.assertEqual(len(action.requests), 1)
         self.assertTrue(any("VMD import error: boom" in s for s in app_state.statuses))
         self.assertIn(0, app_state.progress)
+
+    def test_import_vmd_partial_retains_history_and_one_warning_outcome(self):
+        recorded = []
+        warnings = [{"message": "curve skipped"}]
+
+        class _RecordingView(_FakeView):
+            def add_vmd_path_to_history(self, path):
+                recorded.append(path)
+
+        view = _RecordingView()
+        view.vmd_path_edit = _FakeLineEdit("dance.vmd")
+        app_state = _FakeAppState()
+        app_state.current_model_root = "model_root"
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(
+                root_node=True,
+                succeeded=True,
+                warnings=warnings,
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        with patch.object(presenter, "_present_import_partial_outcome", return_value="partial-vmd") as mock_partial:
+            presenter.import_vmd_file()
+
+        self.assertEqual(recorded, ["dance.vmd"])
+        self.assertEqual(app_state.current_model_root, "model_root")
+        self.assertIn(100, app_state.progress)
+        self.assertFalse(any("VMD import complete" in s for s in app_state.statuses))
+        mock_partial.assert_called_once_with(
+            warnings,
+            file_path="dance.vmd",
+            root_node=True,
+            kind="vmd",
+        )
+
+    def test_import_vmd_fatal_leaves_current_model_unchanged(self):
+        recorded = []
+
+        class _RecordingView(_FakeView):
+            def add_vmd_path_to_history(self, path):
+                recorded.append(path)
+
+        view = _RecordingView()
+        view.vmd_path_edit = _FakeLineEdit("dance.vmd")
+        app_state = _FakeAppState()
+        app_state.current_model_root = "model_root"
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(root_node=None, succeeded=False, error=RuntimeError("bad"), outcome="fatal")
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        with patch.object(presenter, "_present_import_partial_outcome") as mock_partial:
+            presenter.import_vmd_file()
+
+        self.assertEqual(app_state.current_model_root, "model_root")
+        self.assertEqual(recorded, [])
+        self.assertTrue(any("VMD import error: bad" in s for s in app_state.statuses))
+        self.assertFalse(any("VMD import complete" in s for s in app_state.statuses))
+        mock_partial.assert_not_called()
 
 
 class TestExportFile(unittest.TestCase):

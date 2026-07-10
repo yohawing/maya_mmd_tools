@@ -6,6 +6,11 @@ from typing import Any, Callable, Dict, List, Optional
 from ..adapters import MayaCmdsAdapter
 from ..io.mmd_importer import import_mmd_file
 
+# Explicit import result outcomes (backwards-compatible with succeeded/error/warnings).
+OUTCOME_SUCCESS = "success"
+OUTCOME_PARTIAL = "partial"
+OUTCOME_FATAL = "fatal"
+
 
 @dataclass
 class ImportVmdRequest:
@@ -25,6 +30,8 @@ class ImportVmdResult:
     succeeded: bool = False
     error: Optional[Exception] = None
     warnings: List[Any] = field(default_factory=list)
+    # success | partial | fatal. None means callers should derive from succeeded/error/warnings.
+    outcome: Optional[str] = None
 
 
 class ImportVmdAction:
@@ -51,16 +58,27 @@ class ImportVmdAction:
                 kwargs["progress_callback"] = request.progress_callback
             root_node = importer(request.file_path, **kwargs)
         except Exception as exc:
-            return ImportVmdResult(error=exc)
+            return ImportVmdResult(error=exc, outcome=OUTCOME_FATAL)
+        warnings = _warnings_from_options(request.options)
         return ImportVmdResult(
             root_node=root_node,
             succeeded=bool(root_node),
-            warnings=_warnings_from_options(request.options),
+            warnings=warnings,
+            outcome=_classify_import_outcome(root_node, warnings),
         )
 
     def _create_new_scene(self) -> None:
         adapter = self._maya_adapter or MayaCmdsAdapter()
         adapter.new_scene(force=True)
+
+
+def _classify_import_outcome(root_node: Any, warnings: List[Any]) -> str:
+    """Classify import into success, partial, or fatal."""
+    if not root_node:
+        return OUTCOME_FATAL
+    if warnings:
+        return OUTCOME_PARTIAL
+    return OUTCOME_SUCCESS
 
 
 def _warnings_from_options(options: Dict[str, Any]) -> List[Any]:
@@ -72,6 +90,8 @@ def _warnings_from_options(options: Dict[str, Any]) -> List[Any]:
     warnings.extend(profile.get("vmd_converter", {}).get("warnings") or [])
     warnings.extend(profile.get("bone_converter", {}).get("warnings") or [])
     warnings.extend(profile.get("bone_converter", {}).get("rig_converter", {}).get("warnings") or [])
+    # Bone morph runtime fail-soft (e.g. node_type_unavailable) is partial, not fatal.
+    warnings.extend(profile.get("bone_morph_runtime", {}).get("warnings") or [])
     warnings.extend(profile.get("texture_issues") or [])
     warnings.extend(profile.get("mesh_converter", {}).get("unresolved_textures") or [])
     return warnings

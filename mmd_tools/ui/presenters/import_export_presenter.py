@@ -223,6 +223,86 @@ class ImportExportPresenter(QObject):
         """PMX/PMD export用の基本オプションを設定から組み立てる。"""
         return self.settings_service.build_export_options(self.view.export_path_edit.text().strip())
 
+    def _resolve_import_outcome(self, result):
+        """Resolve success / partial / fatal from an import action result.
+
+        Prefer the explicit ``outcome`` field when present so presenters do not
+        treat fatal errors as success. Fall back to succeeded/error/warnings for
+        older result objects that omit ``outcome``.
+        """
+        outcome = getattr(result, "outcome", None)
+        if outcome in ("success", "partial", "fatal"):
+            return outcome
+        if getattr(result, "error", None) is not None or not getattr(result, "succeeded", False):
+            return "fatal"
+        if getattr(result, "warnings", None):
+            return "partial"
+        return "success"
+
+    def _is_texture_issue_warning(self, warning):
+        """Return True when a structured warning is a texture-issue record.
+
+        Texture issue / unresolved texture records always carry ``file_node``.
+        Other structured warnings (e.g. bone morph ``node_type_unavailable``) do not.
+        """
+        return isinstance(warning, dict) and "file_node" in warning
+
+    def _partial_warnings_are_texture_only(self, warnings):
+        """Return True when every partial warning is a texture issue record."""
+        if not warnings:
+            return False
+        return all(self._is_texture_issue_warning(item) for item in warnings)
+
+    def _show_import_partial_warning(self, title, message, warnings=None):
+        """Show one operation-level warning dialog for a partial import.
+
+        Intentionally a single dialog for the whole import, not one modal per
+        low-level warning. Headless unit tests can mock this helper.
+        """
+        del warnings  # reserved for future detail panes; one summary dialog only
+        try:
+            from ..qt_compat import QMessageBox
+
+            QMessageBox.warning(self.view, title, message)
+        except Exception as exc:
+            logger.debug("Import partial warning dialog unavailable: %s", exc, exc_info=True)
+
+    def _present_import_partial_outcome(
+        self,
+        warnings,
+        *,
+        file_path,
+        root_node=None,
+        kind="model",
+        show_dialog=True,
+    ):
+        """Present exactly one operation-level partial import outcome.
+
+        Emits a warning status and optionally opens a single generic dialog.
+        Does not emit the normal success-complete status. Returns the status
+        message text. Callers choose ``show_dialog=False`` when a more specific
+        single modal (e.g. texture repair) will be shown instead.
+        """
+        warning_count = len(warnings or [])
+        if kind == "vmd":
+            message = tr_message_format(
+                "vmd_import_partial",
+                file_path=file_path,
+                warning_count=warning_count,
+            )
+            title = tr_message("vmd_import_partial_title")
+        else:
+            message = tr_message_format(
+                "import_partial",
+                root_node=root_node if root_node is not None else file_path,
+                warning_count=warning_count,
+            )
+            title = tr_message("import_partial_title")
+        self.app_state.emit_status(message)
+        if show_dialog:
+            self._show_import_partial_warning(title, message, warnings)
+        return message
+
     def import_file(self):
         file_path = self.view.import_path_edit.text().strip()
         if not file_path:
@@ -254,11 +334,6 @@ class ImportExportPresenter(QObject):
                     progress_callback=self.app_state.emit_progress,
                 )
                 result = self.import_vmd_action.execute(request)
-                if result.error:
-                    raise result.error
-                root_node = result.root_node if result.succeeded else None
-                if create_new_scene:
-                    logger.info("Created new file before import")
             else:
                 request = ImportModelRequest(
                     file_path=file_path,
@@ -267,28 +342,52 @@ class ImportExportPresenter(QObject):
                     progress_callback=self.app_state.emit_progress,
                 )
                 result = self.import_model_action.execute(request)
-                if result.error:
-                    raise result.error
-                root_node = result.root_node if result.succeeded else None
-                if create_new_scene:
-                    logger.info("Created new file before import")
-            if root_node:
-                logger.info("Import successful.")
-                # ApplicationStateを更新
-                self.app_state.refresh_model_list()
-                self.app_state.current_model_root = root_node
-                self.app_state.emit_status(tr_message_format("import_complete_node", root_node=root_node))
-                self.app_state.emit_progress(100)
-                # モデルリストを更新
-                self.refresh_model_list()
-                # 成功したパスを履歴に追加
-                self.view.add_import_path_to_history(file_path)
-                if not is_vmd:
+
+            if create_new_scene:
+                logger.info("Created new file before import")
+
+            outcome = self._resolve_import_outcome(result)
+            if outcome == "fatal":
+                # Fatal must not update current model, history, or success status.
+                if result.error is not None:
+                    logger.error("Import failed: %s", result.error)
+                    self.app_state.emit_status(tr_message_format("import_error", error=str(result.error)))
+                else:
+                    logger.error("Import failed.")
+                    self.app_state.emit_status(tr_message("import_failed"))
+                self.app_state.emit_progress(0)
+                return
+
+            root_node = result.root_node
+            # success and partial both retain the imported root.
+            self.app_state.refresh_model_list()
+            self.app_state.current_model_root = root_node
+            self.app_state.emit_progress(100)
+            self.refresh_model_list()
+            self.view.add_import_path_to_history(file_path)
+
+            if outcome == "partial":
+                logger.warning("Import completed with warnings.")
+                # Exactly one modal per import operation:
+                # - texture-only partial → texture repair dialog (no generic modal)
+                # - any non-texture warning → generic partial modal (no texture modal)
+                texture_only = (not is_vmd) and self._partial_warnings_are_texture_only(
+                    getattr(result, "warnings", None)
+                )
+                self._present_import_partial_outcome(
+                    result.warnings,
+                    file_path=file_path,
+                    root_node=root_node,
+                    kind="vmd" if is_vmd else "model",
+                    show_dialog=not texture_only,
+                )
+                if texture_only:
                     self._maybe_show_texture_issue_dialog(import_profile, file_path)
             else:
-                logger.error("Import failed.")
-                self.app_state.emit_status(tr_message("import_failed"))
-                self.app_state.emit_progress(0)
+                logger.info("Import successful.")
+                self.app_state.emit_status(tr_message_format("import_complete_node", root_node=root_node))
+                if not is_vmd:
+                    self._maybe_show_texture_issue_dialog(import_profile, file_path)
         except Exception as e:
             logger.error(f"Import failed: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("import_error", error=str(e)))
@@ -354,19 +453,32 @@ class ImportExportPresenter(QObject):
                 progress_callback=self.app_state.emit_progress,
             )
             result = self.import_vmd_action.execute(request)
-            if result.error:
-                raise result.error
-            success = result.succeeded
-            if success:
+            outcome = self._resolve_import_outcome(result)
+
+            if outcome == "fatal":
+                # Fatal must not add history or emit a success status.
+                if result.error is not None:
+                    logger.error("VMD import failed: %s", result.error)
+                    self.app_state.emit_status(tr_message_format("vmd_import_error", error=str(result.error)))
+                else:
+                    logger.error("VMD import failed.")
+                    self.app_state.emit_status(tr_message("vmd_import_failed"))
+                self.app_state.emit_progress(0)
+                return
+
+            self.app_state.emit_progress(100)
+            self.view.add_vmd_path_to_history(file_path)
+            if outcome == "partial":
+                logger.warning("VMD import completed with warnings.")
+                self._present_import_partial_outcome(
+                    result.warnings,
+                    file_path=file_path,
+                    root_node=result.root_node,
+                    kind="vmd",
+                )
+            else:
                 logger.info("VMD import successful.")
                 self.app_state.emit_status(tr_message_format("vmd_import_complete", file_path=file_path))
-                self.app_state.emit_progress(100)
-                # 成功したパスを履歴に追加
-                self.view.add_vmd_path_to_history(file_path)
-            else:
-                logger.error("VMD import failed.")
-                self.app_state.emit_status(tr_message("vmd_import_failed"))
-                self.app_state.emit_progress(0)
         except Exception as e:
             logger.error(f"VMD import failed: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("vmd_import_error", error=str(e)))

@@ -12,6 +12,9 @@ from mmd_tools.actions.export_model_action import (  # noqa: E402
 )
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest  # noqa: E402
 from mmd_tools.actions.import_model_action import (  # noqa: E402
+    OUTCOME_FATAL,
+    OUTCOME_PARTIAL,
+    OUTCOME_SUCCESS,
     ImportModelAction,
     ImportModelRequest,
 )
@@ -58,6 +61,7 @@ class _ImportActionContract:
         result = action.execute(self.request_cls(self.file_path, options))
 
         self.assertTrue(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_SUCCESS)
         self.assertEqual(result.root_node, self.root_node)
         self.assertIsNone(result.error)
         self.assertEqual(calls, [(self.file_path, options)])
@@ -156,6 +160,7 @@ class _ImportActionContract:
         result = action.execute(self._make_request({}))
 
         self.assertFalse(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_FATAL)
         self.assertIsNone(result.root_node)
         self.assertIsNone(result.error)
 
@@ -169,6 +174,7 @@ class _ImportActionContract:
         result = action.execute(self._make_request({}))
 
         self.assertFalse(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_FATAL)
         self.assertIsNone(result.root_node)
         self.assertIs(result.error, error)
 
@@ -182,6 +188,7 @@ class _ImportActionContract:
         result = action.execute(self._make_request({}, create_new_scene=True))
 
         self.assertFalse(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_FATAL)
         self.assertIsNone(result.root_node)
         self.assertIs(result.error, error)
 
@@ -190,6 +197,7 @@ class _ImportActionContract:
         vmd_warning = {"message": "runtime fallback"}
         bone_warning = {"message": "bone warning"}
         rig_warning = {"message": "native rig fallback"}
+        bone_morph_warning = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
         texture_issue = {"file_node": "file1"}
         nested_issue = {"file_node": "file2"}
         options = {
@@ -200,6 +208,7 @@ class _ImportActionContract:
                     "warnings": [bone_warning],
                     "rig_converter": {"warnings": [rig_warning]},
                 },
+                "bone_morph_runtime": {"warnings": [bone_morph_warning]},
                 "texture_issues": [texture_issue],
                 "mesh_converter": {"unresolved_textures": [nested_issue]},
             }
@@ -209,7 +218,44 @@ class _ImportActionContract:
         result = action.execute(self._make_request(options))
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(result.warnings, [warning, vmd_warning, bone_warning, rig_warning, texture_issue, nested_issue])
+        self.assertEqual(result.outcome, OUTCOME_PARTIAL)
+        self.assertEqual(
+            result.warnings,
+            [
+                warning,
+                vmd_warning,
+                bone_warning,
+                rig_warning,
+                bone_morph_warning,
+                texture_issue,
+                nested_issue,
+            ],
+        )
+
+    def test_execute_classifies_bone_morph_node_type_unavailable_as_partial(self):
+        bone_morph_warning = {
+            "code": "node_type_unavailable",
+            "reason": "node_type_unavailable",
+            "node_type": "mmdBoneMorphAccum",
+        }
+        options = {
+            "profile": {
+                "bone_morph_runtime": {
+                    "success": False,
+                    "skipped": ["node_type_unavailable"],
+                    "warnings": [bone_morph_warning],
+                }
+            }
+        }
+
+        action = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=lambda: None)
+        result = action.execute(self._make_request(options))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_PARTIAL)
+        self.assertEqual(result.root_node, self.root_node)
+        self.assertEqual(result.warnings, [bone_morph_warning])
+        self.assertEqual(result.warnings[0]["code"], "node_type_unavailable")
 
     def test_result_warning_lists_are_not_shared(self):
         first = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=lambda: None).execute(
@@ -222,6 +268,8 @@ class _ImportActionContract:
         first.warnings.append("first")
 
         self.assertEqual(second.warnings, [])
+        self.assertEqual(first.outcome, OUTCOME_SUCCESS)
+        self.assertEqual(second.outcome, OUTCOME_SUCCESS)
 
 
 class TestImportModelAction(_ImportActionContract, unittest.TestCase):
