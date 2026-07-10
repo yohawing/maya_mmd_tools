@@ -1,5 +1,6 @@
 import json
 import os
+from unittest.mock import MagicMock
 
 from maya import cmds
 
@@ -229,6 +230,111 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(offsets[0]["diffuse"], [0.1, 0.2, 0.3, 0.4])
 
         cmds.delete(mesh_name, morph_node)
+
+    def test_successful_per_morph_conversion_logs_at_debug_not_info(self):
+        """成功した per-item 変換詳細は debug に出し、info には出さない。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "vertex_success"
+            name_english = "vertex_success"
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [{"vertex_index": 0, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        class FakeBoneMorph:
+            name = "bone_success"
+            name_english = "bone_success"
+            panel = 4
+            morph_type = PmxMorphType.BoneMorph
+            offsets = [
+                {
+                    "bone_index": 0,
+                    "translation": (0.0, 0.0, 0.0),
+                    "rotation": (0.0, 0.0, 0.0, 1.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        class FakeGroupMorph:
+            name = "group_success"
+            name_english = "group_success"
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [{"morph_index": 0, "morph_rate": 1.0}]
+
+            def get_name(self):
+                return self.name
+
+        class FakeMaterialMorph:
+            name = "material_success"
+            name_english = "material_success"
+            panel = 4
+            morph_type = PmxMorphType.MaterialMorph
+            offsets = [
+                {
+                    "material_index": 0,
+                    "operation_type": 0,
+                    "diffuse": (0.0, 0.0, 0.0, 0.0),
+                    "specular": (0.0, 0.0, 0.0),
+                    "specular_coefficient": 0.0,
+                    "ambient": (0.0, 0.0, 0.0),
+                    "edge_color": (0.0, 0.0, 0.0, 0.0),
+                    "edge_size": 0.0,
+                    "texture_factor": (0.0, 0.0, 0.0, 0.0),
+                    "sphere_texture_factor": (0.0, 0.0, 0.0, 0.0),
+                    "toon_texture_factor": (0.0, 0.0, 0.0, 0.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [
+                    FakeVertexMorph(),
+                    FakeBoneMorph(),
+                    FakeGroupMorph(),
+                    FakeMaterialMorph(),
+                ],
+            },
+        )()
+
+        expected_success_messages = [
+            "Successfully converted morph: vertex_success",
+            "Successfully imported bone morph metadata: bone_success",
+            "Successfully imported group morph metadata: group_success",
+            "Successfully imported material morph metadata: material_success",
+        ]
+
+        morph_converter = MorphConverter()
+        morph_converter.logger = MagicMock()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 4)
+
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call[0][0] for call in morph_converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in morph_converter.logger.info.call_args_list if call[0]
+        ]
+
+        for message in expected_success_messages:
+            self.assertIn(message, debug_messages)
+            self.assertNotIn(message, info_messages)
 
     def test_material_split_mesh_skips_unaffected_vertex_morphs(self):
         """material split mesh では表示 material に関係しない vertex morph を作らない。"""

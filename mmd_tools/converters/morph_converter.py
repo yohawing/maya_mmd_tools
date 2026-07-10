@@ -100,7 +100,7 @@ class MorphConverter:
                                 results.append(result)
                                 if result["blend_shape_node"] not in blend_shape_nodes:
                                     blend_shape_nodes.append(result["blend_shape_node"])
-                                self.logger.info(f"Successfully converted morph: {morph.name}")
+                                self.logger.debug(f"Successfully converted morph: {morph.name}")
                         elif morph.morph_type == PmxMorphType.BoneMorph and morph.name not in converted_bone_morphs:
                             self.logger.debug(f"Converting bone morph metadata: {morph.name}")
                             result = self._convert_bone_morph_pmx(morph, morph_index)
@@ -108,7 +108,7 @@ class MorphConverter:
                                 converted_bone_morphs.add(morph.name)
                                 results.append(result)
                                 bone_morph_nodes.append(result["morph_node"])
-                                self.logger.info(f"Successfully imported bone morph metadata: {morph.name}")
+                                self.logger.debug(f"Successfully imported bone morph metadata: {morph.name}")
                         elif morph.morph_type == PmxMorphType.GroupMorph and morph.name not in converted_group_morphs:
                             self.logger.debug(f"Converting group morph metadata: {morph.name}")
                             result = self._convert_group_morph_pmx(morph, morph_index)
@@ -116,7 +116,7 @@ class MorphConverter:
                                 converted_group_morphs.add(morph.name)
                                 results.append(result)
                                 group_morph_nodes.append(result["morph_node"])
-                                self.logger.info(f"Successfully imported group morph metadata: {morph.name}")
+                                self.logger.debug(f"Successfully imported group morph metadata: {morph.name}")
                         elif (
                             morph.morph_type == PmxMorphType.MaterialMorph
                             and morph.name not in converted_material_morphs
@@ -127,7 +127,7 @@ class MorphConverter:
                                 converted_material_morphs.add(morph.name)
                                 results.append(result)
                                 material_morph_nodes.append(result["morph_node"])
-                                self.logger.info(f"Successfully imported material morph metadata: {morph.name}")
+                                self.logger.debug(f"Successfully imported material morph metadata: {morph.name}")
                     except Exception as e:
                         self.logger.warning(f"Failed to convert morph {morph.name}: {e}")
             finally:
