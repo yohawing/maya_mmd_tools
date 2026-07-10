@@ -796,7 +796,7 @@ class VmdConverter:
                     max_time = self.vmd_frame_to_maya_time(max_frame)
                     cmds.playbackOptions(min=0, max=max_time, animationStartTime=0, animationEndTime=max_time)
             bake_samples = self._iter_runtime_bake_frame_samples(min_frame, max_frame)
-            self.logger.info(
+            self.logger.debug(
                 f"Runtime evaluation range: {min_frame} - {max_frame} "
                 f"(keys={len(bake_samples)}, fps={self.fps:g})"
             )
@@ -851,12 +851,12 @@ class VmdConverter:
                 physics_routing.update(runtime_cache.physics_bake)
             if isinstance(profile, dict):
                 profile.setdefault("vmd_converter", {})["native_physics_bake"] = dict(physics_routing)
-            self.logger.info(
+            self.logger.debug(
                 f"mmd-anim runtime pose evaluation and cache completed "
                 f"(frames={len(runtime_cache.baked_frames)}, elapsed={runtime_cache.eval_elapsed:.3f}s, "
                 f"physics_used={physics_routing.get('used', False)})"
             )
-            self.logger.info(
+            self.logger.debug(
                 "runtime bake cache timings: "
                 f"mode={'batch' if runtime_cache.batch_mode else 'per-frame'}, "
                 f"physics={'yes' if physics_routing.get('used') else 'no'}, "
@@ -879,12 +879,12 @@ class VmdConverter:
                     pmx_morph_names,
                 )
                 apply_elapsed = time.perf_counter() - apply_start
-                self.logger.info(
+                self.logger.debug(
                     f"Runtime cache key application completed (elapsed={apply_elapsed:.3f}s)"
                 )
 
             runtime_elapsed = time.perf_counter() - runtime_start
-            self.logger.info(f"runtime bake total elapsed={runtime_elapsed:.3f}s")
+            self.logger.debug(f"runtime bake total elapsed={runtime_elapsed:.3f}s")
 
             return True
 

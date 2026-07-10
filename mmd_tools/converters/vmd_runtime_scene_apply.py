@@ -212,7 +212,7 @@ def _apply_runtime_channel_arrays_to_scene(
             context.logger.debug(f"batch array keying error for {joint}: {e}")
             raise
 
-    context.logger.info(
+    context.logger.debug(
         "runtime joint channel pruning: "
         f"keyed={keyed_channels}, skipped_static={skipped_static_channels}, "
         f"total={total_channels}"

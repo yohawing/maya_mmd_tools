@@ -189,10 +189,10 @@ def import_pmx_file(
                 }
                 pipeline.profile["bone_morph_runtime"] = bone_morph_runtime_result
                 pipeline.profile["material_morph_runtime"] = material_morph_runtime_result
-                logger.info("PMX import phase timings: %s", pipeline.profile["phase_timings"])
-                logger.info("Mesh converter profile: %s", pipeline.profile["mesh_converter"])
-                logger.info("Morph converter profile: %s", pipeline.profile["morph_converter"])
-                logger.info("Bone converter profile: %s", pipeline.profile["bone_converter"])
+                logger.debug("PMX import phase timings: %s", pipeline.profile["phase_timings"])
+                logger.debug("Mesh converter profile: %s", pipeline.profile["mesh_converter"])
+                logger.debug("Morph converter profile: %s", pipeline.profile["morph_converter"])
+                logger.debug("Bone converter profile: %s", pipeline.profile["bone_converter"])
             if mesh_converter.unresolved_texture_count:
                 logger.warning(
                     "%d texture(s) could not be loaded. Use Resolve textures to repair them.",

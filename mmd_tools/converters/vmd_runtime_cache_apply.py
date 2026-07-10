@@ -66,7 +66,7 @@ def apply_runtime_cache_to_scene(converter, runtime_cache: List[dict], pmx_morph
                     converter._batch_create_and_key_curves(jname, dynamic_chans)
             except Exception as e:
                 converter.logger.debug(f"batch keying error for {jname} (will have used fallbacks): {e}")
-        converter.logger.info(
+        converter.logger.debug(
             "runtime joint channel pruning: "
             f"keyed={keyed_channels}, skipped_static={skipped_static_channels}, "
             f"total={total_channels}"

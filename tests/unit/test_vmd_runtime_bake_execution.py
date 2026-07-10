@@ -2,7 +2,7 @@
 
 import ctypes
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import mmd_tools.converters.vmd_converter as vmd_converter_module
 from mmd_tools.converters.vmd_converter import VmdConverter
@@ -75,6 +75,8 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
 
         self.converter.bone_index_to_joint = {}
         self.converter.bone_name_to_index = {}
+        logger_mock = MagicMock()
+        self.converter.logger = logger_mock
         with patch.object(vmd_converter_module, "MmdRuntimeModel", FakeModel), patch.object(
             vmd_converter_module,
             "MmdRuntimeClip",
@@ -90,6 +92,34 @@ class TestVmdRuntimeBakeExecution(MayaTestBase):
         self.assertTrue(result)
         self.assertEqual(FakeInstance.last.batch_calls, [(0.0, 1.0, 3, 0)])
         self.assertEqual(FakeInstance.last.per_frame_calls, [])
+
+        # Internal runtime bake detail stays on DEBUG; completion summary stays on INFO.
+        detail_debug_prefixes = (
+            "Runtime evaluation range:",
+            "mmd-anim runtime pose evaluation and cache completed",
+            "runtime bake cache timings:",
+            "Runtime cache key application completed",
+            "runtime bake total elapsed=",
+            "runtime joint channel pruning:",
+        )
+        debug_msgs = [call[0][0] for call in logger_mock.debug.call_args_list if call[0]]
+        info_msgs = [call[0][0] for call in logger_mock.info.call_args_list if call[0]]
+        for prefix in detail_debug_prefixes:
+            self.assertTrue(
+                any(isinstance(msg, str) and msg.startswith(prefix) for msg in debug_msgs),
+                "expected DEBUG log starting with %r, got %r" % (prefix, debug_msgs),
+            )
+            self.assertFalse(
+                any(isinstance(msg, str) and msg.startswith(prefix) for msg in info_msgs),
+                "runtime detail %r must not be INFO" % (prefix,),
+            )
+        self.assertTrue(
+            any(
+                isinstance(msg, str) and msg.startswith("Applied runtime cache: keyed ")
+                for msg in info_msgs
+            ),
+            "expected INFO Applied runtime cache summary, got %r" % (info_msgs,),
+        )
 
     def test_runtime_bake_fps_60_batch_samples_target_maya_frames(self):
         """60fps runtime bake は Maya output frame ごとに 0.5 VMD frame step で評価する。"""
