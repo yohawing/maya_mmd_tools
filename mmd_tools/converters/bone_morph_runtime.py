@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -22,6 +24,8 @@ from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadat
 logger = get_logger(__name__)
 
 ACCUM_NODE_TYPE = "mmdBoneMorphAccum"
+CCD_IK_NODE_TYPE = "mmdCcdIk"
+APPEND_NODE_TYPE = "mmdAppend"
 REQUIRED_ACCUM_ATTRS = (
     "contribution",
     "morphOrder",
@@ -36,6 +40,7 @@ REQUIRED_ACCUM_ATTRS = (
 )
 _NODE_TYPE_UNAVAILABLE = "node_type_unavailable"
 _PROBE_NODE_NAME = "__mmdBoneMorphAccum_availability_probe__"
+_ARRAY_INDEX_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\](?:\.|$)")
 
 
 def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
@@ -538,14 +543,96 @@ def _reroute_joint_inputs_through_accumulator(joint: str, node: str) -> None:
 
 
 def _destination_upstream_of_append(joint: str, attr_kind: str) -> str:
+    """Resolve where a bone morph accumulator should feed for *joint*.*attr_kind*.
+
+    Priority:
+    1. ``mmdAppend.output*`` driving the joint → feed ``mmdAppend.base*``
+    2. ``mmdCcdIk.outputRotate[link_i]`` driving ``joint.rotate`` → feed
+       ``mmdCcdIk.inputRotate[chainJson.links[link_i].bone_slot]``
+    3. Otherwise feed the joint attribute itself
+    """
     joint_attr = f"{joint}.{attr_kind}"
     output_name = f"output{attr_kind.capitalize()}"
     base_name = f"base{attr_kind.capitalize()}"
     for source in cmds.listConnections(joint_attr, s=True, d=False, p=True) or []:
         source_node, source_attr = _split_plug(source)
-        if source_node and cmds.nodeType(source_node) == "mmdAppend" and source_attr.startswith(output_name):
+        if not source_node:
+            continue
+        try:
+            source_type = cmds.nodeType(source_node)
+        except Exception:
+            continue
+        if source_type == APPEND_NODE_TYPE and source_attr.startswith(output_name):
             return f"{source_node}.{base_name}"
+        if attr_kind == "rotate" and source_type == CCD_IK_NODE_TYPE:
+            ik_dest = _ccd_ik_input_rotate_destination(source_node, source_attr)
+            if ik_dest:
+                return ik_dest
     return joint_attr
+
+
+def _ccd_ik_input_rotate_destination(ik_node: str, source_attr: str) -> Optional[str]:
+    """Map ``mmdCcdIk.outputRotate[link_i]`` to its pre-solver ``inputRotate`` plug."""
+    link_index = _array_attr_index(source_attr, "outputRotate")
+    if link_index is None:
+        return None
+    bone_slot = _ccd_ik_link_bone_slot(ik_node, link_index)
+    if bone_slot is None or bone_slot < 0:
+        return None
+    return f"{ik_node}.inputRotate[{bone_slot}]"
+
+
+def _ccd_ik_link_bone_slot(ik_node: str, link_index: int) -> Optional[int]:
+    """Return ``chainJson.links[link_index].bone_slot`` (fallback: *link_index*)."""
+    try:
+        raw = cmds.getAttr(f"{ik_node}.chainJson") or "{}"
+        cfg = json.loads(raw)
+    except Exception:
+        return link_index
+    links = cfg.get("links") if isinstance(cfg, dict) else None
+    if not isinstance(links, list) or link_index < 0 or link_index >= len(links):
+        return link_index
+    link = links[link_index]
+    if not isinstance(link, dict):
+        return link_index
+    try:
+        return int(link.get("bone_slot", link_index))
+    except (TypeError, ValueError):
+        return link_index
+
+
+def _array_attr_index(source_attr: str, array_name: str) -> Optional[int]:
+    """Parse multi-index from ``outputRotate[2]`` or ``outputRotate[2].child``."""
+    if not source_attr.startswith(array_name):
+        return None
+    match = _ARRAY_INDEX_RE.match(source_attr)
+    if not match or match.group(1) != array_name:
+        return None
+    try:
+        return int(match.group(2))
+    except (TypeError, ValueError):
+        return None
+
+
+def _compound_axis_plug(compound_attr: str, axis: str) -> Optional[str]:
+    """Resolve the X/Y/Z child plug for a compound attribute.
+
+    Handles standard children (``rotateX``) and mmdCcdIk array elements
+    (``inputRotate[n].inputRotateElementX``).
+    """
+    candidates = [f"{compound_attr}{axis}"]
+    if "[" in compound_attr:
+        leaf = compound_attr.rsplit(".", 1)[-1]
+        array_name = leaf.split("[", 1)[0]
+        if array_name:
+            candidates.append(f"{compound_attr}.{array_name}Element{axis}")
+    for plug in candidates:
+        try:
+            if cmds.objExists(plug):
+                return plug
+        except Exception:
+            continue
+    return candidates[0] if candidates else None
 
 
 def _reroute_compound(destination: str, base_attr: str, output_attr: str, attr_kind: str) -> None:
@@ -558,10 +645,16 @@ def _reroute_compound(destination: str, base_attr: str, output_attr: str, attr_k
         _disconnect_and_reconnect(source, destination, base_attr)
 
     for axis in ("X", "Y", "Z"):
-        dst_axis = f"{destination}{axis}"
-        base_axis = f"{base_attr}{axis}"
-        output_axis = f"{output_attr}{axis}"
-        for source in cmds.listConnections(dst_axis, s=True, d=False, p=True) or []:
+        dst_axis = _compound_axis_plug(destination, axis)
+        base_axis = _compound_axis_plug(base_attr, axis)
+        output_axis = _compound_axis_plug(output_attr, axis)
+        if not dst_axis or not base_axis or not output_axis:
+            continue
+        try:
+            axis_sources = cmds.listConnections(dst_axis, s=True, d=False, p=True) or []
+        except Exception:
+            axis_sources = []
+        for source in axis_sources:
             if _same_source(source, output_axis):
                 continue
             _disconnect_and_reconnect(source, dst_axis, base_axis)

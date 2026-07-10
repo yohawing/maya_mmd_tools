@@ -217,6 +217,98 @@ class TestBoneMorphRuntime(MayaTestBase):
         cmds.setAttr(f"{morph}.weight", 1.0)
         self.assertListAlmostEqual(cmds.getAttr(f"{append_node}.baseTranslate")[0], (4.0, 0.0, 0.0), places=5)
 
+    def test_accumulator_feeds_mmd_ccd_ik_input_not_joint_rotate(self):
+        """When mmdCcdIk drives joint.rotate, bone morph feeds inputRotate[bone_slot]."""
+        self._require_accumulator_node()
+        try:
+            ik_node = cmds.createNode("mmdCcdIk", name="link_mmdCcdIk")
+        except RuntimeError as exc:
+            self.skipTest(f"mmdCcdIk node is unavailable: {exc}")
+
+        root, joint = self._create_indexed_joint(name="ik_link_joint", bone_index=0)
+        # link_i=0 maps to bone_slot=1 so the destination must use chainJson, not link index.
+        chain = {
+            "bones": [
+                {"rest_position": [0.0, 0.0, 0.0], "parent_slot": -1},
+                {"rest_position": [0.0, 1.0, 0.0], "parent_slot": 0},
+            ],
+            "links": [{"bone_slot": 1}],
+            "targetBoneSlot": 0,
+            "controllerBoneSlot": -1,
+            "iterationCount": 1,
+            "limitAngle": 0.1,
+        }
+        cmds.setAttr(f"{ik_node}.chainJson", json.dumps(chain), type="string")
+        # Disabled solver is pass-through: outputRotate[link_i] == inputRotate[bone_slot].
+        cmds.setAttr(f"{ik_node}.enabled", False)
+        cmds.setAttr(f"{ik_node}.inputRotate[1]", 5.0, 0.0, 0.0, type="double3")
+        cmds.connectAttr(f"{ik_node}.outputRotate[0]", f"{joint}.rotate", force=True)
+
+        half_sqrt = math.sqrt(0.5)
+        morph = self._create_bone_morph_node(
+            "ik_upstream_boneMorph",
+            0,
+            [
+                {
+                    "bone_index": 0,
+                    "translation": [0.0, 0.0, 0.0],
+                    # PMX +90° X → Maya -90° X after coordinate conversion.
+                    "rotation": [half_sqrt, 0.0, 0.0, half_sqrt],
+                }
+            ],
+        )
+
+        result = build_bone_morph_graph(root)
+        self.assertTrue(result["success"])
+        self.assertEqual(result["created"], 1)
+        accum = result["accumulator_nodes"][0]
+
+        joint_rotate_sources = cmds.listConnections(f"{joint}.rotate", s=True, d=False, p=True) or []
+        self.assertIn(f"{ik_node}.outputRotate[0]", joint_rotate_sources)
+        self.assertNotIn(f"{accum}.outputRotate", joint_rotate_sources)
+
+        ik_input_sources = cmds.listConnections(
+            f"{ik_node}.inputRotate[1]", s=True, d=False, p=True
+        ) or []
+        self.assertIn(f"{accum}.outputRotate", ik_input_sources)
+        # Wrong slot must stay free (proves bone_slot mapping, not link_i).
+        self.assertFalse(
+            cmds.listConnections(f"{ik_node}.inputRotate[0]", s=True, d=False, p=True) or []
+        )
+
+        # Morph weight contributes through the solver input; disabled IK copies it out.
+        cmds.setAttr(f"{morph}.weight", 0.0)
+        base_input = cmds.getAttr(f"{ik_node}.inputRotate[1]")[0]
+        self.assertListAlmostEqual(base_input, (5.0, 0.0, 0.0), places=4)
+        self.assertListAlmostEqual(cmds.getAttr(f"{joint}.rotate")[0], (5.0, 0.0, 0.0), places=4)
+
+        cmds.setAttr(f"{morph}.weight", 1.0)
+        morphed_input = cmds.getAttr(f"{ik_node}.inputRotate[1]")[0]
+        self.assertAlmostEqual(morphed_input[0], -85.0, delta=0.15)
+        self.assertAlmostEqual(morphed_input[1], 0.0, delta=0.15)
+        self.assertAlmostEqual(morphed_input[2], 0.0, delta=0.15)
+        joint_rotate = cmds.getAttr(f"{joint}.rotate")[0]
+        self.assertAlmostEqual(joint_rotate[0], morphed_input[0], delta=0.15)
+        self.assertAlmostEqual(joint_rotate[1], morphed_input[1], delta=0.15)
+        self.assertAlmostEqual(joint_rotate[2], morphed_input[2], delta=0.15)
+
+        # Idempotent re-build: still one accumulator, IK output stays on joint.rotate.
+        again = build_bone_morph_graph(root)
+        self.assertEqual(again["created"], 0)
+        self.assertEqual(again["reused"], 1)
+        self.assertEqual(len(cmds.ls(type="mmdBoneMorphAccum") or []), 1)
+        self.assertIn(
+            f"{ik_node}.outputRotate[0]",
+            cmds.listConnections(f"{joint}.rotate", s=True, d=False, p=True) or [],
+        )
+        self.assertIn(
+            f"{accum}.outputRotate",
+            cmds.listConnections(f"{ik_node}.inputRotate[1]", s=True, d=False, p=True) or [],
+        )
+        # Observable evaluation still succeeds (no DG cycle).
+        cmds.getAttr(f"{joint}.rotate")
+        cmds.getAttr(f"{ik_node}.outputRotate[0]")
+
     def test_probe_reports_unavailable_when_create_fails(self):
         """createNode failure is treated as node_type_unavailable, not success."""
         cmds_mock = mock.Mock()
