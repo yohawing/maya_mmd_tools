@@ -35,7 +35,7 @@ def apply_import_scale(root_group: str, scale: float, logger: Any) -> bool:
             logger.debug("Could not inspect or unlock scale attr: %s", attr, exc_info=True)
 
     try:
-        logger.info("Applying scale: %f", scale)
+        logger.debug("Applying scale: %f", scale)
         for attr in attrs:
             cmds.setAttr(attr, scale)
     except Exception:

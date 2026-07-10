@@ -89,7 +89,7 @@ def import_pmx_file(
             )
 
             # メッシュを変換
-            logger.info("Converting mesh...")
+            logger.debug("Converting mesh...")
             mesh_converter = MeshConverter(filepath, scale=scale)
             phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
@@ -100,7 +100,7 @@ def import_pmx_file(
             mesh_names = mesh_name if isinstance(mesh_name, list) else [mesh_name]
             logger.debug("Mesh conversion complete: group=%s, name=%s", mesh_group, mesh_name)
 
-            logger.info("Converting morphs...")
+            logger.debug("Converting morphs...")
             morph_converter = MorphConverter(scale=scale)
             phase_start = time.perf_counter()
             morph_result = morph_converter.convert_pmx_morphs(parser, mesh_name)
@@ -112,7 +112,7 @@ def import_pmx_file(
             pipeline.connect_morph_nodes_to_root(root_group, morph_result)
 
             # ボーンを変換
-            logger.info("Converting bones...")
+            logger.debug("Converting bones...")
             bone_converter = BoneConverter()
             phase_start = time.perf_counter()
             maya_joints, skin_cluster = bone_converter.convert_pmx_bones(
@@ -132,13 +132,13 @@ def import_pmx_file(
                 len(mesh_names),
             )
 
-            logger.info("Building bone morph runtime graph...")
+            logger.debug("Building bone morph runtime graph...")
             phase_start = time.perf_counter()
             bone_morph_runtime_result = build_bone_morph_graph(root_group)
             pipeline.record_phase("bone_morph_runtime_sec", phase_start)
             logger.debug("Bone morph runtime graph result: %s", bone_morph_runtime_result)
 
-            logger.info("Building material morph runtime graph...")
+            logger.debug("Building material morph runtime graph...")
             phase_start = time.perf_counter()
             material_morph_runtime_result = build_material_morph_graph(root_group)
             pipeline.record_phase("material_morph_runtime_sec", phase_start)

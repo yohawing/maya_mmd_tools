@@ -5,7 +5,13 @@ NamespaceUtilsクラスのユニットテスト
 import unittest
 from unittest.mock import patch, call
 
+from mmd_tools.core import namespace_utils
 from mmd_tools.core.namespace_utils import NamespaceUtils
+
+
+def _message_templates(mock_log):
+    # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+)
+    return [call[0][0] for call in mock_log.call_args_list if call[0]]
 
 
 class TestNamespaceUtils(unittest.TestCase):
@@ -105,12 +111,19 @@ class TestNamespaceUtils(unittest.TestCase):
 
         mock_namespace.side_effect = namespace_side_effect
 
-        result = NamespaceUtils.create_namespace("TestNamespace")
+        with patch.object(namespace_utils, "logger") as mock_logger:
+            result = NamespaceUtils.create_namespace("TestNamespace")
         self.assertTrue(result)
 
         # 呼び出しを確認
         expected_calls = [call(exists="TestNamespace"), call(add="TestNamespace")]
         self.assertEqual(mock_namespace.call_args_list, expected_calls)
+
+        # Create detail is DEBUG, not INFO.
+        debug_messages = _message_templates(mock_logger.debug)
+        info_messages = _message_templates(mock_logger.info)
+        self.assertIn("Created namespace: TestNamespace", debug_messages)
+        self.assertNotIn("Created namespace: TestNamespace", info_messages)
 
     @patch("maya.cmds.namespace")
     def test_create_namespace_already_exists(self, mock_namespace):
@@ -202,10 +215,17 @@ class TestNamespaceUtils(unittest.TestCase):
         mock_namespace.side_effect = namespace_side_effect
         mock_ls.return_value = ["TestNS:cube1", "TestNS:sphere1"]
 
-        NamespaceUtils.cleanup_namespace("TestNS", force=True)
+        with patch.object(namespace_utils, "logger") as mock_logger:
+            NamespaceUtils.cleanup_namespace("TestNS", force=True)
 
         mock_delete.assert_called_once_with(["TestNS:cube1", "TestNS:sphere1"])
         mock_namespace.assert_any_call(removeNamespace="TestNS", mergeNamespaceWithParent=False)
+
+        # Cleanup detail is DEBUG, not INFO; force-delete warning remains.
+        debug_messages = _message_templates(mock_logger.debug)
+        info_messages = _message_templates(mock_logger.info)
+        self.assertIn("Cleaned up namespace: TestNS", debug_messages)
+        self.assertNotIn("Cleaned up namespace: TestNS", info_messages)
 
     @patch("maya.cmds.namespace")
     @patch("maya.cmds.ls")
@@ -222,9 +242,18 @@ class TestNamespaceUtils(unittest.TestCase):
         mock_namespace.side_effect = namespace_side_effect
         mock_ls.return_value = ["TestNS:cube1"]
 
-        NamespaceUtils.cleanup_namespace("TestNS", force=False)
+        with patch.object(namespace_utils, "logger") as mock_logger:
+            NamespaceUtils.cleanup_namespace("TestNS", force=False)
 
         mock_namespace.assert_any_call(removeNamespace="TestNS", mergeNamespaceWithParent=True)
+
+        # Merge + cleanup details are DEBUG, not INFO.
+        debug_messages = _message_templates(mock_logger.debug)
+        info_messages = _message_templates(mock_logger.info)
+        self.assertIn("Merging namespace: TestNS", debug_messages)
+        self.assertIn("Cleaned up namespace: TestNS", debug_messages)
+        self.assertNotIn("Merging namespace: TestNS", info_messages)
+        self.assertNotIn("Cleaned up namespace: TestNS", info_messages)
 
     @patch("maya.cmds.namespaceInfo")
     def test_list_model_namespaces(self, mock_info):

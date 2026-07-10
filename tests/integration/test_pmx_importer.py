@@ -4,6 +4,7 @@ PMXインポーターの統合テスト
 
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 from maya import cmds
 
@@ -11,10 +12,25 @@ from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.converters import PhysicsConverter
 from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
+from mmd_tools.io import pmx_importer
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
 
 HAIR_PHYSICS_FIXTURE = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
+
+# Internal phase details (DEBUG); outer start/completion stay INFO.
+_PMX_INTERNAL_PHASE_MESSAGES = (
+    "Converting mesh...",
+    "Converting morphs...",
+    "Converting bones...",
+    "Building bone morph runtime graph...",
+    "Building material morph runtime graph...",
+)
+
+
+def _message_templates(mock_log):
+    # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+)
+    return [call[0][0] for call in mock_log.call_args_list if call[0]]
 
 
 class TestPmxImporter(MayaTestBase):
@@ -56,8 +72,9 @@ class TestPmxImporter(MayaTestBase):
         # インポート前のシーン状態を記録
         initial_nodes = set(cmds.ls())
 
-        # PMXファイルをインポート
-        result = import_pmx_file(parser, pmx_file)
+        # PMXファイルをインポート（内部 phase ログ境界も検証）
+        with patch.object(pmx_importer, "logger") as mock_logger:
+            result = import_pmx_file(parser, pmx_file)
 
         # インポートが成功したことを確認
         self.assertTrue(result)
@@ -85,6 +102,27 @@ class TestPmxImporter(MayaTestBase):
         for file_node in file_nodes:
             texture_path = cmds.getAttr(f"{file_node}.fileTextureName")
             self.assertTrue(texture_path, f"{file_node}.fileTextureName が空です")
+
+        # Internal phase routing details are DEBUG, not INFO.
+        debug_messages = _message_templates(mock_logger.debug)
+        info_messages = _message_templates(mock_logger.info)
+        for message in _PMX_INTERNAL_PHASE_MESSAGES:
+            self.assertIn(message, debug_messages)
+            self.assertNotIn(message, info_messages)
+
+        # Outer import boundaries stay INFO.
+        self.assertTrue(
+            any(
+                isinstance(msg, str) and msg.startswith("Starting PMX file import:")
+                for msg in info_messages
+            )
+        )
+        self.assertTrue(
+            any(
+                isinstance(msg, str) and msg.startswith("PMX file import completed:")
+                for msg in info_messages
+            )
+        )
 
     def test_import_pmx_with_physics_disabled_keeps_display_metadata(self):
         """import_physics=False では物理 node を作らず表示枠 metadata は保持する。"""

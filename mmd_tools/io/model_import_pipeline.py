@@ -59,12 +59,12 @@ class ModelImportPipeline:
 
         if custom_namespace:
             namespace = NamespaceUtils.ensure_unique_namespace(custom_namespace)
-            self.logger.info("Using custom namespace: %s", namespace)
+            self.logger.debug("Using custom namespace: %s", namespace)
             return namespace
 
         base_ns = NamespaceUtils.generate_namespace(model_name)
         namespace = NamespaceUtils.ensure_unique_namespace(base_ns)
-        self.logger.info("Using namespace: %s", namespace)
+        self.logger.debug("Using namespace: %s", namespace)
         return namespace
 
     def create_root_group(self, model_name: str, attributes: Dict[str, Any]) -> str:
@@ -100,7 +100,7 @@ class ModelImportPipeline:
         if not import_physics:
             return [], []
 
-        self.logger.info("Converting physics...")
+        self.logger.debug("Converting physics...")
         if not getattr(parser, "rigid_bodies", None):
             self.logger.debug("No physics data found")
             return [], []
@@ -210,5 +210,5 @@ class ModelImportPipeline:
     def cleanup_namespace(self, namespace: Optional[str]) -> None:
         """Remove a namespace after an import failure."""
         if namespace:
-            self.logger.info("Cleaning up namespace: %s", namespace)
+            self.logger.debug("Cleaning up namespace: %s", namespace)
             NamespaceUtils.cleanup_namespace(namespace, force=True)
