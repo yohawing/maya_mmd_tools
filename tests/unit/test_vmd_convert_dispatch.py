@@ -317,6 +317,43 @@ class TestVmdConvertDispatch(unittest.TestCase):
         clear_light.assert_not_called()
         convert_light.assert_not_called()
 
+    def test_internal_routing_details_are_debug_not_info(self):
+        """Detected-kind and legacy morph route stay DEBUG; outer start/completion stay INFO."""
+        frame = type("FrameStub", (), {"frame_number": 1})()
+        vmd_data = _fake_vmd_data(morph_frames=[frame])
+        logger = self.converter.logger
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(self.converter, "_should_use_mmd_runtime_bake", return_value=False))
+            convert_morph = stack.enter_context(patch.object(self.converter, "_convert_morph_animation"))
+            info_mock = stack.enter_context(patch.object(logger, "info"))
+            debug_mock = stack.enter_context(patch.object(logger, "debug"))
+            result = self.converter.convert(vmd_data)
+
+        self.assertTrue(result)
+        convert_morph.assert_called_once_with(vmd_data.morph_frames)
+
+        # Python 3.7 互換: call[0] で位置引数タプルを取る（_Call.args は使わない）
+        info_msgs = [call[0][0] for call in info_mock.call_args_list if call[0]]
+        debug_msgs = [call[0][0] for call in debug_mock.call_args_list if call[0]]
+
+        self.assertIn("Starting VMD animation conversion", info_msgs)
+        self.assertIn("VMD animation conversion completed", info_msgs)
+
+        kind_debug = [
+            msg
+            for msg in debug_msgs
+            if isinstance(msg, str) and msg.startswith("Detected VMD motion kind: ")
+        ]
+        self.assertTrue(kind_debug, "expected DEBUG detected-kind log, got %r" % (debug_msgs,))
+        self.assertIn("Converting morph animation (legacy)", debug_msgs)
+
+        self.assertFalse(
+            any(isinstance(msg, str) and msg.startswith("Detected VMD motion kind: ") for msg in info_msgs),
+            "detected-kind must not be INFO",
+        )
+        self.assertNotIn("Converting morph animation (legacy)", info_msgs)
+
 
 if __name__ == "__main__":
     unittest.main()

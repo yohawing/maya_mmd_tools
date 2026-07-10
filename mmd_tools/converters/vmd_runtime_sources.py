@@ -51,7 +51,7 @@ def resolve_runtime_bake_sources(
             try:
                 with open(vmd_source, "rb") as file:
                     resolved_vmd_bytes = file.read()
-                converter.logger.info(f"Restored VMD bytes for runtime bake from VMD source_file: {vmd_source}")
+                converter.logger.debug(f"Restored VMD bytes for runtime bake from VMD source_file: {vmd_source}")
             except Exception as exc:
                 converter.logger.debug(f"Failed to read VMD source_file: {vmd_source}: {exc}")
 
@@ -82,7 +82,7 @@ def resolve_pmx_path_from_scene(converter, target_namespace: str = None) -> Opti
             candidates.append(str(stored))
 
     if len(candidates) == 1:
-        converter.logger.info(f"Restored PMX source from scene mmd_source_file: {candidates[0]}")
+        converter.logger.debug(f"Restored PMX source from scene mmd_source_file: {candidates[0]}")
         return candidates[0]
     if len(candidates) > 1:
         converter.logger.warning(

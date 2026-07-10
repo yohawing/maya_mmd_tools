@@ -521,7 +521,7 @@ class VmdConverter:
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
-            self.logger.info(f"Detected VMD motion kind: {motion_kind}")
+            self.logger.debug(f"Detected VMD motion kind: {motion_kind}")
 
             # タイムライン設定
             with vmd_profile.scope("timeline_setup"):
@@ -613,7 +613,7 @@ class VmdConverter:
 
                 # モーフアニメーション（レガシー）
                 if hasattr(import_context.vmd_data, "morph_frames") and import_context.vmd_data.morph_frames:
-                    self.logger.info("Converting morph animation (legacy)")
+                    self.logger.debug("Converting morph animation (legacy)")
                     self._convert_morph_animation(import_context.vmd_data.morph_frames)
                 _emit_progress(82)
 

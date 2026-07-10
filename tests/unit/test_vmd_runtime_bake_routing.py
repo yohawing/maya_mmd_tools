@@ -110,15 +110,30 @@ class TestVmdRuntimeBakeRouting(MayaTestBase):
             vmd_data = create_test_vmd_data()
             vmd_data.source_file = vmd_path
 
-            vmd_bytes, pmx_bytes, resolved_pmx_path = self.converter._resolve_runtime_bake_sources(
-                vmd_data,
-                vmd_bytes=None,
-                pmx_bytes=None,
-                pmx_path=None,
-            )
+            logger_mock = self.converter.logger
+            with patch.object(logger_mock, "info") as info_mock, patch.object(
+                logger_mock, "debug"
+            ) as debug_mock:
+                vmd_bytes, pmx_bytes, resolved_pmx_path = self.converter._resolve_runtime_bake_sources(
+                    vmd_data,
+                    vmd_bytes=None,
+                    pmx_bytes=None,
+                    pmx_path=None,
+                )
 
             self.assertEqual(vmd_bytes, b"vmd-bytes")
             self.assertIsNone(pmx_bytes)
             self.assertEqual(resolved_pmx_path, pmx_path)
+
+            # Restored-source details are internal routing: DEBUG only, not INFO.
+            # Python 3.7 互換: call[0] で位置引数タプルを取る（_Call.args は使わない）
+            debug_msgs = [call[0][0] for call in debug_mock.call_args_list if call[0]]
+            info_msgs = [call[0][0] for call in info_mock.call_args_list if call[0]]
+            vmd_restored = "Restored VMD bytes for runtime bake from VMD source_file: %s" % vmd_path
+            pmx_restored = "Restored PMX source from scene mmd_source_file: %s" % pmx_path
+            self.assertIn(vmd_restored, debug_msgs)
+            self.assertIn(pmx_restored, debug_msgs)
+            self.assertNotIn(vmd_restored, info_msgs)
+            self.assertNotIn(pmx_restored, info_msgs)
 
             cmds.delete(root)
