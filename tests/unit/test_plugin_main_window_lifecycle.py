@@ -138,6 +138,73 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         locator_mod = sys.modules["mmd_tools.nodes.mmd_rigid_body_locator_node"]
         locator_mod.register.assert_not_called()
 
+    def test_initialize_calls_soft_bone_morph_postcondition(self):
+        """initializePlugin invokes soft postcondition after bone morph register."""
+        self.plugin_main.install_mmd_menu = MagicMock()
+        self.plugin_main.install_drag_drop_importer = MagicMock()
+        # Keep locator registration skipped so mayapy cannot hit draw registry.
+        self.plugin_main.cmds.allNodeTypes.return_value = ["mmdRigidBodyLocator"]
+        self.plugin_main.cmds.pluginInfo.return_value = []
+        soft_check = MagicMock()
+        self.plugin_main._soft_check_bone_morph_accum_availability = soft_check
+
+        self.plugin_main.initializePlugin(MagicMock())
+
+        soft_check.assert_called_once_with()
+
+    def test_soft_bone_morph_postcondition_warns_without_raising(self):
+        """Unavailable probe emits a warning and never aborts plugin load."""
+        display_warning = MagicMock()
+        fake_om = MagicMock()
+        fake_om.MGlobal.displayWarning = display_warning
+        self.plugin_main.om = fake_om
+
+        unavailable = {
+            "available": False,
+            "code": "node_type_unavailable",
+            "reason": "node_type_unavailable",
+            "detail": "create_failed: simulated",
+        }
+        postcondition = MagicMock(return_value=unavailable)
+        fake_runtime = types.ModuleType("mmd_tools.converters.bone_morph_runtime")
+        fake_runtime.log_bone_morph_accum_availability_postcondition = postcondition
+        sys.modules["mmd_tools.converters.bone_morph_runtime"] = fake_runtime
+
+        # Ensure parent package exists without executing converters package import.
+        converters_pkg = types.ModuleType("mmd_tools.converters")
+        converters_pkg.__path__ = []
+        sys.modules.setdefault("mmd_tools.converters", converters_pkg)
+
+        self.plugin_main._soft_check_bone_morph_accum_availability()
+
+        postcondition.assert_called_once_with()
+        display_warning.assert_called_once()
+        warning_text = display_warning.call_args[0][0]
+        self.assertIn("mmdBoneMorphAccum", warning_text)
+        self.assertIn("create_failed: simulated", warning_text)
+
+    def test_soft_bone_morph_postcondition_swallows_probe_errors(self):
+        """Probe import/runtime errors must not fail plugin initialization."""
+        display_warning = MagicMock()
+        fake_om = MagicMock()
+        fake_om.MGlobal.displayWarning = display_warning
+        self.plugin_main.om = fake_om
+
+        fake_runtime = types.ModuleType("mmd_tools.converters.bone_morph_runtime")
+
+        def _boom():
+            raise RuntimeError("probe exploded")
+
+        fake_runtime.log_bone_morph_accum_availability_postcondition = _boom
+        sys.modules["mmd_tools.converters.bone_morph_runtime"] = fake_runtime
+        converters_pkg = types.ModuleType("mmd_tools.converters")
+        converters_pkg.__path__ = []
+        sys.modules.setdefault("mmd_tools.converters", converters_pkg)
+
+        # Must not raise.
+        self.plugin_main._soft_check_bone_morph_accum_availability()
+        display_warning.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

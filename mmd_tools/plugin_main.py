@@ -184,6 +184,31 @@ def _node_type_registered(type_name: str) -> bool:
         return False
 
 
+def _soft_check_bone_morph_accum_availability():
+    """Soft plugin postcondition for mmdBoneMorphAccum contract.
+
+    Creates a temporary probe via the runtime helper. Never raises: plugin load
+    must succeed even when the probe fails, because import-time graph building
+    re-probes and fails soft with structured warnings.
+    """
+    try:
+        from mmd_tools.converters.bone_morph_runtime import (
+            log_bone_morph_accum_availability_postcondition,
+        )
+
+        availability = log_bone_morph_accum_availability_postcondition()
+        if not availability.get("available"):
+            om.MGlobal.displayWarning(
+                "mmdBoneMorphAccum is unavailable after registration; "
+                "bone morph runtime graphs will be skipped ({0})".format(
+                    availability.get("detail") or "node_type_unavailable"
+                )
+            )
+    except Exception:
+        # Runtime probing remains the enforcement boundary for fail-soft import.
+        pass
+
+
 def initializePlugin(mobject):
     """
     Plugin entry point.
@@ -205,6 +230,7 @@ def initializePlugin(mobject):
             mmd_rigid_body_locator_node.register(plugin_fn)
             _rigid_body_locator_registered = True
         mmd_bone_morph_accum_node.register(plugin_fn)
+        _soft_check_bone_morph_accum_availability()
         mmd_material_morph_eval_node.register(plugin_fn)
         # Skip Python rig-node registration when C++ plugin already provides them
         global _python_rig_nodes_registered

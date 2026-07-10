@@ -137,6 +137,12 @@ def import_pmx_file(
             bone_morph_runtime_result = build_bone_morph_graph(root_group)
             pipeline.record_phase("bone_morph_runtime_sec", phase_start)
             logger.debug("Bone morph runtime graph result: %s", bone_morph_runtime_result)
+            for warning in bone_morph_runtime_result.get("warnings") or []:
+                logger.warning(
+                    "Bone morph runtime warning: code=%s detail=%s",
+                    warning.get("code") or warning.get("reason"),
+                    warning.get("detail"),
+                )
 
             logger.debug("Building material morph runtime graph...")
             phase_start = time.perf_counter()

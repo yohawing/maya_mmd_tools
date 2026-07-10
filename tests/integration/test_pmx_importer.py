@@ -124,6 +124,52 @@ class TestPmxImporter(MayaTestBase):
             )
         )
 
+    def test_import_continues_when_bone_morph_runtime_is_unavailable(self):
+        """mmdBoneMorphAccum 不可時も PMX import は継続し profile に structured warning を残す。"""
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        parser = parse_pmx_file(pmx_file)
+        profile = {}
+        unavailable_result = {
+            "success": False,
+            "accumulator_nodes": [],
+            "created": 0,
+            "reused": 0,
+            "contributions": 0,
+            "skipped": ["node_type_unavailable"],
+            "warnings": [
+                {
+                    "code": "node_type_unavailable",
+                    "reason": "node_type_unavailable",
+                    "node_type": "mmdBoneMorphAccum",
+                    "detail": "create_failed: simulated",
+                    "missing_attributes": [],
+                    "actual_type": "",
+                }
+            ],
+        }
+
+        with patch.object(
+            pmx_importer,
+            "build_bone_morph_graph",
+            return_value=unavailable_result,
+        ) as mock_build:
+            result = import_pmx_file(
+                parser,
+                pmx_file,
+                options={"profile": profile, "import_physics": False},
+            )
+
+        self.assertTrue(result)
+        mock_build.assert_called_once()
+        runtime_profile = profile.get("bone_morph_runtime") or {}
+        self.assertFalse(runtime_profile.get("success"))
+        self.assertIn("node_type_unavailable", runtime_profile.get("skipped") or [])
+        warnings = runtime_profile.get("warnings") or []
+        self.assertEqual(len(warnings), 1)
+        self.assertEqual(warnings[0].get("code"), "node_type_unavailable")
+        self.assertEqual(warnings[0].get("reason"), "node_type_unavailable")
+        self.assertTrue(cmds.objExists(result))
+
     def test_import_pmx_with_physics_disabled_keeps_display_metadata(self):
         """import_physics=False では物理 node を作らず表示枠 metadata は保持する。"""
         cmds.file(new=True, force=True)

@@ -22,6 +22,20 @@ from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadat
 logger = get_logger(__name__)
 
 ACCUM_NODE_TYPE = "mmdBoneMorphAccum"
+REQUIRED_ACCUM_ATTRS = (
+    "contribution",
+    "morphOrder",
+    "weight",
+    "translateOffset",
+    "rotateOffsetQuat",
+    "baseTranslate",
+    "baseRotate",
+    "rotateOrder",
+    "outputTranslate",
+    "outputRotate",
+)
+_NODE_TYPE_UNAVAILABLE = "node_type_unavailable"
+_PROBE_NODE_NAME = "__mmdBoneMorphAccum_availability_probe__"
 
 
 def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
@@ -33,7 +47,9 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
 
     Returns:
         Summary dict containing created/reused accumulator nodes and skipped
-        morph metadata records.
+        morph metadata records. When ``mmdBoneMorphAccum`` is unavailable the
+        graph is skipped, morph metadata is preserved, and a structured
+        ``node_type_unavailable`` warning is returned.
     """
     result = {
         "success": True,
@@ -42,6 +58,7 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         "reused": 0,
         "contributions": 0,
         "skipped": [],
+        "warnings": [],
     }
     if not root_group or not cmds.objExists(root_group):
         result["success"] = False
@@ -70,6 +87,19 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         result["skipped"].append("no_bone_morph_contributions")
         return result
 
+    availability = probe_bone_morph_accum_availability()
+    if not availability.get("available"):
+        warning = _node_type_unavailable_warning(availability)
+        result["success"] = False
+        result["warnings"].append(warning)
+        result["skipped"].append(_NODE_TYPE_UNAVAILABLE)
+        logger.warning(
+            "Skipping bone morph runtime graph: %s unavailable (%s)",
+            ACCUM_NODE_TYPE,
+            availability.get("detail") or _NODE_TYPE_UNAVAILABLE,
+        )
+        return result
+
     for contributions in contributions_by_joint.values():
         contributions.sort(
             key=lambda item: (
@@ -82,7 +112,7 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
     existing_by_joint = _collect_existing_accumulators()
     for joint, contributions in contributions_by_joint.items():
         node = existing_by_joint.get(joint)
-        if node and cmds.objExists(node):
+        if node and _is_valid_accumulator(node):
             result["reused"] += 1
         else:
             node = _create_accumulator(joint)
@@ -100,6 +130,118 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         result["contributions"] += len(contributions)
 
     return result
+
+
+def probe_bone_morph_accum_availability() -> Dict[str, Any]:
+    """Probe whether ``mmdBoneMorphAccum`` can be created with its attribute contract.
+
+    Creates a temporary probe node, validates type and required attributes, then
+    deletes the probe. Never leaves a scene artifact on success or failure paths
+    that this function owns.
+
+    Returns:
+        Dict with ``available`` bool and diagnostic fields. When unavailable,
+        ``code`` / ``reason`` are ``node_type_unavailable``.
+    """
+    result = {
+        "available": False,
+        "code": _NODE_TYPE_UNAVAILABLE,
+        "reason": _NODE_TYPE_UNAVAILABLE,
+        "node_type": ACCUM_NODE_TYPE,
+        "detail": "",
+        "missing_attributes": [],
+        "actual_type": "",
+    }
+    node = None
+    try:
+        try:
+            node = cmds.createNode(ACCUM_NODE_TYPE, name=_PROBE_NODE_NAME)
+        except Exception as exc:
+            result["detail"] = "create_failed: {0}".format(exc)
+            return result
+
+        try:
+            actual_type = cmds.nodeType(node) or ""
+        except Exception as exc:
+            result["detail"] = "node_type_query_failed: {0}".format(exc)
+            return result
+        result["actual_type"] = actual_type
+
+        if actual_type != ACCUM_NODE_TYPE:
+            result["detail"] = "unknown_or_wrong_type: {0}".format(actual_type)
+            return result
+
+        missing = []
+        for attr in REQUIRED_ACCUM_ATTRS:
+            try:
+                exists = cmds.attributeQuery(attr, node=node, exists=True)
+            except Exception:
+                exists = False
+            if not exists:
+                missing.append(attr)
+        if missing:
+            result["missing_attributes"] = missing
+            result["detail"] = "missing_attributes: {0}".format(",".join(missing))
+            return result
+
+        result["available"] = True
+        result["code"] = ""
+        result["reason"] = ""
+        result["detail"] = ""
+        return result
+    finally:
+        _delete_node_quiet(node)
+
+
+def log_bone_morph_accum_availability_postcondition() -> Dict[str, Any]:
+    """Soft plugin-init postcondition: probe contract without failing load.
+
+    Returns the probe result. Callers should treat exceptions / unavailable
+    results as non-fatal diagnostics only.
+    """
+    availability = probe_bone_morph_accum_availability()
+    if not availability.get("available"):
+        logger.warning(
+            "Plugin postcondition: %s unavailable (%s); bone morph runtime will fail soft",
+            ACCUM_NODE_TYPE,
+            availability.get("detail") or _NODE_TYPE_UNAVAILABLE,
+        )
+    return availability
+
+
+def _node_type_unavailable_warning(availability: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "code": _NODE_TYPE_UNAVAILABLE,
+        "reason": _NODE_TYPE_UNAVAILABLE,
+        "node_type": ACCUM_NODE_TYPE,
+        "detail": availability.get("detail") or _NODE_TYPE_UNAVAILABLE,
+        "missing_attributes": list(availability.get("missing_attributes") or []),
+        "actual_type": availability.get("actual_type") or "",
+    }
+
+
+def _delete_node_quiet(node: Optional[str]) -> None:
+    if not node:
+        return
+    try:
+        if cmds.objExists(node):
+            cmds.delete(node)
+    except Exception:
+        logger.debug("Failed to delete temporary node %s", node, exc_info=True)
+
+
+def _is_valid_accumulator(node: str) -> bool:
+    """Return whether *node* is a usable ``mmdBoneMorphAccum`` instance."""
+    if not node or not cmds.objExists(node):
+        return False
+    try:
+        if cmds.nodeType(node) != ACCUM_NODE_TYPE:
+            return False
+        return all(
+            cmds.attributeQuery(attr, node=node, exists=True) for attr in REQUIRED_ACCUM_ATTRS
+        )
+    except Exception:
+        return False
 
 
 def _collect_joints_by_bone_index(root_group: str) -> Dict[int, str]:
@@ -281,6 +423,8 @@ def _pmx_quat_to_maya(values) -> Tuple[float, float, float, float]:
 def _collect_existing_accumulators() -> Dict[str, str]:
     accumulators: Dict[str, str] = {}
     for node in cmds.ls(type=ACCUM_NODE_TYPE) or []:
+        if not _is_valid_accumulator(node):
+            continue
         if not cmds.attributeQuery("mmd_target_joint", node=node, exists=True):
             continue
         try:
@@ -295,10 +439,19 @@ def _collect_existing_accumulators() -> Dict[str, str]:
 def _create_accumulator(joint: str) -> Optional[str]:
     node_name = f"{joint.split('|')[-1]}_boneMorphAccum"
     try:
-        return cmds.createNode(ACCUM_NODE_TYPE, name=node_name)
+        node = cmds.createNode(ACCUM_NODE_TYPE, name=node_name)
     except Exception as exc:
         logger.warning("Failed to create %s for %s: %s", ACCUM_NODE_TYPE, joint, exc)
         return None
+    if _is_valid_accumulator(node):
+        return node
+    logger.warning(
+        "Created %s for %s, but type/attribute contract is unavailable; deleting probe node",
+        ACCUM_NODE_TYPE,
+        joint,
+    )
+    _delete_node_quiet(node)
+    return None
 
 
 def _mark_accumulator(node: str, joint: str) -> None:
