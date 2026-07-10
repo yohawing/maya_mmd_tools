@@ -206,7 +206,13 @@
     "both_sides": "両面描画",
     "ground_shadow": "地面影",
     "self_shadow": "セルフシャドウ",
-    "edge": "エッジ描画"
+    "edge": "エッジ描画",
+    "physics_shape_sphere": "球体",
+    "physics_shape_box": "箱",
+    "physics_shape_capsule": "カプセル",
+    "physics_mode_bone": "ボーン追従",
+    "physics_mode_physics": "物理演算",
+    "physics_mode_physics_bone": "物理演算 + ボーン"
   },
   "settings": {
     "general": "一般設定",
@@ -261,7 +267,9 @@
     "physics_settings": "物理設定",
     "other_settings": "その他",
     "physics_objects": "物理オブジェクト",
-    "details": "詳細"
+    "details": "詳細",
+    "rigid_body_values": "剛体の値",
+    "joint_values": "ジョイントの値"
   },
   "checkboxes": {
     "use_namespace": "ネームスペースを使用",
@@ -356,8 +364,31 @@
     "transparency_opaque_threshold": "不透明とみなすα閾値:",
     "original_texture_path": "元テクスチャパス:",
     "name": "名前:",
+    "name_english": "英語名:",
     "shape": "形状:",
-    "bodies": "ボディ:"
+    "bodies": "ボディ:",
+    "physics_mode": "物理モード:",
+    "related_bone": "関連ボーン:",
+    "collision_group": "衝突グループ:",
+    "collision_mask": "衝突マスク:",
+    "mass": "質量:",
+    "linear_damping": "移動減衰:",
+    "angular_damping": "回転減衰:",
+    "restitution": "反発力:",
+    "friction": "摩擦力:",
+    "joint_type": "ジョイント種別:",
+    "rigid_body_a": "剛体 A:",
+    "rigid_body_b": "剛体 B:",
+    "linear_constraint_states": "移動状態 (X, Y, Z):",
+    "angular_constraint_states": "回転状態 (X, Y, Z):",
+    "translation_limit_min": "移動下限 (X, Y, Z):",
+    "translation_limit_max": "移動上限 (X, Y, Z):",
+    "rotation_limit_min_degrees": "回転下限・度 (X, Y, Z):",
+    "rotation_limit_max_degrees": "回転上限・度 (X, Y, Z):",
+    "spring_translation": "移動ばね (X, Y, Z):",
+    "spring_rotation": "回転ばね (X, Y, Z):",
+    "spring_translation_enabled": "移動ばね有効:",
+    "spring_rotation_enabled": "回転ばね有効:"
   },
   "actions": {
     "import_model": "モデルをインポート",

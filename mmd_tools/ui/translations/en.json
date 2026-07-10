@@ -206,7 +206,13 @@
     "both_sides": "Both Sides",
     "ground_shadow": "Ground Shadow",
     "self_shadow": "Self Shadow",
-    "edge": "Edge Drawing"
+    "edge": "Edge Drawing",
+    "physics_shape_sphere": "Sphere",
+    "physics_shape_box": "Box",
+    "physics_shape_capsule": "Capsule",
+    "physics_mode_bone": "Bone",
+    "physics_mode_physics": "Physics",
+    "physics_mode_physics_bone": "Physics + Bone"
   },
   "settings": {
     "general": "General Settings",
@@ -261,7 +267,9 @@
     "physics_settings": "Physics Settings",
     "other_settings": "Other",
     "physics_objects": "Physics Objects",
-    "details": "Details"
+    "details": "Details",
+    "rigid_body_values": "Rigid Body Values",
+    "joint_values": "Joint Values"
   },
   "checkboxes": {
     "use_namespace": "Use Namespace",
@@ -356,8 +364,31 @@
     "transparency_opaque_threshold": "Opaque alpha threshold:",
     "original_texture_path": "Original Texture Path:",
     "name": "Name:",
+    "name_english": "English Name:",
     "shape": "Shape:",
-    "bodies": "Bodies:"
+    "bodies": "Bodies:",
+    "physics_mode": "Physics Mode:",
+    "related_bone": "Related Bone:",
+    "collision_group": "Collision Group:",
+    "collision_mask": "Collision Mask:",
+    "mass": "Mass:",
+    "linear_damping": "Linear Damping:",
+    "angular_damping": "Angular Damping:",
+    "restitution": "Restitution:",
+    "friction": "Friction:",
+    "joint_type": "Joint Type:",
+    "rigid_body_a": "Rigid Body A:",
+    "rigid_body_b": "Rigid Body B:",
+    "linear_constraint_states": "Linear States (X, Y, Z):",
+    "angular_constraint_states": "Angular States (X, Y, Z):",
+    "translation_limit_min": "Translation Min (X, Y, Z):",
+    "translation_limit_max": "Translation Max (X, Y, Z):",
+    "rotation_limit_min_degrees": "Rotation Min Degrees (X, Y, Z):",
+    "rotation_limit_max_degrees": "Rotation Max Degrees (X, Y, Z):",
+    "spring_translation": "Translation Spring (X, Y, Z):",
+    "spring_rotation": "Rotation Spring (X, Y, Z):",
+    "spring_translation_enabled": "Translation Spring Enabled:",
+    "spring_rotation_enabled": "Rotation Spring Enabled:"
   },
   "actions": {
     "import_model": "Import Model",

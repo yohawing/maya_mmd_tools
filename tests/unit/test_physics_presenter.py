@@ -87,6 +87,13 @@ class _FakeList:
 class _FakeButton:
     def __init__(self):
         self.clicked = _FakeSignal()
+        self.enabled = False
+
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
+
+    def isEnabled(self):
+        return self.enabled
 
 
 class _FakeCheck:
@@ -143,6 +150,8 @@ class _FakeView:
         self.rigid_body_list = _FakeList()
         self.joint_list = _FakeList()
         self.refresh_btn = _FakeButton()
+        self.apply_btn = _FakeButton()
+        self.reset_btn = _FakeButton()
         self.collider_visible_check = _FakeCheck()
         self.detail_name_value = _FakeLabel()
         self.detail_type_value = _FakeLabel()
@@ -152,12 +161,29 @@ class _FakeView:
         self.rigid_body_search_edit = _FakeLineEdit()
         self.joint_search_edit = _FakeLineEdit()
         self.list_tabs = _FakeTabWidget()
+        self.physics_form_changed = _FakeSignal()
+        self.form_kind = None
+        self.form_values = {}
+        self.form_dirty = False
         self.details_enabled = None
         self.details_enabled_calls = []
 
     def set_physics_details_enabled(self, enabled):
         self.details_enabled = bool(enabled)
         self.details_enabled_calls.append(bool(enabled))
+        if not enabled:
+            self.set_physics_dirty(False)
+
+    def set_physics_form(self, kind, values):
+        self.form_kind = kind
+        self.form_values = dict(values)
+        self.set_physics_dirty(False)
+
+    def set_physics_dirty(self, dirty):
+        self.form_dirty = bool(dirty)
+        enabled = self.form_dirty and bool(self.details_enabled)
+        self.apply_btn.setEnabled(False)
+        self.reset_btn.setEnabled(enabled)
 
 
 class _FakeAppState:
@@ -245,7 +271,17 @@ class _FakePhysicsReader:
         return self.refs
 
 
-def _rigid(transform, index, name, shape_type=0, physics_mode=0, bone=-1, locator_shape=None, name_english=None):
+def _rigid(
+    transform,
+    index,
+    name,
+    shape_type=0,
+    physics_mode=0,
+    bone=-1,
+    locator_shape=None,
+    name_english=None,
+    **fields,
+):
     return RigidBodySceneRef(
         transform=transform,
         bullet_shape=f"{transform}|bulletRigidBodyShape",
@@ -256,10 +292,11 @@ def _rigid(transform, index, name, shape_type=0, physics_mode=0, bone=-1, locato
         physics_mode=physics_mode,
         related_bone_index=bone,
         locator_shape=locator_shape,
+        **fields,
     )
 
 
-def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1, name_english=None):
+def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1, name_english=None, **fields):
     return JointSceneRef(
         transform=transform,
         constraint_shape=f"{transform}|bulletRigidBodyConstraintShape",
@@ -268,6 +305,7 @@ def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1, name_english=Non
         joint_type=joint_type,
         rigid_body_a_index=body_a,
         rigid_body_b_index=body_b,
+        **fields,
     )
 
 
@@ -354,6 +392,109 @@ class TestPhysicsPresenter(unittest.TestCase):
         view.rigid_body_list.select_items(view.rigid_body_list.items[0])
         self.assertTrue(view.details_enabled)
         self.assertEqual(view.detail_name_value.text, "skirt")
+        self.assertEqual(view.form_kind, "rigid")
+        self.assertFalse(view.form_dirty)
+
+    def test_rigid_form_populates_dirty_and_resets_without_scene_write(self):
+        rigid = _rigid(
+            "|root|rb2",
+            2,
+            "skirt",
+            shape_type=1,
+            physics_mode=2,
+            bone=9,
+            name_english="Skirt",
+            collision_group=7,
+            collision_mask=0xFF7F,
+            mass=2.5,
+            linear_damping=0.15,
+            angular_damping=0.25,
+            restitution=0.35,
+            friction=0.45,
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2"})
+        presenter, view, _, adapter, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(PhysicsSceneRefs((rigid,), ())),
+        )
+        presenter.load_physics()
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+
+        self.assertEqual(view.form_kind, "rigid")
+        self.assertEqual(
+            view.form_values,
+            {
+                "name": "skirt",
+                "name_english": "Skirt",
+                "shape": 1,
+                "physics_mode": 2,
+                "related_bone": 9,
+                "collision_group": 7,
+                "collision_mask": 0xFF7F,
+                "mass": 2.5,
+                "linear_damping": 0.15,
+                "angular_damping": 0.25,
+                "restitution": 0.35,
+                "friction": 0.45,
+            },
+        )
+        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertFalse(view.reset_btn.isEnabled())
+        writes_before = sum(1 for call in adapter.calls if call[0] == "set_attr")
+
+        view.form_values["mass"] = 9.0
+        view.physics_form_changed.emit()
+        self.assertTrue(view.form_dirty)
+        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertTrue(view.reset_btn.isEnabled())
+
+        view.reset_btn.clicked.emit()
+        self.assertEqual(view.form_values["mass"], 2.5)
+        self.assertFalse(view.form_dirty)
+        self.assertFalse(view.apply_btn.isEnabled())
+        writes_after = sum(1 for call in adapter.calls if call[0] == "set_attr")
+        self.assertEqual(writes_after, writes_before)
+
+    def test_joint_form_populates_all_cached_constraint_values(self):
+        joint = _joint(
+            "|root|jointB",
+            "jointB",
+            joint_type=4,
+            body_a=2,
+            body_b=5,
+            name_english="Joint B",
+            is_pmx=True,
+            linear_constraint_states=(0, 1, 2),
+            angular_constraint_states=(2, 1, 0),
+            translation_limit_min=(-1.0, -2.0, -3.0),
+            translation_limit_max=(1.0, 2.0, 3.0),
+            rotation_limit_min_degrees=(-10.0, -20.0, -30.0),
+            rotation_limit_max_degrees=(10.0, 20.0, 30.0),
+            spring_translation=(0.12345678901234567, 0.2, 0.3),
+            spring_rotation=(0.4, 0.5, 0.6),
+            spring_translation_enabled=(True, False, True),
+            spring_rotation_enabled=(False, True, False),
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|jointB"})
+        presenter, view, _, _, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(PhysicsSceneRefs((), (joint,))),
+        )
+        presenter.load_physics()
+        view.joint_list.select_items(view.joint_list.items[0])
+
+        self.assertEqual(view.form_kind, "joint")
+        self.assertEqual(view.form_values["name_english"], "Joint B")
+        self.assertEqual(view.form_values["joint_type"], 4)
+        self.assertEqual(view.form_values["rigid_body_a"], 2)
+        self.assertEqual(view.form_values["rigid_body_b"], 5)
+        self.assertEqual(view.form_values["linear_constraint_states"], "0, 1, 2")
+        self.assertEqual(view.form_values["angular_constraint_states"], "2, 1, 0")
+        self.assertEqual(view.form_values["translation_limit_min"], "-1.0, -2.0, -3.0")
+        self.assertEqual(view.form_values["rotation_limit_max_degrees"], "10.0, 20.0, 30.0")
+        self.assertEqual(view.form_values["spring_translation"], "0.12345678901234566, 0.2, 0.3")
+        self.assertEqual(view.form_values["spring_rotation_enabled"], "0, 1, 0")
+        self.assertFalse(view.form_dirty)
 
     def test_rigid_body_selection_selects_user_role_transform(self):
         refs = PhysicsSceneRefs(rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),), joints=())

@@ -147,7 +147,13 @@
     "both_sides": "双面显示",
     "ground_shadow": "地面阴影",
     "self_shadow": "自身阴影",
-    "edge": "边缘描绘"
+    "edge": "边缘描绘",
+    "physics_shape_sphere": "球体",
+    "physics_shape_box": "盒体",
+    "physics_shape_capsule": "胶囊体",
+    "physics_mode_bone": "骨骼跟随",
+    "physics_mode_physics": "物理",
+    "physics_mode_physics_bone": "物理 + 骨骼"
   },
   "settings": {
     "general": "常规设置",
@@ -202,7 +208,9 @@
     "physics_settings": "物理设置",
     "other_settings": "其他设置",
     "physics_objects": "物理对象",
-    "details": "详细信息"
+    "details": "详细信息",
+    "rigid_body_values": "刚体数值",
+    "joint_values": "关节数值"
   },
   "checkboxes": {
     "use_namespace": "使用命名空间",
@@ -294,8 +302,31 @@
     "transparency_opaque_threshold": "不透明α阈值:",
     "original_texture_path": "原始纹理路径:",
     "name": "名称:",
+    "name_english": "英文名称:",
     "shape": "形状:",
-    "bodies": "刚体:"
+    "bodies": "刚体:",
+    "physics_mode": "物理模式:",
+    "related_bone": "关联骨骼:",
+    "collision_group": "碰撞组:",
+    "collision_mask": "碰撞遮罩:",
+    "mass": "质量:",
+    "linear_damping": "线性阻尼:",
+    "angular_damping": "角阻尼:",
+    "restitution": "弹性:",
+    "friction": "摩擦力:",
+    "joint_type": "关节类型:",
+    "rigid_body_a": "刚体 A:",
+    "rigid_body_b": "刚体 B:",
+    "linear_constraint_states": "线性状态 (X, Y, Z):",
+    "angular_constraint_states": "角状态 (X, Y, Z):",
+    "translation_limit_min": "平移下限 (X, Y, Z):",
+    "translation_limit_max": "平移上限 (X, Y, Z):",
+    "rotation_limit_min_degrees": "旋转下限度数 (X, Y, Z):",
+    "rotation_limit_max_degrees": "旋转上限度数 (X, Y, Z):",
+    "spring_translation": "平移弹簧 (X, Y, Z):",
+    "spring_rotation": "旋转弹簧 (X, Y, Z):",
+    "spring_translation_enabled": "启用平移弹簧:",
+    "spring_rotation_enabled": "启用旋转弹簧:"
   },
   "actions": {
     "import_model": "导入模型",

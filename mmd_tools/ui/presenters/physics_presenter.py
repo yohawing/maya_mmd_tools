@@ -34,6 +34,7 @@ class PhysicsPresenter:
         self.physics_reader = physics_reader or MayaPhysicsSceneReader(self.maya_adapter)
         self._rigid_bodies_by_transform = {}
         self._joints_by_transform = {}
+        self._current_physics_ref = None
         self.connect_signals()
 
     def connect_signals(self):
@@ -59,6 +60,13 @@ class PhysicsPresenter:
         list_tabs = getattr(self.view, "list_tabs", None)
         if list_tabs is not None and hasattr(list_tabs, "currentChanged"):
             list_tabs.currentChanged.connect(self.on_list_tab_changed)
+
+        form_changed = getattr(self.view, "physics_form_changed", None)
+        if form_changed is not None and hasattr(form_changed, "connect"):
+            form_changed.connect(self.on_physics_form_changed)
+        reset_btn = getattr(self.view, "reset_btn", None)
+        if reset_btn is not None and hasattr(reset_btn, "clicked"):
+            reset_btn.clicked.connect(self.reset_physics_form)
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
@@ -132,6 +140,7 @@ class PhysicsPresenter:
             rigid_body.transform in selected_nodes or self.maya_adapter.object_exists(rigid_body.transform)
         )
         if has_valid_selection:
+            self._current_physics_ref = rigid_body
             self._set_physics_details_enabled(True)
             self._set_details(
                 rigid_body.name,
@@ -140,6 +149,7 @@ class PhysicsPresenter:
                 f"bone={rigid_body.related_bone_index}",
                 rigid_body.transform,
             )
+            self._populate_rigid_body_form(rigid_body)
         else:
             self._reset_details()
 
@@ -159,6 +169,7 @@ class PhysicsPresenter:
             joint.transform in selected_nodes or self.maya_adapter.object_exists(joint.transform)
         )
         if has_valid_selection:
+            self._current_physics_ref = joint
             self._set_physics_details_enabled(True)
             self._set_details(
                 joint.name,
@@ -167,8 +178,25 @@ class PhysicsPresenter:
                 f"A={joint.rigid_body_a_index}, B={joint.rigid_body_b_index}",
                 joint.transform,
             )
+            self._populate_joint_form(joint)
         else:
             self._reset_details()
+
+    def on_physics_form_changed(self, *_args):
+        """Mark the cached form dirty without writing to the Maya scene."""
+        if self._current_physics_ref is None:
+            return
+        setter = getattr(self.view, "set_physics_dirty", None)
+        if callable(setter):
+            setter(True)
+
+    def reset_physics_form(self):
+        """Restore widgets from the selected cached scene reference."""
+        current = self._current_physics_ref
+        if isinstance(current, RigidBodySceneRef):
+            self._populate_rigid_body_form(current)
+        elif isinstance(current, JointSceneRef):
+            self._populate_joint_form(current)
 
     def on_collider_visibility_toggled(self, visible):
         """Toggle display-only collider locator shapes."""
@@ -372,8 +400,58 @@ class PhysicsPresenter:
 
     def _reset_details(self):
         """Clear detail labels and disable the details panel."""
+        self._current_physics_ref = None
         self._set_details("None", "", "", "")
+        set_form = getattr(self.view, "set_physics_form", None)
+        if callable(set_form):
+            set_form(None, {})
         self._set_physics_details_enabled(False)
+
+    def _populate_rigid_body_form(self, rigid_body):
+        self._set_cached_form(
+            "rigid",
+            {
+                "name": rigid_body.name,
+                "name_english": rigid_body.name_english,
+                "shape": rigid_body.shape_type,
+                "physics_mode": rigid_body.physics_mode,
+                "related_bone": rigid_body.related_bone_index,
+                "collision_group": rigid_body.collision_group,
+                "collision_mask": rigid_body.collision_mask,
+                "mass": rigid_body.mass,
+                "linear_damping": rigid_body.linear_damping,
+                "angular_damping": rigid_body.angular_damping,
+                "restitution": rigid_body.restitution,
+                "friction": rigid_body.friction,
+            },
+        )
+
+    def _populate_joint_form(self, joint):
+        self._set_cached_form(
+            "joint",
+            {
+                "name": joint.name,
+                "name_english": joint.name_english,
+                "joint_type": joint.joint_type,
+                "rigid_body_a": joint.rigid_body_a_index,
+                "rigid_body_b": joint.rigid_body_b_index,
+                "linear_constraint_states": _format_vector(joint.linear_constraint_states),
+                "angular_constraint_states": _format_vector(joint.angular_constraint_states),
+                "translation_limit_min": _format_vector(joint.translation_limit_min),
+                "translation_limit_max": _format_vector(joint.translation_limit_max),
+                "rotation_limit_min_degrees": _format_vector(joint.rotation_limit_min_degrees),
+                "rotation_limit_max_degrees": _format_vector(joint.rotation_limit_max_degrees),
+                "spring_translation": _format_vector(joint.spring_translation),
+                "spring_rotation": _format_vector(joint.spring_rotation),
+                "spring_translation_enabled": _format_vector(joint.spring_translation_enabled),
+                "spring_rotation_enabled": _format_vector(joint.spring_rotation_enabled),
+            },
+        )
+
+    def _set_cached_form(self, kind, values):
+        set_form = getattr(self.view, "set_physics_form", None)
+        if callable(set_form):
+            set_form(kind, values)
 
     def _set_details(self, name: str, kind: str, shape_or_type: str, bodies: str, node: str = ""):
         label_values = {
@@ -405,3 +483,14 @@ def _joint_item(joint: JointSceneRef):
     item = QListWidgetItem(label)
     item.setData(Qt.UserRole, joint.transform)
     return item
+
+
+def _format_vector(values):
+    def _format(value):
+        if isinstance(value, bool):
+            return "1" if value else "0"
+        if isinstance(value, int):
+            return str(value)
+        return repr(float(value))
+
+    return ", ".join(_format(value) for value in values)

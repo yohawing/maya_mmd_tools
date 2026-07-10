@@ -4,6 +4,7 @@ PhysicsTab の GUI シェルテスト (Slice A: splitter / search / scroll / i18
 """
 
 import unittest
+import sys
 
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from mmd_tools.ui.qt_compat import QApplication
@@ -48,9 +49,79 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertFalse(tab.physics_details_content.isEnabled())
 
             tab.set_physics_details_enabled(True)
-            self.assertTrue(tab.apply_btn.isEnabled())
+            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertFalse(tab.reset_btn.isEnabled())
+            tab.set_physics_dirty(True)
+            self.assertFalse(tab.apply_btn.isEnabled())
             self.assertTrue(tab.reset_btn.isEnabled())
             tab.set_physics_details_enabled(False)
+            self.assertFalse(tab.apply_btn.isEnabled())
+        finally:
+            tab.deleteLater()
+            QApplication.processEvents()
+
+    def test_editable_forms_populate_without_dirty_then_emit_on_user_edit(self):
+        """cached populate は clean、ユーザー編集だけが form changed を通知する。"""
+        tab = PhysicsTab()
+        changes = []
+        tab.physics_form_changed.connect(lambda: changes.append(True))
+        try:
+            tab.set_physics_details_enabled(True)
+            tab.set_physics_form(
+                "rigid",
+                {
+                    "name": "skirt",
+                    "name_english": "Skirt",
+                    "shape": 1,
+                    "physics_mode": 2,
+                    "related_bone": 9,
+                    "collision_group": 7,
+                    "collision_mask": 0xFF7F,
+                    "mass": sys.float_info.max,
+                    "linear_damping": 0.15,
+                    "angular_damping": 0.25,
+                    "restitution": 0.35,
+                    "friction": 0.45,
+                },
+            )
+            self.assertFalse(tab.rigid_body_form_group.isHidden())
+            self.assertTrue(tab.joint_form_group.isHidden())
+            self.assertEqual(tab.rigid_name_edit.text(), "skirt")
+            self.assertEqual(tab.rigid_shape_combo.currentIndex(), 1)
+            self.assertEqual(tab.rigid_mass_edit.text(), repr(sys.float_info.max))
+            self.assertEqual(changes, [])
+            self.assertFalse(tab.apply_btn.isEnabled())
+
+            tab.rigid_mass_edit.setText("3.0")
+            QApplication.processEvents()
+            self.assertEqual(changes, [True])
+            tab.set_physics_dirty(True)
+            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertTrue(tab.reset_btn.isEnabled())
+
+            tab.set_physics_form(
+                "joint",
+                {
+                    "name": "joint",
+                    "name_english": "Joint",
+                    "joint_type": 4,
+                    "rigid_body_a": 2,
+                    "rigid_body_b": 5,
+                    "linear_constraint_states": "0, 1, 2",
+                    "angular_constraint_states": "2, 1, 0",
+                    "translation_limit_min": "-1, -2, -3",
+                    "translation_limit_max": "1, 2, 3",
+                    "rotation_limit_min_degrees": "-10, -20, -30",
+                    "rotation_limit_max_degrees": "10, 20, 30",
+                    "spring_translation": "0.1, 0.2, 0.3",
+                    "spring_rotation": "0.4, 0.5, 0.6",
+                    "spring_translation_enabled": "1, 0, 1",
+                    "spring_rotation_enabled": "0, 1, 0",
+                },
+            )
+            self.assertTrue(tab.rigid_body_form_group.isHidden())
+            self.assertFalse(tab.joint_form_group.isHidden())
+            self.assertEqual(tab.joint_rotation_max_edit.text(), "10, 20, 30")
             self.assertFalse(tab.apply_btn.isEnabled())
         finally:
             tab.deleteLater()
@@ -68,6 +139,8 @@ class TestPhysicsTabGUI(GuiTestBase):
             en_refresh = tab.refresh_btn.text()
             en_details = tab.details_group.title()
             en_search = tab.rigid_body_search_edit.placeholderText()
+            en_mass = tab._form_labels["rigid_mass"][1].text()
+            en_shape_option = tab.rigid_shape_combo.itemText(0)
 
             translator.set_language("ja")
             tab.retranslateUi()
@@ -83,6 +156,12 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertNotEqual(tab.refresh_btn.text(), en_refresh)
             self.assertNotEqual(tab.details_group.title(), en_details)
             self.assertNotEqual(tab.rigid_body_search_edit.placeholderText(), en_search)
+            self.assertNotEqual(tab._form_labels["rigid_mass"][1].text(), en_mass)
+            self.assertNotEqual(tab.rigid_shape_combo.itemText(0), en_shape_option)
+            self.assertEqual(
+                tab.rigid_shape_combo.itemText(0),
+                translator.translate("physics_shape_sphere", "options"),
+            )
 
             translator.set_language("en")
             tab.retranslateUi()
