@@ -35,6 +35,8 @@ class _FakeList:
         self.items = []
         self.itemSelectionChanged = _FakeSignal()
         self._selected_items = []
+        self._signals_blocked = False
+        self.block_signals_calls = []
 
     def clear(self):
         self.clear_calls += 1
@@ -42,14 +44,44 @@ class _FakeList:
         self._selected_items.clear()
 
     def addItem(self, item):
+        # Ensure setHidden/isHidden track state on stub QListWidgetItem.
+        if not hasattr(item, "_filter_hidden"):
+            item._filter_hidden = False
+
+            def setHidden(hidden, _item=item):
+                _item._filter_hidden = bool(hidden)
+
+            def isHidden(_item=item):
+                return bool(_item._filter_hidden)
+
+            item.setHidden = setHidden
+            item.isHidden = isHidden
         self.items.append(item)
+
+    def count(self):
+        return len(self.items)
+
+    def item(self, index):
+        return self.items[index]
 
     def selectedItems(self):
         return list(self._selected_items)
 
+    def clearSelection(self):
+        self._selected_items.clear()
+        if not self._signals_blocked:
+            self.itemSelectionChanged.emit()
+
+    def blockSignals(self, block):
+        previous = self._signals_blocked
+        self._signals_blocked = bool(block)
+        self.block_signals_calls.append(bool(block))
+        return previous
+
     def select_items(self, *items):
         self._selected_items = list(items)
-        self.itemSelectionChanged.emit()
+        if not self._signals_blocked:
+            self.itemSelectionChanged.emit()
 
 
 class _FakeButton:
@@ -81,6 +113,31 @@ class _FakeLabel:
         self.text = text
 
 
+class _FakeLineEdit:
+    def __init__(self):
+        self.textChanged = _FakeSignal()
+        self._text = ""
+
+    def text(self):
+        return self._text
+
+    def setText(self, text):
+        self._text = text
+
+
+class _FakeTabWidget:
+    def __init__(self):
+        self.currentChanged = _FakeSignal()
+        self._index = 0
+
+    def currentIndex(self):
+        return self._index
+
+    def setCurrentIndex(self, index):
+        self._index = index
+        self.currentChanged.emit(index)
+
+
 class _FakeView:
     def __init__(self):
         self.rigid_body_list = _FakeList()
@@ -92,6 +149,15 @@ class _FakeView:
         self.detail_shape_value = _FakeLabel()
         self.detail_bodies_value = _FakeLabel()
         self.detail_node_value = _FakeLabel()
+        self.rigid_body_search_edit = _FakeLineEdit()
+        self.joint_search_edit = _FakeLineEdit()
+        self.list_tabs = _FakeTabWidget()
+        self.details_enabled = None
+        self.details_enabled_calls = []
+
+    def set_physics_details_enabled(self, enabled):
+        self.details_enabled = bool(enabled)
+        self.details_enabled_calls.append(bool(enabled))
 
 
 class _FakeAppState:
@@ -115,6 +181,8 @@ class _FakeMayaAdapter:
 
     def select(self, nodes, replace=True):
         self.calls.append(("select", tuple(nodes), replace))
+        if getattr(self, "select_error", None) is not None:
+            raise self.select_error
 
     def set_attr(self, *args, **kwargs):
         self.calls.append(("set_attr", args, kwargs))
@@ -177,13 +245,13 @@ class _FakePhysicsReader:
         return self.refs
 
 
-def _rigid(transform, index, name, shape_type=0, physics_mode=0, bone=-1, locator_shape=None):
+def _rigid(transform, index, name, shape_type=0, physics_mode=0, bone=-1, locator_shape=None, name_english=None):
     return RigidBodySceneRef(
         transform=transform,
         bullet_shape=f"{transform}|bulletRigidBodyShape",
         index=index,
         name=name,
-        name_english=name,
+        name_english=name_english if name_english is not None else name,
         shape_type=shape_type,
         physics_mode=physics_mode,
         related_bone_index=bone,
@@ -191,12 +259,12 @@ def _rigid(transform, index, name, shape_type=0, physics_mode=0, bone=-1, locato
     )
 
 
-def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1):
+def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1, name_english=None):
     return JointSceneRef(
         transform=transform,
         constraint_shape=f"{transform}|bulletRigidBodyConstraintShape",
         name=name,
-        name_english=name,
+        name_english=name_english if name_english is not None else name,
         joint_type=joint_type,
         rigid_body_a_index=body_a,
         rigid_body_b_index=body_b,
@@ -212,6 +280,10 @@ def _make_presenter(model=TEST_MODEL, adapter=None, reader=None):
     return presenter, view, app_state, adapter, reader
 
 
+def _hidden_flags(list_widget):
+    return [item.isHidden() for item in list_widget.items]
+
+
 class TestPhysicsPresenter(unittest.TestCase):
     def test_load_physics_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter, reader = _make_presenter(model=None)
@@ -224,6 +296,8 @@ class TestPhysicsPresenter(unittest.TestCase):
         self.assertEqual(reader.calls, [])
         self.assertEqual(view.rigid_body_list.items, [])
         self.assertEqual(view.joint_list.items, [])
+        self.assertEqual(view.detail_name_value.text, "None")
+        self.assertFalse(view.details_enabled)
 
     def test_load_physics_returns_when_model_does_not_exist(self):
         adapter = _FakeMayaAdapter(exists=False)
@@ -235,6 +309,7 @@ class TestPhysicsPresenter(unittest.TestCase):
         self.assertEqual(reader.calls, [])
         self.assertEqual(view.rigid_body_list.items, [])
         self.assertEqual(view.joint_list.items, [])
+        self.assertFalse(view.details_enabled)
 
     def test_load_physics_adds_root_scoped_bullet_metadata_items(self):
         refs = PhysicsSceneRefs(
@@ -262,6 +337,23 @@ class TestPhysicsPresenter(unittest.TestCase):
             "jointB (type=4, A=2, B=5)",
         ])
         self.assertEqual(view.joint_list.items[0].data(Qt.UserRole), "|root|jointB")
+        self.assertFalse(view.details_enabled)
+
+    def test_valid_load_keeps_details_disabled_until_selection(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),),
+            joints=(),
+        )
+        presenter, view, _, _, _ = _make_presenter(reader=_FakePhysicsReader(refs))
+        presenter.load_physics()
+
+        self.assertEqual(len(view.rigid_body_list.items), 1)
+        self.assertFalse(view.details_enabled)
+        self.assertEqual(view.detail_name_value.text, "None")
+
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+        self.assertTrue(view.details_enabled)
+        self.assertEqual(view.detail_name_value.text, "skirt")
 
     def test_rigid_body_selection_selects_user_role_transform(self):
         refs = PhysicsSceneRefs(rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),), joints=())
@@ -275,11 +367,32 @@ class TestPhysicsPresenter(unittest.TestCase):
             ("object_exists", "|root|rb2"),
             ("select", ("|root|rb2",), True),
         ])
+        self.assertTrue(view.details_enabled)
         self.assertEqual(view.detail_name_value.text, "skirt")
         self.assertEqual(view.detail_type_value.text, "Rigid body")
         self.assertEqual(view.detail_shape_value.text, "sphere, mode=0")
         self.assertEqual(view.detail_bodies_value.text, "bone=-1")
         self.assertEqual(view.detail_node_value.text, "|root|rb2")
+
+    def test_selection_sync_failure_keeps_valid_cached_details(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),),
+            joints=(_joint("|root|jointB", "jointB"),),
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2", "|root|jointB"})
+        adapter.select_error = RuntimeError("selection temporarily unavailable")
+        presenter, view, _, _, _ = _make_presenter(adapter=adapter, reader=_FakePhysicsReader(refs))
+        presenter.load_physics()
+
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+        self.assertTrue(view.details_enabled)
+        self.assertEqual(view.detail_name_value.text, "skirt")
+        self.assertEqual(view.detail_type_value.text, "Rigid body")
+
+        view.joint_list.select_items(view.joint_list.items[0])
+        self.assertTrue(view.details_enabled)
+        self.assertEqual(view.detail_name_value.text, "jointB")
+        self.assertEqual(view.detail_type_value.text, "Joint")
 
     def test_joint_selection_ignores_missing_transform(self):
         refs = PhysicsSceneRefs(rigid_bodies=(), joints=(_joint("|root|jointB", "jointB"),))
@@ -290,10 +403,142 @@ class TestPhysicsPresenter(unittest.TestCase):
         view.joint_list.select_items(view.joint_list.items[0])
 
         self.assertNotIn(("select", ("|root|jointB",), True), adapter.calls)
-        self.assertEqual(view.detail_name_value.text, "jointB")
+        self.assertFalse(view.details_enabled)
+        self.assertEqual(view.detail_name_value.text, "None")
+        self.assertEqual(view.detail_type_value.text, "")
+
+    def test_selection_clears_opposite_list_and_missing_selection_disables(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),),
+            joints=(_joint("|root|jointB", "jointB"),),
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2", "|root|jointB"})
+        presenter, view, _, adapter, _ = _make_presenter(adapter=adapter, reader=_FakePhysicsReader(refs))
+        presenter.load_physics()
+
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+        self.assertTrue(view.details_enabled)
+        self.assertEqual(view.detail_type_value.text, "Rigid body")
+
+        view.joint_list.select_items(view.joint_list.items[0])
+        self.assertEqual(view.rigid_body_list.selectedItems(), [])
+        self.assertTrue(True in view.rigid_body_list.block_signals_calls)
         self.assertEqual(view.detail_type_value.text, "Joint")
-        self.assertEqual(view.detail_shape_value.text, "type=0")
-        self.assertEqual(view.detail_bodies_value.text, "A=-1, B=-1")
+        self.assertTrue(view.details_enabled)
+
+        view.joint_list.select_items()  # clear selection
+        self.assertFalse(view.details_enabled)
+        self.assertEqual(view.detail_name_value.text, "None")
+
+    def test_filter_rigid_bodies_matches_text_transform_and_names(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(
+                _rigid("|root|rb_skirt", 2, "スカート", name_english="Skirt"),
+                _rigid("|root|rb_hair", 5, "髪", name_english="Hair"),
+            ),
+            joints=(),
+        )
+        presenter, view, _, adapter, _ = _make_presenter(reader=_FakePhysicsReader(refs))
+        presenter.load_physics()
+        object_exists_calls_before = sum(1 for c in adapter.calls if c[0] == "object_exists")
+
+        presenter.filter_rigid_bodies("hair")
+        self.assertEqual(_hidden_flags(view.rigid_body_list), [True, False])
+
+        presenter.filter_rigid_bodies("|root|rb_skirt")
+        self.assertEqual(_hidden_flags(view.rigid_body_list), [False, True])
+
+        presenter.filter_rigid_bodies("スカート")
+        self.assertEqual(_hidden_flags(view.rigid_body_list), [False, True])
+
+        presenter.filter_rigid_bodies("Skirt")
+        self.assertEqual(_hidden_flags(view.rigid_body_list), [False, True])
+
+        presenter.filter_rigid_bodies("")
+        self.assertEqual(_hidden_flags(view.rigid_body_list), [False, False])
+
+        # Filtering must not query Maya per keystroke.
+        object_exists_calls_after = sum(1 for c in adapter.calls if c[0] == "object_exists")
+        self.assertEqual(object_exists_calls_after, object_exists_calls_before)
+
+    def test_filter_joints_matches_text_transform_and_names(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(),
+            joints=(
+                _joint("|root|j_a", "ジョイントA", name_english="JointA"),
+                _joint("|root|j_b", "ジョイントB", name_english="JointB"),
+            ),
+        )
+        presenter, view, _, adapter, _ = _make_presenter(reader=_FakePhysicsReader(refs))
+        presenter.load_physics()
+        object_exists_calls_before = sum(1 for c in adapter.calls if c[0] == "object_exists")
+
+        presenter.filter_joints("jointb")
+        self.assertEqual(_hidden_flags(view.joint_list), [True, False])
+
+        presenter.filter_joints("|root|j_a")
+        self.assertEqual(_hidden_flags(view.joint_list), [False, True])
+
+        presenter.filter_joints("ジョイントA")
+        self.assertEqual(_hidden_flags(view.joint_list), [False, True])
+
+        presenter.filter_joints("")
+        self.assertEqual(_hidden_flags(view.joint_list), [False, False])
+
+        object_exists_calls_after = sum(1 for c in adapter.calls if c[0] == "object_exists")
+        self.assertEqual(object_exists_calls_after, object_exists_calls_before)
+
+    def test_load_reapplies_existing_search_queries(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(
+                _rigid("|root|rb_skirt", 2, "Skirt"),
+                _rigid("|root|rb_hair", 5, "Hair"),
+            ),
+            joints=(
+                _joint("|root|j_a", "JointA"),
+                _joint("|root|j_b", "JointB"),
+            ),
+        )
+        presenter, view, _, _, _ = _make_presenter(reader=_FakePhysicsReader(refs))
+        view.rigid_body_search_edit.setText("hair")
+        view.joint_search_edit.setText("jointb")
+
+        presenter.load_physics()
+
+        self.assertEqual(_hidden_flags(view.rigid_body_list), [True, False])
+        self.assertEqual(_hidden_flags(view.joint_list), [True, False])
+
+    def test_list_tab_change_clears_inactive_selection_and_resets_details(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),),
+            joints=(_joint("|root|jointB", "jointB"),),
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2", "|root|jointB"})
+        presenter, view, _, _, _ = _make_presenter(adapter=adapter, reader=_FakePhysicsReader(refs))
+        presenter.load_physics()
+
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+        self.assertTrue(view.details_enabled)
+
+        # Switch to Joints tab (index 1): clear rigid selection, reset details.
+        view.list_tabs.setCurrentIndex(1)
+        self.assertEqual(view.rigid_body_list.selectedItems(), [])
+        self.assertFalse(view.details_enabled)
+        self.assertEqual(view.detail_name_value.text, "None")
+
+        view.joint_list.select_items(view.joint_list.items[0])
+        self.assertTrue(view.details_enabled)
+
+        # Switch back to Rigid Bodies (index 0): clear joint selection, reset details.
+        view.list_tabs.setCurrentIndex(0)
+        self.assertEqual(view.joint_list.selectedItems(), [])
+        self.assertFalse(view.details_enabled)
+
+    def test_search_and_tab_signals_are_wired(self):
+        presenter, view, _, _, _ = _make_presenter()
+        self.assertIn(presenter.filter_rigid_bodies, view.rigid_body_search_edit.textChanged._callbacks)
+        self.assertIn(presenter.filter_joints, view.joint_search_edit.textChanged._callbacks)
+        self.assertIn(presenter.on_list_tab_changed, view.list_tabs.currentChanged._callbacks)
 
     def test_refresh_button_and_model_change_reload_physics(self):
         presenter, _, app_state, _, reader = _make_presenter()
