@@ -1,5 +1,5 @@
-from dataclasses import replace
-from typing import Optional
+from dataclasses import dataclass, replace
+from typing import Optional, Tuple
 
 from ...core.physics_scene_query import MayaPhysicsSceneReader, JointSceneRef, PhysicsSceneRefs, RigidBodySceneRef
 from ...core.physics_scene_writer import MayaPhysicsSceneWriter, PhysicsSceneWriteError
@@ -19,7 +19,6 @@ from ...core.visibility_state import (
 from ..qt_compat import QListWidgetItem, Qt
 from .list_presenter_helpers import (
     apply_list_filter,
-    reload_for_current_model_change,
     select_existing_user_role_nodes,
 )
 
@@ -30,6 +29,16 @@ _SHAPE_LABELS = {
     1: "box",
     2: "capsule",
 }
+
+
+@dataclass(frozen=True)
+class _PhysicsUiState:
+    list_tab_index: int = 0
+    rigid_search: str = ""
+    joint_search: str = ""
+    splitter_sizes: Tuple[int, ...] = ()
+    selected_rigid_transform: Optional[str] = None
+    selected_joint_transform: Optional[str] = None
 
 
 class PhysicsPresenter:
@@ -44,6 +53,9 @@ class PhysicsPresenter:
         self._current_physics_ref = None
         self._validated_form_values = None
         self._validated_form_ref = None
+        self._ui_state_by_root = {}
+        self._active_model_root = None
+        self._default_ui_state = self._capture_ui_state()
         self.connect_signals()
 
     @property
@@ -58,7 +70,7 @@ class PhysicsPresenter:
         self.view.joint_list.itemSelectionChanged.connect(self.on_joint_selection_changed)
         refresh_btn = getattr(self.view, "refresh_btn", None)
         if refresh_btn is not None:
-            refresh_btn.clicked.connect(self.load_physics)
+            refresh_btn.clicked.connect(self.refresh_physics)
         collider_visible_check = getattr(self.view, "collider_visible_check", None)
         if collider_visible_check is not None:
             collider_visible_check.toggled.connect(self.on_collider_visibility_toggled)
@@ -87,7 +99,20 @@ class PhysicsPresenter:
 
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
-        reload_for_current_model_change(logger, "PhysicsPresenter", model_root, self.load_physics)
+        old_root = self._active_model_root
+        if old_root:
+            self._ui_state_by_root[old_root] = self._capture_ui_state()
+        logger.debug("PhysicsPresenter: Current model changed to %s", model_root)
+        self.load_physics()
+        self._restore_ui_state(model_root or None)
+
+    def refresh_physics(self):
+        """Reload the active root while preserving its in-memory UI state."""
+        root = self.app_state.current_model_root
+        if root:
+            self._ui_state_by_root[root] = self._capture_ui_state()
+        self.load_physics()
+        self._restore_ui_state(root)
 
     def load_physics(self):
         self.view.rigid_body_list.clear()
@@ -97,6 +122,7 @@ class PhysicsPresenter:
         self._reset_details()
 
         current_model_root = self.app_state.current_model_root
+        self._active_model_root = current_model_root or None
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             return
 
@@ -259,7 +285,7 @@ class PhysicsPresenter:
         self._validated_form_values = None
         self._validated_form_ref = None
         self._clear_validation_error()
-        self.load_physics()
+        self.refresh_physics()
 
     def on_collider_visibility_toggled(self, visible):
         """Toggle display-only collider locator shapes."""
@@ -535,6 +561,78 @@ class PhysicsPresenter:
         setter = getattr(self.view, "set_physics_dirty", None)
         if callable(setter):
             setter(True, valid=False)
+
+    def _capture_ui_state(self):
+        list_tabs = getattr(self.view, "list_tabs", None)
+        current_index = getattr(list_tabs, "currentIndex", None)
+        splitter = getattr(self.view, "splitter", None)
+        sizes = getattr(splitter, "sizes", None)
+        return _PhysicsUiState(
+            list_tab_index=int(current_index()) if callable(current_index) else 0,
+            rigid_search=self._search_text("rigid_body_search_edit"),
+            joint_search=self._search_text("joint_search_edit"),
+            splitter_sizes=tuple(int(value) for value in sizes()) if callable(sizes) else (),
+            selected_rigid_transform=self._selected_transform(self.view.rigid_body_list),
+            selected_joint_transform=self._selected_transform(self.view.joint_list),
+        )
+
+    def _restore_ui_state(self, root):
+        state = self._ui_state_by_root.get(root, self._default_ui_state)
+        self._set_search_text("rigid_body_search_edit", state.rigid_search)
+        self._set_search_text("joint_search_edit", state.joint_search)
+        self.filter_rigid_bodies(state.rigid_search)
+        self.filter_joints(state.joint_search)
+
+        splitter = getattr(self.view, "splitter", None)
+        set_sizes = getattr(splitter, "setSizes", None)
+        if state.splitter_sizes and callable(set_sizes):
+            set_sizes(list(state.splitter_sizes))
+
+        list_tabs = getattr(self.view, "list_tabs", None)
+        set_current_index = getattr(list_tabs, "setCurrentIndex", None)
+        if callable(set_current_index):
+            set_current_index(state.list_tab_index)
+
+        if state.list_tab_index == 0:
+            self._restore_list_selection(
+                self.view.rigid_body_list,
+                state.selected_rigid_transform,
+            )
+        else:
+            self._restore_list_selection(
+                self.view.joint_list,
+                state.selected_joint_transform,
+            )
+
+    def _set_search_text(self, attr_name, value):
+        search_edit = getattr(self.view, attr_name, None)
+        setter = getattr(search_edit, "setText", None)
+        if callable(setter):
+            setter(value)
+
+    def _selected_transform(self, list_widget):
+        selected_items = list_widget.selectedItems() if list_widget is not None else []
+        if not selected_items:
+            return None
+        return selected_items[0].data(Qt.UserRole)
+
+    def _restore_list_selection(self, list_widget, transform):
+        if not transform or not self.maya_adapter.object_exists(transform):
+            return
+        for item in self._iter_list_items(list_widget):
+            if item.data(Qt.UserRole) != transform:
+                continue
+            is_hidden = getattr(item, "isHidden", None)
+            if callable(is_hidden) and is_hidden():
+                return
+            set_current_item = getattr(list_widget, "setCurrentItem", None)
+            if callable(set_current_item):
+                set_current_item(item)
+                return
+            select_items = getattr(list_widget, "select_items", None)
+            if callable(select_items):
+                select_items(item)
+                return
 
     def _set_details(self, name: str, kind: str, shape_or_type: str, bodies: str, node: str = ""):
         label_values = {

@@ -147,6 +147,17 @@ class _FakeTabWidget:
         self.currentChanged.emit(index)
 
 
+class _FakeSplitter:
+    def __init__(self):
+        self._sizes = [400, 600]
+
+    def sizes(self):
+        return list(self._sizes)
+
+    def setSizes(self, sizes):
+        self._sizes = list(sizes)
+
+
 class _FakeView:
     def __init__(self):
         self.rigid_body_list = _FakeList()
@@ -163,6 +174,7 @@ class _FakeView:
         self.rigid_body_search_edit = _FakeLineEdit()
         self.joint_search_edit = _FakeLineEdit()
         self.list_tabs = _FakeTabWidget()
+        self.splitter = _FakeSplitter()
         self.physics_form_changed = _FakeSignal()
         self.form_kind = None
         self.form_values = {}
@@ -282,6 +294,16 @@ class _FakePhysicsReader:
     def collect(self, root):
         self.calls.append(root)
         return self.refs
+
+
+class _RootPhysicsReader:
+    def __init__(self, refs_by_root):
+        self.refs_by_root = refs_by_root
+        self.calls = []
+
+    def collect(self, root):
+        self.calls.append(root)
+        return self.refs_by_root.get(root, PhysicsSceneRefs((), ()))
 
 
 class _FakePhysicsWriter:
@@ -582,7 +604,11 @@ class TestPhysicsPresenter(unittest.TestCase):
         self.assertIsNone(presenter.validated_form_values)
         self.assertIsNone(view.validation_error)
         self.assertFalse(view.form_dirty)
-        self.assertFalse(view.details_enabled)
+        self.assertTrue(view.details_enabled)
+        self.assertEqual(
+            view.rigid_body_list.selectedItems()[0].data(Qt.UserRole),
+            rigid.transform,
+        )
 
     def test_apply_failure_keeps_dirty_and_shows_error_without_recollect(self):
         rigid = _rigid("|root|rb2", 2, "skirt", mass=2.5)
@@ -823,6 +849,139 @@ class TestPhysicsPresenter(unittest.TestCase):
         presenter.view.refresh_btn.clicked.emit()
 
         self.assertEqual(reader.calls, [TEST_MODEL, TEST_MODEL])
+
+    def test_model_switch_restores_root_scoped_ui_state_without_leak(self):
+        root_a = "|modelA"
+        root_b = "|modelB"
+        root_c = "|modelC"
+        rigid_a = _rigid("|modelA|rb", 0, "skirt")
+        joint_b = _joint("|modelB|joint", "jointB")
+        reader = _RootPhysicsReader(
+            {
+                root_a: PhysicsSceneRefs((rigid_a,), ()),
+                root_b: PhysicsSceneRefs((), (joint_b,)),
+                root_c: PhysicsSceneRefs((), ()),
+            }
+        )
+        adapter = _FakeMayaAdapter(
+            existing_nodes={root_a, root_b, root_c, rigid_a.transform, joint_b.transform}
+        )
+        presenter, view, app_state, _, _ = _make_presenter(
+            model=root_a,
+            adapter=adapter,
+            reader=reader,
+        )
+        presenter.load_physics()
+        view.rigid_body_search_edit.setText("skirt")
+        presenter.filter_rigid_bodies("skirt")
+        view.splitter.setSizes([300, 700])
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+
+        app_state.current_model_root = root_b
+        app_state.current_model_changed.emit(root_b)
+        self.assertEqual(view.list_tabs.currentIndex(), 0)
+        self.assertEqual(view.rigid_body_search_edit.text(), "")
+        self.assertEqual(view.joint_search_edit.text(), "")
+        self.assertEqual(view.splitter.sizes(), [400, 600])
+        self.assertFalse(view.details_enabled)
+
+        view.list_tabs.setCurrentIndex(1)
+        view.joint_search_edit.setText("jointB")
+        presenter.filter_joints("jointB")
+        view.splitter.setSizes([250, 750])
+        view.joint_list.select_items(view.joint_list.items[0])
+
+        app_state.current_model_root = root_a
+        app_state.current_model_changed.emit(root_a)
+        self.assertEqual(view.list_tabs.currentIndex(), 0)
+        self.assertEqual(view.rigid_body_search_edit.text(), "skirt")
+        self.assertEqual(view.splitter.sizes(), [300, 700])
+        self.assertEqual(
+            view.rigid_body_list.selectedItems()[0].data(Qt.UserRole),
+            rigid_a.transform,
+        )
+        self.assertTrue(view.details_enabled)
+
+        app_state.current_model_root = root_b
+        app_state.current_model_changed.emit(root_b)
+        self.assertEqual(view.list_tabs.currentIndex(), 1)
+        self.assertEqual(view.joint_search_edit.text(), "jointB")
+        self.assertEqual(view.splitter.sizes(), [250, 750])
+        self.assertEqual(
+            view.joint_list.selectedItems()[0].data(Qt.UserRole),
+            joint_b.transform,
+        )
+
+        app_state.current_model_root = root_c
+        app_state.current_model_changed.emit(root_c)
+        self.assertEqual(view.list_tabs.currentIndex(), 0)
+        self.assertEqual(view.rigid_body_search_edit.text(), "")
+        self.assertEqual(view.joint_search_edit.text(), "")
+        self.assertEqual(view.splitter.sizes(), [400, 600])
+        self.assertFalse(view.details_enabled)
+
+    def test_refresh_preserves_active_root_ui_state_and_selection(self):
+        rigid = _rigid("|root|rb2", 2, "skirt")
+        reader = _FakePhysicsReader(PhysicsSceneRefs((rigid,), ()))
+        adapter = _FakeMayaAdapter(existing_nodes={TEST_MODEL, rigid.transform})
+        presenter, view, _, _, _ = _make_presenter(adapter=adapter, reader=reader)
+        presenter.load_physics()
+        view.rigid_body_search_edit.setText("skirt")
+        presenter.filter_rigid_bodies("skirt")
+        view.splitter.setSizes([320, 680])
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+
+        view.refresh_btn.clicked.emit()
+
+        self.assertEqual(reader.calls, [TEST_MODEL, TEST_MODEL])
+        self.assertEqual(view.rigid_body_search_edit.text(), "skirt")
+        self.assertEqual(view.splitter.sizes(), [320, 680])
+        self.assertEqual(
+            view.rigid_body_list.selectedItems()[0].data(Qt.UserRole),
+            rigid.transform,
+        )
+        self.assertTrue(view.details_enabled)
+
+        # Re-emitting the same root through ApplicationState preserves it too.
+        view.splitter.setSizes([330, 670])
+        app_state = presenter.app_state
+        app_state.current_model_changed.emit(TEST_MODEL)
+        self.assertEqual(view.rigid_body_search_edit.text(), "skirt")
+        self.assertEqual(view.splitter.sizes(), [330, 670])
+        self.assertEqual(
+            view.rigid_body_list.selectedItems()[0].data(Qt.UserRole),
+            rigid.transform,
+        )
+
+    def test_restore_drops_missing_or_filtered_selection(self):
+        root_a = "|modelA"
+        root_b = "|modelB"
+        rigid_a = _rigid("|modelA|rb", 0, "skirt")
+        reader = _RootPhysicsReader(
+            {
+                root_a: PhysicsSceneRefs((rigid_a,), ()),
+                root_b: PhysicsSceneRefs((), ()),
+            }
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={root_a, root_b, rigid_a.transform})
+        presenter, view, app_state, _, _ = _make_presenter(
+            model=root_a,
+            adapter=adapter,
+            reader=reader,
+        )
+        presenter.load_physics()
+        view.rigid_body_search_edit.setText("does-not-match")
+        presenter.filter_rigid_bodies("does-not-match")
+        # Store a selected transform even though the restored filter hides it.
+        view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+
+        app_state.current_model_root = root_b
+        app_state.current_model_changed.emit(root_b)
+        app_state.current_model_root = root_a
+        app_state.current_model_changed.emit(root_a)
+
+        self.assertEqual(view.rigid_body_list.selectedItems(), [])
+        self.assertFalse(view.details_enabled)
 
     def test_collider_visibility_toggle_sets_locator_shapes_only(self):
         refs = PhysicsSceneRefs(
