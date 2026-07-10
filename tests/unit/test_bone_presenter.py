@@ -304,6 +304,27 @@ class TestBonePresenter(MayaTestBase):
         )
         self.assertEqual(flags, expected_flags)
 
+    def test_on_bone_selected(self):
+        """ボーン選択時: current_bone / details / property load と DEBUG ログ境界。"""
+        mock_item = MagicMock()
+        mock_item.data = MagicMock(return_value=self.test_bone1)
+
+        with patch("mmd_tools.ui.presenters.bone_presenter.logger") as mock_logger, patch.object(
+            self.presenter, "load_bone_properties"
+        ) as mock_load:
+            self.presenter.on_bone_selected(mock_item, None)
+
+        self.assertEqual(self.presenter.current_bone, self.test_bone1)
+        self.mock_view.set_bone_details_enabled.assert_called_with(True)
+        mock_load.assert_called_once_with()
+
+        expected = f"Selected bone: {self.test_bone1}"
+        # Python 3.7 互換: call[0] で位置引数タプルを取る（_Call.args は使わない）
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
+
     def test_on_selection_changed_maya(self):
         """リスト選択時のMaya選択テスト"""
         # モックアイテムを作成

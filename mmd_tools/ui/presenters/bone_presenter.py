@@ -231,7 +231,7 @@ class BonePresenter:
             self.view.set_bone_details_enabled(False)
             return
 
-        logger.info(f"Selected bone: {self.current_bone}")
+        logger.debug(f"Selected bone: {self.current_bone}")
         self.view.set_bone_details_enabled(True)
         self.load_bone_properties()
 
