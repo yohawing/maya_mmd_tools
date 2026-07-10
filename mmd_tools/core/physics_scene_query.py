@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -24,6 +25,13 @@ class RigidBodySceneRef:
     physics_mode: int
     related_bone_index: int
     locator_shape: Optional[str] = None
+    collision_group: int = 0
+    collision_mask: int = 0xFFFF
+    mass: float = 0.0
+    linear_damping: float = 0.0
+    angular_damping: float = 0.0
+    restitution: float = 0.0
+    friction: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -37,6 +45,17 @@ class JointSceneRef:
     joint_type: int
     rigid_body_a_index: int
     rigid_body_b_index: int
+    is_pmx: bool = False
+    linear_constraint_states: tuple[int, int, int] = (0, 0, 0)
+    angular_constraint_states: tuple[int, int, int] = (0, 0, 0)
+    translation_limit_min: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    translation_limit_max: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_limit_min_degrees: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    rotation_limit_max_degrees: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    spring_translation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    spring_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    spring_translation_enabled: tuple[bool, bool, bool] = (False, False, False)
+    spring_rotation_enabled: tuple[bool, bool, bool] = (False, False, False)
 
 
 @dataclass(frozen=True)
@@ -92,6 +111,13 @@ class MayaPhysicsSceneReader:
                 physics_mode=physics_mode,
                 related_bone_index=_safe_int(self._get_attr(f"{node}.mmd_related_bone_index"), -1),
                 locator_shape=self._first_child_shape(node, "mmdRigidBodyLocator"),
+                collision_group=_safe_int(self._get_attr(f"{node}.mmd_collision_group"), 0),
+                collision_mask=_safe_int(self._get_attr(f"{node}.mmd_collision_mask"), 0xFFFF),
+                mass=_safe_float(self._get_attr(f"{bullet_shape}.mass")),
+                linear_damping=_safe_float(self._get_attr(f"{bullet_shape}.linearDamping")),
+                angular_damping=_safe_float(self._get_attr(f"{bullet_shape}.angularDamping")),
+                restitution=_safe_float(self._get_attr(f"{bullet_shape}.restitution")),
+                friction=_safe_float(self._get_attr(f"{bullet_shape}.friction")),
             )
             rigid_bodies.append(rigid_body)
             shape_to_original_index[bullet_shape] = index
@@ -124,6 +150,47 @@ class MayaPhysicsSceneReader:
                         constraint_shape,
                         "rigidBodyB",
                         shape_to_original_index,
+                    ),
+                    is_pmx=_safe_bool(self._get_attr(f"{node}.mmd_joint_is_pmx")),
+                    linear_constraint_states=tuple(
+                        _safe_int(self._get_attr(f"{constraint_shape}.linearConstraint{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    angular_constraint_states=tuple(
+                        _safe_int(self._get_attr(f"{constraint_shape}.angularConstraint{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    translation_limit_min=tuple(
+                        _safe_float(self._get_attr(f"{constraint_shape}.linearConstraintMin{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    translation_limit_max=tuple(
+                        _safe_float(self._get_attr(f"{constraint_shape}.linearConstraintMax{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    rotation_limit_min_degrees=tuple(
+                        _safe_float(self._get_attr(f"{constraint_shape}.angularConstraintMin{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    rotation_limit_max_degrees=tuple(
+                        _safe_float(self._get_attr(f"{constraint_shape}.angularConstraintMax{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    spring_translation=tuple(
+                        _safe_float(self._get_attr(f"{constraint_shape}.linearSpringStiffness{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    spring_rotation=tuple(
+                        _safe_float(self._get_attr(f"{constraint_shape}.angularSpringStiffness{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    spring_translation_enabled=tuple(
+                        _safe_bool(self._get_attr(f"{constraint_shape}.linearSpringEnabled{axis}"))
+                        for axis in "XYZ"
+                    ),
+                    spring_rotation_enabled=tuple(
+                        _safe_bool(self._get_attr(f"{constraint_shape}.angularSpringEnabled{axis}"))
+                        for axis in "XYZ"
                     ),
                 )
             )
@@ -204,6 +271,28 @@ def _safe_int(value, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    return result if math.isfinite(result) else default
+
+
+def _safe_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true"}:
+            return True
+        if normalized in {"0", "false"}:
+            return False
+    return default
 
 
 def _safe_str(value, default: str) -> str:
