@@ -1,9 +1,11 @@
+import json
 import math
 import unittest
 from unittest.mock import Mock
 import maya.cmds as cmds
 
 from mmd_tools.converters.rig_converter import RigConverter
+from mmd_tools.converters.native_rig_builder import RigManifest
 from mmd_tools.core.constants import (
     ATTR_MMD_GRANT_PARENT_INDEX,
     ATTR_MMD_GRANT_RATE,
@@ -80,6 +82,55 @@ class TestRigConverterMaya(unittest.TestCase):
         joints.append(cmds.joint(name="joint3", position=[0, 15, 0]))
 
         return joints
+
+    def test_native_ik_node_uses_parent_first_slots_for_out_of_order_manifest(self):
+        """out-of-order PMX index でも mmdCcdIk node が cycle なしで評価できる。"""
+        cmds.select(clear=True)
+        root = cmds.joint(name="out_of_order_root", position=[0.0, 0.0, 0.0])
+        cmds.select(root)
+        parent = cmds.joint(name="out_of_order_parent", position=[1.0, 0.0, 0.0])
+        cmds.select(parent)
+        link = cmds.joint(name="out_of_order_link", position=[2.0, 0.0, 0.0])
+        cmds.select(parent)
+        controller = cmds.joint(name="out_of_order_controller", position=[1.0, 1.0, 0.0])
+        maya_joints = [root, link, controller, parent]
+        manifest = RigManifest({
+            "boneCount": 4,
+            "bones": [
+                {"parentIndex": -1, "restPosition": [0.0, 0.0, 0.0]},
+                {"parentIndex": 3, "restPosition": [2.0, 0.0, 0.0]},
+                {"parentIndex": 3, "restPosition": [1.0, 1.0, 0.0]},
+                {"parentIndex": 0, "restPosition": [1.0, 0.0, 0.0]},
+            ],
+            "ikChains": [{
+                "controllerBoneIndex": 2,
+                "targetBoneIndex": 1,
+                "links": [{"boneIndex": 1}],
+                "iterationCount": 4,
+                "limitAngle": 1.0,
+            }],
+        })
+
+        nodes = self.converter._create_ik_nodes_from_manifest(manifest, maya_joints)
+
+        self.assertEqual(len(nodes), 1)
+        node = nodes[0]
+        chain = json.loads(cmds.getAttr(f"{node}.chainJson"))
+        self.assertEqual(
+            [bone["parent_slot"] for bone in chain["bones"]], [-1, 0, 1, 1]
+        )
+        self.assertEqual(chain["targetBoneSlot"], 2)
+        self.assertEqual(chain["links"][0]["bone_slot"], 2)
+        self.assertEqual(
+            cmds.listConnections(f"{link}.rotate", source=True, destination=False, plugs=True),
+            [f"{node}.outputRotate[0]"],
+        )
+        self.assertEqual(
+            cmds.listConnections(f"{node}.goalWorldMatrix", source=True, destination=False),
+            [controller],
+        )
+        output_rotate = cmds.getAttr(f"{node}.outputRotate[0]")
+        self.assertEqual(len(output_rotate[0]), 3)
 
     def test_extract_ik_chains_pmx(self):
         """PMXボーンからのIKチェーン抽出テスト"""

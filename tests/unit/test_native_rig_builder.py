@@ -6,11 +6,13 @@ PMX fixture から manifest 取得、ミニチェーン構築、append solver �
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from mmd_tools.core.native import is_rig_primitive_available
 from mmd_tools.converters.native_rig_builder import (
     NativeRigPrimitives,
     RigManifest,
+    build_ik_mini_chain,
 )
 
 _TEST_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -46,6 +48,157 @@ class TestNativeRigPrimitives(unittest.TestCase):
         prims = NativeRigPrimitives.from_pmx_bytes(mmt_bytes)
         self.assertIsNotNone(prims)
         prims.free()
+
+
+class TestIkMiniChainOrdering(unittest.TestCase):
+    """DLL 非依存で mini-chain の slot 契約と拒否診断を検証する。"""
+
+    @staticmethod
+    def _manifest(bones):
+        return RigManifest({"boneCount": len(bones), "bones": bones})
+
+    @staticmethod
+    def _bone(parent, position):
+        return {"parentIndex": parent, "restPosition": position}
+
+    def test_parent_after_child_uses_parent_first_slots_and_preserves_mapping(self):
+        """親 index が後ろでも native chain には親先行 slot を渡す。"""
+        manifest = self._manifest([
+            self._bone(-1, [0.0, 0.0, 0.0]),
+            self._bone(3, [2.0, 0.0, 0.0]),
+            self._bone(3, [1.0, 1.0, 0.0]),
+            self._bone(0, [1.0, 0.0, 0.0]),
+        ])
+        ik_def = {
+            "controllerBoneIndex": 2,
+            "targetBoneIndex": 1,
+            "links": [{"boneIndex": 1}],
+        }
+        fake_chain = object()
+        with patch(
+            "mmd_tools.converters.native_rig_builder.MmdIkChain.create",
+            return_value=fake_chain,
+        ) as create:
+            result = build_ik_mini_chain(manifest, ik_def)
+
+        self.assertIsNotNone(result)
+        chain, mapping = result
+        self.assertIs(chain, fake_chain)
+        self.assertEqual(mapping["slot_to_pmx"], {0: 0, 1: 3, 2: 1, 3: 2})
+        self.assertEqual(mapping["pmx_to_slot"], {0: 0, 3: 1, 1: 2, 2: 3})
+        self.assertEqual(mapping["link_slots"], [2])
+        self.assertEqual(create.call_args.kwargs["target_bone_slot"], 2)
+        self.assertEqual(
+            [bone["parent_slot"] for bone in create.call_args.kwargs["bones"]],
+            [-1, 0, 1, 1],
+        )
+        self.assertEqual(
+            create.call_args.kwargs["bones"][2]["rest_position"], [1.0, 0.0, 0.0]
+        )
+
+    def test_multiple_roots_and_siblings_have_deterministic_parent_first_slots(self):
+        manifest = self._manifest([
+            self._bone(-1, [0.0, 0.0, 0.0]),
+            self._bone(-1, [10.0, 0.0, 0.0]),
+            self._bone(0, [1.0, 0.0, 0.0]),
+            self._bone(0, [2.0, 0.0, 0.0]),
+            self._bone(1, [11.0, 0.0, 0.0]),
+        ])
+        ik_def = {
+            "controllerBoneIndex": 4,
+            "targetBoneIndex": 2,
+            "links": [{"boneIndex": 3}],
+        }
+        with patch(
+            "mmd_tools.converters.native_rig_builder.MmdIkChain.create",
+            return_value=object(),
+        ):
+            result = build_ik_mini_chain(manifest, ik_def)
+
+        self.assertIsNotNone(result)
+        _, mapping = result
+        self.assertEqual(mapping["slot_to_pmx"], {0: 0, 1: 2, 2: 3, 3: 1, 4: 4})
+
+    def test_deep_valid_hierarchy_does_not_depend_on_python_recursion_limit(self):
+        bones = [self._bone(-1, [0.0, 0.0, 0.0])]
+        for index in range(1, 1100):
+            bones.append(self._bone(index - 1, [float(index), 0.0, 0.0]))
+        with patch(
+            "mmd_tools.converters.native_rig_builder.MmdIkChain.create",
+            return_value=object(),
+        ):
+            result = build_ik_mini_chain(
+                self._manifest(bones),
+                {
+                    "controllerBoneIndex": 1099,
+                    "targetBoneIndex": 1098,
+                    "links": [{"boneIndex": 1098}],
+                },
+            )
+
+        self.assertIsNotNone(result)
+        _, mapping = result
+        self.assertEqual(mapping["slot_to_pmx"][0], 0)
+        self.assertEqual(mapping["slot_to_pmx"][1099], 1099)
+
+    def test_invalid_controller_target_and_link_skip_before_factory(self):
+        manifest = self._manifest([self._bone(-1, [0.0, 0.0, 0.0])])
+        cases = [
+            (
+                {"controllerBoneIndex": 1, "targetBoneIndex": 0, "links": []},
+                "invalid_controller_index",
+            ),
+            (
+                {"controllerBoneIndex": 0, "targetBoneIndex": 1, "links": []},
+                "invalid_target_index",
+            ),
+            (
+                {
+                    "controllerBoneIndex": 0,
+                    "targetBoneIndex": 0,
+                    "links": [{"boneIndex": 1}],
+                },
+                "invalid_link_index",
+            ),
+        ]
+        for ik_def, expected_reason in cases:
+            with self.subTest(reason=expected_reason), patch(
+                "mmd_tools.converters.native_rig_builder.MmdIkChain.create"
+            ) as create, patch(
+                "mmd_tools.converters.native_rig_builder.logger.warning"
+            ) as warning:
+                result = build_ik_mini_chain(manifest, ik_def)
+
+            self.assertIsNone(result)
+            create.assert_not_called()
+            self.assertEqual(warning.call_args.args[1], expected_reason)
+            self.assertIn("event=ik_mini_chain_skipped", warning.call_args.args[0])
+
+    def test_invalid_ancestor_parent_and_cycle_skip_before_factory(self):
+        cases = [
+            (
+                [self._bone(5, [0.0, 0.0, 0.0])],
+                "invalid_parent_index",
+            ),
+            (
+                [self._bone(1, [0.0, 0.0, 0.0]), self._bone(0, [1.0, 0.0, 0.0])],
+                "ancestor_cycle",
+            ),
+        ]
+        for bones, expected_reason in cases:
+            with self.subTest(reason=expected_reason), patch(
+                "mmd_tools.converters.native_rig_builder.MmdIkChain.create"
+            ) as create, patch(
+                "mmd_tools.converters.native_rig_builder.logger.warning"
+            ) as warning:
+                result = build_ik_mini_chain(
+                    self._manifest(bones),
+                    {"controllerBoneIndex": 0, "targetBoneIndex": 0, "links": []},
+                )
+
+            self.assertIsNone(result)
+            create.assert_not_called()
+            self.assertEqual(warning.call_args.args[1], expected_reason)
 
 
 if __name__ == "__main__":

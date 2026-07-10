@@ -23,6 +23,86 @@ from mmd_tools.core.native.mmd_anim_runtime import (
 logger = get_logger(__name__)
 
 
+def _warn_ik_mini_chain_skipped(
+    reason: str,
+    controller_idx: Any,
+    target_idx: Any,
+    link_indices: List[Any],
+) -> None:
+    """IK mini-chain を安全に skip した理由を一貫した形式で残す。"""
+    logger.warning(
+        "event=ik_mini_chain_skipped reason=%s controller=%r target=%r links=%r",
+        reason,
+        controller_idx,
+        target_idx,
+        link_indices,
+    )
+
+
+def _is_valid_bone_index(index: Any, bone_count: int) -> bool:
+    """PMX bone index として利用できる値か判定する。"""
+    return isinstance(index, int) and not isinstance(index, bool) and 0 <= index < bone_count
+
+
+def _validated_parent_first_bone_indices(
+    all_bones: List[Dict[str, Any]],
+    controller_idx: Any,
+    target_idx: Any,
+    link_indices: List[Any],
+) -> Tuple[Optional[List[int]], Optional[str]]:
+    """IK 関与骨の祖先 closure を検証し、決定的な parent-first 順を返す。"""
+    bone_count = len(all_bones)
+    for index, reason in (
+        (controller_idx, "invalid_controller_index"),
+        (target_idx, "invalid_target_index"),
+    ):
+        if not _is_valid_bone_index(index, bone_count):
+            return None, reason
+    for index in link_indices:
+        if not _is_valid_bone_index(index, bone_count):
+            return None, "invalid_link_index"
+
+    involved = set()
+    for seed in [controller_idx, target_idx] + link_indices:
+        current = seed
+        path = set()
+        while True:
+            if current in path:
+                return None, "ancestor_cycle"
+            path.add(current)
+            involved.add(current)
+
+            bone_data = all_bones[current]
+            if not isinstance(bone_data, dict):
+                return None, "invalid_parent_index"
+            parent = bone_data.get("parentIndex", -1)
+            if parent == -1:
+                break
+            if not _is_valid_bone_index(parent, bone_count):
+                return None, "invalid_parent_index"
+            current = parent
+
+    children = {index: [] for index in involved}
+    roots = []
+    for index in involved:
+        parent = all_bones[index].get("parentIndex", -1)
+        if parent == -1:
+            roots.append(index)
+        else:
+            children[parent].append(index)
+
+    ordered_indices = []
+    stack = list(reversed(sorted(roots)))
+    while stack:
+        index = stack.pop()
+        ordered_indices.append(index)
+        stack.extend(reversed(sorted(children[index])))
+
+    if len(ordered_indices) != len(involved):
+        return None, "ancestor_cycle"
+    return ordered_indices, None
+
+
 class RigManifest:
     """
     PMX rig spec manifest のパース結果を保持する。
@@ -66,7 +146,7 @@ def build_ik_mini_chain(
 
     HANDOFF.md ミニチェーン構築ルール:
     1. controller, target, 全 links のボーン + 祖先を列挙
-    2. PMX index 昇順で slot 0, 1, 2... とする
+    2. 親が必ず子より先になる決定的な parent-first 順で slot 0, 1, 2... とする
     3. parent_slot はミニチェーン内の親 slot (-1 = chain root)
     4. target_bone_slot, links[].bone_slot をリマップ
 
@@ -76,34 +156,32 @@ def build_ik_mini_chain(
                        "link_slots": [slot_indices]}
     """
     all_bones = manifest.bones
-    controller_idx = ik_chain_def["controllerBoneIndex"]
-    target_idx = ik_chain_def["targetBoneIndex"]
+    controller_idx = ik_chain_def.get("controllerBoneIndex")
+    target_idx = ik_chain_def.get("targetBoneIndex")
     link_defs = ik_chain_def.get("links", [])
+    if not isinstance(link_defs, list):
+        _warn_ik_mini_chain_skipped(
+            "invalid_link_index", controller_idx, target_idx, []
+        )
+        return None
+    link_indices = []
+    for link_def in link_defs:
+        if not isinstance(link_def, dict):
+            _warn_ik_mini_chain_skipped(
+                "invalid_link_index", controller_idx, target_idx, link_indices
+            )
+            return None
+        link_indices.append(link_def.get("boneIndex"))
 
-    involved = set()
-    involved.add(controller_idx)
-    involved.add(target_idx)
-    for lk in link_defs:
-        involved.add(lk["boneIndex"])
+    sorted_indices, rejection_reason = _validated_parent_first_bone_indices(
+        all_bones, controller_idx, target_idx, link_indices
+    )
+    if rejection_reason is not None:
+        _warn_ik_mini_chain_skipped(
+            rejection_reason, controller_idx, target_idx, link_indices
+        )
+        return None
 
-    def _ancestors(idx: int) -> List[int]:
-        result = []
-        visited = set()
-        while True:
-            if idx < 0 or idx >= len(all_bones) or idx in visited:
-                break
-            visited.add(idx)
-            parent = all_bones[idx].get("parentIndex", -1)
-            if parent < 0 or parent >= len(all_bones):
-                break
-            result.append(parent)
-            idx = parent
-        return result
-
-    for idx in list(involved):
-        involved.update(_ancestors(idx))
-
-    sorted_indices = sorted(involved)
     pmx_to_slot = {pmx_idx: slot for slot, pmx_idx in enumerate(sorted_indices)}
     slot_to_pmx = {slot: pmx_idx for pmx_idx, slot in pmx_to_slot.items()}
 
