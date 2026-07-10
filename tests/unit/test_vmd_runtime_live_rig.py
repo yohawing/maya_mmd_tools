@@ -91,15 +91,12 @@ class TestVmdRuntimeLiveRig(MayaTestBase):
             options={"setup_rig": True, "setup_bone_orientation": True},
         )
         self.assertIsNotNone(root, "PMX import failed")
-        visual_controller_joints = [
-            joint for joint in (cmds.ls(type="joint") or [])
-            if cmds.attributeQuery("mmd_ik_controller_visual", node=joint, exists=True)
-            and cmds.getAttr(f"{joint}.mmd_ik_controller_visual")
-        ]
-        self.assertGreater(len(visual_controller_joints), 0, "IK controller visual が作成されていません")
-        self.assertTrue(
-            any(cmds.listRelatives(joint, shapes=True, type="nurbsCurve") for joint in visual_controller_joints),
-            "IK controller visual の NURBS curve shape が見つかりません",
+        self.assertFalse(
+            any(
+                cmds.attributeQuery("mmd_ik_controller_visual", node=joint, exists=True)
+                for joint in (cmds.ls(type="joint") or [])
+            ),
+            "IK controller visual 属性は生成しません",
         )
         self.assertTrue(
             import_mmd_file(vmd_path, options={"target_model": root, "pmx_path": pmx_path}),

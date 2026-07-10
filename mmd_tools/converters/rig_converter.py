@@ -1213,7 +1213,6 @@ class RigConverter:
                 node_name = f"{controller_leaf_name}_mmdCcdIk"
                 node = cmds.createNode(self._ccd_ik_node_type(), name=node_name)
                 cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
-                self._attach_ik_controller_shape(controller_joint)
                 if cmds.attributeQuery("enabled", node=node, exists=True):
                     cmds.setAttr(f"{node}.enabled", False)
                 try:
@@ -1276,71 +1275,6 @@ class RigConverter:
                 )
 
         return nodes
-
-    def _attach_ik_controller_shape(self, controller_joint: str) -> Optional[str]:
-        """Attach a lightweight NURBS control shape to the IK controller joint.
-
-        The controller joint already drives generated ``mmdCcdIk`` goals in Rig
-        mode.  To avoid adding constraints or evaluation cycles, this method only
-        parents a curve shape under that joint transform so the existing joint is
-        easier to select in the viewport.
-        """
-        if not controller_joint or not maya_scene_utils.object_exists(controller_joint):
-            return None
-        if cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
-            return None
-
-        try:
-            radius = 0.6
-            children = cmds.listRelatives(controller_joint, children=True, type="joint") or []
-            if children:
-                child_positions = [
-                    cmds.xform(child, query=True, worldSpace=True, translation=True)
-                    for child in children
-                ]
-                own_pos = cmds.xform(controller_joint, query=True, worldSpace=True, translation=True)
-                distances = [
-                    sum((child_pos[i] - own_pos[i]) ** 2 for i in range(3)) ** 0.5
-                    for child_pos in child_positions
-                ]
-                if distances:
-                    radius = max(0.2, min(2.0, min(distances) * 0.25))
-
-            controller_leaf_name = _node_leaf_name(controller_joint)
-            ctrl_name = f"{controller_leaf_name}_ctrlShape#"
-            curve_transform = cmds.circle(
-                name=f"{controller_leaf_name}_ctrl#",
-                normal=(0.0, 1.0, 0.0),
-                radius=radius,
-                constructionHistory=False,
-            )[0]
-            curve_shape = (cmds.listRelatives(curve_transform, shapes=True, fullPath=True) or [None])[0]
-            if not curve_shape:
-                cmds.delete(curve_transform)
-                return None
-            curve_shape = cmds.rename(curve_shape, ctrl_name)
-            curve_shape_short = curve_shape.rsplit("|", 1)[-1]
-            cmds.parent(curve_shape, controller_joint, shape=True, relative=True)
-            cmds.delete(curve_transform)
-            shapes = cmds.listRelatives(controller_joint, shapes=True, fullPath=True) or []
-            attached = next((shape for shape in shapes if shape.endswith(curve_shape_short)), None)
-            if attached is None and shapes:
-                attached = shapes[-1]
-
-            if attached:
-                try:
-                    cmds.setAttr(f"{attached}.overrideEnabled", True)
-                    cmds.setAttr(f"{attached}.overrideColor", 17)  # yellow
-                except Exception:
-                    pass
-
-            if not cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
-                cmds.addAttr(controller_joint, longName="mmd_ik_controller_visual", attributeType="bool")
-            cmds.setAttr(f"{controller_joint}.mmd_ik_controller_visual", True)
-            return attached
-        except Exception as exc:
-            self.logger.debug(f"failed to attach IK controller shape for {controller_joint}: {exc}")
-            return None
 
     def _can_connect_live_ik_goal_world_matrix(self, controller_joint: str, link_joints: List[str]) -> bool:
         """Return True when controller.worldMatrix will not depend on IK output links."""

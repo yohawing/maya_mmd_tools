@@ -131,6 +131,12 @@ class TestRigConverterMaya(unittest.TestCase):
         )
         output_rotate = cmds.getAttr(f"{node}.outputRotate[0]")
         self.assertEqual(len(output_rotate[0]), 3)
+        self.assertFalse(
+            cmds.attributeQuery("mmd_ik_controller_visual", node=controller, exists=True)
+        )
+        self.assertEqual(
+            cmds.listRelatives(controller, shapes=True, type="nurbsCurve") or [], []
+        )
 
     def test_extract_ik_chains_pmx(self):
         """PMXボーンからのIKチェーン抽出テスト"""
@@ -219,28 +225,6 @@ class TestRigConverterMaya(unittest.TestCase):
         # IKハンドルが非表示になっているか確認
         visibility = cmds.getAttr(f"{handle_info['ik_handle']}.visibility")
         self.assertEqual(visibility, 0)
-
-    def test_attach_ik_controller_shape_adds_nurbs_visual_to_joint(self):
-        """Rig mode 用 IK controller joint に NURBS curve visual を追加する。"""
-        cmds.select(clear=True)
-        controller = cmds.joint(name="left_leg_ik", position=[1, 0, 2])
-        cmds.select(clear=True)
-        child = cmds.joint(name="left_leg_ik_child", position=[1, 1, 2])
-        cmds.parent(child, controller)
-
-        shape = self.converter._attach_ik_controller_shape(controller)
-
-        self.assertIsNotNone(shape)
-        self.assertTrue(cmds.attributeQuery("mmd_ik_controller_visual", node=controller, exists=True))
-        self.assertTrue(cmds.getAttr(f"{controller}.mmd_ik_controller_visual"))
-        shapes = cmds.listRelatives(controller, shapes=True, type="nurbsCurve") or []
-        self.assertEqual(len(shapes), 1)
-        self.assertEqual(cmds.nodeType(shapes[0]), "nurbsCurve")
-
-        duplicate = self.converter._attach_ik_controller_shape(controller)
-        self.assertIsNone(duplicate)
-        shapes_after = cmds.listRelatives(controller, shapes=True, type="nurbsCurve") or []
-        self.assertEqual(len(shapes_after), 1)
 
     def test_import_fix_axis_bones(self):
         """fix_axis fixture のボーンをインポートできることを確認する。"""
