@@ -239,6 +239,59 @@ class TestDevelopmentModeLogLevels(unittest.TestCase):
         # _loading 中なので変更されない
         self.assertEqual(settings.get("logging.level"), "DEBUG")
 
+    def test_dev_mode_applies_level_to_already_cached_probe_logger(self):
+        """Development Mode は既にキャッシュ済みのプローブロガーにも INFO/WARNING を適用する。"""
+        import logging
+
+        from mmd_tools.core import logger as logger_mod
+        from mmd_tools.core.logger import get_logger
+
+        probe = get_logger("test_settings_presenter_dev_probe")
+        prev_levels = {
+            name: ml._logger.level for name, ml in list(logger_mod._loggers.items())
+        }
+        try:
+            probe.set_level(logging.ERROR)
+
+            self.view.development_mode_check.setChecked(True)
+            self.presenter.on_development_mode_changed()
+            self.assertEqual(probe._logger.level, logging.INFO)
+
+            self.view.development_mode_check.setChecked(False)
+            self.presenter.on_development_mode_changed()
+            self.assertEqual(probe._logger.level, logging.WARNING)
+        finally:
+            for name, level in prev_levels.items():
+                cached = logger_mod._loggers.get(name)
+                if cached is not None:
+                    cached.set_level(level)
+
+    def test_log_level_combo_debug_applies_to_already_cached_probe_logger(self):
+        """ログレベルコンボの DEBUG 選択は既にキャッシュ済みのプローブロガーにも適用する。"""
+        import logging
+
+        from mmd_tools.core import logger as logger_mod
+        from mmd_tools.core.logger import get_logger
+
+        probe = get_logger("test_settings_presenter_combo_probe")
+        prev_levels = {
+            name: ml._logger.level for name, ml in list(logger_mod._loggers.items())
+        }
+        try:
+            probe.set_level(logging.WARNING)
+            idx = self.view.log_level_combo.findText("DEBUG")
+            self.assertGreaterEqual(idx, 0)
+            self.view.log_level_combo.setCurrentIndex(idx)
+
+            self.presenter.on_log_level_changed()
+
+            self.assertEqual(probe._logger.level, logging.DEBUG)
+        finally:
+            for name, level in prev_levels.items():
+                cached = logger_mod._loggers.get(name)
+                if cached is not None:
+                    cached.set_level(level)
+
 
 class TestLoadSettings(unittest.TestCase):
     """load_settings() が development_mode を正しく読み込む。"""

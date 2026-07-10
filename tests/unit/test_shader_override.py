@@ -26,7 +26,7 @@ import os
 import sys
 import unittest
 from types import ModuleType
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 # ----------------------------------------------------------------------
@@ -221,6 +221,57 @@ class TestShaderFxPackaging(unittest.TestCase):
             f"Shader .fx file missing (packaging regression): {fx_path}",
         )
 
+
+@_skip_without_shader_override_stub()
+class TestShaderOverrideLifecycleDebugLogging(unittest.TestCase):
+    """MMDShaderOverride の冗長ライフサイクル診断が logger.debug 経由であること。
+
+    Script Editor を汚染していた displayInfo 呼び出しが、通常パスの 7 箇所で
+    logger.debug に置き換わったことをスタブ下で検証する (実 VP2 は不要)。
+    """
+
+    def test_lifecycle_diagnostics_use_logger_debug_not_display_info(self):
+        fake_shader = MagicMock(name="fake_effects_shader")
+        fake_shader_mgr = MagicMock(name="fake_shader_manager")
+        fake_shader_mgr.getEffectsFileShader.return_value = fake_shader
+
+        with patch.object(
+            shader_override.logger, "debug", autospec=True
+        ) as mock_debug, patch.object(
+            shader_override.om.MGlobal, "displayInfo", autospec=True
+        ) as mock_display_info, patch.object(
+            shader_override.omr.MRenderer,
+            "getShaderManager",
+            return_value=fake_shader_mgr,
+            create=True,
+        ):
+            override = shader_override.MMDShaderOverride(None)
+            override.initialize(None, None)
+            # null / falsy object: log then early-return without reading plugs
+            override.updateDG(None)
+            override.activateKey(None, None)
+            # empty renderables: logs count only (draw body is a no-op)
+            override.draw(None, [])
+
+        self.assertEqual(mock_display_info.call_count, 0)
+
+        # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+)
+        debug_messages = [call[0][0] for call in mock_debug.call_args_list]
+        self.assertEqual(
+            debug_messages,
+            [
+                "MMDShaderOverride: Loading shader from %s",
+                "MMDShaderOverride: initialize() called",
+                "MMDShaderOverride: Loading shader from %s",
+                "MMDShaderOverride: Shader loaded successfully",
+                "MMDShaderOverride: updateDG() called",
+                "MMDShaderOverride: activateKey() called",
+                "MMDShaderOverride: draw() called with %s renderables",
+            ],
+        )
+        # draw() passes the renderable count as the %-format argument
+        draw_call = mock_debug.call_args_list[6]
+        self.assertEqual(draw_call[0][1], 0)
 
 
 if __name__ == "__main__":

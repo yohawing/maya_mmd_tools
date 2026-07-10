@@ -1,6 +1,6 @@
 from ..qt_compat import QFileDialog, QMessageBox
 from ...core import settings_keys as setting_keys
-from ...core.logger import get_logger
+from ...core.logger import get_logger, set_all_logger_levels
 from ...services.settings_service import SettingsService
 from ..translations import UITranslator
 
@@ -147,9 +147,10 @@ class SettingsPresenter:
         if idx >= 0:
             self.view.log_level_combo.setCurrentIndex(idx)
 
-        # ロガーに即座に適用
+        # キャッシュ済みロガーすべてに即座に適用（presenter だけでなく
+        # import 時に作られた shader_override 等のロガーも含む）
         level = getattr(logging, level_str, logging.WARNING)
-        logger.set_level(level)
+        set_all_logger_levels(level)
         logger.info(f"Development Mode {'enabled' if dev_on else 'disabled'}: log level set to {level_str}")
 
     def on_setting_changed(self):
@@ -224,11 +225,11 @@ class SettingsPresenter:
         """ログレベルが変更されたときの処理"""
         if not self._loading:
             new_level = self.view.log_level_combo.currentText()
-            # ログレベルを即座に更新
+            # キャッシュ済みロガーすべてにログレベルを即座に適用
             import logging
 
             level = getattr(logging, new_level, logging.INFO)
-            logger.set_level(level)
+            set_all_logger_levels(level)
             logger.info(f"Changed log level to {new_level}")
             # 設定も同時に保存
             self.on_setting_changed()

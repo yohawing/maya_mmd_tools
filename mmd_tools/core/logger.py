@@ -324,6 +324,19 @@ def get_logger(name: str) -> MayaLogger:
     return _loggers[name]
 
 
+def set_all_logger_levels(level: int) -> None:
+    """既存のキャッシュ済み MayaLogger すべてにログレベルを適用する。
+
+    Settings UI など実行時にレベルを切り替える経路から呼ぶ。
+    キャッシュ辞書をスナップショットしてから走査し、反復中の変異を避ける。
+
+    Args:
+        level: logging のレベル定数（logging.DEBUG 等）
+    """
+    for logger in list(_loggers.values()):
+        logger.set_level(level)
+
+
 def setup_logger(logger_name: str) -> MayaLogger:
     """
     既存のsetup_logger関数の互換性維持のための関数
