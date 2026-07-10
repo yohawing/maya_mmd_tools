@@ -189,8 +189,9 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.ls.assert_called_with(["mat1"], materials=True)
         self.mock_maya_adapter.attribute_exists.assert_called_with(ATTR_MMD_MATERIAL_NAME, "mat1")
 
+    @patch("mmd_tools.ui.presenters.material_presenter.logger")
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
-    def test_on_material_selected(self, mock_maya_attribute_utils):
+    def test_on_material_selected(self, mock_maya_attribute_utils, mock_logger):
         """マテリアル選択時の処理テスト"""
         # モックアイテムを作成
         mock_item = Mock()
@@ -206,6 +207,13 @@ class TestMaterialPresenter(unittest.TestCase):
         self.mock_maya_adapter.select.assert_called_with("material1", replace=True)
         # 詳細が有効化されることを確認
         self.mock_view._set_details_enabled.assert_called_with(True)
+
+        # 選択ログは DEBUG のみ（INFO には出さない）
+        expected = "Selected material: material1"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_load_material_properties_dx11shader(self, mock_maya_attribute_utils):

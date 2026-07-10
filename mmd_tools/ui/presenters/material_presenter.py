@@ -220,7 +220,7 @@ class MaterialPresenter:
             # 互換性のため、データがない場合はテキストを使用
             material_name = current.text()
 
-        logger.info(f"Selected material: {material_name}")
+        logger.debug(f"Selected material: {material_name}")
 
         self.current_material = material_name
         # 変更フラグを事前にリセットして、ロード中の変更検知を無効化
