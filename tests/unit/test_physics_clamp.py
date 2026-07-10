@@ -17,7 +17,7 @@ from __future__ import annotations
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 class _StubModule(types.ModuleType):
@@ -171,6 +171,52 @@ class TestSetAttrClamped(unittest.TestCase):
         physics_converter.cmds = fake_cmds
         conv._set_attr_clamped("someShape", "friction", None)
         fake_cmds.setAttr.assert_called_once_with("someShape.friction", 0.0)
+
+
+class TestPhysicsConverterInternalLogging(unittest.TestCase):
+    """内部詳細ログが INFO ではなく DEBUG であることを検証する。"""
+
+    @staticmethod
+    def _call_messages(mock_method):
+        """Python 3.7 互換: call_args_list から第1位置引数のメッセージを集める。"""
+        messages = []
+        for call in mock_method.call_args_list:
+            args = call[0]
+            if args:
+                messages.append(args[0])
+        return messages
+
+    def test_init_logs_initialized_at_debug_not_info(self):
+        mock_logger = MagicMock()
+        with patch.object(physics_converter, "get_logger", return_value=mock_logger):
+            physics_converter.PhysicsConverter()
+
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn("Initialized PhysicsConverter", debug_messages)
+        self.assertNotIn("Initialized PhysicsConverter", info_messages)
+
+    def test_ensure_nucleus_solver_logs_at_debug_not_info(self):
+        conv = physics_converter.PhysicsConverter.__new__(physics_converter.PhysicsConverter)
+        conv.logger = MagicMock()
+        conv.nucleus_solver = None
+        conv.settings = {}
+
+        with patch.object(
+            physics_converter.maya_physics_utils,
+            "find_or_create_nucleus_solver",
+            return_value="mmd_nucleus",
+        ), patch.object(conv, "_configure_nucleus_solver") as mock_configure:
+            result = conv._ensure_nucleus_solver()
+
+        self.assertEqual(result, "mmd_nucleus")
+        self.assertEqual(conv.nucleus_solver, "mmd_nucleus")
+        mock_configure.assert_called_once_with()
+
+        debug_messages = self._call_messages(conv.logger.debug)
+        info_messages = self._call_messages(conv.logger.info)
+        self.assertIn("Nucleus solver: mmd_nucleus", debug_messages)
+        self.assertNotIn("Nucleus solver: mmd_nucleus", info_messages)
 
 
 if __name__ == "__main__":

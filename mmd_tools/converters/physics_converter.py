@@ -293,7 +293,7 @@ class PhysicsConverter:
 
         self._bullet_available: Optional[bool] = None
 
-        self.logger.info("Initialized PhysicsConverter")
+        self.logger.debug("Initialized PhysicsConverter")
 
     # ------------------------------------------------------------------
     # 公開エントリポイント
@@ -2283,7 +2283,7 @@ class PhysicsConverter:
         if self.nucleus_solver and maya_scene_utils.object_exists(self.nucleus_solver):
             return self.nucleus_solver
         self.nucleus_solver = maya_physics_utils.find_or_create_nucleus_solver("mmd_nucleus")
-        self.logger.info(f"Nucleus solver: {self.nucleus_solver}")
+        self.logger.debug(f"Nucleus solver: {self.nucleus_solver}")
         self._configure_nucleus_solver()
         return self.nucleus_solver
 
