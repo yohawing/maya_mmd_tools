@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 from ctypes import CDLL, c_float, c_uint8, c_void_p
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -14,6 +15,7 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiByteBuffer,
     MmdRuntimeFfiIkSolveStats,
     MmdRuntimeFfiRigBone,
+    MmdRuntimeFfiRigBoneLocalAxisV2,
     MmdRuntimeFfiRigIkLink,
 )
 
@@ -115,7 +117,8 @@ class MmdIkChain:
         IK チェーンプリミティブを作成する。
 
         Args:
-            bones: [{"parent_slot": int, "rest_position": [x,y,z], "flags": int, "fixed_axis": [x,y,z]}]
+            bones: [{"parent_slot": int, "rest_position": [x,y,z], "flags": int,
+                     "fixed_axis": [x,y,z], "local_axis": {"x": [x,y,z], "z": [x,y,z]} | None}]
             target_bone_slot: effector のミニチェーン内スロット
             links: [{"bone_slot": int, "has_angle_limit": bool, "angle_limit_min": [x,y,z], "angle_limit_max": [x,y,z]}]
             iteration_count: IK 反復回数
@@ -129,6 +132,8 @@ class MmdIkChain:
         link_count = len(links)
 
         c_bones = (MmdRuntimeFfiRigBone * bone_count)()
+        c_local_axes = (MmdRuntimeFfiRigBoneLocalAxisV2 * bone_count)()
+        has_any_local_axis = False
         for i, b in enumerate(bones):
             c_bones[i].parent_slot = b.get("parent_slot", -1)
             pos = b.get("rest_position", [0, 0, 0])
@@ -138,6 +143,33 @@ class MmdIkChain:
             axis = b.get("fixed_axis", [0, 0, 0])
             for j in range(3):
                 c_bones[i].fixed_axis_xyz[j] = axis[j]
+
+            local_axis = b.get("local_axis")
+            if local_axis is None:
+                continue
+            if not isinstance(local_axis, dict) or set(local_axis) != {"x", "z"}:
+                logger.error("Invalid local_axis descriptor at bone slot %d", i)
+                return None
+            axis_x = local_axis["x"]
+            axis_z = local_axis["z"]
+            if any(
+                not isinstance(values, (list, tuple))
+                or len(values) != 3
+                or any(
+                    not isinstance(value, (int, float))
+                    or isinstance(value, bool)
+                    or not math.isfinite(value)
+                    for value in values
+                )
+                for values in (axis_x, axis_z)
+            ):
+                logger.error("Invalid local_axis vectors at bone slot %d", i)
+                return None
+            c_local_axes[i].has_local_axis = True
+            for j in range(3):
+                c_local_axes[i].local_axis_x_xyz[j] = axis_x[j]
+                c_local_axes[i].local_axis_z_xyz[j] = axis_z[j]
+            has_any_local_axis = True
 
         c_links = (MmdRuntimeFfiRigIkLink * link_count)()
         for i, lk in enumerate(links):
@@ -150,15 +182,27 @@ class MmdIkChain:
                 c_links[i].angle_limit_max_xyz[j] = lmax[j]
 
         try:
-            handle = lib.mmd_runtime_ik_chain_create(
-                c_bones,
-                bone_count,
-                target_bone_slot,
-                c_links,
-                link_count,
-                iteration_count,
-                limit_angle,
-            )
+            if has_any_local_axis and hasattr(lib, "mmd_runtime_ik_chain_create_v2"):
+                handle = lib.mmd_runtime_ik_chain_create_v2(
+                    c_bones,
+                    bone_count,
+                    c_local_axes,
+                    target_bone_slot,
+                    c_links,
+                    link_count,
+                    iteration_count,
+                    limit_angle,
+                )
+            else:
+                handle = lib.mmd_runtime_ik_chain_create(
+                    c_bones,
+                    bone_count,
+                    target_bone_slot,
+                    c_links,
+                    link_count,
+                    iteration_count,
+                    limit_angle,
+                )
             if not handle:
                 return None
             return cls(lib, handle, bone_count, link_count)

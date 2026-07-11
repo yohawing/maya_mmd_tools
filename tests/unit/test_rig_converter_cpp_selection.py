@@ -6,6 +6,8 @@ which plugin is loaded.
 """
 
 from contextlib import ExitStack
+import json
+from pathlib import Path
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
@@ -19,6 +21,41 @@ from mmd_tools.converters.rig_converter import RigConverter  # noqa: E402
 
 
 class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
+    def test_cpp_v2_lookup_is_scoped_to_legacy_symbol_owner_module(self):
+        source = (
+            Path(__file__).resolve().parents[2] / "cpp" / "src" / "MmdCcdIkNode.cpp"
+        ).read_text(encoding="utf-8")
+        resolver = source.split("IkChainCreateV2Fn resolveIkChainCreateV2()", 1)[1].split(
+            "struct CcdIkChainConfig", 1
+        )[0]
+
+        self.assertIn("GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS", resolver)
+        self.assertIn("&mmd_runtime_ik_chain_create", resolver)
+        self.assertIn("dladdr", resolver)
+        self.assertIn("ownerInfo.dli_fname", resolver)
+        self.assertNotIn("GetModuleHandleA(", resolver)
+        self.assertNotIn("RTLD_DEFAULT", resolver)
+
+    def test_ik_chain_json_preserves_local_axis_on_remapped_slot(self):
+        converter = RigConverter()
+        local_axis = {"x": [0.0, 0.0, 1.0], "z": [0.0, 1.0, 0.0]}
+        manifest = SimpleNamespace(
+            bones=[
+                {"parentIndex": -1, "restPosition": [0.0, 0.0, 0.0]},
+                {"parentIndex": 0, "restPosition": [0.0, 1.0, 0.0], "localAxis": local_axis},
+            ]
+        )
+        payload, _ = converter._build_ik_chain_json(
+            manifest,
+            {"controllerBoneIndex": 0, "targetBoneIndex": 1, "links": [{"boneIndex": 1}]},
+            {"pmx_to_slot": {0: 0, 1: 1}, "slot_to_pmx": {0: 0, 1: 1}},
+            [],
+        )
+
+        bones = json.loads(payload)["bones"]
+        self.assertIsNone(bones[0]["local_axis"])
+        self.assertEqual(bones[1]["local_axis"], local_axis)
+
     def test_append_node_type_always_returns_unified_name(self):
         converter = RigConverter()
         self.assertEqual(converter._append_node_type(), "mmdAppend")

@@ -96,6 +96,29 @@ class TestIkMiniChainOrdering(unittest.TestCase):
             create.call_args.kwargs["bones"][2]["rest_position"], [1.0, 0.0, 0.0]
         )
 
+    def test_local_axis_stays_attached_to_its_remapped_bone_slot(self):
+        local_axis = {"x": [0.0, 0.0, 1.0], "z": [0.0, 1.0, 0.0]}
+        bones = [
+            self._bone(-1, [0.0, 0.0, 0.0]),
+            self._bone(2, [2.0, 0.0, 0.0]),
+            self._bone(0, [1.0, 0.0, 0.0]),
+        ]
+        bones[1]["localAxis"] = local_axis
+        with patch(
+            "mmd_tools.converters.native_rig_builder.MmdIkChain.create",
+            return_value=object(),
+        ) as create:
+            result = build_ik_mini_chain(
+                self._manifest(bones),
+                {"controllerBoneIndex": 2, "targetBoneIndex": 1, "links": [{"boneIndex": 1}]},
+            )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result[1]["pmx_to_slot"][1], 2)
+        self.assertIsNone(create.call_args.kwargs["bones"][0]["local_axis"])
+        self.assertIsNone(create.call_args.kwargs["bones"][1]["local_axis"])
+        self.assertEqual(create.call_args.kwargs["bones"][2]["local_axis"], local_axis)
+
     def test_multiple_roots_and_siblings_have_deterministic_parent_first_slots(self):
         manifest = self._manifest([
             self._bone(-1, [0.0, 0.0, 0.0]),

@@ -40,12 +40,60 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <dlfcn.h>
+#endif
+
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 using nlohmann::json;
 
+using IkChainCreateV2Fn = mmd_runtime_ik_chain_t* (*)(
+    const mmd_runtime_ffi_rig_bone_t*,
+    size_t,
+    const mmd_runtime_ffi_rig_bone_local_axis_v2_t*,
+    uint32_t,
+    const mmd_runtime_ffi_rig_ik_link_t*,
+    size_t,
+    uint32_t,
+    float);
+
+IkChainCreateV2Fn resolveIkChainCreateV2()
+{
+#ifdef _WIN32
+    HMODULE ownerModule = nullptr;
+    if (!GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&mmd_runtime_ik_chain_create),
+            &ownerModule) ||
+        !ownerModule) {
+        return nullptr;
+    }
+    return reinterpret_cast<IkChainCreateV2Fn>(
+        GetProcAddress(ownerModule, "mmd_runtime_ik_chain_create_v2"));
+#elif defined(__APPLE__)
+    Dl_info ownerInfo{};
+    if (dladdr(reinterpret_cast<const void*>(&mmd_runtime_ik_chain_create), &ownerInfo) == 0 ||
+        !ownerInfo.dli_fname) {
+        return nullptr;
+    }
+    void* ownerModule = dlopen(ownerInfo.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
+    if (!ownerModule) {
+        return nullptr;
+    }
+    auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+        dlsym(ownerModule, "mmd_runtime_ik_chain_create_v2"));
+    dlclose(ownerModule);
+    return fn;
+#endif
+    return nullptr;
+}
+
 struct CcdIkChainConfig {
     std::vector<mmd_runtime_ffi_rig_bone_t> bones;
+    std::vector<mmd_runtime_ffi_rig_bone_local_axis_v2_t> localAxes;
     std::vector<mmd_runtime_ffi_rig_ik_link_t> links;
     std::vector<std::array<double, 3>> restPositions;
     std::vector<std::array<double, 3>> mayaRestTranslates;
@@ -56,6 +104,7 @@ struct CcdIkChainConfig {
     std::vector<MMatrix> noOrientBindWorldMatrices;
     std::vector<uint32_t> linkSlots;
     bool hasBindMatrices = false;
+    bool hasLocalAxes = false;
     int32_t controllerBoneSlot = -1;
     uint32_t targetBoneSlot = 0;
     uint32_t iterationCount = 40;
@@ -173,6 +222,7 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
 
     cfg = CcdIkChainConfig{};
     cfg.bones.reserve(bonesIt->size());
+    cfg.localAxes.reserve(bonesIt->size());
     cfg.restPositions.reserve(bonesIt->size());
     cfg.mayaRestTranslates.reserve(bonesIt->size());
     cfg.parentSlots.reserve(bonesIt->size());
@@ -210,6 +260,36 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
         for (size_t axis = 0; axis < 3; ++axis) {
             bone.fixed_axis_xyz[axis] = fixedAxis[axis];
         }
+
+        mmd_runtime_ffi_rig_bone_local_axis_v2_t localAxis{};
+        const auto localAxisIt = boneJson.find("local_axis");
+        if (localAxisIt != boneJson.end() && !localAxisIt->is_null()) {
+            if (!localAxisIt->is_object() || localAxisIt->size() != 2 ||
+                !localAxisIt->contains("x") || !localAxisIt->contains("z")) {
+                return false;
+            }
+            const json& axisXJson = localAxisIt->at("x");
+            const json& axisZJson = localAxisIt->at("z");
+            if (!axisXJson.is_array() || axisXJson.size() != 3 ||
+                !axisZJson.is_array() || axisZJson.size() != 3) {
+                return false;
+            }
+            for (size_t axis = 0; axis < 3; ++axis) {
+                if (!axisXJson[axis].is_number() || !axisZJson[axis].is_number()) {
+                    return false;
+                }
+                const float axisX = axisXJson[axis].get<float>();
+                const float axisZ = axisZJson[axis].get<float>();
+                if (!std::isfinite(axisX) || !std::isfinite(axisZ)) {
+                    return false;
+                }
+                localAxis.local_axis_x_xyz[axis] = axisX;
+                localAxis.local_axis_z_xyz[axis] = axisZ;
+            }
+            localAxis.has_local_axis = true;
+            cfg.hasLocalAxes = true;
+        }
+        cfg.localAxes.push_back(localAxis);
 
         std::array<double, 3> mayaRest{
             static_cast<double>(rest[0]),
@@ -524,14 +604,25 @@ bool solveChainJsonIk(
     bool& outSolved,
     std::vector<std::array<double, 3>>& outEulerRadians)
 {
-    mmd_runtime_ik_chain_t* chain = mmd_runtime_ik_chain_create(
-        cfg.bones.data(),
-        cfg.bones.size(),
-        cfg.targetBoneSlot,
-        cfg.links.data(),
-        cfg.links.size(),
-        cfg.iterationCount,
-        cfg.limitAngle);
+    const IkChainCreateV2Fn createV2 = cfg.hasLocalAxes ? resolveIkChainCreateV2() : nullptr;
+    mmd_runtime_ik_chain_t* chain = createV2
+        ? createV2(
+              cfg.bones.data(),
+              cfg.bones.size(),
+              cfg.localAxes.data(),
+              cfg.targetBoneSlot,
+              cfg.links.data(),
+              cfg.links.size(),
+              cfg.iterationCount,
+              cfg.limitAngle)
+        : mmd_runtime_ik_chain_create(
+              cfg.bones.data(),
+              cfg.bones.size(),
+              cfg.targetBoneSlot,
+              cfg.links.data(),
+              cfg.links.size(),
+              cfg.iterationCount,
+              cfg.limitAngle);
     if (!chain) {
         return false;
     }

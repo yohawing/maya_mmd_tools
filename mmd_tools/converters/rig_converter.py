@@ -963,6 +963,7 @@ class RigConverter:
             abs_positions.append(abs_pos)
             flags = 0
             fixed_axis = bone_data.get("fixedAxis")
+            local_axis = bone_data.get("localAxis")
             fa = [0, 0, 0]
             if fixed_axis is not None:
                 flags = 0x1  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS (1 << 0)
@@ -984,6 +985,7 @@ class RigConverter:
                 "no_orient_bind_world_matrix": None,
                 "flags": flags,
                 "fixed_axis": fa,
+                "local_axis": local_axis,
                 "joint_orient_deg": jo_deg,
             })
 

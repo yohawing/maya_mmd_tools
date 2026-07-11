@@ -109,6 +109,16 @@ class MmdRuntimeFfiRigIkLink(Structure):
     ]
 
 
+class MmdRuntimeFfiRigBoneLocalAxisV2(Structure):
+    """Optional PMX local-axis descriptor for v2 IK-chain creation."""
+
+    _fields_ = [
+        ("has_local_axis", c_bool),
+        ("local_axis_x_xyz", c_float * 3),
+        ("local_axis_z_xyz", c_float * 3),
+    ]
+
+
 class MmdRuntimeFfiIkSolveStats(Structure):
     """IK solver statistics returned by the native FFI."""
 

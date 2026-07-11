@@ -19,6 +19,7 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiPhysicsStepStats,
     MmdRuntimeFfiPhysicsWorldStepReport,
     MmdRuntimeFfiRigBone,
+    MmdRuntimeFfiRigBoneLocalAxisV2,
     MmdRuntimeFfiRigIkLink,
 )
 
@@ -300,6 +301,21 @@ def setup_rig_primitive_signatures(lib: CDLL) -> None:
             "mmd_runtime_ik_chain_create",
             c_void_p,
             [POINTER(MmdRuntimeFfiRigBone), c_size_t, c_uint32, POINTER(MmdRuntimeFfiRigIkLink), c_size_t, c_uint32, c_float],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_ik_chain_create_v2",
+            c_void_p,
+            [
+                POINTER(MmdRuntimeFfiRigBone),
+                c_size_t,
+                POINTER(MmdRuntimeFfiRigBoneLocalAxisV2),
+                c_uint32,
+                POINTER(MmdRuntimeFfiRigIkLink),
+                c_size_t,
+                c_uint32,
+                c_float,
+            ],
         )
         set_sig(lib, "mmd_runtime_ik_chain_free", None, [c_void_p])
         set_sig(
