@@ -32,6 +32,31 @@ BACKENDS = {
 LOGGER = logging.getLogger(__name__)
 
 
+def exception_summary(exc: BaseException) -> str:
+    """Format exceptions so empty-message errors such as MemoryError stay useful."""
+    message = str(exc)
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
+def rgba_pixel_stats(buffer, width: int, height: int) -> dict:
+    """Compute RGB statistics from exactly one RGBA8 image without copies."""
+    expected = int(width) * int(height) * 4
+    view = memoryview(buffer).cast("B")
+    if view.nbytes < expected:
+        raise ValueError(f"RGBA buffer too short: expected {expected}, got {view.nbytes}")
+    view = view[:expected]
+    minimum = 255
+    maximum = 0
+    nonzero = 0
+    for offset in range(0, expected, 4):
+        for channel in range(3):
+            component = view[offset + channel]
+            minimum = min(minimum, component)
+            maximum = max(maximum, component)
+            nonzero += component != 0
+    return {"rgbMin": minimum, "rgbMax": maximum, "rgbRange": maximum - minimum, "nonzeroRgb": nonzero}
+
+
 def trace_weight_source_chains(
     start_plug: str,
     target_plug: str,
@@ -190,14 +215,13 @@ def values(node, names):
     return {{name: attr(node, name) for name in names if cmds.attributeQuery(name, node=node, exists=True)}}
 
 def png_stats(path):
+    from tests.viewport.material_morph_e2e import rgba_pixel_stats
     image = om.MImage()
     image.readFromFile(str(path))
     width, height = image.getSize()
-    pixels = bytes(image.pixels())
-    rgb = [pixels[offset + channel] for offset in range(0, len(pixels), 4) for channel in range(3)]
-    return {{"width": width, "height": height, "bytes": Path(path).stat().st_size,
-             "rgbMin": min(rgb), "rgbMax": max(rgb), "rgbRange": max(rgb) - min(rgb),
-             "nonzeroRgb": sum(component != 0 for component in rgb)}}
+    stats = rgba_pixel_stats(image.pixels(), width, height)
+    stats.update({{"width": width, "height": height, "bytes": Path(path).stat().st_size}})
+    return stats
 
 def device_matches(device):
     text = str(device).lower()
@@ -383,15 +407,17 @@ try:
                                   "metadataName": attr(node, "mmd_morph_name", ""), "offsets": item_offsets,
                                   "alphaOnlyInvariant": invariant, "samples": samples}})
 except Exception as exc:
-    report["errors"].append({{"error": str(exc), "traceback": traceback.format_exc()}})
+    from tests.viewport.material_morph_e2e import exception_summary
+    report["errors"].append({{"error": exception_summary(exc), "traceback": traceback.format_exc()}})
 finally:
     if _settings_impl is not None:
         try:
             restore_settings(_settings_impl, _setting_optionvars, _setting_memory_values)
             report["settingsRestored"] = True
         except Exception as restore_exc:
+            from tests.viewport.material_morph_e2e import exception_summary
             report["settingsRestored"] = False
-            report["errors"].append({{"error": "settings restoration failed: " + str(restore_exc),
+            report["errors"].append({{"error": "settings restoration failed: " + exception_summary(restore_exc),
                                      "traceback": traceback.format_exc()}})
     with (OUT / "material-morph-report.json").open("w", encoding="utf-8") as stream:
         json.dump(report, stream, ensure_ascii=False, indent=2, default=str)

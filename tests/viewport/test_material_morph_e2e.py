@@ -10,8 +10,10 @@ from tests.viewport.material_morph_e2e import (
     DEFAULT_MORPHS,
     _maya_code,
     build_parser,
+    exception_summary,
     is_diffuse_alpha_only_offsets,
     parse_morph,
+    rgba_pixel_stats,
     safe_capture_dir,
     trace_weight_source_chains,
 )
@@ -163,6 +165,20 @@ class MaterialMorphE2ETest(unittest.TestCase):
         self.assertIn('"existed": existed', code)
         self.assertIn('if not prior["existed"]:', code)
         self.assertIn("cmds.optionVar(remove=option_key)", code)
+
+    def test_rgba_pixel_stats_uses_exact_bounded_buffer(self):
+        # Trailing bytes must not affect the two declared pixels.
+        pixels = bytearray([0, 10, 20, 255, 200, 100, 50, 255] + [255] * 1024)
+        stats = rgba_pixel_stats(pixels, 2, 1)
+        self.assertEqual(0, stats["rgbMin"])
+        self.assertEqual(200, stats["rgbMax"])
+        self.assertEqual(5, stats["nonzeroRgb"])
+        with self.assertRaises(ValueError):
+            rgba_pixel_stats(bytearray(7), 2, 1)
+
+    def test_blank_exception_summary_keeps_type(self):
+        self.assertEqual("MemoryError", exception_summary(MemoryError()))
+        self.assertEqual("ValueError: detail", exception_summary(ValueError("detail")))
 
 
 if __name__ == "__main__":
