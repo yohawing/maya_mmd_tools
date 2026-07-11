@@ -632,10 +632,18 @@ class TestPhysicsPresenter(unittest.TestCase):
         self.assertEqual(len(writer.calls), 1)
         self.assertEqual(reader.calls, [TEST_MODEL])
         self.assertTrue(view.form_dirty)
-        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertTrue(view.apply_btn.isEnabled())
         self.assertTrue(view.reset_btn.isEnabled())
         self.assertEqual(view.validation_error[:2], ("mass", "physics_write_failed"))
         self.assertIsInstance(presenter.validated_form_values, RigidBodyFormValues)
+
+        # A transient write failure must be retryable with the same form value.
+        writer.error = None
+        view.apply_btn.clicked.emit()
+        self.assertEqual(len(writer.calls), 2)
+        self.assertEqual(reader.calls, [TEST_MODEL, TEST_MODEL])
+        self.assertIsNone(presenter.validated_form_values)
+        self.assertFalse(view.form_dirty)
 
     def test_apply_rejects_stale_validated_ref_identity(self):
         rigid = _rigid("|root|rb2", 2, "skirt", mass=2.5)
@@ -656,6 +664,48 @@ class TestPhysicsPresenter(unittest.TestCase):
 
         self.assertEqual(writer.calls, [])
         self.assertEqual(view.validation_error[:2], ("node", "physics_write_stale_form"))
+        self.assertIsNone(presenter.validated_form_values)
+        self.assertFalse(view.apply_btn.isEnabled())
+        self.assertTrue(view.reset_btn.isEnabled())
+
+    def test_apply_only_general_write_failure_is_retryable(self):
+        error_codes = (
+            "physics_write_node_missing",
+            "physics_write_attribute_missing",
+            "physics_write_attribute_not_settable",
+            "physics_write_undo_disabled",
+            "physics_write_preflight_failed",
+            "physics_write_stale_form",
+            "physics_write_rollback_failed",
+            "physics_write_failed",
+        )
+        for error_code in error_codes:
+            with self.subTest(error_code=error_code):
+                rigid = _rigid("|root|rb2", 2, "skirt", mass=2.5)
+                writer = _FakePhysicsWriter(
+                    PhysicsSceneWriteError("mass", error_code, error="write failed")
+                )
+                adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2"})
+                presenter, view, _, _, _ = _make_presenter(
+                    adapter=adapter,
+                    reader=_FakePhysicsReader(PhysicsSceneRefs((rigid,), ())),
+                    writer=writer,
+                )
+                presenter.load_physics()
+                view.rigid_body_list.select_items(view.rigid_body_list.items[0])
+                view.form_values["mass"] = "3.25"
+                view.physics_form_changed.emit()
+
+                view.apply_btn.clicked.emit()
+
+                retryable = error_code == "physics_write_failed"
+                self.assertEqual(len(writer.calls), 1)
+                self.assertEqual(view.apply_btn.isEnabled(), retryable)
+                self.assertEqual(
+                    presenter.validated_form_values is not None,
+                    retryable,
+                )
+                self.assertTrue(view.reset_btn.isEnabled())
 
     def test_rigid_body_selection_selects_user_role_transform(self):
         refs = PhysicsSceneRefs(rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),), joints=())

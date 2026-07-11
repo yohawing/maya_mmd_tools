@@ -558,9 +558,16 @@ class PhysicsPresenter:
 
     def _set_write_error(self, error):
         self._set_validation_error(error)
+        retryable = error.message_key == "physics_write_failed"
+        requires_revalidation = not retryable
+        if requires_revalidation:
+            self._validated_form_values = None
+            self._validated_form_ref = None
         setter = getattr(self.view, "set_physics_dirty", None)
         if callable(setter):
-            setter(True, valid=False)
+            # Only the general write failure is explicitly retryable. Structural,
+            # environment, stale-identity, and rollback failures require a reset.
+            setter(True, valid=retryable)
 
     def _capture_ui_state(self):
         list_tabs = getattr(self.view, "list_tabs", None)

@@ -85,7 +85,6 @@ class TestPngVisualDiversity(unittest.TestCase):
                 }
             )
         )
-
     def test_multicolor_panel_is_accepted(self):
         self.assertTrue(
             _is_png_visually_diverse(
@@ -97,6 +96,24 @@ class TestPngVisualDiversity(unittest.TestCase):
                 }
             )
         )
+
+
+class TestValidateDiagnostics(unittest.TestCase):
+    """Restore failures invalidate an otherwise successful capture."""
+
+    def test_restore_exception_fails_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            diag_path = Path(tmp) / "capture.diag.json"
+            diag_path.write_text(
+                '{"restore_exception": "Traceback\\nRuntimeError: restore failed"}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(RuntimeError) as ctx:
+                capture_module._validate_diag(diag_path)
+
+            self.assertIn("restore/cleanup failed", str(ctx.exception))
+            self.assertIn("RuntimeError: restore failed", str(ctx.exception))
 
 
 class _FakeSettings(object):

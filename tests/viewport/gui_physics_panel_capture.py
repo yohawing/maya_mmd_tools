@@ -892,6 +892,13 @@ def _tail_until_marker(log_path, timeout):
 def _validate_diag(diag_path):
     diag = json.loads(diag_path.read_text(encoding="utf-8"))
     errors = []
+    restore_exception = str(diag.get("restore_exception") or "").strip()
+    if restore_exception:
+        errors.append(
+            "Maya-side restore/cleanup failed: {0}".format(
+                restore_exception.splitlines()[-1].strip()
+            )
+        )
     if diag.get("capture_failed"):
         failure_class = diag.get("failure_class") or "capture_application"
         errors.append(
