@@ -21,6 +21,65 @@ from mmd_tools.converters.rig_converter import RigConverter  # noqa: E402
 
 
 class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
+    def test_self_grant_is_disabled_with_named_continue_diagnostic(self):
+        converter = RigConverter()
+        converter.logger = MagicMock()
+        grant = {
+            "targetBoneIndex": 0,
+            "sourceBoneIndex": 0,
+        }
+
+        filtered = converter._drop_cycle_closing_grants(
+            [grant],
+            target_index=lambda item: item["targetBoneIndex"],
+            source_index=lambda item: item["sourceBoneIndex"],
+            bone_name=lambda _item: "self_bone",
+        )
+
+        self.assertEqual(filtered, [])
+        message = converter.logger.info.call_args[0][0]
+        self.assertIn("self_bone", message)
+        self.assertIn("self-grant is skipped", message)
+        self.assertIn("import continues", message)
+
+    def test_two_bone_cycle_omits_only_cycle_closing_grant(self):
+        converter = RigConverter()
+        converter.logger = MagicMock()
+        grants = [
+            {"targetBoneIndex": 0, "sourceBoneIndex": 1},
+            {"targetBoneIndex": 1, "sourceBoneIndex": 0},
+        ]
+
+        filtered = converter._drop_cycle_closing_grants(
+            grants,
+            target_index=lambda item: item["targetBoneIndex"],
+            source_index=lambda item: item["sourceBoneIndex"],
+            bone_name=lambda item: ("A", "B")[item["targetBoneIndex"]],
+        )
+
+        self.assertEqual(filtered, [grants[0]])
+        message = converter.logger.warning.call_args[0][0]
+        self.assertIn("B", message)
+        self.assertIn("0 -> 1", message)
+        self.assertIn("import continues", message)
+
+    def test_acyclic_grants_preserve_parent_first_order(self):
+        converter = RigConverter()
+        grants = [
+            {"targetBoneIndex": 2, "sourceBoneIndex": 1},
+            {"targetBoneIndex": 1, "sourceBoneIndex": 0},
+        ]
+
+        filtered = converter._drop_cycle_closing_grants(
+            grants,
+            target_index=lambda item: item["targetBoneIndex"],
+            source_index=lambda item: item["sourceBoneIndex"],
+            bone_name=lambda item: str(item["targetBoneIndex"]),
+        )
+        ordered = converter._resolve_grant_dependencies_from_manifest(filtered)
+
+        self.assertEqual([item["targetBoneIndex"] for item in ordered], [1, 2])
+
     def test_cpp_v2_lookup_is_scoped_to_legacy_symbol_owner_module(self):
         source = (
             Path(__file__).resolve().parents[2] / "cpp" / "src" / "MmdCcdIkNode.cpp"

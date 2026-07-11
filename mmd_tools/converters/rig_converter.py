@@ -550,6 +550,13 @@ class RigConverter:
         # 変形順序でソート（物理前後 → 変形階層 → インデックス）
         given_bones.sort(key=lambda x: (x["is_physics_after"], x["transform_layer"], x["index"]))
 
+        given_bones = self._drop_cycle_closing_grants(
+            given_bones,
+            target_index=lambda info: info["index"],
+            source_index=lambda info: getattr(info["bone"], "grant_parent_bone_index", -1),
+            bone_name=lambda info: getattr(info["bone"], "name", None) or info["joint"],
+        )
+
         # 多重付与の依存関係を解決
         given_bones = self._resolve_given_dependencies(given_bones, bones)
 
@@ -567,7 +574,10 @@ class RigConverter:
             # 投げるため、warning を出してこのボーンの付与をスキップする。
             grant_parent_index = getattr(bone, "grant_parent_bone_index", -1)
             if 0 <= grant_parent_index < len(maya_joints) and maya_joints[grant_parent_index] == joint:
-                self.logger.warning(f"Append parent points to itself; skipping append: {joint}")
+                self.logger.info(
+                    f"Append/grant disabled for bone '{getattr(bone, 'name', None) or joint}': "
+                    "self-grant is skipped; import continues"
+                )
                 continue
 
             # 回転付与
@@ -633,6 +643,55 @@ class RigConverter:
                     )
 
         return constraints
+
+    def _drop_cycle_closing_grants(
+        self,
+        grants,
+        *,
+        target_index,
+        source_index,
+        bone_name,
+    ):
+        """Drop self-grants and the deterministic edge that would close a grant cycle."""
+        accepted = []
+        dependencies = {}
+
+        for grant in grants:
+            target = target_index(grant)
+            source = source_index(grant)
+            name = bone_name(grant)
+            if target == source:
+                self.logger.info(
+                    f"Append/grant disabled for bone '{name}': self-grant is skipped; import continues"
+                )
+                continue
+
+            # dependencies are target -> source.  The new edge closes a cycle
+            # when source can already reach target through accepted edges.
+            pending = [source]
+            visited = set()
+            closes_cycle = False
+            while pending:
+                node = pending.pop()
+                if node == target:
+                    closes_cycle = True
+                    break
+                if node in visited:
+                    continue
+                visited.add(node)
+                pending.extend(dependencies.get(node, ()))
+
+            if closes_cycle:
+                self.logger.warning(
+                    f"Append/grant disabled for bone '{name}': cycle-closing grant "
+                    f"{source} -> {target} is skipped; import continues"
+                )
+                continue
+
+            accepted.append(grant)
+            dependencies.setdefault(target, []).append(source)
+
+        return accepted
 
     def _mark_mmd_grant_constraint(self, constraint):
         """runtime bake時に無効化できるMMD付与constraintとして印を付ける。"""
@@ -795,6 +854,13 @@ class RigConverter:
             bones[g["targetBoneIndex"]].get("deformLayer", 0),
             g["targetBoneIndex"],
         ))
+        grants = self._drop_cycle_closing_grants(
+            grants,
+            target_index=lambda grant: grant["targetBoneIndex"],
+            source_index=lambda grant: grant["sourceBoneIndex"],
+            bone_name=lambda grant: bones[grant["targetBoneIndex"]].get("name")
+            or maya_joints[grant["targetBoneIndex"]],
+        )
         grants = self._resolve_grant_dependencies_from_manifest(grants)
 
         append_nodes_by_target: Dict[str, str] = {}
