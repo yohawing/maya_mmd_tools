@@ -104,7 +104,24 @@ uvx nox -s tests -- --type integration
 uvx nox -s ffi_build -- --release
 uvx nox -s native_smoke
 uvx nox -s golden_oracle
+uvx nox -s release_version -- --version X.Y.Z
+uvx nox -s release_package -- --version X.Y.Z
 ```
+
+`tests/release/package_manifest.json` is the single source of truth for the
+ZIP's required paths, optional directories, excluded local artifacts, Maya
+2024-2027 Release plug-ins/runtimes, native runtimes, and version markers.
+`release_package` writes `build/reports/release_package.json` and
+`build/reports/release_package.md`; missing, stale, or mismatched artifacts
+fail the session with a non-zero exit code.
+
+Each manifest-declared Maya Release plug-in must expose an unambiguous binary
+`MFnPlugin` vendor/version/API tuple. The validator records the distinct
+embedded SemVer values and requires exactly one value matching the project
+version. Repeated copies of the same tuple are accepted; missing/unobservable
+markers, distinct values, and stale values fail. Arbitrary toolchain strings
+such as Python `3.11.3` are ignored because they are not part of that
+vendor/version/API tuple.
 
 The aggregate release gate runs the complete mayapy unit and integration suites
 on Maya 2024, 2025, 2026, and 2027. It also runs fixed viewport/shader captures
@@ -182,27 +199,21 @@ uvx nox -s cpp_build -- --maya <version> --config Release
 
 `release_camera_motion_oracle` is a camera-motion gate with a repo-local generated fixture by default (`tests/data/camera_motion/manifest.json`), so the release gate does not silently skip when the local GoldenOracle checkout is absent. It runs Bake mode as a strict current/keyframe comparison, and Sparse mode as a keyframe gate with current playback recorded report-only because the editable sparse camera rig uses Maya curves between sparse keys. Pass `--manifest F:\Develop\MMDDev\GoldenOracle\manifests\camera_motion.json` and `--all-cases` for a full local audit after refreshing or accepting the nanoem camera baselines.
 
-If GUI, viewport, or Rig/Bake parity behavior changed, add the relevant viewport / commandPort smoke result to the PR notes. Local asset manifests must be passed by CLI argument or a local-only release gate and should not be added to CI-only tests.
+If GUI, viewport, or Rig/Bake parity behavior changed, add the relevant
+viewport / commandPort smoke result to the PR notes. These remain manual
+release evidence and are not automated CI gates in `release.yml`. Local asset
+manifests must be passed by CLI argument or a local-only release gate and
+should not be added to CI-only tests.
 
 ## Release ZIP Contents
 
-The GitHub Actions release workflow builds `dist/maya_mmd_tools-X.Y.Z.zip` from:
-
-```text
-mmd_tools/
-plug-ins/
-docs/README_ja.md
-README.md
-LICENSE
-drag_drop_install.py
-maya_mmd_tools.mod
-userSetup.py
-pyproject.toml
-config/      # if present
-resources/   # if present
-shaders/     # if present
-examples/    # if present
-```
+The GitHub Actions release workflow builds
+`dist/maya_mmd_tools-X.Y.Z.zip` through
+`uvx nox -s release_package`; it does not maintain a second file list.
+Inspect `tests/release/package_manifest.json` for the exact package policy.
+The archive root is exactly `maya_mmd_tools/`, and the public Markdown
+surface is intentionally limited to `README.md` and `docs/README_ja.md`.
+`CHANGELOG.md` is used for release notes but is not copied into the ZIP.
 
 Before publishing, inspect the ZIP or workflow artifact and confirm:
 
@@ -211,6 +222,7 @@ Before publishing, inspect the ZIP or workflow artifact and confirm:
 - `mmd_tools/native/` contains the intended runtime libraries.
 - `plug-ins/<version>/Release/` contains the intended Maya C++ plug-ins.
 - No local test assets, build directories, caches, or machine-specific paths are included.
+- `build/reports/release_package.json` and `.md` record the static validation evidence.
 
 ## PR Flow
 
@@ -252,10 +264,17 @@ git push origin vX.Y.Z
 The tag push runs `.github/workflows/release.yml`:
 
 1. `ruff check --no-fix .`
-2. Build the release ZIP.
-3. Extract the matching `CHANGELOG.md` section.
-4. Upload the ZIP as an artifact.
-5. Publish the GitHub Release for tag builds.
+2. Run the pure-Python unit gate (`ci_unit`).
+3. Run the GoldenOracle numeric gate.
+4. Validate version markers against the tag.
+5. Build and validate the release ZIP from the manifest.
+6. Extract the matching `CHANGELOG.md` section.
+7. Upload the ZIP as an artifact.
+8. Publish the GitHub Release for tag builds.
+
+Tag creation, merge, and publish decisions remain human-owned. GUI and
+viewport evidence is also collected manually for the release PR when those
+areas changed.
 
 ## Post-release Checks
 

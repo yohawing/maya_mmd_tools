@@ -33,6 +33,8 @@ from tests.common.maya_location import convert_path_options_for_maya_process as 
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.maya_location import pythonpath_for_maya_process as _maya_pythonpath  # noqa: E402
 from tests.common.maya_location import resolve_path_for_maya_process as _resolve_maya_path  # noqa: E402
+from tests.release.package import DEFAULT_MANIFEST_PATH as _PACKAGE_MANIFEST_PATH  # noqa: E402
+from tests.release.package import build_and_validate as _build_release_package  # noqa: E402
 
 
 DEFAULT_MAYA_VERSION = "2024"
@@ -394,13 +396,15 @@ def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[s
     return rewritten
 
 
-def _release_gate_version_check() -> None:
+def _release_gate_version_check(expected_version: str | None = None) -> None:
     """Validate release version markers before running expensive gates."""
     import re
     import tomllib
 
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     version = pyproject["project"]["version"]
+    if expected_version and version != expected_version:
+        raise RuntimeError(f"pyproject.toml version {version} does not match requested release version {expected_version}")
 
     init_text = (ROOT / "mmd_tools" / "__init__.py").read_text(encoding="utf-8")
     init_match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
@@ -981,6 +985,14 @@ def ci_unit(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def release_version(session: nox.Session) -> None:
+    """Validate all release version markers, optionally against a tag version."""
+    expected_version = _option(session.posargs, "--version", "") or None
+    _release_gate_version_check(expected_version=expected_version)
+    session.log(f"Release version markers match {expected_version or 'the project version'}")
+
+
+@nox.session(venv_backend="none")
 def tests(session: nox.Session) -> None:
     """Run existing mayapy-backed unit/integration tests.
 
@@ -1110,6 +1122,32 @@ def native_export_smoke(session: nox.Session) -> None:
     if ffi_path:
         env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
     session.run(sys.executable, "tests/native_export_smoke.py", *smoke_args, env=env, external=True)
+
+
+@nox.session(venv_backend="none")
+def release_package(session: nox.Session) -> None:
+    """Build and fail-closed validate the release ZIP from the package manifest.
+
+    Examples:
+        uvx nox -s release_package
+        uvx nox -s release_package -- --version 0.3.1
+        uvx nox -s release_package -- --out-dir dist
+    """
+    manifest = _resolve_existing_or_repo_path(
+        _option(session.posargs, "--manifest", str(_PACKAGE_MANIFEST_PATH))
+    )
+    output_dir = _resolve_existing_or_repo_path(_option(session.posargs, "--out-dir", "dist"))
+    root = ROOT.resolve()
+    if output_dir != root and root not in output_dir.parents:
+        session.error(f"--out-dir must stay inside the repository: {output_dir}")
+    result = _build_release_package(
+        root,
+        manifest_path=manifest,
+        output_dir=output_dir,
+        expected_version=_option(session.posargs, "--version", "") or None,
+    )
+    session.log(f"Release package: {result['archive']}")
+    session.log("Release package evidence: build/reports/release_package.json and .md")
 
 
 @nox.session(venv_backend="none")
@@ -2182,6 +2220,7 @@ def release_gate(session: nox.Session) -> None:
     tier1_commands = [
         ("tier1:ci_unit", ["uvx", "nox", "-s", "ci_unit"]),
         ("tier1:golden_oracle", ["uvx", "nox", "-s", "golden_oracle"]),
+        ("tier1:release-package", ["uvx", "nox", "-s", "release_package"]),
     ]
     if not quick:
         ffi_build_command = ["uvx", "nox", "-s", "ffi_build"]

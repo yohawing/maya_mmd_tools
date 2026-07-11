@@ -24,11 +24,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install lint tools
-        run: python -m pip install --upgrade pip ruff
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
 
       - name: Lint
-        run: ruff check --no-fix .
+        run: uvx ruff check --no-fix .
 
       - name: Resolve package version
         id: version
@@ -47,36 +49,17 @@ jobs:
           echo "version=${version}" >> "${GITHUB_OUTPUT}"
           echo "zip_name=maya_mmd_tools-${version}.zip" >> "${GITHUB_OUTPUT}"
 
-      - name: Build release zip
-        shell: bash
-        run: |
-          set -euo pipefail
-          package_root="dist/maya_mmd_tools"
-          mkdir -p "${package_root}"
+      - name: Unit gate
+        run: uvx nox -s ci_unit
 
-          cp -R mmd_tools "${package_root}/"
-          cp -R plug-ins "${package_root}/"
-          mkdir -p "${package_root}/docs"
-          cp docs/README_ja.md "${package_root}/docs/"
-          cp README.md LICENSE drag_drop_install.py maya_mmd_tools.mod userSetup.py pyproject.toml "${package_root}/"
+      - name: GoldenOracle numeric gate
+        run: uvx nox -s golden_oracle
 
-          for optional_dir in config resources shaders examples; do
-            if [[ -d "${optional_dir}" ]]; then
-              cp -R "${optional_dir}" "${package_root}/"
-            fi
-          done
+      - name: Version marker gate
+        run: uvx nox -s release_version -- --version "${{ steps.version.outputs.version }}"
 
-          find "${package_root}" -type d \( -name "__pycache__" -o -name ".pytest_cache" -o -name ".ruff_cache" \) -prune -exec rm -rf {} +
-          find "${package_root}" -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete
-
-          python - <<'PY'
-          import pathlib
-          import shutil
-
-          zip_name = "${{ steps.version.outputs.zip_name }}"
-          base_name = pathlib.Path("dist") / pathlib.Path(zip_name).with_suffix("")
-          shutil.make_archive(str(base_name), "zip", root_dir="dist", base_dir="maya_mmd_tools")
-          PY
+      - name: Build and validate release ZIP
+        run: uvx nox -s release_package -- --version "${{ steps.version.outputs.version }}"
 
       - name: Build release notes
         shell: bash
