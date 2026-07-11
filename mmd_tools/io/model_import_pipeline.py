@@ -9,7 +9,7 @@ from maya import cmds
 
 from .. import settings
 from ..converters import PhysicsConverter
-from ..converters.light_converter import create_mmd_light_controller, wire_dx11_shaders_to_mmd_light
+from ..converters.light_converter import create_mmd_light_controller, wire_mmd_shaders_to_mmd_light
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core import maya_attribute_utils, maya_viewport_utils, settings_keys as setting_keys
 from ..core.constants import SCENE_ROOT_SUFFIX
@@ -194,11 +194,11 @@ class ModelImportPipeline:
         return synced_dx11
 
     def wire_light_controller(self, mesh_converter: Any, light_ctrl: Optional[str]) -> None:
-        """Wire the MMD light controller to generated dx11 shaders when available."""
+        """Wire the MMD light controller to generated hardware shaders."""
         if not light_ctrl:
             return
         try:
-            wire_dx11_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)
+            wire_mmd_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)
         except Exception:
             self.logger.debug("Failed to wire MMD light", exc_info=True)
 

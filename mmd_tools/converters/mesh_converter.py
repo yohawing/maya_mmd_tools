@@ -349,6 +349,8 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
         # 後段のコントローラ結線が失敗しないようにする。
         ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
         ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
+        ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
+        ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
     ]
 
     try:

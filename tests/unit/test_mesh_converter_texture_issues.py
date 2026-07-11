@@ -1062,9 +1062,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         source = (Path(__file__).parents[2] / "mmd_tools" / "shaders" / "MMDShader.ogsfx").read_text(
             encoding="utf-8"
         )
-        self.assertIn("uniform vec3 MMDLightDirection", source)
-        self.assertIn("uniform vec3 MMDLightColor", source)
-        self.assertIn("vec3 lightDir = -normalize(MMDLightDirection)", source)
+        self.assertIn("uniform vec3 MmdControllerLightVector", source)
+        self.assertIn("uniform vec3 MmdControllerLightRgb", source)
+        self.assertIn("vec3 lightDir = -normalize(MmdControllerLightVector)", source)
         self.assertIn("float halfLambert = ndotl * 0.5 + 0.5", source)
         self.assertIn("vec3 srgbToLinear(vec3 color)", source)
         self.assertIn("colorOut = vec4(srgbToLinear(lighting), opacity)", source)

@@ -542,6 +542,8 @@ def _shader_diag():
             "shader", "technique", "DiffuseColorRGB", "DiffuseColorA",
             "diagnostics", "EffectParameters",
             "AmbientColor", "SpecularColor", "Shininess", "Opacity",
+            "MMDLightDirection", "MMDLightColor",
+            "MmdControllerLightVector", "MmdControllerLightRgb",
             "SphereMode", "EdgeColorRGB", "EdgeSize",
             "HasMainTexture", "HasSphereTexture", "HasToonTexture",
             "mmd_texture_path", "mmd_sphere_path", "mmd_draw_flags",
@@ -551,7 +553,11 @@ def _shader_diag():
                     item["attrs"][attr] = cmds.getAttr(shader + "." + attr)
                 except Exception as exc:
                     item["attrs"][attr] = "ERR: " + str(exc)
-        for attr in ["MainTexture", "SphereTexture", "ToonTexture"]:
+        for attr in [
+            "MainTexture", "SphereTexture", "ToonTexture",
+            "MMDLightDirection", "MMDLightColor",
+            "MmdControllerLightVector", "MmdControllerLightRgb",
+        ]:
             if cmds.attributeQuery(attr, node=shader, exists=True):
                 try:
                     item["incoming"][attr] = cmds.listConnections(shader + "." + attr, s=True, d=False, plugs=True) or []

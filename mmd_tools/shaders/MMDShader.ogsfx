@@ -27,8 +27,10 @@ uniform int HasMainTexture = 0;
 uniform int HasSphereTexture = 0;
 uniform int HasToonTexture = 0;
 // Driven by the same mmd_light controller connections as the DX11 effect.
-uniform vec3 MMDLightDirection = {0.5, -1.0, 0.5};
-uniform vec3 MMDLightColor = {1.0, 1.0, 1.0};
+// Avoid Maya's built-in light-parameter name inference: MMDLightDirection was
+// materialized as a matrix plug instead of a connectable vec3 on GLSLShader.
+uniform vec3 MmdControllerLightVector = {0.5, -1.0, 0.5};
+uniform vec3 MmdControllerLightRgb = {1.0, 1.0, 1.0};
 
 uniform texture2D MainTexture
 <
@@ -116,8 +118,8 @@ GLSLShader FS
     void main()
     {
         vec3 n = normalize(psIn.NormalWS);
-        vec3 lightDir = -normalize(MMDLightDirection);
-        vec3 lightColor = MMDLightColor;
+        vec3 lightDir = -normalize(MmdControllerLightVector);
+        vec3 lightColor = MmdControllerLightRgb;
         vec4 texColor = vec4(1.0);
         if (HasMainTexture != 0)
         {
