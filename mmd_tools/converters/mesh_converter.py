@@ -46,6 +46,12 @@ from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
     material_is_double_sided as _material_is_double_sided,
 )
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_EDGE_ALPHA,
+    ATTR_MMD_DIFFUSE_ALPHA,
+    iter_hardware_shader_values,
+    material_base_parameter_values,
+)
 from mmd_tools.converters.mesh_texture_resolve import (
     resolve_pmx_toon_texture_path as _resolve_pmx_toon_texture_path,
     resolve_texture_path as _resolve_texture_path,
@@ -337,6 +343,8 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
         ("SpecularColor", om.MFnNumericData.kDouble, 3, True, (0.5, 0.5, 0.5)),
         ("AmbientColor", om.MFnNumericData.kDouble, 3, True, (0.3, 0.3, 0.3)),
         ("EdgeColor", om.MFnNumericData.kDouble, 4, True, (0.0, 0.0, 0.0, 1.0)),
+        ("EdgeColorRGB", om.MFnNumericData.kDouble, 3, True, (0.0, 0.0, 0.0)),
+        ("EdgeColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("Shininess", om.MFnNumericData.kDouble, 1, False, 20.0),
         ("EdgeSize", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("SphereMode", om.MFnNumericData.kLong, 1, False, 0),
@@ -708,7 +716,9 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
             try:
                 edge_color = list(cmds.getAttr(f"{shader}.{ATTR_MMD_EDGE_COLOR}")[0])
                 edge_alpha = 1.0
-                if cmds.attributeQuery("EdgeColorA", node=shader, exists=True):
+                if cmds.attributeQuery(ATTR_MMD_EDGE_ALPHA, node=shader, exists=True):
+                    edge_alpha = float(cmds.getAttr(f"{shader}.{ATTR_MMD_EDGE_ALPHA}"))
+                elif cmds.attributeQuery("EdgeColorA", node=shader, exists=True):
                     edge_alpha = float(cmds.getAttr(f"{shader}.EdgeColorA"))
                 _set_dx11_color_uniform(shader, "EdgeColor", edge_color + [edge_alpha])
             except Exception:
@@ -1466,6 +1476,9 @@ class MeshConverter:
             ATTR_MMD_MATERIAL_INDEX: material.material_index,
             ATTR_MMD_MATERIAL_NAME: material.name,
             ATTR_MMD_DIFFUSE_COLOR: material.diffuse[:3],
+            ATTR_MMD_DIFFUSE_ALPHA: (
+                float(material.diffuse[3]) if len(material.diffuse) > 3 else 1.0
+            ),
             ATTR_MMD_AMBIENT_COLOR: material.ambient[:3],
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
@@ -1501,6 +1514,9 @@ class MeshConverter:
             custom_attrs[ATTR_MMD_TEXTURE_INDEX] = material.texture_index
             custom_attrs[ATTR_MMD_DRAW_FLAGS] = int(material.draw_flag)
             custom_attrs[ATTR_MMD_EDGE_COLOR] = material.edge_color[:3]
+            custom_attrs[ATTR_MMD_EDGE_ALPHA] = (
+                float(material.edge_color[3]) if len(material.edge_color) > 3 else 1.0
+            )
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
             custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
@@ -1652,41 +1668,12 @@ class MeshConverter:
         setup_ok &= _set_shader_attribute_checked(shader, "technique", "Main", "string")
         _ensure_mmd_shader_uniform_attributes(shader)
 
-        # OGSFX contract: DiffuseColorRGB (vec3) + DiffuseColorA (float). Never
-        # write a single vec4 DiffuseColor so alpha stays morph-safe.
-        diffuse = list(material.diffuse) if hasattr(material, "diffuse") else [0.8, 0.8, 0.8, 1.0]
-        diffuse_rgb = diffuse[:3] if len(diffuse) >= 3 else [0.8, 0.8, 0.8]
-        diffuse_a = float(diffuse[3]) if len(diffuse) > 3 else 1.0
-        setup_ok &= _set_shader_attribute_checked(shader, "DiffuseColorRGB", diffuse_rgb, "double3")
-        setup_ok &= _set_shader_attribute_checked(shader, "DiffuseColorA", diffuse_a, "float")
-
-        if hasattr(material, "specular"):
-            _set_shader_attribute_checked(shader, "SpecularColor", material.specular[:3], "double3")
-
-        if hasattr(material, "ambient"):
-            _set_shader_attribute_checked(shader, "AmbientColor", material.ambient[:3], "double3")
-
-        shininess = None
-        if hasattr(material, "specular_coefficient"):
-            shininess = material.specular_coefficient
-        elif hasattr(material, "specular_power"):
-            shininess = material.specular_power
-        if shininess is not None:
-            _set_shader_attribute_checked(shader, "Shininess", shininess, "float")
-
-        edge_color = [0.0, 0.0, 0.0, 1.0]
-        if hasattr(material, "edge_color"):
-            edge_color = list(material.edge_color)
-            if len(edge_color) == 3:
-                edge_color.append(1.0)
-        setup_ok &= _set_shader_attribute_checked(shader, "EdgeColor", edge_color, "double4")
-        setup_ok &= _set_shader_attribute_checked(shader, "EdgeSize", 0.0, "float")
-
-        sphere_mode = getattr(material, "sphere_mode", 0)
-        setup_ok &= _set_shader_attribute_checked(shader, "SphereMode", int(sphere_mode), "long")
-
-        # Keep Opacity in sync with diffuse alpha for legacy consumers.
-        setup_ok &= _set_shader_attribute_checked(shader, "Opacity", diffuse_a, "float")
+        # Both hardware backends use the same base-value contract. Diffuse alpha
+        # stays separate so a later material-morph evaluator can own final RGB.
+        for binding, value in iter_hardware_shader_values(
+            material_base_parameter_values(material), "GLSLShader"
+        ):
+            setup_ok &= _set_shader_attribute_checked(shader, binding.attribute, value, binding.attribute_type)
 
         for texture_flag in ("HasMainTexture", "HasSphereTexture", "HasToonTexture"):
             if cmds.attributeQuery(texture_flag, node=shader, exists=True):
@@ -1886,38 +1873,13 @@ class MeshConverter:
         _store_transparency_mode_attr(shader, mode)
         _store_shader_double_sided_attr(shader, double_sided)
 
-        # 基本色設定（Diffuse）
-        _set_dx11_color_uniform(shader, "DiffuseColor", material.diffuse)
-        opacity = material.diffuse[3] if hasattr(material, "diffuse") and len(material.diffuse) > 3 else 1.0
-        maya_attribute_utils.set_attribute(shader, "Opacity", opacity, "float")
-
-        # スペキュラー設定
-        if hasattr(material, "specular"):
-            maya_attribute_utils.set_attribute(
-                shader,
-                "SpecularColor",
-                material.specular[:3],
-                "double3",
-            )
-
-        # スペキュラー係数の設定（PMDとPMXで異なる）
-        specular_coef = None
-        if hasattr(material, "specular_coefficient"):
-            specular_coef = material.specular_coefficient
-        elif hasattr(material, "specular_power"):
-            specular_coef = material.specular_power
-
-        if specular_coef is not None:
-            maya_attribute_utils.set_attribute(shader, "Shininess", specular_coef, "float")
-
-        # アンビエント設定
-        if hasattr(material, "ambient"):
-            maya_attribute_utils.set_attribute(
-                shader,
-                "AmbientColor",
-                material.ambient[:3],
-                "double3",
-            )
+        base_values = material_base_parameter_values(material)
+        for semantic in ("diffuse_rgb", "diffuse_alpha", "opacity", "specular", "specular_power", "ambient"):
+            for binding, value in iter_hardware_shader_values(
+                {semantic: base_values.get(semantic)}, "dx11Shader"
+            ):
+                if value is not None:
+                    maya_attribute_utils.set_attribute(shader, binding.attribute, value, binding.attribute_type)
 
         # エッジ設定（PMXのみ）
         if not is_pmd:

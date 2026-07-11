@@ -381,7 +381,7 @@ class TestMaterialPresenter(unittest.TestCase):
         mock_apply_mode,
         mock_apply_outline,
     ):
-        """dx11Shaderに無い標準shader属性は設定せず、MMD edge colorはdouble3で保存する"""
+        """dx11Shaderに無い標準属性を避け、MMD edge alphaも保持する。"""
         self._configure_apply_inputs()
         self.mock_maya_adapter.node_type.return_value = "dx11Shader"
         self._set_existing_mmd_attribute_query(missing_attrs=("color", "specularColor", "transparency"))
@@ -397,9 +397,515 @@ class TestMaterialPresenter(unittest.TestCase):
             [0.1, 0.2, 0.3],
             "double3",
         )
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
+            "test_material", "mmd_edge_alpha", 1.0, "float"
+        )
         mock_apply_mode.assert_called_once()
         mock_apply_outline.assert_called_once_with("test_material", False, 1.5)
         self.assertFalse(self.presenter.has_unsaved_changes)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_apply_changes_updates_shared_dx11_and_glsl_base_uniforms(self, mock_maya_attribute_utils):
+        """Apply synchronizes the common hardware contract and authored attrs."""
+        for shader_type in ("dx11Shader", "GLSLShader"):
+            with self.subTest(shader_type=shader_type):
+                mock_maya_attribute_utils.reset_mock()
+                self._configure_apply_inputs()
+                self.presenter.material_data["ambient"] = (0.2, 0.3, 0.4)
+                self.presenter.material_data["edge_alpha"] = 0.35
+                self.mock_maya_adapter.node_type.return_value = shader_type
+                self.mock_maya_adapter.attribute_exists.return_value = True
+                self.mock_maya_adapter.list_connections.return_value = []
+
+                self.presenter.apply_changes()
+
+                mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+                    "test_material",
+                    {
+                        "diffuse_color": (1.0, 0.5, 0.0),
+                        "specular_color": (0.8, 0.8, 0.8),
+                        "ambient_color": (0.2, 0.3, 0.4),
+                        "mmd_diffuse_alpha": 0.75,
+                    },
+                )
+                for attr, value, attr_type in (
+                    ("DiffuseColorRGB", (1.0, 0.5, 0.0), "double3"),
+                    ("DiffuseColorA", 0.75, "float"),
+                    ("AmbientColor", (0.2, 0.3, 0.4), "double3"),
+                    ("SpecularColor", (0.8, 0.8, 0.8), "double3"),
+                    ("Shininess", 0.75, "float"),
+                ):
+                    mock_maya_attribute_utils.set_attribute.assert_any_call(
+                        "test_material", attr, value, attr_type
+                    )
+                if shader_type == "dx11Shader":
+                    mock_maya_attribute_utils.set_attribute.assert_any_call(
+                        "test_material", "EdgeColorRGB", [0.1, 0.2, 0.3], "double3"
+                    )
+                    mock_maya_attribute_utils.set_attribute.assert_any_call(
+                        "test_material", "EdgeColorA", 0.35, "float"
+                    )
+                    self.assertFalse(
+                        any(call.args[1] == "EdgeColor" for call in mock_maya_attribute_utils.set_attribute.call_args_list)
+                    )
+                else:
+                    mock_maya_attribute_utils.set_attribute.assert_any_call(
+                        "test_material", "EdgeColor", (0.1, 0.2, 0.3, 0.35), "double4"
+                    )
+                    self.assertFalse(
+                        any(call.args[1] == "EdgeColorRGB" for call in mock_maya_attribute_utils.set_attribute.call_args_list)
+                    )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_hardware_base_sync_does_not_overwrite_driven_final_plug(self, mock_maya_attribute_utils):
+        """A material-morph evaluator connection owns the final shader plug."""
+        self.presenter.current_material = "test_material"
+        self.mock_maya_adapter.attribute_exists.return_value = True
+        self.mock_maya_adapter.list_connections.side_effect = lambda plug, **_kwargs: (
+            ["morphEval.outputDiffuse"] if plug.endswith(".DiffuseColorRGB") else []
+        )
+
+        self.presenter._apply_hardware_base_values(
+            {"diffuse_rgb": (0.1, 0.2, 0.3), "ambient": (0.4, 0.5, 0.6)},
+            "dx11Shader",
+        )
+
+        self.assertNotIn(
+            unittest.mock.call("test_material", "DiffuseColorRGB", (0.1, 0.2, 0.3), "double3"),
+            mock_maya_attribute_utils.set_attribute.call_args_list,
+        )
+        mock_maya_attribute_utils.set_attribute.assert_called_once_with(
+            "test_material", "AmbientColor", (0.4, 0.5, 0.6), "double3"
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_dx11_edge_sync_skips_only_driven_split_plug(self, mock_maya_attribute_utils):
+        self.presenter.current_material = "test_material"
+        self.mock_maya_adapter.attribute_exists.return_value = True
+        self.mock_maya_adapter.list_connections.side_effect = lambda plug, **_kwargs: (
+            ["morphEval.outputEdgeAlpha"] if plug.endswith(".EdgeColorA") else []
+        )
+
+        self.presenter._apply_hardware_base_values(
+            {"edge_color": (0.1, 0.2, 0.3, 0.4)}, "dx11Shader"
+        )
+
+        mock_maya_attribute_utils.set_attribute.assert_called_once_with(
+            "test_material", "EdgeColorRGB", [0.1, 0.2, 0.3], "double3"
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_rgb_only_edge_scene_defaults_separate_alpha(self, mock_maya_attribute_utils):
+        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr == "mmd_edge_color"
+        self.mock_maya_adapter.list_connections.return_value = None
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: (
+            (0.2, 0.3, 0.4) if attr == "mmd_edge_color" else None
+        )
+
+        self.presenter.load_material_properties("legacy_mat")
+
+        self.assertEqual(self.presenter.material_data["edge_color"], (0.2, 0.3, 0.4))
+        self.assertEqual(self.presenter.material_data["edge_alpha"], 1.0)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_load_separate_edge_alpha_attribute(self, mock_maya_attribute_utils):
+        self.mock_maya_adapter.node_type.return_value = "GLSLShader"
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in {
+            "mmd_edge_color",
+            "mmd_edge_alpha",
+        }
+        self.mock_maya_adapter.list_connections.return_value = None
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
+            "mmd_edge_color": (0.2, 0.3, 0.4),
+            "mmd_edge_alpha": 0.25,
+        }.get(attr)
+
+        self.presenter.load_material_properties("current_mat")
+
+        self.assertEqual(self.presenter.material_data["edge_alpha"], 0.25)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_driven_hardware_load_and_unrelated_apply_preserve_authored_base(
+        self, mock_maya_attribute_utils
+    ):
+        authored = {
+            "diffuse_color": (0.1, 0.2, 0.3),
+            "specular_color": (0.4, 0.5, 0.6),
+            "ambient_color": (0.2, 0.25, 0.3),
+            "mmd_diffuse_alpha": 0.6,
+            "mmd_specular_coefficient": 8.0,
+            "mmd_edge_color": (0.0, 0.0, 0.0),
+            "mmd_edge_alpha": 0.7,
+        }
+        evaluated = {
+            "DiffuseColorRGB": (0.9, 0.9, 0.9),
+            "SpecularColor": (0.8, 0.8, 0.8),
+            "AmbientColor": (0.7, 0.7, 0.7),
+            "DiffuseColorA": 0.2,
+        }
+        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in authored or attr in evaluated
+        self.mock_maya_adapter.list_connections.side_effect = lambda plug, **_kwargs: (
+            ["morphEval.output"] if plug.rsplit(".", 1)[-1] in evaluated else []
+        )
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
+            **authored,
+            **evaluated,
+        }.get(attr)
+
+        self.presenter.load_material_properties("test_material")
+
+        self.assertEqual(self.presenter.material_data["diffuse"], authored["diffuse_color"])
+        self.assertEqual(self.presenter.material_data["specular"], authored["specular_color"])
+        self.assertEqual(self.presenter.material_data["ambient"], authored["ambient_color"])
+        self.assertEqual(self.presenter.material_data["transparency"], 0.4)
+
+        mock_maya_attribute_utils.reset_mock()
+        self._configure_apply_inputs()
+        self.presenter.material_data.update(
+            diffuse=authored["diffuse_color"],
+            specular=authored["specular_color"],
+            ambient=authored["ambient_color"],
+            edge_alpha=authored["mmd_edge_alpha"],
+        )
+        self.mock_view.transparency_spin.value.return_value = 0.4
+        self.mock_view.specular_coefficient_spin.value.return_value = 8.0
+        self.presenter.apply_changes()
+
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material",
+            {
+                "diffuse_color": authored["diffuse_color"],
+                "specular_color": authored["specular_color"],
+                "ambient_color": authored["ambient_color"],
+                "mmd_diffuse_alpha": authored["mmd_diffuse_alpha"],
+            },
+        )
+        written_hardware = {
+            call.args[1] for call in mock_maya_attribute_utils.set_attribute.call_args_list
+        }
+        self.assertFalse({"DiffuseColorRGB", "SpecularColor", "AmbientColor", "DiffuseColorA"} & written_hardware)
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material", {"mmd_specular_coefficient": 8.0, "shininess": 8.0}
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_legacy_undriven_hardware_color_remains_loadable(self, mock_maya_attribute_utils):
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr == "DiffuseColorRGB"
+        self.mock_maya_adapter.list_connections.return_value = []
+        mock_maya_attribute_utils.get_attribute.return_value = (0.3, 0.4, 0.5)
+
+        value, owned = self.presenter._load_base_value(
+            "legacy", "diffuse_color", ("DiffuseColorRGB",), (0.5, 0.5, 0.5)
+        )
+
+        self.assertEqual(value, (0.3, 0.4, 0.5))
+        self.assertTrue(owned)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_standard_surface_actual_values_override_stale_custom_attrs(self, mock_maya_attribute_utils):
+        actual = {
+            "baseColor": (0.2, 0.4, 0.6),
+            "opacity": (0.7, 0.7, 0.7),
+            "specularColor": (0.3, 0.5, 0.7),
+            "ambientColor": (0.1, 0.15, 0.2),
+            "specular": 0.22,
+        }
+        stale = {
+            "diffuse_color": (0.9, 0.9, 0.9),
+            "specular_color": (0.8, 0.8, 0.8),
+            "ambient_color": (0.7, 0.7, 0.7),
+            "mmd_diffuse_alpha": 0.1,
+        }
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in actual or attr in stale
+        self.mock_maya_adapter.list_connections.return_value = None
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
+            **actual,
+            **stale,
+        }.get(attr)
+
+        self.presenter.load_material_properties("test_material")
+        loaded = dict(self.presenter.material_data)
+
+        self.assertEqual(loaded["diffuse"], actual["baseColor"])
+        self.assertEqual(loaded["specular"], actual["specularColor"])
+        self.assertEqual(loaded["ambient"], actual["ambientColor"])
+        self.assertAlmostEqual(loaded["transparency"], 0.3)
+
+        self._configure_apply_inputs()
+        self.presenter.material_data = loaded
+        self.mock_view.transparency_spin.value.return_value = 0.3
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.22
+        mock_maya_attribute_utils.reset_mock()
+        self.presenter.apply_changes()
+
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
+            "test_material", "baseColor", actual["baseColor"], "double3"
+        )
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
+            "test_material", "opacity", [0.7, 0.7, 0.7], "double3"
+        )
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material",
+            {
+                "diffuse_color": actual["baseColor"],
+                "specular_color": actual["specularColor"],
+                "ambient_color": actual["ambientColor"],
+                "mmd_diffuse_alpha": 0.7,
+            },
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_editing_unknown_driven_hardware_values_acquires_base_ownership(
+        self, mock_maya_attribute_utils
+    ):
+        self._configure_apply_inputs()
+        self.presenter.material_data = {
+            "diffuse": (0.2, 0.3, 0.4),
+            "specular": (0.5, 0.6, 0.7),
+            "ambient": (0.1, 0.2, 0.3),
+            "edge_color": (0.0, 0.0, 0.0),
+            "_diffuse_base_owned": False,
+            "_specular_base_owned": False,
+            "_ambient_base_owned": False,
+            "_diffuse_alpha_base_owned": False,
+            "_specular_power_base_owned": False,
+            "_loaded_base_snapshot": {
+                "diffuse": (0.5, 0.5, 0.5),
+                "specular": (0.5, 0.5, 0.5),
+                "ambient": (0.5, 0.5, 0.5),
+                "transparency": 0.0,
+                "specular_coefficient": 0.5,
+            },
+        }
+        self.mock_view.transparency_spin.value.return_value = 0.35
+        self.mock_view.specular_coefficient_spin.value.return_value = 12.0
+        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
+        hardware_attrs = {
+            "DiffuseColorRGB",
+            "DiffuseColorA",
+            "SpecularColor",
+            "AmbientColor",
+            "Shininess",
+            "EdgeColorRGB",
+            "EdgeColorA",
+            "EdgeSize",
+            "SphereMode",
+            "Opacity",
+        }
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in hardware_attrs
+        self.mock_maya_adapter.list_connections.return_value = ["morphEval.output"]
+
+        self.presenter.apply_changes()
+
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material",
+            {
+                "diffuse_color": (0.2, 0.3, 0.4),
+                "specular_color": (0.5, 0.6, 0.7),
+                "ambient_color": (0.1, 0.2, 0.3),
+                "mmd_diffuse_alpha": 0.65,
+            },
+        )
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material", {"mmd_specular_coefficient": 12.0, "shininess": 12.0}
+        )
+        for key in (
+            "_diffuse_base_owned",
+            "_specular_base_owned",
+            "_ambient_base_owned",
+            "_diffuse_alpha_base_owned",
+            "_specular_power_base_owned",
+        ):
+            self.assertTrue(self.presenter.material_data[key])
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_unrelated_apply_keeps_unknown_driven_bases_unowned(self, mock_maya_attribute_utils):
+        self._configure_apply_inputs()
+        unknown = (0.5, 0.5, 0.5)
+        self.presenter.material_data = {
+            "diffuse": unknown,
+            "specular": unknown,
+            "ambient": unknown,
+            "edge_color": (0.0, 0.0, 0.0),
+            "_diffuse_base_owned": False,
+            "_specular_base_owned": False,
+            "_ambient_base_owned": False,
+            "_diffuse_alpha_base_owned": False,
+            "_specular_power_base_owned": False,
+            "_loaded_base_snapshot": {
+                "diffuse": unknown,
+                "specular": unknown,
+                "ambient": unknown,
+                "transparency": 0.0,
+                "specular_coefficient": 0.5,
+            },
+        }
+        self.mock_view.transparency_spin.value.return_value = 0.0
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.5
+        self.mock_maya_adapter.node_type.return_value = "dx11Shader"
+        hardware_attrs = {
+            "DiffuseColorRGB",
+            "DiffuseColorA",
+            "SpecularColor",
+            "AmbientColor",
+            "Shininess",
+            "EdgeColorRGB",
+            "EdgeColorA",
+            "EdgeSize",
+            "SphereMode",
+            "Opacity",
+        }
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in hardware_attrs
+        self.mock_maya_adapter.list_connections.return_value = ["morphEval.output"]
+
+        self.presenter.apply_changes()
+
+        custom_payloads = [call.args[1] for call in mock_maya_attribute_utils.set_custom_attributes.call_args_list]
+        self.assertFalse(any("diffuse_color" in payload for payload in custom_payloads))
+        self.assertFalse(any("specular_color" in payload for payload in custom_payloads))
+        self.assertFalse(any("ambient_color" in payload for payload in custom_payloads))
+        self.assertFalse(any("mmd_diffuse_alpha" in payload for payload in custom_payloads))
+        self.assertFalse(any("shininess" in payload for payload in custom_payloads))
+
+        # Reload remains unknown: unrelated Apply did not manufacture authority.
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: {
+            "DiffuseColorRGB": (0.9, 0.9, 0.9),
+            "DiffuseColorA": 0.2,
+            "SpecularColor": (0.8, 0.8, 0.8),
+            "AmbientColor": (0.7, 0.7, 0.7),
+            "Shininess": 20.0,
+        }.get(attr)
+        self.presenter.load_material_properties("test_material")
+        self.assertFalse(self.presenter.material_data["_diffuse_base_owned"])
+        self.assertFalse(self.presenter.material_data["_specular_base_owned"])
+        self.assertFalse(self.presenter.material_data["_ambient_base_owned"])
+        self.assertFalse(self.presenter.material_data["_diffuse_alpha_base_owned"])
+        self.assertFalse(self.presenter.material_data["_specular_power_base_owned"])
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_ensure_mmd_attributes_excludes_ownership_sensitive_bases(self, mock_maya_attribute_utils):
+        self.mock_maya_adapter.attribute_exists.return_value = False
+
+        self.presenter._ensure_mmd_attributes("legacy_mat")
+
+        defaults = mock_maya_attribute_utils.set_custom_attributes.call_args.args[1]
+        for attr in (
+            "diffuse_color",
+            "mmd_diffuse_alpha",
+            "specular_color",
+            "ambient_color",
+            "shininess",
+            "mmd_specular_coefficient",
+        ):
+            self.assertNotIn(attr, defaults)
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_standard_surface_preserves_mmd_coefficient_and_direct_specular_without_edit(
+        self, mock_maya_attribute_utils
+    ):
+        values = {
+            "baseColor": (0.2, 0.3, 0.4),
+            "specularColor": (0.5, 0.6, 0.7),
+            "specular": 0.6,
+            "opacity": (1.0, 1.0, 1.0),
+            "mmd_specular_coefficient": 25.0,
+        }
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in values
+        self.mock_maya_adapter.list_connections.return_value = None
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: values.get(attr)
+
+        self.presenter.load_material_properties("test_material")
+        loaded = dict(self.presenter.material_data)
+        self.assertEqual(loaded["specular_coefficient"], 1.0)
+        self.assertEqual(loaded["_authored_specular_coefficient"], 25.0)
+        self.assertEqual(loaded["_standard_specular_weight"], 0.6)
+
+        self._configure_apply_inputs()
+        self.presenter.material_data = loaded
+        self.mock_view.specular_coefficient_spin.value.return_value = 1.0
+        self.mock_view.transparency_spin.value.return_value = 0.0
+        mock_maya_attribute_utils.reset_mock()
+        self.presenter.apply_changes()
+
+        specular_writes = [
+            call for call in mock_maya_attribute_utils.set_attribute.call_args_list
+            if call.args[1] == "specular"
+        ]
+        self.assertEqual(specular_writes, [])
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material", {"mmd_specular_coefficient": 25.0, "shininess": 25.0}
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_standard_surface_coefficient_edit_maps_directly_to_specular_weight(
+        self, mock_maya_attribute_utils
+    ):
+        self._configure_apply_inputs()
+        self.presenter.material_data.update(
+            specular_coefficient=1.0,
+            _authored_specular_coefficient=25.0,
+            _standard_specular_weight=0.6,
+            _specular_power_base_owned=True,
+            _loaded_base_snapshot={
+                "diffuse": self.presenter.material_data["diffuse"],
+                "specular": self.presenter.material_data["specular"],
+                "ambient": self.presenter.material_data.get("ambient"),
+                "transparency": 0.25,
+                "specular_coefficient": 1.0,
+            },
+        )
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self.mock_maya_adapter.attribute_exists.return_value = True
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.7
+
+        self.presenter.apply_changes()
+
+        mock_maya_attribute_utils.set_attribute.assert_any_call(
+            "test_material", "specular", 0.7, "float"
+        )
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material", {"mmd_specular_coefficient": 0.7, "shininess": 0.7}
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_standard_surface_without_custom_coefficient_roundtrips_direct_weight(
+        self, mock_maya_attribute_utils
+    ):
+        values = {
+            "baseColor": (0.2, 0.3, 0.4),
+            "specularColor": (0.5, 0.6, 0.7),
+            "specular": 0.5,
+            "opacity": (1.0, 1.0, 1.0),
+        }
+        self.mock_maya_adapter.node_type.return_value = "standardSurface"
+        self.mock_maya_adapter.attribute_exists.side_effect = lambda attr, _node: attr in values
+        self.mock_maya_adapter.list_connections.return_value = None
+        mock_maya_attribute_utils.get_attribute.side_effect = lambda _node, attr: values.get(attr)
+
+        self.presenter.load_material_properties("test_material")
+        loaded = dict(self.presenter.material_data)
+        self.assertEqual(loaded["specular_coefficient"], 0.5)
+
+        self._configure_apply_inputs()
+        self.presenter.material_data = loaded
+        self.mock_view.specular_coefficient_spin.value.return_value = 0.5
+        self.mock_view.transparency_spin.value.return_value = 0.0
+        mock_maya_attribute_utils.reset_mock()
+        self.presenter.apply_changes()
+
+        self.assertFalse(
+            any(
+                call.args[1] == "specular"
+                for call in mock_maya_attribute_utils.set_attribute.call_args_list
+            )
+        )
+        mock_maya_attribute_utils.set_custom_attributes.assert_any_call(
+            "test_material", {"mmd_specular_coefficient": 0.5, "shininess": 0.5}
+        )
 
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_apply_changes_routes_standard_surface_opacity_and_specular(self, mock_maya_attribute_utils):

@@ -1,7 +1,16 @@
 from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core import maya_material_utils
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_EDGE_ALPHA,
+    ATTR_MMD_DIFFUSE_ALPHA,
+    iter_hardware_shader_values,
+)
 from mmd_tools.core.constants import (
     ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_DIFFUSE_COLOR,
+    ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_SHININESS,
     ATTR_MMD_EDGE_COLOR,
     ATTR_MMD_EDGE_SIZE,
     ATTR_MMD_MATERIAL_NAME,
@@ -261,34 +270,32 @@ class MaterialPresenter:
             # Check shader type
             shader_type = self.maya_adapter.node_type(material_name)
 
-            # Get diffuse color based on shader type
-            if shader_type == "standardSurface":
-                diffuse_color = maya_attribute_utils.get_attribute(material_name, "baseColor")
-            elif shader_type == "dx11Shader":
-                # dx11Shaderの場合、DiffuseColorRGBまたはg_Diffuseを試す
-                if self.maya_adapter.attribute_exists("DiffuseColorRGB", material_name):
-                    diffuse_color = maya_attribute_utils.get_attribute(material_name, "DiffuseColorRGB")
-                elif self.maya_adapter.attribute_exists("g_Diffuse", material_name):
-                    diffuse_color = maya_attribute_utils.get_attribute(material_name, "g_Diffuse")
-                else:
-                    diffuse_color = (0.5, 0.5, 0.5)
-                # タプルが正しい形式であることを確認
-                if not isinstance(diffuse_color, (list, tuple)) or len(diffuse_color) < 3:
-                    diffuse_color = (0.5, 0.5, 0.5)
-            elif self.maya_adapter.attribute_exists("color", material_name):
-                diffuse_color = maya_attribute_utils.get_attribute(material_name, "color")
+            if shader_type in ("dx11Shader", "GLSLShader"):
+                diffuse_color, diffuse_owned = self._load_base_value(
+                    material_name,
+                    ATTR_MMD_DIFFUSE_COLOR,
+                    ("DiffuseColorRGB", "g_Diffuse"),
+                    (0.5, 0.5, 0.5),
+                )
             else:
-                diffuse_color = (0.5, 0.5, 0.5)
+                actual_attr = "baseColor" if shader_type == "standardSurface" else "color"
+                diffuse_color = self._get_attr_safe(material_name, actual_attr, (0.5, 0.5, 0.5))
+                diffuse_owned = True
+            self.material_data["_diffuse_base_owned"] = diffuse_owned
             self.material_data["diffuse"] = diffuse_color
             self._update_color_widget(self.view.diffuse_color_widget, diffuse_color)
 
             # Get specular color
-            if shader_type == "dx11Shader" and self.maya_adapter.attribute_exists("SpecularColor", material_name):
-                specular_color = maya_attribute_utils.get_attribute(material_name, "SpecularColor")
-            elif self.maya_adapter.attribute_exists("specularColor", material_name):
-                specular_color = maya_attribute_utils.get_attribute(material_name, "specularColor")
+            if shader_type in ("dx11Shader", "GLSLShader"):
+                specular_color, specular_owned = self._load_base_value(
+                    material_name, ATTR_MMD_SPECULAR_COLOR, ("SpecularColor",), (0.5, 0.5, 0.5)
+                )
             else:
-                specular_color = (0.5, 0.5, 0.5)
+                specular_color = self._get_attr_safe(
+                    material_name, "specularColor", (0.5, 0.5, 0.5)
+                )
+                specular_owned = True
+            self.material_data["_specular_base_owned"] = specular_owned
 
             # タプルが正しい形式であることを確認
             if not isinstance(specular_color, (list, tuple)) or len(specular_color) < 3:
@@ -298,12 +305,16 @@ class MaterialPresenter:
             self._update_color_widget(self.view.specular_color_widget, specular_color)
 
             # Get ambient - Maya doesn't have ambient by default, check if attr exists
-            if shader_type == "dx11Shader" and self.maya_adapter.attribute_exists("AmbientColor", material_name):
-                ambient_color = maya_attribute_utils.get_attribute(material_name, "AmbientColor")
-            elif self.maya_adapter.attribute_exists("ambientColor", material_name):
-                ambient_color = maya_attribute_utils.get_attribute(material_name, "ambientColor")
+            if shader_type in ("dx11Shader", "GLSLShader"):
+                ambient_color, ambient_owned = self._load_base_value(
+                    material_name, ATTR_MMD_AMBIENT_COLOR, ("AmbientColor",), (0.5, 0.5, 0.5)
+                )
             else:
-                ambient_color = (0.5, 0.5, 0.5)
+                ambient_color = self._get_attr_safe(
+                    material_name, "ambientColor", (0.5, 0.5, 0.5)
+                )
+                ambient_owned = True
+            self.material_data["_ambient_base_owned"] = ambient_owned
 
             # タプルが正しい形式であることを確認
             if not isinstance(ambient_color, (list, tuple)) or len(ambient_color) < 3:
@@ -313,19 +324,61 @@ class MaterialPresenter:
             self._update_color_widget(self.view.ambient_color_widget, ambient_color)
 
             # Get specular coefficient (MMD style)
-            if self.maya_adapter.attribute_exists("mmd_specular_coefficient", material_name):
+            if shader_type == "standardSurface":
+                standard_specular_weight = float(self._get_attr_safe(material_name, "specular", 0.5))
+                self.material_data["_standard_specular_weight"] = standard_specular_weight
+                if self.maya_adapter.attribute_exists("mmd_specular_coefficient", material_name):
+                    specular_coefficient = maya_attribute_utils.get_attribute(
+                        material_name, "mmd_specular_coefficient"
+                    )
+                elif self.maya_adapter.attribute_exists(ATTR_MMD_SHININESS, material_name):
+                    specular_coefficient = maya_attribute_utils.get_attribute(
+                        material_name, ATTR_MMD_SHININESS
+                    )
+                else:
+                    specular_coefficient = standard_specular_weight
+                self.material_data["_specular_power_base_owned"] = True
+            elif shader_type in ("dx11Shader", "GLSLShader") and self.maya_adapter.attribute_exists(
+                "mmd_specular_coefficient", material_name
+            ):
                 specular_coefficient = maya_attribute_utils.get_attribute(material_name, "mmd_specular_coefficient")
+                self.material_data["_specular_power_base_owned"] = True
+            elif shader_type in ("dx11Shader", "GLSLShader") and self.maya_adapter.attribute_exists(
+                ATTR_MMD_SHININESS, material_name
+            ):
+                specular_coefficient = maya_attribute_utils.get_attribute(material_name, ATTR_MMD_SHININESS)
+                self.material_data["_specular_power_base_owned"] = True
+            elif shader_type in ("dx11Shader", "GLSLShader") and self._plug_is_unconnected(
+                material_name, "Shininess"
+            ):
+                specular_coefficient = maya_attribute_utils.get_attribute(material_name, "Shininess")
+                self.material_data["_specular_power_base_owned"] = True
             elif self.maya_adapter.attribute_exists("specular", material_name):
-                # StandardSurfaceの場合、specular値を係数に変換
-                specular_weight = maya_attribute_utils.get_attribute(material_name, "specular")
-                specular_coefficient = specular_weight
+                specular_coefficient = maya_attribute_utils.get_attribute(material_name, "specular")
+                self.material_data["_specular_power_base_owned"] = True
             else:
                 specular_coefficient = 0.5
+                self.material_data["_specular_power_base_owned"] = False
+            self.material_data["_authored_specular_coefficient"] = specular_coefficient
+            # MaterialTab's form contract is 0..1 for every backend. Preserve
+            # out-of-range imported PMX values separately until the user edits.
+            specular_coefficient = max(0.0, min(1.0, float(specular_coefficient)))
             self.material_data["specular_coefficient"] = specular_coefficient
             self.view.specular_coefficient_spin.setValue(specular_coefficient)
 
             # Get transparency (PMX style)
-            if self.maya_adapter.attribute_exists("opacity", material_name):
+            if shader_type in ("dx11Shader", "GLSLShader") and self.maya_adapter.attribute_exists(
+                ATTR_MMD_DIFFUSE_ALPHA, material_name
+            ):
+                diffuse_alpha = float(maya_attribute_utils.get_attribute(material_name, ATTR_MMD_DIFFUSE_ALPHA))
+                self.material_data["_diffuse_alpha_base_owned"] = True
+                transparency = 1.0 - diffuse_alpha
+            elif shader_type in ("dx11Shader", "GLSLShader") and self._plug_is_unconnected(
+                material_name, "DiffuseColorA"
+            ):
+                transparency = 1.0 - float(maya_attribute_utils.get_attribute(material_name, "DiffuseColorA"))
+                self.material_data["_diffuse_alpha_base_owned"] = True
+            elif self.maya_adapter.attribute_exists("opacity", material_name):
                 # StandardSurfaceの場合
                 opacity = maya_attribute_utils.get_attribute(material_name, "opacity")
                 transparency = 1.0 - opacity[0]  # Convert opacity to transparency
@@ -334,6 +387,7 @@ class MaterialPresenter:
                 transparency = transparency_val[0]
             else:
                 transparency = 0.0
+                self.material_data["_diffuse_alpha_base_owned"] = False
             self.material_data["transparency"] = transparency
             self.view.transparency_spin.setValue(transparency)
 
@@ -342,8 +396,8 @@ class MaterialPresenter:
             texture_attrs = []
             if shader_type == "standardSurface":
                 texture_attrs.append(f"{material_name}.baseColor")
-            elif shader_type == "dx11Shader":
-                # dx11Shaderの場合、MainTextureアトリビュートをチェック
+            elif shader_type in ("dx11Shader", "GLSLShader"):
+                # Hardware shader texture slots use the same names.
                 if self.maya_adapter.attribute_exists("MainTexture", material_name):
                     texture_attrs.append(f"{material_name}.MainTexture")
                 if self.maya_adapter.attribute_exists("DiffuseTexture", material_name):
@@ -405,6 +459,13 @@ class MaterialPresenter:
 
             # Get MMD-specific attributes if they exist
             self._load_mmd_attributes(material_name)
+            self.material_data["_loaded_base_snapshot"] = {
+                "diffuse": self.material_data.get("diffuse"),
+                "specular": self.material_data.get("specular"),
+                "ambient": self.material_data.get("ambient"),
+                "transparency": self.material_data.get("transparency"),
+                "specular_coefficient": self.material_data.get("specular_coefficient"),
+            }
 
         except Exception as e:
             logger.error(
@@ -505,9 +566,13 @@ class MaterialPresenter:
 
         # Edge properties
         edge_color = self._get_attr_safe(material_name, ATTR_MMD_EDGE_COLOR, (0.0, 0.0, 0.0, 1.0))
+        edge_alpha = float(self._get_attr_safe(material_name, ATTR_MMD_EDGE_ALPHA, 1.0))
         # エッジカラーの形式を確認
         if isinstance(edge_color, (list, tuple)):
             if len(edge_color) == 4:
+                # Legacy double4 scenes predate the separate alpha attribute.
+                if not self.maya_adapter.attribute_exists(ATTR_MMD_EDGE_ALPHA, material_name):
+                    edge_alpha = float(edge_color[3])
                 edge_color = edge_color[:3]  # Remove alpha
             elif len(edge_color) < 3:
                 edge_color = (0.0, 0.0, 0.0)
@@ -517,6 +582,7 @@ class MaterialPresenter:
         self.material_data["edge_color"] = edge_color
         self._update_color_widget(self.view.edge_color_widget, edge_color)
 
+        self.material_data["edge_alpha"] = edge_alpha
         raw_edge_size = float(self._get_attr_safe(material_name, ATTR_MMD_EDGE_SIZE, 1.0))
         visible_edge_size = max(0.0, min(2.0, raw_edge_size))
         self.material_data["edge_size"] = raw_edge_size
@@ -528,6 +594,37 @@ class MaterialPresenter:
         if self.maya_adapter.attribute_exists(attr, node):
             return maya_attribute_utils.get_attribute(node, attr)
         return default
+
+    def _plug_is_unconnected(self, node, attr):
+        if not self.maya_adapter.attribute_exists(attr, node):
+            return False
+        return not bool(
+            self.maya_adapter.list_connections(
+                f"{node}.{attr}", source=True, destination=False, plugs=True
+            ) or []
+        )
+
+    def _load_base_value(self, node, authored_attr, fallback_attrs, default):
+        """Read authored data first; never treat a driven final plug as base."""
+        if self.maya_adapter.attribute_exists(authored_attr, node):
+            return maya_attribute_utils.get_attribute(node, authored_attr), True
+        for attr in fallback_attrs:
+            if self._plug_is_unconnected(node, attr):
+                return maya_attribute_utils.get_attribute(node, attr), True
+        return default, False
+
+    @staticmethod
+    def _base_value_changed(current, loaded):
+        if loaded is None:
+            return current is not None
+        if isinstance(current, (list, tuple)) and isinstance(loaded, (list, tuple)):
+            if len(current) != len(loaded):
+                return True
+            return any(abs(float(a) - float(b)) > 1e-6 for a, b in zip(current, loaded))
+        try:
+            return abs(float(current) - float(loaded)) > 1e-6
+        except (TypeError, ValueError):
+            return current != loaded
 
     def _update_color_widget(self, widget, color):
         """Update color display widget"""
@@ -625,9 +722,45 @@ class MaterialPresenter:
                 {ATTR_MMD_MATERIAL_NAME: jp_name, ATTR_MMD_MATERIAL_NAME_EN: en_name},
             )
 
+            shader_type = self.maya_adapter.node_type(self.current_material)
+            snapshot = self.material_data.get("_loaded_base_snapshot", {})
+            diffuse_changed = self._base_value_changed(
+                self.material_data.get("diffuse"), snapshot.get("diffuse")
+            )
+            specular_changed = self._base_value_changed(
+                self.material_data.get("specular"), snapshot.get("specular")
+            )
+            ambient_changed = self._base_value_changed(
+                self.material_data.get("ambient"), snapshot.get("ambient")
+            )
+            transparency = self.view.transparency_spin.value()
+            alpha_changed = self._base_value_changed(
+                transparency, snapshot.get("transparency")
+            )
+            specular_coefficient = self.view.specular_coefficient_spin.value()
+            specular_power_changed = self._base_value_changed(
+                specular_coefficient, snapshot.get("specular_coefficient")
+            )
+            base_attrs = {}
+            if "diffuse" in self.material_data and (
+                self.material_data.get("_diffuse_base_owned", True) or diffuse_changed
+            ):
+                base_attrs["diffuse_color"] = self.material_data["diffuse"][:3]
+            if "specular" in self.material_data and (
+                self.material_data.get("_specular_base_owned", True) or specular_changed
+            ):
+                base_attrs["specular_color"] = self.material_data["specular"][:3]
+            if "ambient" in self.material_data and (
+                self.material_data.get("_ambient_base_owned", True) or ambient_changed
+            ):
+                base_attrs["ambient_color"] = self.material_data["ambient"][:3]
+            if self.material_data.get("_diffuse_alpha_base_owned", True) or alpha_changed:
+                base_attrs[ATTR_MMD_DIFFUSE_ALPHA] = 1.0 - transparency
+            if base_attrs:
+                maya_attribute_utils.set_custom_attributes(self.current_material, base_attrs)
+
             # Apply basic colors
             if "diffuse" in self.material_data:
-                shader_type = self.maya_adapter.node_type(self.current_material)
                 if shader_type == "standardSurface":
                     maya_attribute_utils.set_attribute(
                         self.current_material,
@@ -654,7 +787,6 @@ class MaterialPresenter:
                 )
 
             # Apply transparency
-            transparency = self.view.transparency_spin.value()
             # StandardSurfaceの場合はopacityに変換
             if self.maya_adapter.node_type(self.current_material) == "standardSurface":
                 opacity = 1.0 - transparency
@@ -674,17 +806,53 @@ class MaterialPresenter:
                 )
 
             # Apply specular coefficient
-            specular_coefficient = self.view.specular_coefficient_spin.value()
             # MMD係数として保存
-            maya_attribute_utils.set_custom_attributes(
-                self.current_material,
-                {"mmd_specular_coefficient": specular_coefficient},
-            )
+            if self.material_data.get("_specular_power_base_owned", True) or specular_power_changed:
+                authored_specular_coefficient = (
+                    specular_coefficient
+                    if specular_power_changed
+                    else self.material_data.get(
+                        "_authored_specular_coefficient", specular_coefficient
+                    )
+                )
+                maya_attribute_utils.set_custom_attributes(
+                    self.current_material,
+                    {
+                        "mmd_specular_coefficient": authored_specular_coefficient,
+                        ATTR_MMD_SHININESS: authored_specular_coefficient,
+                    },
+                )
+
+            if shader_type in ("dx11Shader", "GLSLShader"):
+                opacity = 1.0 - transparency
+                values = {
+                    "diffuse_rgb": self.material_data.get("diffuse"),
+                    "diffuse_alpha": opacity,
+                    "opacity": opacity,
+                    "ambient": self.material_data.get("ambient"),
+                    "specular": self.material_data.get("specular"),
+                    "specular_power": (
+                        specular_coefficient
+                        if specular_power_changed
+                        else self.material_data.get(
+                            "_authored_specular_coefficient", specular_coefficient
+                        )
+                    ),
+                    "edge_size": self.view.edge_size_spin.value(),
+                    "sphere_mode": self.view.sphere_mode_combo.currentIndex(),
+                }
+                edge = self.material_data.get("edge_color")
+                if edge is not None:
+                    values["edge_color"] = tuple(edge[:3]) + (
+                        float(self.material_data.get("edge_alpha", 1.0)),
+                    )
+                self._apply_hardware_base_values(values, shader_type)
 
             # StandardSurfaceの場合はspecularに変換
-            if self.maya_adapter.node_type(self.current_material) == "standardSurface":
-                specular_weight = min(1.0, specular_coefficient / 100.0)
+            if shader_type == "standardSurface" and specular_power_changed:
+                specular_weight = specular_coefficient
                 maya_attribute_utils.set_attribute(self.current_material, "specular", specular_weight, "float")
+                self.material_data["_standard_specular_weight"] = specular_weight
 
             # Apply textures
             texture_path = self.view.texture_path_edit.text()
@@ -748,6 +916,25 @@ class MaterialPresenter:
                     item.setText(display_text)
                     break
 
+            if diffuse_changed:
+                self.material_data["_diffuse_base_owned"] = True
+            if specular_changed:
+                self.material_data["_specular_base_owned"] = True
+            if ambient_changed:
+                self.material_data["_ambient_base_owned"] = True
+            if alpha_changed:
+                self.material_data["_diffuse_alpha_base_owned"] = True
+            if specular_power_changed:
+                self.material_data["_specular_power_base_owned"] = True
+            self.material_data["transparency"] = transparency
+            self.material_data["specular_coefficient"] = specular_coefficient
+            self.material_data["_loaded_base_snapshot"] = {
+                "diffuse": self.material_data.get("diffuse"),
+                "specular": self.material_data.get("specular"),
+                "ambient": self.material_data.get("ambient"),
+                "transparency": transparency,
+                "specular_coefficient": specular_coefficient,
+            }
             self.has_unsaved_changes = False
             logger.info(f"Applied changes to material '{self.current_material}'")
             self.app_state.emit_status(tr_message_format("material_changes_applied", material=self.current_material))
@@ -755,6 +942,21 @@ class MaterialPresenter:
         except Exception as e:
             logger.error(f"Failed to apply material changes: {e}", exc_info=True)
             self.app_state.emit_status(tr_message_format("material_changes_failed", error=str(e)))
+
+    def _apply_hardware_base_values(self, values, shader_type):
+        """Write base values only when no evaluator owns the final plug."""
+        material = self.current_material
+        for binding, value in iter_hardware_shader_values(values, shader_type):
+            if value is None or not self.maya_adapter.attribute_exists(binding.attribute, material):
+                continue
+            plug = f"{material}.{binding.attribute}"
+            incoming = self.maya_adapter.list_connections(
+                plug, source=True, destination=False, plugs=True
+            ) or []
+            if incoming:
+                logger.debug("Skipping driven hardware material plug: %s", plug)
+                continue
+            maya_attribute_utils.set_attribute(material, binding.attribute, value, binding.attribute_type)
 
     def _apply_texture(self, material, texture_path):
         """Apply texture to material"""
@@ -833,6 +1035,12 @@ class MaterialPresenter:
                 [edge_color[0], edge_color[1], edge_color[2]],
                 "double3",
             )
+            maya_attribute_utils.set_attribute(
+                self.current_material,
+                ATTR_MMD_EDGE_ALPHA,
+                float(self.material_data.get("edge_alpha", 1.0)),
+                "float",
+            )
 
         edge_size_value = self.view.edge_size_spin.value()
         if abs(edge_size_value - float(self.material_data.get("edge_size_view", edge_size_value))) < 1e-6:
@@ -860,10 +1068,9 @@ class MaterialPresenter:
             "mmd_toon_index": 0,
             "mmd_draw_flags": 0x1F,
             "mmd_edge_color": [0.0, 0.0, 0.0],
+            ATTR_MMD_EDGE_ALPHA: 1.0,
             "mmd_edge_size": 1.0,
             ATTR_MMD_SHADER_OUTLINE_ENABLED: False,
-            "mmd_specular_coefficient": 5.0,
-            "ambientColor": [0.5, 0.5, 0.5],
         }
 
         # 存在しないアトリビュートのみデフォルト値で作成
