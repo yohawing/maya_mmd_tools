@@ -409,30 +409,33 @@ class TestMorphPresenter(MayaTestBase):
         self.assertFalse(any(msg.startswith("Auto-connect succeeded:") for msg in info_messages))
 
     def test_organize_morphs_by_group(self):
-        """グループごとのモーフ整理のテスト"""
-        # モーフデータを設定
+        """PMX panel に基づくモーフ整理のテスト"""
+        # モーフデータを設定（stale group は分類に使わない）
         self.presenter.morph_data = {
-            "eyebrow_up": {"group": "眉"},
-            "eyebrow_down": {"group": "眉"},
-            "eye_close": {"group": "目"},
-            "mouth_open": {"group": "口"},
-            "cheek_red": {"group": "その他"},
-            "custom_morph": {"group": "カスタム"},
+            "eyebrow_up": {"panel": 1, "group": "カスタム"},
+            "eyebrow_down": {"panel": 1, "group": "その他"},
+            "eye_close": {"panel": 2, "group": "口"},
+            "mouth_open": {"panel": 3, "group": "眉"},
+            "cheek_red": {"panel": 4, "group": "カスタム"},
+            "system_base": {"panel": 0, "group": "その他"},
+            "custom_morph": {"group": "カスタム"},  # missing panel -> Other
         }
 
         # グループ整理を実行
         self.presenter._organize_morphs_by_group()
 
-        # 結果を確認
+        # 結果を確認: panels 1-4 only; custom group strings ignored
         self.assertEqual(len(self.presenter.group_morphs["眉"]), 2)
         self.assertEqual(len(self.presenter.group_morphs["目"]), 1)
         self.assertEqual(len(self.presenter.group_morphs["口"]), 1)
-        self.assertEqual(len(self.presenter.group_morphs["その他"]), 1)
-        self.assertEqual(len(self.presenter.group_morphs["カスタム"]), 1)
+        self.assertEqual(len(self.presenter.group_morphs["その他"]), 2)
+        self.assertNotIn("カスタム", self.presenter.group_morphs)
+        self.assertNotIn("system_base", self.presenter.group_morphs["その他"])
 
         self.assertIn("eyebrow_up", self.presenter.group_morphs["眉"])
         self.assertIn("eyebrow_down", self.presenter.group_morphs["眉"])
         self.assertIn("eye_close", self.presenter.group_morphs["目"])
+        self.assertIn("custom_morph", self.presenter.group_morphs["その他"])
 
     def test_apply_changes(self):
         """変更適用のテスト"""

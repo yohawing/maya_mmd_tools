@@ -5,6 +5,12 @@ from mmd_tools.adapters import MayaCmdsAdapter
 from ...core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
 from ...core.logger import get_logger
 from ...core.maya_attribute_utils import set_custom_attributes, set_attribute
+from ...core.morph_metadata_reader import (
+    MORPH_TAB_GROUP_ORDER,
+    group_morph_names_by_panel,
+    morph_info_from_presenter_entry,
+    panel_display_group,
+)
 from ..qt_compat import QTimer, QListWidgetItem
 from .list_presenter_helpers import apply_list_filter, reload_for_current_model_change, tr_message, tr_message_format
 
@@ -21,6 +27,8 @@ _NETWORK_MORPH_TYPE_INDEX = {
     "group": _GROUP_MORPH_TYPE_INDEX,
 }
 _WEIGHT_INDEX_RE = re.compile(r"\[(\d+)\]")
+# Fallback panel for morphs without explicit PMX panel metadata (not System/0).
+_DEFAULT_USER_PANEL = 4
 
 
 class MorphPresenter:
@@ -159,13 +167,23 @@ class MorphPresenter:
                         if not allow_metadata_entries:
                             continue
                         morph_key = raw_name
+                        # No inventing panel=0 (System). Unknown BS morphs default to Other.
+                        panel = _DEFAULT_USER_PANEL
                         self.morph_data[morph_key] = {
                             "name_jp": raw_name,
                             "name_en": "",
-                            "panel": 0,
+                            "panel": panel,
                             "type": 0,  # 頂点モーフ
-                            "group": "その他",
+                            "index": weight_index if weight_index is not None else -1,
+                            # Custom group annotation defaults to panel label; filtering uses panel.
+                            "group": panel_display_group(panel) or "その他",
                         }
+                    else:
+                        # Multi-mesh / multi-alias merge: keep first panel/type/index.
+                        data = self.morph_data[morph_key]
+                        if data.get("index") is None or data.get("index") == -1:
+                            if weight_index is not None:
+                                data["index"] = weight_index
 
                     # ブレンドシェイプ情報を追加
                     self._add_blend_shape_target(self.morph_data[morph_key], bs_node, target_name, target_attr)
@@ -214,24 +232,29 @@ class MorphPresenter:
 
             raw_name = self._get_attr_safe(morph_node, "mmd_morph_name", "") or morph_node
             morph_key = raw_name if raw_name in self.morph_data else morph_node
+            panel = self._read_network_panel(morph_node)
+            morph_index = self._read_network_index(morph_node)
             if morph_key not in self.morph_data:
                 if not allow_metadata_entries:
                     continue
                 morph_key = raw_name
-                panel = self._get_attr_safe(morph_node, "mmd_morph_panel", 0)
-                try:
-                    panel = int(panel)
-                except (TypeError, ValueError):
-                    panel = 0
                 self.morph_data[morph_key] = {
                     "name_jp": raw_name,
                     "name_en": self._get_attr_safe(morph_node, "mmd_morph_name_en", ""),
                     "panel": panel,
                     "type": _NETWORK_MORPH_TYPE_INDEX.get(morph_type, 0),
-                    "group": "その他",
+                    "index": morph_index,
+                    # Custom group annotation defaults to panel label; filtering uses panel.
+                    "group": panel_display_group(panel) or "その他",
                 }
 
             data = self.morph_data[morph_key]
+            # Multi-target / namespace merge: keep first deterministic panel/type/index.
+            if data.get("panel") is None:
+                data["panel"] = panel
+            if data.get("index") is None or data.get("index") == -1:
+                if morph_index is not None and morph_index >= 0:
+                    data["index"] = morph_index
             english_name = self._get_attr_safe(morph_node, "mmd_morph_name_en", "")
             if english_name and not data.get("name_en"):
                 data["name_en"] = english_name
@@ -425,17 +448,20 @@ class MorphPresenter:
                 )
 
     def _organize_morphs_by_group(self):
-        """グループごとにモーフを整理"""
-        # デフォルトグループ
-        for group in ["眉", "目", "口", "その他"]:
-            self.group_morphs[group] = []
+        """PMX panel 1-4 でモーフを整理する。
 
-        # モーフをグループに振り分け
-        for morph_name, data in self.morph_data.items():
-            group = data.get("group", "その他")
-            if group not in self.group_morphs:
-                self.group_morphs[group] = []
-            self.group_morphs[group].append(morph_name)
+        Source of truth は ``panel`` メタデータ（MorphInfo + categorize_morphs）。
+        ユーザー編集用の ``group`` 文字列は保存対象として残すが、分類・フィルタ
+        には使わない。panel 0 (System) はリスト本体には残しつつグループから除外。
+        """
+        morph_infos = [
+            morph_info_from_presenter_entry(name, data)
+            for name, data in self.morph_data.items()
+        ]
+        self.group_morphs = group_morph_names_by_panel(morph_infos)
+        # Ensure stable key order even when a category is empty.
+        for group in MORPH_TAB_GROUP_ORDER:
+            self.group_morphs.setdefault(group, [])
 
     def _display_all_morphs(self):
         """全てのモーフを表示"""
@@ -988,6 +1014,26 @@ class MorphPresenter:
                 self.app_state.emit_status(tr_message_format("preset_deleted", preset=preset_name))
         except Exception:
             pass
+
+    def _read_network_panel(self, morph_node):
+        """Read ``mmd_morph_panel``; missing attr defaults to Other, not System."""
+        if not self.maya_adapter.attribute_exists("mmd_morph_panel", morph_node):
+            return _DEFAULT_USER_PANEL
+        panel = self._get_attr_safe(morph_node, "mmd_morph_panel", _DEFAULT_USER_PANEL)
+        try:
+            return int(panel)
+        except (TypeError, ValueError):
+            return _DEFAULT_USER_PANEL
+
+    def _read_network_index(self, morph_node):
+        """Read ``mmd_morph_index`` when present; otherwise ``-1``."""
+        if not self.maya_adapter.attribute_exists("mmd_morph_index", morph_node):
+            return -1
+        index = self._get_attr_safe(morph_node, "mmd_morph_index", -1)
+        try:
+            return int(index)
+        except (TypeError, ValueError):
+            return -1
 
     def _get_attr_safe(self, node, attr, default=None):
         """属性を安全に取得"""

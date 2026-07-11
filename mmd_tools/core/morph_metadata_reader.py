@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Mapping, Optional
 
+# English labels used by AnimationPresenter morph picker groups.
 PANEL_NAMES: Dict[int, str] = {
     0: "System",
     1: "Eyebrow",
@@ -12,6 +13,17 @@ PANEL_NAMES: Dict[int, str] = {
     3: "Mouth",
     4: "Other",
 }
+
+# Japanese MorphTab filter labels (panels 1-4). Panel 0 is intentionally absent.
+PANEL_GROUP_LABELS: Dict[int, str] = {
+    1: "眉",
+    2: "目",
+    3: "口",
+    4: "その他",
+}
+
+# Stable MorphTab group order for filter UI.
+MORPH_TAB_GROUP_ORDER: tuple[str, ...] = ("眉", "目", "口", "その他")
 
 
 @dataclass(frozen=True)
@@ -33,6 +45,66 @@ class CategorizedMorphs:
     eye: tuple[MorphInfo, ...]
     mouth: tuple[MorphInfo, ...]
     other: tuple[MorphInfo, ...]
+
+
+def panel_display_group(panel: int) -> Optional[str]:
+    """Return MorphTab Japanese group label for *panel*.
+
+    System/reserved panel ``0`` returns ``None`` (excluded from user-facing
+    filter groups). Unknown panels map to ``その他``, matching
+    :func:`categorize_morphs`.
+    """
+    if panel == 0:
+        return None
+    return PANEL_GROUP_LABELS.get(panel, PANEL_GROUP_LABELS[4])
+
+
+def morph_info_from_presenter_entry(name: str, data: Mapping[str, object]) -> MorphInfo:
+    """Build :class:`MorphInfo` from MorphPresenter ``morph_data`` entry.
+
+    Missing ``panel`` defaults to Other (4), not System (0), so incomplete
+    scene metadata still participates in user-facing grouping.
+    """
+    panel_raw = data.get("panel")
+    if panel_raw is None:
+        panel = 4
+    else:
+        panel = _coerce_int(panel_raw, default=4)
+
+    morph_type_raw = data.get("mmd_morph_type") or data.get("morph_type")
+    if morph_type_raw:
+        morph_type = _coerce_str(morph_type_raw, default="vertex")
+    else:
+        # MorphPresenter stores PMX morph type as integer ``type``.
+        type_index = _coerce_int(data.get("type"), default=0)
+        morph_type = {
+            0: "vertex",
+            10: "bone",
+            11: "material",
+            12: "group",
+        }.get(type_index, "vertex")
+
+    return MorphInfo(
+        name=name,
+        name_english=_coerce_str(data.get("name_en") or data.get("name_english")),
+        panel=panel,
+        morph_type=morph_type,
+        index=_coerce_int(data.get("index"), default=-1),
+    )
+
+
+def group_morph_names_by_panel(morphs: Iterable[MorphInfo]) -> Dict[str, List[str]]:
+    """Map MorphTab Japanese labels to morph names via :func:`categorize_morphs`.
+
+    Panel 0 morphs are excluded. Only panels 1-4 labels are returned.
+    """
+    categorized = categorize_morphs(morphs)
+    return {
+        PANEL_GROUP_LABELS[1]: [m.name for m in categorized.eyebrow],
+        PANEL_GROUP_LABELS[2]: [m.name for m in categorized.eye],
+        PANEL_GROUP_LABELS[3]: [m.name for m in categorized.mouth],
+        PANEL_GROUP_LABELS[4]: [m.name for m in categorized.other],
+    }
 
 
 def categorize_morphs(morphs: Iterable[MorphInfo]) -> CategorizedMorphs:

@@ -711,14 +711,15 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         set_calls = [call for call in adapter.calls if call[0] == "set_attr"]
         self.assertEqual(set_calls, [("set_attr", "faceBlendShape.weight[0]", 0.55)])
 
-    def test_organize_and_filter_morphs_by_group_are_pure_logic(self):
+    def test_organize_and_filter_morphs_by_panel_not_stale_group(self):
         presenter, view, _, _ = _make_presenter()
         presenter.morph_data = {
-            "eyebrow_up": {"group": "眉"},
-            "eye_close": {"group": "目"},
-            "mouth_open": {"group": "口"},
-            "custom": {"group": "カスタム"},
-            "fallback": {},
+            # stale custom group must not override panel classification
+            "eyebrow_up": {"panel": 1, "group": "カスタム"},
+            "eye_close": {"panel": 2, "group": "その他"},
+            "mouth_open": {"panel": 3, "group": "眉"},
+            "system_base": {"panel": 0, "group": "その他"},
+            "fallback": {},  # missing panel -> Other
         }
 
         presenter._organize_morphs_by_group()
@@ -728,13 +729,307 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.group_morphs["目"], ["eye_close"])
         self.assertEqual(presenter.group_morphs["口"], ["mouth_open"])
         self.assertEqual(presenter.group_morphs["その他"], ["fallback"])
-        self.assertEqual(presenter.group_morphs["カスタム"], ["custom"])
+        self.assertNotIn("カスタム", presenter.group_morphs)
+        # panel 0 stays in morph_data but is excluded from filter groups
+        self.assertNotIn("system_base", presenter.group_morphs["その他"])
         self.assertEqual([item.text() for item in view.morph_list.items], ["fallback"])
 
         view.morph_list.items = [_FakeItem("smile"), _FakeItem("wink"), _FakeItem("sad")]
         presenter.filter_morphs("s")
 
         self.assertEqual([item.hidden for item in view.morph_list.items], [False, True, False])
+
+    def test_panel_0_to_4_classification_across_morph_types(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update(
+            {
+                TEST_MODEL,
+                "faceBlendShape",
+                "faceBlendShape.weight[0]",
+                "faceBlendShape.weight[1]",
+                "boneNode",
+                "materialNode",
+                "groupNode",
+                "systemNode",
+            }
+        )
+        mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
+        adapter.relatives[(TEST_MODEL, mesh_kwargs)] = ["faceShape"]
+        adapter.history["faceShape"] = ["faceBlendShape"]
+        adapter.ls_results[((("faceBlendShape",),), (("type", "blendShape"),))] = ["faceBlendShape"]
+        adapter.ls_results[((), (("type", "network"),))] = [
+            "boneNode",
+            "materialNode",
+            "groupNode",
+            "systemNode",
+        ]
+        adapter.aliases["faceBlendShape"] = ["brow_v", "weight[0]", "other_v", "weight[1]"]
+        adapter.attr_exists.update(
+            {
+                ("faceBlendShape", "mmd_blendshape_morph_names_json"),
+                ("boneNode", "mmd_morph_type"),
+                ("boneNode", "mmd_morph_name"),
+                ("boneNode", "mmd_morph_panel"),
+                ("boneNode", "mmd_morph_index"),
+                ("materialNode", "mmd_morph_type"),
+                ("materialNode", "mmd_morph_name"),
+                ("materialNode", "mmd_morph_panel"),
+                ("materialNode", "mmd_morph_index"),
+                ("groupNode", "mmd_morph_type"),
+                ("groupNode", "mmd_morph_name"),
+                ("groupNode", "mmd_morph_panel"),
+                ("groupNode", "mmd_morph_index"),
+                ("systemNode", "mmd_morph_type"),
+                ("systemNode", "mmd_morph_name"),
+                ("systemNode", "mmd_morph_panel"),
+                ("systemNode", "mmd_morph_index"),
+            }
+        )
+        adapter.attr_values.update(
+            {
+                "faceBlendShape.mmd_blendshape_morph_names_json": json.dumps(
+                    {"0": "眉頂点", "1": "その他頂点"},
+                    ensure_ascii=False,
+                ),
+                "faceBlendShape.weight[0]": 0.0,
+                "faceBlendShape.weight[1]": 0.0,
+                "boneNode.mmd_morph_type": "bone",
+                "boneNode.mmd_morph_name": "目ボーン",
+                "boneNode.mmd_morph_panel": 2,
+                "boneNode.mmd_morph_index": 10,
+                "materialNode.mmd_morph_type": "material",
+                "materialNode.mmd_morph_name": "口材質",
+                "materialNode.mmd_morph_panel": 3,
+                "materialNode.mmd_morph_index": 11,
+                "groupNode.mmd_morph_type": "group",
+                "groupNode.mmd_morph_name": "その他グループ",
+                "groupNode.mmd_morph_panel": 4,
+                "groupNode.mmd_morph_index": 12,
+                "systemNode.mmd_morph_type": "bone",
+                "systemNode.mmd_morph_name": "base",
+                "systemNode.mmd_morph_panel": 0,
+                "systemNode.mmd_morph_index": 0,
+            }
+        )
+        # Seed full mmdMorphData so panel is authoritative and stale group is ignored.
+        # allow_metadata_entries becomes False; network/BS only attach by matching name.
+        adapter.attr_exists.add((TEST_MODEL, "mmdMorphData"))
+        adapter.attr_values[f"{TEST_MODEL}.mmdMorphData"] = json.dumps(
+            {
+                "眉頂点": {
+                    "name_jp": "眉頂点",
+                    "panel": 1,
+                    "type": 0,
+                    "index": 0,
+                    "group": "stale_custom",
+                },
+                "その他頂点": {
+                    "name_jp": "その他頂点",
+                    "panel": 4,
+                    "type": 0,
+                    "index": 1,
+                    "group": "stale_custom",
+                },
+                "目ボーン": {
+                    "name_jp": "目ボーン",
+                    "panel": 2,
+                    "type": 10,
+                    "index": 10,
+                    "group": "stale_custom",
+                },
+                "口材質": {
+                    "name_jp": "口材質",
+                    "panel": 3,
+                    "type": 11,
+                    "index": 11,
+                    "group": "stale_custom",
+                },
+                "その他グループ": {
+                    "name_jp": "その他グループ",
+                    "panel": 4,
+                    "type": 12,
+                    "index": 12,
+                    "group": "stale_custom",
+                },
+                "base": {
+                    "name_jp": "base",
+                    "panel": 0,
+                    "type": 10,
+                    "index": 0,
+                    "group": "stale_custom",
+                },
+            },
+            ensure_ascii=False,
+        )
+        presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
+
+        presenter.load_morphs()
+
+        # All morphs (including system) appear in the full list.
+        # Python default sort is code-point order (目 < 眉).
+        self.assertEqual(
+            [item.text() for item in view.morph_list.items],
+            ["base", "その他グループ", "その他頂点", "口材質", "目ボーン", "眉頂点"],
+        )
+        self.assertEqual(presenter.morph_data["base"]["panel"], 0)
+        self.assertEqual(presenter.morph_data["眉頂点"]["panel"], 1)
+        self.assertEqual(presenter.morph_data["目ボーン"]["panel"], 2)
+        self.assertEqual(presenter.morph_data["口材質"]["panel"], 3)
+        self.assertEqual(presenter.morph_data["その他頂点"]["panel"], 4)
+        self.assertEqual(presenter.morph_data["その他グループ"]["panel"], 4)
+        # Network attach + weight targets wired without inventing panel.
+        self.assertEqual(presenter.morph_data["目ボーン"]["morph_node"], "boneNode")
+        self.assertEqual(presenter.morph_data["口材質"]["morph_node"], "materialNode")
+        self.assertEqual(presenter.morph_data["その他グループ"]["morph_node"], "groupNode")
+        self.assertEqual(presenter.morph_data["base"]["morph_node"], "systemNode")
+        self.assertTrue(presenter.morph_data["眉頂点"].get("blend_shape_targets"))
+
+        # Stale custom group did not drive classification.
+        self.assertEqual(presenter.group_morphs["眉"], ["眉頂点"])
+        self.assertEqual(presenter.group_morphs["目"], ["目ボーン"])
+        self.assertEqual(presenter.group_morphs["口"], ["口材質"])
+        self.assertEqual(
+            sorted(presenter.group_morphs["その他"]),
+            ["その他グループ", "その他頂点"],
+        )
+        self.assertNotIn("base", presenter.group_morphs["その他"])
+
+        presenter.filter_morphs_by_group("目")
+        self.assertEqual([item.text() for item in view.morph_list.items], ["目ボーン"])
+
+        presenter.filter_morphs_by_group("全て表示")
+        self.assertIn("base", [item.text() for item in view.morph_list.items])
+
+    def test_multi_mesh_namespace_same_name_merges_targets_not_list_items(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update(
+            {
+                TEST_MODEL,
+                "ns:faceBlendShapeA",
+                "ns:faceBlendShapeA.weight[0]",
+                "faceBlendShapeB",
+                "faceBlendShapeB.weight[3]",
+            }
+        )
+        mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
+        adapter.relatives[(TEST_MODEL, mesh_kwargs)] = ["ns:faceShapeA", "faceShapeB"]
+        adapter.history["ns:faceShapeA"] = ["ns:faceBlendShapeA"]
+        adapter.history["faceShapeB"] = ["faceBlendShapeB"]
+        adapter.ls_results[((("ns:faceBlendShapeA",),), (("type", "blendShape"),))] = [
+            "ns:faceBlendShapeA"
+        ]
+        adapter.ls_results[((("faceBlendShapeB",),), (("type", "blendShape"),))] = [
+            "faceBlendShapeB"
+        ]
+        adapter.attr_exists.update(
+            {
+                ("ns:faceBlendShapeA", "mmd_blendshape_morph_names_json"),
+                ("faceBlendShapeB", "mmd_blendshape_morph_names_json"),
+            }
+        )
+        adapter.attr_values.update(
+            {
+                "ns:faceBlendShapeA.mmd_blendshape_morph_names_json": json.dumps(
+                    {"0": "笑顔"}, ensure_ascii=False
+                ),
+                "faceBlendShapeB.mmd_blendshape_morph_names_json": json.dumps(
+                    {"3": "笑顔"}, ensure_ascii=False
+                ),
+                "ns:faceBlendShapeA.weight[0]": 0.0,
+                "faceBlendShapeB.weight[3]": 0.0,
+            }
+        )
+        adapter.aliases["ns:faceBlendShapeA"] = ["smile_a", "weight[0]"]
+        adapter.aliases["faceBlendShapeB"] = ["smile_b", "weight[3]"]
+        presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
+
+        presenter.load_morphs()
+
+        self.assertEqual([item.text() for item in view.morph_list.items], ["笑顔"])
+        data = presenter.morph_data["笑顔"]
+        self.assertEqual(data["panel"], 4)  # invent Other, never System
+        self.assertEqual(data["index"], 0)  # first-seen weight index retained
+        self.assertEqual(
+            data["blend_shape_targets"],
+            [
+                {"node": "ns:faceBlendShapeA", "target": "smile_a", "weight_attr": "weight[0]"},
+                {"node": "faceBlendShapeB", "target": "smile_b", "weight_attr": "weight[3]"},
+            ],
+        )
+        # Filter by Other includes the single merged entry.
+        presenter.filter_morphs_by_group("その他")
+        self.assertEqual([item.text() for item in view.morph_list.items], ["笑顔"])
+
+    def test_existing_panel_metadata_not_overwritten_by_fallback_load(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update(
+            {
+                TEST_MODEL,
+                "faceBlendShape",
+                "faceBlendShape.weight[0]",
+                "boneNode",
+            }
+        )
+        mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
+        adapter.relatives[(TEST_MODEL, mesh_kwargs)] = ["faceShape"]
+        adapter.history["faceShape"] = ["faceBlendShape"]
+        adapter.ls_results[((("faceBlendShape",),), (("type", "blendShape"),))] = ["faceBlendShape"]
+        adapter.ls_results[((), (("type", "network"),))] = ["boneNode"]
+        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
+        adapter.attr_exists.update(
+            {
+                (TEST_MODEL, "mmdMorphData"),
+                ("faceBlendShape", "mmd_blendshape_morph_names_json"),
+                ("boneNode", "mmd_morph_type"),
+                ("boneNode", "mmd_morph_name"),
+                ("boneNode", "mmd_morph_panel"),
+                ("boneNode", "mmd_morph_index"),
+            }
+        )
+        adapter.attr_values.update(
+            {
+                f"{TEST_MODEL}.mmdMorphData": json.dumps(
+                    {
+                        "笑顔": {
+                            "name_jp": "笑顔",
+                            "name_en": "smile",
+                            "panel": 3,
+                            "type": 0,
+                            "index": 5,
+                            "group": "ユーザー分類",
+                        },
+                        "ボーン笑い": {
+                            "name_jp": "ボーン笑い",
+                            "name_en": "bone_smile",
+                            "panel": 2,
+                            "type": 10,
+                            "index": 7,
+                            "group": "ユーザー分類",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "faceBlendShape.mmd_blendshape_morph_names_json": json.dumps(
+                    {"0": "笑顔"}, ensure_ascii=False
+                ),
+                "faceBlendShape.weight[0]": 0.0,
+                "boneNode.mmd_morph_type": "bone",
+                "boneNode.mmd_morph_name": "ボーン笑い",
+                "boneNode.mmd_morph_panel": 4,  # must not overwrite existing panel=2
+                "boneNode.mmd_morph_index": 99,
+            }
+        )
+        presenter, _, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
+
+        presenter.load_morphs()
+
+        self.assertEqual(presenter.morph_data["笑顔"]["panel"], 3)
+        self.assertEqual(presenter.morph_data["笑顔"]["index"], 5)
+        self.assertEqual(presenter.morph_data["笑顔"]["group"], "ユーザー分類")
+        self.assertEqual(presenter.morph_data["ボーン笑い"]["panel"], 2)
+        self.assertEqual(presenter.morph_data["ボーン笑い"]["index"], 7)
+        self.assertEqual(presenter.group_morphs["口"], ["笑顔"])
+        self.assertEqual(presenter.group_morphs["目"], ["ボーン笑い"])
 
     def test_on_morph_selected_loads_details_via_adapter_and_updates_view(self):
         adapter = _FakeMayaAdapter()

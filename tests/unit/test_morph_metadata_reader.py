@@ -4,8 +4,13 @@ import unittest
 
 from mmd_tools.core.morph_metadata_reader import (
     CategorizedMorphs,
+    MORPH_TAB_GROUP_ORDER,
     MorphInfo,
+    PANEL_GROUP_LABELS,
     categorize_morphs,
+    group_morph_names_by_panel,
+    morph_info_from_presenter_entry,
+    panel_display_group,
     read_morph_list_from_blendshape_json,
     read_morph_list_from_metadata,
 )
@@ -126,6 +131,61 @@ class TestFrozenDataclasses(unittest.TestCase):
             morph.name = "changed"
         with self.assertRaises(AttributeError):
             categorized.mouth = ()
+
+
+class TestPanelDisplayGroup(unittest.TestCase):
+    def test_panels_0_to_4_map_to_morph_tab_labels(self):
+        self.assertIsNone(panel_display_group(0))
+        self.assertEqual(panel_display_group(1), "眉")
+        self.assertEqual(panel_display_group(2), "目")
+        self.assertEqual(panel_display_group(3), "口")
+        self.assertEqual(panel_display_group(4), "その他")
+        self.assertEqual(panel_display_group(99), "その他")
+
+    def test_group_labels_cover_only_user_panels(self):
+        self.assertEqual(tuple(PANEL_GROUP_LABELS.keys()), (1, 2, 3, 4))
+        self.assertEqual(MORPH_TAB_GROUP_ORDER, ("眉", "目", "口", "その他"))
+
+
+class TestMorphInfoFromPresenterEntry(unittest.TestCase):
+    def test_reads_panel_and_network_type_across_morph_kinds(self):
+        cases = [
+            ("vertex_a", {"panel": 1, "type": 0}, "vertex", 1),
+            ("bone_b", {"panel": 2, "type": 10, "mmd_morph_type": "bone"}, "bone", 2),
+            ("mat_c", {"panel": 3, "type": 11, "mmd_morph_type": "material"}, "material", 3),
+            ("group_d", {"panel": 4, "type": 12, "mmd_morph_type": "group"}, "group", 4),
+            ("system_e", {"panel": 0, "type": 0}, "vertex", 0),
+        ]
+        for name, data, morph_type, panel in cases:
+            info = morph_info_from_presenter_entry(name, data)
+            self.assertEqual(info.name, name)
+            self.assertEqual(info.morph_type, morph_type)
+            self.assertEqual(info.panel, panel)
+
+    def test_missing_panel_defaults_to_other_not_system(self):
+        info = morph_info_from_presenter_entry("fallback", {"name_en": "fb"})
+        self.assertEqual(info.panel, 4)
+        self.assertEqual(info.name_english, "fb")
+        self.assertEqual(info.morph_type, "vertex")
+        self.assertEqual(info.index, -1)
+
+
+class TestGroupMorphNamesByPanel(unittest.TestCase):
+    def test_excludes_system_and_uses_japanese_labels(self):
+        morphs = [
+            _morph("sys", panel=0, morph_type="vertex", index=0),
+            _morph("brow", panel=1, morph_type="vertex", index=1),
+            _morph("eye", panel=2, morph_type="bone", index=2),
+            _morph("mouth", panel=3, morph_type="material", index=3),
+            _morph("other", panel=4, morph_type="group", index=4),
+        ]
+        grouped = group_morph_names_by_panel(morphs)
+
+        self.assertEqual(grouped["眉"], ["brow"])
+        self.assertEqual(grouped["目"], ["eye"])
+        self.assertEqual(grouped["口"], ["mouth"])
+        self.assertEqual(grouped["その他"], ["other"])
+        self.assertNotIn("sys", grouped["眉"] + grouped["目"] + grouped["口"] + grouped["その他"])
 
 
 if __name__ == "__main__":
