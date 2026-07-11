@@ -28,8 +28,38 @@ _REQUIRED_EVAL_ATTRS = (
     "contribution",
     "baseDiffuse",
     "outputDiffuse",
+    "outputDiffuseAlpha",
+    "baseSpecular",
+    "outputSpecular",
+    "baseSpecularCoefficient",
+    "outputSpecularCoefficient",
+    "baseAmbient",
+    "outputAmbient",
+    "baseEdgeColor",
+    "outputEdgeColor",
+    "baseEdgeSize",
+    "outputEdgeSize",
     "outputTextureMultiply",
     "outputTextureAdd",
+    "outputSphereTextureMultiply",
+    "outputSphereTextureAdd",
+    "outputToonTextureMultiply",
+    "outputToonTextureAdd",
+)
+
+_HARDWARE_COMMON_ROUTES = (
+    ("DiffuseColorRGB", "baseDiffuse", "outputDiffuse", 3),
+    ("DiffuseColorA", "baseDiffuseA", "outputDiffuseAlpha", 1),
+    ("SpecularColor", "baseSpecular", "outputSpecular", 3),
+    ("Shininess", "baseSpecularCoefficient", "outputSpecularCoefficient", 1),
+    ("AmbientColor", "baseAmbient", "outputAmbient", 3),
+    ("EdgeSize", "baseEdgeSize", "outputEdgeSize", 1),
+    ("MainTextureMultiply", None, "outputTextureMultiply", 4),
+    ("MainTextureAdd", None, "outputTextureAdd", 4),
+    ("SphereTextureMultiply", None, "outputSphereTextureMultiply", 4),
+    ("SphereTextureAdd", None, "outputSphereTextureAdd", 4),
+    ("ToonTextureMultiply", None, "outputToonTextureMultiply", 4),
+    ("ToonTextureAdd", None, "outputToonTextureAdd", 4),
 )
 
 # Backend identifiers returned by resolve_shader_color_route.
@@ -209,6 +239,8 @@ def build_material_morph_graph(root_group: str, *, connect_shader: bool = False)
         _mark_evaluator(node, shader)
         _refresh_contributions(node, contributions)
         route = resolve_shader_color_route(shader, vp2_api=vp2_api)
+        if route.is_usable:
+            route = _complete_hardware_route(shader, route)
         if not route.is_usable:
             skip = route.skip_reason or f"color_route_unavailable:{shader}"
             result["skipped"].append(skip)
@@ -220,7 +252,9 @@ def build_material_morph_graph(root_group: str, *, connect_shader: bool = False)
                 skip,
             )
         else:
-            _reroute_shader_color(shader, node, route)
+            if not _reroute_complete_shader(shader, node, route):
+                result["success"] = False
+                result["skipped"].append(f"complete_route_failed:{shader}")
         result["evaluator_nodes"].append(node)
         result["contributions"] += len(contributions)
 
@@ -507,6 +541,9 @@ def _mark_evaluator(node: str, shader: str) -> None:
     if not cmds.attributeQuery("mmd_target_shader", node=node, exists=True):
         cmds.addAttr(node, longName="mmd_target_shader", dataType="string")
     cmds.setAttr(f"{node}.mmd_target_shader", shader, type="string")
+    if not cmds.attributeQuery("mmd_complete_route_ready", node=node, exists=True):
+        cmds.addAttr(node, longName="mmd_complete_route_ready", attributeType="bool")
+        cmds.setAttr(f"{node}.mmd_complete_route_ready", False)
 
 
 def _refresh_contributions(node: str, contributions: List[Dict[str, Any]]) -> None:
@@ -703,6 +740,249 @@ def resolve_shader_color_route(
         backend=BACKEND_STANDARD if node_type in _STANDARD_ATTR_BY_TYPE else BACKEND_UNKNOWN,
         skip_reason=f"standard_diffuse_unroutable:{shader}",
     )
+
+
+def _complete_hardware_route(shader: str, route: ShaderColorRoute) -> ShaderColorRoute:
+    """Require the entire PMX material plug set before exposing a route."""
+    if not route.is_usable:
+        return route
+    if route.backend not in {BACKEND_DX11, BACKEND_GLSL}:
+        return ShaderColorRoute(
+            backend=route.backend,
+            skip_reason=f"complete_material_backend_unsupported:{shader}",
+        )
+    edge = (("EdgeColorRGB", 3), ("EdgeColorA", 1)) if route.backend == BACKEND_DX11 else (("EdgeColor", 4),)
+    required = tuple((name, size) for name, _, _, size in _HARDWARE_COMMON_ROUTES) + edge + (("Opacity", 1),)
+    missing = [name for name, size in required if not _is_writable_plug(shader, name, size)]
+    if missing:
+        return ShaderColorRoute(
+            backend=route.backend,
+            skip_reason=f"{route.backend}_material_plugs_incomplete:{shader}:{','.join(missing)}",
+        )
+    return route
+
+
+def _is_writable_plug(shader: str, attr_name: str, size: int) -> bool:
+    try:
+        if not cmds.attributeQuery(attr_name, node=shader, exists=True):
+            return False
+        if not cmds.attributeQuery(attr_name, node=shader, writable=True):
+            return False
+        if cmds.getAttr(f"{shader}.{attr_name}", lock=True):
+            return False
+        attr_type = cmds.getAttr(f"{shader}.{attr_name}", type=True)
+    except Exception:
+        return False
+    if size == 1:
+        return attr_type in {"double", "float", "long", "short"}
+    return attr_type in {f"double{size}", f"float{size}"} or all(
+        cmds.attributeQuery(f"{attr_name}{axis}", node=shader, exists=True)
+        for axis in "RGBA"[:size]
+    )
+
+
+def _reroute_complete_shader(shader: str, node: str, route: ShaderColorRoute) -> bool:
+    """Atomically preflight, initialize, and connect every evaluator output."""
+    complete = _complete_hardware_route(shader, route)
+    if not complete.is_usable:
+        return False
+    bindings = list(_HARDWARE_COMMON_ROUTES)
+    if route.backend == BACKEND_DX11:
+        edge_rgb_children = cmds.attributeQuery(
+            "EdgeColorRGB", node=shader, listChildren=True
+        ) or []
+        if len(edge_rgb_children) != 3:
+            return False
+        bindings.extend(
+            (edge_rgb_children[index], f"baseEdgeColor{axis}", f"outputEdgeColor{axis}", 1)
+            for index, axis in enumerate("RGB")
+        )
+        bindings.append(("EdgeColorA", "baseEdgeColorA", "outputEdgeColorA", 1))
+    else:
+        bindings.append(("EdgeColor", "baseEdgeColor", "outputEdgeColor", 4))
+    if _complete_route_already_owned(shader, node, bindings):
+        return True
+    touched = []
+    for shader_name, base_name, output_name, size in bindings:
+        destination = f"{shader}.{shader_name}"
+        touched.extend(_expanded_plugs(destination, size))
+        if base_name is not None:
+            touched.extend(_expanded_plugs(f"{node}.{base_name}", size))
+    touched.append(f"{shader}.Opacity")
+    touched.extend((
+        f"{node}.mmd_complete_route_ready",
+        f"{node}.mmd_target_shader",
+    ))
+    snapshots = {plug: _snapshot_plug(plug) for plug in dict.fromkeys(touched)}
+    try:
+        cmds.setAttr(f"{node}.mmd_complete_route_ready", False)
+        for source in _exact_incoming_sources(f"{shader}.Opacity"):
+            cmds.disconnectAttr(source, f"{shader}.Opacity")
+        cmds.setAttr(f"{shader}.Opacity", 1.0)
+        for shader_name, base_name, output_name, size in bindings:
+            destination = f"{shader}.{shader_name}"
+            output = f"{node}.{output_name}"
+            if base_name is not None:
+                _initialize_and_reroute_base(destination, f"{node}.{base_name}", output, size)
+            _connect_if_needed(output, destination, force=True)
+        cmds.setAttr(f"{node}.mmd_complete_route_ready", True)
+    except Exception:
+        logger.warning("Material morph complete route failed for %s", shader, exc_info=True)
+        _restore_plug_snapshots(snapshots)
+        return False
+    return True
+
+
+def _complete_route_already_owned(
+    shader: str,
+    node: str,
+    bindings: Sequence[Tuple[str, Optional[str], str, int]],
+) -> bool:
+    """Return whether this evaluator already owns every final hardware plug."""
+    try:
+        if not cmds.getAttr(f"{node}.mmd_complete_route_ready"):
+            return False
+        if abs(float(cmds.getAttr(f"{shader}.Opacity")) - 1.0) > 1.0e-7:
+            return False
+        if _exact_incoming_sources(f"{shader}.Opacity"):
+            return False
+    except Exception:
+        return False
+    return all(
+        _is_connected(f"{node}.{output_name}", f"{shader}.{shader_name}")
+        for shader_name, _base_name, output_name, _size in bindings
+    )
+
+
+def _expanded_plugs(parent: str, size: int) -> List[str]:
+    """Return parent plus actual compound children in Maya's declared order."""
+    result = [parent]
+    if size <= 1:
+        return result
+    node, attr = parent.split(".", 1)
+    try:
+        children = cmds.attributeQuery(attr, node=node, listChildren=True) or []
+        result.extend(f"{node}.{child}" for child in children[:size])
+    except Exception:
+        pass
+    return result
+
+
+def _snapshot_plug(plug: str) -> Dict[str, Any]:
+    """Capture value/type and incoming connections for transaction rollback."""
+    snapshot: Dict[str, Any] = {"sources": _exact_incoming_sources(plug)}
+    try:
+        snapshot["type"] = cmds.getAttr(plug, type=True)
+        snapshot["value"] = cmds.getAttr(plug)
+        node, attr = plug.split(".", 1)
+        snapshot["has_children"] = bool(
+            cmds.attributeQuery(attr, node=node, listChildren=True) or []
+        )
+    except Exception:
+        snapshot["value"] = None
+    return snapshot
+
+
+def _restore_plug_snapshots(snapshots: Dict[str, Dict[str, Any]]) -> None:
+    """Best-effort exact restoration after a failed complete-route transaction."""
+    # Disconnect every current route first; child values cannot be restored while
+    # their parent compound is still driven.
+    for plug in snapshots:
+        for source in _exact_incoming_sources(plug):
+            try:
+                cmds.disconnectAttr(source, plug)
+            except Exception:
+                logger.debug("Failed to disconnect rollback plug %s", plug, exc_info=True)
+    # Restore leaf/scalar values. Compound parent values are represented by their
+    # exact child snapshots and intentionally skipped.
+    for plug in reversed(list(snapshots)):
+        original = snapshots[plug]
+        value = original.get("value")
+        if value is not None and not original["sources"] and not original.get("has_children"):
+            try:
+                _set_plug_value(plug, value, original.get("type"))
+            except Exception:
+                logger.debug("Failed to restore rollback value %s", plug, exc_info=True)
+    # Finally restore the original topology after all stored values are back.
+    for plug, original in snapshots.items():
+        for source in original["sources"]:
+            try:
+                cmds.connectAttr(source, plug, force=True)
+            except Exception:
+                logger.error("Failed to restore rollback connection %s -> %s", source, plug, exc_info=True)
+
+
+def _set_plug_value(plug: str, value: Any, attr_type: Optional[str]) -> None:
+    """Restore scalar/string/vector values including Maya's nested vec4 shape."""
+    while (
+        isinstance(value, (list, tuple))
+        and len(value) == 1
+        and isinstance(value[0], (list, tuple))
+    ):
+        value = value[0]
+    if attr_type == "string":
+        cmds.setAttr(plug, value, type="string")
+    elif isinstance(value, (list, tuple)) and attr_type in {
+        "double2", "double3", "double4", "float2", "float3", "float4"
+    }:
+        cmds.setAttr(plug, *value, type=attr_type)
+    elif not isinstance(value, (list, tuple)):
+        cmds.setAttr(plug, value)
+
+
+def _initialize_and_reroute_base(destination: str, base: str, output: str, size: int) -> None:
+    """Transfer authored/current final values and incoming drivers to evaluator base."""
+    value = cmds.getAttr(destination)
+    if size > 1 and isinstance(value, (list, tuple)) and value and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    values = (float(value),) if size == 1 else tuple(float(v) for v in value[:size])
+    destination_node, destination_attr = destination.split(".", 1)
+    base_node, base_attr = base.split(".", 1)
+    output_node, output_attr = output.split(".", 1)
+    destination_children = []
+    base_children = []
+    output_children = []
+    if size > 1:
+        destination_children = cmds.attributeQuery(
+            destination_attr, node=destination_node, listChildren=True
+        ) or []
+        base_children = cmds.attributeQuery(base_attr, node=base_node, listChildren=True) or []
+        output_children = cmds.attributeQuery(output_attr, node=output_node, listChildren=True) or []
+        if len(destination_children) < size or len(base_children) < size or len(output_children) < size:
+            raise RuntimeError(f"compound child arity mismatch: {destination} -> {base}")
+    if size == 1:
+        cmds.setAttr(base, values[0])
+    else:
+        for child, component in zip(base_children, values):
+            cmds.setAttr(f"{base_node}.{child}", component)
+    sources = _exact_incoming_sources(destination)
+    for source in sources:
+        if _same_source(source, output):
+            continue
+        cmds.disconnectAttr(source, destination)
+        _connect_if_needed(source, base, force=True)
+    for destination_child_name, base_child_name, output_child_name in zip(
+        destination_children, base_children, output_children
+    ):
+        destination_child = f"{destination_node}.{destination_child_name}"
+        base_child = f"{base_node}.{base_child_name}"
+        output_child = f"{output_node}.{output_child_name}"
+        for source in _exact_incoming_sources(destination_child):
+            if _same_source(source, output_child):
+                continue
+            cmds.disconnectAttr(source, destination_child)
+            _connect_if_needed(source, base_child, force=True)
+
+
+def _exact_incoming_sources(plug: str) -> List[str]:
+    """Return only the source connected to this exact plug, excluding child aggregation."""
+    try:
+        if not cmds.connectionInfo(plug, isExactDestination=True):
+            return []
+        source = cmds.connectionInfo(plug, sourceFromDestination=True)
+        return [source] if source else []
+    except Exception:
+        return list(cmds.listConnections(plug, s=True, d=False, p=True) or [])
 
 
 def _resolve_candidate_route(

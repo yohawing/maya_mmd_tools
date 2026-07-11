@@ -241,6 +241,153 @@ class TestMaterialMorphRuntimeGuard(unittest.TestCase):
         cmds.delete.assert_not_called()
 
 
+class TestCompleteRouteRollback(unittest.TestCase):
+    class _StateCmds:
+        def __init__(self, fail_at):
+            self.fail_at = fail_at
+            self.connect_count = 0
+            self.children = {}
+            self.connections = {"shader.DiffuseColorRGB": ["authored.out"]}
+            self.values = {}
+            self.values["eval.mmd_complete_route_ready"] = False
+            self.values["eval.mmd_target_shader"] = "shader"
+            self.values["shader.Opacity"] = 0.4
+            for shader_name, base_name, _output, size in material_morph_runtime._HARDWARE_COMMON_ROUTES:
+                self.values[f"shader.{shader_name}"] = 0.4 if size == 1 else [tuple(0.4 for _ in range(size))]
+                if size > 1:
+                    self.children[("shader", shader_name)] = [f"{shader_name}{index}" for index in range(size)]
+                    for child in self.children[("shader", shader_name)]:
+                        self.values[f"shader.{child}"] = 0.4
+                if base_name:
+                    self.values[f"eval.{base_name}"] = 0.1 if size == 1 else [tuple(0.1 for _ in range(size))]
+                    for axis in "RGBA"[:size] if size > 1 else "":
+                        self.values[f"eval.{base_name}{axis}"] = 0.1
+                    if size > 1:
+                        self.children[("eval", base_name)] = [f"{base_name}{axis}" for axis in "RGBA"[:size]]
+                if size > 1:
+                    self.children[("eval", _output)] = [f"{_output}{axis}" for axis in "RGBA"[:size]]
+            self.values["shader.EdgeColorRGB"] = [(0.2, 0.2, 0.2)]
+            for axis in "RGB":
+                self.values[f"shader.EdgeColorRGB{axis}"] = 0.2
+            self.children[("shader", "EdgeColorRGB")] = [f"EdgeColorRGB{axis}" for axis in "RGB"]
+            self.values["shader.EdgeColorA"] = 0.3
+            self.values["eval.baseEdgeColor"] = [(0.1, 0.1, 0.1, 0.1)]
+            for axis in "RGBA":
+                self.values[f"eval.baseEdgeColor{axis}"] = 0.1
+            self.children[("eval", "baseEdgeColor")] = [f"baseEdgeColor{axis}" for axis in "RGBA"]
+            self.children[("eval", "outputEdgeColor")] = [f"outputEdgeColor{axis}" for axis in "RGBA"]
+
+        def attributeQuery(self, attr, node=None, **kwargs):  # noqa: N802
+            if kwargs.get("listChildren"):
+                return self.children.get((node, attr), [])
+            if kwargs.get("exists"):
+                return f"{node}.{attr}" in self.values
+            return True
+
+        def getAttr(self, plug, **kwargs):  # noqa: N802
+            if kwargs.get("type"):
+                value = self.values.get(plug, 0.0)
+                if isinstance(value, str):
+                    return "string"
+                if isinstance(value, list):
+                    return f"double{len(value[0])}"
+                return "double"
+            return self.values.get(plug, 0.0)
+
+        def setAttr(self, plug, *values, **kwargs):  # noqa: N802, ARG002
+            self.values[plug] = values[0] if len(values) == 1 else [tuple(values)]
+
+        def listConnections(self, plug, **kwargs):  # noqa: N802, ARG002
+            return list(self.connections.get(plug, []))
+
+        def connectAttr(self, source, destination, **kwargs):  # noqa: N802, ARG002
+            self.connect_count += 1
+            if self.connect_count == self.fail_at:
+                raise RuntimeError("injected connect failure")
+            self.connections[destination] = [source]
+
+        def disconnectAttr(self, source, destination):  # noqa: N802
+            if source in self.connections.get(destination, []):
+                self.connections[destination].remove(source)
+
+        @staticmethod
+        def ls(value, **kwargs):  # noqa: ARG004
+            return [value]
+
+    def test_early_middle_and_late_failures_restore_exact_state(self):
+        route = material_morph_runtime.ShaderColorRoute(
+            backend=material_morph_runtime.BACKEND_DX11,
+            attr_name="DiffuseColorRGB",
+        )
+        for fail_at in (1, 8, 15):
+            with self.subTest(fail_at=fail_at):
+                cmds = self._StateCmds(fail_at)
+                original_values = dict(cmds.values)
+                original_connections = {key: list(value) for key, value in cmds.connections.items()}
+                with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+                    material_morph_runtime,
+                    "_complete_hardware_route",
+                    return_value=route,
+                ), mock.patch.object(
+                    material_morph_runtime,
+                    "_connect_if_needed",
+                    side_effect=lambda source, destination, force=False: cmds.connectAttr(
+                        source, destination, force=force
+                    ),
+                ), mock.patch.object(
+                    material_morph_runtime,
+                    "_same_source",
+                    side_effect=lambda left, right: left == right,
+                ):
+                    self.assertFalse(
+                        material_morph_runtime._reroute_complete_shader("shader", "eval", route)
+                    )
+                restored_connections = {
+                    key: value for key, value in cmds.connections.items() if value
+                }
+                self.assertEqual(restored_connections, original_connections)
+                self.assertEqual(cmds.values, original_values)
+                self.assertFalse(
+                    any(
+                        source.startswith("eval.output")
+                        for sources in cmds.connections.values()
+                        for source in sources
+                    )
+                )
+                cmds.fail_at = 999
+                with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+                    material_morph_runtime,
+                    "_complete_hardware_route",
+                    return_value=route,
+                ), mock.patch.object(
+                    material_morph_runtime,
+                    "_connect_if_needed",
+                    side_effect=lambda source, destination, force=False: cmds.connectAttr(
+                        source, destination, force=force
+                    ),
+                ), mock.patch.object(
+                    material_morph_runtime,
+                    "_same_source",
+                    side_effect=lambda left, right: left == right,
+                ):
+                    self.assertTrue(
+                        material_morph_runtime._reroute_complete_shader("shader", "eval", route)
+                    )
+                self.assertTrue(cmds.values["eval.mmd_complete_route_ready"])
+
+    def test_set_plug_value_supports_nested_double4_and_float4(self):
+        cmds = self._StateCmds(999)
+        with mock.patch.object(material_morph_runtime, "cmds", cmds):
+            material_morph_runtime._set_plug_value(
+                "shader.double4Value", [[(0.1, 0.2, 0.3, 0.4)]], "double4"
+            )
+            material_morph_runtime._set_plug_value(
+                "shader.float4Value", [(0.5, 0.6, 0.7, 0.8)], "float4"
+            )
+        self.assertEqual(cmds.values["shader.double4Value"], [(0.1, 0.2, 0.3, 0.4)])
+        self.assertEqual(cmds.values["shader.float4Value"], [(0.5, 0.6, 0.7, 0.8)])
+
+
 class TestDetectEffectiveVp2DrawApi(unittest.TestCase):
     """Isolated effective VP2 draw-API detector (ogs + optionVar only)."""
 

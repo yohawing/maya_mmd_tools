@@ -127,6 +127,13 @@ float DiffuseColorA<
     int UIOrder = 201;
 > = 1.0f;
 
+float4 MainTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 MainTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+float4 SphereTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 SphereTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+float4 ToonTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 ToonTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+
 float3 SpecularColor<
     string UIGroup = "Material";
     string UIName = "Specular Color";
@@ -379,6 +386,7 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     if (HasMainTexture != 0)
     {
         texColor = MainTexture.Sample(LinearSampler, input.texCoord0);
+        texColor = texColor * MainTextureMultiply + MainTextureAdd;
     }
 
     // Calculate shadow
@@ -397,7 +405,9 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         // Sample the full toon ramp so the shadow side reaches the dark band.
         // The previous 0.25..0.75 mid-band squeeze flattened all shading into a
         // washed mid-tone with no real shadow contrast.
-        toonColor = ToonTexture.Sample(ToonSampler, float2(0.5, 1.0 - rampCoord)).rgb;
+        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.5, 1.0 - rampCoord));
+        float4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
+        toonColor = factoredToon.rgb;
     }
     // MMD's untextured-toon path is intentionally flat: N.L only selects a
     // toon-ramp sample and must not become an implicit gray diffuse ramp.
@@ -428,7 +438,9 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         float2 sphereUV;
         sphereUV.x = sphereNormal.x * 0.35 + 0.5;
         sphereUV.y = sphereNormal.y * -0.35 + 0.5;
-        sphereColor = SphereTexture.Sample(LinearSampler, sphereUV).rgb;
+        float4 sphereSample = SphereTexture.Sample(LinearSampler, sphereUV);
+        float4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
+        sphereColor = factoredSphere.rgb;
     }
 
     // Combine lighting

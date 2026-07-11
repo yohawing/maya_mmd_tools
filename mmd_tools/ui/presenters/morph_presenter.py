@@ -28,6 +28,13 @@ _NETWORK_MORPH_TYPE_INDEX = {
     "group": _GROUP_MORPH_TYPE_INDEX,
 }
 _WEIGHT_INDEX_RE = re.compile(r"\[(\d+)\]")
+_MATERIAL_EVALUATOR_WEIGHT_RE = re.compile(r"contribution\[\d+\]\.weight")
+_MATERIAL_WEIGHT_HELPER_OUTPUTS = {
+    "plusMinusAverage": ("output1D", "output2D", "output3D"),
+    "multiplyDivide": ("outputX", "outputY", "outputZ"),
+    "unitConversion": ("output",),
+}
+_MATERIAL_WEIGHT_TRAVERSAL_MAX_DEPTH = 6
 # Fallback panel for morphs without explicit PMX panel metadata (not System/0).
 _DEFAULT_USER_PANEL = 4
 _PMX_TYPE_TO_UI_INDEX = {0: 12, 1: 0, 2: 10, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 11, 9: 13, 10: 14}
@@ -43,7 +50,7 @@ _DIRECT_RUNTIME_MORPH_CAPABILITIES = {
     5: False,  # additional UV2
     6: False,  # additional UV3
     7: False,  # additional UV4
-    8: False,  # material
+    8: True,   # material (complete hardware-shader runtime; per material fail-closed)
     9: False,  # flip
     10: False, # impulse
 }
@@ -356,6 +363,42 @@ class MorphPresenter:
     def _morph_controls_supported(self, data):
         """Return whether changing this morph's weight drives supported runtime output."""
         raw_type = self._raw_pmx_type(data)
+        if raw_type == 8:
+            morph_node = data.get("morph_node")
+            if not morph_node or not self.maya_adapter.object_exists(morph_node):
+                return False
+            evaluators = self._material_evaluator_weight_destinations(
+                f"{morph_node}.weight"
+            )
+            for evaluator_plug in evaluators:
+                evaluator, separator, evaluator_attr = evaluator_plug.partition(".")
+                if not separator or not _MATERIAL_EVALUATOR_WEIGHT_RE.fullmatch(evaluator_attr):
+                    continue
+                try:
+                    if not self.maya_adapter.attribute_exists(
+                        "mmd_complete_route_ready", evaluator
+                    ) or not self.maya_adapter.get_attr(
+                        f"{evaluator}.mmd_complete_route_ready"
+                    ):
+                        continue
+                    target_shader = self.maya_adapter.get_attr(
+                        f"{evaluator}.mmd_target_shader"
+                    )
+                    outputs = self.maya_adapter.list_connections(
+                        f"{evaluator}.outputDiffuse",
+                        source=False,
+                        destination=True,
+                        plugs=True,
+                    ) or []
+                except Exception:
+                    continue
+                for output in outputs:
+                    shader = output.split(".", 1)[0]
+                    if shader == target_shader and self.maya_adapter.node_type(shader) in {
+                        "dx11Shader", "GLSLShader"
+                    }:
+                        return True
+            return False
         if raw_type != 0:
             return _DIRECT_RUNTIME_MORPH_CAPABILITIES.get(raw_type, False)
 
@@ -375,15 +418,50 @@ class MorphPresenter:
                 rate = float(offset.get("morph_rate", 0.0))
             except (TypeError, ValueError):
                 continue
-            # Current group runtime only contributes referenced bone morphs.
-            if (
-                referenced is not None
-                and rate != 0.0
-                and self._raw_pmx_type(referenced) == 2
-                and referenced.get("morph_node")
-            ):
+            if referenced is None or rate == 0.0:
+                continue
+            referenced_type = self._raw_pmx_type(referenced)
+            if referenced_type == 2 and referenced.get("morph_node"):
+                return True
+            if referenced_type == 8 and self._morph_controls_supported(referenced):
                 return True
         return False
+
+    def _material_evaluator_weight_destinations(self, start_plug):
+        """Traverse only known scalar weight helpers to evaluator weight inputs."""
+        queue = [(start_plug, 0)]
+        visited = set()
+        found = []
+        while queue:
+            plug, depth = queue.pop(0)
+            if plug in visited or depth > _MATERIAL_WEIGHT_TRAVERSAL_MAX_DEPTH:
+                continue
+            visited.add(plug)
+            try:
+                destinations = self.maya_adapter.list_connections(
+                    plug,
+                    source=False,
+                    destination=True,
+                    plugs=True,
+                ) or []
+            except Exception:
+                continue
+            for destination in destinations:
+                node, separator, attr = destination.partition(".")
+                if not separator:
+                    continue
+                node_type = self.maya_adapter.node_type(node)
+                if (
+                    node_type == "mmdMaterialMorphEval"
+                    and _MATERIAL_EVALUATOR_WEIGHT_RE.fullmatch(attr)
+                ):
+                    found.append(destination)
+                    continue
+                outputs = _MATERIAL_WEIGHT_HELPER_OUTPUTS.get(node_type)
+                if outputs is None or depth >= _MATERIAL_WEIGHT_TRAVERSAL_MAX_DEPTH:
+                    continue
+                queue.extend((f"{node}.{output}", depth + 1) for output in outputs)
+        return found
 
     def _add_blend_shape_target(self, data, blend_shape_node, target_name, target_attr):
         """Morph data に blendShape target 接続情報を追加する。"""

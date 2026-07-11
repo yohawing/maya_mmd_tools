@@ -946,6 +946,15 @@ class MaterialPresenter:
     def _apply_hardware_base_values(self, values, shader_type):
         """Write base values only when no evaluator owns the final plug."""
         material = self.current_material
+        evaluator_base_by_uniform = {
+            "DiffuseColorRGB": ("baseDiffuse", "double3"),
+            "DiffuseColorA": ("baseDiffuseA", "float"),
+            "SpecularColor": ("baseSpecular", "double3"),
+            "Shininess": ("baseSpecularCoefficient", "float"),
+            "AmbientColor": ("baseAmbient", "double3"),
+            "EdgeSize": ("baseEdgeSize", "float"),
+            "EdgeColor": ("baseEdgeColor", "double4"),
+        }
         for binding, value in iter_hardware_shader_values(values, shader_type):
             if value is None or not self.maya_adapter.attribute_exists(binding.attribute, material):
                 continue
@@ -954,8 +963,54 @@ class MaterialPresenter:
                 plug, source=True, destination=False, plugs=True
             ) or []
             if incoming:
+                evaluator = incoming[0].split(".", 1)[0]
+                try:
+                    ready = (
+                        self.maya_adapter.node_type(evaluator) == "mmdMaterialMorphEval"
+                        and
+                        self.maya_adapter.attribute_exists(
+                            "mmd_complete_route_ready", evaluator
+                        )
+                        and self.maya_adapter.get_attr(
+                            f"{evaluator}.mmd_complete_route_ready"
+                        )
+                        and self.maya_adapter.get_attr(
+                            f"{evaluator}.mmd_target_shader"
+                        ) == material
+                    )
+                except Exception:
+                    ready = False
+                base_binding = evaluator_base_by_uniform.get(binding.attribute)
+                if ready and binding.attribute == "EdgeColorRGB":
+                    for axis, component in zip("RGB", value):
+                        maya_attribute_utils.set_attribute(
+                            evaluator, f"baseEdgeColor{axis}", component, "float"
+                        )
+                elif ready and binding.attribute == "EdgeColorA":
+                    maya_attribute_utils.set_attribute(
+                        evaluator, "baseEdgeColorA", value, "float"
+                    )
+                elif ready and base_binding:
+                    base_attr, base_type = base_binding
+                    maya_attribute_utils.set_attribute(
+                        evaluator, base_attr, value, base_type
+                    )
                 logger.debug("Skipping driven hardware material plug: %s", plug)
                 continue
+            if binding.attribute == "Opacity":
+                # Complete material morph owns alpha through DiffuseColorA only.
+                evaluators = self.maya_adapter.list_connections(
+                    f"{material}.DiffuseColorA", source=True, destination=False, plugs=True
+                ) or []
+                if evaluators:
+                    evaluator = evaluators[0].split(".", 1)[0]
+                    if self.maya_adapter.attribute_exists(
+                        "mmd_complete_route_ready", evaluator
+                    ) and self.maya_adapter.node_type(evaluator) == "mmdMaterialMorphEval" and self.maya_adapter.get_attr(
+                        f"{evaluator}.mmd_complete_route_ready"
+                    ) and self.maya_adapter.get_attr(f"{evaluator}.mmd_target_shader") == material:
+                        maya_attribute_utils.set_attribute(material, "Opacity", 1.0, "float")
+                        continue
             maya_attribute_utils.set_attribute(material, binding.attribute, value, binding.attribute_type)
 
     def _apply_texture(self, material, texture_path):

@@ -28,6 +28,12 @@ _COMMON_SHADER_PARAMETERS: Mapping[str, ShaderParameter] = {
     "edge_size": ShaderParameter("EdgeSize", "float"),
     "sphere_mode": ShaderParameter("SphereMode", "long"),
     "opacity": ShaderParameter("Opacity", "float"),
+    "texture_multiply": ShaderParameter("MainTextureMultiply", "double4"),
+    "texture_add": ShaderParameter("MainTextureAdd", "double4"),
+    "sphere_texture_multiply": ShaderParameter("SphereTextureMultiply", "double4"),
+    "sphere_texture_add": ShaderParameter("SphereTextureAdd", "double4"),
+    "toon_texture_multiply": ShaderParameter("ToonTextureMultiply", "double4"),
+    "toon_texture_add": ShaderParameter("ToonTextureAdd", "double4"),
 }
 
 _BACKEND_SHADER_PARAMETERS: Mapping[str, Mapping[str, ShaderParameter]] = {

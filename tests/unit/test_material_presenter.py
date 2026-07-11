@@ -479,6 +479,76 @@ class TestMaterialPresenter(unittest.TestCase):
         )
 
     @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_ready_material_route_writes_base_alpha_and_keeps_opacity_neutral(
+        self, mock_maya_attribute_utils
+    ):
+        self.presenter.current_material = "test_material"
+        self.mock_maya_adapter.attribute_exists.return_value = True
+        self.mock_maya_adapter.node_type.side_effect = lambda node: (
+            "mmdMaterialMorphEval" if node == "morphEval" else "dx11Shader"
+        )
+        self.mock_maya_adapter.get_attr.side_effect = lambda plug: {
+            "morphEval.mmd_complete_route_ready": True,
+            "morphEval.mmd_target_shader": "test_material",
+        }[plug]
+        self.mock_maya_adapter.list_connections.side_effect = lambda plug, **_kwargs: (
+            ["morphEval.outputDiffuseAlpha"]
+            if plug.endswith(".DiffuseColorA")
+            else []
+        )
+
+        self.presenter._apply_hardware_base_values(
+            {"diffuse_alpha": 0.4, "opacity": 0.4}, "dx11Shader"
+        )
+
+        self.assertIn(
+            unittest.mock.call("morphEval", "baseDiffuseA", 0.4, "float"),
+            mock_maya_attribute_utils.set_attribute.call_args_list,
+        )
+        self.assertIn(
+            unittest.mock.call("test_material", "Opacity", 1.0, "float"),
+            mock_maya_attribute_utils.set_attribute.call_args_list,
+        )
+        self.assertFalse(
+            any(call.args[1] == "DiffuseColorA" for call in mock_maya_attribute_utils.set_attribute.call_args_list)
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
+    def test_ready_dx11_edge_edits_update_evaluator_base_only(self, mock_maya_attribute_utils):
+        self.presenter.current_material = "test_material"
+        self.mock_maya_adapter.attribute_exists.return_value = True
+        self.mock_maya_adapter.node_type.side_effect = lambda node: (
+            "mmdMaterialMorphEval" if node == "morphEval" else "dx11Shader"
+        )
+        self.mock_maya_adapter.get_attr.side_effect = lambda plug: {
+            "morphEval.mmd_complete_route_ready": True,
+            "morphEval.mmd_target_shader": "test_material",
+        }[plug]
+        driven = {"EdgeColorRGB", "EdgeColorA", "EdgeSize"}
+        self.mock_maya_adapter.list_connections.side_effect = lambda plug, **_kwargs: (
+            [f"morphEval.output{plug.rsplit('.', 1)[-1]}"]
+            if plug.rsplit(".", 1)[-1] in driven else []
+        )
+
+        self.presenter._apply_hardware_base_values(
+            {"edge_color": (0.1, 0.2, 0.3, 0.4), "edge_size": 2.5},
+            "dx11Shader",
+        )
+
+        expected = [
+            unittest.mock.call("morphEval", "baseEdgeColorR", 0.1, "float"),
+            unittest.mock.call("morphEval", "baseEdgeColorG", 0.2, "float"),
+            unittest.mock.call("morphEval", "baseEdgeColorB", 0.3, "float"),
+            unittest.mock.call("morphEval", "baseEdgeColorA", 0.4, "float"),
+            unittest.mock.call("morphEval", "baseEdgeSize", 2.5, "float"),
+        ]
+        for expected_call in expected:
+            self.assertIn(expected_call, mock_maya_attribute_utils.set_attribute.call_args_list)
+        self.assertFalse(
+            any(call.args[0] == "test_material" for call in mock_maya_attribute_utils.set_attribute.call_args_list)
+        )
+
+    @patch("mmd_tools.ui.presenters.material_presenter.maya_attribute_utils")
     def test_dx11_edge_sync_skips_only_driven_split_plug(self, mock_maya_attribute_utils):
         self.presenter.current_material = "test_material"
         self.mock_maya_adapter.attribute_exists.return_value = True

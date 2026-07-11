@@ -16,6 +16,12 @@ uniform vec3 ViewPosition : ViewPosition < string UIWidget = "None"; >;
 // corrupting alpha. Mirrors MMDShader.fx DiffuseColorRGB / DiffuseColorA.
 uniform vec3 DiffuseColorRGB = {0.8, 0.8, 0.8};
 uniform float DiffuseColorA = 1.0;
+uniform vec4 MainTextureMultiply = {1.0, 1.0, 1.0, 1.0};
+uniform vec4 MainTextureAdd = {0.0, 0.0, 0.0, 0.0};
+uniform vec4 SphereTextureMultiply = {1.0, 1.0, 1.0, 1.0};
+uniform vec4 SphereTextureAdd = {0.0, 0.0, 0.0, 0.0};
+uniform vec4 ToonTextureMultiply = {1.0, 1.0, 1.0, 1.0};
+uniform vec4 ToonTextureAdd = {0.0, 0.0, 0.0, 0.0};
 uniform vec3 SpecularColor = {0.5, 0.5, 0.5};
 uniform vec3 AmbientColor = {0.2, 0.2, 0.2};
 uniform float Shininess = 20.0;
@@ -128,6 +134,7 @@ GLSLShader FS
         if (HasMainTexture != 0)
         {
             texColor = texture2D(MainSampler, psIn.UVset0);
+            texColor = texColor * MainTextureMultiply + MainTextureAdd;
         }
         float ndotl = dot(n, lightDir);
         float halfLambert = ndotl * 0.5 + 0.5;
@@ -135,7 +142,9 @@ GLSLShader FS
         vec3 toonColor = vec3(1.0);
         if (HasToonTexture != 0)
         {
-            toonColor = texture2D(ToonSampler, vec2(0.5, 1.0 - rampCoord)).rgb;
+            vec4 toonSample = texture2D(ToonSampler, vec2(0.5, 1.0 - rampCoord));
+            vec4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
+            toonColor = factoredToon.rgb;
         }
         // No toon means flat MMD diffuse. N.L is used only to select a ramp
         // sample when a toon texture is actually bound.
@@ -156,7 +165,9 @@ GLSLShader FS
         {
             vec3 sphereNormal = normalize((View * vec4(n, 0.0)).xyz);
             vec2 sphereUV = vec2(sphereNormal.x * 0.35 + 0.5, sphereNormal.y * -0.35 + 0.5);
-            sphereColor = texture2D(SphereSampler, sphereUV).rgb;
+            vec4 sphereSample = texture2D(SphereSampler, sphereUV);
+            vec4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
+            sphereColor = factoredSphere.rgb;
         }
         if (SphereMode == 1 && HasSphereTexture != 0)
         {

@@ -7,6 +7,7 @@ weight 変更がマテリアル外観に反映されることを検証する。
 from pathlib import Path
 import json
 import unittest
+from unittest import mock
 
 from maya import cmds
 
@@ -83,6 +84,13 @@ class TestMaterialMorphNumericComposition(unittest.TestCase):
         self.assertEqual(material["diffuse"][:3], self._base()["diffuse"][:3])
         self.assertAlmostEqual(material["diffuse"][3], 0.5)
 
+    def test_semitransparent_alpha_multiply_is_not_squared(self):
+        contribution = self._contribution(0, 1.0)
+        contribution["diffuse"] = (1.0, 1.0, 1.0, 0.5)
+        material, _, _ = MmdMaterialMorphEvalNode.compose(self._base(), [contribution])
+        self.assertEqual(material["diffuse"][:3], self._base()["diffuse"][:3])
+        self.assertAlmostEqual(material["diffuse"][3], 0.4)
+
     def test_all_texture_tracks_keep_multiply_and_add_separate(self):
         contributions = [self._contribution(0, 0.5), self._contribution(1, 0.2)]
         material, multiply, add = MmdMaterialMorphEvalNode.compose(self._base(), contributions)
@@ -92,6 +100,22 @@ class TestMaterialMorphNumericComposition(unittest.TestCase):
         for name in ("texture", "sphereTexture", "toonTexture"):
             self.assertEqual(tuple(multiply[name]), (0.5, 0.5, 0.5, 0.5))
             self.assertEqual(tuple(add[name]), (0.2, 0.2, 0.2, 0.2))
+
+    def test_main_texture_alpha_factor_is_composed_as_rgba(self):
+        multiply = self._contribution(0, 1.0)
+        multiply["texture"] = (1.0, 1.0, 1.0, 0.5)
+        additive = self._contribution(1, 0.0, order=1, slot=1)
+        additive["texture"] = (0.0, 0.0, 0.0, 0.2)
+        _, texture_multiply, texture_add = MmdMaterialMorphEvalNode.compose(
+            self._base(), [multiply, additive]
+        )
+        self.assertEqual(tuple(texture_multiply["texture"]), (1.0, 1.0, 1.0, 0.5))
+        self.assertEqual(tuple(texture_add["texture"]), (0.0, 0.0, 0.0, 0.2))
+        sample_alpha = 0.8
+        self.assertAlmostEqual(
+            sample_alpha * texture_multiply["texture"][3] + texture_add["texture"][3],
+            0.6,
+        )
 
     def test_declared_node_contract_covers_every_pmx_channel(self):
         expected = {
@@ -398,6 +422,10 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         *,
         base_color=(1.0, 1.0, 1.0),
         base_alpha=1.0,
+        shader=None,
+        edge_color=(0.0, 0.0, 0.0, 0.0),
+        diffuse_offset=(1.0, 0.0, 0.0, 0.0),
+        build_graph=True,
     ):
         """mesh + lambert shader + material morph を持つ最小シーンを構築する。"""
         self._require_material_morph_node()
@@ -413,21 +441,25 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         )
         mesh = cmds.parent(mesh, root)[0]
 
-        # lambert shader を作成して割り当て
-        shader = cmds.shadingNode("lambert", asShader=True, name="mmd_mat_0")
+        # Default to a lambert; hardware-route tests may provide a complete shader.
+        shader = shader or cmds.shadingNode("lambert", asShader=True, name="mmd_mat_0")
         sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="mmd_mat_0_SG")
         cmds.connectAttr(f"{shader}.outColor", f"{sg}.surfaceShader", force=True)
         cmds.sets(mesh, edit=True, forceElement=sg)
 
-        cmds.setAttr(f"{shader}.color", *base_color, type="double3")
-        transparency = 1.0 - base_alpha
-        cmds.setAttr(
-            f"{shader}.transparency",
-            transparency,
-            transparency,
-            transparency,
-            type="double3",
-        )
+        if cmds.nodeType(shader) == "lambert":
+            cmds.setAttr(f"{shader}.color", *base_color, type="double3")
+            transparency = 1.0 - base_alpha
+            cmds.setAttr(
+                f"{shader}.transparency",
+                transparency,
+                transparency,
+                transparency,
+                type="double3",
+            )
+        else:
+            cmds.setAttr(f"{shader}.DiffuseColorRGB", *base_color, type="double3")
+            cmds.setAttr(f"{shader}.DiffuseColorA", base_alpha)
 
         # shader に mmd_material_index を設定（graph builder がマッチングに使う）
         if not cmds.attributeQuery(ATTR_MMD_MATERIAL_INDEX, node=shader, exists=True):
@@ -439,11 +471,11 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             {
                 "material_index": 0,
                 "operation_type": 1,
-                "diffuse": (1.0, 0.0, 0.0, 0.0),
+                "diffuse": diffuse_offset,
                 "specular": (0.0, 0.0, 0.0),
                 "specular_coefficient": 0.0,
                 "ambient": (0.0, 0.0, 0.0),
-                "edge_color": (0.0, 0.0, 0.0, 0.0),
+                "edge_color": edge_color,
                 "edge_size": 0.0,
                 "texture_factor": (0.0, 0.0, 0.0, 0.0),
                 "sphere_texture_factor": (0.0, 0.0, 0.0, 0.0),
@@ -461,12 +493,196 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
         # material morph runtime graph を構築（shader ↔ evaluator 接続）
-        graph = build_material_morph_graph(root, connect_shader=True)
+        graph = build_material_morph_graph(root, connect_shader=True) if build_graph else None
 
         return root, mesh, shader, material_nodes, graph
 
-    def test_standard_material_graph_routes_to_color_plug(self):
-        """lambert 標準マテリアルは color へ接続され、public summary キーを保つ。"""
+    @staticmethod
+    def _add_vec4_uniform(shader, name, default):
+        if cmds.attributeQuery(name, node=shader, exists=True):
+            return
+        cmds.addAttr(shader, longName=name, attributeType="compound", numberOfChildren=4)
+        for axis, value in zip("RGBA", default):
+            cmds.addAttr(
+                shader,
+                longName=f"{name}{axis}",
+                attributeType="double",
+                parent=name,
+                defaultValue=value,
+            )
+
+    def test_complete_dx11_route_uses_real_edge_compound_children(self):
+        """Complete DX11 fallback routes exact registered edge child plugs."""
+        try:
+            cmds.loadPlugin("dx11Shader", quiet=True)
+            shader = cmds.shadingNode("dx11Shader", asShader=True, name="complete_dx11")
+        except Exception as exc:
+            self.skipTest(f"dx11Shader unavailable: {exc}")
+        _ensure_mmd_shader_uniform_attributes(shader)
+        for name, default in (
+            ("MainTextureMultiply", (1.0, 1.0, 1.0, 1.0)),
+            ("MainTextureAdd", (0.0, 0.0, 0.0, 0.0)),
+            ("SphereTextureMultiply", (1.0, 1.0, 1.0, 1.0)),
+            ("SphereTextureAdd", (0.0, 0.0, 0.0, 0.0)),
+            ("ToonTextureMultiply", (1.0, 1.0, 1.0, 1.0)),
+            ("ToonTextureAdd", (0.0, 0.0, 0.0, 0.0)),
+        ):
+            self._add_vec4_uniform(shader, name, default)
+        factor_names = (
+            "MainTextureMultiply", "MainTextureAdd",
+            "SphereTextureMultiply", "SphereTextureAdd",
+            "ToonTextureMultiply", "ToonTextureAdd",
+        )
+        factor_values = {}
+        for factor_index, name in enumerate(factor_names):
+            children = cmds.attributeQuery(name, node=shader, listChildren=True)
+            values = tuple(0.11 * (factor_index + 1) + 0.01 * axis for axis in range(4))
+            for child, value in zip(children, values):
+                cmds.setAttr(f"{shader}.{child}", value)
+            factor_values[name] = cmds.getAttr(f"{shader}.{name}")
+        cmds.setAttr(f"{shader}.EdgeColorRGB", 0.1, 0.2, 0.3, type="double3")
+        cmds.setAttr(f"{shader}.EdgeColorA", 0.4)
+        cmds.setAttr(f"{shader}.Opacity", 0.4)
+
+        with mock.patch.object(
+            material_morph_runtime,
+            "detect_effective_vp2_draw_api",
+            return_value=VP2_API_DIRECTX11,
+        ):
+            root, _, shader, morph_nodes, _ = self._create_scene_with_shader(
+                shader=shader,
+                base_alpha=0.4,
+                edge_color=(0.0, 0.0, 0.0, 0.2),
+                diffuse_offset=(0.0, 0.0, 0.0, 0.6),
+                build_graph=False,
+            )
+
+        edge_children = cmds.attributeQuery("EdgeColorRGB", node=shader, listChildren=True)
+        drivers = []
+        for index, (child, value) in enumerate(zip(edge_children, (0.1, 0.2, 0.3))):
+            driver = cmds.createNode("addDoubleLinear", name=f"edge_driver_{index}")
+            cmds.setAttr(f"{driver}.input1", value)
+            cmds.connectAttr(f"{driver}.output", f"{shader}.{child}", force=True)
+            drivers.append(driver)
+
+        real_connect = material_morph_runtime._connect_if_needed
+        connect_count = {"value": 0}
+
+        def _fail_late(source, destination, force=False):
+            connect_count["value"] += 1
+            if connect_count["value"] == 10:
+                raise RuntimeError("injected late route failure")
+            return real_connect(source, destination, force=force)
+
+        with mock.patch.object(
+            material_morph_runtime,
+            "detect_effective_vp2_draw_api",
+            return_value=VP2_API_DIRECTX11,
+        ), mock.patch.object(material_morph_runtime, "_connect_if_needed", side_effect=_fail_late):
+            failed = build_material_morph_graph(root, connect_shader=True)
+        self.assertFalse(failed["success"])
+        self.assertAlmostEqual(cmds.getAttr(f"{shader}.Opacity"), 0.4)
+        for name, expected in factor_values.items():
+            self.assertEqual(cmds.getAttr(f"{shader}.{name}"), expected)
+            self.assertFalse(
+                cmds.listConnections(f"{shader}.{name}", s=True, d=False, p=True) or []
+            )
+        for child, driver in zip(edge_children, drivers):
+            self.assertEqual(
+                cmds.listConnections(f"{shader}.{child}", s=True, d=False, p=True),
+                [f"{driver}.output"],
+            )
+
+        with mock.patch.object(
+            material_morph_runtime,
+            "detect_effective_vp2_draw_api",
+            return_value=VP2_API_DIRECTX11,
+        ):
+            graph = build_material_morph_graph(root, connect_shader=True)
+
+        self.assertTrue(graph["success"], graph)
+        self.assertAlmostEqual(cmds.getAttr(f"{shader}.Opacity"), 1.0)
+        self.assertFalse(any(str(item).startswith("complete_route_failed") for item in graph["skipped"]))
+        evaluator = graph["evaluator_nodes"][0]
+        for child, axis in zip(edge_children, "RGB"):
+            self.assertEqual(
+                cmds.listConnections(f"{shader}.{child}", s=True, d=False, p=True),
+                [f"{evaluator}.outputEdgeColor{axis}"],
+            )
+        for axis, driver in zip("RGB", drivers):
+            self.assertEqual(
+                cmds.listConnections(
+                    f"{evaluator}.baseEdgeColor{axis}", s=True, d=False, p=True
+                ),
+                [f"{driver}.output"],
+            )
+        self.assertEqual(
+            cmds.listConnections(f"{shader}.EdgeColorA", s=True, d=False, p=True),
+            [f"{evaluator}.outputEdgeColorA"],
+        )
+        cmds.setAttr(f"{morph_nodes[0]}.weight", 0.0)
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{shader}.DiffuseColorA") * cmds.getAttr(f"{shader}.Opacity"),
+            0.4,
+        )
+        self.assertAlmostEqual(cmds.getAttr(f"{shader}.EdgeColorA"), 0.4)
+        cmds.setAttr(f"{morph_nodes[0]}.weight", 1.0)
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{shader}.DiffuseColorA") * cmds.getAttr(f"{shader}.Opacity"),
+            1.0,
+        )
+        self.assertAlmostEqual(cmds.getAttr(f"{shader}.EdgeColorA"), 0.6)
+        base_before = cmds.getAttr(f"{evaluator}.baseEdgeColorA")
+        final_before = cmds.getAttr(f"{shader}.EdgeColorA")
+        connections_before = cmds.listConnections(
+            f"{shader}.EdgeColorA", s=True, d=False, p=True
+        )
+        retry_count = {"value": 0}
+
+        def _fail_ready_rebuild(source, destination, force=False):
+            retry_count["value"] += 1
+            if retry_count["value"] == 5:
+                raise RuntimeError("injected ready rebuild failure")
+            return real_connect(source, destination, force=force)
+
+        with mock.patch.object(
+            material_morph_runtime,
+            "detect_effective_vp2_draw_api",
+            return_value=VP2_API_DIRECTX11,
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_complete_route_already_owned",
+            return_value=False,
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_connect_if_needed",
+            side_effect=_fail_ready_rebuild,
+        ):
+            failed_rebuild = build_material_morph_graph(root, connect_shader=True)
+        self.assertFalse(failed_rebuild["success"])
+        self.assertTrue(cmds.getAttr(f"{evaluator}.mmd_complete_route_ready"))
+        self.assertEqual(cmds.getAttr(f"{evaluator}.baseEdgeColorA"), base_before)
+        self.assertEqual(cmds.getAttr(f"{shader}.EdgeColorA"), final_before)
+        self.assertEqual(
+            cmds.listConnections(f"{shader}.EdgeColorA", s=True, d=False, p=True),
+            connections_before,
+        )
+        with mock.patch.object(
+            material_morph_runtime,
+            "detect_effective_vp2_draw_api",
+            return_value=VP2_API_DIRECTX11,
+        ):
+            rebuilt = build_material_morph_graph(root, connect_shader=True)
+        self.assertTrue(rebuilt["success"], rebuilt)
+        self.assertEqual(cmds.getAttr(f"{evaluator}.baseEdgeColorA"), base_before)
+        self.assertEqual(cmds.getAttr(f"{shader}.EdgeColorA"), final_before)
+        self.assertEqual(
+            cmds.listConnections(f"{shader}.EdgeColorA", s=True, d=False, p=True),
+            connections_before,
+        )
+
+    def test_standard_material_graph_fails_closed_without_partial_route(self):
+        """Lambert は全PMX channelを持たないためRGBだけを先行接続しない。"""
         _, _, shader, material_nodes, graph = self._create_scene_with_shader()
         self.assertTrue(graph["success"])
         self.assertIn("evaluator_nodes", graph)
@@ -489,11 +705,12 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             if node in sources:
                 connected = True
                 break
-        self.assertTrue(
-            connected,
-            "mmdMaterialMorphEval.outputDiffuse が lambert.color に接続されていない",
+        self.assertFalse(connected, "Lambertへdiffuse RGBだけを部分接続してはならない")
+        self.assertIn(
+            f"complete_material_backend_unsupported:{shader}",
+            graph["skipped"],
         )
-        # weight 駆動が生きていることも確認（既存契約の回帰）
+        # evaluator/contribution metadata is still retained for diagnostics.
         self.assertEqual(len(material_nodes), 1)
 
     def test_weight_zero_preserves_nonblack_base_rgba(self):
@@ -506,29 +723,15 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         )
         self.assertTrue(graph["success"])
         self.assertEqual(len(graph["evaluator_nodes"]), 1)
-        evaluator = graph["evaluator_nodes"][0]
         cmds.setAttr(f"{material_nodes[0]}.weight", 0.0)
 
-        for axis, expected in zip("RGB", base_rgb):
-            self.assertAlmostEqual(
-                float(cmds.getAttr(f"{evaluator}.baseDiffuse{axis}")),
-                expected,
-                places=6,
-            )
-        self.assertAlmostEqual(
-            float(cmds.getAttr(f"{evaluator}.baseDiffuseA")),
-            base_alpha,
-            places=6,
-        )
+        # Unsupported backends are not allowed to take ownership of authored base values.
+        self.assertIn(f"complete_material_backend_unsupported:{shader}", graph["skipped"])
         self.assertEqual(
             tuple(round(value, 6) for value in cmds.getAttr(f"{shader}.color")[0]),
             base_rgb,
         )
-        self.assertAlmostEqual(
-            float(cmds.getAttr(f"{evaluator}.outputDiffuseAlpha")),
-            base_alpha,
-            places=6,
-        )
+        self.assertFalse(cmds.listConnections(f"{shader}.color", s=True, d=False) or [])
 
     def test_weight_zero_preserves_original_diffuse(self):
         """weight=0 のとき shader diffuse は変わらない。"""
@@ -543,42 +746,27 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertAlmostEqual(diffuse[2], 1.0, places=4, msg="B が変わった")
 
     def test_weight_one_applies_additive_diffuse(self):
-        """weight=1 で加算モーフが shader diffuse に反映される。
-
-        operation_type=1 (加算), diffuse=(1,0,0,0) なので
-        base(1,1,1) + weight*offset → (2,1,1) — clamp で (1,1,1) のまま等ではなく
-        DG 接続で中間値が流れることを期待する。
-        """
+        """Unsupported standard shader remains unchanged at weight=1."""
         _, _, shader, material_nodes, _ = self._create_scene_with_shader()
         morph_node = material_nodes[0]
 
         cmds.setAttr(f"{morph_node}.weight", 1.0)
 
         diffuse = cmds.getAttr(f"{shader}.color")[0]
-        self.assertGreater(
-            diffuse[0], 1.0 + 0.01,
-            "weight=1 でも diffuse.R が変化しない",
-        )
+        self.assertEqual(tuple(diffuse), (1.0, 1.0, 1.0))
 
     def test_weight_half_applies_partial_offset(self):
-        """weight=0.5 で加算量が半分になる。"""
+        """Unsupported standard shader remains unchanged at a mixed weight."""
         _, _, shader, material_nodes, _ = self._create_scene_with_shader()
         morph_node = material_nodes[0]
 
         cmds.setAttr(f"{morph_node}.weight", 0.5)
 
         diffuse = cmds.getAttr(f"{shader}.color")[0]
-        expected_r = 1.0 + 0.5 * 1.0  # base + weight * offset
-        self.assertAlmostEqual(
-            diffuse[0], expected_r, places=4,
-            msg="weight=0.5 の diffuse.R が期待値と違う",
-        )
+        self.assertEqual(tuple(diffuse), (1.0, 1.0, 1.0))
 
     def test_glsl_rgb_alpha_route_when_glsl_available(self):
-        """GLSLShader が作れる環境では DiffuseColorRGB へ接続し alpha は触らない。
-
-        GLSL プラグイン不可 / ノード生成不可 / VP2 が OpenGL 系でない場合は skip。
-        """
+        """Standalone GLSL fallback without the complete uniform set fails closed."""
         self._require_material_morph_node()
 
         try:
@@ -669,8 +857,14 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             if node in sources:
                 connected = True
                 break
-        self.assertTrue(connected, "evaluator output not connected to DiffuseColorRGB")
-        # Alpha plug must not be driven by the RGB evaluator output.
+        # Standalone fallback intentionally lacks the six texture-factor uniforms;
+        # a partial RGB route must therefore be rejected.
+        self.assertFalse(connected, "incomplete GLSL fallback must fail closed")
+        self.assertTrue(
+            any("glsl_material_plugs_incomplete" in str(item) for item in graph["skipped"]),
+            graph["skipped"],
+        )
+        # Alpha plug must remain authored when the complete route is unavailable.
         alpha_sources = cmds.listConnections(f"{shader}.DiffuseColorA", s=True, d=False) or []
         for node in graph.get("evaluator_nodes") or []:
             self.assertNotIn(node, alpha_sources)

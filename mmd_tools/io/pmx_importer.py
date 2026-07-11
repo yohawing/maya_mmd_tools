@@ -197,7 +197,9 @@ def import_pmx_file(
             # Material morph colour route needs post-sync plugs; do not re-sync.
             logger.debug("Building material morph runtime graph...")
             phase_start = time.perf_counter()
-            material_morph_runtime_result = build_material_morph_graph(root_group)
+            material_morph_runtime_result = build_material_morph_graph(
+                root_group, connect_shader=True
+            )
             pipeline.record_phase("material_morph_runtime_sec", phase_start)
             pipeline.emit_progress(90)
             logger.debug("Material morph runtime graph result: %s", material_morph_runtime_result)

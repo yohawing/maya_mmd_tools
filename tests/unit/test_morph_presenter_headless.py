@@ -288,6 +288,7 @@ class _FakeMayaAdapter:
         self.ls_results = {}
         self.aliases = {}
         self.node_types = {}
+        self.connections = {}
 
     def object_exists(self, node):
         self.calls.append(("object_exists", node))
@@ -328,6 +329,25 @@ class _FakeMayaAdapter:
     def node_type(self, node):
         self.calls.append(("node_type", node))
         return self.node_types.get(node, "")
+
+    def list_connections(self, node, **kwargs):
+        self.calls.append(("list_connections", node, kwargs))
+        result = []
+        source = kwargs.get("source", True)
+        destination = kwargs.get("destination", True)
+        requested_type = kwargs.get("type")
+        for connection in self.connections.get(node, []):
+            if destination and not source and connection["source"] == node:
+                candidate = connection["destination"]
+            elif source and not destination and connection["destination"] == node:
+                candidate = connection["source"]
+            else:
+                continue
+            candidate_node = candidate.split(".", 1)[0]
+            if requested_type and self.node_types.get(candidate_node) != requested_type:
+                continue
+            result.append(candidate if kwargs.get("plugs") else candidate_node)
+        return result
 
 
 def _make_presenter(model=None, adapter=None):
@@ -529,12 +549,34 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter.morph_data["vertex"].update(blend_shape_node="vertex_bs", blend_shape_target="v")
         presenter.morph_data["bone"].update(morph_node="bone_node")
         presenter.morph_data["material"].update(morph_node="material_node")
+        adapter.node_types["materialEval"] = "mmdMaterialMorphEval"
+        adapter.node_types["materialShader"] = "dx11Shader"
+        adapter.attr_exists.add(("materialEval", "mmd_complete_route_ready"))
+        adapter.attr_values["materialEval.mmd_complete_route_ready"] = True
+        adapter.attr_values["materialEval.mmd_target_shader"] = "materialShader"
+        adapter.node_types.update({"groupSum": "plusMinusAverage", "groupScale": "multiplyDivide"})
+        adapter.connections["material_node.weight"] = [{
+            "source": "material_node.weight",
+            "destination": "groupSum.input1D[0]",
+        }]
+        adapter.connections["groupSum.output1D"] = [{
+            "source": "groupSum.output1D",
+            "destination": "groupScale.input1X",
+        }]
+        adapter.connections["groupScale.outputX"] = [{
+            "source": "groupScale.outputX",
+            "destination": "materialEval.contribution[0].weight",
+        }]
+        adapter.connections["materialEval.outputDiffuse"] = [{
+            "source": "materialEval.outputDiffuse",
+            "destination": "materialShader.DiffuseColorRGB",
+        }]
 
-        for name in ("vertex", "bone"):
+        for name in ("vertex", "bone", "material"):
             presenter.on_morph_selected(_FakeItem(name, name), None)
             self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
 
-        for name in ("material", "uv", "flip", "impulse"):
+        for name in ("uv", "flip", "impulse"):
             presenter.on_morph_selected(_FakeItem(name, name), None)
             self.assertEqual(
                 view.controls_enabled_calls[-1],
@@ -543,9 +585,85 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             self.assertTrue(view.details_enabled_calls[-1])
             self.assertEqual(presenter.current_morph, name)
 
+    def test_material_capability_requires_destination_evaluator_plug(self):
+        presenter, _, _, adapter = _make_presenter()
+        adapter.existing.add("material_node")
+        data = {"type": 8, "_pmx_type_raw": True, "morph_node": "material_node"}
+
+        adapter.node_types["wrong"] = "multiplyDivide"
+        adapter.connections["material_node.weight"] = [{
+            "source": "material_node.weight",
+            "destination": "wrong.input1X",
+        }]
+        self.assertFalse(presenter._morph_controls_supported(data))
+
+        adapter.node_types["materialEval"] = "mmdMaterialMorphEval"
+        adapter.connections["material_node.weight"] = [{
+            "source": "materialEval.outputDiffuseR",
+            "destination": "material_node.weight",
+        }]
+        self.assertFalse(presenter._morph_controls_supported(data))
+
+        adapter.connections["material_node.weight"] = [{
+            "source": "material_node.weight",
+            "destination": "materialEval.contribution[0].weight",
+        }]
+        self.assertFalse(presenter._morph_controls_supported(data))
+
+        adapter.attr_exists.add(("materialEval", "mmd_complete_route_ready"))
+        adapter.attr_values["materialEval.mmd_complete_route_ready"] = True
+        adapter.attr_values["materialEval.mmd_target_shader"] = "materialShader"
+        adapter.node_types["materialShader"] = "GLSLShader"
+        adapter.connections["materialEval.outputDiffuse"] = [{
+            "source": "materialEval.outputDiffuse",
+            "destination": "materialShader.DiffuseColorRGB",
+        }]
+        self.assertTrue(presenter._morph_controls_supported(data))
+
+        adapter.node_types["unrelated"] = "condition"
+        adapter.connections["material_node.weight"] = [{
+            "source": "material_node.weight",
+            "destination": "unrelated.firstTerm",
+        }]
+        self.assertFalse(presenter._morph_controls_supported(data))
+
+        adapter.node_types["cycleA"] = "unitConversion"
+        adapter.node_types["cycleB"] = "unitConversion"
+        adapter.connections["material_node.weight"] = [{
+            "source": "material_node.weight",
+            "destination": "cycleA.input",
+        }]
+        adapter.connections["cycleA.output"] = [{
+            "source": "cycleA.output", "destination": "cycleB.input",
+        }]
+        adapter.connections["cycleB.output"] = [{
+            "source": "cycleB.output", "destination": "cycleA.input",
+        }]
+        self.assertFalse(presenter._morph_controls_supported(data))
+
+        adapter.connections["material_node.weight"] = [{
+            "source": "material_node.weight",
+            "destination": "materialEval.baseDiffuseR",
+        }]
+        self.assertFalse(presenter._morph_controls_supported(data))
+
+        adapter.connections["material_node.weight"] = [{
+            "source": "material_node.weight",
+            "destination": "ns:materialEval.contribution[12].weight",
+        }]
+        adapter.node_types["ns:materialEval"] = "mmdMaterialMorphEval"
+        adapter.attr_exists.add(("ns:materialEval", "mmd_complete_route_ready"))
+        adapter.attr_values["ns:materialEval.mmd_complete_route_ready"] = True
+        adapter.attr_values["ns:materialEval.mmd_target_shader"] = "materialShader"
+        adapter.connections["ns:materialEval.outputDiffuse"] = [{
+            "source": "ns:materialEval.outputDiffuse",
+            "destination": "materialShader.DiffuseColorRGB",
+        }]
+        self.assertTrue(presenter._morph_controls_supported(data))
+
     def test_group_capability_requires_referenced_bone_morph(self):
         presenter, view, _, adapter = _make_presenter()
-        adapter.existing.update({"bone_node", "group_node"})
+        adapter.existing.update({"bone_node", "material_node", "group_node"})
         presenter.morph_data = presenter._index_morph_metadata(
             [
                 {"name_jp": "vertex", "panel": 4, "type": 1, "index": 0},
@@ -557,8 +675,44 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         group = presenter.morph_data["group"]
         group["morph_node"] = "group_node"
         presenter.morph_data["bone"]["morph_node"] = "bone_node"
+        presenter.morph_data["material"]["morph_node"] = "material_node"
 
         group["group_morph_offsets"] = [{"morph_index": 0}, {"morph_index": 2}, {"morph_index": 99}]
+        presenter.on_morph_selected(_FakeItem("group", "group"), None)
+        self.assertEqual(view.controls_enabled_calls[-1][0], False)
+
+        adapter.node_types.update({
+            "materialEval": "mmdMaterialMorphEval",
+            "materialShader": "dx11Shader",
+            "materialGroupSum": "plusMinusAverage",
+            "materialGroupScale": "multiplyDivide",
+        })
+        adapter.attr_exists.add(("materialEval", "mmd_complete_route_ready"))
+        adapter.attr_values.update({
+            "materialEval.mmd_complete_route_ready": True,
+            "materialEval.mmd_target_shader": "materialShader",
+        })
+        adapter.connections["material_node.weight"] = [{
+            "source": "material_node.weight",
+            "destination": "materialGroupSum.input1D[0]",
+        }]
+        adapter.connections["materialGroupSum.output1D"] = [{
+            "source": "materialGroupSum.output1D",
+            "destination": "materialGroupScale.input1X",
+        }]
+        adapter.connections["materialGroupScale.outputX"] = [{
+            "source": "materialGroupScale.outputX",
+            "destination": "materialEval.contribution[0].weight",
+        }]
+        adapter.connections["materialEval.outputDiffuse"] = [{
+            "source": "materialEval.outputDiffuse",
+            "destination": "materialShader.DiffuseColorRGB",
+        }]
+        group["group_morph_offsets"] = [{"morph_index": 2, "morph_rate": 0.5}]
+        presenter.on_morph_selected(_FakeItem("group", "group"), None)
+        self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
+
+        adapter.attr_values["materialEval.mmd_complete_route_ready"] = False
         presenter.on_morph_selected(_FakeItem("group", "group"), None)
         self.assertEqual(view.controls_enabled_calls[-1][0], False)
 

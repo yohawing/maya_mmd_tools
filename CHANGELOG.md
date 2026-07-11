@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-07-11
 
 ### Added
+- Enabled complete-or-none PMX material morph routing for DX11 and GLSL, including diffuse alpha, specular, ambient, edge, and all texture factors.
 - Added pass/fail GoldenOracle viewport image comparisons with case-specific thresholds and flat-gray regression detection.
 - Added Maya Bullet import and preview simulation for PMX/PMD rigid bodies and joints, enabled by default when Bullet is available.
 - Added development-mode PMX round-trip preservation for rigid bodies, joints, and display frames, including focused round-trip gates.

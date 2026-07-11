@@ -183,9 +183,10 @@ class TestPmxImporter(MayaTestBase):
             call_order.append("sync_dx11")
             return real_sync(self, mesh_converter, refresh_if_dx11=refresh_if_dx11)
 
-        def _tracking_build(root_group):
+        def _tracking_build(root_group, *, connect_shader=False):
             call_order.append("material_morph")
-            return real_build(root_group)
+            self.assertTrue(connect_shader)
+            return real_build(root_group, connect_shader=connect_shader)
 
         with patch.object(
             pmx_importer.ModelImportPipeline,
