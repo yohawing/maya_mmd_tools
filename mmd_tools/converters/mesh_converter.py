@@ -1686,6 +1686,60 @@ class MeshConverter:
         # Keep Opacity in sync with diffuse alpha for legacy consumers.
         setup_ok &= _set_shader_attribute_checked(shader, "Opacity", diffuse_a, "float")
 
+        for texture_flag in ("HasMainTexture", "HasSphereTexture", "HasToonTexture"):
+            if cmds.attributeQuery(texture_flag, node=shader, exists=True):
+                maya_attribute_utils.set_attribute(shader, texture_flag, 0, "long")
+
+        # OGSFX exposes the same texture-slot contract as the DX11 effect.  The
+        # previous GLSL setup stopped after scalar uniforms, leaving every
+        # material untextured even when the PMX texture paths were valid.
+        self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
+
+        sphere_texture_path = None
+        if not is_pmd and getattr(material, "sphere_texture_index", -1) >= 0:
+            sphere_index = int(material.sphere_texture_index)
+            if all_textures and sphere_index < len(all_textures):
+                sphere_texture_path = all_textures[sphere_index]
+                full_sphere_path = _resolve_texture_path(self.texture_dir, sphere_texture_path)
+                self._connect_dx11_secondary_texture(
+                    shader,
+                    material,
+                    sphere_texture_path,
+                    full_sphere_path,
+                    "SphereTexture",
+                    "HasSphereTexture",
+                    "_sphere_texture",
+                    "Sphere",
+                )
+
+        if not is_pmd:
+            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+            if full_toon_path and os.path.exists(full_toon_path):
+                toon_original_path = ""
+                toon_source_kind = "shared_toon"
+                toon_shared_id = ""
+                if (
+                    getattr(material, "shared_toon_flag", 1) == 0
+                    and all_textures
+                    and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
+                ):
+                    toon_original_path = all_textures[int(material.toon_texture_index)]
+                    toon_source_kind = "pmx_texture"
+                elif hasattr(material, "toon_texture_index"):
+                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
+                self._connect_dx11_secondary_texture(
+                    shader,
+                    material,
+                    toon_original_path,
+                    full_toon_path,
+                    "ToonTexture",
+                    "HasToonTexture",
+                    "_toon_texture",
+                    "Toon",
+                    source_kind=toon_source_kind,
+                    shared_toon_id=toon_shared_id,
+                )
+
         self._apply_custom_attributes(
             shader,
             material,
@@ -1693,7 +1747,7 @@ class MeshConverter:
             is_pmd,
             material_index,
             texture_path,
-            None,
+            sphere_texture_path,
         )
         return setup_ok
 

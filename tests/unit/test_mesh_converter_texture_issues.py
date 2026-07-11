@@ -995,6 +995,69 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         )
         self.assertIn(call("Face_shader", "HasToonTexture", 1, "long"), mock_set_attribute.call_args_list)
 
+    def test_setup_glsl_shader_binds_main_sphere_and_toon_texture_slots(self):
+        """GLSL setup must honor the same texture-slot contract as DX11."""
+        converter = MeshConverter(str(self.model))
+        material = self._material(
+            sphere_texture_index=0,
+            sphere_mode=1,
+            toon_texture_index=0,
+            shared_toon_flag=0,
+        )
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter._ensure_mmd_shader_uniform_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter._set_shader_attribute_checked",
+            return_value=True,
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
+        ):
+            mock_cmds.attributeQuery.return_value = True
+            mock_cmds.listConnections.return_value = []
+            mock_cmds.shadingNode.side_effect = lambda _type, **kwargs: kwargs["name"]
+
+            result = converter._setup_glsl_shader(
+                "Face_shader",
+                material,
+                self.ascii_texture.name,
+                [self.ascii_texture.name],
+                is_pmd=False,
+                material_index=0,
+            )
+
+        self.assertTrue(result)
+        for suffix, texture_attr, flag_attr in (
+            ("_texture", "MainTexture", "HasMainTexture"),
+            ("_sphere_texture", "SphereTexture", "HasSphereTexture"),
+            ("_toon_texture", "ToonTexture", "HasToonTexture"),
+        ):
+            mock_cmds.connectAttr.assert_any_call(
+                f"Face_shader{suffix}.outColor",
+                f"Face_shader.{texture_attr}",
+                force=True,
+            )
+            self.assertIn(call("Face_shader", flag_attr, 1, "long"), mock_set_attribute.call_args_list)
+
+    def test_glsl_effect_declares_uv_and_all_mmd_texture_samplers(self):
+        source = (Path(__file__).parents[2] / "mmd_tools" / "shaders" / "MMDShader.ogsfx").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("vec2 UVset0   : TEXCOORD0", source)
+        self.assertIn("vec3 sphereNormal = normalize((View * vec4(n, 0.0)).xyz)", source)
+        for texture, sampler in (
+            ("MainTexture", "MainSampler"),
+            ("SphereTexture", "SphereSampler"),
+            ("ToonTexture", "ToonSampler"),
+        ):
+            self.assertIn(f"uniform texture2D {texture}", source)
+            self.assertIn(f"Texture = <{texture}>;", source)
+            self.assertIn(f"texture2D({sampler}", source)
+
     @staticmethod
     def _material(**overrides):
         values = {
