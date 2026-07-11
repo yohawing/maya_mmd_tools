@@ -135,11 +135,14 @@ def _classify_vp2_draw_api_text(text: str) -> str:
     return VP2_API_UNKNOWN
 
 
-def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
-    """Build or refresh PMX material morph evaluator nodes for shaders under *root_group*.
+def build_material_morph_graph(root_group: str, *, connect_shader: bool = False) -> Dict[str, Any]:
+    """Optionally build PMX material morph evaluator connections under *root_group*.
 
     Args:
         root_group: Imported MMD model root group.
+        connect_shader: Explicit opt-in for the incomplete diffuse-RGB-only
+            runtime. Normal imports leave this false until every PMX material
+            channel can be reproduced safely.
 
     Returns:
         Summary dict.
@@ -155,6 +158,10 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
     if not root_group or not cmds.objExists(root_group):
         result["success"] = False
         result["skipped"].append("root_group_missing")
+        return result
+
+    if not connect_shader:
+        result["skipped"].append("material_morph_shader_routing_disabled")
         return result
 
     shaders_by_index = _collect_shaders_by_material_index(root_group)

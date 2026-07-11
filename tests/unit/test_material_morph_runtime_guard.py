@@ -44,6 +44,25 @@ def _rgb_safe_get_attr(*, locked=False, attr_type="double3", value=(1.0, 0.0, 0.
 
 
 class TestMaterialMorphRuntimeGuard(unittest.TestCase):
+    def test_build_graph_does_not_connect_shader_by_default(self):
+        cmds = mock.Mock()
+        cmds.objExists.return_value = True
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
+            material_morph_runtime,
+            "_collect_shaders_by_material_index",
+        ) as collect_mock, mock.patch.object(
+            material_morph_runtime,
+            "_reroute_shader_color",
+        ) as reroute_mock:
+            result = material_morph_runtime.build_material_morph_graph("root")
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["evaluator_nodes"], [])
+        self.assertEqual(result["contributions"], 0)
+        self.assertEqual(result["skipped"], ["material_morph_shader_routing_disabled"])
+        collect_mock.assert_not_called()
+        reroute_mock.assert_not_called()
+
     def test_neutral_diffuse_offsets_do_not_need_rgb_evaluation(self):
         additive_alpha_only = {
             "material_index": 0,
@@ -480,7 +499,7 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             return_value=["morph1"],
         ):
             cmds.objExists.return_value = True
-            result = material_morph_runtime.build_material_morph_graph("root")
+            result = material_morph_runtime.build_material_morph_graph("root", connect_shader=True)
 
         self.assertTrue(result["success"])
         self.assertIn("dx11_vp2_not_directx11:dx11_shader", result["skipped"])

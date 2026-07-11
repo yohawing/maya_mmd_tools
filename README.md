@@ -27,7 +27,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Bones & skeleton | 🔶 | Some complex models still have known issues |
 | Rig (IK / grant / local axis) | ✅ | Supported |
 | Display frames (表示枠) | 🔶 | Preserved as model metadata for development-mode PMX round-trip; no dedicated editing UI yet |
-| Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, and group controls are supported. Material morph runtime currently drives diffuse RGB only; alpha, specular, ambient, edge, and texture/sphere/toon factors are not reproduced. UV, Flip, and Impulse morphs are not supported. |
+| Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, and group controls are supported. Material morph metadata is imported, but shader runtime connections are disabled until all PMX material channels can be reproduced safely. UV, Flip, and Impulse morphs are not supported. |
 | Rigid bodies & joints | 🧪 | Imported as Maya Bullet nodes with preview simulation and development-mode PMX round-trip metadata |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
 | HumanIK | 🧪 | Experimental Bone tab action creates a HumanIK definition/control rig from the imported MMD skeleton |
@@ -38,7 +38,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Feature | Status | Notes |
 |---|---|---|
 | Bone animation | 🔶 | Bake mode uses high-precision [mmd-anim](https://github.com/yohawing/mmd-anim) final-pose evaluation. Rig mode keeps editable sparse keys and live MMD rig nodes, but remains experimental for complex motions. |
-| Morph animation | 🔶 | Vertex and bone morphs are supported. Material morph runtime is limited to diffuse RGB only. |
+| Morph animation | 🔶 | Vertex and bone morphs are supported. Material morph shader animation is currently disabled. |
 | Camera animation | ✅ | Creates/keys `mmd_camera` |
 | Light animation | ✅ | Drives the `mmd_light` controller |
 | IK on/off frames | 🔶 | Supported for import/bake. Runtime bake applies the state to the baked pose; rig mode keys `mmdCcdIk.enabled`. |
@@ -58,7 +58,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 - **Export is not available.** This is an import-only tool for now — PMX/PMD/VMD export is not implemented (the UI states this explicitly).
 - **VPD pose import is available through drag-and-drop.** It applies the pose at the current frame to the selected MMD model, or to a PMX/PMD model dropped together with the VPD file.
 - **Additional UV / multi-UV is not applied** (read but ignored).
-- **Material morph runtime is incomplete.** Only diffuse RGB is currently driven. Alpha, specular, ambient, edge color/size, and texture/sphere/toon factors are preserved as metadata but are not reproduced in the viewport.
+- **Material morph shader runtime is disabled.** Material morph metadata is preserved, but no shader parameters are connected until diffuse/alpha, specular, ambient, edge color/size, and texture/sphere/toon factors can be reproduced together.
 - **UV, Flip, and Impulse morphs are not supported.** Vertex, bone, material, and group controls are available.
 - **Soft body (PMX 2.1) data is silently ignored.** The rest of the file still imports correctly.
 - **Display frames (表示枠) are preserved for PMX round-trip but do not have a dedicated editing UI.**

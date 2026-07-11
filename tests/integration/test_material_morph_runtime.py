@@ -231,7 +231,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
         # material morph runtime graph を構築（shader ↔ evaluator 接続）
-        graph = build_material_morph_graph(root)
+        graph = build_material_morph_graph(root, connect_shader=True)
 
         return root, mesh, shader, material_nodes, graph
 
@@ -379,7 +379,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
                 cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
-        graph = build_material_morph_graph(root)
+        graph = build_material_morph_graph(root, connect_shader=True)
         route = resolve_shader_color_route(shader)
 
         if not route.is_usable:
@@ -535,7 +535,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
         cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
-        graph = build_material_morph_graph(root)
+        graph = build_material_morph_graph(root, connect_shader=True)
         route = resolve_shader_color_route(shader)
         effective_api = detect_effective_vp2_draw_api()
 
