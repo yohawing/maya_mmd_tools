@@ -1058,6 +1058,19 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             self.assertIn(f"Texture = <{texture}>;", source)
             self.assertIn(f"texture2D({sampler}", source)
 
+    def test_glsl_effect_matches_dx11_light_color_and_gamma_contract(self):
+        source = (Path(__file__).parents[2] / "mmd_tools" / "shaders" / "MMDShader.ogsfx").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("uniform vec3 MMDLightDirection", source)
+        self.assertIn("uniform vec3 MMDLightColor", source)
+        self.assertIn("vec3 lightDir = -normalize(MMDLightDirection)", source)
+        self.assertIn("float halfLambert = ndotl * 0.5 + 0.5", source)
+        self.assertIn("vec3 srgbToLinear(vec3 color)", source)
+        self.assertIn("colorOut = vec4(srgbToLinear(lighting), opacity)", source)
+        self.assertIn("if (texColor.a < 0.003 || opacity <= 0.0)", source)
+        self.assertIn("discard;", source)
+
     @staticmethod
     def _material(**overrides):
         values = {

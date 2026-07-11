@@ -25,7 +25,7 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 | ボーン・スケルトン | 🔶 |　複雑なモデルでは既知の問題があります。 |
 | リグ（IK・付与・ローカル軸 ） | ✅ | 対応 |
 | 表示枠 | 🔶 | Development ModeのPMX round-trip用metadataとして保持。専用編集UIは未対応。 |
-| モーフ（頂点・ボーン・マテリアル・グループ・UV） | 🔶 | 頂点・ボーン・マテリアル・グループの操作に対応。UV・Flip・Impulseは未対応。 |
+| モーフ（頂点・ボーン・マテリアル・グループ・UV） | 🔶 | 頂点・ボーン・グループの操作に対応。マテリアルモーフのruntime反映はDiffuse RGBのみ。alpha、specular、ambient、edge、texture/sphere/toon factor、UV・Flip・Impulseは未対応。 |
 | 剛体・ジョイント | 🧪 | Maya Bullet nodeとしてimportし、preview simulationとDevelopment ModeのPMX round-trip metadataに対応。 |
 | ソフトボディ（PMX 2.1） | ⛔ | 非対応 |
 | HumanIK | 🧪 | Boneタブからインポート済みMMDスケルトンのHumanIK定義/control rigを作成（実験的） |
@@ -36,7 +36,7 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 | 機能 | 状態 | 備考 |
 |---|---|---|
 | ボーンアニメーション | 🔶 | ベイクモードは [mmd-anim](https://github.com/yohawing/mmd-anim) による最終姿勢ベイクです。リグモードは編集しやすい sparse key と live MMD リグノードを保持しますが、複雑なモーションでは試験的です。 |
-| モーフアニメーション | ✅ |　頂点・ボーン・モーフのみ対応。マテリアルモーフは一部のみ対応。 |
+| モーフアニメーション | 🔶 | 頂点・ボーンモーフに対応。マテリアルモーフのruntime反映はDiffuse RGBのみ。 |
 | カメラアニメーション | ✅ | `mmd_camera` を作成・キー設定 |
 | 照明アニメーション | ✅ | `mmd_light` コントローラを駆動 |
 | IK オン／オフフレーム | 🔶 | インポート・ベイクに対応。ランタイムベイクでは最終姿勢に反映され、リグモードでは `mmdCcdIk.enabled` にキーを設定します。 |
@@ -47,7 +47,8 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 - **エクスポートは未対応です。** 現時点では PMX/PMD/VMD の読み込み用ツールです。
 - **VPD ポーズはドラッグ＆ドロップで適用します。** 選択中の MMD モデル、または同時にドロップした PMX/PMD モデルに対して、現在フレームへポーズを適用してキーを作成します。
 - **追加 UV / multi-UV は適用されません。**
-- **UV、Flip、Impulse モーフは未対応です。** 頂点・ボーン・マテリアル・グループの操作に対応しますが、マテリアルの再現性は使用中のshader backendに依存します。
+- **マテリアルモーフのruntime再現は未完成です。** 現在接続するのはDiffuse RGBのみです。alpha、specular、ambient、edge color/size、texture/sphere/toon factorはmetadataとして保持しますが、viewportには反映しません。
+- **UV、Flip、Impulse モーフは未対応です。** 頂点・ボーン・マテリアル・グループの操作に対応します。
 - **物理は実験的です。** Maya Bulletが利用できる場合はPMX/PMDの剛体・ジョイントを既定でimportします。native physics motion bakeはopt-inです。
 - **表示枠はPMX round-trip用に保持されますが、専用編集UIは未対応です。**
 - **VMD の忠実度を優先する場合はベイクモードを使用してください。** ベイクモードは `mmd-anim` runtime の最終姿勢を焼き込みます。

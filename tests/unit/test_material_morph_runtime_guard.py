@@ -44,6 +44,43 @@ def _rgb_safe_get_attr(*, locked=False, attr_type="double3", value=(1.0, 0.0, 0.
 
 
 class TestMaterialMorphRuntimeGuard(unittest.TestCase):
+    def test_neutral_diffuse_offsets_do_not_need_rgb_evaluation(self):
+        additive_alpha_only = {
+            "material_index": 0,
+            "operation_type": 1,
+            "diffuse": [0.0, 0.0, 0.0, -1.0],
+        }
+        multiply_alpha_only = {
+            "material_index": 0,
+            "operation_type": 0,
+            "diffuse": [1.0, 1.0, 1.0, 0.0],
+        }
+        rgb_change = {
+            "material_index": 0,
+            "operation_type": 1,
+            "diffuse": [0.25, 0.0, 0.0, 0.0],
+        }
+
+        self.assertTrue(material_morph_runtime._is_neutral_diffuse_rgb_offset(additive_alpha_only))
+        self.assertTrue(material_morph_runtime._is_neutral_diffuse_rgb_offset(multiply_alpha_only))
+        self.assertFalse(material_morph_runtime._is_neutral_diffuse_rgb_offset(rgb_change))
+
+        skipped = []
+        with mock.patch.object(
+            material_morph_runtime,
+            "_parse_offsets_json",
+            return_value=[additive_alpha_only, multiply_alpha_only, rgb_change],
+        ), mock.patch.object(material_morph_runtime, "_get_morph_order", return_value=7):
+            contributions = material_morph_runtime._collect_contributions_by_shader(
+                ["materialMorph1"],
+                {0: "shader1"},
+                skipped,
+            )
+
+        self.assertEqual(len(contributions["shader1"]), 1)
+        self.assertEqual(contributions["shader1"][0]["diffuse_rgb"], (0.25, 0.0, 0.0))
+        self.assertEqual(skipped, [])
+
     def test_create_evaluator_rejects_node_without_required_attrs(self):
         cmds = mock.Mock()
         cmds.createNode.return_value = "bad_materialMorphEval"

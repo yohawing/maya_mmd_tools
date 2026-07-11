@@ -259,6 +259,11 @@ def _collect_contributions_by_shader(
             continue
         morph_order = _get_morph_order(morph_node)
         for offset in offsets:
+            # The evaluator implements diffuse RGB only. Visibility/costume
+            # morphs commonly change alpha while leaving RGB neutral; routing
+            # those offsets is misleading and can destabilize hardware uniforms.
+            if _is_neutral_diffuse_rgb_offset(offset):
+                continue
             contribution = _offset_to_contribution(morph_node, morph_order, offset)
             if contribution is None:
                 skipped.append(f"invalid_offset:{morph_node}")
@@ -277,6 +282,20 @@ def _collect_contributions_by_shader(
     for contributions in contributions_by_shader.values():
         contributions.sort(key=lambda c: (c["morph_order"], c["morph_node"]))
     return dict(contributions_by_shader)
+
+
+def _is_neutral_diffuse_rgb_offset(offset: Dict[str, Any]) -> bool:
+    """Return whether a PMX material offset leaves diffuse RGB unchanged."""
+    if not isinstance(offset, dict):
+        return False
+    try:
+        diffuse = offset.get("diffuse", [0.0, 0.0, 0.0, 0.0])
+        if len(diffuse) < 3:
+            return False
+        neutral = 1.0 if int(offset.get("operation_type", 1)) == 0 else 0.0
+        return all(abs(float(value) - neutral) <= 1.0e-7 for value in diffuse[:3])
+    except (TypeError, ValueError):
+        return False
 
 
 def _parse_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
