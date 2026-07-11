@@ -30,12 +30,34 @@ BACKENDS = {
     "glsl": {"shader": "GLSLShader", "plugin": "glslShader", "device": "VirtualDeviceGLCore"},
 }
 LOGGER = logging.getLogger(__name__)
+MAX_RGBA_BYTES = 256 * 1024 * 1024
 
 
 def exception_summary(exc: BaseException) -> str:
     """Format exceptions so empty-message errors such as MemoryError stay useful."""
     message = str(exc)
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+
+
+def mimage_rgba_buffer(pixels, width: int, height: int):
+    """Adapt Maya MImage buffer/pointer results to a bounded byte view."""
+    width = int(width)
+    height = int(height)
+    if width <= 0 or height <= 0:
+        raise ValueError(f"invalid MImage dimensions: {width}x{height}")
+    expected = width * height * 4
+    if expected > MAX_RGBA_BYTES:
+        raise ValueError(f"unreasonable MImage byte size: {expected} > {MAX_RGBA_BYTES}")
+    if isinstance(pixels, int):
+        if pixels <= 0:
+            raise ValueError("MImage.pixels() returned a null pointer")
+        import ctypes
+
+        return ctypes.string_at(pixels, expected)
+    view = memoryview(pixels).cast("B")
+    if view.nbytes < expected:
+        raise ValueError(f"RGBA buffer too short: expected {expected}, got {view.nbytes}")
+    return view[:expected]
 
 
 def rgba_pixel_stats(buffer, width: int, height: int) -> dict:
@@ -215,11 +237,12 @@ def values(node, names):
     return {{name: attr(node, name) for name in names if cmds.attributeQuery(name, node=node, exists=True)}}
 
 def png_stats(path):
-    from tests.viewport.material_morph_e2e import rgba_pixel_stats
+    from tests.viewport.material_morph_e2e import mimage_rgba_buffer, rgba_pixel_stats
     image = om.MImage()
     image.readFromFile(str(path))
     width, height = image.getSize()
-    stats = rgba_pixel_stats(image.pixels(), width, height)
+    pixels = mimage_rgba_buffer(image.pixels(), width, height)
+    stats = rgba_pixel_stats(pixels, width, height)
     stats.update({{"width": width, "height": height, "bytes": Path(path).stat().st_size}})
     return stats
 

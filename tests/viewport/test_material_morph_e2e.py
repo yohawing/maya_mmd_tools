@@ -1,6 +1,7 @@
 """Headless CLI/payload tests for the material morph commandPort runner."""
 
 import argparse
+import ctypes
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +13,7 @@ from tests.viewport.material_morph_e2e import (
     build_parser,
     exception_summary,
     is_diffuse_alpha_only_offsets,
+    mimage_rgba_buffer,
     parse_morph,
     rgba_pixel_stats,
     safe_capture_dir,
@@ -179,6 +181,28 @@ class MaterialMorphE2ETest(unittest.TestCase):
     def test_blank_exception_summary_keeps_type(self):
         self.assertEqual("MemoryError", exception_summary(MemoryError()))
         self.assertEqual("ValueError: detail", exception_summary(ValueError("detail")))
+
+    def test_mimage_integer_pointer_reads_exact_bounded_bytes(self):
+        storage = ctypes.create_string_buffer(bytes(range(12)))
+        adapted = mimage_rgba_buffer(ctypes.addressof(storage), 1, 1)
+        self.assertEqual(bytes(range(4)), adapted)
+        self.assertEqual(4, len(adapted))
+
+    def test_mimage_rejects_null_pointer_and_unreasonable_dimensions(self):
+        with self.assertRaisesRegex(ValueError, "null pointer"):
+            mimage_rgba_buffer(0, 1, 1)
+        with self.assertRaisesRegex(ValueError, "invalid MImage dimensions"):
+            mimage_rgba_buffer(bytearray(), 0, 1)
+        with self.assertRaisesRegex(ValueError, "unreasonable MImage byte size"):
+            mimage_rgba_buffer(bytearray(), 100_000, 100_000)
+
+    def test_mimage_buffer_path_is_bounded_view(self):
+        storage = bytearray(range(12))
+        adapted = mimage_rgba_buffer(storage, 1, 1)
+        self.assertIsInstance(adapted, memoryview)
+        self.assertEqual(bytes(range(4)), bytes(adapted))
+        storage[0] = 99
+        self.assertEqual(99, adapted[0])
 
 
 if __name__ == "__main__":
