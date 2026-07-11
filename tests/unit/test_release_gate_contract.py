@@ -139,6 +139,30 @@ class ReleaseGateContractTest(unittest.TestCase):
         self.assertIn('"tier2:bundled-native-smoke"', source)
         self.assertIn('["uvx", "nox", "-s", "bundled_native_smoke"]', source)
 
+    def test_full_release_gate_includes_native_physics_release_gate(self):
+        source = inspect.getsource(noxfile.release_gate)
+        self.assertIn('"tier2:native-physics-release-gate"', source)
+        self.assertIn('["uvx", "nox", "-s", "native_physics_release_gate"]', source)
+        gate_source = inspect.getsource(noxfile.native_physics_release_gate)
+        self.assertIn('tests/data/physics/test_hair_physics.pmx', gate_source)
+        self.assertIn('tests/data/mmt_test_model_test_motion.vmd', gate_source)
+        self.assertIn("_bundled_physics_runtime()", gate_source)
+
+    def test_bundled_physics_runtime_selects_supported_platform(self):
+        windows = noxfile._bundled_physics_runtime("Windows")
+        macos = noxfile._bundled_physics_runtime("Darwin")
+        self.assertTrue(str(windows).replace("\\", "/").endswith("mmd_tools/native/win64/mmd_runtime_ffi.dll"))
+        self.assertTrue(str(macos).replace("\\", "/").endswith("mmd_tools/native/macos/libmmd_runtime_ffi.dylib"))
+        with self.assertRaisesRegex(RuntimeError, "unsupported on Linux"):
+            noxfile._bundled_physics_runtime("Linux")
+
+    def test_native_physics_release_gate_clears_all_reports_before_inputs(self):
+        source = inspect.getsource(noxfile.native_physics_release_gate)
+        cleanup = source.index("for stale_report in")
+        input_check = source.index("for required in")
+        self.assertLess(cleanup, input_check)
+        self.assertIn("(*run_reports, comparison_json, comparison_md)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1347,6 +1347,61 @@ def native_physics_bake_route_e2e(session: nox.Session) -> None:
     )
 
 
+def _bundled_physics_runtime(system: str | None = None) -> Path:
+    """Return the platform-specific bundled runtime used by the physics release gate."""
+    current = system or platform.system()
+    relative = {
+        "Windows": "mmd_tools/native/win64/mmd_runtime_ffi.dll",
+        "Darwin": "mmd_tools/native/macos/libmmd_runtime_ffi.dylib",
+    }.get(current)
+    if relative is None:
+        raise RuntimeError(f"Bundled native physics release gate is unsupported on {current}")
+    return (ROOT / relative).resolve()
+
+
+@nox.session(venv_backend="none")
+def native_physics_release_gate(session: nox.Session) -> None:
+    """Run the bundled native physics bake route twice and compare deterministic outputs."""
+    maya_version = "2024"
+    mayapy = _mayapy(maya_version)
+    pmx = (ROOT / "tests/data/physics/test_hair_physics.pmx").resolve()
+    vmd = (ROOT / "tests/data/mmt_test_model_test_motion.vmd").resolve()
+    ffi = _bundled_physics_runtime()
+    report_dir = (ROOT / "build/reports").resolve()
+    run_reports = [report_dir / "native_physics_release_run1.json", report_dir / "native_physics_release_run2.json"]
+    comparison_json = report_dir / "native_physics_release_comparison.json"
+    comparison_md = report_dir / "native_physics_release_comparison.md"
+    for stale_report in (*run_reports, comparison_json, comparison_md):
+        if stale_report.exists():
+            stale_report.unlink()
+    for required in (mayapy, pmx, vmd, ffi):
+        if not required.is_file():
+            raise FileNotFoundError(f"Native physics release gate input not found: {required}")
+    env = _mayapy_env(mayapy, MAYA_VERSION=maya_version, MMD_ANIM_FFI_PATH=str(ffi))
+    for report in run_reports:
+        session.run(
+            str(mayapy),
+            _mayapy_script(mayapy, "tests/viewport/native_physics_bake_capture.py"),
+            "--verify-bake-route",
+            "--pmx", _maya_process_path(mayapy, pmx),
+            "--vmd", _maya_process_path(mayapy, vmd),
+            "--report", _maya_process_path(mayapy, report),
+            "--eval-frames", "0,1,2,3,4,5",
+            env=env,
+            external=True,
+        )
+    session.run(
+        sys.executable,
+        "tests/release/native_physics_determinism.py",
+        "--run1", str(run_reports[0]),
+        "--run2", str(run_reports[1]),
+        "--ffi", str(ffi),
+        "--out-json", str(comparison_json),
+        "--out-md", str(comparison_md),
+        external=True,
+    )
+
+
 @nox.session(venv_backend="none")
 def humanik_definition_smoke(session: nox.Session) -> None:
     """Create a minimal HumanIK definition under mayapy.
@@ -2231,6 +2286,10 @@ def release_gate(session: nox.Session) -> None:
             (
                 "tier2:bundled-native-smoke",
                 ["uvx", "nox", "-s", "bundled_native_smoke"],
+            ),
+            (
+                "tier2:native-physics-release-gate",
+                ["uvx", "nox", "-s", "native_physics_release_gate"],
             ),
             (
                 "tier2:pmx-roundtrip-v0_4",
