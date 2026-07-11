@@ -391,6 +391,20 @@ class TestCompleteRouteRollback(unittest.TestCase):
 class TestDetectEffectiveVp2DrawApi(unittest.TestCase):
     """Isolated effective VP2 draw-API detector (ogs + optionVar only)."""
 
+    def setUp(self):
+        # Detector tests must not inherit the launcher/host VP2 override. Tests
+        # exercising the override contract opt in with their own patch.dict.
+        self._environment = mock.patch.dict(
+            material_morph_runtime.os.environ,
+            dict(material_morph_runtime.os.environ),
+            clear=True,
+        )
+        self._environment.start()
+        material_morph_runtime.os.environ.pop("MAYA_VP2_DEVICE_OVERRIDE", None)
+
+    def tearDown(self):
+        self._environment.stop()
+
     def test_prefers_ogs_device_information_directx(self):
         cmds = mock.Mock()
         cmds.ogs.return_value = "API : DirectX V.11\nAdapter : Fake GPU"
@@ -438,6 +452,56 @@ class TestDetectEffectiveVp2DrawApi(unittest.TestCase):
         self.assertEqual(classify("VirtualDeviceGLCore"), material_morph_runtime.VP2_API_OPENGL_CORE)
         self.assertEqual(classify("VirtualDeviceGL"), material_morph_runtime.VP2_API_OPENGL)
         self.assertEqual(classify(""), material_morph_runtime.VP2_API_UNKNOWN)
+
+    def test_generic_opengl_is_refined_by_process_glcore_override(self):
+        cmds = mock.Mock()
+        cmds.ogs.return_value = "API : OpenGL V.4.6"
+        cmds.optionVar.return_value = "OpenGL"
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.dict(
+            material_morph_runtime.os.environ,
+            {"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceGLCore"},
+            clear=False,
+        ):
+            self.assertEqual(
+                material_morph_runtime.detect_effective_vp2_draw_api(),
+                material_morph_runtime.VP2_API_OPENGL_CORE,
+            )
+
+    def test_generic_opengl_is_refined_by_core_option_var(self):
+        cmds = mock.Mock()
+        cmds.ogs.return_value = "API : OpenGL V.4.6"
+        cmds.optionVar.return_value = "OpenGLCoreProfile"
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.dict(
+            material_morph_runtime.os.environ, {}, clear=True
+        ):
+            self.assertEqual(
+                material_morph_runtime.detect_effective_vp2_draw_api(),
+                material_morph_runtime.VP2_API_OPENGL_CORE,
+            )
+
+    def test_plain_gl_override_stays_opengl_and_dx_device_is_authoritative(self):
+        cmds = mock.Mock()
+        cmds.ogs.return_value = "API : OpenGL V.4.6"
+        cmds.optionVar.return_value = "DirectX11"
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.dict(
+            material_morph_runtime.os.environ,
+            {"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceGL"},
+            clear=False,
+        ):
+            self.assertEqual(
+                material_morph_runtime.detect_effective_vp2_draw_api(),
+                material_morph_runtime.VP2_API_OPENGL,
+            )
+        cmds.ogs.return_value = "API : DirectX V.11"
+        with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.dict(
+            material_morph_runtime.os.environ,
+            {"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceGLCore"},
+            clear=False,
+        ):
+            self.assertEqual(
+                material_morph_runtime.detect_effective_vp2_draw_api(),
+                material_morph_runtime.VP2_API_DIRECTX11,
+            )
 
 
 class TestResolveShaderColorRoute(unittest.TestCase):

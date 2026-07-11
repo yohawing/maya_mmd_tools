@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 import hashlib
+import os
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from maya import cmds
@@ -132,9 +133,13 @@ def detect_effective_vp2_draw_api() -> str:
     except Exception:
         device_text = ""
 
-    api = _classify_vp2_draw_api_text(device_text)
-    if api != VP2_API_UNKNOWN:
-        return api
+    device_api = _classify_vp2_draw_api_text(device_text)
+    if device_api in {VP2_API_DIRECTX11, VP2_API_OPENGL_CORE}:
+        return device_api
+
+    override_api = _classify_vp2_draw_api_text(
+        os.environ.get("MAYA_VP2_DEVICE_OVERRIDE", "")
+    )
 
     option_text = ""
     try:
@@ -142,7 +147,17 @@ def detect_effective_vp2_draw_api() -> str:
     except Exception:
         option_text = ""
 
-    return _classify_vp2_draw_api_text(option_text)
+    option_api = _classify_vp2_draw_api_text(option_text)
+    if device_api == VP2_API_OPENGL:
+        # Maya's GLCore device diagnostic often reports only "OpenGL V.4.6".
+        # Refine generic GL with explicit process state, then a core optionVar;
+        # never let a stale non-core option override the live device family.
+        if override_api == VP2_API_OPENGL_CORE or option_api == VP2_API_OPENGL_CORE:
+            return VP2_API_OPENGL_CORE
+        return VP2_API_OPENGL
+    if override_api != VP2_API_UNKNOWN:
+        return override_api
+    return option_api
 
 
 def _classify_vp2_draw_api_text(text: str) -> str:
