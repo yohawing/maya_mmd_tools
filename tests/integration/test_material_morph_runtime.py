@@ -501,15 +501,23 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
     def _add_vec4_uniform(shader, name, default):
         if cmds.attributeQuery(name, node=shader, exists=True):
             return
-        cmds.addAttr(shader, longName=name, attributeType="compound", numberOfChildren=4)
-        for axis, value in zip("RGBA", default):
+        cmds.addAttr(shader, longName=name, attributeType="compound", numberOfChildren=2)
+        cmds.addAttr(
+            shader, longName=f"{name}XYZ", attributeType="compound",
+            numberOfChildren=3, parent=name,
+        )
+        for axis, value in zip("XYZ", default[:3]):
             cmds.addAttr(
                 shader,
                 longName=f"{name}{axis}",
                 attributeType="double",
-                parent=name,
+                parent=f"{name}XYZ",
                 defaultValue=value,
             )
+        cmds.addAttr(
+            shader, longName=f"{name}W", attributeType="double",
+            parent=name, defaultValue=default[3],
+        )
 
     def test_complete_dx11_route_uses_real_edge_compound_children(self):
         """Complete DX11 fallback routes exact registered edge child plugs."""
@@ -535,11 +543,13 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         )
         factor_values = {}
         for factor_index, name in enumerate(factor_names):
-            children = cmds.attributeQuery(name, node=shader, listChildren=True)
+            children = material_morph_runtime._scalar_leaf_attrs(shader, name)
             values = tuple(0.11 * (factor_index + 1) + 0.01 * axis for axis in range(4))
             for child, value in zip(children, values):
                 cmds.setAttr(f"{shader}.{child}", value)
-            factor_values[name] = cmds.getAttr(f"{shader}.{name}")
+            factor_values[name] = tuple(
+                cmds.getAttr(f"{shader}.{child}") for child in children
+            )
         cmds.setAttr(f"{shader}.EdgeColorRGB", 0.1, 0.2, 0.3, type="double3")
         cmds.setAttr(f"{shader}.EdgeColorA", 0.4)
         cmds.setAttr(f"{shader}.Opacity", 0.4)
@@ -583,7 +593,10 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         self.assertFalse(failed["success"])
         self.assertAlmostEqual(cmds.getAttr(f"{shader}.Opacity"), 0.4)
         for name, expected in factor_values.items():
-            self.assertEqual(cmds.getAttr(f"{shader}.{name}"), expected)
+            leaves = material_morph_runtime._scalar_leaf_attrs(shader, name)
+            self.assertEqual(
+                tuple(cmds.getAttr(f"{shader}.{leaf}") for leaf in leaves), expected
+            )
             self.assertFalse(
                 cmds.listConnections(f"{shader}.{name}", s=True, d=False, p=True) or []
             )

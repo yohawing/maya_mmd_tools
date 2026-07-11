@@ -790,10 +790,77 @@ def _is_writable_plug(shader: str, attr_name: str, size: int) -> bool:
         return False
     if size == 1:
         return attr_type in {"double", "float", "long", "short"}
-    return attr_type in {f"double{size}", f"float{size}"} or all(
-        cmds.attributeQuery(f"{attr_name}{axis}", node=shader, exists=True)
-        for axis in "RGBA"[:size]
-    )
+    return len(_scalar_leaf_attrs(shader, attr_name)) == size
+
+
+def _scalar_leaf_attrs(
+    node: str,
+    attr_name: str,
+    *,
+    max_depth: int = 4,
+    require_writable: bool = True,
+) -> List[str]:
+    """Flatten nested Maya compounds to writable scalar leaves in declared order."""
+    result: List[str] = []
+    visited = set()
+
+    def visit(current: str, depth: int) -> None:
+        if current in visited or depth > max_depth:
+            return
+        visited.add(current)
+        try:
+            children = cmds.attributeQuery(current, node=node, listChildren=True) or []
+        except Exception:
+            children = []
+        if children:
+            for child in children:
+                visit(child, depth + 1)
+            return
+        plug = f"{node}.{current}"
+        try:
+            attr_type = cmds.getAttr(plug, type=True)
+            writable = cmds.attributeQuery(current, node=node, writable=True)
+            locked = cmds.getAttr(plug, lock=True)
+        except Exception:
+            return
+        if (writable or not require_writable) and not locked and attr_type in {
+            "double", "float", "long", "short"
+        }:
+            result.append(current)
+
+    visit(attr_name, 0)
+    return result
+
+
+def _expand_route_bindings(
+    shader: str,
+    node: str,
+    bindings: Sequence[Tuple[str, Optional[str], str, int]],
+) -> List[Tuple[str, Optional[str], str, int]]:
+    """Expand every vector route to scalar leaves so nested GLSL compounds connect."""
+    expanded: List[Tuple[str, Optional[str], str, int]] = []
+    for shader_name, base_name, output_name, size in bindings:
+        if size == 1:
+            expanded.append((shader_name, base_name, output_name, 1))
+            continue
+        shader_leaves = _scalar_leaf_attrs(shader, shader_name)
+        output_leaves = _scalar_leaf_attrs(node, output_name, require_writable=False)
+        base_leaves = _scalar_leaf_attrs(node, base_name) if base_name else []
+        if len(shader_leaves) != size or len(output_leaves) != size or (
+            base_name and len(base_leaves) < size
+        ):
+            raise RuntimeError(
+                f"route leaf arity mismatch: {shader}.{shader_name} "
+                f"shader={shader_leaves} base={base_leaves} output={output_leaves}"
+            )
+        for index in range(size):
+            expanded.append((
+                shader_leaves[index],
+                base_leaves[index] if base_name else None,
+                output_leaves[index],
+                1,
+            ))
+    return expanded
 
 
 def _reroute_complete_shader(shader: str, node: str, route: ShaderColorRoute) -> bool:
@@ -815,6 +882,11 @@ def _reroute_complete_shader(shader: str, node: str, route: ShaderColorRoute) ->
         bindings.append(("EdgeColorA", "baseEdgeColorA", "outputEdgeColorA", 1))
     else:
         bindings.append(("EdgeColor", "baseEdgeColor", "outputEdgeColor", 4))
+    try:
+        bindings = _expand_route_bindings(shader, node, bindings)
+    except Exception:
+        logger.warning("Material morph route leaf expansion failed for %s", shader, exc_info=True)
+        return False
     if _complete_route_already_owned(shader, node, bindings):
         return True
     touched = []

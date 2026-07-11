@@ -947,13 +947,16 @@ class MaterialPresenter:
         """Write base values only when no evaluator owns the final plug."""
         material = self.current_material
         evaluator_base_by_uniform = {
-            "DiffuseColorRGB": ("baseDiffuse", "double3"),
             "DiffuseColorA": ("baseDiffuseA", "float"),
-            "SpecularColor": ("baseSpecular", "double3"),
             "Shininess": ("baseSpecularCoefficient", "float"),
-            "AmbientColor": ("baseAmbient", "double3"),
             "EdgeSize": ("baseEdgeSize", "float"),
-            "EdgeColor": ("baseEdgeColor", "double4"),
+        }
+        evaluator_vector_base_by_uniform = {
+            "DiffuseColorRGB": ("baseDiffuse", "RGB"),
+            "SpecularColor": ("baseSpecular", "RGB"),
+            "AmbientColor": ("baseAmbient", "RGB"),
+            "EdgeColorRGB": ("baseEdgeColor", "RGB"),
+            "EdgeColor": ("baseEdgeColor", "RGBA"),
         }
         for binding, value in iter_hardware_shader_values(values, shader_type):
             if value is None or not self.maya_adapter.attribute_exists(binding.attribute, material):
@@ -981,10 +984,12 @@ class MaterialPresenter:
                 except Exception:
                     ready = False
                 base_binding = evaluator_base_by_uniform.get(binding.attribute)
-                if ready and binding.attribute == "EdgeColorRGB":
-                    for axis, component in zip("RGB", value):
+                vector_base = evaluator_vector_base_by_uniform.get(binding.attribute)
+                if ready and vector_base:
+                    base_prefix, axes = vector_base
+                    for axis, component in zip(axes, value):
                         maya_attribute_utils.set_attribute(
-                            evaluator, f"baseEdgeColor{axis}", component, "float"
+                            evaluator, f"{base_prefix}{axis}", component, "float"
                         )
                 elif ready and binding.attribute == "EdgeColorA":
                     maya_attribute_utils.set_attribute(

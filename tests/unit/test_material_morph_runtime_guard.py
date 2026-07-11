@@ -285,6 +285,8 @@ class TestCompleteRouteRollback(unittest.TestCase):
             return True
 
         def getAttr(self, plug, **kwargs):  # noqa: N802
+            if kwargs.get("lock"):
+                return False
             if kwargs.get("type"):
                 value = self.values.get(plug, 0.0)
                 if isinstance(value, str):
@@ -386,6 +388,20 @@ class TestCompleteRouteRollback(unittest.TestCase):
             )
         self.assertEqual(cmds.values["shader.double4Value"], [(0.1, 0.2, 0.3, 0.4)])
         self.assertEqual(cmds.values["shader.float4Value"], [(0.5, 0.6, 0.7, 0.8)])
+
+    def test_scalar_leaf_attrs_flattens_nested_xyz_w_and_stops_cycles(self):
+        cmds = self._StateCmds(999)
+        cmds.children[("shader", "Nested")] = ["NestedXYZ", "NestedW"]
+        cmds.children[("shader", "NestedXYZ")] = ["NestedX", "NestedY", "NestedZ"]
+        for child in ("NestedX", "NestedY", "NestedZ", "NestedW"):
+            cmds.values[f"shader.{child}"] = 0.5
+        with mock.patch.object(material_morph_runtime, "cmds", cmds):
+            self.assertEqual(
+                material_morph_runtime._scalar_leaf_attrs("shader", "Nested"),
+                ["NestedX", "NestedY", "NestedZ", "NestedW"],
+            )
+            cmds.children[("shader", "Cycle")] = ["Cycle"]
+            self.assertEqual(material_morph_runtime._scalar_leaf_attrs("shader", "Cycle"), [])
 
 
 class TestDetectEffectiveVp2DrawApi(unittest.TestCase):
