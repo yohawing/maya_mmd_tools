@@ -30,6 +30,60 @@ from ..core.namespace_utils import NamespaceUtils
 logger = get_logger("mmd_tools.io.pmx_importer")
 
 
+def _build_material_morph_graph_with_retry(root_group, pipeline, mesh_converter):
+    """Retry once only when hardware uniform plugs have not materialized yet."""
+    first = build_material_morph_graph(root_group, connect_shader=True)
+    prefixes = ("dx11_material_plugs_incomplete:", "glsl_material_plugs_incomplete:")
+    first_skipped = list(first.get("skipped") or [])
+    if not any(str(item).startswith(prefixes) for item in first_skipped):
+        return first
+    retry_errors = []
+    try:
+        from maya import cmds
+
+        cmds.refresh(force=True)
+    except Exception as exc:
+        retry_errors.append({
+            "phase": "refresh",
+            "type": type(exc).__name__,
+            "message": str(exc),
+        })
+        logger.debug("Failed delayed hardware-uniform refresh", exc_info=True)
+    try:
+        pipeline.sync_dx11_uniforms(mesh_converter, refresh_if_dx11=False)
+    except Exception as exc:
+        retry_errors.append({
+            "phase": "uniform_sync",
+            "type": type(exc).__name__,
+            "message": str(exc),
+        })
+        logger.debug("Failed delayed hardware-uniform sync", exc_info=True)
+    final = build_material_morph_graph(root_group, connect_shader=True)
+    raw_final_counts = {
+        key: int(final.get(key) or 0)
+        for key in ("created", "reused", "contributions")
+    }
+    first_nodes = list(first.get("evaluator_nodes") or [])
+    final_nodes = list(final.get("evaluator_nodes") or [])
+    final["evaluator_nodes"] = list(dict.fromkeys(first_nodes + final_nodes))
+    final["created"] = int(first.get("created") or 0) + int(final.get("created") or 0)
+    # The final pass observes first-pass creations as reused; keep its count
+    # authoritative instead of adding the same evaluators twice.
+    final["reused"] = int(final.get("reused") or 0)
+    final["retry"] = {
+        "attempted": True,
+        "first_skipped": first_skipped,
+        "final_skipped": list(final.get("skipped") or []),
+        "errors": retry_errors,
+        "first_counts": {
+            key: int(first.get(key) or 0)
+            for key in ("created", "reused", "contributions")
+        },
+        "final_counts": raw_final_counts,
+    }
+    return final
+
+
 def _serialize_pmx_morph_data(morphs: Any) -> str:
     """Serialize authoritative PMX morph metadata for the model root.
 
@@ -197,8 +251,8 @@ def import_pmx_file(
             # Material morph colour route needs post-sync plugs; do not re-sync.
             logger.debug("Building material morph runtime graph...")
             phase_start = time.perf_counter()
-            material_morph_runtime_result = build_material_morph_graph(
-                root_group, connect_shader=True
+            material_morph_runtime_result = _build_material_morph_graph_with_retry(
+                root_group, pipeline, mesh_converter
             )
             pipeline.record_phase("material_morph_runtime_sec", phase_start)
             pipeline.emit_progress(90)
