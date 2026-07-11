@@ -1402,7 +1402,7 @@ def maya_static_render(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none")
 def maya_visual_regression(session: nox.Session) -> None:
-    """Run manifest-driven Maya GUI / DX11 viewport visual regression captures.
+    """Run manifest-driven Maya GUI viewport visual regression captures.
 
     This is a report-only visual harness around GoldenOracle-compatible render
     manifests. The manifest path is intentionally required so local asset roots
@@ -1417,7 +1417,13 @@ def maya_visual_regression(session: nox.Session) -> None:
     if not manifest:
         session.error("--manifest is required for maya_visual_regression")
 
-    out = _option(session.posargs, "--out", "build/visual-regression/maya-dx11")
+    shader_backend = _option(session.posargs, "--shader-backend", "dx11")
+    if shader_backend not in {"dx11", "glsl"}:
+        session.error(f"Unsupported --shader-backend: {shader_backend}")
+    vp2_device = _option(session.posargs, "--vp2-device", "default")
+    if vp2_device not in {"default", "gl", "glcore", "dx11"}:
+        session.error(f"Unsupported --vp2-device: {vp2_device}")
+    out = _option(session.posargs, "--out", f"build/visual-regression/maya-{shader_backend}")
     out_path = _require_build_path(session, out, "--out")
     port = _option(session.posargs, "--port", "7721")
     width = _option(session.posargs, "--width", "1024")
@@ -1460,6 +1466,10 @@ def maya_visual_regression(session: nox.Session) -> None:
         height,
         "--timeout",
         timeout,
+        "--shader-backend",
+        shader_backend,
+        "--vp2-device",
+        vp2_device,
     ]
     cmd.extend(forwarded)
     session.run(*cmd, external=True)
