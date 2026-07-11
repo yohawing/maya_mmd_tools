@@ -757,6 +757,7 @@ class MeshConverter:
         """
         self.logger = get_logger(__name__)
         self.created_shaders = []
+        self.created_texture_file_nodes = []
         self.has_dx11_shaders = False
         self.has_glsl_shaders = False
         self.unresolved_texture_count = 0
@@ -1610,6 +1611,7 @@ class MeshConverter:
                         unresolved = False
 
                 file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
+                self.created_texture_file_nodes.append(file_node)
                 place_uv_node = cmds.shadingNode(
                     "place2dTexture",
                     asUtility=True,
@@ -1784,6 +1786,7 @@ class MeshConverter:
                 unresolved = False
 
         file_node = cmds.shadingNode("file", asTexture=True, name=shader + node_suffix)
+        self.created_texture_file_nodes.append(file_node)
         maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
         mark_kwargs = {"unresolved": unresolved}
         if source_kind != "pmx_texture" or shared_toon_id:

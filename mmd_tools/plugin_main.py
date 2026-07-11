@@ -134,12 +134,32 @@ def open_animator_toolset(dockable=True):
         raise
 
 
+def repair_current_model_texture_paths():
+    """Repair texture paths for the model selected in the MMD Tools window."""
+    window = _main_window
+    if window is None:
+        window = open_main_window(dockable=False)
+        app_state = getattr(window, "app_state", None)
+        if app_state is not None and hasattr(app_state, "emit_status"):
+            from mmd_tools.ui.translations.translator import UITranslator
+
+            app_state.emit_status(
+                UITranslator.instance().translate("status_select_model", "texture_issues")
+            )
+        return None
+    presenter = getattr(window, "import_export_presenter", None)
+    if presenter is None:
+        om.MGlobal.displayWarning("MMD Tools texture repair is unavailable")
+        return None
+    return presenter.fix_texture_paths()
+
+
 def install_mmd_menu():
     """Install the MMD menu in Maya."""
     if not cmds.menu("MMD", exists=True):
         cmds.menu("MMD", parent="MayaWindow")
 
-    _LABELS = ("MMD Tools", "Animator Toolset")
+    _LABELS = ("MMD Tools", "Repair Texture Paths", "Animator Toolset")
     for item in cmds.menu("MMD", query=True, itemArray=True) or []:
         if cmds.menuItem(item, query=True, label=True) in _LABELS:
             cmds.deleteUI(item)
@@ -148,6 +168,12 @@ def install_mmd_menu():
         "MMDToolsMenuItem",
         label="MMD Tools",
         command=lambda *args: open_main_window(dockable=False),
+        parent="MMD",
+    )
+    cmds.menuItem(
+        "MMDRepairTexturePathsMenuItem",
+        label="Repair Texture Paths",
+        command=lambda *args: repair_current_model_texture_paths(),
         parent="MMD",
     )
 

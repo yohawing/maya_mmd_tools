@@ -162,5 +162,19 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
         self.assertEqual(result.rebind_status, "skipped")
         self.assertEqual(result.rebind_reason, "dx11_texture_slot_not_found")
 
+    def test_resolve_scene_accepts_model_scoped_file_nodes(self):
+        classification = SimpleNamespace(status="ok")
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds, patch(
+            "mmd_tools.core.maya_material_utils.classify_mmd_texture_file_node",
+            return_value=classification,
+        ) as mock_classify:
+            mock_cmds.attributeQuery.return_value = True
+
+            results = maya_material_utils.resolve_scene_mmd_textures(file_nodes=["model_file"])
+
+        self.assertEqual(results, [classification])
+        mock_cmds.ls.assert_not_called()
+        mock_classify.assert_called_once_with("model_file")
+
 if __name__ == "__main__":
     unittest.main()

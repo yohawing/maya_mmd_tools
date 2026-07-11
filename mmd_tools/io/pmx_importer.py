@@ -261,6 +261,10 @@ def import_pmx_file(
             mesh_converter = MeshConverter(filepath, scale=scale)
             phase_start = time.perf_counter()
             mesh_group, mesh_name = mesh_converter.convert_pmx_mesh(parser, root_group)
+            pipeline.connect_texture_nodes_to_root(
+                root_group,
+                mesh_converter.created_texture_file_nodes,
+            )
             pipeline.record_phase("mesh_conversion_sec", phase_start)
             pipeline.emit_progress(35)
 

@@ -545,6 +545,8 @@
     "close": "閉じる",
     "dont_show_again": "今後表示しない",
     "status_fixed": "{count} 件のテクスチャを修復しました",
+    "status_repair_summary": "テクスチャを {resolved} 件修復しました。未解決: {unresolved} 件。",
+    "status_select_model": "MMD Toolsで対象モデルを選択してから、もう一度「テクスチャパスを修復」を実行してください。",
     "fix_texture_path": "テクスチャパスを修正",
     "status_no_issues": "テクスチャパスの問題は見つかりませんでした。",
     "status_scan_failed": "テクスチャパスの問題をスキャンできませんでした。"

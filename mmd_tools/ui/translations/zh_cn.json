@@ -483,6 +483,8 @@
     "close": "关闭",
     "dont_show_again": "不再显示",
     "status_fixed": "已修复 {count} 个贴图",
+    "status_repair_summary": "已修复 {resolved} 个贴图；仍有 {unresolved} 个未解决。",
+    "status_select_model": "请在MMD Tools中选择目标模型，然后再次运行修复贴图路径。",
     "fix_texture_path": "修正贴图路径",
     "status_no_issues": "未发现贴图路径问题。",
     "status_scan_failed": "无法扫描贴图路径问题。"

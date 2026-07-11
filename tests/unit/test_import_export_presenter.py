@@ -9,6 +9,7 @@ ImportExportPresenter 自体は純粋な分岐ロジックだが、import 連鎖
 """
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -153,16 +154,20 @@ class _FakeSceneModelService:
 
 
 class _FakeMayaAdapter:
-    def __init__(self, file_nodes=None, existing_attrs=None, connections=None):
+    def __init__(self, file_nodes=None, existing_attrs=None, connections=None, relatives=None, existing=None):
         self.file_nodes = file_nodes or []
         self.existing_attrs = existing_attrs or {}
         self.connections = connections or {}
+        self.relatives = relatives or {}
+        self.existing = set(existing or [])
         self.attribute_exists_calls = []
         self.list_connections_calls = []
         self.ls_calls = []
 
     def ls(self, *args, **kwargs):
         self.ls_calls.append((args, kwargs))
+        if kwargs.get("materials") and args:
+            return list(args[0])
         return list(self.file_nodes)
 
     def attribute_exists(self, attr, node):
@@ -171,7 +176,18 @@ class _FakeMayaAdapter:
 
     def list_connections(self, node, **kwargs):
         self.list_connections_calls.append((node, kwargs))
+        if isinstance(node, list):
+            merged = []
+            for item in node:
+                merged.extend(self.connections.get(item, []))
+            return merged
         return list(self.connections.get(node, []))
+
+    def list_relatives(self, node, **kwargs):
+        return list(self.relatives.get(node, []))
+
+    def object_exists(self, node):
+        return node in self.existing
 
 
 class _RecordingImportModelAction:
@@ -353,15 +369,6 @@ class TestImportExportPresenter(unittest.TestCase):
         # Texture dialog setting off: still no generic modal (status-only partial).
         mock_generic.assert_not_called()
 
-    def test_connect_signals_connects_fix_texture_path_button_when_present(self):
-        view = _FakeView()
-        view.fix_texture_path_button = _RecordingButton()
-        app_state = _FakeAppState()
-
-        presenter = ImportExportPresenter(view, app_state)
-
-        self.assertEqual(view.fix_texture_path_button.clicked.connected, [presenter.fix_texture_paths])
-
     def test_refresh_model_list_uses_scene_model_service_display_names(self):
         view = _FakeView()
         scene_service = _FakeSceneModelService(
@@ -384,33 +391,50 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertEqual(view.model_items, [])
 
-    def test_fix_texture_paths_shows_dialog_even_when_import_dialog_setting_disabled(self):
-        settings.set("import.model.show_texture_issue_dialog", False)
+    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_material_utils")
+    def test_fix_texture_paths_repairs_current_model_and_reports_counts(self, mock_material_utils):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "root"
+        maya_adapter = _FakeMayaAdapter(
+            existing={"root"},
+            relatives={"root": ["shape"]},
+            connections={
+                "shape": ["sg"],
+                "sg": ["mat"],
+                "mat": ["file1", "file2"],
+                "root.message": ["disconnected_file"],
+            },
+            existing_attrs={
+                "file1": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "file2": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "disconnected_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+            },
+        )
+        presenter = ImportExportPresenter(view, app_state, maya_adapter=maya_adapter)
+        mock_material_utils.resolve_scene_mmd_textures.return_value = [
+            SimpleNamespace(status="resolved", rebind_status="rebound"),
+            SimpleNamespace(status="resolved", rebind_status="failed"),
+            SimpleNamespace(status="unrecoverable"),
+        ]
+
+        result = presenter.fix_texture_paths()
+
+        mock_material_utils.resolve_scene_mmd_textures.assert_called_once_with(
+            file_nodes=["disconnected_file", "file1", "file2"]
+        )
+        self.assertEqual(result, {"resolved": 1, "unresolved": 2})
+        self.assertTrue(any("1" in status for status in app_state.statuses))
+
+    def test_fix_texture_paths_no_current_model_prompts_for_selection(self):
         view = _FakeView()
         app_state = _FakeAppState()
         presenter = ImportExportPresenter(view, app_state)
-        issue = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
 
-        with patch.object(presenter, "_collect_scene_texture_issues", return_value=[issue]), patch(
-            "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
-        ) as mock_dialog:
-            presenter.fix_texture_paths()
+        result = presenter.fix_texture_paths()
 
-        mock_dialog.assert_called_once_with([issue], model_path="", app_state=app_state, parent=view)
-        mock_dialog.return_value.exec.assert_called_once()
-
-    def test_fix_texture_paths_no_issues_emits_status_and_skips_dialog(self):
-        view = _FakeView()
-        app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
-
-        with patch.object(presenter, "_collect_scene_texture_issues", return_value=[]), patch(
-            "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
-        ) as mock_dialog:
-            presenter.fix_texture_paths()
-
-        mock_dialog.assert_not_called()
-        expected_status = UITranslator.instance().translate("status_no_issues", "texture_issues")
+        self.assertEqual(result, {"resolved": 0, "unresolved": 0})
+        expected_status = UITranslator.instance().translate("status_select_model", "texture_issues")
         self.assertIn(expected_status, app_state.statuses)
 
     @patch("mmd_tools.ui.presenters.import_export_presenter.maya_material_utils")

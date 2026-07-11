@@ -168,6 +168,44 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         self.assertEqual(second.show_calls, [True])
         self.assertIs(self.plugin_main._main_window, second)
 
+    def test_repair_texture_paths_uses_main_window_presenter(self):
+        presenter = MagicMock()
+        window = types.SimpleNamespace(import_export_presenter=presenter)
+        self.plugin_main._main_window = window
+
+        result = self.plugin_main.repair_current_model_texture_paths()
+
+        presenter.fix_texture_paths.assert_called_once_with()
+        self.assertIs(result, presenter.fix_texture_paths.return_value)
+
+    def test_repair_texture_paths_first_opens_window_without_mutating(self):
+        presenter = MagicMock()
+        app_state = MagicMock()
+        window = types.SimpleNamespace(import_export_presenter=presenter, app_state=app_state)
+        self.plugin_main._main_window = None
+        self.plugin_main.open_main_window = MagicMock(return_value=window)
+
+        result = self.plugin_main.repair_current_model_texture_paths()
+
+        self.assertIsNone(result)
+        self.plugin_main.open_main_window.assert_called_once_with(dockable=False)
+        presenter.fix_texture_paths.assert_not_called()
+        app_state.emit_status.assert_called_once()
+
+    def test_install_menu_adds_texture_repair_action(self):
+        self.plugin_main.cmds.menu.side_effect = lambda *_args, **kwargs: (
+            False if kwargs.get("exists") else [] if kwargs.get("query") else "MMD"
+        )
+
+        self.plugin_main.install_mmd_menu()
+
+        repair_calls = [
+            call
+            for call in self.plugin_main.cmds.menuItem.call_args_list
+            if call[1].get("label") == "Repair Texture Paths"
+        ]
+        self.assertEqual(len(repair_calls), 1)
+
     def test_teardown_restores_parent_package_module_attribute(self):
         parent, child_name, existed, original = self._saved_parent_attrs["mmd_tools.ui.main_window"]
         setattr(parent, child_name, sys.modules["mmd_tools.ui.main_window"])

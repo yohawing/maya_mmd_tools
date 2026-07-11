@@ -383,8 +383,6 @@ class ImportExportTab(BaseTab):
         # 状態が変更されたら保存
         self.new_file_check.toggled.connect(lambda checked: self.view_state.set("new_file_check", str(checked)))
         import_button_layout.addWidget(self.import_button)
-        self.fix_texture_path_button = QPushButton(self.tr("fix_texture_path", "texture_issues"))
-        import_button_layout.addWidget(self.fix_texture_path_button)
         import_button_layout.addWidget(self.new_file_check)
         import_button_layout.addStretch()
         model_import_layout.addRow(import_button_layout)
@@ -705,8 +703,6 @@ class ImportExportTab(BaseTab):
         self.vmd_path_button.setText(self.tr("browse", "buttons"))
         self.export_path_button.setText(self.tr("browse", "buttons"))
         self.import_button.setText(self.tr("import_model", "actions"))
-        if hasattr(self, "fix_texture_path_button"):
-            self.fix_texture_path_button.setText(self.tr("fix_texture_path", "texture_issues"))
         self.import_vmd_button.setText(self.tr("import_animation", "actions"))
         self.export_button.setText(self.tr("export", "buttons"))
 

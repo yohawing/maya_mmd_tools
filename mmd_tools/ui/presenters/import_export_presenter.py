@@ -5,7 +5,10 @@ from ...actions.import_model_action import ImportModelAction, ImportModelRequest
 from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core import maya_attribute_utils, maya_material_utils, settings_keys as setting_keys
-from ...core.constants import ATTR_MMD_ORIGINAL_TEXTURE_PATH, ATTR_MMD_TEXTURE_CACHE_PATH
+from ...core.constants import (
+    ATTR_MMD_ORIGINAL_TEXTURE_PATH,
+    ATTR_MMD_TEXTURE_CACHE_PATH,
+)
 from ...core.logger import get_logger
 from ...services.settings_service import SettingsService
 from .list_presenter_helpers import tr_message, tr_message_format
@@ -44,9 +47,6 @@ class ImportExportPresenter(QObject):
         self.view.export_path_button.clicked.connect(self.select_export_file)
         self.view.import_button.clicked.connect(self.import_file)
         self.view.export_button.clicked.connect(self.export_file)
-        if hasattr(self.view, "fix_texture_path_button"):
-            self.view.fix_texture_path_button.clicked.connect(self.fix_texture_paths)
-
         # VMD import signals
         self.view.vmd_path_button.clicked.connect(self.select_vmd_file)
         self.view.import_vmd_button.clicked.connect(self.import_vmd_file)
@@ -201,23 +201,81 @@ class ImportExportPresenter(QObject):
             issues.append(self._texture_resolution_to_issue(file_node, classification))
         return issues
 
-    def fix_texture_paths(self):
-        """Show scene texture issues for explicit user-triggered fixing."""
+    def _current_model_texture_file_nodes(self):
+        """Return MMD texture file nodes used by the currently selected model."""
 
+        model_root = getattr(self.app_state, "current_model_root", None)
+        if not model_root or not self.maya_adapter.object_exists(model_root):
+            return []
+        shapes = self.maya_adapter.list_relatives(model_root, allDescendents=True, type="mesh") or []
+        shading_groups = self.maya_adapter.list_connections(shapes, type="shadingEngine") or []
+        materials = []
+        for shading_group in set(shading_groups):
+            materials.extend(self.maya_adapter.ls(self.maya_adapter.list_connections(shading_group) or [], materials=True))
+        file_nodes = []
+        for material in set(materials):
+            file_nodes.extend(
+                self.maya_adapter.list_connections(material, source=True, destination=False, type="file") or []
+            )
+
+        # Imported file nodes carry a message owner so failed/disconnected
+        # shader binds remain instance-scoped even when the same PMX is loaded
+        # more than once. Legacy disconnected nodes without ownership are
+        # intentionally excluded because source-path provenance is ambiguous.
+        file_nodes.extend(
+            self.maya_adapter.list_connections(
+                f"{model_root}.message",
+                source=False,
+                destination=True,
+                type="file",
+            )
+            or []
+        )
+        return sorted(
+            {
+                node
+                for node in file_nodes
+                if self.maya_adapter.attribute_exists(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=node)
+            }
+        )
+
+    def fix_texture_paths(self):
+        """Repair texture paths for the current model and publish a concise result."""
+
+        translator = UITranslator.instance()
+        if not getattr(self.app_state, "current_model_root", None):
+            self.app_state.emit_status(translator.translate("status_select_model", "texture_issues"))
+            return {"resolved": 0, "unresolved": 0}
         try:
-            issues = self._collect_scene_texture_issues()
+            file_nodes = self._current_model_texture_file_nodes()
+            if not file_nodes:
+                self.app_state.emit_status(translator.translate("status_no_issues", "texture_issues"))
+                return {"resolved": 0, "unresolved": 0}
+            results = maya_material_utils.resolve_scene_mmd_textures(file_nodes=file_nodes)
         except Exception as exc:
-            logger.error("Failed to scan scene texture issues: %s", exc, exc_info=True)
-            message = UITranslator.instance().translate("status_scan_failed", "texture_issues")
-            self.app_state.emit_status(message)
-            return
-        if issues:
-            # Manual button presses are explicit user actions, so they intentionally
-            # ignore import.model.show_texture_issue_dialog.
-            self._show_texture_issue_dialog(issues, model_path="")
+            logger.error("Failed to repair model texture paths: %s", exc, exc_info=True)
+            self.app_state.emit_status(translator.translate("status_scan_failed", "texture_issues"))
+            return {"resolved": 0, "unresolved": 0}
+
+        resolved = sum(
+            getattr(result, "status", "") == "resolved"
+            and getattr(result, "rebind_status", "") != "failed"
+            for result in results or []
+        )
+        unresolved = sum(
+            getattr(result, "status", "") not in ("ok", "resolved")
+            or getattr(result, "rebind_status", "") == "failed"
+            for result in results or []
+        )
+        if not resolved and not unresolved:
+            message = translator.translate("status_no_issues", "texture_issues")
         else:
-            message = UITranslator.instance().translate("status_no_issues", "texture_issues")
-            self.app_state.emit_status(message)
+            message = translator.translate("status_repair_summary", "texture_issues").format(
+                resolved=resolved,
+                unresolved=unresolved,
+            )
+        self.app_state.emit_status(message)
+        return {"resolved": resolved, "unresolved": unresolved}
 
     def _build_export_options(self):
         """PMX/PMD export用の基本オプションを設定から組み立てる。"""

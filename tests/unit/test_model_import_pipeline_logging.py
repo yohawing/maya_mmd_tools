@@ -75,6 +75,21 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             pipeline.sync_dx11_uniforms(converter, refresh_if_dx11=True)
         self.assertEqual(order, ["refresh", "sync"])
 
+    def test_texture_nodes_receive_instance_root_ownership(self):
+        pipeline = self._make_pipeline(MagicMock())
+        with patch.object(model_import_pipeline.cmds, "attributeQuery", return_value=False) as query, patch.object(
+            model_import_pipeline.cmds, "addAttr"
+        ) as add_attr, patch.object(model_import_pipeline.cmds, "connectAttr") as connect_attr:
+            pipeline.connect_texture_nodes_to_root("ModelRoot", ["texture_file"])
+
+        query.assert_called_once_with("mmd_model_root", node="texture_file", exists=True)
+        add_attr.assert_called_once_with("texture_file", longName="mmd_model_root", attributeType="message")
+        connect_attr.assert_called_once_with(
+            "ModelRoot.message",
+            "texture_file.mmd_model_root",
+            force=True,
+        )
+
     def test_mesh_converter_records_glsl_hardware_backend(self):
         converter = MeshConverter()
         with patch.object(mesh_converter_module.cmds, "objExists", return_value=True), patch.object(

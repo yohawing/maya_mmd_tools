@@ -86,6 +86,13 @@ class ModelImportPipeline:
                 cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root", force=True)
 
+    def connect_texture_nodes_to_root(self, root_group: str, texture_nodes) -> None:
+        """Attach instance ownership to imported texture nodes."""
+        for texture_node in texture_nodes or []:
+            if not cmds.attributeQuery("mmd_model_root", node=texture_node, exists=True):
+                cmds.addAttr(texture_node, longName="mmd_model_root", attributeType="message")
+            cmds.connectAttr(f"{root_group}.message", f"{texture_node}.mmd_model_root", force=True)
+
     def convert_physics(
         self,
         *,

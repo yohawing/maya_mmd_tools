@@ -545,6 +545,8 @@
     "close": "Close",
     "dont_show_again": "Don't show again",
     "status_fixed": "Fixed {count} texture(s)",
+    "status_repair_summary": "Repaired {resolved} texture(s); {unresolved} remain unresolved.",
+    "status_select_model": "Select the target model in MMD Tools, then run Repair Texture Paths again.",
     "fix_texture_path": "Fix Texture Path",
     "status_no_issues": "No texture path issues found.",
     "status_scan_failed": "Failed to scan texture path issues."

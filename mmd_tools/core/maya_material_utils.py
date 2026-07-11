@@ -288,10 +288,11 @@ def resolve_mmd_material_texture(material, workspace_root=None):
     return resolve_mmd_texture_file_node(file_node, workspace_root=workspace_root)
 
 
-def resolve_scene_mmd_textures(workspace_root=None):
-    """Resolve all broken MMD file nodes in the current Maya scene."""
+def resolve_scene_mmd_textures(workspace_root=None, file_nodes=None):
+    """Resolve broken MMD file nodes, optionally restricted to a model-owned set."""
     results = []
-    for file_node in cmds.ls(type="file") or []:
+    candidates = (cmds.ls(type="file") or []) if file_nodes is None else file_nodes
+    for file_node in candidates:
         if not cmds.attributeQuery(ATTR_MMD_ORIGINAL_TEXTURE_PATH, node=file_node, exists=True):
             continue
         classification = classify_mmd_texture_file_node(file_node)
