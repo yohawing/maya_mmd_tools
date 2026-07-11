@@ -281,6 +281,38 @@ class TestImportModelAction(_ImportActionContract, unittest.TestCase):
     options = {"scale": 1.0}
     root_node = "root"
 
+    def test_execute_forwards_policy_scale_from_options_for_pmx(self):
+        """Presenter/Settings が組み立てた scale を importer へそのまま渡す。"""
+        calls = []
+        options = {"scale": 1.0, "use_namespace": False}
+
+        def importer(file_path, options=None):
+            calls.append((file_path, dict(options or {})))
+            return self.root_node
+
+        action = ImportModelAction(importer=importer, new_scene=lambda: None)
+        result = action.execute(ImportModelRequest("model.pmx", options))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(calls, [("model.pmx", options)])
+        self.assertEqual(calls[0][1]["scale"], 1.0)
+
+    def test_execute_forwards_dev_scale_from_options_for_pmd(self):
+        """PMD 経路でも options.scale（dev の永続値を含む）を上書きしない。"""
+        calls = []
+        options = {"scale": 2.5}
+
+        def importer(file_path, options=None):
+            calls.append((file_path, dict(options or {})))
+            return self.root_node
+
+        action = ImportModelAction(importer=importer, new_scene=lambda: None)
+        result = action.execute(ImportModelRequest("model.pmd", options))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(calls, [("model.pmd", options)])
+        self.assertEqual(calls[0][1]["scale"], 2.5)
+
 
 class TestImportVmdAction(_ImportActionContract, unittest.TestCase):
     """VMD import action の依存境界を検証する。"""

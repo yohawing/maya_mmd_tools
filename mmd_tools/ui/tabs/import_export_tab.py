@@ -61,19 +61,28 @@ class ImportExportTab(BaseTab):
         self.left_widget = QWidget()
         model_settings_layout = QVBoxLayout(self.left_widget)
 
-        # Import scale
-        scale_layout = QHBoxLayout()
+        # Import scale (dev-only control; normal mode always uses 1.0)
+        self.scale_row = QWidget()
+        scale_layout = QHBoxLayout(self.scale_row)
+        scale_layout.setContentsMargins(0, 0, 0, 0)
         self.scale_label = QLabel(self.tr("import_scale", "fields"))
         scale_layout.addWidget(self.scale_label)
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setRange(0.001, 1000.0)
         self.scale_spin.setDecimals(3)
-        self.scale_spin.setValue(self.settings_service.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, 1.0))
+        # Normal mode always displays 1.0; persisted scale is only shown in dev mode.
+        # Do not write 1.0 back over a previously stored development scale.
+        initial_scale = (
+            self.settings_service.resolve_import_scale()
+            if hasattr(self.settings_service, "resolve_import_scale")
+            else self.settings_service.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, 1.0)
+        )
+        self.scale_spin.setValue(initial_scale)
         self.scale_spin.valueChanged.connect(lambda v: self.settings_service.set(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, v))
         self.scale_spin.setToolTip(self.tr("import_scale", "tooltips"))
         scale_layout.addWidget(self.scale_spin)
         scale_layout.addStretch()
-        model_settings_layout.addLayout(scale_layout)
+        model_settings_layout.addWidget(self.scale_row)
 
         # General Model Settings Group
         self.general_group = QGroupBox(self.tr("general", "groups"))
@@ -475,6 +484,7 @@ class ImportExportTab(BaseTab):
         # Dev-only controls: shown only when development_mode=True.
         # Export UI/entry is also develop-mode only (export_group via _apply_export_visibility).
         self._dev_only_widgets = [
+            self.scale_row,
             self.separate_meshes_check,
             self.auto_classify_transparency_check,
             self.transparency_threshold_row,
@@ -508,8 +518,32 @@ class ImportExportTab(BaseTab):
         is_dev = self.settings_service.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
         for widget in self._dev_only_widgets:
             widget.setVisible(is_dev)
+        # Import scale: normal mode displays 1.0 without overwriting the persisted value.
+        self._sync_import_scale_control(is_dev)
         # Export entry also depends on develop mode.
         self._apply_export_visibility()
+
+    def _sync_import_scale_control(self, is_dev):
+        """Sync scale spin display for the current mode without clobbering settings.
+
+        Normal mode shows DEFAULT 1.0 while the valueChanged handler is blocked so a
+        previously persisted development scale remains stored. Development mode
+        reloads the persisted value into the control (binding remains active).
+        """
+        if not hasattr(self, "scale_spin"):
+            return
+        if is_dev:
+            if hasattr(self.settings_service, "resolve_import_scale"):
+                value = self.settings_service.resolve_import_scale()
+            else:
+                value = self.settings_service.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, 1.0)
+        else:
+            value = 1.0
+        blocked = self.scale_spin.blockSignals(True)
+        try:
+            self.scale_spin.setValue(value)
+        finally:
+            self.scale_spin.blockSignals(blocked)
 
     def _on_export_format_changed(self, export_format):
         """エクスポート形式を保存し、利用可能な export UI だけを表示する。"""

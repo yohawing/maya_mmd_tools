@@ -178,10 +178,23 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.store = _FakeSettingsStore()
         self.service = SettingsService(self.store)
 
+    def test_resolve_import_scale_returns_default_in_normal_mode(self):
+        self.assertFalse(self.service.is_development_mode())
+        self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
+
+        self.assertEqual(self.service.resolve_import_scale(), 1.0)
+        # Persisted development value must not be overwritten.
+        self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
+
+    def test_resolve_import_scale_returns_persisted_value_in_dev_mode(self):
+        self.service.set("ui.general.development_mode", True)
+
+        self.assertEqual(self.service.resolve_import_scale(), 2.0)
+
     def test_build_pmx_import_options_applies_normal_mode_overrides(self):
         options = self.service.build_pmx_import_options(custom_namespace="ns")
 
-        self.assertEqual(options["scale"], 2.0)
+        self.assertEqual(options["scale"], 1.0)
         self.assertTrue(options["use_namespace"])
         self.assertEqual(options["custom_namespace"], "ns")
         self.assertTrue(options["import_models"])
@@ -201,12 +214,15 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["use_cpp_fast_load"])
         self.assertFalse(options["cpp_fast_load_mesh_only"])
         self.assertTrue(options["use_cpp_rig_nodes"])
+        # Policy forces scale 1.0 without mutating the stored value.
+        self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
 
     def test_build_pmx_import_options_preserves_dev_mode_saved_values(self):
         self.service.set("ui.general.development_mode", True)
 
         options = self.service.build_pmx_import_options()
 
+        self.assertEqual(options["scale"], 2.0)
         self.assertFalse(options["import_models"])
         self.assertTrue(options["import_physics"])
         self.assertTrue(options["separate_meshes_by_material"])

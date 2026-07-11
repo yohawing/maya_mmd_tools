@@ -1420,6 +1420,7 @@ class TestDevModeBehaviorGating(unittest.TestCase):
 
     _KEYS_TO_PRESERVE = (
         "ui.general.development_mode",
+        "import.general.scale_factor",
         "import.model.import_models",
         "import.physics.import_physics",
         "import.model.separate_meshes_by_material",
@@ -1457,6 +1458,27 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         ) as mock_import:
             presenter.import_file()
         return mock_import.call_args.kwargs["options"]
+
+    def test_normal_mode_forces_import_scale_to_default(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.general.scale_factor", 5.0)
+        opts = self._run_import()
+        self.assertEqual(opts["scale"], 1.0)
+        # Policy must not overwrite the persisted development scale.
+        self.assertEqual(settings.get("import.general.scale_factor"), 5.0)
+
+    def test_dev_mode_preserves_import_scale(self):
+        settings.set("ui.general.development_mode", True)
+        settings.set("import.general.scale_factor", 5.0)
+        opts = self._run_import()
+        self.assertEqual(opts["scale"], 5.0)
+
+    def test_normal_mode_forces_pmd_import_scale_to_default(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.general.scale_factor", 5.0)
+        opts = self._run_import(path="model.pmd")
+        self.assertEqual(opts["scale"], 1.0)
+        self.assertEqual(settings.get("import.general.scale_factor"), 5.0)
 
     def test_normal_mode_forces_import_models_true(self):
         settings.set("ui.general.development_mode", False)

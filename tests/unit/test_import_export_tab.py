@@ -57,6 +57,14 @@ class _FakeSettingsService:
     def set(self, key, value):
         self.values[key] = value
 
+    def is_development_mode(self):
+        return bool(self.get("ui.general.development_mode", False))
+
+    def resolve_import_scale(self):
+        if self.is_development_mode():
+            return float(self.get("import.general.scale_factor", 1.0))
+        return 1.0
+
 
 class _FakeWidget:
     def __init__(self):
@@ -68,6 +76,24 @@ class _FakeWidget:
 
     def setEnabled(self, enabled):
         self.enabled = enabled
+
+
+class _FakeSpinBox:
+    def __init__(self, value=1.0):
+        self.value = value
+        self.blocked = False
+        self.block_calls = []
+        self.set_value_calls = []
+
+    def blockSignals(self, blocked):
+        previous = self.blocked
+        self.blocked = blocked
+        self.block_calls.append(blocked)
+        return previous
+
+    def setValue(self, value):
+        self.set_value_calls.append((value, self.blocked))
+        self.value = value
 
 
 class _FakePresenter:
@@ -161,22 +187,92 @@ class TestImportExportTabRefreshModelList(unittest.TestCase):
 class TestImportExportTabDevModeVisibility(unittest.TestCase):
     def test_dev_only_controls_follow_development_mode(self):
         tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        scale_row = _FakeWidget()
         cpp_rig_nodes_check = _FakeWidget()
         motion_scale_row = _FakeWidget()
         export_settings_tab = _FakeWidget()
-        tab._dev_only_widgets = [cpp_rig_nodes_check, motion_scale_row, export_settings_tab]
-        tab.settings_service = _FakeSettingsService({"ui.general.development_mode": False})
+        tab._dev_only_widgets = [scale_row, cpp_rig_nodes_check, motion_scale_row, export_settings_tab]
+        tab.scale_spin = _FakeSpinBox(value=2.5)
+        tab.settings_service = _FakeSettingsService(
+            {
+                "ui.general.development_mode": False,
+                "import.general.scale_factor": 2.5,
+            }
+        )
 
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
+        self.assertFalse(scale_row.visible)
         self.assertFalse(cpp_rig_nodes_check.visible)
         self.assertFalse(motion_scale_row.visible)
         self.assertFalse(export_settings_tab.visible)
 
         tab.settings_service.set("ui.general.development_mode", True)
         import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
+        self.assertTrue(scale_row.visible)
         self.assertTrue(cpp_rig_nodes_check.visible)
         self.assertTrue(motion_scale_row.visible)
         self.assertTrue(export_settings_tab.visible)
+
+    def test_normal_mode_hides_scale_row_and_displays_one_without_writing_settings(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        scale_row = _FakeWidget()
+        tab._dev_only_widgets = [scale_row]
+        tab.scale_spin = _FakeSpinBox(value=2.5)
+        tab.settings_service = _FakeSettingsService(
+            {
+                "ui.general.development_mode": False,
+                "import.general.scale_factor": 2.5,
+            }
+        )
+
+        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
+
+        self.assertFalse(scale_row.visible)
+        self.assertEqual(tab.scale_spin.value, 1.0)
+        self.assertIn((1.0, True), tab.scale_spin.set_value_calls)
+        self.assertEqual(tab.settings_service.get("import.general.scale_factor"), 2.5)
+
+    def test_dev_mode_restores_persisted_scale_into_spin(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        scale_row = _FakeWidget()
+        tab._dev_only_widgets = [scale_row]
+        tab.scale_spin = _FakeSpinBox(value=1.0)
+        tab.settings_service = _FakeSettingsService(
+            {
+                "ui.general.development_mode": True,
+                "import.general.scale_factor": 2.5,
+            }
+        )
+
+        import_export_tab.ImportExportTab._apply_dev_mode_visibility(tab)
+
+        self.assertTrue(scale_row.visible)
+        self.assertEqual(tab.scale_spin.value, 2.5)
+        self.assertEqual(tab.settings_service.get("import.general.scale_factor"), 2.5)
+
+    def test_sync_import_scale_control_does_not_emit_value_changed_writes(self):
+        tab = import_export_tab.ImportExportTab.__new__(import_export_tab.ImportExportTab)
+        tab.scale_spin = _FakeSpinBox(value=3.0)
+        tab.settings_service = _FakeSettingsService(
+            {
+                "ui.general.development_mode": False,
+                "import.general.scale_factor": 3.0,
+            }
+        )
+        writes = []
+        original_set = tab.settings_service.set
+
+        def tracking_set(key, value):
+            writes.append((key, value))
+            original_set(key, value)
+
+        tab.settings_service.set = tracking_set
+
+        import_export_tab.ImportExportTab._sync_import_scale_control(tab, is_dev=False)
+
+        self.assertEqual(tab.scale_spin.value, 1.0)
+        self.assertEqual(writes, [])
+        self.assertEqual(tab.settings_service.get("import.general.scale_factor"), 3.0)
 
 
 class TestImportExportTabNativePhysicsBakeVisibility(unittest.TestCase):

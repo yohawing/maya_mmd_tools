@@ -14,11 +14,23 @@ from mmd_tools.ui import drag_drop_importer  # noqa: E402
 
 
 class _FakeSettingsService:
+    def __init__(self, pmx_options=None, vmd_options=None):
+        self.pmx_options = dict(pmx_options or {"kind": "pmx"})
+        self.vmd_options = dict(vmd_options or {"kind": "vmd"})
+        self.pmx_calls = []
+        self.vmd_calls = []
+
     def build_pmx_import_options(self, custom_namespace=None):
-        return {"kind": "pmx", "custom_namespace": custom_namespace}
+        self.pmx_calls.append(custom_namespace)
+        options = dict(self.pmx_options)
+        options["custom_namespace"] = custom_namespace
+        return options
 
     def build_vmd_import_options(self, target_model=None):
-        return {"kind": "vmd", "target_model": target_model}
+        self.vmd_calls.append(target_model)
+        options = dict(self.vmd_options)
+        options["target_model"] = target_model
+        return options
 
 
 class _FakeSceneModelService:
@@ -96,11 +108,65 @@ class TestDragDropImporter(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        self.assertEqual(calls[0], ("model.pmx", {"kind": "pmx", "custom_namespace": None, "profile": {}}))
+        self.assertEqual(
+            calls[0],
+            ("model.pmx", {"kind": "pmx", "custom_namespace": None, "profile": {}}),
+        )
         self.assertEqual(calls[1][0], "motion.vmd")
         self.assertEqual(calls[1][1]["kind"], "vmd")
         self.assertEqual(calls[1][1]["target_model"], "|model_root")
         self.assertEqual(calls[1][1]["pmx_path"], str(model))
+
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_model_uses_settings_service_policy_scale(self, _display_info):
+        """D&D モデル import は SettingsService.build_pmx_import_options の scale を使う。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.pmx"
+            model.write_text("", encoding="utf-8")
+            calls = []
+
+            def importer(file_path, options=None):
+                calls.append(dict(options or {}))
+                return "|model_root"
+
+            settings_service = _FakeSettingsService(
+                pmx_options={"kind": "pmx", "scale": 1.0},
+            )
+            result = drag_drop_importer.import_dropped_files(
+                [str(model)],
+                importer=importer,
+                settings_service=settings_service,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(settings_service.pmx_calls, [None])
+        self.assertEqual(calls[0]["scale"], 1.0)
+        self.assertEqual(calls[0]["kind"], "pmx")
+
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_model_forwards_dev_scale_from_settings_service(self, _display_info):
+        """D&D は build_pmx_import_options が返す dev scale を改変せず渡す。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.pmd"
+            model.write_text("", encoding="utf-8")
+            calls = []
+
+            def importer(file_path, options=None):
+                calls.append((Path(file_path).suffix.lower(), dict(options or {})))
+                return "|model_root"
+
+            settings_service = _FakeSettingsService(
+                pmx_options={"kind": "pmx", "scale": 2.5},
+            )
+            result = drag_drop_importer.import_dropped_files(
+                [str(model)],
+                importer=importer,
+                settings_service=settings_service,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(calls[0][0], ".pmd")
+        self.assertEqual(calls[0][1]["scale"], 2.5)
 
     @patch.object(drag_drop_importer, "_selected_model_root", return_value="|selected_model")
     @patch.object(drag_drop_importer, "_display_info")

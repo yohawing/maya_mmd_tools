@@ -78,11 +78,17 @@ def import_mmd_file(
     _emit_progress(5)
     strategy = resolve_model_import_strategy(filepath, options)
     suffix = strategy.suffix
-    import_scale = (
-        scale
-        if scale is not None
-        else options.get("scale", settings.get(settings_keys.IMPORT_GENERAL_SCALE_FACTOR, 1.0))
-    )
+    # Precedence: explicit scale= kwarg > options["scale"] > mode-aware policy
+    # (dev: persisted scale_factor, normal: DEFAULT_SCALE_FACTOR 1.0).
+    # Explicit scale= remains an intentional public API override.
+    if scale is not None:
+        import_scale = scale
+    elif "scale" in options:
+        import_scale = options["scale"]
+    else:
+        from mmd_tools.services.settings_service import SettingsService
+
+        import_scale = SettingsService().resolve_import_scale()
 
     # --- C++ fast import path (opt-in, PMX only) -------------------------
     logger.info("Model import strategy: cpp_fast_load=%s (%s)", strategy.use_cpp_fast_load, strategy.cpp_fast_load_reason)

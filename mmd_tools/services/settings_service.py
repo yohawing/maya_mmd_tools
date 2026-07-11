@@ -7,6 +7,7 @@ while preserving the existing optionVar-backed storage behavior.
 import json
 
 from ..core import settings_keys as setting_keys
+from ..core.constants import DEFAULT_SCALE_FACTOR
 from ..core.settings import get_settings
 
 
@@ -56,6 +57,17 @@ class SettingsService:
     def is_development_mode(self):
         """Return whether Development Mode is enabled."""
         return self.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False)
+
+    def resolve_import_scale(self):
+        """Return the effective PMX/PMD import scale for the current mode.
+
+        Development mode uses the persisted ``import.general.scale_factor``.
+        Normal mode always returns ``DEFAULT_SCALE_FACTOR`` (1.0) and never
+        writes over the stored development value.
+        """
+        if self.is_development_mode():
+            return float(self.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, DEFAULT_SCALE_FACTOR))
+        return float(DEFAULT_SCALE_FACTOR)
 
     def set_development_mode_log_levels(self, enabled):
         """Set the logging level for Development Mode and return the level."""
@@ -134,7 +146,7 @@ class SettingsService:
         """Build PMX/PMD import options from persisted settings."""
         is_dev = self.is_development_mode()
         opts = {
-            "scale": self.get(setting_keys.IMPORT_GENERAL_SCALE_FACTOR, 1.0),
+            "scale": self.resolve_import_scale(),
             "use_namespace": self.get(setting_keys.IMPORT_GENERAL_USE_NAMESPACE, False),
             "custom_namespace": custom_namespace,
             "import_models": self.get(setting_keys.IMPORT_MODEL_IMPORT_MODELS, True),
