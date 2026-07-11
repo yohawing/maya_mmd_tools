@@ -100,8 +100,6 @@ class AnimationTab(BaseTab):
         for key, label in [
             ("mesh", "Mesh"),
             ("joints", "Joints"),
-            ("ik", "IK"),
-            ("controllers", "Ctrl"),
             ("morphs", "Morphs"),
             ("colliders", "Colliders"),
         ]:

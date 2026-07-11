@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Simplified Import/Export settings and kept unfinished user-facing export actions hidden.
 
 ### Fixed
+- Fixed model-root viewport visibility controls: mesh and joint attributes now drive the `Geometry` and `Skeleton` parent groups immediately after import, while the nonfunctional IK/controller controls were removed.
 - Fixed out-of-order IK mini-chain slot construction and added a tentacle-chain regression fixture.
 - Fixed VMD import physics feedback routing so legacy Bullet preview is restored when native bake is not used and blocked when native bake owns the final animation.
 - Fixed PMX capsule/cylinder height mapping and synchronized collider visibility from the model root.

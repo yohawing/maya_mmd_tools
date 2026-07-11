@@ -3,35 +3,32 @@
 from __future__ import annotations
 
 from .constants import (
-    ATTR_MMD_SHOW_CONTROLLERS,
-    ATTR_MMD_SHOW_IK,
     ATTR_MMD_SHOW_JOINTS,
     ATTR_MMD_SHOW_MESH,
     ATTR_MMD_SHOW_PHYSICS_COLLIDERS,
+    GEOMETRY_GROUP,
+    PHYSICS_GROUP,
+    SKELETON_GROUP,
 )
 
 VISIBILITY_CATEGORY_ATTRS = {
     "mesh": ATTR_MMD_SHOW_MESH,
     "joints": ATTR_MMD_SHOW_JOINTS,
-    "ik": ATTR_MMD_SHOW_IK,
-    "controllers": ATTR_MMD_SHOW_CONTROLLERS,
     "colliders": ATTR_MMD_SHOW_PHYSICS_COLLIDERS,
 }
 
 DEFAULT_VISIBILITY_ATTR_VALUES = {
     ATTR_MMD_SHOW_MESH: True,
     ATTR_MMD_SHOW_JOINTS: True,
-    ATTR_MMD_SHOW_IK: True,
-    ATTR_MMD_SHOW_CONTROLLERS: True,
     ATTR_MMD_SHOW_PHYSICS_COLLIDERS: False,
 }
 
-_VIS_NODE_TYPES = {
-    "mesh": "mesh",
-    "joints": "joint",
-    "ik": "ikHandle",
-    "controllers": "locator",
-    "colliders": "mmdRigidBodyLocator",
+_LEGACY_VISIBILITY_ATTRS = ("mmd_show_ik", "mmd_show_controllers")
+
+_CATEGORY_GROUPS = {
+    "mesh": GEOMETRY_GROUP,
+    "joints": SKELETON_GROUP,
+    "colliders": PHYSICS_GROUP,
 }
 
 
@@ -39,6 +36,7 @@ def ensure_visibility_attrs(adapter, model_root: str) -> None:
     """Ensure model-root viewport visibility attrs exist with release defaults."""
     if not model_root:
         return
+    _remove_legacy_visibility_attrs(adapter, model_root)
     for attr, default in DEFAULT_VISIBILITY_ATTR_VALUES.items():
         try:
             if adapter.attribute_exists(attr, model_root):
@@ -129,56 +127,21 @@ def _iter_category_targets(adapter, model_root: str, category: str):
     if category == "colliders":
         yield from _iter_collider_targets(adapter, model_root)
         return
-
-    node_type = _VIS_NODE_TYPES.get(category)
-    if not node_type:
-        return
-    try:
-        descendants = adapter.list_relatives(
-            model_root,
-            allDescendents=True,
-            type=node_type,
-            fullPath=True,
-        ) or []
-    except Exception:
-        return
-    if category == "mesh":
-        seen = set()
-        for mesh in descendants:
-            try:
-                parents = adapter.list_relatives(mesh, parent=True, fullPath=True) or []
-            except Exception:
-                parents = []
-            for parent in parents:
-                if parent in seen:
-                    continue
-                seen.add(parent)
-                yield parent, "visibility"
-        return
-    target_attr = "drawEnabled" if category == "colliders" else "visibility"
-    for node in descendants:
-        if category == "controllers" and _node_type(adapter, node) == "mmdRigidBodyLocator":
-            continue
-        yield node, target_attr
+    group = _direct_child_group(adapter, model_root, _CATEGORY_GROUPS.get(category))
+    if group:
+        yield group, "visibility"
 
 
 def _iter_collider_targets(adapter, model_root: str):
     # Primary display target: the model root's direct Physics group.
-    try:
-        children = adapter.list_relatives(
-            model_root,
-            children=True,
-            type="transform",
-            fullPath=True,
-        ) or []
-    except Exception:
-        children = []
-    for child in children:
-        if child.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "Physics":
-            yield child, "visibility"
-            break
+    physics_group = _direct_child_group(adapter, model_root, PHYSICS_GROUP)
+    if physics_group:
+        yield physics_group, "visibility"
 
     # Legacy/fallback targets: per-rigid-body locators and curve groups.
+    # These remain for scenes created before the common Physics group route.
+    if physics_group:
+        return
     try:
         locators = adapter.list_relatives(
             model_root,
@@ -203,6 +166,36 @@ def _iter_collider_targets(adapter, model_root: str):
     for node in transforms:
         if node.rsplit("|", 1)[-1].endswith("_colliderCurve"):
             yield node, "visibility"
+
+
+def _direct_child_group(adapter, model_root: str, group_name: str | None) -> str | None:
+    """Return one named direct child transform below the model root."""
+    if not group_name:
+        return None
+    try:
+        children = adapter.list_relatives(
+            model_root,
+            children=True,
+            type="transform",
+            fullPath=True,
+        ) or []
+    except Exception:
+        return None
+    for child in children:
+        short_name = child.rsplit("|", 1)[-1].rsplit(":", 1)[-1]
+        if short_name == group_name:
+            return child
+    return None
+
+
+def _remove_legacy_visibility_attrs(adapter, model_root: str) -> None:
+    """Remove discontinued IK/controller visibility attrs from model roots."""
+    for attr in _LEGACY_VISIBILITY_ATTRS:
+        try:
+            if adapter.attribute_exists(attr, model_root):
+                adapter.delete_attr(f"{model_root}.{attr}")
+        except Exception:
+            continue
 
 
 def _add_bool_attr(adapter, node: str, attr: str) -> None:
@@ -240,11 +233,3 @@ def _source_connections(adapter, destination: str) -> list[str]:
     except Exception:
         return []
 
-
-def _node_type(adapter, node: str) -> str | None:
-    if not hasattr(adapter, "node_type"):
-        return None
-    try:
-        return adapter.node_type(node)
-    except Exception:
-        return None

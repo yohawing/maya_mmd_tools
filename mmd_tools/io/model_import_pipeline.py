@@ -15,6 +15,8 @@ from ..core import maya_attribute_utils, maya_viewport_utils, settings_keys as s
 from ..core.constants import SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
 from ..core.utils import create_bone_joint_mapping
+from ..core.visibility_state import sync_visibility_connections
+from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 from .import_scale import apply_import_scale
 
 
@@ -167,7 +169,8 @@ class ModelImportPipeline:
             return None
 
     def apply_scale_and_select(self, root_group: str, *, apply_scale: bool = True) -> None:
-        """Apply import scale and select the imported model root."""
+        """Finalize root visibility, apply import scale, and select the model."""
+        sync_visibility_connections(MayaCmdsAdapter(cmds), root_group)
         if apply_scale:
             apply_import_scale(root_group, self.scale, self.logger)
         self.emit_progress(92)

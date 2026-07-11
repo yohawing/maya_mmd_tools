@@ -57,6 +57,10 @@ class MayaCmdsAdapter:
         """Pass through to maya.cmds.addAttr."""
         return self._cmds.addAttr(*args, **kwargs)
 
+    def delete_attr(self, *args, **kwargs):
+        """Pass through to maya.cmds.deleteAttr."""
+        return self._cmds.deleteAttr(*args, **kwargs)
+
     def create_node(self, *args, **kwargs):
         """Pass through to maya.cmds.createNode."""
         return self._cmds.createNode(*args, **kwargs)

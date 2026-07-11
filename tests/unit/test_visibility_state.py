@@ -1,6 +1,10 @@
 import unittest
 
-from mmd_tools.core.constants import ATTR_MMD_SHOW_PHYSICS_COLLIDERS
+from mmd_tools.core.constants import (
+    ATTR_MMD_SHOW_JOINTS,
+    ATTR_MMD_SHOW_MESH,
+    ATTR_MMD_SHOW_PHYSICS_COLLIDERS,
+)
 from mmd_tools.core.visibility_state import ensure_visibility_attrs, sync_visibility_connections
 
 
@@ -17,6 +21,11 @@ class _FakeAdapter:
     def add_attr(self, node, **kwargs):
         self.calls.append(("add_attr", node, kwargs))
         self.attrs[(node, kwargs["longName"])] = False
+
+    def delete_attr(self, attr_path):
+        self.calls.append(("delete_attr", attr_path))
+        node, attr = attr_path.rsplit(".", 1)
+        self.attrs.pop((node, attr), None)
 
     def get_attr(self, attr_path):
         node, attr = attr_path.rsplit(".", 1)
@@ -66,7 +75,49 @@ class TestVisibilityState(unittest.TestCase):
             adapter.calls,
         )
 
-    def test_sync_colliders_connects_physics_group_locator_and_curve(self):
+    def test_ensure_visibility_attrs_removes_discontinued_attrs(self):
+        adapter = _FakeAdapter(
+            {
+                ("model_root", "mmd_show_ik"): True,
+                ("model_root", "mmd_show_controllers"): True,
+            }
+        )
+
+        ensure_visibility_attrs(adapter, "model_root")
+
+        self.assertNotIn(("model_root", "mmd_show_ik"), adapter.attrs)
+        self.assertNotIn(("model_root", "mmd_show_controllers"), adapter.attrs)
+
+    def test_sync_mesh_and_joints_connects_direct_parent_groups(self):
+        adapter = _FakeAdapter()
+        adapter.relatives[("model_root", "transform")] = [
+            "|model_root|Geometry",
+            "|model_root|Skeleton",
+            "|model_root|Physics",
+        ]
+
+        sync_visibility_connections(adapter, "model_root")
+
+        self.assertIn(
+            (
+                "connect_attr",
+                f"model_root.{ATTR_MMD_SHOW_MESH}",
+                "|model_root|Geometry.visibility",
+                False,
+            ),
+            adapter.calls,
+        )
+        self.assertIn(
+            (
+                "connect_attr",
+                f"model_root.{ATTR_MMD_SHOW_JOINTS}",
+                "|model_root|Skeleton.visibility",
+                False,
+            ),
+            adapter.calls,
+        )
+
+    def test_sync_colliders_connects_physics_group(self):
         adapter = _FakeAdapter({("model_root", ATTR_MMD_SHOW_PHYSICS_COLLIDERS): False})
         adapter.relatives[("model_root", "mmdRigidBodyLocator")] = ["|model_root|rb|rb_colliderLocatorShape"]
         adapter.relatives[("model_root", "transform")] = [
@@ -86,23 +137,8 @@ class TestVisibilityState(unittest.TestCase):
             ),
             adapter.calls,
         )
-        self.assertIn(
-            (
-                "connect_attr",
-                f"model_root.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}",
-                "|model_root|rb|rb_colliderLocatorShape.drawEnabled",
-                False,
-            ),
-            adapter.calls,
-        )
-        self.assertIn(
-            (
-                "connect_attr",
-                f"model_root.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}",
-                "|model_root|rb|rb_colliderCurve.visibility",
-                False,
-            ),
-            adapter.calls,
+        self.assertFalse(
+            any("colliderLocatorShape" in str(call) for call in adapter.calls)
         )
 
     def test_sync_colliders_does_not_overwrite_existing_physics_visibility_source(self):

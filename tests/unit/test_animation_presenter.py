@@ -134,6 +134,11 @@ class _FakeTreeItem:
         return self._children[idx]
 
 
+import mmd_tools.ui.qt_compat as _qt_compat  # noqa: E402
+
+_qt_compat.QTreeWidgetItem = _FakeTreeItem
+
+
 class _FakeTreeWidget:
     def __init__(self):
         self._items = []
@@ -241,7 +246,7 @@ class _FakeView:
         self.picker_tabs = _FakeTabWidget()
         self.vis_checkboxes = {
             k: _FakeCheckBox(k)
-            for k in ("mesh", "joints", "ik", "controllers", "morphs", "colliders")
+            for k in ("mesh", "joints", "morphs", "colliders")
         }
         self.tool_buttons = {
             k: _FakeButton()
@@ -291,6 +296,12 @@ class _FakeAdapter:
     def list_relatives(self, node, **kwargs):
         if kwargs.get("parent"):
             return [node.rsplit("|", 1)[0] or node]
+        if kwargs.get("children") and kwargs.get("type") == "transform":
+            return [
+                f"|{node}|Geometry",
+                f"|{node}|Skeleton",
+                f"|{node}|Physics",
+            ]
         node_type = kwargs.get("type")
         if node_type == "mesh":
             return list(self._blend_shapes.keys()) if self._blend_shapes else []
@@ -354,6 +365,10 @@ class _FakeAdapter:
 
     def add_attr(self, node, longName=None, attributeType=None, **kwargs):
         self._attrs[(node, longName)] = False
+
+    def delete_attr(self, attr_path):
+        node, attr = attr_path.rsplit(".", 1)
+        self._attrs.pop((node, attr), None)
 
     def connect_attr(self, source, destination, force=False):
         self._connections.append((source, destination, force))
@@ -564,6 +579,9 @@ class TestBodyPickerPresenter(unittest.TestCase):
         with patch(
             "mmd_tools.ui.presenters.animation_presenter"
             ".AnimationPresenter._populate_morph_groups"
+        ), patch(
+            "mmd_tools.ui.presenters.animation_presenter"
+            ".AnimationPresenter._populate_display_frame_tree"
         ):
             presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
         return presenter, view, app_state, adapter
@@ -741,6 +759,9 @@ class TestVisibilityToggle(unittest.TestCase):
         with patch(
             "mmd_tools.ui.presenters.animation_presenter"
             ".AnimationPresenter._populate_morph_groups"
+        ), patch(
+            "mmd_tools.ui.presenters.animation_presenter"
+            ".AnimationPresenter._populate_display_frame_tree"
         ):
             presenter = AnimationPresenter(view, app_state, maya_adapter=adapter)
         return presenter, view, app_state, adapter
@@ -750,7 +771,7 @@ class TestVisibilityToggle(unittest.TestCase):
         presenter._on_visibility_changed("joints", False)
         self.assertEqual(adapter._set_attrs["test_model.mmd_show_joints"], False)
         self.assertIn(
-            ("test_model.mmd_show_joints", "head_jnt.visibility", False),
+            ("test_model.mmd_show_joints", "|test_model|Skeleton.visibility", False),
             adapter._connections,
         )
 
@@ -762,37 +783,19 @@ class TestVisibilityToggle(unittest.TestCase):
 
         self.assertEqual(adapter._set_attrs["test_model.mmd_show_physics_colliders"], False)
         self.assertIn(
-            ("test_model.mmd_show_physics_colliders", "rb_locator_shape.drawEnabled", False),
+            ("test_model.mmd_show_physics_colliders", "|test_model|Physics.visibility", False),
             adapter._connections,
         )
 
     def test_visibility_sync_preserves_existing_visibility_driver(self):
         presenter, _, _, adapter = self._make_with_model()
         adapter._connections.clear()
-        adapter._incoming_connections["head_jnt.visibility"] = ["animCurve1.output"]
+        adapter._incoming_connections["|test_model|Skeleton.visibility"] = ["animCurve1.output"]
 
         presenter._on_visibility_changed("joints", False)
 
         self.assertNotIn(
-            ("test_model.mmd_show_joints", "head_jnt.visibility", False),
-            adapter._connections,
-        )
-
-    def test_controller_visibility_skips_rigid_body_locators(self):
-        presenter, _, _, adapter = self._make_with_model()
-        adapter._joints_by_index = {0: "ctrl_locator", 1: "rb_locator_shape"}
-        adapter._node_types["ctrl_locator"] = "locator"
-        adapter._node_types["rb_locator_shape"] = "mmdRigidBodyLocator"
-        adapter._connections.clear()
-
-        presenter._on_visibility_changed("controllers", False)
-
-        self.assertIn(
-            ("test_model.mmd_show_controllers", "ctrl_locator.visibility", False),
-            adapter._connections,
-        )
-        self.assertNotIn(
-            ("test_model.mmd_show_controllers", "rb_locator_shape.visibility", False),
+            ("test_model.mmd_show_joints", "|test_model|Skeleton.visibility", False),
             adapter._connections,
         )
 

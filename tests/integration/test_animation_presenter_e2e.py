@@ -11,7 +11,11 @@ from maya import cmds
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter
-from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
+from mmd_tools.core.constants import (
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
+    ATTR_MMD_SHOW_JOINTS,
+    ATTR_MMD_SHOW_MESH,
+)
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import parse_pmx_file
 
@@ -195,7 +199,7 @@ class _View:
         self.picker_tabs = _TabWidget()
         self.vis_checkboxes = {
             k: _CheckBox()
-            for k in ("mesh", "joints", "ik", "controllers", "morphs", "colliders")
+            for k in ("mesh", "joints", "morphs", "colliders")
         }
         self.tool_buttons = {
             k: _Btn()
@@ -275,6 +279,24 @@ class TestAnimationPresenterE2E(MayaTestBase):
                 view.display_frame_tree.topLevelItemCount(), 0,
                 "Fallback flat list should have at least one group",
             )
+
+    def test_root_visibility_attrs_drive_geometry_and_skeleton_groups(self):
+        root = self._import_model()
+        self.assertFalse(cmds.attributeQuery("mmd_show_ik", node=root, exists=True))
+        self.assertFalse(cmds.attributeQuery("mmd_show_controllers", node=root, exists=True))
+
+        geometry = "Geometry"
+        skeleton = "Skeleton"
+        for attr, group in (
+            (ATTR_MMD_SHOW_MESH, geometry),
+            (ATTR_MMD_SHOW_JOINTS, skeleton),
+        ):
+            destinations = cmds.listConnections(
+                f"{root}.{attr}", source=False, destination=True, plugs=True
+            ) or []
+            self.assertEqual(destinations, [f"{group}.visibility"])
+            cmds.setAttr(f"{root}.{attr}", False)
+            self.assertFalse(cmds.getAttr(f"{group}.visibility"))
 
     def test_display_frame_item_click_selects_joint(self):
         root = self._import_model()
