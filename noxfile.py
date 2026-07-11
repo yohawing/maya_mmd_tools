@@ -412,6 +412,14 @@ def _release_gate_version_check() -> None:
     if mod_versions != {version}:
         raise RuntimeError(f"maya_mmd_tools.mod versions {sorted(mod_versions)} do not match {version}")
 
+    plugin_text = (ROOT / "cpp" / "src" / "pluginMain.cpp").read_text(encoding="utf-8")
+    plugin_match = re.search(
+        r'MFnPlugin\s+plugin\s*\(\s*obj\s*,\s*"[^"]+"\s*,\s*"([^"]+)"',
+        plugin_text,
+    )
+    if not plugin_match or plugin_match.group(1) != version:
+        raise RuntimeError(f"cpp/src/pluginMain.cpp version does not match pyproject.toml: {version}")
+
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     heading = f"## [{version}]"
     start = changelog.find(heading)
@@ -432,17 +440,42 @@ def _run_release_gate_command(
     name: str,
     command: list[str],
     results: list[dict[str, object]],
+    *,
+    result_report: Path | None = None,
+    required_local: bool = False,
+    strict_local: bool = False,
 ) -> None:
-    """Run a release-gate command and append a keep-going result entry."""
+    """Run a command and record its exit code plus an optional explicit child report."""
     started = time.perf_counter()
+    if result_report is not None and result_report.exists():
+        result_report.unlink()
     completed = subprocess.run(command, cwd=ROOT, text=True, check=False)
+    status = "pass" if completed.returncode == 0 else "fail"
+    detail = None
+    if result_report is not None and result_report.is_file():
+        try:
+            child_status = str(json.loads(result_report.read_text(encoding="utf-8")).get("status", "")).lower()
+        except (OSError, ValueError, TypeError) as exc:
+            status = "fail"
+            detail = f"invalid child report {result_report}: {exc}"
+        else:
+            status_aliases = {"pass": "pass", "passed": "pass", "fail": "fail", "failed": "fail", "skip": "skip", "skipped": "skip"}
+            if child_status not in status_aliases:
+                status = "fail"
+                detail = f"invalid child status in {result_report}: {child_status!r}"
+            elif completed.returncode == 0:
+                status = status_aliases[child_status]
+    if status == "skip" and required_local and strict_local:
+        status = "fail"
+        detail = "required local gate skipped under --strict-local"
     results.append(
         {
             "name": name,
             "command": command,
-            "status": "pass" if completed.returncode == 0 else "fail",
+            "status": status,
             "returncode": completed.returncode,
             "duration_sec": round(time.perf_counter() - started, 3),
+            **({"detail": detail} if detail else {}),
         }
     )
 
@@ -486,10 +519,12 @@ def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -
     json_path = report_dir / "release_gate.json"
     md_path = report_dir / "release_gate.md"
 
-    failed = [result for result in results if result["status"] != "pass"]
+    counts = {status: sum(result["status"] == status for result in results) for status in ("pass", "fail", "skip")}
+    aggregate_status = "fail" if counts["fail"] else "pass" if counts["pass"] else "skip"
     payload = {
         "quick": quick,
-        "status": "fail" if failed else "pass",
+        "status": aggregate_status,
+        "summary": counts,
         "results": results,
     }
     json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -499,6 +534,7 @@ def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -
         "",
         f"- Mode: {'quick' if quick else 'full'}",
         f"- Status: {payload['status']}",
+        f"- Summary: pass={counts['pass']}, fail={counts['fail']}, skip={counts['skip']}",
         "",
         "| Step | Status | Seconds | Command |",
         "| --- | --- | ---: | --- |",
@@ -512,6 +548,54 @@ def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -
         )
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return md_path, json_path
+
+
+def _normalize_local_gate_report(
+    report_path: Path,
+    strict_local: bool,
+    markdown_path: Path | None = None,
+) -> str:
+    """Derive and persist a local child gate status in its JSON and Markdown reports."""
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise ValueError(f"Local gate report has no results list: {report_path}")
+    aliases = {"pass": "pass", "passed": "pass", "fail": "fail", "failed": "fail", "skip": "skip", "skipped": "skip"}
+    statuses = []
+    for result in results:
+        raw_status = str(result.get("status", "")).lower() if isinstance(result, dict) else ""
+        if raw_status not in aliases:
+            raise ValueError(f"Invalid local gate result status in {report_path}: {raw_status!r}")
+        statuses.append(aliases[raw_status])
+    if "fail" in statuses or not statuses:
+        status = "fail"
+    elif "pass" in statuses:
+        status = "pass"
+    else:
+        status = "fail" if strict_local else "skip"
+    payload["status"] = status
+    summary = {
+        candidate: statuses.count(candidate) for candidate in ("pass", "fail", "skip")
+    }
+    payload["summary"] = summary
+    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if markdown_path is not None and markdown_path.is_file():
+        lines = markdown_path.read_text(encoding="utf-8").splitlines()
+        status_line = f"- Status: {status}"
+        summary_line = (
+            f"- Summary: pass={summary['pass']}, fail={summary['fail']}, skip={summary['skip']}"
+        )
+        status_index = next((index for index, line in enumerate(lines) if line.startswith("- Status:")), None)
+        if status_index is None:
+            lines.extend(["", status_line, summary_line])
+        else:
+            lines[status_index] = status_line
+            if status_index + 1 < len(lines) and lines[status_index + 1].startswith("- Summary:"):
+                lines[status_index + 1] = summary_line
+            else:
+                lines.insert(status_index + 1, summary_line)
+        markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return status
 
 
 def _import_order_manifest_asset_path(value: str) -> str:
@@ -2181,7 +2265,12 @@ def release_gate(session: nox.Session) -> None:
                     version,
                     "--manifest",
                     local_assets_manifest,
+                    "--out-json",
+                    "build/reports/release_gate_local_assets.json",
+                    "--out-md",
+                    "build/reports/release_gate_local_assets.md",
                 ],
+                ROOT / "build/reports/release_gate_local_assets.json",
             ),
             (
                 "tier3:release-camera-motion-oracle",
@@ -2196,7 +2285,10 @@ def release_gate(session: nox.Session) -> None:
                     "--manifest",
                     camera_manifest,
                     "--skip-addiction-parity",
+                    "--out-dir",
+                    "build/release-gate/camera-motion",
                 ],
+                ROOT / "build/release-gate/camera-motion/manifest-skip.json",
             ),
             (
                 "tier3:local-parity",
@@ -2211,20 +2303,30 @@ def release_gate(session: nox.Session) -> None:
                     "--manifest",
                     local_parity_manifest,
                     "--skip-fbx",
+                    "--out",
+                    "build/reports/release_gate_local_parity.json",
                 ],
+                ROOT / "build/reports/release_gate_local_parity.json",
             ),
         ]
         if strict_local:
-            for _, command in tier3_commands:
+            for _, command, _ in tier3_commands:
                 command.append("--strict-local")
-        for name, command in tier3_commands:
-            _run_release_gate_command(name, command, results)
+        for name, command, result_report in tier3_commands:
+            _run_release_gate_command(
+                name,
+                command,
+                results,
+                result_report=result_report,
+                required_local=True,
+                strict_local=strict_local,
+            )
 
     md_path, json_path = _write_release_gate_reports(results, quick)
     session.log(f"Release gate report: {md_path}")
     session.log(f"Release gate JSON: {json_path}")
 
-    failed = [result for result in results if result["status"] != "pass"]
+    failed = [result for result in results if result["status"] == "fail"]
     if failed:
         failed_names = ", ".join(str(result["name"]) for result in failed)
         session.error(f"Release gate failed: {failed_names}")
@@ -2311,8 +2413,11 @@ def local_assets_check(session: nox.Session) -> None:
     if strict:
         command.append("--strict-local")
     session.run(*command, env=env, external=True)
+    status = _normalize_local_gate_report(out_json, strict, out_md)
     session.log(f"Local assets report: {out_md}")
     session.log(f"Local assets JSON: {out_json}")
+    if status == "fail":
+        session.error("Local assets check failed")
 
 
 @nox.session(venv_backend="none")
