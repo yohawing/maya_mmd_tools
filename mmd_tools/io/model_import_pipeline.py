@@ -177,14 +177,18 @@ class ModelImportPipeline:
         cmds.select(root_group)
 
     def sync_dx11_uniforms(self, mesh_converter: Any, *, refresh_if_dx11: bool = False) -> int:
-        """Force dx11 uniform generation when needed and sync generated attrs."""
-        if refresh_if_dx11 and mesh_converter.has_dx11_shaders:
+        """Materialize hardware uniforms, then sync DX11 compatibility attrs."""
+        has_hardware_shader = bool(
+            mesh_converter.has_dx11_shaders
+            or getattr(mesh_converter, "has_glsl_shaders", False)
+        )
+        if refresh_if_dx11 and has_hardware_shader:
             try:
                 phase_start = time.perf_counter()
                 cmds.refresh(force=True)
                 self.record_phase("refresh_sec", phase_start)
             except Exception:
-                self.logger.debug("Failed to refresh viewport before dx11 uniform sync", exc_info=True)
+                self.logger.debug("Failed to refresh viewport before hardware uniform sync", exc_info=True)
 
         phase_start = time.perf_counter()
         synced_dx11 = sync_dx11_generated_uniforms(mesh_converter.created_shaders)

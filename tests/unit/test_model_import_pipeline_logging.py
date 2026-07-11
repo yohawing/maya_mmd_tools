@@ -13,6 +13,9 @@ from tests.common.maya_stub import install_headless_ui_stubs
 install_headless_ui_stubs()
 
 from mmd_tools.io.model_import_pipeline import ModelImportPipeline  # noqa: E402
+from mmd_tools.io import model_import_pipeline  # noqa: E402
+from mmd_tools.converters import mesh_converter as mesh_converter_module  # noqa: E402
+from mmd_tools.converters.mesh_converter import MeshConverter  # noqa: E402
 
 
 def _message_templates(mock_log):
@@ -48,6 +51,36 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         info_messages = _message_templates(logger.info)
         self.assertIn("Using custom namespace: %s", debug_messages)
         self.assertNotIn("Using custom namespace: %s", info_messages)
+
+    def test_glsl_shader_refreshes_before_uniform_sync(self):
+        logger = MagicMock()
+        pipeline = self._make_pipeline(logger)
+        converter = SimpleNamespace(
+            has_dx11_shaders=False,
+            has_glsl_shaders=True,
+            created_shaders=["glsl1"],
+        )
+        order = []
+        with patch.object(
+            model_import_pipeline.cmds,
+            "refresh",
+            side_effect=lambda **_kwargs: order.append("refresh"),
+        ), patch.object(
+            model_import_pipeline,
+            "sync_dx11_generated_uniforms",
+            side_effect=lambda _shaders: order.append("sync") or 0,
+        ):
+            pipeline.sync_dx11_uniforms(converter, refresh_if_dx11=True)
+        self.assertEqual(order, ["refresh", "sync"])
+
+    def test_mesh_converter_records_glsl_hardware_backend(self):
+        converter = MeshConverter()
+        with patch.object(mesh_converter_module.cmds, "objExists", return_value=True), patch.object(
+            mesh_converter_module.cmds, "nodeType", return_value="GLSLShader"
+        ):
+            converter._record_created_shader("glsl1")
+        self.assertTrue(converter.has_glsl_shaders)
+        self.assertFalse(converter.has_dx11_shaders)
 
     def test_generated_namespace_logs_at_debug_not_info(self):
         logger = MagicMock()

@@ -758,6 +758,7 @@ class MeshConverter:
         self.logger = get_logger(__name__)
         self.created_shaders = []
         self.has_dx11_shaders = False
+        self.has_glsl_shaders = False
         self.unresolved_texture_count = 0
         self.unresolved_textures = []
         self.model_filepath = pmx_filepath
@@ -794,11 +795,15 @@ class MeshConverter:
         self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
     def _record_created_shader(self, shader: str) -> None:
-        """Record a created shader and whether it is a real dx11Shader node."""
+        """Record a created shader and its hardware backend."""
         self.created_shaders.append(shader)
         try:
-            if shader and cmds.objExists(shader) and cmds.nodeType(shader) == "dx11Shader":
-                self.has_dx11_shaders = True
+            if shader and cmds.objExists(shader):
+                shader_type = cmds.nodeType(shader)
+                if shader_type == "dx11Shader":
+                    self.has_dx11_shaders = True
+                elif shader_type == "GLSLShader":
+                    self.has_glsl_shaders = True
         except Exception as exc:
             self.logger.debug("Failed to record created shader %s: %s", shader, exc)
 
