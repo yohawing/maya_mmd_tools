@@ -112,6 +112,37 @@ class TestCollisionFilterConversion(unittest.TestCase):
         self.assertEqual(_mmd_collision_mask_to_bullet_filter_mask(0x1FFFF), 0xFFFF)
 
 
+class TestJointIndexMetadata(unittest.TestCase):
+    def test_common_joint_creation_persists_source_index(self):
+        conv = physics_converter.PhysicsConverter.__new__(physics_converter.PhysicsConverter)
+        conv.logger = MagicMock()
+        conv.created_bullet_constraints = []
+        conv._get_bullet_solver = MagicMock(return_value=None)
+        fake_cmds = MagicMock()
+        fake_cmds.createNode.side_effect = ["jointTransform", "jointShape"]
+        fake_cmds.objExists.return_value = False
+        fake_cmds.parent.return_value = ["|physics|jointTransform"]
+        joint = types.SimpleNamespace(name="joint", name_english="Joint")
+
+        with patch.object(physics_converter, "cmds", fake_cmds):
+            with patch.object(
+                physics_converter.maya_attribute_utils,
+                "set_custom_attributes",
+            ) as set_attrs:
+                result = conv._create_bullet_constraint_common(
+                    joint=joint,
+                    constraint_type=4,
+                    parent_group="|physics",
+                    rb_shape_a=None,
+                    rb_shape_b=None,
+                    joint_index=27,
+                )
+
+        self.assertEqual(result, "|physics|jointTransform")
+        attrs = set_attrs.call_args.args[1]
+        self.assertEqual(attrs[physics_converter.ATTR_MMD_JOINT_INDEX], 27)
+
+
 class TestGravityResolution(unittest.TestCase):
     """Bullet gravity の既定値と明示指定を検証。"""
 

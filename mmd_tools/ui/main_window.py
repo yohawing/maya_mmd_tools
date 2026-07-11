@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
 
         self.setup_logging()
         self.setup_tabs()
+        self.tab_widget.currentChanged.connect(self._on_main_tab_changed)
         self.restore_settings()
 
         # ApplicationStateのシグナルを接続
@@ -282,6 +283,13 @@ class MainWindow(QMainWindow):
             self.tab_widget.insertTab(insert_index, physics_tab, translator.translate("physics", "tabs"))
         self.physics_tab = physics_tab
         return physics_tab
+
+    def _on_main_tab_changed(self, index):
+        """Refresh Physics when its main tab becomes active."""
+        physics_tab = getattr(self, "physics_tab", None)
+        presenter = getattr(self, "physics_presenter", None)
+        if physics_tab is not None and presenter is not None and self.tab_widget.widget(index) is physics_tab:
+            presenter.refresh_physics()
 
     def refresh_development_mode_visibility(self):
         """Development Mode 依存の UI 表示を現在のウィンドウへ再適用する。"""

@@ -92,6 +92,7 @@ ATTR_MMD_EXTERNAL_PARENT_KEY = "mmd_external_parent_key"  # 外部親キー
 
 # ボーンの詳細アトリビュート名（フォーマット固有の情報を保存）
 ATTR_MMD_BONE_INDEX = "mmd_bone_index"  # ボーンインデックス
+ATTR_MMD_JOINT_INDEX = "mmd_joint_index"  # 物理ジョイントのPMX/PMDグローバルインデックス
 ATTR_MMD_BONE_PARENT_INDEX = "mmd_bone_parent_index"  # 親ボーンインデックス
 ATTR_MMD_CONNECT_TYPE = "mmd_connect_type"  # 接続タイプ
 ATTR_MMD_CONNECT_INDEX = "mmd_connect_index"  # 接続先インデックス

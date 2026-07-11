@@ -17,6 +17,7 @@ from ..core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
+    ATTR_MMD_JOINT_INDEX,
     CONSTRAINTS_GROUP,
     PHYSICS_GROUP,
     PHYSICS_TYPE_CLOTH,
@@ -636,9 +637,11 @@ class PhysicsConverter:
 
         create_joints = self.settings.get(_OPT_CREATE_PHYSICS_JOINTS, True)
         if create_joints and hasattr(pmd_data, "joints") and pmd_data.joints:
-            for joint in pmd_data.joints:
+            for joint_index, joint in enumerate(pmd_data.joints):
                 try:
-                    self._create_bullet_constraint_pmd(joint, pmd_data.rigid_bodies, constraints_group)
+                    self._create_bullet_constraint_pmd(
+                        joint, pmd_data.rigid_bodies, constraints_group, joint_index
+                    )
                 except Exception as e:
                     safe_log_error(self.logger, "PMD joint 作成エラー", joint, e)
 
@@ -690,9 +693,11 @@ class PhysicsConverter:
 
         create_joints = self.settings.get(_OPT_CREATE_PHYSICS_JOINTS, True)
         if create_joints and hasattr(pmx_data, "joints") and pmx_data.joints:
-            for joint in pmx_data.joints:
+            for joint_index, joint in enumerate(pmx_data.joints):
                 try:
-                    self._create_bullet_constraint_pmx(joint, pmx_data.rigid_bodies, constraints_group)
+                    self._create_bullet_constraint_pmx(
+                        joint, pmx_data.rigid_bodies, constraints_group, joint_index
+                    )
                 except Exception as e:
                     safe_log_error(self.logger, "PMX joint 作成エラー", joint, e)
 
@@ -2050,7 +2055,9 @@ class PhysicsConverter:
     # Bullet ジョイント作成: PMD (常に sixDOF=4)
     # ------------------------------------------------------------------
 
-    def _create_bullet_constraint_pmd(self, joint, rigid_bodies: list, parent_group: str) -> Optional[str]:
+    def _create_bullet_constraint_pmd(
+        self, joint, rigid_bodies: list, parent_group: str, joint_index: int = -1
+    ) -> Optional[str]:
         """PMD ジョイント → bulletRigidBodyConstraintShape (SixDOF)。"""
         try:
             idx_a = getattr(joint, "rigid_body_index_a", -1)
@@ -2076,6 +2083,7 @@ class PhysicsConverter:
                 rot_hi_deg=rot_hi,
                 spring_trans=joint.spring_translation if hasattr(joint, "spring_translation") else None,
                 spring_rot=joint.spring_rotation if hasattr(joint, "spring_rotation") else None,
+                joint_index=joint_index,
             )
         except Exception as e:
             safe_log_error(self.logger, "PMD joint 作成エラー", joint, e)
@@ -2085,7 +2093,9 @@ class PhysicsConverter:
     # Bullet ジョイント作成: PMX
     # ------------------------------------------------------------------
 
-    def _create_bullet_constraint_pmx(self, joint, rigid_bodies: list, parent_group: str) -> Optional[str]:
+    def _create_bullet_constraint_pmx(
+        self, joint, rigid_bodies: list, parent_group: str, joint_index: int = -1
+    ) -> Optional[str]:
         """PMX ジョイント → bulletRigidBodyConstraintShape (joint_type に応じて)。"""
         try:
             idx_a = getattr(joint, "rigid_body_a_index", -1)
@@ -2118,6 +2128,7 @@ class PhysicsConverter:
                 rot_hi_deg=rot_hi_deg,
                 spring_trans=spring_trans,
                 spring_rot=spring_rot,
+                joint_index=joint_index,
             )
         except Exception as e:
             safe_log_error(self.logger, "PMX joint 作成エラー", joint, e)
@@ -2141,6 +2152,7 @@ class PhysicsConverter:
         spring_trans: Optional[Tuple[float, float, float]] = None,
         spring_rot: Optional[Tuple[float, float, float]] = None,
         pmx_joint_type: Optional[int] = None,
+        joint_index: int = -1,
     ) -> Optional[str]:
         """
         bulletRigidBodyConstraintShape を作成する共通処理。
@@ -2232,6 +2244,7 @@ class PhysicsConverter:
         # カスタムアトリビュート
         export_joint_type = pmx_joint_type if pmx_joint_type is not None else constraint_type
         custom_attrs = {
+            ATTR_MMD_JOINT_INDEX: int(joint_index),
             "mmd_joint_name": str(getattr(joint, "name", "")),
             "mmd_joint_name_english": str(getattr(joint, "name_english", getattr(joint, "name", ""))),
             "mmd_joint_type": export_joint_type,

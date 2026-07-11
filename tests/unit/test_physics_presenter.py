@@ -1,6 +1,8 @@
 """PhysicsPresenterのMaya非依存ロジックを検証するテスト。"""
 
+import json
 import unittest
+from pathlib import Path
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -13,7 +15,10 @@ from mmd_tools.core.physics_scene_query import (  # noqa: E402
 )
 from mmd_tools.core.physics_form_validation import JointFormValues, RigidBodyFormValues  # noqa: E402
 from mmd_tools.core.physics_scene_writer import PhysicsSceneWriteError  # noqa: E402
-from mmd_tools.ui.presenters.physics_presenter import PhysicsPresenter  # noqa: E402
+from mmd_tools.ui.presenters.physics_presenter import (  # noqa: E402
+    PhysicsPresenter,
+    _format_non_collision_groups,
+)
 from mmd_tools.ui.qt_compat import Qt  # noqa: E402
 
 TEST_MODEL = "|test_mmd_model"
@@ -225,6 +230,10 @@ class _FakeMayaAdapter:
         self.attrs = {}
         self.incoming_connections = {}
         self.created_nodes = []
+        self.joints = []
+
+    def ls(self, *_args, **_kwargs):
+        return list(self.joints)
 
     def object_exists(self, node):
         self.calls.append(("object_exists", node))
@@ -347,7 +356,7 @@ def _rigid(
     )
 
 
-def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1, name_english=None, **fields):
+def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1, name_english=None, index=0, **fields):
     return JointSceneRef(
         transform=transform,
         constraint_shape=f"{transform}|bulletRigidBodyConstraintShape",
@@ -356,6 +365,7 @@ def _joint(transform, name, joint_type=0, body_a=-1, body_b=-1, name_english=Non
         joint_type=joint_type,
         rigid_body_a_index=body_a,
         rigid_body_b_index=body_b,
+        index=index,
         **fields,
     )
 
@@ -380,6 +390,26 @@ def _hidden_flags(list_widget):
 
 
 class TestPhysicsPresenter(unittest.TestCase):
+    def test_non_collision_group_label_is_explicit_in_all_translations(self):
+        translation_dir = Path(__file__).parents[2] / "mmd_tools" / "ui" / "translations"
+        expected = {
+            "ja": "非衝突グループ:",
+            "en": "Non-collision Groups:",
+            "zh_cn": "非碰撞组:",
+            "zh_tw": "非碰撞群組:",
+        }
+        for language, label in expected.items():
+            data = json.loads((translation_dir / f"{language}.json").read_text(encoding="utf-8"))
+            self.assertEqual(data["fields"]["non_collision_groups"], label)
+
+    def test_collision_mask_formats_non_collision_groups(self):
+        self.assertEqual(
+            _format_non_collision_groups(0x0000),
+            ", ".join(str(index) for index in range(1, 17)),
+        )
+        self.assertEqual(_format_non_collision_groups(0xFFFF), "None")
+        self.assertEqual(_format_non_collision_groups(0xFF7F), "8")
+
     def test_load_physics_clears_and_returns_when_no_model(self):
         presenter, view, _, adapter, reader = _make_presenter(model=None)
 
@@ -413,7 +443,7 @@ class TestPhysicsPresenter(unittest.TestCase):
                 _rigid("|root|rb5", 5, "hair", shape_type=2, physics_mode=1, bone=3),
             ),
             joints=(
-                _joint("|root|jointB", "jointB", joint_type=4, body_a=2, body_b=5),
+                _joint("|root|jointB", "jointB", joint_type=4, body_a=2, body_b=5, index=12),
             ),
         )
         reader = _FakePhysicsReader(refs)
@@ -424,15 +454,43 @@ class TestPhysicsPresenter(unittest.TestCase):
         self.assertEqual(adapter.calls[0], ("object_exists", TEST_MODEL))
         self.assertEqual(reader.calls, [TEST_MODEL])
         self.assertEqual([item.text() for item in view.rigid_body_list.items], [
-            "2: skirt (box, mode=2, bone=9)",
-            "5: hair (capsule, mode=1, bone=3)",
+            "002:G1|skirt - [Unknown]",
+            "005:G1|hair - [Unknown]",
         ])
         self.assertEqual(view.rigid_body_list.items[0].data(Qt.UserRole), "|root|rb2")
         self.assertEqual([item.text() for item in view.joint_list.items], [
-            "jointB (type=4, A=2, B=5)",
+            "012:jointB - [skirt - hair]",
         ])
         self.assertEqual(view.joint_list.items[0].data(Qt.UserRole), "|root|jointB")
+        self.assertEqual(view.rigid_body_list.items[0]._physics_mode_color, "#5f477f")
+        self.assertEqual(view.rigid_body_list.items[1]._physics_mode_color, "#8a493f")
         self.assertFalse(view.details_enabled)
+
+    def test_list_labels_resolve_bones_and_search_full_formatted_label(self):
+        rigid = _rigid(
+            "|root|rb2",
+            2,
+            "skirt",
+            physics_mode=1,
+            bone=9,
+            collision_group=7,
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={TEST_MODEL, rigid.transform, "|root|hips"})
+        adapter.joints = ["|root|hips"]
+        adapter.attrs[("|root|hips", "mmd_bone_index")] = 9
+        adapter.attrs[("|root|hips", "mmd_bone_name")] = "センター"
+        presenter, view, _, _, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(PhysicsSceneRefs((rigid,), ())),
+        )
+
+        presenter.load_physics()
+
+        self.assertEqual(view.rigid_body_list.items[0].text(), "002:G8|skirt - [センター]")
+        presenter.filter_rigid_bodies("G8")
+        self.assertEqual(_hidden_flags(view.rigid_body_list), [False])
+        presenter.filter_rigid_bodies("センター")
+        self.assertEqual(_hidden_flags(view.rigid_body_list), [False])
 
     def test_valid_load_keeps_details_disabled_until_selection(self):
         refs = PhysicsSceneRefs(
@@ -485,14 +543,15 @@ class TestPhysicsPresenter(unittest.TestCase):
                 "name_english": "Skirt",
                 "shape": 1,
                 "physics_mode": 2,
-                "related_bone": 9,
+                "related_bone": "Unknown (9)",
                 "collision_group": 7,
-                "collision_mask": 0xFF7F,
+                "collision_mask": "8",
                 "mass": 2.5,
                 "linear_damping": 0.15,
                 "angular_damping": 0.25,
                 "restitution": 0.35,
                 "friction": 0.45,
+                "node": "|root|rb2",
             },
         )
         self.assertFalse(view.apply_btn.isEnabled())
@@ -554,15 +613,18 @@ class TestPhysicsPresenter(unittest.TestCase):
 
         self.assertEqual(view.form_kind, "joint")
         self.assertEqual(view.form_values["name_english"], "Joint B")
-        self.assertEqual(view.form_values["joint_type"], 4)
-        self.assertEqual(view.form_values["rigid_body_a"], 2)
-        self.assertEqual(view.form_values["rigid_body_b"], 5)
-        self.assertEqual(view.form_values["linear_constraint_states"], "0, 1, 2")
-        self.assertEqual(view.form_values["angular_constraint_states"], "2, 1, 0")
-        self.assertEqual(view.form_values["translation_limit_min"], "-1.0, -2.0, -3.0")
-        self.assertEqual(view.form_values["rotation_limit_max_degrees"], "10.0, 20.0, 30.0")
-        self.assertEqual(view.form_values["spring_translation"], "0.12345678901234566, 0.2, 0.3")
-        self.assertEqual(view.form_values["spring_rotation_enabled"], "0, 1, 0")
+        self.assertEqual(view.form_values["joint_type"], "Slider")
+        self.assertEqual(view.form_values["rigid_body_a"], "Unknown (2)")
+        self.assertEqual(view.form_values["rigid_body_b"], "Unknown (5)")
+        self.assertEqual(view.form_values["linear_constraint_states"], "X: 0, Y: 1, Z: 2")
+        self.assertEqual(view.form_values["angular_constraint_states"], "X: 2, Y: 1, Z: 0")
+        self.assertEqual(view.form_values["translation_limit_min"], "X: -1.0, Y: -2.0, Z: -3.0")
+        self.assertEqual(view.form_values["rotation_limit_max_degrees"], "X: 10.0, Y: 20.0, Z: 30.0")
+        self.assertEqual(
+            view.form_values["spring_translation"],
+            "X: 0.12345678901234566, Y: 0.2, Z: 0.3",
+        )
+        self.assertEqual(view.form_values["spring_rotation_enabled"], "X: 0, Y: 1, Z: 0")
         self.assertFalse(view.form_dirty)
 
         view.form_values["linear_constraint_states"] = "0, 2, 1"

@@ -45,6 +45,7 @@ class _FakeMayaAdapter:
             "|root|rb2|bulletRigidBodyShape.mass": float("nan"),
             "|root|rb2|bulletRigidBodyShape.linearDamping": float("inf"),
             "|root|jointB.mmd_joint_name": "jointB",
+            "|root|jointB.mmd_joint_index": 12,
             "|root|jointB.mmd_joint_name_english": "jointB_en",
             "|root|jointB.mmd_joint_type": 4,
             "|root|jointB.mmd_joint_is_pmx": 1,
@@ -147,6 +148,7 @@ class TestMayaPhysicsSceneReader(unittest.TestCase):
 
         self.assertEqual(len(refs.joints), 1)
         joint = refs.joints[0]
+        self.assertEqual(joint.index, 12)
         self.assertEqual(joint.name, "jointB")
         self.assertEqual(joint.joint_type, 4)
         self.assertEqual(joint.rigid_body_a_index, 2)
@@ -162,6 +164,14 @@ class TestMayaPhysicsSceneReader(unittest.TestCase):
         self.assertEqual(joint.spring_rotation, (0.4, 0.0, 0.6))
         self.assertEqual(joint.spring_translation_enabled, (True, False, False))
         self.assertEqual(joint.spring_rotation_enabled, (True, False, True))
+
+    def test_collect_assigns_discovery_order_to_legacy_joint_without_index(self):
+        adapter = _FakeMayaAdapter()
+        del adapter.attrs["|root|jointB.mmd_joint_index"]
+
+        refs = MayaPhysicsSceneReader(adapter).collect("|root")
+
+        self.assertEqual(refs.joints[0].index, 0)
 
 
 if __name__ == "__main__":

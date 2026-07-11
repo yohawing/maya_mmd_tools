@@ -56,6 +56,7 @@ class JointSceneRef:
     spring_rotation: tuple[float, float, float] = (0.0, 0.0, 0.0)
     spring_translation_enabled: tuple[bool, bool, bool] = (False, False, False)
     spring_rotation_enabled: tuple[bool, bool, bool] = (False, False, False)
+    index: int = -1
 
 
 @dataclass(frozen=True)
@@ -123,6 +124,7 @@ class MayaPhysicsSceneReader:
             shape_to_original_index[bullet_shape] = index
 
         joints = []
+        legacy_joint_index = 0
         for node in nodes:
             if not self._attribute_exists(node, "mmd_joint_name"):
                 continue
@@ -130,6 +132,10 @@ class MayaPhysicsSceneReader:
             if not constraint_shape:
                 continue
             name = _safe_str(self._get_attr(f"{node}.mmd_joint_name"), _short_name(node))
+            index = _safe_int(
+                self._get_attr(f"{node}.mmd_joint_index"),
+                legacy_joint_index,
+            )
             joint_type = _safe_int(
                 self._get_attr(f"{node}.mmd_joint_type"),
                 _safe_int(self._get_attr(f"{constraint_shape}.constraintType"), 0),
@@ -192,12 +198,14 @@ class MayaPhysicsSceneReader:
                         _safe_bool(self._get_attr(f"{constraint_shape}.angularSpringEnabled{axis}"))
                         for axis in "XYZ"
                     ),
+                    index=index,
                 )
             )
+            legacy_joint_index += 1
 
         return PhysicsSceneRefs(
             rigid_bodies=tuple(sorted(rigid_bodies, key=lambda item: (item.index, item.name))),
-            joints=tuple(sorted(joints, key=lambda item: (item.name, item.transform))),
+            joints=tuple(sorted(joints, key=lambda item: (item.index, item.name, item.transform))),
         )
 
     def _root_scoped_transforms(self, root: str) -> list[str]:

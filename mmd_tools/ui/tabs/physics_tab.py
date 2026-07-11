@@ -1,11 +1,4 @@
-"""Physics tab UI shell and cached physics value editor.
-
-Layout mirrors Bone/Morph: left list with Rigid Body / Joint switch and search,
-right scrollable details with editable cached values and Apply/Reset. Scene
-writes land in a later slice; presenter-facing attributes stay compatible.
-This D1 form deliberately accepts round-trip text without parsing or physical
-range checks. D2 must validate every field before any explicit Apply write.
-"""
+"""Physics tab UI shell for inspecting rigid bodies and joints."""
 
 from ..qt_compat import (
     QWidget,
@@ -35,16 +28,8 @@ class PhysicsTab(BaseTab):
 
     _TRANSLATION_REGISTRY = (
         ("physics_objects_group", "setTitle", "physics_objects", "groups"),
-        ("details_group", "setTitle", "details", "groups"),
         ("refresh_btn", "setText", "refresh", "buttons"),
-        ("apply_btn", "setText", "apply", "buttons"),
-        ("reset_btn", "setText", "reset", "buttons"),
         ("collider_visible_check", "setText", "show_colliders", "checkboxes"),
-        ("detail_name_label", "setText", "name", "fields"),
-        ("detail_type_label", "setText", "type", "fields"),
-        ("detail_shape_label", "setText", "shape", "fields"),
-        ("detail_bodies_label", "setText", "bodies", "fields"),
-        ("detail_node_label", "setText", "node", "fields"),
         ("rigid_body_search_edit", "setPlaceholderText", "search_rigid_bodies", "placeholders"),
         ("joint_search_edit", "setPlaceholderText", "search_joints", "placeholders"),
     )
@@ -122,7 +107,7 @@ class PhysicsTab(BaseTab):
         return widget
 
     def _create_details_section(self):
-        """Right pane: scrollable read-only details and Apply/Reset bar."""
+        """Right pane: scrollable, read-only PMX physics values."""
         widget = QWidget()
         main_layout = QVBoxLayout(widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -134,29 +119,6 @@ class PhysicsTab(BaseTab):
         content_layout = QVBoxLayout(self.physics_details_content)
         content_layout.setContentsMargins(5, 5, 5, 5)
 
-        self.details_group = QGroupBox(self.tr("details", "groups"))
-        details_layout = QFormLayout()
-
-        self.detail_name_label = QLabel(self.tr("name", "fields"))
-        self.detail_type_label = QLabel(self.tr("type", "fields"))
-        self.detail_shape_label = QLabel(self.tr("shape", "fields"))
-        self.detail_bodies_label = QLabel(self.tr("bodies", "fields"))
-        self.detail_node_label = QLabel(self.tr("node", "fields"))
-
-        self.detail_name_value = QLabel("")
-        self.detail_type_value = QLabel("")
-        self.detail_shape_value = QLabel("")
-        self.detail_bodies_value = QLabel("")
-        self.detail_node_value = QLabel("")
-
-        details_layout.addRow(self.detail_name_label, self.detail_name_value)
-        details_layout.addRow(self.detail_type_label, self.detail_type_value)
-        details_layout.addRow(self.detail_shape_label, self.detail_shape_value)
-        details_layout.addRow(self.detail_bodies_label, self.detail_bodies_value)
-        details_layout.addRow(self.detail_node_label, self.detail_node_value)
-
-        self.details_group.setLayout(details_layout)
-        content_layout.addWidget(self.details_group)
         self.rigid_body_form_group = self._create_rigid_body_form()
         self.joint_form_group = self._create_joint_form()
         content_layout.addWidget(self.rigid_body_form_group)
@@ -172,16 +134,6 @@ class PhysicsTab(BaseTab):
 
         self.details_scroll_area.setWidget(self.physics_details_content)
         main_layout.addWidget(self.details_scroll_area)
-
-        button_layout = QHBoxLayout()
-        self.apply_btn = QPushButton(self.tr("apply", "buttons"))
-        self.reset_btn = QPushButton(self.tr("reset", "buttons"))
-        self.apply_btn.setEnabled(False)
-        self.reset_btn.setEnabled(False)
-        button_layout.addStretch()
-        button_layout.addWidget(self.apply_btn)
-        button_layout.addWidget(self.reset_btn)
-        main_layout.addLayout(button_layout)
 
         return widget
 
@@ -206,28 +158,27 @@ class PhysicsTab(BaseTab):
         )
         self.rigid_physics_mode_combo.setEnabled(False)
         self._add_editor_row(layout, "physics_mode", "rigid_physics_mode", self.rigid_physics_mode_combo)
-        self.rigid_related_bone_spin = self._int_editor("rigid_related_bone", "related_bone", -1, 999999)
+        self.rigid_related_bone_spin = self._line_editor("rigid_related_bone", "related_bone")
         self.rigid_collision_group_spin = self._int_editor("rigid_collision_group", "collision_group", 0, 15)
-        self.rigid_collision_mask_spin = self._int_editor("rigid_collision_mask", "collision_mask", 0, 0xFFFF)
-        self.rigid_related_bone_spin.setReadOnly(True)
-        self.rigid_collision_group_spin.setReadOnly(True)
-        self.rigid_collision_mask_spin.setReadOnly(True)
+        self.rigid_collision_mask_spin = self._line_editor("rigid_collision_mask", "collision_mask")
         self.rigid_mass_edit = self._line_editor("rigid_mass", "mass")
         self.rigid_linear_damping_edit = self._line_editor("rigid_linear_damping", "linear_damping")
         self.rigid_angular_damping_edit = self._line_editor("rigid_angular_damping", "angular_damping")
         self.rigid_restitution_edit = self._line_editor("rigid_restitution", "restitution")
         self.rigid_friction_edit = self._line_editor("rigid_friction", "friction")
-        for key in (
-            "rigid_related_bone",
-            "rigid_collision_group",
-            "rigid_collision_mask",
-            "rigid_mass",
-            "rigid_linear_damping",
-            "rigid_angular_damping",
-            "rigid_restitution",
-            "rigid_friction",
+        for key, label_key in (
+            ("rigid_related_bone", "related_bone"),
+            ("rigid_collision_group", "collision_group"),
+            ("rigid_collision_mask", "non_collision_groups"),
+            ("rigid_mass", "mass"),
+            ("rigid_linear_damping", "linear_damping"),
+            ("rigid_angular_damping", "angular_damping"),
+            ("rigid_restitution", "restitution"),
+            ("rigid_friction", "friction"),
         ):
-            self._add_editor_row(layout, self._physics_editors[key][0], key, self._physics_editors[key][1])
+            self._add_editor_row(layout, label_key, key, self._physics_editors[key][1])
+        self._add_node_row(layout, "rigid_node")
+        self._disable_form_editors("rigid_")
         group.setLayout(layout)
         return group
 
@@ -236,13 +187,9 @@ class PhysicsTab(BaseTab):
         layout = QFormLayout()
         self.joint_name_edit = self._line_editor("joint_name", "name")
         self.joint_name_english_edit = self._line_editor("joint_name_english", "name_english")
-        self.joint_type_spin = self._int_editor("joint_type", "joint_type", 0, 6)
-        self.joint_type_spin.setReadOnly(True)
-        self.joint_body_a_spin = self._int_editor("joint_body_a", "rigid_body_a", -1, 999999)
-        self.joint_body_b_spin = self._int_editor("joint_body_b", "rigid_body_b", -1, 999999)
-        # Reconnecting constraint bodies changes the solver graph and is outside D2b.
-        self.joint_body_a_spin.setReadOnly(True)
-        self.joint_body_b_spin.setReadOnly(True)
+        self.joint_type_spin = self._line_editor("joint_type", "joint_type")
+        self.joint_body_a_spin = self._line_editor("joint_body_a", "rigid_body_a")
+        self.joint_body_b_spin = self._line_editor("joint_body_b", "rigid_body_b")
         for key, field_key in (
             ("joint_linear_states", "linear_constraint_states"),
             ("joint_angular_states", "angular_constraint_states"),
@@ -274,8 +221,25 @@ class PhysicsTab(BaseTab):
             "joint_spring_rotation_enabled",
         ):
             self._add_editor_row(layout, self._physics_editors[key][0], key, self._physics_editors[key][1])
+        self._add_node_row(layout, "joint_node")
+        self._disable_form_editors("joint_")
         group.setLayout(layout)
         return group
+
+    def _add_node_row(self, layout, key):
+        label = QLabel(self.tr("node", "fields"))
+        value = QLineEdit()
+        value.setEnabled(False)
+        self._form_labels[key] = ("node", label)
+        self._physics_editors[key] = ("node", value)
+        layout.addRow(label, value)
+
+    def _disable_form_editors(self, prefix):
+        tooltip = self.tr("physics_read_only_v04", "messages")
+        for key, (_field_key, editor) in self._physics_editors.items():
+            if key.startswith(prefix):
+                editor.setEnabled(False)
+                editor.setToolTip(tooltip)
 
     def _line_editor(self, key, field_key):
         editor = QLineEdit()
@@ -341,9 +305,7 @@ class PhysicsTab(BaseTab):
         return values
 
     def set_physics_dirty(self, dirty, valid=False):
-        enabled = bool(dirty) and self.physics_details_content.isEnabled()
-        self.apply_btn.setEnabled(enabled and bool(valid))
-        self.reset_btn.setEnabled(enabled)
+        """Compatibility hook retained for the dormant writer infrastructure."""
 
     def set_physics_validation_error(self, field_key=None, message_key=None, params=None):
         """Show or clear one localized validation error."""
@@ -360,7 +322,7 @@ class PhysicsTab(BaseTab):
         self.validation_error_label.show()
 
     def set_physics_details_enabled(self, enabled):
-        """Enable or disable the details content and Apply/Reset buttons."""
+        """Enable or disable the read-only details content."""
         self.physics_details_content.setEnabled(enabled)
         if not enabled:
             self.set_physics_dirty(False)

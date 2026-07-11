@@ -16,7 +16,7 @@ from ...core.visibility_state import (
     set_visibility_category,
     sync_visibility_connections,
 )
-from ..qt_compat import QListWidgetItem, Qt
+from ..qt_compat import QColor, QListWidgetItem, Qt
 from .list_presenter_helpers import (
     apply_list_filter,
     select_existing_user_role_nodes,
@@ -28,6 +28,22 @@ _SHAPE_LABELS = {
     0: "sphere",
     1: "box",
     2: "capsule",
+}
+
+_JOINT_TYPE_LABELS = {
+    0: "Spring 6DOF",
+    1: "6DOF",
+    2: "P2P",
+    3: "Cone Twist",
+    4: "Slider",
+    5: "Hinge",
+    6: "Spring 6DOF2",
+}
+
+_PHYSICS_MODE_ROW_COLORS = {
+    0: "#355f8a",
+    1: "#8a493f",
+    2: "#5f477f",
 }
 
 
@@ -55,6 +71,7 @@ class PhysicsPresenter:
         self._validated_form_ref = None
         self._ui_state_by_root = {}
         self._active_model_root = None
+        self._bone_names_by_index = {}
         self._default_ui_state = self._capture_ui_state()
         self.connect_signals()
 
@@ -130,13 +147,17 @@ class PhysicsPresenter:
             self.physics_reader.collect(current_model_root),
             current_model_root,
         )
+        self._bone_names_by_index = self._collect_bone_names(current_model_root)
+        rigid_names = {rigid.index: rigid.name for rigid in refs.rigid_bodies}
         for rigid_body in refs.rigid_bodies:
             self._rigid_bodies_by_transform[rigid_body.transform] = rigid_body
-            self.view.rigid_body_list.addItem(_rigid_body_item(rigid_body))
+            self.view.rigid_body_list.addItem(
+                _rigid_body_item(rigid_body, self._bone_name(rigid_body.related_bone_index))
+            )
 
         for joint in refs.joints:
             self._joints_by_transform[joint.transform] = joint
-            self.view.joint_list.addItem(_joint_item(joint))
+            self.view.joint_list.addItem(_joint_item(joint, rigid_names))
         self.filter_rigid_bodies(self._search_text("rigid_body_search_edit"))
         self.filter_joints(self._search_text("joint_search_edit"))
         self._sync_collider_visibility_control(current_model_root)
@@ -237,8 +258,30 @@ class PhysicsPresenter:
         try:
             raw_values = getter(kind)
             if kind == "rigid":
+                raw_values["related_bone"] = current.related_bone_index
+                raw_values["collision_mask"] = current.collision_mask
+                raw_values.pop("node", None)
                 parsed = parse_rigid_body_form(raw_values)
             else:
+                raw_values["joint_type"] = current.joint_type
+                raw_values["rigid_body_a"] = current.rigid_body_a_index
+                raw_values["rigid_body_b"] = current.rigid_body_b_index
+                raw_values.pop("node", None)
+                for key in (
+                    "linear_constraint_states",
+                    "angular_constraint_states",
+                    "translation_limit_min",
+                    "translation_limit_max",
+                    "rotation_limit_min_degrees",
+                    "rotation_limit_max_degrees",
+                    "spring_translation",
+                    "spring_rotation",
+                    "spring_translation_enabled",
+                    "spring_rotation_enabled",
+                ):
+                    displayed = _format_vector(getattr(current, key))
+                    if raw_values.get(key) == displayed:
+                        raw_values[key] = getattr(current, key)
                 parsed = parse_joint_form(raw_values)
         except PhysicsFormValidationError as exc:
             self._validated_form_values = None
@@ -506,26 +549,35 @@ class PhysicsPresenter:
                 "name_english": rigid_body.name_english,
                 "shape": rigid_body.shape_type,
                 "physics_mode": rigid_body.physics_mode,
-                "related_bone": rigid_body.related_bone_index,
+                "related_bone": self._name_with_index(
+                    self._bone_name(rigid_body.related_bone_index),
+                    rigid_body.related_bone_index,
+                ),
                 "collision_group": rigid_body.collision_group,
-                "collision_mask": rigid_body.collision_mask,
+                "collision_mask": _format_non_collision_groups(rigid_body.collision_mask),
                 "mass": rigid_body.mass,
                 "linear_damping": rigid_body.linear_damping,
                 "angular_damping": rigid_body.angular_damping,
                 "restitution": rigid_body.restitution,
                 "friction": rigid_body.friction,
+                "node": rigid_body.transform,
             },
         )
 
     def _populate_joint_form(self, joint):
+        rigid_names = {ref.index: ref.name for ref in self._rigid_bodies_by_transform.values()}
         self._set_cached_form(
             "joint",
             {
                 "name": joint.name,
                 "name_english": joint.name_english,
-                "joint_type": joint.joint_type,
-                "rigid_body_a": joint.rigid_body_a_index,
-                "rigid_body_b": joint.rigid_body_b_index,
+                "joint_type": _JOINT_TYPE_LABELS.get(joint.joint_type, f"Unknown ({joint.joint_type})"),
+                "rigid_body_a": self._name_with_index(
+                    rigid_names.get(joint.rigid_body_a_index), joint.rigid_body_a_index
+                ),
+                "rigid_body_b": self._name_with_index(
+                    rigid_names.get(joint.rigid_body_b_index), joint.rigid_body_b_index
+                ),
                 "linear_constraint_states": _format_vector(joint.linear_constraint_states),
                 "angular_constraint_states": _format_vector(joint.angular_constraint_states),
                 "translation_limit_min": _format_vector(joint.translation_limit_min),
@@ -536,8 +588,38 @@ class PhysicsPresenter:
                 "spring_rotation": _format_vector(joint.spring_rotation),
                 "spring_translation_enabled": _format_vector(joint.spring_translation_enabled),
                 "spring_rotation_enabled": _format_vector(joint.spring_rotation_enabled),
+                "node": joint.transform,
             },
         )
+
+    def _collect_bone_names(self, root):
+        names = {}
+        ls = getattr(self.maya_adapter, "ls", None)
+        if not callable(ls):
+            return names
+        try:
+            joints = ls(root, dag=True, type="joint", long=True) or []
+        except Exception:
+            return names
+        for joint in joints:
+            try:
+                if not self.maya_adapter.attribute_exists("mmd_bone_index", joint):
+                    continue
+                index = int(self.maya_adapter.get_attr(f"{joint}.mmd_bone_index"))
+                name = joint.rsplit("|", 1)[-1]
+                if self.maya_adapter.attribute_exists("mmd_bone_name", joint):
+                    name = str(self.maya_adapter.get_attr(f"{joint}.mmd_bone_name") or name)
+                names[index] = name
+            except Exception:
+                continue
+        return names
+
+    def _bone_name(self, index):
+        return self._bone_names_by_index.get(index, "None" if index < 0 else "Unknown")
+
+    @staticmethod
+    def _name_with_index(name, index):
+        return f"{name or 'Unknown'} ({index})"
 
     def _set_cached_form(self, kind, values):
         self._validated_form_values = None
@@ -655,19 +737,21 @@ class PhysicsPresenter:
                 label.setText(value)
 
 
-def _rigid_body_item(rigid_body: RigidBodySceneRef):
-    label = (
-        f"{rigid_body.index}: {rigid_body.name} "
-        f"({_SHAPE_LABELS.get(rigid_body.shape_type, 'unknown')}, "
-        f"mode={rigid_body.physics_mode}, bone={rigid_body.related_bone_index})"
-    )
+def _rigid_body_item(rigid_body: RigidBodySceneRef, bone_name: str):
+    label = f"{rigid_body.index:03d}:G{rigid_body.collision_group + 1}|{rigid_body.name} - [{bone_name}]"
     item = QListWidgetItem(label)
     item.setData(Qt.UserRole, rigid_body.transform)
+    color = _PHYSICS_MODE_ROW_COLORS.get(rigid_body.physics_mode, "#4b4b4b")
+    item._physics_mode_color = color
+    if hasattr(item, "setBackground"):
+        item.setBackground(QColor(color))
     return item
 
 
-def _joint_item(joint: JointSceneRef):
-    label = f"{joint.name} (type={joint.joint_type}, A={joint.rigid_body_a_index}, B={joint.rigid_body_b_index})"
+def _joint_item(joint: JointSceneRef, rigid_names):
+    body_a = rigid_names.get(joint.rigid_body_a_index, "Unknown")
+    body_b = rigid_names.get(joint.rigid_body_b_index, "Unknown")
+    label = f"{joint.index:03d}:{joint.name} - [{body_a} - {body_b}]"
     item = QListWidgetItem(label)
     item.setData(Qt.UserRole, joint.transform)
     return item
@@ -681,4 +765,9 @@ def _format_vector(values):
             return str(value)
         return repr(float(value))
 
-    return ", ".join(_format(value) for value in values)
+    return ", ".join(f"{axis}: {_format(value)}" for axis, value in zip("XYZ", values))
+
+
+def _format_non_collision_groups(mask):
+    groups = [str(index + 1) for index in range(16) if not (int(mask) & (1 << index))]
+    return ", ".join(groups) if groups else "None"
