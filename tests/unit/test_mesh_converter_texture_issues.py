@@ -949,7 +949,57 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
             unresolved=True,
         )
         mock_cmds.connectAttr.assert_not_called()
+        self.assertIn(call("Face_shader", "HasToonTexture", 0, "long"), mock_set_attribute.call_args_list)
         self.assertNotIn(call("Face_shader", "HasToonTexture", 1, "long"), mock_set_attribute.call_args_list)
+
+    def test_setup_dx11_shader_absent_toon_keeps_has_flag_disabled(self):
+        converter = MeshConverter(str(self.model))
+        material = self._material(toon_texture_index=-1, shared_toon_flag=0)
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute:
+            mock_cmds.attributeQuery.return_value = True
+
+            converter._setup_dx11_shader(
+                "Face_shader", material, None, [self.ascii_texture.name], is_pmd=False, material_index=0
+            )
+
+        self.assertIn(call("Face_shader", "HasToonTexture", 0, "long"), mock_set_attribute.call_args_list)
+        self.assertNotIn(call("Face_shader", "HasToonTexture", 1, "long"), mock_set_attribute.call_args_list)
+        mock_cmds.connectAttr.assert_not_called()
+
+    def test_setup_dx11_shader_binds_resolved_shared_toon_and_enables_has_flag(self):
+        converter = MeshConverter(str(self.model))
+        material = self._material(toon_texture_index=0, shared_toon_flag=1)
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter._resolve_pmx_toon_texture_path",
+            return_value=str(self.ascii_texture),
+        ), patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
+        ) as mock_mark:
+            mock_cmds.attributeQuery.return_value = True
+            mock_cmds.shadingNode.return_value = "Face_shader_toon_texture"
+
+            converter._setup_dx11_shader(
+                "Face_shader", material, None, [], is_pmd=False, material_index=0
+            )
+
+        mock_mark.assert_called_once_with(
+            "Face_shader_toon_texture",
+            "",
+            str(self.model),
+            unresolved=False,
+            source_kind="shared_toon",
+            shared_toon_id="shared_toon:1",
+        )
+        mock_cmds.connectAttr.assert_any_call(
+            "Face_shader_toon_texture.outColor", "Face_shader.ToonTexture", force=True
+        )
+        self.assertIn(call("Face_shader", "HasToonTexture", 1, "long"), mock_set_attribute.call_args_list)
 
     def test_setup_dx11_shader_readable_toon_texture_skips_auto_resolve(self):
         settings.set("import.model.auto_resolve_textures", True)
@@ -1070,6 +1120,29 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertIn("colorOut = vec4(srgbToLinear(lighting), opacity)", source)
         self.assertIn("if (texColor.a < 0.003 || opacity <= 0.0)", source)
         self.assertIn("discard;", source)
+
+    def test_dx11_and_glsl_effects_keep_no_toon_diffuse_flat(self):
+        shader_dir = Path(__file__).parents[2] / "mmd_tools" / "shaders"
+        dx11 = (shader_dir / "MMDShader.fx").read_text(encoding="utf-8")
+        glsl = (shader_dir / "MMDShader.ogsfx").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb", dx11
+        )
+        self.assertIn("toonColor = float3(1.0, 1.0, 1.0)", dx11)
+        self.assertNotIn("toonColor = rampCoord.xxx", dx11)
+        self.assertIn("float3 diffuse = materialBase * shadow", dx11)
+        self.assertIn("diffuse *= toonColor;", dx11)
+        self.assertNotIn("diffuse *= toonColor * shadow", dx11)
+        self.assertIn(
+            "clamp(DiffuseColorRGB * lightColor + AmbientColor, 0.0, 1.0) * texColor.rgb",
+            glsl,
+        )
+        self.assertIn("toonColor = vec3(1.0)", glsl)
+        self.assertNotIn("toonColor = vec3(rampCoord)", glsl)
+        self.assertIn("uniform float ShadowAttenuation = 1.0", glsl)
+        self.assertIn("vec3 diffuse = materialBase * ShadowAttenuation", glsl)
+        self.assertIn("diffuse *= toonColor;", glsl)
 
     @staticmethod
     def _material(**overrides):
