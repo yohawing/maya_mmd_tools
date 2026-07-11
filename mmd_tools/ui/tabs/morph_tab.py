@@ -390,6 +390,12 @@ class MorphTab(BaseTab):
         self.apply_btn.setEnabled(enabled)
         self.reset_btn.setEnabled(enabled)
 
+    def set_morph_controls_enabled(self, enabled, tooltip=""):
+        """Enable only runtime weight controls while keeping metadata browsable."""
+        for widget in (self.morph_slider, self.reset_slider_btn):
+            widget.setEnabled(enabled)
+            widget.setToolTip(tooltip)
+
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
         apply_translation_registry(self, self._TRANSLATION_REGISTRY)

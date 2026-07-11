@@ -89,6 +89,7 @@
     "namespace_placeholder": "自動產生"
   },
   "tooltips": {
+    "morph_runtime_unsupported": "目前執行階段不支援此變形類型",
     "import_file": "匯入PMD/PMX/VMD檔案",
     "export_file": "將選取的物件匯出為PMX檔案",
     "import_scale": "指定匯入縮放",

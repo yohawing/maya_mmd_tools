@@ -33,6 +33,20 @@ _DEFAULT_USER_PANEL = 4
 _PMX_TYPE_TO_UI_INDEX = {0: 12, 1: 0, 2: 10, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 11, 9: 13, 10: 14}
 _UI_INDEX_TO_PMX_TYPE = {ui_index: pmx_type for pmx_type, ui_index in _PMX_TYPE_TO_UI_INDEX.items()}
 _MORPH_TYPE_LETTERS = {0: "G", 1: "V", 2: "B", 3: "U", 4: "U", 5: "U", 6: "U", 7: "U", 8: "M", 9: "F", 10: "I"}
+# Runtime capability is intentionally centralized here. Material can be flipped
+# after the complete material-morph runtime lands without changing UI routing.
+_DIRECT_RUNTIME_MORPH_CAPABILITIES = {
+    1: True,   # vertex
+    2: True,   # bone
+    3: False,  # UV
+    4: False,  # additional UV1
+    5: False,  # additional UV2
+    6: False,  # additional UV3
+    7: False,  # additional UV4
+    8: False,  # material
+    9: False,  # flip
+    10: False, # impulse
+}
 
 
 class MorphPresenter:
@@ -318,6 +332,58 @@ class MorphPresenter:
             data["morph_node"] = morph_node
             data["morph_weight_attr"] = "weight"
             data["mmd_morph_type"] = morph_type
+            if morph_type == "group":
+                data["group_morph_offsets"] = self._read_group_morph_offsets(morph_node)
+
+    def _read_group_morph_offsets(self, morph_node):
+        """Read group references fail-closed for capability decisions."""
+        raw = self._get_attr_safe(morph_node, "mmd_group_morph_offsets_json", "")
+        if not raw:
+            return []
+        try:
+            offsets = json.loads(raw)
+        except (TypeError, ValueError):
+            return []
+        return offsets if isinstance(offsets, list) else []
+
+    def _raw_pmx_type(self, data):
+        try:
+            stored_type = int(data.get("type", 0))
+        except (TypeError, ValueError):
+            return None
+        return stored_type if data.get("_pmx_type_raw") else _UI_INDEX_TO_PMX_TYPE.get(stored_type)
+
+    def _morph_controls_supported(self, data):
+        """Return whether changing this morph's weight drives supported runtime output."""
+        raw_type = self._raw_pmx_type(data)
+        if raw_type != 0:
+            return _DIRECT_RUNTIME_MORPH_CAPABILITIES.get(raw_type, False)
+
+        by_index = {}
+        for candidate in self.morph_data.values():
+            try:
+                index = int(candidate.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            if index >= 0:
+                by_index[index] = candidate
+        for offset in data.get("group_morph_offsets", []):
+            if not isinstance(offset, dict):
+                continue
+            try:
+                referenced = by_index.get(int(offset.get("morph_index", -1)))
+                rate = float(offset.get("morph_rate", 0.0))
+            except (TypeError, ValueError):
+                continue
+            # Current group runtime only contributes referenced bone morphs.
+            if (
+                referenced is not None
+                and rate != 0.0
+                and self._raw_pmx_type(referenced) == 2
+                and referenced.get("morph_node")
+            ):
+                return True
+        return False
 
     def _add_blend_shape_target(self, data, blend_shape_node, target_name, target_attr):
         """Morph data に blendShape target 接続情報を追加する。"""
@@ -613,6 +679,10 @@ class MorphPresenter:
 
         # オフセット情報を更新
         self.update_offset_table(morph_name)
+
+        supported = self._morph_controls_supported(data)
+        tooltip = "" if supported else self.view.tr("morph_runtime_unsupported", "tooltips")
+        self.view.set_morph_controls_enabled(supported, tooltip)
 
         self.is_updating = False
 

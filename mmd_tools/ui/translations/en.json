@@ -89,6 +89,7 @@
     "not_found": "Not found"
   },
   "tooltips": {
+    "morph_runtime_unsupported": "This morph type is not supported by the current runtime",
     "import_file": "Import PMD/PMX/VMD files",
     "export_file": "Export selected objects as PMX file",
     "import_scale": "Specify the import scale",

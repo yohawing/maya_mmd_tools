@@ -71,6 +71,14 @@ class _FakeList:
 class _FakeButton:
     def __init__(self):
         self.clicked = _FakeSignal()
+        self.enabled = True
+        self.tooltip = ""
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+    def setToolTip(self, tooltip):
+        self.tooltip = tooltip
 
 
 class _FakeLineEdit:
@@ -155,10 +163,18 @@ class _FakeSlider:
         self.valueChanged = _FakeSignal()
         self.value = 0
         self.set_value_calls = []
+        self.enabled = True
+        self.tooltip = ""
 
     def setValue(self, value):
         self.value = value
         self.set_value_calls.append(value)
+
+    def setEnabled(self, enabled):
+        self.enabled = enabled
+
+    def setToolTip(self, tooltip):
+        self.tooltip = tooltip
 
 
 class _FakeLabel:
@@ -234,10 +250,17 @@ class _FakeView:
         self.offset_table = _FakeTable()
 
         self.details_enabled_calls = []
+        self.controls_enabled_calls = []
         self.tr_calls = []
 
     def set_morph_details_enabled(self, enabled):
         self.details_enabled_calls.append(enabled)
+
+    def set_morph_controls_enabled(self, enabled, tooltip=""):
+        self.controls_enabled_calls.append((enabled, tooltip))
+        for widget in (self.morph_slider, self.reset_slider_btn):
+            widget.setEnabled(enabled)
+            widget.setToolTip(tooltip)
 
     def tr(self, key, context):
         self.tr_calls.append((key, context))
@@ -489,6 +512,73 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         view.morph_type_combo.setCurrentIndex(10)
         presenter.apply_changes()
         self.assertEqual(presenter.morph_data["material"]["type"], 2)
+
+    def test_runtime_capability_disables_unsupported_controls_without_hiding_details(self):
+        presenter, view, _, adapter = _make_presenter()
+        adapter.existing.update({"vertex_bs", "bone_node", "material_node", "group_node"})
+        presenter.morph_data = presenter._index_morph_metadata(
+            [
+                {"name_jp": "vertex", "panel": 4, "type": 1, "index": 0},
+                {"name_jp": "bone", "panel": 4, "type": 2, "index": 1},
+                {"name_jp": "material", "panel": 4, "type": 8, "index": 2},
+                {"name_jp": "uv", "panel": 4, "type": 3, "index": 3},
+                {"name_jp": "flip", "panel": 4, "type": 9, "index": 4},
+                {"name_jp": "impulse", "panel": 4, "type": 10, "index": 5},
+            ]
+        )
+        presenter.morph_data["vertex"].update(blend_shape_node="vertex_bs", blend_shape_target="v")
+        presenter.morph_data["bone"].update(morph_node="bone_node")
+        presenter.morph_data["material"].update(morph_node="material_node")
+
+        for name in ("vertex", "bone"):
+            presenter.on_morph_selected(_FakeItem(name, name), None)
+            self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
+
+        for name in ("material", "uv", "flip", "impulse"):
+            presenter.on_morph_selected(_FakeItem(name, name), None)
+            self.assertEqual(
+                view.controls_enabled_calls[-1],
+                (False, "tooltips:morph_runtime_unsupported"),
+            )
+            self.assertTrue(view.details_enabled_calls[-1])
+            self.assertEqual(presenter.current_morph, name)
+
+    def test_group_capability_requires_referenced_bone_morph(self):
+        presenter, view, _, adapter = _make_presenter()
+        adapter.existing.update({"bone_node", "group_node"})
+        presenter.morph_data = presenter._index_morph_metadata(
+            [
+                {"name_jp": "vertex", "panel": 4, "type": 1, "index": 0},
+                {"name_jp": "bone", "panel": 4, "type": 2, "index": 1},
+                {"name_jp": "material", "panel": 4, "type": 8, "index": 2},
+                {"name_jp": "group", "panel": 4, "type": 0, "index": 3},
+            ]
+        )
+        group = presenter.morph_data["group"]
+        group["morph_node"] = "group_node"
+        presenter.morph_data["bone"]["morph_node"] = "bone_node"
+
+        group["group_morph_offsets"] = [{"morph_index": 0}, {"morph_index": 2}, {"morph_index": 99}]
+        presenter.on_morph_selected(_FakeItem("group", "group"), None)
+        self.assertEqual(view.controls_enabled_calls[-1][0], False)
+
+        group["group_morph_offsets"].append({"morph_index": 1, "morph_rate": 0.5})
+        presenter.on_morph_selected(_FakeItem("group", "group"), None)
+        self.assertEqual(view.controls_enabled_calls[-1], (True, ""))
+
+    def test_group_offsets_are_read_from_network_metadata(self):
+        presenter, _, _, adapter = _make_presenter()
+        adapter.attr_exists.add(("group_node", "mmd_group_morph_offsets_json"))
+        adapter.attr_values["group_node.mmd_group_morph_offsets_json"] = json.dumps(
+            [{"morph_index": 7, "morph_rate": 0.25}]
+        )
+
+        self.assertEqual(
+            presenter._read_group_morph_offsets("group_node"),
+            [{"morph_index": 7, "morph_rate": 0.25}],
+        )
+        adapter.attr_values["group_node.mmd_group_morph_offsets_json"] = "not-json"
+        self.assertEqual(presenter._read_group_morph_offsets("group_node"), [])
 
     def test_load_morphs_falls_back_to_blendshape_raw_names_and_split_targets(self):
         adapter = _FakeMayaAdapter()

@@ -89,6 +89,7 @@
     "not_found": "見つかりません"
   },
   "tooltips": {
+    "morph_runtime_unsupported": "このモーフ種別は現在のランタイムでは未対応です",
     "import_file": "PMD/PMX/VMDファイルをインポートします",
     "export_file": "選択したオブジェクトをPMXファイルとしてエクスポートします",
     "import_scale": "インポート時のスケールを指定します",
