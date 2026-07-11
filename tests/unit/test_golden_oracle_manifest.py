@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import unittest
 
 
@@ -59,6 +60,22 @@ class GoldenOracleManifestTest(unittest.TestCase):
             ]
             self.assertTrue(records, f"{case_name}: oracle must contain records")
             self.assertTrue(case["frames"], f"{case_name}: frames must not be empty")
+
+            for record in records:
+                source = record["source"]
+                self.assertEqual(source["mmdAnimVersion"], "0.2.0")
+                self.assertEqual(source["runtimeAbi"], 2)
+                self.assertIsInstance(source["runtimeFeatureFlags"], int)
+                self.assertRegex(source["runtimeSha256"], r"^[0-9a-f]{64}$")
+                self.assertEqual(
+                    Path(source["runtimeRequestedPath"]),
+                    Path(source["runtimeLoadedPath"]),
+                    f"{case_name}: requested and loaded runtime paths must match",
+                )
+                self.assertTrue(
+                    re.fullmatch(r"[0-9a-f]{40}", source["mmdAnimCommit"]),
+                    f"{case_name}: mmd-anim commit must be provenance-stamped",
+                )
 
             for requested_frame in case["frames"]:
                 frame_records = [
