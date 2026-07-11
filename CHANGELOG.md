@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added HumanIK definition and control-rig creation from supported imported MMD skeletons.
 
 ### Changed
+- Expanded the aggregate release gate to run mayapy unit/integration suites on Maya 2024-2027, with fixed Maya 2025 OpenGL/GLSL and Maya 2026 DX11 viewport captures.
 - Updated the bundled and release-gate `mmd-anim` integration to v0.2.0.
 - Unified physics collider visibility under the model Physics group and added DX11 collider meshes for viewport display.
 - Expanded Morph tab routing so vertex, bone, material, and group morphs share editable weights and PMX panel categories.

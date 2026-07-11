@@ -36,8 +36,13 @@ from tests.common.maya_location import resolve_path_for_maya_process as _resolve
 
 
 DEFAULT_MAYA_VERSION = "2024"
+DEFAULT_RELEASE_MAYA_VERSIONS = ("2024", "2025", "2026", "2027")
 DEFAULT_CMAKE_CONFIG = "Debug"
-DEFAULT_CPP_VERIFY_MAYA_VERSIONS = ("2024", "2025", "2026", "2027")
+DEFAULT_CPP_VERIFY_MAYA_VERSIONS = DEFAULT_RELEASE_MAYA_VERSIONS
+DEFAULT_RELEASE_VIEWPORT_MATRIX = (
+    ("2025", "glsl", "glcore"),
+    ("2026", "dx11", "dx11"),
+)
 MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = 0x3
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
 RELEASE_ADDICTION_INTERPOLATION_EYE_MAX = "2.0"
@@ -1989,9 +1994,44 @@ def release_gate(session: nox.Session) -> None:
         _run_release_gate_command(name, command, results)
 
     if not quick:
-        tier2_commands = [
-            ("tier2:mayapy-unit", ["uvx", "nox", "-s", "tests", "--", "--type", "unit"]),
-            ("tier2:mayapy-integration", ["uvx", "nox", "-s", "tests", "--", "--type", "integration"]),
+        tier2_commands = []
+        for maya_version in DEFAULT_RELEASE_MAYA_VERSIONS:
+            tier2_commands.extend(
+                [
+                    (
+                        f"tier2:mayapy-unit-{maya_version}",
+                        [
+                            "uvx", "nox", "-s", "tests", "--",
+                            "--type", "unit", "--maya", maya_version,
+                        ],
+                    ),
+                    (
+                        f"tier2:mayapy-integration-{maya_version}",
+                        [
+                            "uvx", "nox", "-s", "tests", "--",
+                            "--type", "integration", "--maya", maya_version,
+                        ],
+                    ),
+                ]
+            )
+        for maya_version, shader_backend, vp2_device in DEFAULT_RELEASE_VIEWPORT_MATRIX:
+            tier2_commands.append(
+                (
+                    f"tier2:viewport-{shader_backend}-{maya_version}",
+                    [
+                        "uvx", "nox", "-s", "maya_static_render", "--",
+                        "--maya", maya_version,
+                        "--shader",
+                        "--shader-backend", shader_backend,
+                        "--vp2-device", vp2_device,
+                        "--out",
+                        f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.png",
+                        "--diagnostics-out",
+                        f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.json",
+                    ],
+                )
+            )
+        tier2_commands.extend([
             (
                 "tier2:pmx-roundtrip-v0_4",
                 [
@@ -2035,7 +2075,7 @@ def release_gate(session: nox.Session) -> None:
                     "build/release-gate/humanik_control_rig_smoke.json",
                 ],
             ),
-        ]
+        ])
         if _has_flag(args, "--with-cpp"):
             for cpp_version in cpp_versions:
                 tier2_commands.append(

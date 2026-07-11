@@ -106,6 +106,22 @@ uvx nox -s native_smoke
 uvx nox -s golden_oracle
 ```
 
+The aggregate release gate runs the complete mayapy unit and integration suites
+on Maya 2024, 2025, 2026, and 2027. It also runs fixed viewport/shader captures
+for the two representative VP2 paths:
+
+| Maya | VP2 device | Shader backend |
+|---|---|---|
+| 2025 | OpenGL Core Profile | GLSLShader |
+| 2026 | DirectX 11 | dx11Shader |
+
+```powershell
+uvx nox -s release_gate -- --with-cpp --cpp-config Release
+```
+
+The remaining asset/oracle E2E gates use the primary `--maya` version (2024 by
+default). Override it with `--maya <version>` when narrowing a rerun.
+
 If an open Maya session has loaded the default development DLL, build and smoke
 an alternate target without replacing it:
 
