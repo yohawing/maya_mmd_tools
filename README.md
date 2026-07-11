@@ -26,9 +26,9 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Edge / outline flags | 🔶 | Can be enabled as an option, but draw-order limitations remain |
 | Bones & skeleton | 🔶 | Some complex models still have known issues |
 | Rig (IK / grant / local axis) | ✅ | Supported |
-| Display frames (表示枠) | ⛔ | Not supported yet; planned as control rig or AnimPicker data |
-| Morphs (vertex / bone / material / group / UV) | 🔶 | Partially supported |
-| Rigid bodies & joints | ⛔ | Not supported |
+| Display frames (表示枠) | 🔶 | Preserved as model metadata for development-mode PMX round-trip; no dedicated editing UI yet |
+| Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, material, and group morph controls are supported; UV, Flip, and Impulse morphs are not |
+| Rigid bodies & joints | 🧪 | Imported as Maya Bullet nodes with preview simulation and development-mode PMX round-trip metadata |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
 | HumanIK | 🧪 | Experimental Bone tab action creates a HumanIK definition/control rig from the imported MMD skeleton |
 | Export | ⛔ | Not supported |
@@ -56,12 +56,12 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 ## Known Limitations
 
 - **Export is not available.** This is an import-only tool for now — PMX/PMD/VMD export is not implemented (the UI states this explicitly).
-- **VPD pose import is not yet available.** The parser exists, but the UI is disabled until it is wired up.
+- **VPD pose import is available through drag-and-drop.** It applies the pose at the current frame to the selected MMD model, or to a PMX/PMD model dropped together with the VPD file.
 - **Additional UV / multi-UV is not applied** (read but ignored).
-- **Group, UV, Flip, and Impulse morphs are not supported.** Vertex morphs are fully supported; bone and material morphs are applied through motion bake.
+- **UV, Flip, and Impulse morphs are not supported.** Vertex, bone, material, and group morph controls are available, with material fidelity depending on the active shader backend.
 - **Soft body (PMX 2.1) data is silently ignored.** The rest of the file still imports correctly.
-- **Display frames (表示枠) are read but not reflected in Maya.**
-- **Physics is experimental** and off by default.
+- **Display frames (表示枠) are preserved for PMX round-trip but do not have a dedicated editing UI.**
+- **Physics is experimental.** PMX/PMD rigid bodies and joints are imported by default when Maya Bullet is available; native physics motion bake remains an opt-in path.
 - **Bake mode is the fidelity path for VMD motion.** It bakes final poses from the `mmd-anim` runtime and is the recommended path when matching MMD output matters.
 - **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
 - **HumanIK setup requires a valid full-body skeleton.** The Bone tab action reports an error if Maya cannot create the HumanIK control rig from the current model.
