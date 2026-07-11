@@ -5,6 +5,7 @@ weight 変更がマテリアル外観に反映されることを検証する。
 """
 
 from pathlib import Path
+import json
 import unittest
 
 from maya import cmds
@@ -19,6 +20,7 @@ from mmd_tools.converters.material_morph_runtime import (
     detect_effective_vp2_draw_api,
     resolve_shader_color_route,
 )
+from mmd_tools.converters import material_morph_runtime
 from mmd_tools.converters.mesh_converter import _ensure_mmd_shader_uniform_attributes
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
@@ -257,6 +259,139 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             except RuntimeError:
                 self.skipTest(f"mmdMaterialMorphEval node is unavailable: {exc}")
         cmds.delete(node)
+
+    def test_direct_and_multiple_group_weights_add_at_evaluator_input(self):
+        """direct + group*rate が同じ material contribution weight に加算される。"""
+        self._require_material_morph_node()
+        evaluator = cmds.createNode("mmdMaterialMorphEval", name="groupMaterialEval")
+        direct = cmds.createNode("network", name="directMaterialMorph")
+        group_a = cmds.createNode("network", name="groupMaterialMorphA")
+        group_b = cmds.createNode("network", name="groupMaterialMorphB")
+        for node in (direct, group_a, group_b):
+            cmds.addAttr(node, longName="weight", attributeType="double")
+
+        material_morph_runtime._connect_contribution_weight(
+            evaluator,
+            0,
+            {
+                "morph_node": direct,
+                "group_weight_sources": [
+                    (7, group_a, 0.25),
+                    (8, group_b, -0.5),
+                ],
+            },
+            f"{evaluator}.contribution[0].weight",
+        )
+        cmds.setAttr(f"{direct}.weight", 0.4)
+        cmds.setAttr(f"{group_a}.weight", 0.8)
+        cmds.setAttr(f"{group_b}.weight", 0.2)
+
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{evaluator}.contribution[0].weight"),
+            0.4 + 0.8 * 0.25 + 0.2 * -0.5,
+        )
+
+    def test_all_material_group_weight_is_applied_once_per_evaluator(self):
+        """material_index=-1 のgroup成分をshader数だけ重複加算しない。"""
+        self._require_material_morph_node()
+        material = cmds.createNode("network", name="allMaterialMorph")
+        group = cmds.createNode("network", name="allMaterialGroup")
+        for node, index in ((material, 4), (group, 8)):
+            cmds.addAttr(node, longName="weight", attributeType="double")
+            cmds.addAttr(node, longName="mmd_morph_index", attributeType="long")
+            cmds.setAttr(f"{node}.mmd_morph_index", index)
+        cmds.addAttr(material, longName="mmd_material_morph_offsets_json", dataType="string")
+        cmds.setAttr(
+            f"{material}.mmd_material_morph_offsets_json",
+            json.dumps([{"material_index": -1, "operation_type": 1}]),
+            type="string",
+        )
+        cmds.addAttr(group, longName="mmd_group_morph_offsets_json", dataType="string")
+        cmds.setAttr(
+            f"{group}.mmd_group_morph_offsets_json",
+            json.dumps([{"morph_index": 4, "morph_rate": 0.25}]),
+            type="string",
+        )
+
+        skipped = []
+        contributions = material_morph_runtime._collect_contributions_by_shader(
+            [material],
+            {0: "shaderA", 1: "shaderB"},
+            skipped,
+        )
+        material_morph_runtime._append_group_weight_sources(contributions, [group], skipped)
+        cmds.setAttr(f"{material}.weight", 0.4)
+        cmds.setAttr(f"{group}.weight", 0.8)
+        for shader in ("shaderA", "shaderB"):
+            evaluator = cmds.createNode("mmdMaterialMorphEval", name=f"{shader}Eval")
+            material_morph_runtime._connect_contribution_weight(
+                evaluator,
+                0,
+                contributions[shader][0],
+                f"{evaluator}.contribution[0].weight",
+            )
+            self.assertAlmostEqual(
+                cmds.getAttr(f"{evaluator}.contribution[0].weight"),
+                0.4 + 0.8 * 0.25,
+            )
+        self.assertEqual(skipped, [])
+
+    def test_colliding_sanitized_evaluator_names_keep_owned_helpers_distinct(self):
+        """namespace区切りだけが違う evaluator 間でhelperを共有しない。"""
+        self._require_material_morph_node()
+        if not cmds.namespace(exists="ns"):
+            cmds.namespace(add="ns")
+        evaluators = (
+            cmds.createNode("mmdMaterialMorphEval", name="ns:mat_materialMorphEval"),
+            cmds.createNode("mmdMaterialMorphEval", name="ns_mat_materialMorphEval"),
+        )
+        direct_nodes = []
+        group_nodes = []
+        for index in range(2):
+            direct = cmds.createNode("network", name=f"collisionDirect{index}")
+            group = cmds.createNode("network", name=f"collisionGroup{index}")
+            for node in (direct, group):
+                cmds.addAttr(node, longName="weight", attributeType="double")
+            direct_nodes.append(direct)
+            group_nodes.append(group)
+
+        def connect(index):
+            evaluator = evaluators[index]
+            material_morph_runtime._connect_contribution_weight(
+                evaluator,
+                0,
+                {
+                    "morph_node": direct_nodes[index],
+                    "group_weight_sources": [(8, group_nodes[index], 0.25)],
+                },
+                f"{evaluator}.contribution[0].weight",
+            )
+
+        connect(0)
+        connect(1)
+        owned_before = []
+        for evaluator in evaluators:
+            owned_before.append(
+                set(cmds.listConnections(f"{evaluator}.message", source=False, destination=True) or [])
+            )
+        self.assertTrue(owned_before[0])
+        self.assertTrue(owned_before[1])
+        self.assertTrue(owned_before[0].isdisjoint(owned_before[1]))
+
+        cmds.setAttr(f"{direct_nodes[0]}.weight", 0.1)
+        cmds.setAttr(f"{group_nodes[0]}.weight", 0.4)
+        cmds.setAttr(f"{direct_nodes[1]}.weight", 0.6)
+        cmds.setAttr(f"{group_nodes[1]}.weight", 0.8)
+        self.assertAlmostEqual(cmds.getAttr(f"{evaluators[0]}.contribution[0].weight"), 0.2)
+        self.assertAlmostEqual(cmds.getAttr(f"{evaluators[1]}.contribution[0].weight"), 0.8)
+
+        connect(0)
+        connect(1)
+        for evaluator, expected in zip(evaluators, owned_before):
+            owned_after = set(
+                cmds.listConnections(f"{evaluator}.message", source=False, destination=True) or []
+            )
+            self.assertEqual(owned_after, expected)
 
     def _create_scene_with_shader(
         self,

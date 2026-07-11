@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+import hashlib
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from maya import cmds
@@ -180,6 +181,11 @@ def build_material_morph_graph(root_group: str, *, connect_shader: bool = False)
         shaders_by_index,
         result["skipped"],
     )
+    _append_group_weight_sources(
+        contributions_by_shader,
+        _iter_group_morph_nodes(root_group),
+        result["skipped"],
+    )
     if not contributions_by_shader:
         result["skipped"].append("no_material_morph_contributions")
         return result
@@ -259,6 +265,15 @@ def _iter_material_morph_nodes(root_group: str) -> Iterable[str]:
         yield metadata.node
 
 
+def _iter_group_morph_nodes(root_group: str) -> Iterable[str]:
+    for metadata in iter_morph_network_metadata(
+        root_group=root_group,
+        morph_types={"group"},
+        required_attrs=("mmd_group_morph_offsets_json",),
+    ):
+        yield metadata.node
+
+
 def _collect_contributions_by_shader(
     morph_nodes: Iterable[str],
     shaders_by_index: Dict[int, str],
@@ -281,7 +296,10 @@ def _collect_contributions_by_shader(
                 # material_index == -1 means "all materials"
                 if contribution["material_index"] == -1:
                     for shader in shaders_by_index.values():
-                        contributions_by_shader[shader].append(contribution)
+                        # Each evaluator owns and annotates its contribution.
+                        # Sharing this dict would make group sources accumulate
+                        # once per shader during the later global-index pass.
+                        contributions_by_shader[shader].append(dict(contribution))
                 else:
                     skipped.append(f"missing_shader:{morph_node}:{contribution['material_index']}")
                 continue
@@ -290,6 +308,70 @@ def _collect_contributions_by_shader(
     for contributions in contributions_by_shader.values():
         contributions.sort(key=lambda c: (c["morph_order"], c["morph_node"]))
     return dict(contributions_by_shader)
+
+
+def _append_group_weight_sources(
+    contributions_by_shader: Dict[str, List[Dict[str, Any]]],
+    group_morph_nodes: Iterable[str],
+    skipped: List[str],
+) -> None:
+    """Add one-level group morph weights to referenced material contributions.
+
+    PMX group offsets use global morph indices.  Material contribution records
+    retain their direct weight and receive zero or more additional
+    ``group.weight * morph_rate`` sources.  References to groups (including
+    self/nested/cyclic networks) are deliberately ignored so this builder can
+    never introduce a dependency cycle.
+    """
+    contributions_by_index: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    for contributions in contributions_by_shader.values():
+        for contribution in contributions:
+            morph_index = contribution.get("morph_index")
+            if morph_index is not None:
+                contributions_by_index[int(morph_index)].append(contribution)
+
+    group_nodes = list(group_morph_nodes)
+    group_indices = set()
+    for node in group_nodes:
+        index = _get_explicit_morph_index(node)
+        if index is not None:
+            group_indices.add(index)
+    for group_node in group_nodes:
+        group_index = _get_explicit_morph_index(group_node)
+        if group_index is None:
+            skipped.append(f"missing_group_morph_index:{group_node}")
+            continue
+        offsets = parse_morph_offsets_json(group_node, "mmd_group_morph_offsets_json")
+        if offsets is None:
+            skipped.append(f"invalid_group_offsets:{group_node}")
+            continue
+        for offset in offsets:
+            try:
+                target_index = int(offset["morph_index"])
+                rate = float(offset.get("morph_rate", 0.0))
+            except (KeyError, TypeError, ValueError):
+                skipped.append(f"invalid_group_offset:{group_node}")
+                continue
+            if target_index in group_indices:
+                skipped.append(f"nested_group_reference_unsupported:{group_node}:{target_index}")
+                logger.warning(
+                    "Ignoring nested/cyclic group morph reference %s -> morph index %s",
+                    group_node,
+                    target_index,
+                )
+                continue
+            targets = contributions_by_index.get(target_index)
+            if not targets:
+                continue
+            source = (group_index, group_node, rate)
+            for contribution in targets:
+                contribution.setdefault("group_weight_sources", []).append(source)
+
+    for contributions in contributions_by_shader.values():
+        for contribution in contributions:
+            contribution.get("group_weight_sources", []).sort(
+                key=lambda source: (source[0], source[1], source[2])
+            )
 
 
 def _parse_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
@@ -318,6 +400,15 @@ def _get_morph_order(morph_node: str) -> int:
     return get_morph_order(morph_node)
 
 
+def _get_explicit_morph_index(morph_node: str) -> Optional[int]:
+    if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
+        return None
+    try:
+        return int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
+    except Exception:
+        return None
+
+
 def _offset_to_contribution(
     morph_node: str,
     morph_order: int,
@@ -338,6 +429,7 @@ def _offset_to_contribution(
         return {
             "morph_node": morph_node,
             "morph_order": int(morph_order),
+            "morph_index": _get_explicit_morph_index(morph_node),
             "material_index": int(offset["material_index"]),
             "operation_type": operation_type,
             "diffuse": vector("diffuse", 4),
@@ -448,7 +540,88 @@ def _refresh_contributions(node: str, contributions: List[Dict[str, Any]]) -> No
             else:
                 for axis, value in zip("RGBA", values):
                     cmds.setAttr(f"{plug}{axis}", value)
-        _connect_if_needed(f"{contribution['morph_node']}.weight", f"{prefix}.weight", force=True)
+        _connect_contribution_weight(node, slot, contribution, f"{prefix}.weight")
+
+
+def _connect_contribution_weight(
+    evaluator_node: str,
+    slot: int,
+    contribution: Dict[str, Any],
+    destination: str,
+) -> None:
+    """Connect direct + one-level group weights additively and deterministically."""
+    group_sources = contribution.get("group_weight_sources") or []
+    direct_source = f"{contribution['morph_node']}.weight"
+    if not group_sources:
+        _connect_if_needed(direct_source, destination, force=True)
+        return
+
+    token = _collision_safe_node_token(evaluator_node)
+    sum_node = _get_or_create_owned_helper(
+        evaluator_node,
+        "plusMinusAverage",
+        f"contribution{slot}:sum",
+        f"{token}_contribution{slot}_effectiveWeight",
+    )
+    cmds.setAttr(f"{sum_node}.operation", 1)
+    for index in cmds.getAttr(f"{sum_node}.input1D", multiIndices=True) or []:
+        try:
+            cmds.removeMultiInstance(f"{sum_node}.input1D[{index}]", b=True)
+        except Exception:
+            pass
+    _connect_if_needed(direct_source, f"{sum_node}.input1D[0]", force=True)
+    for source_slot, (_, group_node, rate) in enumerate(group_sources, start=1):
+        multiplier = _get_or_create_owned_helper(
+            evaluator_node,
+            "multiplyDivide",
+            f"contribution{slot}:group{source_slot}",
+            f"{token}_contribution{slot}_groupWeight{source_slot}",
+        )
+        cmds.setAttr(f"{multiplier}.operation", 1)
+        cmds.setAttr(f"{multiplier}.input2X", float(rate))
+        _connect_if_needed(f"{group_node}.weight", f"{multiplier}.input1X", force=True)
+        _connect_if_needed(f"{multiplier}.outputX", f"{sum_node}.input1D[{source_slot}]", force=True)
+    _connect_if_needed(f"{sum_node}.output1D", destination, force=True)
+
+
+def _collision_safe_node_token(node: str) -> str:
+    long_names = cmds.ls(node, long=True) or [node]
+    identity = str(long_names[0])
+    digest = hashlib.sha1(identity.encode("utf-8")).hexdigest()[:10]
+    token = node.split("|")[-1]
+    for char in (":", ".", "[", "]"):
+        token = token.replace(char, "_")
+    return f"{token}_{digest}"
+
+
+def _get_or_create_owned_helper(
+    evaluator_node: str,
+    node_type: str,
+    helper_key: str,
+    desired_name: str,
+) -> str:
+    """Reuse only a helper explicitly owned by *evaluator_node* and *helper_key*."""
+    for candidate in cmds.listConnections(
+        f"{evaluator_node}.message",
+        source=False,
+        destination=True,
+    ) or []:
+        try:
+            if cmds.nodeType(candidate) != node_type:
+                continue
+            if not cmds.attributeQuery("mmd_weight_helper_key", node=candidate, exists=True):
+                continue
+            if cmds.getAttr(f"{candidate}.mmd_weight_helper_key") == helper_key:
+                return candidate
+        except Exception:
+            continue
+
+    helper = cmds.createNode(node_type, name=desired_name)
+    cmds.addAttr(helper, longName="mmd_weight_owner", attributeType="message")
+    cmds.addAttr(helper, longName="mmd_weight_helper_key", dataType="string")
+    cmds.setAttr(f"{helper}.mmd_weight_helper_key", helper_key, type="string")
+    _connect_if_needed(f"{evaluator_node}.message", f"{helper}.mmd_weight_owner", force=True)
+    return helper
 
 
 def resolve_shader_color_route(
