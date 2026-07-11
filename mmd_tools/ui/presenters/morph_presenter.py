@@ -13,6 +13,13 @@ logger = get_logger(__name__)
 
 _BONE_MORPH_TYPE_INDEX = 10
 _MATERIAL_MORPH_TYPE_INDEX = 11
+_GROUP_MORPH_TYPE_INDEX = 12
+_NETWORK_MORPH_TYPES = frozenset({"bone", "material", "group"})
+_NETWORK_MORPH_TYPE_INDEX = {
+    "bone": _BONE_MORPH_TYPE_INDEX,
+    "material": _MATERIAL_MORPH_TYPE_INDEX,
+    "group": _GROUP_MORPH_TYPE_INDEX,
+}
 _WEIGHT_INDEX_RE = re.compile(r"\[(\d+)\]")
 
 
@@ -94,7 +101,7 @@ class MorphPresenter:
         # ブレンドシェイプノードを検索
         self._load_blend_shapes(current_model_root, allow_metadata_entries=allow_metadata_entries)
 
-        # bone/material morph の network node を検索
+        # bone/material/group morph の network node を検索
         self._load_network_morphs(current_model_root, allow_metadata_entries=allow_metadata_entries)
 
         # グループごとにモーフを整理
@@ -187,7 +194,7 @@ class MorphPresenter:
         return mapping
 
     def _load_network_morphs(self, model_root=None, allow_metadata_entries=True):
-        """bone/material morph の network node metadata を一覧用に読む。"""
+        """bone/material/group morph の network node metadata を一覧用に読む。"""
         network_nodes = self.maya_adapter.ls(type="network") or []
         for morph_node in network_nodes:
             if not self.maya_adapter.attribute_exists("mmd_morph_type", morph_node):
@@ -202,7 +209,7 @@ class MorphPresenter:
                     continue
 
             morph_type = self._get_attr_safe(morph_node, "mmd_morph_type", "")
-            if morph_type not in {"bone", "material"}:
+            if morph_type not in _NETWORK_MORPH_TYPES:
                 continue
 
             raw_name = self._get_attr_safe(morph_node, "mmd_morph_name", "") or morph_node
@@ -211,11 +218,16 @@ class MorphPresenter:
                 if not allow_metadata_entries:
                     continue
                 morph_key = raw_name
+                panel = self._get_attr_safe(morph_node, "mmd_morph_panel", 0)
+                try:
+                    panel = int(panel)
+                except (TypeError, ValueError):
+                    panel = 0
                 self.morph_data[morph_key] = {
                     "name_jp": raw_name,
                     "name_en": self._get_attr_safe(morph_node, "mmd_morph_name_en", ""),
-                    "panel": 0,
-                    "type": _BONE_MORPH_TYPE_INDEX if morph_type == "bone" else _MATERIAL_MORPH_TYPE_INDEX,
+                    "panel": panel,
+                    "type": _NETWORK_MORPH_TYPE_INDEX.get(morph_type, 0),
                     "group": "その他",
                 }
 
@@ -338,28 +350,66 @@ class MorphPresenter:
                 continue
             yield plug
 
+    def _iter_network_morph_weight_plugs(self, data, morph_name):
+        """Yield scoped network morph weight plugs (bone/material/group)."""
+        morph_node = data.get("morph_node")
+        weight_attr = data.get("morph_weight_attr") or "weight"
+        if not morph_node or not weight_attr:
+            return
+        if not self.maya_adapter.object_exists(morph_node):
+            logger.warning(
+                "Skipping missing network morph node: morph=%s node=%s",
+                morph_name,
+                morph_node,
+            )
+            return
+        plug = f"{morph_node}.{weight_attr}"
+        yield plug
+
+    def _iter_morph_weight_plugs(self, data, morph_name):
+        """Yield deduplicated writable morph weight plugs for one morph.
+
+        Canonical blendShape ``weight[n]`` plugs come first, then the scoped
+        network ``morph_node.weight`` used by bone/material/group morphs.
+        """
+        seen = set()
+        for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
+            if plug in seen:
+                continue
+            seen.add(plug)
+            yield plug
+        for plug in self._iter_network_morph_weight_plugs(data, morph_name):
+            if plug in seen:
+                continue
+            seen.add(plug)
+            yield plug
+
     def _get_first_weight(self, data, morph_name="<unknown>", default=0.0):
         """UI 表示用に最初に見つかった morph weight を取得する。"""
-        for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
+        for plug in self._iter_morph_weight_plugs(data, morph_name):
             try:
                 return self.maya_adapter.get_attr(plug)
             except Exception as e:
                 logger.warning(
-                    "Failed to read blendShape weight: morph=%s plug=%s error=%s",
+                    "Failed to read morph weight: morph=%s plug=%s error=%s",
                     morph_name,
                     plug,
                     e,
                 )
-
-        morph_node = data.get("morph_node")
-        weight_attr = data.get("morph_weight_attr")
-        if morph_node and weight_attr and self.maya_adapter.object_exists(morph_node):
-            try:
-                return self.maya_adapter.get_attr(f"{morph_node}.{weight_attr}")
-            except Exception as e:
-                logger.debug(f"Failed to get network morph weight: {morph_node}.{weight_attr}: {e}")
-
         return default
+
+    def _set_morph_weight(self, data, weight, morph_name="<unknown>"):
+        """接続済み morph weight plug 全てに weight を設定する。"""
+        for plug in self._iter_morph_weight_plugs(data, morph_name):
+            try:
+                self.maya_adapter.set_attr(plug, weight)
+            except Exception as e:
+                logger.warning(
+                    "Failed to set morph weight: morph=%s plug=%s error=%s",
+                    morph_name,
+                    plug,
+                    e,
+                )
 
     def _set_blend_shape_weight(self, data, weight, morph_name="<unknown>"):
         """接続済み blendShape target 全てに weight を設定する。"""
@@ -472,19 +522,17 @@ class MorphPresenter:
         # ラベルを更新
         self.view.morph_value_label.setText(f"{value}%")
 
-        # ブレンドシェイプに適用
+        # BlendShape / network morph の共通 weight 契約へ適用
         if self.current_morph in self.morph_data:
             data = self.morph_data[self.current_morph]
+            weight = value / 100.0
 
-            if any(self._iter_blend_shape_targets(data)):
-                weight = value / 100.0
+            # 詳細設定を適用
+            if self.view.invert_check.isChecked():
+                weight = 1.0 - weight
+            weight *= self.view.multiplier_spin.value()
 
-                # 詳細設定を適用
-                if self.view.invert_check.isChecked():
-                    weight = 1.0 - weight
-                weight *= self.view.multiplier_spin.value()
-
-                self._set_blend_shape_weight(data, weight, self.current_morph)
+            self._set_morph_weight(data, weight, self.current_morph)
 
     def on_group_selected(self, current, previous):
         """グループが選択されたときの処理"""
@@ -535,7 +583,7 @@ class MorphPresenter:
         """全てのモーフをリセット"""
         reset_count = 0
         for morph_name, data in self.morph_data.items():
-            for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
+            for plug in self._iter_morph_weight_plugs(data, morph_name):
                 try:
                     current_value = self.maya_adapter.get_attr(plug)
                     if current_value != 0:
@@ -543,7 +591,7 @@ class MorphPresenter:
                         reset_count += 1
                 except Exception as e:
                     logger.warning(
-                        "Failed to reset blendShape weight: morph=%s plug=%s error=%s",
+                        "Failed to reset morph weight: morph=%s plug=%s error=%s",
                         morph_name,
                         plug,
                         e,
@@ -791,7 +839,7 @@ class MorphPresenter:
         # 現在のモーフ値を収集
         preset_data = {}
         for morph_name, data in self.morph_data.items():
-            for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
+            for plug in self._iter_morph_weight_plugs(data, morph_name):
                 try:
                     value = self.maya_adapter.get_attr(plug)
                     if value != 0:  # 0以外の値のみ保存
@@ -799,7 +847,7 @@ class MorphPresenter:
                     break
                 except Exception as e:
                     logger.warning(
-                        "Failed to read preset blendShape weight: morph=%s plug=%s error=%s",
+                        "Failed to read preset morph weight: morph=%s plug=%s error=%s",
                         morph_name,
                         plug,
                         e,
@@ -874,13 +922,13 @@ class MorphPresenter:
                 if morph_name in self.morph_data:
                     data = self.morph_data[morph_name]
                     applied = False
-                    for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
+                    for plug in self._iter_morph_weight_plugs(data, morph_name):
                         try:
                             self.maya_adapter.set_attr(plug, value)
                             applied = True
                         except Exception as e:
                             logger.warning(
-                                "Failed to apply preset blendShape weight: morph=%s plug=%s error=%s",
+                                "Failed to apply preset morph weight: morph=%s plug=%s error=%s",
                                 morph_name,
                                 plug,
                                 e,

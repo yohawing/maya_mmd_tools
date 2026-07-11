@@ -470,10 +470,15 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
     def test_load_morphs_falls_back_to_network_morph_nodes_for_display(self):
         adapter = _FakeMayaAdapter()
-        adapter.existing.update({TEST_MODEL, "boneSmileNode", "materialFlashNode"})
+        adapter.existing.update({TEST_MODEL, "boneSmileNode", "materialFlashNode", "groupPoseNode"})
         mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
         adapter.relatives[(TEST_MODEL, mesh_kwargs)] = []
-        adapter.ls_results[((), (("type", "network"),))] = ["boneSmileNode", "materialFlashNode", "plainNetwork"]
+        adapter.ls_results[((), (("type", "network"),))] = [
+            "boneSmileNode",
+            "materialFlashNode",
+            "groupPoseNode",
+            "plainNetwork",
+        ]
         adapter.attr_exists.update(
             {
                 ("boneSmileNode", "mmd_morph_type"),
@@ -481,6 +486,9 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 ("boneSmileNode", "mmd_morph_name_en"),
                 ("materialFlashNode", "mmd_morph_type"),
                 ("materialFlashNode", "mmd_morph_name"),
+                ("groupPoseNode", "mmd_morph_type"),
+                ("groupPoseNode", "mmd_morph_name"),
+                ("groupPoseNode", "mmd_morph_panel"),
                 ("plainNetwork", "mmd_morph_type"),
             }
         )
@@ -493,6 +501,10 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 "materialFlashNode.mmd_morph_type": "material",
                 "materialFlashNode.mmd_morph_name": "材質点滅",
                 "materialFlashNode.weight": 0.0,
+                "groupPoseNode.mmd_morph_type": "group",
+                "groupPoseNode.mmd_morph_name": "グループ表情",
+                "groupPoseNode.mmd_morph_panel": 3,
+                "groupPoseNode.weight": 0.0,
                 "plainNetwork.mmd_morph_type": "other",
             }
         )
@@ -501,14 +513,203 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter.load_morphs()
         presenter.on_morph_selected(_FakeItem("ボーン笑い"), None)
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["ボーン笑い", "材質点滅"])
+        self.assertEqual(
+            [item.text() for item in view.morph_list.items],
+            ["グループ表情", "ボーン笑い", "材質点滅"],
+        )
         self.assertEqual(presenter.morph_data["ボーン笑い"]["type"], 10)
         self.assertEqual(presenter.morph_data["ボーン笑い"]["name_en"], "bone_smile")
         self.assertEqual(presenter.morph_data["材質点滅"]["type"], 11)
+        self.assertEqual(presenter.morph_data["グループ表情"]["type"], 12)
+        self.assertEqual(presenter.morph_data["グループ表情"]["panel"], 3)
+        self.assertEqual(presenter.morph_data["グループ表情"]["mmd_morph_type"], "group")
         self.assertEqual(view.blend_shape_edit._text, "boneSmileNode")
         self.assertEqual(view.target_name_edit._text, "weight")
         self.assertEqual(view.connection_status_label.text, "Metadata only")
         self.assertEqual(view.morph_slider.set_value_calls, [25])
+
+    def test_material_network_slider_drives_weight_with_invert_and_multiplier(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.add("materialFlashNode")
+        adapter.attr_values["materialFlashNode.weight"] = 0.0
+        presenter, view, _, _ = _make_presenter(adapter=adapter)
+        view.invert_check = _FakeCheckBox(checked=True)
+        view.multiplier_spin = _FakeSpinBox(value=0.5)
+        presenter.current_morph = "材質点滅"
+        presenter.morph_data = {
+            "材質点滅": {
+                "morph_node": "materialFlashNode",
+                "morph_weight_attr": "weight",
+                "mmd_morph_type": "material",
+            }
+        }
+
+        presenter.on_morph_slider_changed(40)
+
+        # invert: 1.0 - 0.4 = 0.6, then * 0.5 = 0.3
+        self.assertIn(("set_attr", "materialFlashNode.weight", 0.3), adapter.calls)
+        self.assertEqual(view.morph_value_label.text, "40%")
+
+    def test_group_network_morph_is_discovered_alongside_bone_and_material(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update({TEST_MODEL, "groupPoseNode"})
+        mesh_kwargs = tuple(sorted({"allDescendents": True, "type": "mesh"}.items()))
+        adapter.relatives[(TEST_MODEL, mesh_kwargs)] = []
+        adapter.ls_results[((), (("type", "network"),))] = ["groupPoseNode"]
+        adapter.attr_exists.update(
+            {
+                ("groupPoseNode", "mmd_morph_type"),
+                ("groupPoseNode", "mmd_morph_name"),
+                ("groupPoseNode", "mmd_morph_panel"),
+            }
+        )
+        adapter.attr_values.update(
+            {
+                "groupPoseNode.mmd_morph_type": "group",
+                "groupPoseNode.mmd_morph_name": "グループ表情",
+                "groupPoseNode.mmd_morph_panel": 2,
+                "groupPoseNode.weight": 0.0,
+            }
+        )
+        presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
+
+        presenter.load_morphs()
+
+        self.assertEqual([item.text() for item in view.morph_list.items], ["グループ表情"])
+        self.assertEqual(presenter.morph_data["グループ表情"]["type"], 12)
+        self.assertEqual(presenter.morph_data["グループ表情"]["panel"], 2)
+        self.assertEqual(presenter.morph_data["グループ表情"]["morph_node"], "groupPoseNode")
+        self.assertEqual(presenter.morph_data["グループ表情"]["morph_weight_attr"], "weight")
+
+    def test_reset_all_morphs_resets_network_and_blendshape_weights(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update(
+            {
+                "faceBlendShape",
+                "faceBlendShape.weight[0]",
+                "materialFlashNode",
+                "missingNetwork",
+            }
+        )
+        adapter.attr_values.update(
+            {
+                "faceBlendShape.weight[0]": 0.8,
+                "materialFlashNode.weight": 0.55,
+            }
+        )
+        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
+        presenter, view, app_state, _ = _make_presenter(adapter=adapter)
+        presenter.morph_data = {
+            "smile": {
+                "blend_shape_node": "faceBlendShape",
+                "blend_shape_target": "smile",
+                "blend_shape_weight_attr": "weight[0]",
+            },
+            "材質点滅": {
+                "morph_node": "materialFlashNode",
+                "morph_weight_attr": "weight",
+            },
+            "gone": {
+                "morph_node": "missingNetwork",
+                "morph_weight_attr": "weight",
+            },
+        }
+        # mark missingNetwork as absent for the reset path
+        adapter.existing.discard("missingNetwork")
+
+        with self.assertLogs(morph_presenter_module.logger.name, level="WARNING") as logs:
+            presenter.reset_all_morphs()
+
+        message = "\n".join(logs.output)
+        self.assertIn("morph=gone", message)
+        self.assertIn("missingNetwork", message)
+        self.assertIn(("set_attr", "faceBlendShape.weight[0]", 0), adapter.calls)
+        self.assertIn(("set_attr", "materialFlashNode.weight", 0), adapter.calls)
+        self.assertEqual(adapter.attr_values["faceBlendShape.weight[0]"], 0)
+        self.assertEqual(adapter.attr_values["materialFlashNode.weight"], 0)
+        self.assertEqual(view.morph_slider.set_value_calls, [0])
+        self.assertEqual(app_state.statuses, [("Reset 2 morph(s)", None)])
+
+    def test_preset_roundtrip_includes_network_morph_weights(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update(
+            {
+                TEST_MODEL,
+                "faceBlendShape",
+                "faceBlendShape.weight[0]",
+                "materialFlashNode",
+                "groupPoseNode",
+            }
+        )
+        adapter.attr_exists.add((TEST_MODEL, "mmdMorphPresets"))
+        adapter.attr_values.update(
+            {
+                "faceBlendShape.weight[0]": 0.8,
+                "materialFlashNode.weight": 0.4,
+                "groupPoseNode.weight": 0.0,
+                f"{TEST_MODEL}.mmdMorphPresets": json.dumps({}),
+            }
+        )
+        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
+        presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
+        view.preset_combo.setCurrentText("network_pose")
+        presenter.morph_data = {
+            "smile": {
+                "blend_shape_node": "faceBlendShape",
+                "blend_shape_target": "smile",
+                "blend_shape_weight_attr": "weight[0]",
+            },
+            "材質点滅": {
+                "morph_node": "materialFlashNode",
+                "morph_weight_attr": "weight",
+            },
+            "グループ表情": {
+                "morph_node": "groupPoseNode",
+                "morph_weight_attr": "weight",
+            },
+        }
+
+        with patch.object(morph_presenter_module, "set_attribute") as set_attribute:
+            presenter.save_preset()
+
+        saved_presets = json.loads(set_attribute.call_args[0][2])
+        self.assertEqual(
+            saved_presets["network_pose"],
+            {"smile": 0.8, "材質点滅": 0.4},
+        )
+
+        # Mutate scene weights, then reload preset through the same helper path.
+        adapter.attr_values["faceBlendShape.weight[0]"] = 0.0
+        adapter.attr_values["materialFlashNode.weight"] = 0.0
+        adapter.attr_values[f"{TEST_MODEL}.mmdMorphPresets"] = set_attribute.call_args[0][2]
+        presenter.current_morph = "材質点滅"
+        presenter.load_preset()
+
+        self.assertEqual(adapter.attr_values["faceBlendShape.weight[0]"], 0.8)
+        self.assertEqual(adapter.attr_values["materialFlashNode.weight"], 0.4)
+        self.assertEqual(adapter.attr_values["groupPoseNode.weight"], 0.0)
+        self.assertEqual(view.morph_slider.set_value_calls[-1], 40)
+        self.assertIn(("Saved preset 'network_pose'", None), app_state.statuses)
+        self.assertIn(("Applied preset 'network_pose'", None), app_state.statuses)
+
+    def test_morph_weight_helper_does_not_double_write_shared_plug(self):
+        adapter = _FakeMayaAdapter()
+        adapter.existing.update({"faceBlendShape", "faceBlendShape.weight[0]"})
+        adapter.aliases["faceBlendShape"] = ["smile", "weight[0]"]
+        presenter, _, _, _ = _make_presenter(adapter=adapter)
+        # Pathological case: network reference points at the same plug path as BS.
+        data = {
+            "blend_shape_node": "faceBlendShape",
+            "blend_shape_target": "smile",
+            "blend_shape_weight_attr": "weight[0]",
+            "morph_node": "faceBlendShape",
+            "morph_weight_attr": "weight[0]",
+        }
+
+        presenter._set_morph_weight(data, 0.55, "smile")
+
+        set_calls = [call for call in adapter.calls if call[0] == "set_attr"]
+        self.assertEqual(set_calls, [("set_attr", "faceBlendShape.weight[0]", 0.55)])
 
     def test_organize_and_filter_morphs_by_group_are_pure_logic(self):
         presenter, view, _, _ = _make_presenter()
