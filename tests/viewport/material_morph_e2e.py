@@ -402,6 +402,11 @@ try:
     panel = cmds.modelPanel(label="MaterialMorphE2E")
     cmds.modelEditor(panel, edit=True, displayAppearance="smoothShaded", displayTextures=True, allObjects=True, grid=False)
     cmds.setFocus(panel)
+    # GLSLShader uniforms may not materialize until a VP2 panel exists.  The
+    # importer schedules one lowest-priority idle retry for that case; process
+    # the idle queue here so this fresh-import gate verifies the real contract.
+    from maya import utils as maya_utils
+    maya_utils.processIdleEvents()
     camera = cmds.modelPanel(panel, query=True, camera=True)
     cmds.viewFit(camera, all=True)
     cmds.currentTime(0)

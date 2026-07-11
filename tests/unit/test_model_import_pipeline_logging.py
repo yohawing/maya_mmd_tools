@@ -109,12 +109,62 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         incomplete = {"success": True, "skipped": ["dx11_material_plugs_incomplete:s:x"]}
         with patch.object(
             pmx_importer, "build_material_morph_graph", side_effect=[incomplete, dict(incomplete)]
-        ) as build, patch.object(cmds, "refresh"):
+        ) as build, patch.object(cmds, "refresh"), patch.object(
+            cmds, "ls", return_value=["root-uuid"]
+        ):
             result = pmx_importer._build_material_morph_graph_with_retry(
                 "root", pipeline, SimpleNamespace()
             )
         self.assertEqual(build.call_count, 2)
         self.assertEqual(result["retry"]["final_skipped"], incomplete["skipped"])
+        self.assertTrue(result["retry"]["deferred_scheduled"])
+
+    def test_material_graph_persistent_incomplete_retries_once_at_idle(self):
+        pipeline = MagicMock()
+        incomplete = {"success": True, "skipped": ["glsl_material_plugs_incomplete:s:x"]}
+        complete = {"success": True, "skipped": [], "evaluator_nodes": ["eval1"]}
+        callbacks = []
+        with patch.object(
+            pmx_importer,
+            "build_material_morph_graph",
+            side_effect=[incomplete, dict(incomplete), complete],
+        ) as build, patch.object(cmds, "refresh"), patch.object(
+            cmds,
+            "evalDeferred",
+            side_effect=lambda callback, **_kwargs: callbacks.append(callback),
+        ), patch.object(cmds, "ls", return_value=["root-uuid"]):
+            result = pmx_importer._build_material_morph_graph_with_retry(
+                "root", pipeline, SimpleNamespace()
+            )
+            self.assertEqual(build.call_count, 2)
+            self.assertEqual(len(callbacks), 1)
+            callbacks[0]()
+        self.assertEqual(build.call_count, 3)
+        self.assertEqual(result["retry"]["deferred"]["skipped"], [])
+
+    def test_material_graph_deferred_retry_rejects_replaced_root(self):
+        pipeline = MagicMock()
+        incomplete = {"success": True, "skipped": ["glsl_material_plugs_incomplete:s:x"]}
+        callbacks = []
+        with patch.object(
+            pmx_importer,
+            "build_material_morph_graph",
+            side_effect=[incomplete, dict(incomplete)],
+        ) as build, patch.object(cmds, "refresh"), patch.object(
+            cmds,
+            "evalDeferred",
+            side_effect=lambda callback, **_kwargs: callbacks.append(callback),
+        ), patch.object(cmds, "ls", side_effect=[["original-uuid"], ["replacement-uuid"]]):
+            result = pmx_importer._build_material_morph_graph_with_retry(
+                "root", pipeline, SimpleNamespace()
+            )
+            callbacks[0]()
+        self.assertEqual(build.call_count, 2)
+        pipeline.sync_dx11_uniforms.assert_called_once()
+        self.assertEqual(
+            result["retry"]["deferred"]["skipped"],
+            ["root_group_identity_changed"],
+        )
 
     def test_material_graph_retry_refresh_and_sync_exceptions_are_fail_soft(self):
         incomplete = {"success": True, "skipped": ["glsl_material_plugs_incomplete:s:x"]}

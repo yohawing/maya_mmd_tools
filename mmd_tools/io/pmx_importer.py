@@ -81,7 +81,93 @@ def _build_material_morph_graph_with_retry(root_group, pipeline, mesh_converter)
         },
         "final_counts": raw_final_counts,
     }
+    if any(str(item).startswith(prefixes) for item in final.get("skipped") or []):
+        _schedule_deferred_material_morph_retry(
+            root_group,
+            pipeline,
+            mesh_converter,
+            final,
+        )
     return final
+
+
+def _schedule_deferred_material_morph_retry(root_group, pipeline, mesh_converter, result):
+    """Retry once at Maya idle after hardware uniforms finish materializing."""
+    retry = result.setdefault("retry", {})
+    retry["deferred_scheduled"] = False
+    try:
+        from maya import cmds
+
+        root_uuids = cmds.ls(root_group, uuid=True) or []
+        root_uuid = str(root_uuids[0]) if len(root_uuids) == 1 else ""
+    except Exception:
+        root_uuid = ""
+    if not root_uuid:
+        retry.setdefault("errors", []).append({
+            "phase": "deferred_schedule",
+            "type": "RootIdentityUnavailable",
+            "message": f"Could not capture UUID for {root_group}",
+        })
+        return
+
+    def rebuild_after_idle():
+        deferred_errors = []
+        try:
+            from maya import cmds
+
+            current_uuids = cmds.ls(root_group, uuid=True) or []
+            if len(current_uuids) != 1 or str(current_uuids[0]) != root_uuid:
+                retry["deferred"] = {
+                    "skipped": ["root_group_identity_changed"],
+                    "errors": [],
+                }
+                return
+            try:
+                cmds.refresh(force=True)
+            except Exception as exc:
+                deferred_errors.append({
+                    "phase": "refresh",
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                })
+                logger.debug("Failed deferred hardware-uniform refresh", exc_info=True)
+            try:
+                pipeline.sync_dx11_uniforms(mesh_converter, refresh_if_dx11=False)
+            except Exception as exc:
+                deferred_errors.append({
+                    "phase": "uniform_sync",
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                })
+                logger.debug("Failed deferred hardware-uniform sync", exc_info=True)
+            rebuilt = build_material_morph_graph(root_group, connect_shader=True)
+            retry["deferred"] = {
+                "skipped": list(rebuilt.get("skipped") or []),
+                "errors": deferred_errors,
+            }
+        except Exception as exc:
+            retry["deferred"] = {
+                "skipped": [],
+                "errors": [{
+                    "phase": "graph_build",
+                    "type": type(exc).__name__,
+                    "message": str(exc),
+                }],
+            }
+            logger.debug("Failed deferred material-morph graph rebuild", exc_info=True)
+
+    try:
+        from maya import cmds
+
+        cmds.evalDeferred(rebuild_after_idle, lowestPriority=True)
+        retry["deferred_scheduled"] = True
+    except Exception as exc:
+        retry.setdefault("errors", []).append({
+            "phase": "deferred_schedule",
+            "type": type(exc).__name__,
+            "message": str(exc),
+        })
+        logger.debug("Failed to schedule deferred material-morph graph rebuild", exc_info=True)
 
 
 def _serialize_pmx_morph_data(morphs: Any) -> str:
