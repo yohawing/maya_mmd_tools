@@ -1062,6 +1062,37 @@ def native_smoke(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
+def bundled_native_smoke(session: nox.Session) -> None:
+    """Verify only the native binaries bundled in release distribution paths."""
+    out_json = _require_build_path(
+        session,
+        _option(session.posargs, "--out-json", "build/reports/bundled_native_smoke.json"),
+        "--out-json",
+    )
+    out_md = _require_build_path(
+        session,
+        _option(session.posargs, "--out-md", "build/reports/bundled_native_smoke.md"),
+        "--out-md",
+    )
+    import tomllib
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    session.run(
+        sys.executable,
+        "tests/release/bundled_native_smoke.py",
+        "--root",
+        str(ROOT),
+        "--expected-version",
+        project["project"]["version"],
+        "--out-json",
+        str(out_json),
+        "--out-md",
+        str(out_md),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
 def native_export_smoke(session: nox.Session) -> None:
     """Verify native export writer symbols when the DLL is current.
 
@@ -2197,6 +2228,10 @@ def release_gate(session: nox.Session) -> None:
                 results,
             )
         tier2_commands.extend([
+            (
+                "tier2:bundled-native-smoke",
+                ["uvx", "nox", "-s", "bundled_native_smoke"],
+            ),
             (
                 "tier2:pmx-roundtrip-v0_4",
                 [

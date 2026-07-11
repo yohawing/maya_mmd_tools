@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 import re
 import sys
 import tempfile
@@ -132,6 +133,11 @@ class ReleaseGateContractTest(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertEqual(noxfile._normalize_local_gate_report(report, strict_local=False), "fail")
+
+    def test_full_release_gate_includes_bundled_native_smoke(self):
+        source = inspect.getsource(noxfile.release_gate)
+        self.assertIn('"tier2:bundled-native-smoke"', source)
+        self.assertIn('["uvx", "nox", "-s", "bundled_native_smoke"]', source)
 
 
 if __name__ == "__main__":
