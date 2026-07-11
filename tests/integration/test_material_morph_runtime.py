@@ -5,6 +5,7 @@ weight 変更がマテリアル外観に反映されることを検証する。
 """
 
 from pathlib import Path
+import unittest
 
 from maya import cmds
 
@@ -30,6 +31,88 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MMD_SHADER_FX = _REPO_ROOT / "mmd_tools" / "shaders" / "MMDShader.fx"
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.nodes.mmd_material_morph_eval_node import MmdMaterialMorphEvalNode
+
+
+class TestMaterialMorphNumericComposition(unittest.TestCase):
+    """Shader routing に依存しない PMX material morph 数値契約。"""
+
+    @staticmethod
+    def _base():
+        return {
+            "diffuse": (0.5, 0.4, 0.3, 0.8),
+            "specular": (0.5, 0.5, 0.5),
+            "specularCoefficient": (0.5,),
+            "ambient": (0.5, 0.5, 0.5),
+            "edgeColor": (0.5, 0.5, 0.5, 0.5),
+            "edgeSize": (0.5,),
+        }
+
+    @staticmethod
+    def _contribution(op, value, order=0, slot=0):
+        return {
+            "logical_index": slot,
+            "morph_order": order,
+            "weight": 1.0,
+            "op": op,
+            "diffuse": tuple(value for _ in range(4)),
+            "specular": tuple(value for _ in range(3)),
+            "specularCoefficient": (value,),
+            "ambient": tuple(value for _ in range(3)),
+            "edgeColor": tuple(value for _ in range(4)),
+            "edgeSize": (value,),
+            "texture": tuple(value for _ in range(4)),
+            "sphereTexture": tuple(value for _ in range(4)),
+            "toonTexture": tuple(value for _ in range(4)),
+        }
+
+    def test_add_and_multiply_are_composed_separately(self):
+        contributions = [
+            self._contribution(1, 0.2, order=0),
+            self._contribution(0, 0.5, order=1),
+        ]
+        material, _, _ = MmdMaterialMorphEvalNode.compose(self._base(), contributions)
+        self.assertAlmostEqual(material["diffuse"][0], 0.45)
+        self.assertNotAlmostEqual(material["diffuse"][0], 0.35)
+
+    def test_alpha_only_add_preserves_rgb(self):
+        contribution = self._contribution(1, 0.0)
+        contribution["diffuse"] = (0.0, 0.0, 0.0, -0.3)
+        material, _, _ = MmdMaterialMorphEvalNode.compose(self._base(), [contribution])
+        self.assertEqual(material["diffuse"][:3], self._base()["diffuse"][:3])
+        self.assertAlmostEqual(material["diffuse"][3], 0.5)
+
+    def test_all_texture_tracks_keep_multiply_and_add_separate(self):
+        contributions = [self._contribution(0, 0.5), self._contribution(1, 0.2)]
+        material, multiply, add = MmdMaterialMorphEvalNode.compose(self._base(), contributions)
+        for name, values in material.items():
+            for base_value, result in zip(self._base()[name], values):
+                self.assertAlmostEqual(result, base_value * 0.5 + 0.2)
+        for name in ("texture", "sphereTexture", "toonTexture"):
+            self.assertEqual(tuple(multiply[name]), (0.5, 0.5, 0.5, 0.5))
+            self.assertEqual(tuple(add[name]), (0.2, 0.2, 0.2, 0.2))
+
+    def test_declared_node_contract_covers_every_pmx_channel(self):
+        expected = {
+            "baseDiffuse", "baseSpecular", "baseSpecularCoefficient",
+            "baseAmbient", "baseEdgeColor", "baseEdgeSize", "contribution",
+            "diffuseOffset", "specularOffset", "specularCoefficientOffset",
+            "ambientOffset", "edgeColorOffset", "edgeSizeOffset", "textureOffset",
+            "sphereTextureOffset", "toonTextureOffset", "outputDiffuse",
+            "outputDiffuseAlpha", "outputSpecular", "outputSpecularCoefficient",
+            "outputAmbient", "outputEdgeColor", "outputEdgeSize",
+            "outputTextureMultiply", "outputTextureAdd",
+            "outputSphereTextureMultiply", "outputSphereTextureAdd",
+            "outputToonTextureMultiply", "outputToonTextureAdd",
+        }
+        node = cmds.createNode("mmdMaterialMorphEval")
+        try:
+            missing = sorted(
+                attr for attr in expected
+                if not cmds.attributeQuery(attr, node=node, exists=True)
+            )
+            self.assertEqual(missing, [])
+        finally:
+            cmds.delete(node)
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -175,7 +258,12 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
                 self.skipTest(f"mmdMaterialMorphEval node is unavailable: {exc}")
         cmds.delete(node)
 
-    def _create_scene_with_shader(self):
+    def _create_scene_with_shader(
+        self,
+        *,
+        base_color=(1.0, 1.0, 1.0),
+        base_alpha=1.0,
+    ):
         """mesh + lambert shader + material morph を持つ最小シーンを構築する。"""
         self._require_material_morph_node()
 
@@ -196,8 +284,15 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         cmds.connectAttr(f"{shader}.outColor", f"{sg}.surfaceShader", force=True)
         cmds.sets(mesh, edit=True, forceElement=sg)
 
-        # 初期 diffuse を白に
-        cmds.setAttr(f"{shader}.color", 1.0, 1.0, 1.0, type="double3")
+        cmds.setAttr(f"{shader}.color", *base_color, type="double3")
+        transparency = 1.0 - base_alpha
+        cmds.setAttr(
+            f"{shader}.transparency",
+            transparency,
+            transparency,
+            transparency,
+            type="double3",
+        )
 
         # shader に mmd_material_index を設定（graph builder がマッチングに使う）
         if not cmds.attributeQuery(ATTR_MMD_MATERIAL_INDEX, node=shader, exists=True):
@@ -265,6 +360,40 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         )
         # weight 駆動が生きていることも確認（既存契約の回帰）
         self.assertEqual(len(material_nodes), 1)
+
+    def test_weight_zero_preserves_nonblack_base_rgba(self):
+        """RGBA compound route initialization must not silently lose the base."""
+        base_rgb = (0.2, 0.4, 0.7)
+        base_alpha = 0.35
+        _, _, shader, material_nodes, graph = self._create_scene_with_shader(
+            base_color=base_rgb,
+            base_alpha=base_alpha,
+        )
+        self.assertTrue(graph["success"])
+        self.assertEqual(len(graph["evaluator_nodes"]), 1)
+        evaluator = graph["evaluator_nodes"][0]
+        cmds.setAttr(f"{material_nodes[0]}.weight", 0.0)
+
+        for axis, expected in zip("RGB", base_rgb):
+            self.assertAlmostEqual(
+                float(cmds.getAttr(f"{evaluator}.baseDiffuse{axis}")),
+                expected,
+                places=6,
+            )
+        self.assertAlmostEqual(
+            float(cmds.getAttr(f"{evaluator}.baseDiffuseA")),
+            base_alpha,
+            places=6,
+        )
+        self.assertEqual(
+            tuple(round(value, 6) for value in cmds.getAttr(f"{shader}.color")[0]),
+            base_rgb,
+        )
+        self.assertAlmostEqual(
+            float(cmds.getAttr(f"{evaluator}.outputDiffuseAlpha")),
+            base_alpha,
+            places=6,
+        )
 
     def test_weight_zero_preserves_original_diffuse(self):
         """weight=0 のとき shader diffuse は変わらない。"""

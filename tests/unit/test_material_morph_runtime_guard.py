@@ -63,7 +63,7 @@ class TestMaterialMorphRuntimeGuard(unittest.TestCase):
         collect_mock.assert_not_called()
         reroute_mock.assert_not_called()
 
-    def test_neutral_diffuse_offsets_do_not_need_rgb_evaluation(self):
+    def test_alpha_only_offsets_are_retained_for_full_channel_evaluation(self):
         additive_alpha_only = {
             "material_index": 0,
             "operation_type": 1,
@@ -96,8 +96,27 @@ class TestMaterialMorphRuntimeGuard(unittest.TestCase):
                 skipped,
             )
 
-        self.assertEqual(len(contributions["shader1"]), 1)
-        self.assertEqual(contributions["shader1"][0]["diffuse_rgb"], (0.25, 0.0, 0.0))
+        self.assertEqual(len(contributions["shader1"]), 3)
+        self.assertEqual(
+            contributions["shader1"][0]["diffuse"],
+            (0.0, 0.0, 0.0, -1.0),
+        )
+        self.assertEqual(
+            contributions["shader1"][1]["diffuse"],
+            (1.0, 1.0, 1.0, 0.0),
+        )
+        self.assertEqual(
+            contributions["shader1"][2]["diffuse"],
+            (0.25, 0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            contributions["shader1"][0]["texture_factor"],
+            (0.0, 0.0, 0.0, 0.0),
+        )
+        self.assertEqual(
+            contributions["shader1"][1]["texture_factor"],
+            (1.0, 1.0, 1.0, 1.0),
+        )
         self.assertEqual(skipped, [])
 
     def test_create_evaluator_rejects_node_without_required_attrs(self):

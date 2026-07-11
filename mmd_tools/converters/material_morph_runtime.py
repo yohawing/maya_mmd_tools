@@ -23,7 +23,13 @@ from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadat
 logger = get_logger(__name__)
 
 EVAL_NODE_TYPE = "mmdMaterialMorphEval"
-_REQUIRED_EVAL_ATTRS = ("contribution", "baseDiffuse", "outputDiffuse")
+_REQUIRED_EVAL_ATTRS = (
+    "contribution",
+    "baseDiffuse",
+    "outputDiffuse",
+    "outputTextureMultiply",
+    "outputTextureAdd",
+)
 
 # Backend identifiers returned by resolve_shader_color_route.
 BACKEND_STANDARD = "standard"
@@ -266,11 +272,6 @@ def _collect_contributions_by_shader(
             continue
         morph_order = _get_morph_order(morph_node)
         for offset in offsets:
-            # The evaluator implements diffuse RGB only. Visibility/costume
-            # morphs commonly change alpha while leaving RGB neutral; routing
-            # those offsets is misleading and can destabilize hardware uniforms.
-            if _is_neutral_diffuse_rgb_offset(offset):
-                continue
             contribution = _offset_to_contribution(morph_node, morph_order, offset)
             if contribution is None:
                 skipped.append(f"invalid_offset:{morph_node}")
@@ -291,8 +292,16 @@ def _collect_contributions_by_shader(
     return dict(contributions_by_shader)
 
 
+def _parse_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
+    return parse_morph_offsets_json(morph_node, "mmd_material_morph_offsets_json")
+
+
 def _is_neutral_diffuse_rgb_offset(offset: Dict[str, Any]) -> bool:
-    """Return whether a PMX material offset leaves diffuse RGB unchanged."""
+    """Compatibility probe for callers inspecting diffuse RGB neutrality.
+
+    Neutral RGB offsets are still retained now because alpha and the other PMX
+    channels may carry a non-neutral contribution.
+    """
     if not isinstance(offset, dict):
         return False
     try:
@@ -303,10 +312,6 @@ def _is_neutral_diffuse_rgb_offset(offset: Dict[str, Any]) -> bool:
         return all(abs(float(value) - neutral) <= 1.0e-7 for value in diffuse[:3])
     except (TypeError, ValueError):
         return False
-
-
-def _parse_offsets_json(morph_node: str) -> Optional[List[Dict[str, Any]]]:
-    return parse_morph_offsets_json(morph_node, "mmd_material_morph_offsets_json")
 
 
 def _get_morph_order(morph_node: str) -> int:
@@ -321,15 +326,29 @@ def _offset_to_contribution(
     if not isinstance(offset, dict) or "material_index" not in offset:
         return None
     try:
-        diffuse = offset.get("diffuse", [0.0, 0.0, 0.0, 0.0])
-        if len(diffuse) < 3:
-            return None
+        operation_type = int(offset.get("operation_type", 1))
+        neutral = 1.0 if operation_type == 0 else 0.0
+
+        def vector(key: str, size: int) -> Tuple[float, ...]:
+            value = offset.get(key, [neutral] * size)
+            if len(value) != size:
+                raise ValueError(f"{key} must contain {size} values")
+            return tuple(float(component) for component in value)
+
         return {
             "morph_node": morph_node,
             "morph_order": int(morph_order),
             "material_index": int(offset["material_index"]),
-            "operation_type": int(offset.get("operation_type", 1)),
-            "diffuse_rgb": (float(diffuse[0]), float(diffuse[1]), float(diffuse[2])),
+            "operation_type": operation_type,
+            "diffuse": vector("diffuse", 4),
+            "specular": vector("specular", 3),
+            "specular_coefficient": (float(offset.get("specular_coefficient", neutral)),),
+            "ambient": vector("ambient", 3),
+            "edge_color": vector("edge_color", 4),
+            "edge_size": (float(offset.get("edge_size", neutral)),),
+            "texture_factor": vector("texture_factor", 4),
+            "sphere_texture_factor": vector("sphere_texture_factor", 4),
+            "toon_texture_factor": vector("toon_texture_factor", 4),
         }
     except Exception:
         return None
@@ -409,8 +428,26 @@ def _refresh_contributions(node: str, contributions: List[Dict[str, Any]]) -> No
         prefix = f"{node}.contribution[{slot}]"
         cmds.setAttr(f"{prefix}.morphOrder", int(contribution["morph_order"]))
         cmds.setAttr(f"{prefix}.operationType", int(contribution["operation_type"]))
-        dr, dg, db = contribution["diffuse_rgb"]
-        cmds.setAttr(f"{prefix}.diffuseOffset", dr, dg, db, type="double3")
+        attr_values = {
+            "diffuseOffset": contribution["diffuse"],
+            "specularOffset": contribution["specular"],
+            "specularCoefficientOffset": contribution["specular_coefficient"],
+            "ambientOffset": contribution["ambient"],
+            "edgeColorOffset": contribution["edge_color"],
+            "edgeSizeOffset": contribution["edge_size"],
+            "textureOffset": contribution["texture_factor"],
+            "sphereTextureOffset": contribution["sphere_texture_factor"],
+            "toonTextureOffset": contribution["toon_texture_factor"],
+        }
+        for attr_name, values in attr_values.items():
+            plug = f"{prefix}.{attr_name}"
+            if len(values) == 1:
+                cmds.setAttr(plug, values[0])
+            elif len(values) == 3:
+                cmds.setAttr(plug, *values, type="double3")
+            else:
+                for axis, value in zip("RGBA", values):
+                    cmds.setAttr(f"{plug}{axis}", value)
         _connect_if_needed(f"{contribution['morph_node']}.weight", f"{prefix}.weight", force=True)
 
 
@@ -607,10 +644,14 @@ def _reroute_shader_color(shader: str, node: str, route: Optional[ShaderColorRou
     if _is_connected(output_attr, shader_attr):
         return True
 
-    # Copy current color to baseDiffuse
+    # Copy current colour and alpha to the RGBA baseDiffuse compound.  Maya does
+    # not guarantee that setAttr(type="double3") is accepted by a four-child
+    # compound, so write every child explicitly.
     try:
         color = cmds.getAttr(shader_attr)[0]
-        cmds.setAttr(base_attr, float(color[0]), float(color[1]), float(color[2]), type="double3")
+        rgba = (*color[:3], _read_shader_base_alpha(shader))
+        for axis, value in zip("RGBA", rgba):
+            cmds.setAttr(f"{base_attr}{axis}", float(value))
     except Exception:
         logger.debug("Failed to read %s", shader_attr, exc_info=True)
 
@@ -642,3 +683,31 @@ def _reroute_shader_color(shader: str, node: str, route: Optional[ShaderColorRou
 
     _connect_if_needed(output_attr, shader_attr, force=True)
     return True
+
+
+def _read_shader_base_alpha(shader: str) -> float:
+    """Read an opacity-compatible alpha for evaluator initialization."""
+    scalar_candidates = ("DiffuseColorA",)
+    for attr_name in scalar_candidates:
+        try:
+            if cmds.attributeQuery(attr_name, node=shader, exists=True):
+                return float(cmds.getAttr(f"{shader}.{attr_name}"))
+        except Exception:
+            pass
+
+    try:
+        if cmds.attributeQuery("opacity", node=shader, exists=True):
+            opacity = cmds.getAttr(f"{shader}.opacity")[0]
+            return sum(float(value) for value in opacity[:3]) / 3.0
+    except Exception:
+        pass
+
+    try:
+        if cmds.attributeQuery("transparency", node=shader, exists=True):
+            transparency = cmds.getAttr(f"{shader}.transparency")[0]
+            average = sum(float(value) for value in transparency[:3]) / 3.0
+            return 1.0 - average
+    except Exception:
+        pass
+
+    return 1.0
