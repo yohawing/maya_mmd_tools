@@ -10,7 +10,7 @@ from maya import cmds
 from tests.common.gui_test_base import GuiTestBase, requires_gui
 from mmd_tools.ui.application_state import ApplicationState
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
-from mmd_tools.ui.qt_compat import QApplication
+from mmd_tools.ui.qt_compat import QApplication, Qt
 from mmd_tools.ui.tabs.morph_tab import MorphTab
 
 
@@ -55,7 +55,8 @@ class TestMorphTabGUI(GuiTestBase):
             QApplication.processEvents()
 
             self.assertEqual(tab.morph_list.count(), 1)
-            self.assertEqual(tab.morph_list.item(0).text(), "Mouth_A01")
+            self.assertEqual(tab.morph_list.item(0).text(), "000:V|Mouth_A01")
+            self.assertEqual(tab.morph_list.item(0).data(Qt.UserRole), "Mouth_A01")
             tab.morph_list.setCurrentRow(0)
             QApplication.processEvents()
             tab.morph_slider.setValue(65)

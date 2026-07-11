@@ -26,8 +26,9 @@ class _FakeSignal:
 
 
 class _FakeItem:
-    def __init__(self, text):
+    def __init__(self, text, key=None):
         self._text = text
+        self._data = {0x0100: key}
         self.hidden = False
 
     def text(self):
@@ -35,6 +36,9 @@ class _FakeItem:
 
     def setHidden(self, hidden):
         self.hidden = hidden
+
+    def data(self, role):
+        return self._data.get(role)
 
 
 class _FakeList:
@@ -96,24 +100,32 @@ class _FakeComboBox:
         self._current_index = 0
         self.set_index_calls = []
         self.set_text_calls = []
+        self.item_data = []
         if current_text:
             self.items.append(current_text)
 
     def clear(self):
         self.items.clear()
+        self.item_data.clear()
         self._current_text = ""
         self._current_index = 0
 
     def addItems(self, items):
         self.items.extend(items)
+        self.item_data.extend([None] * len(items))
         if not self._current_text and items:
             self._current_text = items[0]
 
-    def addItem(self, item):
+    def addItem(self, item, data=None):
         self.items.append(item)
+        self.item_data.append(data)
 
     def removeItem(self, index):
         del self.items[index]
+        del self.item_data[index]
+
+    def itemData(self, index):
+        return self.item_data[index]
 
     def findText(self, text):
         try:
@@ -188,12 +200,9 @@ class _FakeTable:
 class _FakeView:
     def __init__(self):
         self.morph_list = _FakeList()
-        self.group_list = _FakeList()
+        self.group_filter_combo = _FakeComboBox()
 
         self.refresh_morphs_btn = _FakeButton()
-        self.select_in_maya_btn = _FakeButton()
-        self.add_group_btn = _FakeButton()
-        self.remove_group_btn = _FakeButton()
         self.reset_slider_btn = _FakeButton()
         self.reset_all_btn = _FakeButton()
         self.connect_btn = _FakeButton()
@@ -213,7 +222,6 @@ class _FakeView:
         self.target_name_edit = _FakeLineEdit()
         self.panel_combo = _FakeComboBox()
         self.morph_type_combo = _FakeComboBox()
-        self.group_combo = _FakeComboBox()
         self.preset_combo = _FakeComboBox("なし")
 
         self.morph_slider = _FakeSlider()
@@ -380,7 +388,8 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.blend_shape_node, "faceBlendShape")
         self.assertEqual(presenter.morph_data["smile"]["blend_shape_node"], "faceBlendShape")
         self.assertNotIn("blink", presenter.morph_data)
-        self.assertEqual([item.text() for item in view.morph_list.items], ["smile"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
+        self.assertEqual([item.data(256) for item in view.morph_list.items], ["smile"])
         self.assertEqual(view.preset_combo.items, ["なし", "笑顔", "ウィンク", "驚き", "悲しみ", "custom_pose"])
 
     def test_list_metadata_preserves_duplicate_and_empty_names(self):
@@ -396,6 +405,25 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         self.assertEqual(list(indexed), ["笑顔", "笑顔 [7]", "<unnamed> [9]"])
         self.assertEqual([data["index"] for data in indexed.values()], [4, 7, 9])
+
+    def test_display_uses_global_index_type_letter_and_stable_user_role_key(self):
+        presenter, view, _, _ = _make_presenter()
+        presenter.morph_data = {
+            "duplicate [unknown]": {"name_jp": "同名", "type": 8, "index": -1, "_pmx_type_raw": True},
+            "duplicate [7]": {"name_jp": "同名", "type": 2, "index": 7, "_pmx_type_raw": True},
+            "duplicate [4]": {"name_jp": "同名", "type": 1, "index": 4, "_pmx_type_raw": True},
+        }
+
+        presenter._display_all_morphs()
+
+        self.assertEqual(
+            [item.text() for item in view.morph_list.items],
+            ["004:V|同名", "007:B|同名", "---:M|同名"],
+        )
+        self.assertEqual(
+            [item.data(256) for item in view.morph_list.items],
+            ["duplicate [4]", "duplicate [7]", "duplicate [unknown]"],
+        )
 
     def test_duplicate_blendshape_names_bind_by_weight_index_deterministically(self):
         presenter, _, _, _ = _make_presenter()
@@ -501,7 +529,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter.current_morph = "笑顔"
         presenter.on_morph_slider_changed(65)
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
         self.assertEqual(presenter.morph_data["笑顔"]["name_jp"], "笑顔")
         self.assertEqual(
             presenter.morph_data["笑顔"]["blend_shape_targets"],
@@ -590,11 +618,11 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter, view, _, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
 
         presenter.load_morphs()
-        presenter.on_morph_selected(_FakeItem("ボーン笑い"), None)
+        presenter.on_morph_selected(_FakeItem("---:B|ボーン笑い", "ボーン笑い"), None)
 
         self.assertEqual(
             [item.text() for item in view.morph_list.items],
-            ["グループ表情", "ボーン笑い", "材質点滅"],
+            ["---:G|グループ表情", "---:B|ボーン笑い", "---:M|材質点滅"],
         )
         self.assertEqual(presenter.morph_data["ボーン笑い"]["type"], 10)
         self.assertEqual(presenter.morph_data["ボーン笑い"]["name_en"], "bone_smile")
@@ -654,7 +682,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         presenter.load_morphs()
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["グループ表情"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["---:G|グループ表情"])
         self.assertEqual(presenter.morph_data["グループ表情"]["type"], 12)
         self.assertEqual(presenter.morph_data["グループ表情"]["panel"], 2)
         self.assertEqual(presenter.morph_data["グループ表情"]["morph_node"], "groupPoseNode")
@@ -802,7 +830,8 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         }
 
         presenter._organize_morphs_by_group()
-        presenter.filter_morphs_by_group("その他")
+        view.group_filter_combo.item_data = [4]
+        presenter.on_panel_filter_changed(0)
 
         self.assertEqual(presenter.group_morphs["眉"], ["eyebrow_up"])
         self.assertEqual(presenter.group_morphs["目"], ["eye_close"])
@@ -811,9 +840,20 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertNotIn("カスタム", presenter.group_morphs)
         # panel 0 stays in morph_data but is excluded from filter groups
         self.assertNotIn("system_base", presenter.group_morphs["その他"])
-        self.assertEqual([item.text() for item in view.morph_list.items], ["fallback"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["---:V|fallback"])
 
-        view.morph_list.items = [_FakeItem("smile"), _FakeItem("wink"), _FakeItem("sad")]
+        presenter.morph_data.update(
+            {
+                "smile_key": {"name_jp": "smile"},
+                "wink_key": {"name_jp": "wink"},
+                "sad_key": {"name_jp": "sad"},
+            }
+        )
+        view.morph_list.items = [
+            _FakeItem("display 1", "smile_key"),
+            _FakeItem("display 2", "wink_key"),
+            _FakeItem("display 3", "sad_key"),
+        ]
         presenter.filter_morphs("s")
 
         self.assertEqual([item.hidden for item in view.morph_list.items], [False, True, False])
@@ -944,11 +984,10 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         presenter.load_morphs()
 
-        # All morphs (including system) appear in the full list.
-        # Python default sort is code-point order (目 < 眉).
+        # All morphs (including system) appear in PMX global-index order.
         self.assertEqual(
-            [item.text() for item in view.morph_list.items],
-            ["base", "その他グループ", "その他頂点", "口材質", "目ボーン", "眉頂点"],
+            [item.data(256) for item in view.morph_list.items],
+            ["base", "眉頂点", "その他頂点", "目ボーン", "口材質", "その他グループ"],
         )
         self.assertEqual(presenter.morph_data["base"]["panel"], 0)
         self.assertEqual(presenter.morph_data["眉頂点"]["panel"], 1)
@@ -973,11 +1012,12 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         )
         self.assertNotIn("base", presenter.group_morphs["その他"])
 
-        presenter.filter_morphs_by_group("目")
-        self.assertEqual([item.text() for item in view.morph_list.items], ["目ボーン"])
+        view.group_filter_combo.item_data = [2, ""]
+        presenter.on_panel_filter_changed(0)
+        self.assertEqual([item.text() for item in view.morph_list.items], ["010:B|目ボーン"])
 
-        presenter.filter_morphs_by_group("全て表示")
-        self.assertIn("base", [item.text() for item in view.morph_list.items])
+        presenter.on_panel_filter_changed(1)
+        self.assertIn("base", [item.data(256) for item in view.morph_list.items])
 
     def test_multi_mesh_namespace_same_name_merges_targets_not_list_items(self):
         adapter = _FakeMayaAdapter()
@@ -1024,7 +1064,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         presenter.load_morphs()
 
-        self.assertEqual([item.text() for item in view.morph_list.items], ["笑顔"])
+        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
         data = presenter.morph_data["笑顔"]
         self.assertEqual(data["panel"], 4)  # invent Other, never System
         self.assertEqual(data["index"], 0)  # first-seen weight index retained
@@ -1036,8 +1076,9 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             ],
         )
         # Filter by Other includes the single merged entry.
-        presenter.filter_morphs_by_group("その他")
-        self.assertEqual([item.text() for item in view.morph_list.items], ["笑顔"])
+        view.group_filter_combo.item_data = [4]
+        presenter.on_panel_filter_changed(0)
+        self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
 
     def test_existing_panel_metadata_not_overwritten_by_fallback_load(self):
         adapter = _FakeMayaAdapter()
@@ -1104,7 +1145,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
 
         self.assertEqual(presenter.morph_data["笑顔"]["panel"], 3)
         self.assertEqual(presenter.morph_data["笑顔"]["index"], 5)
-        self.assertEqual(presenter.morph_data["笑顔"]["group"], "ユーザー分類")
+        self.assertNotIn("group", presenter.morph_data["笑顔"])
         self.assertEqual(presenter.morph_data["ボーン笑い"]["panel"], 2)
         self.assertEqual(presenter.morph_data["ボーン笑い"]["index"], 7)
         self.assertEqual(presenter.group_morphs["口"], ["笑顔"])
@@ -1129,14 +1170,13 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             }
         }
 
-        presenter.on_morph_selected(_FakeItem("smile"), None)
+        presenter.on_morph_selected(_FakeItem("000:V|笑顔", "smile"), None)
 
         self.assertEqual(presenter.current_morph, "smile")
         self.assertEqual(view.details_enabled_calls, [True])
         self.assertEqual(view.morph_name_jp_edit._text, "笑顔")
         self.assertEqual(view.morph_name_en_edit._text, "smile")
         self.assertEqual(view.panel_combo.set_index_calls, [1])
-        self.assertEqual(view.group_combo.set_text_calls, ["目"])
         self.assertEqual(view.blend_shape_edit._text, "faceBlendShape")
         self.assertEqual(view.target_name_edit._text, "smile")
         self.assertEqual(view.connection_status_label.text, "Connected")
@@ -1271,7 +1311,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         view.morph_name_en_edit.setText("new")
         view.panel_combo.setCurrentIndex(2)
         view.morph_type_combo.setCurrentIndex(1)
-        view.group_combo.setCurrentText("目")
 
         with patch.object(morph_presenter_module, "set_custom_attributes") as set_custom_attributes:
             presenter.apply_changes()
@@ -1279,7 +1318,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         saved_json = set_custom_attributes.call_args[0][1]["mmdMorphData"]
         self.assertEqual(
             json.loads(saved_json)["smile"],
-            {"name_jp": "新", "name_en": "new", "panel": 2, "type": 1, "group": "目"},
+            {"name_jp": "新", "name_en": "new", "panel": 2, "type": 1},
         )
         self.assertEqual(presenter.group_morphs["目"], ["smile"])
         self.assertIn(("object_exists", TEST_MODEL), adapter.calls)

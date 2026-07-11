@@ -12,7 +12,7 @@ from ...core.morph_metadata_reader import (
     parse_blendshape_morph_entries,
     panel_display_group,
 )
-from ..qt_compat import QTimer, QListWidgetItem
+from ..qt_compat import Qt, QTimer, QListWidgetItem
 from .list_presenter_helpers import apply_list_filter, reload_for_current_model_change, tr_message, tr_message_format
 
 logger = get_logger(__name__)
@@ -32,6 +32,7 @@ _WEIGHT_INDEX_RE = re.compile(r"\[(\d+)\]")
 _DEFAULT_USER_PANEL = 4
 _PMX_TYPE_TO_UI_INDEX = {0: 12, 1: 0, 2: 10, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 11, 9: 13, 10: 14}
 _UI_INDEX_TO_PMX_TYPE = {ui_index: pmx_type for pmx_type, ui_index in _PMX_TYPE_TO_UI_INDEX.items()}
+_MORPH_TYPE_LETTERS = {0: "G", 1: "V", 2: "B", 3: "U", 4: "U", 5: "U", 6: "U", 7: "U", 8: "M", 9: "F", 10: "I"}
 
 
 class MorphPresenter:
@@ -59,13 +60,10 @@ class MorphPresenter:
         # モーフリスト関連
         self.view.morph_list.currentItemChanged.connect(self.on_morph_selected)
         self.view.refresh_morphs_btn.clicked.connect(self.load_morphs)
-        self.view.select_in_maya_btn.clicked.connect(self.select_morph_in_maya)
         self.view.search_edit.textChanged.connect(self.filter_morphs)
 
-        # グループリスト関連
-        self.view.group_list.currentItemChanged.connect(self.on_group_selected)
-        self.view.add_group_btn.clicked.connect(self.add_group)
-        self.view.remove_group_btn.clicked.connect(self.remove_group)
+        # PMX panel フィルター
+        self.view.group_filter_combo.currentIndexChanged.connect(self.on_panel_filter_changed)
 
         # スライダー関連
         self.view.morph_slider.valueChanged.connect(self.on_morph_slider_changed)
@@ -116,6 +114,10 @@ class MorphPresenter:
 
         # bone/material/group morph の network node を検索
         self._load_network_morphs(current_model_root, allow_metadata_entries=allow_metadata_entries)
+
+        # Legacy custom group strings are no longer part of Morph tab state.
+        for data in self.morph_data.values():
+            data.pop("group", None)
 
         # グループごとにモーフを整理
         self._organize_morphs_by_group()
@@ -506,8 +508,7 @@ class MorphPresenter:
         """PMX panel 1-4 でモーフを整理する。
 
         Source of truth は ``panel`` メタデータ（MorphInfo + categorize_morphs）。
-        ユーザー編集用の ``group`` 文字列は保存対象として残すが、分類・フィルタ
-        には使わない。panel 0 (System) はリスト本体には残しつつグループから除外。
+        panel 0 (System) はリスト本体には残しつつグループから除外。
         """
         morph_infos = [
             morph_info_from_presenter_entry(name, data)
@@ -520,8 +521,31 @@ class MorphPresenter:
 
     def _display_all_morphs(self):
         """全てのモーフを表示"""
-        for morph_name in sorted(self.morph_data.keys()):
-            item = QListWidgetItem(morph_name)
+        self._display_morphs(self.morph_data)
+
+    def _display_morphs(self, morph_keys):
+        """安定キーを保持し、PMX global index 順でモーフを表示する。"""
+        def sort_key(morph_key):
+            try:
+                index = int(self.morph_data[morph_key].get("index", -1))
+            except (TypeError, ValueError):
+                index = -1
+            return (index < 0, index if index >= 0 else 0, morph_key)
+
+        for morph_key in sorted(morph_keys, key=sort_key):
+            data = self.morph_data[morph_key]
+            try:
+                index = int(data.get("index", -1))
+            except (TypeError, ValueError):
+                index = -1
+            raw_type = data.get("type", 0)
+            if not data.get("_pmx_type_raw"):
+                raw_type = _UI_INDEX_TO_PMX_TYPE.get(int(raw_type), 1)
+            type_letter = _MORPH_TYPE_LETTERS.get(int(raw_type), "?")
+            name = data.get("name_jp") or morph_key
+            index_text = f"{index:03d}" if index >= 0 else "---"
+            item = QListWidgetItem(f"{index_text}:{type_letter}|{name}")
+            item.setData(Qt.UserRole, morph_key)
             self.view.morph_list.addItem(item)
 
     def on_morph_selected(self, current, previous):
@@ -530,7 +554,9 @@ class MorphPresenter:
             self.view.set_morph_details_enabled(False)
             return
 
-        morph_name = current.text()
+        morph_name = current.data(Qt.UserRole)
+        if morph_name not in self.morph_data:
+            return
         self.current_morph = morph_name
         logger.debug(f"Selected morph: {morph_name}")
 
@@ -556,7 +582,6 @@ class MorphPresenter:
             else int(stored_type)
         )
         self.view.morph_type_combo.setCurrentIndex(ui_type)
-        self.view.group_combo.setCurrentText(data.get("group", "その他"))
 
         # Maya連携情報
         blend_shape_node = data.get("blend_shape_node")
@@ -621,46 +646,25 @@ class MorphPresenter:
 
             self._set_morph_weight(data, weight, self.current_morph)
 
-    def on_group_selected(self, current, previous):
-        """グループが選択されたときの処理"""
-        if not current:
-            return
-
-        group_name = current.text()
-        self.filter_morphs_by_group(group_name)
-
-    def filter_morphs_by_group(self, group_name):
-        """グループでモーフをフィルタ"""
+    def on_panel_filter_changed(self, index):
+        """PMX panel でモーフをフィルタする。"""
         self.view.morph_list.clear()
-
-        if group_name == "全て表示":
-            # 全てのモーフを表示
+        panel = self.view.group_filter_combo.itemData(index)
+        if panel in (None, ""):
             self._display_all_morphs()
-        elif group_name in self.group_morphs:
-            for morph_name in sorted(self.group_morphs[group_name]):
-                item = QListWidgetItem(morph_name)
-                self.view.morph_list.addItem(item)
+            return
+        self._display_morphs(self.group_morphs.get(panel_display_group(panel), ()))
 
     def filter_morphs(self, text):
         """検索テキストでモーフをフィルタ"""
         apply_list_filter(
             (self.view.morph_list.item(i) for i in range(self.view.morph_list.count())),
             text,
-            lambda item: (item.text(),),
+            lambda item: (
+                self.morph_data.get(item.data(Qt.UserRole), {}).get("name_jp", ""),
+                self.morph_data.get(item.data(Qt.UserRole), {}).get("name_en", ""),
+            ),
         )
-
-    def select_morph_in_maya(self):
-        """Mayaでモーフ（ブレンドシェイプノード）を選択"""
-        if not self.current_morph:
-            return
-
-        data = self.morph_data.get(self.current_morph, {})
-        blend_shape_node = data.get("blend_shape_node")
-
-        if blend_shape_node and self.maya_adapter.object_exists(blend_shape_node):
-            self.maya_adapter.select(blend_shape_node, replace=True)
-            logger.debug(f"Selected blend shape node in Maya: {blend_shape_node}")
-            self.app_state.emit_status(tr_message_format("blend_shape_node_selected", node=blend_shape_node))
 
     def reset_current_morph(self):
         """現在のモーフをリセット"""
@@ -693,40 +697,6 @@ class MorphPresenter:
         """モーフタイプが変更されたときの処理"""
         # タイプに応じてUIを更新（将来の拡張用）
         pass
-
-    def add_group(self):
-        """グループを追加"""
-        from ..qt_compat import QInputDialog
-
-        # グループ名を入力
-        group_name, ok = QInputDialog.getText(self.view, "Add Group", "Enter a new group name:")
-
-        if ok and group_name:
-            # 既存のグループと重複チェック
-            existing_groups = []
-            for i in range(self.view.group_list.count()):
-                existing_groups.append(self.view.group_list.item(i).text())
-
-            if group_name in existing_groups:
-                self.app_state.emit_status(tr_message_format("morph_group_exists", group=group_name), "warning")
-                return
-
-            # グループリストに追加
-            self.view.group_list.addItem(group_name)
-            self.group_morphs[group_name] = []
-
-            # グループコンボボックスにも追加
-            self.view.group_combo.addItem(group_name)
-
-            logger.info(f"Added group: {group_name}")
-            self.app_state.emit_status(tr_message_format("morph_group_added", group=group_name))
-
-    def remove_group(self):
-        """グループを削除"""
-        current = self.view.group_list.currentItem()
-        if current and current.text() not in ["眉", "目", "口", "その他"]:
-            # カスタムグループのみ削除可能
-            self.view.group_list.takeItem(self.view.group_list.row(current))
 
     def connect_blend_shape(self):
         """ブレンドシェイプを連携"""
@@ -897,7 +867,7 @@ class MorphPresenter:
             if data.get("_pmx_type_raw")
             else ui_type
         )
-        data["group"] = self.view.group_combo.currentText()
+        data.pop("group", None)
 
         # MMDアトリビュートに保存
         current_model_root = self.app_state.current_model_root
@@ -914,13 +884,16 @@ class MorphPresenter:
         """MMDモーフデータを保存"""
         if any(data.get("_pmx_type_raw") for data in self.morph_data.values()):
             payload = [
-                {key: value for key, value in data.items() if key != "_pmx_type_raw"}
+                {key: value for key, value in data.items() if key not in {"_pmx_type_raw", "group"}}
                 for data in sorted(
                     self.morph_data.values(), key=lambda item: int(item.get("index", -1))
                 )
             ]
         else:
-            payload = self.morph_data
+            payload = {
+                morph_key: {key: value for key, value in data.items() if key != "group"}
+                for morph_key, data in self.morph_data.items()
+            }
         morph_data_json = json.dumps(payload, ensure_ascii=False)
         set_custom_attributes(model_root, {"mmdMorphData": morph_data_json})
 

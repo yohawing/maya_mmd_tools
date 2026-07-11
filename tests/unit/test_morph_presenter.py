@@ -45,11 +45,8 @@ class TestMorphPresenter(MayaTestBase):
             self.mock_view,
             [
                 "morph_list",
-                "group_list",
+                "group_filter_combo",
                 "refresh_morphs_btn",
-                "select_in_maya_btn",
-                "add_group_btn",
-                "remove_group_btn",
                 "reset_slider_btn",
                 "reset_all_btn",
                 "connect_btn",
@@ -68,7 +65,6 @@ class TestMorphPresenter(MayaTestBase):
                 "target_name_edit",
                 "panel_combo",
                 "morph_type_combo",
-                "group_combo",
                 "preset_combo",
                 "morph_slider",
                 "morph_value_label",
@@ -157,7 +153,7 @@ class TestMorphPresenter(MayaTestBase):
 
         # モーフ選択をシミュレート
         mock_item = MagicMock()
-        mock_item.text.return_value = "test_morph"
+        mock_item.data.return_value = "test_morph"
         with patch.object(morph_presenter_module, "logger") as mock_logger:
             self.presenter.on_morph_selected(mock_item, None)
 
@@ -168,36 +164,8 @@ class TestMorphPresenter(MayaTestBase):
         self.mock_view.morph_name_en_edit.setText.assert_called_with("test_morph")
         self.mock_view.panel_combo.setCurrentIndex.assert_called_with(1)
         self.mock_view.morph_type_combo.setCurrentIndex.assert_called_with(0)
-        self.mock_view.group_combo.setCurrentText.assert_called_with("目")
 
         expected = "Selected morph: test_morph"
-        debug_messages = self._call_messages(mock_logger.debug)
-        info_messages = self._call_messages(mock_logger.info)
-        self.assertIn(expected, debug_messages)
-        self.assertNotIn(expected, info_messages)
-
-    def test_select_morph_in_maya_logs_at_debug_not_info(self):
-        """Maya 上のブレンドシェイプ選択は DEBUG で、選択と status 副作用は維持する。"""
-        mesh = cmds.polyCube(name="test_mesh")[0]
-        target = cmds.polyCube(name="test_target")[0]
-        blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
-        cmds.delete(target)
-
-        self.presenter.current_morph = "test_morph"
-        self.presenter.morph_data = {
-            "test_morph": {
-                "blend_shape_node": blend_shape,
-                "blend_shape_target": "test_target",
-            }
-        }
-
-        with patch.object(morph_presenter_module, "logger") as mock_logger:
-            self.presenter.select_morph_in_maya()
-
-        self.assertEqual(cmds.ls(selection=True), [blend_shape])
-        self.mock_app_state.emit_status.assert_called()
-
-        expected = f"Selected blend shape node in Maya: {blend_shape}"
         debug_messages = self._call_messages(mock_logger.debug)
         info_messages = self._call_messages(mock_logger.info)
         self.assertIn(expected, debug_messages)
@@ -276,8 +244,10 @@ class TestMorphPresenter(MayaTestBase):
         items = []
         for name in ["smile", "wink", "sad", "angry"]:
             item = MagicMock()
-            item.text.return_value = name
+            item.data.return_value = name
             items.append(item)
+
+        self.presenter.morph_data = {name: {"name_jp": name} for name in ["smile", "wink", "sad", "angry"]}
 
         self.mock_view.morph_list.count.return_value = len(items)
         self.mock_view.morph_list.item = lambda i: items[i]
@@ -454,7 +424,6 @@ class TestMorphPresenter(MayaTestBase):
         self.mock_view.morph_name_en_edit.text.return_value = "new_name"
         self.mock_view.panel_combo.currentIndex.return_value = 1
         self.mock_view.morph_type_combo.currentIndex.return_value = 2
-        self.mock_view.group_combo.currentText.return_value = "目"
 
         # 変更を適用
         self.presenter.apply_changes()
@@ -465,7 +434,7 @@ class TestMorphPresenter(MayaTestBase):
         self.assertEqual(data["name_en"], "new_name")
         self.assertEqual(data["panel"], 1)
         self.assertEqual(data["type"], 2)
-        self.assertEqual(data["group"], "目")
+        self.assertNotIn("group", data)
 
         # MMDアトリビュートに保存されたことを確認
         self.assertTrue(cmds.attributeQuery("mmdMorphData", node=test_model, exists=True))

@@ -23,15 +23,12 @@ from .translation_registry import apply_translation_registry
 
 class MorphTab(BaseTab):
     _TRANSLATION_REGISTRY = (
-        ("group_box", "setTitle", "morph_groups", "groups"),
+        ("group_filter_label", "setText", "panel_filter", "fields"),
         ("morph_list_group", "setTitle", "morph_list", "groups"),
         ("preview_group", "setTitle", "preview", "groups"),
         ("blend_group", "setTitle", "blendshape_connection", "groups"),
         ("advanced_group", "setTitle", "advanced_settings", "groups"),
-        ("add_group_btn", "setText", "add", "buttons"),
-        ("remove_group_btn", "setText", "delete", "buttons"),
         ("refresh_morphs_btn", "setText", "refresh", "buttons"),
-        ("select_in_maya_btn", "setText", "select_in_maya", "actions"),
         ("reset_slider_btn", "setText", "reset", "buttons"),
         ("reset_all_btn", "setText", "reset_all", "actions"),
         ("save_preset_btn", "setText", "save", "buttons"),
@@ -50,7 +47,6 @@ class MorphTab(BaseTab):
         ("morph_name_en_label", "setText", "morph_name_en", "fields"),
         ("panel_label", "setText", "panel", "fields"),
         ("morph_type_label", "setText", "type", "fields"),
-        ("group_label", "setText", "group", "fields"),
         ("status_label", "setText", "status", "fields"),
         ("node_label", "setText", "node", "fields"),
         ("target_name_label", "setText", "target_name", "fields"),
@@ -93,40 +89,20 @@ class MorphTab(BaseTab):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # グループリスト
-        self.group_box = QGroupBox(self.tr("morph_groups", "groups"))
-        group_layout = QVBoxLayout()
-
-        # ツールバー
-        toolbar_layout = QHBoxLayout()
-        self.add_group_btn = QPushButton(self.tr("add", "buttons"))
-        self.remove_group_btn = QPushButton(self.tr("delete", "buttons"))
-        self.add_group_btn.setMaximumWidth(60)
-        self.remove_group_btn.setMaximumWidth(60)
-        toolbar_layout.addWidget(self.add_group_btn)
-        toolbar_layout.addWidget(self.remove_group_btn)
-        toolbar_layout.addStretch()
-        group_layout.addLayout(toolbar_layout)
-
-        # グループリスト
-        self.group_list = QListWidget()
-        self.group_list.setAlternatingRowColors(True)
-
-        # デフォルトグループを追加
-        self.group_list.addItem(self.tr("show_all", "morph_groups"))
-        default_groups = [
+        self.group_filter_label = QLabel(self.tr("panel_filter", "fields"))
+        layout.addWidget(self.group_filter_label)
+        self.group_filter_combo = QComboBox()
+        self.group_filter_combo.addItem(self.tr("show_all", "morph_groups"), "")
+        default_groups = (
             self.tr("eyebrows", "morph_groups"),
             self.tr("eyes", "morph_groups"),
             self.tr("mouth", "morph_groups"),
             self.tr("other", "morph_groups"),
-        ]
-        for group in default_groups:
-            self.group_list.addItem(group)
-
-        group_layout.addWidget(self.group_list)
-
-        self.group_box.setLayout(group_layout)
-        layout.addWidget(self.group_box)
+        )
+        for panel, group in enumerate(default_groups, start=1):
+            self.group_filter_combo.addItem(group, panel)
+        layout.addWidget(self.group_filter_combo)
+        layout.addStretch()
 
         return widget
 
@@ -144,11 +120,7 @@ class MorphTab(BaseTab):
         toolbar_layout = QHBoxLayout()
         self.refresh_morphs_btn = QPushButton(self.tr("refresh", "buttons"))
         self.refresh_morphs_btn.setMaximumWidth(60)
-        self.select_in_maya_btn = QPushButton(self.tr("select_in_maya", "actions"))
-        self.select_in_maya_btn.setMaximumWidth(100)
-
         toolbar_layout.addWidget(self.refresh_morphs_btn)
-        toolbar_layout.addWidget(self.select_in_maya_btn)
         toolbar_layout.addStretch()
         morph_list_layout.addLayout(toolbar_layout)
 
@@ -311,22 +283,6 @@ class MorphTab(BaseTab):
         self.morph_type_label = QLabel(self.tr("type", "fields"))
         layout.addRow(self.morph_type_label, self.morph_type_combo)
 
-        # グループ設定
-        group_layout = QHBoxLayout()
-        self.group_combo = QComboBox()
-        self.group_combo.setEditable(True)
-        self.group_combo.addItems(
-            [
-                self.tr("eyebrows", "morph_groups"),
-                self.tr("eyes", "morph_groups"),
-                self.tr("mouth", "morph_groups"),
-                self.tr("other", "morph_groups"),
-            ]
-        )
-        group_layout.addWidget(self.group_combo)
-        self.group_label = QLabel(self.tr("group", "fields"))
-        layout.addRow(self.group_label, group_layout)
-
         return widget
 
     def _create_offset_info_tab(self):
@@ -444,13 +400,13 @@ class MorphTab(BaseTab):
             self.detail_tabs.setTabText(1, self.tr("offset_information", "tabs"))
             self.detail_tabs.setTabText(2, self.tr("maya_connection", "tabs"))
 
-        # Group list items
-        if self.group_list.count() >= 5:
-            self.group_list.item(0).setText(self.tr("show_all", "morph_groups"))
-            self.group_list.item(1).setText(self.tr("eyebrows", "morph_groups"))
-            self.group_list.item(2).setText(self.tr("eyes", "morph_groups"))
-            self.group_list.item(3).setText(self.tr("mouth", "morph_groups"))
-            self.group_list.item(4).setText(self.tr("other", "morph_groups"))
+        # PMX panel filter items
+        panel_filter_index = self.group_filter_combo.currentIndex()
+        self.group_filter_combo.clear()
+        self.group_filter_combo.addItem(self.tr("show_all", "morph_groups"), "")
+        for panel, key in enumerate(("eyebrows", "eyes", "mouth", "other"), start=1):
+            self.group_filter_combo.addItem(self.tr(key, "morph_groups"), panel)
+        self.group_filter_combo.setCurrentIndex(panel_filter_index)
 
         # ComboBox items - Panel
         self.panel_combo.clear()
