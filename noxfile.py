@@ -1474,6 +1474,19 @@ def maya_visual_regression(session: nox.Session) -> None:
     cmd.extend(forwarded)
     session.run(*cmd, external=True)
 
+    if not _has_flag(session.posargs, "--no-compare"):
+        comparison_cmd = [
+            python,
+            "tests/viewport/visual_regression_compare.py",
+            "--capture-report",
+            str(out_path / "visual-regression-report.json"),
+            "--out",
+            str(out_path / "visual-regression-comparison.json"),
+        ]
+        for threshold in _options(session.posargs, "--threshold"):
+            comparison_cmd.extend(["--threshold", threshold])
+        session.run(*comparison_cmd, external=True)
+
 
 @nox.session(venv_backend="none")
 def maya_asset_probe(session: nox.Session) -> None:

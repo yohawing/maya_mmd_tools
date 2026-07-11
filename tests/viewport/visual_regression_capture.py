@@ -799,6 +799,7 @@ def _capture_case(case):
         "name": case["name"],
         "ok": ok,
         "actual_png": str(actual),
+        "oracle_png": oracle,
         "diagnostics": str(diag_path),
         "stats": stats,
         "center_sample": center_sample,

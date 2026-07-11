@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Added pass/fail GoldenOracle viewport image comparisons with case-specific thresholds and flat-gray regression detection.
 - Added Maya Bullet import and preview simulation for PMX/PMD rigid bodies and joints, enabled by default when Bullet is available.
 - Added development-mode PMX round-trip preservation for rigid bodies, joints, and display frames, including focused round-trip gates.
 - Added an editable Physics panel with model-scoped filtering, selection, validated atomic updates, and persisted UI state.
