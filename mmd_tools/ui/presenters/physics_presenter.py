@@ -8,11 +8,11 @@ from ...core.physics_form_validation import (
     parse_joint_form,
     parse_rigid_body_form,
 )
+from ...core.constants import ATTR_MMD_SHOW_PHYSICS_COLLIDERS
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
 from ...core.visibility_state import (
     connect_visibility_attr_to_node,
-    get_visibility_category,
     set_visibility_category,
     sync_visibility_connections,
 )
@@ -143,10 +143,10 @@ class PhysicsPresenter:
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             return
 
-        refs = self._ensure_collider_locators(
-            self.physics_reader.collect(current_model_root),
-            current_model_root,
-        )
+        # Loading the always-visible tab must be observational only.  Missing
+        # display locators are not repaired here because creation would dirty
+        # the Maya scene merely by opening or activating the tab.
+        refs = self.physics_reader.collect(current_model_root)
         self._bone_names_by_index = self._collect_bone_names(current_model_root)
         rigid_names = {rigid.index: rigid.name for rigid in refs.rigid_bodies}
         for rigid_body in refs.rigid_bodies:
@@ -161,7 +161,6 @@ class PhysicsPresenter:
         self.filter_rigid_bodies(self._search_text("rigid_body_search_edit"))
         self.filter_joints(self._search_text("joint_search_edit"))
         self._sync_collider_visibility_control(current_model_root)
-        self._apply_collider_visibility(self._colliders_visible(current_model_root))
         # Lists are populated; details stay disabled until an explicit selection.
 
     def filter_rigid_bodies(self, text):
@@ -333,6 +332,15 @@ class PhysicsPresenter:
     def on_collider_visibility_toggled(self, visible):
         """Toggle display-only collider locator shapes."""
         model_root = self.app_state.current_model_root
+        if visible and model_root:
+            refs = PhysicsSceneRefs(
+                rigid_bodies=tuple(self._rigid_bodies_by_transform.values()),
+                joints=tuple(self._joints_by_transform.values()),
+            )
+            repaired = self._ensure_collider_locators(refs, model_root)
+            self._rigid_bodies_by_transform = {
+                rigid.transform: rigid for rigid in repaired.rigid_bodies
+            }
         if model_root:
             try:
                 set_visibility_category(self.maya_adapter, model_root, "colliders", bool(visible))
@@ -446,7 +454,17 @@ class PhysicsPresenter:
     def _colliders_visible(self, model_root: Optional[str] = None) -> bool:
         if model_root:
             try:
-                return get_visibility_category(self.maya_adapter, model_root, "colliders")
+                if self.maya_adapter.attribute_exists(
+                    ATTR_MMD_SHOW_PHYSICS_COLLIDERS,
+                    model_root,
+                ):
+                    return bool(
+                        self.maya_adapter.get_attr(
+                            f"{model_root}.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}"
+                        )
+                    )
+                # Match the release default without creating the missing attr.
+                return False
             except Exception:
                 pass
         collider_visible_check = getattr(self.view, "collider_visible_check", None)
@@ -459,13 +477,19 @@ class PhysicsPresenter:
         collider_visible_check = getattr(self.view, "collider_visible_check", None)
         if collider_visible_check is None:
             return
+        previous_blocked = None
         try:
+            if hasattr(collider_visible_check, "blockSignals"):
+                previous_blocked = collider_visible_check.blockSignals(True)
             if hasattr(collider_visible_check, "setChecked"):
                 collider_visible_check.setChecked(visible)
             elif hasattr(collider_visible_check, "set_checked"):
                 collider_visible_check.set_checked(visible)
         except Exception:
             pass
+        finally:
+            if previous_blocked is not None:
+                collider_visible_check.blockSignals(previous_blocked)
 
     def _iter_list_items(self, list_widget):
         """Yield items from a QListWidget via count/item when available."""

@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added pass/fail GoldenOracle viewport image comparisons with case-specific thresholds and flat-gray regression detection.
 - Added Maya Bullet import and preview simulation for PMX/PMD rigid bodies and joints, enabled by default when Bullet is available.
 - Added development-mode PMX round-trip preservation for rigid bodies, joints, and display frames, including focused round-trip gates.
-- Added an editable Physics panel with model-scoped filtering, selection, validated atomic updates, and persisted UI state.
+- Added an always-available, read-only Physics panel with model-scoped rigid-body and joint filtering and selection.
 - Added native `mmd-anim` physics motion bake with a Maya E2E route gate covering physics-driven bone channels and disabled preview feedback.
 - Added HumanIK definition and control-rig creation from supported imported MMD skeletons.
 
@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Limited custom import scale to Development Mode; normal imports now use scale 1.0.
 - Reduced routine importer, runtime, rig, morph, shader, physics, and UI selection log noise.
 - Simplified Import/Export settings and kept unfinished user-facing export actions hidden.
+- Made the read-only Physics tab available independently of Development Mode.
 
 ### Fixed
 - Fixed model-root viewport visibility controls: mesh and joint attributes now drive the `Geometry` and `Skeleton` parent groups immediately after import, while the nonfunctional IK/controller controls were removed.

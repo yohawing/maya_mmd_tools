@@ -93,15 +93,14 @@ class TestMainWindow(GuiTestBase):
         # タブウィジェットが存在する
         self.assertIsNotNone(self.window.tab_widget)
 
-        # 通常モードでは Physics タブなし: 6タブ
-        # （physics は dev mode のみ）
-        self.assertEqual(self.window.tab_widget.count(), 6)
+        # Physics を含む全タブは通常モードでも作成される
+        self.assertEqual(self.window.tab_widget.count(), 7)
 
         # 各タブのタイトルを確認（翻訳辞書から期待値を導出し、UI 言語に依存しない）
         from mmd_tools.ui.translations import UITranslator
 
         translator = UITranslator.instance()
-        tab_keys = ["file_io", "info", "material", "bone", "morph", "settings"]
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "physics", "settings"]
         expected_titles = [translator.translate(key, "tabs") for key in tab_keys]
 
         for i, title in enumerate(expected_titles):
@@ -119,14 +118,13 @@ class TestMainWindow(GuiTestBase):
         self.assertIsNotNone(self.window.morph_presenter)
         # display_pane_presenter は削除済みのため生成しない（属性自体が存在しない）
         self.assertFalse(hasattr(self.window, "display_pane_presenter"))
-        # 通常モード: Physics タブ/プレゼンターは存在しない
-        self.assertIsNone(self.window.physics_tab)
-        self.assertFalse(hasattr(self.window, "physics_presenter"))
+        self.assertIsNotNone(self.window.physics_tab)
+        self.assertIsNotNone(self.window.physics_presenter)
         self.assertIsNotNone(self.window.settings_presenter)
 
-    def test_physics_tab_in_dev_mode(self):
+    def test_physics_tab_is_independent_of_development_mode(self):
         """
-        開発モード (development_mode=True) では Physics タブとプレゼンターが作成される
+        Development Mode にかかわらず Physics タブとプレゼンターが作成される
         """
         from mmd_tools import settings as _s
 

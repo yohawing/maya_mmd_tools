@@ -28,7 +28,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Rig (IK / grant / local axis) | ✅ | Supported |
 | Display frames (表示枠) | 🔶 | Preserved as model metadata for development-mode PMX round-trip; no dedicated editing UI yet |
 | Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, and group controls are supported. Material morph metadata is imported, but shader runtime connections are disabled until all PMX material channels can be reproduced safely. UV, Flip, and Impulse morphs are not supported. |
-| Rigid bodies & joints | 🧪 | Imported as Maya Bullet nodes with preview simulation and development-mode PMX round-trip metadata |
+| Rigid bodies & joints | 🧪 | Imported as Maya Bullet nodes with preview simulation. The normal Physics tab provides read-only inspection of model-scoped rigid bodies and joints. |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
 | HumanIK | 🧪 | Experimental Bone tab action creates a HumanIK definition/control rig from the imported MMD skeleton |
 | Export | ⛔ | Not supported |
@@ -62,7 +62,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 - **UV, Flip, and Impulse morphs are not supported.** Vertex, bone, material, and group controls are available.
 - **Soft body (PMX 2.1) data is silently ignored.** The rest of the file still imports correctly.
 - **Display frames (表示枠) are preserved for PMX round-trip but do not have a dedicated editing UI.**
-- **Physics is experimental.** PMX/PMD rigid bodies and joints are imported by default when Maya Bullet is available; native physics motion bake remains an opt-in path.
+- **Physics is experimental.** PMX/PMD rigid bodies and joints are imported by default when Maya Bullet is available. The Physics tab is always available for read-only inspection; native physics motion bake remains an opt-in path.
 - **Bake mode is the fidelity path for VMD motion.** It bakes final poses from the `mmd-anim` runtime and is the recommended path when matching MMD output matters.
 - **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
 - **HumanIK setup requires a valid full-body skeleton.** The Bone tab action reports an error if Maya cannot create the HumanIK control rig from the current model.

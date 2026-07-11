@@ -26,7 +26,7 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 | リグ（IK・付与・ローカル軸 ） | ✅ | 対応 |
 | 表示枠 | 🔶 | Development ModeのPMX round-trip用metadataとして保持。専用編集UIは未対応。 |
 | モーフ（頂点・ボーン・マテリアル・グループ・UV） | 🔶 | 頂点・ボーン・グループの操作に対応。マテリアルモーフはmetadataのみimportし、全PMX material channelを安全に再現できるまでshader runtime結線は無効。UV・Flip・Impulseは未対応。 |
-| 剛体・ジョイント | 🧪 | Maya Bullet nodeとしてimportし、preview simulationとDevelopment ModeのPMX round-trip metadataに対応。 |
+| 剛体・ジョイント | 🧪 | Maya Bullet nodeとしてimportし、preview simulationに対応。通常表示されるPhysicsタブからモデル単位の剛体・ジョイントを読み取り専用で確認可能。 |
 | ソフトボディ（PMX 2.1） | ⛔ | 非対応 |
 | HumanIK | 🧪 | Boneタブからインポート済みMMDスケルトンのHumanIK定義/control rigを作成（実験的） |
 | エクスポート | ⛔ | 未対応 |
@@ -49,7 +49,7 @@ MMDのリグの再現及び、アニメーションのインポート・編集�
 - **追加 UV / multi-UV は適用されません。**
 - **マテリアルモーフのshader runtime結線は無効です。** metadataは保持しますが、diffuse/alpha、specular、ambient、edge color/size、texture/sphere/toon factorを一体で再現できるまでshader parameterへ接続しません。
 - **UV、Flip、Impulse モーフは未対応です。** 頂点・ボーン・マテリアル・グループの操作に対応します。
-- **物理は実験的です。** Maya Bulletが利用できる場合はPMX/PMDの剛体・ジョイントを既定でimportします。native physics motion bakeはopt-inです。
+- **物理は実験的です。** Maya Bulletが利用できる場合はPMX/PMDの剛体・ジョイントを既定でimportします。Physicsタブは常時表示され、読み取り専用で確認できます。native physics motion bakeはopt-inです。
 - **表示枠はPMX round-trip用に保持されますが、専用編集UIは未対応です。**
 - **VMD の忠実度を優先する場合はベイクモードを使用してください。** ベイクモードは `mmd-anim` runtime の最終姿勢を焼き込みます。
 - **リグモードは複雑なモーションの一致性が未保証です。** sparse key と live `mmdCcdIk` / `mmdAppend` ノードを保持して編集しやすくしますが、jointOrient、IK、付与、ローカル軸を含むケースでは、ベイクモードや MMD のメッシュ変形と完全には一致しない場合があります。

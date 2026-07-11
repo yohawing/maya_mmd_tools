@@ -246,12 +246,8 @@ class MainWindow(QMainWindow):
         self.morph_presenter = MorphPresenter(morph_tab, self.app_state)
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
 
-        # Physics Tab — dev mode only (physics import is a dev-only feature)
-        is_dev = self.settings_service.is_development_mode()
-        if is_dev:
-            self._add_physics_tab()
-        else:
-            self.physics_tab = None
+        # Physics Tab
+        self._add_physics_tab()
 
         # Settings Tab
         settings_tab = SettingsTab()
@@ -265,13 +261,12 @@ class MainWindow(QMainWindow):
             material_tab,
             bone_tab,
             morph_tab,
+            self.physics_tab,
+            settings_tab,
         ]
-        if self.physics_tab is not None:
-            self.tabs.append(self.physics_tab)
-        self.tabs.append(settings_tab)
 
     def _add_physics_tab(self, insert_index=None):
-        """Create the dev-only Physics tab and add it to the tab widget."""
+        """Create the Physics tab and add it to the tab widget."""
         from .translations import UITranslator
 
         translator = UITranslator.instance()
@@ -296,21 +291,6 @@ class MainWindow(QMainWindow):
         if hasattr(self, "import_export_tab"):
             self.import_export_tab._apply_dev_mode_visibility()
 
-        is_dev = self.settings_service.is_development_mode()
-        physics_index = self.tab_widget.indexOf(self.physics_tab) if self.physics_tab is not None else -1
-
-        if is_dev and self.physics_tab is None:
-            insert_index = max(0, self.tab_widget.count() - 1)
-            physics_tab = self._add_physics_tab(insert_index)
-            self.tabs.insert(insert_index, physics_tab)
-        elif not is_dev and physics_index >= 0:
-            self.tab_widget.removeTab(physics_index)
-            if self.physics_tab in self.tabs:
-                self.tabs.remove(self.physics_tab)
-            self.physics_tab.deleteLater()
-            self.physics_tab = None
-            self.physics_presenter = None
-
         from mmd_tools.plugin_main import install_mmd_menu
 
         install_mmd_menu()
@@ -322,11 +302,7 @@ class MainWindow(QMainWindow):
         translator = UITranslator.instance()
 
         # タブのタイトルを実際に追加されたタブに合わせて再設定
-        # physics は dev mode のみ存在する。
-        tab_keys = ["file_io", "info", "material", "bone", "morph"]
-        if getattr(self, "physics_tab", None) is not None:
-            tab_keys.append("physics")
-        tab_keys.append("settings")
+        tab_keys = ["file_io", "info", "material", "bone", "morph", "physics", "settings"]
         for i, key in enumerate(tab_keys):
             self.tab_widget.setTabText(i, translator.translate(key, "tabs"))
 

@@ -106,6 +106,7 @@ class _FakeButton:
 class _FakeCheck:
     def __init__(self, checked=True):
         self._checked = checked
+        self._signals_blocked = False
         self.toggled = _FakeSignal()
 
     def isChecked(self):
@@ -113,10 +114,19 @@ class _FakeCheck:
 
     def set_checked(self, checked):
         self._checked = checked
-        self.toggled.emit(checked)
+        if not self._signals_blocked:
+            self.toggled.emit(checked)
 
     def setChecked(self, checked):
+        changed = self._checked != checked
         self._checked = checked
+        if changed and not self._signals_blocked:
+            self.toggled.emit(checked)
+
+    def blockSignals(self, block):
+        previous = self._signals_blocked
+        self._signals_blocked = bool(block)
+        return previous
 
 
 class _FakeLabel:
@@ -1147,7 +1157,7 @@ class TestPhysicsPresenter(unittest.TestCase):
         self.assertFalse(any(call[0] == "create_node" for call in adapter.calls))
         self.assertIsNone(presenter._rigid_bodies_by_transform["|root|rb5"].locator_shape)
 
-    def test_load_physics_repairs_missing_collider_locator_when_bullet_shape_absent(self):
+    def test_load_physics_does_not_repair_missing_locator_or_write_visibility(self):
         refs = PhysicsSceneRefs(
             rigid_bodies=(
                 _rigid("|root|rb5", 5, "hair", shape_type=2, locator_shape=None),
@@ -1156,19 +1166,54 @@ class TestPhysicsPresenter(unittest.TestCase):
         )
         # Bullet shape path is not present in existing_nodes => structurally absent.
         adapter = _FakeMayaAdapter(existing_nodes={TEST_MODEL, "|root|rb5"})
-        presenter, _, _, adapter, _ = _make_presenter(
+        presenter, view, _, adapter, _ = _make_presenter(
             adapter=adapter,
             reader=_FakePhysicsReader(refs),
         )
+        adapter.attrs[(TEST_MODEL, "mmd_show_physics_colliders")] = False
 
         presenter.load_physics()
 
+        mutating_calls = {"create_node", "set_attr", "add_attr", "connect_attr"}
+        self.assertFalse(any(call[0] in mutating_calls for call in adapter.calls))
+        self.assertIsNone(presenter._rigid_bodies_by_transform["|root|rb5"].locator_shape)
+        self.assertFalse(view.collider_visible_check.isChecked())
+        self.assertFalse(adapter.attrs[(TEST_MODEL, "mmd_show_physics_colliders")])
+
+        adapter.calls.clear()
+        presenter.refresh_physics()
+        self.assertFalse(any(call[0] in mutating_calls for call in adapter.calls))
+
+    def test_collider_visibility_on_repairs_and_shows_missing_locator(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(
+                _rigid("|root|rb5", 5, "hair", shape_type=2, locator_shape=None),
+            ),
+            joints=(),
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={TEST_MODEL, "|root|rb5"})
+        presenter, view, _, adapter, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(refs),
+        )
+        presenter.load_physics()
+        adapter.calls.clear()
+
+        view.collider_visible_check.set_checked(True)
+
         created = "|root|rb5|rb5_colliderLocatorShape"
-        self.assertIn(("create_node", "mmdRigidBodyLocator", "rb5_colliderLocatorShape", "|root|rb5"), adapter.calls)
-        self.assertEqual(presenter._rigid_bodies_by_transform["|root|rb5"].locator_shape, created)
-        self.assertIn(("set_attr", (f"{created}.colliderShapeType", 3), {}), adapter.calls)
-        self.assertIn(("set_attr", (f"{created}.radius", 0.5), {}), adapter.calls)
-        self.assertIn(("set_attr", (f"{created}.length", 2.5), {}), adapter.calls)
+        self.assertIn(
+            ("create_node", "mmdRigidBodyLocator", "rb5_colliderLocatorShape", "|root|rb5"),
+            adapter.calls,
+        )
+        self.assertEqual(
+            presenter._rigid_bodies_by_transform["|root|rb5"].locator_shape,
+            created,
+        )
+        self.assertIn(
+            ("set_attr", (f"{TEST_MODEL}.mmd_show_physics_colliders", True), {}),
+            adapter.calls,
+        )
         self.assertIn(
             (
                 "connect_attr",
@@ -1178,6 +1223,26 @@ class TestPhysicsPresenter(unittest.TestCase):
             ),
             adapter.calls,
         )
+
+    def test_collider_visibility_off_does_not_create_missing_locator(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(
+                _rigid("|root|rb5", 5, "hair", shape_type=2, locator_shape=None),
+            ),
+            joints=(),
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={TEST_MODEL, "|root|rb5"})
+        presenter, view, _, adapter, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(refs),
+        )
+        presenter.load_physics()
+        adapter.calls.clear()
+
+        view.collider_visible_check.set_checked(False)
+
+        self.assertFalse(any(call[0] == "create_node" for call in adapter.calls))
+        self.assertIsNone(presenter._rigid_bodies_by_transform["|root|rb5"].locator_shape)
 
 
 if __name__ == "__main__":

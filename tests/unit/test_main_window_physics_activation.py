@@ -2,7 +2,7 @@
 
 import sys
 from types import ModuleType
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs, install_maya_stub
 
@@ -42,3 +42,26 @@ def test_physics_refreshes_only_when_its_main_tab_activates():
 
     MainWindow._on_main_tab_changed(window, 1)
     presenter.refresh_physics.assert_called_once_with()
+
+
+def test_development_visibility_refresh_does_not_rebuild_physics_tab():
+    physics_tab = object()
+    physics_presenter = object()
+    import_export_tab = Mock()
+    window = type(
+        "Window",
+        (),
+        {
+            "import_export_tab": import_export_tab,
+            "physics_tab": physics_tab,
+            "physics_presenter": physics_presenter,
+        },
+    )()
+
+    with patch("mmd_tools.plugin_main.install_mmd_menu") as install_menu:
+        MainWindow.refresh_development_mode_visibility(window)
+
+    import_export_tab._apply_dev_mode_visibility.assert_called_once_with()
+    install_menu.assert_called_once_with()
+    assert window.physics_tab is physics_tab
+    assert window.physics_presenter is physics_presenter
