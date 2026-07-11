@@ -48,17 +48,17 @@ RELEASE_ADDICTION_CAMERA_VMD = (
     "F:/MMD/vmd/175_Addictionカメラモーションv1.3/"
     "Addictionカメラモーション/Addictionカメラ用モーション(一人用).vmd"
 )
-MMD_ANIM_CLI_VERSION = "v0.1.9"
+MMD_ANIM_CLI_VERSION = "v0.2.0"
 MMD_ANIM_CLI_REPO = "yohawing/mmd-anim"
 MMD_ANIM_CLI_ASSETS = {
     "Windows": {
-        "archive": "mmd-anim-v0.1.9-x86_64-pc-windows-msvc.zip",
-        "sha256": "8fa674e2b8104324aaf84351ec91e857c47a768345a5e806c5da543cca0b2859",
+        "archive": "mmd-anim-v0.2.0-x86_64-pc-windows-msvc.zip",
+        "sha256": "e50315413aec8525ca4d04f8ea5e2770d1656cb7e7de8b7987db7e3f3218405f",
         "exe": "mmd-anim.exe",
     },
     "Linux": {
-        "archive": "mmd-anim-v0.1.9-x86_64-unknown-linux-gnu.tar.gz",
-        "sha256": "821164e1db3191492303b5290b0a9166fd6bede41384eb805836f4ed3e03a576",
+        "archive": "mmd-anim-v0.2.0-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "11dedde4b929aaca53d9e4ce6966627425fcba31beba61686e7a9e7c87c1ae0e",
         "exe": "mmd-anim",
     },
 }
@@ -199,7 +199,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _mmd_anim_cli_version(exe: Path) -> str:
-    """Return the mmd-anim CLI version string."""
+    """Return the first non-empty line of the mmd-anim CLI version output."""
     result = subprocess.run(
         [str(exe), "--version"],
         cwd=ROOT,
@@ -207,7 +207,7 @@ def _mmd_anim_cli_version(exe: Path) -> str:
         capture_output=True,
         text=True,
     )
-    return result.stdout.strip()
+    return next((line.strip() for line in result.stdout.splitlines() if line.strip()), "")
 
 
 def _download_file(url: str, destination: Path) -> None:
