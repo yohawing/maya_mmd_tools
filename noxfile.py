@@ -43,6 +43,15 @@ DEFAULT_RELEASE_VIEWPORT_MATRIX = (
     ("2025", "glsl", "glcore"),
     ("2026", "dx11", "dx11"),
 )
+DEFAULT_GOLDEN_ORACLE_RENDER_MANIFEST = "F:/Develop/MMDDev/GoldenOracle/manifests/fixture.render.json"
+RELEASE_VISUAL_CASES = (
+    "fixture-render-generated-visual-mmd-diffuse-lit-box",
+    "fixture-render-generated-visual-mmd-toon-ramp-lit-box",
+    "fixture-render-generated-visual-mmd-texture-uv-orientation-plane",
+    "fixture-render-generated-visual-mmd-sphere-texture-add",
+    "fixture-render-generated-visual-mmd-alpha-blend-overlap",
+    "fixture-render-generated-visual-mmd-outline-normal-silhouette",
+)
 MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = 0x3
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
 RELEASE_ADDICTION_INTERPOLATION_EYE_MAX = "2.0"
@@ -1983,6 +1992,13 @@ def release_gate(session: nox.Session) -> None:
         "tests/data/camera_motion/manifest.json",
     )
     local_parity_manifest = _option(args, "--local-parity-manifest", "local-parity-manifest.json")
+    visual_manifest = Path(
+        _option(
+            args,
+            "--visual-manifest",
+            os.environ.get("GOLDEN_ORACLE_RENDER_MANIFEST", DEFAULT_GOLDEN_ORACLE_RENDER_MANIFEST),
+        )
+    )
     results: list[dict[str, object]] = []
 
     tier0_commands = [
@@ -2053,6 +2069,48 @@ def release_gate(session: nox.Session) -> None:
                         f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.json",
                     ],
                 )
+            )
+        if visual_manifest.is_file():
+            visual_outputs = {}
+            for maya_version, shader_backend, vp2_device in DEFAULT_RELEASE_VIEWPORT_MATRIX:
+                output = f"build/release-gate/visual/maya{maya_version}-{shader_backend}"
+                visual_outputs[shader_backend] = output
+                command = [
+                    "uvx", "nox", "-s", "maya_visual_regression", "--",
+                    "--maya", maya_version,
+                    "--shader-backend", shader_backend,
+                    "--vp2-device", vp2_device,
+                    "--manifest", str(visual_manifest),
+                    "--out", output,
+                ]
+                for case in RELEASE_VISUAL_CASES:
+                    command.extend(["--case", case])
+                tier2_commands.append((f"tier2:generated-pmx-visual-{shader_backend}-{maya_version}", command))
+            tier2_commands.append(
+                (
+                    "tier2:generated-pmx-glsl-dx11-diff",
+                    [
+                        sys.executable,
+                        "tests/viewport/visual_regression_compare.py",
+                        "--reference-capture-report",
+                        f"{visual_outputs['dx11']}/visual-regression-report.json",
+                        "--capture-report",
+                        f"{visual_outputs['glsl']}/visual-regression-report.json",
+                        "--out",
+                        "build/release-gate/visual/glsl-dx11-comparison.json",
+                        "--default-threshold",
+                        "0.12",
+                    ],
+                )
+            )
+        else:
+            _run_release_gate_callable(
+                "tier2:generated-pmx-visual-manifest",
+                lambda: (_ for _ in ()).throw(FileNotFoundError(
+                    f"GoldenOracle render manifest not found: {visual_manifest}. "
+                    "Pass --visual-manifest or set GOLDEN_ORACLE_RENDER_MANIFEST."
+                )),
+                results,
             )
         tier2_commands.extend([
             (

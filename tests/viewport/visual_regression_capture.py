@@ -82,9 +82,9 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--launch-mode",
-        choices=["direct", "powershell"],
-        default="powershell" if os.name == "nt" else "direct",
-        help="How to launch Maya when not attaching. powershell uses Start-Process on Windows.",
+        choices=["direct", "powershell", "explorer"],
+        default="explorer" if os.name == "nt" else "direct",
+        help="How to launch Maya when not attaching. explorer is the stable detached Windows route.",
     )
     parser.add_argument(
         "--attach-existing",

@@ -119,6 +119,17 @@ for the two representative VP2 paths:
 uvx nox -s release_gate -- --with-cpp --cpp-config Release
 ```
 
+The non-quick gate also imports six generated-PMX GoldenOracle fixtures covering
+diffuse, toon, UV, sphere, alpha, and outline rendering. It compares Maya 2025
+GLSL and Maya 2026 DX11 captures with their oracle PNGs, then writes a gated
+GLSL-vs-DX11 report to `build/release-gate/visual/glsl-dx11-comparison.json`.
+The GoldenOracle manifest is required and is never silently skipped. Override
+the local default with `--visual-manifest <fixture.render.json>` or the
+`GOLDEN_ORACLE_RENDER_MANIFEST` environment variable. The lightweight cube
+viewport captures remain in the gate as startup/device smoke tests. Oracle and
+capture inputs must be the non-interlaced 8-bit RGB/RGBA PNGs produced by the
+GoldenOracle and Maya capture pipelines; other PNG encodings fail explicitly.
+
 The remaining asset/oracle E2E gates use the primary `--maya` version (2024 by
 default). Override it with `--maya <version>` when narrowing a rerun.
 

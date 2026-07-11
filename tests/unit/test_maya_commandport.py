@@ -9,6 +9,29 @@ from tests.common import maya_commandport
 
 
 class TestMayaCommandPort(unittest.TestCase):
+    def test_launch_maya_explorer_writes_detached_launcher(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            executable = root / "maya.exe"
+            executable.touch()
+            output = root / "out"
+            with mock.patch.object(maya_commandport, "maya_exe", return_value=executable), mock.patch.object(
+                maya_commandport.platform, "system", return_value="Windows"
+            ), mock.patch.object(maya_commandport.subprocess, "run") as run:
+                result = maya_commandport.launch_maya(
+                    version="2025",
+                    project_root=root,
+                    output_dir=output,
+                    port=7788,
+                    launch_mode="explorer",
+                    env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceGLCore"},
+                )
+            self.assertIsNone(result)
+            self.assertIn('commandPort -name ":7788"', (output / "commandport_7788.mel").read_text(encoding="utf-8"))
+            batch = (output / "launch_maya_2025_7788.bat").read_text(encoding="utf-8")
+            self.assertIn("MAYA_VP2_DEVICE_OVERRIDE=VirtualDeviceGLCore", batch)
+            self.assertEqual("explorer.exe", run.call_args.args[0][0])
+
     def test_send_python_wraps_code_as_compiled_exec_payload(self):
         received = []
         ready = threading.Event()

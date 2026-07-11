@@ -116,14 +116,14 @@ def launch_maya(
     project_root: Path,
     output_dir: Path,
     port: int,
-    launch_mode: str = "powershell",
+    launch_mode: str = "explorer" if platform.system() == "Windows" else "direct",
     env_overrides: Optional[dict[str, str]] = None,
 ) -> Optional[subprocess.Popen]:
     """Launch Maya GUI with a Python commandPort.
 
-    On Windows, ``powershell`` uses Start-Process so Maya is not a direct console
-    child.  That avoids the Autodesk licensing failure seen when spawning
-    maya.exe directly from some automation shells.
+    On Windows, ``explorer`` opens a temporary BAT that starts Maya with a MEL
+    commandPort script. This detaches Maya from the automation console and is
+    the stable local route for Autodesk license checkout.
     """
     executable = maya_exe(version)
     if not executable.is_file():
@@ -137,6 +137,22 @@ def launch_maya(
         env.update(env_overrides)
 
     command = [str(executable), "-command", f'commandPort -name ":{port}" -sourceType "python";']
+    if platform.system() == "Windows" and launch_mode == "explorer":
+        mel_path = (output_dir / f"commandport_{port}.mel").resolve()
+        bat_path = (output_dir / f"launch_maya_{version}_{port}.bat").resolve()
+        mel_path.write_text(f'commandPort -name ":{port}" -sourceType "python";\n', encoding="utf-8")
+        env_lines = [f'set "{name}={env[name]}"' for name in ("PYTHONPATH", "MAYA_MODULE_PATH")]
+        env_lines.extend(f'set "{name}={value}"' for name, value in (env_overrides or {}).items())
+        bat_lines = [
+            "@echo off",
+            *env_lines,
+            f'start "" /D "{project_root}" "{executable}" -script "{mel_path}"',
+        ]
+        bat_path.write_text("\r\n".join(bat_lines) + "\r\n", encoding="utf-8")
+        # Explorer may return 1 even after successfully opening the BAT (the
+        # stable signal is the commandPort becoming reachable, not its status).
+        subprocess.run(["explorer.exe", str(bat_path)], cwd=str(project_root), check=False)
+        return None
     if platform.system() == "Windows" and launch_mode == "powershell":
         escaped_args = "@(" + ", ".join("'" + arg.replace("'", "''") + "'" for arg in command[1:]) + ")"
         subprocess.run(
