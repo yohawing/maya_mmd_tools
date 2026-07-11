@@ -47,8 +47,10 @@ class TestMorphTabGUI(GuiTestBase):
         presenter = None
         try:
             app_state = ApplicationState()
-            app_state._current_model_root = root
             presenter = MorphPresenter(tab, app_state)
+            # Set the fixture after construction so no delayed initial-load
+            # callback can outlive this test's widget.
+            app_state._current_model_root = root
             presenter.load_morphs()
             QApplication.processEvents()
 

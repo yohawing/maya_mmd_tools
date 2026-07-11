@@ -216,6 +216,29 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             self.assertIsNone(route.attr_name)
             self.assertEqual(route.skip_reason, "dx11_vp2_not_directx11:mat_dx11_gl")
 
+    def test_dx11_unknown_api_fails_closed_even_with_usable_rgb_plug(self):
+        cmds = self._patch_cmds()
+        cmds.nodeType.return_value = "dx11Shader"
+        cmds.attributeQuery.side_effect = _attr_query_side_effect(
+            exists={"DiffuseColorRGB": True},
+            writable={"DiffuseColorRGB": True},
+        )
+        cmds.getAttr.side_effect = _rgb_safe_get_attr()
+
+        route = self._resolve(
+            cmds,
+            "mat_dx11_standalone",
+            vp2_api=material_morph_runtime.VP2_API_UNKNOWN,
+        )
+
+        self.assertFalse(route.is_usable)
+        self.assertEqual(route.backend, material_morph_runtime.BACKEND_DX11)
+        self.assertIsNone(route.attr_name)
+        self.assertEqual(
+            route.skip_reason,
+            "dx11_vp2_not_directx11:mat_dx11_standalone",
+        )
+
     def test_dx11_skips_when_rgb_plug_missing_locked_or_wrong_type(self):
         cases = (
             ({"DiffuseColorRGB": False}, True, "double3", "missing"),
@@ -300,6 +323,29 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             route = self._resolve(cmds, "mat_glsl_dx", vp2_api=api)
             self.assertFalse(route.is_usable, api)
             self.assertEqual(route.skip_reason, "glsl_vp2_not_opengl:mat_glsl_dx")
+
+    def test_glsl_unknown_api_fails_closed_even_with_usable_rgb_plug(self):
+        cmds = self._patch_cmds()
+        cmds.nodeType.return_value = "GLSLShader"
+        cmds.attributeQuery.side_effect = _attr_query_side_effect(
+            exists={"DiffuseColorRGB": True},
+            writable={"DiffuseColorRGB": True},
+        )
+        cmds.getAttr.side_effect = _rgb_safe_get_attr(attr_type="float3")
+
+        route = self._resolve(
+            cmds,
+            "mat_glsl_standalone",
+            vp2_api=material_morph_runtime.VP2_API_UNKNOWN,
+        )
+
+        self.assertFalse(route.is_usable)
+        self.assertEqual(route.backend, material_morph_runtime.BACKEND_GLSL)
+        self.assertIsNone(route.attr_name)
+        self.assertEqual(
+            route.skip_reason,
+            "glsl_vp2_not_opengl:mat_glsl_standalone",
+        )
 
     def test_glsl_skips_when_only_legacy_vec4_or_plug_unsafe(self):
         # Only vec4 DiffuseColor present — must fail closed (never reconnect vec4).

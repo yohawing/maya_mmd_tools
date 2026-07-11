@@ -324,6 +324,36 @@ class TestBoneMorphRuntime(MayaTestBase):
         self.assertIn("create_failed", availability["detail"])
         cmds_mock.delete.assert_not_called()
 
+    def test_probe_create_failure_preserves_scene_modified_and_restores_undo(self):
+        """Unproven create failure keeps scene ownership visible but restores undo."""
+        cmds_mock = mock.Mock()
+        cmds_mock.file.side_effect = lambda **kwargs: True if kwargs.get("query") else None
+        cmds_mock.undoInfo.side_effect = lambda **kwargs: True if kwargs.get("query") else None
+        cmds_mock.createNode.side_effect = RuntimeError("unavailable")
+        cmds_mock.objExists.return_value = False
+
+        with mock.patch.object(bone_morph_runtime, "cmds", cmds_mock):
+            bone_morph_runtime.probe_bone_morph_accum_availability()
+
+        self.assertIn(mock.call(stateWithoutFlush=False), cmds_mock.undoInfo.call_args_list)
+        self.assertIn(mock.call(stateWithoutFlush=True), cmds_mock.undoInfo.call_args_list)
+        self.assertNotIn(mock.call(modified=True), cmds_mock.file.call_args_list)
+
+    def test_probe_does_not_hide_scene_change_when_cleanup_fails(self):
+        """A residual probe node must leave Maya's scene visibly dirty."""
+        cmds_mock = mock.Mock()
+        cmds_mock.file.side_effect = lambda **kwargs: False if kwargs.get("query") else None
+        cmds_mock.undoInfo.side_effect = lambda **kwargs: True if kwargs.get("query") else None
+        cmds_mock.createNode.return_value = bone_morph_runtime._PROBE_NODE_NAME
+        cmds_mock.nodeType.return_value = "unknown"
+        cmds_mock.objExists.return_value = True
+        cmds_mock.delete.side_effect = RuntimeError("delete failed")
+
+        with mock.patch.object(bone_morph_runtime, "cmds", cmds_mock):
+            bone_morph_runtime.probe_bone_morph_accum_availability()
+
+        self.assertNotIn(mock.call(modified=False), cmds_mock.file.call_args_list)
+
     def test_probe_deletes_unknown_node_and_reports_unavailable(self):
         """Unknown node returned by createNode is deleted and fails soft."""
         probe_name = bone_morph_runtime._PROBE_NODE_NAME

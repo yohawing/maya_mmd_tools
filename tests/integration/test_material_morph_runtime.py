@@ -13,7 +13,9 @@ from mmd_tools.converters.material_morph_runtime import (
     BACKEND_DX11,
     BACKEND_GLSL,
     BACKEND_STANDARD,
+    VP2_API_DIRECTX11,
     build_material_morph_graph,
+    detect_effective_vp2_draw_api,
     resolve_shader_color_route,
 )
 from mmd_tools.converters.mesh_converter import _ensure_mmd_shader_uniform_attributes
@@ -535,9 +537,17 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
 
         graph = build_material_morph_graph(root)
         route = resolve_shader_color_route(shader)
+        effective_api = detect_effective_vp2_draw_api()
 
         if not route.is_usable:
-            # Non-DX11 VP2, missing effect RGB, or unroutable plug: fail closed.
+            # A proven DX11 session must expose a usable effect route; otherwise
+            # this is a regression, not an acceptable headless skip path.
+            if effective_api == VP2_API_DIRECTX11:
+                self.fail(
+                    "DX11 VP2 did not produce a usable material morph route: "
+                    f"{route.skip_reason} (has_rgb={has_rgb}, graph={graph!r})"
+                )
+            # Non-DX11 VP2 or a headless session without the effect plug fails closed.
             self.assertEqual(route.backend, BACKEND_DX11)
             self.assertTrue(
                 (route.skip_reason or "").startswith("dx11_"),

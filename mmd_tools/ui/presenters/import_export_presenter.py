@@ -370,7 +370,7 @@ class ImportExportPresenter(QObject):
                 logger.warning("Import completed with warnings.")
                 # Exactly one modal per import operation:
                 # - texture-only partial → texture repair dialog (no generic modal)
-                # - any non-texture warning → generic partial modal (no texture modal)
+                # - mixed warnings → generic summary, then actionable texture repair
                 texture_only = (not is_vmd) and self._partial_warnings_are_texture_only(
                     getattr(result, "warnings", None)
                 )
@@ -382,6 +382,10 @@ class ImportExportPresenter(QObject):
                     show_dialog=not texture_only,
                 )
                 if texture_only:
+                    self._maybe_show_texture_issue_dialog(import_profile, file_path)
+                elif not is_vmd and any(
+                    self._is_texture_issue_warning(item) for item in (getattr(result, "warnings", None) or [])
+                ):
                     self._maybe_show_texture_issue_dialog(import_profile, file_path)
             else:
                 logger.info("Import successful.")

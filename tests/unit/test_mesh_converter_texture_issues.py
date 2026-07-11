@@ -15,6 +15,8 @@ from mmd_tools.converters.mesh_converter import (  # noqa: E402
     MeshConverter,
     _set_dx11_color_uniform,
     bind_dx11_texture_file_node,
+    migrate_legacy_glsl_diffuse_contracts,
+    sync_dx11_generated_uniforms,
 )
 from mmd_tools.core.settings import settings  # noqa: E402
 
@@ -164,6 +166,326 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         self.assertIn(call("Face_shader.DiffuseColorB", 0.3), mock_cmds.setAttr.call_args_list)
         self.assertNotIn(call("Face_shader.DiffuseColorA", 0.4), mock_cmds.setAttr.call_args_list)
         mock_warning.assert_not_called()
+
+    def test_sync_migrates_legacy_glsl_vec4_without_changing_rgb_or_alpha(self):
+        legacy = (0.17, 0.29, 0.41, 0.63)
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ):
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "mmd_material",
+                "DiffuseColor",
+                "DiffuseColorRGB",
+                "DiffuseColorA",
+            }
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: False if kwargs.get("lock") else (
+                [legacy[:3]] if plug.endswith("DiffuseColorRGB") else legacy[3] if plug.endswith("DiffuseColorA") else [legacy]
+            )
+            mock_cmds.listConnections.return_value = []
+
+            mock_cmds.ls.side_effect = lambda **kwargs: (
+                ["legacy_glsl"] if kwargs.get("type") == "GLSLShader" else []
+            )
+            synced = sync_dx11_generated_uniforms()
+
+        self.assertEqual(synced, 1)
+        self.assertIn(
+            call("legacy_glsl.DiffuseColorRGB", *legacy[:3], type="double3"),
+            mock_cmds.setAttr.call_args_list,
+        )
+        self.assertIn(call("legacy_glsl.DiffuseColorA", legacy[3]), mock_cmds.setAttr.call_args_list)
+        self.assertIn(
+            call("legacy_glsl.mmdDiffuseRgbContractVersion", 1),
+            mock_cmds.setAttr.call_args_list,
+        )
+
+    def test_scene_wide_markerless_current_glsl_does_not_migrate(self):
+        pmx_rgb = (0.11, 0.22, 0.33)
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ):
+            mock_cmds.ls.side_effect = lambda **kwargs: ["current_glsl"] if kwargs.get("type") == "GLSLShader" else []
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "mmd_material", "diffuse_color", "Opacity", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
+            }
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: False if kwargs.get("lock") else (
+                [pmx_rgb] if plug.endswith(".diffuse_color") else 0.44
+            )
+            mock_cmds.listConnections.return_value = []
+
+            synced = sync_dx11_generated_uniforms()
+
+        self.assertEqual(synced, 1)
+        self.assertIn(
+            call("current_glsl.DiffuseColorRGB", *pmx_rgb, type="double3"),
+            mock_cmds.setAttr.call_args_list,
+        )
+        self.assertNotIn(call("current_glsl.DiffuseColorRGB", 0.8, 0.8, 0.8, type="double3"), mock_cmds.setAttr.call_args_list)
+
+    def test_dedicated_legacy_migration_does_not_write_current_glsl_or_dx11(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.ls.return_value = ["current_glsl"]
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "mmd_material", "diffuse_color", "Opacity", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
+            }
+
+            self.assertEqual(migrate_legacy_glsl_diffuse_contracts(), 0)
+
+        mock_cmds.setAttr.assert_not_called()
+        self.assertEqual(mock_cmds.ls.call_args_list, [call(type="GLSLShader")])
+
+    def test_scene_wide_current_glsl_marker_preserves_existing_rgb_and_alpha(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.ls.side_effect = lambda **kwargs: ["current_glsl"] if kwargs.get("type") == "GLSLShader" else []
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr == "mmdDiffuseRgbContractVersion"
+            mock_cmds.getAttr.return_value = 1
+
+            synced = sync_dx11_generated_uniforms()
+
+        self.assertEqual(synced, 0)
+        mock_cmds.setAttr.assert_not_called()
+
+    def test_scene_wide_legacy_glsl_migration_is_idempotent_after_marker(self):
+        legacy = (0.2, 0.3, 0.4, 0.5)
+        marker_exists = False
+
+        def attribute_query(attr, **_kwargs):
+            if attr == "mmdDiffuseRgbContractVersion":
+                return marker_exists
+            return attr in {"mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"}
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.ls.side_effect = lambda **kwargs: ["legacy_glsl"] if kwargs.get("type") == "GLSLShader" else []
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = attribute_query
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: False if kwargs.get("lock") else (
+                [legacy[:3]] if plug.endswith("DiffuseColorRGB") else legacy[3] if plug.endswith("DiffuseColorA") else [legacy]
+            )
+            mock_cmds.listConnections.return_value = []
+
+            self.assertEqual(sync_dx11_generated_uniforms(), 1)
+            marker_exists = True
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: False if kwargs.get("lock") else 1
+            first_calls = list(mock_cmds.setAttr.call_args_list)
+            self.assertEqual(sync_dx11_generated_uniforms(), 0)
+
+        self.assertEqual(mock_cmds.setAttr.call_args_list, first_calls)
+
+    def test_legacy_glsl_failed_write_is_not_marked_and_retries(self):
+        legacy = (0.2, 0.3, 0.4, 0.5)
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.ls.side_effect = lambda **kwargs: ["legacy_glsl"] if kwargs.get("type") == "GLSLShader" else []
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
+            }
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: False if kwargs.get("lock") else (
+                [legacy[:3]] if plug.endswith("DiffuseColorRGB") else legacy[3] if plug.endswith("DiffuseColorA") else [legacy]
+            )
+            mock_cmds.listConnections.return_value = []
+            mock_cmds.setAttr.side_effect = RuntimeError("write failed")
+
+            self.assertEqual(sync_dx11_generated_uniforms(), 0)
+            self.assertEqual(sync_dx11_generated_uniforms(), 0)
+
+        marker_calls = [
+            item for item in mock_cmds.setAttr.call_args_list if item.args[0].endswith("mmdDiffuseRgbContractVersion")
+        ]
+        self.assertEqual(marker_calls, [])
+        rgb_attempts = [
+            item for item in mock_cmds.setAttr.call_args_list if item.args[0].endswith("DiffuseColorRGB")
+        ]
+        self.assertGreaterEqual(len(rgb_attempts), 2)
+
+    def test_driven_legacy_glsl_is_not_frozen_or_marked(self):
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.LOGGER.warning"
+        ) as warning:
+            mock_cmds.ls.return_value = ["driven_legacy"]
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
+            }
+            mock_cmds.listConnections.side_effect = lambda plug, **_kwargs: (
+                ["animCurve.output"] if plug == "driven_legacy.DiffuseColor" else []
+            )
+
+            self.assertEqual(migrate_legacy_glsl_diffuse_contracts(), 0)
+
+        mock_cmds.setAttr.assert_not_called()
+        warning.assert_called_once()
+
+    def test_legacy_glsl_alpha_write_failure_rolls_back_rgb_and_alpha(self):
+        original_rgb = (0.8, 0.7, 0.6)
+        original_alpha = 0.9
+        state = {"rgb": original_rgb, "alpha": original_alpha}
+
+        def get_attr(plug, **kwargs):
+            if kwargs.get("lock"):
+                return False
+            if plug.endswith("DiffuseColorRGB"):
+                return [state["rgb"]]
+            if plug.endswith("DiffuseColorA"):
+                return state["alpha"]
+            return [(0.2, 0.3, 0.4, 0.5)]
+
+        alpha_failed = False
+
+        def set_attr(plug, *values, **_kwargs):
+            nonlocal alpha_failed
+            if plug.endswith("DiffuseColorRGB"):
+                state["rgb"] = tuple(values[:3])
+            elif plug.endswith("DiffuseColorA"):
+                if not alpha_failed:
+                    alpha_failed = True
+                    raise RuntimeError("alpha write failed")
+                state["alpha"] = values[0]
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.ls.return_value = ["legacy_glsl"]
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA"
+            }
+            mock_cmds.listConnections.return_value = []
+            mock_cmds.getAttr.side_effect = get_attr
+            mock_cmds.setAttr.side_effect = set_attr
+
+            self.assertEqual(migrate_legacy_glsl_diffuse_contracts(), 0)
+
+        self.assertEqual(state["rgb"], original_rgb)
+        self.assertEqual(state["alpha"], original_alpha)
+        marker_calls = [
+            item for item in mock_cmds.setAttr.call_args_list if item.args[0].endswith("mmdDiffuseRgbContractVersion")
+        ]
+        self.assertEqual(marker_calls, [])
+
+    def test_marker_set_failure_preserves_preexisting_zero_marker(self):
+        state = {"rgb": (0.8, 0.7, 0.6), "alpha": 0.9, "marker": 0}
+        marker_set_attempts = 0
+
+        def get_attr(plug, **kwargs):
+            if kwargs.get("lock"):
+                return False
+            if plug.endswith("DiffuseColorRGB"):
+                return [state["rgb"]]
+            if plug.endswith("DiffuseColorA"):
+                return state["alpha"]
+            if plug.endswith("mmdDiffuseRgbContractVersion"):
+                return state["marker"]
+            return [(0.2, 0.3, 0.4, 0.5)]
+
+        def set_attr(plug, *values, **_kwargs):
+            nonlocal marker_set_attempts
+            if plug.endswith("DiffuseColorRGB"):
+                state["rgb"] = tuple(values[:3])
+            elif plug.endswith("DiffuseColorA"):
+                state["alpha"] = values[0]
+            elif plug.endswith("mmdDiffuseRgbContractVersion"):
+                marker_set_attempts += 1
+                if marker_set_attempts == 1:
+                    raise RuntimeError("marker set failed")
+                state["marker"] = values[0]
+
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds:
+            mock_cmds.ls.return_value = ["legacy_glsl"]
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "mmd_material", "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA",
+                "mmdDiffuseRgbContractVersion",
+            }
+            # A value-0 marker is intentionally incomplete and remains a migration candidate.
+            mock_cmds.listConnections.return_value = []
+            mock_cmds.getAttr.side_effect = get_attr
+            mock_cmds.setAttr.side_effect = set_attr
+
+            self.assertEqual(migrate_legacy_glsl_diffuse_contracts(), 0)
+
+        self.assertEqual(state["marker"], 0)
+        mock_cmds.deleteAttr.assert_not_called()
+
+    def test_sync_explicit_new_glsl_uses_pmx_custom_diffuse_not_compat_default(self):
+        pmx_rgb = (0.12, 0.34, 0.56)
+        pmx_alpha = 0.78
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ):
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "DiffuseColor",
+                "DiffuseColorRGB",
+                "DiffuseColorA",
+                "diffuse_color",
+                "Opacity",
+            }
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: (
+                False
+                if kwargs.get("lock")
+                else [pmx_rgb]
+                if plug.endswith(".diffuse_color")
+                else pmx_alpha
+                if plug.endswith(".Opacity")
+                else [pmx_rgb]
+                if plug.endswith(".DiffuseColorRGB")
+                else pmx_alpha
+                if plug.endswith(".DiffuseColorA")
+                else [(0.8, 0.8, 0.8, 1.0)]
+            )
+            mock_cmds.listConnections.return_value = []
+
+            synced = sync_dx11_generated_uniforms(["new_glsl"])
+
+        self.assertEqual(synced, 1)
+        self.assertIn(
+            call("new_glsl.DiffuseColorRGB", *pmx_rgb, type="double3"),
+            mock_cmds.setAttr.call_args_list,
+        )
+        self.assertIn(call("new_glsl.DiffuseColorA", pmx_alpha), mock_cmds.setAttr.call_args_list)
+        self.assertIn(
+            call("new_glsl.mmdDiffuseRgbContractVersion", 1),
+            mock_cmds.setAttr.call_args_list,
+        )
+        self.assertNotIn(
+            call("new_glsl.DiffuseColorRGB", 0.8, 0.8, 0.8, type="double3"),
+            mock_cmds.setAttr.call_args_list,
+        )
+
+    def test_current_glsl_write_failure_does_not_set_contract_marker(self):
+        pmx_rgb = (0.12, 0.34, 0.56)
+        with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
+        ):
+            mock_cmds.objExists.return_value = True
+            mock_cmds.nodeType.return_value = "GLSLShader"
+            mock_cmds.attributeQuery.side_effect = lambda attr, **_kwargs: attr in {
+                "DiffuseColor", "DiffuseColorRGB", "DiffuseColorA", "diffuse_color", "Opacity"
+            }
+            mock_cmds.listConnections.return_value = []
+            mock_cmds.getAttr.side_effect = lambda plug, **kwargs: False if kwargs.get("lock") else (
+                [pmx_rgb] if plug.endswith(".diffuse_color") else 0.7 if plug.endswith(".Opacity") else [(0.8, 0.8, 0.8)]
+            )
+            mock_cmds.setAttr.side_effect = RuntimeError("write failed")
+
+            sync_dx11_generated_uniforms(["current_glsl"])
+
+        marker_calls = [
+            item for item in mock_cmds.setAttr.call_args_list if item.args[0].endswith("mmdDiffuseRgbContractVersion")
+        ]
+        self.assertEqual(marker_calls, [])
 
     def test_record_unresolved_texture_issue_dict_shape(self):
         converter = MeshConverter(str(self.model))

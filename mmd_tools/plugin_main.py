@@ -24,6 +24,7 @@ _animator_toolset_window = None
 _python_rig_nodes_registered = False
 _shader_override_registered = False
 _rigid_body_locator_registered = False
+_after_open_callback_id = None
 
 
 def maya_useNewAPI():
@@ -209,6 +210,75 @@ def _soft_check_bone_morph_accum_availability():
         pass
 
 
+def _soft_sync_existing_glsl_diffuse_contracts():
+    """Migrate strict legacy GLSL contracts in the scene without polluting undo.
+
+    The synchronizer is signature-gated and idempotent.  A real migration keeps
+    the scene dirty so Maya can prompt the user to save it; an empty/no-op scan
+    does not issue any scene edit.
+    """
+    undo_was_enabled = None
+    try:
+        undo_was_enabled = bool(cmds.undoInfo(query=True, state=True))
+        if undo_was_enabled:
+            cmds.undoInfo(stateWithoutFlush=False)
+    except Exception:
+        undo_was_enabled = None
+    try:
+        from mmd_tools.converters.mesh_converter import migrate_legacy_glsl_diffuse_contracts
+
+        migrate_legacy_glsl_diffuse_contracts()
+    except Exception:
+        # Existing-scene compatibility must never make plugin loading fail.
+        pass
+    finally:
+        if undo_was_enabled:
+            try:
+                cmds.undoInfo(stateWithoutFlush=True)
+            except Exception:
+                pass
+
+
+def _after_scene_open(*_args):
+    """Run strict existing-scene migration after Maya opens a scene."""
+    try:
+        _soft_sync_existing_glsl_diffuse_contracts()
+    except Exception:
+        pass
+
+
+def _scene_file_is_being_read():
+    """Return Maya's file-read state, conservatively treating query failure as reading."""
+    try:
+        return bool(om.MFileIO.isReadingFile())
+    except Exception:
+        return True
+
+
+def _register_after_open_callback():
+    """Register one scene-open migration callback, tolerating host limitations."""
+    global _after_open_callback_id
+    if _after_open_callback_id is not None:
+        return
+    try:
+        _after_open_callback_id = om.MSceneMessage.addCallback(om.MSceneMessage.kAfterOpen, _after_scene_open)
+    except Exception:
+        _after_open_callback_id = None
+
+
+def _remove_after_open_callback():
+    """Remove the owned scene-open callback if it exists."""
+    global _after_open_callback_id
+    callback_id = _after_open_callback_id
+    _after_open_callback_id = None
+    if callback_id is None:
+        return
+    try:
+        om.MMessage.removeCallback(callback_id)
+    except Exception:
+        pass
+
+
 def initializePlugin(mobject):
     """
     Plugin entry point.
@@ -232,12 +302,15 @@ def initializePlugin(mobject):
         mmd_bone_morph_accum_node.register(plugin_fn)
         _soft_check_bone_morph_accum_availability()
         mmd_material_morph_eval_node.register(plugin_fn)
+        if not _scene_file_is_being_read():
+            _soft_sync_existing_glsl_diffuse_contracts()
         # Skip Python rig-node registration when C++ plugin already provides them
         global _python_rig_nodes_registered
         if not _cpp_plugin_loaded():
             mmd_append_node.register(plugin_fn)
             mmd_ccd_ik_node.register(plugin_fn)
             _python_rig_nodes_registered = True
+        _register_after_open_callback()
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
         raise
@@ -250,6 +323,7 @@ def uninitializePlugin(mobject):
     plugin_fn = om.MFnPlugin(mobject)
 
     try:
+        _remove_after_open_callback()
         close_animator_toolset()
         close_main_window()
         uninstall_mmd_menu()

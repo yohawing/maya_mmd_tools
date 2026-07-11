@@ -434,6 +434,132 @@ def _ensure_dx11_uniform_attributes(shader_node):
     _ensure_mmd_shader_uniform_attributes(shader_node)
 
 
+_GLSL_DIFFUSE_CONTRACT_MARKER = "mmdDiffuseRgbContractVersion"
+
+
+def _has_glsl_diffuse_contract_marker(shader_node):
+    try:
+        return cmds.attributeQuery(_GLSL_DIFFUSE_CONTRACT_MARKER, node=shader_node, exists=True) and bool(
+            cmds.getAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}")
+        )
+    except Exception:
+        return False
+
+
+def _mark_glsl_diffuse_contract(shader_node):
+    """Mark GLSL diffuse RGB/A data as authoritative and migration-complete."""
+    try:
+        if not cmds.attributeQuery(_GLSL_DIFFUSE_CONTRACT_MARKER, node=shader_node, exists=True):
+            cmds.addAttr(shader_node, longName=_GLSL_DIFFUSE_CONTRACT_MARKER, attributeType="long", defaultValue=0)
+        cmds.setAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}", 1)
+        return True
+    except Exception:
+        LOGGER.warning("Failed to mark GLSL diffuse contract for '%s'", shader_node, exc_info=True)
+        return False
+
+
+def _migrate_legacy_glsl_diffuse(shader_node, legacy):
+    """Transactionally write and verify the split GLSL diffuse contract."""
+    if len(legacy) < 4:
+        return False
+    rgb_plug = f"{shader_node}.DiffuseColorRGB"
+    alpha_plug = f"{shader_node}.DiffuseColorA"
+    if not _is_dx11_generated_uniform_writable(rgb_plug) or not _is_dx11_generated_uniform_writable(alpha_plug):
+        return False
+    try:
+        original_rgb = list(cmds.getAttr(rgb_plug)[0])
+        original_alpha = float(cmds.getAttr(alpha_plug))
+        marker_existed = cmds.attributeQuery(_GLSL_DIFFUSE_CONTRACT_MARKER, node=shader_node, exists=True)
+        original_marker_value = (
+            cmds.getAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}") if marker_existed else None
+        )
+    except Exception:
+        LOGGER.warning("Could not snapshot legacy GLSL diffuse for '%s'; migration skipped", shader_node)
+        return False
+
+    def rollback():
+        rollback_ok = True
+        try:
+            cmds.setAttr(rgb_plug, original_rgb[0], original_rgb[1], original_rgb[2], type="double3")
+        except Exception:
+            rollback_ok = False
+        try:
+            cmds.setAttr(alpha_plug, original_alpha)
+        except Exception:
+            rollback_ok = False
+        try:
+            marker_exists_now = cmds.attributeQuery(
+                _GLSL_DIFFUSE_CONTRACT_MARKER, node=shader_node, exists=True
+            )
+            if marker_existed:
+                if not marker_exists_now:
+                    raise RuntimeError("pre-existing marker attribute was removed")
+                cmds.setAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}", original_marker_value)
+            elif marker_exists_now:
+                cmds.deleteAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}")
+        except Exception:
+            rollback_ok = False
+        if not rollback_ok:
+            LOGGER.error(
+                "Rollback failed after legacy GLSL diffuse migration error for '%s'; scene may contain partial changes",
+                shader_node,
+            )
+
+    try:
+        cmds.setAttr(rgb_plug, legacy[0], legacy[1], legacy[2], type="double3")
+        cmds.setAttr(alpha_plug, legacy[3])
+        rgb = list(cmds.getAttr(rgb_plug)[0])
+        alpha = float(cmds.getAttr(alpha_plug))
+        expected = [float(value) for value in legacy[:3]]
+        if len(rgb) != 3 or any(abs(float(actual) - wanted) > 1e-6 for actual, wanted in zip(rgb, expected)):
+            raise RuntimeError("RGB read-back mismatch")
+        if abs(alpha - float(legacy[3])) > 1e-6:
+            raise RuntimeError("alpha read-back mismatch")
+        if not _mark_glsl_diffuse_contract(shader_node):
+            raise RuntimeError("contract marker write failed")
+        return True
+    except Exception:
+        LOGGER.warning("Failed to migrate legacy GLSL diffuse for '%s'", shader_node, exc_info=True)
+        rollback()
+        return False
+
+
+def _legacy_glsl_diffuse_is_driven(shader_node):
+    """Return whether legacy diffuse data has inputs that cannot be frozen safely."""
+    attrs = ["DiffuseColor", "DiffuseColorR", "DiffuseColorG", "DiffuseColorB", "DiffuseColorA"]
+    for attr in attrs:
+        try:
+            if not cmds.attributeQuery(attr, node=shader_node, exists=True):
+                continue
+            if cmds.listConnections(
+                f"{shader_node}.{attr}", source=True, destination=False, plugs=True
+            ) or []:
+                return True
+        except Exception:
+            # Unknown connection state is not safe for destructive migration.
+            return True
+    return False
+
+
+def _glsl_split_diffuse_matches(shader_node, rgb_expected, alpha_expected):
+    """Verify writable, unconnected GLSL RGB/A plugs contain expected values."""
+    rgb_plug = f"{shader_node}.DiffuseColorRGB"
+    alpha_plug = f"{shader_node}.DiffuseColorA"
+    if not _is_dx11_generated_uniform_writable(rgb_plug) or not _is_dx11_generated_uniform_writable(alpha_plug):
+        return False
+    try:
+        rgb = list(cmds.getAttr(rgb_plug)[0])
+        alpha = float(cmds.getAttr(alpha_plug))
+        expected = [float(value) for value in rgb_expected]
+        return (
+            len(rgb) == 3
+            and all(abs(float(actual) - wanted) <= 1e-6 for actual, wanted in zip(rgb, expected))
+            and abs(alpha - float(alpha_expected)) <= 1e-6
+        )
+    except Exception:
+        return False
+
+
 def _is_dx11_generated_uniform_writable(plug):
     """Return False for generated dx11Shader attrs driven by Maya/VP2 internals."""
     try:
@@ -511,6 +637,37 @@ def _set_dx11_color_uniform(shader_node, attr_name, values):
             LOGGER.debug("Failed to set dx11Shader alpha uniform '%s'", alpha_plug, exc_info=True)
 
 
+def migrate_legacy_glsl_diffuse_contracts():
+    """Migrate only unambiguous legacy MMD GLSL nodes in the current scene."""
+    migrated = 0
+    for shader in cmds.ls(type="GLSLShader") or []:
+        if not shader or not cmds.objExists(shader) or cmds.nodeType(shader) != "GLSLShader":
+            continue
+        if not (
+            not _has_glsl_diffuse_contract_marker(shader)
+            and cmds.attributeQuery(ATTR_MMD_MATERIAL, node=shader, exists=True)
+            and not cmds.attributeQuery(ATTR_MMD_DIFFUSE_COLOR, node=shader, exists=True)
+            and not cmds.attributeQuery("Opacity", node=shader, exists=True)
+            and cmds.attributeQuery("DiffuseColor", node=shader, exists=True)
+            and cmds.attributeQuery("DiffuseColorRGB", node=shader, exists=True)
+            and cmds.attributeQuery("DiffuseColorA", node=shader, exists=True)
+        ):
+            continue
+        if _legacy_glsl_diffuse_is_driven(shader):
+            LOGGER.warning(
+                "Skipping automatic legacy GLSL diffuse migration for driven shader '%s'; manual migration required",
+                shader,
+            )
+            continue
+        try:
+            legacy = list(cmds.getAttr(f"{shader}.DiffuseColor")[0])
+            if _migrate_legacy_glsl_diffuse(shader, legacy):
+                migrated += 1
+        except Exception:
+            LOGGER.warning("Failed to migrate legacy GLSL DiffuseColor for '%s'", shader, exc_info=True)
+    return migrated
+
+
 def sync_dx11_generated_uniforms(shader_nodes=None):
     """Synchronize generated dx11Shader effect attrs after import.
 
@@ -520,9 +677,15 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
     attributes into the generated effect attrs once they are present.
     """
     synced = 0
-    shaders = list(shader_nodes) if shader_nodes is not None else (cmds.ls(type="dx11Shader") or [])
+    if shader_nodes is None:
+        synced += migrate_legacy_glsl_diffuse_contracts()
+    shaders = (
+        list(shader_nodes)
+        if shader_nodes is not None
+        else list(cmds.ls(type="dx11Shader") or []) + list(cmds.ls(type="GLSLShader") or [])
+    )
     for shader in shaders:
-        if not shader or not cmds.objExists(shader) or cmds.nodeType(shader) != "dx11Shader":
+        if not shader or not cmds.objExists(shader) or cmds.nodeType(shader) not in ("dx11Shader", "GLSLShader"):
             continue
         if cmds.attributeQuery(ATTR_MMD_DIFFUSE_COLOR, node=shader, exists=True):
             try:
@@ -531,6 +694,10 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
                 if cmds.attributeQuery("Opacity", node=shader, exists=True):
                     opacity = float(cmds.getAttr(f"{shader}.Opacity"))
                 _set_dx11_color_uniform(shader, "DiffuseColor", diffuse + [opacity])
+                if cmds.nodeType(shader) == "GLSLShader" and _glsl_split_diffuse_matches(
+                    shader, diffuse, opacity
+                ):
+                    _mark_glsl_diffuse_contract(shader)
                 synced += 1
             except Exception:
                 LOGGER.warning("Failed to sync dx11 DiffuseColor uniforms for '%s'", shader, exc_info=True)

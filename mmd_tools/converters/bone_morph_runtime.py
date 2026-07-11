@@ -158,7 +158,19 @@ def probe_bone_morph_accum_availability() -> Dict[str, Any]:
         "actual_type": "",
     }
     node = None
+    scene_was_modified = None
+    undo_was_enabled = None
     try:
+        try:
+            scene_was_modified = bool(cmds.file(query=True, modified=True))
+        except Exception:
+            pass
+        try:
+            undo_was_enabled = bool(cmds.undoInfo(query=True, state=True))
+            if undo_was_enabled:
+                cmds.undoInfo(stateWithoutFlush=False)
+        except Exception:
+            undo_was_enabled = None
         try:
             node = cmds.createNode(ACCUM_NODE_TYPE, name=_PROBE_NODE_NAME)
         except Exception as exc:
@@ -195,7 +207,19 @@ def probe_bone_morph_accum_availability() -> Dict[str, Any]:
         result["detail"] = ""
         return result
     finally:
-        _delete_node_quiet(node)
+        # A createNode exception may still have mutated Maya before failing.
+        # Cleanup is only provable after Maya returned a concrete node name.
+        cleanup_succeeded = node is not None and _delete_node_quiet(node)
+        if undo_was_enabled:
+            try:
+                cmds.undoInfo(stateWithoutFlush=True)
+            except Exception:
+                pass
+        if scene_was_modified is not None and cleanup_succeeded:
+            try:
+                cmds.file(modified=scene_was_modified)
+            except Exception:
+                pass
 
 
 def log_bone_morph_accum_availability_postcondition() -> Dict[str, Any]:
@@ -225,14 +249,17 @@ def _node_type_unavailable_warning(availability: Dict[str, Any]) -> Dict[str, An
     }
 
 
-def _delete_node_quiet(node: Optional[str]) -> None:
+def _delete_node_quiet(node: Optional[str]) -> bool:
     if not node:
-        return
+        return True
     try:
         if cmds.objExists(node):
             cmds.delete(node)
+            return not cmds.objExists(node)
+        return True
     except Exception:
         logger.debug("Failed to delete temporary node %s", node, exc_info=True)
+        return False
 
 
 def _is_valid_accumulator(node: str) -> bool:

@@ -623,7 +623,7 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
         self.assertTrue(any("warning" in s.lower() for s in app_state.statuses))
 
-    def test_import_file_model_partial_non_texture_shows_generic_dialog_only(self):
+    def test_import_file_model_partial_mixed_shows_generic_and_texture_dialogs(self):
         settings.set("import.model.show_texture_issue_dialog", True)
         non_texture = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
         texture = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
@@ -636,8 +636,8 @@ class TestImportExportPresenter(unittest.TestCase):
 
             def execute(self, request):
                 self.requests.append(request)
-                # Profile may still contain texture issues; non-texture partial must prefer
-                # the generic operation-level dialog and suppress the texture modal.
+                # Mixed warnings need the generic summary and the actionable
+                # texture repair dialog.
                 profile = request.options.setdefault("profile", {})
                 profile["texture_issues"] = [texture]
                 profile["bone_morph_runtime"] = {"warnings": [non_texture]}
@@ -663,7 +663,7 @@ class TestImportExportPresenter(unittest.TestCase):
             presenter.import_file()
 
         mock_generic.assert_called_once()
-        mock_texture.assert_not_called()
+        mock_texture.assert_called_once_with([texture], model_path="model.pmx")
         self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
 
     def test_import_file_model_partial_node_type_unavailable_suppresses_texture_dialog(self):

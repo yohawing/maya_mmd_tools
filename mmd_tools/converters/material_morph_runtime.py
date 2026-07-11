@@ -398,8 +398,10 @@ def resolve_shader_color_route(
     Standard Maya materials are API-independent.  ``dx11Shader`` may route only
     when the effective VP2 draw API is DirectX11 **and** a writable
     ``DiffuseColorRGB`` plug is demonstrated.  ``GLSLShader`` may route only on
-    OpenGL / OpenGL Core with a validated ``DiffuseColorRGB`` plug.  The evaluator
-    never reconnects a vec4 ``DiffuseColor`` plug (would corrupt alpha).
+    OpenGL / OpenGL Core with a validated ``DiffuseColorRGB`` plug.  Unknown API
+    state fails closed because a writable plug alone does not prove that a saved
+    hardware-shader connection is portable to the next Maya session.  The
+    evaluator never reconnects a vec4 ``DiffuseColor`` plug (would corrupt alpha).
 
     Args:
         shader: Material / shader node name.
