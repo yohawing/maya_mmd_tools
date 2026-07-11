@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Dict, Iterable, List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from maya import cmds
 
@@ -23,6 +24,115 @@ logger = get_logger(__name__)
 
 EVAL_NODE_TYPE = "mmdMaterialMorphEval"
 _REQUIRED_EVAL_ATTRS = ("contribution", "baseDiffuse", "outputDiffuse")
+
+# Backend identifiers returned by resolve_shader_color_route.
+BACKEND_STANDARD = "standard"
+BACKEND_DX11 = "dx11"
+BACKEND_GLSL = "glsl"
+BACKEND_UNKNOWN = "unknown"
+
+# Effective VP2 draw-API ids from detect_effective_vp2_draw_api().
+VP2_API_DIRECTX11 = "directx11"
+VP2_API_OPENGL = "opengl"
+VP2_API_OPENGL_CORE = "openglcore"
+VP2_API_UNKNOWN = "unknown"
+
+# Direct colour plugs for Maya standard materials (stable contracts).
+_STANDARD_ATTR_BY_TYPE = {
+    "standardSurface": "baseColor",
+    "lambert": "color",
+    "phong": "color",
+    "blinn": "color",
+}
+
+# Shared RGB contract for dx11Shader (.fx) and GLSLShader (.ogsfx).
+# Both expose DiffuseColorRGB (float3/vec3); alpha is a separate plug and must
+# never be overwritten by the material-morph evaluator (double3 output).
+_DX11_DIFFUSE_CANDIDATES: Tuple[str, ...] = ("DiffuseColorRGB",)
+_GLSL_DIFFUSE_CANDIDATES: Tuple[str, ...] = ("DiffuseColorRGB",)
+_RGB_TRIPLE_TYPES = frozenset({"double3", "float3"})
+_GL_VP2_APIS = frozenset({VP2_API_OPENGL, VP2_API_OPENGL_CORE})
+
+
+@dataclass(frozen=True)
+class ShaderColorRoute:
+    """Resolved material-morph colour target for one shader backend.
+
+    Attributes:
+        backend: Backend id (``standard`` / ``dx11`` / ``glsl`` / ``unknown``).
+        attr_name: Destination attribute short name when routing is safe.
+        skip_reason: Deterministic skip code when routing must fail closed.
+    """
+
+    backend: str
+    attr_name: Optional[str] = None
+    skip_reason: Optional[str] = None
+
+    @property
+    def is_usable(self) -> bool:
+        """Return True when the route has a verified connectable attribute."""
+        return bool(self.attr_name) and not self.skip_reason
+
+
+def detect_effective_vp2_draw_api() -> str:
+    """Return the effective VP2 draw API using operational Maya diagnostics.
+
+    Prefers ``cmds.ogs(deviceInformation=True)`` and falls back to the
+    ``vp2RenderingEngine`` optionVar.  Does **not** use ``cmds.about(api=True)``,
+    which is not a reliable VP2 device probe in this project.
+
+    Returns:
+        One of :data:`VP2_API_DIRECTX11`, :data:`VP2_API_OPENGL`,
+        :data:`VP2_API_OPENGL_CORE`, or :data:`VP2_API_UNKNOWN`.
+    """
+    device_text = ""
+    try:
+        raw = cmds.ogs(deviceInformation=True)
+        if isinstance(raw, (list, tuple)):
+            device_text = " ".join(str(part) for part in raw)
+        elif raw is not None:
+            device_text = str(raw)
+    except Exception:
+        device_text = ""
+
+    api = _classify_vp2_draw_api_text(device_text)
+    if api != VP2_API_UNKNOWN:
+        return api
+
+    option_text = ""
+    try:
+        option_text = str(cmds.optionVar(query="vp2RenderingEngine") or "")
+    except Exception:
+        option_text = ""
+
+    return _classify_vp2_draw_api_text(option_text)
+
+
+def _classify_vp2_draw_api_text(text: str) -> str:
+    """Map free-form Maya VP2 diagnostic text to a stable API id."""
+    if not text:
+        return VP2_API_UNKNOWN
+
+    lowered = text.lower()
+    # DirectX first: "API : DirectX V.11" / "Direct3D11" / optionVar "DirectX11".
+    if any(
+        token in lowered
+        for token in ("directx", "direct3d11", "dx11", "d3d11")
+    ):
+        return VP2_API_DIRECTX11
+
+    # GL Core before plain OpenGL (optionVar "OpenGLCoreProfile", VirtualDeviceGLCore).
+    if any(
+        token in lowered
+        for token in ("openglcore", "glcore", "core profile", "coreprofile")
+    ):
+        return VP2_API_OPENGL_CORE
+
+    if any(token in lowered for token in ("opengl", "open gl", "virtualdevicegl")):
+        # Avoid matching bare "gl" inside unrelated tokens when OpenGL is absent.
+        return VP2_API_OPENGL
+
+    return VP2_API_UNKNOWN
 
 
 def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
@@ -61,6 +171,9 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
         result["skipped"].append("no_material_morph_contributions")
         return result
 
+    # Detect VP2 API once per graph build; standard materials ignore it.
+    vp2_api = detect_effective_vp2_draw_api()
+
     existing_by_shader = _collect_existing_evaluators()
     for shader, contributions in contributions_by_shader.items():
         node = existing_by_shader.get(shader)
@@ -76,7 +189,19 @@ def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
 
         _mark_evaluator(node, shader)
         _refresh_contributions(node, contributions)
-        _reroute_shader_color(shader, node)
+        route = resolve_shader_color_route(shader, vp2_api=vp2_api)
+        if not route.is_usable:
+            skip = route.skip_reason or f"color_route_unavailable:{shader}"
+            result["skipped"].append(skip)
+            logger.debug(
+                "Skipping material morph colour reroute for %s (%s backend, vp2=%s): %s",
+                shader,
+                route.backend,
+                vp2_api,
+                skip,
+            )
+        else:
+            _reroute_shader_color(shader, node, route)
         result["evaluator_nodes"].append(node)
         result["contributions"] += len(contributions)
 
@@ -263,42 +388,196 @@ def _refresh_contributions(node: str, contributions: List[Dict[str, Any]]) -> No
         _connect_if_needed(f"{contribution['morph_node']}.weight", f"{prefix}.weight", force=True)
 
 
-def _get_diffuse_attr_name(shader: str) -> str:
-    """Return the diffuse colour attribute name for *shader*.
+def resolve_shader_color_route(
+    shader: str,
+    *,
+    vp2_api: Optional[str] = None,
+) -> ShaderColorRoute:
+    """Resolve a backend- and VP2-API-aware colour plug for material morph routing.
 
-    Different shader types expose diffuse colour under different names:
-    - ``lambert`` / ``phong`` / ``blinn`` → ``color``
-    - ``standardSurface`` → ``baseColor``
-    - ``dx11Shader`` / ``GLSLShader`` → ``DiffuseColorRGB`` or ``DiffuseColor``
-      (generated uniforms; the exact name depends on the .fx file)
+    Standard Maya materials are API-independent.  ``dx11Shader`` may route only
+    when the effective VP2 draw API is DirectX11 **and** a writable
+    ``DiffuseColorRGB`` plug is demonstrated.  ``GLSLShader`` may route only on
+    OpenGL / OpenGL Core with a validated ``DiffuseColorRGB`` plug.  The evaluator
+    never reconnects a vec4 ``DiffuseColor`` plug (would corrupt alpha).
 
-    Falls back to ``color`` for unknown shader types.
+    Args:
+        shader: Material / shader node name.
+        vp2_api: Optional pre-detected VP2 API id.  When omitted, calls
+            :func:`detect_effective_vp2_draw_api` once for hardware backends.
+
+    Returns:
+        A :class:`ShaderColorRoute`.  Unusable routes leave the shader untouched
+        and expose a deterministic ``skip_reason``.
     """
-    node_type = cmds.nodeType(shader)
-    if node_type == "standardSurface":
-        return "baseColor"
-    if node_type in ("dx11Shader", "GLSLShader"):
-        for candidate in ("DiffuseColorRGB", "DiffuseColor"):
-            if cmds.attributeQuery(candidate, node=shader, exists=True):
-                return candidate
-    # lambert, phong, blinn, etc.
-    return "color"
+    if not shader or not cmds.objExists(shader):
+        return ShaderColorRoute(
+            backend=BACKEND_UNKNOWN,
+            skip_reason=f"shader_missing:{shader or ''}",
+        )
+
+    try:
+        node_type = cmds.nodeType(shader) or ""
+    except Exception:
+        return ShaderColorRoute(
+            backend=BACKEND_UNKNOWN,
+            skip_reason=f"shader_type_unavailable:{shader}",
+        )
+
+    if node_type == "dx11Shader":
+        effective_api = vp2_api if vp2_api is not None else detect_effective_vp2_draw_api()
+        if effective_api != VP2_API_DIRECTX11:
+            return ShaderColorRoute(
+                backend=BACKEND_DX11,
+                skip_reason=f"dx11_vp2_not_directx11:{shader}",
+            )
+        return _resolve_candidate_route(
+            shader,
+            backend=BACKEND_DX11,
+            candidates=_DX11_DIFFUSE_CANDIDATES,
+            skip_reason=f"dx11_diffuse_unroutable:{shader}",
+        )
+
+    if node_type == "GLSLShader":
+        effective_api = vp2_api if vp2_api is not None else detect_effective_vp2_draw_api()
+        if effective_api not in _GL_VP2_APIS:
+            return ShaderColorRoute(
+                backend=BACKEND_GLSL,
+                skip_reason=f"glsl_vp2_not_opengl:{shader}",
+            )
+        return _resolve_candidate_route(
+            shader,
+            backend=BACKEND_GLSL,
+            candidates=_GLSL_DIFFUSE_CANDIDATES,
+            skip_reason=f"glsl_diffuse_unroutable:{shader}",
+        )
+
+    # Standard / unknown Maya materials: API-independent colour contracts.
+    attr_name = _STANDARD_ATTR_BY_TYPE.get(node_type, "color")
+    if _is_rgb_plug_contract_safe(shader, attr_name):
+        return ShaderColorRoute(backend=BACKEND_STANDARD, attr_name=attr_name)
+
+    # Unknown Maya material types still try the conventional ``color`` plug.
+    if attr_name != "color" and _is_rgb_plug_contract_safe(shader, "color"):
+        return ShaderColorRoute(backend=BACKEND_STANDARD, attr_name="color")
+
+    return ShaderColorRoute(
+        backend=BACKEND_STANDARD if node_type in _STANDARD_ATTR_BY_TYPE else BACKEND_UNKNOWN,
+        skip_reason=f"standard_diffuse_unroutable:{shader}",
+    )
+
+
+def _resolve_candidate_route(
+    shader: str,
+    *,
+    backend: str,
+    candidates: Sequence[str],
+    skip_reason: str,
+) -> ShaderColorRoute:
+    """Pick the first candidate that passes the RGB plug contract check."""
+    for attr_name in candidates:
+        if _is_rgb_plug_contract_safe(shader, attr_name):
+            return ShaderColorRoute(backend=backend, attr_name=attr_name)
+    return ShaderColorRoute(backend=backend, skip_reason=skip_reason)
+
+
+def _is_rgb_plug_contract_safe(shader: str, attr_name: str) -> bool:
+    """Return True when *attr_name* is a demonstrated writable RGB morph target.
+
+    Existence alone is not enough: generated dx11 uniforms may be locked or
+    internally driven.  The contract requires Maya command probes for
+    existence, writability, lock state, and an RGB-compatible type layout.
+    """
+    if not shader or not attr_name:
+        return False
+    try:
+        if not cmds.attributeQuery(attr_name, node=shader, exists=True):
+            return False
+    except Exception:
+        return False
+
+    plug = f"{shader}.{attr_name}"
+    try:
+        if cmds.getAttr(plug, lock=True):
+            return False
+    except Exception:
+        return False
+
+    try:
+        if not cmds.attributeQuery(attr_name, node=shader, writable=True):
+            return False
+    except Exception:
+        return False
+
+    # RGB triple plug (dx11 DiffuseColorRGB, lambert.color, etc.).
+    try:
+        attr_type = cmds.getAttr(plug, type=True)
+    except Exception:
+        attr_type = None
+    if attr_type in _RGB_TRIPLE_TYPES:
+        return True
+
+    # Colour compound with R/G/B children (standard materials, some OGSFX vec4).
+    if _has_per_channel_children(shader, attr_name):
+        for axis in ("R", "G", "B"):
+            child = f"{attr_name}{axis}"
+            child_plug = f"{shader}.{child}"
+            try:
+                if cmds.getAttr(child_plug, lock=True):
+                    return False
+                if not cmds.attributeQuery(child, node=shader, writable=True):
+                    return False
+            except Exception:
+                return False
+        return True
+
+    return False
+
+
+def _get_diffuse_attr_name(shader: str) -> Optional[str]:
+    """Return the verified diffuse attribute name, or None when unroutable.
+
+    Kept as a thin compatibility wrapper around :func:`resolve_shader_color_route`.
+    """
+    route = resolve_shader_color_route(shader)
+    return route.attr_name if route.is_usable else None
 
 
 def _has_per_channel_children(shader: str, attr_name: str) -> bool:
     """Return True if ``shader.attrNameR`` (per-channel sub-attr) exists."""
-    return cmds.attributeQuery(f"{attr_name}R", node=shader, exists=True)
+    try:
+        return all(
+            cmds.attributeQuery(f"{attr_name}{axis}", node=shader, exists=True)
+            for axis in ("R", "G", "B")
+        )
+    except Exception:
+        return False
 
 
-def _reroute_shader_color(shader: str, node: str) -> None:
-    """Intercept shader diffuse colour through the evaluator node."""
-    diffuse_name = _get_diffuse_attr_name(shader)
+def _reroute_shader_color(shader: str, node: str, route: Optional[ShaderColorRoute] = None) -> bool:
+    """Intercept shader diffuse colour through the evaluator node.
+
+    Args:
+        shader: Target material/shader node.
+        node: ``mmdMaterialMorphEval`` evaluator node.
+        route: Pre-resolved colour route.  When omitted, resolves on demand.
+
+    Returns:
+        True when the colour plug was connected (or already connected).
+        False when the route is unusable; the shader connection is left untouched.
+    """
+    if route is None:
+        route = resolve_shader_color_route(shader)
+    if not route.is_usable or not route.attr_name:
+        return False
+
+    diffuse_name = route.attr_name
     output_attr = f"{node}.outputDiffuse"
     base_attr = f"{node}.baseDiffuse"
     shader_attr = f"{shader}.{diffuse_name}"
 
     if _is_connected(output_attr, shader_attr):
-        return
+        return True
 
     # Copy current color to baseDiffuse
     try:
@@ -318,8 +597,7 @@ def _reroute_shader_color(shader: str, node: str) -> None:
         _connect_if_needed(source, base_attr, force=True)
 
     # Per-channel rerouting (lambert.colorR/G/B, standardSurface.baseColorR/G/B).
-    # dx11Shader/GLSLShader generated uniforms are flat double3 attrs without
-    # per-channel children, so skip for those.
+    # dx11 DiffuseColorRGB is typically a flat double3 without R/G/B children.
     if _has_per_channel_children(shader, diffuse_name):
         for axis in ("R", "G", "B"):
             shader_axis = f"{shader}.{diffuse_name}{axis}"
@@ -335,3 +613,4 @@ def _reroute_shader_color(shader: str, node: str) -> None:
                 _connect_if_needed(source, base_axis, force=True)
 
     _connect_if_needed(output_attr, shader_attr, force=True)
+    return True

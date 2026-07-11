@@ -329,7 +329,11 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
     import maya.api.OpenMaya as om
 
     uniforms = [
+        # Legacy compound kept for dx11 standalone/tests; HLSL/OGSFX RGB morph
+        # targets use DiffuseColorRGB + DiffuseColorA (alpha preserved separate).
         ("DiffuseColor", om.MFnNumericData.kDouble, 4, True, (0.8, 0.8, 0.8, 1.0)),
+        ("DiffuseColorRGB", om.MFnNumericData.kDouble, 3, True, (0.8, 0.8, 0.8)),
+        ("DiffuseColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("SpecularColor", om.MFnNumericData.kDouble, 3, True, (0.5, 0.5, 0.5)),
         ("AmbientColor", om.MFnNumericData.kDouble, 3, True, (0.3, 0.3, 0.3)),
         ("EdgeColor", om.MFnNumericData.kDouble, 4, True, (0.0, 0.0, 0.0, 1.0)),
@@ -1479,7 +1483,13 @@ class MeshConverter:
         setup_ok &= _set_shader_attribute_checked(shader, "technique", "Main", "string")
         _ensure_mmd_shader_uniform_attributes(shader)
 
-        setup_ok &= _set_shader_attribute_checked(shader, "DiffuseColor", material.diffuse, "double4")
+        # OGSFX contract: DiffuseColorRGB (vec3) + DiffuseColorA (float). Never
+        # write a single vec4 DiffuseColor so alpha stays morph-safe.
+        diffuse = list(material.diffuse) if hasattr(material, "diffuse") else [0.8, 0.8, 0.8, 1.0]
+        diffuse_rgb = diffuse[:3] if len(diffuse) >= 3 else [0.8, 0.8, 0.8]
+        diffuse_a = float(diffuse[3]) if len(diffuse) > 3 else 1.0
+        setup_ok &= _set_shader_attribute_checked(shader, "DiffuseColorRGB", diffuse_rgb, "double3")
+        setup_ok &= _set_shader_attribute_checked(shader, "DiffuseColorA", diffuse_a, "float")
 
         if hasattr(material, "specular"):
             _set_shader_attribute_checked(shader, "SpecularColor", material.specular[:3], "double3")
@@ -1506,8 +1516,8 @@ class MeshConverter:
         sphere_mode = getattr(material, "sphere_mode", 0)
         setup_ok &= _set_shader_attribute_checked(shader, "SphereMode", int(sphere_mode), "long")
 
-        opacity = material.diffuse[3] if hasattr(material, "diffuse") and len(material.diffuse) > 3 else 1.0
-        setup_ok &= _set_shader_attribute_checked(shader, "Opacity", opacity, "float")
+        # Keep Opacity in sync with diffuse alpha for legacy consumers.
+        setup_ok &= _set_shader_attribute_checked(shader, "Opacity", diffuse_a, "float")
 
         self._apply_custom_attributes(
             shader,

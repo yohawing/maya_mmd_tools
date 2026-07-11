@@ -144,13 +144,6 @@ def import_pmx_file(
                     warning.get("detail"),
                 )
 
-            logger.debug("Building material morph runtime graph...")
-            phase_start = time.perf_counter()
-            material_morph_runtime_result = build_material_morph_graph(root_group)
-            pipeline.record_phase("material_morph_runtime_sec", phase_start)
-            pipeline.emit_progress(78)
-            logger.debug("Material morph runtime graph result: %s", material_morph_runtime_result)
-
             pipeline.convert_physics(
                 file_kind="pmx",
                 parser=parser,
@@ -167,9 +160,19 @@ def import_pmx_file(
             # bind 後の root scale freeze は skinCluster.bindPreMatrix を stale にするため避ける。
             pipeline.apply_scale_and_select(root_group, apply_scale=False)
             try:
+                # Generated dx11 uniforms (DiffuseColorRGB etc.) only materialize
+                # after VP2 refresh; material morph routing must run after this.
                 pipeline.sync_dx11_uniforms(mesh_converter, refresh_if_dx11=True)
             except Exception:
                 logger.debug("Failed to synchronize dx11 generated uniforms", exc_info=True)
+
+            # Material morph colour route needs post-sync plugs; do not re-sync.
+            logger.debug("Building material morph runtime graph...")
+            phase_start = time.perf_counter()
+            material_morph_runtime_result = build_material_morph_graph(root_group)
+            pipeline.record_phase("material_morph_runtime_sec", phase_start)
+            pipeline.emit_progress(90)
+            logger.debug("Material morph runtime graph result: %s", material_morph_runtime_result)
 
             # MMD ライトコントローラを各 dx11Shader に結線（uniform 生成後）。
             pipeline.wire_light_controller(mesh_converter, light_ctrl)

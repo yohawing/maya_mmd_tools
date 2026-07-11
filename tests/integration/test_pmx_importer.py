@@ -170,6 +170,50 @@ class TestPmxImporter(MayaTestBase):
         self.assertEqual(warnings[0].get("reason"), "node_type_unavailable")
         self.assertTrue(cmds.objExists(result))
 
+    def test_material_morph_graph_builds_after_dx11_uniform_sync(self):
+        """material morph graph は dx11 uniform sync の後にだけ構築される。"""
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        parser = parse_pmx_file(pmx_file)
+        call_order = []
+
+        real_sync = pmx_importer.ModelImportPipeline.sync_dx11_uniforms
+        real_build = pmx_importer.build_material_morph_graph
+
+        def _tracking_sync(self, mesh_converter, refresh_if_dx11=False):
+            call_order.append("sync_dx11")
+            return real_sync(self, mesh_converter, refresh_if_dx11=refresh_if_dx11)
+
+        def _tracking_build(root_group):
+            call_order.append("material_morph")
+            return real_build(root_group)
+
+        with patch.object(
+            pmx_importer.ModelImportPipeline,
+            "sync_dx11_uniforms",
+            _tracking_sync,
+        ), patch.object(
+            pmx_importer,
+            "build_material_morph_graph",
+            side_effect=_tracking_build,
+        ):
+            result = import_pmx_file(
+                parser,
+                pmx_file,
+                options={"import_physics": False},
+            )
+
+        self.assertTrue(result)
+        self.assertIn("sync_dx11", call_order)
+        self.assertIn("material_morph", call_order)
+        self.assertLess(
+            call_order.index("sync_dx11"),
+            call_order.index("material_morph"),
+            f"expected sync before material morph, got {call_order}",
+        )
+        # Single build, no accidental re-entry after wire/setup.
+        self.assertEqual(call_order.count("material_morph"), 1)
+        self.assertEqual(call_order.count("sync_dx11"), 1)
+
     def test_import_pmx_with_physics_disabled_keeps_display_metadata(self):
         """import_physics=False では物理 node を作らず表示枠 metadata は保持する。"""
         cmds.file(new=True, force=True)

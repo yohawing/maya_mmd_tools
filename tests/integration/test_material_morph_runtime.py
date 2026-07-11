@@ -9,13 +9,23 @@ from pathlib import Path
 from maya import cmds
 
 from mmd_tools.converters import MorphConverter
-from mmd_tools.converters.material_morph_runtime import build_material_morph_graph
+from mmd_tools.converters.material_morph_runtime import (
+    BACKEND_DX11,
+    BACKEND_GLSL,
+    BACKEND_STANDARD,
+    build_material_morph_graph,
+    resolve_shader_color_route,
+)
+from mmd_tools.converters.mesh_converter import _ensure_mmd_shader_uniform_attributes
 from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     SCENE_ROOT_SUFFIX,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MATERIAL_INDEX,
 )
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_MMD_SHADER_FX = _REPO_ROOT / "mmd_tools" / "shaders" / "MMDShader.fx"
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.nodes.mmd_material_morph_eval_node import MmdMaterialMorphEvalNode
 from tests.common.maya_test_base import MayaTestBase
@@ -219,13 +229,44 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
         # material morph runtime graph を構築（shader ↔ evaluator 接続）
-        build_material_morph_graph(root)
+        graph = build_material_morph_graph(root)
 
-        return root, mesh, shader, material_nodes
+        return root, mesh, shader, material_nodes, graph
+
+    def test_standard_material_graph_routes_to_color_plug(self):
+        """lambert 標準マテリアルは color へ接続され、public summary キーを保つ。"""
+        _, _, shader, material_nodes, graph = self._create_scene_with_shader()
+        self.assertTrue(graph["success"])
+        self.assertIn("evaluator_nodes", graph)
+        self.assertIn("created", graph)
+        self.assertIn("reused", graph)
+        self.assertIn("contributions", graph)
+        self.assertIn("skipped", graph)
+        self.assertGreaterEqual(len(graph["evaluator_nodes"]), 1)
+        self.assertGreaterEqual(graph["contributions"], 1)
+
+        route = resolve_shader_color_route(shader)
+        self.assertTrue(route.is_usable)
+        self.assertEqual(route.backend, BACKEND_STANDARD)
+        self.assertEqual(route.attr_name, "color")
+
+        evaluators = graph["evaluator_nodes"]
+        connected = False
+        for node in evaluators:
+            sources = cmds.listConnections(f"{shader}.color", s=True, d=False) or []
+            if node in sources:
+                connected = True
+                break
+        self.assertTrue(
+            connected,
+            "mmdMaterialMorphEval.outputDiffuse が lambert.color に接続されていない",
+        )
+        # weight 駆動が生きていることも確認（既存契約の回帰）
+        self.assertEqual(len(material_nodes), 1)
 
     def test_weight_zero_preserves_original_diffuse(self):
         """weight=0 のとき shader diffuse は変わらない。"""
-        _, _, shader, material_nodes = self._create_scene_with_shader()
+        _, _, shader, material_nodes, _ = self._create_scene_with_shader()
         morph_node = material_nodes[0]
 
         cmds.setAttr(f"{morph_node}.weight", 0.0)
@@ -242,7 +283,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
         base(1,1,1) + weight*offset → (2,1,1) — clamp で (1,1,1) のまま等ではなく
         DG 接続で中間値が流れることを期待する。
         """
-        _, _, shader, material_nodes = self._create_scene_with_shader()
+        _, _, shader, material_nodes, _ = self._create_scene_with_shader()
         morph_node = material_nodes[0]
 
         cmds.setAttr(f"{morph_node}.weight", 1.0)
@@ -255,7 +296,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
 
     def test_weight_half_applies_partial_offset(self):
         """weight=0.5 で加算量が半分になる。"""
-        _, _, shader, material_nodes = self._create_scene_with_shader()
+        _, _, shader, material_nodes, _ = self._create_scene_with_shader()
         morph_node = material_nodes[0]
 
         cmds.setAttr(f"{morph_node}.weight", 0.5)
@@ -266,3 +307,310 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             diffuse[0], expected_r, places=4,
             msg="weight=0.5 の diffuse.R が期待値と違う",
         )
+
+    def test_glsl_rgb_alpha_route_when_glsl_available(self):
+        """GLSLShader が作れる環境では DiffuseColorRGB へ接続し alpha は触らない。
+
+        GLSL プラグイン不可 / ノード生成不可 / VP2 が OpenGL 系でない場合は skip。
+        """
+        self._require_material_morph_node()
+
+        try:
+            cmds.loadPlugin("glslShader", quiet=True)
+        except Exception as exc:
+            self.skipTest(f"glslShader plugin unavailable: {exc}")
+
+        try:
+            shader = cmds.shadingNode("GLSLShader", asShader=True, name="mmd_glsl_mat_0")
+        except Exception as exc:
+            self.skipTest(f"GLSLShader node unavailable: {exc}")
+
+        # Standalone often lacks OGSFX-generated uniforms; create RGB+A contract.
+        _ensure_mmd_shader_uniform_attributes(shader)
+        if not cmds.attributeQuery("DiffuseColorRGB", node=shader, exists=True):
+            self.skipTest("DiffuseColorRGB was not created on GLSLShader")
+        if not cmds.attributeQuery("DiffuseColorA", node=shader, exists=True):
+            self.skipTest("DiffuseColorA was not created on GLSLShader")
+
+        cmds.setAttr(f"{shader}.DiffuseColorRGB", 0.7, 0.7, 0.7, type="double3")
+        cmds.setAttr(f"{shader}.DiffuseColorA", 0.42)
+
+        root = cmds.group(empty=True, name=f"glsl_mat_morph{SCENE_ROOT_SUFFIX}")
+        maya_attribute_utils.set_custom_attributes(root, {ATTR_MMD_MODEL_NAME: "test"})
+        mesh = maya_mesh_utils.create_mesh_with_uvs(
+            "glsl_mat_mesh",
+            [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+            [4], [0, 1, 2, 3],
+            [0, 0, 1, 0, 1, 1, 0, 1], [0, 1, 2, 3],
+        )
+        mesh = cmds.parent(mesh, root)[0]
+        sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="mmd_glsl_mat_0_SG")
+        if cmds.attributeQuery("outColor", node=shader, exists=True):
+            cmds.connectAttr(f"{shader}.outColor", f"{sg}.surfaceShader", force=True)
+        cmds.sets(mesh, edit=True, forceElement=sg)
+
+        if not cmds.attributeQuery(ATTR_MMD_MATERIAL_INDEX, node=shader, exists=True):
+            cmds.addAttr(shader, longName=ATTR_MMD_MATERIAL_INDEX, attributeType="long")
+        cmds.setAttr(f"{shader}.{ATTR_MMD_MATERIAL_INDEX}", 0)
+
+        morph = _make_material_morph("glsl赤", [
+            {
+                "material_index": 0,
+                "operation_type": 1,
+                "diffuse": (1.0, 0.0, 0.0, 0.0),
+                "specular": (0.0, 0.0, 0.0),
+                "specular_coefficient": 0.0,
+                "ambient": (0.0, 0.0, 0.0),
+                "edge_color": (0.0, 0.0, 0.0, 0.0),
+                "edge_size": 0.0,
+                "texture_factor": (0.0, 0.0, 0.0, 0.0),
+                "sphere_texture_factor": (0.0, 0.0, 0.0, 0.0),
+                "toon_texture_factor": (0.0, 0.0, 0.0, 0.0),
+            }
+        ])
+        converter = MorphConverter()
+        material_nodes = converter.convert_pmx_morphs(
+            _make_fake_pmx_data([morph]), mesh
+        ).get("material_morph_nodes", [])
+        for morph_node in material_nodes:
+            if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):
+                cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
+            cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
+
+        graph = build_material_morph_graph(root)
+        route = resolve_shader_color_route(shader)
+
+        if not route.is_usable:
+            # Non-OpenGL VP2 (common on Windows DX11 hosts) must fail closed.
+            self.assertEqual(route.backend, BACKEND_GLSL)
+            self.assertTrue(
+                (route.skip_reason or "").startswith("glsl_"),
+                f"unexpected skip: {route.skip_reason}",
+            )
+            self.assertTrue(
+                any(str(s).startswith("glsl_") for s in graph.get("skipped") or []),
+                f"graph skipped missing glsl diagnostic: {graph.get('skipped')}",
+            )
+            # Alpha must remain untouched when routing is skipped.
+            self.assertAlmostEqual(float(cmds.getAttr(f"{shader}.DiffuseColorA")), 0.42, places=4)
+            return
+
+        self.assertEqual(route.attr_name, "DiffuseColorRGB")
+        self.assertEqual(route.backend, BACKEND_GLSL)
+        connected = False
+        for node in graph.get("evaluator_nodes") or []:
+            sources = cmds.listConnections(f"{shader}.DiffuseColorRGB", s=True, d=False) or []
+            if node in sources:
+                connected = True
+                break
+        self.assertTrue(connected, "evaluator output not connected to DiffuseColorRGB")
+        # Alpha plug must not be driven by the RGB evaluator output.
+        alpha_sources = cmds.listConnections(f"{shader}.DiffuseColorA", s=True, d=False) or []
+        for node in graph.get("evaluator_nodes") or []:
+            self.assertNotIn(node, alpha_sources)
+        self.assertAlmostEqual(float(cmds.getAttr(f"{shader}.DiffuseColorA")), 0.42, places=4)
+
+    def test_dx11_rgb_alpha_route_with_real_fx(self):
+        """Real dx11Shader + MMDShader.fx route: fail-closed off-DX11, RGB-only on DX11.
+
+        Does **not** pre-create fake uniforms.  Relies on the effect file + technique
+        evaluation (and refresh) to materialize ``DiffuseColorRGB``.  On non-DX11
+        VP2, asserts the deterministic dx11 skip diagnostic and leaves alpha alone.
+        On DX11 (e.g. ``MAYA_VP2_DEVICE_OVERRIDE=VirtualDeviceDx11``), asserts the
+        evaluator drives RGB, does not touch alpha, and weight changes RGB.
+        """
+        self._require_material_morph_node()
+
+        if not _MMD_SHADER_FX.is_file():
+            self.skipTest(f"MMDShader.fx missing: {_MMD_SHADER_FX}")
+
+        try:
+            cmds.loadPlugin("dx11Shader", quiet=True)
+        except Exception as exc:
+            self.skipTest(f"dx11Shader plugin unavailable: {exc}")
+
+        try:
+            shader = cmds.shadingNode("dx11Shader", asShader=True, name="mmd_dx11_mat_0")
+        except Exception as exc:
+            self.skipTest(f"dx11Shader node unavailable: {exc}")
+
+        fx_path = str(_MMD_SHADER_FX.resolve())
+        try:
+            cmds.setAttr(f"{shader}.shader", fx_path, type="string")
+        except Exception as exc:
+            self.skipTest(f"failed to assign MMDShader.fx: {exc}")
+
+        techniques = []
+        try:
+            techniques = list(cmds.dx11Shader(shader, query=True, listTechniques=True) or [])
+        except Exception:
+            techniques = []
+        if not techniques and cmds.attributeQuery("technique", node=shader, exists=True):
+            # Fallback: known opaque technique from MMDShader.fx when listTechniques
+            # is empty before first evaluation.
+            techniques = ["MMDTechniqueNoEdge"]
+        if not techniques:
+            self.skipTest("dx11Shader has no techniques after loading MMDShader.fx")
+
+        preferred = "MMDTechniqueNoEdge"
+        technique = preferred if preferred in techniques else techniques[0]
+        try:
+            cmds.setAttr(f"{shader}.technique", technique, type="string")
+        except Exception as exc:
+            self.skipTest(f"failed to set technique {technique!r}: {exc}")
+
+        # Force VP2/effect evaluation so hardware generates DiffuseColorRGB.
+        try:
+            cmds.refresh(force=True)
+        except Exception:
+            # mayapy may lack a display; still proceed and check whether the
+            # effect already materialized uniforms from shader/technique set.
+            pass
+
+        has_rgb = cmds.attributeQuery("DiffuseColorRGB", node=shader, exists=True)
+        has_alpha = cmds.attributeQuery("DiffuseColorA", node=shader, exists=True)
+        alpha_seed = 0.37
+        pre_rgb_sources = []
+
+        # Seed only real effect plugs when the hardware generated them.
+        if has_rgb:
+            try:
+                cmds.setAttr(f"{shader}.DiffuseColorRGB", 0.6, 0.6, 0.6, type="double3")
+            except Exception:
+                # Locked or internally driven RGB is still a probe result for the
+                # route contract; continue so fail-closed / success assertions run.
+                pass
+            pre_rgb_sources = (
+                cmds.listConnections(f"{shader}.DiffuseColorRGB", s=True, d=False, p=True)
+                or []
+            )
+        if has_alpha:
+            try:
+                cmds.setAttr(f"{shader}.DiffuseColorA", alpha_seed)
+            except Exception:
+                has_alpha = False
+
+        root = cmds.group(empty=True, name=f"dx11_mat_morph{SCENE_ROOT_SUFFIX}")
+        maya_attribute_utils.set_custom_attributes(root, {ATTR_MMD_MODEL_NAME: "test"})
+        mesh = maya_mesh_utils.create_mesh_with_uvs(
+            "dx11_mat_mesh",
+            [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)],
+            [4], [0, 1, 2, 3],
+            [0, 0, 1, 0, 1, 1, 0, 1], [0, 1, 2, 3],
+        )
+        mesh = cmds.parent(mesh, root)[0]
+        sg = cmds.sets(renderable=True, noSurfaceShader=True, empty=True, name="mmd_dx11_mat_0_SG")
+        if cmds.attributeQuery("outColor", node=shader, exists=True):
+            cmds.connectAttr(f"{shader}.outColor", f"{sg}.surfaceShader", force=True)
+        cmds.sets(mesh, edit=True, forceElement=sg)
+
+        if not cmds.attributeQuery(ATTR_MMD_MATERIAL_INDEX, node=shader, exists=True):
+            cmds.addAttr(shader, longName=ATTR_MMD_MATERIAL_INDEX, attributeType="long")
+        cmds.setAttr(f"{shader}.{ATTR_MMD_MATERIAL_INDEX}", 0)
+
+        morph = _make_material_morph("dx11赤", [
+            {
+                "material_index": 0,
+                "operation_type": 1,
+                "diffuse": (1.0, 0.0, 0.0, 0.0),
+                "specular": (0.0, 0.0, 0.0),
+                "specular_coefficient": 0.0,
+                "ambient": (0.0, 0.0, 0.0),
+                "edge_color": (0.0, 0.0, 0.0, 0.0),
+                "edge_size": 0.0,
+                "texture_factor": (0.0, 0.0, 0.0, 0.0),
+                "sphere_texture_factor": (0.0, 0.0, 0.0, 0.0),
+                "toon_texture_factor": (0.0, 0.0, 0.0, 0.0),
+            }
+        ])
+        converter = MorphConverter()
+        material_nodes = converter.convert_pmx_morphs(
+            _make_fake_pmx_data([morph]), mesh
+        ).get("material_morph_nodes", [])
+        self.assertEqual(len(material_nodes), 1)
+        morph_node = material_nodes[0]
+        if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):
+            cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
+        cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
+
+        graph = build_material_morph_graph(root)
+        route = resolve_shader_color_route(shader)
+
+        if not route.is_usable:
+            # Non-DX11 VP2, missing effect RGB, or unroutable plug: fail closed.
+            self.assertEqual(route.backend, BACKEND_DX11)
+            self.assertTrue(
+                (route.skip_reason or "").startswith("dx11_"),
+                f"unexpected skip: {route.skip_reason}",
+            )
+            self.assertTrue(
+                any(str(s).startswith("dx11_") for s in graph.get("skipped") or []),
+                f"graph skipped missing dx11 diagnostic: {graph.get('skipped')}",
+            )
+            if has_alpha:
+                self.assertAlmostEqual(
+                    float(cmds.getAttr(f"{shader}.DiffuseColorA")),
+                    alpha_seed,
+                    places=4,
+                )
+            if has_rgb:
+                rgb_sources = cmds.listConnections(
+                    f"{shader}.DiffuseColorRGB", s=True, d=False
+                ) or []
+                for node in graph.get("evaluator_nodes") or []:
+                    self.assertNotIn(node, rgb_sources)
+            return
+
+        # Success path requires the hardware-generated RGB effect plug.
+        self.assertTrue(
+            has_rgb,
+            "usable dx11 route without DiffuseColorRGB from MMDShader.fx",
+        )
+        self.assertEqual(route.attr_name, "DiffuseColorRGB")
+        self.assertEqual(route.backend, BACKEND_DX11)
+        evaluators = graph.get("evaluator_nodes") or []
+        self.assertGreaterEqual(len(evaluators), 1)
+
+        connected = False
+        for node in evaluators:
+            sources = cmds.listConnections(f"{shader}.DiffuseColorRGB", s=True, d=False) or []
+            if node in sources:
+                connected = True
+                break
+        self.assertTrue(
+            connected,
+            "mmdMaterialMorphEval.outputDiffuse must drive dx11Shader.DiffuseColorRGB"
+            f" (pre-route sources={pre_rgb_sources!r})",
+        )
+
+        if has_alpha:
+            alpha_sources = (
+                cmds.listConnections(f"{shader}.DiffuseColorA", s=True, d=False) or []
+            )
+            for node in evaluators:
+                self.assertNotIn(node, alpha_sources)
+            self.assertAlmostEqual(
+                float(cmds.getAttr(f"{shader}.DiffuseColorA")),
+                alpha_seed,
+                places=4,
+                msg="reroute must not change DiffuseColorA",
+            )
+
+        # Weight must produce an observable RGB change on the effect plug.
+        cmds.setAttr(f"{morph_node}.weight", 0.0)
+        rgb_at_zero = cmds.getAttr(f"{shader}.DiffuseColorRGB")[0]
+        cmds.setAttr(f"{morph_node}.weight", 1.0)
+        rgb_at_one = cmds.getAttr(f"{shader}.DiffuseColorRGB")[0]
+        self.assertGreater(
+            float(rgb_at_one[0]),
+            float(rgb_at_zero[0]) + 0.01,
+            f"weight=1 did not raise DiffuseColorRGB.R "
+            f"(zero={rgb_at_zero}, one={rgb_at_one})",
+        )
+        if has_alpha:
+            self.assertAlmostEqual(
+                float(cmds.getAttr(f"{shader}.DiffuseColorA")),
+                alpha_seed,
+                places=4,
+                msg="weight drive must not change DiffuseColorA",
+            )

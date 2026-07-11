@@ -11,7 +11,10 @@
 uniform mat4 World : WORLD < string UIWidget = "None"; >;
 uniform mat4 WorldViewProjection : WorldViewProjection < string UIWidget = "None"; >;
 uniform vec3 ViewPosition : ViewPosition < string UIWidget = "None"; >;
-uniform vec4 DiffuseColor = {0.8, 0.8, 0.8, 1.0};
+// RGB + alpha are separate so material morph can drive RGB (double3) without
+// corrupting alpha. Mirrors MMDShader.fx DiffuseColorRGB / DiffuseColorA.
+uniform vec3 DiffuseColorRGB = {0.8, 0.8, 0.8};
+uniform float DiffuseColorA = 1.0;
 uniform vec3 SpecularColor = {0.5, 0.5, 0.5};
 uniform vec3 AmbientColor = {0.2, 0.2, 0.2};
 uniform float Shininess = 20.0;
@@ -63,7 +66,7 @@ GLSLShader FS
         vec3 l = normalize(vec3(0.0, 0.0, 1.0));
         float ndotl = clamp(dot(n, -l), 0.0, 1.0);
         float band = floor(ndotl * 4.0) / 4.0;
-        vec3 lighting = AmbientColor + DiffuseColor.rgb * (0.2 + band);
+        vec3 lighting = AmbientColor + DiffuseColorRGB * (0.2 + band);
         float specDot = max(dot(reflect(l, n), normalize(psIn.ViewDir)), 0.0);
         float spec = pow(specDot, max(Shininess, 1.0)) * 0.8;
         lighting += SpecularColor * spec;
@@ -80,7 +83,7 @@ GLSLShader FS
             lighting += 0.15;
         }
 
-        colorOut = vec4(lighting, DiffuseColor.a * Opacity);
+        colorOut = vec4(lighting, DiffuseColorA * Opacity);
     }
 }
 
