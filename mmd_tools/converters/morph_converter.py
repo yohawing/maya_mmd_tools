@@ -21,7 +21,7 @@ from mmd_tools.core.constants import (
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.converters.morph_scene_metadata import (
     iter_morph_network_metadata,
-    read_blendshape_morph_name_strings,
+    read_blendshape_morph_entry_strings,
 )
 
 _OPT_IMPORT_MORPHS = "import_morphs"
@@ -95,7 +95,9 @@ class MorphConverter:
                                 )
                                 continue
                             self.logger.debug(f"Converting vertex morph: {morph.name}")
-                            result = self._convert_vertex_morph_pmx(morph, mn, template_ctx=template_ctx)
+                            result = self._convert_vertex_morph_pmx(
+                                morph, mn, morph_index=morph_index, template_ctx=template_ctx
+                            )
                             if result["success"]:
                                 results.append(result)
                                 if result["blend_shape_node"] not in blend_shape_nodes:
@@ -327,9 +329,9 @@ class MorphConverter:
             index += 1
         return f"{base_alias}_{index}"
 
-    def _load_blendshape_morph_names(self, blend_shape_node: str) -> Dict[str, str]:
+    def _load_blendshape_morph_names(self, blend_shape_node: str) -> Dict[str, Dict[str, object]]:
         """blendShape ノードの weight index → 生モーフ名 JSON を読み込む。"""
-        return read_blendshape_morph_name_strings(blend_shape_node, ensure_attr=True)
+        return read_blendshape_morph_entry_strings(blend_shape_node, ensure_attr=True)
 
     def _flush_vertex_morph_name_mapping(self, template_ctx: Dict[str, Any]) -> None:
         """vertex morph ループで蓄積した morph name mapping を一括保存する。"""
@@ -342,13 +344,14 @@ class MorphConverter:
         self._add_profile_time("morph_name_store_sec", start)
         template_ctx["morph_name_mapping_dirty"] = False
 
-    def _store_blendshape_morph_name(self, blend_shape_node: str, target_index: int, raw_name: str) -> None:
+    def _store_blendshape_morph_name(
+        self, blend_shape_node: str, target_index: int, raw_name: str, morph_index: int
+    ) -> None:
         """blendShape ノードに weight index → 生モーフ名 の対応を JSON で保存する。"""
         if not raw_name:
             return
-        parsed = maya_attribute_utils.read_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, default={})
-        names: Dict[str, str] = {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
-        names[str(target_index)] = str(raw_name)
+        names = read_blendshape_morph_entry_strings(blend_shape_node, ensure_attr=True)
+        names[str(target_index)] = {"name": str(raw_name), "index": int(morph_index)}
         maya_attribute_utils.write_json_attr(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, names)
 
     def _convert_bone_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
@@ -478,7 +481,12 @@ class MorphConverter:
         return [float(v) for v in values]
 
     def _convert_vertex_morph_pmx(
-        self, morph, mesh_node: str, *, template_ctx: Optional[Dict[str, Any]] = None,
+        self,
+        morph,
+        mesh_node: str,
+        *,
+        morph_index: int = -1,
+        template_ctx: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """PMX頂点モーフの変換
 
@@ -567,12 +575,16 @@ class MorphConverter:
             existing_aliases.add(alias)
 
         if template_ctx is not None and "morph_name_mapping" in template_ctx:
-            if raw_name:
-                template_ctx["morph_name_mapping"][str(target_index)] = str(raw_name)
-                template_ctx["morph_name_mapping_dirty"] = True
+            template_ctx["morph_name_mapping"][str(target_index)] = {
+                "name": str(raw_name),
+                "index": int(morph_index),
+            }
+            template_ctx["morph_name_mapping_dirty"] = True
         else:
             morph_name_store_start = time.perf_counter()
-            self._store_blendshape_morph_name(blend_shape_node, target_index, raw_name)
+            self._store_blendshape_morph_name(
+                blend_shape_node, target_index, raw_name, morph_index
+            )
             self._add_profile_time("morph_name_store_sec", morph_name_store_start)
 
         return {

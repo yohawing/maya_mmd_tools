@@ -9,6 +9,7 @@ from ...core.morph_metadata_reader import (
     MORPH_TAB_GROUP_ORDER,
     group_morph_names_by_panel,
     morph_info_from_presenter_entry,
+    parse_blendshape_morph_entries,
     panel_display_group,
 )
 from ..qt_compat import QTimer, QListWidgetItem
@@ -29,6 +30,8 @@ _NETWORK_MORPH_TYPE_INDEX = {
 _WEIGHT_INDEX_RE = re.compile(r"\[(\d+)\]")
 # Fallback panel for morphs without explicit PMX panel metadata (not System/0).
 _DEFAULT_USER_PANEL = 4
+_PMX_TYPE_TO_UI_INDEX = {0: 12, 1: 0, 2: 10, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 11, 9: 13, 10: 14}
+_UI_INDEX_TO_PMX_TYPE = {ui_index: pmx_type for pmx_type, ui_index in _PMX_TYPE_TO_UI_INDEX.items()}
 
 
 class MorphPresenter:
@@ -39,6 +42,7 @@ class MorphPresenter:
         self.blend_shape_node = None
         self.current_morph = None
         self.morph_data = {}  # MMDモーフデータのキャッシュ
+        self._blendshape_metadata_bindings = {}
         self.group_morphs = {}  # グループごとのモーフリスト
         self.is_updating = False
 
@@ -94,6 +98,7 @@ class MorphPresenter:
         """モーフをロード"""
         self.view.morph_list.clear()
         self.morph_data.clear()
+        self._blendshape_metadata_bindings.clear()
         self.group_morphs.clear()
         self.current_morph = None
         self.view.set_morph_details_enabled(False)
@@ -129,7 +134,13 @@ class MorphPresenter:
         morph_data_json = self._get_attr_safe(model_root, "mmdMorphData", "")
         if morph_data_json:
             try:
-                self.morph_data = json.loads(morph_data_json)
+                parsed = json.loads(morph_data_json)
+                if isinstance(parsed, dict):
+                    self.morph_data = parsed
+                elif isinstance(parsed, list):
+                    self.morph_data = self._index_morph_metadata(parsed)
+                else:
+                    logger.warning("Ignoring unsupported mmdMorphData schema: %s", type(parsed).__name__)
             except Exception as e:
                 logger.error(f"Failed to parse MMD morph data: {e}", exc_info=True)
 
@@ -157,10 +168,16 @@ class MorphPresenter:
                     target_name = aliases[i]
                     target_attr = aliases[i + 1] if i + 1 < len(aliases) else ""
                     weight_index = self._parse_weight_index(target_attr)
-                    raw_name = raw_names.get(weight_index) or target_name
-                    if not raw_name:
+                    entry = raw_names.get(weight_index)
+                    raw_name = entry["name"] if entry is not None else target_name
+                    global_index = entry.get("index") if entry is not None else None
+                    if raw_name is None:
                         continue
-                    morph_key = raw_name if raw_name in self.morph_data else target_name
+                    morph_key = self._resolve_blendshape_metadata_key(
+                        raw_name, global_index=global_index, weight_index=weight_index
+                    )
+                    if morph_key is None:
+                        morph_key = raw_name if raw_name in self.morph_data else target_name
 
                     # MMDデータと照合、なければ新規作成
                     if morph_key not in self.morph_data:
@@ -188,8 +205,55 @@ class MorphPresenter:
                     # ブレンドシェイプ情報を追加
                     self._add_blend_shape_target(self.morph_data[morph_key], bs_node, target_name, target_attr)
 
+    @staticmethod
+    def _index_morph_metadata(entries):
+        """Convert lossless list metadata to the presenter's unique-key mapping."""
+        result = {}
+        for position, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                continue
+            data = dict(entry)
+            data["_pmx_type_raw"] = True
+            index = data.get("index", position)
+            raw_name = str(data.get("name_jp", "") or "")
+            key = raw_name
+            if not key or key in result:
+                key = f"{raw_name or '<unnamed>'} [{index}]"
+                suffix = 2
+                while key in result:
+                    key = f"{raw_name or '<unnamed>'} [{index}]#{suffix}"
+                    suffix += 1
+            result[key] = data
+        return result
+
+    def _resolve_blendshape_metadata_key(self, raw_name, *, global_index=None, weight_index=None):
+        """Resolve by PMX global index, with deterministic legacy-name fallback."""
+        if global_index is not None:
+            for key, data in self.morph_data.items():
+                if data.get("_pmx_type_raw") and int(data.get("index", -1)) == int(global_index):
+                    return key
+
+        binding_key = (str(raw_name), weight_index)
+        if binding_key in self._blendshape_metadata_bindings:
+            return self._blendshape_metadata_bindings[binding_key]
+
+        candidates = [
+            (key, data)
+            for key, data in self.morph_data.items()
+            if str(data.get("name_jp", "") or "") == str(raw_name)
+            and int(data.get("type", 1)) == 1
+        ]
+        candidates.sort(key=lambda item: int(item[1].get("index", -1)))
+        already_bound = set(self._blendshape_metadata_bindings.values())
+        selected = next((key for key, _data in candidates if key not in already_bound), None)
+        if selected is None and candidates:
+            selected = candidates[0][0]
+        if selected is not None:
+            self._blendshape_metadata_bindings[binding_key] = selected
+        return selected
+
     def _load_blend_shape_morph_name_mapping(self, blend_shape_node):
-        """blendShape node の weight index -> PMX raw morph name 対応を読む。"""
+        """Read weight index -> raw name/global PMX index metadata."""
         raw_json = self._get_attr_safe(blend_shape_node, ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, "")
         if not raw_json:
             return {}
@@ -200,16 +264,7 @@ class MorphPresenter:
             logger.debug(f"Failed to parse blendShape morph name mapping: {blend_shape_node}: {e}")
             return {}
 
-        if not isinstance(parsed, dict):
-            return {}
-
-        mapping = {}
-        for key, value in parsed.items():
-            try:
-                mapping[int(key)] = str(value)
-            except (TypeError, ValueError):
-                continue
-        return mapping
+        return parse_blendshape_morph_entries(parsed)
 
     def _load_network_morphs(self, model_root=None, allow_metadata_entries=True):
         """bone/material/group morph の network node metadata を一覧用に読む。"""
@@ -494,7 +549,13 @@ class MorphPresenter:
         self.view.morph_name_jp_edit.setText(data.get("name_jp", morph_name))
         self.view.morph_name_en_edit.setText(data.get("name_en", ""))
         self.view.panel_combo.setCurrentIndex(data.get("panel", 0))
-        self.view.morph_type_combo.setCurrentIndex(data.get("type", 0))
+        stored_type = data.get("type", 0)
+        ui_type = (
+            _PMX_TYPE_TO_UI_INDEX.get(int(stored_type), 0)
+            if data.get("_pmx_type_raw")
+            else int(stored_type)
+        )
+        self.view.morph_type_combo.setCurrentIndex(ui_type)
         self.view.group_combo.setCurrentText(data.get("group", "その他"))
 
         # Maya連携情報
@@ -830,7 +891,12 @@ class MorphPresenter:
         data["name_jp"] = self.view.morph_name_jp_edit.text()
         data["name_en"] = self.view.morph_name_en_edit.text()
         data["panel"] = self.view.panel_combo.currentIndex()
-        data["type"] = self.view.morph_type_combo.currentIndex()
+        ui_type = self.view.morph_type_combo.currentIndex()
+        data["type"] = (
+            _UI_INDEX_TO_PMX_TYPE.get(ui_type, 1)
+            if data.get("_pmx_type_raw")
+            else ui_type
+        )
         data["group"] = self.view.group_combo.currentText()
 
         # MMDアトリビュートに保存
@@ -846,7 +912,16 @@ class MorphPresenter:
 
     def _save_mmd_morph_data(self, model_root):
         """MMDモーフデータを保存"""
-        morph_data_json = json.dumps(self.morph_data, ensure_ascii=False)
+        if any(data.get("_pmx_type_raw") for data in self.morph_data.values()):
+            payload = [
+                {key: value for key, value in data.items() if key != "_pmx_type_raw"}
+                for data in sorted(
+                    self.morph_data.values(), key=lambda item: int(item.get("index", -1))
+                )
+            ]
+        else:
+            payload = self.morph_data
+        morph_data_json = json.dumps(payload, ensure_ascii=False)
         set_custom_attributes(model_root, {"mmdMorphData": morph_data_json})
 
     def reset_changes(self):

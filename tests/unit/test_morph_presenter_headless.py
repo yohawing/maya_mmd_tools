@@ -383,6 +383,85 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual([item.text() for item in view.morph_list.items], ["smile"])
         self.assertEqual(view.preset_combo.items, ["なし", "笑顔", "ウィンク", "驚き", "悲しみ", "custom_pose"])
 
+    def test_list_metadata_preserves_duplicate_and_empty_names(self):
+        presenter, _, _, _ = _make_presenter()
+
+        indexed = presenter._index_morph_metadata(
+            [
+                {"name_jp": "笑顔", "panel": 2, "type": 1, "index": 4},
+                {"name_jp": "笑顔", "panel": 3, "type": 1, "index": 7},
+                {"name_jp": "", "panel": 4, "type": 1, "index": 9},
+            ]
+        )
+
+        self.assertEqual(list(indexed), ["笑顔", "笑顔 [7]", "<unnamed> [9]"])
+        self.assertEqual([data["index"] for data in indexed.values()], [4, 7, 9])
+
+    def test_duplicate_blendshape_names_bind_by_weight_index_deterministically(self):
+        presenter, _, _, _ = _make_presenter()
+        presenter.morph_data = presenter._index_morph_metadata(
+            [
+                {"name_jp": "笑顔", "panel": 2, "type": 1, "index": 4},
+                {"name_jp": "笑顔", "panel": 3, "type": 1, "index": 7},
+            ]
+        )
+
+        self.assertEqual(presenter._resolve_blendshape_metadata_key("笑顔", weight_index=0), "笑顔")
+        self.assertEqual(presenter._resolve_blendshape_metadata_key("笑顔", weight_index=1), "笑顔 [7]")
+        # A split mesh repeats the local weight index and resolves to the same record.
+        self.assertEqual(presenter._resolve_blendshape_metadata_key("笑顔", weight_index=0), "笑顔")
+
+        presenter.morph_data["<unnamed> [9]"] = {
+            "name_jp": "",
+            "panel": 4,
+            "type": 1,
+            "index": 9,
+        }
+        self.assertEqual(
+            presenter._resolve_blendshape_metadata_key("", weight_index=2),
+            "<unnamed> [9]",
+        )
+
+    def test_global_morph_index_wins_across_split_mesh_local_order(self):
+        presenter, _, _, _ = _make_presenter()
+        presenter.morph_data = presenter._index_morph_metadata(
+            [
+                {"name_jp": "笑顔", "panel": 2, "type": 1, "index": 4},
+                {"name_jp": "笑顔", "panel": 3, "type": 1, "index": 7},
+            ]
+        )
+
+        self.assertEqual(
+            presenter._resolve_blendshape_metadata_key("笑顔", global_index=7, weight_index=0),
+            "笑顔 [7]",
+        )
+        self.assertEqual(
+            presenter._resolve_blendshape_metadata_key("笑顔", global_index=4, weight_index=1),
+            "笑顔",
+        )
+        # Another split mesh may use a different local slot for the same PMX morph.
+        self.assertEqual(
+            presenter._resolve_blendshape_metadata_key("笑顔", global_index=7, weight_index=5),
+            "笑顔 [7]",
+        )
+
+    def test_raw_pmx_type_ui_mapping_round_trips_without_mutating_storage(self):
+        for raw_type, ui_index in morph_presenter_module._PMX_TYPE_TO_UI_INDEX.items():
+            self.assertEqual(morph_presenter_module._UI_INDEX_TO_PMX_TYPE[ui_index], raw_type)
+
+        presenter, view, _, _ = _make_presenter()
+        presenter.morph_data = presenter._index_morph_metadata(
+            [{"name_jp": "material", "panel": 4, "type": 8, "index": 3}]
+        )
+        presenter.load_morph_details("material")
+        self.assertEqual(view.morph_type_combo.currentIndex(), 11)
+        self.assertEqual(presenter.morph_data["material"]["type"], 8)
+
+        presenter.current_morph = "material"
+        view.morph_type_combo.setCurrentIndex(10)
+        presenter.apply_changes()
+        self.assertEqual(presenter.morph_data["material"]["type"], 2)
+
     def test_load_morphs_falls_back_to_blendshape_raw_names_and_split_targets(self):
         adapter = _FakeMayaAdapter()
         adapter.existing.update(

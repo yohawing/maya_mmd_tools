@@ -20,6 +20,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_LIGHT,
     ATTR_MMD_MODEL_NAME,
 )
+from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 from mmd_tools.converters.vmd_camera_animation import (
     ATTR_MMD_CAMERA_ROOT_NODE,
     ATTR_MMD_CAMERA_TARGET_NODE,
@@ -347,15 +348,7 @@ def _read_blendshape_morph_names(blend_shape: str) -> dict[int, str]:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
         return {}
-    if not isinstance(parsed, dict):
-        return {}
-    result = {}
-    for key, value in parsed.items():
-        try:
-            result[int(key)] = str(value)
-        except (TypeError, ValueError):
-            continue
-    return result
+    return parse_blendshape_morph_names(parsed)
 
 
 def _key_times(node: str, attrs: Iterable[str]) -> list[float]:

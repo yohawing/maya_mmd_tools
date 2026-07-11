@@ -25,6 +25,7 @@ ATTR_MMD_MODEL_NAME_EN = "mmd_model_name_en"
 ATTR_MMD_COMMENT = "mmd_comment"
 ATTR_MMD_COMMENT_EN = "mmd_comment_en"
 ATTR_MMD_DISPLAY_FRAMES_JSON = "mmd_display_frames_json"
+ATTR_MMD_MORPH_DATA = "mmdMorphData"
 
 # Animator Toolset viewport visibility state on the imported model root.
 ATTR_MMD_SHOW_MESH = "mmd_show_mesh"

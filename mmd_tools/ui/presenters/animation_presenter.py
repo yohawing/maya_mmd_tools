@@ -17,6 +17,7 @@ from ...core.morph_metadata_reader import (
     CategorizedMorphs,
     MorphInfo,
     categorize_morphs,
+    parse_blendshape_morph_names,
     read_morph_list_from_blendshape_json,
     PANEL_NAMES,
 )
@@ -402,8 +403,8 @@ class AnimationPresenter:
             )
             if not raw:
                 return None
-            parsed = json.loads(raw)
-            return parsed if isinstance(parsed, dict) else None
+            parsed = parse_blendshape_morph_names(json.loads(raw))
+            return {str(index): name for index, name in parsed.items()} or None
         except Exception:
             return None
 

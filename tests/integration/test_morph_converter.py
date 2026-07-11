@@ -530,8 +530,8 @@ class TestMorphConverter(MayaTestBase):
             cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True)
         )
         stored = json.loads(cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"))
-        self.assertEqual(stored.get("0"), "にっこり")
-        self.assertEqual(stored.get("1"), "にやり")
+        self.assertEqual(stored.get("0"), {"name": "にっこり", "index": 0})
+        self.assertEqual(stored.get("1"), {"name": "にやり", "index": 1})
 
     def test_vertex_morph_targets_keep_independent_offsets(self):
         """複数 vertex morph target が最後の target geometry に潰れないことを確認する。"""

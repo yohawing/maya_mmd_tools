@@ -2,6 +2,7 @@
 PMXファイルをMayaシーンにインポートするためのモジュール。
 """
 
+import json
 import os
 import time
 from typing import Any, Callable, Dict, Optional
@@ -20,12 +21,36 @@ from ..core.constants import (
     ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MODEL_NAME,
     ATTR_MMD_MODEL_NAME_EN,
+    ATTR_MMD_MORPH_DATA,
 )
 from ..core.display_frame_metadata import display_frames_to_json
 from ..core.namespace_utils import NamespaceUtils
 
 # ロガーを取得
 logger = get_logger("mmd_tools.io.pmx_importer")
+
+
+def _serialize_pmx_morph_data(morphs: Any) -> str:
+    """Serialize authoritative PMX morph metadata for the model root.
+
+    MorphPresenter uses the raw Japanese morph name as its scene key.  Keep the
+    PMX type value intact so later UI features can distinguish UV and PMX 2.1
+    morphs without reconstructing it from Maya nodes.
+    """
+    metadata = []
+    for index, morph in enumerate(morphs or []):
+        name_jp = str(getattr(morph, "name", "") or "")
+        morph_type = getattr(morph, "morph_type", 0)
+        metadata.append(
+            {
+                "name_jp": name_jp,
+                "name_en": str(getattr(morph, "name_english", "") or ""),
+                "panel": int(getattr(morph, "panel", 0)),
+                "type": int(morph_type),
+                "index": index,
+            }
+        )
+    return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
 
 
 def import_pmx_file(
@@ -82,6 +107,9 @@ def import_pmx_file(
                     ATTR_MMD_COMMENT_EN: parser.header.comment_english,
                     ATTR_MMD_DISPLAY_FRAMES_JSON: display_frames_to_json(
                         getattr(parser, "display_frames", [])
+                    ),
+                    ATTR_MMD_MORPH_DATA: _serialize_pmx_morph_data(
+                        getattr(parser, "morphs", [])
                     ),
                     # Phase 1: runtime bake で VMD インポート時に PMX ソースを容易に見つけるため
                     "mmd_source_file": filepath,

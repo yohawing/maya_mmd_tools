@@ -26,6 +26,36 @@ PANEL_GROUP_LABELS: Dict[int, str] = {
 MORPH_TAB_GROUP_ORDER: tuple[str, ...] = ("眉", "目", "口", "その他")
 
 
+def parse_blendshape_morph_entries(parsed: object) -> Dict[int, Dict[str, object]]:
+    """Normalize new object and legacy string blendShape metadata schemas."""
+    if not isinstance(parsed, dict):
+        return {}
+    result = {}
+    for key, value in parsed.items():
+        try:
+            weight_index = int(key)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, dict):
+            entry = {"name": str(value.get("name", ""))}
+            try:
+                entry["index"] = int(value["index"])
+            except (KeyError, TypeError, ValueError):
+                pass
+        else:
+            entry = {"name": str(value)}
+        result[weight_index] = entry
+    return result
+
+
+def parse_blendshape_morph_names(parsed: object) -> Dict[int, str]:
+    """Return weight-index to raw PMX name for either stored schema."""
+    return {
+        index: str(entry["name"])
+        for index, entry in parse_blendshape_morph_entries(parsed).items()
+    }
+
+
 @dataclass(frozen=True)
 class MorphInfo:
     """Read-only morph metadata for picker categorization."""
@@ -74,6 +104,20 @@ def morph_info_from_presenter_entry(name: str, data: Mapping[str, object]) -> Mo
     morph_type_raw = data.get("mmd_morph_type") or data.get("morph_type")
     if morph_type_raw:
         morph_type = _coerce_str(morph_type_raw, default="vertex")
+    elif data.get("_pmx_type_raw"):
+        morph_type = {
+            0: "group",
+            1: "vertex",
+            2: "bone",
+            3: "uv",
+            4: "uv",
+            5: "uv",
+            6: "uv",
+            7: "uv",
+            8: "material",
+            9: "flip",
+            10: "impulse",
+        }.get(_coerce_int(data.get("type"), default=1), "vertex")
     else:
         # MorphPresenter stores PMX morph type as integer ``type``.
         type_index = _coerce_int(data.get("type"), default=0)
@@ -146,11 +190,12 @@ def read_morph_list_from_blendshape_json(
 ) -> list[MorphInfo]:
     """Build vertex morph list from blendShape weight-index JSON mapping."""
     morphs: List[MorphInfo] = []
-    for key, raw_name in names_json.items():
+    for key, raw_entry in names_json.items():
         try:
             index = int(key)
         except (TypeError, ValueError):
             continue
+        raw_name = raw_entry.get("name", "") if isinstance(raw_entry, dict) else raw_entry
         morphs.append(
             MorphInfo(
                 name=str(raw_name),

@@ -32,6 +32,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.coordinate_transform import maya_point_to_mmd
 from mmd_tools.core.display_frame_metadata import display_frames_from_json
+from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_names
 
 
 def _get_mesh_shape(node: str) -> str:
@@ -292,15 +293,7 @@ def _blendshape_stored_names(blend_shape: str) -> dict[int, str]:
         parsed = json.loads(raw)
     except (TypeError, ValueError):
         return {}
-    if not isinstance(parsed, dict):
-        return {}
-    names = {}
-    for key, value in parsed.items():
-        try:
-            names[int(key)] = str(value)
-        except (TypeError, ValueError):
-            continue
-    return names
+    return parse_blendshape_morph_names(parsed)
 
 
 def _blendshape_target_indices(blend_shape: str) -> list[int]:
