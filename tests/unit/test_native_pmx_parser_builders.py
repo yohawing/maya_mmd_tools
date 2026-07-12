@@ -122,21 +122,38 @@ class TestNativePmxParserBuilders(unittest.TestCase):
         legacy_pmx = _make_minimal_pmx21_data()
         legacy_pmx.soft_bodies = [_make_test_soft_body()]
         lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())
+        observed = {}
 
-        with patch("mmd_tools.core.native.mmd_anim_runtime.get_mmd_runtime_library", return_value=lib), patch(
-            "mmd_tools.core.native.native_pmx_parser.Path.read_bytes", return_value=b"pmx"
-        ), patch(
-            "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes", return_value=native_pmx
-        ), patch(
-            "mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy", return_value=legacy_pmx
-        ):
-            parsed_native = parse_pmx_native("cloth.pmx")
+        def parse_captured_temp(path):
+            observed["path"] = Path(path)
+            observed["bytes"] = Path(path).read_bytes()
+            return legacy_pmx
 
-        self.assertIs(parsed_native, native_pmx)
-        parsed_native.soft_body_loader = lambda: legacy_pmx.soft_bodies
         with TemporaryDirectory() as temp_dir:
             out_path = Path(temp_dir) / "roundtrip.pmx"
-            parsed_native.write_file(str(out_path))
+            with patch(
+                "mmd_tools.core.native.mmd_anim_runtime.get_mmd_runtime_library",
+                return_value=lib,
+            ), patch(
+                "mmd_tools.core.native.native_pmx_parser.Path.read_bytes",
+                return_value=b"pmx",
+            ), patch(
+                "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes",
+                return_value=native_pmx,
+            ), patch(
+                "mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy",
+                side_effect=parse_captured_temp,
+            ) as parse_legacy:
+                parsed_native = parse_pmx_native("cloth.pmx")
+                self.assertIs(parsed_native, native_pmx)
+                parse_legacy.assert_not_called()
+
+                parsed_native.write_file(str(out_path))
+
+                parse_legacy.assert_called_once()
+
+            self.assertEqual(observed["bytes"], b"pmx")
+            self.assertFalse(observed["path"].exists())
             reparsed = PmxData().parse_file(str(out_path))
 
         self.assertEqual(len(reparsed.soft_bodies), 1)
