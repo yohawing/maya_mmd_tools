@@ -246,6 +246,113 @@ class TestVmdIkAnimation(MayaTestBase):
 
         cmds.delete(node, goal)
 
+    def _ancestor_chain_json(self) -> str:
+        """腰相当の祖先(slot0) + link(1) + target(2) + 別ブランチ controller(3)"""
+        return json.dumps({
+            "bones": [
+                {"rest_position": [0.0, 0.0, 0.0], "parent_slot": -1, "joint_orient_deg": [0.0, 0.0, 0.0]},
+                {"rest_position": [1.0, 0.0, 0.0], "parent_slot": 0, "joint_orient_deg": [0.0, 0.0, 0.0]},
+                {"rest_position": [1.0, 0.0, 0.0], "parent_slot": 1, "joint_orient_deg": [0.0, 0.0, 0.0]},
+                {"rest_position": [2.0, 0.0, 0.0], "parent_slot": -1, "joint_orient_deg": [0.0, 0.0, 0.0]},
+            ],
+            "links": [{"bone_slot": 1}],
+            "targetBoneSlot": 2,
+            "controllerBoneSlot": 3,
+            "iterationCount": 40,
+            "limitAngle": 2.0,
+        })
+
+    def test_mmd_ccd_ik_ancestor_rotation_triggers_solve_when_goal_at_rest(self):
+        """腰相当の祖先を回転すると、controller が REST のままでも IK を解き直す"""
+        node = cmds.createNode("mmdCcdIk", name="ancestor_rotation_ik_solver")
+        ancestor = cmds.createNode("transform", name="ancestor_rotation_src")
+        cmds.setAttr(f"{node}.chainJson", self._ancestor_chain_json(), type="string")
+        cmds.setAttr(f"{node}.enabled", True)
+        cmds.connectAttr(f"{ancestor}.rotate", f"{node}.inputRotate[0]")
+        cmds.setAttr(f"{ancestor}.rotateZ", 30.0)
+
+        self.assertGreater(
+            abs(cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ")),
+            20.0,
+        )
+
+        cmds.delete(node, ancestor)
+
+    def test_mmd_ccd_ik_ancestor_translation_triggers_solve_when_goal_at_rest(self):
+        """controller ブランチ外の祖先を移動しても IK を解き直す"""
+        node = cmds.createNode("mmdCcdIk", name="ancestor_translation_ik_solver")
+        ancestor = cmds.createNode("transform", name="ancestor_translation_src")
+        cmds.setAttr(f"{node}.chainJson", self._ancestor_chain_json(), type="string")
+        cmds.setAttr(f"{node}.enabled", True)
+        cmds.connectAttr(f"{ancestor}.translate", f"{node}.inputTranslate[0]")
+        cmds.setAttr(f"{ancestor}.translate", 0.0, 0.5, 0.0)
+
+        self.assertGreater(
+            abs(cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ")),
+            15.0,
+        )
+
+        cmds.delete(node, ancestor)
+
+    def test_mmd_ccd_ik_ancestor_rotation_solves_with_goal_world_matrix_at_rest(self):
+        """本番配線（goalWorldMatrix接続）でも祖先回転で IK を解き直す"""
+        node = cmds.createNode("mmdCcdIk", name="ancestor_rotation_gwm_ik_solver")
+        ancestor = cmds.createNode("transform", name="ancestor_rotation_gwm_src")
+        goal = cmds.spaceLocator(name="ancestor_rotation_gwm_goal")[0]
+        cmds.setAttr(f"{node}.chainJson", self._ancestor_chain_json(), type="string")
+        cmds.setAttr(f"{node}.enabled", True)
+        cmds.setAttr(f"{goal}.translate", 2.0, 0.0, 0.0)
+        cmds.connectAttr(f"{goal}.worldMatrix[0]", f"{node}.goalWorldMatrix")
+        cmds.connectAttr(f"{ancestor}.rotate", f"{node}.inputRotate[0]")
+        cmds.setAttr(f"{ancestor}.rotateZ", 30.0)
+
+        self.assertGreater(
+            abs(cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ")),
+            20.0,
+        )
+
+        cmds.delete(node, ancestor, goal)
+
+    def test_mmd_ccd_ik_shared_root_rotation_stays_passthrough(self):
+        """全ての親相当の共通ルート回転は target と goal が一緒に動くので解かない"""
+        node = cmds.createNode("mmdCcdIk", name="shared_root_ik_solver")
+        root = cmds.createNode("transform", name="shared_root_src")
+        link = cmds.createNode("transform", name="shared_root_link_src")
+        chain = {
+            "bones": [
+                {"rest_position": [0.0, 0.0, 0.0], "parent_slot": -1, "joint_orient_deg": [0.0, 0.0, 0.0]},
+                {"rest_position": [1.0, 0.0, 0.0], "parent_slot": 0, "joint_orient_deg": [0.0, 0.0, 0.0]},
+                {"rest_position": [1.0, 0.0, 0.0], "parent_slot": 1, "joint_orient_deg": [0.0, 0.0, 0.0]},
+                {"rest_position": [2.0, 0.0, 0.0], "parent_slot": 0, "joint_orient_deg": [0.0, 0.0, 0.0]},
+            ],
+            "links": [{"bone_slot": 1}],
+            "targetBoneSlot": 2,
+            "controllerBoneSlot": 3,
+            "iterationCount": 40,
+            "limitAngle": 2.0,
+        }
+        cmds.setAttr(f"{node}.chainJson", json.dumps(chain), type="string")
+        cmds.setAttr(f"{node}.enabled", True)
+        cmds.connectAttr(f"{root}.rotate", f"{node}.inputRotate[0]")
+        cmds.setAttr(f"{root}.rotateZ", 30.0)
+        # link のボーン軸(+X)まわり twist は target を動かさないので、
+        # pass-through でそのまま出力に保持されるべき値。
+        cmds.connectAttr(f"{link}.rotate", f"{node}.inputRotate[1]")
+        cmds.setAttr(f"{link}.rotateX", 25.0)
+
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementX"),
+            25.0,
+            places=4,
+        )
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{node}.outputRotate[0].outputRotateElementZ"),
+            0.0,
+            places=4,
+        )
+
+        cmds.delete(node, root, link)
+
     def test_mmd_ccd_ik_external_goal_connection_overrides_controller_slot_goal(self):
         """controllerBoneSlot があっても外部 goal 接続は公開入力として尊重する"""
         node = cmds.createNode("mmdCcdIk", name="external_goal_ik_solver")

@@ -500,33 +500,19 @@ bool readInputRotateElement(
     return true;
 }
 
-bool controllerBranchHasPositionOffset(const CcdIkChainConfig& cfg, const std::vector<float>& positions)
-{
-    if (cfg.controllerBoneSlot < 0 || static_cast<size_t>(cfg.controllerBoneSlot) >= cfg.bones.size()) {
-        return false;
-    }
-    int32_t slot = cfg.controllerBoneSlot;
-    std::vector<bool> visited(cfg.bones.size(), false);
-    while (slot >= 0 && static_cast<size_t>(slot) < cfg.bones.size() && !visited[static_cast<size_t>(slot)]) {
-        visited[static_cast<size_t>(slot)] = true;
-        const size_t offset = static_cast<size_t>(slot) * 3;
-        if (std::abs(positions[offset]) > 1.0e-5f ||
-            std::abs(positions[offset + 1]) > 1.0e-5f ||
-            std::abs(positions[offset + 2]) > 1.0e-5f) {
-            return true;
-        }
-        slot = cfg.parentSlots[static_cast<size_t>(slot)];
-    }
-    return false;
-}
+// FK target と goal の一致判定 (MMD units)。VMD bake の Euler/animCurve
+// 丸め誤差より十分大きく、目視で分かる足のズレより十分小さい値。
+constexpr float kGoalMatchEpsilon = 1.0e-3f;
 
-std::array<float, 3> computePreIkGoal(
+// input pose だけから指定 slot の FK world 位置 (MMD space) を得る。
+std::array<float, 3> computeFkWorldPosition(
     const CcdIkChainConfig& cfg,
     const std::vector<float>& positions,
-    const std::vector<float>& rotations)
+    const std::vector<float>& rotations,
+    int32_t slot)
 {
     std::array<float, 3> goal{0.0f, 0.0f, 0.0f};
-    if (cfg.controllerBoneSlot < 0 || static_cast<size_t>(cfg.controllerBoneSlot) >= cfg.bones.size()) {
+    if (slot < 0 || static_cast<size_t>(slot) >= cfg.bones.size()) {
         return goal;
     }
 
@@ -554,12 +540,35 @@ std::array<float, 3> computePreIkGoal(
         }
     }
 
-    MVector point = MTransformationMatrix(worldMats[static_cast<size_t>(cfg.controllerBoneSlot)])
+    MVector point = MTransformationMatrix(worldMats[static_cast<size_t>(slot)])
                         .getTranslation(MSpace::kWorld);
     goal[0] = static_cast<float>(point.x);
     goal[1] = static_cast<float>(point.y);
     goal[2] = static_cast<float>(point.z);
     return goal;
+}
+
+// Pass-through: link slot の inputRotate 値をそのまま出力へコピーする。
+void copyInputRotateLinksToOutput(
+    const CcdIkChainConfig& cfg,
+    MDataBlock& data,
+    std::vector<std::array<double, 3>>& outEulerRadians)
+{
+    MStatus status;
+    MArrayDataHandle rotateArray = data.inputArrayValue(MmdCcdIkNode::aInputRotateArray, &status);
+    outEulerRadians.clear();
+    outEulerRadians.reserve(cfg.linkSlots.size());
+    for (uint32_t slot : cfg.linkSlots) {
+        std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
+        readInputRotateElement(
+            rotateArray,
+            slot,
+            MmdCcdIkNode::aInputRotateArrayX,
+            MmdCcdIkNode::aInputRotateArrayY,
+            MmdCcdIkNode::aInputRotateArrayZ,
+            eulerRadians);
+        outEulerRadians.push_back(eulerRadians);
+    }
 }
 
 std::array<float, 3> readGoalPositionMmd(
@@ -600,7 +609,6 @@ bool solveChainJsonIk(
     MDataBlock& data,
     bool useGoalWorldMatrix,
     bool goalHasInputConnection,
-    bool goalWorldMatrixHasInputConnection,
     bool& outSolved,
     std::vector<std::array<double, 3>>& outEulerRadians)
 {
@@ -723,66 +731,30 @@ bool solveChainJsonIk(
         }
     }
 
-    bool useControllerGoal = cfg.controllerBoneSlot >= 0 &&
-                             static_cast<size_t>(cfg.controllerBoneSlot) < boneCount &&
-                             !goalHasInputConnection;
-    if (cfg.controllerBoneSlot >= 0 && static_cast<size_t>(cfg.controllerBoneSlot) < boneCount) {
-        const bool hasControllerPositionOffset = controllerBranchHasPositionOffset(cfg, positions);
-        if (useControllerGoal && !hasControllerPositionOffset) {
+    const bool useControllerGoal = cfg.controllerBoneSlot >= 0 &&
+                                   static_cast<size_t>(cfg.controllerBoneSlot) < boneCount &&
+                                   !goalHasInputConnection;
+    const std::array<float, 3> goal = useControllerGoal
+        ? computeFkWorldPosition(cfg, positions, rotations, cfg.controllerBoneSlot)
+        : readGoalPositionMmd(cfg, data, useGoalWorldMatrix);
+
+    // Pass-through gate: FK input pose が target を既に goal 上に置いている
+    // なら solve しない（VMD bake 済み final pose の二重 solve 防止）。
+    // ズレていれば solve する — 腰などチェーン祖先の移動は target だけを
+    // 動かすので solve が走り、全ての親は target と goal を一緒に動かす
+    // ので pass-through のまま。
+    if (static_cast<size_t>(cfg.targetBoneSlot) < boneCount) {
+        const std::array<float, 3> fkTarget = computeFkWorldPosition(
+            cfg, positions, rotations, static_cast<int32_t>(cfg.targetBoneSlot));
+        if (std::abs(fkTarget[0] - goal[0]) <= kGoalMatchEpsilon &&
+            std::abs(fkTarget[1] - goal[1]) <= kGoalMatchEpsilon &&
+            std::abs(fkTarget[2] - goal[2]) <= kGoalMatchEpsilon) {
             mmd_runtime_ik_chain_free(chain);
-            MArrayDataHandle rotateArrayCopy = data.inputArrayValue(MmdCcdIkNode::aInputRotateArray, &status);
-            outEulerRadians.clear();
-            outEulerRadians.reserve(cfg.linkSlots.size());
-            for (uint32_t slot : cfg.linkSlots) {
-                std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
-                readInputRotateElement(
-                    rotateArrayCopy,
-                    slot,
-                    MmdCcdIkNode::aInputRotateArrayX,
-                    MmdCcdIkNode::aInputRotateArrayY,
-                    MmdCcdIkNode::aInputRotateArrayZ,
-                    eulerRadians);
-                outEulerRadians.push_back(eulerRadians);
-            }
+            copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
             outSolved = false;
             return true;
         }
-
-        if (goalWorldMatrixHasInputConnection && !hasControllerPositionOffset) {
-            const std::array<float, 3> goalNow = readGoalPositionMmd(cfg, data, true);
-            std::vector<float> restPositions(boneCount * 3, 0.0f);
-            std::vector<float> restRotations(boneCount * 4, 0.0f);
-            for (size_t boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
-                restRotations[boneIndex * 4 + 3] = 1.0f;
-            }
-            const std::array<float, 3> restGoal = computePreIkGoal(cfg, restPositions, restRotations);
-            if (std::abs(goalNow[0] - restGoal[0]) <= 1.0e-5f &&
-                std::abs(goalNow[1] - restGoal[1]) <= 1.0e-5f &&
-                std::abs(goalNow[2] - restGoal[2]) <= 1.0e-5f) {
-                mmd_runtime_ik_chain_free(chain);
-                MArrayDataHandle rotateArrayCopy = data.inputArrayValue(MmdCcdIkNode::aInputRotateArray, &status);
-                outEulerRadians.clear();
-                outEulerRadians.reserve(cfg.linkSlots.size());
-                for (uint32_t slot : cfg.linkSlots) {
-                    std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
-                    readInputRotateElement(
-                        rotateArrayCopy,
-                        slot,
-                        MmdCcdIkNode::aInputRotateArrayX,
-                        MmdCcdIkNode::aInputRotateArrayY,
-                        MmdCcdIkNode::aInputRotateArrayZ,
-                        eulerRadians);
-                    outEulerRadians.push_back(eulerRadians);
-                }
-                outSolved = false;
-                return true;
-            }
-        }
     }
-
-    std::array<float, 3> goal = useControllerGoal
-        ? computePreIkGoal(cfg, positions, rotations)
-        : readGoalPositionMmd(cfg, data, useGoalWorldMatrix);
     float goalPosition[3] = {goal[0], goal[1], goal[2]};
     std::vector<float> outQuats(cfg.links.size() * 4, 0.0f);
     mmd_runtime_ffi_ik_solve_stats_t stats{};
@@ -1431,7 +1403,6 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
                 data,
                 goalWorldConnected,
                 goalConnected,
-                goalWorldConnected,
                 chainSolved,
                 chainRotationsRadians);
         } else {
