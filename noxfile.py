@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -930,6 +931,29 @@ def _run_cli_smoke(
     session.run(str(exe), *smoke_args, external=True)
 
 
+_EXPECTED_ENVIRONMENT_MODULE_PREFIXES = ("maya", "PySide2", "PySide6")
+_TERMINAL_EXCEPTION_RE = re.compile(r"^(?P<type>[\w.]+(?:Error|Exception)):\s*(?P<message>.*)$")
+_MISSING_MODULE_RE = re.compile(
+    r"No module named ['\"](?P<module>[^'\"]+)['\"](?:;.*)?\.?$"
+)
+
+
+def _is_expected_environment_import_failure(stderr: str) -> bool:
+    """Return whether the final exception is an allowlisted missing environment module."""
+    for line in reversed(stderr.splitlines()):
+        match = _TERMINAL_EXCEPTION_RE.match(line.strip())
+        if not match:
+            continue
+        if match.group("type") != "ModuleNotFoundError":
+            return False
+        missing = _MISSING_MODULE_RE.fullmatch(match.group("message"))
+        if not missing:
+            return False
+        prefix = missing.group("module").split(".", 1)[0]
+        return prefix in _EXPECTED_ENVIRONMENT_MODULE_PREFIXES
+    return False
+
+
 @nox.session(venv_backend="none")
 def ci_unit(session: nox.Session) -> None:
     """Run pure-python unit tests without mayapy.
@@ -940,9 +964,9 @@ def ci_unit(session: nox.Session) -> None:
 
     A test file is included when it can be imported successfully with a
     plain ``python -c "import tests.unit.<stem>"`` probe (i.e. it has no
-    transitive dependency on ``maya``).  Files that fail this probe are
-    skipped with a notice; they require mayapy and belong to the ``tests``
-    session instead.
+    transitive dependency on an allowlisted environment-only module). Files
+    that fail for one of those expected dependencies are skipped with a notice;
+    other import failures abort the session.
 
     Examples:
         uvx nox -s ci_unit
@@ -962,12 +986,20 @@ def ci_unit(session: nox.Session) -> None:
         )
         if probe.returncode == 0:
             importable.append(module_name)
-        else:
+            continue
+        stderr = probe.stderr or ""
+        if _is_expected_environment_import_failure(stderr):
             skipped.append(py_file.name)
+        else:
+            session.error(
+                f"ci_unit: {py_file.name} failed to import for a non-environment reason; "
+                "update _EXPECTED_ENVIRONMENT_MODULE_PREFIXES only for an intentional dependency:\n"
+                + stderr.strip()[-2000:]
+            )
 
     if skipped:
         session.log(
-            f"Skipping {len(skipped)} test file(s) that require mayapy: "
+            f"Skipping {len(skipped)} test file(s) that require environment-only dependencies: "
             + ", ".join(skipped)
         )
 
