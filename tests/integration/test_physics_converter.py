@@ -457,7 +457,11 @@ class TestPhysicsConverter(MayaTestBase):
             logger=mock.Mock(),
             filepath="fake.pmx",
             scale=1.0,
-            options={"profile": profile, "import_physics": True},
+            options={
+                "profile": profile,
+                "import_physics": True,
+                "enable_maya_bullet_preview": True,
+            },
         )
 
         with mock.patch("mmd_tools.io.model_import_pipeline.PhysicsConverter", FakePhysicsConverter):

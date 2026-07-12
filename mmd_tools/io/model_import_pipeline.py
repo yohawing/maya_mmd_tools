@@ -101,7 +101,16 @@ class ModelImportPipeline:
         maya_joints: Any,
         root_group: str,
     ) -> Tuple[list, list]:
-        """Run PMX or PMD physics conversion when enabled and data is present."""
+        """Run the development-only Maya Bullet preview conversion."""
+        if not bool(self.options.get("enable_maya_bullet_preview", False)):
+            self.logger.debug("Skipping Maya Bullet preview conversion")
+            if self.profile is not None:
+                self.profile["physics_converter"] = {
+                    "skipped": True,
+                    "reason": "maya_bullet_preview_disabled",
+                }
+            return [], []
+
         import_physics = self.options.get(
             "import_physics",
             settings.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, True),

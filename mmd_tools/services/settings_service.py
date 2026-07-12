@@ -158,6 +158,11 @@ class SettingsService:
             "uv_set_name": self.get(setting_keys.IMPORT_MODEL_UV_SET_NAME, "map#"),
             "texture_search_path": self.get(setting_keys.IMPORT_MODEL_TEXTURE_SEARCH_PATH, ""),
             "import_physics": self.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, True),
+            # Maya Bullet preview is intentionally development-only.  Native
+            # physics bake remains available through VMD import options.
+            "enable_maya_bullet_preview": bool(
+                is_dev and self.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, True)
+            ),
             "import_morphs": self.get(setting_keys.IMPORT_MORPH_IMPORT_MORPHS, True),
             "add_semi_standard_bones": self.get(setting_keys.IMPORT_RIG_ADD_SEMI_STANDARD_BONES, False),
             "translate_names": self.get(setting_keys.IMPORT_NAMING_TRANSLATE_NAMES, True),

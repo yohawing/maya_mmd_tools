@@ -802,11 +802,9 @@ class VmdConverter:
             )
             self._disable_mmd_rig_constraints_for_runtime_bake()
             physics_preview_connections = self._capture_physics_preview_rotation_connections()
-            bullet_seed_records = self._capture_bullet_seed_records()
             self._restore_joints_to_bind_pose_for_runtime_bake()
             if self.bone_index_to_joint:
                 self._build_runtime_bind_world_maps()
-            self._resolve_bullet_seed_bind_offsets(bullet_seed_records)
 
             physics_routing: Dict[str, Any] = {
                 "requested": bool(use_native_physics_bake),
@@ -882,9 +880,6 @@ class VmdConverter:
                     pmx_morph_names,
                 )
                 if not physics_routing.get("used", False):
-                    self._seed_bullet_initial_transforms_from_runtime_pose(
-                        bullet_seed_records, runtime_cache.bake_times
-                    )
                     self._restore_physics_preview_rotation_connections(
                         physics_preview_connections
                     )
@@ -1340,103 +1335,6 @@ class VmdConverter:
                     destination,
                     exc,
                 )
-
-    def _capture_bullet_seed_records(self) -> List[Dict[str, Any]]:
-        """Capture bind-space body-from-bone transforms for VMD pose seeding."""
-        records: List[Dict[str, Any]] = []
-        seen_bodies: set[str] = set()
-        for joint in self.bone_index_to_joint.values():
-            constraints = cmds.listConnections(
-                joint, source=True, destination=False, type="orientConstraint"
-            ) or []
-            for constraint in constraints:
-                if not cmds.attributeQuery(
-                    "mmd_physics_preview_constraint", node=constraint, exists=True
-                ):
-                    continue
-                for body in cmds.orientConstraint(
-                    constraint, query=True, targetList=True
-                ) or []:
-                    if body in seen_bodies or not cmds.attributeQuery(
-                        "mmd_physics_mode", node=body, exists=True
-                    ):
-                        continue
-                    if int(cmds.getAttr(f"{body}.mmd_physics_mode")) != 2:
-                        continue
-                    shapes = cmds.listRelatives(
-                        body, shapes=True, fullPath=True, type="bulletRigidBodyShape"
-                    ) or []
-                    if not shapes:
-                        continue
-                    seen_bodies.add(body)
-                    records.append(
-                        {
-                            "body": body,
-                            "shape": shapes[0],
-                            "joint": joint,
-                        }
-                    )
-        return records
-
-    def _resolve_bullet_seed_bind_offsets(
-        self, records: List[Dict[str, Any]]
-    ) -> None:
-        """Resolve stable bind offsets after mapped joints have returned to bind."""
-        for record in records:
-            shape = record["shape"]
-            translate = cmds.getAttr(f"{shape}.initialTranslate")[0]
-            rotate = cmds.getAttr(f"{shape}.initialRotate")[0]
-            body_transform = om.MTransformationMatrix()
-            body_transform.setTranslation(
-                om.MVector(*translate), om.MSpace.kWorld
-            )
-            body_transform.setRotation(om.MEulerRotation(*rotate))
-            body_bind = body_transform.asMatrix()
-            bone_bind = om.MMatrix(
-                cmds.xform(
-                    record["joint"], query=True, matrix=True, worldSpace=True
-                )
-            )
-            record["bodyFromBone"] = body_bind * bone_bind.inverse()
-
-    def _seed_bullet_initial_transforms_from_runtime_pose(
-        self, records: List[Dict[str, Any]], bake_times: om.MTimeArray
-    ) -> None:
-        """Reseed Maya Bullet bodies from the first evaluated VMD pose."""
-        if not records or not bake_times:
-            return
-        previous_time = cmds.currentTime(query=True)
-        first_time = bake_times[0].asUnits(om.MTime.uiUnit())
-        try:
-            cmds.currentTime(first_time, edit=True)
-            for record in records:
-                if "bodyFromBone" not in record:
-                    continue
-                joint_world = om.MMatrix(
-                    cmds.xform(
-                        record["joint"], query=True, matrix=True, worldSpace=True
-                    )
-                )
-                body_world = record["bodyFromBone"] * joint_world
-                transform = om.MTransformationMatrix(body_world)
-                translate = transform.translation(om.MSpace.kWorld)
-                rotate = transform.rotation(asQuaternion=False)
-                cmds.setAttr(
-                    f"{record['shape']}.initialTranslate",
-                    translate.x,
-                    translate.y,
-                    translate.z,
-                    type="double3",
-                )
-                cmds.setAttr(
-                    f"{record['shape']}.initialRotate",
-                    rotate.x,
-                    rotate.y,
-                    rotate.z,
-                    type="double3",
-                )
-        finally:
-            cmds.currentTime(previous_time, edit=True)
 
     def _add_objects_to_layer(self, objects: List[str]):
         """オブジェクトをアニメーションレイヤーに追加
