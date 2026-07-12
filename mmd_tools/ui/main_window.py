@@ -247,7 +247,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
         self.morph_tab = morph_tab
 
-        # Physics Tab (development-only while Maya Bullet preview is retired)
+        # Physics Tab (development-only placeholder for a future backend)
         self._add_physics_tab(add_to_widget=self.settings_service.is_development_mode())
 
         # Settings Tab
@@ -268,7 +268,7 @@ class MainWindow(QMainWindow):
             self.tabs.insert(-1, self.physics_tab)
 
     def _add_physics_tab(self, insert_index=None, add_to_widget=True):
-        """Create the Physics tab and add it to the tab widget."""
+        """Create the development-only Physics tab and add it to the tab widget."""
         from .translations import UITranslator
 
         translator = UITranslator.instance()

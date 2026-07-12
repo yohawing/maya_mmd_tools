@@ -80,10 +80,7 @@ def run_asset_probe(
             loaded_plugins = cmds.pluginInfo(query=True, listPlugins=True) or []
             return "plugin_main" in loaded_plugins or "plugin_main.py" in loaded_plugins
 
-        def locator_available() -> bool:
-            return "mmdRigidBodyLocator" in (cmds.allNodeTypes() or [])
-
-        if not locator_available():
+        if not plugin_loaded():
             previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
             os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
             try:
@@ -100,9 +97,6 @@ def run_asset_probe(
                     os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
                 else:
                     os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
-
-        if not locator_available():
-            raise RuntimeError("mmdRigidBodyLocator node type is unavailable after loading mmd_tools plugin")
 
     log("=== Maya asset error probe begin ===")
     log(f"Maya version: {cmds.about(version=True)}")

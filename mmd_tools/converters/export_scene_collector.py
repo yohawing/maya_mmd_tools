@@ -19,7 +19,6 @@ import maya.api.OpenMayaAnim as oma
 from maya import cmds
 
 from mmd_tools.converters.morph_converter import MorphConverter
-from mmd_tools.converters.physics_converter import PhysicsConverter
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
@@ -688,8 +687,6 @@ class ExportSceneCollector:
 
         morphs = list(vertex_morphs_by_name.values())
         morphs.extend(MorphConverter().collect_morphs_from_scene_for_export())
-        physics = PhysicsConverter().collect_physics_from_scene_for_export(root)
-
         return {
             "model_name": _get_model_name(root),
             "vertices": merged_vertices,
@@ -698,6 +695,6 @@ class ExportSceneCollector:
             "bones": merged_bones or None,
             "morphs": morphs,
             "display_frames": _collect_display_frames(root),
-            "rigid_bodies": physics.get("rigid_bodies", []),
-            "joints": physics.get("joints", []),
+            "rigid_bodies": [],
+            "joints": [],
         }

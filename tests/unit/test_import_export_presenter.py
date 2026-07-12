@@ -1510,18 +1510,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         opts = self._run_import()
         self.assertTrue(opts["import_models"])
 
-    def test_normal_mode_preserves_import_physics_true(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.physics.import_physics", True)
-        opts = self._run_import()
-        self.assertTrue(opts["import_physics"])
-
-    def test_normal_mode_preserves_import_physics_false(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.physics.import_physics", False)
-        opts = self._run_import()
-        self.assertFalse(opts["import_physics"])
-
     def test_normal_mode_forces_separate_meshes_false(self):
         settings.set("ui.general.development_mode", False)
         settings.set("import.model.separate_meshes_by_material", True)

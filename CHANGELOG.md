@@ -5,14 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2026-07-11
+## [0.4.0] - 2026-07-13
 
 ### Added
 - Enabled complete-or-none PMX material morph routing for DX11 and GLSL, including diffuse alpha, specular, ambient, edge, and all texture factors.
 - Added pass/fail GoldenOracle viewport image comparisons with case-specific thresholds and flat-gray regression detection.
-- Added Maya Bullet import and preview simulation for PMX/PMD rigid bodies and joints, enabled by default when Bullet is available.
-- Added development-mode PMX round-trip preservation for rigid bodies, joints, and display frames, including focused round-trip gates.
-- Added an always-available, read-only Physics panel with model-scoped rigid-body and joint filtering and selection.
+- Kept the Physics panel as a Development Mode-only placeholder for a future scene-physics backend.
 - Added native `mmd-anim` physics motion bake with a Maya E2E route gate covering physics-driven bone channels and disabled preview feedback.
 - Added HumanIK definition and control-rig creation from supported imported MMD skeletons.
 
@@ -20,24 +18,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Integrated generated-PMX GoldenOracle visual comparisons for Maya 2025 GLSL and Maya 2026 DX11 into the aggregate release gate.
 - Expanded the aggregate release gate to run mayapy unit/integration suites on Maya 2024-2027, with fixed Maya 2025 OpenGL/GLSL and Maya 2026 DX11 viewport captures.
 - Updated the bundled and release-gate `mmd-anim` integration to v0.2.0.
-- Unified physics collider visibility under the model Physics group and added DX11 collider meshes for viewport display.
 - Expanded Morph tab routing so vertex, bone, material, and group morphs share editable weights and PMX panel categories.
 - Limited custom import scale to Development Mode; normal imports now use scale 1.0.
 - Reduced routine importer, runtime, rig, morph, shader, physics, and UI selection log noise.
 - Simplified Import/Export settings and kept unfinished user-facing export actions hidden.
-- Made the read-only Physics tab available independently of Development Mode.
+- Raised the supported Python floor to 3.10 and aligned Ruff's parser target with Maya 2024+.
+- Deferred PMX 2.1 soft-body decoding on the native fast-import path until soft-body data is requested.
+- Retired the Maya scene-physics backend; physics animation now uses the native bake workflow.
 
 ### Fixed
 - Fixed model-root viewport visibility controls: mesh and joint attributes now drive the `Geometry` and `Skeleton` parent groups immediately after import, while the nonfunctional IK/controller controls were removed.
 - Fixed out-of-order IK mini-chain slot construction and added a tentacle-chain regression fixture.
-- Fixed VMD import physics feedback routing so legacy Bullet preview is restored when native bake is not used and blocked when native bake owns the final animation.
-- Fixed PMX capsule/cylinder height mapping and synchronized collider visibility from the model root.
 - Fixed Morph tab blendShape addressing and routed bone/material morph weights through the correct IK and shader-backend paths.
 - Made unavailable bone-morph runtime nodes fail soft and report partial import outcomes instead of aborting the complete import.
+- Fixed IK evaluation so ancestor motion can trigger a solve while baked FK poses that already match their goal are not solved twice.
+- Fixed morph metadata reads when legacy scenes do not expose an expected morph-index attribute.
+- Fixed native FFI byte-buffer cleanup when decoding or conversion raises an exception.
+- Made the CI unit gate fail on unexpected import errors instead of silently classifying them as Maya-only skips.
 
 ### Known Issues
-- Physics and native physics motion bake remain experimental; the native bake path is opt-in.
-- Physics collider DX11 pixel parity for Bullet preview OFF/ON is not a release blocker and still requires a reliable real-viewport capture gate.
+- Native physics motion bake remains experimental and opt-in; interactive scene physics is unavailable.
 - Display frames are preserved for PMX round-trip but do not yet have a dedicated editing UI.
 - User-facing PMX/PMD/VMD export remains unavailable; current writer and round-trip paths are development-only.
 - Additional UV, Flip, Impulse, and PMX 2.1 soft-body workflows remain unsupported.

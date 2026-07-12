@@ -108,8 +108,7 @@
     "vmd_fps": "VMD 檔案的影格率。MMD 標準為 30 fps",
     "separate_meshes": "依材質分割網格",
     "auto_classify_transparency": "透過 UV alpha 掃描自動分類透明材質",
-    "disable_backface_culling": "停用背面剔除以啟用雙面算圖",
-    "import_physics": "匯入剛體與關節等物理模擬物件"
+    "disable_backface_culling": "停用背面剔除以啟用雙面算圖"
   },
   "messages": {
     "import_success": "匯入完成",
@@ -159,7 +158,6 @@
     "import_mesh": "匯入網格",
     "import_skeleton": "匯入骨骼",
     "import_morph": "匯入表情",
-    "import_physics": "匯入物理",
     "import_display": "匯入顯示設定",
     "normalize_normals": "正規化法線",
     "fix_texture_path": "修正貼圖路徑",
@@ -191,7 +189,7 @@
   "groups": {
     "general": "一般",
     "model": "模型",
-    "morph_physics": "表情 & 物理",
+    "morph": "表情",
     "other": "其他",
     "model_import": "模型匯入 (PMX/PMD)",
     "animation_import": "動畫匯入 (VMD)",
@@ -240,7 +238,6 @@
     "joint_name_conversion": "將關節名稱轉換為英文",
     "disable_backface_culling": "停用背面剔除",
     "import_morphs": "匯入表情",
-    "import_physics": "匯入物理",
     "bake_mode": "烘焙動作",
     "native_physics_bake": "烘焙物理",
     "apply_scale": "套用縮放",

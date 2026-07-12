@@ -12,8 +12,6 @@ REQUIRED_FEATURE_FLAGS = 0x3
 REQUIRED_ASSERTIONS = {
     "native_physics_bake_used",
     "physics_bone_local_transform_delta",
-    "maya_bullet_world_sanity",
-    "preview_constraints_blocked",
 }
 
 
@@ -39,10 +37,8 @@ def _canonical(report: dict[str, Any]) -> dict[str, Any]:
             "physics_routing": native.get("physics_routing"),
             "physics_bones": native.get("physics_bones"),
             "samples": native.get("samples"),
-            "preview_constraints": native.get("preview_constraints"),
         },
         "delta": report.get("delta"),
-        "bullet_world_sanity": report.get("bullet_world_sanity"),
         "assertions": report.get("assertions"),
     }
 

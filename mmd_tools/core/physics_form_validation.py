@@ -63,7 +63,7 @@ def parse_rigid_body_form(values: Mapping[str, Any]) -> RigidBodyFormValues:
         collision_group=_integer(values, "collision_group", minimum=0, maximum=15),
         collision_mask=_integer(values, "collision_mask", minimum=0, maximum=0xFFFF),
         mass=_number(values, "mass", minimum=0.0),
-        # Bullet min/max are node-specific and remain a D2b adapter/clamp concern.
+        # Backend min/max conversion remains an adapter/clamp concern.
         linear_damping=_number(values, "linear_damping"),
         angular_damping=_number(values, "angular_damping"),
         restitution=_number(values, "restitution"),

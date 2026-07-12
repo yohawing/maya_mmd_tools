@@ -117,45 +117,6 @@ class TestVisibilityState(unittest.TestCase):
             adapter.calls,
         )
 
-    def test_sync_colliders_connects_physics_group(self):
-        adapter = _FakeAdapter({("model_root", ATTR_MMD_SHOW_PHYSICS_COLLIDERS): False})
-        adapter.relatives[("model_root", "mmdRigidBodyLocator")] = ["|model_root|rb|rb_colliderLocatorShape"]
-        adapter.relatives[("model_root", "transform")] = [
-            "|model_root|Physics",
-            "|model_root|rb",
-            "|model_root|rb|rb_colliderCurve",
-        ]
-
-        sync_visibility_connections(adapter, "model_root", "colliders")
-
-        self.assertIn(
-            (
-                "connect_attr",
-                f"model_root.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}",
-                "|model_root|Physics.visibility",
-                False,
-            ),
-            adapter.calls,
-        )
-        self.assertFalse(
-            any("colliderLocatorShape" in str(call) for call in adapter.calls)
-        )
-
-    def test_sync_colliders_does_not_overwrite_existing_physics_visibility_source(self):
-        adapter = _FakeAdapter({("model_root", ATTR_MMD_SHOW_PHYSICS_COLLIDERS): False})
-        adapter.relatives[("model_root", "transform")] = ["|model_root|Physics"]
-        adapter.connections["|model_root|Physics.visibility"] = ["other_driver.outValue"]
-
-        sync_visibility_connections(adapter, "model_root", "colliders")
-
-        connect_calls = [call for call in adapter.calls if call[0] == "connect_attr"]
-        self.assertEqual(connect_calls, [])
-        self.assertEqual(
-            adapter.connections["|model_root|Physics.visibility"],
-            ["other_driver.outValue"],
-        )
-        self.assertFalse(any(call[0] == "connect_attr" and call[3] is True for call in adapter.calls))
-
 
 if __name__ == "__main__":
     unittest.main()

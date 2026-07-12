@@ -8,21 +8,14 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from maya import cmds
 
 from .. import settings
-from ..converters import PhysicsConverter
 from ..converters.light_converter import create_mmd_light_controller, wire_mmd_shaders_to_mmd_light
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core import maya_attribute_utils, maya_viewport_utils, settings_keys as setting_keys
 from ..core.constants import SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
-from ..core.utils import create_bone_joint_mapping
 from ..core.visibility_state import sync_visibility_connections
 from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 from .import_scale import apply_import_scale
-
-
-def _is_development_mode() -> bool:
-    """Return the persisted Development Mode state."""
-    return bool(settings.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False))
 
 
 class ModelImportPipeline:
@@ -106,80 +99,14 @@ class ModelImportPipeline:
         maya_joints: Any,
         root_group: str,
     ) -> Tuple[list, list]:
-        """Run the development-only Maya Bullet preview conversion."""
-        preview_requested = bool(self.options.get("enable_maya_bullet_preview", False))
-        development_mode = _is_development_mode()
-        if not (preview_requested and development_mode):
-            self.logger.debug("Skipping Maya Bullet preview conversion")
-            if self.profile is not None:
-                self.profile["physics_converter"] = {
-                    "skipped": True,
-                    "reason": "maya_bullet_preview_disabled",
-                }
-            return [], []
-
-        import_physics = self.options.get(
-            "import_physics",
-            settings.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, True),
-        )
-        if not import_physics:
-            return [], []
-
-        self.logger.debug("Converting physics...")
-        if not getattr(parser, "rigid_bodies", None):
-            self.logger.debug("No physics data found")
-            return [], []
-
-        physics_converter = PhysicsConverter(self._physics_converter_settings())
-        bone_joint_mapping = create_bone_joint_mapping(parser.bones, maya_joints, file_kind)
-        phase_start = time.perf_counter()
-        if file_kind == "pmx":
-            ncloth_nodes, constraint_nodes = physics_converter.convert_pmx_physics(
-                parser, bone_joint_mapping, root_group
-            )
-        else:
-            ncloth_nodes, constraint_nodes = physics_converter.convert_pmd_physics(
-                parser, bone_joint_mapping, root_group
-            )
-        self.record_phase("physics_conversion_sec", phase_start)
+        """Skip scene physics creation; physics is available only through native bake."""
+        self.logger.debug("Skipping retired Maya scene physics conversion")
         if self.profile is not None:
             self.profile["physics_converter"] = {
-                "created_bullet_rigid_bodies": len(physics_converter.created_bullet_rigid_bodies),
-                "created_bullet_constraints": len(physics_converter.created_bullet_constraints),
-                "bullet_visual_locator_failure_count": len(
-                    physics_converter.bullet_visual_locator_failures
-                ),
-                "bullet_visual_locator_failures": list(
-                    physics_converter.bullet_visual_locator_failures
-                ),
+                "skipped": True,
+                "reason": "maya_scene_physics_removed",
             }
-        self.emit_progress(86)
-        self.logger.debug(
-            "Physics conversion complete: nCloth=%d, Constraints=%d",
-            len(ncloth_nodes),
-            len(constraint_nodes),
-        )
-        return ncloth_nodes, constraint_nodes
-
-    def _physics_converter_settings(self) -> dict:
-        """Collect physics converter settings from import options and defaults."""
-        keys = (
-            "create_physics_joints",
-            "simulation_quality",
-            "solver_iterations",
-            "substeps",
-            "start_frame",
-            "time_scale",
-            "gravity",
-            "bullet_fixed_frame_rate",
-            "split_impulse",
-        )
-        result = {}
-        for key in keys:
-            setting_key = f"import.physics.{key}"
-            result[key] = self.options.get(key, settings.get(setting_key, None))
-        result["scale"] = self.scale
-        return {key: value for key, value in result.items() if value is not None}
+        return [], []
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""

@@ -3,20 +3,17 @@ PMXインポーターの統合テスト
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 from maya import cmds
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
-from mmd_tools.converters import PhysicsConverter
 from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
 from mmd_tools.io import pmx_importer
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
 
-HAIR_PHYSICS_FIXTURE = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
 
 # Internal phase details (DEBUG); outer start/completion stay INFO.
 _PMX_INTERNAL_PHASE_MESSAGES = (
@@ -238,71 +235,6 @@ class TestPmxImporter(MayaTestBase):
             for child in (cmds.listRelatives(result, children=True, fullPath=True) or [])
         }
         self.assertNotIn("Physics", child_names)
-        try:
-            bullet_loaded = bool(cmds.pluginInfo("bullet", query=True, loaded=True))
-        except Exception:
-            bullet_loaded = False
-        if bullet_loaded:
-            self.assertFalse(cmds.ls(type="bulletRigidBodyShape") or [])
-            self.assertFalse(cmds.ls(type="bulletRigidBodyConstraintShape") or [])
-
-    def test_import_pmx_with_physics_uses_root_physics_visibility_without_locators(self):
-        """通常 Bullet PMX import は locator/curve なしで root→Physics 可視性を使う。"""
-        if not PhysicsConverter.is_bullet_available():
-            self.skipTest("Bullet plugin is unavailable")
-
-        profile = {}
-        parser = parse_pmx_file(str(HAIR_PHYSICS_FIXTURE))
-
-        result = import_pmx_file(
-            parser,
-            str(HAIR_PHYSICS_FIXTURE),
-            options={"profile": profile, "import_physics": True},
-        )
-
-        self.assertTrue(result)
-        bullet_shapes = cmds.listRelatives(
-            result,
-            allDescendents=True,
-            type="bulletRigidBodyShape",
-            fullPath=True,
-        ) or []
-        self.assertGreater(len(bullet_shapes), 0, "Bullet rigid body shapes が生成されていません")
-        locator_shapes = cmds.listRelatives(
-            result,
-            allDescendents=True,
-            type="mmdRigidBodyLocator",
-            fullPath=True,
-        ) or []
-        self.assertEqual(len(locator_shapes), 0, "通常 Bullet import では mmdRigidBodyLocator を作らない")
-        curve_groups = [
-            node
-            for node in (cmds.listRelatives(result, allDescendents=True, type="transform", fullPath=True) or [])
-            if node.rsplit("|", 1)[-1].endswith("_colliderCurve")
-        ]
-        self.assertEqual(len(curve_groups), 0, "通常 Bullet import では *_colliderCurve を作らない")
-        physics_profile = profile.get("physics_converter") or {}
-        self.assertGreater(physics_profile.get("created_bullet_rigid_bodies", 0), 0)
-        self.assertEqual(physics_profile.get("bullet_visual_locator_failure_count"), 0)
-
-        physics_groups = [
-            child
-            for child in (cmds.listRelatives(result, children=True, type="transform", fullPath=True) or [])
-            if child.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "Physics"
-        ]
-        self.assertEqual(len(physics_groups), 1, "model root 直下に Physics グループが必要")
-        physics_group = physics_groups[0]
-        self.assertTrue(cmds.attributeQuery("mmd_show_physics_colliders", node=result, exists=True))
-        self.assertTrue(
-            cmds.isConnected(f"{result}.mmd_show_physics_colliders", f"{physics_group}.visibility"),
-            "root mmd_show_physics_colliders が Physics.visibility に接続されていること",
-        )
-        self.assertFalse(cmds.getAttr(f"{result}.mmd_show_physics_colliders"))
-        self.assertFalse(cmds.getAttr(f"{physics_group}.visibility"))
-        cmds.setAttr(f"{result}.mmd_show_physics_colliders", True)
-        self.assertTrue(cmds.getAttr(f"{physics_group}.visibility"))
-        cmds.setAttr(f"{result}.mmd_show_physics_colliders", False)
-        self.assertFalse(cmds.getAttr(f"{physics_group}.visibility"))
 
     def test_import_pmx_multiple_files(self):
         """全てのPMXモデルが基本的にロード可能かテスト"""

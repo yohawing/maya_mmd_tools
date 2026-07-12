@@ -56,19 +56,6 @@ class TestCoreMayaUtilsDirectImport(unittest.TestCase):
             ),
         )
 
-    def test_maya_physics_utils_public_helpers_import_directly(self):
-        self._assert_callables(
-            "mmd_tools.core.maya_physics_utils",
-            (
-                "find_or_create_nucleus_solver",
-                "create_collision_primitive",
-                "apply_ncloth_to_mesh",
-                "apply_nrigid_to_mesh",
-                "create_dynamic_curve",
-                "apply_nhair_to_curve",
-            ),
-        )
-
     def test_maya_animation_utils_public_helpers_import_directly(self):
         self._assert_callables(
             "mmd_tools.core.maya_animation_utils",

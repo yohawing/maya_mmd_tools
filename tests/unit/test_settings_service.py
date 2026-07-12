@@ -27,7 +27,6 @@ class _FakeSettingsStore:
                     "texture_search_path": "/textures",
                     "show_texture_issue_dialog": False,
                 },
-                "physics": {"import_physics": True},
                 "morph": {"import_morphs": False},
                 "rig": {"add_semi_standard_bones": True, "bake_mode": False},
                 "native": {
@@ -198,8 +197,8 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["use_namespace"])
         self.assertEqual(options["custom_namespace"], "ns")
         self.assertTrue(options["import_models"])
-        self.assertTrue(options["import_physics"])
-        self.assertFalse(options["enable_maya_bullet_preview"])
+        self.assertNotIn("import_physics", options)
+        self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertFalse(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
         self.assertNotIn("hide_hidden_geometry", options)
@@ -225,8 +224,8 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
 
         self.assertEqual(options["scale"], 2.0)
         self.assertFalse(options["import_models"])
-        self.assertTrue(options["import_physics"])
-        self.assertTrue(options["enable_maya_bullet_preview"])
+        self.assertNotIn("import_physics", options)
+        self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertTrue(options["separate_meshes_by_material"])
         self.assertNotIn("split_meshes_by_morph_groups", options)
         self.assertNotIn("hide_hidden_geometry", options)
@@ -240,22 +239,6 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertNotIn("setup_rig", options)
         self.assertNotIn("setup_bone_orientation", options)
 
-    def test_build_pmx_import_options_defaults_physics_on_when_setting_is_missing(self):
-        del self.store.data["import"]["physics"]["import_physics"]
-
-        options = self.service.build_pmx_import_options()
-
-        self.assertTrue(options["import_physics"])
-        self.assertFalse(options["enable_maya_bullet_preview"])
-
-    def test_build_pmx_import_options_preserves_explicit_physics_false_in_normal_mode(self):
-        self.service.set("import.physics.import_physics", False)
-
-        options = self.service.build_pmx_import_options()
-
-        self.assertFalse(options["import_physics"])
-        self.assertFalse(options["enable_maya_bullet_preview"])
-
     def test_build_vmd_import_options_forces_resample_curves_in_normal_mode(self):
         options = self.service.build_vmd_import_options(target_model="model")
 
@@ -267,7 +250,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["import_light_animation"])
         self.assertEqual(options["motion_scale"], 2.5)
         self.assertTrue(options["clear_existing_motion"])
-        self.assertFalse(options["enable_maya_bullet_preview"])
+        self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertFalse(options["resample_curves"])
         self.assertFalse(options["bake_mode"])
         self.assertTrue(options["use_native_physics_bake"])
@@ -279,7 +262,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         options = self.service.build_vmd_import_options()
 
         self.assertTrue(options["resample_curves"])
-        self.assertTrue(options["enable_maya_bullet_preview"])
+        self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertFalse(options["bake_mode"])
         self.assertTrue(options["use_native_physics_bake"])
         self.assertIsNone(options["target_model"])

@@ -111,7 +111,6 @@
     "separate_meshes": "マテリアルごとにメッシュを分割します",
     "auto_classify_transparency": "UVアルファスキャンで透過マテリアルを自動分類します",
     "disable_backface_culling": "バックフェースカリングを無効にして両面描画にします",
-    "import_physics": "剛体・ジョイントなどの物理オブジェクトをインポートします",
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
@@ -218,7 +217,6 @@
     "import_mesh": "メッシュをインポート",
     "import_skeleton": "スケルトンをインポート",
     "import_morph": "モーフをインポート",
-    "import_physics": "物理をインポート",
     "import_display": "表示設定をインポート",
     "normalize_normals": "法線を正規化",
     "fix_texture_path": "テクスチャパスを修正",
@@ -250,7 +248,7 @@
   "groups": {
     "general": "一般",
     "model": "モデル",
-    "morph_physics": "モーフ & 物理演算",
+    "morph": "モーフ",
     "other": "その他",
     "model_import": "モデルインポート (PMX/PMD)",
     "animation_import": "アニメーションインポート (VMD)",
@@ -300,7 +298,6 @@
     "joint_name_conversion": "ジョイント名を英語に変換",
     "disable_backface_culling": "バックフェースカリングを無効化",
     "import_morphs": "モーフをインポート",
-    "import_physics": "物理をインポート",
     "bake_mode": "モーションをベイク",
     "native_physics_bake": "物理をベイク",
     "clear_existing_motion": "既存モーションをクリア",

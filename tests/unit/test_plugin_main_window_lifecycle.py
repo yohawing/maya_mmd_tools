@@ -100,12 +100,6 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             mod.deregister = MagicMock()
             self._inject_module(name, mod)
 
-        locator_mod = types.ModuleType("mmd_tools.nodes.mmd_rigid_body_locator_node")
-        locator_mod.register = MagicMock()
-        locator_mod.deregister = MagicMock()
-        locator_mod.MmdRigidBodyLocatorNode = types.SimpleNamespace(kTypeName="mmdRigidBodyLocator")
-        self._inject_module("mmd_tools.nodes.mmd_rigid_body_locator_node", locator_mod)
-
         self.plugin_main = importlib.import_module("mmd_tools.plugin_main")
         self.plugin_main.mmd_shader = shader_mod
         self.plugin_main.cmds = MagicMock()
@@ -130,6 +124,8 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
                     getattr(parent, child_name, None),
                 )
         sys.modules[name] = module
+        if parent is not None:
+            setattr(parent, child_name, module)
 
     def tearDown(self):
         for name in reversed(self._injected_module_names):
@@ -238,23 +234,11 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         self.assertTrue(window.deleted)
         self.assertIsNone(self.plugin_main._main_window)
 
-    def test_initialize_skips_locator_registration_when_already_registered(self):
-        self.plugin_main.install_mmd_menu = MagicMock()
-        self.plugin_main.install_drag_drop_importer = MagicMock()
-        self.plugin_main.cmds.allNodeTypes.return_value = ["mmdRigidBodyLocator"]
-        self.plugin_main.cmds.pluginInfo.return_value = []
-
-        self.plugin_main.initializePlugin(MagicMock())
-
-        locator_mod = sys.modules["mmd_tools.nodes.mmd_rigid_body_locator_node"]
-        locator_mod.register.assert_not_called()
-
     def test_initialize_calls_soft_bone_morph_postcondition(self):
         """initializePlugin invokes soft postcondition after bone morph register."""
         self.plugin_main.install_mmd_menu = MagicMock()
         self.plugin_main.install_drag_drop_importer = MagicMock()
-        # Keep locator registration skipped so mayapy cannot hit draw registry.
-        self.plugin_main.cmds.allNodeTypes.return_value = ["mmdRigidBodyLocator"]
+        self.plugin_main.cmds.allNodeTypes.return_value = []
         self.plugin_main.cmds.pluginInfo.return_value = []
         soft_check = MagicMock()
         self.plugin_main._soft_check_bone_morph_accum_availability = soft_check
@@ -266,7 +250,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
     def test_initialize_while_reading_registers_after_open_without_immediate_migration(self):
         self.plugin_main.install_mmd_menu = MagicMock()
         self.plugin_main.install_drag_drop_importer = MagicMock()
-        self.plugin_main.cmds.allNodeTypes.return_value = ["mmdRigidBodyLocator"]
+        self.plugin_main.cmds.allNodeTypes.return_value = []
         self.plugin_main.cmds.pluginInfo.return_value = []
         migration = MagicMock()
         self.plugin_main._soft_sync_existing_glsl_diffuse_contracts = migration
@@ -284,7 +268,7 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
     def test_initialize_manual_load_migrates_complete_scene_and_registers_callback(self):
         self.plugin_main.install_mmd_menu = MagicMock()
         self.plugin_main.install_drag_drop_importer = MagicMock()
-        self.plugin_main.cmds.allNodeTypes.return_value = ["mmdRigidBodyLocator"]
+        self.plugin_main.cmds.allNodeTypes.return_value = []
         self.plugin_main.cmds.pluginInfo.return_value = []
         migration = MagicMock()
         self.plugin_main._soft_sync_existing_glsl_diffuse_contracts = migration

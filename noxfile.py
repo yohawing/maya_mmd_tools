@@ -1352,9 +1352,8 @@ def native_physics_bake_route_e2e(session: nox.Session) -> None:
     1. baseline: ``bake_mode=True``, ``use_native_physics_bake=False``
     2. native:   ``bake_mode=True``, ``use_native_physics_bake=True``
 
-    Fails unless native routing was used, at least one physics-controlled bone
-    has a measurable local-transform delta vs baseline, and every model-scoped
-    ``mmd_physics_preview_constraint`` is ``nodeState == 2`` after native import.
+    Fails unless native routing was used and at least one physics-controlled
+    bone has a measurable local-transform delta vs baseline.
 
     Defaults to the hair physics fixture + known short motion. Does not change
     the single-import PNG capture session.
@@ -1794,142 +1793,6 @@ def maya_asset_probe(session: nox.Session) -> None:
 
 
 @nox.session(venv_backend="none")
-def maya_physics_collider_capture(session: nox.Session) -> None:
-    """Capture MMD physics collider locator drawing in Maya GUI / DX11.
-
-    The harness imports a physics fixture with Bullet enabled, verifies
-    ``mmdRigidBodyLocator`` shapes exist, captures one VP2 PNG, and validates
-    that the DX11 device plus cyan-ish wire pixels are present.
-
-    Examples:
-        uvx nox -s maya_physics_collider_capture -- --maya 2026
-        uvx nox -s maya_physics_collider_capture -- --maya 2026 --attach-existing --out build/captures/gui-physics-collider/physics_collider.png
-    """
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    model = _option(session.posargs, "--model", str(ROOT / "tests/data/physics/test_hair_physics.pmx"))
-    out = _option(session.posargs, "--out", str(ROOT / "build/captures/gui-physics-collider/physics_collider.png"))
-    port = _option(session.posargs, "--port", "7726")
-    width = _option(session.posargs, "--width", "1280")
-    height = _option(session.posargs, "--height", "720")
-
-    forwarded: list[str] = []
-    for flag in ("--attach-existing", "--leave-open"):
-        if flag in session.posargs:
-            forwarded.append(flag)
-
-    session.run(
-        sys.executable,
-        "tests/viewport/gui_physics_collider_capture.py",
-        "--maya",
-        version,
-        "--model",
-        model,
-        "--out",
-        out,
-        "--port",
-        port,
-        "--width",
-        width,
-        "--height",
-        height,
-        *forwarded,
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none")
-def maya_physics_panel_capture(session: nox.Session) -> None:
-    """Capture the real MMD Tools Physics tab in Maya GUI for closeout review.
-
-    Imports the hair physics fixture, opens MainWindow in development mode,
-    selects a rigid body so details are readable, grabs the Physics tab to PNG,
-    and validates non-blank diagnostics under ``build/captures/gui-physics-panel``.
-
-    Examples:
-        uvx nox -s maya_physics_panel_capture -- --maya 2024
-        uvx nox -s maya_physics_panel_capture -- --maya 2024 --attach-existing --allow-scene-reset --out build/captures/gui-physics-panel/physics_panel.png
-    """
-    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    model = _option(session.posargs, "--model", str(ROOT / "tests/data/physics/test_hair_physics.pmx"))
-    out = _option(session.posargs, "--out", str(ROOT / "build/captures/gui-physics-panel/physics_panel.png"))
-    port = _option(session.posargs, "--port", "7727")
-    width = _option(session.posargs, "--width", "960")
-    height = _option(session.posargs, "--height", "720")
-
-    forwarded: list[str] = []
-    for flag in ("--attach-existing", "--leave-open", "--allow-scene-reset"):
-        if flag in session.posargs:
-            forwarded.append(flag)
-    # Do not hardcode explorer: the Python harness picks a platform-safe default
-    # (explorer on Windows, direct elsewhere). Only forward an explicit opt-in.
-    if "--launch-mode" in session.posargs:
-        forwarded.extend(
-            ["--launch-mode", _option(session.posargs, "--launch-mode", "direct")]
-        )
-
-    session.run(
-        sys.executable,
-        "tests/viewport/gui_physics_panel_capture.py",
-        "--maya",
-        version,
-        "--model",
-        model,
-        "--out",
-        out,
-        "--port",
-        port,
-        "--width",
-        width,
-        "--height",
-        height,
-        *forwarded,
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none")
-def maya_physics_preview_numeric(session: nox.Session) -> None:
-    """Sample representative Bullet physics preview transforms under mayapy.
-
-    Examples:
-        uvx nox -s maya_physics_preview_numeric -- --maya 2024
-        uvx nox -s maya_physics_preview_numeric -- --maya 2024 --frames 1,30,60 --out build/reports/physics_preview_numeric.json
-    """
-    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    passthrough: list[str] = []
-    args = list(session.posargs)
-    path_options = {"--model", "--out"}
-    value_options = path_options | {
-        "--frames",
-        "--min-dynamic-movers",
-        "--min-tip-rotate-deg",
-        "--max-displacement",
-    }
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in value_options and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] == "--dgdirty":
-            passthrough.append(args[i])
-            i += 1
-            continue
-        i += 1
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/physics_preview_numeric_harness.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, path_options),
-        env=_mayapy_env(mayapy, preserve_pythonpath=True),
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none")
 def maya_batch_import(session: nox.Session) -> None:
     """Run Track 6 manifest-driven Maya batch import checks.
 
@@ -2232,11 +2095,6 @@ def release_gate(session: nox.Session) -> None:
         "tests/data/camera_motion/manifest.json",
     )
     local_parity_manifest = _option(args, "--local-parity-manifest", "local-parity-manifest.json")
-    local_physics_manifest = _option(
-        args,
-        "--local-physics-manifest",
-        "local-physics-parity-manifest.json",
-    )
     visual_manifest = Path(
         _option(
             args,
@@ -2478,29 +2336,7 @@ def release_gate(session: nox.Session) -> None:
                 ],
                 ROOT / "build/reports/release_gate_local_parity.json",
             ),
-            (
-                "tier3:local-physics-parity",
-                [
-                    "uvx",
-                    "nox",
-                    "-s",
-                    "local_physics_parity",
-                    "--",
-                    "--maya",
-                    version,
-                    "--manifest",
-                    local_physics_manifest,
-                    "--out",
-                    "build/reports/release_gate_local_physics_parity.json",
-                ],
-                ROOT / "build/reports/release_gate_local_physics_parity.json",
-            ),
         ]
-        if ffi_path:
-            local_physics_command = next(
-                command for name, command, _ in tier3_commands if name == "tier3:local-physics-parity"
-            )
-            local_physics_command.extend(["--ffi-path", ffi_path])
         if strict_local:
             for _, command, _ in tier3_commands:
                 command.append("--strict-local")
@@ -3022,89 +2858,6 @@ def local_parity(session: nox.Session) -> None:
         _mayapy_script(mayapy, "tests/viewport/local_asset_motion_compare.py"),
         *_convert_mayapy_path_options(mayapy, passthrough, {"--out"}),
         env=_mayapy_env(mayapy, preserve_pythonpath=True),
-        external=True,
-    )
-
-
-@nox.session(venv_backend="none")
-def local_physics_parity(session: nox.Session) -> None:
-    """Compare Maya Bullet and native physics on local PMX/VMD assets.
-
-    Examples:
-        uvx nox -s local_physics_parity -- --maya 2024
-        uvx nox -s local_physics_parity -- --maya 2024 --manifest F:/local/physics-parity.json
-        uvx nox -s local_physics_parity -- --maya 2024 --case hair
-    """
-    args = list(session.posargs)
-    maya_ver = _option(args, "--maya", DEFAULT_MAYA_VERSION)
-    mayapy = _mayapy(maya_ver)
-    manifest = _option(args, "--manifest", "local-physics-parity-manifest.json")
-    out_json = _option(args, "--out", "build/reports/local_physics_parity.json")
-    ffi_path = _option(args, "--ffi-path", "")
-    manifest_path = Path(manifest)
-    if not manifest_path.is_absolute():
-        manifest_path = ROOT / manifest_path
-    manifest_path = manifest_path.resolve()
-    out_path = _require_build_path(session, out_json, "--out")
-    if not manifest_path.is_file():
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        status = "fail" if _has_flag(args, "--strict-local") else "skip"
-        out_path.write_text(
-            json.dumps(
-                {
-                    "status": status,
-                    "summary": {"pass": 0, "fail": 1 if status == "fail" else 0, "skip": 1},
-                    "results": [
-                        {
-                            "name": str(manifest_path),
-                            "status": status,
-                            "reason": "manifest_not_found",
-                        }
-                    ],
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        session.log(f"Local physics parity manifest not found: {manifest_path}")
-        session.log(f"Local physics parity report: {out_path}")
-        if status == "fail":
-            session.error("Local physics parity manifest is required with --strict-local")
-        return
-
-    passthrough: list[str] = ["--manifest", str(manifest_path)]
-    i = 0
-    while i < len(args):
-        if args[i] == "--maya" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] == "--out" and i + 1 < len(args):
-            passthrough.extend(["--out", str(out_path)])
-            i += 2
-            continue
-        if args[i] == "--manifest" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] == "--ffi-path" and i + 1 < len(args):
-            i += 2
-            continue
-        if args[i] in ("--case", "--frame", "--fps", "--mesh-threshold") and i + 1 < len(args):
-            passthrough.extend([args[i], args[i + 1]])
-            i += 2
-            continue
-        if args[i] == "--strict-local":
-            passthrough.append(args[i])
-        i += 1
-    env = _mayapy_env(mayapy, preserve_pythonpath=True)
-    if ffi_path:
-        env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
-    session.run(
-        str(mayapy),
-        _mayapy_script(mayapy, "tests/viewport/local_physics_parity.py"),
-        *_convert_mayapy_path_options(mayapy, passthrough, {"--manifest", "--out"}),
-        env=env,
         external=True,
     )
 

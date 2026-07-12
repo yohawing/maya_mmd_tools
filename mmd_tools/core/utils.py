@@ -328,7 +328,7 @@ def create_bone_joint_mapping(bones, maya_joints, format_type):
     mapping = {}
 
     for i, (bone, joint_name) in enumerate(zip(bones, maya_joints)):
-        # インデックスベースのボーン名を作成（PhysicsConverterで使用される形式）
+        # インデックスベースのボーン名を作成
         bone_key = f"bone_{i}"
         mapping[bone_key] = joint_name
 

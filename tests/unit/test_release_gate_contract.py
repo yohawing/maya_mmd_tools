@@ -148,53 +148,6 @@ class ReleaseGateContractTest(unittest.TestCase):
         self.assertIn('tests/data/mmt_test_model_test_motion.vmd', gate_source)
         self.assertIn("_bundled_physics_runtime()", gate_source)
 
-    def test_full_release_gate_includes_optional_local_physics_parity(self):
-        source = inspect.getsource(noxfile.release_gate)
-        self.assertIn('"tier3:local-physics-parity"', source)
-        self.assertIn('"local-physics-parity-manifest.json"', source)
-        self.assertIn('"build/reports/release_gate_local_physics_parity.json"', source)
-        self.assertIn('command.append("--strict-local")', source)
-        self.assertIn('local_physics_command.extend(["--ffi-path", ffi_path])', source)
-
-    def test_local_physics_parity_missing_manifest_writes_child_report(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            session = mock.Mock()
-            session.posargs = ["--manifest", "missing.json", "--out", "build/report.json"]
-            with mock.patch.object(noxfile, "ROOT", root):
-                noxfile.local_physics_parity(session)
-            report = json.loads((root / "build/report.json").read_text(encoding="utf-8"))
-            self.assertEqual(report["status"], "skip")
-            self.assertEqual(report["results"][0]["reason"], "manifest_not_found")
-            session.run.assert_not_called()
-
-    def test_local_physics_parity_rejects_output_outside_build(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            manifest = root / "manifest.json"
-            manifest.write_text('{"cases": []}', encoding="utf-8")
-            session = mock.Mock()
-            session.posargs = ["--manifest", str(manifest), "--out", "README.json"]
-            session.error.side_effect = RuntimeError
-            with mock.patch.object(noxfile, "ROOT", root):
-                with self.assertRaises(RuntimeError):
-                    noxfile.local_physics_parity(session)
-            session.run.assert_not_called()
-
-    def test_local_physics_parity_passes_default_manifest_to_runner(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            manifest = root / "local-physics-parity-manifest.json"
-            manifest.write_text('{"cases": []}', encoding="utf-8")
-            session = mock.Mock(posargs=[])
-            with mock.patch.object(noxfile, "ROOT", root), mock.patch.object(
-                noxfile, "_mayapy", return_value=root / "mayapy"
-            ):
-                noxfile.local_physics_parity(session)
-            command = session.run.call_args.args
-            self.assertIn("--manifest", command)
-            self.assertIn(str(manifest), command)
-
     def test_bundled_physics_runtime_selects_supported_platform(self):
         windows = noxfile._bundled_physics_runtime("Windows")
         macos = noxfile._bundled_physics_runtime("Darwin")

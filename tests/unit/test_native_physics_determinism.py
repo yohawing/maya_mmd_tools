@@ -26,10 +26,8 @@ def _passing_report() -> dict:
             "physics_routing": {"used": True},
             "physics_bones": ["hair"],
             "samples": {"hair": {"0": {"tx": 1.0}}},
-            "preview_constraints": [{"node": "constraint", "nodeState": 2}],
         },
         "delta": {"passed": True, "comparedChannels": 1, "maxAbsDelta": 1.0},
-        "bullet_world_sanity": {"passed": True, "comparedSamples": 1},
         "assertions": [{"name": name, "pass": True} for name in sorted(determinism.REQUIRED_ASSERTIONS)],
     }
 

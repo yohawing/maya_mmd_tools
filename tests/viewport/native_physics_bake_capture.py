@@ -16,10 +16,6 @@ Default mode (single-import capture):
     - native profile reports ``native_physics_bake.used == True``
     - at least one physics-controlled bone shows a measurable local-transform
       delta between native and baseline across explicit evaluation frames
-    - Maya Bullet world-space bone positions stay within conservative,
-      model-extent-scaled explosion limits relative to the native result
-    - every model-scoped ``mmd_physics_preview_constraint`` has
-      ``nodeState == 2`` after the native import (Bullet feedback blocked)
 
 Capture path reuses the known-good mayapy offscreen pattern from
 ``static_render_capture`` / track6 capture (bbox-framed persp camera, lambert
@@ -72,7 +68,6 @@ DEFAULT_EVAL_FRAMES = (0, 1, 2, 3, 4, 5)
 # Local TR channels: translation units are scene cm; rotations are degrees.
 # 1e-3 is large enough to ignore float noise, small enough to catch real physics writeback.
 DEFAULT_DELTA_EPSILON = 1.0e-3
-NODE_STATE_BLOCKING = 2
 LOCAL_CHANNELS = (
     "translateX",
     "translateY",
@@ -582,9 +577,10 @@ def _extract_native_physics_routing(profile: dict[str, Any]) -> dict[str, Any]:
     return dict(routing) if isinstance(routing, dict) else {}
 
 
-def _physics_controlled_joints(root: str) -> list[dict[str, Any]]:
-    """Return joints driven by non-static PMX rigid bodies under *root*."""
+def _physics_controlled_joints(root: str, pmx_path: Path) -> list[dict[str, Any]]:
+    """Return joints driven by non-static rigid bodies declared in the PMX."""
     from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
+    from mmd_tools.core.mmd_parser import parse_pmx_file
 
     root_path = _long_path(root)
     bone_by_index: dict[int, str] = {}
@@ -598,23 +594,10 @@ def _physics_controlled_joints(root: str) -> list[dict[str, Any]]:
 
     controlled: list[dict[str, Any]] = []
     seen_joints: set[str] = set()
-    transforms = [root_path]
-    transforms.extend(
-        cmds.listRelatives(root_path, allDescendents=True, type="transform", fullPath=True) or []
-    )
-    for transform in transforms:
-        if not cmds.attributeQuery("mmd_rigid_body_index", node=transform, exists=True):
-            continue
-        if not cmds.attributeQuery("mmd_physics_mode", node=transform, exists=True):
-            continue
-        if not cmds.attributeQuery("mmd_related_bone_index", node=transform, exists=True):
-            continue
-        try:
-            mode = int(cmds.getAttr(f"{transform}.mmd_physics_mode"))
-            bone_index = int(cmds.getAttr(f"{transform}.mmd_related_bone_index"))
-            rb_index = int(cmds.getAttr(f"{transform}.mmd_rigid_body_index"))
-        except Exception:
-            continue
+    pmx = parse_pmx_file(str(pmx_path))
+    for rb_index, rigid_body in enumerate(pmx.rigid_bodies):
+        mode = int(rigid_body.physics_mode)
+        bone_index = int(rigid_body.related_bone_index)
         if mode == 0 or bone_index < 0:
             continue
         joint = bone_by_index.get(bone_index)
@@ -627,7 +610,6 @@ def _physics_controlled_joints(root: str) -> list[dict[str, Any]]:
                 "boneIndex": bone_index,
                 "rigidBodyIndex": rb_index,
                 "physicsMode": mode,
-                "rigidBodyNode": transform,
             }
         )
     controlled.sort(key=lambda item: (int(item["boneIndex"]), str(item["joint"])))
@@ -710,15 +692,6 @@ def _sample_physics_bones(
         for item in controlled:
             bone_key = str(item["boneIndex"])
             sample = _sample_bone_transform(item["joint"])
-            try:
-                sample["rigidBodyWorldMatrix"] = [
-                    float(value)
-                    for value in cmds.xform(
-                        item["rigidBodyNode"], query=True, matrix=True, worldSpace=True
-                    )
-                ]
-            except Exception:
-                sample["rigidBodyWorldMatrix"] = [float("nan")] * 16
             samples[bone_key][frame_key] = sample
     return samples
 
@@ -730,72 +703,12 @@ def _capture_physics_bind_pairs(
     pairs: dict[str, dict[str, Any]] = {}
     for item in controlled:
         sample = _sample_bone_transform(item["joint"])
-        try:
-            rigid_matrix = cmds.xform(
-                item["rigidBodyNode"], query=True, matrix=True, worldSpace=True
-            )
-        except Exception:
-            rigid_matrix = [float("nan")] * 16
         pairs[str(item["boneIndex"])] = {
             "joint": item["joint"],
-            "rigidBodyNode": item["rigidBodyNode"],
             "physicsMode": item["physicsMode"],
             "worldMatrix": sample["worldMatrix"],
-            "rigidBodyWorldMatrix": [float(value) for value in rigid_matrix],
         }
     return pairs
-
-
-def _list_preview_constraints(root: str) -> list[dict[str, Any]]:
-    """List generated mmd_physics_preview_constraint nodes under *root*."""
-    root_path = _long_path(root)
-    descendants = set(
-        cmds.listRelatives(root_path, allDescendents=True, fullPath=True) or []
-    )
-    descendants.add(root_path)
-
-    # Constraints may live under the model or as siblings wired into joints.
-    # Collect marked constraints that drive joints under the model root.
-    found: dict[str, dict[str, Any]] = {}
-    for node_type in (
-        "orientConstraint",
-        "pointConstraint",
-        "parentConstraint",
-        "scaleConstraint",
-        "aimConstraint",
-    ):
-        for constraint in cmds.ls(type=node_type, long=True) or []:
-            try:
-                if not cmds.attributeQuery("mmd_physics_preview_constraint", node=constraint, exists=True):
-                    continue
-                if not cmds.getAttr(f"{constraint}.mmd_physics_preview_constraint"):
-                    continue
-            except Exception:
-                continue
-
-            # Scope: constraint is under the model, or it targets a descendant joint.
-            scoped = constraint in descendants or constraint.startswith(root_path + "|")
-            if not scoped:
-                targets = cmds.listConnections(constraint, source=False, destination=True) or []
-                for target in targets:
-                    target_long = _long_path(target)
-                    if target_long in descendants or target_long.startswith(root_path + "|"):
-                        scoped = True
-                        break
-            if not scoped:
-                continue
-
-            try:
-                node_state = int(cmds.getAttr(f"{constraint}.nodeState"))
-            except Exception:
-                node_state = -1
-            found[constraint] = {
-                "constraint": constraint,
-                "type": node_type,
-                "nodeState": node_state,
-                "blocking": node_state == NODE_STATE_BLOCKING,
-            }
-    return [found[key] for key in sorted(found.keys())]
 
 
 def _compare_local_samples(
@@ -922,7 +835,7 @@ def _run_bake_scene(
     eval_frames: list[int],
 ) -> dict[str, Any]:
     root = _import_pmx_with_physics(pmx_path)
-    bind_pairs = _capture_physics_bind_pairs(_physics_controlled_joints(root))
+    bind_pairs = _capture_physics_bind_pairs(_physics_controlled_joints(root, pmx_path))
     profile = _import_vmd_bake(
         vmd_path=vmd_path,
         pmx_path=pmx_path,
@@ -931,9 +844,8 @@ def _run_bake_scene(
         use_native_physics_bake=use_native_physics_bake,
     )
     routing = _extract_native_physics_routing(profile)
-    controlled = _physics_controlled_joints(root)
+    controlled = _physics_controlled_joints(root, pmx_path)
     samples = _sample_physics_bones(controlled, eval_frames)
-    constraints = _list_preview_constraints(root) if use_native_physics_bake else []
     return {
         "root": root,
         "bake_mode": True,
@@ -943,7 +855,6 @@ def _run_bake_scene(
         "physics_bones": controlled,
         "bind_pairs": bind_pairs,
         "samples": samples,
-        "preview_constraints": constraints,
         "eval_frames": list(eval_frames),
     }
 
@@ -983,31 +894,6 @@ def _assert_route_gate(report: dict[str, Any], epsilon: float) -> list[dict[str,
         }
     )
 
-    parity = report.get("bullet_world_sanity") or {}
-    assertions.append(
-        {
-            "name": "maya_bullet_world_sanity",
-            "pass": bool(parity.get("passed")),
-            "details": parity,
-        }
-    )
-
-    constraints = list(native.get("preview_constraints") or [])
-    blocking = [item for item in constraints if item.get("nodeState") == NODE_STATE_BLOCKING]
-    non_blocking = [item for item in constraints if item.get("nodeState") != NODE_STATE_BLOCKING]
-    constraint_pass = bool(constraints) and not non_blocking
-    assertions.append(
-        {
-            "name": "preview_constraints_blocked",
-            "pass": constraint_pass,
-            "details": {
-                "count": len(constraints),
-                "blockingCount": len(blocking),
-                "nonBlocking": non_blocking,
-                "requiredNodeState": NODE_STATE_BLOCKING,
-            },
-        }
-    )
 
     report["assertions"] = assertions
     failed = [item for item in assertions if not item["pass"]]
@@ -1032,7 +918,6 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
     _initialize(repo_root)
 
     import mmd_tools
-    from mmd_tools.converters import PhysicsConverter
     from mmd_tools.core.native.mmd_anim_runtime import (
         get_runtime_feature_flags,
         get_runtime_library_path,
@@ -1079,7 +964,6 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
         "baseline": {},
         "native": {},
         "delta": {},
-        "bullet_world_sanity": {},
         "assertions": [],
         "report": str(report_path),
     }
@@ -1106,35 +990,7 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
         _write_report(report_path, report)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 3
-    if not PhysicsConverter.is_bullet_available():
-        report["error"] = (
-            "Maya Bullet plugin is unavailable; cannot verify "
-            "mmd_physics_preview_constraint isolation after native bake"
-        )
-        report["gate"] = "bullet_unavailable"
-        _write_report(report_path, report)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 3
-
     _configure_import_settings()
-
-    from mmd_tools.services.settings_service import SettingsService
-    from tests.viewport.native_physics_parity import apply_import_scale, static_pmx_extent
-
-    try:
-        import_scale = float(SettingsService().resolve_import_scale())
-        static_extent = static_pmx_extent(pmx_path)
-        model_extent = apply_import_scale(static_extent, import_scale)
-    except Exception as exc:
-        report["error"] = f"static PMX extent failed: {type(exc).__name__}: {exc}"
-        report["gate"] = "static_pmx_extent_invalid"
-        _write_report(report_path, report)
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 4
-    report["static_pmx_extent"] = static_extent
-    report["import_scale"] = import_scale
-    report["scaled_static_pmx_extent"] = model_extent
-    report["extent_source"] = "pmx_static_vertices_x_import_scale"
 
     try:
         baseline = _run_bake_scene(
@@ -1177,7 +1033,6 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
             "physics_routing": native["physics_routing"],
             "physics_bones": native["physics_bones"],
             "samples": native["samples"],
-            "preview_constraints": native["preview_constraints"],
             "eval_frames": native["eval_frames"],
         }
     except Exception as exc:
@@ -1203,11 +1058,6 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
         eval_frames,
         epsilon,
     )
-    from tests.viewport.native_physics_parity import compare_bullet_world_sanity
-
-    report["bullet_world_sanity"] = compare_bullet_world_sanity(
-        baseline["samples"], native["samples"], eval_frames, model_extent
-    )
     _assert_route_gate(report, epsilon)
     _write_report(report_path, report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -1219,10 +1069,6 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
         return 6
     if gate == "physics_bone_local_transform_delta":
         return 7
-    if gate == "preview_constraints_blocked":
-        return 8
-    if gate == "maya_bullet_world_sanity":
-        return 9
     return 10
 
 

@@ -138,34 +138,6 @@ def _iter_collider_targets(adapter, model_root: str):
     if physics_group:
         yield physics_group, "visibility"
 
-    # Legacy/fallback targets: per-rigid-body locators and curve groups.
-    # These remain for scenes created before the common Physics group route.
-    if physics_group:
-        return
-    try:
-        locators = adapter.list_relatives(
-            model_root,
-            allDescendents=True,
-            type="mmdRigidBodyLocator",
-            fullPath=True,
-        ) or []
-    except Exception:
-        locators = []
-    for locator in locators:
-        yield locator, "drawEnabled"
-
-    try:
-        transforms = adapter.list_relatives(
-            model_root,
-            allDescendents=True,
-            type="transform",
-            fullPath=True,
-        ) or []
-    except Exception:
-        transforms = []
-    for node in transforms:
-        if node.rsplit("|", 1)[-1].endswith("_colliderCurve"):
-            yield node, "visibility"
 
 
 def _direct_child_group(adapter, model_root: str, group_name: str | None) -> str | None:
@@ -232,4 +204,3 @@ def _source_connections(adapter, destination: str) -> list[str]:
         ) or []
     except Exception:
         return []
-

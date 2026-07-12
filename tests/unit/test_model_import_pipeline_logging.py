@@ -119,66 +119,6 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         self.assertIn("Using namespace: %s", debug_messages)
         self.assertNotIn("Using namespace: %s", info_messages)
 
-    def test_no_data_physics_phase_logs_at_debug_not_info(self):
-        logger = MagicMock()
-        # import_physics=True in options skips settings.get fallback.
-        pipeline = self._make_pipeline(
-            logger,
-            options={"import_physics": True, "enable_maya_bullet_preview": True},
-        )
-        parser = SimpleNamespace(rigid_bodies=None)
-
-        with patch(
-            "mmd_tools.io.model_import_pipeline._is_development_mode",
-            return_value=True,
-        ):
-            ncloth, constraints = pipeline.convert_physics(
-                file_kind="pmx",
-                parser=parser,
-                maya_joints=[],
-                root_group="root",
-            )
-
-        self.assertEqual(ncloth, [])
-        self.assertEqual(constraints, [])
-
-        debug_messages = _message_templates(logger.debug)
-        info_messages = _message_templates(logger.info)
-        self.assertIn("Converting physics...", debug_messages)
-        self.assertIn("No physics data found", debug_messages)
-        self.assertNotIn("Converting physics...", info_messages)
-
-    def test_maya_bullet_preview_is_skipped_without_development_flag(self):
-        logger = MagicMock()
-        profile = {}
-        pipeline = self._make_pipeline(
-            logger,
-            options={
-                "import_physics": True,
-                "enable_maya_bullet_preview": True,
-                "profile": profile,
-            },
-        )
-        parser = SimpleNamespace(rigid_bodies=[object()], bones=[])
-
-        with patch(
-            "mmd_tools.io.model_import_pipeline._is_development_mode",
-            return_value=False,
-        ), patch("mmd_tools.io.model_import_pipeline.PhysicsConverter") as converter:
-            result = pipeline.convert_physics(
-                file_kind="pmx",
-                parser=parser,
-                maya_joints=[],
-                root_group="root",
-            )
-
-        self.assertEqual(result, ([], []))
-        converter.assert_not_called()
-        self.assertEqual(
-            profile["physics_converter"]["reason"],
-            "maya_bullet_preview_disabled",
-        )
-
     def test_cleanup_namespace_logs_at_debug_not_info(self):
         logger = MagicMock()
         pipeline = self._make_pipeline(logger)
