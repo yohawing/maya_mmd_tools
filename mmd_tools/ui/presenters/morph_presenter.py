@@ -12,7 +12,6 @@ from ...core.morph_metadata_reader import (
     group_morph_names_by_panel,
     morph_info_from_presenter_entry,
     parse_blendshape_morph_entries,
-    panel_display_group,
 )
 from ...converters.morph_runtime_common import parse_morph_offsets_json
 from ..qt_compat import Qt, QTimer, QListWidgetItem
@@ -71,6 +70,7 @@ class MorphPresenter:
         self._blendshape_metadata_bindings = {}
         self._morph_capability_cache = {}
         self._morphs_by_index = {}
+        self._loaded_model_root = None
         self.group_morphs = {}  # グループごとのモーフリスト
         self.is_updating = False
 
@@ -88,9 +88,6 @@ class MorphPresenter:
         self.view.morph_list.currentItemChanged.connect(self.on_morph_selected)
         self.view.refresh_morphs_btn.clicked.connect(self.load_morphs)
         self.view.search_edit.textChanged.connect(self.filter_morphs)
-
-        # PMX panel フィルター
-        self.view.group_filter_combo.currentIndexChanged.connect(self.on_panel_filter_changed)
 
         # スライダー関連
         self.view.morph_slider.valueChanged.connect(self.on_morph_slider_changed)
@@ -119,6 +116,12 @@ class MorphPresenter:
         """現在のモデルが変更されたときの処理"""
         reload_for_current_model_change(logger, "MorphPresenter", model_root, self.load_morphs)
 
+    def ensure_morphs_loaded(self):
+        """Load once when the active model has not populated this presenter yet."""
+        model_root = self.app_state.current_model_root
+        if model_root and model_root != self._loaded_model_root:
+            self.load_morphs()
+
     def load_morphs(self):
         """モーフをロード"""
         self.view.morph_list.clear()
@@ -132,6 +135,7 @@ class MorphPresenter:
 
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
+            self._loaded_model_root = None
             return
 
         # MMDモーフデータを収集
@@ -158,6 +162,7 @@ class MorphPresenter:
 
         # プリセットを読み込み
         self._load_presets(current_model_root)
+        self._loaded_model_root = current_model_root
 
         logger.debug(f"Loaded {self.view.morph_list.count()} morphs for model: {current_model_root}")
 
@@ -824,15 +829,6 @@ class MorphPresenter:
             weight *= self.view.multiplier_spin.value()
 
             self._set_morph_weight(data, weight, self.current_morph)
-
-    def on_panel_filter_changed(self, index):
-        """PMX panel でモーフをフィルタする。"""
-        self.view.morph_list.clear()
-        panel = self.view.group_filter_combo.itemData(index)
-        if panel in (None, ""):
-            self._display_all_morphs()
-            return
-        self._display_morphs(self.group_morphs.get(panel_display_group(panel), ()))
 
     def filter_morphs(self, text):
         """検索テキストでモーフをフィルタ"""

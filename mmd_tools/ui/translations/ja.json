@@ -369,7 +369,6 @@
     "morph_name_jp": "日本語名:",
     "morph_name_en": "英語名:",
     "panel": "パネル:",
-    "panel_filter": "パネル絞り込み:",
     "type": "タイプ:",
     "status": "状態:",
     "node": "ノード:",
@@ -487,7 +486,6 @@
     "details": "詳細"
   },
   "morph_groups": {
-    "show_all": "全て表示",
     "eyebrows": "眉",
     "eyes": "目",
     "mouth": "口",

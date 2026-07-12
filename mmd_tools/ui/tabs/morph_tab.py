@@ -23,7 +23,6 @@ from .translation_registry import apply_translation_registry
 
 class MorphTab(BaseTab):
     _TRANSLATION_REGISTRY = (
-        ("group_filter_label", "setText", "panel_filter", "fields"),
         ("morph_list_group", "setTitle", "morph_list", "groups"),
         ("preview_group", "setTitle", "preview", "groups"),
         ("blend_group", "setTitle", "blendshape_connection", "groups"),
@@ -63,14 +62,10 @@ class MorphTab(BaseTab):
         main_layout = QHBoxLayout(self)
         main_layout.setContentsMargins(5, 5, 5, 5)
 
-        # スプリッターで左中右を分割
+        # スプリッターでリストと詳細を分割
         splitter = QSplitter(Qt.Horizontal)
 
-        # 左側: モーフグループリスト
-        left_widget = self._create_group_section()
-        splitter.addWidget(left_widget)
-
-        # 中央: モーフリスト
+        # 左側: モーフリスト
         center_widget = self._create_morph_list_section()
         splitter.addWidget(center_widget)
 
@@ -79,32 +74,9 @@ class MorphTab(BaseTab):
         splitter.addWidget(right_widget)
 
         # 初期のスプリッター比率
-        splitter.setSizes([200, 300, 500])
+        splitter.setSizes([350, 650])
 
         main_layout.addWidget(splitter)
-
-    def _create_group_section(self):
-        """モーフグループセクションを作成"""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.group_filter_label = QLabel(self.tr("panel_filter", "fields"))
-        layout.addWidget(self.group_filter_label)
-        self.group_filter_combo = QComboBox()
-        self.group_filter_combo.addItem(self.tr("show_all", "morph_groups"), "")
-        default_groups = (
-            self.tr("eyebrows", "morph_groups"),
-            self.tr("eyes", "morph_groups"),
-            self.tr("mouth", "morph_groups"),
-            self.tr("other", "morph_groups"),
-        )
-        for panel, group in enumerate(default_groups, start=1):
-            self.group_filter_combo.addItem(group, panel)
-        layout.addWidget(self.group_filter_combo)
-        layout.addStretch()
-
-        return widget
 
     def _create_morph_list_section(self):
         """モーフリストセクションを作成"""
@@ -405,14 +377,6 @@ class MorphTab(BaseTab):
             self.detail_tabs.setTabText(0, self.tr("basic_information", "tabs"))
             self.detail_tabs.setTabText(1, self.tr("offset_information", "tabs"))
             self.detail_tabs.setTabText(2, self.tr("maya_connection", "tabs"))
-
-        # PMX panel filter items
-        panel_filter_index = self.group_filter_combo.currentIndex()
-        self.group_filter_combo.clear()
-        self.group_filter_combo.addItem(self.tr("show_all", "morph_groups"), "")
-        for panel, key in enumerate(("eyebrows", "eyes", "mouth", "other"), start=1):
-            self.group_filter_combo.addItem(self.tr(key, "morph_groups"), panel)
-        self.group_filter_combo.setCurrentIndex(panel_filter_index)
 
         # ComboBox items - Panel
         self.panel_combo.clear()

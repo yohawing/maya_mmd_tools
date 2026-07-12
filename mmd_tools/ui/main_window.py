@@ -245,6 +245,7 @@ class MainWindow(QMainWindow):
         morph_tab = MorphTab()
         self.morph_presenter = MorphPresenter(morph_tab, self.app_state)
         self.tab_widget.addTab(morph_tab, translator.translate("morph", "tabs"))
+        self.morph_tab = morph_tab
 
         # Physics Tab
         self._add_physics_tab()
@@ -280,10 +281,16 @@ class MainWindow(QMainWindow):
         return physics_tab
 
     def _on_main_tab_changed(self, index):
-        """Refresh Physics when its main tab becomes active."""
+        """Refresh data-backed tabs when they become active."""
+        active_tab = self.tab_widget.widget(index)
+        morph_tab = getattr(self, "morph_tab", None)
+        morph_presenter = getattr(self, "morph_presenter", None)
+        if morph_tab is not None and morph_presenter is not None and active_tab is morph_tab:
+            morph_presenter.ensure_morphs_loaded()
+
         physics_tab = getattr(self, "physics_tab", None)
         presenter = getattr(self, "physics_presenter", None)
-        if physics_tab is not None and presenter is not None and self.tab_widget.widget(index) is physics_tab:
+        if physics_tab is not None and presenter is not None and active_tab is physics_tab:
             presenter.refresh_physics()
 
     def refresh_development_mode_visibility(self):

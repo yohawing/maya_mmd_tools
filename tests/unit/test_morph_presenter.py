@@ -45,7 +45,6 @@ class TestMorphPresenter(MayaTestBase):
             self.mock_view,
             [
                 "morph_list",
-                "group_filter_combo",
                 "refresh_morphs_btn",
                 "reset_slider_btn",
                 "reset_all_btn",

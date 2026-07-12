@@ -307,7 +307,6 @@
     "morph_name_jp": "日文名称:",
     "morph_name_en": "英文名称:",
     "panel": "面板:",
-    "panel_filter": "面板筛选:",
     "type": "类型:",
     "status": "状态:",
     "node": "节点:",
@@ -425,7 +424,6 @@
     "details": "详情"
   },
   "morph_groups": {
-    "show_all": "显示全部",
     "eyebrows": "眉毛",
     "eyes": "眼睛",
     "mouth": "嘴巴",

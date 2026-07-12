@@ -369,7 +369,6 @@
     "morph_name_jp": "Japanese Name:",
     "morph_name_en": "English Name:",
     "panel": "Panel:",
-    "panel_filter": "Panel filter:",
     "type": "Type:",
     "status": "Status:",
     "node": "Node:",
@@ -487,7 +486,6 @@
     "details": "Details"
   },
   "morph_groups": {
-    "show_all": "Show All",
     "eyebrows": "Eyebrows",
     "eyes": "Eyes",
     "mouth": "Mouth",

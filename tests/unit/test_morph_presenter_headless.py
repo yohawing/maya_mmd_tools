@@ -216,7 +216,6 @@ class _FakeTable:
 class _FakeView:
     def __init__(self):
         self.morph_list = _FakeList()
-        self.group_filter_combo = _FakeComboBox()
 
         self.refresh_morphs_btn = _FakeButton()
         self.reset_slider_btn = _FakeButton()
@@ -397,6 +396,21 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.group_morphs, {})
         self.assertIsNone(presenter.current_morph)
         self.assertEqual(adapter.calls, [])
+
+    def test_tab_activation_loads_new_model_once_and_preserves_current_state(self):
+        presenter, view, app_state, adapter = _make_presenter()
+        app_state.current_model_root = TEST_MODEL
+        adapter.existing.add(TEST_MODEL)
+
+        presenter.ensure_morphs_loaded()
+        self.assertEqual(presenter._loaded_model_root, TEST_MODEL)
+
+        view.search_edit._text = "keep"
+        presenter.current_morph = "selected"
+        presenter.ensure_morphs_loaded()
+
+        self.assertEqual(view.search_edit._text, "keep")
+        self.assertEqual(presenter.current_morph, "selected")
 
     def test_load_morphs_routes_through_adapter_and_populates_view(self):
         adapter = _FakeMayaAdapter()
@@ -1104,7 +1118,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         set_calls = [call for call in adapter.calls if call[0] == "set_attr"]
         self.assertEqual(set_calls, [("set_attr", "faceBlendShape.weight[0]", 0.55)])
 
-    def test_organize_and_filter_morphs_by_panel_not_stale_group(self):
+    def test_organize_morphs_by_panel_not_stale_group(self):
         presenter, view, _, _ = _make_presenter()
         presenter.morph_data = {
             # stale custom group must not override panel classification
@@ -1116,8 +1130,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         }
 
         presenter._organize_morphs_by_group()
-        view.group_filter_combo.item_data = [4]
-        presenter.on_panel_filter_changed(0)
 
         self.assertEqual(presenter.group_morphs["眉"], ["eyebrow_up"])
         self.assertEqual(presenter.group_morphs["目"], ["eye_close"])
@@ -1126,7 +1138,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertNotIn("カスタム", presenter.group_morphs)
         # panel 0 stays in morph_data but is excluded from filter groups
         self.assertNotIn("system_base", presenter.group_morphs["その他"])
-        self.assertEqual([item.text() for item in view.morph_list.items], ["---:V|fallback"])
 
         presenter.morph_data.update(
             {
@@ -1298,11 +1309,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         )
         self.assertNotIn("base", presenter.group_morphs["その他"])
 
-        view.group_filter_combo.item_data = [2, ""]
-        presenter.on_panel_filter_changed(0)
-        self.assertEqual([item.text() for item in view.morph_list.items], ["010:B|目ボーン"])
-
-        presenter.on_panel_filter_changed(1)
         self.assertIn("base", [item.data(256) for item in view.morph_list.items])
 
     def test_multi_mesh_namespace_same_name_merges_targets_not_list_items(self):
@@ -1361,9 +1367,6 @@ class TestMorphPresenterHeadless(unittest.TestCase):
                 {"node": "faceBlendShapeB", "target": "smile_b", "weight_attr": "weight[3]"},
             ],
         )
-        # Filter by Other includes the single merged entry.
-        view.group_filter_combo.item_data = [4]
-        presenter.on_panel_filter_changed(0)
         self.assertEqual([item.text() for item in view.morph_list.items], ["000:V|笑顔"])
 
     def test_existing_panel_metadata_not_overwritten_by_fallback_load(self):

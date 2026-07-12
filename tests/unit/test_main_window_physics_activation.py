@@ -44,6 +44,27 @@ def test_physics_refreshes_only_when_its_main_tab_activates():
     presenter.refresh_physics.assert_called_once_with()
 
 
+def test_morphs_load_when_their_main_tab_activates():
+    morph_tab = object()
+    other_tab = object()
+    presenter = Mock()
+    window = type(
+        "Window",
+        (),
+        {
+            "morph_tab": morph_tab,
+            "morph_presenter": presenter,
+            "tab_widget": _Tabs([other_tab, morph_tab]),
+        },
+    )()
+
+    MainWindow._on_main_tab_changed(window, 0)
+    presenter.ensure_morphs_loaded.assert_not_called()
+
+    MainWindow._on_main_tab_changed(window, 1)
+    presenter.ensure_morphs_loaded.assert_called_once_with()
+
+
 def test_development_visibility_refresh_does_not_rebuild_physics_tab():
     physics_tab = object()
     physics_presenter = object()
