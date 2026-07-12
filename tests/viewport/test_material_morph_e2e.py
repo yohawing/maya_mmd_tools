@@ -9,12 +9,16 @@ from pathlib import Path
 from tests.viewport.material_morph_e2e import (
     BACKENDS,
     DEFAULT_MORPHS,
+    PLUGIN_PHASE_COMPLETION_MARKER,
+    PLUGIN_READY_MARKER,
+    _plugin_load_code,
     _maya_code,
     build_parser,
     exception_summary,
     is_diffuse_alpha_only_offsets,
     mimage_rgba_buffer,
     parse_morph,
+    production_plugin_path,
     rgba_pixel_stats,
     safe_capture_dir,
     trace_weight_source_chains,
@@ -36,6 +40,13 @@ class MaterialMorphE2ETest(unittest.TestCase):
         self.assertEqual("VirtualDeviceGLCore", BACKENDS[args.backend]["device"])
         self.assertTrue(args.leave_open)
 
+    def test_canonical_production_plugin_entrypoint(self):
+        root = Path("repo-root")
+        self.assertEqual(
+            (root / "plug-ins" / "mmd_tools_plugin.py").resolve(),
+            production_plugin_path(root),
+        )
+
     def test_payload_contains_required_gates(self):
         code = _maya_code({"sentinel": True})
         for token in (
@@ -47,6 +58,55 @@ class MaterialMorphE2ETest(unittest.TestCase):
             "mmdMaterialMorphEval",
         ):
             self.assertIn(token, code)
+
+    def test_main_payload_only_verifies_preloaded_plugin_before_import(self):
+        code = _maya_code({"sentinel": True})
+        plugin_path = 'plugin_path = str(Path(P["production_plugin_path"]).resolve())'
+        loaded_guard = "if not cmds.pluginInfo(loaded_plugin_name, query=True, loaded=True):"
+        path_query = "cmds.pluginInfo(loaded_plugin_name, query=True, path=True)"
+        path_guard = "if os.path.normcase(actual_plugin_path) != os.path.normcase(plugin_path):"
+        registration = 'if "mmdMaterialMorphEval" not in registered_types:'
+        probe = 'cmds.createNode("mmdMaterialMorphEval", name="materialMorphE2EPluginProbe")'
+        backend_load = 'cmds.loadPlugin(P["plugin"], quiet=True)'
+        import_model = 'root = import_mmd_file(P["model"])'
+        attach_guard = 'if P["attach_existing"] and cmds.file(query=True, modified=True):'
+        scene_reset = "cmds.file(new=True, force=True)"
+        self.assertNotIn("cmds.loadPlugin(plugin_path", code)
+        self.assertLess(code.index(plugin_path), code.index(loaded_guard))
+        self.assertLess(code.index(loaded_guard), code.index(path_query))
+        self.assertLess(code.index(path_query), code.index(path_guard))
+        self.assertLess(code.index(path_guard), code.index(registration))
+        self.assertLess(code.index(registration), code.index(probe))
+        self.assertLess(code.index(attach_guard), code.index(scene_reset))
+        self.assertLess(code.index(scene_reset), code.index(probe))
+        self.assertLess(code.index(probe), code.index(backend_load))
+        self.assertLess(code.index(backend_load), code.index(import_model))
+        self.assertIn('report["productionPlugin"]', code)
+        self.assertIn('"path": actual_plugin_path', code)
+
+    def test_plugin_phase_defers_load_and_writes_ready_or_error_status(self):
+        code = _plugin_load_code({"sentinel": True})
+        scheduled = 'phase_log("material morph plugin phase: deferred load scheduled")'
+        deferred = "maya_utils.executeDeferred(load_production_plugin)"
+        loaded_query = 'already_loaded = bool(cmds.pluginInfo(P["plugin_name"], query=True, loaded=True))'
+        modified_guard = 'if P["attach_existing"] and cmds.file(query=True, modified=True):'
+        load_guard = "if already_loaded:"
+        load = "loaded = cmds.loadPlugin(expected, quiet=True)"
+        status_write = 'STATUS.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")'
+        self.assertLess(code.index(scheduled), code.index(deferred))
+        self.assertLess(code.index(modified_guard), code.index(loaded_query))
+        self.assertLess(code.index(modified_guard), code.index(load))
+        self.assertLess(code.index(loaded_query), code.index(load_guard))
+        self.assertLess(code.index(load_guard), code.index(load))
+        self.assertLess(code.index(load), code.index(status_write))
+        self.assertIn(PLUGIN_READY_MARKER, code)
+        self.assertIn(PLUGIN_PHASE_COMPLETION_MARKER, code)
+        self.assertIn('status["errors"].append', code)
+        self.assertIn('"actualPath": actual', code)
+        self.assertIn('"alreadyLoaded": already_loaded', code)
+        self.assertIn('"evaluatorRegistered": True', code)
+        self.assertNotIn("createNode", code)
+        self.assertNotIn("delete(probe", code)
 
     def test_true_add_and_multiply_diffuse_alpha_only(self):
         self.assertTrue(

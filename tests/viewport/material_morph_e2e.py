@@ -24,6 +24,8 @@ if str(_PROJECT_ROOT) not in sys.path:
 from tests.common import maya_commandport
 
 COMPLETION_MARKER = "//-- MAYA MATERIAL MORPH E2E FINISHED --//"
+PLUGIN_PHASE_COMPLETION_MARKER = "//-- MAYA MATERIAL MORPH PLUGIN PHASE FINISHED --//"
+PLUGIN_READY_MARKER = "//-- MAYA MATERIAL MORPH PLUGIN READY --//"
 DEFAULT_MORPHS = ((158, "制服"), (31, "瞳消し"), (143, "照れ"))
 BACKENDS = {
     "dx11": {"shader": "dx11Shader", "plugin": "dx11Shader", "device": "VirtualDeviceDx11"},
@@ -208,10 +210,15 @@ def _resolve(path: str, root: Path) -> Path:
     return candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
 
 
+def production_plugin_path(root: Path) -> Path:
+    """Return Maya's canonical repository plugin entrypoint."""
+    return (root / "plug-ins" / "mmd_tools_plugin.py").resolve()
+
+
 def _maya_code(payload: dict) -> str:
     encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
     return f'''\
-import base64, json, sys, traceback
+import base64, json, os, sys, traceback
 from pathlib import Path
 import maya.cmds as cmds
 import maya.api.OpenMaya as om
@@ -383,10 +390,29 @@ try:
     cmds.file(new=True, force=True)
     settings.set("import.model.create_mmd_shaders", True)
     settings.set("import.model.mmd_shader_backend", P["backend"])
+    plugin_path = str(Path(P["production_plugin_path"]).resolve())
+    loaded_plugin_name = P["production_plugin_name"]
+    if not cmds.pluginInfo(loaded_plugin_name, query=True, loaded=True):
+        raise RuntimeError("production plugin became unloaded before import: " + loaded_plugin_name)
+    actual_plugin_path = str(Path(cmds.pluginInfo(loaded_plugin_name, query=True, path=True)).resolve())
+    if os.path.normcase(actual_plugin_path) != os.path.normcase(plugin_path):
+        raise RuntimeError(
+            "production plugin path mismatch: expected {{}} got {{}}".format(plugin_path, actual_plugin_path)
+        )
+    registered_types = cmds.allNodeTypes() or []
+    if "mmdMaterialMorphEval" not in registered_types:
+        raise RuntimeError("production plugin did not register mmdMaterialMorphEval: " + plugin_path)
+    evaluator_probe = cmds.createNode("mmdMaterialMorphEval", name="materialMorphE2EPluginProbe")
+    if cmds.nodeType(evaluator_probe) != "mmdMaterialMorphEval":
+        raise RuntimeError("mmdMaterialMorphEval probe has unexpected type: " + str(cmds.nodeType(evaluator_probe)))
+    cmds.delete(evaluator_probe)
+    report["productionPlugin"] = {{"path": actual_plugin_path, "evaluatorRegistered": True, "probeCreated": True}}
+    log("//-- MAYA MATERIAL MORPH PLUGIN READY --//")
     cmds.loadPlugin(P["plugin"], quiet=True)
     root = import_mmd_file(P["model"])
     if root is None:
         raise RuntimeError("import_mmd_file returned None")
+    log("//-- MAYA MATERIAL MORPH MODEL IMPORTED --//")
     from mmd_tools.converters.material_morph_runtime import detect_effective_vp2_draw_api
     device = cmds.ogs(deviceInformation=True)
     runtime_api = detect_effective_vp2_draw_api()
@@ -453,6 +479,58 @@ finally:
 '''
 
 
+def _plugin_load_code(payload: dict) -> str:
+    """Schedule canonical production-plugin loading on Maya's GUI event loop."""
+    encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
+    return f'''\
+import base64, json, os, traceback
+from pathlib import Path
+import maya.cmds as cmds
+from maya import utils as maya_utils
+
+P = json.loads(base64.b64decode({encoded!r}).decode("utf-8"))
+LOG, STATUS = Path(P["log"]), Path(P["status"])
+
+def phase_log(value):
+    text = str(value)
+    print(text)
+    with LOG.open("a", encoding="utf-8") as stream:
+        stream.write(text + "\\n")
+        stream.flush()
+
+def load_production_plugin():
+    status = {{"ready": False, "expectedPath": P["plugin_path"], "errors": []}}
+    try:
+        phase_log("material morph plugin phase: deferred load started")
+        if P["attach_existing"] and cmds.file(query=True, modified=True):
+            raise RuntimeError("refusing plugin load for modified scene attached through commandPort")
+        expected = str(Path(P["plugin_path"]).resolve())
+        already_loaded = bool(cmds.pluginInfo(P["plugin_name"], query=True, loaded=True))
+        if already_loaded:
+            name = P["plugin_name"]
+        else:
+            loaded = cmds.loadPlugin(expected, quiet=True)
+            name = loaded[-1] if isinstance(loaded, (list, tuple)) else loaded
+        actual = str(Path(cmds.pluginInfo(name or expected, query=True, path=True)).resolve())
+        if os.path.normcase(actual) != os.path.normcase(expected):
+            raise RuntimeError("production plugin path mismatch: expected {{}} got {{}}".format(expected, actual))
+        if "mmdMaterialMorphEval" not in (cmds.allNodeTypes() or []):
+            raise RuntimeError("production plugin did not register mmdMaterialMorphEval: " + expected)
+        status.update({{"ready": True, "name": name, "actualPath": actual, "alreadyLoaded": already_loaded,
+                       "evaluatorRegistered": True}})
+        phase_log({PLUGIN_READY_MARKER!r})
+    except Exception as exc:
+        status["errors"].append({{"error": type(exc).__name__ + ": " + str(exc), "traceback": traceback.format_exc()}})
+        phase_log("material morph plugin phase error: " + status["errors"][0]["error"])
+    finally:
+        STATUS.write_text(json.dumps(status, ensure_ascii=False, indent=2), encoding="utf-8")
+        phase_log({PLUGIN_PHASE_COMPLETION_MARKER!r})
+
+phase_log("material morph plugin phase: deferred load scheduled")
+maya_utils.executeDeferred(load_production_plugin)
+'''
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = _PROJECT_ROOT
@@ -463,7 +541,8 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     log_path = out / "material-morph-e2e.log"
     report_path = out / "material-morph-report.json"
-    maya_commandport.remove_stale_logs([log_path, report_path])
+    plugin_status_path = out / "material-morph-plugin-status.json"
+    maya_commandport.remove_stale_logs([log_path, report_path, plugin_status_path])
     morphs = args.morph or list(DEFAULT_MORPHS)
     proc: subprocess.Popen | None = None
     launched = not args.attach_existing
@@ -478,11 +557,30 @@ def main(argv: list[str] | None = None) -> int:
                 env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": BACKENDS[args.backend]["device"]},
             )
         maya_commandport.wait_for_port(args.port, args.timeout, proc)
+        expected_plugin_path = production_plugin_path(root)
+        plugin_payload = {
+            "plugin_path": str(expected_plugin_path),
+            "plugin_name": "mmd_tools_plugin.py",
+            "attach_existing": args.attach_existing,
+            "log": str(log_path),
+            "status": str(plugin_status_path),
+        }
+        maya_commandport.send_python(args.port, _plugin_load_code(plugin_payload), label="<material-morph-plugin-load>")
+        if not maya_commandport.tail_until_marker(log_path, PLUGIN_PHASE_COMPLETION_MARKER, args.timeout):
+            raise TimeoutError(f"plugin phase marker not found in {log_path}")
+        if not plugin_status_path.is_file():
+            raise RuntimeError(f"plugin phase status missing: {plugin_status_path}")
+        plugin_status = json.loads(plugin_status_path.read_text(encoding="utf-8"))
+        if not plugin_status.get("ready"):
+            errors = plugin_status.get("errors") or [{"error": "unknown plugin phase failure"}]
+            raise RuntimeError(f"production plugin phase failed: {errors[0]['error']}")
         payload = {
             "project_root": str(root), "model": str(model), "out": str(out), "log": str(log_path),
             "maya": args.maya, "backend": args.backend, "plugin": BACKENDS[args.backend]["plugin"],
             "width": args.width, "height": args.height, "morphs": morphs,
             "attach_existing": args.attach_existing,
+            "production_plugin_name": plugin_status["name"],
+            "production_plugin_path": plugin_status["actualPath"],
         }
         maya_commandport.send_python(args.port, _maya_code(payload), label="<material-morph-e2e>")
         if not maya_commandport.tail_until_marker(log_path, COMPLETION_MARKER, args.timeout):
