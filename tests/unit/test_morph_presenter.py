@@ -415,7 +415,13 @@ class TestMorphPresenter(MayaTestBase):
         # モーフデータを設定
         self.presenter.current_morph = "test_morph"
         self.presenter.morph_data = {
-            "test_morph": {"name_jp": "旧名前", "name_en": "old_name", "panel": 0, "type": 0}
+            "test_morph": {
+                "name_jp": "旧名前",
+                "name_en": "old_name",
+                "panel": 0,
+                "type": 0,
+                "group": "その他",
+            }
         }
 
         # UIの値を設定
@@ -439,6 +445,7 @@ class TestMorphPresenter(MayaTestBase):
         self.assertTrue(cmds.attributeQuery("mmdMorphData", node=test_model, exists=True))
         saved_data = json.loads(cmds.getAttr(f"{test_model}.mmdMorphData"))
         self.assertEqual(saved_data["test_morph"]["name_jp"], "新名前")
+        self.assertNotIn("group", saved_data["test_morph"])
 
     def test_delete_preset(self):
         """プリセット削除のテスト"""

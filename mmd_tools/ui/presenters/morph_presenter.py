@@ -1042,6 +1042,7 @@ class MorphPresenter:
             if data.get("_pmx_type_raw")
             else ui_type
         )
+        data.pop("group", None)
 
         # MMDアトリビュートに保存
         current_model_root = self.app_state.current_model_root
@@ -1061,13 +1062,16 @@ class MorphPresenter:
         """MMDモーフデータを保存"""
         if any(data.get("_pmx_type_raw") for data in self.morph_data.values()):
             payload = [
-                {key: value for key, value in data.items() if key != "_pmx_type_raw"}
+                {key: value for key, value in data.items() if key not in {"_pmx_type_raw", "group"}}
                 for data in sorted(
                     self.morph_data.values(), key=lambda item: int(item.get("index", -1))
                 )
             ]
         else:
-            payload = dict(self.morph_data)
+            payload = {
+                morph_key: {key: value for key, value in data.items() if key != "group"}
+                for morph_key, data in self.morph_data.items()
+            }
         morph_data_json = json.dumps(payload, ensure_ascii=False)
         set_custom_attributes(model_root, {"mmdMorphData": morph_data_json})
 
