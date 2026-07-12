@@ -609,6 +609,7 @@ class PhysicsConverter:
         self._bullet_visual_locator_warning_keys = set()
         self._bullet_rigid_body_shapes_by_index = {}
         self._source_joints = list(getattr(pmd_data, "joints", None) or [])
+        self._source_rigid_bodies = list(getattr(pmd_data, "rigid_bodies", None) or [])
 
         physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
         rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
@@ -665,6 +666,7 @@ class PhysicsConverter:
         self._bullet_visual_locator_warning_keys = set()
         self._bullet_rigid_body_shapes_by_index = {}
         self._source_joints = list(getattr(pmx_data, "joints", None) or [])
+        self._source_rigid_bodies = list(getattr(pmx_data, "rigid_bodies", None) or [])
 
         physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root_group)
         rigid_bodies_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
@@ -984,22 +986,54 @@ class PhysicsConverter:
             )
 
     def _joints_lock_rigid_body_translation(self, rigid_body_index: Optional[int]) -> bool:
-        """Return True when source joints fully lock translation for a rigid body."""
+        """Return True when locked joints anchor a body to bone-follow mode 0."""
         if rigid_body_index is None or rigid_body_index < 0:
             return False
 
+        locked_adjacency: Dict[int, set[int]] = {}
+        found_incident_joint = False
         for joint in getattr(self, "_source_joints", ()) or ():
             idx_a = getattr(joint, "rigid_body_a_index", getattr(joint, "rigid_body_index_a", -1))
             idx_b = getattr(joint, "rigid_body_b_index", getattr(joint, "rigid_body_index_b", -1))
-            if rigid_body_index not in (idx_a, idx_b):
-                continue
-
             trans_lo = getattr(joint, "translation_limit_min", None)
             trans_hi = getattr(joint, "translation_limit_max", None)
-            if not trans_lo or not trans_hi:
+            limits_are_locked = (
+                bool(trans_lo)
+                and bool(trans_hi)
+                and len(trans_lo) == 3
+                and len(trans_hi) == 3
+                and all(float(lo) == float(hi) == 0.0 for lo, hi in zip(trans_lo, trans_hi))
+            )
+            if rigid_body_index in (idx_a, idx_b):
+                found_incident_joint = True
+                if not limits_are_locked:
+                    return False
+            if limits_are_locked and idx_a >= 0 and idx_b >= 0:
+                locked_adjacency.setdefault(idx_a, set()).add(idx_b)
+                locked_adjacency.setdefault(idx_b, set()).add(idx_a)
+
+        if not found_incident_joint:
+            return False
+
+        source_rigid_bodies = getattr(self, "_source_rigid_bodies", ()) or ()
+        pending = [rigid_body_index]
+        visited: set[int] = set()
+        while pending:
+            current_index = pending.pop()
+            if current_index in visited:
                 continue
-            if all(float(lo) == float(hi) == 0.0 for lo, hi in zip(trans_lo, trans_hi)):
-                return True
+            visited.add(current_index)
+            if 0 <= current_index < len(source_rigid_bodies):
+                rigid_body = source_rigid_bodies[current_index]
+                physics_mode = int(getattr(rigid_body, "physics_mode", -1))
+                bone_index = getattr(
+                    rigid_body,
+                    "related_bone_index",
+                    getattr(rigid_body, "bone_index", -1),
+                )
+                if physics_mode == 0 and bone_index is not None and int(bone_index) >= 0:
+                    return True
+            pending.extend(locked_adjacency.get(current_index, ()))
         return False
 
     def connect_existing_bullet_preview_to_bones(self, root_group: Optional[str] = None) -> int:
@@ -1460,7 +1494,7 @@ class PhysicsConverter:
             return False
         if cmds.attributeQuery("mmd_physics_orient_only", node=transform, exists=True):
             return not cmds.getAttr(f"{transform}.mmd_physics_orient_only")
-        return True
+        return not self._joints_lock_rigid_body_translation(rigid_body_index)
 
     @staticmethod
     def _store_orient_only_flag(transform: str, orient_only: bool) -> None:
