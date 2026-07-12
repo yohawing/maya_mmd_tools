@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import unittest
+import json
 
 from tests.viewport.native_physics_parity import (
     apply_import_scale,
     compare_bullet_world_sanity,
+    compare_mesh_vertex_samples,
     static_extent_from_positions,
 )
 
@@ -22,6 +24,40 @@ def _sample(world: list[float], parent: list[float], *, finite: bool = True) -> 
 
 
 class NativePhysicsParityTest(unittest.TestCase):
+    def test_mesh_world_samples_report_max_and_rms(self):
+        baseline = {0: [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)]}
+        native = {0: [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]}
+        result = compare_mesh_vertex_samples(baseline, native, [0], 1.0)
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["comparedVertexSamples"], 2)
+        self.assertEqual(result["max"], 1.0)
+        self.assertAlmostEqual(result["rms"], 2**-0.5)
+
+    def test_mesh_world_samples_fail_closed_on_count_mismatch(self):
+        result = compare_mesh_vertex_samples(
+            {0: [(0.0, 0.0, 0.0)]},
+            {0: []},
+            [0],
+            1.0,
+        )
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["failures"][0]["reason"], "vertex_count_mismatch")
+
+    def test_mesh_world_samples_fail_closed_on_nonfinite(self):
+        result = compare_mesh_vertex_samples(
+            {0: [(float("nan"), 0.0, 0.0)]},
+            {0: [(0.0, 0.0, 0.0)]},
+            [0],
+            1.0,
+        )
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["frames"]["0"]["nonfiniteVertexCount"], 1)
+        self.assertIsNone(result["frames"]["0"]["max"])
+        self.assertIsNone(result["frames"]["0"]["rms"])
+        self.assertIsNone(result["max"])
+        self.assertIsNone(result["rms"])
+        json.dumps(result, allow_nan=False)
+
     def test_import_scale_resizes_static_extent(self):
         self.assertEqual(apply_import_scale(10.0, 0.1), 1.0)
         self.assertEqual(apply_import_scale(10.0, 10.0), 100.0)

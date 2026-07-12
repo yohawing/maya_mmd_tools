@@ -138,3 +138,80 @@ def compare_bullet_world_sanity(
         "worst": worst,
         "failures": failures[:20],
     }
+
+
+def compare_mesh_vertex_samples(
+    baseline: dict[int, list[tuple[float, float, float]]],
+    native: dict[int, list[tuple[float, float, float]]],
+    frames: list[int],
+    threshold: float,
+) -> dict[str, Any]:
+    """Compare matching world-space mesh vertices, failing closed on bad data."""
+    limit = float(threshold)
+    if not math.isfinite(limit) or limit < 0.0:
+        raise ValueError(f"mesh threshold must be finite and non-negative: {threshold!r}")
+    per_frame: dict[str, Any] = {}
+    all_distances: list[float] = []
+    failures: list[dict[str, Any]] = []
+    for frame in frames:
+        left = baseline.get(frame)
+        right = native.get(frame)
+        if left is None or right is None:
+            failure = {"frame": int(frame), "reason": "missing_frame"}
+            failures.append(failure)
+            per_frame[str(frame)] = {**failure, "passed": False}
+            continue
+        if len(left) != len(right) or not left:
+            failure = {
+                "frame": int(frame),
+                "reason": "vertex_count_mismatch" if len(left) != len(right) else "no_vertices",
+                "baselineVertexCount": len(left),
+                "nativeVertexCount": len(right),
+            }
+            failures.append(failure)
+            per_frame[str(frame)] = {**failure, "passed": False}
+            continue
+        distances: list[float] = []
+        nonfinite = 0
+        for lhs, rhs in zip(left, right):
+            values = (*lhs, *rhs)
+            if len(lhs) != 3 or len(rhs) != 3 or not all(math.isfinite(float(value)) for value in values):
+                nonfinite += 1
+                continue
+            distances.append(_distance(list(lhs), list(rhs)))
+        max_distance = max(distances) if distances else None
+        rms = math.sqrt(sum(value * value for value in distances) / len(distances)) if distances else None
+        failed = (
+            nonfinite > 0
+            or len(distances) != len(left)
+            or max_distance is None
+            or max_distance > limit
+        )
+        evidence = {
+            "frame": int(frame),
+            "vertexCount": len(left),
+            "comparedVertexCount": len(distances),
+            "nonfiniteVertexCount": nonfinite,
+            "max": max_distance,
+            "rms": rms,
+            "passed": not failed,
+        }
+        per_frame[str(frame)] = evidence
+        all_distances.extend(distances)
+        if failed:
+            failures.append(evidence)
+    return {
+        "passed": bool(frames) and not failures,
+        "threshold": limit,
+        "frameCount": len(frames),
+        "comparedVertexSamples": len(all_distances),
+        "max": max(all_distances) if all_distances else None,
+        "rms": (
+            math.sqrt(sum(value * value for value in all_distances) / len(all_distances))
+            if all_distances
+            else None
+        ),
+        "failureCount": len(failures),
+        "failures": failures[:20],
+        "frames": per_frame,
+    }
