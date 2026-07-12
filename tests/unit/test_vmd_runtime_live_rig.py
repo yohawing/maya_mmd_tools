@@ -97,6 +97,86 @@ class TestVmdRuntimeLiveRig(MayaTestBase):
             self.converter._capture_physics_preview_rotation_connections(), []
         )
 
+    def test_mode2_bullet_initial_transform_is_seeded_from_vmd_pose(self):
+        joint = cmds.joint(name="mode2_seed_joint")
+        cmds.rotate(10.0, 20.0, -5.0, joint, objectSpace=True)
+        body = cmds.createNode("transform", name="mode2_seed_body")
+        cmds.rotate(-8.0, 35.0, 12.0, body, objectSpace=True)
+        cmds.move(1.0, 3.0, -2.0, body, worldSpace=True)
+        for attr, value in (
+            ("mmd_rigid_body_index", 4),
+            ("mmd_physics_mode", 2),
+            ("mmd_related_bone_index", 7),
+        ):
+            cmds.addAttr(body, longName=attr, attributeType="long")
+            cmds.setAttr(f"{body}.{attr}", value)
+        shape = cmds.createNode("network", name="mode2_seed_shape")
+        cmds.addAttr(shape, longName="initialTranslate", attributeType="double3")
+        cmds.addAttr(shape, longName="initialTranslateX", attributeType="double", parent="initialTranslate")
+        cmds.addAttr(shape, longName="initialTranslateY", attributeType="double", parent="initialTranslate")
+        cmds.addAttr(shape, longName="initialTranslateZ", attributeType="double", parent="initialTranslate")
+        cmds.addAttr(shape, longName="initialRotate", attributeType="double3")
+        cmds.addAttr(shape, longName="initialRotateX", attributeType="double", parent="initialRotate")
+        cmds.addAttr(shape, longName="initialRotateY", attributeType="double", parent="initialRotate")
+        cmds.addAttr(shape, longName="initialRotateZ", attributeType="double", parent="initialRotate")
+        body_bind = om.MTransformationMatrix(
+            om.MMatrix(cmds.xform(body, query=True, matrix=True, worldSpace=True))
+        )
+        bind_translate = body_bind.translation(om.MSpace.kWorld)
+        bind_rotate = body_bind.rotation(asQuaternion=False)
+        cmds.setAttr(
+            f"{shape}.initialTranslate",
+            bind_translate.x,
+            bind_translate.y,
+            bind_translate.z,
+            type="double3",
+        )
+        cmds.setAttr(
+            f"{shape}.initialRotate",
+            bind_rotate.x,
+            bind_rotate.y,
+            bind_rotate.z,
+            type="double3",
+        )
+        constraint = cmds.orientConstraint(body, joint, maintainOffset=True)[0]
+        cmds.addAttr(
+            constraint,
+            longName="mmd_physics_preview_constraint",
+            attributeType="bool",
+        )
+        cmds.setAttr(f"{constraint}.mmd_physics_preview_constraint", True)
+        self.converter.bone_index_to_joint = {7: joint}
+        with patch("maya.cmds.listRelatives", return_value=[shape]):
+            records = self.converter._capture_bullet_seed_records()
+        self.assertEqual(len(records), 1)
+        self.converter._resolve_bullet_seed_bind_offsets(records)
+
+        cmds.rotate(45.0, -15.0, 25.0, joint, objectSpace=True)
+        expected_matrix = records[0]["bodyFromBone"] * om.MMatrix(
+            cmds.xform(joint, query=True, matrix=True, worldSpace=True)
+        )
+        expected = om.MTransformationMatrix(expected_matrix)
+        expected_translate = expected.translation(om.MSpace.kWorld)
+        expected_rotate = expected.rotation(asQuaternion=False)
+        times = om.MTimeArray()
+        times.append(om.MTime(0.0, om.MTime.uiUnit()))
+        cmds.currentTime(8.0)
+
+        self.converter._seed_bullet_initial_transforms_from_runtime_pose(records, times)
+
+        self.assertEqual(cmds.currentTime(query=True), 8.0)
+        actual_translate = cmds.getAttr(f"{shape}.initialTranslate")[0]
+        actual_rotate = cmds.getAttr(f"{shape}.initialRotate")[0]
+        for actual, target in zip(
+            actual_translate,
+            (expected_translate.x, expected_translate.y, expected_translate.z),
+        ):
+            self.assertAlmostEqual(actual, target)
+        for actual, target in zip(
+            actual_rotate, (expected_rotate.x, expected_rotate.y, expected_rotate.z)
+        ):
+            self.assertAlmostEqual(actual, target)
+
     def test_mmd_ik_passthrough_keys_chain_bone_slot(self):
         """runtime live apply 中は mmdCcdIk output link の入力 slot へ final rotation を焼く"""
         joint = cmds.joint(name="runtime_live_toe_link")
