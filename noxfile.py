@@ -2181,7 +2181,7 @@ def release_gate(session: nox.Session) -> None:
         uvx nox -s release_gate -- --with-cpp
         uvx nox -s release_gate -- --with-cpp --cpp-maya 2024 --cpp-maya 2026 --cpp-config Release
         uvx nox -s release_gate -- --ffi-cargo-target-dir build/mmd-anim-unlocked-target
-        uvx nox -s release_gate -- --strict-local --local-parity-manifest F:/local/parity.json
+        uvx nox -s release_gate -- --strict-local --local-parity-manifest F:/local/parity.json --local-physics-manifest F:/local/physics-parity.json
     """
     args = list(session.posargs)
     quick = _has_flag(args, "--quick")
@@ -2200,6 +2200,11 @@ def release_gate(session: nox.Session) -> None:
         "tests/data/camera_motion/manifest.json",
     )
     local_parity_manifest = _option(args, "--local-parity-manifest", "local-parity-manifest.json")
+    local_physics_manifest = _option(
+        args,
+        "--local-physics-manifest",
+        "local-physics-parity-manifest.json",
+    )
     visual_manifest = Path(
         _option(
             args,
@@ -2441,7 +2446,29 @@ def release_gate(session: nox.Session) -> None:
                 ],
                 ROOT / "build/reports/release_gate_local_parity.json",
             ),
+            (
+                "tier3:local-physics-parity",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "local_physics_parity",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    local_physics_manifest,
+                    "--out",
+                    "build/reports/release_gate_local_physics_parity.json",
+                ],
+                ROOT / "build/reports/release_gate_local_physics_parity.json",
+            ),
         ]
+        if ffi_path:
+            local_physics_command = next(
+                command for name, command, _ in tier3_commands if name == "tier3:local-physics-parity"
+            )
+            local_physics_command.extend(["--ffi-path", ffi_path])
         if strict_local:
             for _, command, _ in tier3_commands:
                 command.append("--strict-local")
@@ -2963,6 +2990,89 @@ def local_parity(session: nox.Session) -> None:
         _mayapy_script(mayapy, "tests/viewport/local_asset_motion_compare.py"),
         *_convert_mayapy_path_options(mayapy, passthrough, {"--out"}),
         env=_mayapy_env(mayapy, preserve_pythonpath=True),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def local_physics_parity(session: nox.Session) -> None:
+    """Compare Maya Bullet and native physics on local PMX/VMD assets.
+
+    Examples:
+        uvx nox -s local_physics_parity -- --maya 2024
+        uvx nox -s local_physics_parity -- --maya 2024 --manifest F:/local/physics-parity.json
+        uvx nox -s local_physics_parity -- --maya 2024 --case hair
+    """
+    args = list(session.posargs)
+    maya_ver = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    manifest = _option(args, "--manifest", "local-physics-parity-manifest.json")
+    out_json = _option(args, "--out", "build/reports/local_physics_parity.json")
+    ffi_path = _option(args, "--ffi-path", "")
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = ROOT / manifest_path
+    manifest_path = manifest_path.resolve()
+    out_path = _require_build_path(session, out_json, "--out")
+    if not manifest_path.is_file():
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        status = "fail" if _has_flag(args, "--strict-local") else "skip"
+        out_path.write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "summary": {"pass": 0, "fail": 1 if status == "fail" else 0, "skip": 1},
+                    "results": [
+                        {
+                            "name": str(manifest_path),
+                            "status": status,
+                            "reason": "manifest_not_found",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        session.log(f"Local physics parity manifest not found: {manifest_path}")
+        session.log(f"Local physics parity report: {out_path}")
+        if status == "fail":
+            session.error("Local physics parity manifest is required with --strict-local")
+        return
+
+    passthrough: list[str] = ["--manifest", str(manifest_path)]
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] == "--out" and i + 1 < len(args):
+            passthrough.extend(["--out", str(out_path)])
+            i += 2
+            continue
+        if args[i] == "--manifest" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] == "--ffi-path" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in ("--case", "--frame", "--fps", "--mesh-threshold") and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] == "--strict-local":
+            passthrough.append(args[i])
+        i += 1
+    env = _mayapy_env(mayapy, preserve_pythonpath=True)
+    if ffi_path:
+        env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/local_physics_parity.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--manifest", "--out"}),
+        env=env,
         external=True,
     )
 

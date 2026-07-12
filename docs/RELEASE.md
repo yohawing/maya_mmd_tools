@@ -176,7 +176,19 @@ uvx nox -s release_camera_motion_oracle -- --maya 2024
 uvx nox -s import_scale_drift_e2e -- --maya 2024 --expect fixed
 uvx nox -s anim_layer_graph_compare -- --maya 2024
 uvx nox -s import_order_e2e -- --maya 2024
+uvx nox -s local_physics_parity -- --maya 2024 --manifest F:/local/physics-parity.json
 ```
+
+`local_physics_parity` compares Maya Bullet and native bake on non-committed
+PMX/VMD assets. The full release gate treats a missing local manifest as an
+optional skip. Require this evidence with:
+
+```powershell
+uvx nox -s release_gate -- --strict-local --local-physics-manifest F:/local/physics-parity.json
+```
+
+The aggregate child report is written to
+`build/reports/release_gate_local_physics_parity.json`.
 
 For C++/Maya runtime verification:
 
