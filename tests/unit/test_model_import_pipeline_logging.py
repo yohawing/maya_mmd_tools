@@ -229,7 +229,7 @@ class TestModelImportPipelineLogging(unittest.TestCase):
                 "root", pipeline, SimpleNamespace()
             )
         self.assertEqual(result["created"], 3)
-        self.assertEqual(result["reused"], 3)
+        self.assertEqual(result["reused"], 0)
         self.assertEqual(result["contributions"], 7)
         self.assertEqual(result["evaluator_nodes"], ["evalA", "evalB", "evalC"])
         self.assertEqual(

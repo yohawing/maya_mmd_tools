@@ -58,6 +58,7 @@ class PhysicsPresenter:
         self._ui_state_by_root = {}
         self._active_model_root = None
         self._bone_names_by_index = {}
+        self._rigid_names_by_index = {}
         self._scene_change_token = 0
         self._loaded_cache_key = None
         self._default_ui_state = self._capture_ui_state()
@@ -240,6 +241,7 @@ class PhysicsPresenter:
         self.view.joint_list.clear()
         self._rigid_bodies_by_transform.clear()
         self._joints_by_transform.clear()
+        self._rigid_names_by_index.clear()
         self._reset_details()
 
         current_model_root = self.app_state.current_model_root
@@ -254,6 +256,7 @@ class PhysicsPresenter:
         refs = self.physics_reader.collect(current_model_root)
         self._bone_names_by_index = self._collect_bone_names(current_model_root)
         rigid_names = {rigid.index: rigid.name for rigid in refs.rigid_bodies}
+        self._rigid_names_by_index = rigid_names
         for rigid_body in refs.rigid_bodies:
             self._rigid_bodies_by_transform[rigid_body.transform] = rigid_body
             self.view.rigid_body_list.addItem(
@@ -523,7 +526,6 @@ class PhysicsPresenter:
         )
 
     def _populate_joint_form(self, joint):
-        rigid_names = {ref.index: ref.name for ref in self._rigid_bodies_by_transform.values()}
         self._set_cached_form(
             "joint",
             {
@@ -531,10 +533,10 @@ class PhysicsPresenter:
                 "name_english": joint.name_english,
                 "joint_type": _JOINT_TYPE_LABELS.get(joint.joint_type, f"Unknown ({joint.joint_type})"),
                 "rigid_body_a": self._name_with_index(
-                    rigid_names.get(joint.rigid_body_a_index), joint.rigid_body_a_index
+                    self._rigid_names_by_index.get(joint.rigid_body_a_index), joint.rigid_body_a_index
                 ),
                 "rigid_body_b": self._name_with_index(
-                    rigid_names.get(joint.rigid_body_b_index), joint.rigid_body_b_index
+                    self._rigid_names_by_index.get(joint.rigid_body_b_index), joint.rigid_body_b_index
                 ),
                 "linear_constraint_states": _format_vector(joint.linear_constraint_states),
                 "angular_constraint_states": _format_vector(joint.angular_constraint_states),

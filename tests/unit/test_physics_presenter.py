@@ -566,6 +566,28 @@ class TestPhysicsPresenter(unittest.TestCase):
         )
         self.assertEqual(view.form_values["spring_rotation_enabled"], "X: 0, Y: 1, Z: 0")
 
+    def test_joint_form_uses_rigid_name_cache_built_during_load(self):
+        refs = PhysicsSceneRefs(
+            rigid_bodies=(
+                _rigid("|root|rb2", 2, "skirt"),
+                _rigid("|root|rb5", 5, "hair"),
+            ),
+            joints=(_joint("|root|jointB", "jointB", body_a=2, body_b=5),),
+        )
+        adapter = _FakeMayaAdapter(existing_nodes={"|root|jointB"})
+        presenter, view, _, _, _ = _make_presenter(
+            adapter=adapter,
+            reader=_FakePhysicsReader(refs),
+        )
+        presenter.load_physics()
+
+        # Selection-time formatting must not rebuild the lookup from refs.
+        presenter._rigid_bodies_by_transform.clear()
+        view.joint_list.select_items(view.joint_list.items[0])
+
+        self.assertEqual(view.form_values["rigid_body_a"], "skirt (2)")
+        self.assertEqual(view.form_values["rigid_body_b"], "hair (5)")
+
     def test_rigid_body_selection_selects_user_role_transform(self):
         refs = PhysicsSceneRefs(rigid_bodies=(_rigid("|root|rb2", 2, "skirt"),), joints=())
         adapter = _FakeMayaAdapter(existing_nodes={"|root|rb2"})

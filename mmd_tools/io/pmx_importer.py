@@ -67,9 +67,12 @@ def _build_material_morph_graph_with_retry(root_group, pipeline, mesh_converter)
     final_nodes = list(final.get("evaluator_nodes") or [])
     final["evaluator_nodes"] = list(dict.fromkeys(first_nodes + final_nodes))
     final["created"] = int(first.get("created") or 0) + int(final.get("created") or 0)
-    # The final pass observes first-pass creations as reused; keep its count
-    # authoritative instead of adding the same evaluators twice.
-    final["reused"] = int(final.get("reused") or 0)
+    # The final pass observes first-pass creations as reused.  Exclude those
+    # same evaluators so created + reused remains a count of unique nodes.
+    final["reused"] = max(
+        0,
+        int(final.get("reused") or 0) - int(first.get("created") or 0),
+    )
     final["retry"] = {
         "attempted": True,
         "first_skipped": first_skipped,
