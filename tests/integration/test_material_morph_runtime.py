@@ -139,6 +139,50 @@ class TestMaterialMorphNumericComposition(unittest.TestCase):
             self.assertEqual(missing, [])
         finally:
             cmds.delete(node)
+
+    def test_all_output_attributes_are_non_writable_and_non_storable(self):
+        node = cmds.createNode("mmdMaterialMorphEval")
+        try:
+            output_attrs = cmds.listAttr(node, output=True) or []
+            declared_outputs = [
+                attr for attr in output_attrs if attr.startswith("output")
+            ]
+            self.assertTrue(declared_outputs)
+            for attr in declared_outputs:
+                self.assertFalse(
+                    cmds.attributeQuery(attr, node=node, writable=True),
+                    f"{attr} must be output-only",
+                )
+                self.assertFalse(
+                    cmds.attributeQuery(attr, node=node, storable=True),
+                    f"{attr} must not be serialized",
+                )
+        finally:
+            cmds.delete(node)
+
+    def test_output_attribute_cache_is_flattened_once_and_reused(self):
+        node = cmds.createNode("mmdMaterialMorphEval")
+        try:
+            cached = MmdMaterialMorphEvalNode._all_output_attributes()
+            expected_count = sum(
+                1 + len(children)
+                for children in MmdMaterialMorphEvalNode._output_children.values()
+            )
+            self.assertEqual(len(cached), expected_count)
+            self.assertIs(MmdMaterialMorphEvalNode._all_output_attributes(), cached)
+
+            cmds.setAttr(f"{node}.baseDiffuse", 0.2, 0.3, 0.4, type="double3")
+            self.assertEqual(
+                tuple(cmds.getAttr(f"{node}.outputDiffuse")[0]),
+                (0.2, 0.3, 0.4),
+            )
+            cmds.setAttr(f"{node}.baseDiffuse", 0.7, 0.6, 0.5, type="double3")
+            self.assertEqual(
+                tuple(cmds.getAttr(f"{node}.outputDiffuse")[0]),
+                (0.7, 0.6, 0.5),
+            )
+        finally:
+            cmds.delete(node)
 from tests.common.maya_test_base import MayaTestBase
 
 

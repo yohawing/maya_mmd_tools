@@ -45,6 +45,7 @@ class MmdMaterialMorphEvalNode(om.MPxNode):
     _base_children = {}
     _offset_children = {}
     _output_children = {}
+    _all_output_attrs = ()
 
     @staticmethod
     def _plug_matches_any(plug, attributes):
@@ -166,29 +167,37 @@ class MmdMaterialMorphEvalNode(om.MPxNode):
 
     @classmethod
     def _all_output_attributes(cls):
-        attrs = []
-        for attr in cls._output_attrs.values():
-            attrs.append(attr)
-            try:
-                fn = om.MFnCompoundAttribute(attr)
-                attrs.extend(fn.child(index) for index in range(fn.numChildren()))
-            except Exception:
-                pass
-        return tuple(attrs)
+        return cls._all_output_attrs
 
 
-def _numeric_attr(name, short_name, size, default):
+def _numeric_attr(name, short_name, size, default, *, output=False):
     n_attr = om.MFnNumericAttribute()
     if size == 1:
-        return n_attr.create(name, short_name, om.MFnNumericData.kDouble, default), ()
+        attr = n_attr.create(name, short_name, om.MFnNumericData.kDouble, default)
+        if output:
+            n_attr.writable = False
+            n_attr.storable = False
+        return attr, ()
     children = []
     suffixes = "RGBA"[:size]
     for suffix in suffixes:
-        children.append(n_attr.create(f"{name}{suffix}", f"{short_name}{suffix.lower()}", om.MFnNumericData.kDouble, default))
+        child = n_attr.create(
+            f"{name}{suffix}",
+            f"{short_name}{suffix.lower()}",
+            om.MFnNumericData.kDouble,
+            default,
+        )
+        if output:
+            n_attr.writable = False
+            n_attr.storable = False
+        children.append(child)
     c_attr = om.MFnCompoundAttribute()
     parent = c_attr.create(name, short_name)
     for child in children:
         c_attr.addChild(child)
+    if output:
+        c_attr.writable = False
+        c_attr.storable = False
     return parent, tuple(children)
 
 
@@ -204,6 +213,7 @@ def initialize():
     N._base_children = {}
     N._offset_children = {}
     N._output_children = {}
+    N._all_output_attrs = ()
 
     for name, size in _MATERIAL_CHANNELS.items():
         title = f"{name[0].upper()}{name[1:]}"
@@ -242,11 +252,23 @@ def initialize():
         output_specs[f"{title}Add"] = 4
     for name, size in output_specs.items():
         title = f"{name[0].upper()}{name[1:]}"
-        attr, children = _numeric_attr(f"output{title}", f"output{title}", size, 0.0)
+        attr, children = _numeric_attr(
+            f"output{title}",
+            f"output{title}",
+            size,
+            0.0,
+            output=True,
+        )
         output_name = f"output{title}"
         N._output_attrs[output_name] = attr
         N._output_children[output_name] = children
         N.addAttribute(attr)
+
+    N._all_output_attrs = tuple(
+        attr
+        for name, parent in N._output_attrs.items()
+        for attr in (parent, *N._output_children[name])
+    )
 
     for source in (*N._base_attrs.values(), N.aContribution, N.aContributionWeight,
                    N.aOperationType, N.aMorphOrder, *N._offset_attrs.values()):
