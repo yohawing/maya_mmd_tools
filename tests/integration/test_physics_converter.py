@@ -464,7 +464,10 @@ class TestPhysicsConverter(MayaTestBase):
             },
         )
 
-        with mock.patch("mmd_tools.io.model_import_pipeline.PhysicsConverter", FakePhysicsConverter):
+        with mock.patch(
+            "mmd_tools.io.model_import_pipeline._is_development_mode",
+            return_value=True,
+        ), mock.patch("mmd_tools.io.model_import_pipeline.PhysicsConverter", FakePhysicsConverter):
             pipeline.convert_physics(
                 file_kind="pmx",
                 parser=parser,

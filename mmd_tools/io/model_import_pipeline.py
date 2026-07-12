@@ -20,6 +20,11 @@ from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 from .import_scale import apply_import_scale
 
 
+def _is_development_mode() -> bool:
+    """Return the persisted Development Mode state."""
+    return bool(settings.get(setting_keys.UI_GENERAL_DEVELOPMENT_MODE, False))
+
+
 class ModelImportPipeline:
     """Common orchestration support shared by PMX and PMD importers."""
 
@@ -102,7 +107,9 @@ class ModelImportPipeline:
         root_group: str,
     ) -> Tuple[list, list]:
         """Run the development-only Maya Bullet preview conversion."""
-        if not bool(self.options.get("enable_maya_bullet_preview", False)):
+        preview_requested = bool(self.options.get("enable_maya_bullet_preview", False))
+        development_mode = _is_development_mode()
+        if not (preview_requested and development_mode):
             self.logger.debug("Skipping Maya Bullet preview conversion")
             if self.profile is not None:
                 self.profile["physics_converter"] = {

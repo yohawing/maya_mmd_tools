@@ -128,12 +128,16 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         )
         parser = SimpleNamespace(rigid_bodies=None)
 
-        ncloth, constraints = pipeline.convert_physics(
-            file_kind="pmx",
-            parser=parser,
-            maya_joints=[],
-            root_group="root",
-        )
+        with patch(
+            "mmd_tools.io.model_import_pipeline._is_development_mode",
+            return_value=True,
+        ):
+            ncloth, constraints = pipeline.convert_physics(
+                file_kind="pmx",
+                parser=parser,
+                maya_joints=[],
+                root_group="root",
+            )
 
         self.assertEqual(ncloth, [])
         self.assertEqual(constraints, [])
@@ -149,11 +153,18 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         profile = {}
         pipeline = self._make_pipeline(
             logger,
-            options={"import_physics": True, "profile": profile},
+            options={
+                "import_physics": True,
+                "enable_maya_bullet_preview": True,
+                "profile": profile,
+            },
         )
         parser = SimpleNamespace(rigid_bodies=[object()], bones=[])
 
-        with patch("mmd_tools.io.model_import_pipeline.PhysicsConverter") as converter:
+        with patch(
+            "mmd_tools.io.model_import_pipeline._is_development_mode",
+            return_value=False,
+        ), patch("mmd_tools.io.model_import_pipeline.PhysicsConverter") as converter:
             result = pipeline.convert_physics(
                 file_kind="pmx",
                 parser=parser,

@@ -254,7 +254,7 @@ class TestVmdImporter(MayaTestBase):
         self.assertIsInstance(options["profile"], dict)
         self.assertIs(converter.convert.call_args.kwargs["profile"], options["profile"])
 
-    def test_successful_import_repairs_physics_preview_feedback(self):
+    def test_normal_mode_success_does_not_repair_physics_preview_feedback(self):
         target_model = cmds.group(empty=True, name="mmd_model_root")
         temp_root = Path(tempfile.mkdtemp())
         vmd_path = str(temp_root / "motion.vmd")
@@ -273,8 +273,11 @@ class TestVmdImporter(MayaTestBase):
             result = import_vmd_file(object(), vmd_path, options)
 
         self.assertTrue(result)
-        physics_converter.connect_existing_bullet_preview_to_bones.assert_called_once_with(target_model)
-        self.assertEqual(options["profile"]["physics_preview_repaired"], 3)
+        physics_converter.connect_existing_bullet_preview_to_bones.assert_not_called()
+        self.assertEqual(
+            options["profile"]["physics_preview_repair_skipped"],
+            "maya_bullet_preview_disabled",
+        )
 
     def test_native_physics_bake_used_disables_legacy_preview_feedback(self):
         """Native bake disables existing Bullet-to-bone feedback without deleting setup."""
@@ -287,6 +290,7 @@ class TestVmdImporter(MayaTestBase):
             "target_model": target_model,
             "use_native_physics_bake": True,
             "bake_mode": True,
+            "enable_maya_bullet_preview": True,
         }
 
         def _convert_side_effect(*_args, **kwargs):
@@ -297,7 +301,9 @@ class TestVmdImporter(MayaTestBase):
             }
             return True
 
-        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+        with patch("mmd_tools.io.vmd_importer._is_development_mode", return_value=True), patch(
+            "mmd_tools.io.vmd_importer.VmdConverter"
+        ) as converter_class, patch(
             "mmd_tools.converters.PhysicsConverter"
         ) as physics_converter_class:
             converter = converter_class.return_value
@@ -330,6 +336,7 @@ class TestVmdImporter(MayaTestBase):
             "target_model": target_model,
             "use_native_physics_bake": True,
             "bake_mode": True,
+            "enable_maya_bullet_preview": True,
         }
 
         def _convert_side_effect(*_args, **kwargs):
@@ -341,7 +348,9 @@ class TestVmdImporter(MayaTestBase):
             }
             return True
 
-        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+        with patch("mmd_tools.io.vmd_importer._is_development_mode", return_value=True), patch(
+            "mmd_tools.io.vmd_importer.VmdConverter"
+        ) as converter_class, patch(
             "mmd_tools.converters.PhysicsConverter"
         ) as physics_converter_class:
             converter = converter_class.return_value
@@ -367,9 +376,15 @@ class TestVmdImporter(MayaTestBase):
         vmd_path = str(temp_root / "motion.vmd")
         Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
         self.files_created.append(vmd_path)
-        options = {"target_model": target_model, "bake_mode": False}
+        options = {
+            "target_model": target_model,
+            "bake_mode": False,
+            "enable_maya_bullet_preview": True,
+        }
 
-        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+        with patch("mmd_tools.io.vmd_importer._is_development_mode", return_value=True), patch(
+            "mmd_tools.io.vmd_importer.VmdConverter"
+        ) as converter_class, patch(
             "mmd_tools.converters.PhysicsConverter"
         ) as physics_converter_class:
             converter = converter_class.return_value
@@ -404,9 +419,15 @@ class TestVmdImporter(MayaTestBase):
         vmd_path = str(temp_root / "motion.vmd")
         Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
         self.files_created.append(vmd_path)
-        options = {"target_model": target_model, "bake_mode": False}
+        options = {
+            "target_model": target_model,
+            "bake_mode": False,
+            "enable_maya_bullet_preview": True,
+        }
 
-        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+        with patch("mmd_tools.io.vmd_importer._is_development_mode", return_value=True), patch(
+            "mmd_tools.io.vmd_importer.VmdConverter"
+        ) as converter_class, patch(
             "mmd_tools.converters.PhysicsConverter"
         ) as physics_converter_class:
             converter = converter_class.return_value
@@ -464,11 +485,7 @@ class TestVmdImporter(MayaTestBase):
             result = import_vmd_file(object(), vmd_path, options)
 
         self.assertTrue(result)
-        # Live control is ensured for older models, but native path still does not
-        # read/write the preference value itself.
-        physics_converter_class.ensure_legacy_bullet_enabled_control.assert_called_once_with(
-            target_model
-        )
+        physics_converter_class.ensure_legacy_bullet_enabled_control.assert_not_called()
         physics_converter_class.get_legacy_bullet_enabled.assert_not_called()
         physics_converter.set_legacy_bullet_enabled.assert_not_called()
         physics_converter.set_existing_bullet_preview_feedback_enabled.assert_called_once_with(

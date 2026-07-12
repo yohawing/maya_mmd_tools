@@ -267,6 +267,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["import_light_animation"])
         self.assertEqual(options["motion_scale"], 2.5)
         self.assertTrue(options["clear_existing_motion"])
+        self.assertFalse(options["enable_maya_bullet_preview"])
         self.assertFalse(options["resample_curves"])
         self.assertFalse(options["bake_mode"])
         self.assertTrue(options["use_native_physics_bake"])
@@ -278,6 +279,7 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         options = self.service.build_vmd_import_options()
 
         self.assertTrue(options["resample_curves"])
+        self.assertTrue(options["enable_maya_bullet_preview"])
         self.assertFalse(options["bake_mode"])
         self.assertTrue(options["use_native_physics_bake"])
         self.assertIsNone(options["target_model"])

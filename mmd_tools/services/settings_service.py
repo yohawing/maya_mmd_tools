@@ -139,6 +139,9 @@ class SettingsService:
             "resample_curves": self.get(setting_keys.IMPORT_ANIMATION_RESAMPLE_CURVES, False) if is_dev else False,
             "bake_mode": self.get(setting_keys.IMPORT_RIG_BAKE_MODE, False),
             "use_native_physics_bake": self.get(setting_keys.IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE, False),
+            "enable_maya_bullet_preview": bool(
+                is_dev and self.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, True)
+            ),
             "target_model": target_model,
         }
 
