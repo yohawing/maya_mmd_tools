@@ -788,8 +788,8 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertNotEqual(resolved, geometry_master)
         self.assertEqual(cmds.ls(resolved, long=True)[0], cmds.ls(skeleton_master, long=True)[0])
 
-    def test_pmx_mode1_rigid_body_drives_related_bone_translation_preview(self):
-        """PMX physics_mode=1 は Bullet solved translation も関連ボーンへ戻す。"""
+    def test_pmx_mode1_rigid_body_uses_orientation_only_preview(self):
+        """PMX physics_mode=1 は姿勢だけを関連ボーンへ戻す。"""
         if not PhysicsConverter.is_bullet_available():
             self.skipTest("Bullet プラグインが利用できません")
 
@@ -819,22 +819,15 @@ class TestPhysicsConverter(MayaTestBase):
 
         point_constraints = cmds.listConnections(joint, source=True, destination=False, type="pointConstraint") or []
         orient_constraints = cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or []
-        self.assertTrue(point_constraints, "physics_mode=1 剛体から関連ボーンへの pointConstraint が作成されていない")
+        self.assertFalse(point_constraints, "physics_mode=1 剛体が pointConstraint を作成している")
         self.assertTrue(orient_constraints, "physics_mode=1 剛体から関連ボーンへの orientConstraint が作成されていない")
         self.assertTrue(
-            cmds.attributeQuery("mmd_physics_preview_constraint", node=point_constraints[0], exists=True),
-            "pointConstraint に物理 preview marker が付いていない",
+            cmds.attributeQuery("mmd_physics_preview_constraint", node=orient_constraints[0], exists=True),
+            "orientConstraint に物理 preview marker が付いていない",
         )
 
-        cmds.playbackOptions(min=1, max=30, animationStartTime=1, animationEndTime=30)
-        cmds.currentTime(1, edit=True)
-        start_y = cmds.xform(joint, query=True, worldSpace=True, translation=True)[1]
-        cmds.currentTime(30, edit=True)
-        end_y = cmds.xform(joint, query=True, worldSpace=True, translation=True)[1]
-        self.assertLess(end_y, start_y - 0.1)
-
-    def test_pmx_mode1_locked_chain_uses_orient_only_preview(self):
-        """移動をロックした chain 剛体は bone translation を駆動しない。"""
+    def test_pmx_mode1_zero_linear_limit_uses_orientation_only_preview(self):
+        """Bullet joint の linear limit に関係なくbone feedbackは姿勢だけにする。"""
         if not PhysicsConverter.is_bullet_available():
             self.skipTest("Bullet プラグインが利用できません")
 
@@ -885,176 +878,9 @@ class TestPhysicsConverter(MayaTestBase):
 
         point_constraints = cmds.listConnections(child_joint, source=True, destination=False, type="pointConstraint") or []
         orient_constraints = cmds.listConnections(child_joint, source=True, destination=False, type="orientConstraint") or []
-        self.assertFalse(point_constraints, "移動ロック済み mode=1 剛体が point feedback を作成している")
+        self.assertFalse(point_constraints, "mode=1 dynamic body が point feedback を作成している")
         self.assertTrue(orient_constraints, "mode=1 dynamic body の orient feedback が作成されていない")
         self.assertTrue(cmds.getAttr(f"{rbs[1]}.mmd_physics_orient_only"))
-
-    def test_pmx_mode1_locked_root_uses_orient_only_preview(self):
-        """移動をロックした root 剛体も bone translation を駆動しない。"""
-        if not PhysicsConverter.is_bullet_available():
-            self.skipTest("Bullet プラグインが利用できません")
-
-        root = cmds.group(name="test_root", empty=True)
-        cmds.select(clear=True)
-        root_joint = cmds.joint(name="physics_root_bone", position=(0.0, 10.0, 0.0))
-        child_joint = cmds.joint(name="physics_child_bone", position=(0.0, 8.0, 0.0))
-        cmds.parent(root_joint, root)
-
-        rb_root = self._make_fake_pmx_rigid_body(
-            name="dynamic_root",
-            related_bone_index=0,
-            shape_type=0,
-            position=(0.0, 10.0, 0.0),
-            physics_mode=1,
-            mass=1.0,
-        )
-        rb_child = self._make_fake_pmx_rigid_body(
-            name="static_child",
-            related_bone_index=1,
-            shape_type=0,
-            position=(0.0, 8.0, 0.0),
-            physics_mode=0,
-            mass=0.0,
-        )
-        locked_joint = self._make_fake_pmx_joint(
-            name="locked_root_joint",
-            rigid_body_a_index=0,
-            rigid_body_b_index=1,
-            translation_limit_min=(0.0, 0.0, 0.0),
-            translation_limit_max=(0.0, 0.0, 0.0),
-        )
-        data = self._make_fake_pmx_data(
-            rigid_bodies=[rb_root, rb_child],
-            joints=[locked_joint],
-            bones=[self._make_fake_bone("physics_root_bone"), self._make_fake_bone("physics_child_bone")],
-        )
-
-        converter = PhysicsConverter({"create_physics_joints": True, "gravity": 120.0})
-        rbs, _ = converter.convert_pmx_physics(
-            data,
-            {
-                "physics_root_bone": root_joint,
-                "physics_child_bone": child_joint,
-            },
-            root,
-        )
-
-        point_constraints = cmds.listConnections(root_joint, source=True, destination=False, type="pointConstraint") or []
-        orient_constraints = cmds.listConnections(root_joint, source=True, destination=False, type="orientConstraint") or []
-        self.assertFalse(point_constraints, "移動ロック済み root mode=1 剛体が point feedback を作成している")
-        self.assertTrue(orient_constraints, "root mode=1 剛体の orient feedback が作成されていない")
-        self.assertTrue(cmds.getAttr(f"{rbs[0]}.mmd_physics_orient_only"))
-
-    def test_pmx_mode1_mixed_joint_limits_keep_translation_preview(self):
-        """ロック済みと可動Jointの両方へ接続する剛体はtranslationを駆動する。"""
-        if not PhysicsConverter.is_bullet_available():
-            self.skipTest("Bullet プラグインが利用できません")
-
-        root = cmds.group(name="test_root", empty=True)
-        cmds.select(clear=True)
-        parent_joint = cmds.joint(name="physics_parent_bone", position=(0.0, 10.0, 0.0))
-        dynamic_joint = cmds.joint(name="physics_dynamic_bone", position=(0.0, 8.0, 0.0))
-        tail_joint = cmds.joint(name="physics_tail_bone", position=(0.0, 6.0, 0.0))
-        cmds.parent(parent_joint, root)
-
-        rigid_bodies = [
-            self._make_fake_pmx_rigid_body(
-                name="static_parent", related_bone_index=0, shape_type=0,
-                position=(0.0, 10.0, 0.0), physics_mode=0, mass=0.0,
-            ),
-            self._make_fake_pmx_rigid_body(
-                name="mixed_dynamic", related_bone_index=1, shape_type=0,
-                position=(0.0, 8.0, 0.0), physics_mode=1, mass=1.0,
-            ),
-            self._make_fake_pmx_rigid_body(
-                name="static_tail", related_bone_index=2, shape_type=0,
-                position=(0.0, 6.0, 0.0), physics_mode=0, mass=0.0,
-            ),
-        ]
-        joints = [
-            self._make_fake_pmx_joint(
-                name="locked_joint", rigid_body_a_index=0, rigid_body_b_index=1,
-                translation_limit_min=(0.0, 0.0, 0.0), translation_limit_max=(0.0, 0.0, 0.0),
-            ),
-            self._make_fake_pmx_joint(
-                name="unlocked_joint", rigid_body_a_index=1, rigid_body_b_index=2,
-                translation_limit_min=(-1.0, 0.0, 0.0), translation_limit_max=(1.0, 0.0, 0.0),
-            ),
-        ]
-        data = self._make_fake_pmx_data(
-            rigid_bodies=rigid_bodies,
-            joints=joints,
-            bones=[
-                self._make_fake_bone("physics_parent_bone"),
-                self._make_fake_bone("physics_dynamic_bone"),
-                self._make_fake_bone("physics_tail_bone"),
-            ],
-        )
-
-        converter = PhysicsConverter({"create_physics_joints": True, "gravity": 120.0})
-        rbs, _ = converter.convert_pmx_physics(
-            data,
-            {
-                "physics_parent_bone": parent_joint,
-                "physics_dynamic_bone": dynamic_joint,
-                "physics_tail_bone": tail_joint,
-            },
-            root,
-        )
-
-        point_constraints = cmds.listConnections(
-            dynamic_joint, source=True, destination=False, type="pointConstraint",
-        ) or []
-        orient_constraints = cmds.listConnections(
-            dynamic_joint, source=True, destination=False, type="orientConstraint",
-        ) or []
-        self.assertTrue(point_constraints, "可動Jointを含む mode=1 剛体の point feedback が抑止されている")
-        self.assertTrue(orient_constraints, "mode=1 剛体の orient feedback が作成されていない")
-        self.assertFalse(cmds.getAttr(f"{rbs[1]}.mmd_physics_orient_only"))
-
-    def test_pmx_mode1_locked_all_dynamic_chain_keeps_translation_preview(self):
-        """完全ロックでもmode 0 anchorがないdynamic成分はtranslationを駆動する。"""
-        if not PhysicsConverter.is_bullet_available():
-            self.skipTest("Bullet プラグインが利用できません")
-
-        root = cmds.group(name="test_root", empty=True)
-        cmds.select(clear=True)
-        first_joint = cmds.joint(name="physics_first_bone", position=(0.0, 10.0, 0.0))
-        second_joint = cmds.joint(name="physics_second_bone", position=(0.0, 8.0, 0.0))
-        cmds.parent(first_joint, root)
-        rigid_bodies = [
-            self._make_fake_pmx_rigid_body(
-                name="dynamic_first", related_bone_index=0, shape_type=0,
-                position=(0.0, 10.0, 0.0), physics_mode=1, mass=1.0,
-            ),
-            self._make_fake_pmx_rigid_body(
-                name="dynamic_second", related_bone_index=1, shape_type=0,
-                position=(0.0, 8.0, 0.0), physics_mode=1, mass=1.0,
-            ),
-        ]
-        locked_joint = self._make_fake_pmx_joint(
-            name="locked_dynamic_joint", rigid_body_a_index=0, rigid_body_b_index=1,
-            translation_limit_min=(0.0, 0.0, 0.0), translation_limit_max=(0.0, 0.0, 0.0),
-        )
-        data = self._make_fake_pmx_data(
-            rigid_bodies=rigid_bodies,
-            joints=[locked_joint],
-            bones=[self._make_fake_bone("physics_first_bone"), self._make_fake_bone("physics_second_bone")],
-        )
-
-        converter = PhysicsConverter({"create_physics_joints": True, "gravity": 120.0})
-        rbs, _ = converter.convert_pmx_physics(
-            data,
-            {"physics_first_bone": first_joint, "physics_second_bone": second_joint},
-            root,
-        )
-
-        for joint, rigid_body in zip((first_joint, second_joint), rbs):
-            point_constraints = cmds.listConnections(
-                joint, source=True, destination=False, type="pointConstraint",
-            ) or []
-            self.assertTrue(point_constraints, "anchorなしdynamic成分のpoint feedbackが抑止されている")
-            self.assertFalse(cmds.getAttr(f"{rigid_body}.mmd_physics_orient_only"))
 
     def test_pmx_dynamic_rigid_body_maps_related_bone_by_metadata_index(self):
         """関連ボーン接続は sanitize 名ではなく mmd_bone_index を優先する。"""
@@ -1088,7 +914,7 @@ class TestPhysicsConverter(MayaTestBase):
         constraints = cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or []
         point_constraints = cmds.listConnections(joint, source=True, destination=False, type="pointConstraint") or []
         self.assertTrue(constraints, "mmd_bone_index による dynamic preview 接続が作成されていない")
-        self.assertTrue(point_constraints, "mmd_bone_index による mode-1 translation preview 接続が作成されていない")
+        self.assertFalse(point_constraints, "mmd_bone_index 経路が point preview を作成している")
 
     def test_pmx_rigid_body_applies_collision_filter_and_capsule_total_length(self):
         """PMX capsule sizeY は Maya Bullet の円柱部高さとして扱う。"""
@@ -1188,7 +1014,7 @@ class TestPhysicsConverter(MayaTestBase):
 
         self.assertEqual(connected, 1)
         self.assertTrue(cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or [])
-        self.assertTrue(cmds.listConnections(joint, source=True, destination=False, type="pointConstraint") or [])
+        self.assertFalse(cmds.listConnections(joint, source=True, destination=False, type="pointConstraint") or [])
 
     def test_native_bake_preview_feedback_toggle_is_scoped_and_reversible(self):
         """Native bake disables only marked feedback and restores its own change."""
@@ -1649,7 +1475,7 @@ class TestPhysicsConverter(MayaTestBase):
         self.assertEqual(connected, 1)
         self.assertFalse(cmds.objExists(stale), "古い parentConstraint preview が残っている")
         self.assertTrue(cmds.listConnections(joint, source=True, destination=False, type="orientConstraint") or [])
-        self.assertTrue(cmds.listConnections(joint, source=True, destination=False, type="pointConstraint") or [])
+        self.assertFalse(cmds.listConnections(joint, source=True, destination=False, type="pointConstraint") or [])
 
     def test_hair_physics_fixture_preview_preserves_parent_bone_translation(self):
         """髪物理フィクスチャの dynamic bone は親ボーン移動で world 固定されない。"""
