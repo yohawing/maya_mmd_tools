@@ -3,6 +3,7 @@ from mmd_tools.core import maya_material_utils
 from mmd_tools.converters.material_shader_parameters import (
     ATTR_MMD_EDGE_ALPHA,
     ATTR_MMD_DIFFUSE_ALPHA,
+    hardware_morph_route_for_uniform,
     iter_hardware_shader_values,
 )
 from mmd_tools.core.constants import (
@@ -946,18 +947,6 @@ class MaterialPresenter:
     def _apply_hardware_base_values(self, values, shader_type):
         """Write base values only when no evaluator owns the final plug."""
         material = self.current_material
-        evaluator_base_by_uniform = {
-            "DiffuseColorA": ("baseDiffuseA", "float"),
-            "Shininess": ("baseSpecularCoefficient", "float"),
-            "EdgeSize": ("baseEdgeSize", "float"),
-        }
-        evaluator_vector_base_by_uniform = {
-            "DiffuseColorRGB": ("baseDiffuse", "RGB"),
-            "SpecularColor": ("baseSpecular", "RGB"),
-            "AmbientColor": ("baseAmbient", "RGB"),
-            "EdgeColorRGB": ("baseEdgeColor", "RGB"),
-            "EdgeColor": ("baseEdgeColor", "RGBA"),
-        }
         for binding, value in iter_hardware_shader_values(values, shader_type):
             if value is None or not self.maya_adapter.attribute_exists(binding.attribute, material):
                 continue
@@ -983,22 +972,19 @@ class MaterialPresenter:
                     )
                 except Exception:
                     ready = False
-                base_binding = evaluator_base_by_uniform.get(binding.attribute)
-                vector_base = evaluator_vector_base_by_uniform.get(binding.attribute)
-                if ready and vector_base:
-                    base_prefix, axes = vector_base
+                morph_route = hardware_morph_route_for_uniform(
+                    binding.attribute, shader_type
+                )
+                if ready and morph_route and morph_route.evaluator_base and morph_route.size > 1:
+                    base_prefix = morph_route.evaluator_base
+                    axes = "RGBA"[:morph_route.size]
                     for axis, component in zip(axes, value):
                         maya_attribute_utils.set_attribute(
                             evaluator, f"{base_prefix}{axis}", component, "float"
                         )
-                elif ready and binding.attribute == "EdgeColorA":
+                elif ready and morph_route and morph_route.evaluator_base:
                     maya_attribute_utils.set_attribute(
-                        evaluator, "baseEdgeColorA", value, "float"
-                    )
-                elif ready and base_binding:
-                    base_attr, base_type = base_binding
-                    maya_attribute_utils.set_attribute(
-                        evaluator, base_attr, value, base_type
+                        evaluator, morph_route.evaluator_base, value, "float"
                     )
                 logger.debug("Skipping driven hardware material plug: %s", plug)
                 continue

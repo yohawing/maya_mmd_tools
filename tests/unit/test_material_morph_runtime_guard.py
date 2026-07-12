@@ -8,6 +8,7 @@ from tests.common.maya_stub import install_maya_stub
 install_maya_stub(profile="headless")
 
 from mmd_tools.converters import material_morph_runtime  # noqa: E402
+from mmd_tools.converters.material_shader_parameters import hardware_morph_routes  # noqa: E402
 
 
 def _attr_query_side_effect(exists=None, writable=None, **_extra):
@@ -44,24 +45,21 @@ def _rgb_safe_get_attr(*, locked=False, attr_type="double3", value=(1.0, 0.0, 0.
 
 
 class TestMaterialMorphRuntimeGuard(unittest.TestCase):
-    def test_build_graph_does_not_connect_shader_by_default(self):
+    def test_build_graph_starts_full_runtime_by_default(self):
         cmds = mock.Mock()
         cmds.objExists.return_value = True
         with mock.patch.object(material_morph_runtime, "cmds", cmds), mock.patch.object(
             material_morph_runtime,
             "_collect_shaders_by_material_index",
-        ) as collect_mock, mock.patch.object(
-            material_morph_runtime,
-            "_reroute_shader_color",
-        ) as reroute_mock:
+        ) as collect_mock:
+            collect_mock.return_value = {}
             result = material_morph_runtime.build_material_morph_graph("root")
 
         self.assertTrue(result["success"])
         self.assertEqual(result["evaluator_nodes"], [])
         self.assertEqual(result["contributions"], 0)
-        self.assertEqual(result["skipped"], ["material_morph_shader_routing_disabled"])
-        collect_mock.assert_not_called()
-        reroute_mock.assert_not_called()
+        self.assertEqual(result["skipped"], ["no_indexed_shaders"])
+        collect_mock.assert_called_once_with("root")
 
     def test_alpha_only_offsets_are_retained_for_full_channel_evaluation(self):
         additive_alpha_only = {
@@ -252,7 +250,13 @@ class TestCompleteRouteRollback(unittest.TestCase):
             self.values["eval.mmd_complete_route_ready"] = False
             self.values["eval.mmd_target_shader"] = "shader"
             self.values["shader.Opacity"] = 0.4
-            for shader_name, base_name, _output, size in material_morph_runtime._HARDWARE_COMMON_ROUTES:
+            for route in hardware_morph_routes("dx11Shader"):
+                if route.uniform.startswith("EdgeColor"):
+                    continue
+                shader_name = route.uniform
+                base_name = route.evaluator_base
+                _output = route.evaluator_output
+                size = route.size
                 self.values[f"shader.{shader_name}"] = 0.4 if size == 1 else [tuple(0.4 for _ in range(size))]
                 if size > 1:
                     self.children[("shader", shader_name)] = [f"{shader_name}{index}" for index in range(size)]
@@ -840,7 +844,7 @@ class TestResolveShaderColorRoute(unittest.TestCase):
             return_value=["morph1"],
         ):
             cmds.objExists.return_value = True
-            result = material_morph_runtime.build_material_morph_graph("root", connect_shader=True)
+            result = material_morph_runtime.build_material_morph_graph("root")
 
         self.assertTrue(result["success"])
         self.assertIn("dx11_vp2_not_directx11:dx11_shader", result["skipped"])

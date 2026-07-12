@@ -20,6 +20,7 @@ from mmd_tools.converters.morph_runtime_common import (
     same_source as _same_source,
 )
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
+from mmd_tools.converters.material_shader_parameters import hardware_morph_routes
 
 
 logger = get_logger(__name__)
@@ -46,21 +47,6 @@ _REQUIRED_EVAL_ATTRS = (
     "outputSphereTextureAdd",
     "outputToonTextureMultiply",
     "outputToonTextureAdd",
-)
-
-_HARDWARE_COMMON_ROUTES = (
-    ("DiffuseColorRGB", "baseDiffuse", "outputDiffuse", 3),
-    ("DiffuseColorA", "baseDiffuseA", "outputDiffuseAlpha", 1),
-    ("SpecularColor", "baseSpecular", "outputSpecular", 3),
-    ("Shininess", "baseSpecularCoefficient", "outputSpecularCoefficient", 1),
-    ("AmbientColor", "baseAmbient", "outputAmbient", 3),
-    ("EdgeSize", "baseEdgeSize", "outputEdgeSize", 1),
-    ("MainTextureMultiply", None, "outputTextureMultiply", 4),
-    ("MainTextureAdd", None, "outputTextureAdd", 4),
-    ("SphereTextureMultiply", None, "outputSphereTextureMultiply", 4),
-    ("SphereTextureAdd", None, "outputSphereTextureAdd", 4),
-    ("ToonTextureMultiply", None, "outputToonTextureMultiply", 4),
-    ("ToonTextureAdd", None, "outputToonTextureAdd", 4),
 )
 
 # Backend identifiers returned by resolve_shader_color_route.
@@ -187,15 +173,11 @@ def _classify_vp2_draw_api_text(text: str) -> str:
     return VP2_API_UNKNOWN
 
 
-def build_material_morph_graph(root_group: str, *, connect_shader: bool = False) -> Dict[str, Any]:
-    """Optionally build PMX material morph evaluator connections under *root_group*.
+def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
+    """Build the complete PMX material morph runtime under *root_group*.
 
     Args:
         root_group: Imported MMD model root group.
-        connect_shader: Explicit opt-in for the incomplete diffuse-RGB-only
-            runtime. Normal imports leave this false until every PMX material
-            channel can be reproduced safely.
-
     Returns:
         Summary dict.
     """
@@ -210,10 +192,6 @@ def build_material_morph_graph(root_group: str, *, connect_shader: bool = False)
     if not root_group or not cmds.objExists(root_group):
         result["success"] = False
         result["skipped"].append("root_group_missing")
-        return result
-
-    if not connect_shader:
-        result["skipped"].append("material_morph_shader_routing_disabled")
         return result
 
     shaders_by_index = _collect_shaders_by_material_index(root_group)
@@ -766,8 +744,10 @@ def _complete_hardware_route(shader: str, route: ShaderColorRoute) -> ShaderColo
             backend=route.backend,
             skip_reason=f"complete_material_backend_unsupported:{shader}",
         )
-    edge = (("EdgeColorRGB", 3), ("EdgeColorA", 1)) if route.backend == BACKEND_DX11 else (("EdgeColor", 4),)
-    required = tuple((name, size) for name, _, _, size in _HARDWARE_COMMON_ROUTES) + edge + (("Opacity", 1),)
+    shader_type = "dx11Shader" if route.backend == BACKEND_DX11 else "GLSLShader"
+    required = tuple(
+        (item.uniform, item.size) for item in hardware_morph_routes(shader_type)
+    ) + (("Opacity", 1),)
     missing = [name for name, size in required if not _is_writable_plug(shader, name, size)]
     if missing:
         return ShaderColorRoute(
@@ -868,20 +848,44 @@ def _reroute_complete_shader(shader: str, node: str, route: ShaderColorRoute) ->
     complete = _complete_hardware_route(shader, route)
     if not complete.is_usable:
         return False
-    bindings = list(_HARDWARE_COMMON_ROUTES)
+    shader_type = "dx11Shader" if route.backend == BACKEND_DX11 else "GLSLShader"
+    route_contract = hardware_morph_routes(shader_type)
+    bindings = [
+        (item.uniform, item.evaluator_base, item.evaluator_output, item.size)
+        for item in route_contract
+        if not item.uniform.startswith("EdgeColor")
+    ]
     if route.backend == BACKEND_DX11:
+        edge_rgb = next(item for item in route_contract if item.uniform == "EdgeColorRGB")
+        edge_alpha = next(item for item in route_contract if item.uniform == "EdgeColorA")
         edge_rgb_children = cmds.attributeQuery(
-            "EdgeColorRGB", node=shader, listChildren=True
+            edge_rgb.uniform, node=shader, listChildren=True
         ) or []
         if len(edge_rgb_children) != 3:
             return False
         bindings.extend(
-            (edge_rgb_children[index], f"baseEdgeColor{axis}", f"outputEdgeColor{axis}", 1)
+            (
+                edge_rgb_children[index],
+                f"{edge_rgb.evaluator_base}{axis}",
+                f"{edge_rgb.evaluator_output}{axis}",
+                1,
+            )
             for index, axis in enumerate("RGB")
         )
-        bindings.append(("EdgeColorA", "baseEdgeColorA", "outputEdgeColorA", 1))
+        bindings.append((
+            edge_alpha.uniform,
+            edge_alpha.evaluator_base,
+            edge_alpha.evaluator_output,
+            edge_alpha.size,
+        ))
     else:
-        bindings.append(("EdgeColor", "baseEdgeColor", "outputEdgeColor", 4))
+        edge_color = next(item for item in route_contract if item.uniform == "EdgeColor")
+        bindings.append((
+            edge_color.uniform,
+            edge_color.evaluator_base,
+            edge_color.evaluator_output,
+            edge_color.size,
+        ))
     try:
         bindings = _expand_route_bindings(shader, node, bindings)
     except Exception:

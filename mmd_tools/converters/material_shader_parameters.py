@@ -5,7 +5,7 @@ display plugs, so callers must not overwrite them while an evaluator drives them
 """
 
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional, Tuple
 
 
 ATTR_MMD_EDGE_ALPHA = "mmd_edge_alpha"
@@ -18,31 +18,110 @@ class ShaderParameter:
     attribute_type: str
 
 
+@dataclass(frozen=True)
+class HardwareMorphRoute:
+    """One hardware uniform route owned by ``mmdMaterialMorphEval``."""
+
+    semantic: str
+    uniform: str
+    evaluator_base: Optional[str]
+    evaluator_output: str
+    size: int
+    attribute_type: str
+
+
 # MMDShader.fx and MMDShader.ogsfx intentionally share this contract.
 _COMMON_SHADER_PARAMETERS: Mapping[str, ShaderParameter] = {
-    "diffuse_rgb": ShaderParameter("DiffuseColorRGB", "double3"),
-    "diffuse_alpha": ShaderParameter("DiffuseColorA", "float"),
-    "ambient": ShaderParameter("AmbientColor", "double3"),
-    "specular": ShaderParameter("SpecularColor", "double3"),
-    "specular_power": ShaderParameter("Shininess", "float"),
-    "edge_size": ShaderParameter("EdgeSize", "float"),
     "sphere_mode": ShaderParameter("SphereMode", "long"),
     "opacity": ShaderParameter("Opacity", "float"),
-    "texture_multiply": ShaderParameter("MainTextureMultiply", "double4"),
-    "texture_add": ShaderParameter("MainTextureAdd", "double4"),
-    "sphere_texture_multiply": ShaderParameter("SphereTextureMultiply", "double4"),
-    "sphere_texture_add": ShaderParameter("SphereTextureAdd", "double4"),
-    "toon_texture_multiply": ShaderParameter("ToonTextureMultiply", "double4"),
-    "toon_texture_add": ShaderParameter("ToonTextureAdd", "double4"),
 }
 
-_BACKEND_SHADER_PARAMETERS: Mapping[str, Mapping[str, ShaderParameter]] = {
-    "dx11Shader": {
-        "edge_rgb": ShaderParameter("EdgeColorRGB", "double3"),
-        "edge_alpha": ShaderParameter("EdgeColorA", "float"),
-    },
-    "GLSLShader": {"edge_color": ShaderParameter("EdgeColor", "double4")},
+_COMMON_HARDWARE_MORPH_ROUTES = (
+    HardwareMorphRoute(
+        "diffuse_rgb", "DiffuseColorRGB", "baseDiffuse", "outputDiffuse", 3, "double3"
+    ),
+    HardwareMorphRoute(
+        "diffuse_alpha", "DiffuseColorA", "baseDiffuseA", "outputDiffuseAlpha", 1, "float"
+    ),
+    HardwareMorphRoute(
+        "specular", "SpecularColor", "baseSpecular", "outputSpecular", 3, "double3"
+    ),
+    HardwareMorphRoute(
+        "specular_power",
+        "Shininess",
+        "baseSpecularCoefficient",
+        "outputSpecularCoefficient",
+        1,
+        "float",
+    ),
+    HardwareMorphRoute(
+        "ambient", "AmbientColor", "baseAmbient", "outputAmbient", 3, "double3"
+    ),
+    HardwareMorphRoute(
+        "edge_size", "EdgeSize", "baseEdgeSize", "outputEdgeSize", 1, "float"
+    ),
+    HardwareMorphRoute(
+        "texture_multiply", "MainTextureMultiply", None, "outputTextureMultiply", 4, "double4"
+    ),
+    HardwareMorphRoute(
+        "texture_add", "MainTextureAdd", None, "outputTextureAdd", 4, "double4"
+    ),
+    HardwareMorphRoute(
+        "sphere_texture_multiply",
+        "SphereTextureMultiply",
+        None,
+        "outputSphereTextureMultiply",
+        4,
+        "double4",
+    ),
+    HardwareMorphRoute(
+        "sphere_texture_add", "SphereTextureAdd", None, "outputSphereTextureAdd", 4, "double4"
+    ),
+    HardwareMorphRoute(
+        "toon_texture_multiply",
+        "ToonTextureMultiply",
+        None,
+        "outputToonTextureMultiply",
+        4,
+        "double4",
+    ),
+    HardwareMorphRoute(
+        "toon_texture_add", "ToonTextureAdd", None, "outputToonTextureAdd", 4, "double4"
+    ),
+)
+
+_BACKEND_HARDWARE_MORPH_ROUTES = {
+    "dx11Shader": (
+        HardwareMorphRoute(
+            "edge_color", "EdgeColorRGB", "baseEdgeColor", "outputEdgeColor", 3, "double3"
+        ),
+        HardwareMorphRoute(
+            "edge_color", "EdgeColorA", "baseEdgeColorA", "outputEdgeColorA", 1, "float"
+        ),
+    ),
+    "GLSLShader": (
+        HardwareMorphRoute(
+            "edge_color", "EdgeColor", "baseEdgeColor", "outputEdgeColor", 4, "double4"
+        ),
+    ),
 }
+
+
+def hardware_morph_routes(shader_type: str) -> Tuple[HardwareMorphRoute, ...]:
+    """Return the complete evaluator route contract for a hardware shader type."""
+    return _COMMON_HARDWARE_MORPH_ROUTES + _BACKEND_HARDWARE_MORPH_ROUTES.get(
+        shader_type, ()
+    )
+
+
+def hardware_morph_route_for_uniform(
+    uniform: str, shader_type: str
+) -> Optional[HardwareMorphRoute]:
+    """Return the evaluator route owning *uniform*, if it is morph-driven."""
+    return next(
+        (route for route in hardware_morph_routes(shader_type) if route.uniform == uniform),
+        None,
+    )
 
 
 def material_base_parameter_values(material: Any) -> dict[str, Any]:
@@ -73,15 +152,30 @@ def material_base_parameter_values(material: Any) -> dict[str, Any]:
 def iter_hardware_shader_values(values: Mapping[str, Any], shader_type: str):
     """Yield backend-correct bindings for recognized semantic values."""
     for semantic, value in values.items():
-        if semantic == "edge_color" and shader_type == "dx11Shader":
-            edge = list(value)
-            yield _BACKEND_SHADER_PARAMETERS[shader_type]["edge_rgb"], edge[:3]
-            yield _BACKEND_SHADER_PARAMETERS[shader_type]["edge_alpha"], (
-                float(edge[3]) if len(edge) > 3 else 1.0
+        routes = [
+            route for route in hardware_morph_routes(shader_type)
+            if route.semantic == semantic
+        ]
+        if routes:
+            components = (
+                list(value) if semantic == "edge_color" and len(routes) > 1 else None
             )
+            for route in routes:
+                route_value = value
+                if components is not None:
+                    route_value = (
+                        components[:3]
+                        if route.size == 3
+                        else (
+                            float(components[3])
+                            if route.size == 1 and len(components) > 3
+                            else 1.0
+                        )
+                        if route.size == 1
+                        else components
+                    )
+                yield ShaderParameter(route.uniform, route.attribute_type), route_value
             continue
-        binding = _BACKEND_SHADER_PARAMETERS.get(shader_type, {}).get(
-            semantic, _COMMON_SHADER_PARAMETERS.get(semantic)
-        )
+        binding = _COMMON_SHADER_PARAMETERS.get(semantic)
         if binding is not None:
             yield binding, value

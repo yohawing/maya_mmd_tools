@@ -537,7 +537,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
         # material morph runtime graph を構築（shader ↔ evaluator 接続）
-        graph = build_material_morph_graph(root, connect_shader=True) if build_graph else None
+        graph = build_material_morph_graph(root) if build_graph else None
 
         return root, mesh, shader, material_nodes, graph
 
@@ -633,7 +633,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             "detect_effective_vp2_draw_api",
             return_value=VP2_API_DIRECTX11,
         ), mock.patch.object(material_morph_runtime, "_connect_if_needed", side_effect=_fail_late):
-            failed = build_material_morph_graph(root, connect_shader=True)
+            failed = build_material_morph_graph(root)
         self.assertFalse(failed["success"])
         self.assertAlmostEqual(cmds.getAttr(f"{shader}.Opacity"), 0.4)
         for name, expected in factor_values.items():
@@ -655,7 +655,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             "detect_effective_vp2_draw_api",
             return_value=VP2_API_DIRECTX11,
         ):
-            graph = build_material_morph_graph(root, connect_shader=True)
+            graph = build_material_morph_graph(root)
 
         self.assertTrue(graph["success"], graph)
         self.assertAlmostEqual(cmds.getAttr(f"{shader}.Opacity"), 1.0)
@@ -715,7 +715,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             "_connect_if_needed",
             side_effect=_fail_ready_rebuild,
         ):
-            failed_rebuild = build_material_morph_graph(root, connect_shader=True)
+            failed_rebuild = build_material_morph_graph(root)
         self.assertFalse(failed_rebuild["success"])
         self.assertTrue(cmds.getAttr(f"{evaluator}.mmd_complete_route_ready"))
         self.assertEqual(cmds.getAttr(f"{evaluator}.baseEdgeColorA"), base_before)
@@ -729,7 +729,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             "detect_effective_vp2_draw_api",
             return_value=VP2_API_DIRECTX11,
         ):
-            rebuilt = build_material_morph_graph(root, connect_shader=True)
+            rebuilt = build_material_morph_graph(root)
         self.assertTrue(rebuilt["success"], rebuilt)
         self.assertEqual(cmds.getAttr(f"{evaluator}.baseEdgeColorA"), base_before)
         self.assertEqual(cmds.getAttr(f"{shader}.EdgeColorA"), final_before)
@@ -888,7 +888,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
                 cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
-        graph = build_material_morph_graph(root, connect_shader=True)
+        graph = build_material_morph_graph(root)
         route = resolve_shader_color_route(shader)
 
         if not route.is_usable:
@@ -1050,7 +1050,7 @@ class TestMaterialMorphWeightDrivesShader(MayaTestBase):
             cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
         cmds.connectAttr(f"{root}.message", f"{morph_node}.mmd_model_root", force=True)
 
-        graph = build_material_morph_graph(root, connect_shader=True)
+        graph = build_material_morph_graph(root)
         route = resolve_shader_color_route(shader)
         effective_api = detect_effective_vp2_draw_api()
 

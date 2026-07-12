@@ -32,7 +32,7 @@ logger = get_logger("mmd_tools.io.pmx_importer")
 
 def _build_material_morph_graph_with_retry(root_group, pipeline, mesh_converter):
     """Retry once only when hardware uniform plugs have not materialized yet."""
-    first = build_material_morph_graph(root_group, connect_shader=True)
+    first = build_material_morph_graph(root_group)
     prefixes = ("dx11_material_plugs_incomplete:", "glsl_material_plugs_incomplete:")
     first_skipped = list(first.get("skipped") or [])
     if not any(str(item).startswith(prefixes) for item in first_skipped):
@@ -58,7 +58,7 @@ def _build_material_morph_graph_with_retry(root_group, pipeline, mesh_converter)
             "message": str(exc),
         })
         logger.debug("Failed delayed hardware-uniform sync", exc_info=True)
-    final = build_material_morph_graph(root_group, connect_shader=True)
+    final = build_material_morph_graph(root_group)
     raw_final_counts = {
         key: int(final.get(key) or 0)
         for key in ("created", "reused", "contributions")
@@ -140,7 +140,7 @@ def _schedule_deferred_material_morph_retry(root_group, pipeline, mesh_converter
                     "message": str(exc),
                 })
                 logger.debug("Failed deferred hardware-uniform sync", exc_info=True)
-            rebuilt = build_material_morph_graph(root_group, connect_shader=True)
+            rebuilt = build_material_morph_graph(root_group)
             retry["deferred"] = {
                 "skipped": list(rebuilt.get("skipped") or []),
                 "errors": deferred_errors,
