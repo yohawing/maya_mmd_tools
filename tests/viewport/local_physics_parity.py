@@ -85,6 +85,7 @@ def _run_case(case: dict[str, Any], args: argparse.Namespace, stage: Any) -> dic
     from tests.viewport.native_physics_parity import (
         apply_import_scale,
         compare_bullet_world_sanity,
+        compare_bullet_world_transform_delta,
         compare_mesh_vertex_samples,
         static_pmx_extent,
     )
@@ -116,6 +117,9 @@ def _run_case(case: dict[str, Any], args: argparse.Namespace, stage: Any) -> dic
     result["boneWorldParity"] = compare_bullet_world_sanity(
         baseline["samples"], native["samples"], frames, extent
     )
+    result["boneWorldTransformDelta"] = compare_bullet_world_transform_delta(
+        baseline["samples"], native["samples"], frames
+    )
     threshold = case.get("mesh_threshold")
     result["meshWorldParity"] = compare_mesh_vertex_samples(
         baseline["mesh_vertices"],
@@ -141,9 +145,18 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
     for case in report["cases"]:
         lines.extend([f"## {case['name']}", "", f"- status: `{case.get('status')}`", f"- frames: `{case.get('frames')}`"])
         bone = case.get("boneWorldParity")
+        transform_delta = case.get("boneWorldTransformDelta")
         mesh = case.get("meshWorldParity")
         if bone:
             lines.append(f"- bone world: passed=`{bone['passed']}`, samples=`{bone['comparedSamples']}`, failures=`{bone['failureCount']}`")
+        if transform_delta:
+            lines.append(
+                "- bone delta (report-only): "
+                f"translation max=`{transform_delta['maxTranslation']}`, "
+                f"rotation max deg=`{transform_delta['maxRotationDegrees']}`, "
+                f"rotation RMS deg=`{transform_delta['rmsRotationDegrees']}`, "
+                f"rotation p95 deg=`{transform_delta['p95RotationDegrees']}`"
+            )
         if mesh:
             lines.append(f"- mesh world: passed=`{mesh['passed']}`, vertices=`{mesh['comparedVertexSamples']}`, max=`{mesh['max']}`, RMS=`{mesh['rms']}`, threshold=`{mesh['threshold']}`")
         if case.get("reason") or case.get("error"):

@@ -655,6 +655,7 @@ def _sample_bone_transform(joint: str) -> dict[str, Any]:
             for row in range(3)
         ]
     except Exception:
+        matrix = [float("nan")] * 16
         world = [float("nan")] * 3
         scale = [float("nan")] * 3
     parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
@@ -666,13 +667,17 @@ def _sample_bone_transform(joint: str) -> dict[str, Any]:
         )
     except Exception:
         parent_world = [float("nan")] * 3
-    finite = all(math.isfinite(value) for value in (*local.values(), *world, *parent_world, *scale))
+    finite = all(
+        math.isfinite(value)
+        for value in (*local.values(), *world, *parent_world, *scale, *matrix)
+    )
     return {
         **local,
         "joint": joint,
         "worldTranslate": world,
         "parentWorldTranslate": parent_world,
         "worldMatrixScale": scale,
+        "worldMatrix": matrix,
         "finite": finite,
     }
 

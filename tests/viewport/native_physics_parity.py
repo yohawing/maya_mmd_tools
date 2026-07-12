@@ -11,6 +11,96 @@ def _distance(left: list[float], right: list[float]) -> float:
     return math.sqrt(sum((float(a) - float(b)) ** 2 for a, b in zip(left, right)))
 
 
+def _normalized_rotation_rows(matrix: list[float]) -> list[list[float]]:
+    """Extract normalized XYZ basis rows from a Maya world matrix."""
+    if len(matrix) != 16:
+        raise ValueError("world matrix must contain 16 values")
+    rows = [[float(matrix[row * 4 + column]) for column in range(3)] for row in range(3)]
+    result: list[list[float]] = []
+    for row in rows:
+        length = math.sqrt(sum(value * value for value in row))
+        if not math.isfinite(length) or length <= 1.0e-8:
+            raise ValueError("world matrix has a degenerate rotation basis")
+        result.append([value / length for value in row])
+    return result
+
+
+def _rotation_angle_degrees(left: list[float], right: list[float]) -> float:
+    """Return the shortest angular distance between two world matrices."""
+    lhs = _normalized_rotation_rows(left)
+    rhs = _normalized_rotation_rows(right)
+    trace = sum(sum(lhs[row][axis] * rhs[row][axis] for axis in range(3)) for row in range(3))
+    cosine = max(-1.0, min(1.0, (trace - 1.0) * 0.5))
+    return math.degrees(math.acos(cosine))
+
+
+def compare_bullet_world_transform_delta(
+    baseline: dict[str, dict[str, dict[str, Any]]],
+    native: dict[str, dict[str, dict[str, Any]]],
+    frames: list[int],
+) -> dict[str, Any]:
+    """Report exact world translation/rotation drift without imposing a gate."""
+    compared = 0
+    translations: list[float] = []
+    rotations: list[float] = []
+    translation_worst: dict[str, Any] | None = None
+    rotation_worst: dict[str, Any] | None = None
+    for bone_index in sorted(set(baseline) & set(native), key=lambda value: int(value)):
+        for frame in frames:
+            frame_key = str(frame)
+            bullet_sample = baseline[bone_index].get(frame_key)
+            native_sample = native[bone_index].get(frame_key)
+            if not bullet_sample or not native_sample:
+                continue
+            try:
+                translation = _distance(
+                    bullet_sample["worldTranslate"], native_sample["worldTranslate"]
+                )
+                rotation = _rotation_angle_degrees(
+                    bullet_sample["worldMatrix"], native_sample["worldMatrix"]
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(translation) or not math.isfinite(rotation):
+                continue
+            compared += 1
+            translations.append(translation)
+            rotations.append(rotation)
+            evidence = {
+                "boneIndex": int(bone_index),
+                "joint": bullet_sample.get("joint"),
+                "frame": int(frame),
+                "translation": translation,
+                "rotationDegrees": rotation,
+                "bulletWorldTranslate": bullet_sample.get("worldTranslate"),
+                "nativeWorldTranslate": native_sample.get("worldTranslate"),
+            }
+            if translation_worst is None or translation > translation_worst["translation"]:
+                translation_worst = evidence
+            if rotation_worst is None or rotation > rotation_worst["rotationDegrees"]:
+                rotation_worst = evidence
+    sorted_rotations = sorted(rotations)
+    p95_index = max(0, math.ceil(len(sorted_rotations) * 0.95) - 1)
+    return {
+        "comparedSamples": compared,
+        "maxTranslation": translation_worst["translation"] if translation_worst else None,
+        "maxRotationDegrees": rotation_worst["rotationDegrees"] if rotation_worst else None,
+        "rmsTranslation": (
+            math.sqrt(sum(value * value for value in translations) / len(translations))
+            if translations
+            else None
+        ),
+        "rmsRotationDegrees": (
+            math.sqrt(sum(value * value for value in rotations) / len(rotations))
+            if rotations
+            else None
+        ),
+        "p95RotationDegrees": sorted_rotations[p95_index] if sorted_rotations else None,
+        "translationWorst": translation_worst,
+        "rotationWorst": rotation_worst,
+    }
+
+
 def static_extent_from_positions(positions: list[Any]) -> float:
     """Return a finite, non-zero diagonal from static model-space vertices."""
     finite: list[tuple[float, float, float]] = []

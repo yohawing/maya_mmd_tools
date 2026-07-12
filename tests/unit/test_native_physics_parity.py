@@ -8,6 +8,7 @@ import json
 from tests.viewport.native_physics_parity import (
     apply_import_scale,
     compare_bullet_world_sanity,
+    compare_bullet_world_transform_delta,
     compare_mesh_vertex_samples,
     static_extent_from_positions,
 )
@@ -19,11 +20,38 @@ def _sample(world: list[float], parent: list[float], *, finite: bool = True) -> 
         "worldTranslate": world,
         "parentWorldTranslate": parent,
         "worldMatrixScale": [1.0, 1.0, 1.0],
+        "worldMatrix": [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            *world, 1.0,
+        ],
         "finite": finite,
     }
 
 
 class NativePhysicsParityTest(unittest.TestCase):
+    def test_world_transform_delta_reports_quaternion_safe_rotation(self):
+        baseline_sample = _sample([2.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        baseline_sample["worldMatrix"] = [
+            0.0, 1.0, 0.0, 0.0,
+            -1.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            2.0, 0.0, 0.0, 1.0,
+        ]
+        native_sample = _sample([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        result = compare_bullet_world_transform_delta(
+            {"7": {"3": baseline_sample}},
+            {"7": {"3": native_sample}},
+            [3],
+        )
+        self.assertEqual(result["comparedSamples"], 1)
+        self.assertAlmostEqual(result["maxTranslation"], 2.0)
+        self.assertAlmostEqual(result["maxRotationDegrees"], 90.0)
+        self.assertAlmostEqual(result["rmsTranslation"], 2.0)
+        self.assertAlmostEqual(result["rmsRotationDegrees"], 90.0)
+        self.assertAlmostEqual(result["p95RotationDegrees"], 90.0)
+
     def test_mesh_world_samples_report_max_and_rms(self):
         baseline = {0: [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)]}
         native = {0: [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]}
