@@ -33,7 +33,7 @@ Maya MMD Tools のリリース手順とバージョン方針はこのファイ�
 - CMake 3.20+
 - Rust toolchain
 - Maya 2024 / 2025 / 2026 / 2027 and matching DevKit
-- Python 3.7+ for Maya-side compatibility checks
+- Python 3.10+ for Maya-side compatibility checks (bundled with Maya 2024+)
 - `uvx` / `nox`
 
 ### macOS
