@@ -398,9 +398,9 @@ def _append_group_morph_contributions(
 def _collect_morph_nodes_by_index(morph_nodes: Iterable[str]) -> Dict[int, str]:
     nodes_by_index: Dict[int, str] = {}
     for morph_node in morph_nodes:
-        if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
-            continue
         try:
+            if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
+                continue
             morph_index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
         except Exception:
             continue

@@ -958,7 +958,9 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
 
         with patch("mmd_tools.converters.mesh_converter.cmds") as mock_cmds, patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
-        ) as mock_set_attribute:
+        ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ):
             mock_cmds.attributeQuery.return_value = True
 
             converter._setup_dx11_shader(
@@ -979,6 +981,8 @@ class TestMeshConverterTextureIssues(unittest.TestCase):
         ), patch(
             "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute, patch(
+            "mmd_tools.converters.mesh_converter.maya_attribute_utils.set_custom_attributes"
+        ), patch(
             "mmd_tools.converters.mesh_converter.maya_material_utils.mark_mmd_texture_file_node"
         ) as mock_mark:
             mock_cmds.attributeQuery.return_value = True

@@ -36,11 +36,11 @@ def parse_morph_offsets_json(
 
 def get_morph_order(morph_node: str) -> int:
     """Return the PMX morph index used to keep runtime evaluation deterministic."""
-    if cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
-        try:
+    try:
+        if cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
             return int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
-        except Exception:
-            pass
+    except Exception:
+        pass
     return 0
 
 

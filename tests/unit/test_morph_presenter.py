@@ -415,7 +415,7 @@ class TestMorphPresenter(MayaTestBase):
         # モーフデータを設定
         self.presenter.current_morph = "test_morph"
         self.presenter.morph_data = {
-            "test_morph": {"name_jp": "旧名前", "name_en": "old_name", "panel": 0, "type": 0, "group": "その他"}
+            "test_morph": {"name_jp": "旧名前", "name_en": "old_name", "panel": 0, "type": 0}
         }
 
         # UIの値を設定

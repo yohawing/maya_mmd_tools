@@ -428,9 +428,9 @@ def _get_morph_order(morph_node: str) -> int:
 
 
 def _get_explicit_morph_index(morph_node: str) -> Optional[int]:
-    if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
-        return None
     try:
+        if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
+            return None
         return int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
     except Exception:
         return None

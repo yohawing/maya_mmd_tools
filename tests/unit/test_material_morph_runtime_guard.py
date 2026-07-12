@@ -45,6 +45,15 @@ def _rgb_safe_get_attr(*, locked=False, attr_type="double3", value=(1.0, 0.0, 0.
 
 
 class TestMaterialMorphRuntimeGuard(unittest.TestCase):
+    def test_explicit_morph_index_returns_none_when_attribute_query_raises(self):
+        cmds = mock.Mock()
+        cmds.attributeQuery.side_effect = RuntimeError("node does not exist")
+
+        with mock.patch.object(material_morph_runtime, "cmds", cmds):
+            result = material_morph_runtime._get_explicit_morph_index("missing")
+
+        self.assertIsNone(result)
+
     def test_build_graph_starts_full_runtime_by_default(self):
         cmds = mock.Mock()
         cmds.objExists.return_value = True
