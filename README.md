@@ -76,7 +76,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 
 - **Maya**: 2024 or later
 - **OS**: Windows 11 / macOS 15.6
-- **Python**: 3.7 or later (bundled with Maya)
+- **Python**: 3.10 or later (bundled with Maya 2024+)
 
 ## Installation
 
