@@ -1,21 +1,10 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from ...core.physics_scene_query import MayaPhysicsSceneReader, JointSceneRef, PhysicsSceneRefs, RigidBodySceneRef
-from ...core.physics_scene_writer import MayaPhysicsSceneWriter, PhysicsSceneWriteError
-from ...core.physics_form_validation import (
-    PhysicsFormValidationError,
-    parse_joint_form,
-    parse_rigid_body_form,
-)
+from ...core.physics_scene_query import MayaPhysicsSceneReader, JointSceneRef, RigidBodySceneRef
 from ...core.constants import ATTR_MMD_SHOW_PHYSICS_COLLIDERS
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.logger import get_logger
-from ...core.visibility_state import (
-    connect_visibility_attr_to_node,
-    set_visibility_category,
-    sync_visibility_connections,
-)
 from ..qt_compat import QColor, QListWidgetItem, Qt
 from .list_presenter_helpers import (
     apply_list_filter,
@@ -58,36 +47,33 @@ class _PhysicsUiState:
 
 
 class PhysicsPresenter:
-    def __init__(self, view, app_state, maya_adapter=None, physics_reader=None, physics_writer=None):
+    def __init__(self, view, app_state, maya_adapter=None, physics_reader=None):
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
         self.physics_reader = physics_reader or MayaPhysicsSceneReader(self.maya_adapter)
-        self.physics_writer = physics_writer or MayaPhysicsSceneWriter(self.maya_adapter)
         self._rigid_bodies_by_transform = {}
         self._joints_by_transform = {}
         self._current_physics_ref = None
-        self._validated_form_values = None
-        self._validated_form_ref = None
         self._ui_state_by_root = {}
         self._active_model_root = None
         self._bone_names_by_index = {}
+        self._scene_change_token = 0
+        self._loaded_cache_key = None
         self._default_ui_state = self._capture_ui_state()
         self.connect_signals()
-
-    @property
-    def validated_form_values(self):
-        """Typed dirty values reserved for the later explicit writer slice."""
-        return self._validated_form_values
 
     def connect_signals(self):
         # ApplicationStateのシグナル
         self.app_state.current_model_changed.connect(self.on_current_model_changed)
+        model_list_updated = getattr(self.app_state, "model_list_updated", None)
+        if model_list_updated is not None and hasattr(model_list_updated, "connect"):
+            model_list_updated.connect(self.invalidate_physics_cache)
         self.view.rigid_body_list.itemSelectionChanged.connect(self.on_rigid_body_selection_changed)
         self.view.joint_list.itemSelectionChanged.connect(self.on_joint_selection_changed)
         refresh_btn = getattr(self.view, "refresh_btn", None)
         if refresh_btn is not None:
-            refresh_btn.clicked.connect(self.refresh_physics)
+            refresh_btn.clicked.connect(lambda *_args: self.refresh_physics(force=True))
         collider_visible_check = getattr(self.view, "collider_visible_check", None)
         if collider_visible_check is not None:
             collider_visible_check.toggled.connect(self.on_collider_visibility_toggled)
@@ -104,32 +90,150 @@ class PhysicsPresenter:
         if list_tabs is not None and hasattr(list_tabs, "currentChanged"):
             list_tabs.currentChanged.connect(self.on_list_tab_changed)
 
-        form_changed = getattr(self.view, "physics_form_changed", None)
-        if form_changed is not None and hasattr(form_changed, "connect"):
-            form_changed.connect(self.on_physics_form_changed)
-        reset_btn = getattr(self.view, "reset_btn", None)
-        if reset_btn is not None and hasattr(reset_btn, "clicked"):
-            reset_btn.clicked.connect(self.reset_physics_form)
-        apply_btn = getattr(self.view, "apply_btn", None)
-        if apply_btn is not None and hasattr(apply_btn, "clicked"):
-            apply_btn.clicked.connect(self.apply_physics_form)
-
     def on_current_model_changed(self, model_root):
         """現在のモデルが変更されたときの処理"""
         old_root = self._active_model_root
         if old_root:
             self._ui_state_by_root[old_root] = self._capture_ui_state()
         logger.debug("PhysicsPresenter: Current model changed to %s", model_root)
+        self.invalidate_physics_cache()
         self.load_physics()
         self._restore_ui_state(model_root or None)
 
-    def refresh_physics(self):
+    def refresh_physics(self, force=False):
         """Reload the active root while preserving its in-memory UI state."""
         root = self.app_state.current_model_root
+        cache_key = self._physics_cache_key(root)
+        if not force and cache_key == self._loaded_cache_key:
+            return False
         if root:
             self._ui_state_by_root[root] = self._capture_ui_state()
         self.load_physics()
         self._restore_ui_state(root)
+        return True
+
+    def invalidate_physics_cache(self, *_args):
+        """Mark collected scene references stale after a scene/model-list change."""
+        self._scene_change_token += 1
+
+    def _model_root_token(self, root):
+        """Return a stable root identity, preferring Maya's node UUID."""
+        if not root:
+            return None
+        try:
+            uuids = self.maya_adapter.ls(root, uuid=True) or []
+            if uuids:
+                return (root, str(uuids[0]))
+        except Exception:
+            pass
+        return (root, root)
+
+    def _physics_cache_key(self, root):
+        return (
+            self._model_root_token(root),
+            self._scene_change_token,
+            self._physics_scene_revision(root),
+        )
+
+    def _physics_scene_revision(self, root):
+        """Read a lightweight fingerprint of collected physics nodes and values."""
+        if not root:
+            return ()
+        try:
+            descendants = tuple(
+                sorted(
+                    self.maya_adapter.list_relatives(
+                        root,
+                        allDescendents=True,
+                        type="transform",
+                        fullPath=True,
+                    )
+                    or []
+                )
+            )
+        except Exception:
+            descendants = ()
+        plugs = [f"{root}.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}"]
+        for rigid in self._rigid_bodies_by_transform.values():
+            plugs.extend(
+                f"{rigid.transform}.{attr}"
+                for attr in (
+                    "mmd_rigid_body_index",
+                    "mmd_rigid_body_name",
+                    "mmd_rigid_body_name_english",
+                    "mmd_physics_mode",
+                    "mmd_related_bone_index",
+                    "mmd_collision_group",
+                    "mmd_collision_mask",
+                )
+            )
+            plugs.extend(
+                f"{rigid.bullet_shape}.{attr}"
+                for attr in (
+                    "colliderShapeType",
+                    "bodyType",
+                    "mass",
+                    "linearDamping",
+                    "angularDamping",
+                    "restitution",
+                    "friction",
+                )
+            )
+            if rigid.locator_shape:
+                plugs.append(f"{rigid.locator_shape}.drawEnabled")
+        for joint in self._joints_by_transform.values():
+            plugs.extend(
+                f"{joint.transform}.{attr}"
+                for attr in (
+                    "mmd_joint_index",
+                    "mmd_joint_name",
+                    "mmd_joint_name_english",
+                    "mmd_joint_type",
+                    "mmd_joint_is_pmx",
+                )
+            )
+            for prefix in (
+                "linearConstraint",
+                "angularConstraint",
+                "linearConstraintMin",
+                "linearConstraintMax",
+                "angularConstraintMin",
+                "angularConstraintMax",
+                "linearSpringStiffness",
+                "angularSpringStiffness",
+                "linearSpringEnabled",
+                "angularSpringEnabled",
+            ):
+                plugs.extend(f"{joint.constraint_shape}.{prefix}{axis}" for axis in "XYZ")
+            plugs.append(f"{joint.constraint_shape}.constraintType")
+            for body_attr in ("rigidBodyA", "rigidBodyB"):
+                path = f"{joint.constraint_shape}.{body_attr}"
+                try:
+                    connections = tuple(
+                        self.maya_adapter.list_connections(
+                            path,
+                            source=True,
+                            destination=False,
+                            plugs=True,
+                        )
+                        or []
+                    )
+                except Exception:
+                    connections = ()
+                plugs.append((path, connections))
+        values = []
+        for plug in plugs:
+            if isinstance(plug, tuple):
+                values.append(plug)
+                continue
+            try:
+                value = self.maya_adapter.get_attr(plug)
+            except Exception:
+                value = None
+            if isinstance(value, list):
+                value = tuple(value)
+            values.append((plug, value))
+        return (descendants, tuple(values))
 
     def load_physics(self):
         self.view.rigid_body_list.clear()
@@ -141,6 +245,7 @@ class PhysicsPresenter:
         current_model_root = self.app_state.current_model_root
         self._active_model_root = current_model_root or None
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
+            self._loaded_cache_key = self._physics_cache_key(current_model_root)
             return
 
         # Loading the always-visible tab must be observational only.  Missing
@@ -161,6 +266,7 @@ class PhysicsPresenter:
         self.filter_rigid_bodies(self._search_text("rigid_body_search_edit"))
         self.filter_joints(self._search_text("joint_search_edit"))
         self._sync_collider_visibility_control(current_model_root)
+        self._loaded_cache_key = self._physics_cache_key(current_model_root)
         # Lists are populated; details stay disabled until an explicit selection.
 
     def filter_rigid_bodies(self, text):
@@ -245,117 +351,25 @@ class PhysicsPresenter:
         else:
             self._reset_details()
 
-    def on_physics_form_changed(self, *_args):
-        """Validate dirty widgets and cache typed values without scene writes."""
-        current = self._current_physics_ref
-        if current is None:
-            return
-        getter = getattr(self.view, "get_physics_form_values", None)
-        if not callable(getter):
-            return
-        kind = "rigid" if isinstance(current, RigidBodySceneRef) else "joint"
-        try:
-            raw_values = getter(kind)
-            if kind == "rigid":
-                raw_values["related_bone"] = current.related_bone_index
-                raw_values["collision_mask"] = current.collision_mask
-                raw_values.pop("node", None)
-                parsed = parse_rigid_body_form(raw_values)
-            else:
-                raw_values["joint_type"] = current.joint_type
-                raw_values["rigid_body_a"] = current.rigid_body_a_index
-                raw_values["rigid_body_b"] = current.rigid_body_b_index
-                raw_values.pop("node", None)
-                for key in (
-                    "linear_constraint_states",
-                    "angular_constraint_states",
-                    "translation_limit_min",
-                    "translation_limit_max",
-                    "rotation_limit_min_degrees",
-                    "rotation_limit_max_degrees",
-                    "spring_translation",
-                    "spring_rotation",
-                    "spring_translation_enabled",
-                    "spring_rotation_enabled",
-                ):
-                    displayed = _format_vector(getattr(current, key))
-                    if raw_values.get(key) == displayed:
-                        raw_values[key] = getattr(current, key)
-                parsed = parse_joint_form(raw_values)
-        except PhysicsFormValidationError as exc:
-            self._validated_form_values = None
-            self._validated_form_ref = None
-            self._set_validation_error(exc)
-            valid = False
-        else:
-            self._validated_form_values = parsed
-            self._validated_form_ref = current
-            self._clear_validation_error()
-            valid = True
-        setter = getattr(self.view, "set_physics_dirty", None)
-        if callable(setter):
-            setter(True, valid=valid)
-
-    def reset_physics_form(self):
-        """Restore widgets from the selected cached scene reference."""
-        current = self._current_physics_ref
-        if isinstance(current, RigidBodySceneRef):
-            self._populate_rigid_body_form(current)
-        elif isinstance(current, JointSceneRef):
-            self._populate_joint_form(current)
-
-    def apply_physics_form(self):
-        """Atomically write the validated dirty form, then re-read the scene."""
-        current = self._current_physics_ref
-        values = self._validated_form_values
-        if current is None or values is None or self._validated_form_ref is not current:
-            self._set_write_error(
-                PhysicsSceneWriteError("node", "physics_write_stale_form")
-            )
-            return
-        try:
-            if isinstance(current, RigidBodySceneRef):
-                self.physics_writer.apply_rigid_body(current, values)
-            elif isinstance(current, JointSceneRef):
-                self.physics_writer.apply_joint(current, values)
-            else:
-                raise PhysicsSceneWriteError("node", "physics_write_stale_form")
-        except PhysicsSceneWriteError as exc:
-            self._set_write_error(exc)
-            return
-
-        self._validated_form_values = None
-        self._validated_form_ref = None
-        self._clear_validation_error()
-        self.refresh_physics()
-
     def on_collider_visibility_toggled(self, visible):
-        """Toggle display-only collider locator shapes."""
+        """Toggle existing display-only collider locator shapes."""
         model_root = self.app_state.current_model_root
-        if visible and model_root:
-            refs = PhysicsSceneRefs(
-                rigid_bodies=tuple(self._rigid_bodies_by_transform.values()),
-                joints=tuple(self._joints_by_transform.values()),
-            )
-            repaired = self._ensure_collider_locators(refs, model_root)
-            self._rigid_bodies_by_transform = {
-                rigid.transform: rigid for rigid in repaired.rigid_bodies
-            }
         if model_root:
             try:
-                set_visibility_category(self.maya_adapter, model_root, "colliders", bool(visible))
+                if self.maya_adapter.attribute_exists(
+                    ATTR_MMD_SHOW_PHYSICS_COLLIDERS,
+                    model_root,
+                ):
+                    self.maya_adapter.set_attr(
+                        f"{model_root}.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}",
+                        bool(visible),
+                    )
             except Exception as exc:
                 logger.debug("Could not update collider root visibility attr: %s", exc)
         self._apply_collider_visibility(bool(visible))
+        self._loaded_cache_key = self._physics_cache_key(model_root)
 
     def _apply_collider_visibility(self, visible: bool):
-        model_root = self.app_state.current_model_root
-        if model_root:
-            try:
-                sync_visibility_connections(self.maya_adapter, model_root, "colliders")
-                return
-            except Exception as exc:
-                logger.debug("Could not sync collider drawEnabled connections: %s", exc)
         for rigid_body in self._rigid_bodies_by_transform.values():
             locator = rigid_body.locator_shape
             if not locator or not self.maya_adapter.object_exists(locator):
@@ -365,93 +379,15 @@ class PhysicsPresenter:
             except Exception as exc:
                 logger.warning("Could not set collider locator visibility for %s: %s", locator, exc)
 
-    def _ensure_collider_locators(self, refs: PhysicsSceneRefs, model_root: str) -> PhysicsSceneRefs:
-        repaired = []
-        changed = False
-        for rigid_body in refs.rigid_bodies:
-            if rigid_body.locator_shape:
-                repaired.append(rigid_body)
+    def _colliders_visible(self, model_root: Optional[str] = None) -> bool:
+        for rigid_body in self._rigid_bodies_by_transform.values():
+            locator = rigid_body.locator_shape
+            if not locator or not self.maya_adapter.object_exists(locator):
                 continue
-            # Normal Bullet path is structural bulletRigidBodyShape existence.
-            # Only repair locators when the Bullet shape is structurally absent.
-            bullet_shape = rigid_body.bullet_shape
-            if bullet_shape and self.maya_adapter.object_exists(bullet_shape):
-                repaired.append(rigid_body)
-                continue
-            locator = self._create_collider_locator(rigid_body, model_root)
-            if locator:
-                repaired.append(replace(rigid_body, locator_shape=locator))
-                changed = True
-            else:
-                repaired.append(rigid_body)
-        if not changed:
-            return refs
-        return PhysicsSceneRefs(rigid_bodies=tuple(repaired), joints=refs.joints)
-
-    def _create_collider_locator(self, rigid_body: RigidBodySceneRef, model_root: str) -> Optional[str]:
-        if not hasattr(self.maya_adapter, "create_node"):
-            return None
-        try:
-            if hasattr(self.maya_adapter, "all_node_types"):
-                node_types = self.maya_adapter.all_node_types() or []
-                if "mmdRigidBodyLocator" not in node_types:
-                    return None
-            created = self.maya_adapter.create_node(
-                "mmdRigidBodyLocator",
-                name=f"{rigid_body.transform.rsplit('|', 1)[-1]}_colliderLocatorShape",
-                parent=rigid_body.transform,
-            )
-            locator = self._resolve_collider_locator(rigid_body.transform, created)
-            if not locator:
-                return None
-            self._seed_collider_locator_attrs(locator, rigid_body.bullet_shape)
-            connect_visibility_attr_to_node(
-                self.maya_adapter,
-                model_root,
-                "colliders",
-                locator,
-                target_attr="drawEnabled",
-            )
-            return locator
-        except Exception as exc:
-            logger.debug("Could not create collider locator for %s: %s", rigid_body.transform, exc)
-            return None
-
-    def _resolve_collider_locator(self, transform: str, created: Optional[str]) -> Optional[str]:
-        try:
-            locators = self.maya_adapter.list_relatives(
-                transform,
-                shapes=True,
-                type="mmdRigidBodyLocator",
-                fullPath=True,
-            ) or []
-        except Exception:
-            locators = []
-        if not locators:
-            return created
-        if created:
-            created_short = created.rsplit("|", 1)[-1]
-            for locator in locators:
-                if locator == created or locator.rsplit("|", 1)[-1] == created_short:
-                    return locator
-        return locators[0]
-
-    def _seed_collider_locator_attrs(self, locator: str, bullet_shape: str) -> None:
-        for source_attr, target_attr in (
-            ("colliderShapeType", "colliderShapeType"),
-            ("radius", "radius"),
-            ("length", "length"),
-            ("colliderShapeSizeX", "boxSizeX"),
-            ("colliderShapeSizeY", "boxSizeY"),
-            ("colliderShapeSizeZ", "boxSizeZ"),
-        ):
             try:
-                value = self.maya_adapter.get_attr(f"{bullet_shape}.{source_attr}")
-                self.maya_adapter.set_attr(f"{locator}.{target_attr}", value)
+                return bool(self.maya_adapter.get_attr(f"{locator}.drawEnabled"))
             except Exception:
                 continue
-
-    def _colliders_visible(self, model_root: Optional[str] = None) -> bool:
         if model_root:
             try:
                 if self.maya_adapter.attribute_exists(
@@ -557,8 +493,6 @@ class PhysicsPresenter:
     def _reset_details(self):
         """Clear detail labels and disable the details panel."""
         self._current_physics_ref = None
-        self._validated_form_values = None
-        self._validated_form_ref = None
         self._set_details("None", "", "", "")
         set_form = getattr(self.view, "set_physics_form", None)
         if callable(set_form):
@@ -646,34 +580,9 @@ class PhysicsPresenter:
         return f"{name or 'Unknown'} ({index})"
 
     def _set_cached_form(self, kind, values):
-        self._validated_form_values = None
-        self._validated_form_ref = None
         set_form = getattr(self.view, "set_physics_form", None)
         if callable(set_form):
             set_form(kind, values)
-
-    def _set_validation_error(self, error):
-        setter = getattr(self.view, "set_physics_validation_error", None)
-        if callable(setter):
-            setter(error.field_key, error.message_key, error.params)
-
-    def _clear_validation_error(self):
-        setter = getattr(self.view, "set_physics_validation_error", None)
-        if callable(setter):
-            setter()
-
-    def _set_write_error(self, error):
-        self._set_validation_error(error)
-        retryable = error.message_key == "physics_write_failed"
-        requires_revalidation = not retryable
-        if requires_revalidation:
-            self._validated_form_values = None
-            self._validated_form_ref = None
-        setter = getattr(self.view, "set_physics_dirty", None)
-        if callable(setter):
-            # Only the general write failure is explicitly retryable. Structural,
-            # environment, stale-identity, and rollback failures require a reset.
-            setter(True, valid=retryable)
 
     def _capture_ui_state(self):
         list_tabs = getattr(self.view, "list_tabs", None)

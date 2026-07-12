@@ -726,8 +726,9 @@ def run_capture(log_path, model_path, out_png, diag_json, width=960, height=720,
             diag["rigid_form_name"] = physics_tab.rigid_name_edit.text()
             diag["rigid_form_mass"] = physics_tab.rigid_mass_edit.text()
             diag["rigid_shape_readonly"] = not physics_tab.rigid_shape_combo.isEnabled()
-            diag["apply_enabled"] = bool(physics_tab.apply_btn.isEnabled())
-            diag["reset_enabled"] = bool(physics_tab.reset_btn.isEnabled())
+            diag["writer_controls_present"] = any(
+                hasattr(physics_tab, name) for name in ("apply_btn", "reset_btn")
+            )
             diag["list_tab_texts"] = [
                 physics_tab.list_tabs.tabText(0),
                 physics_tab.list_tabs.tabText(1),

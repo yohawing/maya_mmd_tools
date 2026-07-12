@@ -137,7 +137,7 @@ class TestMainWindow(GuiTestBase):
             self.assertIsNotNone(dev_window.physics_presenter)
 
             tab = dev_window.physics_tab
-            # Slice A shell: splitter / list tabs / search / scroll / buttons
+            # Inspection shell: splitter / list tabs / search / scroll
             self.assertIsNotNone(tab.splitter)
             self.assertIsNotNone(tab.list_tabs)
             self.assertEqual(tab.list_tabs.count(), 2)
@@ -145,8 +145,8 @@ class TestMainWindow(GuiTestBase):
             self.assertIsNotNone(tab.joint_search_edit)
             self.assertIsNotNone(tab.details_scroll_area)
             self.assertTrue(tab.details_scroll_area.widgetResizable())
-            self.assertIsNotNone(tab.apply_btn)
-            self.assertIsNotNone(tab.reset_btn)
+            self.assertFalse(hasattr(tab, "apply_btn"))
+            self.assertFalse(hasattr(tab, "reset_btn"))
 
             # Legacy presenter-facing attributes
             for attr in (
@@ -162,10 +162,8 @@ class TestMainWindow(GuiTestBase):
             ):
                 self.assertTrue(hasattr(tab, attr), f"missing attribute: {attr}")
 
-            # Defaults: collider off, details/buttons disabled
+            # Defaults: collider off and details disabled
             self.assertFalse(tab.collider_visible_check.isChecked())
-            self.assertFalse(tab.apply_btn.isEnabled())
-            self.assertFalse(tab.reset_btn.isEnabled())
             self.assertFalse(tab.physics_details_content.isEnabled())
         finally:
             _s.set("ui.general.development_mode", False)
