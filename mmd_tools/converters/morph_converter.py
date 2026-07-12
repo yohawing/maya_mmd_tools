@@ -574,7 +574,7 @@ class MorphConverter:
         if existing_aliases is not None:
             existing_aliases.add(alias)
 
-        if template_ctx is not None and "morph_name_mapping" in template_ctx:
+        if raw_name and template_ctx is not None and "morph_name_mapping" in template_ctx:
             template_ctx["morph_name_mapping"][str(target_index)] = {
                 "name": str(raw_name),
                 "index": int(morph_index),

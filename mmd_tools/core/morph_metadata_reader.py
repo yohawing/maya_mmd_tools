@@ -25,6 +25,20 @@ PANEL_GROUP_LABELS: Dict[int, str] = {
 # Stable MorphTab group order for filter UI.
 MORPH_TAB_GROUP_ORDER: tuple[str, ...] = ("眉", "目", "口", "その他")
 
+# PMX's on-disk morph type and MorphTab's combo-box index intentionally differ.
+# Keep the conversion table beside the rest of the morph metadata schema.
+PMX_TYPE_TO_UI_INDEX: Dict[int, int] = {
+    0: 12, 1: 0, 2: 10, 3: 1, 4: 2, 5: 3,
+    6: 4, 7: 5, 8: 11, 9: 13, 10: 14,
+}
+UI_INDEX_TO_PMX_TYPE: Dict[int, int] = {
+    ui_index: pmx_type for pmx_type, ui_index in PMX_TYPE_TO_UI_INDEX.items()
+}
+PMX_MORPH_TYPE_NAMES: Dict[int, str] = {
+    0: "group", 1: "vertex", 2: "bone", 3: "uv", 4: "uv", 5: "uv",
+    6: "uv", 7: "uv", 8: "material", 9: "flip", 10: "impulse",
+}
+
 
 def parse_blendshape_morph_entries(parsed: object) -> Dict[int, Dict[str, object]]:
     """Normalize new object and legacy string blendShape metadata schemas."""
@@ -105,19 +119,9 @@ def morph_info_from_presenter_entry(name: str, data: Mapping[str, object]) -> Mo
     if morph_type_raw:
         morph_type = _coerce_str(morph_type_raw, default="vertex")
     elif data.get("_pmx_type_raw"):
-        morph_type = {
-            0: "group",
-            1: "vertex",
-            2: "bone",
-            3: "uv",
-            4: "uv",
-            5: "uv",
-            6: "uv",
-            7: "uv",
-            8: "material",
-            9: "flip",
-            10: "impulse",
-        }.get(_coerce_int(data.get("type"), default=1), "vertex")
+        morph_type = PMX_MORPH_TYPE_NAMES.get(
+            _coerce_int(data.get("type"), default=1), "vertex"
+        )
     else:
         # MorphPresenter stores PMX morph type as integer ``type``.
         type_index = _coerce_int(data.get("type"), default=0)
@@ -196,6 +200,8 @@ def read_morph_list_from_blendshape_json(
         except (TypeError, ValueError):
             continue
         raw_name = raw_entry.get("name", "") if isinstance(raw_entry, dict) else raw_entry
+        if not raw_name:
+            continue
         morphs.append(
             MorphInfo(
                 name=str(raw_name),

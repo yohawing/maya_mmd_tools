@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
 
@@ -619,6 +619,48 @@ class TestMorphPresenterHeadless(unittest.TestCase):
             "destination": "materialShader.DiffuseColorRGB",
         }]
         self.assertTrue(presenter._morph_controls_supported(data))
+
+    def test_cached_material_capability_does_not_repeat_graph_traversal(self):
+        presenter, _, _, adapter = _make_presenter()
+        adapter.existing.add("material_node")
+        adapter.node_types.update({
+            "materialEval": "mmdMaterialMorphEval",
+            "materialShader": "GLSLShader",
+        })
+        adapter.attr_exists.add(("materialEval", "mmd_complete_route_ready"))
+        adapter.attr_values.update({
+            "materialEval.mmd_complete_route_ready": True,
+            "materialEval.mmd_target_shader": "materialShader",
+        })
+        adapter.connections.update({
+            "material_node.weight": [{
+                "source": "material_node.weight",
+                "destination": "materialEval.contribution[0].weight",
+            }],
+            "materialEval.outputDiffuse": [{
+                "source": "materialEval.outputDiffuse",
+                "destination": "materialShader.DiffuseColorRGB",
+            }],
+        })
+        data = {
+            "type": 8,
+            "_pmx_type_raw": True,
+            "index": 2,
+            "morph_node": "material_node",
+        }
+        presenter.morph_data = {"material": data}
+        adapter.list_connections = MagicMock(wraps=adapter.list_connections)
+
+        presenter._cache_morph_capabilities()
+        calls_after_load = adapter.list_connections.call_count
+        self.assertTrue(presenter._morph_controls_supported(data))
+        self.assertTrue(presenter._morph_controls_supported(data))
+
+        self.assertGreater(calls_after_load, 0)
+        self.assertEqual(adapter.list_connections.call_count, calls_after_load)
+
+        # The remaining assertions exercise the uncached evaluator itself.
+        presenter._morph_capability_cache.clear()
 
         adapter.node_types["unrelated"] = "condition"
         adapter.connections["material_node.weight"] = [{
@@ -1549,7 +1591,7 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         presenter, view, app_state, _ = _make_presenter(model=TEST_MODEL, adapter=adapter)
         presenter.current_morph = "smile"
         presenter.morph_data = {
-            "smile": {"name_jp": "旧", "name_en": "old", "panel": 0, "type": 0, "group": "その他"},
+            "smile": {"name_jp": "旧", "name_en": "old", "panel": 0, "type": 0},
         }
         view.morph_name_jp_edit.setText("新")
         view.morph_name_en_edit.setText("new")
@@ -1567,6 +1609,23 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(presenter.group_morphs["目"], ["smile"])
         self.assertIn(("object_exists", TEST_MODEL), adapter.calls)
         self.assertEqual(app_state.statuses, [("Applied morph changes: smile", None)])
+
+    def test_apply_changes_rebuilds_capability_cache_after_type_change(self):
+        presenter, view, _, _ = _make_presenter()
+        presenter.current_morph = "smile"
+        data = {"name_jp": "smile", "panel": 3, "type": 0, "index": 1}
+        presenter.morph_data = {"smile": data}
+        presenter._cache_morph_capabilities()
+        self.assertTrue(presenter._morph_controls_supported(data))
+
+        view.morph_name_jp_edit.setText("smile")
+        view.morph_name_en_edit.setText("")
+        view.panel_combo.setCurrentIndex(3)
+        view.morph_type_combo.setCurrentIndex(1)  # UV is unsupported.
+
+        presenter.apply_changes()
+
+        self.assertFalse(presenter._morph_controls_supported(data))
 
 
 if __name__ == "__main__":

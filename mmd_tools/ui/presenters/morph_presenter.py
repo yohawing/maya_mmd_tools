@@ -7,11 +7,14 @@ from ...core.logger import get_logger
 from ...core.maya_attribute_utils import set_custom_attributes, set_attribute
 from ...core.morph_metadata_reader import (
     MORPH_TAB_GROUP_ORDER,
+    PMX_TYPE_TO_UI_INDEX,
+    UI_INDEX_TO_PMX_TYPE,
     group_morph_names_by_panel,
     morph_info_from_presenter_entry,
     parse_blendshape_morph_entries,
     panel_display_group,
 )
+from ...converters.morph_runtime_common import parse_morph_offsets_json
 from ..qt_compat import Qt, QTimer, QListWidgetItem
 from .list_presenter_helpers import apply_list_filter, reload_for_current_model_change, tr_message, tr_message_format
 
@@ -37,8 +40,9 @@ _MATERIAL_WEIGHT_HELPER_OUTPUTS = {
 _MATERIAL_WEIGHT_TRAVERSAL_MAX_DEPTH = 6
 # Fallback panel for morphs without explicit PMX panel metadata (not System/0).
 _DEFAULT_USER_PANEL = 4
-_PMX_TYPE_TO_UI_INDEX = {0: 12, 1: 0, 2: 10, 3: 1, 4: 2, 5: 3, 6: 4, 7: 5, 8: 11, 9: 13, 10: 14}
-_UI_INDEX_TO_PMX_TYPE = {ui_index: pmx_type for pmx_type, ui_index in _PMX_TYPE_TO_UI_INDEX.items()}
+# Backward-compatible private aliases; the canonical table lives in the reader.
+_PMX_TYPE_TO_UI_INDEX = PMX_TYPE_TO_UI_INDEX
+_UI_INDEX_TO_PMX_TYPE = UI_INDEX_TO_PMX_TYPE
 _MORPH_TYPE_LETTERS = {0: "G", 1: "V", 2: "B", 3: "U", 4: "U", 5: "U", 6: "U", 7: "U", 8: "M", 9: "F", 10: "I"}
 # Runtime capability is intentionally centralized here. Material can be flipped
 # after the complete material-morph runtime lands without changing UI routing.
@@ -65,6 +69,8 @@ class MorphPresenter:
         self.current_morph = None
         self.morph_data = {}  # MMDモーフデータのキャッシュ
         self._blendshape_metadata_bindings = {}
+        self._morph_capability_cache = {}
+        self._morphs_by_index = {}
         self.group_morphs = {}  # グループごとのモーフリスト
         self.is_updating = False
 
@@ -118,6 +124,8 @@ class MorphPresenter:
         self.view.morph_list.clear()
         self.morph_data.clear()
         self._blendshape_metadata_bindings.clear()
+        self._morph_capability_cache.clear()
+        self._morphs_by_index.clear()
         self.group_morphs.clear()
         self.current_morph = None
         self.view.set_morph_details_enabled(False)
@@ -136,9 +144,11 @@ class MorphPresenter:
         # bone/material/group morph の network node を検索
         self._load_network_morphs(current_model_root, allow_metadata_entries=allow_metadata_entries)
 
-        # Legacy custom group strings are no longer part of Morph tab state.
+        # Strip the legacy custom annotation once at the input boundary.
         for data in self.morph_data.values():
             data.pop("group", None)
+
+        self._cache_morph_capabilities()
 
         # グループごとにモーフを整理
         self._organize_morphs_by_group()
@@ -194,7 +204,7 @@ class MorphPresenter:
                     entry = raw_names.get(weight_index)
                     raw_name = entry["name"] if entry is not None else target_name
                     global_index = entry.get("index") if entry is not None else None
-                    if raw_name is None:
+                    if not raw_name:
                         continue
                     morph_key = self._resolve_blendshape_metadata_key(
                         raw_name, global_index=global_index, weight_index=weight_index
@@ -215,8 +225,6 @@ class MorphPresenter:
                             "panel": panel,
                             "type": 0,  # 頂点モーフ
                             "index": weight_index if weight_index is not None else -1,
-                            # Custom group annotation defaults to panel label; filtering uses panel.
-                            "group": panel_display_group(panel) or "その他",
                         }
                     else:
                         # Multi-mesh / multi-alias merge: keep first panel/type/index.
@@ -322,8 +330,6 @@ class MorphPresenter:
                     "panel": panel,
                     "type": _NETWORK_MORPH_TYPE_INDEX.get(morph_type, 0),
                     "index": morph_index,
-                    # Custom group annotation defaults to panel label; filtering uses panel.
-                    "group": panel_display_group(panel) or "その他",
                 }
 
             data = self.morph_data[morph_key]
@@ -344,24 +350,49 @@ class MorphPresenter:
 
     def _read_group_morph_offsets(self, morph_node):
         """Read group references fail-closed for capability decisions."""
-        raw = self._get_attr_safe(morph_node, "mmd_group_morph_offsets_json", "")
-        if not raw:
-            return []
-        try:
-            offsets = json.loads(raw)
-        except (TypeError, ValueError):
-            return []
-        return offsets if isinstance(offsets, list) else []
+        offsets = parse_morph_offsets_json(
+            morph_node,
+            "mmd_group_morph_offsets_json",
+            get_attr=lambda plug: self.maya_adapter.get_attr(plug),
+        )
+        return offsets or []
 
     def _raw_pmx_type(self, data):
         try:
             stored_type = int(data.get("type", 0))
         except (TypeError, ValueError):
             return None
-        return stored_type if data.get("_pmx_type_raw") else _UI_INDEX_TO_PMX_TYPE.get(stored_type)
+        return stored_type if data.get("_pmx_type_raw") else UI_INDEX_TO_PMX_TYPE.get(stored_type)
+
+    def _cache_morph_capabilities(self):
+        """Evaluate graph-dependent capabilities once for the loaded model."""
+        self._morph_capability_cache.clear()
+        self._morphs_by_index = {}
+        for data in self.morph_data.values():
+            try:
+                index = int(data.get("index", -1))
+            except (TypeError, ValueError):
+                continue
+            if index >= 0:
+                self._morphs_by_index[index] = data
+
+        # Material graph traversal must finish before group references consume it.
+        ordered = sorted(
+            self.morph_data.values(),
+            key=lambda data: self._raw_pmx_type(data) == 0,
+        )
+        for data in ordered:
+            self._morph_capability_cache[id(data)] = self._evaluate_morph_controls_supported(data)
 
     def _morph_controls_supported(self, data):
         """Return whether changing this morph's weight drives supported runtime output."""
+        cached = self._morph_capability_cache.get(id(data))
+        if cached is not None:
+            return cached
+        return self._evaluate_morph_controls_supported(data)
+
+    def _evaluate_morph_controls_supported(self, data):
+        """Compute capability; callers should normally use the cached wrapper."""
         raw_type = self._raw_pmx_type(data)
         if raw_type == 8:
             morph_node = data.get("morph_node")
@@ -402,14 +433,14 @@ class MorphPresenter:
         if raw_type != 0:
             return _DIRECT_RUNTIME_MORPH_CAPABILITIES.get(raw_type, False)
 
-        by_index = {}
-        for candidate in self.morph_data.values():
-            try:
-                index = int(candidate.get("index", -1))
-            except (TypeError, ValueError):
-                continue
-            if index >= 0:
-                by_index[index] = candidate
+        by_index = self._morphs_by_index
+        if not by_index:
+            by_index = {
+                int(candidate.get("index", -1)): candidate
+                for candidate in self.morph_data.values()
+                if str(candidate.get("index", -1)).lstrip("-").isdigit()
+                and int(candidate.get("index", -1)) >= 0
+            }
         for offset in data.get("group_morph_offsets", []):
             if not isinstance(offset, dict):
                 continue
@@ -684,7 +715,7 @@ class MorphPresenter:
                 index = -1
             raw_type = data.get("type", 0)
             if not data.get("_pmx_type_raw"):
-                raw_type = _UI_INDEX_TO_PMX_TYPE.get(int(raw_type), 1)
+                raw_type = UI_INDEX_TO_PMX_TYPE.get(int(raw_type), 1)
             type_letter = _MORPH_TYPE_LETTERS.get(int(raw_type), "?")
             name = data.get("name_jp") or morph_key
             index_text = f"{index:03d}" if index >= 0 else "---"
@@ -721,7 +752,7 @@ class MorphPresenter:
         self.view.panel_combo.setCurrentIndex(data.get("panel", 0))
         stored_type = data.get("type", 0)
         ui_type = (
-            _PMX_TYPE_TO_UI_INDEX.get(int(stored_type), 0)
+            PMX_TYPE_TO_UI_INDEX.get(int(stored_type), 0)
             if data.get("_pmx_type_raw")
             else int(stored_type)
         )
@@ -1011,16 +1042,18 @@ class MorphPresenter:
         data["panel"] = self.view.panel_combo.currentIndex()
         ui_type = self.view.morph_type_combo.currentIndex()
         data["type"] = (
-            _UI_INDEX_TO_PMX_TYPE.get(ui_type, 1)
+            UI_INDEX_TO_PMX_TYPE.get(ui_type, 1)
             if data.get("_pmx_type_raw")
             else ui_type
         )
-        data.pop("group", None)
 
         # MMDアトリビュートに保存
         current_model_root = self.app_state.current_model_root
         if current_model_root and self.maya_adapter.object_exists(current_model_root):
             self._save_mmd_morph_data(current_model_root)
+
+        # Type changes alter this morph and any group that references it.
+        self._cache_morph_capabilities()
 
         # グループを再整理
         self._organize_morphs_by_group()
@@ -1032,16 +1065,13 @@ class MorphPresenter:
         """MMDモーフデータを保存"""
         if any(data.get("_pmx_type_raw") for data in self.morph_data.values()):
             payload = [
-                {key: value for key, value in data.items() if key not in {"_pmx_type_raw", "group"}}
+                {key: value for key, value in data.items() if key != "_pmx_type_raw"}
                 for data in sorted(
                     self.morph_data.values(), key=lambda item: int(item.get("index", -1))
                 )
             ]
         else:
-            payload = {
-                morph_key: {key: value for key, value in data.items() if key != "group"}
-                for morph_key, data in self.morph_data.items()
-            }
+            payload = dict(self.morph_data)
         morph_data_json = json.dumps(payload, ensure_ascii=False)
         set_custom_attributes(model_root, {"mmdMorphData": morph_data_json})
 

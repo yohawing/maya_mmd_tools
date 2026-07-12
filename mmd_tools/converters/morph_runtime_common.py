@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional
 from maya import cmds
 
 
-def parse_morph_offsets_json(morph_node: str, attr_name: str) -> Optional[List[Dict[str, Any]]]:
+def parse_morph_offsets_json(
+    morph_node: str,
+    attr_name: str,
+    *,
+    get_attr=None,
+) -> Optional[List[Dict[str, Any]]]:
     """Read a PMX morph offsets JSON attribute as a list of offset dicts.
 
     Args:
@@ -19,9 +24,10 @@ def parse_morph_offsets_json(morph_node: str, attr_name: str) -> Optional[List[D
         Parsed offsets, or None when the attribute does not contain a JSON list.
     """
     try:
-        raw = cmds.getAttr(f"{morph_node}.{attr_name}") or "[]"
+        reader = get_attr or cmds.getAttr
+        raw = reader(f"{morph_node}.{attr_name}") or "[]"
         offsets = json.loads(raw)
-    except (TypeError, ValueError):
+    except Exception:
         return None
     if not isinstance(offsets, list):
         return None

@@ -121,6 +121,13 @@ class TestReadMorphListFromBlendshapeJson(unittest.TestCase):
     def test_read_from_blendshape_json_empty(self):
         self.assertEqual(read_morph_list_from_blendshape_json({}), [])
 
+    def test_read_from_blendshape_json_skips_empty_raw_names(self):
+        result = read_morph_list_from_blendshape_json(
+            {"0": "", "1": {"name": ""}, "2": {"name": "smile"}}
+        )
+
+        self.assertEqual([(m.index, m.name) for m in result], [(2, "smile")])
+
 
 class TestFrozenDataclasses(unittest.TestCase):
     def test_frozen_dataclasses(self):

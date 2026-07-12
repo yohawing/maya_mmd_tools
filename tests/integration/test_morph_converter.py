@@ -533,6 +533,36 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(stored.get("0"), {"name": "にっこり", "index": 0})
         self.assertEqual(stored.get("1"), {"name": "にやり", "index": 1})
 
+    def test_vertex_morph_does_not_store_empty_raw_name(self):
+        """An unnamed PMX morph may have a usable alias but is not a VMD key."""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = ""
+            name_english = ""
+            morph_type = PmxMorphType.VertexMorph
+            panel = 4
+            offsets = [{"vertex_index": 1, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return ""
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]},
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        bs_node = result["blend_shape_nodes"][0]
+        if cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True):
+            stored = json.loads(
+                cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
+            )
+            self.assertEqual(stored, {})
+
     def test_vertex_morph_targets_keep_independent_offsets(self):
         """複数 vertex morph target が最後の target geometry に潰れないことを確認する。"""
         mesh = self._create_test_mesh()
