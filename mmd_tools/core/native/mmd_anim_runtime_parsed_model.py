@@ -368,18 +368,21 @@ class MmdParsedModel:
         try:
             for i in range(self.vertex_morph_count):
                 buf: MmdRuntimeFfiByteBuffer = func(self._handle, i)
-                if not buf.data or buf.len == 0:
-                    free_func(buf)
-                    names.append("")
-                    continue
-                addr = ctypes.cast(buf.data, c_void_p).value
-                if addr is None or addr == 0:
-                    free_func(buf)
-                    names.append("")
-                    continue
-                raw_bytes = (c_uint8 * buf.len).from_address(addr)
-                names.append(bytes(raw_bytes).decode("utf-8", errors="replace"))
-                free_func(buf)
+                try:
+                    if not buf.data or buf.len == 0:
+                        names.append("")
+                        continue
+                    addr = ctypes.cast(buf.data, c_void_p).value
+                    if addr is None or addr == 0:
+                        names.append("")
+                        continue
+                    raw_bytes = (c_uint8 * buf.len).from_address(addr)
+                    names.append(bytes(raw_bytes).decode("utf-8", errors="replace"))
+                finally:
+                    try:
+                        free_func(buf)
+                    except Exception as exc:
+                        logger.debug("mmd_runtime_byte_buffer_free failed: %s", exc)
             return names
         except Exception as e:
             logger.error(f"Failed to read vertex_morph_names: {e}")
@@ -400,28 +403,26 @@ class MmdParsedModel:
         free_func = getattr(self._lib, "mmd_runtime_byte_buffer_free", None)
         if free_func is None:
             return None
+        buf = None
         try:
-            buf: MmdRuntimeFfiByteBuffer = func(self._handle)
+            buf = func(self._handle)
             if not buf.data or buf.len == 0:
-                # 空バッファでも free を呼んで安全に処理
-                if free_func:
-                    free_func(buf)
                 return None
             # ポインタアドレスを整数として取り出し、バッファをコピーする
             addr = ctypes.cast(buf.data, c_void_p).value
             if addr is None or addr == 0:
-                free_func(buf)
                 return None
             raw_bytes = (c_uint8 * buf.len).from_address(addr)
-            text = bytes(raw_bytes).decode("utf-8", errors="replace")
-            # 必ず解放
-            free_func(buf)
-            return text
+            return bytes(raw_bytes).decode("utf-8", errors="replace")
         except Exception as e:
             logger.error(f"Failed to read metadata_json: {e}")
-            # エラーでも可能なら解放を試みる
-            self._safe_free_buffer()
             return None
+        finally:
+            if buf is not None:
+                try:
+                    free_func(buf)
+                except Exception as exc:
+                    logger.debug("mmd_runtime_byte_buffer_free failed: %s", exc)
 
     # ---- 内部ヘルパー ----
 
@@ -442,17 +443,6 @@ class MmdParsedModel:
             return ptr if isinstance(ptr, int) else ctypes.addressof(ptr.contents)
         except Exception:
             return None
-
-    def _safe_free_buffer(self) -> None:
-        """エラー後などに残っている可能性のあるバッファを安全に解放試行する。"""
-        if self._lib is None:
-            return
-        free_func = getattr(self._lib, "mmd_runtime_byte_buffer_free", None)
-        if free_func:
-            try:
-                free_func(MmdRuntimeFfiByteBuffer(data=None, len=0))
-            except Exception as exc:
-                logger.debug("mmd_runtime_byte_buffer_free cleanup failed: %s", exc)
 
     def __repr__(self):
         return f"<MmdParsedModel handle={self._handle}>"
