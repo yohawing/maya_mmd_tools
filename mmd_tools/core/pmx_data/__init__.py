@@ -1,4 +1,5 @@
 import struct
+from typing import Callable, Optional
 
 from .header import PmxHeader, PmxEncoding, is_pmx_21_or_later
 
@@ -18,9 +19,26 @@ class PmxData:
         self.display_frames = []
         self.rigid_bodies = []
         self.joints = []
+        # Native parsers may set this neutral hook for PMX 2.1 roundtrip data.
+        self.soft_body_loader: Optional[Callable[[], list]] = None
         self.soft_bodies = []
         self.textures = []
         self.toon_textures = []
+
+    @property
+    def soft_bodies(self):
+        """Return soft bodies, resolving an optional native roundtrip loader once."""
+        if self.soft_body_loader is not None:
+            loaded_soft_bodies = list(self.soft_body_loader() or [])
+            self._soft_bodies = loaded_soft_bodies
+            self.soft_body_loader = None
+        return self._soft_bodies
+
+    @soft_bodies.setter
+    def soft_bodies(self, value):
+        """Explicitly replace soft bodies without resurrecting deferred source data."""
+        self._soft_bodies = list(value or [])
+        self.soft_body_loader = None
 
     def parse_file(self, file_path: str) -> "PmxData":
         """Legacy Python PMX parser compatibility entry point.
@@ -50,6 +68,9 @@ class PmxData:
             IOError: ファイル書き込みに失敗した場合。
         """
         try:
+            resolved_soft_bodies = (
+                self.soft_bodies if is_pmx_21_or_later(self.header.version) else None
+            )
             with open(file_path, "wb") as f:
                 # Header
                 self.header.write(f)
@@ -117,9 +138,9 @@ class PmxData:
 
                 # SoftBody (Optional, PMX 2.1 only)
                 if is_pmx_21_or_later(self.header.version):
-                    soft_body_count = len(self.soft_bodies)
+                    soft_body_count = len(resolved_soft_bodies)
                     f.write(struct.pack("<I", soft_body_count))
-                    for soft_body in self.soft_bodies:
+                    for soft_body in resolved_soft_bodies:
                         soft_body.write(f)
 
         except Exception as e:

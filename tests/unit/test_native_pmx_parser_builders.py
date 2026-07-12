@@ -12,7 +12,7 @@ from mmd_tools.core.native.native_pmx_parser import (
     _build_morphs,
     _build_rigid_bodies,
     _build_vertices,
-    _preserve_soft_bodies_from_legacy,
+    _load_soft_bodies_from_legacy,
     parse_pmx_native,
 )
 from mmd_tools.core.pmx_data import PmxData
@@ -63,24 +63,7 @@ def _make_test_soft_body():
 
 
 class TestNativePmxParserBuilders(unittest.TestCase):
-    def test_parse_pmx_native_preserves_soft_bodies_after_native_build(self):
-        native_pmx = PmxData()
-        lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())
-
-        with patch("mmd_tools.core.native.mmd_anim_runtime.get_mmd_runtime_library", return_value=lib), patch(
-            "mmd_tools.core.native.native_pmx_parser.Path.read_bytes", return_value=b"pmx"
-        ), patch(
-            "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes", return_value=native_pmx
-        ) as parse_bytes, patch(
-            "mmd_tools.core.native.native_pmx_parser._preserve_soft_bodies_from_legacy"
-        ) as preserve:
-            result = parse_pmx_native("cloth.pmx")
-
-        self.assertIs(result, native_pmx)
-        parse_bytes.assert_called_once_with(lib, b"pmx")
-        preserve.assert_called_once_with("cloth.pmx", native_pmx)
-
-    def test_parse_pmx_native_keeps_native_result_when_soft_body_preservation_fails(self):
+    def test_parse_pmx_native_defers_pmx21_soft_bodies_from_captured_bytes(self):
         native_pmx = _make_minimal_pmx21_data()
         lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())
 
@@ -88,10 +71,29 @@ class TestNativePmxParserBuilders(unittest.TestCase):
             "mmd_tools.core.native.native_pmx_parser.Path.read_bytes", return_value=b"pmx"
         ), patch(
             "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes", return_value=native_pmx
+        ) as parse_bytes, patch(
+            "mmd_tools.core.native.native_pmx_parser._load_soft_bodies_from_legacy"
+        ) as load_soft_bodies:
+            result = parse_pmx_native("cloth.pmx")
+
+        self.assertIs(result, native_pmx)
+        parse_bytes.assert_called_once_with(lib, b"pmx")
+        load_soft_bodies.assert_not_called()
+        self.assertIsNotNone(result.soft_body_loader)
+
+    def test_parse_pmx_native_does_not_set_loader_for_pmx20(self):
+        native_pmx = PmxData()
+        native_pmx.header.version = 2.0
+        lib = SimpleNamespace(mmd_runtime_parse_pmx_non_geometry_json=object())
+
+        with patch("mmd_tools.core.native.mmd_anim_runtime.get_mmd_runtime_library", return_value=lib), patch(
+            "mmd_tools.core.native.native_pmx_parser.Path.read_bytes", return_value=b"pmx"
         ), patch(
-            "mmd_tools.core.native.native_pmx_parser._preserve_soft_bodies_from_legacy", return_value=False
+            "mmd_tools.core.native.native_pmx_parser._parse_pmx_bytes", return_value=native_pmx
         ):
             self.assertIs(parse_pmx_native("cloth.pmx"), native_pmx)
+
+        self.assertIsNone(native_pmx.soft_body_loader)
 
     def test_parse_pmx_native_failure_returns_none_and_logs_fallback_at_debug(self):
         """Optional native failure detail is DEBUG-only; caller falls back."""
@@ -131,6 +133,7 @@ class TestNativePmxParserBuilders(unittest.TestCase):
             parsed_native = parse_pmx_native("cloth.pmx")
 
         self.assertIs(parsed_native, native_pmx)
+        parsed_native.soft_body_loader = lambda: legacy_pmx.soft_bodies
         with TemporaryDirectory() as temp_dir:
             out_path = Path(temp_dir) / "roundtrip.pmx"
             parsed_native.write_file(str(out_path))
@@ -144,45 +147,127 @@ class TestNativePmxParserBuilders(unittest.TestCase):
         self.assertEqual(reparsed_soft_body._unsupported_detail, bytes(range(_UNSUPPORTED_DETAIL_SIZE)))
         self.assertEqual(reparsed_soft_body.anchors, [(0, 5, 1)])
         self.assertEqual(reparsed_soft_body.pins, [6, 7])
+        self.assertIsNone(parsed_native.soft_body_loader)
 
-    def test_preserve_soft_bodies_from_legacy_for_pmx21_native_result(self):
-        native_pmx = _make_minimal_pmx21_data()
+    def test_lazy_loader_parses_captured_bytes_and_cleans_temporary_file(self):
         legacy_pmx = _make_minimal_pmx21_data()
         soft_body = _make_test_soft_body()
         legacy_pmx.soft_bodies = [soft_body]
+        captured_bytes = b"captured immutable pmx bytes"
+        observed = {}
+
+        def parse_temp(path):
+            observed["path"] = Path(path)
+            observed["bytes"] = Path(path).read_bytes()
+            return legacy_pmx
 
         with patch(
             "mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy",
-            return_value=legacy_pmx,
+            side_effect=parse_temp,
         ) as parse_legacy:
-            result = _preserve_soft_bodies_from_legacy("cloth.pmx", native_pmx)
+            result = _load_soft_bodies_from_legacy(captured_bytes)
 
-        self.assertTrue(result)
-        parse_legacy.assert_called_once_with("cloth.pmx")
-        self.assertEqual(native_pmx.soft_bodies, [soft_body])
+        parse_legacy.assert_called_once()
+        self.assertEqual(result, [soft_body])
+        self.assertEqual(observed["bytes"], captured_bytes)
+        self.assertFalse(observed["path"].exists())
 
-    def test_preserve_soft_bodies_from_legacy_does_not_overwrite_existing_native_data(self):
-        native_pmx = PmxData()
-        native_pmx.header.version = 2.1
-        native_soft_body = object()
-        native_pmx.soft_bodies = [native_soft_body]
+    def test_lazy_loader_cleans_temporary_file_when_legacy_parse_fails(self):
+        observed = {}
 
-        with patch("mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy") as parse_legacy:
-            result = _preserve_soft_bodies_from_legacy("cloth.pmx", native_pmx)
+        def fail_parse(path):
+            observed["path"] = Path(path)
+            raise RuntimeError("legacy parse failed")
 
-        self.assertTrue(result)
-        parse_legacy.assert_not_called()
-        self.assertEqual(native_pmx.soft_bodies, [native_soft_body])
+        with patch(
+            "mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy",
+            side_effect=fail_parse,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "legacy parse failed"):
+                _load_soft_bodies_from_legacy(b"captured bytes")
 
-    def test_preserve_soft_bodies_from_legacy_skips_pmx20(self):
-        native_pmx = PmxData()
-        native_pmx.header.version = 2.0
+        self.assertFalse(observed["path"].exists())
 
-        with patch("mmd_tools.core.pmx_data.legacy_parser.parse_pmx_file_legacy") as parse_legacy:
-            result = _preserve_soft_bodies_from_legacy("model.pmx", native_pmx)
+    def test_writer_caches_empty_lazy_result_across_saves(self):
+        pmx = _make_minimal_pmx21_data()
+        calls = []
+        pmx.soft_body_loader = lambda: calls.append("load") or []
 
-        self.assertTrue(result)
-        parse_legacy.assert_not_called()
+        with TemporaryDirectory() as temp_dir:
+            pmx.write_file(str(Path(temp_dir) / "first.pmx"))
+            pmx.write_file(str(Path(temp_dir) / "second.pmx"))
+
+        self.assertEqual(calls, ["load"])
+        self.assertEqual(pmx.soft_bodies, [])
+        self.assertIsNone(pmx.soft_body_loader)
+
+    def test_soft_bodies_read_resolves_loader_once(self):
+        pmx = _make_minimal_pmx21_data()
+        original = _make_test_soft_body()
+        calls = []
+        pmx.soft_body_loader = lambda: calls.append("load") or [original]
+
+        self.assertEqual(pmx.soft_bodies, [original])
+        self.assertEqual(pmx.soft_bodies, [original])
+        self.assertEqual(calls, ["load"])
+
+    def test_soft_bodies_append_preserves_lazy_originals(self):
+        pmx = _make_minimal_pmx21_data()
+        original = _make_test_soft_body()
+        appended = object()
+        pmx.soft_body_loader = lambda: [original]
+
+        pmx.soft_bodies.append(appended)
+
+        self.assertEqual(pmx.soft_bodies, [original, appended])
+        self.assertIsNone(pmx.soft_body_loader)
+
+    def test_soft_bodies_explicit_replacement_discards_lazy_source(self):
+        pmx = _make_minimal_pmx21_data()
+        calls = []
+        pmx.soft_body_loader = lambda: calls.append("load") or [_make_test_soft_body()]
+
+        pmx.soft_bodies = []
+
+        self.assertEqual(pmx.soft_bodies, [])
+        self.assertEqual(calls, [])
+        self.assertIsNone(pmx.soft_body_loader)
+
+    def test_soft_bodies_failed_read_keeps_loader_retryable(self):
+        pmx = _make_minimal_pmx21_data()
+        original = _make_test_soft_body()
+        attempts = []
+
+        def retry_loader():
+            attempts.append("load")
+            if len(attempts) == 1:
+                raise RuntimeError("temporary failure")
+            return [original]
+
+        pmx.soft_body_loader = retry_loader
+        with self.assertRaisesRegex(RuntimeError, "temporary failure"):
+            _ = pmx.soft_bodies
+
+        self.assertIs(pmx.soft_body_loader, retry_loader)
+        self.assertEqual(pmx.soft_bodies, [original])
+        self.assertEqual(attempts, ["load", "load"])
+
+    def test_writer_propagates_lazy_loader_failure_and_keeps_it_retryable(self):
+        pmx = _make_minimal_pmx21_data()
+
+        def fail_loader():
+            raise RuntimeError("legacy parse failed")
+
+        pmx.soft_body_loader = fail_loader
+        with TemporaryDirectory() as temp_dir:
+            destination = Path(temp_dir) / "failed.pmx"
+            destination.write_bytes(b"existing destination")
+            with self.assertRaises(IOError) as raised:
+                pmx.write_file(str(destination))
+            self.assertEqual(destination.read_bytes(), b"existing destination")
+
+        self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+        self.assertIs(pmx.soft_body_loader, fail_loader)
 
     def test_build_vertices_preserves_additional_uv_channels(self):
         positions = (c_float * 6)(0.0, 1.0, 2.0, 3.0, 4.0, 5.0)

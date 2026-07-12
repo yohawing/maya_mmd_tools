@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import tempfile
 from ctypes import POINTER, c_float, c_size_t, c_uint8, c_uint32, c_void_p
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -118,32 +119,35 @@ def parse_pmx_native(file_path: str) -> Optional[PmxData]:
 
     try:
         pmx = _parse_pmx_bytes(lib, pmx_bytes)
-        if pmx is not None:
-            _preserve_soft_bodies_from_legacy(file_path, pmx)
+        if pmx is not None and is_pmx_21_or_later(pmx.header.version):
+            pmx.soft_body_loader = lambda pmx_bytes=pmx_bytes: _load_soft_bodies_from_legacy(
+                pmx_bytes
+            )
         return pmx
     except Exception as exc:
         logger.debug("Native PMX parse failed, will fallback: %s", exc)
         return None
 
 
-def _preserve_soft_bodies_from_legacy(file_path: str, pmx: PmxData) -> bool:
-    """Copy PMX 2.1 soft bodies into native parse results for writer roundtrip."""
-    if not is_pmx_21_or_later(pmx.header.version) or getattr(pmx, "soft_bodies", None):
-        return True
-
+def _load_soft_bodies_from_legacy(pmx_bytes: bytes) -> list:
+    """Load PMX 2.1 soft bodies from captured source bytes at export time."""
     # mmd-anim native metadata does not expose PMX 2.1 soft bodies yet. Preserve
-    # them via the legacy reader so native import/export roundtrips do not drop
-    # the trailing section.
+    # them through this hook until Rust metadata support can replace it.
+    temp_path = None
     try:
         from mmd_tools.core.pmx_data.legacy_parser import parse_pmx_file_legacy
 
-        legacy_pmx = parse_pmx_file_legacy(file_path)
+        with tempfile.NamedTemporaryFile(suffix=".pmx", delete=False) as temp_file:
+            temp_file.write(pmx_bytes)
+            temp_path = Path(temp_file.name)
+        legacy_pmx = parse_pmx_file_legacy(str(temp_path))
+        return list(getattr(legacy_pmx, "soft_bodies", []) or [])
     except Exception as exc:
-        logger.warning("Failed to preserve PMX soft bodies from legacy parser: %s", exc)
-        return False
-
-    pmx.soft_bodies = list(getattr(legacy_pmx, "soft_bodies", []) or [])
-    return True
+        logger.warning("Failed to load PMX soft bodies from captured bytes: %s", exc)
+        raise
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def _parse_pmx_bytes(lib: Any, pmx_bytes: bytes) -> Optional[PmxData]:
