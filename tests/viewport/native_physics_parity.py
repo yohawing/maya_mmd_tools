@@ -34,6 +34,143 @@ def _rotation_angle_degrees(left: list[float], right: list[float]) -> float:
     return math.degrees(math.acos(cosine))
 
 
+def _mat3_transpose(matrix: list[list[float]]) -> list[list[float]]:
+    return [[matrix[column][row] for column in range(3)] for row in range(3)]
+
+
+def _mat3_multiply(left: list[list[float]], right: list[list[float]]) -> list[list[float]]:
+    return [
+        [
+            sum(left[row][axis] * right[axis][column] for axis in range(3))
+            for column in range(3)
+        ]
+        for row in range(3)
+    ]
+
+
+def _rotation_rows_to_world_matrix(rotation: list[list[float]]) -> list[float]:
+    return [
+        rotation[0][0], rotation[0][1], rotation[0][2], 0.0,
+        rotation[1][0], rotation[1][1], rotation[1][2], 0.0,
+        rotation[2][0], rotation[2][1], rotation[2][2], 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+
+
+def compare_bullet_rotation_transfer(
+    bind_pairs: dict[str, dict[str, Any]],
+    baseline: dict[str, dict[str, dict[str, Any]]],
+    native: dict[str, dict[str, dict[str, Any]]],
+    frames: list[int],
+) -> dict[str, Any]:
+    """Separate rigid-body-to-bone transfer error from solver/readback drift.
+
+    Maya matrices use row-vector composition.  A bind relation is therefore
+    ``inverse(body_bind) * bone_bind`` and a simulated body predicts
+    ``body_world * relation``.  Comparing that prediction with the Maya bone
+    isolates the orientConstraint transfer; comparing it with the native bone
+    captures the remaining solver/readback difference.
+    """
+    transfer_values: list[float] = []
+    solver_values: list[float] = []
+    candidate_values: dict[str, list[float]] = {
+        "body_delta_post": [],
+        "body_delta_pre": [],
+        "bind_offset_post": [],
+        "bind_offset_pre": [],
+    }
+    transfer_worst: dict[str, Any] | None = None
+    solver_worst: dict[str, Any] | None = None
+    for bone_index in sorted(set(baseline) & set(native), key=lambda value: int(value)):
+        baseline_frames = baseline[bone_index]
+        native_frames = native[bone_index]
+        bind_sample = bind_pairs.get(bone_index)
+        if not bind_sample:
+            continue
+        try:
+            body_bind = _normalized_rotation_rows(bind_sample["rigidBodyWorldMatrix"])
+            bone_bind = _normalized_rotation_rows(bind_sample["worldMatrix"])
+            bind_relation = _mat3_multiply(_mat3_transpose(body_bind), bone_bind)
+        except (KeyError, TypeError, ValueError):
+            continue
+        for frame in frames:
+            frame_key = str(frame)
+            bullet_sample = baseline_frames.get(frame_key)
+            native_sample = native_frames.get(frame_key)
+            if not bullet_sample or not native_sample:
+                continue
+            try:
+                body_world = _normalized_rotation_rows(bullet_sample["rigidBodyWorldMatrix"])
+                candidates = {
+                    "body_delta_post": _mat3_multiply(body_world, bind_relation),
+                    "body_delta_pre": _mat3_multiply(
+                        _mat3_multiply(bone_bind, _mat3_transpose(body_bind)), body_world
+                    ),
+                    "bind_offset_post": _mat3_multiply(
+                        body_world, _mat3_multiply(bone_bind, _mat3_transpose(body_bind))
+                    ),
+                    "bind_offset_pre": _mat3_multiply(bind_relation, body_world),
+                }
+                bullet_world = bullet_sample["worldMatrix"]
+                for name, rows in candidates.items():
+                    candidate_values[name].append(
+                        _rotation_angle_degrees(
+                            _rotation_rows_to_world_matrix(rows), bullet_world
+                        )
+                    )
+                predicted_rows = candidates["body_delta_post"]
+                predicted = _rotation_rows_to_world_matrix(predicted_rows)
+                transfer = _rotation_angle_degrees(predicted, bullet_world)
+                solver = _rotation_angle_degrees(predicted, native_sample["worldMatrix"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(transfer) or not math.isfinite(solver):
+                continue
+            transfer_values.append(transfer)
+            solver_values.append(solver)
+            evidence = {
+                "boneIndex": int(bone_index),
+                "joint": bullet_sample.get("joint"),
+                "frame": int(frame),
+                "transferResidualDegrees": transfer,
+                "solverReadbackDegrees": solver,
+            }
+            if transfer_worst is None or transfer > transfer_worst["transferResidualDegrees"]:
+                transfer_worst = evidence
+            if solver_worst is None or solver > solver_worst["solverReadbackDegrees"]:
+                solver_worst = evidence
+    return {
+        "comparedSamples": len(transfer_values),
+        "transferResidualMaxDegrees": (
+            transfer_worst["transferResidualDegrees"] if transfer_worst else None
+        ),
+        "transferResidualRmsDegrees": (
+            math.sqrt(sum(value * value for value in transfer_values) / len(transfer_values))
+            if transfer_values
+            else None
+        ),
+        "solverReadbackMaxDegrees": solver_worst["solverReadbackDegrees"] if solver_worst else None,
+        "solverReadbackRmsDegrees": (
+            math.sqrt(sum(value * value for value in solver_values) / len(solver_values))
+            if solver_values
+            else None
+        ),
+        "transferWorst": transfer_worst,
+        "solverWorst": solver_worst,
+        "transferFormulaCandidates": {
+            name: {
+                "maxDegrees": max(values) if values else None,
+                "rmsDegrees": (
+                    math.sqrt(sum(value * value for value in values) / len(values))
+                    if values
+                    else None
+                ),
+            }
+            for name, values in candidate_values.items()
+        },
+    }
+
+
 def compare_bullet_world_transform_delta(
     baseline: dict[str, dict[str, dict[str, Any]]],
     native: dict[str, dict[str, dict[str, Any]]],

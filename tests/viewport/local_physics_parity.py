@@ -86,6 +86,7 @@ def _run_case(case: dict[str, Any], args: argparse.Namespace, stage: Any) -> dic
         apply_import_scale,
         compare_bullet_world_sanity,
         compare_bullet_world_transform_delta,
+        compare_bullet_rotation_transfer,
         compare_mesh_vertex_samples,
         static_pmx_extent,
     )
@@ -120,6 +121,9 @@ def _run_case(case: dict[str, Any], args: argparse.Namespace, stage: Any) -> dic
     result["boneWorldTransformDelta"] = compare_bullet_world_transform_delta(
         baseline["samples"], native["samples"], frames
     )
+    result["rotationTransfer"] = compare_bullet_rotation_transfer(
+        baseline["bind_pairs"], baseline["samples"], native["samples"], frames
+    )
     threshold = case.get("mesh_threshold")
     result["meshWorldParity"] = compare_mesh_vertex_samples(
         baseline["mesh_vertices"],
@@ -146,6 +150,7 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
         lines.extend([f"## {case['name']}", "", f"- status: `{case.get('status')}`", f"- frames: `{case.get('frames')}`"])
         bone = case.get("boneWorldParity")
         transform_delta = case.get("boneWorldTransformDelta")
+        rotation_transfer = case.get("rotationTransfer")
         mesh = case.get("meshWorldParity")
         if bone:
             lines.append(f"- bone world: passed=`{bone['passed']}`, samples=`{bone['comparedSamples']}`, failures=`{bone['failureCount']}`")
@@ -156,6 +161,12 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
                 f"rotation max deg=`{transform_delta['maxRotationDegrees']}`, "
                 f"rotation RMS deg=`{transform_delta['rmsRotationDegrees']}`, "
                 f"rotation p95 deg=`{transform_delta['p95RotationDegrees']}`"
+            )
+        if rotation_transfer:
+            lines.append(
+                "- rotation transfer (report-only): "
+                f"transfer RMS deg=`{rotation_transfer['transferResidualRmsDegrees']}`, "
+                f"solver/readback RMS deg=`{rotation_transfer['solverReadbackRmsDegrees']}`"
             )
         if mesh:
             lines.append(f"- mesh world: passed=`{mesh['passed']}`, vertices=`{mesh['comparedVertexSamples']}`, max=`{mesh['max']}`, RMS=`{mesh['rms']}`, threshold=`{mesh['threshold']}`")

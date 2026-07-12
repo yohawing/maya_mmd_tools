@@ -801,6 +801,7 @@ class VmdConverter:
                 f"(keys={len(bake_samples)}, fps={self.fps:g})"
             )
             self._disable_mmd_rig_constraints_for_runtime_bake()
+            physics_preview_connections = self._capture_physics_preview_rotation_connections()
             self._restore_joints_to_bind_pose_for_runtime_bake()
             if self.bone_index_to_joint:
                 self._build_runtime_bind_world_maps()
@@ -878,6 +879,10 @@ class VmdConverter:
                     runtime_cache.morph_cache,
                     pmx_morph_names,
                 )
+                if not physics_routing.get("used", False):
+                    self._restore_physics_preview_rotation_connections(
+                        physics_preview_connections
+                    )
                 apply_elapsed = time.perf_counter() - apply_start
                 self.logger.debug(
                     f"Runtime cache key application completed (elapsed={apply_elapsed:.3f}s)"
@@ -1282,6 +1287,54 @@ class VmdConverter:
     def _restore_joints_to_bind_pose_for_runtime_bake(self) -> None:
         """live rig出力切断後に残った値を消し、runtime bake用のbind姿勢へ戻す。"""
         restore_joints_to_bind_pose_for_runtime_bake(self._runtime_rig_context())
+
+    def _capture_physics_preview_rotation_connections(self) -> List[Tuple[str, str]]:
+        """Remember marked Bullet feedback plugs before runtime bake disconnects them."""
+        connections: List[Tuple[str, str]] = []
+        for joint in self.bone_index_to_joint.values():
+            if not cmds.objExists(joint):
+                continue
+            for attr in ("rotateX", "rotateY", "rotateZ"):
+                destination = f"{joint}.{attr}"
+                for source in cmds.listConnections(
+                    destination, source=True, destination=False, plugs=True
+                ) or []:
+                    node = source.split(".", 1)[0]
+                    if not cmds.attributeQuery(
+                        "mmd_physics_preview_constraint", node=node, exists=True
+                    ):
+                        continue
+                    if cmds.nodeType(node) != "orientConstraint":
+                        continue
+                    targets = cmds.orientConstraint(node, query=True, targetList=True) or []
+                    preserve_mode2 = any(
+                        cmds.attributeQuery("mmd_physics_mode", node=target, exists=True)
+                        and int(cmds.getAttr(f"{target}.mmd_physics_mode")) == 2
+                        for target in targets
+                    )
+                    if (
+                        cmds.getAttr(f"{node}.mmd_physics_preview_constraint")
+                        and preserve_mode2
+                    ):
+                        connections.append((source, destination))
+        return connections
+
+    def _restore_physics_preview_rotation_connections(
+        self, connections: List[Tuple[str, str]]
+    ) -> None:
+        """Restore the original bind-offset Bullet feedback after normal runtime bake."""
+        for source, destination in connections:
+            if not cmds.objExists(source) or not cmds.objExists(destination):
+                continue
+            try:
+                cmds.connectAttr(source, destination, force=True)
+            except Exception as exc:
+                self.logger.debug(
+                    "failed to restore physics preview connection %s -> %s: %s",
+                    source,
+                    destination,
+                    exc,
+                )
 
     def _add_objects_to_layer(self, objects: List[str]):
         """オブジェクトをアニメーションレイヤーに追加

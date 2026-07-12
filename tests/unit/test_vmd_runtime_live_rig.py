@@ -36,6 +36,67 @@ class TestVmdRuntimeLiveRig(MayaTestBase):
         super().tearDown()
         self.fixture_provider.cleanup_temp_files()
 
+    def test_mode2_physics_preview_rotation_connection_survives_runtime_bake(self):
+        joint = cmds.joint(name="mode2_preview_joint")
+        body = cmds.createNode("transform", name="mode2_preview_body")
+        cmds.addAttr(body, longName="mmd_physics_mode", attributeType="long")
+        cmds.setAttr(f"{body}.mmd_physics_mode", 2)
+        constraint = cmds.orientConstraint(body, joint, maintainOffset=True)[0]
+        cmds.addAttr(
+            constraint,
+            longName="mmd_physics_preview_constraint",
+            attributeType="bool",
+        )
+        cmds.setAttr(f"{constraint}.mmd_physics_preview_constraint", True)
+        self.converter.bone_index_to_joint = {0: joint}
+
+        connections = self.converter._capture_physics_preview_rotation_connections()
+        self.assertEqual(len(connections), 3)
+        offset = cmds.getAttr(f"{constraint}.offset")[0]
+        for source, destination in connections:
+            cmds.disconnectAttr(source, destination)
+            cmds.setKeyframe(destination, time=0, value=15.0)
+
+        self.converter._restore_physics_preview_rotation_connections(connections)
+
+        self.assertEqual(cmds.getAttr(f"{constraint}.offset")[0], offset)
+        for source, destination in connections:
+            self.assertTrue(cmds.isConnected(source, destination))
+
+    def test_mode1_physics_preview_rotation_is_not_preserved(self):
+        joint = cmds.joint(name="mode1_preview_joint")
+        body = cmds.createNode("transform", name="mode1_preview_body")
+        cmds.addAttr(body, longName="mmd_physics_mode", attributeType="long")
+        cmds.setAttr(f"{body}.mmd_physics_mode", 1)
+        constraint = cmds.orientConstraint(body, joint, maintainOffset=True)[0]
+        cmds.addAttr(
+            constraint,
+            longName="mmd_physics_preview_constraint",
+            attributeType="bool",
+        )
+        cmds.setAttr(f"{constraint}.mmd_physics_preview_constraint", True)
+        self.converter.bone_index_to_joint = {0: joint}
+
+        self.assertEqual(
+            self.converter._capture_physics_preview_rotation_connections(), []
+        )
+
+    def test_non_orient_marked_preview_constraint_is_ignored(self):
+        joint = cmds.joint(name="legacy_preview_joint")
+        body = cmds.createNode("transform", name="legacy_preview_body")
+        constraint = cmds.parentConstraint(body, joint, maintainOffset=True)[0]
+        cmds.addAttr(
+            constraint,
+            longName="mmd_physics_preview_constraint",
+            attributeType="bool",
+        )
+        cmds.setAttr(f"{constraint}.mmd_physics_preview_constraint", True)
+        self.converter.bone_index_to_joint = {0: joint}
+
+        self.assertEqual(
+            self.converter._capture_physics_preview_rotation_connections(), []
+        )
+
     def test_mmd_ik_passthrough_keys_chain_bone_slot(self):
         """runtime live apply 中は mmdCcdIk output link の入力 slot へ final rotation を焼く"""
         joint = cmds.joint(name="runtime_live_toe_link")

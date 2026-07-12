@@ -709,8 +709,41 @@ def _sample_physics_bones(
         frame_key = str(frame)
         for item in controlled:
             bone_key = str(item["boneIndex"])
-            samples[bone_key][frame_key] = _sample_bone_transform(item["joint"])
+            sample = _sample_bone_transform(item["joint"])
+            try:
+                sample["rigidBodyWorldMatrix"] = [
+                    float(value)
+                    for value in cmds.xform(
+                        item["rigidBodyNode"], query=True, matrix=True, worldSpace=True
+                    )
+                ]
+            except Exception:
+                sample["rigidBodyWorldMatrix"] = [float("nan")] * 16
+            samples[bone_key][frame_key] = sample
     return samples
+
+
+def _capture_physics_bind_pairs(
+    controlled: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Capture the PMX-import bind relation before VMD changes the joints."""
+    pairs: dict[str, dict[str, Any]] = {}
+    for item in controlled:
+        sample = _sample_bone_transform(item["joint"])
+        try:
+            rigid_matrix = cmds.xform(
+                item["rigidBodyNode"], query=True, matrix=True, worldSpace=True
+            )
+        except Exception:
+            rigid_matrix = [float("nan")] * 16
+        pairs[str(item["boneIndex"])] = {
+            "joint": item["joint"],
+            "rigidBodyNode": item["rigidBodyNode"],
+            "physicsMode": item["physicsMode"],
+            "worldMatrix": sample["worldMatrix"],
+            "rigidBodyWorldMatrix": [float(value) for value in rigid_matrix],
+        }
+    return pairs
 
 
 def _list_preview_constraints(root: str) -> list[dict[str, Any]]:
@@ -889,6 +922,7 @@ def _run_bake_scene(
     eval_frames: list[int],
 ) -> dict[str, Any]:
     root = _import_pmx_with_physics(pmx_path)
+    bind_pairs = _capture_physics_bind_pairs(_physics_controlled_joints(root))
     profile = _import_vmd_bake(
         vmd_path=vmd_path,
         pmx_path=pmx_path,
@@ -907,6 +941,7 @@ def _run_bake_scene(
         "profile": profile,
         "physics_routing": routing,
         "physics_bones": controlled,
+        "bind_pairs": bind_pairs,
         "samples": samples,
         "preview_constraints": constraints,
         "eval_frames": list(eval_frames),

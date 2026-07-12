@@ -9,6 +9,7 @@ from tests.viewport.native_physics_parity import (
     apply_import_scale,
     compare_bullet_world_sanity,
     compare_bullet_world_transform_delta,
+    compare_bullet_rotation_transfer,
     compare_mesh_vertex_samples,
     static_extent_from_positions,
 )
@@ -26,11 +27,39 @@ def _sample(world: list[float], parent: list[float], *, finite: bool = True) -> 
             0.0, 0.0, 1.0, 0.0,
             *world, 1.0,
         ],
+        "rigidBodyWorldMatrix": [
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 1.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            *world, 1.0,
+        ],
         "finite": finite,
     }
 
 
 class NativePhysicsParityTest(unittest.TestCase):
+    def test_rotation_transfer_separates_graph_and_solver_drift(self):
+        bind = _sample([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        rotated = _sample([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        quarter_turn = [
+            0.0, 1.0, 0.0, 0.0,
+            -1.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 1.0, 0.0,
+            0.0, 0.0, 0.0, 1.0,
+        ]
+        rotated["worldMatrix"] = quarter_turn
+        rotated["rigidBodyWorldMatrix"] = quarter_turn
+        native_frame = _sample([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        result = compare_bullet_rotation_transfer(
+            {"7": bind},
+            {"7": {"0": bind, "1": rotated}},
+            {"7": {"0": bind, "1": native_frame}},
+            [0, 1],
+        )
+        self.assertEqual(result["comparedSamples"], 2)
+        self.assertAlmostEqual(result["transferResidualMaxDegrees"], 0.0)
+        self.assertAlmostEqual(result["solverReadbackMaxDegrees"], 90.0)
+
     def test_world_transform_delta_reports_quaternion_safe_rotation(self):
         baseline_sample = _sample([2.0, 0.0, 0.0], [0.0, 0.0, 0.0])
         baseline_sample["worldMatrix"] = [
