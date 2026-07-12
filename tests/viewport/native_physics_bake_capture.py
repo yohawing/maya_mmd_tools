@@ -16,6 +16,8 @@ Default mode (single-import capture):
     - native profile reports ``native_physics_bake.used == True``
     - at least one physics-controlled bone shows a measurable local-transform
       delta between native and baseline across explicit evaluation frames
+    - Maya Bullet world-space bone positions stay within conservative,
+      model-extent-scaled explosion limits relative to the native result
     - every model-scoped ``mmd_physics_preview_constraint`` has
       ``nodeState == 2`` after the native import (Bullet feedback blocked)
 
@@ -643,16 +645,48 @@ def _sample_local_channels(joint: str) -> dict[str, float]:
     return values
 
 
+def _sample_bone_transform(joint: str) -> dict[str, Any]:
+    local = _sample_local_channels(joint)
+    try:
+        matrix = [float(value) for value in cmds.xform(joint, query=True, matrix=True, worldSpace=True)]
+        world = [matrix[12], matrix[13], matrix[14]]
+        scale = [
+            math.sqrt(sum(matrix[row * 4 + column] ** 2 for column in range(3)))
+            for row in range(3)
+        ]
+    except Exception:
+        world = [float("nan")] * 3
+        scale = [float("nan")] * 3
+    parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
+    try:
+        parent_world = (
+            [float(value) for value in cmds.xform(parents[0], query=True, translation=True, worldSpace=True)]
+            if parents
+            else [0.0, 0.0, 0.0]
+        )
+    except Exception:
+        parent_world = [float("nan")] * 3
+    finite = all(math.isfinite(value) for value in (*local.values(), *world, *parent_world, *scale))
+    return {
+        **local,
+        "joint": joint,
+        "worldTranslate": world,
+        "parentWorldTranslate": parent_world,
+        "worldMatrixScale": scale,
+        "finite": finite,
+    }
+
+
 def _sample_physics_bones(
     controlled: list[dict[str, Any]],
     frames: list[int],
-) -> dict[str, dict[str, dict[str, float]]]:
-    """Sample local TR channels for physics bones at each evaluation frame.
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Sample local TR and world-space diagnostics at each evaluation frame.
 
-    Layout: samples[joint_path][frame_str][channel] = value
+    Layout: samples[bone_index][frame_str][channel_or_world_field] = value.
     """
-    samples: dict[str, dict[str, dict[str, float]]] = {
-        item["joint"]: {} for item in controlled
+    samples: dict[str, dict[str, dict[str, Any]]] = {
+        str(item["boneIndex"]): {} for item in controlled
     }
     for frame in frames:
         cmds.currentTime(frame, edit=True)
@@ -669,8 +703,8 @@ def _sample_physics_bones(
                 pass
         frame_key = str(frame)
         for item in controlled:
-            joint = item["joint"]
-            samples[joint][frame_key] = _sample_local_channels(joint)
+            bone_key = str(item["boneIndex"])
+            samples[bone_key][frame_key] = _sample_bone_transform(item["joint"])
     return samples
 
 
@@ -727,8 +761,8 @@ def _list_preview_constraints(root: str) -> list[dict[str, Any]]:
 
 
 def _compare_local_samples(
-    baseline: dict[str, dict[str, dict[str, float]]],
-    native: dict[str, dict[str, dict[str, float]]],
+    baseline: dict[str, dict[str, dict[str, Any]]],
+    native: dict[str, dict[str, dict[str, Any]]],
     frames: list[int],
     epsilon: float,
 ) -> dict[str, Any]:
@@ -739,14 +773,14 @@ def _compare_local_samples(
     compared_channels = 0
     per_bone_max: dict[str, float] = {}
 
-    joints = sorted(set(baseline.keys()) & set(native.keys()))
-    for joint in joints:
+    bone_indices = sorted(set(baseline.keys()) & set(native.keys()), key=lambda value: int(value))
+    for bone_index in bone_indices:
         compared_bones += 1
         bone_max = 0.0
         for frame in frames:
             frame_key = str(frame)
-            base_frame = baseline.get(joint, {}).get(frame_key)
-            native_frame = native.get(joint, {}).get(frame_key)
+            base_frame = baseline.get(bone_index, {}).get(frame_key)
+            native_frame = native.get(bone_index, {}).get(frame_key)
             if not base_frame or not native_frame:
                 continue
             for channel in LOCAL_CHANNELS:
@@ -762,14 +796,15 @@ def _compare_local_samples(
                 if delta > max_abs:
                     max_abs = delta
                     winner = {
-                        "joint": joint,
+                        "boneIndex": int(bone_index),
+                        "joint": base_frame.get("joint"),
                         "frame": frame,
                         "channel": channel,
                         "baseline": float(base_val),
                         "native": float(native_val),
                         "absDelta": float(delta),
                     }
-        per_bone_max[joint] = round(bone_max, 9)
+        per_bone_max[bone_index] = round(bone_max, 9)
 
     return {
         "epsilon": float(epsilon),
@@ -908,6 +943,15 @@ def _assert_route_gate(report: dict[str, Any], epsilon: float) -> list[dict[str,
         }
     )
 
+    parity = report.get("bullet_world_sanity") or {}
+    assertions.append(
+        {
+            "name": "maya_bullet_world_sanity",
+            "pass": bool(parity.get("passed")),
+            "details": parity,
+        }
+    )
+
     constraints = list(native.get("preview_constraints") or [])
     blocking = [item for item in constraints if item.get("nodeState") == NODE_STATE_BLOCKING]
     non_blocking = [item for item in constraints if item.get("nodeState") != NODE_STATE_BLOCKING]
@@ -995,6 +1039,7 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
         "baseline": {},
         "native": {},
         "delta": {},
+        "bullet_world_sanity": {},
         "assertions": [],
         "report": str(report_path),
     }
@@ -1032,6 +1077,24 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
         return 3
 
     _configure_import_settings()
+
+    from mmd_tools.services.settings_service import SettingsService
+    from tests.viewport.native_physics_parity import apply_import_scale, static_pmx_extent
+
+    try:
+        import_scale = float(SettingsService().resolve_import_scale())
+        static_extent = static_pmx_extent(pmx_path)
+        model_extent = apply_import_scale(static_extent, import_scale)
+    except Exception as exc:
+        report["error"] = f"static PMX extent failed: {type(exc).__name__}: {exc}"
+        report["gate"] = "static_pmx_extent_invalid"
+        _write_report(report_path, report)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 4
+    report["static_pmx_extent"] = static_extent
+    report["import_scale"] = import_scale
+    report["scaled_static_pmx_extent"] = model_extent
+    report["extent_source"] = "pmx_static_vertices_x_import_scale"
 
     try:
         baseline = _run_bake_scene(
@@ -1100,6 +1163,11 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
         eval_frames,
         epsilon,
     )
+    from tests.viewport.native_physics_parity import compare_bullet_world_sanity
+
+    report["bullet_world_sanity"] = compare_bullet_world_sanity(
+        baseline["samples"], native["samples"], eval_frames, model_extent
+    )
     _assert_route_gate(report, epsilon)
     _write_report(report_path, report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -1113,7 +1181,9 @@ def main_verify_bake_route(args: argparse.Namespace) -> int:
         return 7
     if gate == "preview_constraints_blocked":
         return 8
-    return 9
+    if gate == "maya_bullet_world_sanity":
+        return 9
+    return 10
 
 
 def main_capture(args: argparse.Namespace) -> int:

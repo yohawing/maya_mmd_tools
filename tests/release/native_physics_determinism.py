@@ -12,6 +12,7 @@ REQUIRED_FEATURE_FLAGS = 0x3
 REQUIRED_ASSERTIONS = {
     "native_physics_bake_used",
     "physics_bone_local_transform_delta",
+    "maya_bullet_world_sanity",
     "preview_constraints_blocked",
 }
 
@@ -25,6 +26,10 @@ def _canonical(report: dict[str, Any]) -> dict[str, Any]:
         "native_physics_available": report.get("native_physics_available"),
         "eval_frames": report.get("eval_frames"),
         "delta_epsilon": report.get("delta_epsilon"),
+        "static_pmx_extent": report.get("static_pmx_extent"),
+        "import_scale": report.get("import_scale"),
+        "scaled_static_pmx_extent": report.get("scaled_static_pmx_extent"),
+        "extent_source": report.get("extent_source"),
         "baseline": {
             "physics_routing": baseline.get("physics_routing"),
             "physics_bones": baseline.get("physics_bones"),
@@ -37,6 +42,7 @@ def _canonical(report: dict[str, Any]) -> dict[str, Any]:
             "preview_constraints": native.get("preview_constraints"),
         },
         "delta": report.get("delta"),
+        "bullet_world_sanity": report.get("bullet_world_sanity"),
         "assertions": report.get("assertions"),
     }
 

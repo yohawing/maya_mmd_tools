@@ -17,6 +17,10 @@ def _passing_report() -> dict:
         "runtime_library_path": "F:/repo/mmd_tools/native/win64/mmd_runtime_ffi.dll",
         "eval_frames": [0, 1],
         "delta_epsilon": 0.001,
+        "static_pmx_extent": 10.0,
+        "import_scale": 1.0,
+        "scaled_static_pmx_extent": 10.0,
+        "extent_source": "pmx_static_vertices_x_import_scale",
         "baseline": {"physics_routing": {}, "physics_bones": ["hair"], "samples": {"hair": {"0": {"tx": 0.0}}}},
         "native": {
             "physics_routing": {"used": True},
@@ -25,6 +29,7 @@ def _passing_report() -> dict:
             "preview_constraints": [{"node": "constraint", "nodeState": 2}],
         },
         "delta": {"passed": True, "comparedChannels": 1, "maxAbsDelta": 1.0},
+        "bullet_world_sanity": {"passed": True, "comparedSamples": 1},
         "assertions": [{"name": name, "pass": True} for name in sorted(determinism.REQUIRED_ASSERTIONS)],
     }
 
