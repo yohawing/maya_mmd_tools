@@ -14,6 +14,8 @@ from mmd_tools.nodes import mmd_append_node
 from mmd_tools.nodes import mmd_bone_morph_accum_node
 from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
+from mmd_tools.nodes import mmd_rigid_body_shape
+from mmd_tools.nodes import mmd_physics_joint_shape
 
 _main_window = None
 _animator_toolset_window = None
@@ -22,6 +24,7 @@ _animator_toolset_window = None
 # is fragile if the C++ plugin loads or unloads between init and uninit.
 _python_rig_nodes_registered = False
 _shader_override_registered = False
+_physics_nodes_registered = False
 _after_open_callback_id = None
 
 
@@ -330,6 +333,11 @@ def initializePlugin(mobject):
             mmd_append_node.register(plugin_fn)
             mmd_ccd_ik_node.register(plugin_fn)
             _python_rig_nodes_registered = True
+        global _physics_nodes_registered
+        if os.environ.get("MMD_TOOLS_PHYSICS_NODES") == "1":
+            mmd_rigid_body_shape.register(plugin_fn)
+            mmd_physics_joint_shape.register(plugin_fn)
+            _physics_nodes_registered = True
         _register_after_open_callback()
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
@@ -354,6 +362,11 @@ def uninitializePlugin(mobject):
                 mmd_shader.uninitializePlugin(mobject)
             finally:
                 _shader_override_registered = False
+        global _physics_nodes_registered
+        if _physics_nodes_registered:
+            mmd_physics_joint_shape.deregister(plugin_fn)
+            mmd_rigid_body_shape.deregister(plugin_fn)
+            _physics_nodes_registered = False
         # Only deregister rig nodes that Python actually registered
         global _python_rig_nodes_registered
         if _python_rig_nodes_registered:
