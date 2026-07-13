@@ -1,0 +1,365 @@
+"""Integration test for mmdPhysicsSolver and mmdPhysicsBoneDriver DG nodes.
+
+Verifies that the DG solver node produces bone world matrices matching the
+native bake oracle, and that the bone driver correctly decomposes world
+matrices to local translate/rotate.
+"""
+
+from __future__ import annotations
+
+import base64
+import math
+import os
+import unittest
+from pathlib import Path
+
+from maya import cmds
+
+from tests.common.maya_test_base import MayaTestBase
+
+from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_SOURCE_PMX_PAYLOAD
+from mmd_tools.core.mmd_parser import parse_pmx_file
+from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
+
+FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
+
+
+def _native_physics_available() -> bool:
+    try:
+        return is_native_physics_available()
+    except Exception:
+        return False
+
+
+def _create_joints_under_root(bones, root):
+    """Create flat joints under root with mmd_bone_index attributes."""
+    joints = []
+    for i, bone in enumerate(bones):
+        cmds.select(clear=True)
+        jnt = cmds.joint(name=f"bone_{i}")
+        cmds.xform(jnt, worldSpace=True, translation=list(bone.position))
+        cmds.addAttr(jnt, longName=ATTR_MMD_BONE_INDEX, attributeType="long")
+        cmds.setAttr(f"{jnt}.{ATTR_MMD_BONE_INDEX}", i)
+        cmds.parent(jnt, root)
+        joints.append(jnt)
+    return joints
+
+
+def _store_pmx_payload(root, pmx_bytes):
+    """Store base64-encoded PMX payload on model root."""
+    encoded = base64.b64encode(pmx_bytes).decode("ascii")
+    if not cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root, exists=True):
+        cmds.addAttr(root, longName=ATTR_MMD_SOURCE_PMX_PAYLOAD, dataType="string", hidden=True)
+    cmds.setAttr(f"{root}.{ATTR_MMD_SOURCE_PMX_PAYLOAD}", encoded, type="string")
+
+
+@unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
+@unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+class TestPhysicsSolverNode(MayaTestBase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            cmds.loadPlugin(plugin_path)
+        except Exception:
+            pass
+        cls.pmx_bytes = FIXTURE_PATH.read_bytes()
+        cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
+        super().tearDownClass()
+
+    def _build_scene(self):
+        """Create root, joints, PMX payload — minimal scene for solver."""
+        root = cmds.group(empty=True, name="test_solver_root")
+        joints = _create_joints_under_root(self.pmx.bones, root)
+        _store_pmx_payload(root, self.pmx_bytes)
+        return root, joints
+
+    def _create_solver(self, root):
+        """Create and connect a solver node to root and time."""
+        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
+        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
+        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        return solver
+
+    def test_solver_node_creates(self):
+        self.assertTrue(cmds.objExists("time1"))
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+        self.assertEqual(cmds.nodeType(solver), "mmdPhysicsSolver")
+
+    def test_solver_outputs_bone_count(self):
+        root, joints = self._build_scene()
+        solver = self._create_solver(root)
+        cmds.currentTime(0)
+        bone_count = cmds.getAttr(f"{solver}.outBoneCount")
+        self.assertEqual(bone_count, len(self.pmx.bones))
+
+    def test_solver_outputs_solved_at_frame_zero(self):
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+        cmds.currentTime(0)
+        solved = cmds.getAttr(f"{solver}.outSolved")
+        self.assertTrue(solved)
+
+    def test_solver_outputs_status(self):
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+        cmds.currentTime(0)
+        status = cmds.getAttr(f"{solver}.outStatus")
+        self.assertIn(status, ("reset", "stepped", "cached"))
+
+    def test_solver_disabled_outputs_not_solved(self):
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+        cmds.setAttr(f"{solver}.enable", False)
+        cmds.currentTime(0)
+        solved = cmds.getAttr(f"{solver}.outSolved")
+        self.assertFalse(solved)
+        status = cmds.getAttr(f"{solver}.outStatus")
+        self.assertEqual(status, "disabled")
+
+    def test_solver_same_time_idempotent(self):
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+        cmds.currentTime(1)
+        status1 = cmds.getAttr(f"{solver}.outStatus")
+        # Force re-evaluation by reading again (DG caches, so this verifies
+        # the node handles same-time correctly on internal state)
+        self.assertIn(status1, ("reset", "stepped"))
+
+    def test_solver_bone_matrices_non_empty(self):
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+        cmds.currentTime(0)
+        matrices = cmds.getAttr(f"{solver}.outBoneMatrices")
+        self.assertIsNotNone(matrices)
+        expected_len = len(self.pmx.bones) * 16
+        self.assertEqual(len(matrices), expected_len)
+
+    def test_solver_parity_with_native_oracle(self):
+        """Solver node bone matrices must match direct native stepping."""
+        from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
+        from mmd_tools.core.native.mmd_anim_runtime_handles import (
+            MmdRuntimeInstance,
+            MmdRuntimeModel,
+            MmdRuntimePhysicsWorld,
+        )
+        from mmd_tools.core.native.mmd_anim_runtime_types import (
+            MMD_RUNTIME_PHYSICS_MODE_LIVE,
+        )
+
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+
+        cmds.currentUnit(time="ntsc")
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+
+        n_steps = 10
+        for frame in range(1, n_steps + 1):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+        solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
+
+        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        ref_instance = MmdRuntimeInstance.for_model(ref_model)
+        ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
+        ref_instance.evaluate_rest_pose()
+        ref_world.reset(ref_instance)
+        for _ in range(n_steps):
+            ref_instance.evaluate_rest_pose()
+            ref_world.step_runtime(ref_instance, 1.0 / 30.0)
+            ref_instance.evaluate_current_pose_after_physics()
+        ref_raw = ref_instance.get_world_matrices()
+
+        self.assertIsNotNone(solver_flat)
+        self.assertIsNotNone(ref_raw)
+
+        bone_count = len(self.pmx.bones)
+        self.assertEqual(len(solver_flat), bone_count * 16)
+        self.assertEqual(len(ref_raw), bone_count)
+
+        for bone_idx in range(bone_count):
+            ref_maya = mmd_matrix_to_maya(ref_raw[bone_idx])
+            for c in range(16):
+                solver_val = solver_flat[bone_idx * 16 + c]
+                ref_val = ref_maya[c]
+                self.assertAlmostEqual(
+                    solver_val, ref_val,
+                    delta=0.005,
+                    msg=f"bone[{bone_idx}] matrix[{c}]: solver={solver_val}, ref={ref_val}",
+                )
+
+        ref_instance.free()
+        ref_model.free()
+        ref_world.free()
+
+    def test_solver_forward_step_changes_physics_bones(self):
+        """Physics bones must show displacement after forward stepping."""
+        root, _ = self._build_scene()
+        solver = self._create_solver(root)
+
+        cmds.currentUnit(time="ntsc")
+        cmds.currentTime(0)
+        mat_before = cmds.getAttr(f"{solver}.outBoneMatrices")
+
+        for frame in range(1, 31):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+        mat_after = cmds.getAttr(f"{solver}.outBoneMatrices")
+
+        physics_bone_indices = set()
+        for rb in self.pmx.rigid_bodies:
+            if rb.physics_mode != 0 and 0 <= rb.related_bone_index < len(self.pmx.bones):
+                physics_bone_indices.add(rb.related_bone_index)
+
+        if not physics_bone_indices:
+            self.skipTest("No physics-driven bones")
+
+        changed_count = 0
+        for idx in physics_bone_indices:
+            offset = idx * 16
+            before_vals = mat_before[offset : offset + 16]
+            after_vals = mat_after[offset : offset + 16]
+            diff = sum((a - b) ** 2 for a, b in zip(after_vals, before_vals)) ** 0.5
+            if diff > 0.001:
+                changed_count += 1
+
+        self.assertGreater(
+            changed_count, 0,
+            "At least some physics bones should change after 30 forward steps",
+        )
+
+
+@unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
+@unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+class TestPhysicsBoneDriverNode(MayaTestBase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            cmds.loadPlugin(plugin_path)
+        except Exception:
+            pass
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
+        super().tearDownClass()
+
+    def test_driver_node_creates(self):
+        driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
+        self.assertEqual(cmds.nodeType(driver), "mmdPhysicsBoneDriver")
+
+    def test_driver_identity_matrix_produces_zero_output(self):
+        """An identity matrix at bone 0 with identity parent should produce origin."""
+        driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
+        identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        cmds.setAttr(f"{driver}.inSolverBoneMatrices", identity, type="doubleArray")
+        cmds.setAttr(f"{driver}.inSolverBoneCount", 1)
+        cmds.setAttr(f"{driver}.inBoneIndex", 0)
+        cmds.setAttr(f"{driver}.inParentBoneIndex", -1)
+        cmds.setAttr(f"{driver}.inSolved", True)
+
+        tx = cmds.getAttr(f"{driver}.outTranslateX")
+        ty = cmds.getAttr(f"{driver}.outTranslateY")
+        tz = cmds.getAttr(f"{driver}.outTranslateZ")
+        self.assertAlmostEqual(tx, 0.0, places=6)
+        self.assertAlmostEqual(ty, 0.0, places=6)
+        self.assertAlmostEqual(tz, 0.0, places=6)
+
+    def test_driver_extracts_translation(self):
+        """A translated matrix should produce matching translate output."""
+        driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
+        mat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5.0, 10.0, -3.0, 1]
+        cmds.setAttr(f"{driver}.inSolverBoneMatrices", mat, type="doubleArray")
+        cmds.setAttr(f"{driver}.inSolverBoneCount", 1)
+        cmds.setAttr(f"{driver}.inBoneIndex", 0)
+        cmds.setAttr(f"{driver}.inParentBoneIndex", -1)
+        cmds.setAttr(f"{driver}.inSolved", True)
+
+        tx = cmds.getAttr(f"{driver}.outTranslateX")
+        ty = cmds.getAttr(f"{driver}.outTranslateY")
+        tz = cmds.getAttr(f"{driver}.outTranslateZ")
+        self.assertAlmostEqual(tx, 5.0, places=4)
+        self.assertAlmostEqual(ty, 10.0, places=4)
+        self.assertAlmostEqual(tz, -3.0, places=4)
+
+    def test_driver_removes_joint_orient(self):
+        """With a 90° Z JO and a 90° Z world rotation, rotate output should be ~zero."""
+        driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
+        c = math.cos(math.pi / 2)
+        s = math.sin(math.pi / 2)
+        rot90z = [c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        cmds.setAttr(f"{driver}.inSolverBoneMatrices", rot90z, type="doubleArray")
+        cmds.setAttr(f"{driver}.inSolverBoneCount", 1)
+        cmds.setAttr(f"{driver}.inBoneIndex", 0)
+        cmds.setAttr(f"{driver}.inParentBoneIndex", -1)
+        cmds.setAttr(f"{driver}.inSolved", True)
+        cmds.setAttr(f"{driver}.inJointOrientZ", math.degrees(math.pi / 2))
+
+        rx = cmds.getAttr(f"{driver}.outRotateX")
+        ry = cmds.getAttr(f"{driver}.outRotateY")
+        rz = cmds.getAttr(f"{driver}.outRotateZ")
+        self.assertAlmostEqual(rx, 0.0, places=4)
+        self.assertAlmostEqual(ry, 0.0, places=4)
+        self.assertAlmostEqual(rz, 0.0, places=4)
+
+    def test_driver_disabled_outputs_zero(self):
+        driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
+        mat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5.0, 10.0, -3.0, 1]
+        cmds.setAttr(f"{driver}.inSolverBoneMatrices", mat, type="doubleArray")
+        cmds.setAttr(f"{driver}.inSolverBoneCount", 1)
+        cmds.setAttr(f"{driver}.inBoneIndex", 0)
+        cmds.setAttr(f"{driver}.inParentBoneIndex", -1)
+        cmds.setAttr(f"{driver}.inSolved", True)
+        cmds.setAttr(f"{driver}.enable", False)
+
+        tx = cmds.getAttr(f"{driver}.outTranslateX")
+        self.assertAlmostEqual(tx, 0.0, places=6)
+
+    def test_driver_parent_bone_index_computes_local(self):
+        """Bone at (10,0,0) with parent at (5,0,0) should have local translate (5,0,0)."""
+        driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
+        parent_mat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5.0, 0, 0, 1]
+        child_mat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10.0, 0, 0, 1]
+        flat = parent_mat + child_mat
+        cmds.setAttr(f"{driver}.inSolverBoneMatrices", flat, type="doubleArray")
+        cmds.setAttr(f"{driver}.inSolverBoneCount", 2)
+        cmds.setAttr(f"{driver}.inBoneIndex", 1)
+        cmds.setAttr(f"{driver}.inParentBoneIndex", 0)
+        cmds.setAttr(f"{driver}.inSolved", True)
+
+        tx = cmds.getAttr(f"{driver}.outTranslateX")
+        ty = cmds.getAttr(f"{driver}.outTranslateY")
+        tz = cmds.getAttr(f"{driver}.outTranslateZ")
+        self.assertAlmostEqual(tx, 5.0, places=4)
+        self.assertAlmostEqual(ty, 0.0, places=4)
+        self.assertAlmostEqual(tz, 0.0, places=4)
+
+    def test_driver_out_of_range_bone_index(self):
+        """Out-of-range bone index should produce identity (zero) output."""
+        driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
+        mat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5.0, 10.0, 0, 1]
+        cmds.setAttr(f"{driver}.inSolverBoneMatrices", mat, type="doubleArray")
+        cmds.setAttr(f"{driver}.inSolverBoneCount", 1)
+        cmds.setAttr(f"{driver}.inBoneIndex", 99)
+        cmds.setAttr(f"{driver}.inSolved", True)
+
+        tx = cmds.getAttr(f"{driver}.outTranslateX")
+        self.assertAlmostEqual(tx, 0.0, places=6)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -16,6 +16,8 @@ from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
 from mmd_tools.nodes import mmd_rigid_body_shape
 from mmd_tools.nodes import mmd_physics_joint_shape
+from mmd_tools.nodes import mmd_physics_solver_node
+from mmd_tools.nodes import mmd_physics_bone_driver_node
 
 _main_window = None
 _animator_toolset_window = None
@@ -337,6 +339,8 @@ def initializePlugin(mobject):
         if os.environ.get("MMD_TOOLS_PHYSICS_NODES") == "1":
             mmd_rigid_body_shape.register(plugin_fn)
             mmd_physics_joint_shape.register(plugin_fn)
+            mmd_physics_solver_node.register(plugin_fn)
+            mmd_physics_bone_driver_node.register(plugin_fn)
             _physics_nodes_registered = True
         _register_after_open_callback()
     except Exception as e:
@@ -364,6 +368,8 @@ def uninitializePlugin(mobject):
                 _shader_override_registered = False
         global _physics_nodes_registered
         if _physics_nodes_registered:
+            mmd_physics_bone_driver_node.deregister(plugin_fn)
+            mmd_physics_solver_node.deregister(plugin_fn)
             mmd_physics_joint_shape.deregister(plugin_fn)
             mmd_rigid_body_shape.deregister(plugin_fn)
             _physics_nodes_registered = False
