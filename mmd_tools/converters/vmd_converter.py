@@ -251,11 +251,13 @@ class VmdConverter:
         profile: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
         use_native_physics_bake: bool = False,
+        target_model: str = None,
     ) -> VmdImportContext:
         """Return import-run state for convert() dispatch and split helpers."""
         return VmdImportContext(
             vmd_data=vmd_data,
             target_namespace=target_namespace,
+            target_model=target_model,
             layer_name=layer_name,
             bake_mode=bool(bake_mode),
             clear_existing_motion=bool(clear_existing_motion),
@@ -451,6 +453,7 @@ class VmdConverter:
         profile: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
         use_native_physics_bake: bool = False,
+        target_model: str = None,
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
@@ -461,6 +464,7 @@ class VmdConverter:
         Args:
             vmd_data: パース済みのVMDデータ
             target_namespace: 対象となるネームスペース（省略可）
+            target_model: 対象モデルのroot node（指定時はbone/morph mappingをroot配下へ限定）
             layer_name: アニメーションレイヤー名
             bake_mode: True の場合は live rig ではなく runtime final-pose bake を優先する
             clear_existing_motion: True の場合は既存の VMD motion keys/layer を削除してから読み込む
@@ -482,6 +486,7 @@ class VmdConverter:
         import_context = self._import_context(
             vmd_data=vmd_data,
             target_namespace=target_namespace,
+            target_model=target_model,
             layer_name=layer_name,
             bake_mode=bake_mode,
             clear_existing_motion=clear_existing_motion,
@@ -513,11 +518,18 @@ class VmdConverter:
 
             # 名前マッピングの構築（ボーン名 → Maya joint）
             with vmd_profile.scope("name_mapping_build"):
-                self._build_name_mappings(import_context.target_namespace)
+                self._build_name_mappings(
+                    import_context.target_namespace,
+                    target_model=import_context.target_model,
+                )
             _emit_progress(40)
             motion_kind = self._detect_vmd_motion_kind(import_context.vmd_data)
             if import_context.clear_existing_motion and motion_kind in {"model", "mixed"}:
-                self._clear_existing_motion(import_context.layer_name, import_context.target_namespace)
+                self._clear_existing_motion(
+                    import_context.layer_name,
+                    import_context.target_namespace,
+                    target_model=import_context.target_model,
+                )
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
@@ -598,7 +610,11 @@ class VmdConverter:
 
             if not runtime_success:
                 # --- レガシーパス（従来の変換） ---
-                self._apply_ik_enabled_animation(import_context.vmd_data, import_context.target_namespace)
+                self._apply_ik_enabled_animation(
+                    import_context.vmd_data,
+                    import_context.target_namespace,
+                    target_model=import_context.target_model,
+                )
                 _emit_progress(60)
 
                 if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
@@ -693,9 +709,19 @@ class VmdConverter:
         """VMD import 中に変わった animLayer selected 状態を元に戻す。"""
         restore_anim_layer_selection(selection)
 
-    def _clear_existing_motion(self, layer_name: str, target_namespace: Optional[str] = None) -> None:
+    def _clear_existing_motion(
+        self,
+        layer_name: str,
+        target_namespace: Optional[str] = None,
+        target_model: Optional[str] = None,
+    ) -> None:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
-        clear_existing_motion(self._import_state_context(), layer_name, target_namespace)
+        clear_existing_motion(
+            self._import_state_context(),
+            layer_name,
+            target_namespace,
+            target_model=target_model,
+        )
 
     def _clear_existing_camera_motion(self) -> None:
         """既存のMMDカメラアニメーションキーを削除する。"""
@@ -1291,7 +1317,7 @@ class VmdConverter:
         """
         add_transform_attrs_to_anim_layer(self.anim_layer, objects)
 
-    def _build_name_mappings(self, target_namespace: str = None):
+    def _build_name_mappings(self, target_namespace: str = None, target_model: str = None):
         """ボーン名とモーフ名のマッピングを構築
 
         Phase 1 拡張: bone_name → joint に加え、
@@ -1299,7 +1325,11 @@ class VmdConverter:
         これにより mmd-anim の world_matrices (PMXボーン順) を Maya ジョイントに
         正しく対応づけられる。
         """
-        build_name_mappings(self._name_mapping_context(), target_namespace)
+        build_name_mappings(
+            self._name_mapping_context(),
+            target_namespace,
+            target_model=target_model,
+        )
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
@@ -1339,11 +1369,24 @@ class VmdConverter:
     def _node_namespace(node: str) -> str:
         return node_namespace(node)
 
-    def _collect_ik_nodes_by_bone_name(self, target_namespace: str = None) -> Dict[str, str]:
+    def _collect_ik_nodes_by_bone_name(
+        self,
+        target_namespace: str = None,
+        target_model: str = None,
+    ) -> Dict[str, str]:
         """mmdCcdIk ノードを PMX IK ボーン名で引けるように収集する。"""
-        return collect_ik_nodes_by_bone_name(target_namespace, self._node_namespace)
+        return collect_ik_nodes_by_bone_name(
+            target_namespace,
+            self._node_namespace,
+            target_model=target_model,
+        )
 
-    def _apply_ik_enabled_animation(self, vmd_data: VmdData, target_namespace: str = None) -> None:
+    def _apply_ik_enabled_animation(
+        self,
+        vmd_data: VmdData,
+        target_namespace: str = None,
+        target_model: str = None,
+    ) -> None:
         """VMD の IK 表示/非表示フレームを mmdCcdIk.enabled に反映する。
 
         PMX import 直後は REST mesh を守るため mmdCcdIk.enabled=False。
@@ -1351,7 +1394,12 @@ class VmdConverter:
         property frame がないモデルモーションでは、従来互換として全 IK を
         評価範囲の先頭で有効にする。
         """
-        apply_ik_enabled_animation(self._ik_enabled_animation_context(), vmd_data, target_namespace)
+        apply_ik_enabled_animation(
+            self._ik_enabled_animation_context(),
+            vmd_data,
+            target_namespace,
+            target_model=target_model,
+        )
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""
@@ -1506,6 +1554,6 @@ class VmdConverter:
     def _iter_morph_mappings(mapping_entry):
         return iter_morph_mappings(mapping_entry)
 
-    def _build_morph_mappings(self):
+    def _build_morph_mappings(self, target_model: str = None):
         """シーン内のblendShapeとmetadata networkからモーフ名マッピングを構築"""
-        build_morph_mappings(self)
+        build_morph_mappings(self, target_model=target_model)

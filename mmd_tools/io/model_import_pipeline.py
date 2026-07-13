@@ -78,6 +78,7 @@ class ModelImportPipeline:
         """Connect PMX network morph metadata nodes back to the model root."""
         for morph_node in (
             morph_result.get("bone_morph_nodes", [])
+            + morph_result.get("group_morph_nodes", [])
             + morph_result.get("material_morph_nodes", [])
         ):
             if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):

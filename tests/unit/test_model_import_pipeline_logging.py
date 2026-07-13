@@ -88,6 +88,35 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             force=True,
         )
 
+    def test_all_generated_network_morph_types_receive_root_ownership(self):
+        """Normal PMX import ownership includes bone, group, and material morph nodes."""
+        pipeline = self._make_pipeline(MagicMock())
+        morph_result = {
+            "bone_morph_nodes": ["bone_morph"],
+            "group_morph_nodes": ["group_morph"],
+            "material_morph_nodes": ["material_morph"],
+        }
+        with patch.object(
+            model_import_pipeline.cmds,
+            "attributeQuery",
+            return_value=False,
+        ), patch.object(model_import_pipeline.cmds, "addAttr") as add_attr, patch.object(
+            model_import_pipeline.cmds,
+            "connectAttr",
+        ) as connect_attr:
+            pipeline.connect_morph_nodes_to_root("ModelRoot", morph_result)
+
+        self.assertEqual(add_attr.call_count, 3)
+        self.assertEqual(
+            {call.args for call in connect_attr.call_args_list},
+            {
+                ("ModelRoot.message", "bone_morph.mmd_model_root"),
+                ("ModelRoot.message", "group_morph.mmd_model_root"),
+                ("ModelRoot.message", "material_morph.mmd_model_root"),
+            },
+        )
+        self.assertTrue(all(call.kwargs == {"force": True} for call in connect_attr.call_args_list))
+
     def test_mesh_converter_records_glsl_hardware_backend(self):
         converter = MeshConverter()
         with patch.object(mesh_converter_module.cmds, "objExists", return_value=True), patch.object(

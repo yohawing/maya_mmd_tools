@@ -1,6 +1,8 @@
 """VMD IK enable animation and mmdCcdIk node behavior tests."""
 
 import json
+import os
+from pathlib import Path
 
 import maya.cmds as cmds
 
@@ -15,6 +17,26 @@ from tests.common.vmd_mock import create_test_vmd_data
 
 class TestVmdIkAnimation(MayaTestBase):
     """IK enable keying and mmdCcdIk behavior tests."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._previous_skip_shader_override = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+        plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+        if not cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+            cls.plugins_loaded.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
+
+    @classmethod
+    def tearDownClass(cls):
+        try:
+            super().tearDownClass()
+        finally:
+            previous = cls._previous_skip_shader_override
+            if previous is None:
+                os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+            else:
+                os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
 
     def setUp(self):
         super().setUp()
@@ -80,6 +102,59 @@ class TestVmdIkAnimation(MayaTestBase):
         self.assertEqual(cmds.keyframe(f"{node_b}.enabled", query=True, timeChange=True), None)
 
         cmds.delete(node_a, node_b)
+
+    def test_apply_ik_enabled_animation_scopes_namespace_less_nodes_to_target_root(self):
+        """Explicit root ownership prevents same-named namespace-less IK cross-keying."""
+        root_a = cmds.group(empty=True, name="ik_model_a_root")
+        root_b = cmds.group(empty=True, name="ik_model_b_root")
+        cmds.select(clear=True)
+        joint_a = cmds.joint(name="ik_model_a_joint")
+        cmds.parent(joint_a, root_a)
+        cmds.select(clear=True)
+        joint_b = cmds.joint(name="ik_model_b_joint")
+        cmds.parent(joint_b, root_b)
+        node_a = cmds.createNode("mmdCcdIk", name="ik_model_a_solver")
+        node_b = cmds.createNode("mmdCcdIk", name="ik_model_b_solver")
+        for node, joint in ((node_a, joint_a), (node_b, joint_b)):
+            cmds.addAttr(node, longName="mmd_ik_bone_name", dataType="string")
+            cmds.setAttr(f"{node}.mmd_ik_bone_name", "左足ＩＫ", type="string")
+            cmds.setAttr(f"{node}.enabled", False)
+            cmds.connectAttr(f"{joint}.rotate", f"{node}.inputRotate[0]")
+
+        vmd_data = create_test_vmd_data()
+        frame = VmdIKShowHideFrame()
+        frame.frame_number = 20
+        frame.ik_states = [("左足ＩＫ", 0)]
+        vmd_data.ik_show_hide_frames = [frame]
+
+        apply_ik_enabled_animation(
+            self._ik_enabled_context(),
+            vmd_data,
+            target_model=root_b,
+        )
+
+        self.assertIsNone(cmds.keyframe(f"{node_a}.enabled", query=True))
+        self.assertIn(0.0, cmds.keyframe(f"{node_b}.enabled", query=True, timeChange=True) or [])
+        self.assertIn(20.0, cmds.keyframe(f"{node_b}.enabled", query=True, timeChange=True) or [])
+
+    def test_apply_ik_enabled_animation_passes_target_model_as_callback_keyword(self):
+        """Direct public-helper contexts do not bind target_model as namespace_for_node."""
+        calls = []
+
+        def collect(target_namespace=None, *, target_model=None):
+            calls.append((target_namespace, target_model))
+            return {}
+
+        context = VmdIkEnabledAnimationContext(
+            logger=self.converter.logger,
+            collect_ik_nodes_by_bone_name=collect,
+            get_animation_frame_range=get_animation_frame_range,
+            vmd_frame_to_maya_time=self.converter.vmd_frame_to_maya_time,
+        )
+
+        apply_ik_enabled_animation(context, create_test_vmd_data(), target_model="model_root")
+
+        self.assertEqual(calls, [(None, "model_root")])
 
     def test_mmd_ccd_ik_disabled_passes_input_rotate_through(self):
         """IK OFF 時は link joint の FK/VMD 回転を失わないよう inputRotate を outputRotate に通す"""

@@ -12,6 +12,7 @@ from ..core.exceptions import MMDImportException
 from ..core.logger import get_logger
 from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
+from ..services.scene_model_service import SceneModelService
 
 
 def import_vmd_file(
@@ -69,15 +70,21 @@ def import_vmd_file(
         else:
             selected = cmds.ls(selection=True)
             if selected:
+                scene_model_service = SceneModelService()
                 for sel in selected:
-                    target_namespace = NamespaceUtils.get_namespace_from_node(sel)
-                    if target_namespace:
-                        logger.debug(f"Target namespace: {target_namespace}")
-                        target_model = sel
+                    resolved_root = scene_model_service.get_parent_mmd_root(sel)
+                    if resolved_root:
+                        target_model = resolved_root
+                        target_namespace = NamespaceUtils.get_namespace_from_node(resolved_root)
+                        logger.debug(f"Resolved target model root from selection: {target_model}")
                         break
                 if not target_model:
-                    target_model = selected[0]
-                    logger.debug(f"Target model without namespace: {target_model}")
+                    for sel in selected:
+                        target_namespace = NamespaceUtils.get_namespace_from_node(sel)
+                        if target_namespace:
+                            logger.debug(f"Target namespace fallback: {target_namespace}")
+                            break
+                    logger.debug("Selected node has no provable MMD model root; using legacy namespace fallback")
             else:
                 logger.warning("Target model is not specified.")
 
@@ -156,6 +163,7 @@ def import_vmd_file(
                     profile=profile,
                     progress_callback=progress_callback,
                     use_native_physics_bake=use_native_physics_bake,
+                    target_model=target_model,
                 )
         finally:
             vmd_profile.flush("import_vmd_file")

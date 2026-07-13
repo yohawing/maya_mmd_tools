@@ -10,6 +10,7 @@ from mmd_tools.converters.vmd_bone_animation import convert_bone_animation
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.vmd_context import VmdBoneAnimationContext
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
+from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX, ATTR_MMD_BONE_NAME
 from tests.common.maya_test_base import MayaTestBase
 
 
@@ -102,6 +103,34 @@ class TestVmdBoneAnimation(MayaTestBase):
         self.assertAlmostEqual(cmds.getAttr(f"{joint}.translateZ"), 1.0, places=6)
 
         cmds.delete(joint)
+
+    def test_namespace_less_duplicate_bones_key_only_explicit_target_root(self):
+        """Same bone name/index on two roots keys only the explicitly selected model."""
+        root_a = cmds.group(empty=True, name="bone_model_a_root")
+        root_b = cmds.group(empty=True, name="bone_model_b_root")
+        cmds.select(clear=True)
+        joint_a = cmds.joint(name="bone_model_a_center")
+        cmds.parent(joint_a, root_a)
+        cmds.select(clear=True)
+        joint_b = cmds.joint(name="bone_model_b_center")
+        cmds.parent(joint_b, root_b)
+        for joint in (joint_a, joint_b):
+            cmds.addAttr(joint, longName=ATTR_MMD_BONE_NAME, dataType="string")
+            cmds.addAttr(joint, longName=ATTR_MMD_BONE_INDEX, attributeType="long")
+            cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
+            cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}", 0)
+
+        self.converter.use_animation_layers = False
+        self.converter._build_name_mappings(target_model=root_b)
+        self.converter._bone_bind_poses["センター"] = (0.0, 0.0, 0.0)
+        self.assertTrue(
+            self.converter._convert_bone_animation(
+                [_bone_frame("センター", 9, (1.0, 2.0, 3.0))]
+            )
+        )
+
+        self.assertIsNone(cmds.keyframe(joint_a, query=True))
+        self.assertIn(9.0, cmds.keyframe(joint_b, query=True, timeChange=True))
 
     def test_motion_scale_affects_bone_translate_offset_only(self):
         """motion_scale は bind pose ではなく VMD translate offset にだけ適用する。"""

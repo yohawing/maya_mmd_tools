@@ -11,6 +11,59 @@ import maya.cmds as cmds
 from .vmd_runtime_rig_helper import _ls_mmd_append_nodes
 
 
+def stable_long_dag_path(node: Optional[str]) -> Optional[str]:
+    """Return a long DAG path when node resolves unambiguously; otherwise preserve it."""
+    if not node:
+        return node
+    matches = cmds.ls(node, long=True) or []
+    if len(matches) == 1 and matches[0].startswith("|"):
+        return matches[0]
+    return node
+
+
+class DagPathKeyDict(dict):
+    """Canonical long-path mapping with unambiguous short-name lookup compatibility."""
+
+    @staticmethod
+    def _canonical_key(key):
+        return stable_long_dag_path(key) if isinstance(key, str) else key
+
+    def __contains__(self, key):
+        return super().__contains__(self._canonical_key(key))
+
+    def __setitem__(self, key, value):
+        return super().__setitem__(self._canonical_key(key), value)
+
+    def __getitem__(self, key):
+        return super().__getitem__(self._canonical_key(key))
+
+    def get(self, key, default=None):
+        return super().get(self._canonical_key(key), default)
+
+
+def canonicalize_dag_mapping(mapping: dict, path_cache: dict) -> Tuple[dict, dict]:
+    """Canonicalize a DAG-keyed mapping once and retain its original-key aliases."""
+    canonical = {}
+    aliases = {}
+    for key, value in mapping.items():
+        if isinstance(key, str):
+            canonical_key = cached_long_dag_path(key, path_cache)
+        else:
+            canonical_key = key
+        canonical[canonical_key] = value
+        aliases.setdefault(canonical_key, []).append(key)
+    return canonical, aliases
+
+
+def cached_long_dag_path(node: str, path_cache: dict) -> str:
+    """Resolve one DAG identifier at most once for a decomposition call."""
+    if node not in path_cache:
+        canonical = stable_long_dag_path(node)
+        path_cache[node] = canonical
+        path_cache.setdefault(canonical, canonical)
+    return path_cache[node]
+
+
 def get_or_expand_runtime_channel(
     ch_dict: Dict[str, Optional[om.MDoubleArray]],
     st_dict: Dict[str, dict],
@@ -44,13 +97,17 @@ def joint_orient_quat_from_joint(joint: str) -> om.MQuaternion:
 
 def collect_append_info() -> Dict[str, dict]:
     """Collect mmdAppend dependency metadata keyed by target joint."""
-    result = {}
+    result = DagPathKeyDict()
     append_nodes = _ls_mmd_append_nodes()
 
     def _compound_destinations(src_attr, dst_attr):
         plugs = cmds.listConnections(src_attr, s=False, d=True, p=True) or []
         suffix = f".{dst_attr}"
-        return [plug.rsplit(".", 1)[0] for plug in plugs if plug.endswith(suffix)]
+        return [
+            stable_long_dag_path(plug.rsplit(".", 1)[0])
+            for plug in plugs
+            if plug.endswith(suffix)
+        ]
 
     node_targets = {}
     for node in append_nodes:
@@ -73,7 +130,7 @@ def collect_append_info() -> Dict[str, dict]:
             if src_attr.startswith(append_prefix):
                 return node_targets.get(src_node), src_node
             if src_attr.startswith(joint_attr):
-                return src_node, None
+                return stable_long_dag_path(src_node), None
             if src_attr.startswith("output3D"):
                 upstream = cmds.listConnections(f"{src_node}.input3D[0]", s=True, d=False, p=True) or []
                 if upstream:
@@ -115,6 +172,7 @@ def collect_append_info() -> Dict[str, dict]:
             })
         result[target_joint] = {
             "node": node,
+            "target_joint": target_joint,
             "source_joint": source_joint,
             "source_append_node": source_append_node,
             "ratio": ratio,
@@ -185,12 +243,17 @@ def decompose_append_rotations_for_scene(
     n_frames: int,
 ) -> Dict[str, Dict[str, om.MDoubleArray]]:
     """Decompose final rotations into own rotations following append dependencies."""
+    path_cache = {}
+    canonical_values, value_aliases = canonicalize_dag_mapping(joint_channel_values, path_cache)
+    canonical_static, _ = canonicalize_dag_mapping(joint_channel_static, path_cache)
+    canonical_append_info, _ = canonicalize_dag_mapping(append_info, path_cache)
     resolved: Dict[str, Optional[Dict[str, Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]]] = {}
     resolving = set()
 
     def _final_rotation(joint: str) -> Optional[Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]:
-        channels = joint_channel_values.get(joint, {})
-        static = joint_channel_static.get(joint, {})
+        canonical_joint = cached_long_dag_path(joint, path_cache)
+        channels = canonical_values.get(canonical_joint, {})
+        static = canonical_static.get(canonical_joint, {})
         rx = get_or_expand_runtime_channel(channels, static, "rotateX", n_frames)
         ry = get_or_expand_runtime_channel(channels, static, "rotateY", n_frames)
         rz = get_or_expand_runtime_channel(channels, static, "rotateZ", n_frames)
@@ -199,6 +262,7 @@ def decompose_append_rotations_for_scene(
         return rx, ry, rz
 
     def _resolve(joint: str) -> Optional[Dict[str, Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]]:
+        joint = cached_long_dag_path(joint, path_cache)
         if joint in resolved:
             return resolved[joint]
         if joint in resolving:
@@ -206,7 +270,7 @@ def decompose_append_rotations_for_scene(
             resolved[joint] = None
             return None
 
-        info = append_info.get(joint)
+        info = canonical_append_info.get(joint)
         if not info or not info.get("affect_rotation") or not info.get("source_joint"):
             resolved[joint] = None
             return None
@@ -217,8 +281,8 @@ def decompose_append_rotations_for_scene(
             return None
 
         resolving.add(joint)
-        source_joint = info["source_joint"]
-        source_info = append_info.get(source_joint)
+        source_joint = cached_long_dag_path(info["source_joint"], path_cache)
+        source_info = canonical_append_info.get(source_joint)
         source_rotation = _final_rotation(source_joint)
         source_resolved = _resolve(source_joint) if source_info else None
         source_rotation_is_mmd = bool(info.get("source_rotation_is_mmd", False))
@@ -247,15 +311,17 @@ def decompose_append_rotations_for_scene(
         return resolved[joint]
 
     decomposed = {}
-    for joint in append_info:
+    for joint in canonical_append_info:
         state = _resolve(joint)
         if state:
             own_rx, own_ry, own_rz = state["own"]
-            decomposed[joint] = {
+            channels = {
                 "rotateX": own_rx,
                 "rotateY": own_ry,
                 "rotateZ": own_rz,
             }
+            for alias in value_aliases.get(joint, [joint]):
+                decomposed[alias] = channels
     return decomposed
 
 
@@ -299,12 +365,17 @@ def decompose_append_translations_for_scene(
     n_frames: int,
 ) -> Dict[str, Dict[str, om.MDoubleArray]]:
     """Decompose final translations into own translations following append dependencies."""
+    path_cache = {}
+    canonical_values, value_aliases = canonicalize_dag_mapping(joint_channel_values, path_cache)
+    canonical_static, _ = canonicalize_dag_mapping(joint_channel_static, path_cache)
+    canonical_append_info, _ = canonicalize_dag_mapping(append_info, path_cache)
     resolved: Dict[str, Optional[Dict[str, Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]]] = {}
     resolving = set()
 
     def _final_translation(joint: str) -> Optional[Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]:
-        channels = joint_channel_values.get(joint, {})
-        static = joint_channel_static.get(joint, {})
+        canonical_joint = cached_long_dag_path(joint, path_cache)
+        channels = canonical_values.get(canonical_joint, {})
+        static = canonical_static.get(canonical_joint, {})
         tx = get_or_expand_runtime_channel(channels, static, "translateX", n_frames)
         ty = get_or_expand_runtime_channel(channels, static, "translateY", n_frames)
         tz = get_or_expand_runtime_channel(channels, static, "translateZ", n_frames)
@@ -313,7 +384,7 @@ def decompose_append_translations_for_scene(
         return tx, ty, tz
 
     def _rest_translation(joint: str) -> Tuple[float, float, float]:
-        info = append_info.get(joint)
+        info = canonical_append_info.get(cached_long_dag_path(joint, path_cache))
         if info:
             try:
                 return tuple(float(v) for v in cmds.getAttr(f"{info['node']}.baseTranslate")[0])
@@ -339,6 +410,7 @@ def decompose_append_translations_for_scene(
         return out_x, out_y, out_z
 
     def _resolve(joint: str) -> Optional[Dict[str, Tuple[om.MDoubleArray, om.MDoubleArray, om.MDoubleArray]]]:
+        joint = cached_long_dag_path(joint, path_cache)
         if joint in resolved:
             return resolved[joint]
         if joint in resolving:
@@ -346,7 +418,7 @@ def decompose_append_translations_for_scene(
             resolved[joint] = None
             return None
 
-        info = append_info.get(joint)
+        info = canonical_append_info.get(joint)
         if not info or not info.get("affect_translation") or not info.get("source_joint"):
             resolved[joint] = None
             return None
@@ -357,8 +429,8 @@ def decompose_append_translations_for_scene(
             return None
 
         resolving.add(joint)
-        source_joint = info["source_joint"]
-        source_info = append_info.get(source_joint)
+        source_joint = cached_long_dag_path(info["source_joint"], path_cache)
+        source_info = canonical_append_info.get(source_joint)
         source_translation = _final_translation(source_joint)
         source_resolved = _resolve(source_joint) if source_info else None
         if source_resolved:
@@ -384,13 +456,15 @@ def decompose_append_translations_for_scene(
         return resolved[joint]
 
     decomposed = {}
-    for joint in append_info:
+    for joint in canonical_append_info:
         state = _resolve(joint)
         if state:
             own_tx, own_ty, own_tz = state["own"]
-            decomposed[joint] = {
+            channels = {
                 "translateX": own_tx,
                 "translateY": own_ty,
                 "translateZ": own_tz,
             }
+            for alias in value_aliases.get(joint, [joint]):
+                decomposed[alias] = channels
     return decomposed
