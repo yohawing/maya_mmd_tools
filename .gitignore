@@ -55,7 +55,6 @@ docs-dev/
 /PLAN.md
 docs/*
 !docs/README_ja.md
-!docs/RELEASE.md
 
 # TestData
 /tests/data/*
