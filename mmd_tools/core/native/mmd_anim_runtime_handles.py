@@ -758,6 +758,34 @@ class MmdRuntimeInstance:
             logger.error("evaluate_rest_pose failed: %s", e, exc_info=True)
             return False
 
+    def evaluate_clip_frame_before_physics(self, clip: MmdRuntimeClip, frame: float) -> bool:
+        """Evaluate the clip up to the physics boundary (pre-physics pose)."""
+        if not self._handle or not clip or not clip.handle or self._lib is None:
+            return False
+        func = getattr(self._lib, "mmd_runtime_instance_evaluate_clip_frame_before_physics", None)
+        if func is None:
+            return False
+        try:
+            status = int(func(self._handle, clip.handle, c_float(frame)))
+            return status == MMD_RUNTIME_STATUS_OK
+        except Exception as exc:
+            logger.error("evaluate_clip_frame_before_physics failed: %s", exc, exc_info=True)
+            return False
+
+    def evaluate_current_pose_after_physics(self) -> bool:
+        """Finalize the pose after physics has been stepped (post-physics IK, append, etc.)."""
+        if not self._handle or self._lib is None:
+            return False
+        func = getattr(self._lib, "mmd_runtime_instance_evaluate_current_pose_after_physics", None)
+        if func is None:
+            return False
+        try:
+            status = int(func(self._handle))
+            return status == MMD_RUNTIME_STATUS_OK
+        except Exception as exc:
+            logger.error("evaluate_current_pose_after_physics failed: %s", exc, exc_info=True)
+            return False
+
     def set_physics_mode(self, mode: int) -> bool:
         """Set the instance physics mode (OFF/TRACE/LIVE). Fail-closed when ABI missing."""
         if not self._handle or self._lib is None:

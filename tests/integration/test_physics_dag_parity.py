@@ -300,6 +300,35 @@ class TestPhysicsDagParity(MayaTestBase):
         dag_world.free()
         pmx_world.free()
 
+    @unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+    def test_dag_bone_world_matrices_match_pmx_after_stepping(self):
+        """Bone world matrices must match after split-evaluation physics stepping."""
+        root, maya_joints, _, _ = self._build_dag_scene()
+        dag_desc_set = build_descriptors_from_dag(
+            root, bone_joints=maya_joints, bone_count=len(self.pmx.bones),
+        )
+        dag_world = MmdRuntimePhysicsWorld.from_descriptors(
+            dag_desc_set.rigid_bodies, dag_desc_set.joints,
+        )
+        pmx_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+
+        dag_matrices = self._run_split_eval_steps(dag_world, num_steps=10)
+        pmx_matrices = self._run_split_eval_steps(pmx_world, num_steps=10)
+
+        self.assertIsNotNone(dag_matrices, "DAG world matrices retrieval failed")
+        self.assertIsNotNone(pmx_matrices, "PMX world matrices retrieval failed")
+        self.assertEqual(len(dag_matrices), len(pmx_matrices))
+
+        for bone_idx, (dag_mat, pmx_mat) in enumerate(zip(dag_matrices, pmx_matrices)):
+            for c in range(16):
+                self.assertAlmostEqual(
+                    dag_mat[c], pmx_mat[c], delta=0.005,
+                    msg=f"bone[{bone_idx}] matrix[{c}]",
+                )
+
+        dag_world.free()
+        pmx_world.free()
+
     def _run_steps(self, world, num_steps=10):
         model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
         instance = MmdRuntimeInstance.for_model(model)
@@ -316,6 +345,26 @@ class TestPhysicsDagParity(MayaTestBase):
         instance.free()
         model.free()
         return states
+
+    def _run_split_eval_steps(self, world, num_steps=10):
+        model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        instance = MmdRuntimeInstance.for_model(model)
+        instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
+        instance.evaluate_rest_pose()
+        world.reset(instance)
+
+        dt = 1.0 / 60.0
+        for step in range(num_steps):
+            instance.evaluate_rest_pose()
+            report = world.step_runtime(instance, dt)
+            self.assertIsNotNone(report, f"split eval step {step} failed")
+            ok = instance.evaluate_current_pose_after_physics()
+            self.assertTrue(ok, f"evaluate_current_pose_after_physics failed at step {step}")
+
+        matrices = instance.get_world_matrices()
+        instance.free()
+        model.free()
+        return matrices
 
 
 if __name__ == "__main__":
