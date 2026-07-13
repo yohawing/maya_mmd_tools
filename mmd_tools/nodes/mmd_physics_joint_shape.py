@@ -8,13 +8,14 @@ VP2 描画は持たない。rigidBodyA/rigidBodyB の message 接続を経由し
 from __future__ import annotations
 
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaUI as omui
 
 
 def maya_useNewAPI():
     pass
 
 
-class MmdPhysicsJointShape(om.MPxLocatorNode):
+class MmdPhysicsJointShape(omui.MPxLocatorNode):
     kTypeName = "mmdPhysicsJointShape"
     kTypeId = om.MTypeId(0x00128007)
     kClassify = "drawdb/geometry/mmdPhysicsJointShape:utility/general"

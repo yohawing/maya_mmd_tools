@@ -9,13 +9,14 @@ MmdRuntimeFfiPhysicsRigidbodyDesc 構築はソルバー/シーンビルダー側
 from __future__ import annotations
 
 import maya.api.OpenMaya as om
+import maya.api.OpenMayaUI as omui
 
 
 def maya_useNewAPI():
     pass
 
 
-class MmdRigidBodyShape(om.MPxLocatorNode):
+class MmdRigidBodyShape(omui.MPxLocatorNode):
     kTypeName = "mmdRigidBodyShape"
     kTypeId = om.MTypeId(0x00128005)
     kClassify = "drawdb/geometry/mmdRigidBodyShape:utility/general"
