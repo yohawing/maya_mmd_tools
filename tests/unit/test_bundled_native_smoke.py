@@ -44,7 +44,7 @@ class BundledNativeSmokeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runtime = Path(directory) / smoke.RUNTIME_NAME
             runtime.write_bytes(b"fixture")
-            with mock.patch.object(smoke.ctypes, "WinDLL", return_value=fake_library):
+            with mock.patch.object(smoke.ctypes, "WinDLL", return_value=fake_library, create=True):
                 with mock.patch.object(smoke, "_windows_module_path", return_value="F:/wrong/mmd_runtime_ffi.dll"):
                     result = smoke._runtime_probe(runtime)
         self.assertEqual(result["status"], "fail")
