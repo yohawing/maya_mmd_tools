@@ -259,33 +259,12 @@ class _MmdDropEventFilter:
         self._accept_drop_states = []
 
     def _drop_targets(self, window):
-        try:
-            from mmd_tools.ui.qt_compat import QApplication, QWidget
-
-            app = QApplication.instance()
-            targets = []
-            if app is not None:
-                targets.append(app)
-            targets.append(window)
-            try:
-                targets.extend(window.findChildren(QWidget) or [])
-            except Exception:
-                pass
-
-            result = []
-            seen = set()
-            for target in targets:
-                if target is None:
-                    continue
-                key = id(target)
-                if key in seen:
-                    continue
-                seen.add(key)
-                result.append(target)
-            return result
-        except Exception as exc:
-            logger.debug("Failed to enumerate Maya drop targets: %s", exc, exc_info=True)
-            return [window]
+        # Do not install a Python event filter on QApplication or every child
+        # widget. Maya 2027 replaces parts of its Qt hierarchy when leaving the
+        # Home screen; filtering those transient PySide wrappers can re-enter
+        # wrapper creation during destruction and crash the host. Drop events
+        # from viewport children propagate to the stable main window.
+        return [window]
 
     def _install_on_target(self, target) -> None:
         if hasattr(target, "setAcceptDrops"):
