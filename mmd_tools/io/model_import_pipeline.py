@@ -99,14 +99,42 @@ class ModelImportPipeline:
         maya_joints: Any,
         root_group: str,
     ) -> Tuple[list, list]:
-        """Skip scene physics creation; physics is available only through native bake."""
-        self.logger.debug("Skipping retired Maya scene physics conversion")
+        """Build physics DAG nodes when the development gate is enabled."""
+        import os
+        if os.environ.get("MMD_TOOLS_PHYSICS_NODES") != "1":
+            self.logger.debug("Skipping physics scene build (MMD_TOOLS_PHYSICS_NODES not set)")
+            if self.profile is not None:
+                self.profile["physics_converter"] = {
+                    "skipped": True,
+                    "reason": "physics_nodes_gate_off",
+                }
+            return [], []
+
+        from ..converters.physics_scene_builder import build_physics_scene
+
+        t0 = time.time()
+        rb_transforms, jt_transforms = build_physics_scene(
+            rigid_bodies=parser.rigid_bodies,
+            joints=parser.joints,
+            bones=parser.bones,
+            maya_joints=maya_joints,
+            root_group=root_group,
+            logger=self.logger,
+        )
+        elapsed = time.time() - t0
+        self.logger.info(
+            "Physics scene built: %d rigid bodies, %d joints (%.3fs)",
+            len([t for t in rb_transforms if t]),
+            len([t for t in jt_transforms if t]),
+            elapsed,
+        )
         if self.profile is not None:
             self.profile["physics_converter"] = {
-                "skipped": True,
-                "reason": "maya_scene_physics_removed",
+                "rigid_bodies": len(rb_transforms),
+                "joints": len(jt_transforms),
+                "elapsed_seconds": elapsed,
             }
-        return [], []
+        return rb_transforms, jt_transforms
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""
