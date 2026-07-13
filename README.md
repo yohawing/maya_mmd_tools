@@ -19,56 +19,36 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 | Feature | Status | Notes |
 |---|---|---|
 | Mesh / vertices / normals | ✅ | |
-| Materials & textures | 🔶 | MMD toon shading through the DX11 shader. Semi-transparent material fidelity is limited by draw-order constraints. Japanese/Chinese texture paths are copied/renamed to safe fallback paths when needed. |
-| Maya name resolution | ✅ | Names are converted to ASCII-safe Maya names |
-| Primary UV | ✅ | |
-| Additional UV (UV1–4) | ⛔ | Not supported |
+| Materials & textures | 🔶 | MMD toon shading through DX11 and OpenGL shaders. VP2.0 fidelity is limited. |
+| Maya name resolution | ✅ | Names are converted to ASCII-safe Maya names. Japanese and Chinese texture paths are also resolved automatically to safe paths. |
+| UV | 🔶 | Primary UVs are supported. Additional UVs (UV1–4) are not supported. |
 | Edge / outline flags | 🔶 | Can be enabled as an option, but draw-order limitations remain |
 | Bones & skeleton | 🔶 | Some complex models still have known issues |
-| Rig (IK / grant / local axis) | ✅ | Supported |
+| Rig (IK / grant / local axis) | 🔶 | Partially supported. Some complex models still have known issues. |
 | Display frames (表示枠) | 🔶 | Preserved as model metadata for development-mode PMX round-trip; no dedicated editing UI yet |
-| Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex, bone, material, and group controls are supported. Material morphs drive the complete MMD hardware-shader parameter set and fail closed when a backend is incomplete. UV, Flip, and Impulse morphs are not supported. |
-| Rigid bodies & joints | 🔶 | Scene preview is not available. VMD physics can be baked through the opt-in native runtime path. |
+| Morphs (vertex / bone / material / group / UV) | 🔶 | Vertex and bone morphs are supported. Material, UV, Flip, and Impulse morphs are not supported. |
+| Rigid bodies & joints | ⛔ | Not supported |
 | Soft body (PMX 2.1) | ⛔ | Not supported |
-| HumanIK | 🧪 | Experimental Bone tab action creates a HumanIK definition/control rig from the imported MMD skeleton |
+| HumanIK | ⛔ | Not supported |
 | Export | ⛔ | Not supported |
 
 ### Animation (VMD)
 
 | Feature | Status | Notes |
 |---|---|---|
-| Bone animation | 🔶 | Bake mode uses high-precision [mmd-anim](https://github.com/yohawing/mmd-anim) final-pose evaluation. Rig mode keeps editable sparse keys and live MMD rig nodes, but remains experimental for complex motions. |
-| Morph animation | 🔶 | Vertex, bone, and complete hardware-shader material morph animation are supported. |
+| Bone animation | 🔶 | MMD rigs are supported through the Maya DG. Bake mode uses [mmd-anim](https://github.com/yohawing/mmd-anim) final-pose evaluation. |
+| VPD | ✅ | Available through drag and drop only |
+| Morph animation | 🔶 | Vertex and bone morphs are supported. Material, UV, Flip, and Impulse morphs are not supported. |
 | Camera animation | ✅ | Creates/keys `mmd_camera` |
 | Light animation | ✅ | Drives the `mmd_light` controller |
 | IK on/off frames | 🔶 | Supported for import/bake. Runtime bake applies the state to the baked pose; rig mode keys `mmdCcdIk.enabled`. |
+| Physics | 🔶 | Supported in Bake mode only |
 | Export | ⛔ | Not supported |
-
-### Viewport & Shading
-
-| Feature | Status | Notes |
-|---|---|---|
-| DX11 MMD toon shader (Windows) | 🔶 | Toon shading and transparency. Outline rendering is off by default due to draw-order constraints; it can be enabled per-material from the Material tab, but fidelity is limited. |
-| MMD light controller | ✅ | Single directional-light null |
-| Transparency (opaque / cutout / blend) | ✅ | Manual, plus opt-in auto-classification |
-| GLSL shader (macOS) | ⛔ | Not supported |
 
 ## Known Limitations
 
 - **Export is not available.** This is an import-only tool for now — PMX/PMD/VMD export is not implemented (the UI states this explicitly).
-- **VPD pose import is available through drag-and-drop.** It applies the pose at the current frame to the selected MMD model, or to a PMX/PMD model dropped together with the VPD file.
-- **Additional UV / multi-UV is not applied** (read but ignored).
-- **Material morph shader runtime is complete-or-none.** Diffuse/alpha, specular, ambient, edge color/size, and texture/sphere/toon factors are connected together; an incomplete backend is left untouched and reported.
-- **UV, Flip, and Impulse morphs are not supported.** Vertex, bone, material, and group controls are available.
-- **Soft body (PMX 2.1) data is silently ignored.** The rest of the file still imports correctly.
-- **Display frames (表示枠) are preserved for PMX round-trip but do not have a dedicated editing UI.**
-- **Scene physics preview is unavailable.** Native physics motion bake remains an opt-in path. The Development Mode Physics tab is reserved for a future backend.
-- **Bake mode is the fidelity path for VMD motion.** It bakes final poses from the `mmd-anim` runtime and is the recommended path when matching MMD output matters.
 - **Rig mode is experimental for complex motion parity.** It keeps editable sparse keys plus live `mmdCcdIk` / `mmdAppend` nodes, but complex joint-orient, IK, append, and local-axis cases may not match Bake mode or MMD mesh deformation exactly.
-- **HumanIK setup requires a valid full-body skeleton.** The Bone tab action reports an error if Maya cannot create the HumanIK control rig from the current model.
-- **File > Import integration is not part of this release.** Use the MMD Tools UI or drag-and-drop import instead. The Maya file translator path is deferred because it needs a separate safe integration path.
-- Large models may have performance issues, and some PMX files may fail to import.
-- The opt-in C++ fast-import path supports mesh, basic materials, basic skeleton/skin, and vertex-morph blendShape targets only (UV / material / bone / group morphs are not handled on that path).
 
 ## System Requirements
 
@@ -92,8 +72,7 @@ Legend: ✅ Supported · 🔶 Partial / with caveats · 🧪 Experimental (opt-i
 3. Confirm the install dialog.
 4. Restart Maya.
 
-The installer copies all Maya MMD Tools files into Maya's user modules folder, then writes a `maya_mmd_tools.mod` file next to that copy. The module file contains entries for the Maya versions bundled in the ZIP, so installing from one Maya version also prepares the same copy for the other bundled versions.
-After confirming that Maya starts with the plugin, you can delete the temporary extracted folder.
+The installer copies all Maya MMD Tools files into Maya's user `modules` folder, then writes a `maya_mmd_tools.mod` file next to that copy.
 
 On Windows, the installed copy is placed under:
 
@@ -147,8 +126,7 @@ Main tabs:
 1. In the Import/Export tab, choose a PMX or PMD file.
 2. Click `Import Model`.
 
-After a successful import, a `model_root` group is created in the Outliner, and the model appears in the viewport. Materials and textures are applied automatically.
-If textures fail to load due to multi-byte characters in the path, enable the automatic texture repair option. Textures will be automatically copied and renamed to loadable names.
+If textures fail to load due to multi-byte characters in the path, enable the automatic texture repair option. The textures will be copied automatically and renamed to loadable names.
 
 ### Import Animation
 
@@ -157,20 +135,13 @@ If textures fail to load due to multi-byte characters in the path, enable the au
 3. Click `Import Animation`.
 4. The animation is applied to the matching model in the scene.
 
-### Drag and Drop Import
-
-You can also import MMD files by dragging them into the Maya viewport.
-
-- Drop a PMX or PMD file to import a model.
-- Drop a PMX/PMD file together with a VMD file to import the model first and then apply the motion.
-- Drop a VMD file after a model is already loaded to apply the motion to the selected or existing MMD model.
-- Dropping a VMD file before loading a model shows a warning and does not import the motion.
+You can also import MMD files by dragging them into the Maya viewport. This is an experimental feature.
 
 Maya `File > Import` is not a supported MMD import path in this release.
 
 ## Viewport Setup
 
-The shader that reproduces the MMD toon look can be confirmed by enabling the MMD shader creation option together with the `dx11Shader.dll` plugin. The following settings are also applied automatically on import:
+To view the shader that reproduces the MMD toon look, enable the MMD shader creation option and the shader plug-in for your rendering environment. Use the `dx11Shader` plug-in on Windows and the `glslShader` (GLSLShader) plug-in on macOS. The following settings are also applied automatically on import:
 
 - **Rendering space** → `ACEScg` → `scene-linear Rec.709-sRGB`.
 - **View Transform** → `ACES 1.0 SDR-video (sRGB)` → `Un-tone-mapped (sRGB)`.
