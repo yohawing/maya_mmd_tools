@@ -16,7 +16,10 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiAppendConfig,
     MmdRuntimeFfiByteBuffer,
     MmdRuntimeFfiIkSolveStats,
+    MmdRuntimeFfiPhysicsJointDesc,
+    MmdRuntimeFfiPhysicsRigidbodyDesc,
     MmdRuntimeFfiPhysicsStepStats,
+    MmdRuntimeFfiPhysicsTickConfig,
     MmdRuntimeFfiPhysicsWorldStepReport,
     MmdRuntimeFfiRigBone,
     MmdRuntimeFfiRigBoneLocalAxisV2,
@@ -230,6 +233,42 @@ def setup_physics_signatures(lib: CDLL) -> None:
             [c_void_p, c_void_p, c_float, POINTER(MmdRuntimeFfiPhysicsWorldStepReport)],
         )
         set_sig(lib, "mmd_runtime_physics_world_rigidbody_count", c_uint32, [c_void_p, POINTER(c_size_t)])
+        set_sig(
+            lib,
+            "mmd_runtime_physics_world_copy_rigidbody_states",
+            c_uint32,
+            [c_void_p, POINTER(c_float), c_size_t],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_physics_world_create",
+            c_uint32,
+            [
+                POINTER(MmdRuntimeFfiPhysicsRigidbodyDesc),
+                c_size_t,
+                POINTER(MmdRuntimeFfiPhysicsJointDesc),
+                c_size_t,
+                POINTER(c_void_p),
+            ],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_instance_get_physics_tick_config",
+            c_uint32,
+            [c_void_p, POINTER(MmdRuntimeFfiPhysicsTickConfig)],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_instance_set_physics_tick_config",
+            c_uint32,
+            [c_void_p, POINTER(MmdRuntimeFfiPhysicsTickConfig)],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_instance_apply_physics_world_matrices",
+            c_uint32,
+            [c_void_p, POINTER(c_float), c_size_t, POINTER(c_uint8), c_size_t, POINTER(c_size_t)],
+        )
         set_sig(
             lib,
             "mmd_runtime_physics_world_bake_clip_frames",

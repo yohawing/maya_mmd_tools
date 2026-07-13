@@ -5,7 +5,7 @@ from __future__ import annotations
 import ctypes
 import math
 from ctypes import CDLL, c_float, c_size_t, c_uint8, c_uint32, c_void_p
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native import mmd_anim_runtime_loader as _runtime_loader
@@ -15,6 +15,9 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_STATUS_OK,
     MMD_RUNTIME_STATUS_UNSUPPORTED,
     MmdRuntimeBatchEvaluation,
+    MmdRuntimeFfiPhysicsJointDesc,
+    MmdRuntimeFfiPhysicsRigidbodyDesc,
+    MmdRuntimeFfiPhysicsTickConfig,
     MmdRuntimeFfiPhysicsWorldStepReport,
 )
 
@@ -206,6 +209,44 @@ class MmdRuntimePhysicsWorld:
     def __init__(self, lib: CDLL, handle: c_void_p):
         self._lib = lib
         self._handle = handle
+
+    @classmethod
+    def from_descriptors(
+        cls,
+        rigid_bodies: Sequence[MmdRuntimeFfiPhysicsRigidbodyDesc],
+        joints: Sequence[MmdRuntimeFfiPhysicsJointDesc],
+    ) -> Optional["MmdRuntimePhysicsWorld"]:
+        """Create a physics world from typed descriptors."""
+        lib = cls._get_library()
+        if lib is None:
+            return None
+        flags_func = getattr(lib, "mmd_runtime_feature_flags", None)
+        create_func = getattr(lib, "mmd_runtime_physics_world_create", None)
+        if flags_func is None or create_func is None:
+            return None
+        try:
+            flags = int(flags_func())
+            if (flags & MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS) != MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS:
+                return None
+            rb_count = len(rigid_bodies)
+            jt_count = len(joints)
+            rb_array = (MmdRuntimeFfiPhysicsRigidbodyDesc * rb_count)(*rigid_bodies) if rb_count else None
+            jt_array = (MmdRuntimeFfiPhysicsJointDesc * jt_count)(*joints) if jt_count else None
+            out_world = c_void_p()
+            status = int(create_func(
+                rb_array,
+                c_size_t(rb_count),
+                jt_array,
+                c_size_t(jt_count),
+                ctypes.byref(out_world),
+            ))
+            if status != MMD_RUNTIME_STATUS_OK or not out_world.value:
+                logger.error("mmd_runtime_physics_world_create failed: status=%s", status)
+                return None
+            return cls(lib, out_world)
+        except Exception as exc:
+            logger.error("MmdRuntimePhysicsWorld.from_descriptors failed: %s", exc, exc_info=True)
+            return None
 
     @classmethod
     def from_pmx_bytes(cls, pmx_bytes: bytes) -> Optional["MmdRuntimePhysicsWorld"]:
@@ -455,6 +496,37 @@ class MmdRuntimePhysicsWorld:
                 exc,
                 exc_info=True,
             )
+            return None
+
+    def copy_rigidbody_states(self) -> Optional[List[Tuple[Tuple[float, float, float], Tuple[float, float, float, float]]]]:
+        """Copy all rigid-body states as (position_xyz, rotation_xyzw) per body."""
+        if not self._handle or self._lib is None:
+            return None
+        count = self.rigidbody_count()
+        if count is None:
+            return None
+        if count == 0:
+            return []
+        copy_func = getattr(self._lib, "mmd_runtime_physics_world_copy_rigidbody_states", None)
+        if copy_func is None:
+            return None
+        try:
+            # 7 floats per body: position_xyz[3] + rotation_xyzw[4]
+            buf_len = count * 7
+            buf = (c_float * buf_len)()
+            status = int(copy_func(self._handle, buf, c_size_t(buf_len)))
+            if status != MMD_RUNTIME_STATUS_OK:
+                logger.error("mmd_runtime_physics_world_copy_rigidbody_states failed: status=%s", status)
+                return None
+            states = []
+            for i in range(count):
+                off = i * 7
+                pos = (float(buf[off]), float(buf[off + 1]), float(buf[off + 2]))
+                rot = (float(buf[off + 3]), float(buf[off + 4]), float(buf[off + 5]), float(buf[off + 6]))
+                states.append((pos, rot))
+            return states
+        except Exception as exc:
+            logger.error("copy_rigidbody_states failed: %s", exc, exc_info=True)
             return None
 
     def rigidbody_count(self) -> Optional[int]:
@@ -719,6 +791,47 @@ class MmdRuntimeInstance:
         except Exception as exc:
             logger.error("get_physics_mode failed: %s", exc, exc_info=True)
             return None
+
+    def get_physics_tick_config(self) -> Optional[Tuple[float, int]]:
+        """Return (fixed_substep_seconds, max_substeps_per_tick), or None."""
+        if not self._handle or self._lib is None:
+            return None
+        func = getattr(self._lib, "mmd_runtime_instance_get_physics_tick_config", None)
+        if func is None:
+            return None
+        try:
+            config = MmdRuntimeFfiPhysicsTickConfig()
+            status = int(func(self._handle, ctypes.byref(config)))
+            if status != MMD_RUNTIME_STATUS_OK:
+                return None
+            return (float(config.fixed_substep_seconds), int(config.max_substeps_per_tick))
+        except Exception as exc:
+            logger.error("get_physics_tick_config failed: %s", exc, exc_info=True)
+            return None
+
+    def set_physics_tick_config(self, fixed_substep_seconds: float, max_substeps_per_tick: int) -> bool:
+        """Set physics tick configuration. Fail-closed when ABI missing."""
+        if not self._handle or self._lib is None:
+            return False
+        func = getattr(self._lib, "mmd_runtime_instance_set_physics_tick_config", None)
+        if func is None:
+            return False
+        dt = _as_finite_float(fixed_substep_seconds)
+        count = _as_positive_integral_count(max_substeps_per_tick)
+        if dt is None or dt <= 0.0 or count is None:
+            return False
+        try:
+            config = MmdRuntimeFfiPhysicsTickConfig()
+            config.fixed_substep_seconds = dt
+            config.max_substeps_per_tick = count
+            status = int(func(self._handle, ctypes.byref(config)))
+            if status != MMD_RUNTIME_STATUS_OK:
+                logger.error("set_physics_tick_config failed: status=%s", status)
+                return False
+            return True
+        except Exception as exc:
+            logger.error("set_physics_tick_config failed: %s", exc, exc_info=True)
+            return False
 
     def get_world_matrices(self) -> Optional[List[List[float]]]:
         """

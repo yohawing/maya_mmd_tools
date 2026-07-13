@@ -8,7 +8,7 @@ without pulling in library discovery or function binding side effects.
 
 from __future__ import annotations
 
-from ctypes import POINTER, Structure, c_bool, c_float, c_int32, c_size_t, c_uint8, c_uint32
+from ctypes import POINTER, Structure, c_bool, c_float, c_int32, c_size_t, c_uint8, c_uint16, c_uint32
 from typing import Any, NamedTuple
 
 
@@ -137,4 +137,68 @@ class MmdRuntimeFfiAppendConfig(Structure):
         ("ratio", c_float),
         ("affect_rotation", c_bool),
         ("affect_translation", c_bool),
+    ]
+
+
+MMD_RUNTIME_PHYSICS_RIGIDBODY_SHAPE_SPHERE = 0
+MMD_RUNTIME_PHYSICS_RIGIDBODY_SHAPE_BOX = 1
+MMD_RUNTIME_PHYSICS_RIGIDBODY_SHAPE_CAPSULE = 2
+
+MMD_RUNTIME_PHYSICS_RIGIDBODY_MODE_STATIC = 0
+MMD_RUNTIME_PHYSICS_RIGIDBODY_MODE_DYNAMIC = 1
+MMD_RUNTIME_PHYSICS_RIGIDBODY_MODE_DYNAMIC_BONE = 2
+MMD_RUNTIME_PHYSICS_RIGIDBODY_MODE_UNKNOWN = 3
+
+MMD_RUNTIME_PHYSICS_JOINT_KIND_GENERIC_6DOF_SPRING = 0
+MMD_RUNTIME_PHYSICS_JOINT_KIND_UNSUPPORTED = 1
+
+
+class MmdRuntimeFfiPhysicsTickConfig(Structure):
+    """Physics tick configuration for the native FFI."""
+
+    _fields_ = [
+        ("fixed_substep_seconds", c_float),
+        ("max_substeps_per_tick", c_uint32),
+    ]
+
+
+class MmdRuntimeFfiPhysicsRigidbodyDesc(Structure):
+    """Canonical rigid body descriptor matching mmd_runtime_ffi_physics_rigidbody_desc_t."""
+
+    _fields_ = [
+        ("shape", c_uint32),
+        ("shape_size", c_float * 3),
+        ("position_xyz", c_float * 3),
+        ("rotation_euler_xyz", c_float * 3),
+        ("mass", c_float),
+        ("linear_damping", c_float),
+        ("angular_damping", c_float),
+        ("friction", c_float),
+        ("restitution", c_float),
+        ("collision_group", c_uint16),
+        ("collision_mask", c_uint16),
+        ("bone_index", c_int32),
+        ("mode", c_uint32),
+        ("body_from_bone_position_xyz", c_float * 3),
+        ("body_from_bone_rotation_xyzw", c_float * 4),
+        ("bone_from_body_position_xyz", c_float * 3),
+        ("bone_from_body_rotation_xyzw", c_float * 4),
+    ]
+
+
+class MmdRuntimeFfiPhysicsJointDesc(Structure):
+    """Canonical joint descriptor matching mmd_runtime_ffi_physics_joint_desc_t."""
+
+    _fields_ = [
+        ("kind", c_uint32),
+        ("rigidbody_a", c_size_t),
+        ("rigidbody_b", c_size_t),
+        ("position_xyz", c_float * 3),
+        ("rotation_euler_xyz", c_float * 3),
+        ("translation_lower_limit_xyz", c_float * 3),
+        ("translation_upper_limit_xyz", c_float * 3),
+        ("rotation_lower_limit_xyz", c_float * 3),
+        ("rotation_upper_limit_xyz", c_float * 3),
+        ("spring_translation_factor_xyz", c_float * 3),
+        ("spring_rotation_factor_xyz", c_float * 3),
     ]
