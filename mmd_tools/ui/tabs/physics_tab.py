@@ -27,6 +27,7 @@ class PhysicsTab(BaseTab):
         ("physics_objects_group", "setTitle", "physics_objects", "groups"),
         ("refresh_btn", "setText", "refresh", "buttons"),
         ("create_btn", "setText", "create", "buttons"),
+        ("duplicate_btn", "setText", "duplicate", "buttons"),
         ("delete_btn", "setText", "delete", "buttons"),
         ("collider_visible_check", "setText", "show_colliders", "checkboxes"),
         ("rigid_body_search_edit", "setPlaceholderText", "search_rigid_bodies", "placeholders"),
@@ -73,6 +74,9 @@ class PhysicsTab(BaseTab):
         self.create_btn = QPushButton(self.tr("create", "buttons"))
         self.create_btn.setMaximumWidth(60)
         self.create_btn.setEnabled(False)
+        self.duplicate_btn = QPushButton(self.tr("duplicate", "buttons"))
+        self.duplicate_btn.setMaximumWidth(70)
+        self.duplicate_btn.setEnabled(False)
         self.delete_btn = QPushButton(self.tr("delete", "buttons"))
         self.delete_btn.setMaximumWidth(60)
         self.delete_btn.setEnabled(False)
@@ -80,6 +84,7 @@ class PhysicsTab(BaseTab):
         self.collider_visible_check.setChecked(False)
         toolbar_layout.addWidget(self.refresh_btn)
         toolbar_layout.addWidget(self.create_btn)
+        toolbar_layout.addWidget(self.duplicate_btn)
         toolbar_layout.addWidget(self.delete_btn)
         toolbar_layout.addWidget(self.collider_visible_check)
         toolbar_layout.addStretch()

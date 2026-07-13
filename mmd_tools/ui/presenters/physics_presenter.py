@@ -100,6 +100,10 @@ class PhysicsPresenter:
         if create_btn is not None:
             create_btn.clicked.connect(self.create_item)
 
+        duplicate_btn = getattr(self.view, "duplicate_btn", None)
+        if duplicate_btn is not None:
+            duplicate_btn.clicked.connect(self.duplicate_item)
+
         delete_btn = getattr(self.view, "delete_btn", None)
         if delete_btn is not None:
             delete_btn.clicked.connect(self.delete_item)
@@ -244,7 +248,7 @@ class PhysicsPresenter:
         self._set_apply_reset_enabled(True)
 
     def _set_apply_reset_enabled(self, enabled):
-        for btn_name in ("apply_btn", "reset_btn", "delete_btn"):
+        for btn_name in ("apply_btn", "reset_btn", "delete_btn", "duplicate_btn"):
             btn = getattr(self.view, btn_name, None)
             if btn is not None:
                 btn.setEnabled(enabled)
@@ -464,6 +468,25 @@ class PhysicsPresenter:
             cmds.undoInfo(closeChunk=True)
         self.refresh_physics(force=True)
 
+    def duplicate_item(self):
+        shape = self._current_shape
+        if not shape or not cmds.objExists(shape):
+            return
+        root = self.app_state.current_model_root
+        if not root or not cmds.objExists(root):
+            return
+        try:
+            cmds.undoInfo(openChunk=True, chunkName="MMD Physics Duplicate")
+            if self._current_kind == "rigid":
+                self._duplicate_rigid_body(root, shape)
+            elif self._current_kind == "joint":
+                self._duplicate_joint(root, shape)
+        except Exception:
+            logger.error("Failed to duplicate physics item", exc_info=True)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        self.refresh_physics(force=True)
+
     def delete_item(self):
         shape = self._current_shape
         if not shape or not cmds.objExists(shape):
@@ -524,6 +547,72 @@ class PhysicsPresenter:
         cmds.setAttr(f"{shape}.nameJp", f"ジョイント{new_index}", type="string")
         cmds.setAttr(f"{shape}.nameEn", f"joint_{new_index}", type="string")
         logger.info("Created joint '%s'", transform)
+
+    def _duplicate_rigid_body(self, root, source_shape):
+        physics_group = self._find_child(root, PHYSICS_GROUP)
+        rb_group = self._find_child(physics_group, RIGID_BODIES_GROUP) if physics_group else None
+        if not rb_group:
+            return
+
+        existing = self._find_shapes(rb_group, "mmdRigidBodyShape")
+        new_index = len(existing)
+
+        transform = cmds.createNode("transform", name=f"rb_{new_index}", parent=rb_group)
+        shape = cmds.createNode("mmdRigidBodyShape", name=f"rb_{new_index}Shape", parent=transform)
+        cmds.setAttr(f"{shape}.pmxIndex", new_index)
+        for attr in (
+            "nameJp", "nameEn", "shapeType", "physicsMode", "mass",
+            "linearDamping", "angularDamping", "restitution", "friction",
+            "collisionGroup", "collisionMask", "relatedBoneIndex",
+        ):
+            val = _get_attr(source_shape, attr)
+            if val is not None:
+                if isinstance(val, str):
+                    cmds.setAttr(f"{shape}.{attr}", val, type="string")
+                else:
+                    cmds.setAttr(f"{shape}.{attr}", val)
+        for vec_attr in ("shapeSize", "position", "rotation"):
+            for axis in ("X", "Y", "Z"):
+                val = _get_attr(source_shape, f"{vec_attr}{axis}", 0.0)
+                cmds.setAttr(f"{shape}.{vec_attr}{axis}", val)
+        bone_conn = cmds.listConnections(f"{source_shape}.relatedBone", source=True, destination=False) or []
+        if bone_conn:
+            cmds.connectAttr(f"{bone_conn[0]}.message", f"{shape}.relatedBone", force=True)
+        logger.info("Duplicated rigid body '%s' from '%s'", transform, source_shape)
+
+    def _duplicate_joint(self, root, source_shape):
+        physics_group = self._find_child(root, PHYSICS_GROUP)
+        jt_group = self._find_child(physics_group, CONSTRAINTS_GROUP) if physics_group else None
+        if not jt_group:
+            return
+
+        existing = self._find_shapes(jt_group, "mmdPhysicsJointShape")
+        new_index = len(existing)
+
+        transform = cmds.createNode("transform", name=f"joint_{new_index}", parent=jt_group)
+        shape = cmds.createNode("mmdPhysicsJointShape", name=f"joint_{new_index}Shape", parent=transform)
+        cmds.setAttr(f"{shape}.pmxIndex", new_index)
+        for attr in ("nameJp", "nameEn", "jointType", "rigidBodyAIndex", "rigidBodyBIndex"):
+            val = _get_attr(source_shape, attr)
+            if val is not None:
+                if isinstance(val, str):
+                    cmds.setAttr(f"{shape}.{attr}", val, type="string")
+                else:
+                    cmds.setAttr(f"{shape}.{attr}", val)
+        for vec_attr in (
+            "position", "rotation",
+            "translationLimitMin", "translationLimitMax",
+            "rotationLimitMin", "rotationLimitMax",
+            "springTranslation", "springRotation",
+        ):
+            for axis in ("X", "Y", "Z"):
+                val = _get_attr(source_shape, f"{vec_attr}{axis}", 0.0)
+                cmds.setAttr(f"{shape}.{vec_attr}{axis}", val)
+        for rb_attr in ("rigidBodyA", "rigidBodyB"):
+            conn = cmds.listConnections(f"{source_shape}.{rb_attr}", source=True, destination=False) or []
+            if conn:
+                cmds.connectAttr(f"{conn[0]}.message", f"{shape}.{rb_attr}", force=True)
+        logger.info("Duplicated joint '%s' from '%s'", transform, source_shape)
 
     def _clear_view(self):
         self._current_kind = None

@@ -66,12 +66,15 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertIn("parse_joint_form", self.source)
         self.assertIn("PhysicsFormValidationError", self.source)
 
-    def test_has_create_delete_methods(self):
+    def test_has_create_delete_duplicate_methods(self):
         func_names = [n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)]
         self.assertIn("create_item", func_names)
+        self.assertIn("duplicate_item", func_names)
         self.assertIn("delete_item", func_names)
         self.assertIn("_create_rigid_body", func_names)
         self.assertIn("_create_joint", func_names)
+        self.assertIn("_duplicate_rigid_body", func_names)
+        self.assertIn("_duplicate_joint", func_names)
 
     def test_has_parse_vector_str(self):
         self.assertIn("_parse_vector_str", self.source)
@@ -142,8 +145,9 @@ class TestTabStructure(unittest.TestCase):
         self.assertIn("apply_btn", self.tab_source)
         self.assertIn("reset_btn", self.tab_source)
 
-    def test_has_create_delete_buttons(self):
+    def test_has_create_delete_duplicate_buttons(self):
         self.assertIn("create_btn", self.tab_source)
+        self.assertIn("duplicate_btn", self.tab_source)
         self.assertIn("delete_btn", self.tab_source)
 
 

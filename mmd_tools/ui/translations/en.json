@@ -32,6 +32,7 @@
     "add": "Add",
     "remove": "Remove",
     "create": "Create",
+    "duplicate": "Duplicate",
     "delete": "Delete",
     "up": "Up",
     "down": "Down",
