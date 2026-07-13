@@ -29,6 +29,8 @@ class PhysicsTab(BaseTab):
         ("collider_visible_check", "setText", "show_colliders", "checkboxes"),
         ("rigid_body_search_edit", "setPlaceholderText", "search_rigid_bodies", "placeholders"),
         ("joint_search_edit", "setPlaceholderText", "search_joints", "placeholders"),
+        ("apply_btn", "setText", "apply", "buttons"),
+        ("reset_btn", "setText", "reset", "buttons"),
     )
 
     def __init__(self, parent=None):
@@ -103,7 +105,7 @@ class PhysicsTab(BaseTab):
         return widget
 
     def _create_details_section(self):
-        """Right pane: scrollable, read-only PMX physics values."""
+        """Right pane: scrollable physics property forms with Apply/Reset."""
         widget = QWidget()
         main_layout = QVBoxLayout(widget)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -121,6 +123,16 @@ class PhysicsTab(BaseTab):
         content_layout.addWidget(self.joint_form_group)
         self.rigid_body_form_group.hide()
         self.joint_form_group.hide()
+
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        self.apply_btn = QPushButton(self.tr("apply", "buttons"))
+        self.reset_btn = QPushButton(self.tr("reset", "buttons"))
+        self.apply_btn.setEnabled(False)
+        self.reset_btn.setEnabled(False)
+        button_layout.addWidget(self.apply_btn)
+        button_layout.addWidget(self.reset_btn)
+        content_layout.addLayout(button_layout)
         content_layout.addStretch()
 
         self.details_scroll_area.setWidget(self.physics_details_content)
@@ -148,6 +160,7 @@ class PhysicsTab(BaseTab):
         )
         self._add_editor_row(layout, "physics_mode", "rigid_physics_mode", self.rigid_physics_mode_combo)
         self.rigid_related_bone_spin = self._line_editor("rigid_related_bone", "related_bone")
+        self.rigid_related_bone_spin.setEnabled(False)
         self.rigid_collision_group_spin = self._int_editor("rigid_collision_group", "collision_group", 0, 15)
         self.rigid_collision_mask_spin = self._line_editor("rigid_collision_mask", "collision_mask")
         self.rigid_mass_edit = self._line_editor("rigid_mass", "mass")
@@ -167,7 +180,6 @@ class PhysicsTab(BaseTab):
         ):
             self._add_editor_row(layout, label_key, key, self._physics_editors[key][1])
         self._add_node_row(layout, "rigid_node")
-        self._disable_form_editors("rigid_")
         group.setLayout(layout)
         return group
 
@@ -178,7 +190,9 @@ class PhysicsTab(BaseTab):
         self.joint_name_english_edit = self._line_editor("joint_name_english", "name_english")
         self.joint_type_spin = self._line_editor("joint_type", "joint_type")
         self.joint_body_a_spin = self._line_editor("joint_body_a", "rigid_body_a")
+        self.joint_body_a_spin.setEnabled(False)
         self.joint_body_b_spin = self._line_editor("joint_body_b", "rigid_body_b")
+        self.joint_body_b_spin.setEnabled(False)
         for key, field_key in (
             ("joint_linear_states", "linear_constraint_states"),
             ("joint_angular_states", "angular_constraint_states"),
@@ -192,6 +206,10 @@ class PhysicsTab(BaseTab):
             ("joint_spring_rotation_enabled", "spring_rotation_enabled"),
         ):
             setattr(self, f"{key}_edit", self._line_editor(key, field_key))
+        _NO_BACKING_ATTR = {"joint_linear_states", "joint_angular_states",
+                            "joint_spring_translation_enabled", "joint_spring_rotation_enabled"}
+        for key in _NO_BACKING_ATTR:
+            getattr(self, f"{key}_edit").setEnabled(False)
         for key in (
             "joint_name",
             "joint_name_english",
@@ -211,7 +229,6 @@ class PhysicsTab(BaseTab):
         ):
             self._add_editor_row(layout, self._physics_editors[key][0], key, self._physics_editors[key][1])
         self._add_node_row(layout, "joint_node")
-        self._disable_form_editors("joint_")
         group.setLayout(layout)
         return group
 
@@ -222,13 +239,6 @@ class PhysicsTab(BaseTab):
         self._form_labels[key] = ("node", label)
         self._physics_editors[key] = ("node", value)
         layout.addRow(label, value)
-
-    def _disable_form_editors(self, prefix):
-        tooltip = self.tr("physics_read_only_v04", "messages")
-        for key, (_field_key, editor) in self._physics_editors.items():
-            if key.startswith(prefix):
-                editor.setEnabled(False)
-                editor.setToolTip(tooltip)
 
     def _line_editor(self, key, field_key):
         editor = QLineEdit()

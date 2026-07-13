@@ -33,7 +33,7 @@ def _get_vector_str(node, attr):
 
 
 def _get_angle_vector_deg_str(node, attr):
-    """Read angle attrs (stored in radians internally for kAngle) and display as degrees."""
+    """Read kAngle attrs via cmds.getAttr (returns Maya's current angle UI unit, degrees by default)."""
     x = _get_attr(node, f"{attr}X", 0.0)
     y = _get_attr(node, f"{attr}Y", 0.0)
     z = _get_attr(node, f"{attr}Z", 0.0)
@@ -45,6 +45,16 @@ def _resolve_message_name(shape, attr):
     return connections[0] if connections else ""
 
 
+def _parse_vector_str(text):
+    parts = [p.strip() for p in text.split(",")]
+    if len(parts) != 3:
+        return None
+    try:
+        return tuple(float(p) for p in parts)
+    except ValueError:
+        return None
+
+
 class PhysicsPresenter:
     """Load rigid bodies / joints from the Physics DAG and drive the tab view."""
 
@@ -52,6 +62,8 @@ class PhysicsPresenter:
         self.view = view
         self.app_state = app_state
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self._current_kind = None
+        self._current_shape = None
         self._connect_signals()
 
         if self.app_state.current_model_root:
@@ -83,6 +95,14 @@ class PhysicsPresenter:
         jt_search = getattr(self.view, "joint_search_edit", None)
         if jt_search is not None:
             jt_search.textChanged.connect(self.filter_joints)
+
+        apply_btn = getattr(self.view, "apply_btn", None)
+        if apply_btn is not None:
+            apply_btn.clicked.connect(self.apply_changes)
+
+        reset_btn = getattr(self.view, "reset_btn", None)
+        if reset_btn is not None:
+            reset_btn.clicked.connect(self.reset_changes)
 
     def on_current_model_changed(self, model_root):
         reload_for_current_model_change(logger, "PhysicsPresenter", model_root, lambda: self.refresh_physics(force=True))
@@ -179,21 +199,41 @@ class PhysicsPresenter:
 
     def _on_rigid_body_selected(self, current, _previous):
         if current is None:
+            self._current_kind = None
+            self._current_shape = None
+            self._set_apply_reset_enabled(False)
             return
         shape = current.data(Qt.UserRole)
         if not shape or not cmds.objExists(shape):
             return
+        self._current_kind = "rigid"
+        self._current_shape = shape
         values = self._read_rigid_body_values(shape)
         self.view.set_physics_form("rigid", values)
+        self._set_apply_reset_enabled(True)
 
     def _on_joint_selected(self, current, _previous):
         if current is None:
+            self._current_kind = None
+            self._current_shape = None
+            self._set_apply_reset_enabled(False)
             return
         shape = current.data(Qt.UserRole)
         if not shape or not cmds.objExists(shape):
             return
+        self._current_kind = "joint"
+        self._current_shape = shape
         values = self._read_joint_values(shape)
         self.view.set_physics_form("joint", values)
+        self._set_apply_reset_enabled(True)
+
+    def _set_apply_reset_enabled(self, enabled):
+        apply_btn = getattr(self.view, "apply_btn", None)
+        if apply_btn is not None:
+            apply_btn.setEnabled(enabled)
+        reset_btn = getattr(self.view, "reset_btn", None)
+        if reset_btn is not None:
+            reset_btn.setEnabled(enabled)
 
     def _on_rb_selection_changed_maya(self):
         select_existing_user_role_nodes(
@@ -260,7 +300,90 @@ class PhysicsPresenter:
             "node": shape.rsplit("|", 1)[-1],
         }
 
+    def apply_changes(self):
+        shape = self._current_shape
+        if not shape or not cmds.objExists(shape):
+            return
+        try:
+            cmds.undoInfo(openChunk=True, chunkName="MMD Physics Edit")
+            if self._current_kind == "rigid":
+                self._apply_rigid_body_changes(shape)
+            elif self._current_kind == "joint":
+                self._apply_joint_changes(shape)
+            logger.info("Applied physics changes to '%s'", shape)
+        except Exception:
+            logger.error("Failed to apply physics changes to '%s'", shape, exc_info=True)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+
+    def reset_changes(self):
+        shape = self._current_shape
+        if not shape or not cmds.objExists(shape):
+            return
+        if self._current_kind == "rigid":
+            values = self._read_rigid_body_values(shape)
+            self.view.set_physics_form("rigid", values)
+        elif self._current_kind == "joint":
+            values = self._read_joint_values(shape)
+            self.view.set_physics_form("joint", values)
+
+    def _apply_rigid_body_changes(self, shape):
+        v = self.view
+        cmds.setAttr(f"{shape}.nameJp", v.rigid_name_edit.text(), type="string")
+        cmds.setAttr(f"{shape}.nameEn", v.rigid_name_english_edit.text(), type="string")
+        cmds.setAttr(f"{shape}.shapeType", v.rigid_shape_combo.currentIndex())
+        cmds.setAttr(f"{shape}.physicsMode", v.rigid_physics_mode_combo.currentIndex())
+        cmds.setAttr(f"{shape}.collisionGroup", v.rigid_collision_group_spin.value())
+        mask_text = v.rigid_collision_mask_spin.text().strip()
+        try:
+            cmds.setAttr(f"{shape}.collisionMask", int(mask_text, 0))
+        except ValueError:
+            pass
+        for attr, editor in (
+            ("mass", v.rigid_mass_edit),
+            ("linearDamping", v.rigid_linear_damping_edit),
+            ("angularDamping", v.rigid_angular_damping_edit),
+            ("restitution", v.rigid_restitution_edit),
+            ("friction", v.rigid_friction_edit),
+        ):
+            try:
+                cmds.setAttr(f"{shape}.{attr}", float(editor.text()))
+            except ValueError:
+                pass
+
+    def _apply_joint_changes(self, shape):
+        v = self.view
+        cmds.setAttr(f"{shape}.nameJp", v.joint_name_edit.text(), type="string")
+        cmds.setAttr(f"{shape}.nameEn", v.joint_name_english_edit.text(), type="string")
+        try:
+            cmds.setAttr(f"{shape}.jointType", int(v.joint_type_spin.text()))
+        except ValueError:
+            pass
+        for attr, editor_name in (
+            ("translationLimitMin", "joint_translation_min_edit"),
+            ("translationLimitMax", "joint_translation_max_edit"),
+            ("springTranslation", "joint_spring_translation_edit"),
+            ("springRotation", "joint_spring_rotation_edit"),
+        ):
+            vec = _parse_vector_str(getattr(v, editor_name).text())
+            if vec is not None:
+                cmds.setAttr(f"{shape}.{attr}X", vec[0])
+                cmds.setAttr(f"{shape}.{attr}Y", vec[1])
+                cmds.setAttr(f"{shape}.{attr}Z", vec[2])
+        for attr, editor_name in (
+            ("rotationLimitMin", "joint_rotation_min_edit"),
+            ("rotationLimitMax", "joint_rotation_max_edit"),
+        ):
+            vec = _parse_vector_str(getattr(v, editor_name).text())
+            if vec is not None:
+                cmds.setAttr(f"{shape}.{attr}X", vec[0])
+                cmds.setAttr(f"{shape}.{attr}Y", vec[1])
+                cmds.setAttr(f"{shape}.{attr}Z", vec[2])
+
     def _clear_view(self):
+        self._current_kind = None
+        self._current_shape = None
+        self._set_apply_reset_enabled(False)
         for name in ("rigid_body_list", "joint_list"):
             widget = getattr(self.view, name, None)
             if widget is not None and hasattr(widget, "clear"):

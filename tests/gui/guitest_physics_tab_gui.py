@@ -1,4 +1,4 @@
-"""PhysicsTab read-only GUI contract tests.
+"""PhysicsTab GUI contract tests.
 
 These tests run only with a real Qt application. Scene collection and Maya
 selection behavior remain covered by the presenter unit tests.
@@ -14,20 +14,17 @@ from mmd_tools.ui.translations import UITranslator
 
 @requires_gui
 class TestPhysicsTabGUI(GuiTestBase):
-    """Lock the inspection-only Physics tab widget contract."""
+    """Lock the Physics tab widget contract."""
 
-    def test_shell_structure_and_read_only_defaults(self):
+    def test_shell_structure_and_defaults(self):
         tab = PhysicsTab()
         try:
             self.assertEqual(tab.list_tabs.count(), 2)
             self.assertTrue(tab.details_scroll_area.widgetResizable())
             self.assertFalse(tab.collider_visible_check.isChecked())
             self.assertFalse(tab.physics_details_content.isEnabled())
-            self.assertFalse(hasattr(tab, "physics_form_changed"))
-            self.assertFalse(hasattr(tab, "set_physics_dirty"))
-            self.assertFalse(hasattr(tab, "set_physics_validation_error"))
-            for _field_key, editor in tab._physics_editors.values():
-                self.assertFalse(editor.isEnabled())
+            self.assertFalse(tab.apply_btn.isEnabled())
+            self.assertFalse(tab.reset_btn.isEnabled())
         finally:
             tab.deleteLater()
             QApplication.processEvents()
@@ -59,7 +56,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertEqual(tab.rigid_name_edit.text(), "右髪２")
             self.assertEqual(tab.rigid_shape_combo.currentIndex(), 2)
             self.assertEqual(tab.rigid_mass_edit.text(), "0.5")
-            self.assertFalse(tab.rigid_mass_edit.isEnabled())
+            self.assertTrue(tab.rigid_mass_edit.isEnabled())
 
             tab.set_physics_form(
                 "joint",
@@ -85,7 +82,7 @@ class TestPhysicsTabGUI(GuiTestBase):
             self.assertTrue(tab.rigid_body_form_group.isHidden())
             self.assertFalse(tab.joint_form_group.isHidden())
             self.assertEqual(tab.joint_type_spin.text(), "Spring 6DOF")
-            self.assertFalse(tab.joint_rotation_max_edit.isEnabled())
+            self.assertTrue(tab.joint_rotation_max_edit.isEnabled())
         finally:
             tab.deleteLater()
             QApplication.processEvents()

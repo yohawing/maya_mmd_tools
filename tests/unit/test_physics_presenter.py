@@ -46,6 +46,22 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertIn("_read_rigid_body_values", func_names)
         self.assertIn("_read_joint_values", func_names)
 
+    def test_has_apply_reset_methods(self):
+        func_names = [n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)]
+        self.assertIn("apply_changes", func_names)
+        self.assertIn("reset_changes", func_names)
+
+    def test_has_write_back_helpers(self):
+        func_names = [n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)]
+        self.assertIn("_apply_rigid_body_changes", func_names)
+        self.assertIn("_apply_joint_changes", func_names)
+
+    def test_has_parse_vector_str(self):
+        self.assertIn("_parse_vector_str", self.source)
+
+    def test_uses_undo_info(self):
+        self.assertIn("undoInfo", self.source)
+
     def test_uses_list_presenter_helpers(self):
         self.assertIn("apply_list_filter", self.source)
         self.assertIn("select_existing_user_role_nodes", self.source)
@@ -105,8 +121,9 @@ class TestTabStructure(unittest.TestCase):
     def test_has_set_physics_details_enabled(self):
         self.assertIn("set_physics_details_enabled", self.tab_source)
 
-    def test_editors_disabled_until_write_path(self):
-        self.assertIn("_disable_form_editors", self.tab_source)
+    def test_has_apply_reset_buttons(self):
+        self.assertIn("apply_btn", self.tab_source)
+        self.assertIn("reset_btn", self.tab_source)
 
 
 if __name__ == "__main__":
