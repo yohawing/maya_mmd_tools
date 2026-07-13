@@ -140,14 +140,12 @@ class PhysicsTab(BaseTab):
             "shape",
             ["physics_shape_sphere", "physics_shape_box", "physics_shape_capsule"],
         )
-        self.rigid_shape_combo.setEnabled(False)
         self._add_editor_row(layout, "shape", "rigid_shape", self.rigid_shape_combo)
         self.rigid_physics_mode_combo = self._combo_editor(
             "rigid_physics_mode",
             "physics_mode",
             ["physics_mode_bone", "physics_mode_physics", "physics_mode_physics_bone"],
         )
-        self.rigid_physics_mode_combo.setEnabled(False)
         self._add_editor_row(layout, "physics_mode", "rigid_physics_mode", self.rigid_physics_mode_combo)
         self.rigid_related_bone_spin = self._line_editor("rigid_related_bone", "related_bone")
         self.rigid_collision_group_spin = self._int_editor("rigid_collision_group", "collision_group", 0, 15)
