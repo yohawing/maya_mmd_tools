@@ -76,6 +76,11 @@ class TestPresenterModuleStructure(unittest.TestCase):
         self.assertIn("_duplicate_rigid_body", func_names)
         self.assertIn("_duplicate_joint", func_names)
 
+    def test_has_visibility_methods(self):
+        func_names = [n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)]
+        self.assertIn("_on_collider_visibility_changed", func_names)
+        self.assertIn("_sync_collider_visibility_checkbox", func_names)
+
     def test_has_parse_vector_str(self):
         self.assertIn("_parse_vector_str", self.source)
 

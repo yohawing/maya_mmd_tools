@@ -8,6 +8,7 @@ from maya import cmds
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
 from ...core.logger import get_logger
+from ...core.visibility_state import get_visibility_category, set_visibility_category, sync_visibility_connections
 from ..qt_compat import Qt
 from .list_presenter_helpers import (
     apply_list_filter,
@@ -96,6 +97,10 @@ class PhysicsPresenter:
         if jt_search is not None:
             jt_search.textChanged.connect(self.filter_joints)
 
+        collider_check = getattr(self.view, "collider_visible_check", None)
+        if collider_check is not None:
+            collider_check.stateChanged.connect(lambda state: self._on_collider_visibility_changed(state != 0))
+
         create_btn = getattr(self.view, "create_btn", None)
         if create_btn is not None:
             create_btn.clicked.connect(self.create_item)
@@ -143,6 +148,7 @@ class PhysicsPresenter:
         self._populate_rigid_body_list(rb_group)
         self._populate_joint_list(jt_group)
         self.view.set_physics_details_enabled(True)
+        self._sync_collider_visibility_checkbox(root)
 
     def load_physics(self):
         self.refresh_physics(force=True)
@@ -442,6 +448,29 @@ class PhysicsPresenter:
             cmds.setAttr(f"{shape}.{attr}X", values[0])
             cmds.setAttr(f"{shape}.{attr}Y", values[1])
             cmds.setAttr(f"{shape}.{attr}Z", values[2])
+
+    def _on_collider_visibility_changed(self, visible):
+        root = self.app_state.current_model_root
+        if not root or not self.maya_adapter.object_exists(root):
+            return
+        try:
+            set_visibility_category(self.maya_adapter, root, "colliders", visible)
+            sync_visibility_connections(self.maya_adapter, root, "colliders")
+        except Exception:
+            logger.debug("Collider visibility toggle failed", exc_info=True)
+
+    def _sync_collider_visibility_checkbox(self, root):
+        collider_check = getattr(self.view, "collider_visible_check", None)
+        if collider_check is None:
+            return
+        try:
+            sync_visibility_connections(self.maya_adapter, root, "colliders")
+            visible = get_visibility_category(self.maya_adapter, root, "colliders")
+            collider_check.blockSignals(True)
+            collider_check.setChecked(visible)
+            collider_check.blockSignals(False)
+        except Exception:
+            logger.debug("Failed to sync collider visibility checkbox", exc_info=True)
 
     def _on_list_tab_changed(self, index):
         """Enable create/delete when a physics list tab is active."""
