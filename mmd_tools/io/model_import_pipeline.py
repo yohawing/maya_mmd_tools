@@ -134,7 +134,23 @@ class ModelImportPipeline:
                 "joints": len(jt_transforms),
                 "elapsed_seconds": elapsed,
             }
+        self._store_source_pmx_payload(root_group)
         return rb_transforms, jt_transforms
+
+    def _store_source_pmx_payload(self, root_group: str) -> None:
+        """Store raw PMX bytes on the model root for solver use."""
+        import base64
+        from pathlib import Path
+        from ..core.constants import ATTR_MMD_SOURCE_PMX_PAYLOAD
+        try:
+            pmx_bytes = Path(self.filepath).read_bytes()
+            encoded = base64.b64encode(pmx_bytes).decode("ascii")
+            if not cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root_group, exists=True):
+                cmds.addAttr(root_group, longName=ATTR_MMD_SOURCE_PMX_PAYLOAD, dataType="string", hidden=True)
+            cmds.setAttr(f"{root_group}.{ATTR_MMD_SOURCE_PMX_PAYLOAD}", encoded, type="string")
+            self.logger.debug("Stored PMX payload (%d bytes) on %s", len(pmx_bytes), root_group)
+        except Exception as exc:
+            self.logger.warning("Failed to store PMX payload: %s", exc)
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""

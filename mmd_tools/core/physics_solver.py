@@ -14,6 +14,7 @@ from typing import Optional, Sequence
 
 from maya import cmds
 
+from mmd_tools.core.constants import ATTR_MMD_SOURCE_PMX_PAYLOAD
 from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
@@ -28,6 +29,43 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
 from mmd_tools.core.physics_dag_descriptor import build_descriptors_from_dag
 
 logger = get_logger(__name__)
+
+
+def read_source_pmx_payload(root_group: str) -> Optional[bytes]:
+    """Read the stored PMX payload from the model root, or None if absent."""
+    import base64
+
+    if not cmds.objExists(root_group):
+        return None
+    if not cmds.attributeQuery(ATTR_MMD_SOURCE_PMX_PAYLOAD, node=root_group, exists=True):
+        return None
+    try:
+        data = cmds.getAttr(f"{root_group}.{ATTR_MMD_SOURCE_PMX_PAYLOAD}")
+        if not data:
+            return None
+        return base64.b64decode(data)
+    except Exception:
+        return None
+
+
+def _collect_bone_joints(root_group: str) -> list[Optional[str]]:
+    """Collect Maya joints indexed by PMX bone index from the scene."""
+    from mmd_tools.core.constants import ATTR_MMD_BONE_INDEX
+    all_joints = cmds.listRelatives(root_group, allDescendents=True, type="joint", fullPath=True) or []
+    max_index = -1
+    index_map: dict[int, str] = {}
+    for jnt in all_joints:
+        if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=jnt, exists=True):
+            idx = int(cmds.getAttr(f"{jnt}.{ATTR_MMD_BONE_INDEX}"))
+            index_map[idx] = jnt
+            if idx > max_index:
+                max_index = idx
+    if max_index < 0:
+        return []
+    result: list[Optional[str]] = [None] * (max_index + 1)
+    for idx, jnt in index_map.items():
+        result[idx] = jnt
+    return result
 
 
 class PhysicsSolverSession:
@@ -114,6 +152,25 @@ class PhysicsSolverSession:
                 bone_index_to_joint[idx] = jnt
 
         return cls(world, model, instance, bone_index_to_joint, len(bone_joints))
+
+    @classmethod
+    def from_scene(cls, root_group: str) -> Optional["PhysicsSolverSession"]:
+        """Create a solver session from the scene, reading PMX payload from the model root.
+
+        Requires that the model root has the ``mmd_source_pmx_payload`` attribute
+        (written by the import pipeline when physics nodes are enabled).
+        """
+        pmx_bytes = read_source_pmx_payload(root_group)
+        if pmx_bytes is None:
+            logger.error("No PMX payload found on '%s'", root_group)
+            return None
+
+        bone_joints = _collect_bone_joints(root_group)
+        if not bone_joints:
+            logger.error("No bone joints found under '%s'", root_group)
+            return None
+
+        return cls.create(root_group, pmx_bytes, bone_joints)
 
     def reset(self) -> bool:
         """Prepare the physics world for simulation from rest pose."""

@@ -17,7 +17,8 @@ from tests.common.maya_test_base import MayaTestBase
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
-from mmd_tools.core.physics_solver import PhysicsSolverSession
+from mmd_tools.core.constants import ATTR_MMD_SOURCE_PMX_PAYLOAD
+from mmd_tools.core.physics_solver import PhysicsSolverSession, read_source_pmx_payload
 from mmd_tools.converters.physics_scene_builder import build_physics_scene
 
 FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx"
@@ -215,6 +216,23 @@ class TestPhysicsSolverSession(MayaTestBase):
         instance.free()
         model.free()
         pmx_world.free()
+
+    def test_source_payload_store_and_read(self):
+        """PMX payload stored on root node is readable and matches original."""
+        import base64
+        root, maya_joints = self._build_scene()
+        attr = ATTR_MMD_SOURCE_PMX_PAYLOAD
+        encoded = base64.b64encode(self.pmx_bytes).decode("ascii")
+        cmds.addAttr(root, longName=attr, dataType="string", hidden=True)
+        cmds.setAttr(f"{root}.{attr}", encoded, type="string")
+
+        recovered = read_source_pmx_payload(root)
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered, self.pmx_bytes)
+
+    def test_source_payload_absent_returns_none(self):
+        root = cmds.group(empty=True, name="test_no_payload_root")
+        self.assertIsNone(read_source_pmx_payload(root))
 
 
 if __name__ == "__main__":
