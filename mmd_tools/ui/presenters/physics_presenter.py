@@ -96,6 +96,18 @@ class PhysicsPresenter:
         if jt_search is not None:
             jt_search.textChanged.connect(self.filter_joints)
 
+        create_btn = getattr(self.view, "create_btn", None)
+        if create_btn is not None:
+            create_btn.clicked.connect(self.create_item)
+
+        delete_btn = getattr(self.view, "delete_btn", None)
+        if delete_btn is not None:
+            delete_btn.clicked.connect(self.delete_item)
+
+        list_tabs = getattr(self.view, "list_tabs", None)
+        if list_tabs is not None:
+            list_tabs.currentChanged.connect(self._on_list_tab_changed)
+
         apply_btn = getattr(self.view, "apply_btn", None)
         if apply_btn is not None:
             apply_btn.clicked.connect(self.apply_changes)
@@ -112,6 +124,10 @@ class PhysicsPresenter:
         root = self.app_state.current_model_root
         if not root or not self.maya_adapter.object_exists(root):
             return
+
+        create_btn = getattr(self.view, "create_btn", None)
+        if create_btn is not None:
+            create_btn.setEnabled(True)
 
         physics_group = self._find_child(root, PHYSICS_GROUP)
         if not physics_group:
@@ -228,12 +244,10 @@ class PhysicsPresenter:
         self._set_apply_reset_enabled(True)
 
     def _set_apply_reset_enabled(self, enabled):
-        apply_btn = getattr(self.view, "apply_btn", None)
-        if apply_btn is not None:
-            apply_btn.setEnabled(enabled)
-        reset_btn = getattr(self.view, "reset_btn", None)
-        if reset_btn is not None:
-            reset_btn.setEnabled(enabled)
+        for btn_name in ("apply_btn", "reset_btn", "delete_btn"):
+            btn = getattr(self.view, btn_name, None)
+            if btn is not None:
+                btn.setEnabled(enabled)
 
     def _on_rb_selection_changed_maya(self):
         select_existing_user_role_nodes(
@@ -424,6 +438,92 @@ class PhysicsPresenter:
             cmds.setAttr(f"{shape}.{attr}X", values[0])
             cmds.setAttr(f"{shape}.{attr}Y", values[1])
             cmds.setAttr(f"{shape}.{attr}Z", values[2])
+
+    def _on_list_tab_changed(self, index):
+        """Enable create/delete when a physics list tab is active."""
+        has_model = bool(self.app_state.current_model_root)
+        create_btn = getattr(self.view, "create_btn", None)
+        if create_btn is not None:
+            create_btn.setEnabled(has_model)
+
+    def create_item(self):
+        root = self.app_state.current_model_root
+        if not root or not cmds.objExists(root):
+            return
+        list_tabs = getattr(self.view, "list_tabs", None)
+        tab_index = list_tabs.currentIndex() if list_tabs else 0
+        try:
+            cmds.undoInfo(openChunk=True, chunkName="MMD Physics Create")
+            if tab_index == 0:
+                self._create_rigid_body(root)
+            else:
+                self._create_joint(root)
+        except Exception:
+            logger.error("Failed to create physics item", exc_info=True)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        self.refresh_physics(force=True)
+
+    def delete_item(self):
+        shape = self._current_shape
+        if not shape or not cmds.objExists(shape):
+            return
+        parent = cmds.listRelatives(shape, parent=True, fullPath=True)
+        if not parent:
+            return
+        try:
+            cmds.undoInfo(openChunk=True, chunkName="MMD Physics Delete")
+            cmds.delete(parent[0])
+        except Exception:
+            logger.error("Failed to delete physics item", exc_info=True)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+        self._current_shape = None
+        self._current_kind = None
+        self.refresh_physics(force=True)
+
+    def _create_rigid_body(self, root):
+        physics_group = self._find_child(root, PHYSICS_GROUP)
+        if not physics_group:
+            physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root)
+        rb_group = self._find_child(physics_group, RIGID_BODIES_GROUP)
+        if not rb_group:
+            rb_group = cmds.group(empty=True, name=RIGID_BODIES_GROUP, parent=physics_group)
+
+        existing = self._find_shapes(rb_group, "mmdRigidBodyShape")
+        new_index = len(existing)
+
+        transform = cmds.createNode("transform", name=f"rb_{new_index}", parent=rb_group)
+        shape = cmds.createNode("mmdRigidBodyShape", name=f"rb_{new_index}Shape", parent=transform)
+        cmds.setAttr(f"{shape}.pmxIndex", new_index)
+        cmds.setAttr(f"{shape}.nameJp", f"剛体{new_index}", type="string")
+        cmds.setAttr(f"{shape}.nameEn", f"rigid_body_{new_index}", type="string")
+        cmds.setAttr(f"{shape}.shapeType", 0)
+        cmds.setAttr(f"{shape}.shapeSizeX", 0.5)
+        cmds.setAttr(f"{shape}.shapeSizeY", 0.5)
+        cmds.setAttr(f"{shape}.shapeSizeZ", 0.5)
+        cmds.setAttr(f"{shape}.mass", 1.0)
+        cmds.setAttr(f"{shape}.collisionGroup", 0)
+        cmds.setAttr(f"{shape}.collisionMask", 0xFFFF)
+        logger.info("Created rigid body '%s'", transform)
+
+    def _create_joint(self, root):
+        physics_group = self._find_child(root, PHYSICS_GROUP)
+        if not physics_group:
+            physics_group = cmds.group(empty=True, name=PHYSICS_GROUP, parent=root)
+        jt_group = self._find_child(physics_group, CONSTRAINTS_GROUP)
+        if not jt_group:
+            jt_group = cmds.group(empty=True, name=CONSTRAINTS_GROUP, parent=physics_group)
+
+        existing = self._find_shapes(jt_group, "mmdPhysicsJointShape")
+        new_index = len(existing)
+
+        transform = cmds.createNode("transform", name=f"joint_{new_index}", parent=jt_group)
+        shape = cmds.createNode("mmdPhysicsJointShape", name=f"joint_{new_index}Shape", parent=transform)
+        cmds.setAttr(f"{shape}.pmxIndex", new_index)
+        cmds.setAttr(f"{shape}.nameJp", f"ジョイント{new_index}", type="string")
+        cmds.setAttr(f"{shape}.nameEn", f"joint_{new_index}", type="string")
+        logger.info("Created joint '%s'", transform)
 
     def _clear_view(self):
         self._current_kind = None
