@@ -315,7 +315,6 @@ def _iter_morph_nodes(root_group: str, morph_type: str, required_attr: str) -> I
         root_group=root_group,
         morph_types={morph_type},
         required_attrs=(required_attr,),
-        enforce_model_root_scope=False,
     ):
         yield metadata.node
 

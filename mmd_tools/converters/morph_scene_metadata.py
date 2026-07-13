@@ -9,8 +9,11 @@ import maya.cmds as cmds
 
 from ..core import maya_attribute_utils
 from ..core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON
-from ..core.namespace_utils import NamespaceUtils
+from ..core.logger import get_logger
 from ..core.morph_metadata_reader import parse_blendshape_morph_entries, parse_blendshape_morph_names
+
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -80,16 +83,14 @@ def iter_morph_network_metadata(
     root_group: Optional[str] = None,
     morph_types: Optional[Iterable[str]] = None,
     required_attrs: Iterable[str] = (),
-    enforce_model_root_scope: bool = True,
 ) -> Iterator[MorphNetworkMetadata]:
-    """Iterate PMX morph network nodes with optional type and scope filters."""
+    """Iterate PMX morph network nodes, failing closed under an explicit root."""
     allowed_types = set(morph_types) if morph_types is not None else None
     required_attr_tuple = tuple(required_attrs)
-    namespace = NamespaceUtils.get_namespace_from_node(root_group) if root_group else None
+    requested_root = _canonical_dag_root(root_group) if root_group is not None else None
+    warned_nodes = set()
 
     for node in cmds.ls(type="network") or []:
-        if namespace is not None and NamespaceUtils.get_namespace_from_node(node) != namespace:
-            continue
         if not _has_attr(node, "mmd_morph_type"):
             continue
 
@@ -98,9 +99,24 @@ def iter_morph_network_metadata(
             continue
         if any(not _has_attr(node, attr) for attr in required_attr_tuple):
             continue
-        if enforce_model_root_scope and root_group and _has_attr(node, "mmd_model_root"):
-            connected_roots = cmds.listConnections(f"{node}.mmd_model_root") or []
-            if root_group not in connected_roots:
+        if root_group is not None:
+            if not _has_attr(node, "mmd_model_root"):
+                _warn_migration_required(node, root_group, "missing mmd_model_root", warned_nodes)
+                continue
+            connected_roots = cmds.listConnections(
+                f"{node}.mmd_model_root",
+                source=True,
+                destination=False,
+            ) or []
+            if len(connected_roots) != 1:
+                reason = "missing root connection" if not connected_roots else "multiple root connections"
+                _warn_migration_required(node, root_group, reason, warned_nodes)
+                continue
+            connected_root = _canonical_dag_root(connected_roots[0])
+            if requested_root is None or connected_root is None:
+                _warn_migration_required(node, root_group, "invalid root connection", warned_nodes)
+                continue
+            if connected_root != requested_root:
                 continue
 
         yield MorphNetworkMetadata(
@@ -111,6 +127,32 @@ def iter_morph_network_metadata(
             panel=_get_int_attr(node, "mmd_morph_panel", default=0),
             index=_get_optional_int_attr(node, "mmd_morph_index"),
         )
+
+
+def _canonical_dag_root(node: Optional[str]) -> Optional[str]:
+    if not node or not cmds.objExists(node):
+        return None
+    matches = cmds.ls(node, long=True) or []
+    if len(matches) != 1 or not matches[0].startswith("|"):
+        return None
+    return matches[0]
+
+
+def _warn_migration_required(
+    node: str,
+    requested_root: str,
+    reason: str,
+    warned_nodes: set,
+) -> None:
+    if node in warned_nodes:
+        return
+    warned_nodes.add(node)
+    logger.warning(
+        "Skipping legacy morph network %s for requested root %s: migration required (%s)",
+        node,
+        requested_root,
+        reason,
+    )
 
 
 def _has_attr(node: str, attr: str) -> bool:
