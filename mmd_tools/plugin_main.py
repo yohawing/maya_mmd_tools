@@ -4,7 +4,6 @@ import traceback
 from maya import cmds
 import maya.api.OpenMaya as om
 from mmd_tools import __version__
-from mmd_tools.ui.main_window import MainWindow
 from mmd_tools.view import shader_override as mmd_shader
 from mmd_tools.ui.drag_drop_importer import (
     install_drag_drop_importer,
@@ -23,6 +22,15 @@ _animator_toolset_window = None
 _python_rig_nodes_registered = False
 _shader_override_registered = False
 _after_open_callback_id = None
+_MAIN_WINDOW_NAME = "MMDToolsMainWindow"
+_MAIN_WINDOW_WORKSPACE_CONTROL_NAME = "MMDToolsWorkspaceControl"
+
+
+def _load_main_window_class():
+    """Load the Qt UI only when a caller explicitly requests it."""
+    from mmd_tools.ui.main_window import MainWindow
+
+    return MainWindow
 
 
 def maya_useNewAPI():
@@ -62,7 +70,7 @@ def close_main_window():
         if app is not None:
             for widget in list(app.allWidgets()):
                 try:
-                    if widget.objectName() == MainWindow.WINDOW_NAME:
+                    if widget.objectName() == _MAIN_WINDOW_NAME:
                         _delete_qt_widget(widget)
                 except Exception:
                     pass
@@ -77,17 +85,27 @@ def open_main_window(dockable=False):
 
     close_main_window()
 
+    try:
+        main_window_class = _load_main_window_class()
+    except ImportError as exc:
+        om.MGlobal.displayWarning(f"MMD Tools UI is unavailable: {exc}")
+        return None
+
     # 既存のウィンドウを削除
-    if cmds.window(MainWindow.WINDOW_NAME, exists=True):
-        cmds.deleteUI(MainWindow.WINDOW_NAME)
+    if cmds.window(_MAIN_WINDOW_NAME, exists=True):
+        cmds.deleteUI(_MAIN_WINDOW_NAME)
 
     # workspaceControlがあれば削除
-    if hasattr(MainWindow, "WORKSPACE_CONTROL_NAME"):
-        if cmds.workspaceControl(MainWindow.WORKSPACE_CONTROL_NAME, exists=True):
-            cmds.deleteUI(MainWindow.WORKSPACE_CONTROL_NAME, control=True)
+    workspace_control_name = getattr(
+        main_window_class,
+        "WORKSPACE_CONTROL_NAME",
+        _MAIN_WINDOW_WORKSPACE_CONTROL_NAME,
+    )
+    if cmds.workspaceControl(workspace_control_name, exists=True):
+        cmds.deleteUI(workspace_control_name, control=True)
 
     # 新しいインスタンスを作成して表示
-    main_window = MainWindow()
+    main_window = main_window_class()
     main_window.show_window(dockable=dockable)
     _main_window = main_window
     return main_window
@@ -314,7 +332,10 @@ def initializePlugin(mobject):
 
     try:
         install_mmd_menu()
-        install_drag_drop_importer()
+        try:
+            install_drag_drop_importer()
+        except ImportError as exc:
+            om.MGlobal.displayWarning(f"MMD Tools drag-and-drop UI is unavailable: {exc}")
         global _shader_override_registered
         if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
             mmd_shader.initializePlugin(mobject)

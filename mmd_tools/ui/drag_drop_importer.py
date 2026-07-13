@@ -279,10 +279,8 @@ class _MmdDropEventFilter:
 
 
 def _qt_core():
-    try:
-        from PySide6 import QtCore
-    except ImportError:
-        from PySide2 import QtCore
+    from mmd_tools.ui.qt_compat import QtCore
+
     return QtCore
 
 
