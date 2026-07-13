@@ -687,6 +687,20 @@ class ExportSceneCollector:
 
         morphs = list(vertex_morphs_by_name.values())
         morphs.extend(MorphConverter().collect_morphs_from_scene_for_export())
+
+        bone_index_by_joint: dict[str, int] = {}
+        for key, index in global_bone_by_key.items():
+            bone = merged_bones[index]
+            source_joint = bone.get("source_joint")
+            if source_joint:
+                bone_index_by_joint[source_joint] = index
+                for long_name in cmds.ls(source_joint, long=True) or []:
+                    bone_index_by_joint[long_name] = index
+                bone_index_by_joint[source_joint.rsplit("|", 1)[-1]] = index
+
+        from .physics_export_collector import collect_physics_from_scene
+        rigid_bodies, joints = collect_physics_from_scene(root, bone_index_by_joint)
+
         return {
             "model_name": _get_model_name(root),
             "vertices": merged_vertices,
@@ -695,6 +709,6 @@ class ExportSceneCollector:
             "bones": merged_bones or None,
             "morphs": morphs,
             "display_frames": _collect_display_frames(root),
-            "rigid_bodies": [],
-            "joints": [],
+            "rigid_bodies": rigid_bodies,
+            "joints": joints,
         }
