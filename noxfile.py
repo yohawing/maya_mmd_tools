@@ -34,6 +34,14 @@ from tests.common.maya_location import convert_path_options_for_maya_process as 
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.maya_location import pythonpath_for_maya_process as _maya_pythonpath  # noqa: E402
 from tests.common.maya_location import resolve_path_for_maya_process as _resolve_maya_path  # noqa: E402
+from tests.common.output_hygiene import (  # noqa: E402
+    compact_failure_details_from_log as _compact_failure_details_from_log,
+)
+from tests.common.output_hygiene import (  # noqa: E402
+    format_summary as _format_test_summary,
+)
+from tests.common.output_hygiene import run_logged_subprocess as _run_logged_subprocess  # noqa: E402
+from tests.common.output_hygiene import safe_log_name as _safe_log_name  # noqa: E402
 from tests.release.package import DEFAULT_MANIFEST_PATH as _PACKAGE_MANIFEST_PATH  # noqa: E402
 from tests.release.package import build_and_validate as _build_release_package  # noqa: E402
 
@@ -449,13 +457,19 @@ def _run_release_gate_command(
     result_report: Path | None = None,
     required_local: bool = False,
     strict_local: bool = False,
+    verbose: bool = False,
 ) -> None:
-    """Run a command and record its exit code plus an optional explicit child report."""
+    """Run a command quietly, retain its transcript, and record its result."""
     started = time.perf_counter()
     if result_report is not None and result_report.exists():
         result_report.unlink()
-    completed = subprocess.run(command, cwd=ROOT, text=True, check=False)
-    status = "pass" if completed.returncode == 0 else "fail"
+    returncode, log_path, (_, repeated_warnings) = _run_logged_subprocess(
+        command,
+        log_path=ROOT / "build" / "reports" / "release_gate" / f"{_safe_log_name(name)}.log",
+        cwd=ROOT,
+        verbose=verbose,
+    )
+    status = "pass" if returncode == 0 else "fail"
     detail = None
     if result_report is not None and result_report.is_file():
         try:
@@ -468,21 +482,43 @@ def _run_release_gate_command(
             if child_status not in status_aliases:
                 status = "fail"
                 detail = f"invalid child status in {result_report}: {child_status!r}"
-            elif completed.returncode == 0:
+            elif returncode == 0:
                 status = status_aliases[child_status]
     if status == "skip" and required_local and strict_local:
         status = "fail"
         detail = "required local gate skipped under --strict-local"
-    results.append(
-        {
-            "name": name,
-            "command": command,
-            "status": status,
-            "returncode": completed.returncode,
-            "duration_sec": round(time.perf_counter() - started, 3),
-            **({"detail": detail} if detail else {}),
-        }
+    duration_sec = round(time.perf_counter() - started, 3)
+    first_failure, failed_tests = _compact_failure_details_from_log(log_path)
+    result = {
+        "name": name,
+        "command": command,
+        "status": status,
+        "returncode": returncode,
+        "duration_sec": duration_sec,
+        "log": str(log_path),
+        "repeated_warnings_suppressed": repeated_warnings,
+        **({"first_failure": first_failure} if first_failure else {}),
+        **({"failed_tests": failed_tests} if failed_tests else {}),
+        **({"detail": detail} if detail else {}),
+    }
+    results.append(result)
+    print(
+        _format_test_summary(
+            name,
+            total=1,
+            passed=int(status == "pass"),
+            skipped=int(status == "skip"),
+            failed=int(status == "fail"),
+            duration_sec=duration_sec,
+        )
     )
+    if repeated_warnings and not verbose:
+        print(f"[{name}] repeated warnings suppressed from terminal: {repeated_warnings}")
+    if status == "fail":
+        print(f"[{name}] first failure: {first_failure or name}")
+        if failed_tests:
+            print(f"[{name}] failed tests: {', '.join(failed_tests)}")
+        print(f"[{name}] full log: {log_path}")
 
 
 def _run_release_gate_callable(
@@ -495,8 +531,7 @@ def _run_release_gate_callable(
     try:
         func()
     except Exception as exc:
-        results.append(
-            {
+        result = {
                 "name": name,
                 "command": [],
                 "status": "fail",
@@ -504,17 +539,37 @@ def _run_release_gate_callable(
                 "duration_sec": round(time.perf_counter() - started, 3),
                 "error": str(exc),
             }
-        )
     else:
-        results.append(
-            {
+        result = {
                 "name": name,
                 "command": [],
                 "status": "pass",
                 "returncode": 0,
                 "duration_sec": round(time.perf_counter() - started, 3),
             }
+    results.append(result)
+    print(
+        _format_test_summary(
+            name,
+            total=1,
+            passed=int(result["status"] == "pass"),
+            skipped=0,
+            failed=int(result["status"] == "fail"),
+            duration_sec=float(result["duration_sec"]),
         )
+    )
+    if result["status"] == "fail":
+        print(f"[{name}] first failure: {result.get('error', name)}")
+
+
+def _release_gate_failure_label(result: dict[str, object]) -> str:
+    """Return the best available compact failure detail for an aggregate gate."""
+    return str(
+        result.get("first_failure")
+        or result.get("error")
+        or result.get("name")
+        or "unknown failure"
+    )
 
 
 def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -> tuple[Path, Path]:
@@ -2088,6 +2143,7 @@ def release_gate(session: nox.Session) -> None:
     if ffi_cargo_target_dir and not ffi_path:
         ffi_path = str(Path(ffi_cargo_target_dir) / "release")
     strict_local = _has_flag(args, "--strict-local")
+    verbose = _has_flag(args, "--verbose")
     local_assets_manifest = _option(args, "--local-assets-manifest", "local-assets-manifest.json")
     camera_manifest = _option(
         args,
@@ -2109,7 +2165,7 @@ def release_gate(session: nox.Session) -> None:
         ("tier0:diff-check", ["git", "diff", "--check"]),
     ]
     for name, command in tier0_commands:
-        _run_release_gate_command(name, command, results)
+        _run_release_gate_command(name, command, results, verbose=verbose)
     _run_release_gate_callable("tier0:version-markers", _release_gate_version_check, results)
 
     tier1_commands = [
@@ -2134,7 +2190,7 @@ def release_gate(session: nox.Session) -> None:
             ]
         )
     for name, command in tier1_commands:
-        _run_release_gate_command(name, command, results)
+        _run_release_gate_command(name, command, results, verbose=verbose)
 
     if not quick:
         tier2_commands = []
@@ -2277,8 +2333,12 @@ def release_gate(session: nox.Session) -> None:
                         ["uvx", "nox", "-s", "cpp_verify", "--", "--maya", cpp_version, "--config", cpp_config],
                     )
                 )
+        if verbose:
+            for name, command in tier2_commands:
+                if name.startswith("tier2:mayapy-") and "--verbose" not in command:
+                    command.append("--verbose")
         for name, command in tier2_commands:
-            _run_release_gate_command(name, command, results)
+            _run_release_gate_command(name, command, results, verbose=verbose)
 
         tier3_commands = [
             (
@@ -2348,15 +2408,49 @@ def release_gate(session: nox.Session) -> None:
                 result_report=result_report,
                 required_local=True,
                 strict_local=strict_local,
+                verbose=verbose,
             )
 
     md_path, json_path = _write_release_gate_reports(results, quick)
+    counts = {
+        status: sum(result["status"] == status for result in results)
+        for status in ("pass", "fail", "skip")
+    }
+    print(
+        _format_test_summary(
+            "release_gate",
+            total=len(results),
+            passed=counts["pass"],
+            skipped=counts["skip"],
+            failed=counts["fail"],
+            duration_sec=sum(float(result["duration_sec"]) for result in results),
+        )
+    )
     session.log(f"Release gate report: {md_path}")
     session.log(f"Release gate JSON: {json_path}")
 
     failed = [result for result in results if result["status"] == "fail"]
     if failed:
         failed_names = ", ".join(str(result["name"]) for result in failed)
+        print(
+            "[release_gate] first failure: "
+            f"{_release_gate_failure_label(failed[0])}"
+        )
+        print(f"[release_gate] failed gates: {failed_names}")
+        failed_tests = list(
+            dict.fromkeys(
+                str(test)
+                for result in failed
+                for test in result.get("failed_tests", [])
+            )
+        )
+        if failed_tests:
+            print(f"[release_gate] failed tests: {', '.join(failed_tests)}")
+        failed_logs = [str(result["log"]) for result in failed if result.get("log")]
+        if any(not result.get("log") for result in failed):
+            failed_logs.append(str(json_path))
+        if failed_logs:
+            print(f"[release_gate] failure logs: {', '.join(failed_logs)}")
         session.error(f"Release gate failed: {failed_names}")
 
 
