@@ -53,8 +53,18 @@ class TestPresenterModuleStructure(unittest.TestCase):
 
     def test_has_write_back_helpers(self):
         func_names = [n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)]
-        self.assertIn("_apply_rigid_body_changes", func_names)
-        self.assertIn("_apply_joint_changes", func_names)
+        self.assertIn("_apply_validated_rigid_body", func_names)
+        self.assertIn("_apply_validated_joint", func_names)
+
+    def test_has_collect_form_values(self):
+        func_names = [n.name for n in ast.walk(self.tree) if isinstance(n, ast.FunctionDef)]
+        self.assertIn("_collect_rigid_body_form_values", func_names)
+        self.assertIn("_collect_joint_form_values", func_names)
+
+    def test_uses_validation(self):
+        self.assertIn("parse_rigid_body_form", self.source)
+        self.assertIn("parse_joint_form", self.source)
+        self.assertIn("PhysicsFormValidationError", self.source)
 
     def test_has_parse_vector_str(self):
         self.assertIn("_parse_vector_str", self.source)

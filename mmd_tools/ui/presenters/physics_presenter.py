@@ -301,15 +301,35 @@ class PhysicsPresenter:
         }
 
     def apply_changes(self):
+        from ...core.physics_form_validation import (
+            PhysicsFormValidationError,
+            parse_joint_form,
+            parse_rigid_body_form,
+        )
+
         shape = self._current_shape
         if not shape or not cmds.objExists(shape):
             return
+
+        try:
+            if self._current_kind == "rigid":
+                values = self._collect_rigid_body_form_values(shape)
+                parsed = parse_rigid_body_form(values)
+            elif self._current_kind == "joint":
+                values = self._collect_joint_form_values(shape)
+                parsed = parse_joint_form(values)
+            else:
+                return
+        except PhysicsFormValidationError as e:
+            cmds.warning(f"Validation error ({e.field_key}): {e.message_key}")
+            return
+
         try:
             cmds.undoInfo(openChunk=True, chunkName="MMD Physics Edit")
             if self._current_kind == "rigid":
-                self._apply_rigid_body_changes(shape)
+                self._apply_validated_rigid_body(shape, parsed)
             elif self._current_kind == "joint":
-                self._apply_joint_changes(shape)
+                self._apply_validated_joint(shape, parsed)
             logger.info("Applied physics changes to '%s'", shape)
         except Exception:
             logger.error("Failed to apply physics changes to '%s'", shape, exc_info=True)
@@ -327,58 +347,83 @@ class PhysicsPresenter:
             values = self._read_joint_values(shape)
             self.view.set_physics_form("joint", values)
 
-    def _apply_rigid_body_changes(self, shape):
+    def _collect_rigid_body_form_values(self, shape):
+        """Collect form values for rigid body validation."""
         v = self.view
-        cmds.setAttr(f"{shape}.nameJp", v.rigid_name_edit.text(), type="string")
-        cmds.setAttr(f"{shape}.nameEn", v.rigid_name_english_edit.text(), type="string")
-        cmds.setAttr(f"{shape}.shapeType", v.rigid_shape_combo.currentIndex())
-        cmds.setAttr(f"{shape}.physicsMode", v.rigid_physics_mode_combo.currentIndex())
-        cmds.setAttr(f"{shape}.collisionGroup", v.rigid_collision_group_spin.value())
         mask_text = v.rigid_collision_mask_spin.text().strip()
         try:
-            cmds.setAttr(f"{shape}.collisionMask", int(mask_text, 0))
+            mask_int = int(mask_text, 0)
         except ValueError:
-            pass
-        for attr, editor in (
-            ("mass", v.rigid_mass_edit),
-            ("linearDamping", v.rigid_linear_damping_edit),
-            ("angularDamping", v.rigid_angular_damping_edit),
-            ("restitution", v.rigid_restitution_edit),
-            ("friction", v.rigid_friction_edit),
-        ):
-            try:
-                cmds.setAttr(f"{shape}.{attr}", float(editor.text()))
-            except ValueError:
-                pass
+            mask_int = mask_text
+        return {
+            "name": v.rigid_name_edit.text(),
+            "name_english": v.rigid_name_english_edit.text(),
+            "shape": v.rigid_shape_combo.currentIndex(),
+            "physics_mode": v.rigid_physics_mode_combo.currentIndex(),
+            "related_bone": int(_get_attr(shape, "relatedBoneIndex", -1)),
+            "collision_group": v.rigid_collision_group_spin.value(),
+            "collision_mask": mask_int,
+            "mass": v.rigid_mass_edit.text(),
+            "linear_damping": v.rigid_linear_damping_edit.text(),
+            "angular_damping": v.rigid_angular_damping_edit.text(),
+            "restitution": v.rigid_restitution_edit.text(),
+            "friction": v.rigid_friction_edit.text(),
+        }
 
-    def _apply_joint_changes(self, shape):
+    def _collect_joint_form_values(self, shape):
+        """Collect form values for joint validation."""
         v = self.view
-        cmds.setAttr(f"{shape}.nameJp", v.joint_name_edit.text(), type="string")
-        cmds.setAttr(f"{shape}.nameEn", v.joint_name_english_edit.text(), type="string")
-        try:
-            cmds.setAttr(f"{shape}.jointType", int(v.joint_type_spin.text()))
-        except ValueError:
-            pass
-        for attr, editor_name in (
-            ("translationLimitMin", "joint_translation_min_edit"),
-            ("translationLimitMax", "joint_translation_max_edit"),
-            ("springTranslation", "joint_spring_translation_edit"),
-            ("springRotation", "joint_spring_rotation_edit"),
+        return {
+            "name": v.joint_name_edit.text(),
+            "name_english": v.joint_name_english_edit.text(),
+            "joint_type": v.joint_type_spin.text(),
+            "rigid_body_a": int(_get_attr(shape, "rigidBodyAIndex", -1)),
+            "rigid_body_b": int(_get_attr(shape, "rigidBodyBIndex", -1)),
+            "linear_constraint_states": "0, 0, 0",
+            "angular_constraint_states": "0, 0, 0",
+            "translation_limit_min": getattr(v, "joint_translation_min_edit").text(),
+            "translation_limit_max": getattr(v, "joint_translation_max_edit").text(),
+            "rotation_limit_min_degrees": getattr(v, "joint_rotation_min_edit").text(),
+            "rotation_limit_max_degrees": getattr(v, "joint_rotation_max_edit").text(),
+            "spring_translation": getattr(v, "joint_spring_translation_edit").text(),
+            "spring_rotation": getattr(v, "joint_spring_rotation_edit").text(),
+            "spring_translation_enabled": "0, 0, 0",
+            "spring_rotation_enabled": "0, 0, 0",
+        }
+
+    def _apply_validated_rigid_body(self, shape, parsed):
+        cmds.setAttr(f"{shape}.nameJp", parsed.name, type="string")
+        cmds.setAttr(f"{shape}.nameEn", parsed.name_english, type="string")
+        cmds.setAttr(f"{shape}.shapeType", parsed.shape_type)
+        cmds.setAttr(f"{shape}.physicsMode", parsed.physics_mode)
+        cmds.setAttr(f"{shape}.collisionGroup", parsed.collision_group)
+        cmds.setAttr(f"{shape}.collisionMask", parsed.collision_mask)
+        cmds.setAttr(f"{shape}.mass", parsed.mass)
+        cmds.setAttr(f"{shape}.linearDamping", parsed.linear_damping)
+        cmds.setAttr(f"{shape}.angularDamping", parsed.angular_damping)
+        cmds.setAttr(f"{shape}.restitution", parsed.restitution)
+        cmds.setAttr(f"{shape}.friction", parsed.friction)
+
+    def _apply_validated_joint(self, shape, parsed):
+        cmds.setAttr(f"{shape}.nameJp", parsed.name, type="string")
+        cmds.setAttr(f"{shape}.nameEn", parsed.name_english, type="string")
+        cmds.setAttr(f"{shape}.jointType", parsed.joint_type)
+        for attr, values in (
+            ("translationLimitMin", parsed.translation_limit_min),
+            ("translationLimitMax", parsed.translation_limit_max),
+            ("springTranslation", parsed.spring_translation),
+            ("springRotation", parsed.spring_rotation),
         ):
-            vec = _parse_vector_str(getattr(v, editor_name).text())
-            if vec is not None:
-                cmds.setAttr(f"{shape}.{attr}X", vec[0])
-                cmds.setAttr(f"{shape}.{attr}Y", vec[1])
-                cmds.setAttr(f"{shape}.{attr}Z", vec[2])
-        for attr, editor_name in (
-            ("rotationLimitMin", "joint_rotation_min_edit"),
-            ("rotationLimitMax", "joint_rotation_max_edit"),
+            cmds.setAttr(f"{shape}.{attr}X", values[0])
+            cmds.setAttr(f"{shape}.{attr}Y", values[1])
+            cmds.setAttr(f"{shape}.{attr}Z", values[2])
+        for attr, values in (
+            ("rotationLimitMin", parsed.rotation_limit_min_degrees),
+            ("rotationLimitMax", parsed.rotation_limit_max_degrees),
         ):
-            vec = _parse_vector_str(getattr(v, editor_name).text())
-            if vec is not None:
-                cmds.setAttr(f"{shape}.{attr}X", vec[0])
-                cmds.setAttr(f"{shape}.{attr}Y", vec[1])
-                cmds.setAttr(f"{shape}.{attr}Z", vec[2])
+            cmds.setAttr(f"{shape}.{attr}X", values[0])
+            cmds.setAttr(f"{shape}.{attr}Y", values[1])
+            cmds.setAttr(f"{shape}.{attr}Z", values[2])
 
     def _clear_view(self):
         self._current_kind = None
