@@ -9,8 +9,8 @@ import maya.cmds as cmds
 from .vmd_context import VmdRuntimeRigContext
 
 
-MMD_APPEND_NODE_TYPES = ("mmdAppend", "mmdAppendNode")
-MMD_CCD_IK_NODE_TYPES = ("mmdCcdIk", "mmdCcdIkNode")
+MMD_APPEND_NODE_TYPES = ("mmdAppend",)
+MMD_CCD_IK_NODE_TYPES = ("mmdCcdIk",)
 
 
 def _ls_nodes_of_types(node_types: Tuple[str, ...]) -> List[str]:

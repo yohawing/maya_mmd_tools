@@ -2,14 +2,94 @@
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
+from .vmd_context import VmdRuntimeSceneApplyContext
+
+
+def _resolve_runtime_scene_apply_context(
+    converter_or_context: Union[Any, VmdRuntimeSceneApplyContext],
+) -> VmdRuntimeSceneApplyContext:
+    if isinstance(converter_or_context, VmdRuntimeSceneApplyContext):
+        return converter_or_context
+    factory = getattr(converter_or_context, "_runtime_scene_apply_context", None)
+    if callable(factory):
+        return factory()
+    apply_runtime_channel_arrays = getattr(
+        converter_or_context,
+        "_apply_runtime_channel_arrays_to_scene",
+        None,
+    )
+    if not callable(apply_runtime_channel_arrays):
+        def apply_runtime_channel_arrays(*args):
+            return apply_runtime_channel_arrays_to_scene(converter_or_context, *args)
+    noop_logger = SimpleNamespace(info=lambda *_args, **_kwargs: None, debug=lambda *_args, **_kwargs: None)
+    return VmdRuntimeSceneApplyContext(
+        logger=getattr(converter_or_context, "logger", noop_logger),
+        outer_refresh_suspended=bool(getattr(converter_or_context, "_vmd_import_refresh_suspended", False)),
+        collect_append_info=getattr(converter_or_context, "_collect_append_info", lambda: {}),
+        collect_mmd_ik_passthrough_info=getattr(
+            converter_or_context,
+            "_collect_mmd_ik_passthrough_info",
+            lambda: {},
+        ),
+        decompose_append_rotations_for_scene=getattr(
+            converter_or_context,
+            "_decompose_append_rotations_for_scene",
+            lambda *_args: {},
+        ),
+        decompose_append_translations_for_scene=getattr(
+            converter_or_context,
+            "_decompose_append_translations_for_scene",
+            lambda *_args: {},
+        ),
+        key_mmd_ik_passthrough_rotation=getattr(
+            converter_or_context,
+            "_key_mmd_ik_passthrough_rotation",
+            lambda *_args, **_kwargs: 0,
+        ),
+        batch_create_and_key_curve_arrays=getattr(
+            converter_or_context,
+            "_batch_create_and_key_curve_arrays",
+            lambda *_args: (0, 0),
+        ),
+        bake_morph_weight_cache_from_runtime=getattr(
+            converter_or_context,
+            "_bake_morph_weight_cache_from_runtime",
+            lambda *_args: None,
+        ),
+        apply_runtime_channel_arrays=apply_runtime_channel_arrays,
+    )
+
 
 def apply_runtime_channel_arrays_to_scene(
-    converter,
+    converter_or_context,
+    joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
+    joint_channel_static: Dict[str, Dict[str, dict]],
+    bake_times: om.MTimeArray,
+    baked_frames: List[float],
+    morph_cache: List[Tuple[float, list]],
+    pmx_morph_names: List[str],
+) -> None:
+    """Apply collected runtime bake channel arrays to the Maya scene."""
+    context = _resolve_runtime_scene_apply_context(converter_or_context)
+    _apply_runtime_channel_arrays_to_scene(
+        context,
+        joint_channel_values,
+        joint_channel_static,
+        bake_times,
+        baked_frames,
+        morph_cache,
+        pmx_morph_names,
+    )
+
+
+def _apply_runtime_channel_arrays_to_scene(
+    context: VmdRuntimeSceneApplyContext,
     joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
     joint_channel_static: Dict[str, Dict[str, dict]],
     bake_times: om.MTimeArray,
@@ -22,15 +102,15 @@ def apply_runtime_channel_arrays_to_scene(
     skipped_static_channels = 0
     total_channels = 0
 
-    append_info = converter._collect_append_info()
-    ik_passthrough_info = converter._collect_mmd_ik_passthrough_info()
-    decomposed_rotations = converter._decompose_append_rotations_for_scene(
+    append_info = context.collect_append_info()
+    ik_passthrough_info = context.collect_mmd_ik_passthrough_info()
+    decomposed_rotations = context.decompose_append_rotations_for_scene(
         joint_channel_values,
         joint_channel_static,
         append_info,
         len(baked_frames),
     )
-    decomposed_translations = converter._decompose_append_translations_for_scene(
+    decomposed_translations = context.decompose_append_translations_for_scene(
         joint_channel_values,
         joint_channel_static,
         append_info,
@@ -43,7 +123,7 @@ def apply_runtime_channel_arrays_to_scene(
             ik_info = ik_passthrough_info.get(joint)
             if ik_info:
                 channels = dict(channels)
-                redirected = converter._key_mmd_ik_passthrough_rotation(
+                redirected = context.key_mmd_ik_passthrough_rotation(
                     ik_info,
                     channels,
                     joint_channel_static.get(joint, {}),
@@ -95,7 +175,7 @@ def apply_runtime_channel_arrays_to_scene(
                             passthrough_static[attr] = orig_state
 
                 if redirected_channels:
-                    keyed, skipped = converter._batch_create_and_key_curve_arrays(
+                    keyed, skipped = context.batch_create_and_key_curve_arrays(
                         append_node,
                         redirected_channels,
                         redirected_static,
@@ -106,7 +186,7 @@ def apply_runtime_channel_arrays_to_scene(
                     skipped_static_channels += skipped
 
                 if passthrough_channels:
-                    keyed, skipped = converter._batch_create_and_key_curve_arrays(
+                    keyed, skipped = context.batch_create_and_key_curve_arrays(
                         joint,
                         passthrough_channels,
                         passthrough_static,
@@ -119,7 +199,7 @@ def apply_runtime_channel_arrays_to_scene(
                 if redirected_channels or passthrough_channels:
                     continue
 
-            keyed, skipped = converter._batch_create_and_key_curve_arrays(
+            keyed, skipped = context.batch_create_and_key_curve_arrays(
                 joint,
                 channels,
                 target_static,
@@ -129,22 +209,22 @@ def apply_runtime_channel_arrays_to_scene(
             keyed_channels += keyed
             skipped_static_channels += skipped
         except Exception as e:
-            converter.logger.debug(f"batch array keying error for {joint}: {e}")
+            context.logger.debug(f"batch array keying error for {joint}: {e}")
             raise
 
-    converter.logger.info(
+    context.logger.debug(
         "runtime joint channel pruning: "
         f"keyed={keyed_channels}, skipped_static={skipped_static_channels}, "
         f"total={total_channels}"
     )
 
-    converter._bake_morph_weight_cache_from_runtime(morph_cache, pmx_morph_names)
+    context.bake_morph_weight_cache_from_runtime(morph_cache, pmx_morph_names)
 
-    converter.logger.info(f"Applied runtime cache: keyed {len(baked_frames)} frames")
+    context.logger.info(f"Applied runtime cache: keyed {len(baked_frames)} frames")
 
 
 def apply_runtime_channel_arrays_to_scene_with_undo_disabled(
-    converter,
+    converter_or_context,
     joint_channel_values: Dict[str, Dict[str, Optional[om.MDoubleArray]]],
     joint_channel_static: Dict[str, Dict[str, dict]],
     bake_times: om.MTimeArray,
@@ -153,9 +233,9 @@ def apply_runtime_channel_arrays_to_scene_with_undo_disabled(
     pmx_morph_names: List[str],
 ) -> None:
     """Apply runtime channels while suppressing Maya undo recording."""
+    context = _resolve_runtime_scene_apply_context(converter_or_context)
     undo_was_enabled = True
     refresh_suspended = False
-    outer_refresh_suspended = bool(getattr(converter, "_vmd_import_refresh_suspended", False))
     try:
         undo_was_enabled = bool(cmds.undoInfo(q=True, state=True))
     except Exception:
@@ -164,21 +244,32 @@ def apply_runtime_channel_arrays_to_scene_with_undo_disabled(
         cmds.undoInfo(stateWithoutFlush=False)
     except Exception:
         pass
-    if not outer_refresh_suspended:
+    if not context.outer_refresh_suspended:
         try:
             cmds.refresh(suspend=True)
             refresh_suspended = True
         except Exception:
             refresh_suspended = False
     try:
-        converter._apply_runtime_channel_arrays_to_scene(
-            joint_channel_values,
-            joint_channel_static,
-            bake_times,
-            baked_frames,
-            morph_cache,
-            pmx_morph_names,
-        )
+        if context.apply_runtime_channel_arrays is not None:
+            context.apply_runtime_channel_arrays(
+                joint_channel_values,
+                joint_channel_static,
+                bake_times,
+                baked_frames,
+                morph_cache,
+                pmx_morph_names,
+            )
+        else:
+            _apply_runtime_channel_arrays_to_scene(
+                context,
+                joint_channel_values,
+                joint_channel_static,
+                bake_times,
+                baked_frames,
+                morph_cache,
+                pmx_morph_names,
+            )
     finally:
         if refresh_suspended:
             try:

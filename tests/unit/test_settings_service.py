@@ -20,8 +20,6 @@ class _FakeSettingsStore:
                     "import_models": False,
                     "create_mmd_shaders": False,
                     "separate_meshes_by_material": True,
-                    "split_meshes_by_morph_groups": True,
-                    "hide_hidden_geometry": True,
                     "auto_classify_transparency": True,
                     "auto_resolve_textures": True,
                     "disable_backface_culling": False,
@@ -29,7 +27,6 @@ class _FakeSettingsStore:
                     "texture_search_path": "/textures",
                     "show_texture_issue_dialog": False,
                 },
-                "physics": {"import_physics": True},
                 "morph": {"import_morphs": False},
                 "rig": {"add_semi_standard_bones": True, "bake_mode": False},
                 "native": {
@@ -48,6 +45,7 @@ class _FakeSettingsStore:
                     "motion_scale": 2.5,
                     "clear_existing_motion": True,
                     "resample_curves": True,
+                    "use_native_physics_bake": True,
                 },
             },
             "export": {"general": {"export_format": "pmd", "apply_scale": False}},
@@ -120,6 +118,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
             state,
             {
                 "development_mode": False,
+                "command_port": 3939,
                 "logging_enabled": False,
                 "logging_level": "ERROR",
                 "log_file_path": "custom.log",
@@ -130,6 +129,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         self.service.save_settings_tab_state(
             {
                 "development_mode": True,
+                "command_port": 7788,
                 "logging_enabled": True,
                 "logging_level": "INFO",
                 "log_file_path": "next.log",
@@ -138,6 +138,7 @@ class TestSettingsServiceDelegation(unittest.TestCase):
         )
 
         self.assertTrue(self.service.get("ui.general.development_mode"))
+        self.assertEqual(self.service.get("ui.dev.command_port"), 7788)
         self.assertEqual(self.service.get("ui.general.language"), "ja")
         self.assertTrue(self.service.get("logging.enabled"))
         self.assertEqual(self.service.get("logging.level"), "INFO")
@@ -176,17 +177,31 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.store = _FakeSettingsStore()
         self.service = SettingsService(self.store)
 
+    def test_resolve_import_scale_returns_default_in_normal_mode(self):
+        self.assertFalse(self.service.is_development_mode())
+        self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
+
+        self.assertEqual(self.service.resolve_import_scale(), 1.0)
+        # Persisted development value must not be overwritten.
+        self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
+
+    def test_resolve_import_scale_returns_persisted_value_in_dev_mode(self):
+        self.service.set("ui.general.development_mode", True)
+
+        self.assertEqual(self.service.resolve_import_scale(), 2.0)
+
     def test_build_pmx_import_options_applies_normal_mode_overrides(self):
         options = self.service.build_pmx_import_options(custom_namespace="ns")
 
-        self.assertEqual(options["scale"], 2.0)
+        self.assertEqual(options["scale"], 1.0)
         self.assertTrue(options["use_namespace"])
         self.assertEqual(options["custom_namespace"], "ns")
         self.assertTrue(options["import_models"])
-        self.assertFalse(options["import_physics"])
+        self.assertNotIn("import_physics", options)
+        self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertFalse(options["separate_meshes_by_material"])
-        self.assertFalse(options["split_meshes_by_morph_groups"])
-        self.assertFalse(options["hide_hidden_geometry"])
+        self.assertNotIn("split_meshes_by_morph_groups", options)
+        self.assertNotIn("hide_hidden_geometry", options)
         self.assertFalse(options["auto_classify_transparency"])
         self.assertTrue(options["auto_resolve_textures"])
         self.assertTrue(options["disable_backface_culling"])
@@ -199,17 +214,21 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertTrue(options["use_cpp_fast_load"])
         self.assertFalse(options["cpp_fast_load_mesh_only"])
         self.assertTrue(options["use_cpp_rig_nodes"])
+        # Policy forces scale 1.0 without mutating the stored value.
+        self.assertEqual(self.service.get("import.general.scale_factor"), 2.0)
 
     def test_build_pmx_import_options_preserves_dev_mode_saved_values(self):
         self.service.set("ui.general.development_mode", True)
 
         options = self.service.build_pmx_import_options()
 
+        self.assertEqual(options["scale"], 2.0)
         self.assertFalse(options["import_models"])
-        self.assertTrue(options["import_physics"])
+        self.assertNotIn("import_physics", options)
+        self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertTrue(options["separate_meshes_by_material"])
-        self.assertTrue(options["split_meshes_by_morph_groups"])
-        self.assertTrue(options["hide_hidden_geometry"])
+        self.assertNotIn("split_meshes_by_morph_groups", options)
+        self.assertNotIn("hide_hidden_geometry", options)
         self.assertTrue(options["auto_classify_transparency"])
         self.assertTrue(options["auto_resolve_textures"])
         self.assertFalse(options["disable_backface_culling"])
@@ -231,8 +250,10 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         self.assertFalse(options["import_light_animation"])
         self.assertEqual(options["motion_scale"], 2.5)
         self.assertTrue(options["clear_existing_motion"])
+        self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertFalse(options["resample_curves"])
         self.assertFalse(options["bake_mode"])
+        self.assertTrue(options["use_native_physics_bake"])
         self.assertEqual(options["target_model"], "model")
 
     def test_build_vmd_import_options_preserves_resample_curves_in_dev_mode(self):
@@ -241,7 +262,9 @@ class TestSettingsServiceImportOptions(unittest.TestCase):
         options = self.service.build_vmd_import_options()
 
         self.assertTrue(options["resample_curves"])
+        self.assertNotIn("enable_maya_bullet_preview", options)
         self.assertFalse(options["bake_mode"])
+        self.assertTrue(options["use_native_physics_bake"])
         self.assertIsNone(options["target_model"])
 
     def test_build_export_options_and_texture_dialog_setting(self):

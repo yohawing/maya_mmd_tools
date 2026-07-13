@@ -12,10 +12,12 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -32,10 +34,28 @@ from tests.common.maya_location import convert_path_options_for_maya_process as 
 from tests.common.maya_location import path_for_maya_process as _maya_process_path  # noqa: E402
 from tests.common.maya_location import pythonpath_for_maya_process as _maya_pythonpath  # noqa: E402
 from tests.common.maya_location import resolve_path_for_maya_process as _resolve_maya_path  # noqa: E402
+from tests.release.package import DEFAULT_MANIFEST_PATH as _PACKAGE_MANIFEST_PATH  # noqa: E402
+from tests.release.package import build_and_validate as _build_release_package  # noqa: E402
 
 
 DEFAULT_MAYA_VERSION = "2024"
+DEFAULT_RELEASE_MAYA_VERSIONS = ("2024", "2025", "2026", "2027")
 DEFAULT_CMAKE_CONFIG = "Debug"
+DEFAULT_CPP_VERIFY_MAYA_VERSIONS = DEFAULT_RELEASE_MAYA_VERSIONS
+DEFAULT_RELEASE_VIEWPORT_MATRIX = (
+    ("2025", "glsl", "glcore"),
+    ("2026", "dx11", "dx11"),
+)
+DEFAULT_GOLDEN_ORACLE_RENDER_MANIFEST = "F:/Develop/MMDDev/GoldenOracle/manifests/fixture.render.json"
+RELEASE_VISUAL_CASES = (
+    "fixture-render-generated-visual-mmd-diffuse-lit-box",
+    "fixture-render-generated-visual-mmd-toon-ramp-lit-box",
+    "fixture-render-generated-visual-mmd-texture-uv-orientation-plane",
+    "fixture-render-generated-visual-mmd-sphere-texture-add",
+    "fixture-render-generated-visual-mmd-alpha-blend-overlap",
+    "fixture-render-generated-visual-mmd-outline-normal-silhouette",
+)
+MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS = 0x3
 RELEASE_CAMERA_CURRENT_EPSILON = "18.25"
 RELEASE_ADDICTION_INTERPOLATION_EYE_MAX = "2.0"
 RELEASE_ADDICTION_INTERPOLATION_FORWARD_MAX_DEG = "5.0"
@@ -45,17 +65,17 @@ RELEASE_ADDICTION_CAMERA_VMD = (
     "F:/MMD/vmd/175_Addictionカメラモーションv1.3/"
     "Addictionカメラモーション/Addictionカメラ用モーション(一人用).vmd"
 )
-MMD_ANIM_CLI_VERSION = "v0.1.9"
+MMD_ANIM_CLI_VERSION = "v0.2.0"
 MMD_ANIM_CLI_REPO = "yohawing/mmd-anim"
 MMD_ANIM_CLI_ASSETS = {
     "Windows": {
-        "archive": "mmd-anim-v0.1.9-x86_64-pc-windows-msvc.zip",
-        "sha256": "8fa674e2b8104324aaf84351ec91e857c47a768345a5e806c5da543cca0b2859",
+        "archive": "mmd-anim-v0.2.0-x86_64-pc-windows-msvc.zip",
+        "sha256": "e50315413aec8525ca4d04f8ea5e2770d1656cb7e7de8b7987db7e3f3218405f",
         "exe": "mmd-anim.exe",
     },
     "Linux": {
-        "archive": "mmd-anim-v0.1.9-x86_64-unknown-linux-gnu.tar.gz",
-        "sha256": "821164e1db3191492303b5290b0a9166fd6bede41384eb805836f4ed3e03a576",
+        "archive": "mmd-anim-v0.2.0-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "11dedde4b929aaca53d9e4ce6966627425fcba31beba61686e7a9e7c87c1ae0e",
         "exe": "mmd-anim",
     },
 }
@@ -75,9 +95,95 @@ def _option(args: list[str], name: str, default: str) -> str:
         raise ValueError(f"{name} requires a value") from exc
 
 
+def _options(args: list[str], name: str) -> list[str]:
+    """Return all string option values from nox positional arguments."""
+    values: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == name:
+            if i + 1 >= len(args):
+                raise ValueError(f"{name} requires a value")
+            values.append(args[i + 1])
+            i += 2
+            continue
+        i += 1
+    return values
+
+
+def _without_option(args: list[str], name: str) -> list[str]:
+    """Return args with a single value option removed."""
+    filtered: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == name:
+            if i + 1 >= len(args):
+                raise ValueError(f"{name} requires a value")
+            i += 2
+            continue
+        filtered.append(args[i])
+        i += 1
+    return filtered
+
+
 def _has_flag(args: list[str], name: str) -> bool:
     """Return True if a boolean flag is present in positional arguments."""
     return name in args
+
+
+def _cargo_args_with_physics_feature(args: list[str]) -> list[str]:
+    """Return cargo args that enable the native Bullet physics runtime feature."""
+    feature = "physics-bullet-native"
+    cargo_args = list(args)
+    for index, value in enumerate(cargo_args):
+        if value == "--features":
+            if index + 1 >= len(cargo_args):
+                raise ValueError("--features requires a value")
+            features = cargo_args[index + 1].replace(",", " ").split()
+            if feature not in features:
+                features.append(feature)
+                cargo_args[index + 1] = " ".join(features)
+            return cargo_args
+        if value.startswith("--features="):
+            features = value.split("=", 1)[1].replace(",", " ").split()
+            if feature not in features:
+                features.append(feature)
+                cargo_args[index] = "--features=" + " ".join(features)
+            return cargo_args
+    cargo_args.extend(["--features", feature])
+    return cargo_args
+
+
+def _native_runtime_smoke_code() -> str:
+    """Return Python code that verifies the runtime ABI and required features."""
+    return (
+        "from mmd_tools.core.native.mmd_anim_runtime import "
+        "get_mmd_runtime_library, get_runtime_library_path; "
+        "required = "
+        f"{MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS}; "
+        "lib = get_mmd_runtime_library(); "
+        "path = get_runtime_library_path(); "
+        "flags = lib.mmd_runtime_feature_flags() if lib and hasattr(lib, 'mmd_runtime_feature_flags') else 0; "
+        "abi = lib.mmd_runtime_abi_version() if lib else 0; "
+        "print(path); "
+        "print({'abi': abi, 'featureFlags': hex(flags), 'requiredFeatureFlags': hex(required)}); "
+        "raise SystemExit(0 if lib and abi == 2 and (flags & required) == required else 1)"
+    )
+
+
+def _configure_bullet3_dir(session: nox.Session, env: dict[str, str]) -> None:
+    """Set a local Bullet checkout for physics-enabled mmd-anim builds when available."""
+    if env.get("MMD_ANIM_BULLET3_DIR"):
+        return
+    candidates = [
+        ROOT / "external" / "mmd-anim" / "bullet3",
+        ROOT.parent / "MMDDev" / "bullet3",
+        ROOT.parent / "bullet3",
+    ]
+    for candidate in candidates:
+        if (candidate / "src").exists():
+            env["MMD_ANIM_BULLET3_DIR"] = str(candidate.resolve())
+            session.log(f"Using Bullet sources: {env['MMD_ANIM_BULLET3_DIR']}")
+            return
 
 
 def _require_build_path(session: nox.Session, value: str, option_name: str) -> Path:
@@ -92,6 +198,14 @@ def _require_build_path(session: nox.Session, value: str, option_name: str) -> P
     return path
 
 
+def _resolve_existing_or_repo_path(value: str) -> Path:
+    """Resolve an input path from absolute or repository-relative text."""
+    path = Path(value)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path.resolve()
+
+
 def _sha256_file(path: Path) -> str:
     """Return the SHA-256 digest for a file."""
     digest = hashlib.sha256()
@@ -102,7 +216,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _mmd_anim_cli_version(exe: Path) -> str:
-    """Return the mmd-anim CLI version string."""
+    """Return the first non-empty line of the mmd-anim CLI version output."""
     result = subprocess.run(
         [str(exe), "--version"],
         cwd=ROOT,
@@ -110,7 +224,7 @@ def _mmd_anim_cli_version(exe: Path) -> str:
         capture_output=True,
         text=True,
     )
-    return result.stdout.strip()
+    return next((line.strip() for line in result.stdout.splitlines() if line.strip()), "")
 
 
 def _download_file(url: str, destination: Path) -> None:
@@ -133,6 +247,35 @@ def _extract_archive(archive: Path, destination: Path) -> None:
             tar_file.extractall(destination)
     else:
         raise ValueError(f"Unsupported archive format: {archive}")
+
+
+def _windows_processes_locking_module(path: Path) -> list[str]:
+    """Return Windows processes that have a DLL loaded, best-effort."""
+    if platform.system() != "Windows" or not path.exists():
+        return []
+    target = str(path).replace("'", "''")
+    script = (
+        "$target = '"
+        + target
+        + "'; "
+        "$rows = Get-Process | Where-Object { "
+        "try { $_.Modules | Where-Object { $_.FileName -eq $target } } catch { $false } "
+        "} | Select-Object Id,ProcessName,Path; "
+        "$rows | ForEach-Object { \"$($_.Id) $($_.ProcessName) $($_.Path)\" }"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", script],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
 def _downloaded_mmd_anim_cli(session: nox.Session) -> Path:
@@ -252,6 +395,212 @@ def _copy_parity_vmd_for_mayapy(session: nox.Session, args: list[str]) -> list[s
     rewritten = list(args)
     rewritten[index + 1] = str(alias)
     return rewritten
+
+
+def _release_gate_version_check(expected_version: str | None = None) -> None:
+    """Validate release version markers before running expensive gates."""
+    import re
+    import tomllib
+
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    version = pyproject["project"]["version"]
+    if expected_version and version != expected_version:
+        raise RuntimeError(f"pyproject.toml version {version} does not match requested release version {expected_version}")
+
+    init_text = (ROOT / "mmd_tools" / "__init__.py").read_text(encoding="utf-8")
+    init_match = re.search(r'__version__\s*=\s*"([^"]+)"', init_text)
+    if not init_match or init_match.group(1) != version:
+        raise RuntimeError(f"mmd_tools/__init__.py version does not match pyproject.toml: {version}")
+
+    mod_text = (ROOT / "maya_mmd_tools.mod").read_text(encoding="utf-8")
+    mod_versions = set(re.findall(r"maya_mmd_tools\s+([0-9]+\.[0-9]+\.[0-9]+)", mod_text))
+    if mod_versions != {version}:
+        raise RuntimeError(f"maya_mmd_tools.mod versions {sorted(mod_versions)} do not match {version}")
+
+    plugin_text = (ROOT / "cpp" / "src" / "pluginMain.cpp").read_text(encoding="utf-8")
+    plugin_match = re.search(
+        r'MFnPlugin\s+plugin\s*\(\s*obj\s*,\s*"[^"]+"\s*,\s*"([^"]+)"',
+        plugin_text,
+    )
+    if not plugin_match or plugin_match.group(1) != version:
+        raise RuntimeError(f"cpp/src/pluginMain.cpp version does not match pyproject.toml: {version}")
+
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    heading = f"## [{version}]"
+    start = changelog.find(heading)
+    if start == -1:
+        raise RuntimeError(f"CHANGELOG.md is missing {heading}")
+    next_heading = changelog.find("\n## [", start + len(heading))
+    section = changelog[start: next_heading if next_heading != -1 else len(changelog)]
+    body_lines = [
+        line.strip()
+        for line in section.splitlines()[1:]
+        if line.strip() and not line.strip().startswith("[")
+    ]
+    if not body_lines:
+        raise RuntimeError(f"CHANGELOG.md section {heading} is empty")
+
+
+def _run_release_gate_command(
+    name: str,
+    command: list[str],
+    results: list[dict[str, object]],
+    *,
+    result_report: Path | None = None,
+    required_local: bool = False,
+    strict_local: bool = False,
+) -> None:
+    """Run a command and record its exit code plus an optional explicit child report."""
+    started = time.perf_counter()
+    if result_report is not None and result_report.exists():
+        result_report.unlink()
+    completed = subprocess.run(command, cwd=ROOT, text=True, check=False)
+    status = "pass" if completed.returncode == 0 else "fail"
+    detail = None
+    if result_report is not None and result_report.is_file():
+        try:
+            child_status = str(json.loads(result_report.read_text(encoding="utf-8")).get("status", "")).lower()
+        except (OSError, ValueError, TypeError) as exc:
+            status = "fail"
+            detail = f"invalid child report {result_report}: {exc}"
+        else:
+            status_aliases = {"pass": "pass", "passed": "pass", "fail": "fail", "failed": "fail", "skip": "skip", "skipped": "skip"}
+            if child_status not in status_aliases:
+                status = "fail"
+                detail = f"invalid child status in {result_report}: {child_status!r}"
+            elif completed.returncode == 0:
+                status = status_aliases[child_status]
+    if status == "skip" and required_local and strict_local:
+        status = "fail"
+        detail = "required local gate skipped under --strict-local"
+    results.append(
+        {
+            "name": name,
+            "command": command,
+            "status": status,
+            "returncode": completed.returncode,
+            "duration_sec": round(time.perf_counter() - started, 3),
+            **({"detail": detail} if detail else {}),
+        }
+    )
+
+
+def _run_release_gate_callable(
+    name: str,
+    func,
+    results: list[dict[str, object]],
+) -> None:
+    """Run an in-process release-gate step and append a keep-going result entry."""
+    started = time.perf_counter()
+    try:
+        func()
+    except Exception as exc:
+        results.append(
+            {
+                "name": name,
+                "command": [],
+                "status": "fail",
+                "returncode": 1,
+                "duration_sec": round(time.perf_counter() - started, 3),
+                "error": str(exc),
+            }
+        )
+    else:
+        results.append(
+            {
+                "name": name,
+                "command": [],
+                "status": "pass",
+                "returncode": 0,
+                "duration_sec": round(time.perf_counter() - started, 3),
+            }
+        )
+
+
+def _write_release_gate_reports(results: list[dict[str, object]], quick: bool) -> tuple[Path, Path]:
+    """Write release-gate Markdown and JSON summaries."""
+    report_dir = ROOT / "build" / "reports"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    json_path = report_dir / "release_gate.json"
+    md_path = report_dir / "release_gate.md"
+
+    counts = {status: sum(result["status"] == status for result in results) for status in ("pass", "fail", "skip")}
+    aggregate_status = "fail" if counts["fail"] else "pass" if counts["pass"] else "skip"
+    payload = {
+        "quick": quick,
+        "status": aggregate_status,
+        "summary": counts,
+        "results": results,
+    }
+    json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    lines = [
+        "# Release Gate",
+        "",
+        f"- Mode: {'quick' if quick else 'full'}",
+        f"- Status: {payload['status']}",
+        f"- Summary: pass={counts['pass']}, fail={counts['fail']}, skip={counts['skip']}",
+        "",
+        "| Step | Status | Seconds | Command |",
+        "| --- | --- | ---: | --- |",
+    ]
+    for result in results:
+        command = " ".join(str(part) for part in result.get("command") or [])
+        if not command:
+            command = str(result.get("error", "in-process"))
+        lines.append(
+            f"| {result['name']} | {result['status']} | {result['duration_sec']} | `{command}` |"
+        )
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return md_path, json_path
+
+
+def _normalize_local_gate_report(
+    report_path: Path,
+    strict_local: bool,
+    markdown_path: Path | None = None,
+) -> str:
+    """Derive and persist a local child gate status in its JSON and Markdown reports."""
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    results = payload.get("results")
+    if not isinstance(results, list):
+        raise ValueError(f"Local gate report has no results list: {report_path}")
+    aliases = {"pass": "pass", "passed": "pass", "fail": "fail", "failed": "fail", "skip": "skip", "skipped": "skip"}
+    statuses = []
+    for result in results:
+        raw_status = str(result.get("status", "")).lower() if isinstance(result, dict) else ""
+        if raw_status not in aliases:
+            raise ValueError(f"Invalid local gate result status in {report_path}: {raw_status!r}")
+        statuses.append(aliases[raw_status])
+    if "fail" in statuses or not statuses:
+        status = "fail"
+    elif "pass" in statuses:
+        status = "pass"
+    else:
+        status = "fail" if strict_local else "skip"
+    payload["status"] = status
+    summary = {
+        candidate: statuses.count(candidate) for candidate in ("pass", "fail", "skip")
+    }
+    payload["summary"] = summary
+    report_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if markdown_path is not None and markdown_path.is_file():
+        lines = markdown_path.read_text(encoding="utf-8").splitlines()
+        status_line = f"- Status: {status}"
+        summary_line = (
+            f"- Summary: pass={summary['pass']}, fail={summary['fail']}, skip={summary['skip']}"
+        )
+        status_index = next((index for index, line in enumerate(lines) if line.startswith("- Status:")), None)
+        if status_index is None:
+            lines.extend(["", status_line, summary_line])
+        else:
+            lines[status_index] = status_line
+            if status_index + 1 < len(lines) and lines[status_index + 1].startswith("- Summary:"):
+                lines[status_index + 1] = summary_line
+            else:
+                lines.insert(status_index + 1, summary_line)
+        markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return status
 
 
 def _import_order_manifest_asset_path(value: str) -> str:
@@ -582,6 +931,29 @@ def _run_cli_smoke(
     session.run(str(exe), *smoke_args, external=True)
 
 
+_EXPECTED_ENVIRONMENT_MODULE_PREFIXES = ("maya", "PySide2", "PySide6")
+_TERMINAL_EXCEPTION_RE = re.compile(r"^(?P<type>[\w.]+(?:Error|Exception)):\s*(?P<message>.*)$")
+_MISSING_MODULE_RE = re.compile(
+    r"No module named ['\"](?P<module>[^'\"]+)['\"](?:;.*)?\.?$"
+)
+
+
+def _is_expected_environment_import_failure(stderr: str) -> bool:
+    """Return whether the final exception is an allowlisted missing environment module."""
+    for line in reversed(stderr.splitlines()):
+        match = _TERMINAL_EXCEPTION_RE.match(line.strip())
+        if not match:
+            continue
+        if match.group("type") != "ModuleNotFoundError":
+            return False
+        missing = _MISSING_MODULE_RE.fullmatch(match.group("message"))
+        if not missing:
+            return False
+        prefix = missing.group("module").split(".", 1)[0]
+        return prefix in _EXPECTED_ENVIRONMENT_MODULE_PREFIXES
+    return False
+
+
 @nox.session(venv_backend="none")
 def ci_unit(session: nox.Session) -> None:
     """Run pure-python unit tests without mayapy.
@@ -592,9 +964,9 @@ def ci_unit(session: nox.Session) -> None:
 
     A test file is included when it can be imported successfully with a
     plain ``python -c "import tests.unit.<stem>"`` probe (i.e. it has no
-    transitive dependency on ``maya``).  Files that fail this probe are
-    skipped with a notice; they require mayapy and belong to the ``tests``
-    session instead.
+    transitive dependency on an allowlisted environment-only module). Files
+    that fail for one of those expected dependencies are skipped with a notice;
+    other import failures abort the session.
 
     Examples:
         uvx nox -s ci_unit
@@ -614,12 +986,20 @@ def ci_unit(session: nox.Session) -> None:
         )
         if probe.returncode == 0:
             importable.append(module_name)
-        else:
+            continue
+        stderr = probe.stderr or ""
+        if _is_expected_environment_import_failure(stderr):
             skipped.append(py_file.name)
+        else:
+            session.error(
+                f"ci_unit: {py_file.name} failed to import for a non-environment reason; "
+                "update _EXPECTED_ENVIRONMENT_MODULE_PREFIXES only for an intentional dependency:\n"
+                + stderr.strip()[-2000:]
+            )
 
     if skipped:
         session.log(
-            f"Skipping {len(skipped)} test file(s) that require mayapy: "
+            f"Skipping {len(skipped)} test file(s) that require environment-only dependencies: "
             + ", ".join(skipped)
         )
 
@@ -634,6 +1014,14 @@ def ci_unit(session: nox.Session) -> None:
         *importable,
         external=True,
     )
+
+
+@nox.session(venv_backend="none")
+def release_version(session: nox.Session) -> None:
+    """Validate all release version markers, optionally against a tag version."""
+    expected_version = _option(session.posargs, "--version", "") or None
+    _release_gate_version_check(expected_version=expected_version)
+    session.log(f"Release version markers match {expected_version or 'the project version'}")
 
 
 @nox.session(venv_backend="none")
@@ -657,8 +1045,37 @@ def gui_tests(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none")
 def ffi_build(session: nox.Session) -> None:
-    """Build the mmd-anim FFI library used by Python and C++ integrations."""
+    """Build the mmd-anim FFI library used by Python and C++ integrations.
+
+    Examples:
+        uvx nox -s ffi_build
+        uvx nox -s ffi_build -- --release --cargo-target-dir build/mmd-anim-unlocked-target
+    """
     args = session.posargs or ["--release"]
+    cargo_target_dir_raw = _option(args, "--cargo-target-dir", "")
+    cargo_args = _without_option(args, "--cargo-target-dir") if cargo_target_dir_raw else list(args)
+    cargo_args = _cargo_args_with_physics_feature(cargo_args)
+    cargo_target_dir = None
+    if cargo_target_dir_raw:
+        cargo_target_dir = _require_build_path(session, cargo_target_dir_raw, "--cargo-target-dir")
+    profile = "release" if "--release" in args else "debug"
+    library_name = {
+        "Windows": "mmd_runtime_ffi.dll",
+        "Darwin": "libmmd_runtime_ffi.dylib",
+    }.get(platform.system(), "libmmd_runtime_ffi.so")
+    output_root = cargo_target_dir or (ROOT / "external" / "mmd-anim" / "target")
+    locked_by = _windows_processes_locking_module(
+        output_root / profile / library_name
+    )
+    if locked_by:
+        session.error(
+            "mmd-anim FFI output DLL is currently loaded and cannot be replaced: "
+            + "; ".join(locked_by)
+        )
+    env = os.environ.copy()
+    if cargo_target_dir is not None:
+        env["CARGO_TARGET_DIR"] = str(cargo_target_dir)
+    _configure_bullet3_dir(session, env)
     session.run(
         "cargo",
         "build",
@@ -666,22 +1083,103 @@ def ffi_build(session: nox.Session) -> None:
         "mmd-anim-ffi",
         "--manifest-path",
         "external/mmd-anim/Cargo.toml",
-        *args,
+        *cargo_args,
+        env=env,
         external=True,
     )
 
 
 @nox.session(venv_backend="none")
 def native_smoke(session: nox.Session) -> None:
-    """Verify that Python can load mmd-anim-ffi and read its ABI version."""
-    code = (
-        "from mmd_tools.core.native.mmd_anim_runtime import "
-        "get_mmd_runtime_library, get_runtime_library_path; "
-        "lib = get_mmd_runtime_library(); "
-        "print(get_runtime_library_path()); "
-        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
+    """Verify that Python can load mmd-anim-ffi and read its ABI version.
+
+    Examples:
+        uvx nox -s native_smoke
+        uvx nox -s native_smoke -- --ffi-path build/mmd-anim-unlocked-target/release
+    """
+    args = list(session.posargs)
+    ffi_path = _option(args, "--ffi-path", "")
+    env = os.environ.copy()
+    if ffi_path:
+        env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
+    session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=env, external=True)
+
+
+@nox.session(venv_backend="none")
+def bundled_native_smoke(session: nox.Session) -> None:
+    """Verify only the native binaries bundled in release distribution paths."""
+    out_json = _require_build_path(
+        session,
+        _option(session.posargs, "--out-json", "build/reports/bundled_native_smoke.json"),
+        "--out-json",
     )
-    session.run(sys.executable, "-c", code, external=True)
+    out_md = _require_build_path(
+        session,
+        _option(session.posargs, "--out-md", "build/reports/bundled_native_smoke.md"),
+        "--out-md",
+    )
+    import tomllib
+
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    session.run(
+        sys.executable,
+        "tests/release/bundled_native_smoke.py",
+        "--root",
+        str(ROOT),
+        "--expected-version",
+        project["project"]["version"],
+        "--out-json",
+        str(out_json),
+        "--out-md",
+        str(out_md),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def native_export_smoke(session: nox.Session) -> None:
+    """Verify native export writer symbols when the DLL is current.
+
+    PMX parts export is required. VMD/PMD JSON writer symbols are optional in
+    newer mmd-anim builds and are exercised only when present.
+
+    Examples:
+        uvx nox -s native_export_smoke
+        uvx nox -s native_export_smoke -- --strict --ffi-path build/mmd-anim-unlocked-target/release
+    """
+    args = list(session.posargs)
+    ffi_path = _option(args, "--ffi-path", "")
+    smoke_args = _without_option(args, "--ffi-path") if ffi_path else args
+    env = os.environ.copy()
+    if ffi_path:
+        env["MMD_ANIM_FFI_PATH"] = str(_resolve_existing_or_repo_path(ffi_path))
+    session.run(sys.executable, "tests/native_export_smoke.py", *smoke_args, env=env, external=True)
+
+
+@nox.session(venv_backend="none")
+def release_package(session: nox.Session) -> None:
+    """Build and fail-closed validate the release ZIP from the package manifest.
+
+    Examples:
+        uvx nox -s release_package
+        uvx nox -s release_package -- --version 0.3.1
+        uvx nox -s release_package -- --out-dir dist
+    """
+    manifest = _resolve_existing_or_repo_path(
+        _option(session.posargs, "--manifest", str(_PACKAGE_MANIFEST_PATH))
+    )
+    output_dir = _resolve_existing_or_repo_path(_option(session.posargs, "--out-dir", "dist"))
+    root = ROOT.resolve()
+    if output_dir != root and root not in output_dir.parents:
+        session.error(f"--out-dir must stay inside the repository: {output_dir}")
+    result = _build_release_package(
+        root,
+        manifest_path=manifest,
+        output_dir=output_dir,
+        expected_version=_option(session.posargs, "--version", "") or None,
+    )
+    session.log(f"Release package: {result['archive']}")
+    session.log("Release package evidence: build/reports/release_package.json and .md")
 
 
 @nox.session(venv_backend="none")
@@ -771,6 +1269,239 @@ def maya_viewport_capture(session: nox.Session) -> None:
         "--height",
         height,
         env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def native_physics_bake_capture(session: nox.Session) -> None:
+    """Import PMX+VMD with native physics bake and capture a mayapy PNG + report.
+
+    Requires a physics-feature-enabled mmd-anim-ffi via ``--ffi-path`` (sets
+    ``MMD_ANIM_FFI_PATH``). Uses mayapy only — no Maya GUI.
+
+    The runner imports with ``bake_mode=True, use_native_physics_bake=True``,
+    writes a non-empty PNG playblast and a JSON report with feature flags,
+    physics routing outcome, joint matrix samples, and output paths.
+
+    Examples:
+        uvx nox -s native_physics_bake_capture -- --ffi-path build/mmd-anim-physics-target/debug
+        uvx nox -s native_physics_bake_capture -- --maya 2024 --ffi-path build/mmd-anim-physics-target/debug \\
+            --pmx tests/data/mmt_test_model.pmx --vmd tests/data/mmt_test_model_test_motion.vmd \\
+            --out build/captures/native_physics_bake.png \\
+            --report build/reports/native_physics_bake_capture.json --frame 0
+    """
+    args = list(session.posargs)
+    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    ffi_path = _option(args, "--ffi-path", "")
+    if not ffi_path:
+        raise ValueError(
+            "native_physics_bake_capture requires --ffi-path pointing to a "
+            "physics-feature-enabled mmd-anim-ffi directory or DLL"
+        )
+    pmx = _option(args, "--pmx", str(ROOT / "tests/data/mmt_test_model.pmx"))
+    vmd = _option(args, "--vmd", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd"))
+    out = _option(args, "--out", str(ROOT / "build/captures/native_physics_bake.png"))
+    report = _option(args, "--report", str(ROOT / "build/reports/native_physics_bake_capture.json"))
+    frame = _option(args, "--frame", "0")
+    fps = _option(args, "--fps", "30")
+    width = _option(args, "--width", "640")
+    height = _option(args, "--height", "480")
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    resolved_ffi = _resolve_existing_or_repo_path(ffi_path)
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_ANIM_FFI_PATH=str(resolved_ffi),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/native_physics_bake_capture.py"),
+        "--pmx",
+        _mayapy_arg_path(mayapy, pmx),
+        "--vmd",
+        _mayapy_arg_path(mayapy, vmd),
+        "--out",
+        _mayapy_arg_path(mayapy, out),
+        "--report",
+        _mayapy_arg_path(mayapy, report),
+        "--frame",
+        frame,
+        "--fps",
+        fps,
+        "--width",
+        width,
+        "--height",
+        height,
+        env=env,
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def native_physics_bake_route_e2e(session: nox.Session) -> None:
+    """Dual-import E2E gate: native physics bake vs baseline bake routing.
+
+    Requires a physics-feature-enabled mmd-anim-ffi via ``--ffi-path`` (sets
+    ``MMD_ANIM_FFI_PATH``). Imports a real physics PMX twice in clean scenes:
+
+    1. baseline: ``bake_mode=True``, ``use_native_physics_bake=False``
+    2. native:   ``bake_mode=True``, ``use_native_physics_bake=True``
+
+    Fails unless native routing was used and at least one physics-controlled
+    bone has a measurable local-transform delta vs baseline.
+
+    Defaults to the hair physics fixture + known short motion. Does not change
+    the single-import PNG capture session.
+
+    Examples:
+        uvx nox -s native_physics_bake_route_e2e -- --ffi-path build/mmd-anim-physics-target/debug
+        uvx nox -s native_physics_bake_route_e2e -- --maya 2024 --ffi-path build/mmd-anim-physics-target/debug \\
+            --pmx tests/data/physics/test_hair_physics.pmx \\
+            --vmd tests/data/mmt_test_model_test_motion.vmd \\
+            --eval-frames 0,1,2,3,4,5 \\
+            --report build/reports/native_physics_bake_route_e2e.json
+    """
+    args = list(session.posargs)
+    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    ffi_path = _option(args, "--ffi-path", "")
+    if not ffi_path:
+        raise ValueError(
+            "native_physics_bake_route_e2e requires --ffi-path pointing to a "
+            "physics-feature-enabled mmd-anim-ffi directory or DLL"
+        )
+    pmx = _option(args, "--pmx", str(ROOT / "tests/data/physics/test_hair_physics.pmx"))
+    vmd = _option(args, "--vmd", str(ROOT / "tests/data/mmt_test_model_test_motion.vmd"))
+    report = _option(
+        args,
+        "--report",
+        str(ROOT / "build/reports/native_physics_bake_route_e2e.json"),
+    )
+    eval_frames = _option(args, "--eval-frames", "0,1,2,3,4,5")
+    delta_epsilon = _option(args, "--delta-epsilon", "0.001")
+    fps = _option(args, "--fps", "30")
+
+    mayapy = _mayapy(version)
+    if not mayapy.exists():
+        raise FileNotFoundError(f"mayapy not found: {mayapy}")
+
+    resolved_ffi = _resolve_existing_or_repo_path(ffi_path)
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_ANIM_FFI_PATH=str(resolved_ffi),
+    )
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/native_physics_bake_capture.py"),
+        "--verify-bake-route",
+        "--pmx",
+        _mayapy_arg_path(mayapy, pmx),
+        "--vmd",
+        _mayapy_arg_path(mayapy, vmd),
+        "--report",
+        _mayapy_arg_path(mayapy, report),
+        "--eval-frames",
+        eval_frames,
+        "--delta-epsilon",
+        delta_epsilon,
+        "--fps",
+        fps,
+        env=env,
+        external=True,
+    )
+
+
+def _bundled_physics_runtime(system: str | None = None) -> Path:
+    """Return the platform-specific bundled runtime used by the physics release gate."""
+    current = system or platform.system()
+    relative = {
+        "Windows": "mmd_tools/native/win64/mmd_runtime_ffi.dll",
+        "Darwin": "mmd_tools/native/macos/libmmd_runtime_ffi.dylib",
+    }.get(current)
+    if relative is None:
+        raise RuntimeError(f"Bundled native physics release gate is unsupported on {current}")
+    return (ROOT / relative).resolve()
+
+
+@nox.session(venv_backend="none")
+def native_physics_release_gate(session: nox.Session) -> None:
+    """Run the bundled native physics bake route twice and compare deterministic outputs."""
+    maya_version = "2024"
+    mayapy = _mayapy(maya_version)
+    pmx = (ROOT / "tests/data/physics/test_hair_physics.pmx").resolve()
+    vmd = (ROOT / "tests/data/mmt_test_model_test_motion.vmd").resolve()
+    ffi = _bundled_physics_runtime()
+    report_dir = (ROOT / "build/reports").resolve()
+    run_reports = [report_dir / "native_physics_release_run1.json", report_dir / "native_physics_release_run2.json"]
+    comparison_json = report_dir / "native_physics_release_comparison.json"
+    comparison_md = report_dir / "native_physics_release_comparison.md"
+    for stale_report in (*run_reports, comparison_json, comparison_md):
+        if stale_report.exists():
+            stale_report.unlink()
+    for required in (mayapy, pmx, vmd, ffi):
+        if not required.is_file():
+            raise FileNotFoundError(f"Native physics release gate input not found: {required}")
+    env = _mayapy_env(mayapy, MAYA_VERSION=maya_version, MMD_ANIM_FFI_PATH=str(ffi))
+    for report in run_reports:
+        session.run(
+            str(mayapy),
+            _mayapy_script(mayapy, "tests/viewport/native_physics_bake_capture.py"),
+            "--verify-bake-route",
+            "--pmx", _maya_process_path(mayapy, pmx),
+            "--vmd", _maya_process_path(mayapy, vmd),
+            "--report", _maya_process_path(mayapy, report),
+            "--eval-frames", "0,1,2,3,4,5",
+            env=env,
+            external=True,
+        )
+    session.run(
+        sys.executable,
+        "tests/release/native_physics_determinism.py",
+        "--run1", str(run_reports[0]),
+        "--run2", str(run_reports[1]),
+        "--ffi", str(ffi),
+        "--out-json", str(comparison_json),
+        "--out-md", str(comparison_md),
+        external=True,
+    )
+
+
+@nox.session(venv_backend="none")
+def humanik_definition_smoke(session: nox.Session) -> None:
+    """Create a minimal HumanIK definition under mayapy.
+
+    Examples:
+        uvx nox -s humanik_definition_smoke -- --maya 2024
+        uvx nox -s humanik_definition_smoke -- --maya 2024 --out build/reports/humanik_definition_smoke.json
+    """
+    maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    mayapy = _mayapy(maya_ver)
+    passthrough: list[str] = []
+    args = list(session.posargs)
+    i = 0
+    while i < len(args):
+        if args[i] == "--maya" and i + 1 < len(args):
+            i += 2
+            continue
+        if args[i] in {"--out", "--name", "--fixture"} and i + 1 < len(args):
+            passthrough.extend([args[i], args[i + 1]])
+            i += 2
+            continue
+        if args[i] == "--create-control-rig":
+            passthrough.append(args[i])
+            i += 1
+            continue
+        i += 1
+    session.run(
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/viewport/humanik_definition_smoke.py"),
+        *_convert_mayapy_path_options(mayapy, passthrough, {"--out"}),
+        env=_mayapy_env(mayapy),
         external=True,
     )
 
@@ -919,7 +1650,7 @@ def maya_static_render(session: nox.Session) -> None:
 
 @nox.session(venv_backend="none")
 def maya_visual_regression(session: nox.Session) -> None:
-    """Run manifest-driven Maya GUI / DX11 viewport visual regression captures.
+    """Run manifest-driven Maya GUI viewport visual regression captures.
 
     This is a report-only visual harness around GoldenOracle-compatible render
     manifests. The manifest path is intentionally required so local asset roots
@@ -934,7 +1665,13 @@ def maya_visual_regression(session: nox.Session) -> None:
     if not manifest:
         session.error("--manifest is required for maya_visual_regression")
 
-    out = _option(session.posargs, "--out", "build/visual-regression/maya-dx11")
+    shader_backend = _option(session.posargs, "--shader-backend", "dx11")
+    if shader_backend not in {"dx11", "glsl"}:
+        session.error(f"Unsupported --shader-backend: {shader_backend}")
+    vp2_device = _option(session.posargs, "--vp2-device", "default")
+    if vp2_device not in {"default", "gl", "glcore", "dx11"}:
+        session.error(f"Unsupported --vp2-device: {vp2_device}")
+    out = _option(session.posargs, "--out", f"build/visual-regression/maya-{shader_backend}")
     out_path = _require_build_path(session, out, "--out")
     port = _option(session.posargs, "--port", "7721")
     width = _option(session.posargs, "--width", "1024")
@@ -977,9 +1714,82 @@ def maya_visual_regression(session: nox.Session) -> None:
         height,
         "--timeout",
         timeout,
+        "--shader-backend",
+        shader_backend,
+        "--vp2-device",
+        vp2_device,
     ]
     cmd.extend(forwarded)
     session.run(*cmd, external=True)
+
+    if not _has_flag(session.posargs, "--no-compare"):
+        comparison_cmd = [
+            python,
+            "tests/viewport/visual_regression_compare.py",
+            "--capture-report",
+            str(out_path / "visual-regression-report.json"),
+            "--out",
+            str(out_path / "visual-regression-comparison.json"),
+        ]
+        for threshold in _options(session.posargs, "--threshold"):
+            comparison_cmd.extend(["--threshold", threshold])
+        session.run(*comparison_cmd, external=True)
+
+
+@nox.session(venv_backend="none")
+def maya_asset_probe(session: nox.Session) -> None:
+    """Collect Maya GUI Script Editor/log output while importing PMX assets.
+
+    This is the stable local-asset diagnostic entrypoint for real Maya sessions.
+    It can attach to an already-open commandPort, or launch Maya GUI and open one.
+
+    Examples:
+        uvx nox -s maya_asset_probe -- --attach-existing --port 7721 --asset F:/MMD/pmx/model.pmx
+        uvx nox -s maya_asset_probe -- --maya 2026 --asset-list .ai/local_pmx_assets.txt --out-dir build/asset-error-probe/local
+    """
+    version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
+    out = _option(session.posargs, "--out-dir", "build/asset-error-probe")
+    out_path = _require_build_path(session, out, "--out-dir")
+
+    forwarded: list[str] = []
+    flags = {"--attach-existing", "--keep-maya", "--no-physics", "--reload-mmd-tools"}
+    options = {
+        "--asset",
+        "--asset-list",
+        "--port",
+        "--timeout",
+        "--startup-timeout",
+        "--shader-backend",
+        "--launch-mode",
+    }
+    i = 0
+    while i < len(session.posargs):
+        arg = session.posargs[i]
+        if arg in {"--maya", "--out-dir"}:
+            i += 2
+            continue
+        if arg in flags:
+            forwarded.append(arg)
+            i += 1
+            continue
+        if arg in options:
+            if i + 1 >= len(session.posargs):
+                session.error(f"{arg} requires a value")
+            forwarded.extend([arg, session.posargs[i + 1]])
+            i += 2
+            continue
+        i += 1
+
+    session.run(
+        sys.executable,
+        "tests/viewport/maya_asset_error_probe.py",
+        "--maya",
+        version,
+        "--out-dir",
+        str(out_path),
+        *forwarded,
+        external=True,
+    )
 
 
 @nox.session(venv_backend="none")
@@ -1186,6 +1996,8 @@ def cpp_verify(session: nox.Session) -> None:
     version = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     config = _option(session.posargs, "--config", DEFAULT_CMAKE_CONFIG)
 
+    env = os.environ.copy()
+    _configure_bullet3_dir(session, env)
     session.run(
         "cargo",
         "build",
@@ -1194,17 +2006,15 @@ def cpp_verify(session: nox.Session) -> None:
         "--manifest-path",
         "external/mmd-anim/Cargo.toml",
         "--release",
+        "--features",
+        "physics-bullet-native",
+        env=env,
         external=True,
     )
 
-    code = (
-        "from mmd_tools.core.native.mmd_anim_runtime import "
-        "get_mmd_runtime_library, get_runtime_library_path; "
-        "lib = get_mmd_runtime_library(); "
-        "print(get_runtime_library_path()); "
-        "raise SystemExit(0 if lib and lib.mmd_runtime_abi_version() == 2 else 1)"
-    )
-    session.run(sys.executable, "-c", code, external=True)
+    runtime_env = os.environ.copy()
+    runtime_env["MMD_ANIM_FFI_PATH"] = str((ROOT / "external" / "mmd-anim" / "target" / "release").resolve())
+    session.run(sys.executable, "-c", _native_runtime_smoke_code(), env=runtime_env, external=True)
 
     _cmake_configure(session, version, config)
     _cmake_build(session, version, config)
@@ -1220,7 +2030,12 @@ def cpp_verify(session: nox.Session) -> None:
     if not mayapy.exists():
         raise FileNotFoundError(f"mayapy not found: {mayapy}")
 
-    env = _mayapy_env(mayapy, MAYA_VERSION=version, MMD_TOOLS_CPP_CONFIG=config)
+    env = _mayapy_env(
+        mayapy,
+        MAYA_VERSION=version,
+        MMD_TOOLS_CPP_CONFIG=config,
+        MMD_ANIM_FFI_PATH=runtime_env["MMD_ANIM_FFI_PATH"],
+    )
     session.run(
         str(mayapy),
         _mayapy_script(mayapy, "tests/cpp/smoke_runtime_node.py"),
@@ -1249,6 +2064,450 @@ def golden_oracle(session: nox.Session) -> None:
     mmd_anim = _downloaded_mmd_anim_cli(session)
 
     session.run(str(mmd_anim), "verify", manifest, "--mode", "numeric", external=True)
+
+
+@nox.session(venv_backend="none")
+def release_gate(session: nox.Session) -> None:
+    """Run release verification gates with keep-going reporting.
+
+    Examples:
+        uvx nox -s release_gate -- --quick
+        uvx nox -s release_gate -- --maya 2024
+        uvx nox -s release_gate -- --with-cpp
+        uvx nox -s release_gate -- --with-cpp --cpp-maya 2024 --cpp-maya 2026 --cpp-config Release
+        uvx nox -s release_gate -- --ffi-cargo-target-dir build/mmd-anim-unlocked-target
+        uvx nox -s release_gate -- --strict-local --local-parity-manifest F:/local/parity.json --local-physics-manifest F:/local/physics-parity.json
+    """
+    args = list(session.posargs)
+    quick = _has_flag(args, "--quick")
+    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    cpp_versions = _options(args, "--cpp-maya") or list(DEFAULT_CPP_VERIFY_MAYA_VERSIONS)
+    cpp_config = _option(args, "--cpp-config", DEFAULT_CMAKE_CONFIG)
+    ffi_cargo_target_dir = _option(args, "--ffi-cargo-target-dir", "")
+    ffi_path = _option(args, "--ffi-path", "")
+    if ffi_cargo_target_dir and not ffi_path:
+        ffi_path = str(Path(ffi_cargo_target_dir) / "release")
+    strict_local = _has_flag(args, "--strict-local")
+    local_assets_manifest = _option(args, "--local-assets-manifest", "local-assets-manifest.json")
+    camera_manifest = _option(
+        args,
+        "--camera-manifest",
+        "tests/data/camera_motion/manifest.json",
+    )
+    local_parity_manifest = _option(args, "--local-parity-manifest", "local-parity-manifest.json")
+    visual_manifest = Path(
+        _option(
+            args,
+            "--visual-manifest",
+            os.environ.get("GOLDEN_ORACLE_RENDER_MANIFEST", DEFAULT_GOLDEN_ORACLE_RENDER_MANIFEST),
+        )
+    )
+    results: list[dict[str, object]] = []
+
+    tier0_commands = [
+        ("tier0:ruff", ["uvx", "ruff", "check", "--no-fix", "."]),
+        ("tier0:diff-check", ["git", "diff", "--check"]),
+    ]
+    for name, command in tier0_commands:
+        _run_release_gate_command(name, command, results)
+    _run_release_gate_callable("tier0:version-markers", _release_gate_version_check, results)
+
+    tier1_commands = [
+        ("tier1:ci_unit", ["uvx", "nox", "-s", "ci_unit"]),
+        ("tier1:golden_oracle", ["uvx", "nox", "-s", "golden_oracle"]),
+        ("tier1:release-package", ["uvx", "nox", "-s", "release_package"]),
+    ]
+    if not quick:
+        ffi_build_command = ["uvx", "nox", "-s", "ffi_build"]
+        native_smoke_command = ["uvx", "nox", "-s", "native_smoke"]
+        native_export_smoke_command = ["uvx", "nox", "-s", "native_export_smoke", "--", "--strict"]
+        if ffi_cargo_target_dir:
+            ffi_build_command.extend(["--", "--release", "--cargo-target-dir", ffi_cargo_target_dir])
+        if ffi_path:
+            native_smoke_command.extend(["--", "--ffi-path", ffi_path])
+            native_export_smoke_command.extend(["--ffi-path", ffi_path])
+        tier1_commands.extend(
+            [
+                ("tier1:ffi_build", ffi_build_command),
+                ("tier1:native_smoke", native_smoke_command),
+                ("tier1:native_export_smoke", native_export_smoke_command),
+            ]
+        )
+    for name, command in tier1_commands:
+        _run_release_gate_command(name, command, results)
+
+    if not quick:
+        tier2_commands = []
+        for maya_version in DEFAULT_RELEASE_MAYA_VERSIONS:
+            tier2_commands.extend(
+                [
+                    (
+                        f"tier2:mayapy-unit-{maya_version}",
+                        [
+                            "uvx", "nox", "-s", "tests", "--",
+                            "--type", "unit", "--maya", maya_version,
+                        ],
+                    ),
+                    (
+                        f"tier2:mayapy-integration-{maya_version}",
+                        [
+                            "uvx", "nox", "-s", "tests", "--",
+                            "--type", "integration", "--maya", maya_version,
+                        ],
+                    ),
+                ]
+            )
+        for maya_version, shader_backend, vp2_device in DEFAULT_RELEASE_VIEWPORT_MATRIX:
+            tier2_commands.append(
+                (
+                    f"tier2:viewport-{shader_backend}-{maya_version}",
+                    [
+                        "uvx", "nox", "-s", "maya_static_render", "--",
+                        "--maya", maya_version,
+                        "--shader",
+                        "--shader-backend", shader_backend,
+                        "--vp2-device", vp2_device,
+                        "--out",
+                        f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.png",
+                        "--diagnostics-out",
+                        f"build/release-gate/viewport/maya{maya_version}-{shader_backend}.json",
+                    ],
+                )
+            )
+        if visual_manifest.is_file():
+            visual_outputs = {}
+            for maya_version, shader_backend, vp2_device in DEFAULT_RELEASE_VIEWPORT_MATRIX:
+                output = f"build/release-gate/visual/maya{maya_version}-{shader_backend}"
+                visual_outputs[shader_backend] = output
+                command = [
+                    "uvx", "nox", "-s", "maya_visual_regression", "--",
+                    "--maya", maya_version,
+                    "--shader-backend", shader_backend,
+                    "--vp2-device", vp2_device,
+                    "--manifest", str(visual_manifest),
+                    "--out", output,
+                ]
+                for case in RELEASE_VISUAL_CASES:
+                    command.extend(["--case", case])
+                tier2_commands.append((f"tier2:generated-pmx-visual-{shader_backend}-{maya_version}", command))
+            tier2_commands.append(
+                (
+                    "tier2:generated-pmx-glsl-dx11-diff",
+                    [
+                        sys.executable,
+                        "tests/viewport/visual_regression_compare.py",
+                        "--reference-capture-report",
+                        f"{visual_outputs['dx11']}/visual-regression-report.json",
+                        "--capture-report",
+                        f"{visual_outputs['glsl']}/visual-regression-report.json",
+                        "--out",
+                        "build/release-gate/visual/glsl-dx11-comparison.json",
+                        "--default-threshold",
+                        "0.12",
+                    ],
+                )
+            )
+        else:
+            _run_release_gate_callable(
+                "tier2:generated-pmx-visual-manifest",
+                lambda: (_ for _ in ()).throw(FileNotFoundError(
+                    f"GoldenOracle render manifest not found: {visual_manifest}. "
+                    "Pass --visual-manifest or set GOLDEN_ORACLE_RENDER_MANIFEST."
+                )),
+                results,
+            )
+        tier2_commands.extend([
+            (
+                "tier2:bundled-native-smoke",
+                ["uvx", "nox", "-s", "bundled_native_smoke"],
+            ),
+            (
+                "tier2:native-physics-release-gate",
+                ["uvx", "nox", "-s", "native_physics_release_gate"],
+            ),
+            (
+                "tier2:pmx-roundtrip-v0_4",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "pmx_roundtrip",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    "tests/roundtrip/manifest_v0_4.json",
+                    "--require-clean",
+                    "--out-dir",
+                    "build/release-gate/pmx_roundtrip_v0_4",
+                ],
+            ),
+            (
+                "tier2:import-scale-drift",
+                ["uvx", "nox", "-s", "import_scale_drift_e2e", "--", "--maya", version, "--expect", "fixed"],
+            ),
+            ("tier2:anim-layer-graph", ["uvx", "nox", "-s", "anim_layer_graph_compare", "--", "--maya", version]),
+            (
+                "tier2:import-order-e2e",
+                ["uvx", "nox", "-s", "import_order_e2e", "--", "--maya", version, "--require-zero-fallback"],
+            ),
+            (
+                "tier2:humanik-control-rig",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "humanik_definition_smoke",
+                    "--",
+                    "--maya",
+                    version,
+                    "--fixture",
+                    "body",
+                    "--create-control-rig",
+                    "--out",
+                    "build/release-gate/humanik_control_rig_smoke.json",
+                ],
+            ),
+        ])
+        if _has_flag(args, "--with-cpp"):
+            for cpp_version in cpp_versions:
+                tier2_commands.append(
+                    (
+                        f"tier2:cpp-verify-{cpp_version}",
+                        ["uvx", "nox", "-s", "cpp_verify", "--", "--maya", cpp_version, "--config", cpp_config],
+                    )
+                )
+        for name, command in tier2_commands:
+            _run_release_gate_command(name, command, results)
+
+        tier3_commands = [
+            (
+                "tier3:local-assets-check",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "local_assets_check",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    local_assets_manifest,
+                    "--out-json",
+                    "build/reports/release_gate_local_assets.json",
+                    "--out-md",
+                    "build/reports/release_gate_local_assets.md",
+                ],
+                ROOT / "build/reports/release_gate_local_assets.json",
+            ),
+            (
+                "tier3:release-camera-motion-oracle",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "release_camera_motion_oracle",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    camera_manifest,
+                    "--skip-addiction-parity",
+                    "--out-dir",
+                    "build/release-gate/camera-motion",
+                ],
+                ROOT / "build/release-gate/camera-motion/manifest-skip.json",
+            ),
+            (
+                "tier3:local-parity",
+                [
+                    "uvx",
+                    "nox",
+                    "-s",
+                    "local_parity",
+                    "--",
+                    "--maya",
+                    version,
+                    "--manifest",
+                    local_parity_manifest,
+                    "--skip-fbx",
+                    "--out",
+                    "build/reports/release_gate_local_parity.json",
+                ],
+                ROOT / "build/reports/release_gate_local_parity.json",
+            ),
+        ]
+        if strict_local:
+            for _, command, _ in tier3_commands:
+                command.append("--strict-local")
+        for name, command, result_report in tier3_commands:
+            _run_release_gate_command(
+                name,
+                command,
+                results,
+                result_report=result_report,
+                required_local=True,
+                strict_local=strict_local,
+            )
+
+    md_path, json_path = _write_release_gate_reports(results, quick)
+    session.log(f"Release gate report: {md_path}")
+    session.log(f"Release gate JSON: {json_path}")
+
+    failed = [result for result in results if result["status"] == "fail"]
+    if failed:
+        failed_names = ", ".join(str(result["name"]) for result in failed)
+        session.error(f"Release gate failed: {failed_names}")
+
+
+@nox.session(venv_backend="none")
+def local_assets_check(session: nox.Session) -> None:
+    """Run local PMX/VMD asset smoke checks from an optional manifest.
+
+    Manifest format:
+        {"assets": [{"name": "case", "model": "path/to/model.pmx", "motion": "optional.vmd"}]}
+
+    Examples:
+        uvx nox -s local_assets_check
+        uvx nox -s local_assets_check -- --manifest F:/local/assets.json --strict-local
+    """
+    args = list(session.posargs)
+    version = _option(args, "--maya", DEFAULT_MAYA_VERSION)
+    manifest = Path(_option(args, "--manifest", "local-assets-manifest.json"))
+    strict = _has_flag(args, "--strict-local")
+    out_json = _require_build_path(
+        session,
+        _option(args, "--out-json", "build/reports/local_assets_check.json"),
+        "--out-json",
+    )
+    out_md = _require_build_path(
+        session,
+        _option(args, "--out-md", "build/reports/local_assets_check.md"),
+        "--out-md",
+    )
+
+    if not manifest.is_absolute():
+        manifest = ROOT / manifest
+    manifest = manifest.resolve()
+
+    if not manifest.exists():
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_md.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "status": "fail" if strict else "skip",
+            "results": [
+                {
+                    "name": str(manifest),
+                    "status": "fail" if strict else "skip",
+                    "duration_sec": 0.0,
+                    "detail": "manifest not found",
+                }
+            ],
+        }
+        out_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        out_md.write_text(
+            "\n".join(
+                [
+                    "# Local Assets Check",
+                    "",
+                    f"- Status: {payload['status']}",
+                    "",
+                    "| Asset | Status | Seconds | Detail |",
+                    "| --- | --- | ---: | --- |",
+                    f"| {manifest} | {payload['status']} | 0.0 | manifest not found |",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        session.log(f"Local assets manifest not found: {manifest}")
+        session.log(f"Local assets report: {out_md}")
+        if strict:
+            session.error("Local assets manifest is required with --strict-local")
+        return
+
+    mayapy = _mayapy(version)
+    env = _mayapy_env(mayapy, MAYA_VERSION=version)
+    command = [
+        str(mayapy),
+        _mayapy_script(mayapy, "tests/local/local_assets_check.py"),
+        "--manifest",
+        _mayapy_arg_path(mayapy, manifest),
+        "--out-json",
+        _mayapy_arg_path(mayapy, out_json),
+        "--out-md",
+        _mayapy_arg_path(mayapy, out_md),
+    ]
+    if strict:
+        command.append("--strict-local")
+    session.run(*command, env=env, external=True)
+    status = _normalize_local_gate_report(out_json, strict, out_md)
+    session.log(f"Local assets report: {out_md}")
+    session.log(f"Local assets JSON: {out_json}")
+    if status == "fail":
+        session.error("Local assets check failed")
+
+
+@nox.session(venv_backend="none")
+def semistandard_name_audit(session: nox.Session) -> None:
+    """Audit local PMX/VMD assets for semistandard bone-name conversion gaps.
+
+    Examples:
+        uvx nox -s semistandard_name_audit -- --scan-root F:/MMD --max-files 200
+        uvx nox -s semistandard_name_audit -- --manifest build/batch-import/manifest.json --strict-local
+    """
+    args = list(session.posargs)
+    out_json = _require_build_path(
+        session,
+        _option(args, "--out-json", "build/reports/semistandard_name_audit.json"),
+        "--out-json",
+    )
+    out_md = _require_build_path(
+        session,
+        _option(args, "--out-md", "build/reports/semistandard_name_audit.md"),
+        "--out-md",
+    )
+
+    passthrough: list[str] = []
+    i = 0
+    value_options = {
+        "--manifest",
+        "--scan-root",
+        "--max-files",
+        "--out-json",
+        "--out-md",
+        "--limit-findings",
+        "--min-candidate-files",
+        "--min-candidate-findings",
+    }
+    flag_options = {"--strict-local"}
+    while i < len(args):
+        arg = args[i]
+        if arg in value_options and i + 1 < len(args):
+            value = args[i + 1]
+            if arg in {"--manifest", "--scan-root", "--out-json", "--out-md"}:
+                path = Path(value)
+                value = str(path.resolve() if path.is_absolute() else (ROOT / path).resolve())
+            passthrough.extend([arg, value])
+            i += 2
+            continue
+        if arg in flag_options:
+            passthrough.append(arg)
+            i += 1
+            continue
+        passthrough.append(arg)
+        i += 1
+
+    if "--out-json" not in passthrough:
+        passthrough.extend(["--out-json", str(out_json)])
+    if "--out-md" not in passthrough:
+        passthrough.extend(["--out-md", str(out_md)])
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(ROOT), env.get("PYTHONPATH", "")]))
+    session.run(sys.executable, "tests/local/semistandard_name_audit.py", *passthrough, env=env, external=True)
+    session.log(f"Semistandard name audit report: {out_md}")
+    session.log(f"Semistandard name audit JSON: {out_json}")
 
 
 @nox.session(venv_backend="none")
@@ -1328,19 +2587,40 @@ def release_camera_motion_oracle(session: nox.Session) -> None:
         uvx nox -s release_camera_motion_oracle -- --all-cases
         uvx nox -s release_camera_motion_oracle -- --strict-sparse-current
         uvx nox -s release_camera_motion_oracle -- --skip-addiction-parity
+        uvx nox -s release_camera_motion_oracle -- --strict-local
     """
+    args = list(session.posargs)
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
     manifest = _option(
         session.posargs,
         "--manifest",
-        "F:/Develop/MMDDev/GoldenOracle/manifests/camera_motion.json",
+        "tests/data/camera_motion/manifest.json",
     )
     out_dir = _require_build_path(
         session,
         _option(session.posargs, "--out-dir", "build/local-camera-motion-oracle/release"),
         "--out-dir",
     )
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = ROOT / manifest_path
+    manifest_path = manifest_path.resolve()
+    if not manifest_path.exists():
+        out_dir.mkdir(parents=True, exist_ok=True)
+        skip_report = out_dir / "manifest-skip.json"
+        payload = {
+            "status": "fail" if _has_flag(args, "--strict-local") else "skip",
+            "summary": {"passed": 0, "failed": 1 if _has_flag(args, "--strict-local") else 0, "skipped": 1},
+            "manifest": str(manifest_path),
+            "detail": "manifest not found",
+        }
+        skip_report.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        session.log(f"Camera motion manifest not found: {manifest_path}")
+        session.log(f"Camera motion skip report: {skip_report}")
+        if _has_flag(args, "--strict-local"):
+            session.error("Camera motion manifest is required with --strict-local")
+        return
     default_release_cases = [
         "camera-edge-generated-vmd",
         "camera-interpolation-isolated-vmd",
@@ -1505,22 +2785,70 @@ def local_parity(session: nox.Session) -> None:
     Examples:
         uvx nox -s local_parity -- --maya 2024
         uvx nox -s local_parity -- --maya 2024 --case alicia_weekender
+        uvx nox -s local_parity -- --maya 2024 --manifest F:/local/parity.json
         uvx nox -s local_parity -- --maya 2024 --skip-fbx
     """
     maya_ver = _option(session.posargs, "--maya", DEFAULT_MAYA_VERSION)
     mayapy = _mayapy(maya_ver)
     passthrough: list[str] = []
     args = list(session.posargs)
+    manifest = _option(args, "--manifest", "")
+    out_json = _option(args, "--out", "build/reports/local_asset_motion_compare.json")
+    if manifest:
+        manifest_path = Path(manifest)
+        if not manifest_path.is_absolute():
+            manifest_path = ROOT / manifest_path
+        manifest_path = manifest_path.resolve()
+        if not manifest_path.exists():
+            out_path = _require_build_path(session, out_json, "--out")
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            md_path = out_path.with_suffix(".md")
+            status = "failed" if _has_flag(args, "--strict-local") else "skipped"
+            payload = {
+                "status": status,
+                "vertex_threshold": None,
+                "fbx_threshold": None,
+                "cases": [
+                    {
+                        "name": str(manifest_path),
+                        "status": status,
+                        "reason": "manifest_not_found",
+                    }
+                ],
+            }
+            out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            md_path.write_text(
+                "\n".join(
+                    [
+                        "# Local Asset Motion Compare",
+                        "",
+                        f"- status: `{status}`",
+                        "- cases: `1`",
+                        "",
+                        f"## {manifest_path}",
+                        "",
+                        f"- status: `{status}`",
+                        "- reason: `manifest_not_found`",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            session.log(f"Local parity manifest not found: {manifest_path}")
+            session.log(f"Local parity report: {md_path}")
+            if _has_flag(args, "--strict-local"):
+                session.error("Local parity manifest is required with --strict-local")
+            return
     i = 0
     while i < len(args):
         if args[i] == "--maya" and i + 1 < len(args):
             i += 2
             continue
-        if args[i] in ("--case", "--frame", "--out") and i + 1 < len(args):
+        if args[i] in ("--case", "--frame", "--out", "--manifest") and i + 1 < len(args):
             passthrough.extend([args[i], args[i + 1]])
             i += 2
             continue
-        if args[i] in ("--skip-fbx",):
+        if args[i] in ("--skip-fbx", "--strict-local"):
             passthrough.append(args[i])
             i += 1
             continue

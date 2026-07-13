@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from ..core import maya_utils, settings_keys as setting_keys
+from ..core import maya_material_utils, settings_keys as setting_keys
 from ..core.settings import settings
 from ..core.texture_path_cache import describe_texture_issue
 from .translations.translator import UITranslator
@@ -195,7 +195,7 @@ class TextureIssueDialog(QDialog):
     def resolve_all(self):
         resolved = 0
         try:
-            results = maya_utils.resolve_scene_mmd_textures()
+            results = maya_material_utils.resolve_scene_mmd_textures()
             resolved = update_texture_issues_from_resolution_results(self.issues, results)
         except Exception:
             mark_texture_resolution_failed(self.issues, "cache_copy_failed")

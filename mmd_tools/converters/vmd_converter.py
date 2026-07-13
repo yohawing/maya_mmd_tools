@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 import maya.api.OpenMaya as om
@@ -43,7 +43,22 @@ from .vmd_camera_animation import (
     get_or_create_camera,
     parse_vmd_camera_interpolation,
 )
-from .vmd_context import VmdKeyingContext, VmdRuntimeRigContext
+from .vmd_context import (
+    VmdBoneAnimationContext,
+    VmdCameraAnimationContext,
+    VmdImportContext,
+    VmdImportStateContext,
+    VmdIkEnabledAnimationContext,
+    VmdKeyingContext,
+    VmdLightAnimationContext,
+    VmdMorphAnimationContext,
+    VmdNameMappingContext,
+    VmdRuntimeCacheCollectContext,
+    VmdRuntimeLocalDecomposeContext,
+    VmdRuntimeRigContext,
+    VmdRuntimeSceneApplyContext,
+    VmdTimelineContext,
+)
 from .vmd_import_state import (
     capture_anim_layer_selection,
     clear_existing_camera_motion,
@@ -125,9 +140,14 @@ from . import vmd_profile
 try:
     from ..core.native.mmd_anim_runtime import (
         is_mmd_runtime_available,
+        is_native_physics_available,
         MmdRuntimeModel,
         MmdRuntimeClip,
         MmdRuntimeInstance,
+        MmdRuntimePhysicsWorld,
+        get_runtime_feature_flags,
+    )
+    from ..core.native.mmd_anim_runtime_local_channels import (
         compute_maya_local_channels,
         compute_maya_local_channels_batch,
     )
@@ -136,7 +156,14 @@ except Exception:
     HAS_MMD_RUNTIME = False
     def is_mmd_runtime_available():
         return False
-    MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = None  # type: ignore
+
+    def is_native_physics_available():
+        return False
+
+    def get_runtime_feature_flags():
+        return 0
+
+    MmdRuntimeModel = MmdRuntimeClip = MmdRuntimeInstance = MmdRuntimePhysicsWorld = None  # type: ignore
     compute_maya_local_channels = None  # type: ignore
     compute_maya_local_channels_batch = None  # type: ignore
 
@@ -187,6 +214,94 @@ class VmdConverter:
             use_animation_layers=self.use_animation_layers,
         )
 
+    def _bone_animation_context(self) -> VmdBoneAnimationContext:
+        """Return legacy bone-animation state for split VMD helper modules."""
+        return VmdBoneAnimationContext(
+            logger=self.logger,
+            bone_name_mapping=self.bone_name_mapping,
+            bone_bind_poses=self._bone_bind_poses,
+            failed_bones=self._failed_bones,
+            use_animation_layers=self.use_animation_layers,
+            anim_layer=self.anim_layer,
+            motion_scale=self.motion_scale,
+            use_quaternion_interpolation=self.use_quaternion_interpolation,
+            set_bone_keyframes=self._set_bone_keyframes,
+            build_legacy_bone_key_routes=self._build_legacy_bone_key_routes,
+            collect_ik_link_joints=self._collect_ik_link_joints,
+            add_objects_to_layer=self._add_objects_to_layer,
+            add_attrs_to_anim_layer=self._add_attrs_to_anim_layer,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            vmd_interp_channel_for_attr=self._vmd_interp_channel_for_attr,
+            convert_vmd_quat_to_joint_rotate=self._convert_vmd_quat_to_joint_rotate,
+            samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=self._batch_key_scalar_channels,
+            apply_vmd_bezier_tangents=self._apply_vmd_bezier_tangents,
+        )
+
+    def _import_context(
+        self,
+        vmd_data: VmdData,
+        target_namespace: str = None,
+        layer_name: str = "VMD_Motion",
+        bake_mode: bool = False,
+        clear_existing_motion: bool = False,
+        vmd_bytes: bytes = None,
+        pmx_bytes: bytes = None,
+        pmx_path: str = None,
+        profile: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[int], None]] = None,
+        use_native_physics_bake: bool = False,
+    ) -> VmdImportContext:
+        """Return import-run state for convert() dispatch and split helpers."""
+        return VmdImportContext(
+            vmd_data=vmd_data,
+            target_namespace=target_namespace,
+            layer_name=layer_name,
+            bake_mode=bool(bake_mode),
+            clear_existing_motion=bool(clear_existing_motion),
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=pmx_bytes,
+            pmx_path=pmx_path,
+            profile=profile,
+            progress_callback=progress_callback,
+            import_camera_animation=bool(self.import_camera_animation),
+            import_light_animation=bool(self.import_light_animation),
+            use_native_physics_bake=bool(use_native_physics_bake),
+        )
+
+    def _runtime_local_decompose_context(self) -> VmdRuntimeLocalDecomposeContext:
+        """Return runtime local-channel decomposition state for split helpers."""
+        for attr_name in (
+            "bone_index_to_joint",
+            "bone_name_to_index",
+            "_bone_parent_map",
+            "_bone_rotate_orders",
+            "_runtime_bind_world_matrices",
+            "_runtime_no_orient_bind_world_matrices",
+        ):
+            if not hasattr(self, attr_name):
+                setattr(self, attr_name, {})
+
+        return VmdRuntimeLocalDecomposeContext(
+            logger=self.logger,
+            bone_index_to_joint=self.bone_index_to_joint,
+            bone_name_to_index=self.bone_name_to_index,
+            bone_bind_poses=self._bone_bind_poses,
+            bone_parent_map=self._bone_parent_map,
+            bone_rotate_orders=self._bone_rotate_orders,
+            runtime_bind_world_matrices=self._runtime_bind_world_matrices,
+            runtime_no_orient_bind_world_matrices=self._runtime_no_orient_bind_world_matrices,
+            native_local_decompose_cache={
+                "inputs": getattr(self, "_native_local_decompose_inputs", None),
+            },
+            convert_mmd_world_matrix_to_maya=self._convert_mmd_world_matrix_to_maya,
+            get_joint_orient_cache=self._get_joint_orient_cache,
+        )
+
+    def _sync_runtime_local_decompose_context(self, context: VmdRuntimeLocalDecomposeContext) -> None:
+        """Keep legacy converter cache attributes visible to existing tests/callers."""
+        self._native_local_decompose_inputs = context.native_local_decompose_cache.get("inputs")
+
     def _runtime_rig_context(self) -> VmdRuntimeRigContext:
         """Return runtime-rig-only state for split VMD helper modules."""
         return VmdRuntimeRigContext(
@@ -194,6 +309,133 @@ class VmdConverter:
             bone_name_mapping=self.bone_name_mapping,
             bone_bind_poses=self._bone_bind_poses,
             runtime_joint_attrs=self._runtime_joint_attrs,
+        )
+
+    def _ensure_bone_hierarchy_maps_for_cache_collect(self) -> None:
+        """Build bone hierarchy maps when runtime cache collection needs them."""
+        if not hasattr(self, "_bone_parent_map") or len(getattr(self, "_bone_parent_map", {})) == 0:
+            self._build_bone_hierarchy_and_order_maps()
+
+    def _runtime_cache_collect_context(self) -> VmdRuntimeCacheCollectContext:
+        """Return runtime cache collection state for split VMD helper modules."""
+        return VmdRuntimeCacheCollectContext(
+            logger=self.logger,
+            bone_index_to_joint=getattr(self, "bone_index_to_joint", {}),
+            outer_refresh_suspended=bool(getattr(self, "_vmd_import_refresh_suspended", False)),
+            get_anim_layer=lambda: self.anim_layer,
+            set_anim_layer=lambda value: setattr(self, "anim_layer", value),
+            create_runtime_joint_channel_arrays=self._create_runtime_joint_channel_arrays,
+            create_runtime_joint_channel_static_state=self._create_runtime_joint_channel_static_state,
+            compute_native_local_channel_batch=self._compute_native_local_channel_batch,
+            runtime_batch_morph_weights_for_frame=self._runtime_batch_morph_weights_for_frame,
+            ensure_bone_hierarchy_maps=self._ensure_bone_hierarchy_maps_for_cache_collect,
+            native_local_channel_batch_for_frame=self._native_local_channel_batch_for_frame,
+            runtime_batch_world_matrices_for_frame=self._runtime_batch_world_matrices_for_frame,
+            compute_all_bone_locals=self._compute_all_bone_locals,
+            append_bone_locals_to_channel_arrays=self._append_bone_locals_to_channel_arrays,
+        )
+
+    def _runtime_scene_apply_context(self) -> VmdRuntimeSceneApplyContext:
+        """Return runtime scene-apply state for split VMD helper modules."""
+        return VmdRuntimeSceneApplyContext(
+            logger=self.logger,
+            outer_refresh_suspended=bool(getattr(self, "_vmd_import_refresh_suspended", False)),
+            collect_append_info=self._collect_append_info,
+            collect_mmd_ik_passthrough_info=self._collect_mmd_ik_passthrough_info,
+            decompose_append_rotations_for_scene=self._decompose_append_rotations_for_scene,
+            decompose_append_translations_for_scene=self._decompose_append_translations_for_scene,
+            key_mmd_ik_passthrough_rotation=self._key_mmd_ik_passthrough_rotation,
+            batch_create_and_key_curve_arrays=self._batch_create_and_key_curve_arrays,
+            bake_morph_weight_cache_from_runtime=self._bake_morph_weight_cache_from_runtime,
+        )
+
+    def _camera_animation_context(self) -> VmdCameraAnimationContext:
+        """Return camera-animation state for split VMD helper modules."""
+        return VmdCameraAnimationContext(
+            motion_scale=self.motion_scale,
+            anim_layer=self.anim_layer,
+            use_animation_layers=self.use_animation_layers,
+            get_or_create_camera=self._get_or_create_camera,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            maya_time_to_vmd_frame=self.maya_time_to_vmd_frame,
+            add_attrs_to_anim_layer=self._add_attrs_to_anim_layer,
+            samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=self._batch_key_scalar_channels,
+            apply_vmd_bezier_tangents=self._apply_vmd_bezier_tangents,
+            get_frame_number=self._get_frame_number,
+        )
+
+    def _timeline_context(self) -> VmdTimelineContext:
+        """Return timeline state for split VMD helper modules."""
+        return VmdTimelineContext(
+            logger=self.logger,
+            fps=self.fps,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+        )
+
+    def _ik_enabled_animation_context(self) -> VmdIkEnabledAnimationContext:
+        """Return IK enabled-state keying state for split VMD helper modules."""
+        return VmdIkEnabledAnimationContext(
+            logger=self.logger,
+            collect_ik_nodes_by_bone_name=self._collect_ik_nodes_by_bone_name,
+            get_animation_frame_range=self._get_animation_frame_range,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+        )
+
+    def _name_mapping_context(self) -> VmdNameMappingContext:
+        """Return mutable scene name-mapping state for split VMD helper modules."""
+        if not hasattr(self, "bone_name_to_index"):
+            self.bone_name_to_index = {}
+        if not hasattr(self, "bone_index_to_joint"):
+            self.bone_index_to_joint = {}
+        return VmdNameMappingContext(
+            logger=self.logger,
+            bone_name_mapping=self.bone_name_mapping,
+            bone_name_to_index=self.bone_name_to_index,
+            bone_index_to_joint=self.bone_index_to_joint,
+            build_morph_mappings=self._build_morph_mappings,
+        )
+
+    def _import_state_context(self) -> VmdImportStateContext:
+        """Return import cleanup state for split VMD helper modules."""
+        return VmdImportStateContext(
+            logger=self.logger,
+            bone_name_mapping=self.bone_name_mapping,
+            bone_bind_poses=self._bone_bind_poses,
+            morph_name_mapping=self.morph_name_mapping,
+            collect_append_info=self._collect_append_info,
+            iter_morph_mappings=self._iter_morph_mappings,
+            set_refresh_suspended=self._set_vmd_import_refresh_suspended,
+        )
+
+    def _set_vmd_import_refresh_suspended(self, value: bool) -> None:
+        self._vmd_import_refresh_suspended = bool(value)
+
+    def _light_animation_context(self) -> VmdLightAnimationContext:
+        """Return light-animation state for split VMD helper modules."""
+        return VmdLightAnimationContext(
+            logger=self.logger,
+            anim_layer=self.anim_layer,
+            use_animation_layers=self.use_animation_layers,
+            get_or_create_light=self._get_or_create_light,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            maya_time_to_vmd_frame=self.maya_time_to_vmd_frame,
+            add_attrs_to_anim_layer=self._add_attrs_to_anim_layer,
+            samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=self._batch_key_scalar_channels,
+        )
+
+    def _morph_animation_context(self) -> VmdMorphAnimationContext:
+        """Return morph-animation state for split VMD helper modules."""
+        return VmdMorphAnimationContext(
+            logger=self.logger,
+            morph_name_mapping=self.morph_name_mapping,
+            anim_layer=self.anim_layer,
+            use_animation_layers=self.use_animation_layers,
+            iter_morph_mappings=self._iter_morph_mappings,
+            vmd_frame_to_maya_time=self.vmd_frame_to_maya_time,
+            samples_as_anim_layer_deltas=self._samples_as_anim_layer_deltas,
+            batch_key_scalar_channels=self._batch_key_scalar_channels,
         )
 
     def convert(
@@ -206,7 +448,9 @@ class VmdConverter:
         vmd_bytes: bytes = None,
         pmx_bytes: bytes = None,
         pmx_path: str = None,
+        profile: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[int], None]] = None,
+        use_native_physics_bake: bool = False,
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
@@ -223,7 +467,10 @@ class VmdConverter:
             vmd_bytes: 生の VMD バイナリ（runtime bake で使用）
             pmx_bytes: 生の PMX バイナリ（runtime bake で使用）
             pmx_path: PMX ファイルパス（pmx_bytes がない場合に読み込みに使用）
+            profile: import action へ返す診断を書き込む mutable dict
             progress_callback: フェーズ進捗通知コールバック
+            use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する
+                （デフォルト OFF。feature 不足や失敗時は既存 runtime batch へ fallback）
 
         Returns:
             変換が成功した場合True、失敗した場合False
@@ -232,11 +479,24 @@ class VmdConverter:
         anim_layer_selection = None
         undo_was_enabled = True
         refresh_suspended = False
+        import_context = self._import_context(
+            vmd_data=vmd_data,
+            target_namespace=target_namespace,
+            layer_name=layer_name,
+            bake_mode=bake_mode,
+            clear_existing_motion=clear_existing_motion,
+            vmd_bytes=vmd_bytes,
+            pmx_bytes=pmx_bytes,
+            pmx_path=pmx_path,
+            profile=profile,
+            progress_callback=progress_callback,
+            use_native_physics_bake=use_native_physics_bake,
+        )
 
         def _emit_progress(value: int) -> None:
-            if progress_callback is not None:
+            if import_context.progress_callback is not None:
                 try:
-                    progress_callback(value)
+                    import_context.progress_callback(value)
                 except Exception:
                     self.logger.debug("Progress callback failed", exc_info=True)
 
@@ -253,30 +513,30 @@ class VmdConverter:
 
             # 名前マッピングの構築（ボーン名 → Maya joint）
             with vmd_profile.scope("name_mapping_build"):
-                self._build_name_mappings(target_namespace)
+                self._build_name_mappings(import_context.target_namespace)
             _emit_progress(40)
-            motion_kind = self._detect_vmd_motion_kind(vmd_data)
-            if clear_existing_motion and motion_kind in {"model", "mixed"}:
-                self._clear_existing_motion(layer_name, target_namespace)
+            motion_kind = self._detect_vmd_motion_kind(import_context.vmd_data)
+            if import_context.clear_existing_motion and motion_kind in {"model", "mixed"}:
+                self._clear_existing_motion(import_context.layer_name, import_context.target_namespace)
 
             # ボーンの初期位置を記録
             self._record_bind_poses()
-            self.logger.info(f"Detected VMD motion kind: {motion_kind}")
+            self.logger.debug(f"Detected VMD motion kind: {motion_kind}")
 
             # タイムライン設定
             with vmd_profile.scope("timeline_setup"):
-                self._setup_timeline(vmd_data)
+                self._setup_timeline(import_context.vmd_data)
             _emit_progress(48)
 
             # Runtime final-pose bake writes absolute joint channels.  Additive
             # animation layers can turn held rotation samples back into base
             # values after the last VMD key, so bake mode keys the base attrs.
-            use_animation_layers_for_import = self.use_animation_layers and not bake_mode
+            use_animation_layers_for_import = self.use_animation_layers and not import_context.bake_mode
 
             # アニメーションレイヤーの作成
             if use_animation_layers_for_import:
                 with vmd_profile.scope("anim_layer_create"):
-                    self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
+                    self.anim_layer = cmds.animLayer(import_context.layer_name, override=False, weight=1.0)
             else:
                 self.anim_layer = None
 
@@ -286,62 +546,99 @@ class VmdConverter:
                 self._build_bone_hierarchy_and_order_maps()
                 self._build_runtime_bind_world_maps()
             vmd_bytes, pmx_bytes, pmx_path = self._resolve_runtime_bake_sources(
-                vmd_data,
-                vmd_bytes,
-                pmx_bytes,
-                pmx_path,
-                target_namespace,
+                import_context.vmd_data,
+                import_context.vmd_bytes,
+                import_context.pmx_bytes,
+                import_context.pmx_path,
+                import_context.target_namespace,
             )
             _emit_progress(55)
 
             runtime_success = False
-            if self._should_use_mmd_runtime_bake(vmd_bytes, pmx_bytes, pmx_path, live_rig_target, bake_mode):
+            if self._should_use_mmd_runtime_bake(
+                vmd_bytes,
+                pmx_bytes,
+                pmx_path,
+                live_rig_target,
+                import_context.bake_mode,
+            ):
                 self.logger.info("Converting with mmd-anim runtime high-precision bake path")
+                # Native physics bake is opt-in and only active when both bake_mode
+                # and use_native_physics_bake are True; otherwise existing path.
                 runtime_success = self._convert_using_mmd_runtime(
-                    vmd_data=vmd_data,
+                    vmd_data=import_context.vmd_data,
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,
+                    use_native_physics_bake=bool(
+                        import_context.bake_mode and import_context.use_native_physics_bake
+                    ),
+                    profile=import_context.profile,
                 )
                 if runtime_success:
                     self.logger.info("mmd-anim runtime high-precision bake completed")
                     _emit_progress(82)
                 else:
                     self.logger.warning("Runtime bake failed; falling back to legacy path")
+                    self._record_profile_warning(
+                        import_context.profile,
+                        {
+                            "source": "vmd_converter",
+                            "code": "runtime_bake_failed_fallback",
+                            "severity": "warning",
+                            "message": "mmd-anim runtime bake failed; falling back to legacy VMD conversion",
+                            "fallback": "legacy",
+                            "bake_mode": bool(import_context.bake_mode),
+                            "live_rig_target": bool(live_rig_target),
+                            "has_vmd_bytes": bool(vmd_bytes),
+                            "has_pmx_bytes": bool(pmx_bytes),
+                            "pmx_path": pmx_path or "",
+                        },
+                    )
 
             if not runtime_success:
                 # --- レガシーパス（従来の変換） ---
-                self._apply_ik_enabled_animation(vmd_data, target_namespace)
+                self._apply_ik_enabled_animation(import_context.vmd_data, import_context.target_namespace)
                 _emit_progress(60)
 
-                if hasattr(vmd_data, "bone_frames") and vmd_data.bone_frames:
-                    self.logger.info(f"Starting bone animation conversion (legacy): {len(vmd_data.bone_frames)} frames")
+                if hasattr(import_context.vmd_data, "bone_frames") and import_context.vmd_data.bone_frames:
+                    self.logger.info(
+                        f"Starting bone animation conversion (legacy): {len(import_context.vmd_data.bone_frames)} frames"
+                    )
                     with vmd_profile.scope("bone_animation_convert"):
-                        bone_success = self._convert_bone_animation(vmd_data.bone_frames)
+                        bone_success = self._convert_bone_animation(import_context.vmd_data.bone_frames)
                     if not bone_success:
                         self.logger.warning("Some errors occurred during bone animation conversion")
                 _emit_progress(72)
 
                 # モーフアニメーション（レガシー）
-                if hasattr(vmd_data, "morph_frames") and vmd_data.morph_frames:
-                    self.logger.info("Converting morph animation (legacy)")
-                    self._convert_morph_animation(vmd_data.morph_frames)
+                if hasattr(import_context.vmd_data, "morph_frames") and import_context.vmd_data.morph_frames:
+                    self.logger.debug("Converting morph animation (legacy)")
+                    self._convert_morph_animation(import_context.vmd_data.morph_frames)
                 _emit_progress(82)
 
             # カメラアニメーション（レガシー）
-            if self.import_camera_animation and hasattr(vmd_data, "camera_frames") and vmd_data.camera_frames:
-                self.logger.info(f"Converting camera animation: {len(vmd_data.camera_frames)} frames")
+            if (
+                import_context.import_camera_animation
+                and hasattr(import_context.vmd_data, "camera_frames")
+                and import_context.vmd_data.camera_frames
+            ):
+                self.logger.info(f"Converting camera animation: {len(import_context.vmd_data.camera_frames)} frames")
                 self._clear_existing_camera_motion()
-                camera_sample_bytes = vmd_bytes if bake_mode else None
-                self._convert_camera_animation(vmd_data.camera_frames, vmd_bytes=camera_sample_bytes)
+                camera_sample_bytes = vmd_bytes if import_context.bake_mode else None
+                self._convert_camera_animation(import_context.vmd_data.camera_frames, vmd_bytes=camera_sample_bytes)
             _emit_progress(88)
 
             # ライトアニメーション（レガシー）
-            if self.import_light_animation and hasattr(vmd_data, "light_frames") and vmd_data.light_frames:
-                self.logger.info(f"Converting light animation: {len(vmd_data.light_frames)} frames")
+            if (
+                import_context.import_light_animation
+                and hasattr(import_context.vmd_data, "light_frames")
+                and import_context.vmd_data.light_frames
+            ):
+                self.logger.info(f"Converting light animation: {len(import_context.vmd_data.light_frames)} frames")
                 self._clear_existing_light_motion()
-                light_sample_bytes = vmd_bytes if bake_mode else None
-                self._convert_light_animation(vmd_data.light_frames, vmd_bytes=light_sample_bytes)
+                light_sample_bytes = vmd_bytes if import_context.bake_mode else None
+                self._convert_light_animation(import_context.vmd_data.light_frames, vmd_bytes=light_sample_bytes)
             _emit_progress(94)
 
             self.logger.info("VMD animation conversion completed")
@@ -359,16 +656,24 @@ class VmdConverter:
 
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
-        return suspend_import_scene_updates(self)
+        return suspend_import_scene_updates(self._import_state_context())
 
     def _restore_import_scene_updates(self, undo_was_enabled: bool, refresh_suspended: bool) -> None:
         """Restore viewport refresh and undo state after VMD import."""
-        restore_import_scene_updates(self, undo_was_enabled, refresh_suspended)
+        restore_import_scene_updates(self._import_state_context(), undo_was_enabled, refresh_suspended)
 
     @staticmethod
     def _restore_import_timeline_state(current_time: Optional[float]) -> None:
         """Keep VMD import from leaving Maya visibly playing or scrubbed ahead."""
         restore_import_timeline_state(current_time)
+
+    @staticmethod
+    def _record_profile_warning(profile: Optional[Dict[str, Any]], warning: Dict[str, Any]) -> None:
+        """Append a structured converter warning to the import profile."""
+        if not isinstance(profile, dict):
+            return
+        converter_profile = profile.setdefault("vmd_converter", {})
+        converter_profile.setdefault("warnings", []).append(dict(warning))
 
     def vmd_frame_to_maya_time(self, frame_number: float) -> float:
         """Convert VMD's fixed 30fps frame number to the target Maya time unit."""
@@ -390,7 +695,7 @@ class VmdConverter:
 
     def _clear_existing_motion(self, layer_name: str, target_namespace: Optional[str] = None) -> None:
         """対象モデルに残っている既存 VMD motion keys/layer を削除する。"""
-        clear_existing_motion(self, layer_name, target_namespace)
+        clear_existing_motion(self._import_state_context(), layer_name, target_namespace)
 
     def _clear_existing_camera_motion(self) -> None:
         """既存のMMDカメラアニメーションキーを削除する。"""
@@ -437,10 +742,17 @@ class VmdConverter:
         vmd_bytes: bytes,
         pmx_bytes: bytes,
         pmx_path: str,
+        use_native_physics_bake: bool = False,
+        profile: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         mmd-anim runtime を使って全フレームを評価し、正確なポーズをベイクする。
         付与変形・IK・MMDベジェ補間はすべて runtime 側で解決済み。
+
+        ``use_native_physics_bake`` が True のときは、feature flags / world 作成が
+        成功しサンプルが一様な場合に限って sequential physics bake を試行し、
+        結果は既存の matrix/morph キャッシュ適用経路へ流す。失敗時は物理なし
+        runtime batch へ silent fallback する（例外にしない）。
         """
         resolved_pmx_bytes, pmx_morph_names = resolve_runtime_pmx_bytes_and_morph_names(
             pmx_bytes,
@@ -471,6 +783,7 @@ class VmdConverter:
             model.free()
             return False
 
+        physics_world = None
         try:
             runtime_start = time.perf_counter()
             # フレーム範囲の決定。Python VMD parser が空/失敗でも、
@@ -483,7 +796,7 @@ class VmdConverter:
                     max_time = self.vmd_frame_to_maya_time(max_frame)
                     cmds.playbackOptions(min=0, max=max_time, animationStartTime=0, animationEndTime=max_time)
             bake_samples = self._iter_runtime_bake_frame_samples(min_frame, max_frame)
-            self.logger.info(
+            self.logger.debug(
                 f"Runtime evaluation range: {min_frame} - {max_frame} "
                 f"(keys={len(bake_samples)}, fps={self.fps:g})"
             )
@@ -492,15 +805,61 @@ class VmdConverter:
             if self.bone_index_to_joint:
                 self._build_runtime_bind_world_maps()
 
+            physics_routing: Dict[str, Any] = {
+                "requested": bool(use_native_physics_bake),
+                "used": False,
+                "feature_flags": int(get_runtime_feature_flags()) if HAS_MMD_RUNTIME else 0,
+                "fps": float(self.fps),
+            }
+            if use_native_physics_bake:
+                if not HAS_MMD_RUNTIME or MmdRuntimePhysicsWorld is None:
+                    physics_routing["reason"] = "runtime_unavailable"
+                    self.logger.warning(
+                        "Native physics bake requested but mmd-anim runtime is unavailable; "
+                        "falling back to non-physics runtime batch"
+                    )
+                elif not is_native_physics_available():
+                    physics_routing["reason"] = "feature_flags_unavailable"
+                    self.logger.warning(
+                        "Native physics bake requested but feature flags missing "
+                        "(flags=0x%x); falling back to non-physics runtime batch",
+                        physics_routing["feature_flags"],
+                    )
+                else:
+                    physics_world = MmdRuntimePhysicsWorld.from_pmx_bytes(resolved_pmx_bytes)
+                    if physics_world is None:
+                        physics_routing["reason"] = "physics_world_create_failed"
+                        self.logger.warning(
+                            "Native physics world could not be created from PMX bytes; "
+                            "falling back to non-physics runtime batch"
+                        )
+                    else:
+                        physics_routing["world_created"] = True
+
             # キャッシュ収集: 評価結果を API 配列へ直接保持（cmds.xform / setKeyframe を内側ループから排除）
-            runtime_cache = collect_runtime_bake_cache(self, instance, clip, bake_samples)
-            self.logger.info(
-                f"mmd-anim runtime pose evaluation and cache completed "
-                f"(frames={len(runtime_cache.baked_frames)}, elapsed={runtime_cache.eval_elapsed:.3f}s)"
+            # Native physics batch (when used) reuses the same matrix/morph → channel apply path.
+            runtime_cache = collect_runtime_bake_cache(
+                self._runtime_cache_collect_context(),
+                instance,
+                clip,
+                bake_samples,
+                physics_world=physics_world,
+                fps=float(self.fps),
+                use_native_physics_bake=bool(use_native_physics_bake and physics_world is not None),
             )
-            self.logger.info(
+            if getattr(runtime_cache, "physics_bake", None):
+                physics_routing.update(runtime_cache.physics_bake)
+            if isinstance(profile, dict):
+                profile.setdefault("vmd_converter", {})["native_physics_bake"] = dict(physics_routing)
+            self.logger.debug(
+                f"mmd-anim runtime pose evaluation and cache completed "
+                f"(frames={len(runtime_cache.baked_frames)}, elapsed={runtime_cache.eval_elapsed:.3f}s, "
+                f"physics_used={physics_routing.get('used', False)})"
+            )
+            self.logger.debug(
                 "runtime bake cache timings: "
                 f"mode={'batch' if runtime_cache.batch_mode else 'per-frame'}, "
+                f"physics={'yes' if physics_routing.get('used') else 'no'}, "
                 f"eval_copy={runtime_cache.eval_copy_elapsed:.3f}s, "
                 f"batch_unpack={runtime_cache.batch_unpack_elapsed:.3f}s, "
                 f"local_decompose={runtime_cache.local_elapsed:.3f}s, "
@@ -511,7 +870,7 @@ class VmdConverter:
             if runtime_cache.baked_frames:
                 apply_start = time.perf_counter()
                 apply_runtime_channel_arrays_to_scene_with_undo_disabled(
-                    self,
+                    self._runtime_scene_apply_context(),
                     runtime_cache.joint_channel_values,
                     runtime_cache.joint_channel_static,
                     runtime_cache.bake_times,
@@ -520,16 +879,22 @@ class VmdConverter:
                     pmx_morph_names,
                 )
                 apply_elapsed = time.perf_counter() - apply_start
-                self.logger.info(
+                self.logger.debug(
                     f"Runtime cache key application completed (elapsed={apply_elapsed:.3f}s)"
                 )
 
             runtime_elapsed = time.perf_counter() - runtime_start
-            self.logger.info(f"runtime bake total elapsed={runtime_elapsed:.3f}s")
+            self.logger.debug(f"runtime bake total elapsed={runtime_elapsed:.3f}s")
 
             return True
 
         finally:
+            # Explicit physics world lifetime: free before instance/clip/model.
+            if physics_world is not None:
+                try:
+                    physics_world.free()
+                except Exception:
+                    self.logger.debug("physics world free failed", exc_info=True)
             # リソース解放
             instance.free()
             clip.free()
@@ -562,7 +927,9 @@ class VmdConverter:
 
         Maya ジョイントの DAG 親子とカスタム属性から bone index ベースのマップを構築。
         """
-        build_bone_hierarchy_and_order_maps(self)
+        context = self._runtime_local_decompose_context()
+        build_bone_hierarchy_and_order_maps(context)
+        self._sync_runtime_local_decompose_context(context)
 
     def _build_runtime_bind_world_maps(self) -> None:
         """Build bind-space maps used to convert runtime matrices for JO skinning.
@@ -572,7 +939,9 @@ class VmdConverter:
         different bind world matrix, so the joint world matrix must be converted
         to ``B_maya * inverse(B_noJO) * W_mmd`` before local decomposition.
         """
-        build_runtime_bind_world_maps(self)
+        context = self._runtime_local_decompose_context()
+        build_runtime_bind_world_maps(context)
+        self._sync_runtime_local_decompose_context(context)
 
     def _compute_all_bone_locals(
         self, world_matrices: List[List[float]]
@@ -586,18 +955,30 @@ class VmdConverter:
         JO 付き skeleton では、runtime world matrix そのものではなく skinning
         matrix が no-JO MMD 評価と一致するよう bind-space 補正を行う。
         """
-        return compute_all_bone_locals(self, world_matrices)
+        context = self._runtime_local_decompose_context()
+        try:
+            return compute_all_bone_locals(context, world_matrices, compute_maya_local_channels)
+        finally:
+            self._sync_runtime_local_decompose_context(context)
 
     def _compute_all_bone_locals_native(
         self,
         world_matrices: List[List[float]],
     ) -> Optional[Dict[int, Tuple[float, float, float, float, float, float]]]:
         """Use mmd-anim FFI to decompose runtime world matrices when available."""
-        return compute_all_bone_locals_native(self, world_matrices, compute_maya_local_channels)
+        context = self._runtime_local_decompose_context()
+        try:
+            return compute_all_bone_locals_native(context, world_matrices, compute_maya_local_channels)
+        finally:
+            self._sync_runtime_local_decompose_context(context)
 
     def _compute_native_local_channel_batch(self, batch_result):
         """Compute native local channels for an entire runtime batch when possible."""
-        return compute_native_local_channel_batch(self, batch_result, compute_maya_local_channels_batch)
+        context = self._runtime_local_decompose_context()
+        try:
+            return compute_native_local_channel_batch(context, batch_result, compute_maya_local_channels_batch)
+        finally:
+            self._sync_runtime_local_decompose_context(context)
 
     @staticmethod
     def _native_local_channel_batch_for_frame(
@@ -609,7 +990,11 @@ class VmdConverter:
 
     def _get_native_local_decompose_static_inputs(self, ordered_bone_indices: List[int]) -> Optional[Dict[str, list]]:
         """Return cached static inputs for native runtime local decomposition."""
-        return get_native_local_decompose_static_inputs(self, ordered_bone_indices)
+        context = self._runtime_local_decompose_context()
+        try:
+            return get_native_local_decompose_static_inputs(context, ordered_bone_indices)
+        finally:
+            self._sync_runtime_local_decompose_context(context)
 
     def _batch_create_and_key_curves(
         self,
@@ -779,7 +1164,7 @@ class VmdConverter:
     ) -> None:
         """API配列へ収集済みのruntime bake結果をMaya sceneへ一括適用する。"""
         apply_runtime_channel_arrays_to_scene(
-            self,
+            self._runtime_scene_apply_context(),
             joint_channel_values,
             joint_channel_static,
             bake_times,
@@ -871,7 +1256,7 @@ class VmdConverter:
         pmx_morph_names: List[str] = None,
     ):
         """runtime から得た PMX morph 順のウェイトを Maya blendShape にベイク"""
-        bake_morph_weights_from_runtime(self, frame, morph_weights, pmx_morph_names)
+        bake_morph_weights_from_runtime(self._morph_animation_context(), frame, morph_weights, pmx_morph_names)
 
     def _bake_morph_weight_cache_from_runtime(
         self,
@@ -879,7 +1264,7 @@ class VmdConverter:
         pmx_morph_names: List[str] = None,
     ) -> None:
         """runtime 評価済み morph weight cache を blendShape/network weight へ一括キーイングする。"""
-        bake_morph_weight_cache_from_runtime(self, morph_cache, pmx_morph_names)
+        bake_morph_weight_cache_from_runtime(self._morph_animation_context(), morph_cache, pmx_morph_names)
 
     def _disable_mmd_rig_constraints_for_runtime_bake(self):
         """runtime bake と二重評価になる PMX 付与constraint/IK solverを無効化する。"""
@@ -914,11 +1299,11 @@ class VmdConverter:
         これにより mmd-anim の world_matrices (PMXボーン順) を Maya ジョイントに
         正しく対応づけられる。
         """
-        build_name_mappings(self, target_namespace)
+        build_name_mappings(self._name_mapping_context(), target_namespace)
 
     def _record_bind_poses(self):
         """各ボーンの初期位置（バインドポーズ）を記録"""
-        record_bind_poses(self)
+        record_bind_poses(self._import_state_context())
 
     def _setup_timeline(self, vmd_data: VmdData):
         """タイムラインの設定
@@ -926,7 +1311,7 @@ class VmdConverter:
         Args:
             vmd_data: パース済みのVMDデータ
         """
-        setup_timeline(self, vmd_data)
+        setup_timeline(self._timeline_context(), vmd_data)
 
     def _convert_bone_animation(self, bone_frames: List) -> bool:
         """ボーンアニメーションを変換
@@ -937,7 +1322,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_bone_animation(self, bone_frames)
+        return convert_bone_animation(self._bone_animation_context(), bone_frames)
 
     @staticmethod
     def _collect_ik_link_joints() -> dict:
@@ -956,7 +1341,7 @@ class VmdConverter:
 
     def _collect_ik_nodes_by_bone_name(self, target_namespace: str = None) -> Dict[str, str]:
         """mmdCcdIk ノードを PMX IK ボーン名で引けるように収集する。"""
-        return collect_ik_nodes_by_bone_name(self, target_namespace)
+        return collect_ik_nodes_by_bone_name(target_namespace, self._node_namespace)
 
     def _apply_ik_enabled_animation(self, vmd_data: VmdData, target_namespace: str = None) -> None:
         """VMD の IK 表示/非表示フレームを mmdCcdIk.enabled に反映する。
@@ -966,7 +1351,7 @@ class VmdConverter:
         property frame がないモデルモーションでは、従来互換として全 IK を
         評価範囲の先頭で有効にする。
         """
-        apply_ik_enabled_animation(self, vmd_data, target_namespace)
+        apply_ik_enabled_animation(self._ik_enabled_animation_context(), vmd_data, target_namespace)
 
     def _build_legacy_bone_key_routes(self) -> Dict[str, dict]:
         """レガシー VMD キーの出力先を joint / rig node へ振り分ける。"""
@@ -1031,7 +1416,7 @@ class VmdConverter:
             vmd_bone_name: VMDボーン名
             key_route: append / IK rig 接続に応じたキー出力先情報
         """
-        set_bone_keyframes(self, joint, frames, vmd_bone_name, key_route)
+        set_bone_keyframes(self._bone_animation_context(), joint, frames, vmd_bone_name, key_route)
 
     def _get_joint_orient_cache(self, joint_name):
         """joint の jointOrient quaternion と rotateOrder をキャッシュ付きで取得する。"""
@@ -1083,7 +1468,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_camera_animation(self, camera_frames, vmd_bytes=vmd_bytes)
+        return convert_camera_animation(self._camera_animation_context(), camera_frames, vmd_bytes=vmd_bytes)
 
     def _detect_vmd_motion_kind(self, vmd_data: VmdData) -> str:
         """VMD内容から大まかなモーション種別を判定する。"""
@@ -1104,7 +1489,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_light_animation(self, light_frames, vmd_bytes=vmd_bytes)
+        return convert_light_animation(self._light_animation_context(), light_frames, vmd_bytes=vmd_bytes)
 
     def _convert_morph_animation(self, morph_frames: List) -> bool:
         """モーフアニメーションを変換
@@ -1115,7 +1500,7 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
-        return convert_morph_animation(self, morph_frames)
+        return convert_morph_animation(self._morph_animation_context(), morph_frames)
 
     @staticmethod
     def _iter_morph_mappings(mapping_entry):

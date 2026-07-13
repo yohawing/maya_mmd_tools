@@ -9,6 +9,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_DEFORM_LAYER,
 )
+from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
 from mmd_tools.ui.presenters.bone_presenter import BonePresenter
 from mmd_tools.ui.tabs.bone_tab import BoneTab
@@ -29,81 +30,74 @@ class TestBonePresenter(MayaTestBase):
         self.mock_view = MagicMock(spec=BoneTab)
         self.mock_app_state = MagicMock(spec=ApplicationState)
 
-        # モックビューの属性を設定
-        self.mock_view.bone_list = MagicMock()
+        attach_mocks(
+            self.mock_view,
+            [
+                "bone_list",
+                "refresh_btn",
+                "search_edit",
+                "bone_name_jp_edit",
+                "bone_name_en_edit",
+                "parent_bone_edit",
+                "pos_x_spin",
+                "pos_y_spin",
+                "pos_z_spin",
+                "deform_layer_spin",
+                "connection_type_combo",
+                "connection_bone_edit",
+                "offset_x_spin",
+                "offset_y_spin",
+                "offset_z_spin",
+                "rotatable_check",
+                "movable_check",
+                "visible_check",
+                "enabled_check",
+                "after_physics_check",
+                "external_parent_check",
+                "external_parent_key_label",
+                "external_parent_key_spin",
+                "ik_enabled_check",
+                "ik_settings_group",
+                "ik_links_group",
+                "ik_target_edit",
+                "ik_loop_spin",
+                "ik_limit_angle_spin",
+                "ik_links_table",
+                "add_ik_link_btn",
+                "remove_ik_link_btn",
+                "move_up_btn",
+                "move_down_btn",
+                "rotation_grant_check",
+                "move_grant_check",
+                "grant_settings_group",
+                "grant_parent_edit",
+                "grant_rate_spin",
+                "local_grant_check",
+                "fixed_axis_check",
+                "local_axis_check",
+                "fixed_axis_group",
+                "local_axis_group",
+                "fixed_axis_x_spin",
+                "fixed_axis_y_spin",
+                "fixed_axis_z_spin",
+                "local_x_axis_x_spin",
+                "local_x_axis_y_spin",
+                "local_x_axis_z_spin",
+                "local_z_axis_x_spin",
+                "local_z_axis_y_spin",
+                "local_z_axis_z_spin",
+                "select_parent_btn",
+                "select_connection_btn",
+                "select_ik_target_btn",
+                "select_grant_parent_btn",
+                "apply_btn",
+                "reset_btn",
+            ],
+            mock_cls=MagicMock,
+        )
         self.mock_view.bone_list.clear = MagicMock()
         self.mock_view.bone_list.addItem = MagicMock()
         self.mock_view.bone_list.selectedItems = MagicMock(return_value=[])
-        self.mock_view.refresh_btn = MagicMock()
-        self.mock_view.search_edit = MagicMock()
-
-        # 基本情報タブ
-        self.mock_view.bone_name_jp_edit = MagicMock()
-        self.mock_view.bone_name_en_edit = MagicMock()
-        self.mock_view.parent_bone_edit = MagicMock()
-        self.mock_view.pos_x_spin = MagicMock()
-        self.mock_view.pos_y_spin = MagicMock()
-        self.mock_view.pos_z_spin = MagicMock()
-        self.mock_view.deform_layer_spin = MagicMock()
-        self.mock_view.connection_type_combo = MagicMock()
-        self.mock_view.connection_bone_edit = MagicMock()
-        self.mock_view.offset_x_spin = MagicMock()
-        self.mock_view.offset_y_spin = MagicMock()
-        self.mock_view.offset_z_spin = MagicMock()
-
-        # 変形制御タブ
-        self.mock_view.rotatable_check = MagicMock()
-        self.mock_view.movable_check = MagicMock()
-        self.mock_view.visible_check = MagicMock()
-        self.mock_view.enabled_check = MagicMock()
-        self.mock_view.after_physics_check = MagicMock()
-        self.mock_view.external_parent_check = MagicMock()
-        self.mock_view.external_parent_key_label = MagicMock()
-        self.mock_view.external_parent_key_spin = MagicMock()
-
-        # IK設定タブ
-        self.mock_view.ik_enabled_check = MagicMock()
-        self.mock_view.ik_settings_group = MagicMock()
-        self.mock_view.ik_links_group = MagicMock()
-        self.mock_view.ik_target_edit = MagicMock()
-        self.mock_view.ik_loop_spin = MagicMock()
-        self.mock_view.ik_limit_angle_spin = MagicMock()
-        self.mock_view.ik_links_table = MagicMock()
-        self.mock_view.add_ik_link_btn = MagicMock()
-        self.mock_view.remove_ik_link_btn = MagicMock()
-        self.mock_view.move_up_btn = MagicMock()
-        self.mock_view.move_down_btn = MagicMock()
-
-        # 付与設定タブ
-        self.mock_view.rotation_grant_check = MagicMock()
-        self.mock_view.move_grant_check = MagicMock()
-        self.mock_view.grant_settings_group = MagicMock()
-        self.mock_view.grant_parent_edit = MagicMock()
-        self.mock_view.grant_rate_spin = MagicMock()
-        self.mock_view.local_grant_check = MagicMock()
-
-        # 軸制限タブ
-        self.mock_view.fixed_axis_check = MagicMock()
-        self.mock_view.local_axis_check = MagicMock()
-        self.mock_view.fixed_axis_group = MagicMock()
-        self.mock_view.local_axis_group = MagicMock()
-        self.mock_view.fixed_axis_x_spin = MagicMock()
-        self.mock_view.fixed_axis_y_spin = MagicMock()
-        self.mock_view.fixed_axis_z_spin = MagicMock()
-        self.mock_view.local_x_axis_x_spin = MagicMock()
-        self.mock_view.local_x_axis_y_spin = MagicMock()
-        self.mock_view.local_x_axis_z_spin = MagicMock()
-        self.mock_view.local_z_axis_x_spin = MagicMock()
-        self.mock_view.local_z_axis_y_spin = MagicMock()
-        self.mock_view.local_z_axis_z_spin = MagicMock()
-
-        # ボタン
-        self.mock_view.select_parent_btn = MagicMock()
-        self.mock_view.select_connection_btn = MagicMock()
-        self.mock_view.select_ik_target_btn = MagicMock()
-        self.mock_view.select_grant_parent_btn = MagicMock()
-        self.mock_view.apply_btn = MagicMock()
-        self.mock_view.reset_btn = MagicMock()
 
         # clicked属性を持つモックオブジェクトを設定
         button_attrs = [
@@ -270,7 +264,8 @@ class TestBonePresenter(MayaTestBase):
         self.mock_app_state.current_model_root = self.test_model
 
         # ボーンを読み込み
-        self.presenter.load_bones()
+        with patch("mmd_tools.ui.presenters.bone_presenter.logger") as mock_logger:
+            self.presenter.load_bones()
 
         # リストがクリアされたことを確認
         self.mock_view.bone_list.clear.assert_called()
@@ -280,6 +275,13 @@ class TestBonePresenter(MayaTestBase):
         self.assertIn(self.test_bone1, self.presenter.bone_list_items)
         self.assertIn(self.test_bone2, self.presenter.bone_list_items)
         self.assertIn(self.test_bone3, self.presenter.bone_list_items)
+
+        # 一覧ロード詳細は DEBUG のみ（INFO には出さない）
+        expected = f"Loaded 3 bones for model: {self.test_model}"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_bone_flag_calculation(self):
         """ボーンフラグ計算のテスト"""
@@ -309,6 +311,27 @@ class TestBonePresenter(MayaTestBase):
             | PmxBoneFlag.DEFORM_AFTER_PHYSICS
         )
         self.assertEqual(flags, expected_flags)
+
+    def test_on_bone_selected(self):
+        """ボーン選択時: current_bone / details / property load と DEBUG ログ境界。"""
+        mock_item = MagicMock()
+        mock_item.data = MagicMock(return_value=self.test_bone1)
+
+        with patch("mmd_tools.ui.presenters.bone_presenter.logger") as mock_logger, patch.object(
+            self.presenter, "load_bone_properties"
+        ) as mock_load:
+            self.presenter.on_bone_selected(mock_item, None)
+
+        self.assertEqual(self.presenter.current_bone, self.test_bone1)
+        self.mock_view.set_bone_details_enabled.assert_called_with(True)
+        mock_load.assert_called_once_with()
+
+        expected = f"Selected bone: {self.test_bone1}"
+        # Python 3.7 互換: call[0] で位置引数タプルを取る（_Call.args は使わない）
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_on_selection_changed_maya(self):
         """リスト選択時のMaya選択テスト"""

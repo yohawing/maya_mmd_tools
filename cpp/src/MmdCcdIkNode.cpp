@@ -9,6 +9,7 @@
 
 #include "MmdCcdIkNode.h"
 
+#include <maya/MFnAttribute.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnCompoundAttribute.h>
 #include <maya/MFnTypedAttribute.h>
@@ -39,12 +40,60 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <dlfcn.h>
+#endif
+
 namespace {
 constexpr double kPi = 3.14159265358979323846;
 using nlohmann::json;
 
+using IkChainCreateV2Fn = mmd_runtime_ik_chain_t* (*)(
+    const mmd_runtime_ffi_rig_bone_t*,
+    size_t,
+    const mmd_runtime_ffi_rig_bone_local_axis_v2_t*,
+    uint32_t,
+    const mmd_runtime_ffi_rig_ik_link_t*,
+    size_t,
+    uint32_t,
+    float);
+
+IkChainCreateV2Fn resolveIkChainCreateV2()
+{
+#ifdef _WIN32
+    HMODULE ownerModule = nullptr;
+    if (!GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&mmd_runtime_ik_chain_create),
+            &ownerModule) ||
+        !ownerModule) {
+        return nullptr;
+    }
+    return reinterpret_cast<IkChainCreateV2Fn>(
+        GetProcAddress(ownerModule, "mmd_runtime_ik_chain_create_v2"));
+#elif defined(__APPLE__)
+    Dl_info ownerInfo{};
+    if (dladdr(reinterpret_cast<const void*>(&mmd_runtime_ik_chain_create), &ownerInfo) == 0 ||
+        !ownerInfo.dli_fname) {
+        return nullptr;
+    }
+    void* ownerModule = dlopen(ownerInfo.dli_fname, RTLD_LAZY | RTLD_NOLOAD);
+    if (!ownerModule) {
+        return nullptr;
+    }
+    auto fn = reinterpret_cast<IkChainCreateV2Fn>(
+        dlsym(ownerModule, "mmd_runtime_ik_chain_create_v2"));
+    dlclose(ownerModule);
+    return fn;
+#endif
+    return nullptr;
+}
+
 struct CcdIkChainConfig {
     std::vector<mmd_runtime_ffi_rig_bone_t> bones;
+    std::vector<mmd_runtime_ffi_rig_bone_local_axis_v2_t> localAxes;
     std::vector<mmd_runtime_ffi_rig_ik_link_t> links;
     std::vector<std::array<double, 3>> restPositions;
     std::vector<std::array<double, 3>> mayaRestTranslates;
@@ -55,6 +104,7 @@ struct CcdIkChainConfig {
     std::vector<MMatrix> noOrientBindWorldMatrices;
     std::vector<uint32_t> linkSlots;
     bool hasBindMatrices = false;
+    bool hasLocalAxes = false;
     int32_t controllerBoneSlot = -1;
     uint32_t targetBoneSlot = 0;
     uint32_t iterationCount = 40;
@@ -172,6 +222,7 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
 
     cfg = CcdIkChainConfig{};
     cfg.bones.reserve(bonesIt->size());
+    cfg.localAxes.reserve(bonesIt->size());
     cfg.restPositions.reserve(bonesIt->size());
     cfg.mayaRestTranslates.reserve(bonesIt->size());
     cfg.parentSlots.reserve(bonesIt->size());
@@ -209,6 +260,36 @@ bool parseCcdIkChainJson(const MString& chainJson, CcdIkChainConfig& cfg)
         for (size_t axis = 0; axis < 3; ++axis) {
             bone.fixed_axis_xyz[axis] = fixedAxis[axis];
         }
+
+        mmd_runtime_ffi_rig_bone_local_axis_v2_t localAxis{};
+        const auto localAxisIt = boneJson.find("local_axis");
+        if (localAxisIt != boneJson.end() && !localAxisIt->is_null()) {
+            if (!localAxisIt->is_object() || localAxisIt->size() != 2 ||
+                !localAxisIt->contains("x") || !localAxisIt->contains("z")) {
+                return false;
+            }
+            const json& axisXJson = localAxisIt->at("x");
+            const json& axisZJson = localAxisIt->at("z");
+            if (!axisXJson.is_array() || axisXJson.size() != 3 ||
+                !axisZJson.is_array() || axisZJson.size() != 3) {
+                return false;
+            }
+            for (size_t axis = 0; axis < 3; ++axis) {
+                if (!axisXJson[axis].is_number() || !axisZJson[axis].is_number()) {
+                    return false;
+                }
+                const float axisX = axisXJson[axis].get<float>();
+                const float axisZ = axisZJson[axis].get<float>();
+                if (!std::isfinite(axisX) || !std::isfinite(axisZ)) {
+                    return false;
+                }
+                localAxis.local_axis_x_xyz[axis] = axisX;
+                localAxis.local_axis_z_xyz[axis] = axisZ;
+            }
+            localAxis.has_local_axis = true;
+            cfg.hasLocalAxes = true;
+        }
+        cfg.localAxes.push_back(localAxis);
 
         std::array<double, 3> mayaRest{
             static_cast<double>(rest[0]),
@@ -419,33 +500,19 @@ bool readInputRotateElement(
     return true;
 }
 
-bool controllerBranchHasPositionOffset(const CcdIkChainConfig& cfg, const std::vector<float>& positions)
-{
-    if (cfg.controllerBoneSlot < 0 || static_cast<size_t>(cfg.controllerBoneSlot) >= cfg.bones.size()) {
-        return false;
-    }
-    int32_t slot = cfg.controllerBoneSlot;
-    std::vector<bool> visited(cfg.bones.size(), false);
-    while (slot >= 0 && static_cast<size_t>(slot) < cfg.bones.size() && !visited[static_cast<size_t>(slot)]) {
-        visited[static_cast<size_t>(slot)] = true;
-        const size_t offset = static_cast<size_t>(slot) * 3;
-        if (std::abs(positions[offset]) > 1.0e-5f ||
-            std::abs(positions[offset + 1]) > 1.0e-5f ||
-            std::abs(positions[offset + 2]) > 1.0e-5f) {
-            return true;
-        }
-        slot = cfg.parentSlots[static_cast<size_t>(slot)];
-    }
-    return false;
-}
+// FK target と goal の一致判定 (MMD units)。VMD bake の Euler/animCurve
+// 丸め誤差より十分大きく、目視で分かる足のズレより十分小さい値。
+constexpr float kGoalMatchEpsilon = 1.0e-3f;
 
-std::array<float, 3> computePreIkGoal(
+// input pose だけから指定 slot の FK world 位置 (MMD space) を得る。
+std::array<float, 3> computeFkWorldPosition(
     const CcdIkChainConfig& cfg,
     const std::vector<float>& positions,
-    const std::vector<float>& rotations)
+    const std::vector<float>& rotations,
+    int32_t slot)
 {
     std::array<float, 3> goal{0.0f, 0.0f, 0.0f};
-    if (cfg.controllerBoneSlot < 0 || static_cast<size_t>(cfg.controllerBoneSlot) >= cfg.bones.size()) {
+    if (slot < 0 || static_cast<size_t>(slot) >= cfg.bones.size()) {
         return goal;
     }
 
@@ -473,12 +540,35 @@ std::array<float, 3> computePreIkGoal(
         }
     }
 
-    MVector point = MTransformationMatrix(worldMats[static_cast<size_t>(cfg.controllerBoneSlot)])
+    MVector point = MTransformationMatrix(worldMats[static_cast<size_t>(slot)])
                         .getTranslation(MSpace::kWorld);
     goal[0] = static_cast<float>(point.x);
     goal[1] = static_cast<float>(point.y);
     goal[2] = static_cast<float>(point.z);
     return goal;
+}
+
+// Pass-through: link slot の inputRotate 値をそのまま出力へコピーする。
+void copyInputRotateLinksToOutput(
+    const CcdIkChainConfig& cfg,
+    MDataBlock& data,
+    std::vector<std::array<double, 3>>& outEulerRadians)
+{
+    MStatus status;
+    MArrayDataHandle rotateArray = data.inputArrayValue(MmdCcdIkNode::aInputRotateArray, &status);
+    outEulerRadians.clear();
+    outEulerRadians.reserve(cfg.linkSlots.size());
+    for (uint32_t slot : cfg.linkSlots) {
+        std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
+        readInputRotateElement(
+            rotateArray,
+            slot,
+            MmdCcdIkNode::aInputRotateArrayX,
+            MmdCcdIkNode::aInputRotateArrayY,
+            MmdCcdIkNode::aInputRotateArrayZ,
+            eulerRadians);
+        outEulerRadians.push_back(eulerRadians);
+    }
 }
 
 std::array<float, 3> readGoalPositionMmd(
@@ -519,18 +609,28 @@ bool solveChainJsonIk(
     MDataBlock& data,
     bool useGoalWorldMatrix,
     bool goalHasInputConnection,
-    bool goalWorldMatrixHasInputConnection,
     bool& outSolved,
     std::vector<std::array<double, 3>>& outEulerRadians)
 {
-    mmd_runtime_ik_chain_t* chain = mmd_runtime_ik_chain_create(
-        cfg.bones.data(),
-        cfg.bones.size(),
-        cfg.targetBoneSlot,
-        cfg.links.data(),
-        cfg.links.size(),
-        cfg.iterationCount,
-        cfg.limitAngle);
+    const IkChainCreateV2Fn createV2 = cfg.hasLocalAxes ? resolveIkChainCreateV2() : nullptr;
+    mmd_runtime_ik_chain_t* chain = createV2
+        ? createV2(
+              cfg.bones.data(),
+              cfg.bones.size(),
+              cfg.localAxes.data(),
+              cfg.targetBoneSlot,
+              cfg.links.data(),
+              cfg.links.size(),
+              cfg.iterationCount,
+              cfg.limitAngle)
+        : mmd_runtime_ik_chain_create(
+              cfg.bones.data(),
+              cfg.bones.size(),
+              cfg.targetBoneSlot,
+              cfg.links.data(),
+              cfg.links.size(),
+              cfg.iterationCount,
+              cfg.limitAngle);
     if (!chain) {
         return false;
     }
@@ -631,66 +731,30 @@ bool solveChainJsonIk(
         }
     }
 
-    bool useControllerGoal = cfg.controllerBoneSlot >= 0 &&
-                             static_cast<size_t>(cfg.controllerBoneSlot) < boneCount &&
-                             !goalHasInputConnection;
-    if (cfg.controllerBoneSlot >= 0 && static_cast<size_t>(cfg.controllerBoneSlot) < boneCount) {
-        const bool hasControllerPositionOffset = controllerBranchHasPositionOffset(cfg, positions);
-        if (useControllerGoal && !hasControllerPositionOffset) {
+    const bool useControllerGoal = cfg.controllerBoneSlot >= 0 &&
+                                   static_cast<size_t>(cfg.controllerBoneSlot) < boneCount &&
+                                   !goalHasInputConnection;
+    const std::array<float, 3> goal = useControllerGoal
+        ? computeFkWorldPosition(cfg, positions, rotations, cfg.controllerBoneSlot)
+        : readGoalPositionMmd(cfg, data, useGoalWorldMatrix);
+
+    // Pass-through gate: FK input pose が target を既に goal 上に置いている
+    // なら solve しない（VMD bake 済み final pose の二重 solve 防止）。
+    // ズレていれば solve する — 腰などチェーン祖先の移動は target だけを
+    // 動かすので solve が走り、全ての親は target と goal を一緒に動かす
+    // ので pass-through のまま。
+    if (static_cast<size_t>(cfg.targetBoneSlot) < boneCount) {
+        const std::array<float, 3> fkTarget = computeFkWorldPosition(
+            cfg, positions, rotations, static_cast<int32_t>(cfg.targetBoneSlot));
+        if (std::abs(fkTarget[0] - goal[0]) <= kGoalMatchEpsilon &&
+            std::abs(fkTarget[1] - goal[1]) <= kGoalMatchEpsilon &&
+            std::abs(fkTarget[2] - goal[2]) <= kGoalMatchEpsilon) {
             mmd_runtime_ik_chain_free(chain);
-            MArrayDataHandle rotateArrayCopy = data.inputArrayValue(MmdCcdIkNode::aInputRotateArray, &status);
-            outEulerRadians.clear();
-            outEulerRadians.reserve(cfg.linkSlots.size());
-            for (uint32_t slot : cfg.linkSlots) {
-                std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
-                readInputRotateElement(
-                    rotateArrayCopy,
-                    slot,
-                    MmdCcdIkNode::aInputRotateArrayX,
-                    MmdCcdIkNode::aInputRotateArrayY,
-                    MmdCcdIkNode::aInputRotateArrayZ,
-                    eulerRadians);
-                outEulerRadians.push_back(eulerRadians);
-            }
+            copyInputRotateLinksToOutput(cfg, data, outEulerRadians);
             outSolved = false;
             return true;
         }
-
-        if (goalWorldMatrixHasInputConnection && !hasControllerPositionOffset) {
-            const std::array<float, 3> goalNow = readGoalPositionMmd(cfg, data, true);
-            std::vector<float> restPositions(boneCount * 3, 0.0f);
-            std::vector<float> restRotations(boneCount * 4, 0.0f);
-            for (size_t boneIndex = 0; boneIndex < boneCount; ++boneIndex) {
-                restRotations[boneIndex * 4 + 3] = 1.0f;
-            }
-            const std::array<float, 3> restGoal = computePreIkGoal(cfg, restPositions, restRotations);
-            if (std::abs(goalNow[0] - restGoal[0]) <= 1.0e-5f &&
-                std::abs(goalNow[1] - restGoal[1]) <= 1.0e-5f &&
-                std::abs(goalNow[2] - restGoal[2]) <= 1.0e-5f) {
-                mmd_runtime_ik_chain_free(chain);
-                MArrayDataHandle rotateArrayCopy = data.inputArrayValue(MmdCcdIkNode::aInputRotateArray, &status);
-                outEulerRadians.clear();
-                outEulerRadians.reserve(cfg.linkSlots.size());
-                for (uint32_t slot : cfg.linkSlots) {
-                    std::array<double, 3> eulerRadians{0.0, 0.0, 0.0};
-                    readInputRotateElement(
-                        rotateArrayCopy,
-                        slot,
-                        MmdCcdIkNode::aInputRotateArrayX,
-                        MmdCcdIkNode::aInputRotateArrayY,
-                        MmdCcdIkNode::aInputRotateArrayZ,
-                        eulerRadians);
-                    outEulerRadians.push_back(eulerRadians);
-                }
-                outSolved = false;
-                return true;
-            }
-        }
     }
-
-    std::array<float, 3> goal = useControllerGoal
-        ? computePreIkGoal(cfg, positions, rotations)
-        : readGoalPositionMmd(cfg, data, useGoalWorldMatrix);
     float goalPosition[3] = {goal[0], goal[1], goal[2]};
     std::vector<float> outQuats(cfg.links.size() * 4, 0.0f);
     mmd_runtime_ffi_ik_solve_stats_t stats{};
@@ -792,7 +856,7 @@ bool solveChainJsonIk(
 }
 }
 
-const MTypeId MmdCcdIkNode::id(0x00123458);
+const MTypeId MmdCcdIkNode::id(0x00128002);
 
 // --- 入力: inputRoot ---
 MObject MmdCcdIkNode::aInputRoot;
@@ -917,25 +981,28 @@ MObject MmdCcdIkNode::createAngle3ArrayAttribute(
     const MString& shortName,
     MObject& childX,
     MObject& childY,
-    MObject& childZ)
+    MObject& childZ,
+    const MString& childShortPrefix)
 {
     MStatus status;
     MFnUnitAttribute uAttr;
     MFnCompoundAttribute cAttr;
 
-    childX = uAttr.create(longName + "ElementX", shortName + "x", MFnUnitAttribute::kAngle, 0.0, &status);
+    const MString csp = childShortPrefix.length() > 0 ? childShortPrefix : shortName;
+
+    childX = uAttr.create(longName + "ElementX", csp + "x", MFnUnitAttribute::kAngle, 0.0, &status);
     uAttr.setStorable(true);
     uAttr.setKeyable(true);
     uAttr.setWritable(true);
     uAttr.setReadable(true);
 
-    childY = uAttr.create(longName + "ElementY", shortName + "y", MFnUnitAttribute::kAngle, 0.0, &status);
+    childY = uAttr.create(longName + "ElementY", csp + "y", MFnUnitAttribute::kAngle, 0.0, &status);
     uAttr.setStorable(true);
     uAttr.setKeyable(true);
     uAttr.setWritable(true);
     uAttr.setReadable(true);
 
-    childZ = uAttr.create(longName + "ElementZ", shortName + "z", MFnUnitAttribute::kAngle, 0.0, &status);
+    childZ = uAttr.create(longName + "ElementZ", csp + "z", MFnUnitAttribute::kAngle, 0.0, &status);
     uAttr.setStorable(true);
     uAttr.setKeyable(true);
     uAttr.setWritable(true);
@@ -958,10 +1025,11 @@ MObject MmdCcdIkNode::createAngle3ArrayOutputAttribute(
     const MString& shortName,
     MObject& childX,
     MObject& childY,
-    MObject& childZ)
+    MObject& childZ,
+    const MString& childShortPrefix)
 {
     MStatus status;
-    MObject compound = createAngle3ArrayAttribute(longName, shortName, childX, childY, childZ);
+    MObject compound = createAngle3ArrayAttribute(longName, shortName, childX, childY, childZ, childShortPrefix);
     MFnCompoundAttribute cAttr(compound, &status);
     cAttr.setWritable(false);
     cAttr.setReadable(true);
@@ -989,25 +1057,28 @@ MObject MmdCcdIkNode::createDouble3ArrayAttribute(
     const MString& shortName,
     MObject& childX,
     MObject& childY,
-    MObject& childZ)
+    MObject& childZ,
+    const MString& childShortPrefix)
 {
     MStatus status;
     MFnNumericAttribute nAttr;
     MFnCompoundAttribute cAttr;
 
-    childX = nAttr.create(longName + "ElementX", shortName + "x", MFnNumericData::kDouble, 0.0, &status);
+    const MString csp = childShortPrefix.length() > 0 ? childShortPrefix : shortName;
+
+    childX = nAttr.create(longName + "ElementX", csp + "x", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(true);
 
-    childY = nAttr.create(longName + "ElementY", shortName + "y", MFnNumericData::kDouble, 0.0, &status);
+    childY = nAttr.create(longName + "ElementY", csp + "y", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(true);
 
-    childZ = nAttr.create(longName + "ElementZ", shortName + "z", MFnNumericData::kDouble, 0.0, &status);
+    childZ = nAttr.create(longName + "ElementZ", csp + "z", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
@@ -1032,56 +1103,62 @@ MStatus MmdCcdIkNode::initialize() {
     MFnStringData sData;
     MFnMatrixAttribute mAttr;
 
-    // --- 入力: inputRoot(double3) ---
+    // --- Legacy 入力 (hidden): inputRoot(double3) ---
     aInputRoot = createDouble3Attribute(
         "inputRoot", "irt",
         aInputRootX, aInputRootY, aInputRootZ, 0.0);
     addAttribute(aInputRoot);
+    MFnAttribute(aInputRoot).setHidden(true);
 
-    // --- 入力: inputEffector(double3) ---
+    // --- Legacy 入力 (hidden): inputEffector(double3) ---
     aInputEffector = createDouble3Attribute(
         "inputEffector", "ief",
         aInputEffectorX, aInputEffectorY, aInputEffectorZ, 0.0);
     addAttribute(aInputEffector);
+    MFnAttribute(aInputEffector).setHidden(true);
 
-    // --- 入力: target(double3) ---
+    // --- Legacy 入力 (hidden): target(double3) ---
     aTarget = createDouble3Attribute(
         "target", "tgt",
         aTargetX, aTargetY, aTargetZ, 0.0);
     addAttribute(aTarget);
+    MFnAttribute(aTarget).setHidden(true);
 
     // --- 入力: enabled(bool, default true) ---
-    aEnabled = nAttr.create("enabled", "enb", MFnNumericData::kBoolean, true, &status);
+    aEnabled = nAttr.create("enabled", "en", MFnNumericData::kBoolean, true, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
     addAttribute(aEnabled);
 
-    // --- 入力: iterations(int, default 1, min 1) ---
+    // --- Legacy 入力 (hidden): iterations(int, default 1, min 1) ---
     aIterations = nAttr.create("iterations", "itn", MFnNumericData::kInt, 1, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
     nAttr.setMin(1);
+    nAttr.setHidden(true);
     addAttribute(aIterations);
 
-    // --- 入力: angleLimit(double degrees, default 180.0, min 0) ---
+    // --- Legacy 入力 (hidden): angleLimit(double degrees, default 180.0, min 0) ---
     aAngleLimit = nAttr.create("angleLimit", "alm", MFnNumericData::kDouble, 180.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
     nAttr.setMin(0.0);
+    nAttr.setHidden(true);
     addAttribute(aAngleLimit);
 
-    // --- 入力: inputChain(doubleArray) ---
+    // --- Legacy 入力 (hidden): inputChain(doubleArray) ---
     aInputChain = tAttr.create("inputChain", "ichn", MFnData::kDoubleArray, MObject::kNullObj, &status);
     tAttr.setStorable(true);
     tAttr.setKeyable(false);
     tAttr.setWritable(true);
     tAttr.setReadable(true);
+    tAttr.setHidden(true);
     addAttribute(aInputChain);
 
     aChainJson = tAttr.create("chainJson", "cj", MFnData::kString, sData.create(""), &status);
@@ -1105,50 +1182,54 @@ MStatus MmdCcdIkNode::initialize() {
 
     aInputRotateArray = createAngle3ArrayAttribute(
         "inputRotate", "ir",
-        aInputRotateArrayX, aInputRotateArrayY, aInputRotateArrayZ);
+        aInputRotateArrayX, aInputRotateArrayY, aInputRotateArrayZ, "ier");
     addAttribute(aInputRotateArray);
 
     aInputTranslateArray = createDouble3ArrayAttribute(
         "inputTranslate", "it_ik",
-        aInputTranslateArrayX, aInputTranslateArrayY, aInputTranslateArrayZ);
+        aInputTranslateArrayX, aInputTranslateArrayY, aInputTranslateArrayZ, "iet");
     addAttribute(aInputTranslateArray);
 
     // --- 出力: outputRotate angle array ---
     aOutputRotate = createAngle3ArrayOutputAttribute(
-        "outputRotate", "ort",
-        aOutputRotateX, aOutputRotateY, aOutputRotateZ);
+        "outputRotate", "or_ik",
+        aOutputRotateX, aOutputRotateY, aOutputRotateZ, "oer");
     addAttribute(aOutputRotate);
 
-    // --- 出力: outputAngle(double) ---
+    // --- Legacy 出力 (hidden): outputAngle(double) ---
     aOutputAngle = nAttr.create("outputAngle", "oan", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setWritable(false);
     nAttr.setReadable(true);
     nAttr.setStorable(false);
     nAttr.setKeyable(false);
+    nAttr.setHidden(true);
     addAttribute(aOutputAngle);
 
-    // --- 出力: solved(bool) ---
+    // --- Legacy 出力 (hidden): solved(bool) ---
     aSolved = nAttr.create("solved", "sol", MFnNumericData::kBoolean, false, &status);
     nAttr.setWritable(false);
     nAttr.setReadable(true);
     nAttr.setStorable(false);
     nAttr.setKeyable(false);
+    nAttr.setHidden(true);
     addAttribute(aSolved);
 
-    // --- 出力: outputLinkAngles(doubleArray) ---
+    // --- Legacy 出力 (hidden): outputLinkAngles(doubleArray) ---
     aOutputLinkAngles = tAttr.create("outputLinkAngles", "ola", MFnData::kDoubleArray, MObject::kNullObj, &status);
     tAttr.setWritable(false);
     tAttr.setReadable(true);
     tAttr.setStorable(false);
     tAttr.setKeyable(false);
+    tAttr.setHidden(true);
     addAttribute(aOutputLinkAngles);
 
-    // --- 出力: outputLinkRotates(doubleArray) ---
+    // --- Legacy 出力 (hidden): outputLinkRotates(doubleArray) ---
     aOutputLinkRotates = tAttr.create("outputLinkRotates", "olr", MFnData::kDoubleArray, MObject::kNullObj, &status);
     tAttr.setWritable(false);
     tAttr.setReadable(true);
     tAttr.setStorable(false);
     tAttr.setKeyable(false);
+    tAttr.setHidden(true);
     addAttribute(aOutputLinkRotates);
 
     // --- attributeAffects ---
@@ -1322,7 +1403,6 @@ MStatus MmdCcdIkNode::compute(const MPlug& plug, MDataBlock& data) {
                 data,
                 goalWorldConnected,
                 goalConnected,
-                goalWorldConnected,
                 chainSolved,
                 chainRotationsRadians);
         } else {

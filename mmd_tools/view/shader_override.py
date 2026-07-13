@@ -12,10 +12,14 @@ import os
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaRender as omr
 
+from mmd_tools.core.logger import get_logger
+
 # Shader node name
 SHADER_NODE_NAME = "MMDShader"
 # Shader file path (relative to the plugin root)
 SHADER_FX_FILE = "shaders/MMDShader.fx"
+
+logger = get_logger(__name__)
 
 
 def maya_useNewAPI():
@@ -177,7 +181,7 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 
         self.shader = None
         self.shader_path = os.path.join(os.path.dirname(__file__), "..", SHADER_FX_FILE)
-        om.MGlobal.displayInfo(f"MMDShaderOverride: Loading shader from {self.shader_path}")
+        logger.debug("MMDShaderOverride: Loading shader from %s", self.shader_path)
 
         # Cached values for material properties
         self.diffuse_color = om.MColor((0.8, 0.8, 0.8))
@@ -199,19 +203,19 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 
     def initialize(self, initContext, userdata):
         """Called once to initialize the shader instance."""
-        om.MGlobal.displayInfo("MMDShaderOverride: initialize() called")
+        logger.debug("MMDShaderOverride: initialize() called")
         shader_mgr = omr.MRenderer.getShaderManager()
         if not shader_mgr:
             om.MGlobal.displayError("MMDShaderOverride: Failed to get shader manager")
             return
 
         # Load the .fx shader file
-        om.MGlobal.displayInfo(f"MMDShaderOverride: Loading shader from {self.shader_path}")
+        logger.debug("MMDShaderOverride: Loading shader from %s", self.shader_path)
         self.shader = shader_mgr.getEffectsFileShader(self.shader_path, "MMDTechnique")
         if not self.shader:
             om.MGlobal.displayError(f"Failed to load shader file: {self.shader_path}")
             return
-        om.MGlobal.displayInfo("MMDShaderOverride: Shader loaded successfully")
+        logger.debug("MMDShaderOverride: Shader loaded successfully")
 
         # Create rasterizer states for fill and outline
         raster_state_desc = omr.MRasterizerStateDesc()
@@ -223,7 +227,7 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 
     def updateDG(self, obj):
         """Called when node attributes change."""
-        om.MGlobal.displayInfo("MMDShaderOverride: updateDG() called")
+        logger.debug("MMDShaderOverride: updateDG() called")
         if not obj or obj.isNull():
             return
 
@@ -261,7 +265,7 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 
     def activateKey(self, context, key):
         """Called to activate the shader for drawing."""
-        om.MGlobal.displayInfo("MMDShaderOverride: activateKey() called")
+        logger.debug("MMDShaderOverride: activateKey() called")
         # Return true to indicate we want to handle the drawing
         return True
 
@@ -279,7 +283,10 @@ class MMDShaderOverride(omr.MPxShaderOverride):
 
     def draw(self, context, renderables):
         """The main drawing callback."""
-        om.MGlobal.displayInfo(f"MMDShaderOverride: draw() called with {len(renderables)} renderables")
+        logger.debug(
+            "MMDShaderOverride: draw() called with %s renderables",
+            len(renderables),
+        )
         if not self.shader:
             om.MGlobal.displayWarning("MMDShaderOverride: No shader loaded, skipping draw")
             return

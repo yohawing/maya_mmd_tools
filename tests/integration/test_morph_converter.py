@@ -1,17 +1,16 @@
 import json
 import os
+from unittest.mock import MagicMock
 
 from maya import cmds
 
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.io.pmx_exporter import PmxExporter
 from mmd_tools.converters import MorphConverter, MeshConverter
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_attribute_utils, maya_mesh_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON,
-    ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
-    ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
 )
 from mmd_tools.core.settings import settings
 from mmd_tools.core.pmx_data.morph import PmxMorphType
@@ -232,18 +231,123 @@ class TestMorphConverter(MayaTestBase):
 
         cmds.delete(mesh_name, morph_node)
 
+    def test_successful_per_morph_conversion_logs_at_debug_not_info(self):
+        """成功した per-item 変換詳細は debug に出し、info には出さない。"""
+        mesh_name = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = "vertex_success"
+            name_english = "vertex_success"
+            panel = 1
+            morph_type = PmxMorphType.VertexMorph
+            offsets = [{"vertex_index": 0, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return self.name
+
+        class FakeBoneMorph:
+            name = "bone_success"
+            name_english = "bone_success"
+            panel = 4
+            morph_type = PmxMorphType.BoneMorph
+            offsets = [
+                {
+                    "bone_index": 0,
+                    "translation": (0.0, 0.0, 0.0),
+                    "rotation": (0.0, 0.0, 0.0, 1.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        class FakeGroupMorph:
+            name = "group_success"
+            name_english = "group_success"
+            panel = 4
+            morph_type = PmxMorphType.GroupMorph
+            offsets = [{"morph_index": 0, "morph_rate": 1.0}]
+
+            def get_name(self):
+                return self.name
+
+        class FakeMaterialMorph:
+            name = "material_success"
+            name_english = "material_success"
+            panel = 4
+            morph_type = PmxMorphType.MaterialMorph
+            offsets = [
+                {
+                    "material_index": 0,
+                    "operation_type": 0,
+                    "diffuse": (0.0, 0.0, 0.0, 0.0),
+                    "specular": (0.0, 0.0, 0.0),
+                    "specular_coefficient": 0.0,
+                    "ambient": (0.0, 0.0, 0.0),
+                    "edge_color": (0.0, 0.0, 0.0, 0.0),
+                    "edge_size": 0.0,
+                    "texture_factor": (0.0, 0.0, 0.0, 0.0),
+                    "sphere_texture_factor": (0.0, 0.0, 0.0, 0.0),
+                    "toon_texture_factor": (0.0, 0.0, 0.0, 0.0),
+                }
+            ]
+
+            def get_name(self):
+                return self.name
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {
+                "faces": [],
+                "materials": [],
+                "morphs": [
+                    FakeVertexMorph(),
+                    FakeBoneMorph(),
+                    FakeGroupMorph(),
+                    FakeMaterialMorph(),
+                ],
+            },
+        )()
+
+        expected_success_messages = [
+            "Successfully converted morph: vertex_success",
+            "Successfully imported bone morph metadata: bone_success",
+            "Successfully imported group morph metadata: group_success",
+            "Successfully imported material morph metadata: material_success",
+        ]
+
+        morph_converter = MorphConverter()
+        morph_converter.logger = MagicMock()
+        result = morph_converter.convert_pmx_morphs(fake_data, mesh_name)
+
+        self.assertTrue(result.get("success", False))
+        self.assertEqual(result.get("morphs_converted"), 4)
+
+        # call.args is Python 3.8+; use tuple indexing for 3.7 compatibility
+        debug_messages = [
+            call[0][0] for call in morph_converter.logger.debug.call_args_list if call[0]
+        ]
+        info_messages = [
+            call[0][0] for call in morph_converter.logger.info.call_args_list if call[0]
+        ]
+
+        for message in expected_success_messages:
+            self.assertIn(message, debug_messages)
+            self.assertNotIn(message, info_messages)
+
     def test_material_split_mesh_skips_unaffected_vertex_morphs(self):
         """material split mesh では表示 material に関係しない vertex morph を作らない。"""
         mesh_a = self._create_test_mesh()
         mesh_b = self._create_test_mesh()
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             mesh_a,
             {
                 "mmd_material_split_mesh": True,
                 "mmd_material_index": 0,
             },
         )
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             mesh_b,
             {
                 "mmd_material_split_mesh": True,
@@ -304,7 +408,7 @@ class TestMorphConverter(MayaTestBase):
 
     def test_compact_material_split_mesh_maps_vertex_morph_source_indices(self):
         """compact split mesh では PMX source vertex index を local vertex index に写して morph を適用する。"""
-        mesh = maya_utils.create_mesh_with_uvs(
+        mesh = maya_mesh_utils.create_mesh_with_uvs(
             "compact_split_mesh",
             [(0, 0, 0), (1, 0, 0), (1, 1, 0)],
             [3],
@@ -312,15 +416,15 @@ class TestMorphConverter(MayaTestBase):
             [0, 0, 1, 0, 1, 1],
             [0, 1, 2],
         )
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             mesh,
             {
                 "mmd_material_split_mesh": True,
                 "mmd_material_index": 0,
             },
         )
-        maya_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 2, 3], "longArray")
+        maya_attribute_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_attribute_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 2, 3], "longArray")
 
         class FakeFace:
             indices = [0, 2, 3]
@@ -369,57 +473,6 @@ class TestMorphConverter(MayaTestBase):
         self.assertAlmostEqual(moved_position[0], 1.25, places=5)
         self.assertAlmostEqual(unchanged_position[0], 0.0, places=5)
         cmds.setAttr(f"{bs_node}.{alias}", 0.0)
-
-    def test_morph_group_split_mesh_filters_vertex_morphs_by_name(self):
-        """morph group split mesh では許可された vertex morph だけ blendShape target を作る。"""
-        mesh = self._create_test_mesh()
-        maya_utils.set_custom_attributes(
-            mesh,
-            {
-                ATTR_MMD_MORPH_GROUP_SPLIT_MESH: True,
-                ATTR_MMD_VERTEX_MORPH_NAMES_JSON: json.dumps(["allowed_morph"]),
-            },
-        )
-        maya_utils.add_typed_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_utils.set_attribute(mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [0, 1, 2, 3], "longArray")
-
-        class FakeVertexMorph:
-            morph_type = PmxMorphType.VertexMorph
-            panel = 1
-
-            def __init__(self, name, vertex_index):
-                self.name = name
-                self.offsets = [
-                    {
-                        "vertex_index": vertex_index,
-                        "position_offset": (0.1, 0.0, 0.0),
-                    }
-                ]
-
-            def get_name(self):
-                return self.name
-
-        fake_data = type(
-            "FakePmxData",
-            (),
-            {
-                "faces": [],
-                "materials": [],
-                "morphs": [
-                    FakeVertexMorph("allowed_morph", 1),
-                    FakeVertexMorph("blocked_morph", 2),
-                ],
-            },
-        )()
-
-        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
-
-        self.assertTrue(result.get("success", False))
-        self.assertEqual(result.get("morphs_converted"), 1)
-        self.assertEqual(result.get("vertex_morphs_skipped_by_group"), 1)
-        aliases = cmds.aliasAttr(result["blend_shape_nodes"][0], query=True) or []
-        self.assertIn("allowed_morph", aliases)
-        self.assertNotIn("blocked_morph", aliases)
 
     def test_vertex_morph_stores_raw_name_and_uniquifies_colliding_alias(self):
         """sanitize が衝突する別モーフでも一意 alias を割り当て、生名を JSON に保存する。
@@ -477,8 +530,38 @@ class TestMorphConverter(MayaTestBase):
             cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True)
         )
         stored = json.loads(cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}"))
-        self.assertEqual(stored.get("0"), "にっこり")
-        self.assertEqual(stored.get("1"), "にやり")
+        self.assertEqual(stored.get("0"), {"name": "にっこり", "index": 0})
+        self.assertEqual(stored.get("1"), {"name": "にやり", "index": 1})
+
+    def test_vertex_morph_does_not_store_empty_raw_name(self):
+        """An unnamed PMX morph may have a usable alias but is not a VMD key."""
+        mesh = self._create_test_mesh()
+
+        class FakeVertexMorph:
+            name = ""
+            name_english = ""
+            morph_type = PmxMorphType.VertexMorph
+            panel = 4
+            offsets = [{"vertex_index": 1, "position_offset": (0.1, 0.0, 0.0)}]
+
+            def get_name(self):
+                return ""
+
+        fake_data = type(
+            "FakePmxData",
+            (),
+            {"faces": [], "materials": [], "morphs": [FakeVertexMorph()]},
+        )()
+
+        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+
+        self.assertTrue(result.get("success", False))
+        bs_node = result["blend_shape_nodes"][0]
+        if cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True):
+            stored = json.loads(
+                cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}"
+            )
+            self.assertEqual(stored, {})
 
     def test_vertex_morph_targets_keep_independent_offsets(self):
         """複数 vertex morph target が最後の target geometry に潰れないことを確認する。"""
@@ -709,6 +792,13 @@ class TestMorphConverter(MayaTestBase):
         uvs = [0, 0, 1, 0, 1, 1, 0, 1]
         face_uv_connects = [0, 1, 2, 3]
 
-        mesh_name = maya_utils.create_mesh_with_uvs("test_mesh", vertices, face_counts, face_connects, uvs, face_uv_connects)
+        mesh_name = maya_mesh_utils.create_mesh_with_uvs(
+            "test_mesh",
+            vertices,
+            face_counts,
+            face_connects,
+            uvs,
+            face_uv_connects,
+        )
 
         return mesh_name

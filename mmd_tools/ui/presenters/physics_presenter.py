@@ -1,39 +1,53 @@
-from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
-from ...core.logger import get_logger
-from .list_presenter_helpers import reload_for_current_model_change
+"""Development-only placeholder presenter for a future physics backend."""
 
-logger = get_logger(__name__)
+from __future__ import annotations
 
 
 class PhysicsPresenter:
-    def __init__(self, view, app_state, maya_adapter=None):
+    """Keep the Physics tab usable until its replacement backend is ready."""
+
+    def __init__(self, view, app_state, **_kwargs):
         self.view = view
         self.app_state = app_state
-        self.maya_adapter = maya_adapter or MayaCmdsAdapter()
-        self.connect_signals()
+        self._connect_signals()
+        self._clear_view()
 
-    def connect_signals(self):
-        # ApplicationStateのシグナル
-        self.app_state.current_model_changed.connect(self.on_current_model_changed)
+    def _connect_signals(self):
+        current_model_changed = getattr(self.app_state, "current_model_changed", None)
+        if current_model_changed is not None and hasattr(current_model_changed, "connect"):
+            current_model_changed.connect(self.on_current_model_changed)
+        refresh_btn = getattr(self.view, "refresh_btn", None)
+        if refresh_btn is not None and hasattr(refresh_btn, "clicked"):
+            refresh_btn.clicked.connect(lambda *_args: self.refresh_physics(force=True))
 
-    def on_current_model_changed(self, model_root):
-        """現在のモデルが変更されたときの処理"""
-        reload_for_current_model_change(logger, "PhysicsPresenter", model_root, self.load_physics)
+    def on_current_model_changed(self, _model_root):
+        self.refresh_physics(force=True)
+
+    def refresh_physics(self, force=False):
+        """Clear stale rows until the replacement metadata backend exists."""
+        self._clear_view()
+        return bool(force)
 
     def load_physics(self):
-        self.view.rigid_body_list.clear()
-        self.view.joint_list.clear()
+        self._clear_view()
 
-        current_model_root = self.app_state.current_model_root
-        if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
-            return
+    def invalidate_physics_cache(self, *_args):
+        return None
 
-        # This is a simplified example. Rigid bodies and joints are not directly represented in Maya.
-        # We would need to store this information as attributes on the root node or use custom nodes.
-        rigid_bodies = self.maya_adapter.ls(type="nRigid")
-        for rb in rigid_bodies:
-            self.view.rigid_body_list.addItem(rb)
+    def filter_rigid_bodies(self, _text):
+        return None
 
-        joints = self.maya_adapter.ls(type="constraint")
-        for j in joints:
-            self.view.joint_list.addItem(j)
+    def filter_joints(self, _text):
+        return None
+
+    def _clear_view(self):
+        for name in ("rigid_body_list", "joint_list"):
+            widget = getattr(self.view, name, None)
+            if widget is not None and hasattr(widget, "clear"):
+                widget.clear()
+        set_enabled = getattr(self.view, "set_physics_details_enabled", None)
+        if callable(set_enabled):
+            set_enabled(False)
+        reset_details = getattr(self.view, "reset_details", None)
+        if callable(reset_details):
+            reset_details()

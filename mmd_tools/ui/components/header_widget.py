@@ -123,7 +123,7 @@ class HeaderWidget(QWidget):
         index = self.model_combo.currentIndex()
         model_root = self.model_combo.itemData(index)
 
-        logger.info(f"HeaderWidget: Model selected from combo: {model_root}")
+        logger.debug(f"HeaderWidget: Model selected from combo: {model_root}")
         if model_root:
             self.app_state.current_model_root = model_root
 

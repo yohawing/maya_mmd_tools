@@ -1,6 +1,9 @@
 import struct
 
 
+DEFAULT_CAMERA_INTERPOLATION = b"\x14" * 24
+
+
 class VmdCameraFrame:
     """VMDファイルのカメラフレームデータを保持するクラス。"""
 
@@ -24,7 +27,7 @@ class VmdCameraFrame:
         # R_x1 R_x2 R_y1 R_y2
         # L_x1 L_x2 L_y1 L_y2
         # V_x1 V_x2 V_y1 V_y2
-        self.interpolation = b""  # 24 bytes
+        self.interpolation = DEFAULT_CAMERA_INTERPOLATION  # 24 bytes
         self.viewing_angle = 0  # 視野角degrees
         self.perspective = 0  # 0: On, 1: Off
 
@@ -69,7 +72,7 @@ class VmdCameraFrame:
             data += self.interpolation
         else:
             # 補間データが不正な場合はデフォルト値で埋める
-            data += b"\x00" * 24
+            data += DEFAULT_CAMERA_INTERPOLATION
         # 視野角を4バイトのunsigned intとしてパック
         data += struct.pack("<I", self.viewing_angle)
         # パースペクティブを1バイトのunsigned byteとしてパック

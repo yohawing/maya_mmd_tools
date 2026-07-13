@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 try:
     from maya import cmds
@@ -12,6 +12,7 @@ except ImportError:
     MAYA_AVAILABLE = False
 
 from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME_EN, ATTR_MMD_MODEL_NAME
+from mmd_tools.ui import application_state as application_state_module
 from mmd_tools.ui.application_state import ApplicationState
 
 
@@ -128,6 +129,55 @@ class TestApplicationStateWithInjectedService(unittest.TestCase):
 
         self.assertEqual(info["vertex_count"], 10)
         self.assertIs(app_state.get_model_info("model_root"), info)
+
+    @staticmethod
+    def _call_messages(mock_method):
+        """Python 3.7 互換: call_args_list から第1位置引数のメッセージを集める。"""
+        messages = []
+        for call in mock_method.call_args_list:
+            args = call[0]
+            if args:
+                messages.append(args[0])
+        return messages
+
+    def test_current_model_changed_logs_at_debug_not_info(self):
+        service = _FakeSceneModelService()
+        service.existing = {"model_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        signal_catcher = Mock()
+        app_state.current_model_changed.connect(signal_catcher)
+
+        with patch.object(application_state_module, "logger") as mock_logger:
+            app_state.current_model_root = "model_root"
+
+        self.assertEqual(app_state.current_model_root, "model_root")
+        signal_catcher.assert_called_once_with("model_root")
+
+        expected = "Current model changed: None -> model_root"
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
+
+    def test_model_list_updated_logs_at_debug_not_info(self):
+        service = _FakeSceneModelService()
+        service.models = ["a_root", "b_root"]
+        service.existing = {"a_root", "b_root"}
+        app_state = ApplicationState(scene_model_service=service)
+        signal_catcher = Mock()
+        app_state.model_list_updated.connect(signal_catcher)
+
+        with patch.object(application_state_module, "logger") as mock_logger:
+            app_state.refresh_model_list()
+
+        self.assertEqual(app_state.available_models, ["a_root", "b_root"])
+        signal_catcher.assert_called_once_with(["a_root", "b_root"])
+
+        expected = "Model list updated: 2 models found"
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
 
 @unittest.skipUnless(MAYA_AVAILABLE, "Maya is not available")

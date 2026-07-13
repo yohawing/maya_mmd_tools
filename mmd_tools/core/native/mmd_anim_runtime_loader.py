@@ -20,6 +20,7 @@ from mmd_tools.core.native.mmd_anim_runtime_signatures import setup_function_sig
 logger = get_logger(__name__)
 
 MMD_RUNTIME_ABI_VERSION = 2
+_ALLOW_ABI_MISMATCH_ENV = "MMD_ANIM_FFI_ALLOW_ABI_MISMATCH"
 
 if platform.system() == "Windows":
     _LIB_NAMES = ["mmd_runtime_ffi.dll", "mmd_anim_ffi.dll"]
@@ -93,13 +94,25 @@ def get_mmd_runtime_library() -> Optional[CDLL]:
 
         abi = lib.mmd_runtime_abi_version()
         if abi != MMD_RUNTIME_ABI_VERSION:
+            if not _allow_abi_mismatch():
+                logger.error(
+                    "Rejected mmd-anim runtime library due to ABI version mismatch: path=%s, got=%s, expected=%s",
+                    path,
+                    abi,
+                    MMD_RUNTIME_ABI_VERSION,
+                )
+                _runtime_lib = False
+                _runtime_lib_path = None
+                return None
             logger.warning(
-                "mmd-anim runtime ABI version mismatch: got=%s, expected=%s",
+                "Using mmd-anim runtime library despite ABI version mismatch because %s is set: path=%s, got=%s, expected=%s",
+                _ALLOW_ABI_MISMATCH_ENV,
+                path,
                 abi,
                 MMD_RUNTIME_ABI_VERSION,
             )
         else:
-            logger.debug("Loaded mmd-anim runtime library: %s (ABI %s)", path, abi)
+            logger.info("Loaded mmd-anim runtime library: %s (ABI %s)", path, abi)
 
         _runtime_lib = lib
         _runtime_lib_path = path
@@ -119,3 +132,8 @@ def get_runtime_library_path() -> Optional[Path]:
     """Return the loaded runtime library path, triggering load discovery."""
     get_mmd_runtime_library()
     return _runtime_lib_path
+
+
+def _allow_abi_mismatch() -> bool:
+    value = os.environ.get(_ALLOW_ABI_MISMATCH_ENV, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}

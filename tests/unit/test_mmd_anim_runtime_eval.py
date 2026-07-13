@@ -26,14 +26,17 @@ import unittest
 from ctypes import c_float, c_uint8
 from unittest import mock
 
+import mmd_tools.core.native as native_pkg
 import mmd_tools.core.native.mmd_anim_runtime as rt
 import mmd_tools.core.native.mmd_anim_runtime_loader as runtime_loader
+import mmd_tools.core.native.mmd_anim_runtime_sampling as runtime_sampling
 from mmd_tools.core.native.mmd_anim_runtime import (
     MmdParsedModel,
     MmdRuntimeBatchEvaluation,
     MmdRuntimeClip,
     MmdRuntimeInstance,
     MmdRuntimeModel,
+    MmdRuntimePhysicsWorld,
     MmdRuntimeFfiByteBuffer,
     compute_maya_local_channels,
     compute_maya_local_channels_batch,
@@ -83,6 +86,9 @@ class _FakeRuntimeLib:
         self.evaluate_calls = []
         self.ik_option_calls = []
         self.batch_calls = []
+        self.model_create_calls = []
+        self.clip_create_calls = []
+        self.instance_create_calls = []
 
     # --- 評価 ---
     def mmd_runtime_instance_evaluate_clip_frame(self, instance_handle, clip_handle, frame):
@@ -241,6 +247,19 @@ class _FakeRuntimeLib:
         for i in range(min(n, len(self._ik))):
             out_buf[i] = self._ik[i]
         return True
+
+    # --- handle factory ---
+    def mmd_runtime_model_create_from_pmx_bytes(self, payload, payload_len):
+        self.model_create_calls.append((bytes(payload[:payload_len]), int(payload_len)))
+        return 0x1001
+
+    def mmd_runtime_clip_create_from_vmd_bytes_for_model(self, model_handle, payload, payload_len):
+        self.clip_create_calls.append((model_handle, bytes(payload[:payload_len]), int(payload_len)))
+        return 0x2002
+
+    def mmd_runtime_instance_create_for_model(self, model_handle):
+        self.instance_create_calls.append(model_handle)
+        return 0x3003
 
     # --- free 系 (no-op) ---
     def mmd_runtime_instance_free(self, handle):
@@ -519,6 +538,94 @@ class TestComputeMayaLocalChannelsBatch(unittest.TestCase):
             )
 
 
+class _FakeVmdSamplerLib:
+    def __init__(self):
+        self.free_calls = []
+        self.camera_payload_len = None
+        self.light_payload_len = None
+
+    def mmd_runtime_vmd_camera_track_create_from_vmd_bytes(self, _payload, payload_len):
+        self.camera_payload_len = int(payload_len)
+        return 101
+
+    def mmd_runtime_vmd_camera_track_sample(self, track, frame, out, out_len):
+        if track != 101 or int(out_len.value) != 9:
+            return False
+        base = float(frame.value)
+        values = [30.0 + base, 1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 45.0, 1.0]
+        for index, value in enumerate(values):
+            out[index] = value
+        return True
+
+    def mmd_runtime_vmd_camera_track_free(self, track):
+        self.free_calls.append(("camera", track))
+
+    def mmd_runtime_vmd_light_track_create_from_vmd_bytes(self, _payload, payload_len):
+        self.light_payload_len = int(payload_len)
+        return 202
+
+    def mmd_runtime_vmd_light_track_sample(self, track, frame, out, out_len):
+        if track != 202 or int(out_len.value) != 6:
+            return False
+        base = float(frame.value)
+        values = [1.0, 0.5, 0.25, base, -1.0, 2.0]
+        for index, value in enumerate(values):
+            out[index] = value
+        return True
+
+    def mmd_runtime_vmd_light_track_free(self, track):
+        self.free_calls.append(("light", track))
+
+
+class TestVmdRuntimeSampling(unittest.TestCase):
+    def test_camera_sampler_returns_samples_and_frees_track(self):
+        lib = _FakeVmdSamplerLib()
+
+        samples = runtime_sampling.sample_vmd_camera_frames(
+            b"camera-vmd",
+            start_frame=10.0,
+            frame_step=0.5,
+            frame_count=2,
+            get_library=lambda: lib,
+        )
+
+        self.assertEqual(lib.camera_payload_len, len(b"camera-vmd"))
+        self.assertEqual(lib.free_calls, [("camera", 101)])
+        self.assertEqual(samples[0]["frame"], 10.0)
+        self.assertEqual(samples[1]["frame"], 10.5)
+        self.assertEqual(samples[0]["distance"], 40.0)
+        self.assertEqual(samples[0]["position"], (1.0, 2.0, 3.0))
+        self.assertTrue(samples[0]["perspective"])
+
+    def test_light_sampler_returns_samples_and_frees_track(self):
+        lib = _FakeVmdSamplerLib()
+
+        samples = runtime_sampling.sample_vmd_light_frames(
+            b"light-vmd",
+            start_frame=3.0,
+            frame_step=1.0,
+            frame_count=1,
+            get_library=lambda: lib,
+        )
+
+        self.assertEqual(lib.light_payload_len, len(b"light-vmd"))
+        self.assertEqual(lib.free_calls, [("light", 202)])
+        self.assertEqual(samples, [{"frame": 3.0, "color": (1.0, 0.5, 0.25), "position": (3.0, -1.0, 2.0)}])
+
+    def test_legacy_runtime_module_proxy_uses_patchable_library_getter(self):
+        lib = _FakeVmdSamplerLib()
+
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            samples = rt.sample_vmd_camera_frames(b"camera-vmd", 1.0, 1.0, 1)
+
+        self.assertEqual(samples[0]["frame"], 1.0)
+        self.assertEqual(lib.free_calls, [("camera", 101)])
+
+    def test_sampler_returns_none_without_library_or_payload(self):
+        self.assertIsNone(runtime_sampling.sample_vmd_camera_frames(b"", 0.0, 1.0, 1, get_library=lambda: None))
+        self.assertIsNone(runtime_sampling.sample_vmd_light_frames(b"vmd", 0.0, 1.0, 0, get_library=lambda: None))
+
+
 # ----------------------------------------------------------------------
 # MmdRuntimeInstance: world matrices / morph / ik マーシャリング
 # ----------------------------------------------------------------------
@@ -674,6 +781,7 @@ class _FakeParsedLib:
 
     def __init__(self):
         self._keepalive = []  # ctypes 配列が GC されないよう保持
+        self.create_calls = []
         self.vertex_count = 2
         self.index_count = 3
         self.material_group_count = 1
@@ -683,6 +791,10 @@ class _FakeParsedLib:
         self._positions = [(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)]
         self._material_groups = [(0, 3, 5)]
         self._morph_names = ["まばたき"]
+
+    def mmd_runtime_parsed_model_create_from_pmx_bytes(self, payload, payload_len):
+        self.create_calls.append((bytes(payload[:payload_len]), int(payload_len)))
+        return 0x9901
 
     # --- counts ---
     def mmd_runtime_parsed_model_vertex_count(self, h):
@@ -836,6 +948,233 @@ class TestParsedModelByteBuffers(unittest.TestCase):
         self.assertIsNone(model.vertex_morph_names)
 
 
+class _FakePmxExportLib:
+    def __init__(self, payload=b"PMX exported bytes", *, empty_result=False):
+        self.payload = payload
+        self.empty_result = empty_result
+        self.calls = []
+        self.free_calls = 0
+        self._keepalive = []
+
+    def mmd_runtime_export_pmx_from_parts(
+        self,
+        metadata_json,
+        metadata_json_len,
+        positions_xyz,
+        vertex_count,
+        normals_xyz,
+        uvs_xy,
+        indices,
+        index_count,
+        skin_indices,
+        skin_weights,
+        edge_scale,
+    ):
+        vertex_count = int(vertex_count)
+        index_count = int(index_count)
+        metadata_json_len = int(metadata_json_len)
+        self.calls.append(
+            {
+                "metadata": bytes(metadata_json[i] for i in range(metadata_json_len)),
+                "positions": [float(positions_xyz[i]) for i in range(vertex_count * 3)],
+                "normals": [float(normals_xyz[i]) for i in range(vertex_count * 3)],
+                "uvs": [float(uvs_xy[i]) for i in range(vertex_count * 2)],
+                "indices": [int(indices[i]) for i in range(index_count)] if indices else None,
+                "skin_indices": [int(skin_indices[i]) for i in range(vertex_count * 4)] if skin_indices else None,
+                "skin_weights": [float(skin_weights[i]) for i in range(vertex_count * 4)] if skin_weights else None,
+                "edge_scale": [float(edge_scale[i]) for i in range(vertex_count)] if edge_scale else None,
+            }
+        )
+        buf = MmdRuntimeFfiByteBuffer()
+        if self.empty_result:
+            buf.data = None
+            buf.len = 0
+            return buf
+        arr = (c_uint8 * len(self.payload)).from_buffer_copy(self.payload)
+        self._keepalive.append(arr)
+        buf.data = ctypes.cast(arr, ctypes.POINTER(c_uint8))
+        buf.len = len(self.payload)
+        return buf
+
+    def mmd_runtime_byte_buffer_free(self, buf):
+        self.free_calls += 1
+
+
+class TestPmxPartsExportWrapper(unittest.TestCase):
+    def test_availability_false_without_library(self):
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=None):
+            self.assertFalse(rt.is_native_pmx_parts_export_available())
+            self.assertIsNone(
+                rt.export_pmx_from_parts(
+                    {"format": "PMX"},
+                    [0.0, 0.0, 0.0],
+                    [0.0, 1.0, 0.0],
+                    [0.0, 0.0],
+                )
+            )
+
+    def test_export_passes_flat_buffers_and_frees_result(self):
+        lib = _FakePmxExportLib(payload=b"PMX-data")
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertTrue(rt.is_native_pmx_parts_export_available())
+            result = rt.export_pmx_from_parts(
+                {"format": "PMX", "version": 2.0},
+                [0, 0, 0, 1, 2, 3],
+                [0, 1, 0, 0, 1, 0],
+                [0, 0, 1, 1],
+                indices=[0, 1, 0],
+                skin_indices=[0, 1, 2, 3, 4, 5, 6, 7],
+                skin_weights=[1, 0, 0, 0, 0.25, 0.25, 0.25, 0.25],
+                edge_scale=[1, 0.5],
+            )
+
+        self.assertEqual(result, b"PMX-data")
+        self.assertEqual(lib.free_calls, 1)
+        self.assertEqual(len(lib.calls), 1)
+        call = lib.calls[0]
+        self.assertEqual(call["metadata"], b'{"format":"PMX","version":2.0}')
+        self.assertEqual(call["positions"], [0.0, 0.0, 0.0, 1.0, 2.0, 3.0])
+        self.assertEqual(call["uvs"], [0.0, 0.0, 1.0, 1.0])
+        self.assertEqual(call["indices"], [0, 1, 0])
+        self.assertEqual(call["skin_indices"], [0, 1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(call["edge_scale"], [1.0, 0.5])
+
+    def test_export_allows_optional_buffers_to_be_null(self):
+        lib = _FakePmxExportLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = rt.export_pmx_from_parts(
+                b'{"format":"PMX"}',
+                [0, 0, 0],
+                [0, 1, 0],
+                [0, 0],
+            )
+
+        self.assertEqual(result, b"PMX exported bytes")
+        call = lib.calls[0]
+        self.assertIsNone(call["indices"])
+        self.assertIsNone(call["skin_indices"])
+        self.assertIsNone(call["skin_weights"])
+        self.assertIsNone(call["edge_scale"])
+
+    def test_export_empty_native_buffer_returns_none_and_frees(self):
+        lib = _FakePmxExportLib(empty_result=True)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = rt.export_pmx_from_parts(
+                {"format": "PMX"},
+                [0, 0, 0],
+                [0, 1, 0],
+                [0, 0],
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(lib.free_calls, 1)
+
+    def test_export_rejects_mismatched_skin_buffers_before_native_call(self):
+        lib = _FakePmxExportLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = rt.export_pmx_from_parts(
+                {"format": "PMX"},
+                [0, 0, 0],
+                [0, 1, 0],
+                [0, 0],
+                skin_indices=[0, 1, 2, 3],
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(lib.calls, [])
+        self.assertEqual(lib.free_calls, 0)
+
+
+class _FakeJsonExportLib:
+    def __init__(self, *, payload=b"mmd bytes", empty_result=False, missing_symbols=()):
+        self.payload = payload
+        self.empty_result = empty_result
+        self.calls = []
+        self.free_calls = 0
+        self._missing_symbols = set(missing_symbols)
+        self._keepalive = []
+
+    def __getattribute__(self, name):
+        if name.startswith("mmd_runtime_export_"):
+            missing = object.__getattribute__(self, "_missing_symbols")
+            if name in missing:
+                raise AttributeError(name)
+        return object.__getattribute__(self, name)
+
+    def _export(self, symbol, json_payload, json_len):
+        json_len = int(json_len)
+        self.calls.append(
+            {
+                "symbol": symbol,
+                "payload": bytes(json_payload[i] for i in range(json_len)),
+            }
+        )
+        buf = MmdRuntimeFfiByteBuffer()
+        if self.empty_result:
+            buf.data = None
+            buf.len = 0
+            return buf
+        arr = (c_uint8 * len(self.payload)).from_buffer_copy(self.payload)
+        self._keepalive.append(arr)
+        buf.data = ctypes.cast(arr, ctypes.POINTER(c_uint8))
+        buf.len = len(self.payload)
+        return buf
+
+    def mmd_runtime_export_vmd_animation_json(self, json_payload, json_len):
+        return self._export("vmd", json_payload, json_len)
+
+    def mmd_runtime_export_pmx_model_json(self, json_payload, json_len):
+        return self._export("pmx", json_payload, json_len)
+
+    def mmd_runtime_export_pmd_model_json(self, json_payload, json_len):
+        return self._export("pmd", json_payload, json_len)
+
+    def mmd_runtime_byte_buffer_free(self, buf):
+        self.free_calls += 1
+
+
+class TestJsonExportWrapper(unittest.TestCase):
+    def test_availability_uses_format_symbol(self):
+        lib = _FakeJsonExportLib(missing_symbols={"mmd_runtime_export_pmd_model_json"})
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertTrue(rt.is_native_json_export_available("vmd"))
+            self.assertTrue(rt.is_native_json_export_available("pmx"))
+            self.assertFalse(rt.is_native_json_export_available("pmd"))
+            self.assertFalse(rt.is_native_json_export_available("unknown"))
+
+    def test_export_vmd_json_encodes_dict_payload_and_frees(self):
+        lib = _FakeJsonExportLib(payload=b"VMD")
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            result = rt.export_vmd_animation_json({"kind": "vmd", "frames": []})
+
+        self.assertEqual(result, b"VMD")
+        self.assertEqual(lib.free_calls, 1)
+        self.assertEqual(lib.calls, [{"symbol": "vmd", "payload": b'{"kind":"vmd","frames":[]}'}])
+
+    def test_export_pmx_and_pmd_json_select_distinct_symbols(self):
+        lib = _FakeJsonExportLib(payload=b"PMX")
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertEqual(rt.export_pmx_model_json(b'{"kind":"pmx"}'), b"PMX")
+
+        lib.payload = b"PMD"
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertEqual(rt.export_pmd_model_json('{"kind":"pmd"}'), b"PMD")
+
+        self.assertEqual([call["symbol"] for call in lib.calls], ["pmx", "pmd"])
+        self.assertEqual(lib.free_calls, 2)
+
+    def test_export_json_returns_none_when_symbol_missing_or_empty(self):
+        missing = _FakeJsonExportLib(missing_symbols={"mmd_runtime_export_vmd_animation_json"})
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=missing):
+            self.assertIsNone(rt.export_vmd_animation_json({"kind": "vmd"}))
+        self.assertEqual(missing.calls, [])
+
+        empty = _FakeJsonExportLib(empty_result=True)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=empty):
+            self.assertIsNone(rt.export_pmx_model_json({"kind": "pmx"}))
+        self.assertEqual(empty.free_calls, 1)
+
+
 # ----------------------------------------------------------------------
 # _set_sig / loader.find_library / get_mmd_runtime_library のキャッシュ
 # ----------------------------------------------------------------------
@@ -944,6 +1283,70 @@ class TestGetRuntimeLibraryCache(unittest.TestCase):
         runtime_loader._runtime_lib = False  # キャッシュ済み「ロード失敗」
         self.assertFalse(rt.is_native_pmx_parser_available())
 
+    def test_rejects_runtime_library_when_abi_mismatches(self):
+        from pathlib import Path
+
+        path = Path("F:/runtime/mmd_runtime_ffi.dll")
+
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_abi_version():
+                return runtime_loader.MMD_RUNTIME_ABI_VERSION + 1
+
+        runtime_loader._runtime_lib = None
+        runtime_loader._runtime_lib_path = None
+        with mock.patch.dict("os.environ", {runtime_loader._ALLOW_ABI_MISMATCH_ENV: ""}, clear=False):
+            with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
+                runtime_loader.ctypes, "CDLL", return_value=FakeLib()
+            ), mock.patch.object(runtime_loader, "setup_function_signatures"):
+                self.assertIsNone(rt.get_mmd_runtime_library())
+
+        self.assertIs(runtime_loader._runtime_lib, False)
+        self.assertIsNone(runtime_loader._runtime_lib_path)
+
+    def test_accepts_mismatched_runtime_library_only_with_escape_hatch(self):
+        from pathlib import Path
+
+        path = Path("F:/runtime/mmd_runtime_ffi.dll")
+
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_abi_version():
+                return runtime_loader.MMD_RUNTIME_ABI_VERSION + 1
+
+        fake = FakeLib()
+        runtime_loader._runtime_lib = None
+        runtime_loader._runtime_lib_path = None
+        with mock.patch.dict("os.environ", {runtime_loader._ALLOW_ABI_MISMATCH_ENV: "1"}, clear=False):
+            with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
+                runtime_loader.ctypes, "CDLL", return_value=fake
+            ), mock.patch.object(runtime_loader, "setup_function_signatures"):
+                self.assertIs(rt.get_mmd_runtime_library(), fake)
+
+        self.assertIs(runtime_loader._runtime_lib, fake)
+        self.assertEqual(runtime_loader._runtime_lib_path, path)
+
+    def test_logs_loaded_runtime_library_path_at_info_level(self):
+        from pathlib import Path
+
+        path = Path("F:/runtime/mmd_runtime_ffi.dll")
+
+        class FakeLib:
+            @staticmethod
+            def mmd_runtime_abi_version():
+                return runtime_loader.MMD_RUNTIME_ABI_VERSION
+
+        runtime_loader._runtime_lib = None
+        runtime_loader._runtime_lib_path = None
+        with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
+            runtime_loader.ctypes, "CDLL", return_value=FakeLib()
+        ), mock.patch.object(runtime_loader, "setup_function_signatures"):
+            with self.assertLogs(runtime_loader.logger.name, level="INFO") as logs:
+                self.assertIsNotNone(rt.get_mmd_runtime_library())
+
+        self.assertIn(str(path), "\n".join(logs.output))
+        self.assertIn(f"ABI {runtime_loader.MMD_RUNTIME_ABI_VERSION}", "\n".join(logs.output))
+
 
 # ----------------------------------------------------------------------
 # from_pmx_bytes / from_vmd_bytes のガード (lib が None のとき)
@@ -969,9 +1372,539 @@ class TestFactoryGuardsWithoutLibrary(unittest.TestCase):
         runtime_loader._runtime_lib = _FakeRuntimeLib()
         self.assertIsNone(MmdRuntimeInstance.for_model(None))
 
+    def test_handle_factories_use_legacy_runtime_module_getter_patch(self):
+        lib = _FakeRuntimeLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            model = MmdRuntimeModel.from_pmx_bytes(b"pmx")
+            clip = MmdRuntimeClip.from_vmd_bytes_for_model(model, b"vmd")
+            instance = MmdRuntimeInstance.for_model(model)
+
+        self.assertEqual(model.handle, 0x1001)
+        self.assertEqual(clip.handle, 0x2002)
+        self.assertEqual(instance.handle, 0x3003)
+        self.assertEqual(lib.model_create_calls, [(b"pmx", 3)])
+        self.assertEqual(lib.clip_create_calls, [(0x1001, b"vmd", 3)])
+        self.assertEqual(lib.instance_create_calls, [0x1001])
+
     def test_parsed_model_from_empty_bytes_returns_none(self):
         runtime_loader._runtime_lib = _FakeParsedLib()
         self.assertIsNone(MmdParsedModel.from_pmx_bytes(b""))
+
+    def test_parsed_model_factory_uses_legacy_runtime_module_getter_patch(self):
+        lib = _FakeParsedLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            parsed = MmdParsedModel.from_pmx_bytes(b"pmx")
+
+        self.assertEqual(parsed.handle, 0x9901)
+        self.assertEqual(lib.create_calls, [(b"pmx", 3)])
+
+    def test_package_parser_availability_uses_legacy_runtime_module_getter_patch(self):
+        lib = _FakeParsedLib()
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertTrue(rt.is_native_pmx_parser_available())
+            self.assertTrue(native_pkg.is_native_pmx_parser_available())
+
+
+class _FakePhysicsLib:
+    """Fake CDLL covering physics world create/reset/step/bake ABI."""
+
+    def __init__(
+        self,
+        *,
+        feature_flags=0,
+        create_status=0,
+        world_handle=0x4404,
+        bake_status=0,
+        step_status=0,
+        set_mode_status=0,
+        rest_pose_ok=True,
+        bone_count=2,
+        morph_count=1,
+        batch_world_matrices=None,
+        batch_morph_weights=None,
+        missing_symbols=None,
+    ):
+        self.feature_flags = feature_flags
+        self.create_status = create_status
+        self.world_handle = world_handle
+        self.bake_status = bake_status
+        self.step_status = step_status
+        self.set_mode_status = set_mode_status
+        self.rest_pose_ok = rest_pose_ok
+        self.bone_count = bone_count
+        self.morph_count = morph_count
+        self._batch_world = (
+            list(batch_world_matrices) if batch_world_matrices is not None else None
+        )
+        self._batch_morph = (
+            list(batch_morph_weights) if batch_morph_weights is not None else None
+        )
+        self._missing_symbols = set(missing_symbols or ())
+        self.create_calls = []
+        self.reset_calls = []
+        self.count_calls = []
+        self.free_calls = []
+        self.set_mode_calls = []
+        self.rest_pose_calls = []
+        self.step_calls = []
+        self.bake_calls = []
+        self.physics_mode = 0
+
+    def __getattribute__(self, name):
+        if name.startswith("mmd_runtime_"):
+            missing = object.__getattribute__(self, "_missing_symbols")
+            if name in missing:
+                raise AttributeError(name)
+        return object.__getattribute__(self, name)
+
+    def mmd_runtime_feature_flags(self):
+        return self.feature_flags
+
+    def mmd_runtime_physics_world_create_from_pmx_bytes(self, pmx_data, pmx_len, out_world):
+        self.create_calls.append(bytes(pmx_data[:pmx_len]))
+        if self.create_status == rt.MMD_RUNTIME_STATUS_OK and self.world_handle:
+            out_world._obj.value = self.world_handle
+        return self.create_status
+
+    def mmd_runtime_physics_world_reset(self, world, instance, out_seeded):
+        self.reset_calls.append((world.value, instance.value))
+        out_seeded._obj.value = 7
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_physics_world_rigidbody_count(self, world, out_count):
+        self.count_calls.append(world.value)
+        out_count._obj.value = 9
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_physics_world_free(self, world):
+        self.free_calls.append(world.value)
+
+    def mmd_runtime_instance_set_physics_mode(self, instance, mode):
+        mode_value = int(getattr(mode, "value", mode))
+        self.set_mode_calls.append((instance.value, mode_value))
+        if self.set_mode_status == rt.MMD_RUNTIME_STATUS_OK:
+            self.physics_mode = mode_value
+        return self.set_mode_status
+
+    def mmd_runtime_instance_get_physics_mode(self, instance, out_mode):
+        out_mode._obj.value = self.physics_mode
+        return rt.MMD_RUNTIME_STATUS_OK
+
+    def mmd_runtime_instance_evaluate_rest_pose(self, instance):
+        self.rest_pose_calls.append(instance.value)
+        return self.rest_pose_ok
+
+    def mmd_runtime_physics_world_step_runtime(self, world, instance, dt_seconds, out_report):
+        self.step_calls.append(
+            (world.value, instance.value, float(getattr(dt_seconds, "value", dt_seconds)))
+        )
+        if self.step_status == rt.MMD_RUNTIME_STATUS_OK and out_report:
+            report = out_report._obj
+            report.tick.input_dt_seconds = float(getattr(dt_seconds, "value", dt_seconds))
+            report.tick.clamped_dt_seconds = float(getattr(dt_seconds, "value", dt_seconds))
+            report.tick.substeps = 2
+            report.tick.accumulator_seconds = 0.0
+            report.kinematic_rigidbodies_fed = 1
+            report.bones_written_back = self.bone_count
+        return self.step_status
+
+    def mmd_runtime_instance_clip_frame_batch_world_matrix_f32_len(self, handle, frame_count):
+        count = int(getattr(frame_count, "value", frame_count))
+        if self._batch_world is not None:
+            return len(self._batch_world)
+        return self.bone_count * 16 * count
+
+    def mmd_runtime_instance_clip_frame_batch_morph_weight_f32_len(self, handle, frame_count):
+        count = int(getattr(frame_count, "value", frame_count))
+        if self._batch_morph is not None:
+            return len(self._batch_morph)
+        return self.morph_count * count
+
+    def mmd_runtime_physics_world_bake_clip_frames(
+        self,
+        world,
+        instance,
+        clip,
+        start_frame,
+        frame_step,
+        dt_seconds,
+        frame_count,
+        out_world,
+        out_world_len,
+        out_morph,
+        out_morph_len,
+        out_last_report,
+    ):
+        call = (
+            world.value,
+            instance.value,
+            clip.value,
+            float(getattr(start_frame, "value", start_frame)),
+            float(getattr(frame_step, "value", frame_step)),
+            float(getattr(dt_seconds, "value", dt_seconds)),
+            int(getattr(frame_count, "value", frame_count)),
+            int(getattr(out_world_len, "value", out_world_len)),
+            int(getattr(out_morph_len, "value", out_morph_len)),
+        )
+        self.bake_calls.append(call)
+        if self.bake_status != rt.MMD_RUNTIME_STATUS_OK:
+            return self.bake_status
+        count = int(getattr(frame_count, "value", frame_count))
+        world_len = int(getattr(out_world_len, "value", out_world_len))
+        morph_len = int(getattr(out_morph_len, "value", out_morph_len))
+        if self._batch_world is not None:
+            values = self._batch_world
+        else:
+            values = [float(i + 1) for i in range(world_len)]
+        for i in range(min(world_len, len(values))):
+            out_world[i] = values[i]
+        if morph_len:
+            if self._batch_morph is not None:
+                morph_values = self._batch_morph
+            else:
+                morph_values = [0.1 * (i + 1) for i in range(morph_len)]
+            for i in range(min(morph_len, len(morph_values))):
+                out_morph[i] = morph_values[i]
+        if out_last_report:
+            report = out_last_report._obj
+            report.tick.input_dt_seconds = float(getattr(dt_seconds, "value", dt_seconds))
+            report.tick.clamped_dt_seconds = float(getattr(dt_seconds, "value", dt_seconds))
+            report.tick.substeps = count
+            report.tick.accumulator_seconds = 0.0
+            report.kinematic_rigidbodies_fed = 1
+            report.bones_written_back = self.bone_count
+        return self.bake_status
+
+
+class TestNativePhysicsFoundation(unittest.TestCase):
+    def test_feature_flags_are_zero_without_library(self):
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=None):
+            self.assertEqual(rt.get_runtime_feature_flags(), 0)
+            self.assertFalse(rt.is_native_physics_available())
+            self.assertFalse(native_pkg.is_native_physics_available())
+
+    def test_feature_flags_source_of_truth(self):
+        split_only = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=split_only):
+            self.assertEqual(rt.get_runtime_feature_flags(), rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION)
+            self.assertFalse(rt.is_native_physics_available())
+
+        full = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=full):
+            self.assertEqual(rt.get_runtime_feature_flags(), rt.MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS)
+            self.assertTrue(rt.is_native_physics_available())
+
+    def test_physics_world_requires_feature_flags(self):
+        lib = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION)
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            self.assertIsNone(MmdRuntimePhysicsWorld.from_pmx_bytes(b"pmx"))
+        self.assertEqual(lib.create_calls, [])
+
+    def test_physics_world_create_reset_count_and_free(self):
+        lib = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS)
+        instance = MmdRuntimeInstance(lib, ctypes.c_void_p(0x3003))
+        with mock.patch.object(rt, "get_mmd_runtime_library", return_value=lib):
+            world = MmdRuntimePhysicsWorld.from_pmx_bytes(b"pmx")
+
+        self.assertIsNotNone(world)
+        self.assertEqual(world.handle.value, 0x4404)
+        self.assertEqual(lib.create_calls, [b"pmx"])
+        self.assertEqual(world.reset(instance), 7)
+        self.assertEqual(world.rigidbody_count(), 9)
+        world.free()
+        self.assertEqual(lib.reset_calls, [(0x4404, 0x3003)])
+        self.assertEqual(lib.count_calls, [0x4404])
+        self.assertEqual(lib.free_calls, [0x4404])
+        self.assertIsNone(world.handle)
+
+
+class TestNativePhysicsBake(unittest.TestCase):
+    """Focused fake-CDLL coverage for sequential physics bake wrapper."""
+
+    def _full_lib(self, **kwargs):
+        kwargs.setdefault("feature_flags", rt.MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS)
+        return _FakePhysicsLib(**kwargs)
+
+    def _world_and_handles(self, lib):
+        world = MmdRuntimePhysicsWorld(lib, ctypes.c_void_p(0x4404))
+        instance = MmdRuntimeInstance(lib, ctypes.c_void_p(0x3003))
+        clip = MmdRuntimeClip(lib, ctypes.c_void_p(0x2002))
+        return world, instance, clip
+
+    def test_prepare_for_sequential_bake_mode_rest_reset_order(self):
+        lib = self._full_lib()
+        world, instance, _clip = self._world_and_handles(lib)
+
+        self.assertTrue(world.prepare_for_sequential_bake(instance))
+        self.assertEqual(lib.set_mode_calls, [(0x3003, rt.MMD_RUNTIME_PHYSICS_MODE_LIVE)])
+        self.assertEqual(lib.rest_pose_calls, [0x3003])
+        self.assertEqual(lib.reset_calls, [(0x4404, 0x3003)])
+        self.assertEqual(instance.get_physics_mode(), rt.MMD_RUNTIME_PHYSICS_MODE_LIVE)
+
+    def test_prepare_fails_without_feature_flags(self):
+        lib = _FakePhysicsLib(feature_flags=rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION)
+        world, instance, _clip = self._world_and_handles(lib)
+
+        self.assertFalse(world.prepare_for_sequential_bake(instance))
+        self.assertEqual(lib.set_mode_calls, [])
+        self.assertEqual(lib.rest_pose_calls, [])
+        self.assertEqual(lib.reset_calls, [])
+
+    def test_bake_clip_frames_with_physics_contract_and_layout(self):
+        frame_count = 3
+        bone_count = 2
+        morph_count = 1
+        world_values = [float(i) for i in range(frame_count * bone_count * 16)]
+        morph_values = [0.25 * (i + 1) for i in range(frame_count * morph_count)]
+        lib = self._full_lib(
+            bone_count=bone_count,
+            morph_count=morph_count,
+            batch_world_matrices=world_values,
+            batch_morph_weights=morph_values,
+        )
+        world, instance, clip = self._world_and_handles(lib)
+
+        result = world.bake_clip_frames_with_physics(
+            instance,
+            clip,
+            start_frame=0.0,
+            frame_step=1.0,
+            frame_count=frame_count,
+            dt_seconds=1.0 / 30.0,
+        )
+
+        self.assertIsInstance(result, MmdRuntimeBatchEvaluation)
+        self.assertEqual(result.frame_count, frame_count)
+        self.assertEqual(result.bone_count, bone_count)
+        self.assertEqual(result.morph_count, morph_count)
+        self.assertEqual(len(result.world_matrices), frame_count * bone_count * 16)
+        self.assertEqual(len(result.morph_weights), frame_count * morph_count)
+        self.assertEqual(list(result.world_matrices), world_values)
+        self.assertEqual(list(result.morph_weights), morph_values)
+
+        # LIVE → rest → reset before bake
+        self.assertEqual(lib.set_mode_calls, [(0x3003, rt.MMD_RUNTIME_PHYSICS_MODE_LIVE)])
+        self.assertEqual(lib.rest_pose_calls, [0x3003])
+        self.assertEqual(lib.reset_calls, [(0x4404, 0x3003)])
+        self.assertEqual(len(lib.bake_calls), 1)
+        call = lib.bake_calls[0]
+        self.assertEqual(call[0], 0x4404)  # world
+        self.assertEqual(call[1], 0x3003)  # instance
+        self.assertEqual(call[2], 0x2002)  # clip
+        self.assertEqual(call[3], 0.0)  # start_frame
+        self.assertEqual(call[4], 1.0)  # frame_step (VMD units)
+        self.assertAlmostEqual(call[5], 1.0 / 30.0)  # explicit dt_seconds
+        self.assertEqual(call[6], frame_count)
+        self.assertEqual(call[7], frame_count * bone_count * 16)
+        self.assertEqual(call[8], frame_count * morph_count)
+
+    def test_bake_accepts_vmd_half_step_with_explicit_maya_60fps_dt(self):
+        """VMD frame_step 0.5 at Maya 60fps must pass dt=1/60, not 0.5/60=1/120.
+
+        frame_step is VMD timeline units (fixed 30fps). Maya sampling at 60fps
+        advances 0.5 VMD frames per output sample, but real elapsed time is
+        1/60 s. The old inferred expression ``frame_step / scene_fps`` wrongly
+        yielded 1/120. Callers must pass the actual sample dt in seconds.
+        """
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance,
+            clip,
+            start_frame=0.0,
+            frame_step=0.5,
+            frame_count=2,
+            dt_seconds=1.0 / 60.0,
+            prepare=False,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(len(lib.bake_calls), 1)
+        call = lib.bake_calls[0]
+        self.assertAlmostEqual(call[4], 0.5)  # VMD sample step unchanged
+        self.assertAlmostEqual(call[5], 1.0 / 60.0)  # correct wall dt
+        # Prove the forbidden inference is NOT what was passed.
+        self.assertNotAlmostEqual(call[5], 0.5 / 60.0)
+
+    def test_bake_rejects_non_positive_dt_step_count(self):
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 1.0, 3, dt_seconds=0.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 1.0, 3, dt_seconds=-1.0 / 30.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 0.0, 3, dt_seconds=1.0 / 30.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, -1.0, 3, dt_seconds=1.0 / 30.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 1.0, 0, dt_seconds=1.0 / 30.0)
+        )
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(instance, clip, 0.0, 1.0, -1, dt_seconds=1.0 / 30.0)
+        )
+        self.assertEqual(lib.bake_calls, [])
+        # Invalid inputs must not reach prepare either (LIVE / rest / reset).
+        self.assertEqual(lib.set_mode_calls, [])
+        self.assertEqual(lib.rest_pose_calls, [])
+        self.assertEqual(lib.reset_calls, [])
+
+    def test_bake_rejects_non_finite_time_and_dt_inputs(self):
+        """NaN / ±inf for dt_seconds, frame_step, start_frame must not call native bake."""
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        cases = [
+            # dt_seconds
+            {"start_frame": 0.0, "frame_step": 1.0, "frame_count": 2, "dt_seconds": float("inf")},
+            {"start_frame": 0.0, "frame_step": 1.0, "frame_count": 2, "dt_seconds": float("-inf")},
+            {"start_frame": 0.0, "frame_step": 1.0, "frame_count": 2, "dt_seconds": float("nan")},
+            # frame_step
+            {"start_frame": 0.0, "frame_step": float("inf"), "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            {"start_frame": 0.0, "frame_step": float("-inf"), "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            {"start_frame": 0.0, "frame_step": float("nan"), "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            # start_frame
+            {"start_frame": float("inf"), "frame_step": 1.0, "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            {"start_frame": float("-inf"), "frame_step": 1.0, "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+            {"start_frame": float("nan"), "frame_step": 1.0, "frame_count": 2, "dt_seconds": 1.0 / 30.0},
+        ]
+        for kwargs in cases:
+            with self.subTest(**kwargs):
+                self.assertIsNone(
+                    world.bake_clip_frames_with_physics(instance, clip, **kwargs)
+                )
+        self.assertEqual(lib.bake_calls, [])
+        self.assertEqual(lib.step_calls, [])
+        self.assertEqual(lib.set_mode_calls, [])
+        self.assertEqual(lib.rest_pose_calls, [])
+        self.assertEqual(lib.reset_calls, [])
+
+    def test_bake_rejects_lossy_frame_count_coercion(self):
+        """Fractional floats and bools must not be silently truncated into frame_count."""
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        for frame_count in (1.5, 2.9, True, False, 0.0, -3.0, float("inf"), float("nan")):
+            with self.subTest(frame_count=frame_count):
+                self.assertIsNone(
+                    world.bake_clip_frames_with_physics(
+                        instance, clip, 0.0, 1.0, frame_count, dt_seconds=1.0 / 30.0
+                    )
+                )
+        # Exact integer-like floats remain acceptable.
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2.0, dt_seconds=1.0 / 30.0, prepare=False
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(len(lib.bake_calls), 1)
+        self.assertEqual(lib.bake_calls[0][6], 2)
+
+    def test_bake_fail_closed_without_feature_flags(self):
+        lib = _FakePhysicsLib(
+            feature_flags=rt.MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION,
+        )
+        world, instance, clip = self._world_and_handles(lib)
+        self.assertIsNone(
+            world.bake_clip_frames_with_physics(
+                instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0
+            )
+        )
+        self.assertEqual(lib.bake_calls, [])
+
+    def test_bake_fail_closed_when_bake_symbol_missing(self):
+        lib = self._full_lib(missing_symbols={"mmd_runtime_physics_world_bake_clip_frames"})
+        world, instance, clip = self._world_and_handles(lib)
+        # prepare still runs when bake symbol is missing only after prepare path...
+        # bake checks bake_func before prepare when feature flags pass.
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0, prepare=False
+        )
+        self.assertIsNone(result)
+        self.assertEqual(lib.bake_calls, [])
+
+    def test_bake_returns_none_on_unsupported_status(self):
+        lib = self._full_lib(bake_status=rt.MMD_RUNTIME_STATUS_UNSUPPORTED)
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0
+        )
+        self.assertIsNone(result)
+        self.assertEqual(len(lib.bake_calls), 1)
+
+    def test_bake_returns_none_on_error_status(self):
+        lib = self._full_lib(bake_status=rt.MMD_RUNTIME_STATUS_ERROR)
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0
+        )
+        self.assertIsNone(result)
+        self.assertEqual(len(lib.bake_calls), 1)
+
+    def test_bake_skips_prepare_when_requested(self):
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance,
+            clip,
+            start_frame=10.0,
+            frame_step=2.0,
+            frame_count=2,
+            dt_seconds=2.0 / 30.0,
+            prepare=False,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(lib.set_mode_calls, [])
+        self.assertEqual(lib.rest_pose_calls, [])
+        self.assertEqual(lib.reset_calls, [])
+        self.assertAlmostEqual(lib.bake_calls[0][4], 2.0)
+        self.assertAlmostEqual(lib.bake_calls[0][5], 2.0 / 30.0)
+
+    def test_step_runtime_contract(self):
+        lib = self._full_lib()
+        world, instance, _clip = self._world_and_handles(lib)
+        report = world.step_runtime(instance, 1.0 / 30.0)
+        self.assertIsNotNone(report)
+        self.assertAlmostEqual(report.tick.input_dt_seconds, 1.0 / 30.0, places=6)
+        self.assertEqual(report.tick.substeps, 2)
+        self.assertEqual(report.bones_written_back, 2)
+        self.assertEqual(len(lib.step_calls), 1)
+        self.assertEqual(lib.step_calls[0][:2], (0x4404, 0x3003))
+        self.assertAlmostEqual(lib.step_calls[0][2], 1.0 / 30.0, places=6)
+
+    def test_step_runtime_rejects_non_finite_or_negative_dt(self):
+        """NaN / ±inf / negative dt_seconds must not issue native step_runtime."""
+        lib = self._full_lib()
+        world, instance, _clip = self._world_and_handles(lib)
+        for dt in (float("inf"), float("-inf"), float("nan"), -0.001, "not-a-number"):
+            with self.subTest(dt=dt):
+                self.assertIsNone(world.step_runtime(instance, dt))
+        self.assertEqual(lib.step_calls, [])
+
+    def test_step_runtime_fail_closed_without_features(self):
+        lib = _FakePhysicsLib(feature_flags=0)
+        world, instance, _clip = self._world_and_handles(lib)
+        self.assertIsNone(world.step_runtime(instance, 1.0 / 30.0))
+        self.assertEqual(lib.step_calls, [])
+
+    def test_explicit_free_after_bake(self):
+        lib = self._full_lib()
+        world, instance, clip = self._world_and_handles(lib)
+        result = world.bake_clip_frames_with_physics(
+            instance, clip, 0.0, 1.0, 2, dt_seconds=1.0 / 30.0
+        )
+        self.assertIsNotNone(result)
+        world.free()
+        self.assertEqual(lib.free_calls, [0x4404])
+        self.assertIsNone(world.handle)
+        # Buffers remain usable after world free (caller-owned)
+        self.assertEqual(len(result.world_matrices), 2 * 2 * 16)
+
+    def test_set_physics_mode_fail_closed_without_symbol(self):
+        lib = self._full_lib(missing_symbols={"mmd_runtime_instance_set_physics_mode"})
+        instance = MmdRuntimeInstance(lib, ctypes.c_void_p(0x3003))
+        self.assertFalse(instance.set_physics_mode(rt.MMD_RUNTIME_PHYSICS_MODE_LIVE))
 
 
 if __name__ == "__main__":

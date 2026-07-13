@@ -5,7 +5,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_MODEL_NAME,
 )
 from ...core.logger import get_logger
-from ...core.maya_utils import (
+from ...core.maya_attribute_utils import (
     set_custom_attributes,
 )
 from ..combo_box_utils import add_combo_item_with_tooltip
@@ -87,7 +87,7 @@ class InfoPresenter:
             self.view.comment_jp_edit.setPlainText(comment_jp)  # QTextEditはsetPlainTextを使用
             self.view.comment_en_edit.setPlainText(comment_en)
 
-            logger.info(f"Loaded model info for {current_model_root}")
+            logger.debug(f"Loaded model info for {current_model_root}")
         except Exception as e:
             logger.error(f"Failed to load model info: {e}", exc_info=True)
             # エラー時もフィールドをクリア
@@ -175,6 +175,6 @@ class InfoPresenter:
         if root_node and self.scene_model_service.object_exists(root_node):
             # ApplicationStateを更新
             self.app_state.current_model_root = root_node
-            logger.info(f"Selected MMD model: {root_node}")
+            logger.debug(f"Selected MMD model: {root_node}")
         else:
             self.app_state.current_model_root = None

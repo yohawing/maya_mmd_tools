@@ -141,7 +141,7 @@ def parse_mmd_file(
 
     # VPDファイルの拡張子チェック
     if file_path.lower().endswith(".vpd"):
-        logger.info("Starting parse as VPD file")
+        logger.debug("Starting parse as VPD file")
         parser = VpdData()
         parser.parse_file(file_path)
         logger.info("VPD file parsing completed")
@@ -158,14 +158,14 @@ def parse_mmd_file(
         logger.debug(f"Magic bytes: {magic_bytes}")
 
         if magic_bytes.startswith(b"Pmd"):
-            logger.info("Starting parse as PMD file")
+            logger.debug("Starting parse as PMD file")
             return parse_pmd_file_as_pmx(
                 file_path,
                 use_native_pmx_parse=use_native_pmx_parse,
                 require_native_pmx_parse=require_native_pmx_parse,
             )
         elif magic_bytes.startswith(b"PMX"):
-            logger.info("Starting parse as PMX file")
+            logger.debug("Starting parse as PMX file")
             return parse_pmx_file(
                 file_path,
                 use_native_pmx_parse,
@@ -173,7 +173,7 @@ def parse_mmd_file(
             )
         elif f.read(30).startswith(b"Vocaloid Motion Data"):  # VMD magic is longer
             f.seek(0)  # Reset file pointer again
-            logger.info("Starting parse as VMD file")
+            logger.debug("Starting parse as VMD file")
             parser = VmdData()
             parser.parse_file(file_path)
             logger.info("VMD file parsing completed")

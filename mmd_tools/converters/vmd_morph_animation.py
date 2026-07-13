@@ -1,15 +1,42 @@
 """Morph-specific helpers for VMD animation conversion."""
 
-from typing import Dict, List
+from typing import Any, Dict, List, Union
 
 import maya.cmds as cmds
 
 from . import vmd_profile
+from .vmd_context import VmdMorphAnimationContext
 from .vmd_scene_keying import _ensure_fallback_allowed
 
 
-def convert_morph_animation(converter, morph_frames) -> bool:
-    """Convert VMD morph frames using the converter's shared Maya helpers."""
+def _resolve_morph_animation_context(
+    converter_or_context: Union[Any, VmdMorphAnimationContext],
+) -> VmdMorphAnimationContext:
+    if isinstance(converter_or_context, VmdMorphAnimationContext):
+        return converter_or_context
+    factory = getattr(converter_or_context, "_morph_animation_context", None)
+    if callable(factory):
+        return factory()
+    return VmdMorphAnimationContext(
+        logger=converter_or_context.logger,
+        morph_name_mapping=converter_or_context.morph_name_mapping,
+        anim_layer=converter_or_context.anim_layer,
+        use_animation_layers=converter_or_context.use_animation_layers,
+        iter_morph_mappings=converter_or_context._iter_morph_mappings,
+        vmd_frame_to_maya_time=converter_or_context.vmd_frame_to_maya_time,
+        samples_as_anim_layer_deltas=converter_or_context._samples_as_anim_layer_deltas,
+        batch_key_scalar_channels=converter_or_context._batch_key_scalar_channels,
+    )
+
+
+def convert_morph_animation(converter_or_context, morph_frames) -> bool:
+    """Convert VMD morph frames using explicit morph-animation context."""
+    context = _resolve_morph_animation_context(converter_or_context)
+    return _convert_morph_animation(context, morph_frames)
+
+
+def _convert_morph_animation(context: VmdMorphAnimationContext, morph_frames) -> bool:
+    """Convert VMD morph frames using explicit morph-animation context."""
     if not morph_frames:
         return False
 
@@ -23,7 +50,7 @@ def convert_morph_animation(converter, morph_frames) -> bool:
         morph_frame_map[morph_name].append(frame)
 
     for morph_name, frames in morph_frame_map.items():
-        mappings = converter._iter_morph_mappings(converter.morph_name_mapping.get(morph_name))
+        mappings = context.iter_morph_mappings(context.morph_name_mapping.get(morph_name))
         if not mappings:
             continue
 
@@ -32,8 +59,8 @@ def convert_morph_animation(converter, morph_frames) -> bool:
             for frame in frames:
                 frame_number = frame.frame_number if hasattr(frame, "frame_number") else frame.get("frame_number", 0)
                 value = frame.value if hasattr(frame, "value") else frame.get("value", 0.0)
-                samples.append((converter.vmd_frame_to_maya_time(frame_number), float(value)))
-            if not converter._batch_key_scalar_channels(morph_node, {weight_attr: samples}):
+                samples.append((context.vmd_frame_to_maya_time(frame_number), float(value)))
+            if not context.batch_key_scalar_channels(morph_node, {weight_attr: samples}, None):
                 _ensure_fallback_allowed(
                     morph_node,
                     weight_attr,
@@ -47,7 +74,7 @@ def convert_morph_animation(converter, morph_frames) -> bool:
                         cmds.setKeyframe(
                             morph_node,
                             attribute=weight_attr,
-                            time=converter.vmd_frame_to_maya_time(frame_number),
+                            time=context.vmd_frame_to_maya_time(frame_number),
                             value=value,
                         )
 

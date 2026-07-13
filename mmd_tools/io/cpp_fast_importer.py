@@ -25,7 +25,7 @@ from mmd_tools.core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
 )
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_mesh_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
 
@@ -155,7 +155,7 @@ def fast_import(
 
     if plugin_path is None:
         candidates = "\n".join(str(p) for p in _candidate_plugin_paths())
-        logger.info(
+        logger.debug(
             "C++ plugin not found – falling back to Python importer. "
             "Checked paths:\n%s",
             candidates,
@@ -169,19 +169,19 @@ def fast_import(
     try:
         import maya.cmds as cmds
     except ImportError:
-        logger.info("maya.cmds not available – falling back to Python importer.")
+        logger.debug("maya.cmds not available – falling back to Python importer.")
         return None
 
     # --- load plugin (idempotent) -----------------------------------------
     try:
         cmds.loadPlugin(str(plugin_path), quiet=True)
     except RuntimeError as exc:
-        logger.info("Failed to load C++ plugin: %s – falling back.", exc)
+        logger.debug("Failed to load C++ plugin: %s – falling back.", exc)
         return None
 
     # --- verify the command exists ----------------------------------------
     if not hasattr(cmds, "mmdFastLoad"):
-        logger.info(
+        logger.debug(
             "cmds.mmdFastLoad not found after plugin load – falling back."
         )
         return None
@@ -190,17 +190,17 @@ def fast_import(
     try:
         result = cmds.mmdFastLoad(f=filepath, n=base_name, s=scale, mo=include_morphs)
     except RuntimeError as exc:
-        logger.info("mmdFastLoad failed: %s – falling back to Python importer.", exc)
+        logger.debug("mmdFastLoad failed: %s – falling back to Python importer.", exc)
         return None
 
     if not result or len(result) < 1:
-        logger.info(
+        logger.debug(
             "mmdFastLoad returned empty result – falling back to Python importer."
         )
         return None
 
     if not isinstance(result, (list, tuple)):
-        logger.info(
+        logger.debug(
             "mmdFastLoad returned unexpected type %s – falling back.",
             type(result).__name__,
         )
@@ -218,9 +218,9 @@ def fast_import(
         try:
             _apply_fast_skeleton_skin(filepath, mesh_node, transform_node, base_name, cmds)
         except Exception as exc:
-            logger.info("Fast skeleton/skin failed (%s); returning mesh root only", exc)
+            logger.debug("Fast skeleton/skin failed (%s); returning mesh root only", exc)
 
-    logger.info("Fast import succeeded: transform node = %s", transform_node)
+    logger.debug("Fast import succeeded: transform node = %s", transform_node)
     return transform_node
 
 
@@ -231,7 +231,7 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
         parsed_model_cls = _mmd_parsed_model_class()
         parsed = parsed_model_cls.from_pmx_bytes(pmx_bytes)
         if parsed is None:
-            logger.info("Native parsed-model metadata unavailable; skipping fast material assignment")
+            logger.debug("Native parsed-model metadata unavailable; skipping fast material assignment")
             return
         try:
             metadata_text = parsed.metadata_json
@@ -240,7 +240,7 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
             parsed.free()
 
         if not metadata_text or not material_groups:
-            logger.info("No parsed material metadata/groups; skipping fast material assignment")
+            logger.debug("No parsed material metadata/groups; skipping fast material assignment")
             return
 
         metadata = json.loads(metadata_text)
@@ -261,7 +261,7 @@ def _apply_basic_materials(filepath: str, mesh_node: str, cmds_module) -> None:
 
             cmds_module.sets(f"{mesh_node}.f[{face_start}:{face_end}]", edit=True, forceElement=f"{shader}SG")
     except Exception as exc:
-        logger.info("Fast material assignment skipped: %s", exc)
+        logger.debug("Fast material assignment skipped: %s", exc)
 
 
 def _create_standard_material(material: dict, material_index: int, cmds_module) -> Optional[str]:
@@ -293,7 +293,7 @@ def _create_standard_material(material: dict, material_index: int, cmds_module) 
 
         return str(shader)
     except Exception as exc:
-        logger.info("Failed to create fast material %s: %s", raw_name, exc)
+        logger.debug("Failed to create fast material %s: %s", raw_name, exc)
         return None
 
 
@@ -316,11 +316,11 @@ def _load_fast_skin_data(filepath: str) -> Optional[_FastSkinData]:
             if bones:
                 return _FastSkinData(list(bones), list(skin_indices), list(skin_weights))
 
-        logger.info("Parsed-model skin metadata incomplete; trying native PMX parser fallback")
+        logger.debug("Parsed-model skin metadata incomplete; trying native PMX parser fallback")
 
     pmx = parse_pmx_native(filepath)
     if pmx is None:
-        logger.info("Native PMX parser fallback unavailable; skipping skeleton/skin")
+        logger.debug("Native PMX parser fallback unavailable; skipping skeleton/skin")
         return None
 
     bones = [
@@ -393,7 +393,7 @@ def _apply_fast_skeleton_skin(
     skin_indices = skin_data.skin_indices
     skin_weights = skin_data.skin_weights
     if not bones:
-        logger.info("No bones in metadata; skipping skeleton/skin")
+        logger.debug("No bones in metadata; skipping skeleton/skin")
         return
 
     # ---- build unique bone/joint names ----
@@ -450,13 +450,13 @@ def _apply_fast_skeleton_skin(
 
     # ---- create skinCluster ----
     if not cmds_module.objExists(mesh_node):
-        logger.info("Mesh node %s does not exist; skipping skinCluster", mesh_node)
+        logger.debug("Mesh node %s does not exist; skipping skinCluster", mesh_node)
         return
 
     # filter to joints that still exist
     existing_joints = [j for j in joints if cmds_module.objExists(j)]
     if not existing_joints:
-        logger.info("No valid joints for skinCluster; skipping")
+        logger.debug("No valid joints for skinCluster; skipping")
         return
 
     skin_cluster = cmds_module.skinCluster(
@@ -471,7 +471,7 @@ def _apply_fast_skeleton_skin(
     # ---- apply vertex weights ----
     n_verts = len(skin_indices)
     if n_verts == 0 or n_verts != len(skin_weights):
-        logger.info("Skin data vertex count mismatch (%d indices, %d weights); skipping weights",
+        logger.debug("Skin data vertex count mismatch (%d indices, %d weights); skipping weights",
                      n_verts, len(skin_weights) if skin_weights else 0)
         return
 
@@ -498,9 +498,9 @@ def _apply_fast_skeleton_skin(
         weights_list.append(vw)
 
     try:
-        maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights_list)
+        maya_mesh_utils.apply_vertex_weights(skin_cluster, mesh_node, weights_list)
     except Exception as exc:
-        logger.info("Failed to apply vertex weights: %s", exc)
+        logger.debug("Failed to apply vertex weights: %s", exc)
 
 
 def _tag_fast_joint_metadata(cmds_module, joint: str, bone_index: int, bone: dict) -> None:

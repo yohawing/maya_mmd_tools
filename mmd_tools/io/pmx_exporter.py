@@ -7,16 +7,19 @@ VertexMorph / physics データをPmxDataに変換して書き出す。
 
 import os
 
+from mmd_tools.core.exceptions import MMDExportException
+from mmd_tools.core.native import export_pmx_from_parts
 from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
 from mmd_tools.core.pmx_data.face import PmxFace
 from mmd_tools.core.pmx_data.header import PmxEncoding
 from mmd_tools.core.pmx_data.joint import PmxJoint
-from mmd_tools.core.pmx_data.material import PmxMaterial
+from mmd_tools.core.pmx_data.material import PmxDrawFlag, PmxMaterial, PmxSharedToonFlag, PmxSphereMode
 from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
 from mmd_tools.core.pmx_data.rigid_body import PmxRigidBody
 from mmd_tools.core.pmx_data.vertex import PmxVertex
+from mmd_tools.core.display_frame_metadata import normalize_display_frame_dict
 from mmd_tools.core.utils import (
     choose_index_size as _choose_index_size,
     choose_reference_index_size as _choose_reference_index_size,
@@ -30,8 +33,8 @@ class PmxExporter:
     dict入力から段階的にPMXの主要セクションを書き出す。
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, native_parts_exporter=export_pmx_from_parts):
+        self._native_parts_exporter = native_parts_exporter
 
     def export_pmx_model(self, file_path: str, maya_data: dict) -> None:
         """
@@ -45,6 +48,12 @@ class PmxExporter:
             ValueError: 入力データがPMXとして書き出せない場合。
             IOError: ファイル書き込みに失敗した場合。
         """
+        try:
+            self._export_pmx_model_impl(file_path, maya_data)
+        except (ValueError, TypeError) as e:
+            raise MMDExportException(f"Failed to export PMX file {file_path}: {e}") from e
+
+    def _export_pmx_model_impl(self, file_path: str, maya_data: dict) -> None:
         # --- validation ---
         vertices_raw = maya_data.get("vertices", [])
         faces_raw = maya_data.get("faces", [])
@@ -77,6 +86,7 @@ class PmxExporter:
         pmx.header.bone_index_size = _choose_reference_index_size(bone_count)
 
         morphs_raw = maya_data.get("morphs") or []
+        display_frames_raw = maya_data.get("display_frames") or []
         rigid_bodies_raw = maya_data.get("rigid_bodies") or []
         joints_raw = maya_data.get("joints") or []
         rigid_body_count = len(rigid_bodies_raw)
@@ -415,7 +425,7 @@ class PmxExporter:
         for rb_raw in rigid_bodies_raw:
             rb = PmxRigidBody(
                 bone_index_size=pmx.header.bone_index_size,
-                encoding_flag=pmx.header.encoding,
+                encoding_flag=pmx.header.encoding_flag,
             )
             rb.name = rb_raw.get("name", "RigidBody")
             rb.name_english = rb_raw.get("name_english", "")
@@ -468,30 +478,363 @@ class PmxExporter:
             pmx.joints.append(joint)
 
         # --- display frames (required for valid PMX) ---
-        root_frame = PmxDisplayFrame(
-            pmx.header.bone_index_size,
-            pmx.header.morph_index_size,
-            pmx.header.encoding_flag,
-        )
-        root_frame.name = "Root"
-        root_frame.name_english = "Root"
-        root_frame.special_flag = 1
-        root_frame.elements = [{"type": 0, "index": 0}]  # bone 0
-        pmx.display_frames.append(root_frame)
+        def _append_display_frame(frame_raw):
+            frame_data = normalize_display_frame_dict(frame_raw)
+            frame = PmxDisplayFrame(
+                pmx.header.bone_index_size,
+                pmx.header.morph_index_size,
+                pmx.header.encoding_flag,
+            )
+            frame.name = frame_data["name"]
+            frame.name_english = frame_data["name_english"]
+            frame.special_flag = frame_data["special_flag"]
+            frame.elements = []
+            for element in frame_data["elements"]:
+                element_type = element["type"]
+                index = element["index"]
+                if element_type == 0:
+                    if index < 0 or index >= bone_count:
+                        raise ValueError(
+                            f"display frame bone index out of range: {index} "
+                            f"(bone_count={bone_count})"
+                        )
+                elif element_type == 1:
+                    if index < 0 or index >= len(pmx.morphs):
+                        raise ValueError(
+                            f"display frame morph index out of range: {index} "
+                            f"(morph_count={len(pmx.morphs)})"
+                        )
+                else:
+                    raise ValueError(f"Unsupported display frame element type: {element_type}")
+                frame.elements.append({"type": element_type, "index": index})
+            pmx.display_frames.append(frame)
 
-        exp_frame = PmxDisplayFrame(
-            pmx.header.bone_index_size,
-            pmx.header.morph_index_size,
-            pmx.header.encoding_flag,
-        )
-        exp_frame.name = "表情"
-        exp_frame.name_english = "Exp"
-        exp_frame.special_flag = 1
-        exp_frame.elements = []
-        pmx.display_frames.append(exp_frame)
+        if display_frames_raw:
+            for frame_raw in display_frames_raw:
+                _append_display_frame(frame_raw)
+        else:
+            _append_display_frame(
+                {
+                    "name": "Root",
+                    "name_english": "Root",
+                    "special_flag": 1,
+                    "elements": [{"type": 0, "index": 0}],
+                }
+            )
+            _append_display_frame(
+                {
+                    "name": "表情",
+                    "name_english": "Exp",
+                    "special_flag": 1,
+                    "elements": [],
+                }
+            )
 
         # --- write ---
-        pmx.write_file(file_path)
+        native_bytes = self._try_native_parts_export(pmx)
+        if native_bytes is not None:
+            with open(file_path, "wb") as handle:
+                handle.write(native_bytes)
+        else:
+            pmx.write_file(file_path)
+
+    def to_native_parts(self, pmx: PmxData):
+        """basic PMX data を mmd-anim parts exporter の入力へ変換する。"""
+        if self.native_parts_export_blocker(pmx) is not None:
+            return None
+
+        positions = []
+        normals = []
+        uvs = []
+        skin_indices = []
+        skin_weights = []
+        edge_scale = []
+        for vertex in pmx.vertices:
+            skinning = _pmx_vertex_skinning(vertex)
+            indices4, weights4 = skinning
+            positions.extend(_float_list(vertex.position, 3, "vertex position"))
+            normals.extend(_float_list(vertex.normal, 3, "vertex normal"))
+            uvs.extend(_float_list(vertex.uv, 2, "vertex uv"))
+            skin_indices.extend(indices4)
+            skin_weights.extend(weights4)
+            edge_scale.append(float(vertex.edge_magnification))
+
+        indices = [int(index) for face in pmx.faces for index in face.indices]
+
+        descriptor = {
+            "version": float(pmx.header.version),
+            "encoding": "utf-16le" if pmx.header.encoding == PmxEncoding.UTF16LE else "utf-8",
+            "name": pmx.header.model_name,
+            "englishName": pmx.header.model_name_english,
+            "comment": pmx.header.comment,
+            "englishComment": pmx.header.comment_english,
+            "materials": [self._native_material_descriptor(pmx, material) for material in pmx.materials],
+            "bones": [self._native_bone_descriptor(bone) for bone in pmx.bones],
+            "morphs": [],
+            "displayFrames": [
+                {
+                    "name": frame.name,
+                    "englishName": frame.name_english,
+                    "special": bool(frame.special_flag),
+                    "frames": [
+                        {
+                            "kind": "bone" if int(element["type"]) == 0 else "morph",
+                            "index": int(element["index"]),
+                        }
+                        for element in frame.elements
+                    ],
+                }
+                for frame in pmx.display_frames
+            ],
+            "rigidBodies": [self._native_rigid_body_descriptor(body) for body in pmx.rigid_bodies],
+            "joints": [self._native_joint_descriptor(joint) for joint in pmx.joints],
+            "indexSizes": {
+                "vertex": int(pmx.header.vertex_index_size),
+                "texture": int(pmx.header.texture_index_size),
+                "material": int(pmx.header.material_index_size),
+                "bone": int(pmx.header.bone_index_size),
+                "morph": int(pmx.header.morph_index_size),
+                "rigidBody": int(pmx.header.rigid_body_index_size),
+            },
+        }
+        for morph in pmx.morphs:
+            morph_descriptor = self._native_morph_descriptor(morph)
+            descriptor["morphs"].append(morph_descriptor)
+        return descriptor, positions, normals, uvs, indices, skin_indices, skin_weights, edge_scale
+
+    def native_parts_export_blocker(self, pmx: PmxData) -> str | None:
+        """Return why PMX must use the Python writer instead of native parts export."""
+        if pmx.header.additional_uv != 0:
+            return "additional_uv_header"
+        if any(vertex.additional_uvs for vertex in pmx.vertices):
+            return "additional_uv_vertices"
+        for vertex in pmx.vertices:
+            if _pmx_vertex_skinning(vertex) is None:
+                return f"unsupported_skinning_type:{int(vertex.weight_transform_type)}"
+        if any(material.face_count % 3 != 0 for material in pmx.materials):
+            return "non_triangle_material_face_count"
+        for morph in pmx.morphs:
+            if self._native_morph_descriptor(morph) is None:
+                return f"unsupported_morph_type:{int(morph.morph_type)}"
+        return None
+
+    def _try_native_parts_export(self, pmx: PmxData):
+        if self._native_parts_exporter is None:
+            return None
+        native_parts = self.to_native_parts(pmx)
+        if native_parts is None:
+            return None
+        descriptor, positions, normals, uvs, indices, skin_indices, skin_weights, edge_scale = native_parts
+        return self._native_parts_exporter(
+            descriptor,
+            positions,
+            normals,
+            uvs,
+            indices=indices,
+            skin_indices=skin_indices,
+            skin_weights=skin_weights,
+            edge_scale=edge_scale,
+        )
+
+    def _native_material_descriptor(self, pmx: PmxData, material: PmxMaterial) -> dict:
+        draw_flag = int(material.draw_flag)
+        return {
+            "name": material.name,
+            "englishName": material.name_english,
+            "texturePath": _texture_path(pmx.textures, material.texture_index),
+            "sphereTexturePath": _texture_path(pmx.textures, material.sphere_texture_index),
+            "sphereMode": _sphere_mode_name(material.sphere_mode),
+            "toonTexturePath": (
+                ""
+                if material.shared_toon_flag == PmxSharedToonFlag.SHARED
+                else _texture_path(pmx.textures, material.toon_texture_index)
+            ),
+            "sharedToonIndex": (
+                int(material.toon_texture_index)
+                if material.shared_toon_flag == PmxSharedToonFlag.SHARED
+                else None
+            ),
+            "diffuse": _float_list(material.diffuse, 4, "material diffuse"),
+            "specular": _float_list(material.specular, 3, "material specular"),
+            "specularPower": float(material.specular_coefficient),
+            "ambient": _float_list(material.ambient, 3, "material ambient"),
+            "edgeColor": _float_list(material.edge_color, 4, "material edge color"),
+            "edgeSize": float(material.edge_size),
+            "flags": {
+                "doubleSided": bool(draw_flag & int(PmxDrawFlag.DOUBLE_SIDED)),
+                "groundShadow": bool(draw_flag & int(PmxDrawFlag.GROUND_SHADOW)),
+                "selfShadowMap": bool(draw_flag & int(PmxDrawFlag.SELF_SHADOW_MAP)),
+                "selfShadow": bool(draw_flag & int(PmxDrawFlag.SELF_SHADOW)),
+                "edge": bool(draw_flag & int(PmxDrawFlag.EDGE_DRAWING)),
+                "vertexColor": bool(draw_flag & int(PmxDrawFlag.VERTEX_COLOR)),
+                "pointDraw": bool(draw_flag & int(PmxDrawFlag.POINT_DRAWING)),
+                "lineDraw": bool(draw_flag & int(PmxDrawFlag.LINE_DRAWING)),
+            },
+            "faceCount": int(material.face_count) // 3,
+        }
+
+    @staticmethod
+    def _native_bone_descriptor(bone: PmxBone) -> dict:
+        flags = int(bone.bone_flag)
+        descriptor = {
+            "name": bone.name,
+            "englishName": bone.name_english,
+            "parentIndex": int(bone.parent_bone_index),
+            "layer": int(bone.transform_layer),
+            "position": _float_list(bone.position, 3, "bone position"),
+            "rotatable": bool(flags & int(PmxBoneFlag.ROTATABLE)),
+            "translatable": bool(flags & int(PmxBoneFlag.MOVABLE)),
+            "visible": bool(flags & int(PmxBoneFlag.DISPLAY)),
+            "enabled": bool(flags & int(PmxBoneFlag.OPERATABLE)),
+        }
+        if flags & int(PmxBoneFlag.CONNECT_BONE):
+            descriptor["tailIndex"] = int(bone.connect_bone_index)
+        else:
+            descriptor["tailPosition"] = _float_list(bone.connect_position_offset, 3, "bone tail position")
+        return descriptor
+
+    @staticmethod
+    def _native_morph_descriptor(morph: PmxMorph):
+        if morph.morph_type == PmxMorphType.VertexMorph:
+            return {
+                "name": morph.name,
+                "englishName": morph.name_english,
+                "kind": "vertex",
+                "vertexOffsets": [
+                    {
+                        "vertexIndex": int(offset["vertex_index"]),
+                        "position": _float_list(offset["position_offset"], 3, "vertex morph position"),
+                    }
+                    for offset in morph.offsets
+                ],
+            }
+        if morph.morph_type == PmxMorphType.GroupMorph:
+            return {
+                "name": morph.name,
+                "englishName": morph.name_english,
+                "kind": "group",
+                "groupOffsets": [
+                    {
+                        "morphIndex": int(offset["morph_index"]),
+                        "weight": float(offset["morph_rate"]),
+                    }
+                    for offset in morph.offsets
+                ],
+            }
+        return None
+
+    @staticmethod
+    def _native_rigid_body_descriptor(body: PmxRigidBody) -> dict:
+        return {
+            "name": body.name,
+            "englishName": body.name_english,
+            "boneIndex": int(body.related_bone_index),
+            "group": int(body.group),
+            "mask": int(body.collision_mask),
+            "shape": _rigid_body_shape_name(body.shape_type),
+            "size": _float_list(body.size, 3, "rigid body size"),
+            "position": _float_list(body.position, 3, "rigid body position"),
+            "rotation": _float_list(body.rotation, 3, "rigid body rotation"),
+            "mass": float(body.mass),
+            "linearDamping": float(body.velocity_attenuation),
+            "angularDamping": float(body.rotation_attenuation),
+            "restitution": float(body.elasticity),
+            "friction": float(body.friction),
+            "mode": _rigid_body_mode_name(body.physics_mode),
+        }
+
+    @staticmethod
+    def _native_joint_descriptor(joint: PmxJoint) -> dict:
+        return {
+            "name": joint.name,
+            "englishName": joint.name_english,
+            "type": _joint_type_name(joint.joint_type),
+            "rigidBodyIndexA": int(joint.rigid_body_a_index),
+            "rigidBodyIndexB": int(joint.rigid_body_b_index),
+            "position": _float_list(joint.position, 3, "joint position"),
+            "rotation": _float_list(joint.rotation, 3, "joint rotation"),
+            "translationLowerLimit": _float_list(joint.translation_limit_min, 3, "joint translation lower limit"),
+            "translationUpperLimit": _float_list(joint.translation_limit_max, 3, "joint translation upper limit"),
+            "rotationLowerLimit": _float_list(joint.rotation_limit_min, 3, "joint rotation lower limit"),
+            "rotationUpperLimit": _float_list(joint.rotation_limit_max, 3, "joint rotation upper limit"),
+            "springTranslationFactor": _float_list(joint.spring_translation, 3, "joint spring translation"),
+            "springRotationFactor": _float_list(joint.spring_rotation, 3, "joint spring rotation"),
+        }
+
+
+def _float_list(value, length: int, label: str) -> list:
+    try:
+        result = [float(item) for item in value]
+    except TypeError as exc:
+        raise TypeError(f"{label} must be an iterable of {length} numbers") from exc
+    if len(result) != length:
+        raise ValueError(f"{label} must contain {length} numbers")
+    return result
+
+
+def _texture_path(textures, index: int) -> str:
+    if index < 0 or index >= len(textures):
+        return ""
+    return str(textures[index])
+
+
+def _sphere_mode_name(value) -> str:
+    mode = int(value)
+    if mode == int(PmxSphereMode.MULTIPLY):
+        return "multiply"
+    if mode == int(PmxSphereMode.ADDITIVE):
+        return "add"
+    if mode == int(PmxSphereMode.SUB_TEXTURE):
+        return "subTexture"
+    return "disabled"
+
+
+def _rigid_body_shape_name(value) -> str:
+    shape = int(value)
+    if shape == 1:
+        return "box"
+    if shape == 2:
+        return "capsule"
+    return "sphere"
+
+
+def _rigid_body_mode_name(value) -> str:
+    mode = int(value)
+    if mode == 1:
+        return "dynamic"
+    if mode == 2:
+        return "dynamicBone"
+    return "static"
+
+
+def _joint_type_name(value) -> str:
+    joint_type = int(value)
+    if joint_type == 1:
+        return "generic6dof"
+    if joint_type == 2:
+        return "point2point"
+    if joint_type == 3:
+        return "coneTwist"
+    if joint_type == 4:
+        return "slider"
+    if joint_type == 5:
+        return "hinge"
+    return "generic6dofSpring"
+
+
+def _pmx_vertex_skinning(vertex: PmxVertex):
+    if vertex.weight_transform_type == 0:
+        indices = (list(vertex.bone_indices) + [0, 0, 0, 0])[:4]
+        return [int(index) for index in indices], [1.0, 0.0, 0.0, 0.0]
+    if vertex.weight_transform_type == 1:
+        indices = (list(vertex.bone_indices) + [0, 0, 0, 0])[:4]
+        weight0 = float(vertex.bone_weights[0]) if vertex.bone_weights else 0.5
+        return [int(index) for index in indices], [weight0, 1.0 - weight0, 0.0, 0.0]
+    if vertex.weight_transform_type == 2:
+        indices = (list(vertex.bone_indices) + [0, 0, 0, 0])[:4]
+        weights = (list(vertex.bone_weights) + [0.0, 0.0, 0.0, 0.0])[:4]
+        return [int(index) for index in indices], [float(weight) for weight in weights]
+    return None
 
 
 __all__ = [

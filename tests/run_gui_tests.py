@@ -5,14 +5,17 @@ This script launches a Maya instance, executes GUI tests via a commandPort,
 and streams the results from a log file.
 """
 
-import os
 import sys
-import socket
-import subprocess
 import time
 import argparse
 import logging
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from tests.common import maya_commandport
 
 # --- Constants ---
 DEFAULT_MAYA_VERSION = "2024"
@@ -25,78 +28,6 @@ LOG_POLL_INTERVAL = 1  # second
 # --- Logger Setup ---
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-
-
-def find_maya_executable(maya_version):
-    """
-    Finds the path to the Maya executable.
-    Checks common installation directories and the MAYA_LOCATION environment variable.
-    """
-    maya_location = os.environ.get(f"MAYA_LOCATION_{maya_version}") or os.environ.get("MAYA_LOCATION")
-    if maya_location:
-        maya_exe = Path(maya_location) / "bin" / "maya.exe"
-        if maya_exe.is_file():
-            logger.info(f"Found Maya executable at: {maya_exe}")
-            return str(maya_exe)
-
-    # Check standard Program Files locations
-    for path in [
-        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / f"Autodesk/Maya{maya_version}",
-        Path(os.environ.get("ProgramW6432", "C:/Program Files")) / f"Autodesk/Maya{maya_version}",
-    ]:
-        maya_exe = path / "bin" / "maya.exe"
-        if maya_exe.is_file():
-            logger.info(f"Found Maya executable at: {maya_exe}")
-            return str(maya_exe)
-
-    raise FileNotFoundError(f"Could not find Maya {maya_version}. Set the MAYA_LOCATION environment variable.")
-
-
-def launch_maya(maya_path, project_root):
-    """
-    Launches Maya as a subprocess with a commandPort.
-    """
-    logger.info("Launching Maya...")
-    command = [maya_path, "-command", f'commandPort -name ":{COMMAND_PORT}" -sourceType "python";']
-
-    # Add project root to PYTHONPATH for Maya
-    env = os.environ.copy()
-    python_path = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = f"{project_root};{python_path}"
-
-    process = subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    logger.info(f"Maya process started with PID: {process.pid}")
-    return process
-
-
-def wait_for_maya(timeout):
-    """
-    Waits for the Maya commandPort to become available.
-    """
-    logger.info(f"Waiting for Maya commandPort :{COMMAND_PORT} to open...")
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        try:
-            with socket.create_connection(("127.0.0.1", COMMAND_PORT), timeout=1):
-                logger.info("Maya commandPort is open.")
-                return True
-        except (socket.timeout, ConnectionRefusedError):
-            time.sleep(1)
-    raise TimeoutError("Timed out waiting for Maya commandPort to open.")
-
-
-def send_command_to_maya(command):
-    """
-    Sends a Python command to Maya via the commandPort.
-    """
-    logger.info("Sending command to Maya...")
-    try:
-        with socket.create_connection(("127.0.0.1", COMMAND_PORT), timeout=10) as sock:
-            sock.sendall(command.encode("utf-8"))
-        logger.info("Command sent successfully.")
-    except Exception as e:
-        logger.error(f"Failed to send command to Maya: {e}")
-        raise
 
 
 def monitor_log_file(log_path, timeout):
@@ -152,9 +83,16 @@ def main():
     maya_process = None
     try:
         # 1. Find and launch Maya
-        maya_exe = find_maya_executable(args.maya_version)
-        maya_process = launch_maya(maya_exe, project_root)
-        wait_for_maya(MAYA_START_TIMEOUT)
+        maya_exe = maya_commandport.maya_exe(args.maya_version)
+        logger.info("Maya executable: %s", maya_exe)
+        maya_process = maya_commandport.launch_maya(
+            version=args.maya_version,
+            project_root=project_root,
+            output_dir=log_dir,
+            port=COMMAND_PORT,
+            launch_mode="direct",
+        )
+        maya_commandport.wait_for_port(COMMAND_PORT, MAYA_START_TIMEOUT, maya_process)
 
         # 2. Prepare and send the test execution command
         test_command = f"""
@@ -169,7 +107,7 @@ log_path = r'{log_file_path.as_posix()}'
 test_dir = r'{args.test_path}'
 GuiTestRunner.run_tests_from_command(log_path, test_dir)
 """
-        send_command_to_maya(test_command)
+        maya_commandport.send_python(COMMAND_PORT, test_command, label="<gui-test-runner-command>")
 
         # 3. Monitor the log file for results
         monitor_log_file(log_file_path, TEST_EXECUTION_TIMEOUT)
@@ -182,11 +120,12 @@ GuiTestRunner.run_tests_from_command(log_path, test_dir)
         if maya_process:
             logger.info("Terminating Maya process...")
             try:
-                send_command_to_maya("import maya.cmds as cmds; cmds.quit(force=True)")
+                maya_commandport.quit_maya(COMMAND_PORT)
                 maya_process.wait(timeout=30)
             except Exception as e:
                 logger.warning(f"Failed to quit Maya gracefully, killing process: {e}")
                 maya_process.kill()
+            maya_commandport.close_process_logs(maya_process)
             logger.info("Maya process terminated.")
 
     logger.info("GUI test run finished successfully.")

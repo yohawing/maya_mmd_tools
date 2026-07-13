@@ -9,6 +9,9 @@ from mmd_tools.core.vmd_data import VmdData
 from mmd_tools.core.vmd_data.bone_frame import VmdBoneFrame
 from mmd_tools.core.vmd_data.morph_frame import VmdMorphFrame
 from mmd_tools.core.vmd_data.camera_frame import VmdCameraFrame
+from mmd_tools.core.vmd_data.ik_show_hide_frame import VmdIKShowHideFrame
+from mmd_tools.core.vmd_data.light_frame import VmdLightFrame
+from mmd_tools.core.vmd_data.shadow_frame import VmdShadowFrame
 from mmd_tools.io.vmd_exporter import VmdExporter
 from tests.common.test_base import TestBase
 from tests.common.vmd_mock import VmdMock
@@ -88,6 +91,103 @@ class TestVmdExport(TestBase):
         self.assertEqual(parsed.camera_frames[0].viewing_angle, 45)
         self.assertEqual(parsed.light_frames[0].position, (10.0, 20.0, 30.0))
         self.assertEqual(parsed.shadow_frames[0].mode, 1)
+
+    def test_exporter_uses_native_writer_when_available(self):
+        """native writer が bytes を返す場合は従来 writer ではなくその bytes を書く。"""
+        calls = []
+
+        def native_exporter(payload):
+            calls.append(payload)
+            return b"NATIVE-VMD"
+
+        vmd_data = VmdData()
+        vmd_data.header.model_name = "NativeModel"
+
+        bone = VmdBoneFrame()
+        bone.bone_name = "センター"
+        bone.frame_number = 7
+        bone.position = (1.0, 2.0, 3.0)
+        bone.rotation = (0.0, 0.0, 0.0, 1.0)
+        vmd_data.bone_frames.append(bone)
+
+        light = VmdLightFrame()
+        light.frame_number = 8
+        light.color = (0.1, 0.2, 0.3)
+        light.position = (4.0, 5.0, 6.0)
+        vmd_data.light_frames.append(light)
+
+        shadow = VmdShadowFrame()
+        shadow.frame_number = 9
+        shadow.mode = 2
+        shadow.distance = 123.0
+        vmd_data.shadow_frames.append(shadow)
+
+        prop = VmdIKShowHideFrame()
+        prop.frame_number = 10
+        prop.visible = 1
+        prop.ik_states = [("左足IK", 1), ("右足IK", 0)]
+        vmd_data.ik_show_hide_frames.append(prop)
+
+        tmp_path = os.path.join(self.temp_dir, "native_export.vmd")
+        exported = VmdExporter(native_exporter=native_exporter).export_vmd_animation(tmp_path, vmd_data)
+
+        with open(tmp_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"NATIVE-VMD")
+        self.assertIs(exported, vmd_data)
+        self.assertEqual(len(calls), 1)
+        payload = calls[0]
+        self.assertEqual(payload["metadata"]["modelName"], "NativeModel")
+        self.assertEqual(payload["metadata"]["counts"]["bones"], 1)
+        self.assertEqual(payload["metadata"]["counts"]["lights"], 1)
+        self.assertEqual(payload["metadata"]["counts"]["selfShadows"], 1)
+        self.assertEqual(payload["metadata"]["counts"]["properties"], 1)
+        self.assertEqual(payload["metadata"]["maxFrame"], 10)
+        self.assertEqual(payload["boneFrames"][0]["interpolation"], [20] * 64)
+        self.assertEqual(payload["lightFrames"][0]["direction"], [4.0, 5.0, 6.0])
+        self.assertEqual(payload["propertyFrames"][0]["ikStates"][1]["enabled"], False)
+
+    def test_native_payload_uses_linear_default_interpolation_for_missing_values(self):
+        """native payload の補間 fallback は Python writer と同じ linear default にする。"""
+        exporter = VmdExporter(native_exporter=lambda payload: b"NATIVE-VMD")
+
+        for missing_value in (None, b"", []):
+            with self.subTest(missing_value=missing_value):
+                vmd_data = VmdData()
+
+                bone = VmdBoneFrame()
+                bone.bone_name = "センター"
+                bone.frame_number = 1
+                bone.interpolation = missing_value
+                vmd_data.bone_frames.append(bone)
+
+                camera = VmdCameraFrame()
+                camera.frame_number = 1
+                camera.interpolation = missing_value
+                vmd_data.camera_frames.append(camera)
+
+                payload = exporter.to_native_json_payload(vmd_data)
+
+                self.assertEqual(payload["boneFrames"][0]["interpolation"], [20] * 64)
+                self.assertEqual(payload["cameraFrames"][0]["interpolation"], [20] * 24)
+
+    def test_exporter_falls_back_when_native_writer_returns_none(self):
+        """native writer が使えない環境では従来の VmdData writer へ戻る。"""
+        vmd_data = VmdData()
+        vmd_data.header.model_name = "FallbackModel"
+
+        frame = VmdMorphFrame()
+        frame.morph_name = "笑い"
+        frame.frame_number = 5
+        frame.value = 0.5
+        vmd_data.morph_frames.append(frame)
+
+        tmp_path = os.path.join(self.temp_dir, "fallback_export.vmd")
+        VmdExporter(native_exporter=lambda payload: None).export_vmd_animation(tmp_path, vmd_data)
+
+        parsed = VmdData().parse_file(tmp_path)
+        self.assertEqual(parsed.header.model_name, "FallbackModel")
+        self.assertEqual(parsed.morph_frames[0].morph_name, "笑い")
+        self.assertAlmostEqual(parsed.morph_frames[0].value, 0.5)
 
     def test_exporter_rejects_invalid_frame_shape(self):
         """不正な frame shape はバイナリ書き出し前に失敗させる。"""

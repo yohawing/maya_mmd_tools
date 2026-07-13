@@ -46,7 +46,7 @@ def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]
             # ターゲットモデルからネームスペースを取得
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
             if target_namespace:
-                logger.info(f"Target namespace: {target_namespace}")
+                logger.debug(f"Target namespace: {target_namespace}")
         else:
             # 選択されているオブジェクトからターゲットを取得
             selected = cmds.ls(selection=True)
@@ -56,7 +56,7 @@ def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]
                     if cmds.nodeType(sel) == "joint" or cmds.nodeType(sel) == "transform":
                         target_namespace = NamespaceUtils.get_namespace_from_node(sel)
                         if target_namespace:
-                            logger.info(f"Target namespace from selected object: {target_namespace}")
+                            logger.debug(f"Target namespace from selected object: {target_namespace}")
                             break
 
             if not target_namespace and not apply_to_all:
@@ -101,7 +101,7 @@ def import_vpd_file(parser: Any, filepath: str, options: Optional[Dict[str, Any]
             success = converter.convert(parser, target_namespace, options)
 
             if success and create_keyframe:
-                _create_keyframes_for_namespace(target_namespace, current_frame)
+                _create_keyframes_for_target(target_model, target_namespace, current_frame)
 
         if success:
             logger.info("VPD file import completed")
@@ -152,6 +152,31 @@ def _create_keyframes_for_namespace(namespace: Optional[str], frame: float) -> N
             cmds.setKeyframe(joint, attribute="translateZ", time=frame)
 
     logger.debug(f"Created keyframes for {len(joints)} joints at frame {frame}")
+
+
+def _create_keyframes_for_target(
+    target_model: Optional[str], namespace: Optional[str], frame: float
+) -> None:
+    """対象モデル root が分かる場合は、その配下のジョイントだけにキーを作成する。"""
+    if not target_model or not cmds.objExists(target_model):
+        _create_keyframes_for_namespace(namespace, frame)
+        return
+
+    joints = cmds.listRelatives(target_model, allDescendents=True, type="joint", fullPath=True) or []
+    if cmds.nodeType(target_model) == "joint":
+        joints.append(target_model)
+
+    for joint in joints:
+        cmds.setKeyframe(joint, attribute="rotateX", time=frame)
+        cmds.setKeyframe(joint, attribute="rotateY", time=frame)
+        cmds.setKeyframe(joint, attribute="rotateZ", time=frame)
+
+        if _is_movable_joint(joint):
+            cmds.setKeyframe(joint, attribute="translateX", time=frame)
+            cmds.setKeyframe(joint, attribute="translateY", time=frame)
+            cmds.setKeyframe(joint, attribute="translateZ", time=frame)
+
+    logger.debug(f"Created keyframes for {len(joints)} target joints at frame {frame}")
 
 
 def _is_movable_joint(joint_name: str) -> bool:

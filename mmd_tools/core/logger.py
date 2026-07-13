@@ -7,7 +7,7 @@ Maya環境に最適化されたロガーシステムを提供します。
 
 import logging
 import os
-from typing import Optional, Dict
+from typing import Any, Dict, Optional
 
 from mmd_tools.core import settings_keys as setting_keys
 from mmd_tools.core.settings import settings
@@ -256,6 +256,55 @@ class MayaLogger:
         self._logger.removeHandler(handler)
 
 
+def safe_log_error(logger: MayaLogger, prefix: str, item: Any, error: Exception) -> None:
+    """per-item エラーを安全にログ出力する。
+
+    ログ出力経路（カスタムハンドラ/フィルタや Maya API 由来）が
+    例外を投げても呼び出し元に伝播させず、最終的に必ず握りつぶす。
+
+    Args:
+        logger: ログ出力先
+        prefix: ログメッセージの接頭辞
+        item: 失敗したオブジェクト（name 属性を持つ想定、str の場合はそのまま表示）
+        error: 発生した例外
+    """
+    try:
+        name = getattr(item, "name", "?")
+    except Exception:
+        name = "?"
+    try:
+        logger.error(f"{prefix} '{name}': {error}")
+    except Exception:
+        try:
+            print(f"[MMD] {prefix} '{name}': {error}")
+        except Exception:
+            pass
+
+
+def safe_log_warning(logger: MayaLogger, prefix: str, item: Any, message: str) -> None:
+    """per-item 警告を安全にログ出力する。
+
+    ログ出力経路が例外を投げても呼び出し元に伝播させず、最終的に必ず握りつぶす。
+
+    Args:
+        logger: ログ出力先
+        prefix: ログメッセージの接頭辞
+        item: 対象オブジェクト（name 属性を持つ想定、str の場合はそのまま表示）
+        message: 警告メッセージ
+    """
+    try:
+        name = getattr(item, "name", "?")
+    except Exception:
+        name = "?"
+    try:
+        logger.warning(f"{prefix} '{name}': {message}")
+    except Exception:
+        try:
+            print(f"[MMD] {prefix} '{name}': {message}")
+        except Exception:
+            pass
+
+
 # ロガーインスタンスのキャッシュ
 _loggers: Dict[str, MayaLogger] = {}
 
@@ -273,6 +322,19 @@ def get_logger(name: str) -> MayaLogger:
     if name not in _loggers:
         _loggers[name] = MayaLogger(name)
     return _loggers[name]
+
+
+def set_all_logger_levels(level: int) -> None:
+    """既存のキャッシュ済み MayaLogger すべてにログレベルを適用する。
+
+    Settings UI など実行時にレベルを切り替える経路から呼ぶ。
+    キャッシュ辞書をスナップショットしてから走査し、反復中の変異を避ける。
+
+    Args:
+        level: logging のレベル定数（logging.DEBUG 等）
+    """
+    for logger in list(_loggers.values()):
+        logger.set_level(level)
 
 
 def setup_logger(logger_name: str) -> MayaLogger:

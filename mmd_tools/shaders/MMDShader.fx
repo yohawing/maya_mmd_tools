@@ -127,6 +127,13 @@ float DiffuseColorA<
     int UIOrder = 201;
 > = 1.0f;
 
+float4 MainTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 MainTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+float4 SphereTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 SphereTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+float4 ToonTextureMultiply = {1.0f, 1.0f, 1.0f, 1.0f};
+float4 ToonTextureAdd = {0.0f, 0.0f, 0.0f, 0.0f};
+
 float3 SpecularColor<
     string UIGroup = "Material";
     string UIName = "Specular Color";
@@ -379,14 +386,11 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     if (HasMainTexture != 0)
     {
         texColor = MainTexture.Sample(LinearSampler, input.texCoord0);
+        texColor = texColor * MainTextureMultiply + MainTextureAdd;
     }
-    float4 baseColor = texColor * float4(DiffuseColorRGB, DiffuseColorA);
 
     // Calculate shadow
     float shadow = CalculateShadow(input.shadowCoord, Light0ShadowMap);
-
-    // Ambient light
-    float3 ambient = AmbientColor * baseColor.rgb;
 
     // Diffuse light (Half-Lambert for toon shading)
     float NdotL = dot(normal, lightDir);
@@ -395,15 +399,27 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
     // Sample toon texture. MMD toon ramps are conventionally vertical strips;
     // use RGB as the ramp color rather than a scalar red-channel factor.
     float rampCoord = saturate(halfLambert);
-    float3 toonColor = rampCoord.xxx;
+    float3 toonColor = float3(1.0, 1.0, 1.0);
     if (HasToonTexture != 0)
     {
         // Sample the full toon ramp so the shadow side reaches the dark band.
         // The previous 0.25..0.75 mid-band squeeze flattened all shading into a
         // washed mid-tone with no real shadow contrast.
-        toonColor = ToonTexture.Sample(ToonSampler, float2(0.5, 1.0 - rampCoord)).rgb;
+        float4 toonSample = ToonTexture.Sample(ToonSampler, float2(0.5, 1.0 - rampCoord));
+        float4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
+        toonColor = factoredToon.rgb;
     }
-    float3 diffuse = lightColor * toonColor * shadow;
+    // MMD's untextured-toon path is intentionally flat: N.L only selects a
+    // toon-ramp sample and must not become an implicit gray diffuse ramp.
+    // Ambient is part of the material base for both paths, before toon.
+    float3 materialBase = saturate(DiffuseColorRGB * lightColor + AmbientColor) * texColor.rgb;
+    // Projected shadows attenuate both paths. "Flat" only means bypassing the
+    // N.L-driven toon ramp; it does not mean ignoring cast shadows.
+    float3 diffuse = materialBase * shadow;
+    if (HasToonTexture != 0)
+    {
+        diffuse *= toonColor;
+    }
 
     // Specular light
     float3 halfVec = normalize(lightDir + viewDir);
@@ -422,15 +438,13 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         float2 sphereUV;
         sphereUV.x = sphereNormal.x * 0.35 + 0.5;
         sphereUV.y = sphereNormal.y * -0.35 + 0.5;
-        sphereColor = SphereTexture.Sample(LinearSampler, sphereUV).rgb;
+        float4 sphereSample = SphereTexture.Sample(LinearSampler, sphereUV);
+        float4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
+        sphereColor = factoredSphere.rgb;
     }
 
     // Combine lighting
-    float3 litColor = diffuse * baseColor.rgb + specular;
-    if (HasToonTexture == 0)
-    {
-        litColor += ambient;
-    }
+    float3 litColor = diffuse + specular;
 
     // Apply sphere map
     if (SphereMode == 1 && HasSphereTexture != 0) // Multiply
@@ -439,7 +453,7 @@ float4 MainPS(VS_OUTPUT input) : SV_TARGET
         litColor += sphereColor;
 
     // Apply opacity
-    float opacity = baseColor.a * Opacity;
+    float opacity = texColor.a * DiffuseColorA * Opacity;
 
     // MMD parity (mmd-shading-notes §8): discard fully transparent fragments.
     // This is essential now that transparent materials write depth -- without

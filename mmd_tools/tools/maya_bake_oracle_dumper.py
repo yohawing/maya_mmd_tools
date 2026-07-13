@@ -169,7 +169,7 @@ def _collect_morphs_in_pmx_order(cmds_module: Any, pmx_morph_names: List[str]) -
     # sanitize under maya (matches what morph_converter used for aliasAttr);
     # in plain-python unit tests (no maya) falls back to identity so FakeCmds aliases match pmx names directly.
     try:
-        from mmd_tools.core.maya_utils import sanitize_text
+        from mmd_tools.core.maya_name_utils import sanitize_text
     except Exception:
         def sanitize_text(name: str) -> str:
             return name or ""

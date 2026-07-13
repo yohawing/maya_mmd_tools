@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import sys
 import unittest
@@ -60,6 +61,36 @@ class _Vector:
 
 
 class TestCameraMotionOracleRunner(unittest.TestCase):
+    def test_repo_camera_motion_manifest_points_to_runnable_generated_fixtures(self):
+        manifest = Path(__file__).resolve().parents[1] / "data" / "camera_motion" / "manifest.json"
+        manifest_dir, cases = runner._load_manifest(manifest)
+
+        self.assertGreaterEqual(len(cases), 2)
+        case_names = {case["name"] for case in cases}
+        self.assertIn("camera-edge-generated-vmd", case_names)
+        self.assertIn("camera-interpolation-isolated-vmd", case_names)
+        for case in cases:
+            assets = case.get("assets") or {}
+            vmd_path = runner._resolve_path(manifest_dir, assets.get("cameraMotion") or assets.get("motion"))
+            oracle_path = runner._resolve_path(manifest_dir, ((case.get("oracle") or {}).get("path")))
+
+            self.assertIsNotNone(vmd_path)
+            self.assertTrue(vmd_path.exists(), vmd_path)
+            self.assertIsNotNone(oracle_path)
+            self.assertTrue(oracle_path.exists(), oracle_path)
+            self.assertFalse(runner._skip_current_frame_zero(case, "auto"))
+
+            records = [json.loads(line) for line in oracle_path.read_text(encoding="utf-8").splitlines() if line]
+            record_frames = {int(record["frame"]) for record in records}
+            if case.get("frames"):
+                self.assertLessEqual({int(frame) for frame in case["frames"]}, record_frames)
+            selected_records = runner._select_records(case, records, max_frames=240, all_frames=False)
+            self.assertGreater(len(selected_records), 0)
+
+            first_record = records[0]
+            self.assertIn("current", first_record["camera"])
+            self.assertTrue(first_record["camera"].get("keyframes"))
+
     def test_current_frame_zero_policy_auto_skips_real_dump_cases(self):
         self.assertTrue(runner._skip_current_frame_zero({"name": "camera-shake-it"}, "auto"))
         self.assertTrue(runner._skip_current_frame_zero({"name": "camera-weekender-girl"}, "auto"))

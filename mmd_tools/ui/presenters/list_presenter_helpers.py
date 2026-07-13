@@ -68,7 +68,7 @@ def select_existing_user_role_nodes(
 
 def reload_for_current_model_change(logger, presenter_name: str, model_root, reload_callback: Callable[[], None]) -> None:
     """Log a model change and run the presenter's reload callback."""
-    logger.info("%s: Current model changed to %s", presenter_name, model_root)
+    logger.debug("%s: Current model changed to %s", presenter_name, model_root)
     reload_callback()
 
 

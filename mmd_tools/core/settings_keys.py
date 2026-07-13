@@ -6,8 +6,6 @@ IMPORT_GENERAL_USE_NAMESPACE = "import.general.use_namespace"
 IMPORT_MODEL_IMPORT_MODELS = "import.model.import_models"
 IMPORT_MODEL_CREATE_MMD_SHADERS = "import.model.create_mmd_shaders"
 IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL = "import.model.separate_meshes_by_material"
-IMPORT_MODEL_SPLIT_MESHES_BY_MORPH_GROUPS = "import.model.split_meshes_by_morph_groups"
-IMPORT_MODEL_HIDE_HIDDEN_GEOMETRY = "import.model.hide_hidden_geometry"
 IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY = "import.model.auto_classify_transparency"
 IMPORT_MODEL_AUTO_RESOLVE_TEXTURES = "import.model.auto_resolve_textures"
 IMPORT_MODEL_DISABLE_BACKFACE_CULLING = "import.model.disable_backface_culling"
@@ -17,10 +15,6 @@ IMPORT_MODEL_SHOW_TEXTURE_ISSUE_DIALOG = "import.model.show_texture_issue_dialog
 IMPORT_MODEL_TRANSPARENCY_OPAQUE_THRESHOLD = "import.model.transparency_opaque_threshold"
 IMPORT_MODEL_MMD_SHADER_BACKEND = "import.model.mmd_shader_backend"
 
-IMPORT_PHYSICS_IMPORT_PHYSICS = "import.physics.import_physics"
-IMPORT_PHYSICS_CREATE_RIGID_BODIES = "import.physics.create_rigid_bodies"
-IMPORT_PHYSICS_CREATE_PHYSICS_JOINTS = "import.physics.create_physics_joints"
-IMPORT_PHYSICS_GROUP_PHYSICS_OBJECTS = "import.physics.group_physics_objects"
 
 IMPORT_MORPH_IMPORT_MORPHS = "import.morph.import_morphs"
 IMPORT_MORPH = "import.morph"
@@ -41,6 +35,7 @@ IMPORT_ANIMATION_IMPORT_ANIMATIONS = "import.animation.import_animations"
 IMPORT_ANIMATION_IMPORT_MORPH_ANIMATION = "import.animation.import_morph_animation"
 IMPORT_ANIMATION_IMPORT_CAMERA_ANIMATION = "import.animation.import_camera_animation"
 IMPORT_ANIMATION_IMPORT_LIGHT_ANIMATION = "import.animation.import_light_animation"
+IMPORT_ANIMATION_USE_NATIVE_PHYSICS_BAKE = "import.animation.use_native_physics_bake"
 IMPORT_ANIMATION_MOTION_SCALE = "import.animation.motion_scale"
 IMPORT_ANIMATION_CLEAR_EXISTING_MOTION = "import.animation.clear_existing_motion"
 IMPORT_ANIMATION_RESAMPLE_CURVES = "import.animation.resample_curves"
@@ -56,6 +51,7 @@ EXPORT_GENERAL_APPLY_SCALE = "export.general.apply_scale"
 
 UI_GENERAL_DEVELOPMENT_MODE = "ui.general.development_mode"
 UI_GENERAL_LANGUAGE = "ui.general.language"
+UI_DEV_COMMAND_PORT = "ui.dev.command_port"
 
 LOGGING_ENABLED = "logging.enabled"
 LOGGING_LEVEL = "logging.level"
@@ -64,7 +60,6 @@ LOGGING_LOG_FILE_PATH = "logging.log_file_path"
 # Option-dict keys that must be mirrored into global settings while importing.
 MODEL_OPTION_TO_SETTINGS_KEY = {
     "separate_meshes_by_material": IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL,
-    "split_meshes_by_morph_groups": IMPORT_MODEL_SPLIT_MESHES_BY_MORPH_GROUPS,
     "auto_classify_transparency": IMPORT_MODEL_AUTO_CLASSIFY_TRANSPARENCY,
     "auto_resolve_textures": IMPORT_MODEL_AUTO_RESOLVE_TEXTURES,
     "disable_backface_culling": IMPORT_MODEL_DISABLE_BACKFACE_CULLING,
@@ -72,5 +67,4 @@ MODEL_OPTION_TO_SETTINGS_KEY = {
     "texture_search_path": IMPORT_MODEL_TEXTURE_SEARCH_PATH,
     "add_semi_standard_bones": IMPORT_RIG_ADD_SEMI_STANDARD_BONES,
     "translate_names": IMPORT_NAMING_TRANSLATE_NAMES,
-    "hide_hidden_geometry": IMPORT_MODEL_HIDE_HIDDEN_GEOMETRY,
 }

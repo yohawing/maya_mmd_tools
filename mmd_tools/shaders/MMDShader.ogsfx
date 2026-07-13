@@ -9,9 +9,19 @@
 // Uniform parameters
 //**********
 uniform mat4 World : WORLD < string UIWidget = "None"; >;
+uniform mat4 View : VIEW < string UIWidget = "None"; >;
 uniform mat4 WorldViewProjection : WorldViewProjection < string UIWidget = "None"; >;
 uniform vec3 ViewPosition : ViewPosition < string UIWidget = "None"; >;
-uniform vec4 DiffuseColor = {0.8, 0.8, 0.8, 1.0};
+// RGB + alpha are separate so material morph can drive RGB (double3) without
+// corrupting alpha. Mirrors MMDShader.fx DiffuseColorRGB / DiffuseColorA.
+uniform vec3 DiffuseColorRGB = {0.8, 0.8, 0.8};
+uniform float DiffuseColorA = 1.0;
+uniform vec4 MainTextureMultiply = {1.0, 1.0, 1.0, 1.0};
+uniform vec4 MainTextureAdd = {0.0, 0.0, 0.0, 0.0};
+uniform vec4 SphereTextureMultiply = {1.0, 1.0, 1.0, 1.0};
+uniform vec4 SphereTextureAdd = {0.0, 0.0, 0.0, 0.0};
+uniform vec4 ToonTextureMultiply = {1.0, 1.0, 1.0, 1.0};
+uniform vec4 ToonTextureAdd = {0.0, 0.0, 0.0, 0.0};
 uniform vec3 SpecularColor = {0.5, 0.5, 0.5};
 uniform vec3 AmbientColor = {0.2, 0.2, 0.2};
 uniform float Shininess = 20.0;
@@ -19,6 +29,54 @@ uniform vec4 EdgeColor = {0.0, 0.0, 0.0, 1.0};
 uniform float EdgeSize = 1.0;
 uniform int SphereMode = 0;
 uniform float Opacity = 1.0;
+uniform int HasMainTexture = 0;
+uniform int HasSphereTexture = 0;
+uniform int HasToonTexture = 0;
+// GLSL's current viewport path supplies no projected shadow map, so this stays
+// at full visibility. Keep it explicit so the diffuse composition matches the
+// DX11 contract when shadow binding is added.
+uniform float ShadowAttenuation = 1.0;
+// Driven by the same mmd_light controller connections as the DX11 effect.
+// Avoid Maya's built-in light-parameter name inference: MMDLightDirection was
+// materialized as a matrix plug instead of a connectable vec3 on GLSLShader.
+uniform vec3 MmdControllerLightVector = {0.5, -1.0, 0.5};
+uniform vec3 MmdControllerLightRgb = {1.0, 1.0, 1.0};
+
+uniform texture2D MainTexture
+<
+    string ResourceName = "";
+    string UIName = "Main Texture";
+    string ResourceType = "2D";
+    string UIWidget = "FilePicker";
+>;
+uniform sampler2D MainSampler = sampler_state
+{
+    Texture = <MainTexture>;
+};
+
+uniform texture2D SphereTexture
+<
+    string ResourceName = "";
+    string UIName = "Sphere Texture";
+    string ResourceType = "2D";
+    string UIWidget = "FilePicker";
+>;
+uniform sampler2D SphereSampler = sampler_state
+{
+    Texture = <SphereTexture>;
+};
+
+uniform texture2D ToonTexture
+<
+    string ResourceName = "";
+    string UIName = "Toon Texture";
+    string ResourceType = "2D";
+    string UIWidget = "FilePicker";
+>;
+uniform sampler2D ToonSampler = sampler_state
+{
+    Texture = <ToonTexture>;
+};
 
 //**********
 // Stream definitions
@@ -27,11 +85,13 @@ uniform float Opacity = 1.0;
 attribute appdata {
     vec3 Position : POSITION;
     vec3 Normal   : NORMAL;
+    vec2 UVset0   : TEXCOORD0;
 };
 
 attribute mmdVertexOutput {
     vec3 NormalWS : TEXCOORD0;
     vec3 ViewDir  : TEXCOORD1;
+    vec2 UVset0   : TEXCOORD2;
 };
 
 attribute pixelOut {
@@ -48,6 +108,7 @@ GLSLShader VS
         vec4 world_pos = World * vec4(Position, 1.0);
         vsOut.NormalWS = normalize((World * vec4(Normal, 0.0)).xyz);
         vsOut.ViewDir = normalize(ViewPosition - world_pos.xyz);
+        vsOut.UVset0 = vec2(UVset0.x, 1.0 - UVset0.y);
         gl_Position = WorldViewProjection * vec4(Position, 1.0);
     }
 }
@@ -57,30 +118,76 @@ GLSLShader VS
 //**********
 GLSLShader FS
 {
+    vec3 srgbToLinear(vec3 color)
+    {
+        vec3 lo = color / 12.92;
+        vec3 hi = pow((color + vec3(0.055)) / 1.055, vec3(2.4));
+        return mix(hi, lo, lessThanEqual(color, vec3(0.04045)));
+    }
+
     void main()
     {
         vec3 n = normalize(psIn.NormalWS);
-        vec3 l = normalize(vec3(0.0, 0.0, 1.0));
-        float ndotl = clamp(dot(n, -l), 0.0, 1.0);
-        float band = floor(ndotl * 4.0) / 4.0;
-        vec3 lighting = AmbientColor + DiffuseColor.rgb * (0.2 + band);
-        float specDot = max(dot(reflect(l, n), normalize(psIn.ViewDir)), 0.0);
-        float spec = pow(specDot, max(Shininess, 1.0)) * 0.8;
-        lighting += SpecularColor * spec;
-
-        float edge = step(0.0, EdgeSize) * smoothstep(0.95, 1.0, 1.0 - ndotl);
-        lighting = mix(lighting, EdgeColor.rgb, clamp(edge * EdgeSize * 0.1, 0.0, 1.0));
-
-        if (SphereMode == 1)
+        vec3 lightDir = -normalize(MmdControllerLightVector);
+        vec3 lightColor = MmdControllerLightRgb;
+        vec4 texColor = vec4(1.0);
+        if (HasMainTexture != 0)
         {
-            lighting *= 0.85;
+            texColor = texture2D(MainSampler, psIn.UVset0);
+            texColor = texColor * MainTextureMultiply + MainTextureAdd;
         }
-        else if (SphereMode == 2)
+        float ndotl = dot(n, lightDir);
+        float halfLambert = ndotl * 0.5 + 0.5;
+        float rampCoord = clamp(halfLambert, 0.0, 1.0);
+        vec3 toonColor = vec3(1.0);
+        if (HasToonTexture != 0)
         {
-            lighting += 0.15;
+            vec4 toonSample = texture2D(ToonSampler, vec2(0.5, 1.0 - rampCoord));
+            vec4 factoredToon = toonSample * ToonTextureMultiply + ToonTextureAdd;
+            toonColor = factoredToon.rgb;
+        }
+        // No toon means flat MMD diffuse. N.L is used only to select a ramp
+        // sample when a toon texture is actually bound.
+        vec3 materialBase = clamp(DiffuseColorRGB * lightColor + AmbientColor, 0.0, 1.0) * texColor.rgb;
+        // Flat bypasses only the N.L ramp; cast-shadow attenuation remains a
+        // separate factor shared by toon-present and toon-absent materials.
+        vec3 diffuse = materialBase * ShadowAttenuation;
+        if (HasToonTexture != 0)
+        {
+            diffuse *= toonColor;
+        }
+        vec3 halfVec = normalize(lightDir + normalize(psIn.ViewDir));
+        float specFactor = pow(max(dot(n, halfVec), 0.0), max(Shininess, 1.0)) * step(0.0, ndotl);
+        vec3 lighting = diffuse + SpecularColor * specFactor * lightColor;
+
+        vec3 sphereColor = vec3(1.0);
+        if (SphereMode > 0 && HasSphereTexture != 0)
+        {
+            vec3 sphereNormal = normalize((View * vec4(n, 0.0)).xyz);
+            vec2 sphereUV = vec2(sphereNormal.x * 0.35 + 0.5, sphereNormal.y * -0.35 + 0.5);
+            vec4 sphereSample = texture2D(SphereSampler, sphereUV);
+            vec4 factoredSphere = sphereSample * SphereTextureMultiply + SphereTextureAdd;
+            sphereColor = factoredSphere.rgb;
+        }
+        if (SphereMode == 1 && HasSphereTexture != 0)
+        {
+            lighting *= sphereColor;
+        }
+        else if (SphereMode == 2 && HasSphereTexture != 0)
+        {
+            lighting += sphereColor;
         }
 
-        colorOut = vec4(lighting, DiffuseColor.a * Opacity);
+        float opacity = texColor.a * DiffuseColorA * Opacity;
+        // Cut out transparent texture texels without discarding intentionally
+        // faint PMX materials whose authored diffuse alpha is small.
+        if (texColor.a < 0.003 || opacity <= 0.0)
+        {
+            discard;
+        }
+        // Match the DX11 effect and normal CM-on viewport pipeline: MMD lighting
+        // is evaluated in gamma space, then decoded before the view transform.
+        colorOut = vec4(srgbToLinear(lighting), opacity);
     }
 }
 

@@ -6,6 +6,12 @@ mmd-anim FFI の MmdIkChain を内部で呼び出し、
 チェーン定義は chainJson 属性で設定（import 時に1回書き込む）。
 per-frame は goal (ターゲット位置) + inputRotate[] (全ボーンのローカル回転)。
 
+solve するかどうかは「FK input pose から計算した target ボーンの world 位置が
+goal と一致しているか」で判定する。一致していれば pass-through（VMD bake 済み
+final pose の二重 solve 防止）、ズレていれば solve。腰などチェーン祖先の移動は
+target だけを動かすので solve が走り、全ての親の移動は target と goal を一緒に
+動かすので pass-through のまま — MMD のセマンティクスと一致する。
+
 DG 接続例:
     ikController.translate → mmdCcdIk1.goal
     animCurve → mmdCcdIk1.inputRotate[0]   (ボーン0のアニメ回転)
@@ -33,6 +39,10 @@ class MmdCcdIkNode(om.MPxNode):
     kTypeId = om.MTypeId(0x00128002)
     kClassify = "utility/general"
 
+    # FK target と goal の一致判定 (MMD units)。VMD bake の Euler/animCurve
+    # 丸め誤差より十分大きく、目視で分かる足のズレより十分小さい値。
+    GOAL_MATCH_EPSILON = 1e-3
+
     aChainJson = None
 
     aGoal = None
@@ -55,6 +65,7 @@ class MmdCcdIkNode(om.MPxNode):
         self._bone_count = 0
         self._link_count = 0
         self._controller_slot = -1
+        self._target_slot = -1
         self._rest_positions = []
         self._maya_rest_translates = []
         self._parent_slots = []
@@ -86,6 +97,7 @@ class MmdCcdIkNode(om.MPxNode):
         links = cfg.get("links", [])
         self._controller_slot = int(cfg.get("controllerBoneSlot", -1))
         target_slot = cfg.get("targetBoneSlot", 0)
+        self._target_slot = int(target_slot)
         iterations = cfg.get("iterationCount", 40)
         limit_angle = cfg.get("limitAngle", 0.0628)
 
@@ -220,23 +232,21 @@ class MmdCcdIkNode(om.MPxNode):
             maya_rotate_eulers,
         )
 
-        has_world_matrix_goal = self._goal_world_matrix_has_input_connection()
-        use_controller_goal = 0 <= self._controller_slot < self._bone_count and not self._goal_has_input_connection()
-        if 0 <= self._controller_slot < self._bone_count:
-            has_controller_position_offset = self._controller_branch_has_position_offset(positions)
-            if use_controller_goal and not has_controller_position_offset:
-                self._copy_input_rotate_to_output(data, plug)
-                return
-            if (
-                has_world_matrix_goal
-                and not has_controller_position_offset
-                and not self._world_goal_has_rest_offset(goal_x, goal_y, goal_z)
-            ):
-                self._copy_input_rotate_to_output(data, plug)
-                return
-
+        use_controller_goal = (
+            0 <= self._controller_slot < self._bone_count
+            and not self._goal_has_input_connection()
+        )
         if use_controller_goal:
             goal_x, goal_y, goal_z = self._compute_pre_ik_goal(positions, rotations)
+
+        # Pass-through gate: FK input pose が target を既に goal 上に置いている
+        # なら solve しない（VMD bake 済み final pose の二重 solve 防止）。
+        # ズレていれば solve する — 腰などチェーン祖先の移動は target だけを
+        # 動かすので solve が走り、全ての親は target と goal を一緒に動かす
+        # ので pass-through のまま。
+        if self._fk_target_matches_goal(positions, rotations, goal_x, goal_y, goal_z):
+            self._copy_input_rotate_to_output(data, plug)
+            return
 
         result = self._solver.solve(
             positions=positions,
@@ -447,7 +457,13 @@ class MmdCcdIkNode(om.MPxNode):
         return quat.asEulerRotation()
 
     def _copy_input_rotate_to_output(self, data, plug):
-        """IK disabled state: preserve FK/VMD rotations on IK link joints."""
+        """IK disabled / pass-through 時に link joint の FK/VMD 回転を保持する。
+
+        gate の FK 計算は接続済み (isDestination) の inputRotate 要素だけを
+        読むのに対し、ここは生の attr 値をそのままコピーする（未接続で
+        setAttr された link 回転は gate に見えないが出力には残る、という
+        旧来からの非対称を維持している）。
+        """
         out_array = data.outputArrayValue(self.aOutputRotate)
         builder = out_array.builder()
         fn_dep = om.MFnDependencyNode(self.thisMObject())
@@ -512,40 +528,25 @@ class MmdCcdIkNode(om.MPxNode):
         except Exception:
             return False
 
-    def _controller_branch_has_position_offset(self, positions) -> bool:
-        """Return True when the IK controller or its parents moved from rest."""
-        if not (0 <= self._controller_slot < self._bone_count):
+    def _fk_target_matches_goal(
+        self, positions, rotations, goal_x: float, goal_y: float, goal_z: float
+    ) -> bool:
+        """FK input pose の target world 位置が goal と一致しているか。"""
+        if not (0 <= self._target_slot < self._bone_count):
             return False
-        slot = self._controller_slot
-        visited = set()
-        while 0 <= slot < self._bone_count and slot not in visited:
-            visited.add(slot)
-            offset = slot * 3
-            if (
-                abs(positions[offset]) > 1e-5
-                or abs(positions[offset + 1]) > 1e-5
-                or abs(positions[offset + 2]) > 1e-5
-            ):
-                return True
-            slot = self._parent_slots[slot] if slot < len(self._parent_slots) else -1
-        return False
-
-    def _world_goal_has_rest_offset(self, goal_x: float, goal_y: float, goal_z: float) -> bool:
-        """Return True when an external world-matrix goal moved from controller rest."""
-        if not (0 <= self._controller_slot < self._bone_count):
-            return False
-        rest_goal = self._compute_pre_ik_goal(
-            [0.0] * (self._bone_count * 3),
-            [0.0, 0.0, 0.0, 1.0] * self._bone_count,
-        )
+        tx, ty, tz = self._fk_world_position(self._target_slot, positions, rotations)
         return (
-            abs(goal_x - rest_goal[0]) > 1e-5
-            or abs(goal_y - rest_goal[1]) > 1e-5
-            or abs(goal_z - rest_goal[2]) > 1e-5
+            abs(tx - goal_x) <= self.GOAL_MATCH_EPSILON
+            and abs(ty - goal_y) <= self.GOAL_MATCH_EPSILON
+            and abs(tz - goal_z) <= self.GOAL_MATCH_EPSILON
         )
 
     def _compute_pre_ik_goal(self, positions, rotations):
         """input pose だけから controller bone の pre-IK world 位置を得る。"""
+        return self._fk_world_position(self._controller_slot, positions, rotations)
+
+    def _fk_world_position(self, slot: int, positions, rotations):
+        """input pose だけから指定 slot の FK world 位置 (MMD space) を得る。"""
         world_mats = [om.MMatrix() for _ in range(self._bone_count)]
         for bone_i in range(self._bone_count):
             rest = self._rest_positions[bone_i]
@@ -568,8 +569,8 @@ class MmdCcdIkNode(om.MPxNode):
             parent_slot = self._parent_slots[bone_i] if bone_i < len(self._parent_slots) else -1
             world_mats[bone_i] = local_mat * world_mats[parent_slot] if 0 <= parent_slot < bone_i else local_mat
 
-        goal = om.MTransformationMatrix(world_mats[self._controller_slot]).translation(om.MSpace.kWorld)
-        return goal.x, goal.y, goal.z
+        pos = om.MTransformationMatrix(world_mats[slot]).translation(om.MSpace.kWorld)
+        return pos.x, pos.y, pos.z
 
     def __del__(self):
         if self._solver is not None:

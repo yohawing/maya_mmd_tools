@@ -1,4 +1,5 @@
 import os
+import traceback
 
 from maya import cmds
 import maya.api.OpenMaya as om
@@ -15,6 +16,13 @@ from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
 
 _main_window = None
+_animator_toolset_window = None
+# Track whether Python actually registered rig nodes (mmdAppend / mmdCcdIk).
+# Used at deregister time instead of re-checking _cpp_plugin_loaded(), which
+# is fragile if the C++ plugin loads or unloads between init and uninit.
+_python_rig_nodes_registered = False
+_shader_override_registered = False
+_after_open_callback_id = None
 
 
 def maya_useNewAPI():
@@ -82,6 +90,66 @@ def open_main_window(dockable=False):
     main_window = MainWindow()
     main_window.show_window(dockable=dockable)
     _main_window = main_window
+    return main_window
+
+
+def close_animator_toolset():
+    """Close the standalone Animator Toolset window."""
+    global _animator_toolset_window
+
+    if _animator_toolset_window is not None:
+        try:
+            _animator_toolset_window.close_window()
+        except Exception:
+            _delete_qt_widget(_animator_toolset_window)
+        _animator_toolset_window = None
+
+    ws = "MMDAnimatorToolsetWorkspaceControl"
+    try:
+        if cmds.workspaceControl(ws, exists=True):
+            cmds.deleteUI(ws)
+    except Exception:
+        pass
+
+
+def open_animator_toolset(dockable=True):
+    """Open the standalone Animator Toolset window."""
+    global _animator_toolset_window
+
+    try:
+        close_animator_toolset()
+
+        from mmd_tools.ui.animator_toolset_window import AnimatorToolsetWindow
+
+        window = AnimatorToolsetWindow()
+        window.show_window(dockable=dockable)
+        _animator_toolset_window = window
+        return window
+    except Exception as exc:
+        message = f"Animator Toolset failed to open: {exc}"
+        om.MGlobal.displayError(message)
+        om.MGlobal.displayError(traceback.format_exc())
+        raise
+
+
+def repair_current_model_texture_paths():
+    """Repair texture paths for the model selected in the MMD Tools window."""
+    window = _main_window
+    if window is None:
+        window = open_main_window(dockable=False)
+        app_state = getattr(window, "app_state", None)
+        if app_state is not None and hasattr(app_state, "emit_status"):
+            from mmd_tools.ui.translations.translator import UITranslator
+
+            app_state.emit_status(
+                UITranslator.instance().translate("status_select_model", "texture_issues")
+            )
+        return None
+    presenter = getattr(window, "import_export_presenter", None)
+    if presenter is None:
+        om.MGlobal.displayWarning("MMD Tools texture repair is unavailable")
+        return None
+    return presenter.fix_texture_paths()
 
 
 def install_mmd_menu():
@@ -89,9 +157,9 @@ def install_mmd_menu():
     if not cmds.menu("MMD", exists=True):
         cmds.menu("MMD", parent="MayaWindow")
 
-    # Keep menu installation idempotent across userSetup, reloads, and plug-in toggles.
+    _LABELS = ("MMD Tools", "Repair Texture Paths", "Animator Toolset")
     for item in cmds.menu("MMD", query=True, itemArray=True) or []:
-        if cmds.menuItem(item, query=True, label=True) == "MMD Tools":
+        if cmds.menuItem(item, query=True, label=True) in _LABELS:
             cmds.deleteUI(item)
 
     cmds.menuItem(
@@ -100,12 +168,139 @@ def install_mmd_menu():
         command=lambda *args: open_main_window(dockable=False),
         parent="MMD",
     )
+    cmds.menuItem(
+        "MMDRepairTexturePathsMenuItem",
+        label="Repair Texture Paths",
+        command=lambda *args: repair_current_model_texture_paths(),
+        parent="MMD",
+    )
+
+    from mmd_tools.services.settings_service import SettingsService
+
+    if SettingsService().is_development_mode():
+        cmds.menuItem(
+            "MMDAnimatorToolsetMenuItem",
+            label="Animator Toolset",
+            command=lambda *args: open_animator_toolset(dockable=True),
+            parent="MMD",
+        )
 
 
 def uninstall_mmd_menu():
     """Uninstall the MMD menu from Maya."""
     if cmds.menu("MMD", exists=True):
         cmds.deleteUI("MMD", menu=True)
+
+
+def _cpp_plugin_loaded() -> bool:
+    """Return True if the C++ plugin (mmd_tools_cpp) is already loaded."""
+    try:
+        loaded = cmds.pluginInfo(query=True, listPlugins=True) or []
+    except Exception:
+        loaded = []
+    return "mmd_tools_cpp" in loaded
+
+
+def _node_type_registered(type_name: str) -> bool:
+    """Return True if Maya already has the given node type registered."""
+    try:
+        return type_name in (cmds.allNodeTypes() or [])
+    except Exception:
+        return False
+
+
+def _soft_check_bone_morph_accum_availability():
+    """Soft plugin postcondition for mmdBoneMorphAccum contract.
+
+    Creates a temporary probe via the runtime helper. Never raises: plugin load
+    must succeed even when the probe fails, because import-time graph building
+    re-probes and fails soft with structured warnings.
+    """
+    try:
+        from mmd_tools.converters.bone_morph_runtime import (
+            log_bone_morph_accum_availability_postcondition,
+        )
+
+        availability = log_bone_morph_accum_availability_postcondition()
+        if not availability.get("available"):
+            om.MGlobal.displayWarning(
+                "mmdBoneMorphAccum is unavailable after registration; "
+                "bone morph runtime graphs will be skipped ({0})".format(
+                    availability.get("detail") or "node_type_unavailable"
+                )
+            )
+    except Exception:
+        # Runtime probing remains the enforcement boundary for fail-soft import.
+        pass
+
+
+def _soft_sync_existing_glsl_diffuse_contracts():
+    """Migrate strict legacy GLSL contracts in the scene without polluting undo.
+
+    The synchronizer is signature-gated and idempotent.  A real migration keeps
+    the scene dirty so Maya can prompt the user to save it; an empty/no-op scan
+    does not issue any scene edit.
+    """
+    undo_was_enabled = None
+    try:
+        undo_was_enabled = bool(cmds.undoInfo(query=True, state=True))
+        if undo_was_enabled:
+            cmds.undoInfo(stateWithoutFlush=False)
+    except Exception:
+        undo_was_enabled = None
+    try:
+        from mmd_tools.converters.mesh_converter import migrate_legacy_glsl_diffuse_contracts
+
+        migrate_legacy_glsl_diffuse_contracts()
+    except Exception:
+        # Existing-scene compatibility must never make plugin loading fail.
+        pass
+    finally:
+        if undo_was_enabled:
+            try:
+                cmds.undoInfo(stateWithoutFlush=True)
+            except Exception:
+                pass
+
+
+def _after_scene_open(*_args):
+    """Run strict existing-scene migration after Maya opens a scene."""
+    try:
+        _soft_sync_existing_glsl_diffuse_contracts()
+    except Exception:
+        pass
+
+
+def _scene_file_is_being_read():
+    """Return Maya's file-read state, conservatively treating query failure as reading."""
+    try:
+        return bool(om.MFileIO.isReadingFile())
+    except Exception:
+        return True
+
+
+def _register_after_open_callback():
+    """Register one scene-open migration callback, tolerating host limitations."""
+    global _after_open_callback_id
+    if _after_open_callback_id is not None:
+        return
+    try:
+        _after_open_callback_id = om.MSceneMessage.addCallback(om.MSceneMessage.kAfterOpen, _after_scene_open)
+    except Exception:
+        _after_open_callback_id = None
+
+
+def _remove_after_open_callback():
+    """Remove the owned scene-open callback if it exists."""
+    global _after_open_callback_id
+    callback_id = _after_open_callback_id
+    _after_open_callback_id = None
+    if callback_id is None:
+        return
+    try:
+        om.MMessage.removeCallback(callback_id)
+    except Exception:
+        pass
 
 
 def initializePlugin(mobject):
@@ -120,12 +315,22 @@ def initializePlugin(mobject):
     try:
         install_mmd_menu()
         install_drag_drop_importer()
+        global _shader_override_registered
         if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
             mmd_shader.initializePlugin(mobject)
+            _shader_override_registered = True
         mmd_bone_morph_accum_node.register(plugin_fn)
+        _soft_check_bone_morph_accum_availability()
         mmd_material_morph_eval_node.register(plugin_fn)
-        mmd_append_node.register(plugin_fn)
-        mmd_ccd_ik_node.register(plugin_fn)
+        if not _scene_file_is_being_read():
+            _soft_sync_existing_glsl_diffuse_contracts()
+        # Skip Python rig-node registration when C++ plugin already provides them
+        global _python_rig_nodes_registered
+        if not _cpp_plugin_loaded():
+            mmd_append_node.register(plugin_fn)
+            mmd_ccd_ik_node.register(plugin_fn)
+            _python_rig_nodes_registered = True
+        _register_after_open_callback()
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
         raise
@@ -138,13 +343,23 @@ def uninitializePlugin(mobject):
     plugin_fn = om.MFnPlugin(mobject)
 
     try:
+        _remove_after_open_callback()
+        close_animator_toolset()
         close_main_window()
         uninstall_mmd_menu()
         uninstall_drag_drop_importer()
-        if os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE") != "1":
-            mmd_shader.uninitializePlugin(mobject)
-        mmd_ccd_ik_node.deregister(plugin_fn)
-        mmd_append_node.deregister(plugin_fn)
+        global _shader_override_registered
+        if _shader_override_registered:
+            try:
+                mmd_shader.uninitializePlugin(mobject)
+            finally:
+                _shader_override_registered = False
+        # Only deregister rig nodes that Python actually registered
+        global _python_rig_nodes_registered
+        if _python_rig_nodes_registered:
+            mmd_ccd_ik_node.deregister(plugin_fn)
+            mmd_append_node.deregister(plugin_fn)
+            _python_rig_nodes_registered = False
         mmd_material_morph_eval_node.deregister(plugin_fn)
         mmd_bone_morph_accum_node.deregister(plugin_fn)
     except Exception as e:

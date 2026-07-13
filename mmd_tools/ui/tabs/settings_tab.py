@@ -11,6 +11,7 @@ from ..qt_compat import (
     QWidget,
     QLabel,
     QScrollArea,
+    QSpinBox,
 )
 from ..base_tab import BaseTab
 
@@ -94,6 +95,23 @@ class SettingsTab(BaseTab):
         self.ui_group.setLayout(ui_layout)
         layout.addWidget(self.ui_group)
 
+        # Development tools. Hidden unless Development Mode is enabled.
+        self.dev_tools_group = QGroupBox(self.tr("dev_tools", "groups"))
+        dev_tools_layout = QFormLayout()
+
+        command_port_layout = QHBoxLayout()
+        self.command_port_spin = QSpinBox()
+        self.command_port_spin.setRange(1, 65535)
+        self.command_port_spin.setValue(3939)
+        self.open_command_port_btn = QPushButton(self.tr("open_command_port", "buttons"))
+        command_port_layout.addWidget(self.command_port_spin)
+        command_port_layout.addWidget(self.open_command_port_btn)
+        self.command_port_label = QLabel(self.tr("command_port", "fields"))
+        dev_tools_layout.addRow(self.command_port_label, command_port_layout)
+
+        self.dev_tools_group.setLayout(dev_tools_layout)
+        layout.addWidget(self.dev_tools_group)
+
         # ログ設定
         self.log_group = QGroupBox(self.tr("log_settings", "groups"))
         log_layout = QFormLayout()
@@ -139,10 +157,14 @@ class SettingsTab(BaseTab):
             self.import_settings_btn.setText(self.tr("import_settings", "actions"))
         if hasattr(self, "log_file_browse_btn"):
             self.log_file_browse_btn.setText(self.tr("browse", "buttons"))
+        if hasattr(self, "open_command_port_btn"):
+            self.open_command_port_btn.setText(self.tr("open_command_port", "buttons"))
 
         # GroupBoxes
         if hasattr(self, "ui_group"):
             self.ui_group.setTitle(self.tr("ui_settings", "groups"))
+        if hasattr(self, "dev_tools_group"):
+            self.dev_tools_group.setTitle(self.tr("dev_tools", "groups"))
         if hasattr(self, "log_group"):
             self.log_group.setTitle(self.tr("log_settings", "groups"))
 
@@ -153,6 +175,8 @@ class SettingsTab(BaseTab):
             self.log_level_label.setText(self.tr("log_level", "fields"))
         if hasattr(self, "log_file_label"):
             self.log_file_label.setText(self.tr("log_file", "fields"))
+        if hasattr(self, "command_port_label"):
+            self.command_port_label.setText(self.tr("command_port", "fields"))
 
         # CheckBoxes
         if hasattr(self, "development_mode_check"):

@@ -8,6 +8,8 @@ PmdDataに変換して書き出す。PMXエクスポータの最小スライス�
 
 import os
 
+from mmd_tools.core.exceptions import MMDExportException
+from mmd_tools.core.native import export_pmd_model_json
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.bone import PmdBone, PmdBoneType
 from mmd_tools.core.pmd_data.face import PmdFace
@@ -51,8 +53,8 @@ class PmdExporter:
     dict入力から最小限のPMDセクションを書き出す。
     """
 
-    def __init__(self):
-        pass
+    def __init__(self, native_exporter=export_pmd_model_json):
+        self._native_exporter = native_exporter
 
     def export_pmd_model(self, file_path: str, maya_data: dict) -> None:
         """
@@ -66,6 +68,12 @@ class PmdExporter:
             ValueError: 入力データがPMDとして書き出せない場合。
             IOError: ファイル書き込みに失敗した場合。
         """
+        try:
+            self._export_pmd_model_impl(file_path, maya_data)
+        except (ValueError, TypeError) as e:
+            raise MMDExportException(f"Failed to export PMD file {file_path}: {e}") from e
+
+    def _export_pmd_model_impl(self, file_path: str, maya_data: dict) -> None:
         # --- validation ---
         vertices_raw = maya_data.get("vertices", [])
         faces_raw = maya_data.get("faces", [])
@@ -218,7 +226,122 @@ class PmdExporter:
                 pmd.bones.append(bone)
 
         # --- write ---
-        pmd.write_file(file_path)
+        native_bytes = self._try_native_export(pmd)
+        if native_bytes is not None:
+            with open(file_path, "wb") as handle:
+                handle.write(native_bytes)
+        else:
+            pmd.write_file(file_path)
+
+    def to_native_json_payload(self, pmd: PmdData) -> dict:
+        """``PmdData`` を mmd-anim の PmdParsedModel JSON shape に変換する。"""
+        vertices = [
+            {
+                "position": _float_list(vertex.position, 3, "vertex position"),
+                "normal": _float_list(vertex.normal, 3, "vertex normal"),
+                "uv": _float_list(vertex.uv, 2, "vertex uv"),
+                "boneIndices": [int(vertex.bone_indices[0]), int(vertex.bone_indices[1])],
+                "boneWeight": int(vertex.bone_weight),
+                "edgeEnabled": int(vertex.edge_flag) == 0,
+            }
+            for vertex in pmd.vertices
+        ]
+        indices = [int(index) for face in pmd.faces for index in face.indices]
+        materials = [
+            {
+                "diffuse": _float_list(material.diffuse, 4, "material diffuse"),
+                "specularPower": float(material.specular_power),
+                "specular": _float_list(material.specular, 3, "material specular"),
+                "ambient": _float_list(material.ambient, 3, "material ambient"),
+                "toonIndex": int(material.toon_texture_index),
+                "edgeEnabled": bool(material.edge_flag),
+                "faceCount": int(material.face_count) // 3,
+                "textureName": str(material.texture_file_name),
+                "textureNameBytes": [],
+            }
+            for material in pmd.materials
+        ]
+        bones = [
+            {
+                "name": str(bone.name),
+                "nameBytes": [],
+                "englishName": str(bone.name_english),
+                "englishNameBytes": [],
+                "parentIndex": int(bone.parent_bone_index),
+                "tailIndex": int(bone.tail_pos_bone_index),
+                "boneType": int(bone.bone_type.value),
+                "ikIndex": int(bone.ik_parent_bone_index),
+                "position": _float_list(bone.position, 3, "bone position"),
+            }
+            for bone in pmd.bones
+        ]
+        return {
+            "metadata": {
+                "format": "PMD",
+                "version": float(pmd.header.version),
+                "encoding": "shift-jis",
+                "name": str(pmd.header.model_name),
+                "nameBytes": [],
+                "englishName": str(pmd.header.model_name_english),
+                "englishNameBytes": [],
+                "comment": str(pmd.header.comment),
+                "commentBytes": [],
+                "englishComment": str(pmd.header.comment_english),
+                "englishCommentBytes": [],
+                "counts": {
+                    "vertices": len(vertices),
+                    "faces": len(pmd.faces),
+                    "materials": len(materials),
+                    "bones": len(bones),
+                    "ik": 0,
+                    "morphs": 0,
+                    "displayFrames": 0,
+                    "rigidBodies": 0,
+                    "joints": 0,
+                },
+            },
+            "geometry": {"vertices": vertices, "indices": indices},
+            "materials": materials,
+            "toonTextures": [],
+            "toonTextureBytes": [],
+            "skeleton": {"bones": bones, "ik": []},
+            "morphs": [],
+            "displayFrames": [],
+            "rigidBodies": [],
+            "joints": [],
+            "diagnostics": [],
+        }
+
+    def _try_native_export(self, pmd: PmdData):
+        if self._native_exporter is None:
+            return None
+        if self.native_export_blocker(pmd) is not None:
+            return None
+        return self._native_exporter(self.to_native_json_payload(pmd))
+
+    def native_export_blocker(self, pmd: PmdData) -> str | None:
+        """Return why PMD must use the Python writer instead of native JSON export."""
+        if pmd.ik_data:
+            return "ik"
+        if pmd.morphs:
+            return "morphs"
+        if pmd.display_frames:
+            return "display_frames"
+        if pmd.rigid_bodies:
+            return "rigid_bodies"
+        if pmd.joints:
+            return "joints"
+        return None
+
+
+def _float_list(value, length: int, label: str) -> list:
+    try:
+        result = [float(item) for item in value]
+    except TypeError as exc:
+        raise TypeError(f"{label} must be an iterable of {length} numbers") from exc
+    if len(result) != length:
+        raise ValueError(f"{label} must contain {length} numbers")
+    return result
 
 
 __all__ = [

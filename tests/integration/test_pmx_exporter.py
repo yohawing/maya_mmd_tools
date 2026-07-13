@@ -4,6 +4,7 @@ These tests run under Maya 2024 mayapy and verify the full
 collect → export → parse round-trip for a minimum geometry.
 """
 
+import json
 import os
 from unittest.mock import patch
 
@@ -12,12 +13,12 @@ from maya import cmds
 from mmd_tools.actions.export_model_action import ExportModelAction, ExportModelRequest
 from mmd_tools.converters.export_scene_collector import ExportSceneCollector
 from mmd_tools.converters.morph_converter import MorphConverter
-from mmd_tools.converters.physics_converter import PhysicsConverter
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_INDEX,
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_PARENT_INDEX,
+    ATTR_MMD_DISPLAY_FRAMES_JSON,
     ATTR_MMD_MODEL_NAME,
 )
 from mmd_tools.io.pmx_exporter import PmxExporter
@@ -218,56 +219,6 @@ class TestPmxExporter(MayaTestBase):
         result = MorphConverter().convert_pmx_morphs(fake_data, mesh_name)
         self.assertTrue(result.get("success", False))
         return result
-
-    def _create_scene_physics_metadata(self, root: str):
-        """Create Bullet physics metadata below *root* through PhysicsConverter."""
-
-        class FakeRigidBody:
-            def __init__(self, name, related_bone_index, position, physics_mode):
-                self.name = name
-                self.name_english = f"{name}_en"
-                self.related_bone_index = related_bone_index
-                self.group = 1
-                self.collision_mask = 0xFFFE
-                self.shape_type = 0
-                self.size = (0.5, 0.5, 0.5)
-                self.position = position
-                self.rotation = (0.0, 0.0, 0.0)
-                self.mass = 1.0
-                self.velocity_attenuation = 0.4
-                self.rotation_attenuation = 0.5
-                self.friction = 0.6
-                self.elasticity = 0.2
-                self.physics_mode = physics_mode
-
-        class FakeJoint:
-            name = "physics_joint"
-            name_english = "physics_joint_en"
-            joint_type = 0
-            rigid_body_a_index = 0
-            rigid_body_b_index = 1
-            position = (0.5, 0.5, 0.0)
-            rotation = (0.0, 0.0, 0.0)
-            translation_limit_min = (-0.1, -0.2, -0.3)
-            translation_limit_max = (0.1, 0.2, 0.3)
-            rotation_limit_min = (-0.1, -0.2, -0.3)
-            rotation_limit_max = (0.1, 0.2, 0.3)
-            spring_translation = (0.01, 0.02, 0.03)
-            spring_rotation = (0.04, 0.05, 0.06)
-
-        fake_data = type(
-            "FakePmxData",
-            (),
-            {
-                "bones": [],
-                "rigid_bodies": [
-                    FakeRigidBody("physics_rb_a", 0, (0.0, 1.0, 0.0), 2),
-                    FakeRigidBody("physics_rb_b", 0, (1.0, 1.0, 0.0), 0),
-                ],
-                "joints": [FakeJoint()],
-            },
-        )()
-        return PhysicsConverter().convert_pmx_physics(fake_data, {}, root)
 
     # ------------------------------------------------------------------
     # tests
@@ -481,14 +432,36 @@ class TestPmxExporter(MayaTestBase):
         self.assertTrue(any(m.name == "ボーン笑い" and int(m.morph_type) == 2 for m in pmx.morphs))
         self.assertTrue(any(m.name == "材質点滅" and int(m.morph_type) == 8 for m in pmx.morphs))
 
-    def test_export_model_action_collects_scene_physics_to_pmx(self):
-        """target_model export は root 配下の Bullet physics metadata を PMX に書き戻す。"""
-        if not PhysicsConverter.is_bullet_available():
-            self.skipTest("Bullet プラグインが利用できません")
-
-        root, _meshes, _shaders = self._make_two_mesh_model_root("pmx_physics_root")
-        self._create_scene_physics_metadata(root)
-        output_path = self.get_temp_filename("physics_metadata_model.pmx")
+    def test_export_model_action_collects_display_frames_to_pmx(self):
+        """target_model export は root の表示枠 metadata を PMX に書き戻す。"""
+        root, _meshes, _shaders = self._make_two_mesh_model_root("pmx_display_frame_root")
+        display_frames = [
+            {
+                "name": "Root",
+                "name_english": "Root",
+                "special_flag": 1,
+                "elements": [{"type": 0, "index": 0}],
+            },
+            {
+                "name": "表情",
+                "name_english": "Exp",
+                "special_flag": 1,
+                "elements": [],
+            },
+            {
+                "name": "操作",
+                "name_english": "Controls",
+                "special_flag": 0,
+                "elements": [{"type": 0, "index": 0}],
+            },
+        ]
+        cmds.addAttr(root, longName=ATTR_MMD_DISPLAY_FRAMES_JSON, dataType="string")
+        cmds.setAttr(
+            f"{root}.{ATTR_MMD_DISPLAY_FRAMES_JSON}",
+            json.dumps(display_frames, ensure_ascii=False),
+            type="string",
+        )
+        output_path = self.get_temp_filename("display_frame_metadata_model.pmx")
 
         result = ExportModelAction().execute(
             ExportModelRequest(
@@ -500,13 +473,9 @@ class TestPmxExporter(MayaTestBase):
         self.assertTrue(result.succeeded)
         pmx = _parse_pmx(output_path)
 
-        self.assertEqual([rb.name for rb in pmx.rigid_bodies], ["physics_rb_a", "physics_rb_b"])
-        self.assertEqual([rb.related_bone_index for rb in pmx.rigid_bodies], [0, 0])
-        self.assertEqual([rb.physics_mode for rb in pmx.rigid_bodies], [2, 0])
-        self.assertEqual(len(pmx.joints), 1)
-        self.assertEqual(pmx.joints[0].name, "physics_joint")
-        self.assertEqual(pmx.joints[0].rigid_body_a_index, 0)
-        self.assertEqual(pmx.joints[0].rigid_body_b_index, 1)
+        self.assertEqual([frame.name for frame in pmx.display_frames], ["Root", "表情", "操作"])
+        self.assertEqual(pmx.display_frames[2].name_english, "Controls")
+        self.assertEqual(pmx.display_frames[2].elements, [{"type": 0, "index": 0}])
 
     def test_export_model_action_collects_skincluster_weights_to_pmx(self):
         """skinCluster の influence と weight を PMX bones/BDEF に書き出す。"""

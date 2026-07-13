@@ -65,6 +65,11 @@ public:
     size_t boneCount() const;
     size_t morphCount() const;
 
+    static uint32_t runtimeAbiVersion();
+    static bool isRuntimeAbiCompatible();
+    static bool allowRuntimeAbiMismatch();
+    static const char* runtimeAbiMismatchEnvName();
+
 private:
     mmd_runtime_model_t*   model_ = nullptr;
     mmd_runtime_clip_t*    clip_ = nullptr;

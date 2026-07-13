@@ -12,21 +12,12 @@
       "separate_meshes_by_material": false,
       "auto_classify_transparency": false,
       "auto_resolve_textures": true,
-      "split_meshes_by_morph_groups": false,
       "create_mmd_shaders": false,
       "mmd_shader_backend": "auto",
       "texture_search_path": "",
       "show_texture_issue_dialog": true,
-      "hide_hidden_geometry": false,
       "uv_set_name": "map#",
       "disable_backface_culling": true
-    },
-    "physics": {
-      "_comment": "Settings for importing physics elements like rigid bodies and joints",
-      "import_physics": false,
-      "create_rigid_bodies": true,
-      "create_physics_joints": true,
-      "group_physics_objects": true
     },
     "morph": {
       "_comment": "Settings for importing morphs (blend shapes)",
@@ -46,6 +37,7 @@
       "motion_scale": 1.0,
       "clear_existing_motion": false,
       "resample_curves": false,
+      "use_native_physics_bake": false,
       "import_camera_animation": true,
       "import_light_animation": true,
       "use_mmd_runtime_bake": true,
@@ -79,6 +71,9 @@
       "show_advanced_options": false,
       "development_mode": false,
       "language": "ja"
+    },
+    "dev": {
+      "command_port": 3939
     }
   },
   "logging": {

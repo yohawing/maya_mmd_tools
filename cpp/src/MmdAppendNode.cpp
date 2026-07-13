@@ -12,6 +12,7 @@
 
 #include "MmdAppendNode.h"
 
+#include <maya/MFnAttribute.h>
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnCompoundAttribute.h>
 #include <maya/MDataHandle.h>
@@ -27,6 +28,9 @@
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
+constexpr short kSchemaModeAuto = 0;
+constexpr short kSchemaModeLegacy = 1;
+constexpr short kSchemaModeCompat = 2;
 }
 
 // --- Quaternion helper struct ---
@@ -199,7 +203,7 @@ void setAngle3OutputsDegrees(
 }
 
 
-const MTypeId MmdAppendNode::id(0x00123457); // 仮 ID (0x00123456 の次)
+const MTypeId MmdAppendNode::id(0x00128001);
 
 // --- 入力: inputTranslate ---
 MObject MmdAppendNode::aInputTranslate;
@@ -265,6 +269,7 @@ MObject MmdAppendNode::aRatio;
 MObject MmdAppendNode::aAffectRotation;
 MObject MmdAppendNode::aAffectTranslation;
 MObject MmdAppendNode::aLocalAppend;
+MObject MmdAppendNode::aSchemaMode;
 
 // --- 出力: outputTranslate ---
 MObject MmdAppendNode::aOutputTranslate;
@@ -434,52 +439,59 @@ MStatus MmdAppendNode::initialize() {
     MStatus status;
     MFnNumericAttribute nAttr;
 
-    // --- 入力: inputTranslate(double3) ---
+    // --- Legacy 入力 (hidden): inputTranslate(double3) ---
     aInputTranslate = createDouble3Attribute(
         "inputTranslate", "it",
         aInputTranslateX, aInputTranslateY, aInputTranslateZ, 0.0);
     addAttribute(aInputTranslate);
+    MFnAttribute(aInputTranslate).setHidden(true);
 
-    // --- 入力: inputRotate(double3) ---
+    // --- Legacy 入力 (hidden): inputRotate(double3) ---
     aInputRotate = createDouble3Attribute(
         "inputRotate", "ir",
         aInputRotateX, aInputRotateY, aInputRotateZ, 0.0);
     addAttribute(aInputRotate);
+    MFnAttribute(aInputRotate).setHidden(true);
 
-    // --- 入力: parentTranslate(double3) ---
+    // --- Legacy 入力 (hidden): parentTranslate(double3) ---
     aParentTranslate = createDouble3Attribute(
         "parentTranslate", "pt",
         aParentTranslateX, aParentTranslateY, aParentTranslateZ, 0.0);
     addAttribute(aParentTranslate);
+    MFnAttribute(aParentTranslate).setHidden(true);
 
-    // --- 入力: parentRotate(double3) ---
+    // --- Legacy 入力 (hidden): parentRotate(double3) ---
     aParentRotate = createDouble3Attribute(
         "parentRotate", "pr",
         aParentRotateX, aParentRotateY, aParentRotateZ, 0.0);
     addAttribute(aParentRotate);
+    MFnAttribute(aParentRotate).setHidden(true);
 
-    // --- 入力: grantRate(double) ---
+    // --- Legacy 入力 (hidden): grantRate(double) ---
     aGrantRate = nAttr.create("grantRate", "gr", MFnNumericData::kDouble, 0.0, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
+    nAttr.setHidden(true);
     addAttribute(aGrantRate);
 
-    // --- 入力: enableTranslate(bool) ---
+    // --- Legacy 入力 (hidden): enableTranslate(bool) ---
     aEnableTranslate = nAttr.create("enableTranslate", "et", MFnNumericData::kBoolean, true, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
+    nAttr.setHidden(true);
     addAttribute(aEnableTranslate);
 
-    // --- 入力: enableRotate(bool) ---
+    // --- Legacy 入力 (hidden): enableRotate(bool) ---
     aEnableRotate = nAttr.create("enableRotate", "er", MFnNumericData::kBoolean, true, &status);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     nAttr.setWritable(true);
     nAttr.setReadable(false);
+    nAttr.setHidden(true);
     addAttribute(aEnableRotate);
 
     aBaseTranslate = createDouble3Attribute(
@@ -539,6 +551,15 @@ MStatus MmdAppendNode::initialize() {
     nAttr.setWritable(true);
     nAttr.setReadable(false);
     addAttribute(aLocalAppend);
+
+    aSchemaMode = nAttr.create("schemaMode", "sm", MFnNumericData::kShort, kSchemaModeAuto, &status);
+    nAttr.setStorable(true);
+    nAttr.setKeyable(false);
+    nAttr.setWritable(true);
+    nAttr.setReadable(false);
+    nAttr.setMin(kSchemaModeAuto);
+    nAttr.setMax(kSchemaModeCompat);
+    addAttribute(aSchemaMode);
 
     // --- 出力: outputTranslate(double3) ---
     aOutputTranslate = createDouble3Attribute(
@@ -600,7 +621,7 @@ MStatus MmdAppendNode::initialize() {
     for (MObject input : {
              aBaseTranslateX, aBaseTranslateY, aBaseTranslateZ,
              aSourceTranslateX, aSourceTranslateY, aSourceTranslateZ,
-             aRatio, aAffectTranslation, aLocalAppend}) {
+             aRatio, aAffectTranslation, aLocalAppend, aSchemaMode}) {
         attributeAffects(input, aOutputTranslateX);
         attributeAffects(input, aOutputTranslateY);
         attributeAffects(input, aOutputTranslateZ);
@@ -614,7 +635,7 @@ MStatus MmdAppendNode::initialize() {
              aSourceRotateX, aSourceRotateY, aSourceRotateZ,
              aSourceJointOrientX, aSourceJointOrientY, aSourceJointOrientZ,
              aTargetJointOrientX, aTargetJointOrientY, aTargetJointOrientZ,
-             aRatio, aAffectRotation, aLocalAppend}) {
+             aRatio, aAffectRotation, aLocalAppend, aSchemaMode}) {
         attributeAffects(input, aOutputRotateX);
         attributeAffects(input, aOutputRotateY);
         attributeAffects(input, aOutputRotateZ);
@@ -660,14 +681,21 @@ MStatus MmdAppendNode::compute(const MPlug& plug, MDataBlock& data) {
     float ratio = data.inputValue(aRatio, &status).asFloat();
     bool affectRot = data.inputValue(aAffectRotation, &status).asBool();
     bool affectTrans = data.inputValue(aAffectTranslation, &status).asBool();
-    bool compatInputsActive = isAppendTranslate || isAppendRotate ||
-                              isVectorNonZero(baseT) || isVectorNonZero(sourceT) ||
-                              isVectorNonZero(baseR) || isVectorNonZero(sourceR) ||
-                              isVectorNonZero(sourceJo) || isVectorNonZero(targetJo) ||
-                              std::abs(ratio - 1.0f) > 1e-6f ||
-                              affectTrans || !affectRot;
+    short schemaMode = data.inputValue(aSchemaMode, &status).asShort();
+    bool autoCompatInputsActive = isAppendTranslate || isAppendRotate ||
+                                  isVectorNonZero(baseT) || isVectorNonZero(sourceT) ||
+                                  isVectorNonZero(baseR) || isVectorNonZero(sourceR) ||
+                                  isVectorNonZero(sourceJo) || isVectorNonZero(targetJo) ||
+                                  std::abs(ratio - 1.0f) > 1e-6f ||
+                                  affectTrans || !affectRot;
+    bool useCompatSchema = autoCompatInputsActive;
+    if (schemaMode == kSchemaModeLegacy) {
+        useCompatSchema = isAppendTranslate || isAppendRotate;
+    } else if (schemaMode == kSchemaModeCompat) {
+        useCompatSchema = true;
+    }
 
-    if (compatInputsActive) {
+    if (useCompatSchema) {
         const double srcRx = data.inputValue(aSourceRotateX).asAngle().asRadians();
         const double srcRy = data.inputValue(aSourceRotateY).asAngle().asRadians();
         const double srcRz = data.inputValue(aSourceRotateZ).asAngle().asRadians();

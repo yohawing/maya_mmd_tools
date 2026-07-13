@@ -42,6 +42,8 @@ stubs/
 .gemini/
 .clinerules/
 .claude/
+.ai/
+agent-tools/
 .kiro/
 KIRO.md
 .mcp.json
@@ -53,7 +55,6 @@ docs-dev/
 /PLAN.md
 docs/*
 !docs/README_ja.md
-!docs/RELEASE.md
 
 # TestData
 /tests/data/*
@@ -62,10 +63,14 @@ docs/*
 !/tests/data/for_unit_test/*.pmx
 !/tests/data/for_unit_test/*.pmd
 !/tests/data/for_unit_test/*.vmd
+!/tests/data/physics/
+!/tests/data/physics/test_hair_physics.pmx
 !/tests/data/mmt_test_model.pmx
 !/tests/data/mmt_test_model_test_motion.vmd
 !/tests/data/mmt_test_model_ik_test_motion.vmd
 !/tests/data/joint_orient_test.vmd
 !/tests/data/test_camera_light.vmd
 !/tests/data/test_morph_model.pmx
+!/tests/data/vmd/
+!/tests/data/vmd/*.vmd
 mmd_tools/shaders/MayaToonOutline.fx

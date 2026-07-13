@@ -19,6 +19,7 @@ from ..qt_compat import (
     QScrollArea,
 )
 from ..base_tab import BaseTab
+from .translation_registry import apply_translation_registry
 
 
 class BoneTab(BaseTab):
@@ -579,7 +580,7 @@ class BoneTab(BaseTab):
 
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""
-        self._apply_translation_registry(self._TRANSLATION_REGISTRY)
+        apply_translation_registry(self, self._TRANSLATION_REGISTRY)
 
         # ComboBox items - Connection type
         self.connection_type_combo.clear()

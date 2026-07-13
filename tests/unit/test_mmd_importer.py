@@ -12,7 +12,6 @@ from mmd_tools.io.mmd_importer import _scoped_settings_override, import_mmd_file
 
 _ALL_KEYS = (
     "import.model.separate_meshes_by_material",
-    "import.model.split_meshes_by_morph_groups",
     "import.model.auto_classify_transparency",
     "import.model.auto_resolve_textures",
     "import.model.disable_backface_culling",
@@ -20,7 +19,6 @@ _ALL_KEYS = (
     "import.model.texture_search_path",
     "import.rig.add_semi_standard_bones",
     "import.naming.translate_names",
-    "import.model.hide_hidden_geometry",
 )
 
 
@@ -50,7 +48,6 @@ class TestScopedSettingsOverride(unittest.TestCase):
             "texture_search_path": "",
             "add_semi_standard_bones": False,
             "translate_names": True,
-            "hide_hidden_geometry": False,
         }
 
         with _scoped_settings_override(options):
@@ -62,7 +59,6 @@ class TestScopedSettingsOverride(unittest.TestCase):
             self.assertEqual(settings.get("import.model.texture_search_path"), "")
             self.assertFalse(settings.get("import.rig.add_semi_standard_bones"))
             self.assertTrue(settings.get("import.naming.translate_names"))
-            self.assertFalse(settings.get("import.model.hide_hidden_geometry"))
 
     def test_original_values_restored_after_context(self):
         settings.set("import.model.separate_meshes_by_material", True)
@@ -171,20 +167,55 @@ class TestImportMmdFileScalePrecedence(unittest.TestCase):
                     options={"scale": 4.0},
                 )
 
-    def test_settings_scale_is_used_when_no_explicit_scale_is_given(self):
-        settings.set("import.general.scale_factor", 3.0)
+    def test_policy_scale_is_used_when_no_explicit_scale_is_given(self):
+        """No scale= / options.scale → mode-aware policy (normal mode forces 1.0)."""
+        self._saved_dev = settings.get("ui.general.development_mode", False)
+        try:
+            settings.set("import.general.scale_factor", 3.0)
+            settings.set("ui.general.development_mode", False)
 
-        for extension, importer_patch in (
-            (".pmx", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
-            (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
-        ):
-            with self.subTest(extension=extension):
-                self._assert_model_import_scale(
-                    extension,
-                    importer_patch,
-                    3.0,
-                    options={},
-                )
+            for extension, importer_patch in (
+                (".pmx", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
+                (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
+            ):
+                with self.subTest(extension=extension, mode="normal"):
+                    self._assert_model_import_scale(
+                        extension,
+                        importer_patch,
+                        1.0,
+                        options={},
+                    )
+
+            settings.set("ui.general.development_mode", True)
+            for extension, importer_patch in (
+                (".pmx", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
+                (".pmd", "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file"),
+            ):
+                with self.subTest(extension=extension, mode="dev"):
+                    self._assert_model_import_scale(
+                        extension,
+                        importer_patch,
+                        3.0,
+                        options={},
+                    )
+        finally:
+            settings.set("ui.general.development_mode", self._saved_dev)
+
+    def test_explicit_scale_kwarg_remains_public_override(self):
+        """scale= is an intentional public API override even in normal mode."""
+        self._saved_dev = settings.get("ui.general.development_mode", False)
+        try:
+            settings.set("ui.general.development_mode", False)
+            settings.set("import.general.scale_factor", 9.0)
+            self._assert_model_import_scale(
+                ".pmx",
+                "mmd_tools.io.mmd_importer.pmx_importer.import_pmx_file",
+                2.0,
+                scale=2.0,
+                options={},
+            )
+        finally:
+            settings.set("ui.general.development_mode", self._saved_dev)
 
     def test_pmx_import_forwards_required_native_parse_option(self):
         parsed_data = object()

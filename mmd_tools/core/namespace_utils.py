@@ -12,7 +12,7 @@ from typing import Optional, List
 from maya import cmds
 
 from .logger import get_logger
-from .maya_utils import sanitize_text
+from .maya_name_utils import sanitize_text
 
 logger = get_logger(__name__)
 
@@ -104,7 +104,7 @@ class NamespaceUtils:
                 return True
 
             cmds.namespace(add=namespace_name)
-            logger.info(f"Created namespace: {namespace_name}")
+            logger.debug(f"Created namespace: {namespace_name}")
             return True
 
         except Exception as e:
@@ -176,11 +176,11 @@ class NamespaceUtils:
                     cmds.delete(objects)
                 else:
                     # マージモード：親namespaceにマージ
-                    logger.info(f"Merging namespace: {namespace_name}")
+                    logger.debug(f"Merging namespace: {namespace_name}")
 
             # namespaceを削除
             cmds.namespace(removeNamespace=namespace_name, mergeNamespaceWithParent=not force)
-            logger.info(f"Cleaned up namespace: {namespace_name}")
+            logger.debug(f"Cleaned up namespace: {namespace_name}")
 
         except Exception as e:
             logger.error(f"Failed to cleanup namespace {namespace_name}: {e}")

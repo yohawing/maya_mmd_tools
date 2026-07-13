@@ -8,13 +8,13 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from maya import cmds
 
 from .. import settings
-from ..converters import PhysicsConverter
-from ..converters.light_converter import create_mmd_light_controller, wire_dx11_shaders_to_mmd_light
+from ..converters.light_converter import create_mmd_light_controller, wire_mmd_shaders_to_mmd_light
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
-from ..core import maya_utils, settings_keys as setting_keys
+from ..core import maya_attribute_utils, maya_viewport_utils, settings_keys as setting_keys
 from ..core.constants import SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
-from ..core.utils import create_bone_joint_mapping
+from ..core.visibility_state import sync_visibility_connections
+from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
 from .import_scale import apply_import_scale
 
 
@@ -59,19 +59,19 @@ class ModelImportPipeline:
 
         if custom_namespace:
             namespace = NamespaceUtils.ensure_unique_namespace(custom_namespace)
-            self.logger.info("Using custom namespace: %s", namespace)
+            self.logger.debug("Using custom namespace: %s", namespace)
             return namespace
 
         base_ns = NamespaceUtils.generate_namespace(model_name)
         namespace = NamespaceUtils.ensure_unique_namespace(base_ns)
-        self.logger.info("Using namespace: %s", namespace)
+        self.logger.debug("Using namespace: %s", namespace)
         return namespace
 
     def create_root_group(self, model_name: str, attributes: Dict[str, Any]) -> str:
         """Create the model root transform and attach MMD metadata."""
         root_group = cmds.group(empty=True, name=f"{model_name}{SCENE_ROOT_SUFFIX}")
         self.logger.debug("Created root group: %s", root_group)
-        maya_utils.set_custom_attributes(root_group, attributes)
+        maya_attribute_utils.set_custom_attributes(root_group, attributes)
         return root_group
 
     def connect_morph_nodes_to_root(self, root_group: str, morph_result: Dict[str, Any]) -> None:
@@ -84,6 +84,13 @@ class ModelImportPipeline:
                 cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
             cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root", force=True)
 
+    def connect_texture_nodes_to_root(self, root_group: str, texture_nodes) -> None:
+        """Attach instance ownership to imported texture nodes."""
+        for texture_node in texture_nodes or []:
+            if not cmds.attributeQuery("mmd_model_root", node=texture_node, exists=True):
+                cmds.addAttr(texture_node, longName="mmd_model_root", attributeType="message")
+            cmds.connectAttr(f"{root_group}.message", f"{texture_node}.mmd_model_root", force=True)
+
     def convert_physics(
         self,
         *,
@@ -92,38 +99,14 @@ class ModelImportPipeline:
         maya_joints: Any,
         root_group: str,
     ) -> Tuple[list, list]:
-        """Run PMX or PMD physics conversion when enabled and data is present."""
-        import_physics = self.options.get(
-            "import_physics",
-            settings.get(setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS, True),
-        )
-        if not import_physics:
-            return [], []
-
-        self.logger.info("Converting physics...")
-        if not getattr(parser, "rigid_bodies", None):
-            self.logger.debug("No physics data found")
-            return [], []
-
-        physics_converter = PhysicsConverter()
-        bone_joint_mapping = create_bone_joint_mapping(parser.bones, maya_joints, file_kind)
-        phase_start = time.perf_counter()
-        if file_kind == "pmx":
-            ncloth_nodes, constraint_nodes = physics_converter.convert_pmx_physics(
-                parser, bone_joint_mapping, root_group
-            )
-        else:
-            ncloth_nodes, constraint_nodes = physics_converter.convert_pmd_physics(
-                parser, bone_joint_mapping, root_group
-            )
-        self.record_phase("physics_conversion_sec", phase_start)
-        self.emit_progress(86)
-        self.logger.debug(
-            "Physics conversion complete: nCloth=%d, Constraints=%d",
-            len(ncloth_nodes),
-            len(constraint_nodes),
-        )
-        return ncloth_nodes, constraint_nodes
+        """Skip scene physics creation; physics is available only through native bake."""
+        self.logger.debug("Skipping retired Maya scene physics conversion")
+        if self.profile is not None:
+            self.profile["physics_converter"] = {
+                "skipped": True,
+                "reason": "maya_scene_physics_removed",
+            }
+        return [], []
 
     def create_light_controller(self) -> Optional[str]:
         """Create the shared MMD light controller when enabled."""
@@ -136,21 +119,26 @@ class ModelImportPipeline:
             return None
 
     def apply_scale_and_select(self, root_group: str, *, apply_scale: bool = True) -> None:
-        """Apply import scale and select the imported model root."""
+        """Finalize root visibility, apply import scale, and select the model."""
+        sync_visibility_connections(MayaCmdsAdapter(cmds), root_group)
         if apply_scale:
             apply_import_scale(root_group, self.scale, self.logger)
         self.emit_progress(92)
         cmds.select(root_group)
 
     def sync_dx11_uniforms(self, mesh_converter: Any, *, refresh_if_dx11: bool = False) -> int:
-        """Force dx11 uniform generation when needed and sync generated attrs."""
-        if refresh_if_dx11 and mesh_converter.has_dx11_shaders:
+        """Materialize hardware uniforms, then sync DX11 compatibility attrs."""
+        has_hardware_shader = bool(
+            mesh_converter.has_dx11_shaders
+            or getattr(mesh_converter, "has_glsl_shaders", False)
+        )
+        if refresh_if_dx11 and has_hardware_shader:
             try:
                 phase_start = time.perf_counter()
                 cmds.refresh(force=True)
                 self.record_phase("refresh_sec", phase_start)
             except Exception:
-                self.logger.debug("Failed to refresh viewport before dx11 uniform sync", exc_info=True)
+                self.logger.debug("Failed to refresh viewport before hardware uniform sync", exc_info=True)
 
         phase_start = time.perf_counter()
         synced_dx11 = sync_dx11_generated_uniforms(mesh_converter.created_shaders)
@@ -160,24 +148,24 @@ class ModelImportPipeline:
         return synced_dx11
 
     def wire_light_controller(self, mesh_converter: Any, light_ctrl: Optional[str]) -> None:
-        """Wire the MMD light controller to generated dx11 shaders when available."""
+        """Wire the MMD light controller to generated hardware shaders."""
         if not light_ctrl:
             return
         try:
-            wire_dx11_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)
+            wire_mmd_shaders_to_mmd_light(mesh_converter.created_shaders, light_ctrl)
         except Exception:
             self.logger.debug("Failed to wire MMD light", exc_info=True)
 
     def setup_view(self) -> None:
         """Apply MMD-friendly view settings requested by import options."""
         if settings.get(setting_keys.IMPORT_VIEW_SETUP_COLOR_MANAGEMENT, True):
-            maya_utils.setup_mmd_color_management()
+            maya_viewport_utils.setup_mmd_color_management()
         if settings.get(setting_keys.IMPORT_VIEW_SETUP_TRANSPARENCY, True):
-            maya_utils.setup_mmd_transparency()
+            maya_viewport_utils.setup_mmd_transparency()
         self.emit_progress(96)
 
     def cleanup_namespace(self, namespace: Optional[str]) -> None:
         """Remove a namespace after an import failure."""
         if namespace:
-            self.logger.info("Cleaning up namespace: %s", namespace)
+            self.logger.debug("Cleaning up namespace: %s", namespace)
             NamespaceUtils.cleanup_namespace(namespace, force=True)

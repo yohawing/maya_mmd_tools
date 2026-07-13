@@ -10,6 +10,11 @@ install_headless_ui_stubs()
 from mmd_tools.io.import_scale import apply_import_scale  # noqa: E402
 
 
+def _message_templates(mock_log):
+    # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+)
+    return [call[0][0] for call in mock_log.call_args_list if call[0]]
+
+
 class TestImportScale(unittest.TestCase):
     """Scale application should not make import fail on locked attrs."""
 
@@ -35,6 +40,12 @@ class TestImportScale(unittest.TestCase):
             self.assertIn(call(attr, 2.0), cmds.setAttr.call_args_list)
             self.assertIn(call(attr, lock=True), cmds.setAttr.call_args_list)
 
+        # Scale detail is DEBUG, not INFO; apply behavior unchanged.
+        debug_messages = _message_templates(logger.debug)
+        info_messages = _message_templates(logger.info)
+        self.assertIn("Applying scale: %f", debug_messages)
+        self.assertNotIn("Applying scale: %f", info_messages)
+
     def test_make_identity_failure_is_non_fatal(self):
         logger = MagicMock()
 
@@ -49,6 +60,12 @@ class TestImportScale(unittest.TestCase):
         cmds.setAttr.assert_any_call("model_root.scaleX", 2.0)
         cmds.setAttr.assert_any_call("model_root.scaleY", 2.0)
         cmds.setAttr.assert_any_call("model_root.scaleZ", 2.0)
+
+        # Scale detail still logs at DEBUG even when freeze fails.
+        debug_messages = _message_templates(logger.debug)
+        info_messages = _message_templates(logger.info)
+        self.assertIn("Applying scale: %f", debug_messages)
+        self.assertNotIn("Applying scale: %f", info_messages)
 
 
 if __name__ == "__main__":

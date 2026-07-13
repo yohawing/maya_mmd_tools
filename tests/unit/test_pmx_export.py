@@ -7,6 +7,7 @@ import importlib.machinery
 import importlib.util
 import os
 
+from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.mmd_parser import parse_pmx_file
 from mmd_tools.core.pmx_data import PmxData
 
@@ -26,7 +27,7 @@ from mmd_tools.core.pmx_data.vertex import PmxVertex
 from mmd_tools.core.pmx_data.face import PmxFace
 from mmd_tools.core.pmx_data.material import PmxMaterial
 from mmd_tools.core.pmx_data.bone import PmxBone, PmxBoneFlag
-from mmd_tools.core.pmx_data.morph import PmxMorphType
+from mmd_tools.core.pmx_data.morph import PmxMorph, PmxMorphType
 from mmd_tools.core.pmx_data.display_frame import PmxDisplayFrame
 from tests.common.test_base import TestBase
 from tests.common.pmx_mock import PmxMock
@@ -39,6 +40,47 @@ def _parse_pmx(path):
         use_native_pmx_parse=False,
         require_native_pmx_parse=False,
     )
+
+
+def _minimal_native_parts_pmx() -> PmxData:
+    """Build a tiny PmxData object that is eligible for native parts export."""
+    pmx = PmxData()
+    pmx.header.magic = b"PMX "
+    pmx.header.version = 2.0
+    pmx.header.header_size = 8
+    pmx.header.vertex_index_size = 1
+    pmx.header.texture_index_size = 1
+    pmx.header.material_index_size = 1
+    pmx.header.bone_index_size = 1
+    pmx.header.morph_index_size = 1
+    pmx.header.rigid_body_index_size = 1
+    pmx.header.model_name = "NativeEligible"
+    pmx.header.model_name_english = "NativeEligible"
+
+    for position in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+        vertex = PmxVertex(bone_index_size=1, additional_uv_count=0)
+        vertex.position = position
+        vertex.normal = (0.0, 0.0, 1.0)
+        vertex.uv = (0.0, 0.0)
+        vertex.weight_transform_type = 0
+        vertex.bone_indices = [0]
+        vertex.bone_weights = []
+        vertex.edge_magnification = 1.0
+        pmx.vertices.append(vertex)
+
+    face = PmxFace(vertex_index_size=1)
+    face.indices = (0, 1, 2)
+    pmx.faces.append(face)
+
+    material = PmxMaterial(texture_index_size=1)
+    material.name = "mat"
+    material.face_count = 3
+    pmx.materials.append(material)
+
+    bone = PmxBone(bone_index_size=1)
+    bone.name = "root"
+    pmx.bones.append(bone)
+    return pmx
 
 
 class TestPmxExport(TestBase):
@@ -330,6 +372,171 @@ class TestPmxExporterFromDict(TestBase):
         # Verify face
         self.assertEqual(pmx.faces[0].indices, (0, 1, 2))
 
+    def test_exporter_uses_native_parts_writer_for_basic_model(self):
+        """basic PMX は native parts writer に flat buffers と descriptor を渡す。"""
+        calls = []
+
+        def native_parts_exporter(metadata, positions, normals, uvs, **kwargs):
+            calls.append(
+                {
+                    "metadata": metadata,
+                    "positions": positions,
+                    "normals": normals,
+                    "uvs": uvs,
+                    **kwargs,
+                }
+            )
+            return b"NATIVE-PMX"
+
+        exporter = PmxExporter(native_parts_exporter=native_parts_exporter)
+        out_path = os.path.join(self.temp_dir, "native_parts.pmx")
+        exporter.export_pmx_model(
+            out_path,
+            {
+                "model_name": "NativePmx",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 0, 1], "uv": [0, 0], "bone_indices": [0]},
+                    {
+                        "position": [1, 0, 0],
+                        "normal": [0, 0, 1],
+                        "uv": [1, 0],
+                        "bone_indices": [0, 0],
+                        "bone_weights": [0.25],
+                    },
+                    {
+                        "position": [0, 1, 0],
+                        "normal": [0, 0, 1],
+                        "uv": [0, 1],
+                        "bone_indices": [0, 0, 0, 0],
+                        "bone_weights": [0.25, 0.25, 0.25, 0.25],
+                    },
+                ],
+                "faces": [[0, 1, 2]],
+                "materials": [{"name": "mat", "face_count": 3}],
+            },
+        )
+
+        with open(out_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"NATIVE-PMX")
+        self.assertEqual(len(calls), 1)
+        call = calls[0]
+        self.assertEqual(call["metadata"]["name"], "NativePmx")
+        self.assertEqual(call["metadata"]["materials"][0]["faceCount"], 1)
+        self.assertEqual(call["metadata"]["bones"][0]["name"], "root")
+        self.assertEqual(call["positions"], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+        self.assertEqual(call["indices"], [0, 1, 2])
+        self.assertEqual(call["skin_indices"], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(call["skin_weights"], [1.0, 0.0, 0.0, 0.0, 0.25, 0.75, 0.0, 0.0, 0.25, 0.25, 0.25, 0.25])
+
+    def test_exporter_includes_supported_rich_parts_in_native_descriptor(self):
+        """vertex morph / rigid body / joint は native parts descriptor に含める。"""
+        calls = []
+        exporter = PmxExporter(
+            native_parts_exporter=lambda metadata, positions, normals, uvs, **kwargs: calls.append(metadata) or b"NATIVE-PMX"
+        )
+        out_path = os.path.join(self.temp_dir, "native_rich_parts.pmx")
+        exporter.export_pmx_model(
+            out_path,
+            {
+                "model_name": "NativeRichPmx",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 0, 1], "uv": [0, 0]},
+                    {"position": [1, 0, 0], "normal": [0, 0, 1], "uv": [1, 0]},
+                    {"position": [0, 1, 0], "normal": [0, 0, 1], "uv": [0, 1]},
+                ],
+                "faces": [[0, 1, 2]],
+                "morphs": [
+                    {
+                        "type": "vertex",
+                        "name": "smile",
+                        "offsets": [{"vertex_index": 0, "position_offset": [0.0, 0.1, 0.0]}],
+                    }
+                ],
+                "rigid_bodies": [{"name": "body", "shape_type": 1, "physics_mode": 2}],
+                "joints": [{"name": "joint", "rigid_body_a_index": 0, "rigid_body_b_index": -1}],
+            },
+        )
+
+        self.assertEqual(len(calls), 1)
+        metadata = calls[0]
+        self.assertEqual(metadata["morphs"][0]["kind"], "vertex")
+        self.assertEqual(metadata["morphs"][0]["vertexOffsets"][0]["position"], [0.0, 0.1, 0.0])
+        self.assertEqual(metadata["rigidBodies"][0]["shape"], "box")
+        self.assertEqual(metadata["rigidBodies"][0]["mode"], "dynamicBone")
+        self.assertEqual(metadata["joints"][0]["type"], "generic6dofSpring")
+
+    def test_exporter_falls_back_for_sections_not_supported_by_parts_path(self):
+        """material morph 等の parts ABI 未対応 PMX は従来 writer に戻る。"""
+        calls = []
+        exporter = PmxExporter(native_parts_exporter=lambda *args, **kwargs: calls.append((args, kwargs)) or b"NATIVE-PMX")
+        out_path = os.path.join(self.temp_dir, "native_parts_fallback.pmx")
+        exporter.export_pmx_model(
+            out_path,
+            {
+                "model_name": "FallbackPmx",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 0, 1], "uv": [0, 0]},
+                    {"position": [1, 0, 0], "normal": [0, 0, 1], "uv": [1, 0]},
+                    {"position": [0, 1, 0], "normal": [0, 0, 1], "uv": [0, 1]},
+                ],
+                "faces": [[0, 1, 2]],
+                "morphs": [
+                    {
+                        "type": "material",
+                        "name": "hide_mat",
+                        "offsets": [{"material_index": 0}],
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(calls, [])
+        pmx = _parse_pmx(out_path)
+        self.assertEqual(pmx.header.model_name, "FallbackPmx")
+        self.assertEqual(len(pmx.morphs), 1)
+        self.assertEqual(int(pmx.morphs[0].morph_type), 8)
+
+    def test_native_parts_export_blocker_documents_unsupported_pmx_sections(self):
+        """parts ABI 非対象の PMX 範囲を理由付きで固定する。"""
+        exporter = PmxExporter(native_parts_exporter=lambda *args, **kwargs: b"NATIVE-PMX")
+
+        pmx = _minimal_native_parts_pmx()
+        self.assertIsNone(exporter.native_parts_export_blocker(pmx))
+        self.assertIsNotNone(exporter.to_native_parts(pmx))
+
+        pmx = _minimal_native_parts_pmx()
+        pmx.header.additional_uv = 1
+        self.assertEqual(exporter.native_parts_export_blocker(pmx), "additional_uv_header")
+        self.assertIsNone(exporter.to_native_parts(pmx))
+
+        pmx = _minimal_native_parts_pmx()
+        pmx.vertices[0].additional_uvs = [(0.0, 0.0, 0.0, 0.0)]
+        self.assertEqual(exporter.native_parts_export_blocker(pmx), "additional_uv_vertices")
+        self.assertIsNone(exporter.to_native_parts(pmx))
+
+        for weight_type in (3, 4):
+            with self.subTest(weight_type=weight_type):
+                pmx = _minimal_native_parts_pmx()
+                pmx.vertices[0].weight_transform_type = weight_type
+                self.assertEqual(
+                    exporter.native_parts_export_blocker(pmx),
+                    f"unsupported_skinning_type:{weight_type}",
+                )
+                self.assertIsNone(exporter.to_native_parts(pmx))
+
+        for morph_type in (PmxMorphType.BoneMorph, PmxMorphType.MaterialMorph):
+            with self.subTest(morph_type=morph_type):
+                pmx = _minimal_native_parts_pmx()
+                morph = PmxMorph(1, 1, 1, 1, 1)
+                morph.name = "unsupported"
+                morph.morph_type = morph_type
+                pmx.morphs.append(morph)
+                self.assertEqual(
+                    exporter.native_parts_export_blocker(pmx),
+                    f"unsupported_morph_type:{int(morph_type)}",
+                )
+                self.assertIsNone(exporter.to_native_parts(pmx))
+
     def test_export_display_frame_name_roundtrip_matches_header_encoding(self):
         """dict export でヘッダと同じ encoding_flag で表示枠名を保存できる"""
         data = {
@@ -349,6 +556,87 @@ class TestPmxExporterFromDict(TestBase):
         self.assertEqual(pmx.header.encoding_flag, 0)
         self.assertEqual(len(pmx.display_frames), 2)
         self.assertEqual(pmx.display_frames[1].name, "表情")
+
+    def test_export_custom_display_frames_roundtrip(self):
+        """dict export は任意表示枠と bone / morph 要素を保持する"""
+        data = {
+            "model_name": "DisplayFrameRoundtripTest",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [1.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0], "normal": [0.0, 0.0, 1.0], "uv": [0.0, 1.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [
+                {"name": "センター", "name_english": "Center", "position": [0.0, 0.0, 0.0]},
+                {"name": "上半身", "name_english": "UpperBody", "position": [0.0, 1.0, 0.0]},
+            ],
+            "morphs": [
+                {
+                    "type": "vertex",
+                    "name": "笑い",
+                    "name_english": "Smile",
+                    "panel": 3,
+                    "offsets": [{"vertex_index": 1, "position_offset": [0.1, 0.0, 0.0]}],
+                }
+            ],
+            "display_frames": [
+                {
+                    "name": "Root",
+                    "name_english": "Root",
+                    "special_flag": 1,
+                    "elements": [{"type": 0, "index": 0}],
+                },
+                {
+                    "name": "表情",
+                    "name_english": "Exp",
+                    "special_flag": 1,
+                    "elements": [{"type": 1, "index": 0}],
+                },
+                {
+                    "name": "操作",
+                    "name_english": "Controls",
+                    "special_flag": 0,
+                    "elements": [
+                        {"type": 0, "index": 1},
+                        {"type": 1, "index": 0},
+                    ],
+                },
+            ],
+        }
+        out_path = os.path.join(self.temp_dir, "custom_display_frames.pmx")
+        self.exporter.export_pmx_model(out_path, data)
+
+        pmx = _parse_pmx(out_path)
+
+        self.assertEqual([frame.name for frame in pmx.display_frames], ["Root", "表情", "操作"])
+        self.assertEqual(pmx.display_frames[2].name_english, "Controls")
+        self.assertEqual(pmx.display_frames[2].special_flag, 0)
+        self.assertEqual(
+            pmx.display_frames[2].elements,
+            [{"type": 0, "index": 1}, {"type": 1, "index": 0}],
+        )
+
+    def test_export_display_frame_bone_index_out_of_range_raises(self):
+        """表示枠の bone index が範囲外なら ValueError"""
+        data = {
+            "model_name": "BadDisplayFrameBone",
+            "vertices": [
+                {"position": [0.0, 0.0, 0.0]},
+                {"position": [1.0, 0.0, 0.0]},
+                {"position": [0.0, 1.0, 0.0]},
+            ],
+            "faces": [[0, 1, 2]],
+            "bones": [{"name": "root"}],
+            "display_frames": [
+                {"name": "Bad", "elements": [{"type": 0, "index": 1}]},
+            ],
+        }
+        with self.assertRaises(MMDExportException):
+            self.exporter.export_pmx_model(
+                os.path.join(self.temp_dir, "bad_display_frame_bone.pmx"),
+                data,
+            )
 
     def test_export_roundtrip_keeps_supported_field_values(self):
         """ヘッダ英名 / 材質英名・flags / 接続位置オフセットを保持する"""
@@ -452,7 +740,7 @@ class TestPmxExporterFromDict(TestBase):
 
     def test_export_empty_vertices_raises(self):
         """vertices空でValueError"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "empty.pmx"),
                 {"vertices": [], "faces": [[0, 1, 2]]},
@@ -460,7 +748,7 @@ class TestPmxExporterFromDict(TestBase):
 
     def test_export_empty_faces_raises(self):
         """faces空でValueError"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "empty.pmx"),
                 {"vertices": [{"position": [0.0, 0.0, 0.0]}], "faces": []},
@@ -764,7 +1052,7 @@ class TestPmxExporterFromDict(TestBase):
                 ],
                 "faces": [[0, 1, 2]],
             }
-            with self.assertRaises(ValueError):
+            with self.assertRaises(MMDExportException):
                 self.exporter.export_pmx_model(
                     os.path.join(self.temp_dir, f"bad_len_{bad_len}.pmx"),
                     data,
@@ -782,7 +1070,7 @@ class TestPmxExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "bones": [],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "empty_bones.pmx"),
                 data,
@@ -800,7 +1088,7 @@ class TestPmxExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "bones": [{"name": "root"}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_bone_index.pmx"),
                 data,
@@ -817,7 +1105,7 @@ class TestPmxExporterFromDict(TestBase):
             ],
             "faces": [[0, 1, 3]],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_face_index.pmx"),
                 data,
@@ -967,7 +1255,7 @@ class TestPmxExporterFromDict(TestBase):
                 }
             ],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_bone_morph.pmx"),
                 data,
@@ -1077,7 +1365,7 @@ class TestPmxExporterFromDict(TestBase):
                 }
             ],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_mat_morph.pmx"),
                 data,
@@ -1114,7 +1402,7 @@ class TestPmxExporterFromDict(TestBase):
             with self.subTest(morph_type=morph_type):
                 data = dict(_base_data)
                 data["morphs"] = [{"type": morph_type, "name": "bad", "offsets": []}]
-                with self.assertRaises(ValueError):
+                with self.assertRaises(MMDExportException):
                     self.exporter.export_pmx_model(
                         os.path.join(self.temp_dir, f"unsupported_{str(morph_type).replace(' ', '_')}.pmx"),
                         data,
@@ -1138,7 +1426,7 @@ class TestPmxExporterFromDict(TestBase):
                 }
             ],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_morph_index.pmx"),
                 data,
@@ -1244,7 +1532,7 @@ class TestPmxExporterFromDict(TestBase):
             "bones": [{"name": "center"}],
             "rigid_bodies": [{"name": "bad", "related_bone_index": 1}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_rigid_body_bone.pmx"),
                 data,
@@ -1263,7 +1551,7 @@ class TestPmxExporterFromDict(TestBase):
             "rigid_bodies": [{"name": "rb"}],
             "joints": [{"name": "bad_joint", "rigid_body_a_index": 1}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "bad_joint_rb.pmx"),
                 data,
@@ -1281,7 +1569,7 @@ class TestPmxExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "joints": [{"name": "bad_joint"}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmx_model(
                 os.path.join(self.temp_dir, "joint_without_rb.pmx"),
                 data,

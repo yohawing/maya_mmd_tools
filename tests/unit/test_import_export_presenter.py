@@ -9,6 +9,7 @@ ImportExportPresenter 自体は純粋な分岐ロジックだが、import 連鎖
 """
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from tests.common.maya_stub import install_headless_ui_stubs
@@ -153,16 +154,20 @@ class _FakeSceneModelService:
 
 
 class _FakeMayaAdapter:
-    def __init__(self, file_nodes=None, existing_attrs=None, connections=None):
+    def __init__(self, file_nodes=None, existing_attrs=None, connections=None, relatives=None, existing=None):
         self.file_nodes = file_nodes or []
         self.existing_attrs = existing_attrs or {}
         self.connections = connections or {}
+        self.relatives = relatives or {}
+        self.existing = set(existing or [])
         self.attribute_exists_calls = []
         self.list_connections_calls = []
         self.ls_calls = []
 
     def ls(self, *args, **kwargs):
         self.ls_calls.append((args, kwargs))
+        if kwargs.get("materials") and args:
+            return list(args[0])
         return list(self.file_nodes)
 
     def attribute_exists(self, attr, node):
@@ -171,7 +176,18 @@ class _FakeMayaAdapter:
 
     def list_connections(self, node, **kwargs):
         self.list_connections_calls.append((node, kwargs))
+        if isinstance(node, list):
+            merged = []
+            for item in node:
+                merged.extend(self.connections.get(item, []))
+            return merged
         return list(self.connections.get(node, []))
+
+    def list_relatives(self, node, **kwargs):
+        return list(self.relatives.get(node, []))
+
+    def object_exists(self, node):
+        return node in self.existing
 
 
 class _RecordingImportModelAction:
@@ -314,13 +330,20 @@ class TestImportExportPresenter(unittest.TestCase):
             side_effect=fake_import,
         ) as mock_import, patch(
             "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
-        ) as mock_dialog:
+        ) as mock_dialog, patch.object(
+            presenter,
+            "_show_import_partial_warning",
+        ) as mock_generic:
             presenter.import_file()
 
         options = mock_import.call_args.kwargs["options"]
         self.assertIn("profile", options)
+        # Texture-only partial: one texture repair modal, no generic partial modal.
         mock_dialog.assert_called_once_with([issue], model_path="model.pmx", app_state=app_state, parent=view)
         mock_dialog.return_value.exec.assert_called_once()
+        mock_generic.assert_not_called()
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        self.assertTrue(any("warning" in s.lower() for s in app_state.statuses))
 
     def test_import_file_skips_texture_issue_dialog_when_setting_disabled(self):
         settings.set("import.model.show_texture_issue_dialog", False)
@@ -336,19 +359,15 @@ class TestImportExportPresenter(unittest.TestCase):
         with patch(
             "mmd_tools.actions.import_model_action.import_mmd_file",
             side_effect=fake_import,
-        ), patch("mmd_tools.ui.texture_issue_dialog.TextureIssueDialog") as mock_dialog:
+        ), patch("mmd_tools.ui.texture_issue_dialog.TextureIssueDialog") as mock_dialog, patch.object(
+            presenter,
+            "_show_import_partial_warning",
+        ) as mock_generic:
             presenter.import_file()
 
         mock_dialog.assert_not_called()
-
-    def test_connect_signals_connects_fix_texture_path_button_when_present(self):
-        view = _FakeView()
-        view.fix_texture_path_button = _RecordingButton()
-        app_state = _FakeAppState()
-
-        presenter = ImportExportPresenter(view, app_state)
-
-        self.assertEqual(view.fix_texture_path_button.clicked.connected, [presenter.fix_texture_paths])
+        # Texture dialog setting off: still no generic modal (status-only partial).
+        mock_generic.assert_not_called()
 
     def test_refresh_model_list_uses_scene_model_service_display_names(self):
         view = _FakeView()
@@ -372,37 +391,54 @@ class TestImportExportPresenter(unittest.TestCase):
 
         self.assertEqual(view.model_items, [])
 
-    def test_fix_texture_paths_shows_dialog_even_when_import_dialog_setting_disabled(self):
-        settings.set("import.model.show_texture_issue_dialog", False)
+    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_material_utils")
+    def test_fix_texture_paths_repairs_current_model_and_reports_counts(self, mock_material_utils):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "root"
+        maya_adapter = _FakeMayaAdapter(
+            existing={"root"},
+            relatives={"root": ["shape"]},
+            connections={
+                "shape": ["sg"],
+                "sg": ["mat"],
+                "mat": ["file1", "file2"],
+                "root.message": ["disconnected_file"],
+            },
+            existing_attrs={
+                "file1": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "file2": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+                "disconnected_file": {ATTR_MMD_ORIGINAL_TEXTURE_PATH},
+            },
+        )
+        presenter = ImportExportPresenter(view, app_state, maya_adapter=maya_adapter)
+        mock_material_utils.resolve_scene_mmd_textures.return_value = [
+            SimpleNamespace(status="resolved", rebind_status="rebound"),
+            SimpleNamespace(status="resolved", rebind_status="failed"),
+            SimpleNamespace(status="unrecoverable"),
+        ]
+
+        result = presenter.fix_texture_paths()
+
+        mock_material_utils.resolve_scene_mmd_textures.assert_called_once_with(
+            file_nodes=["disconnected_file", "file1", "file2"]
+        )
+        self.assertEqual(result, {"resolved": 1, "unresolved": 2})
+        self.assertTrue(any("1" in status for status in app_state.statuses))
+
+    def test_fix_texture_paths_no_current_model_prompts_for_selection(self):
         view = _FakeView()
         app_state = _FakeAppState()
         presenter = ImportExportPresenter(view, app_state)
-        issue = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
 
-        with patch.object(presenter, "_collect_scene_texture_issues", return_value=[issue]), patch(
-            "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
-        ) as mock_dialog:
-            presenter.fix_texture_paths()
+        result = presenter.fix_texture_paths()
 
-        mock_dialog.assert_called_once_with([issue], model_path="", app_state=app_state, parent=view)
-        mock_dialog.return_value.exec.assert_called_once()
-
-    def test_fix_texture_paths_no_issues_emits_status_and_skips_dialog(self):
-        view = _FakeView()
-        app_state = _FakeAppState()
-        presenter = ImportExportPresenter(view, app_state)
-
-        with patch.object(presenter, "_collect_scene_texture_issues", return_value=[]), patch(
-            "mmd_tools.ui.texture_issue_dialog.TextureIssueDialog",
-        ) as mock_dialog:
-            presenter.fix_texture_paths()
-
-        mock_dialog.assert_not_called()
-        expected_status = UITranslator.instance().translate("status_no_issues", "texture_issues")
+        self.assertEqual(result, {"resolved": 0, "unresolved": 0})
+        expected_status = UITranslator.instance().translate("status_select_model", "texture_issues")
         self.assertIn(expected_status, app_state.statuses)
 
-    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_utils")
-    def test_collect_scene_texture_issues_filters_and_converts_file_nodes(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_material_utils")
+    def test_collect_scene_texture_issues_filters_and_converts_file_nodes(self, mock_maya_material_utils):
         view = _FakeView()
         app_state = _FakeAppState()
         maya_adapter = _FakeMayaAdapter(
@@ -439,7 +475,7 @@ class TestImportExportPresenter(unittest.TestCase):
             file_texture_path="missing.png",
             source_path=None,
         )
-        mock_maya_utils.classify_mmd_texture_file_node.side_effect = {
+        mock_maya_material_utils.classify_mmd_texture_file_node.side_effect = {
             "ok_file": ok,
             "bad_file": resolvable,
             "lost_file": unrecoverable,
@@ -473,8 +509,8 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(presenter._material_name_for_file_node("file1"), "mat1")
         self.assertEqual(maya_adapter.list_connections_calls, [("file1", {"destination": True})])
 
-    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_utils")
-    def test_texture_resolution_to_issue_prefers_resolution_cache_path(self, mock_maya_utils):
+    @patch("mmd_tools.ui.presenters.import_export_presenter.maya_attribute_utils.get_attribute")
+    def test_texture_resolution_to_issue_prefers_resolution_cache_path(self, mock_get_attribute):
         view = _FakeView()
         app_state = _FakeAppState()
         maya_adapter = _FakeMayaAdapter(
@@ -496,7 +532,7 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertEqual(issue["current_path"], "cache.png")
         self.assertEqual(issue["material"], "mat1")
         self.assertNotIn((ATTR_MMD_TEXTURE_CACHE_PATH, "file1"), maya_adapter.attribute_exists_calls)
-        mock_maya_utils.get_attribute.assert_not_called()
+        mock_get_attribute.assert_not_called()
 
     def test_import_file_model_branch_uses_injected_action_and_updates_ui_state(self):
         recorded_history = []
@@ -507,7 +543,9 @@ class TestImportExportPresenter(unittest.TestCase):
 
         view = _RecordingView()
         app_state = _FakeAppState()
-        action = _RecordingImportModelAction(ImportModelResult(root_node="model_root", succeeded=True))
+        action = _RecordingImportModelAction(
+            ImportModelResult(root_node="model_root", succeeded=True, outcome="success")
+        )
         presenter = ImportExportPresenter(
             view,
             app_state,
@@ -527,6 +565,304 @@ class TestImportExportPresenter(unittest.TestCase):
         self.assertIn(100, app_state.progress)
         self.assertEqual(view.model_items, [])
         self.assertEqual(recorded_history, ["model.pmx"])
+
+    def test_import_file_model_partial_retains_root_and_one_warning_outcome(self):
+        recorded_history = []
+        warnings = [{"code": "node_type_unavailable", "reason": "node_type_unavailable"}]
+
+        class _RecordingView(_FakeView):
+            def add_import_path_to_history(self, path):
+                recorded_history.append(path)
+
+        view = _RecordingView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "previous_root"
+        action = _RecordingImportModelAction(
+            ImportModelResult(
+                root_node="model_root",
+                succeeded=True,
+                warnings=warnings,
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_present_import_partial_outcome", return_value="partial-msg") as mock_partial:
+            presenter.import_file()
+
+        self.assertEqual(app_state.current_model_root, "model_root")
+        self.assertEqual(recorded_history, ["model.pmx"])
+        self.assertIn(100, app_state.progress)
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        mock_partial.assert_called_once_with(
+            warnings,
+            file_path="model.pmx",
+            root_node="model_root",
+            kind="model",
+            show_dialog=True,
+        )
+
+    def test_import_file_model_partial_texture_only_shows_texture_dialog_only(self):
+        settings.set("import.model.show_texture_issue_dialog", True)
+        issue = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
+        view = _FakeView()
+        app_state = _FakeAppState()
+
+        class _TexturePartialAction:
+            def __init__(self):
+                self.requests = []
+
+            def execute(self, request):
+                self.requests.append(request)
+                # Mirror real importers: write texture issues into the shared profile.
+                request.options.setdefault("profile", {})["texture_issues"] = [issue]
+                return ImportModelResult(
+                    root_node="model_root",
+                    succeeded=True,
+                    warnings=[issue],
+                    outcome="partial",
+                )
+
+        action = _TexturePartialAction()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_generic, patch.object(
+            presenter,
+            "_show_texture_issue_dialog",
+        ) as mock_texture:
+            presenter.import_file()
+
+        mock_generic.assert_not_called()
+        mock_texture.assert_called_once_with([issue], model_path="model.pmx")
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        self.assertTrue(any("warning" in s.lower() for s in app_state.statuses))
+
+    def test_import_file_model_partial_mixed_shows_generic_and_texture_dialogs(self):
+        settings.set("import.model.show_texture_issue_dialog", True)
+        non_texture = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
+        texture = {"file_node": "file1", "material": "mat1", "reason": "non_ascii_path"}
+        view = _FakeView()
+        app_state = _FakeAppState()
+
+        class _MixedPartialAction:
+            def __init__(self):
+                self.requests = []
+
+            def execute(self, request):
+                self.requests.append(request)
+                # Mixed warnings need the generic summary and the actionable
+                # texture repair dialog.
+                profile = request.options.setdefault("profile", {})
+                profile["texture_issues"] = [texture]
+                profile["bone_morph_runtime"] = {"warnings": [non_texture]}
+                return ImportModelResult(
+                    root_node="model_root",
+                    succeeded=True,
+                    warnings=[non_texture, texture],
+                    outcome="partial",
+                )
+
+        action = _MixedPartialAction()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_generic, patch.object(
+            presenter,
+            "_show_texture_issue_dialog",
+        ) as mock_texture:
+            presenter.import_file()
+
+        mock_generic.assert_called_once()
+        mock_texture.assert_called_once_with([texture], model_path="model.pmx")
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+
+    def test_import_file_model_partial_node_type_unavailable_suppresses_texture_dialog(self):
+        settings.set("import.model.show_texture_issue_dialog", True)
+        non_texture = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
+        view = _FakeView()
+        app_state = _FakeAppState()
+
+        class _NonTexturePartialAction:
+            def __init__(self):
+                self.requests = []
+
+            def execute(self, request):
+                self.requests.append(request)
+                request.options.setdefault("profile", {})["texture_issues"] = [{"file_node": "file1"}]
+                return ImportModelResult(
+                    root_node="model_root",
+                    succeeded=True,
+                    warnings=[non_texture],
+                    outcome="partial",
+                )
+
+        action = _NonTexturePartialAction()
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_generic, patch.object(
+            presenter,
+            "_show_texture_issue_dialog",
+        ) as mock_texture:
+            presenter.import_file()
+
+        mock_generic.assert_called_once()
+        mock_texture.assert_not_called()
+
+    def test_import_file_model_fatal_does_not_update_model_or_history(self):
+        recorded_history = []
+
+        class _RecordingView(_FakeView):
+            def add_import_path_to_history(self, path):
+                recorded_history.append(path)
+
+        view = _RecordingView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "previous_root"
+        action = _RecordingImportModelAction(
+            ImportModelResult(root_node=None, succeeded=False, outcome="fatal")
+        )
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        with patch.object(presenter, "_present_import_partial_outcome") as mock_partial:
+            presenter.import_file()
+
+        self.assertEqual(app_state.current_model_root, "previous_root")
+        self.assertEqual(recorded_history, [])
+        self.assertIn("Import failed", app_state.statuses)
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        self.assertIn(0, app_state.progress)
+        mock_partial.assert_not_called()
+
+    def test_import_file_model_fatal_error_does_not_emit_success(self):
+        recorded_history = []
+
+        class _RecordingView(_FakeView):
+            def add_import_path_to_history(self, path):
+                recorded_history.append(path)
+
+        view = _RecordingView()
+        app_state = _FakeAppState()
+        app_state.current_model_root = "previous_root"
+        action = _RecordingImportModelAction(
+            ImportModelResult(error=RuntimeError("boom"), outcome="fatal")
+        )
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=action,
+            import_vmd_action=_FailingImportVmdAction(),
+        )
+
+        presenter.import_file()
+
+        self.assertEqual(app_state.current_model_root, "previous_root")
+        self.assertEqual(recorded_history, [])
+        self.assertTrue(any("Import error: boom" in s for s in app_state.statuses))
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+
+    def test_import_file_vmd_partial_uses_one_warning_outcome(self):
+        recorded_history = []
+        warnings = [{"message": "runtime fallback"}]
+
+        class _RecordingView(_FakeView):
+            def add_import_path_to_history(self, path):
+                recorded_history.append(path)
+
+        view = _RecordingView()
+        view.import_path_edit = _FakeLineEdit("motion.vmd")
+        app_state = _FakeAppState()
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(
+                root_node=True,
+                succeeded=True,
+                warnings=warnings,
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            import_model_action=_FailingImportModelAction(),
+            import_vmd_action=action,
+        )
+
+        with patch.object(presenter, "_present_import_partial_outcome", return_value="partial-vmd") as mock_partial:
+            presenter.import_file()
+
+        self.assertEqual(recorded_history, ["motion.vmd"])
+        self.assertEqual(app_state.current_model_root, True)
+        self.assertFalse(any(s.startswith("Import complete:") for s in app_state.statuses))
+        mock_partial.assert_called_once_with(
+            warnings,
+            file_path="motion.vmd",
+            root_node=True,
+            kind="vmd",
+            show_dialog=True,
+        )
+
+    def test_present_import_partial_outcome_emits_status_and_one_dialog(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+        warnings = [{"code": "a"}, {"code": "b"}]
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_dialog:
+            message = presenter._present_import_partial_outcome(
+                warnings,
+                file_path="model.pmx",
+                root_node="model_root",
+                kind="model",
+            )
+
+        self.assertIn("warnings", message.lower())
+        self.assertIn("model_root", message)
+        self.assertIn(message, app_state.statuses)
+        mock_dialog.assert_called_once()
+        title, dialog_message, dialog_warnings = mock_dialog.call_args[0]
+        self.assertEqual(dialog_message, message)
+        self.assertIs(dialog_warnings, warnings)
+        self.assertTrue(title)
+
+    def test_present_import_partial_outcome_can_suppress_dialog(self):
+        view = _FakeView()
+        app_state = _FakeAppState()
+        presenter = ImportExportPresenter(view, app_state)
+
+        with patch.object(presenter, "_show_import_partial_warning") as mock_dialog:
+            message = presenter._present_import_partial_outcome(
+                [{"file_node": "file1"}],
+                file_path="model.pmx",
+                root_node="model_root",
+                kind="model",
+                show_dialog=False,
+            )
+
+        self.assertIn(message, app_state.statuses)
+        mock_dialog.assert_not_called()
 
     def test_import_file_vmd_branch_does_not_use_model_action(self):
         view = _FakeView()
@@ -740,7 +1076,11 @@ class TestVmdImportOptions(unittest.TestCase):
         app_state = _FakeAppState()
         app_state.current_model_root = "current_model"
         presenter, _, _ = self._make_presenter(view, app_state)
-        self.assertEqual(presenter._get_vmd_target_model(), "current_model")
+        with patch("mmd_tools.ui.presenters.import_export_presenter.logger") as mock_logger:
+            self.assertEqual(presenter._get_vmd_target_model(), "current_model")
+        detail = "Auto-selected current model root for VMD import: current_model"
+        self.assertIn(detail, [call[0][0] for call in mock_logger.debug.call_args_list])
+        self.assertNotIn(detail, [call[0][0] for call in mock_logger.info.call_args_list])
 
     def test_get_vmd_target_model_returns_none_when_nothing_selected(self):
         view = _FakeView()
@@ -783,6 +1123,28 @@ class TestVmdImportOptions(unittest.TestCase):
         self.assertEqual(recorded, ["dance.vmd"])
         self.assertIn(100, app_state.progress)
 
+    def test_import_vmd_keeps_operation_boundaries_info_and_target_route_debug(self):
+        view = _FakeView()
+        view.vmd_path_edit = _FakeLineEdit("dance.vmd")
+        app_state = _FakeAppState()
+        app_state.current_model_root = "current_model"
+        action = _RecordingImportVmdAction(ImportVmdResult(root_node=True, succeeded=True))
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        with patch("mmd_tools.ui.presenters.import_export_presenter.logger") as mock_logger:
+            presenter.import_vmd_file()
+
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list]
+        for detail in (
+            "Auto-selected current model root for VMD import: current_model",
+            "Target model: current_model",
+        ):
+            self.assertIn(detail, debug_messages)
+            self.assertNotIn(detail, info_messages)
+        self.assertIn("Importing VMD file: dance.vmd", info_messages)
+        self.assertIn("VMD import successful.", info_messages)
+
     def test_import_vmd_failure_result_emits_failure_and_skips_history(self):
         recorded = []
 
@@ -793,7 +1155,9 @@ class TestVmdImportOptions(unittest.TestCase):
         view = _RecordingView()
         view.vmd_path_edit = _FakeLineEdit("dance.vmd")
         app_state = _FakeAppState()
-        action = _RecordingImportVmdAction(ImportVmdResult(root_node=None, succeeded=False))
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(root_node=None, succeeded=False, outcome="fatal")
+        )
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
         presenter.import_vmd_file()
@@ -807,7 +1171,9 @@ class TestVmdImportOptions(unittest.TestCase):
         view = _FakeView()
         view.vmd_path_edit = _FakeLineEdit("dance.vmd")
         app_state = _FakeAppState()
-        action = _RecordingImportVmdAction(ImportVmdResult(error=RuntimeError("boom")))
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(error=RuntimeError("boom"), outcome="fatal")
+        )
         presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
 
         presenter.import_vmd_file()
@@ -816,6 +1182,67 @@ class TestVmdImportOptions(unittest.TestCase):
         self.assertTrue(any("VMD import error: boom" in s for s in app_state.statuses))
         self.assertIn(0, app_state.progress)
 
+    def test_import_vmd_partial_retains_history_and_one_warning_outcome(self):
+        recorded = []
+        warnings = [{"message": "curve skipped"}]
+
+        class _RecordingView(_FakeView):
+            def add_vmd_path_to_history(self, path):
+                recorded.append(path)
+
+        view = _RecordingView()
+        view.vmd_path_edit = _FakeLineEdit("dance.vmd")
+        app_state = _FakeAppState()
+        app_state.current_model_root = "model_root"
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(
+                root_node=True,
+                succeeded=True,
+                warnings=warnings,
+                outcome="partial",
+            )
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        with patch.object(presenter, "_present_import_partial_outcome", return_value="partial-vmd") as mock_partial:
+            presenter.import_vmd_file()
+
+        self.assertEqual(recorded, ["dance.vmd"])
+        self.assertEqual(app_state.current_model_root, "model_root")
+        self.assertIn(100, app_state.progress)
+        self.assertFalse(any("VMD import complete" in s for s in app_state.statuses))
+        mock_partial.assert_called_once_with(
+            warnings,
+            file_path="dance.vmd",
+            root_node=True,
+            kind="vmd",
+        )
+
+    def test_import_vmd_fatal_leaves_current_model_unchanged(self):
+        recorded = []
+
+        class _RecordingView(_FakeView):
+            def add_vmd_path_to_history(self, path):
+                recorded.append(path)
+
+        view = _RecordingView()
+        view.vmd_path_edit = _FakeLineEdit("dance.vmd")
+        app_state = _FakeAppState()
+        app_state.current_model_root = "model_root"
+        action = _RecordingImportVmdAction(
+            ImportVmdResult(root_node=None, succeeded=False, error=RuntimeError("bad"), outcome="fatal")
+        )
+        presenter = ImportExportPresenter(view, app_state, import_vmd_action=action)
+
+        with patch.object(presenter, "_present_import_partial_outcome") as mock_partial:
+            presenter.import_vmd_file()
+
+        self.assertEqual(app_state.current_model_root, "model_root")
+        self.assertEqual(recorded, [])
+        self.assertTrue(any("VMD import error: bad" in s for s in app_state.statuses))
+        self.assertFalse(any("VMD import complete" in s for s in app_state.statuses))
+        mock_partial.assert_not_called()
+
 
 class TestExportFile(unittest.TestCase):
     """export_file の PMX/PMD/VMD action 分岐を検証する。"""
@@ -823,14 +1250,35 @@ class TestExportFile(unittest.TestCase):
     _KEYS_TO_PRESERVE = (
         "export.general.export_format",
         "export.general.apply_scale",
+        "ui.general.development_mode",
     )
 
     def setUp(self):
         self._saved = {k: settings.get(k) for k in self._KEYS_TO_PRESERVE}
+        # Export is develop-mode only.
+        settings.set("ui.general.development_mode", True)
 
     def tearDown(self):
         for k, v in self._saved.items():
             settings.set(k, v)
+
+    def test_export_blocked_in_normal_mode(self):
+        settings.set("ui.general.development_mode", False)
+        view = _FakeView()
+        view.export_path_edit = _FakeLineEdit("out.pmx")
+        app_state = _FakeAppState()
+        action = _RecordingExportModelAction(ExportModelResult(exported_path="out.pmx", succeeded=True))
+        presenter = ImportExportPresenter(
+            view,
+            app_state,
+            export_model_action=action,
+            export_vmd_action=_FailingExportVmdAction(),
+        )
+
+        presenter.export_file()
+
+        self.assertEqual(action.requests, [])
+        self.assertTrue(any("Development Mode" in s or "開発モード" in s for s in app_state.statuses))
 
     def test_empty_path_guard(self):
         view = _FakeView()
@@ -996,11 +1444,10 @@ class TestDevModeBehaviorGating(unittest.TestCase):
 
     _KEYS_TO_PRESERVE = (
         "ui.general.development_mode",
+        "import.general.scale_factor",
         "import.model.import_models",
         "import.physics.import_physics",
         "import.model.separate_meshes_by_material",
-        "import.model.split_meshes_by_morph_groups",
-        "import.model.hide_hidden_geometry",
         "import.model.auto_classify_transparency",
         "import.model.auto_resolve_textures",
         "import.model.disable_backface_culling",
@@ -1036,29 +1483,38 @@ class TestDevModeBehaviorGating(unittest.TestCase):
             presenter.import_file()
         return mock_import.call_args.kwargs["options"]
 
+    def test_normal_mode_forces_import_scale_to_default(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.general.scale_factor", 5.0)
+        opts = self._run_import()
+        self.assertEqual(opts["scale"], 1.0)
+        # Policy must not overwrite the persisted development scale.
+        self.assertEqual(settings.get("import.general.scale_factor"), 5.0)
+
+    def test_dev_mode_preserves_import_scale(self):
+        settings.set("ui.general.development_mode", True)
+        settings.set("import.general.scale_factor", 5.0)
+        opts = self._run_import()
+        self.assertEqual(opts["scale"], 5.0)
+
+    def test_normal_mode_forces_pmd_import_scale_to_default(self):
+        settings.set("ui.general.development_mode", False)
+        settings.set("import.general.scale_factor", 5.0)
+        opts = self._run_import(path="model.pmd")
+        self.assertEqual(opts["scale"], 1.0)
+        self.assertEqual(settings.get("import.general.scale_factor"), 5.0)
+
     def test_normal_mode_forces_import_models_true(self):
         settings.set("ui.general.development_mode", False)
         settings.set("import.model.import_models", False)
         opts = self._run_import()
         self.assertTrue(opts["import_models"])
 
-    def test_normal_mode_forces_import_physics_false(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.physics.import_physics", True)
-        opts = self._run_import()
-        self.assertFalse(opts["import_physics"])
-
     def test_normal_mode_forces_separate_meshes_false(self):
         settings.set("ui.general.development_mode", False)
         settings.set("import.model.separate_meshes_by_material", True)
         opts = self._run_import()
         self.assertFalse(opts["separate_meshes_by_material"])
-
-    def test_normal_mode_forces_hide_hidden_geometry_false(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.model.hide_hidden_geometry", True)
-        opts = self._run_import()
-        self.assertFalse(opts["hide_hidden_geometry"])
 
     def test_normal_mode_bake_mode_does_not_disable_model_rig_options(self):
         # bake_mode is an animation-import setting and must not suppress model rig creation.
@@ -1127,19 +1583,6 @@ class TestDevModeBehaviorGating(unittest.TestCase):
         settings.set("import.model.auto_resolve_textures", False)
         opts = self._run_import()
         self.assertFalse(opts["auto_resolve_textures"])
-
-    def test_normal_mode_forces_split_meshes_by_morph_groups_false(self):
-        settings.set("ui.general.development_mode", False)
-        settings.set("import.model.split_meshes_by_morph_groups", True)
-        opts = self._run_import()
-        self.assertFalse(opts["split_meshes_by_morph_groups"])
-
-    def test_dev_mode_preserves_split_meshes_by_morph_groups_true(self):
-        settings.set("ui.general.development_mode", True)
-        settings.set("import.model.split_meshes_by_morph_groups", True)
-        opts = self._run_import()
-        self.assertTrue(opts["split_meshes_by_morph_groups"])
-
 
 if __name__ == "__main__":
     unittest.main()

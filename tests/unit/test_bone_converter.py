@@ -4,7 +4,7 @@ import maya.cmds as cmds
 import maya.api.OpenMaya as om
 
 from mmd_tools.converters.bone_converter import BoneConverter
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_attribute_utils
 from mmd_tools.core.constants import (
     ATTR_MMD_BONE_FLAGS,
     ATTR_MMD_BONE_INDEX,
@@ -116,7 +116,7 @@ class TestBoneConverterMaya(unittest.TestCase):
             self._create_mock_pmx_bone(2, "頭"),
         ]
 
-        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+        with patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x  # そのまま返す
 
             bone_map = self.converter._create_bone_mapping(bones)
@@ -134,7 +134,7 @@ class TestBoneConverterMaya(unittest.TestCase):
             self._create_mock_pmx_bone(2, "ボーン"),
         ]
 
-        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+        with patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x  # そのまま返す
 
             bone_map = self.converter._create_bone_mapping(bones)
@@ -143,7 +143,28 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(bone_map[1], "ボーン_1")
         self.assertEqual(bone_map[2], "ボーン_2")
 
-    @patch("mmd_tools.core.maya_utils.sanitize_text")
+    def test_create_bone_mapping_prefers_hardcoded_semistandard_native_names(self):
+        """PMX英名より準標準ボーンのハードコード日本語名変換を優先する。"""
+        cases = [
+            ("左腕D", "D", "left_arm_d"),
+            ("右腕捩D", "D", "right_arm_twist_d"),
+            ("左ひじD", "D", "left_elbow_d"),
+            ("右足IK親", "leg IKP_R", "right_leg_ik_parent"),
+            ("右足先EX", "toe2_R", "right_toe_ex"),
+            ("右肩P", "shoulderP_R", "right_shoulder_p"),
+        ]
+        bones = []
+        for index, (native_name, english_name, _expected) in enumerate(cases):
+            bone = self._create_mock_pmx_bone(index, native_name)
+            bone.name_english = english_name
+            bone.get_name.return_value = english_name
+            bones.append(bone)
+
+        bone_map = self.converter._create_bone_mapping(bones)
+
+        self.assertEqual(bone_map, {index: expected for index, (_native, _english, expected) in enumerate(cases)})
+
+    @patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name")
     def test_create_maya_joints_hierarchy(self, mock_sanitize):
         """ジョイント階層作成のテスト（実際のMaya環境）"""
         mock_sanitize.side_effect = lambda x: x
@@ -183,7 +204,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertAlmostEqual(upper_pos[1], 10, places=5)
         self.assertAlmostEqual(upper_pos[2], 0, places=5)
 
-    @patch("mmd_tools.core.maya_utils.sanitize_text")
+    @patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name")
     def test_create_maya_joints_refreshes_paths_after_name_collision(self, mock_sanitize):
         """既存同名jointがあるシーンでもreparent後のDAG pathを返す"""
         mock_sanitize.side_effect = lambda x: x
@@ -217,7 +238,18 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(parent_of_head, maya_joints[1])
         self.assertTrue(cmds.objExists("|center"), "pre-existing root joint should not be consumed")
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    def test_get_node_uuid_falls_back_to_active_selection_when_name_parser_fails(self):
+        """cmds.ls(uuid=True) が名前パースで落ちても作成直後 joint の UUID を取れる。"""
+        cmds.select(clear=True)
+        joint = cmds.joint(name="uuid_parser_fallback_joint", position=(0, 0, 0))
+        expected_uuid = cmds.ls(joint, uuid=True)[0]
+
+        with patch("mmd_tools.converters.bone_converter.cmds.ls", side_effect=RuntimeError("parser failed")):
+            actual_uuid = self.converter._get_node_uuid(joint, allow_active_selection_fallback=True)
+
+        self.assertEqual(actual_uuid, expected_uuid)
+
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト"""
         bone = self._create_mock_pmx_bone(0, "TestBone", bone_flag=PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE)
@@ -235,7 +267,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(attrs[ATTR_MMD_BONE_NAME], "TestBone")
         self.assertTrue(attrs[ATTR_MMD_BONE_FLAGS], PmxBoneFlag.ROTATABLE | PmxBoneFlag.MOVABLE)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_rotate(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（回転付与）"""
         bone = self._create_mock_pmx_bone(5, "GrantBone", bone_flag=PmxBoneFlag.GRANT_PARENT_ROTATE)
@@ -267,7 +299,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
         self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 3)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_move(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（移動付与）"""
         bone = self._create_mock_pmx_bone(7, "grantMoveBone", bone_flag=PmxBoneFlag.GRANT_PARENT_MOVE)
@@ -298,7 +330,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
         self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 2)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_grant_both(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（回転＋移動付与）"""
         bone = self._create_mock_pmx_bone(
@@ -333,7 +365,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertIn(ATTR_MMD_GRANT_PARENT_INDEX, attrs)
         self.assertEqual(attrs[ATTR_MMD_GRANT_PARENT_INDEX], 4)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_ik(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（IKボーン）"""
         bone = self._create_mock_pmx_bone(10, "IKBone", bone_flag=PmxBoneFlag.IK)
@@ -373,7 +405,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertIn(ATTR_MMD_IK_TARGET_INDEX, attrs)
         self.assertEqual(attrs[ATTR_MMD_IK_TARGET_INDEX], 11)
 
-    @patch("mmd_tools.core.maya_utils.set_custom_attributes")
+    @patch("mmd_tools.converters.bone_converter.maya_attribute_utils.set_custom_attributes")
     def test_set_extra_attributes_pmx_local_axis(self, mock_set_attrs):
         """PMXボーンのカスタムアトリビュート設定テスト（ローカル軸）"""
         bone = self._create_mock_pmx_bone(15, "LocalAxisBone", bone_flag=PmxBoneFlag.LOCAL_AXIS)
@@ -469,7 +501,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         self.assertEqual(weights[2], (3, 0.2))
         self.assertEqual(weights[3], (4, 0.1))
 
-    @patch("mmd_tools.converters.bone_converter.maya_utils.apply_vertex_weights")
+    @patch("mmd_tools.converters.bone_converter.maya_mesh_utils.apply_vertex_weights")
     def test_apply_pmx_vertex_weights_uses_source_vertex_indices_for_compact_split(self, mock_apply_weights):
         """compact material split mesh では local vertex 順に対応する元 PMX vertex の weight を適用する。"""
         pmx_data = Mock()
@@ -481,8 +513,8 @@ class TestBoneConverterMaya(unittest.TestCase):
             vertices.append(vertex)
         pmx_data.vertices = vertices
 
-        maya_utils.add_typed_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_utils.set_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [1, 2], "longArray")
+        maya_attribute_utils.add_typed_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+        maya_attribute_utils.set_attribute(self.test_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, [1, 2], "longArray")
 
         self.converter._apply_pmx_vertex_weights(
             pmx_data,
@@ -519,7 +551,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         ]
         pmx_data.vertices = []
 
-        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+        with patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x
 
             maya_joints, skin_cluster = converter.convert_pmx_bones(pmx_data, self.test_mesh, self.root_group)
@@ -552,7 +584,7 @@ class TestBoneConverterMaya(unittest.TestCase):
         ]
         pmx_data.vertices = []
 
-        with patch("mmd_tools.core.maya_utils.sanitize_text") as mock_sanitize:
+        with patch("mmd_tools.converters.bone_converter.maya_name_utils.sanitize_bone_name") as mock_sanitize:
             mock_sanitize.side_effect = lambda x: x
             maya_joints, skin_cluster = converter.convert_pmx_bones(
                 pmx_data,
@@ -625,6 +657,50 @@ class TestBoneConverterMaya(unittest.TestCase):
         child_world_pos = cmds.xform(maya_joints[1], query=True, worldSpace=True, translation=True)
         for actual, expected in zip(child_world_pos, [2.0, 3.0, -4.0]):
             self.assertAlmostEqual(actual, expected, places=5)
+
+    def test_create_maya_joints_local_axis_out_of_order_parent_keeps_positions(self):
+        """親indexが子より後ろでもJO設定後のworld位置をPMX位置に保つ"""
+        root = self._create_mock_pmx_bone(
+            0,
+            "root",
+            position=(0.0, 0.0, 0.0),
+        )
+        child_before_parent = self._create_mock_pmx_bone(
+            1,
+            "child_before_parent",
+            parent_index=2,
+            position=(1.0, 0.0, 0.0),
+        )
+        local_axis_parent = self._create_mock_pmx_bone(
+            2,
+            "local_axis_parent",
+            parent_index=0,
+            position=(0.0, 0.0, 0.0),
+            bone_flag=PmxBoneFlag.LOCAL_AXIS,
+        )
+        local_axis_parent.x_axis_direction = (0.0, 0.0, -1.0)
+        local_axis_parent.z_axis_direction = (1.0, 0.0, 0.0)
+        grandchild = self._create_mock_pmx_bone(
+            3,
+            "grandchild",
+            parent_index=1,
+            position=(2.0, 0.0, 0.0),
+        )
+
+        bones = [root, child_before_parent, local_axis_parent, grandchild]
+        skeleton_group = cmds.group(empty=True, name="skeleton_out_of_order_local_axis_grp")
+        maya_joints = self.converter._create_maya_joints(
+            bones,
+            {0: "root", 1: "child_before_parent", 2: "local_axis_parent", 3: "grandchild"},
+            "pmx",
+            skeleton_group,
+        )
+
+        for joint, bone in zip(maya_joints, bones):
+            world_pos = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+            expected = (bone.position[0], bone.position[1], -bone.position[2])
+            for actual, expected_value in zip(world_pos, expected):
+                self.assertAlmostEqual(actual, expected_value, places=5)
 
 
 if __name__ == "__main__":

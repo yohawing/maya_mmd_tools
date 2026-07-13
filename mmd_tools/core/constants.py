@@ -24,6 +24,13 @@ ATTR_MMD_MODEL_NAME = "mmd_model_name"
 ATTR_MMD_MODEL_NAME_EN = "mmd_model_name_en"
 ATTR_MMD_COMMENT = "mmd_comment"
 ATTR_MMD_COMMENT_EN = "mmd_comment_en"
+ATTR_MMD_DISPLAY_FRAMES_JSON = "mmd_display_frames_json"
+ATTR_MMD_MORPH_DATA = "mmdMorphData"
+
+# Animator Toolset viewport visibility state on the imported model root.
+ATTR_MMD_SHOW_MESH = "mmd_show_mesh"
+ATTR_MMD_SHOW_JOINTS = "mmd_show_joints"
+ATTR_MMD_SHOW_PHYSICS_COLLIDERS = "mmd_show_physics_colliders"
 
 # マテリアルカスタムアトリビュート名
 ATTR_MMD_MATERIAL = "mmd_material"
@@ -48,8 +55,6 @@ ATTR_MMD_SHARED_TOON_FLAG = "mmd_shared_toon_flag"
 ATTR_MMD_TOON_TEXTURE_INDEX = "mmd_toon_texture_index"
 ATTR_MMD_MATERIAL_INDEX = "mmd_material_index"
 ATTR_MMD_SOURCE_VERTEX_INDICES = "mmd_source_vertex_indices"
-ATTR_MMD_MORPH_GROUP_SPLIT_MESH = "mmd_morph_group_split_mesh"
-ATTR_MMD_VERTEX_MORPH_NAMES_JSON = "mmd_vertex_morph_names_json"
 ATTR_MMD_ORIGINAL_TEXTURE_PATH = "mmd_original_texture_path"
 ATTR_MMD_TEXTURE_UNRESOLVED = "mmd_texture_unresolved"
 ATTR_MMD_TEXTURE_CACHE_PATH = "mmd_texture_cache_path"
@@ -87,6 +92,7 @@ ATTR_MMD_EXTERNAL_PARENT_KEY = "mmd_external_parent_key"  # 外部親キー
 
 # ボーンの詳細アトリビュート名（フォーマット固有の情報を保存）
 ATTR_MMD_BONE_INDEX = "mmd_bone_index"  # ボーンインデックス
+ATTR_MMD_JOINT_INDEX = "mmd_joint_index"  # 物理ジョイントのPMX/PMDグローバルインデックス
 ATTR_MMD_BONE_PARENT_INDEX = "mmd_bone_parent_index"  # 親ボーンインデックス
 ATTR_MMD_CONNECT_TYPE = "mmd_connect_type"  # 接続タイプ
 ATTR_MMD_CONNECT_INDEX = "mmd_connect_index"  # 接続先インデックス

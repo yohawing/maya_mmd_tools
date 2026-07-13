@@ -7,7 +7,8 @@ import maya.api.OpenMayaAnim as oma
 
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 
-from ..core import maya_utils
+from ..core import maya_attribute_utils, maya_mesh_utils, maya_name_utils, maya_scene_utils
+from ..core.mmd_bone_names import has_semistandard_mmd_bone_name
 from ..core.pmx_data import PmxData
 from ..core.constants import (
     SKELETON_GROUP,
@@ -41,7 +42,9 @@ from ..core.constants import (
     ATTR_MMD_TAIL_POS_INDEX,
 )
 from ..core.coordinate_transform import mmd_point_to_maya
-from ..core.logger import get_logger
+from types import SimpleNamespace
+
+from ..core.logger import get_logger, safe_log_error
 from .rig_converter import RigConverter
 
 
@@ -93,7 +96,7 @@ class BoneConverter:
                    スキンクラスターの名前、またはスキンクラスター名のリスト)
         """
         # PMXのボーン階層をMayaのjointノードに変換する
-        maya_utils.select_objects(clear=True)
+        maya_scene_utils.select_objects(clear=True)
 
         # スケルトングループを作成
         skeleton_group = cmds.group(empty=True, name=SKELETON_GROUP, parent=root_group)
@@ -128,10 +131,15 @@ class BoneConverter:
         # リグのセットアップはRigConverterに委譲。
         # runtime bake のように最終姿勢を直接焼く用途では、Maya側リグを作らないことで二重評価を避ける。
         if setup_rig:
-            self.rig_converter.setup_pmx_rig(
+            rig_result = self.rig_converter.setup_pmx_rig(
                 pmx_data, maya_joints, bone_map, skeleton_group,
                 pmx_filepath=pmx_filepath,
             )
+            self.profile["rig_converter"] = {
+                "used_native_rig": rig_result.get("native_rig") is not None,
+                "constraint_count": len(rig_result.get("constraints") or []),
+                "warnings": list(rig_result.get("warnings") or []),
+            }
 
         result_cluster = skin_clusters[0] if len(skin_clusters) == 1 else skin_clusters
 
@@ -151,7 +159,7 @@ class BoneConverter:
         used_names = set()
 
         for i, bone in enumerate(bones):
-            joint_name = maya_utils.sanitize_text(bone.get_name())
+            joint_name = maya_name_utils.sanitize_bone_name(self._bone_node_name_source(bone))
 
             # 重複する名前がある場合はサフィックスを追加
             original_name = joint_name
@@ -165,10 +173,42 @@ class BoneConverter:
 
         return bone_map
 
-    def _get_node_uuid(self, node: str) -> Optional[str]:
-        """Return the Maya UUID for a node when available."""
-        uuids = cmds.ls(node, uuid=True) or []
-        return uuids[0] if uuids else None
+    def _bone_node_name_source(self, bone) -> str:
+        """Return the source PMX/PMD name to use for the Maya joint node name."""
+        native_name = str(getattr(bone, "name", "") or "")
+        if native_name and has_semistandard_mmd_bone_name(native_name):
+            return native_name
+        return bone.get_name()
+
+    def _get_active_selection_uuid(self) -> Optional[str]:
+        """Return the first active selection UUID without parsing its Maya name."""
+        selection = om.MGlobal.getActiveSelectionList()
+        if selection.length() == 0:
+            return None
+        node_obj = selection.getDependNode(0)
+        return om.MFnDependencyNode(node_obj).uuid().asString()
+
+    def _get_node_uuid(self, node: str, allow_active_selection_fallback: bool = False) -> Optional[str]:
+        """Return the Maya UUID for a node when available.
+
+        Some real-world PMX bone names can produce Maya node names that make
+        ``cmds.ls(node, uuid=True)`` fail in Maya's name parser.  Immediately
+        after ``cmds.joint`` creation the new joint is selected, so the importer
+        can safely recover its UUID through the API selection list without
+        reparsing the problematic string.
+        """
+        try:
+            uuids = cmds.ls(node, uuid=True) or []
+            if uuids:
+                return uuids[0]
+        except RuntimeError as exc:
+            if not allow_active_selection_fallback:
+                raise
+            self.logger.debug("cmds.ls(uuid=True) failed for node %r; using active selection UUID: %s", node, exc)
+
+        if allow_active_selection_fallback:
+            return self._get_active_selection_uuid()
+        return None
 
     def _resolve_node_long_path(self, node_uuid: Optional[str], fallback: Optional[str] = None) -> str:
         """Resolve a node UUID to the current long DAG path.
@@ -259,7 +299,7 @@ class BoneConverter:
             joint_name = bone_map[i]
 
             # 選択をクリアしてルートにジョイントを作成
-            maya_utils.select_objects(clear=True)
+            maya_scene_utils.select_objects(clear=True)
 
             # ジョイントを作成
             position = bone.position
@@ -267,11 +307,11 @@ class BoneConverter:
                 name=joint_name,
                 position=list(mmd_point_to_maya(position, scale)),  # MMD: +Z手前, Maya: +Z奥
             )
-            joint_uuid = self._get_node_uuid(joint)
+            joint_uuid = self._get_node_uuid(joint, allow_active_selection_fallback=True)
             joint = self._resolve_node_long_path(joint_uuid, joint)
 
             # セグメントスケール補償を無効化
-            maya_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
+            maya_attribute_utils.set_attribute(joint, "segmentScaleCompensate", False, "bool")
             self._add_profile_time("joint_create_sec", joint_create_start)
 
             joint_attr_start = time.perf_counter()
@@ -296,7 +336,12 @@ class BoneConverter:
                     )
                     self._refresh_joint_paths(maya_joints, joint_uuids)
                 except Exception as e:
-                    self.logger.error(f"Failed to parent {child_joint} to {parent_joint}: {e}")
+                    safe_log_error(
+                        self.logger,
+                        "Failed to parent",
+                        SimpleNamespace(name=f"{child_joint} to {parent_joint}"),
+                        e,
+                    )
 
         # ルートジョイントをスケルトングループにペアレント
         # 親を持たないジョイントを探す
@@ -425,7 +470,7 @@ class BoneConverter:
         else:
             return
 
-        maya_utils.set_custom_attributes(joint, attrs)
+        maya_attribute_utils.set_custom_attributes(joint, attrs)
 
     def _create_skin_cluster(self, maya_joints, mesh_node, max_influence=4):
         """
@@ -439,7 +484,7 @@ class BoneConverter:
             str: 作成されたスキンクラスターの名前。
         """
         # 選択をクリアしてジョイントとメッシュのみを選択
-        maya_utils.select_objects(clear=True)
+        maya_scene_utils.select_objects(clear=True)
 
         # メッシュノードが存在しない場合はNoneを返す
         if not mesh_node or not cmds.objExists(mesh_node):
@@ -617,7 +662,7 @@ class BoneConverter:
                 flat_weights[row_start : row_start + joint_count]
                 for row_start in range(0, len(flat_weights), joint_count)
             ]
-            maya_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
+            maya_mesh_utils.apply_vertex_weights(skin_cluster, mesh_node, weights)
         self._add_profile_time("set_weights_sec", set_weights_start)
 
     def _get_mesh_source_vertex_indices(self, mesh_node):
@@ -627,7 +672,7 @@ class BoneConverter:
                 return None
             if not cmds.attributeQuery(ATTR_MMD_SOURCE_VERTEX_INDICES, node=mesh_node, exists=True):
                 return None
-            source_indices = maya_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
+            source_indices = maya_attribute_utils.get_int_array_attribute(mesh_node, ATTR_MMD_SOURCE_VERTEX_INDICES)
             return source_indices or None
         except Exception:
             return None
@@ -668,7 +713,8 @@ class BoneConverter:
                 [0, 0, 0, 1],
             ])
 
-        for i, bone in enumerate(bones):
+        for i in self._parent_first_bone_indices(bones):
+            bone = bones[i]
             pidx = bone.parent_bone_index
 
             # --- JO 設定 (LOCAL_AXIS ボーンのみ) ---
@@ -681,7 +727,7 @@ class BoneConverter:
                     parent_rot = om.MMatrix()
                 jo_mat = desired_world * parent_rot.inverse()
                 jo_euler = om.MTransformationMatrix(jo_mat).rotation(asQuaternion=False)
-                maya_utils.set_attribute(
+                maya_attribute_utils.set_attribute(
                     maya_joints[i], "jointOrient",
                     (jo_euler.x, jo_euler.y, jo_euler.z), "double3",
                 )
@@ -695,9 +741,9 @@ class BoneConverter:
                     bone.position[0], bone.position[1], -bone.position[2],
                 )
                 local_pos = my_pos * parent_wm_inv
-                maya_utils.set_attribute(
+                maya_attribute_utils.set_attribute(
                     maya_joints[i], "translate",
                     (local_pos.x, local_pos.y, local_pos.z), "double3",
                 )
 
-            maya_utils.set_attribute(maya_joints[i], "rotate", (0, 0, 0), "double3")
+            maya_attribute_utils.set_attribute(maya_joints[i], "rotate", (0, 0, 0), "double3")

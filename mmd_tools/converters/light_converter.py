@@ -13,7 +13,7 @@ MMD のライトはモデル全体に1つの平行光源。これを Maya 上で
 - MMD パラメータ `mmd_light_color` をキー可能アトリビュートで持ち、ライトの
   color に接続。
 
-シェーダーへの結線は `wire_dx11_shaders_to_mmd_light` が担当する。dx11Shader は
+シェーダーへの結線は `wire_mmd_shaders_to_mmd_light` が担当する。hardware shader は
 Maya のシーンライト自動バインド（DIRECTION/LIGHTCOLOR）を使わず、コントローラの
 worldMatrix（→ `MMDLightDirection`）と `mmd_light_color`（→ `MMDLightColor`）
 だけを光源として参照する。ヌルを回すと MMD ライトベクトルが Viewport 2.0 で
@@ -175,16 +175,16 @@ def _get_or_create_light_direction_node(ctrl: str) -> str:
     return vp
 
 
-def wire_dx11_shaders_to_mmd_light(shaders, ctrl: str = None) -> int:
-    """各 dx11Shader を MMD ライトコントローラに結線し、結線した数を返す。
+def wire_mmd_shaders_to_mmd_light(shaders, ctrl: str = None) -> int:
+    """各 dx11Shader / GLSLShader をMMDライトへ結線し、結線数を返す。
 
     シェーダーは Maya のシーンライト自動バインド（DIRECTION/LIGHTCOLOR）を
     使わず、``MMDLightDirection`` / ``MMDLightColor`` uniform のみを光源として
     参照する。これらをコントローラから**明示結線**することで、ビューポートの
     ライトモード（Use Default/All Lights）に依存せずコントローラが効く。
 
-    GUI の dx11Shader は .fx 評価後（``cmds.refresh`` 後）に uniform 属性を
-    生成するため、本関数は refresh / uniform sync の後に呼ぶこと。
+    GUI のhardware shaderはeffect評価後にuniform属性を生成するため、本関数は
+    refresh / uniform sync の後に呼ぶこと。
     """
     if not shaders:
         return 0
@@ -202,17 +202,33 @@ def wire_dx11_shaders_to_mmd_light(shaders, ctrl: str = None) -> int:
 
     wired = 0
     for shader in shaders:
-        if not shader or not cmds.objExists(shader) or cmds.nodeType(shader) != "dx11Shader":
+        if not shader or not cmds.objExists(shader):
+            continue
+        shader_type = cmds.nodeType(shader)
+        if shader_type == "dx11Shader":
+            direction_attr, color_attr = "MMDLightDirection", "MMDLightColor"
+        elif shader_type == "GLSLShader":
+            direction_attr, color_attr = "MmdControllerLightVector", "MmdControllerLightRgb"
+        else:
             continue
         try:
-            if cmds.attributeQuery("MMDLightDirection", node=shader, exists=True):
-                cmds.connectAttr(f"{vp}.output", f"{shader}.MMDLightDirection", force=True)
-            if cmds.attributeQuery("MMDLightColor", node=shader, exists=True):
-                cmds.connectAttr(f"{ctrl}.mmd_light_color", f"{shader}.MMDLightColor", force=True)
-            wired += 1
+            shader_wired = False
+            if cmds.attributeQuery(direction_attr, node=shader, exists=True):
+                cmds.connectAttr(f"{vp}.output", f"{shader}.{direction_attr}", force=True)
+                shader_wired = True
+            if cmds.attributeQuery(color_attr, node=shader, exists=True):
+                cmds.connectAttr(f"{ctrl}.mmd_light_color", f"{shader}.{color_attr}", force=True)
+                shader_wired = True
+            if shader_wired:
+                wired += 1
         except Exception:
             logger.debug("Failed to wire light: %s", shader, exc_info=True)
 
     if wired:
-        logger.info("Wired MMD light to %d dx11Shader nodes", wired)
+        logger.info("Wired MMD light to %d hardware shader nodes", wired)
     return wired
+
+
+def wire_dx11_shaders_to_mmd_light(shaders, ctrl: str = None) -> int:
+    """Backward-compatible alias for the shared hardware-shader light binder."""
+    return wire_mmd_shaders_to_mmd_light(shaders, ctrl)

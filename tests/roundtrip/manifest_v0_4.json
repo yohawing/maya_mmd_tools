@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "v0.4 PMX roundtrip gate covering exporter-supported physics and display-frame data.",
+  "cases": [
+    {
+      "name": "repo_supported_full",
+      "synthetic": "supported_full"
+    },
+    {
+      "name": "repo_mmt_test_model",
+      "model": "../data/mmt_test_model.pmx"
+    }
+  ]
+}

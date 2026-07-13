@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from mmd_tools.core.constants import ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, ATTR_MMD_BONE_INDEX
+from mmd_tools.core.morph_metadata_reader import parse_blendshape_morph_entries
 
 
 _MATRIX_ATTR_MAP = [
@@ -250,8 +251,8 @@ def _connect_runtime_morph_outputs(cmds: Any, node: str, model_root: str, pmx_pa
         return
 
     try:
-        from mmd_tools.core.maya_utils import sanitize_text
-        from mmd_tools.core.native.mmd_anim_runtime import MmdParsedModel
+        from mmd_tools.core.maya_name_utils import sanitize_text
+        from mmd_tools.core.native.mmd_anim_runtime_parsed_model import MmdParsedModel
         from mmd_tools.core.native.native_pmx_parser import parse_pmx_native
         from mmd_tools.core.pmx_data.morph import PmxMorphType
 
@@ -326,12 +327,14 @@ def _connect_blendshape_morph_outputs(
     weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
 
     stored_raw_to_index = {}
+    stored_global_to_index = {}
     if cmds.attributeQuery(ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, node=bs_node, exists=True):
         try:
             parsed_names = json.loads(cmds.getAttr(f"{bs_node}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}") or "{}")
-            if isinstance(parsed_names, dict):
-                for stored_index, stored_name in parsed_names.items():
-                    stored_raw_to_index[str(stored_name)] = int(stored_index)
+            for stored_index, entry in parse_blendshape_morph_entries(parsed_names).items():
+                stored_raw_to_index[str(entry["name"])] = int(stored_index)
+                if "index" in entry:
+                    stored_global_to_index[int(entry["index"])] = int(stored_index)
         except (TypeError, ValueError):
             stored_raw_to_index = {}
 
@@ -340,7 +343,7 @@ def _connect_blendshape_morph_outputs(
             continue
         global_idx = vtx_idx_to_global.get(vmi, vmi)
         sanitized_alias = sanitize_text(pmx_name)
-        stored_wi = stored_raw_to_index.get(pmx_name)
+        stored_wi = stored_global_to_index.get(global_idx, stored_raw_to_index.get(pmx_name))
 
         for weight_index in range(weight_count):
             if stored_wi is not None:

@@ -1,0 +1,122 @@
+import unittest
+
+from mmd_tools.core.constants import (
+    ATTR_MMD_SHOW_JOINTS,
+    ATTR_MMD_SHOW_MESH,
+    ATTR_MMD_SHOW_PHYSICS_COLLIDERS,
+)
+from mmd_tools.core.visibility_state import ensure_visibility_attrs, sync_visibility_connections
+
+
+class _FakeAdapter:
+    def __init__(self, existing_attrs=None):
+        self.attrs = dict(existing_attrs or {})
+        self.calls = []
+        self.relatives = {}
+        self.connections = {}
+
+    def attribute_exists(self, attr, node):
+        return (node, attr) in self.attrs
+
+    def add_attr(self, node, **kwargs):
+        self.calls.append(("add_attr", node, kwargs))
+        self.attrs[(node, kwargs["longName"])] = False
+
+    def delete_attr(self, attr_path):
+        self.calls.append(("delete_attr", attr_path))
+        node, attr = attr_path.rsplit(".", 1)
+        self.attrs.pop((node, attr), None)
+
+    def get_attr(self, attr_path):
+        node, attr = attr_path.rsplit(".", 1)
+        return self.attrs[(node, attr)]
+
+    def set_attr(self, attr_path, value, **kwargs):
+        self.calls.append(("set_attr", attr_path, value, kwargs))
+        node, attr = attr_path.rsplit(".", 1)
+        self.attrs[(node, attr)] = value
+
+    def list_relatives(self, node, **kwargs):
+        return self.relatives.get((node, kwargs.get("type")), [])
+
+    def list_connections(self, node, **kwargs):
+        if kwargs.get("source") and kwargs.get("plugs"):
+            return self.connections.get(node, [])
+        return []
+
+    def connect_attr(self, source, destination, force=False):
+        self.calls.append(("connect_attr", source, destination, force))
+        self.connections[destination] = [source]
+
+
+class TestVisibilityState(unittest.TestCase):
+    def test_ensure_visibility_attrs_creates_keyable_root_attrs(self):
+        adapter = _FakeAdapter()
+
+        ensure_visibility_attrs(adapter, "model_root")
+
+        add_calls = [call for call in adapter.calls if call[0] == "add_attr"]
+        self.assertTrue(add_calls)
+        self.assertTrue(all(call[2].get("keyable") is True for call in add_calls))
+        self.assertIn(("model_root", ATTR_MMD_SHOW_PHYSICS_COLLIDERS), adapter.attrs)
+
+    def test_ensure_visibility_attrs_makes_existing_root_attrs_keyable(self):
+        adapter = _FakeAdapter({("model_root", ATTR_MMD_SHOW_PHYSICS_COLLIDERS): True})
+
+        ensure_visibility_attrs(adapter, "model_root")
+
+        self.assertIn(
+            (
+                "set_attr",
+                f"model_root.{ATTR_MMD_SHOW_PHYSICS_COLLIDERS}",
+                True,
+                {"keyable": True},
+            ),
+            adapter.calls,
+        )
+
+    def test_ensure_visibility_attrs_removes_discontinued_attrs(self):
+        adapter = _FakeAdapter(
+            {
+                ("model_root", "mmd_show_ik"): True,
+                ("model_root", "mmd_show_controllers"): True,
+            }
+        )
+
+        ensure_visibility_attrs(adapter, "model_root")
+
+        self.assertNotIn(("model_root", "mmd_show_ik"), adapter.attrs)
+        self.assertNotIn(("model_root", "mmd_show_controllers"), adapter.attrs)
+
+    def test_sync_mesh_and_joints_connects_direct_parent_groups(self):
+        adapter = _FakeAdapter()
+        adapter.relatives[("model_root", "transform")] = [
+            "|model_root|Geometry",
+            "|model_root|Skeleton",
+            "|model_root|Physics",
+        ]
+
+        sync_visibility_connections(adapter, "model_root")
+
+        self.assertIn(
+            (
+                "connect_attr",
+                f"model_root.{ATTR_MMD_SHOW_MESH}",
+                "|model_root|Geometry.visibility",
+                False,
+            ),
+            adapter.calls,
+        )
+        self.assertIn(
+            (
+                "connect_attr",
+                f"model_root.{ATTR_MMD_SHOW_JOINTS}",
+                "|model_root|Skeleton.visibility",
+                False,
+            ),
+            adapter.calls,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

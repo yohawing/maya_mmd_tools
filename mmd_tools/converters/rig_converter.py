@@ -6,33 +6,13 @@ import maya.cmds as cmds
 
 from mmd_tools.config.bone_aliases import get_bone_aliases, get_original_bone_name_aliases
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag
-from mmd_tools.core import maya_utils, settings_keys as setting_keys
-from mmd_tools.core.logger import get_logger
+from mmd_tools.core import maya_attribute_utils, maya_rig_utils, maya_scene_utils
+from types import SimpleNamespace
+
+from mmd_tools.core.logger import get_logger, safe_log_error
 from mmd_tools.core.native.mmd_anim_runtime import is_rig_primitive_available
-from mmd_tools.core.settings import settings
 
-
-def _node_type_available(node_type: str) -> bool:
-    """Return True when Maya can create the requested DG node type."""
-    try:
-        probe = cmds.createNode(node_type, name=f"{node_type}_availability_probe#")
-        cmds.delete(probe)
-        return True
-    except Exception:
-        return False
-
-
-def _prefer_cpp_rig_nodes() -> bool:
-    """Use C++ rig prototype nodes only when explicitly enabled and loaded."""
-    if not settings.get(setting_keys.IMPORT_NATIVE_USE_CPP_RIG_NODES, False):
-        return False
-    try:
-        loaded_plugins = set(cmds.pluginInfo(query=True, listPlugins=True) or [])
-    except Exception:
-        loaded_plugins = set()
-    if "mmd_tools_cpp" not in loaded_plugins:
-        return False
-    return _node_type_available("mmdAppendNode") and _node_type_available("mmdCcdIkNode")
+MMD_APPEND_SCHEMA_MODE_COMPAT = 2
 
 
 def _node_leaf_name(node_name: str) -> str:
@@ -53,13 +33,14 @@ class RigConverter:
         """
         self.logger = get_logger(__name__)
         self.original_bone_names = {}  # ボーンインデックスから元の日本語名へのマッピング
-        self._use_cpp_rig_nodes = _prefer_cpp_rig_nodes()
 
     def _append_node_type(self) -> str:
-        return "mmdAppendNode" if self._use_cpp_rig_nodes else "mmdAppend"
+        """Return the unified mmdAppend node type name (C++ / Python share the same typeName)."""
+        return "mmdAppend"
 
     def _ccd_ik_node_type(self) -> str:
-        return "mmdCcdIkNode" if self._use_cpp_rig_nodes else "mmdCcdIk"
+        """Return the unified mmdCcdIk node type name (C++ / Python share the same typeName)."""
+        return "mmdCcdIk"
 
     def setup_pmx_rig(
         self,
@@ -92,6 +73,7 @@ class RigConverter:
             "semi_standard_bones": {},
             "constraints": [],
             "native_rig": None,
+            "warnings": [],
         }
 
         # 元のボーン名を保存（日本語名での重複チェック用）
@@ -100,8 +82,19 @@ class RigConverter:
 
         # native rig primitive が利用可能なら使用
         native_rig = None
-        if pmx_filepath and is_rig_primitive_available():
-            native_rig = self._try_setup_native_rig(pmx_filepath, maya_joints, bone_map)
+        if pmx_filepath:
+            if is_rig_primitive_available():
+                native_rig, warning = self._try_setup_native_rig(pmx_filepath, maya_joints, bone_map)
+                if warning:
+                    result["warnings"].append(warning)
+            else:
+                result["warnings"].append(
+                    self._native_rig_warning(
+                        "native_rig_unavailable",
+                        "Native rig primitives are unavailable; falling back to Python constraints",
+                        fallback="python_constraints",
+                    )
+                )
 
         if native_rig is not None:
             result["native_rig"] = native_rig
@@ -124,20 +117,30 @@ class RigConverter:
         maya_joints: List[str],
         bone_map: Dict[int, str],
     ):
-        """native rig builder で IK/付与を構築し、mmdAppend/mmdCcdIk DG ノードを作成する。失敗時は None。"""
+        """native rig builder で IK/付与を構築し、mmdAppend/mmdCcdIk DG ノードを作成する。"""
         try:
             from mmd_tools.converters.native_rig_builder import NativeRigPrimitives
 
             pmx_path = Path(pmx_filepath)
             if not pmx_path.exists():
                 self.logger.warning(f"PMX file not found for native rig: {pmx_filepath}")
-                return None
+                return None, self._native_rig_warning(
+                    "native_rig_pmx_missing",
+                    "PMX file not found for native rig; falling back to Python constraints",
+                    fallback="python_constraints",
+                    pmx_path=pmx_filepath,
+                )
 
             pmx_bytes = pmx_path.read_bytes()
             prims = NativeRigPrimitives.from_pmx_bytes(pmx_bytes)
             if prims is None:
                 self.logger.warning("NativeRigPrimitives.from_pmx_bytes returned None, falling back to Python")
-                return None
+                return None, self._native_rig_warning(
+                    "native_rig_build_unavailable",
+                    "Native rig primitive build returned no result; falling back to Python constraints",
+                    fallback="python_constraints",
+                    pmx_path=pmx_filepath,
+                )
 
             self._store_native_rig_metadata(prims, maya_joints, bone_map)
 
@@ -149,11 +152,29 @@ class RigConverter:
                 f"{len(ik_nodes)} mmdCcdIk"
             )
 
-            return prims
+            return prims, None
 
         except Exception as e:
             self.logger.warning(f"native rig setup failed, falling back to Python: {e}")
-            return None
+            return None, self._native_rig_warning(
+                "native_rig_setup_failed",
+                "Native rig setup failed; falling back to Python constraints",
+                fallback="python_constraints",
+                exception_type=type(e).__name__,
+                error=str(e),
+                pmx_path=pmx_filepath,
+            )
+
+    @staticmethod
+    def _native_rig_warning(code: str, message: str, **extra) -> Dict[str, object]:
+        warning = {
+            "source": "rig_converter",
+            "code": code,
+            "message": message,
+            "severity": "warning",
+        }
+        warning.update(extra)
+        return warning
 
     def _store_native_rig_metadata(self, prims, maya_joints, bone_map):
         """native rig の情報を Maya ジョイントのカスタムアトリビュートに保存する。"""
@@ -292,7 +313,7 @@ class RigConverter:
 
             try:
                 # ikHandleを作成
-                ik_handle, _ = maya_utils.create_ik_handle(
+                ik_handle, _ = maya_rig_utils.create_ik_handle(
                     start_joint=start_joint,
                     end_joint=end_joint,
                     solver="ikRPsolver",  # MMDは通常RPソルバーを使用
@@ -300,10 +321,10 @@ class RigConverter:
                 )
 
                 # IKハンドルをIKボーンにペアレント
-                maya_utils.parent_objects(ik_handle, chain["ik_bone"])
+                maya_scene_utils.parent_objects(ik_handle, chain["ik_bone"])
 
                 # IKハンドルのアトリビュートを設定
-                maya_utils.set_attribute(ik_handle, "v", 0, "bool")  # 非表示
+                maya_attribute_utils.set_attribute(ik_handle, "v", 0, "bool")  # 非表示
 
                 # 足IKの場合、PoleTargetを作成
                 pole_target = None
@@ -318,10 +339,15 @@ class RigConverter:
                 }
 
                 ik_handles.append(ik_handle_info)
-                self.logger.info(f"Created IK handle '{ik_handle}' ({start_joint} -> {end_joint})")
+                self.logger.debug(f"Created IK handle '{ik_handle}' ({start_joint} -> {end_joint})")
 
             except Exception as e:
-                self.logger.error(f"Failed to create IK handle '{chain['ik_bone']}': {e}")
+                safe_log_error(
+                    self.logger,
+                    "Failed to create IK handle",
+                    SimpleNamespace(name=chain["ik_bone"]),
+                    e,
+                )
 
         return ik_handles
 
@@ -343,16 +369,16 @@ class RigConverter:
         # 既存の「全ての親」ボーンを日本語名でチェック
         existing_master = self._find_joint_by_japanese_name(get_original_bone_name_aliases("全ての親"))
         # 英語名でもチェック
-        if not existing_master and maya_utils.object_exists("master"):
+        if not existing_master and maya_scene_utils.object_exists("master"):
             existing_master = "master"
 
         if not existing_master:
             master = cmds.group(empty=True, name="master", parent=skeleton_group)
             semi_standard_bones["master"] = master
-            self.logger.info(f"Added master bone: {master}")
+            self.logger.debug(f"Added master bone: {master}")
         else:
             master = existing_master
-            self.logger.info(f"Using existing master bone: {existing_master}")
+            self.logger.debug(f"Using existing master bone: {existing_master}")
 
         # スケルトングループ直下のルートジョイントを全ての親の子にする
         if "master" in semi_standard_bones or existing_master:
@@ -364,13 +390,13 @@ class RigConverter:
                     continue
                 # ジョイントまたはトランスフォームノードをmasterの子にする
                 if cmds.nodeType(child) in ["joint", "transform"]:
-                    maya_utils.parent_objects(child, master)
+                    maya_scene_utils.parent_objects(child, master)
 
         # グルーブ
         # 既存のグルーブボーンを日本語名でチェック
         existing_groove = self._find_joint_by_japanese_name(get_original_bone_name_aliases("グルーブ"))
         # 英語名でもチェック
-        if not existing_groove and maya_utils.object_exists("groove"):
+        if not existing_groove and maya_scene_utils.object_exists("groove"):
             existing_groove = "groove"
 
         center_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("センター"))
@@ -389,10 +415,10 @@ class RigConverter:
             semi_standard_bones["groove"] = groove
 
             # センターをグルーブの子にする
-            maya_utils.parent_objects(center_joint, groove)
-            self.logger.info(f"Added groove bone: {groove}")
+            maya_scene_utils.parent_objects(center_joint, groove)
+            self.logger.debug(f"Added groove bone: {groove}")
         elif existing_groove:
-            self.logger.info(f"Using existing groove bone: {existing_groove}")
+            self.logger.debug(f"Using existing groove bone: {existing_groove}")
 
         # 腰ボーン（下半身と足の間）
         # 既存の腰ボーンを日本語名でチェック
@@ -416,25 +442,25 @@ class RigConverter:
             ]
 
             # 腰ボーンを作成
-            maya_utils.select_objects(clear=True)
+            maya_scene_utils.select_objects(clear=True)
             waist = cmds.joint(name="waist", position=waist_pos)
             semi_standard_bones["waist"] = waist
 
             # 階層を設定（下半身の子、足の親）
-            maya_utils.parent_objects(waist, lower_body_joint)
+            maya_scene_utils.parent_objects(waist, lower_body_joint)
 
             # 左右の足を腰の子にする
             right_leg_joint = self._find_joint_by_name(maya_joints, get_bone_aliases("右足"))
 
             # 左足を腰の子にする（既に存在確認済み）
-            maya_utils.parent_objects(left_leg_joint, waist)
+            maya_scene_utils.parent_objects(left_leg_joint, waist)
             if right_leg_joint:
-                maya_utils.parent_objects(right_leg_joint, waist)
+                maya_scene_utils.parent_objects(right_leg_joint, waist)
 
-            self.logger.info(f"Added waist bone: {waist}")
+            self.logger.debug(f"Added waist bone: {waist}")
         elif existing_waist:
             # 既存の腰ボーンを使用（新規作成しないので辞書には追加しない）
-            self.logger.info(f"Using existing waist bone: {existing_waist}")
+            self.logger.debug(f"Using existing waist bone: {existing_waist}")
 
         return semi_standard_bones
 
@@ -474,7 +500,7 @@ class RigConverter:
             for jp_name in japanese_names:
                 if original_name == jp_name:
                     # 対応するMayaジョイントを探す
-                    all_joints = maya_utils.list_objects(type="joint")
+                    all_joints = maya_scene_utils.list_objects(type="joint")
                     for joint in all_joints:
                         # カスタムアトリビュートでボーンインデックスを確認
                         if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True):
@@ -524,6 +550,13 @@ class RigConverter:
         # 変形順序でソート（物理前後 → 変形階層 → インデックス）
         given_bones.sort(key=lambda x: (x["is_physics_after"], x["transform_layer"], x["index"]))
 
+        given_bones = self._drop_cycle_closing_grants(
+            given_bones,
+            target_index=lambda info: info["index"],
+            source_index=lambda info: getattr(info["bone"], "grant_parent_bone_index", -1),
+            bone_name=lambda info: getattr(info["bone"], "name", None) or info["joint"],
+        )
+
         # 多重付与の依存関係を解決
         given_bones = self._resolve_given_dependencies(given_bones, bones)
 
@@ -541,7 +574,10 @@ class RigConverter:
             # 投げるため、warning を出してこのボーンの付与をスキップする。
             grant_parent_index = getattr(bone, "grant_parent_bone_index", -1)
             if 0 <= grant_parent_index < len(maya_joints) and maya_joints[grant_parent_index] == joint:
-                self.logger.warning(f"Append parent points to itself; skipping append: {joint}")
+                self.logger.info(
+                    f"Append/grant disabled for bone '{getattr(bone, 'name', None) or joint}': "
+                    "self-grant is skipped; import continues"
+                )
                 continue
 
             # 回転付与
@@ -586,7 +622,7 @@ class RigConverter:
 
                     constraints.append(constraint)
                     given_type = "local append" if is_local_given else "global append"
-                    self.logger.info(
+                    self.logger.debug(
                         f"Configured rotation append ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
                     )
 
@@ -602,11 +638,60 @@ class RigConverter:
 
                     constraints.append(constraint)
                     given_type = "local append" if is_local_given else "global append"
-                    self.logger.info(
+                    self.logger.debug(
                         f"Configured translation append ({given_type}): {joint} <- {parent_joint} (rate={grant_rate}, layer={given_info['transform_layer']})"
                     )
 
         return constraints
+
+    def _drop_cycle_closing_grants(
+        self,
+        grants,
+        *,
+        target_index,
+        source_index,
+        bone_name,
+    ):
+        """Drop self-grants and the deterministic edge that would close a grant cycle."""
+        accepted = []
+        dependencies = {}
+
+        for grant in grants:
+            target = target_index(grant)
+            source = source_index(grant)
+            name = bone_name(grant)
+            if target == source:
+                self.logger.info(
+                    f"Append/grant disabled for bone '{name}': self-grant is skipped; import continues"
+                )
+                continue
+
+            # dependencies are target -> source.  The new edge closes a cycle
+            # when source can already reach target through accepted edges.
+            pending = [source]
+            visited = set()
+            closes_cycle = False
+            while pending:
+                node = pending.pop()
+                if node == target:
+                    closes_cycle = True
+                    break
+                if node in visited:
+                    continue
+                visited.add(node)
+                pending.extend(dependencies.get(node, ()))
+
+            if closes_cycle:
+                self.logger.warning(
+                    f"Append/grant disabled for bone '{name}': cycle-closing grant "
+                    f"{source} -> {target} is skipped; import continues"
+                )
+                continue
+
+            accepted.append(grant)
+            dependencies.setdefault(target, []).append(source)
+
+        return accepted
 
     def _mark_mmd_grant_constraint(self, constraint):
         """runtime bake時に無効化できるMMD付与constraintとして印を付ける。"""
@@ -640,22 +725,22 @@ class RigConverter:
         Returns:
             str: 実在する参照ノード名
         """
-        if cached_reference and maya_utils.object_exists(cached_reference):
+        if cached_reference and maya_scene_utils.object_exists(cached_reference):
             return cached_reference
 
         master_joint = self._find_joint_by_japanese_name(["全ての親", "マスター"])
-        if master_joint and maya_utils.object_exists(master_joint):
+        if master_joint and maya_scene_utils.object_exists(master_joint):
             return master_joint
 
         master_joint = self._find_joint_by_name(maya_joints, ["master", "全ての親", "マスター"])
-        if master_joint and maya_utils.object_exists(master_joint):
+        if master_joint and maya_scene_utils.object_exists(master_joint):
             return master_joint
 
         reference = "mmd_grant_reference"
-        if not maya_utils.object_exists(reference):
+        if not maya_scene_utils.object_exists(reference):
             reference = cmds.group(empty=True, name=reference)
-            maya_utils.set_attribute(reference, "visibility", False, "bool")
-            self.logger.info(f"Added reference node for rotation append: {reference}")
+            maya_attribute_utils.set_attribute(reference, "visibility", False, "bool")
+            self.logger.debug(f"Added reference node for rotation append: {reference}")
 
         return reference
 
@@ -769,6 +854,13 @@ class RigConverter:
             bones[g["targetBoneIndex"]].get("deformLayer", 0),
             g["targetBoneIndex"],
         ))
+        grants = self._drop_cycle_closing_grants(
+            grants,
+            target_index=lambda grant: grant["targetBoneIndex"],
+            source_index=lambda grant: grant["sourceBoneIndex"],
+            bone_name=lambda grant: bones[grant["targetBoneIndex"]].get("name")
+            or maya_joints[grant["targetBoneIndex"]],
+        )
         grants = self._resolve_grant_dependencies_from_manifest(grants)
 
         append_nodes_by_target: Dict[str, str] = {}
@@ -790,7 +882,7 @@ class RigConverter:
             if target_joint == source_joint:
                 continue
 
-            if not maya_utils.object_exists(target_joint) or not maya_utils.object_exists(source_joint):
+            if not maya_scene_utils.object_exists(target_joint) or not maya_scene_utils.object_exists(source_joint):
                 continue
 
             try:
@@ -802,6 +894,8 @@ class RigConverter:
                 cmds.setAttr(f"{node}.affectTranslation", affect_translation)
                 if cmds.attributeQuery("localAppend", node=node, exists=True):
                     cmds.setAttr(f"{node}.localAppend", bool(local_append))
+                if cmds.attributeQuery("schemaMode", node=node, exists=True):
+                    cmds.setAttr(f"{node}.schemaMode", MMD_APPEND_SCHEMA_MODE_COMPAT)
 
                 source_append_node = append_nodes_by_target.get(source_joint)
 
@@ -894,11 +988,16 @@ class RigConverter:
 
                 nodes.append(node)
                 append_nodes_by_target[target_joint] = node
-                self.logger.info(
+                self.logger.debug(
                     f"{self._append_node_type()} node '{node}': {source_joint} -> {target_joint} (ratio={ratio})"
                 )
             except Exception as e:
-                self.logger.error(f"Failed to create mmdAppend node '{target_joint}': {e}")
+                safe_log_error(
+                    self.logger,
+                    "Failed to create mmdAppend node",
+                    SimpleNamespace(name=target_joint),
+                    e,
+                )
 
         return nodes
 
@@ -930,6 +1029,7 @@ class RigConverter:
             abs_positions.append(abs_pos)
             flags = 0
             fixed_axis = bone_data.get("fixedAxis")
+            local_axis = bone_data.get("localAxis")
             fa = [0, 0, 0]
             if fixed_axis is not None:
                 flags = 0x1  # MMD_RUNTIME_RIG_BONE_FIXED_AXIS (1 << 0)
@@ -937,7 +1037,7 @@ class RigConverter:
             jo_deg = [0.0, 0.0, 0.0]
             if pmx_idx < len(maya_joints):
                 jnt = maya_joints[pmx_idx]
-                if maya_utils.object_exists(jnt):
+                if maya_scene_utils.object_exists(jnt):
                     try:
                         jo = cmds.getAttr(f"{jnt}.jointOrient")[0]
                         jo_deg = [jo[0], jo[1], jo[2]]
@@ -951,6 +1051,7 @@ class RigConverter:
                 "no_orient_bind_world_matrix": None,
                 "flags": flags,
                 "fixed_axis": fa,
+                "local_axis": local_axis,
                 "joint_orient_deg": jo_deg,
             })
 
@@ -965,7 +1066,7 @@ class RigConverter:
             pmx_idx = slot_to_pmx[slot]
             if pmx_idx < len(maya_joints):
                 jnt = maya_joints[pmx_idx]
-                if maya_utils.object_exists(jnt):
+                if maya_scene_utils.object_exists(jnt):
                     try:
                         bone["maya_rest_translate"] = list(cmds.getAttr(f"{jnt}.translate")[0])
                     except Exception:
@@ -1022,7 +1123,7 @@ class RigConverter:
             pmx_idx = slot_to_pmx.get(link_slot, -1)
             if 0 <= pmx_idx < len(maya_joints):
                 link_joint = maya_joints[pmx_idx]
-                if maya_utils.object_exists(link_joint):
+                if maya_scene_utils.object_exists(link_joint):
                     link_joints.append(link_joint)
         return link_joints
 
@@ -1080,7 +1181,7 @@ class RigConverter:
                 continue
             if pmx_idx < len(maya_joints):
                 jnt = maya_joints[pmx_idx]
-                if maya_utils.object_exists(jnt):
+                if maya_scene_utils.object_exists(jnt):
                     cmds.connectAttr(f"{jnt}.rotate", f"{node}.inputRotate[{slot}]")
 
         # inputTranslate: ALL bones for position offset computation.
@@ -1088,7 +1189,7 @@ class RigConverter:
             pmx_idx = slot_to_pmx[slot]
             if pmx_idx < len(maya_joints):
                 jnt = maya_joints[pmx_idx]
-                if maya_utils.object_exists(jnt):
+                if maya_scene_utils.object_exists(jnt):
                     cmds.connectAttr(f"{jnt}.translate", f"{node}.inputTranslate[{slot}]")
 
     def _connect_ik_output_rotates(
@@ -1104,7 +1205,7 @@ class RigConverter:
             if pmx_idx < 0 or pmx_idx >= len(maya_joints):
                 continue
             link_joint = maya_joints[pmx_idx]
-            if not maya_utils.object_exists(link_joint):
+            if not maya_scene_utils.object_exists(link_joint):
                 continue
 
             for axis in ("X", "Y", "Z"):
@@ -1151,7 +1252,7 @@ class RigConverter:
                 continue
 
             controller_joint = maya_joints[controller_idx]
-            if not maya_utils.object_exists(controller_joint):
+            if not maya_scene_utils.object_exists(controller_joint):
                 continue
 
             result = build_ik_mini_chain(manifest, chain_def)
@@ -1180,7 +1281,6 @@ class RigConverter:
                 node_name = f"{controller_leaf_name}_mmdCcdIk"
                 node = cmds.createNode(self._ccd_ik_node_type(), name=node_name)
                 cmds.setAttr(f"{node}.chainJson", chain_json, type="string")
-                self._attach_ik_controller_shape(controller_joint)
                 if cmds.attributeQuery("enabled", node=node, exists=True):
                     cmds.setAttr(f"{node}.enabled", False)
                 try:
@@ -1230,79 +1330,19 @@ class RigConverter:
                         pass
 
                 nodes.append(node)
-                self.logger.info(
+                self.logger.debug(
                     f"{self._ccd_ik_node_type()} node '{node}': controller={controller_joint}, "
                     f"{len(links_for_json)} links"
                 )
             except Exception as e:
-                self.logger.error(f"Failed to create mmdCcdIk node '{controller_joint}': {e}")
+                safe_log_error(
+                    self.logger,
+                    "Failed to create mmdCcdIk node",
+                    SimpleNamespace(name=controller_joint),
+                    e,
+                )
 
         return nodes
-
-    def _attach_ik_controller_shape(self, controller_joint: str) -> Optional[str]:
-        """Attach a lightweight NURBS control shape to the IK controller joint.
-
-        The controller joint already drives generated ``mmdCcdIk`` goals in Rig
-        mode.  To avoid adding constraints or evaluation cycles, this method only
-        parents a curve shape under that joint transform so the existing joint is
-        easier to select in the viewport.
-        """
-        if not controller_joint or not maya_utils.object_exists(controller_joint):
-            return None
-        if cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
-            return None
-
-        try:
-            radius = 0.6
-            children = cmds.listRelatives(controller_joint, children=True, type="joint") or []
-            if children:
-                child_positions = [
-                    cmds.xform(child, query=True, worldSpace=True, translation=True)
-                    for child in children
-                ]
-                own_pos = cmds.xform(controller_joint, query=True, worldSpace=True, translation=True)
-                distances = [
-                    sum((child_pos[i] - own_pos[i]) ** 2 for i in range(3)) ** 0.5
-                    for child_pos in child_positions
-                ]
-                if distances:
-                    radius = max(0.2, min(2.0, min(distances) * 0.25))
-
-            controller_leaf_name = _node_leaf_name(controller_joint)
-            ctrl_name = f"{controller_leaf_name}_ctrlShape#"
-            curve_transform = cmds.circle(
-                name=f"{controller_leaf_name}_ctrl#",
-                normal=(0.0, 1.0, 0.0),
-                radius=radius,
-                constructionHistory=False,
-            )[0]
-            curve_shape = (cmds.listRelatives(curve_transform, shapes=True, fullPath=True) or [None])[0]
-            if not curve_shape:
-                cmds.delete(curve_transform)
-                return None
-            curve_shape = cmds.rename(curve_shape, ctrl_name)
-            curve_shape_short = curve_shape.rsplit("|", 1)[-1]
-            cmds.parent(curve_shape, controller_joint, shape=True, relative=True)
-            cmds.delete(curve_transform)
-            shapes = cmds.listRelatives(controller_joint, shapes=True, fullPath=True) or []
-            attached = next((shape for shape in shapes if shape.endswith(curve_shape_short)), None)
-            if attached is None and shapes:
-                attached = shapes[-1]
-
-            if attached:
-                try:
-                    cmds.setAttr(f"{attached}.overrideEnabled", True)
-                    cmds.setAttr(f"{attached}.overrideColor", 17)  # yellow
-                except Exception:
-                    pass
-
-            if not cmds.attributeQuery("mmd_ik_controller_visual", node=controller_joint, exists=True):
-                cmds.addAttr(controller_joint, longName="mmd_ik_controller_visual", attributeType="bool")
-            cmds.setAttr(f"{controller_joint}.mmd_ik_controller_visual", True)
-            return attached
-        except Exception as exc:
-            self.logger.debug(f"failed to attach IK controller shape for {controller_joint}: {exc}")
-            return None
 
     def _can_connect_live_ik_goal_world_matrix(self, controller_joint: str, link_joints: List[str]) -> bool:
         """Return True when controller.worldMatrix will not depend on IK output links."""

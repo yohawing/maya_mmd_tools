@@ -14,11 +14,23 @@ from mmd_tools.ui import drag_drop_importer  # noqa: E402
 
 
 class _FakeSettingsService:
+    def __init__(self, pmx_options=None, vmd_options=None):
+        self.pmx_options = dict(pmx_options or {"kind": "pmx"})
+        self.vmd_options = dict(vmd_options or {"kind": "vmd"})
+        self.pmx_calls = []
+        self.vmd_calls = []
+
     def build_pmx_import_options(self, custom_namespace=None):
-        return {"kind": "pmx", "custom_namespace": custom_namespace}
+        self.pmx_calls.append(custom_namespace)
+        options = dict(self.pmx_options)
+        options["custom_namespace"] = custom_namespace
+        return options
 
     def build_vmd_import_options(self, target_model=None):
-        return {"kind": "vmd", "target_model": target_model}
+        self.vmd_calls.append(target_model)
+        options = dict(self.vmd_options)
+        options["target_model"] = target_model
+        return options
 
 
 class _FakeSceneModelService:
@@ -59,16 +71,18 @@ class TestDragDropImporter(unittest.TestCase):
             root = Path(tmp)
             model = root / "model.pmx"
             motion = root / "motion.vmd"
+            pose = root / "pose.vpd"
             ignored = root / "readme.txt"
             model.write_text("", encoding="utf-8")
             motion.write_text("", encoding="utf-8")
+            pose.write_text("", encoding="utf-8")
             ignored.write_text("", encoding="utf-8")
 
             result = drag_drop_importer.supported_mmd_files(
-                [str(model), str(ignored), str(motion), str(model), str(root / "missing.pmd")]
+                [str(model), str(ignored), str(motion), str(pose), str(model), str(root / "missing.pmd")]
             )
 
-        self.assertEqual(result, [str(model), str(motion)])
+        self.assertEqual(result, [str(model), str(motion), str(pose)])
 
     @patch.object(drag_drop_importer, "_display_info")
     def test_import_dropped_files_imports_models_before_motions(self, _display_info):
@@ -94,11 +108,65 @@ class TestDragDropImporter(unittest.TestCase):
             )
 
         self.assertTrue(result)
-        self.assertEqual(calls[0], ("model.pmx", {"kind": "pmx", "custom_namespace": None, "profile": {}}))
+        self.assertEqual(
+            calls[0],
+            ("model.pmx", {"kind": "pmx", "custom_namespace": None, "profile": {}}),
+        )
         self.assertEqual(calls[1][0], "motion.vmd")
         self.assertEqual(calls[1][1]["kind"], "vmd")
         self.assertEqual(calls[1][1]["target_model"], "|model_root")
         self.assertEqual(calls[1][1]["pmx_path"], str(model))
+
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_model_uses_settings_service_policy_scale(self, _display_info):
+        """D&D モデル import は SettingsService.build_pmx_import_options の scale を使う。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.pmx"
+            model.write_text("", encoding="utf-8")
+            calls = []
+
+            def importer(file_path, options=None):
+                calls.append(dict(options or {}))
+                return "|model_root"
+
+            settings_service = _FakeSettingsService(
+                pmx_options={"kind": "pmx", "scale": 1.0},
+            )
+            result = drag_drop_importer.import_dropped_files(
+                [str(model)],
+                importer=importer,
+                settings_service=settings_service,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(settings_service.pmx_calls, [None])
+        self.assertEqual(calls[0]["scale"], 1.0)
+        self.assertEqual(calls[0]["kind"], "pmx")
+
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_model_forwards_dev_scale_from_settings_service(self, _display_info):
+        """D&D は build_pmx_import_options が返す dev scale を改変せず渡す。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            model = Path(tmp) / "model.pmd"
+            model.write_text("", encoding="utf-8")
+            calls = []
+
+            def importer(file_path, options=None):
+                calls.append((Path(file_path).suffix.lower(), dict(options or {})))
+                return "|model_root"
+
+            settings_service = _FakeSettingsService(
+                pmx_options={"kind": "pmx", "scale": 2.5},
+            )
+            result = drag_drop_importer.import_dropped_files(
+                [str(model)],
+                importer=importer,
+                settings_service=settings_service,
+            )
+
+        self.assertTrue(result)
+        self.assertEqual(calls[0][0], ".pmd")
+        self.assertEqual(calls[0][1]["scale"], 2.5)
 
     @patch.object(drag_drop_importer, "_selected_model_root", return_value="|selected_model")
     @patch.object(drag_drop_importer, "_display_info")
@@ -122,6 +190,90 @@ class TestDragDropImporter(unittest.TestCase):
         importer.assert_called_once()
         self.assertEqual(importer.call_args.args[0], str(motion))
         self.assertEqual(importer.call_args.kwargs["options"], {"kind": "vmd", "target_model": "|selected_model"})
+
+    @patch.object(drag_drop_importer, "_selected_model_root", return_value="|selected_model")
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_vpd_applies_pose_to_selected_model(
+        self,
+        _display_info,
+        _selected_model_root,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            pose = Path(tmp) / "pose.vpd"
+            pose.write_text("", encoding="utf-8")
+            parser = MagicMock(return_value="parsed_vpd")
+            pose_importer = MagicMock(return_value=True)
+
+            result = drag_drop_importer.import_dropped_files(
+                [str(pose)],
+                parser=parser,
+                pose_importer=pose_importer,
+                settings_service=_FakeSettingsService(),
+            )
+
+        self.assertTrue(result)
+        parser.assert_called_once_with(str(pose))
+        pose_importer.assert_called_once_with(
+            "parsed_vpd",
+            str(pose),
+            {"target_model": "|selected_model", "create_keyframe": True},
+        )
+
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_model_and_vpd_applies_pose_to_imported_model(self, _display_info):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            model = root / "model.pmx"
+            pose = root / "pose.vpd"
+            model.write_text("", encoding="utf-8")
+            pose.write_text("", encoding="utf-8")
+            importer = MagicMock(return_value="|new_model")
+            parser = MagicMock(return_value="parsed_vpd")
+            pose_importer = MagicMock(return_value=True)
+
+            result = drag_drop_importer.import_dropped_files(
+                [str(pose), str(model)],
+                importer=importer,
+                parser=parser,
+                pose_importer=pose_importer,
+                settings_service=_FakeSettingsService(),
+            )
+
+        self.assertTrue(result)
+        importer.assert_called_once()
+        pose_importer.assert_called_once_with(
+            "parsed_vpd",
+            str(pose),
+            {"target_model": "|new_model", "create_keyframe": True},
+        )
+
+    @patch.object(drag_drop_importer, "_selected_model_root", return_value=None)
+    @patch.object(drag_drop_importer, "_display_warning")
+    @patch.object(drag_drop_importer, "_display_info")
+    def test_import_dropped_vpd_before_model_load_warns_and_fails(
+        self,
+        _display_info,
+        display_warning,
+        _selected_model_root,
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            pose = Path(tmp) / "pose.vpd"
+            pose.write_text("", encoding="utf-8")
+            parser = MagicMock(return_value="parsed_vpd")
+            pose_importer = MagicMock(return_value=True)
+
+            result = drag_drop_importer.import_dropped_files(
+                [str(pose)],
+                parser=parser,
+                pose_importer=pose_importer,
+                settings_service=_FakeSettingsService(),
+            )
+
+        self.assertFalse(result)
+        parser.assert_not_called()
+        pose_importer.assert_not_called()
+        display_warning.assert_called_once()
+        self.assertIn("before dropping VPD", display_warning.call_args.args[0])
 
     @patch.object(drag_drop_importer, "_selected_model_root", return_value=None)
     @patch.object(drag_drop_importer, "_display_warning")

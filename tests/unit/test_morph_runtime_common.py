@@ -53,6 +53,11 @@ class TestMorphRuntimeCommon(unittest.TestCase):
         self.cmds.getAttr.side_effect = RuntimeError("broken attr")
         self.assertEqual(morph_runtime_common.get_morph_order("morphNode"), 0)
 
+    def test_get_morph_order_returns_zero_when_attribute_query_raises(self):
+        self.cmds.attributeQuery.side_effect = RuntimeError("node does not exist")
+
+        self.assertEqual(morph_runtime_common.get_morph_order("missing"), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

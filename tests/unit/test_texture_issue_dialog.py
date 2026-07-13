@@ -102,7 +102,7 @@ class TestTextureIssueDialogUpdates(unittest.TestCase):
         dialog._populate = MagicMock()
 
         with patch(
-            "mmd_tools.ui.texture_issue_dialog.maya_utils.resolve_scene_mmd_textures",
+            "mmd_tools.ui.texture_issue_dialog.maya_material_utils.resolve_scene_mmd_textures",
             side_effect=PermissionError("denied"),
         ):
             dialog.resolve_all()

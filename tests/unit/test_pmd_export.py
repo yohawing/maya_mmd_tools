@@ -7,11 +7,17 @@ import importlib.machinery
 import importlib.util
 import os
 
+from mmd_tools.core.exceptions import MMDExportException
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.vertex import PmdVertex
 from mmd_tools.core.pmd_data.face import PmdFace
+from mmd_tools.core.pmd_data.ik import PmdIK
 from mmd_tools.core.pmd_data.material import PmdMaterial
+from mmd_tools.core.pmd_data.morph import PmdMorph
 from mmd_tools.core.pmd_data.bone import PmdBone, PmdBoneType
+from mmd_tools.core.pmd_data.display_frame import PmdDisplayFrame
+from mmd_tools.core.pmd_data.rigid_body import PmdRigidBody
+from mmd_tools.core.pmd_data.joint import PmdJoint
 
 # Load PmdExporter directly without triggering io/__init__.py's maya imports
 _pmd_exporter_path = os.path.join(
@@ -258,6 +264,122 @@ class TestPmdExporterFromDict(TestBase):
         self.assertEqual(pmd.bones[0].parent_bone_index, -1)
         self.assertEqual(pmd.bones[0].bone_type, PmdBoneType.ROTATE_AND_MOVE)
 
+    def test_exporter_uses_native_writer_when_available(self):
+        """native PMD writer が bytes を返す場合はその bytes を書く。"""
+        calls = []
+
+        def native_exporter(payload):
+            calls.append(payload)
+            return b"NATIVE-PMD"
+
+        exporter = PmdExporter(native_exporter=native_exporter)
+        out_path = os.path.join(self.temp_dir, "native_dict.pmd")
+        exporter.export_pmd_model(
+            out_path,
+            {
+                "model_name": "NativePmd",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 1, 0], "uv": [0, 0], "bone_indices": [0, 0]},
+                    {"position": [1, 0, 0], "normal": [0, 1, 0], "uv": [1, 0], "bone_indices": [0, 0]},
+                    {"position": [0, 1, 0], "normal": [0, 1, 0], "uv": [0, 1], "bone_indices": [0, 0]},
+                ],
+                "faces": [[0, 1, 2]],
+                "materials": [{"name": "mat", "face_count": 3, "edge_flag": 1}],
+            },
+        )
+
+        with open(out_path, "rb") as handle:
+            self.assertEqual(handle.read(), b"NATIVE-PMD")
+        self.assertEqual(len(calls), 1)
+        payload = calls[0]
+        self.assertEqual(payload["metadata"]["name"], "NativePmd")
+        self.assertEqual(payload["metadata"]["counts"]["vertices"], 3)
+        self.assertEqual(payload["metadata"]["counts"]["faces"], 1)
+        self.assertEqual(payload["materials"][0]["faceCount"], 1)
+        self.assertEqual(payload["geometry"]["vertices"][0]["edgeEnabled"], True)
+        self.assertEqual(payload["skeleton"]["bones"][0]["name"], "root")
+
+    def test_exporter_falls_back_when_native_writer_returns_none(self):
+        """native PMD writer が使えない環境では従来 writer へ戻る。"""
+        exporter = PmdExporter(native_exporter=lambda payload: None)
+        out_path = os.path.join(self.temp_dir, "fallback_dict.pmd")
+        exporter.export_pmd_model(
+            out_path,
+            {
+                "model_name": "FallbackPmd",
+                "vertices": [
+                    {"position": [0, 0, 0], "normal": [0, 1, 0], "uv": [0, 0], "bone_indices": [0, 0]},
+                    {"position": [1, 0, 0], "normal": [0, 1, 0], "uv": [1, 0], "bone_indices": [0, 0]},
+                    {"position": [0, 1, 0], "normal": [0, 1, 0], "uv": [0, 1], "bone_indices": [0, 0]},
+                ],
+                "faces": [[0, 1, 2]],
+            },
+        )
+
+        parsed = PmdData().parse_file(out_path)
+        self.assertEqual(parsed.header.model_name, "FallbackPmd")
+        self.assertEqual(len(parsed.vertices), 3)
+        self.assertEqual(len(parsed.faces), 1)
+
+    def test_native_export_blocker_documents_unsupported_pmd_sections(self):
+        """native JSON がまだ表現しない PMD セクションは理由付きで Python writer に戻す。"""
+        exporter = PmdExporter(native_exporter=lambda payload: b"NATIVE-PMD")
+        pmd = PmdData()
+        self.assertIsNone(exporter.native_export_blocker(pmd))
+
+        section_cases = [
+            ("ik_data", PmdIK(), "ik"),
+            ("morphs", PmdMorph(), "morphs"),
+            ("display_frames", PmdDisplayFrame(), "display_frames"),
+            ("rigid_bodies", PmdRigidBody(), "rigid_bodies"),
+            ("joints", PmdJoint(), "joints"),
+        ]
+        for attr, item, reason in section_cases:
+            with self.subTest(section=attr):
+                pmd = PmdData()
+                getattr(pmd, attr).append(item)
+                self.assertEqual(exporter.native_export_blocker(pmd), reason)
+
+    def test_native_export_falls_back_for_unsupported_pmd_sections(self):
+        """blocker 対象セクションがある場合は native writer を呼ばず Python writer を使う。"""
+        calls = []
+        exporter = PmdExporter(native_exporter=lambda payload: calls.append(payload) or b"NATIVE-PMD")
+        pmd = PmdData()
+        pmd.header.magic = b"Pmd"
+        pmd.header.version = 1.0
+        pmd.header.model_name = "UnsupportedNativePmd"
+
+        for position in ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)):
+            vertex = PmdVertex()
+            vertex.position = position
+            vertex.normal = (0.0, 0.0, 1.0)
+            vertex.uv = (0.0, 0.0)
+            vertex.bone_indices = (0, 0)
+            vertex.bone_weight = 100
+            pmd.vertices.append(vertex)
+
+        face = PmdFace()
+        face.indices = (0, 1, 2)
+        pmd.faces.append(face)
+
+        material = PmdMaterial(0)
+        material.face_count = 3
+        pmd.materials.append(material)
+
+        bone = PmdBone()
+        bone.name = "root"
+        bone.parent_bone_index = -1
+        bone.tail_pos_bone_index = 0xFFFF
+        bone.bone_type = PmdBoneType.ROTATE_AND_MOVE
+        bone.ik_parent_bone_index = 0
+        pmd.bones.append(bone)
+
+        display_frame = PmdDisplayFrame()
+        pmd.display_frames.append(display_frame)
+        native_bytes = exporter._try_native_export(pmd)
+        self.assertIsNone(native_bytes)
+        self.assertEqual(calls, [])
+
     def test_export_quad_triangulation(self):
         """quad dictをfan triangulate -> export -> parse_file で検証"""
         data = {
@@ -302,7 +424,7 @@ class TestPmdExporterFromDict(TestBase):
     def test_export_rejects_vertex_count_above_pmd_index_range(self):
         """65537 頂点以上は PMD の face index で表現できないため拒否する。"""
         vertices = [{"position": [0.0, 0.0, 0.0]} for _ in range(0x10001)]
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "too_many_vertices.pmd"),
                 {"vertices": vertices, "faces": [[0, 1, 2]]},
@@ -460,7 +582,7 @@ class TestPmdExporterFromDict(TestBase):
 
     def test_export_empty_vertices_raises(self):
         """vertices空でValueError"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "empty.pmd"),
                 {"vertices": [], "faces": [[0, 1, 2]]},
@@ -468,7 +590,7 @@ class TestPmdExporterFromDict(TestBase):
 
     def test_export_empty_faces_raises(self):
         """faces空でValueError"""
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "empty.pmd"),
                 {"vertices": [{"position": [0.0, 0.0, 0.0]}], "faces": []},
@@ -485,7 +607,7 @@ class TestPmdExporterFromDict(TestBase):
             ],
             "faces": [[0, 1, 3]],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "bad_face_index.pmd"),
                 data,
@@ -503,7 +625,7 @@ class TestPmdExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "bones": [{"name": "root"}],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "bad_bone_index.pmd"),
                 data,
@@ -521,7 +643,7 @@ class TestPmdExporterFromDict(TestBase):
             "faces": [[0, 1, 2]],
             "bones": [],
         }
-        with self.assertRaises(ValueError):
+        with self.assertRaises(MMDExportException):
             self.exporter.export_pmd_model(
                 os.path.join(self.temp_dir, "empty_bones.pmd"),
                 data,

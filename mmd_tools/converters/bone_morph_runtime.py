@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from collections import defaultdict
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -22,6 +24,23 @@ from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadat
 logger = get_logger(__name__)
 
 ACCUM_NODE_TYPE = "mmdBoneMorphAccum"
+CCD_IK_NODE_TYPE = "mmdCcdIk"
+APPEND_NODE_TYPE = "mmdAppend"
+REQUIRED_ACCUM_ATTRS = (
+    "contribution",
+    "morphOrder",
+    "weight",
+    "translateOffset",
+    "rotateOffsetQuat",
+    "baseTranslate",
+    "baseRotate",
+    "rotateOrder",
+    "outputTranslate",
+    "outputRotate",
+)
+_NODE_TYPE_UNAVAILABLE = "node_type_unavailable"
+_PROBE_NODE_NAME = "__mmdBoneMorphAccum_availability_probe__"
+_ARRAY_INDEX_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)\[(\d+)\](?:\.|$)")
 
 
 def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
@@ -33,7 +52,9 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
 
     Returns:
         Summary dict containing created/reused accumulator nodes and skipped
-        morph metadata records.
+        morph metadata records. When ``mmdBoneMorphAccum`` is unavailable the
+        graph is skipped, morph metadata is preserved, and a structured
+        ``node_type_unavailable`` warning is returned.
     """
     result = {
         "success": True,
@@ -42,6 +63,7 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         "reused": 0,
         "contributions": 0,
         "skipped": [],
+        "warnings": [],
     }
     if not root_group or not cmds.objExists(root_group):
         result["success"] = False
@@ -70,6 +92,19 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         result["skipped"].append("no_bone_morph_contributions")
         return result
 
+    availability = probe_bone_morph_accum_availability()
+    if not availability.get("available"):
+        warning = _node_type_unavailable_warning(availability)
+        result["success"] = False
+        result["warnings"].append(warning)
+        result["skipped"].append(_NODE_TYPE_UNAVAILABLE)
+        logger.warning(
+            "Skipping bone morph runtime graph: %s unavailable (%s)",
+            ACCUM_NODE_TYPE,
+            availability.get("detail") or _NODE_TYPE_UNAVAILABLE,
+        )
+        return result
+
     for contributions in contributions_by_joint.values():
         contributions.sort(
             key=lambda item: (
@@ -82,7 +117,7 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
     existing_by_joint = _collect_existing_accumulators()
     for joint, contributions in contributions_by_joint.items():
         node = existing_by_joint.get(joint)
-        if node and cmds.objExists(node):
+        if node and _is_valid_accumulator(node):
             result["reused"] += 1
         else:
             node = _create_accumulator(joint)
@@ -100,6 +135,145 @@ def build_bone_morph_graph(root_group: str) -> Dict[str, Any]:
         result["contributions"] += len(contributions)
 
     return result
+
+
+def probe_bone_morph_accum_availability() -> Dict[str, Any]:
+    """Probe whether ``mmdBoneMorphAccum`` can be created with its attribute contract.
+
+    Creates a temporary probe node, validates type and required attributes, then
+    deletes the probe. Never leaves a scene artifact on success or failure paths
+    that this function owns.
+
+    Returns:
+        Dict with ``available`` bool and diagnostic fields. When unavailable,
+        ``code`` / ``reason`` are ``node_type_unavailable``.
+    """
+    result = {
+        "available": False,
+        "code": _NODE_TYPE_UNAVAILABLE,
+        "reason": _NODE_TYPE_UNAVAILABLE,
+        "node_type": ACCUM_NODE_TYPE,
+        "detail": "",
+        "missing_attributes": [],
+        "actual_type": "",
+    }
+    node = None
+    scene_was_modified = None
+    undo_was_enabled = None
+    try:
+        try:
+            scene_was_modified = bool(cmds.file(query=True, modified=True))
+        except Exception:
+            pass
+        try:
+            undo_was_enabled = bool(cmds.undoInfo(query=True, state=True))
+            if undo_was_enabled:
+                cmds.undoInfo(stateWithoutFlush=False)
+        except Exception:
+            undo_was_enabled = None
+        try:
+            node = cmds.createNode(ACCUM_NODE_TYPE, name=_PROBE_NODE_NAME)
+        except Exception as exc:
+            result["detail"] = "create_failed: {0}".format(exc)
+            return result
+
+        try:
+            actual_type = cmds.nodeType(node) or ""
+        except Exception as exc:
+            result["detail"] = "node_type_query_failed: {0}".format(exc)
+            return result
+        result["actual_type"] = actual_type
+
+        if actual_type != ACCUM_NODE_TYPE:
+            result["detail"] = "unknown_or_wrong_type: {0}".format(actual_type)
+            return result
+
+        missing = []
+        for attr in REQUIRED_ACCUM_ATTRS:
+            try:
+                exists = cmds.attributeQuery(attr, node=node, exists=True)
+            except Exception:
+                exists = False
+            if not exists:
+                missing.append(attr)
+        if missing:
+            result["missing_attributes"] = missing
+            result["detail"] = "missing_attributes: {0}".format(",".join(missing))
+            return result
+
+        result["available"] = True
+        result["code"] = ""
+        result["reason"] = ""
+        result["detail"] = ""
+        return result
+    finally:
+        # A createNode exception may still have mutated Maya before failing.
+        # Cleanup is only provable after Maya returned a concrete node name.
+        cleanup_succeeded = node is not None and _delete_node_quiet(node)
+        if undo_was_enabled:
+            try:
+                cmds.undoInfo(stateWithoutFlush=True)
+            except Exception:
+                pass
+        if scene_was_modified is not None and cleanup_succeeded:
+            try:
+                cmds.file(modified=scene_was_modified)
+            except Exception:
+                pass
+
+
+def log_bone_morph_accum_availability_postcondition() -> Dict[str, Any]:
+    """Soft plugin-init postcondition: probe contract without failing load.
+
+    Returns the probe result. Callers should treat exceptions / unavailable
+    results as non-fatal diagnostics only.
+    """
+    availability = probe_bone_morph_accum_availability()
+    if not availability.get("available"):
+        logger.warning(
+            "Plugin postcondition: %s unavailable (%s); bone morph runtime will fail soft",
+            ACCUM_NODE_TYPE,
+            availability.get("detail") or _NODE_TYPE_UNAVAILABLE,
+        )
+    return availability
+
+
+def _node_type_unavailable_warning(availability: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "code": _NODE_TYPE_UNAVAILABLE,
+        "reason": _NODE_TYPE_UNAVAILABLE,
+        "node_type": ACCUM_NODE_TYPE,
+        "detail": availability.get("detail") or _NODE_TYPE_UNAVAILABLE,
+        "missing_attributes": list(availability.get("missing_attributes") or []),
+        "actual_type": availability.get("actual_type") or "",
+    }
+
+
+def _delete_node_quiet(node: Optional[str]) -> bool:
+    if not node:
+        return True
+    try:
+        if cmds.objExists(node):
+            cmds.delete(node)
+            return not cmds.objExists(node)
+        return True
+    except Exception:
+        logger.debug("Failed to delete temporary node %s", node, exc_info=True)
+        return False
+
+
+def _is_valid_accumulator(node: str) -> bool:
+    """Return whether *node* is a usable ``mmdBoneMorphAccum`` instance."""
+    if not node or not cmds.objExists(node):
+        return False
+    try:
+        if cmds.nodeType(node) != ACCUM_NODE_TYPE:
+            return False
+        return all(
+            cmds.attributeQuery(attr, node=node, exists=True) for attr in REQUIRED_ACCUM_ATTRS
+        )
+    except Exception:
+        return False
 
 
 def _collect_joints_by_bone_index(root_group: str) -> Dict[int, str]:
@@ -224,9 +398,9 @@ def _append_group_morph_contributions(
 def _collect_morph_nodes_by_index(morph_nodes: Iterable[str]) -> Dict[int, str]:
     nodes_by_index: Dict[int, str] = {}
     for morph_node in morph_nodes:
-        if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
-            continue
         try:
+            if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
+                continue
             morph_index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
         except Exception:
             continue
@@ -281,6 +455,8 @@ def _pmx_quat_to_maya(values) -> Tuple[float, float, float, float]:
 def _collect_existing_accumulators() -> Dict[str, str]:
     accumulators: Dict[str, str] = {}
     for node in cmds.ls(type=ACCUM_NODE_TYPE) or []:
+        if not _is_valid_accumulator(node):
+            continue
         if not cmds.attributeQuery("mmd_target_joint", node=node, exists=True):
             continue
         try:
@@ -295,10 +471,19 @@ def _collect_existing_accumulators() -> Dict[str, str]:
 def _create_accumulator(joint: str) -> Optional[str]:
     node_name = f"{joint.split('|')[-1]}_boneMorphAccum"
     try:
-        return cmds.createNode(ACCUM_NODE_TYPE, name=node_name)
+        node = cmds.createNode(ACCUM_NODE_TYPE, name=node_name)
     except Exception as exc:
         logger.warning("Failed to create %s for %s: %s", ACCUM_NODE_TYPE, joint, exc)
         return None
+    if _is_valid_accumulator(node):
+        return node
+    logger.warning(
+        "Created %s for %s, but type/attribute contract is unavailable; deleting probe node",
+        ACCUM_NODE_TYPE,
+        joint,
+    )
+    _delete_node_quiet(node)
+    return None
 
 
 def _mark_accumulator(node: str, joint: str) -> None:
@@ -385,14 +570,96 @@ def _reroute_joint_inputs_through_accumulator(joint: str, node: str) -> None:
 
 
 def _destination_upstream_of_append(joint: str, attr_kind: str) -> str:
+    """Resolve where a bone morph accumulator should feed for *joint*.*attr_kind*.
+
+    Priority:
+    1. ``mmdAppend.output*`` driving the joint → feed ``mmdAppend.base*``
+    2. ``mmdCcdIk.outputRotate[link_i]`` driving ``joint.rotate`` → feed
+       ``mmdCcdIk.inputRotate[chainJson.links[link_i].bone_slot]``
+    3. Otherwise feed the joint attribute itself
+    """
     joint_attr = f"{joint}.{attr_kind}"
     output_name = f"output{attr_kind.capitalize()}"
     base_name = f"base{attr_kind.capitalize()}"
     for source in cmds.listConnections(joint_attr, s=True, d=False, p=True) or []:
         source_node, source_attr = _split_plug(source)
-        if source_node and cmds.nodeType(source_node) == "mmdAppend" and source_attr.startswith(output_name):
+        if not source_node:
+            continue
+        try:
+            source_type = cmds.nodeType(source_node)
+        except Exception:
+            continue
+        if source_type == APPEND_NODE_TYPE and source_attr.startswith(output_name):
             return f"{source_node}.{base_name}"
+        if attr_kind == "rotate" and source_type == CCD_IK_NODE_TYPE:
+            ik_dest = _ccd_ik_input_rotate_destination(source_node, source_attr)
+            if ik_dest:
+                return ik_dest
     return joint_attr
+
+
+def _ccd_ik_input_rotate_destination(ik_node: str, source_attr: str) -> Optional[str]:
+    """Map ``mmdCcdIk.outputRotate[link_i]`` to its pre-solver ``inputRotate`` plug."""
+    link_index = _array_attr_index(source_attr, "outputRotate")
+    if link_index is None:
+        return None
+    bone_slot = _ccd_ik_link_bone_slot(ik_node, link_index)
+    if bone_slot is None or bone_slot < 0:
+        return None
+    return f"{ik_node}.inputRotate[{bone_slot}]"
+
+
+def _ccd_ik_link_bone_slot(ik_node: str, link_index: int) -> Optional[int]:
+    """Return ``chainJson.links[link_index].bone_slot`` (fallback: *link_index*)."""
+    try:
+        raw = cmds.getAttr(f"{ik_node}.chainJson") or "{}"
+        cfg = json.loads(raw)
+    except Exception:
+        return link_index
+    links = cfg.get("links") if isinstance(cfg, dict) else None
+    if not isinstance(links, list) or link_index < 0 or link_index >= len(links):
+        return link_index
+    link = links[link_index]
+    if not isinstance(link, dict):
+        return link_index
+    try:
+        return int(link.get("bone_slot", link_index))
+    except (TypeError, ValueError):
+        return link_index
+
+
+def _array_attr_index(source_attr: str, array_name: str) -> Optional[int]:
+    """Parse multi-index from ``outputRotate[2]`` or ``outputRotate[2].child``."""
+    if not source_attr.startswith(array_name):
+        return None
+    match = _ARRAY_INDEX_RE.match(source_attr)
+    if not match or match.group(1) != array_name:
+        return None
+    try:
+        return int(match.group(2))
+    except (TypeError, ValueError):
+        return None
+
+
+def _compound_axis_plug(compound_attr: str, axis: str) -> Optional[str]:
+    """Resolve the X/Y/Z child plug for a compound attribute.
+
+    Handles standard children (``rotateX``) and mmdCcdIk array elements
+    (``inputRotate[n].inputRotateElementX``).
+    """
+    candidates = [f"{compound_attr}{axis}"]
+    if "[" in compound_attr:
+        leaf = compound_attr.rsplit(".", 1)[-1]
+        array_name = leaf.split("[", 1)[0]
+        if array_name:
+            candidates.append(f"{compound_attr}.{array_name}Element{axis}")
+    for plug in candidates:
+        try:
+            if cmds.objExists(plug):
+                return plug
+        except Exception:
+            continue
+    return candidates[0] if candidates else None
 
 
 def _reroute_compound(destination: str, base_attr: str, output_attr: str, attr_kind: str) -> None:
@@ -405,10 +672,16 @@ def _reroute_compound(destination: str, base_attr: str, output_attr: str, attr_k
         _disconnect_and_reconnect(source, destination, base_attr)
 
     for axis in ("X", "Y", "Z"):
-        dst_axis = f"{destination}{axis}"
-        base_axis = f"{base_attr}{axis}"
-        output_axis = f"{output_attr}{axis}"
-        for source in cmds.listConnections(dst_axis, s=True, d=False, p=True) or []:
+        dst_axis = _compound_axis_plug(destination, axis)
+        base_axis = _compound_axis_plug(base_attr, axis)
+        output_axis = _compound_axis_plug(output_attr, axis)
+        if not dst_axis or not base_axis or not output_axis:
+            continue
+        try:
+            axis_sources = cmds.listConnections(dst_axis, s=True, d=False, p=True) or []
+        except Exception:
+            axis_sources = []
+        for source in axis_sources:
             if _same_source(source, output_axis):
                 continue
             _disconnect_and_reconnect(source, dst_axis, base_axis)

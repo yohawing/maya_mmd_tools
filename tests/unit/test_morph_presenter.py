@@ -1,9 +1,11 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import json
 from maya import cmds
+from mmd_tools.ui.presenters import morph_presenter as morph_presenter_module
 from mmd_tools.ui.presenters.morph_presenter import MorphPresenter
 from mmd_tools.ui.translations import UITranslator
+from tests.common.mock_ui import attach_mocks
 from tests.common.maya_test_base import MayaTestBase
 
 UITranslator.instance().set_language("en")
@@ -11,6 +13,16 @@ UITranslator.instance().set_language("en")
 
 class TestMorphPresenter(MayaTestBase):
     """MorphPresenterのテストクラス"""
+
+    @staticmethod
+    def _call_messages(mock_method):
+        """Python 3.7 互換: call_args_list から第1位置引数のメッセージを集める。"""
+        messages = []
+        for call in mock_method.call_args_list:
+            args = call[0]
+            if args:
+                messages.append(args[0])
+        return messages
 
     def setUp(self):
         """テストのセットアップ"""
@@ -29,55 +41,43 @@ class TestMorphPresenter(MayaTestBase):
 
     def _setup_view_mocks(self):
         """ビューのモックを設定"""
-        # リストウィジェット
-        self.mock_view.morph_list = MagicMock()
-        self.mock_view.group_list = MagicMock()
-
-        # ボタン
-        self.mock_view.refresh_morphs_btn = MagicMock()
-        self.mock_view.select_in_maya_btn = MagicMock()
-        self.mock_view.add_group_btn = MagicMock()
-        self.mock_view.remove_group_btn = MagicMock()
-        self.mock_view.reset_slider_btn = MagicMock()
-        self.mock_view.reset_all_btn = MagicMock()
-        self.mock_view.connect_btn = MagicMock()
-        self.mock_view.disconnect_btn = MagicMock()
-        self.mock_view.auto_connect_btn = MagicMock()
-        self.mock_view.select_blend_shape_btn = MagicMock()
-        self.mock_view.apply_btn = MagicMock()
-        self.mock_view.reset_btn = MagicMock()
-        self.mock_view.save_preset_btn = MagicMock()
-        self.mock_view.load_preset_btn = MagicMock()
-        self.mock_view.delete_preset_btn = MagicMock()
-
-        # エディット/コンボボックス
-        self.mock_view.search_edit = MagicMock()
-        self.mock_view.morph_name_jp_edit = MagicMock()
-        self.mock_view.morph_name_en_edit = MagicMock()
-        self.mock_view.blend_shape_edit = MagicMock()
-        self.mock_view.target_name_edit = MagicMock()
-        self.mock_view.panel_combo = MagicMock()
-        self.mock_view.morph_type_combo = MagicMock()
-        self.mock_view.group_combo = MagicMock()
-        self.mock_view.preset_combo = MagicMock()
-
-        # スライダー/ラベル
-        self.mock_view.morph_slider = MagicMock()
-        self.mock_view.morph_value_label = MagicMock()
-        self.mock_view.connection_status_label = MagicMock()
-        self.mock_view.offset_count_label = MagicMock()
-
-        # チェックボックス/スピンボックス
-        self.mock_view.invert_check = MagicMock()
+        attach_mocks(
+            self.mock_view,
+            [
+                "morph_list",
+                "refresh_morphs_btn",
+                "reset_slider_btn",
+                "reset_all_btn",
+                "connect_btn",
+                "disconnect_btn",
+                "auto_connect_btn",
+                "select_blend_shape_btn",
+                "apply_btn",
+                "reset_btn",
+                "save_preset_btn",
+                "load_preset_btn",
+                "delete_preset_btn",
+                "search_edit",
+                "morph_name_jp_edit",
+                "morph_name_en_edit",
+                "blend_shape_edit",
+                "target_name_edit",
+                "panel_combo",
+                "morph_type_combo",
+                "preset_combo",
+                "morph_slider",
+                "morph_value_label",
+                "connection_status_label",
+                "offset_count_label",
+                "invert_check",
+                "multiplier_spin",
+                "offset_table",
+                "set_morph_details_enabled",
+            ],
+            mock_cls=MagicMock,
+        )
         self.mock_view.invert_check.isChecked.return_value = False
-        self.mock_view.multiplier_spin = MagicMock()
         self.mock_view.multiplier_spin.value.return_value = 1.0
-
-        # テーブル
-        self.mock_view.offset_table = MagicMock()
-
-        # その他のメソッド
-        self.mock_view.set_morph_details_enabled = MagicMock()
 
     def test_init(self):
         """初期化のテスト"""
@@ -119,12 +119,21 @@ class TestMorphPresenter(MayaTestBase):
         cmds.delete(target)
 
         # モーフをロード
-        self.presenter.load_morphs()
+        self.mock_view.morph_list.count.return_value = 1
+        with patch.object(morph_presenter_module, "logger") as mock_logger:
+            self.presenter.load_morphs()
 
         # 結果を確認
         self.mock_view.morph_list.clear.assert_called()
         self.assertIn("test_target", self.presenter.morph_data)
         self.assertEqual(self.presenter.blend_shape_node, blend_shape)
+
+        # 一覧ロード詳細は DEBUG のみ（INFO には出さない）
+        expected = f"Loaded 1 morphs for model: {test_model}"
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_on_morph_selected(self):
         """モーフ選択時の処理のテスト"""
@@ -143,8 +152,9 @@ class TestMorphPresenter(MayaTestBase):
 
         # モーフ選択をシミュレート
         mock_item = MagicMock()
-        mock_item.text.return_value = "test_morph"
-        self.presenter.on_morph_selected(mock_item, None)
+        mock_item.data.return_value = "test_morph"
+        with patch.object(morph_presenter_module, "logger") as mock_logger:
+            self.presenter.on_morph_selected(mock_item, None)
 
         # 結果を確認
         self.assertEqual(self.presenter.current_morph, "test_morph")
@@ -153,29 +163,46 @@ class TestMorphPresenter(MayaTestBase):
         self.mock_view.morph_name_en_edit.setText.assert_called_with("test_morph")
         self.mock_view.panel_combo.setCurrentIndex.assert_called_with(1)
         self.mock_view.morph_type_combo.setCurrentIndex.assert_called_with(0)
-        self.mock_view.group_combo.setCurrentText.assert_called_with("目")
 
-    def test_on_morph_slider_changed(self):
-        """スライダー変更時の処理のテスト"""
+        expected = "Selected morph: test_morph"
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
+
+    def test_mouth_alias_slider_writes_canonical_weight_plug(self):
+        """Mouth_A01 alias の slider は canonical weight[0] を更新する。"""
         # ブレンドシェイプを作成
         mesh = cmds.polyCube(name="test_mesh")[0]
         target = cmds.polyCube(name="test_target")[0]
         blend_shape = cmds.blendShape(target, mesh, name="test_blendShape")[0]
 
         # ブレンドシェイプのエイリアスを設定
-        cmds.aliasAttr("test_morph_alias", f"{blend_shape}.weight[0]")
+        cmds.aliasAttr("Mouth_A01", f"{blend_shape}.weight[0]")
         cmds.delete(target)
 
         # モーフデータを設定
-        self.presenter.current_morph = "test_morph"
-        self.presenter.morph_data = {"test_morph": {"blend_shape_node": blend_shape, "blend_shape_target": "test_morph_alias"}}
+        self.presenter.current_morph = "あ"
+        self.presenter.morph_data = {
+            "あ": {
+                "blend_shape_node": blend_shape,
+                "blend_shape_target": "Mouth_A01",
+                "blend_shape_weight_attr": "weight[0]",
+            }
+        }
 
         # スライダー変更をシミュレート
-        self.presenter.on_morph_slider_changed(50)
+        with patch.object(
+            self.presenter.maya_adapter,
+            "set_attr",
+            wraps=self.presenter.maya_adapter.set_attr,
+        ) as set_attr:
+            self.presenter.on_morph_slider_changed(50)
 
         # 結果を確認
         self.mock_view.morph_value_label.setText.assert_called_with("50%")
-        weight = cmds.getAttr(f"{blend_shape}.test_morph_alias")
+        set_attr.assert_called_once_with(f"{blend_shape}.weight[0]", 0.5)
+        weight = cmds.getAttr(f"{blend_shape}.weight[0]")
         self.assertAlmostEqual(weight, 0.5, places=5)
 
     def test_reset_all_morphs(self):
@@ -216,8 +243,10 @@ class TestMorphPresenter(MayaTestBase):
         items = []
         for name in ["smile", "wink", "sad", "angry"]:
             item = MagicMock()
-            item.text.return_value = name
+            item.data.return_value = name
             items.append(item)
+
+        self.presenter.morph_data = {name: {"name_jp": name} for name in ["smile", "wink", "sad", "angry"]}
 
         self.mock_view.morph_list.count.return_value = len(items)
         self.mock_view.morph_list.item = lambda i: items[i]
@@ -328,7 +357,8 @@ class TestMorphPresenter(MayaTestBase):
         }
 
         # 自動連携を実行
-        self.presenter.auto_connect_blend_shapes()
+        with patch.object(morph_presenter_module, "logger") as mock_logger:
+            self.presenter.auto_connect_blend_shapes()
 
         # 結果を確認
         for name in target_names:
@@ -338,31 +368,43 @@ class TestMorphPresenter(MayaTestBase):
 
         self.mock_app_state.emit_status.assert_called()
 
+        # 開始・完了は INFO、per-item 成功は DEBUG のみ
+        debug_messages = self._call_messages(mock_logger.debug)
+        info_messages = self._call_messages(mock_logger.info)
+        self.assertIn("Starting auto-connect", info_messages)
+        self.assertIn("Auto-connect complete: connected 3 morph(s)", info_messages)
+        per_item = f"Auto-connect succeeded: smile -> {blend_shape}."
+        self.assertTrue(any(msg.startswith(per_item) for msg in debug_messages))
+        self.assertFalse(any(msg.startswith("Auto-connect succeeded:") for msg in info_messages))
+
     def test_organize_morphs_by_group(self):
-        """グループごとのモーフ整理のテスト"""
-        # モーフデータを設定
+        """PMX panel に基づくモーフ整理のテスト"""
+        # モーフデータを設定（stale group は分類に使わない）
         self.presenter.morph_data = {
-            "eyebrow_up": {"group": "眉"},
-            "eyebrow_down": {"group": "眉"},
-            "eye_close": {"group": "目"},
-            "mouth_open": {"group": "口"},
-            "cheek_red": {"group": "その他"},
-            "custom_morph": {"group": "カスタム"},
+            "eyebrow_up": {"panel": 1, "group": "カスタム"},
+            "eyebrow_down": {"panel": 1, "group": "その他"},
+            "eye_close": {"panel": 2, "group": "口"},
+            "mouth_open": {"panel": 3, "group": "眉"},
+            "cheek_red": {"panel": 4, "group": "カスタム"},
+            "system_base": {"panel": 0, "group": "その他"},
+            "custom_morph": {"group": "カスタム"},  # missing panel -> Other
         }
 
         # グループ整理を実行
         self.presenter._organize_morphs_by_group()
 
-        # 結果を確認
+        # 結果を確認: panels 1-4 only; custom group strings ignored
         self.assertEqual(len(self.presenter.group_morphs["眉"]), 2)
         self.assertEqual(len(self.presenter.group_morphs["目"]), 1)
         self.assertEqual(len(self.presenter.group_morphs["口"]), 1)
-        self.assertEqual(len(self.presenter.group_morphs["その他"]), 1)
-        self.assertEqual(len(self.presenter.group_morphs["カスタム"]), 1)
+        self.assertEqual(len(self.presenter.group_morphs["その他"]), 2)
+        self.assertNotIn("カスタム", self.presenter.group_morphs)
+        self.assertNotIn("system_base", self.presenter.group_morphs["その他"])
 
         self.assertIn("eyebrow_up", self.presenter.group_morphs["眉"])
         self.assertIn("eyebrow_down", self.presenter.group_morphs["眉"])
         self.assertIn("eye_close", self.presenter.group_morphs["目"])
+        self.assertIn("custom_morph", self.presenter.group_morphs["その他"])
 
     def test_apply_changes(self):
         """変更適用のテスト"""
@@ -373,7 +415,13 @@ class TestMorphPresenter(MayaTestBase):
         # モーフデータを設定
         self.presenter.current_morph = "test_morph"
         self.presenter.morph_data = {
-            "test_morph": {"name_jp": "旧名前", "name_en": "old_name", "panel": 0, "type": 0, "group": "その他"}
+            "test_morph": {
+                "name_jp": "旧名前",
+                "name_en": "old_name",
+                "panel": 0,
+                "type": 0,
+                "group": "その他",
+            }
         }
 
         # UIの値を設定
@@ -381,7 +429,6 @@ class TestMorphPresenter(MayaTestBase):
         self.mock_view.morph_name_en_edit.text.return_value = "new_name"
         self.mock_view.panel_combo.currentIndex.return_value = 1
         self.mock_view.morph_type_combo.currentIndex.return_value = 2
-        self.mock_view.group_combo.currentText.return_value = "目"
 
         # 変更を適用
         self.presenter.apply_changes()
@@ -392,12 +439,13 @@ class TestMorphPresenter(MayaTestBase):
         self.assertEqual(data["name_en"], "new_name")
         self.assertEqual(data["panel"], 1)
         self.assertEqual(data["type"], 2)
-        self.assertEqual(data["group"], "目")
+        self.assertNotIn("group", data)
 
         # MMDアトリビュートに保存されたことを確認
         self.assertTrue(cmds.attributeQuery("mmdMorphData", node=test_model, exists=True))
         saved_data = json.loads(cmds.getAttr(f"{test_model}.mmdMorphData"))
         self.assertEqual(saved_data["test_morph"]["name_jp"], "新名前")
+        self.assertNotIn("group", saved_data["test_morph"])
 
     def test_delete_preset(self):
         """プリセット削除のテスト"""

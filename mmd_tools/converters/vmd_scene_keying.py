@@ -7,7 +7,7 @@ import maya.api.OpenMaya as om
 import maya.api.OpenMayaAnim as oma
 import maya.cmds as cmds
 
-from ..core import maya_utils
+from ..core import maya_animation_utils
 from . import vmd_profile
 from .vmd_context import VmdKeyingContext
 
@@ -272,7 +272,7 @@ def _create_scalar_channel_curves(
         if simple_attrs:
             with vmd_profile.scope("curve_setup", count=len(simple_attrs)):
                 curves.update(
-                    maya_utils.create_animation_curves(
+                    maya_animation_utils.create_animation_curves(
                         node_name,
                         simple_attrs,
                         tangent_type=oma.MFnAnimCurve.kTangentLinear,
@@ -324,7 +324,7 @@ def batch_create_and_key_curves(
     animation_layer = context.anim_layer if context.use_animation_layers and context.anim_layer else None
     create_error: Optional[Exception] = None
     try:
-        curves = maya_utils.create_animation_curves(
+        curves = maya_animation_utils.create_animation_curves(
             joint_name,
             attrs,
             tangent_type=oma.MFnAnimCurve.kTangentLinear,
@@ -439,7 +439,7 @@ def batch_create_and_key_curve_arrays(
 
     create_error: Optional[Exception] = None
     try:
-        curves = maya_utils.create_animation_curves(
+        curves = maya_animation_utils.create_animation_curves(
             joint_name,
             dynamic_attrs,
             tangent_type=oma.MFnAnimCurve.kTangentLinear,

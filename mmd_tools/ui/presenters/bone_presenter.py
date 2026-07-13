@@ -1,11 +1,11 @@
 import math
 from mmd_tools.adapters import MayaCmdsAdapter
 from ...core.logger import get_logger
-from ...core.maya_utils import (
-    object_exists,
+from ...core.maya_attribute_utils import (
     set_custom_attributes,
     get_attribute,
 )
+from ...core.maya_scene_utils import object_exists
 from ...core.constants import (
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
@@ -168,7 +168,7 @@ class BonePresenter:
             self.view.bone_list.addItem(item)
             self.bone_list_items[joint] = item
 
-        logger.info(f"Loaded {len(joints)} bones for model: {current_model_root}")
+        logger.debug(f"Loaded {len(joints)} bones for model: {current_model_root}")
 
     def _get_bone_type(self, joint):
         """ボーンのタイプを判定"""
@@ -212,7 +212,7 @@ class BonePresenter:
             self.view.set_bone_details_enabled(False)
             return
 
-        logger.info(f"Selected bone: {self.current_bone}")
+        logger.debug(f"Selected bone: {self.current_bone}")
         self.view.set_bone_details_enabled(True)
         self.load_bone_properties()
 

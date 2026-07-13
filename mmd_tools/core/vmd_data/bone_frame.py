@@ -3,6 +3,9 @@ import struct
 from mmd_tools.core import utils
 
 
+DEFAULT_BONE_INTERPOLATION = b"\x14" * 64
+
+
 class VmdBoneFrame:
     """VMDファイルのボーンフレームデータを保持するクラス。"""
 
@@ -31,7 +34,7 @@ class VmdBoneFrame:
         # Z_x2,R_x2,X_y2,Y_y2,Z_y2,R_y2, 01, 00,
         # R_x1,X_y1,Y_y1,Z_y1,R_y1,X_x2,Y_x2,Z_x2,
         # R_x2,X_y2,Y_y2,Z_y2,R_y2, 01, 00, 00
-        self.interpolation = b""
+        self.interpolation = DEFAULT_BONE_INTERPOLATION
 
     @classmethod
     def size(cls):
@@ -72,5 +75,5 @@ class VmdBoneFrame:
             data += self.interpolation
         else:
             # 補間データが不正な場合はデフォルト値で埋める
-            data += b"\x00" * 64
+            data += DEFAULT_BONE_INTERPOLATION
         return data

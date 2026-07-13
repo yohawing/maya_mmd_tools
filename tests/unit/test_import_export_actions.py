@@ -12,6 +12,9 @@ from mmd_tools.actions.export_model_action import (  # noqa: E402
 )
 from mmd_tools.actions.export_vmd_action import ExportVmdAction, ExportVmdRequest  # noqa: E402
 from mmd_tools.actions.import_model_action import (  # noqa: E402
+    OUTCOME_FATAL,
+    OUTCOME_PARTIAL,
+    OUTCOME_SUCCESS,
     ImportModelAction,
     ImportModelRequest,
 )
@@ -58,6 +61,7 @@ class _ImportActionContract:
         result = action.execute(self.request_cls(self.file_path, options))
 
         self.assertTrue(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_SUCCESS)
         self.assertEqual(result.root_node, self.root_node)
         self.assertIsNone(result.error)
         self.assertEqual(calls, [(self.file_path, options)])
@@ -156,6 +160,7 @@ class _ImportActionContract:
         result = action.execute(self._make_request({}))
 
         self.assertFalse(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_FATAL)
         self.assertIsNone(result.root_node)
         self.assertIsNone(result.error)
 
@@ -169,6 +174,7 @@ class _ImportActionContract:
         result = action.execute(self._make_request({}))
 
         self.assertFalse(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_FATAL)
         self.assertIsNone(result.root_node)
         self.assertIs(result.error, error)
 
@@ -182,16 +188,27 @@ class _ImportActionContract:
         result = action.execute(self._make_request({}, create_new_scene=True))
 
         self.assertFalse(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_FATAL)
         self.assertIsNone(result.root_node)
         self.assertIs(result.error, error)
 
     def test_execute_returns_profile_warnings(self):
         warning = {"message": "partial import warning"}
+        vmd_warning = {"message": "runtime fallback"}
+        bone_warning = {"message": "bone warning"}
+        rig_warning = {"message": "native rig fallback"}
+        bone_morph_warning = {"code": "node_type_unavailable", "reason": "node_type_unavailable"}
         texture_issue = {"file_node": "file1"}
         nested_issue = {"file_node": "file2"}
         options = {
             "profile": {
                 "warnings": [warning],
+                "vmd_converter": {"warnings": [vmd_warning]},
+                "bone_converter": {
+                    "warnings": [bone_warning],
+                    "rig_converter": {"warnings": [rig_warning]},
+                },
+                "bone_morph_runtime": {"warnings": [bone_morph_warning]},
                 "texture_issues": [texture_issue],
                 "mesh_converter": {"unresolved_textures": [nested_issue]},
             }
@@ -201,7 +218,44 @@ class _ImportActionContract:
         result = action.execute(self._make_request(options))
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(result.warnings, [warning, texture_issue, nested_issue])
+        self.assertEqual(result.outcome, OUTCOME_PARTIAL)
+        self.assertEqual(
+            result.warnings,
+            [
+                warning,
+                vmd_warning,
+                bone_warning,
+                rig_warning,
+                bone_morph_warning,
+                texture_issue,
+                nested_issue,
+            ],
+        )
+
+    def test_execute_classifies_bone_morph_node_type_unavailable_as_partial(self):
+        bone_morph_warning = {
+            "code": "node_type_unavailable",
+            "reason": "node_type_unavailable",
+            "node_type": "mmdBoneMorphAccum",
+        }
+        options = {
+            "profile": {
+                "bone_morph_runtime": {
+                    "success": False,
+                    "skipped": ["node_type_unavailable"],
+                    "warnings": [bone_morph_warning],
+                }
+            }
+        }
+
+        action = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=lambda: None)
+        result = action.execute(self._make_request(options))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(result.outcome, OUTCOME_PARTIAL)
+        self.assertEqual(result.root_node, self.root_node)
+        self.assertEqual(result.warnings, [bone_morph_warning])
+        self.assertEqual(result.warnings[0]["code"], "node_type_unavailable")
 
     def test_result_warning_lists_are_not_shared(self):
         first = self.action_cls(importer=lambda _path, options=None: self.root_node, new_scene=lambda: None).execute(
@@ -214,6 +268,8 @@ class _ImportActionContract:
         first.warnings.append("first")
 
         self.assertEqual(second.warnings, [])
+        self.assertEqual(first.outcome, OUTCOME_SUCCESS)
+        self.assertEqual(second.outcome, OUTCOME_SUCCESS)
 
 
 class TestImportModelAction(_ImportActionContract, unittest.TestCase):
@@ -224,6 +280,38 @@ class TestImportModelAction(_ImportActionContract, unittest.TestCase):
     file_path = "model.pmx"
     options = {"scale": 1.0}
     root_node = "root"
+
+    def test_execute_forwards_policy_scale_from_options_for_pmx(self):
+        """Presenter/Settings が組み立てた scale を importer へそのまま渡す。"""
+        calls = []
+        options = {"scale": 1.0, "use_namespace": False}
+
+        def importer(file_path, options=None):
+            calls.append((file_path, dict(options or {})))
+            return self.root_node
+
+        action = ImportModelAction(importer=importer, new_scene=lambda: None)
+        result = action.execute(ImportModelRequest("model.pmx", options))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(calls, [("model.pmx", options)])
+        self.assertEqual(calls[0][1]["scale"], 1.0)
+
+    def test_execute_forwards_dev_scale_from_options_for_pmd(self):
+        """PMD 経路でも options.scale（dev の永続値を含む）を上書きしない。"""
+        calls = []
+        options = {"scale": 2.5}
+
+        def importer(file_path, options=None):
+            calls.append((file_path, dict(options or {})))
+            return self.root_node
+
+        action = ImportModelAction(importer=importer, new_scene=lambda: None)
+        result = action.execute(ImportModelRequest("model.pmd", options))
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(calls, [("model.pmd", options)])
+        self.assertEqual(calls[0][1]["scale"], 2.5)
 
 
 class TestImportVmdAction(_ImportActionContract, unittest.TestCase):

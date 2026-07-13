@@ -8,20 +8,22 @@ from tests.common.maya_stub import install_maya_stub
 
 install_maya_stub()
 
-from mmd_tools.core import maya_utils  # noqa: E402
+from mmd_tools.core import maya_material_utils  # noqa: E402
 
 
 class TestMayaUtilsDx11Rebind(unittest.TestCase):
     def test_unconnected_file_node_is_inferred_from_main_texture_name(self):
-        with patch("mmd_tools.core.maya_utils.cmds") as mock_cmds, patch(
-            "mmd_tools.core.maya_utils.set_attribute"
+        # maya_material_utils owns DX11 slot resolution and writes attributes
+        # through maya_attribute_utils directly.
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds, patch(
+            "mmd_tools.core.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute:
             mock_cmds.listConnections.return_value = []
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "dx11Shader"
             mock_cmds.attributeQuery.return_value = True
 
-            result = maya_utils.rebind_resolved_mmd_dx11_texture("Face_shader_texture")
+            result = maya_material_utils.rebind_resolved_mmd_dx11_texture("Face_shader_texture")
 
         self.assertEqual(result["status"], "rebound")
         self.assertEqual(result["texture_attr"], "MainTexture")
@@ -39,14 +41,14 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
         ]
         for file_node, texture_attr, has_attr in cases:
             with self.subTest(texture_attr=texture_attr), patch(
-                "mmd_tools.core.maya_utils.cmds"
-            ) as mock_cmds, patch("mmd_tools.core.maya_utils.set_attribute") as mock_set_attribute:
+                "mmd_tools.core.maya_material_utils.cmds"
+            ) as mock_cmds, patch("mmd_tools.core.maya_attribute_utils.set_attribute") as mock_set_attribute:
                 mock_cmds.listConnections.return_value = []
                 mock_cmds.objExists.return_value = True
                 mock_cmds.nodeType.return_value = "dx11Shader"
                 mock_cmds.attributeQuery.return_value = True
 
-                result = maya_utils.rebind_resolved_mmd_dx11_texture(file_node)
+                result = maya_material_utils.rebind_resolved_mmd_dx11_texture(file_node)
 
             self.assertEqual(result["status"], "rebound")
             self.assertEqual(result["texture_attr"], texture_attr)
@@ -58,51 +60,51 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
             mock_set_attribute.assert_called_once_with("Face_shader", has_attr, 1, "long")
 
     def test_existing_dx11_connection_sets_has_flag_without_duplicate_connect(self):
-        with patch("mmd_tools.core.maya_utils.cmds") as mock_cmds, patch(
-            "mmd_tools.core.maya_utils.set_attribute"
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds, patch(
+            "mmd_tools.core.maya_attribute_utils.set_attribute"
         ) as mock_set_attribute:
             mock_cmds.listConnections.return_value = ["Face_shader.MainTexture"]
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "dx11Shader"
             mock_cmds.attributeQuery.return_value = True
 
-            result = maya_utils.rebind_resolved_mmd_dx11_texture("Renamed_texture_file")
+            result = maya_material_utils.rebind_resolved_mmd_dx11_texture("Renamed_texture_file")
 
         self.assertEqual(result["status"], "rebound")
         mock_cmds.connectAttr.assert_not_called()
         mock_set_attribute.assert_called_once_with("Face_shader", "HasMainTexture", 1, "long")
 
     def test_rebind_skips_non_dx11_and_missing_slot_cases(self):
-        with patch("mmd_tools.core.maya_utils.cmds") as mock_cmds:
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds:
             mock_cmds.listConnections.return_value = []
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "standardSurface"
             mock_cmds.attributeQuery.return_value = True
 
-            result = maya_utils.rebind_resolved_mmd_dx11_texture("Face_shader_texture")
+            result = maya_material_utils.rebind_resolved_mmd_dx11_texture("Face_shader_texture")
 
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "not_dx11_shader")
         mock_cmds.connectAttr.assert_not_called()
 
-        with patch("mmd_tools.core.maya_utils.cmds") as mock_cmds:
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds:
             mock_cmds.listConnections.return_value = []
             mock_cmds.objExists.return_value = True
             mock_cmds.nodeType.return_value = "dx11Shader"
             mock_cmds.attributeQuery.side_effect = lambda attr, node, exists: attr != "MainTexture"
 
-            result = maya_utils.rebind_resolved_mmd_dx11_texture("Face_shader_texture")
+            result = maya_material_utils.rebind_resolved_mmd_dx11_texture("Face_shader_texture")
 
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "texture_attr_missing")
         mock_cmds.connectAttr.assert_not_called()
 
-        with patch("mmd_tools.core.maya_utils.cmds") as mock_cmds:
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds:
             mock_cmds.listConnections.return_value = []
             mock_cmds.attributeQuery.return_value = True
             mock_cmds.objExists.return_value = False
 
-            result = maya_utils.rebind_resolved_mmd_dx11_texture("unrelated_file")
+            result = maya_material_utils.rebind_resolved_mmd_dx11_texture("unrelated_file")
 
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "dx11_texture_slot_not_found")
@@ -116,14 +118,14 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
         resolved = SimpleNamespace(status="resolved")
         unrecoverable = SimpleNamespace(status="unrecoverable")
 
-        with patch("mmd_tools.core.maya_utils.cmds") as mock_cmds, patch(
-            "mmd_tools.core.maya_utils.classify_mmd_texture_file_node",
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds, patch(
+            "mmd_tools.core.maya_material_utils.classify_mmd_texture_file_node",
             side_effect=classifications,
         ), patch(
-            "mmd_tools.core.maya_utils.resolve_mmd_texture_file_node",
+            "mmd_tools.core.maya_material_utils.resolve_mmd_texture_file_node",
             side_effect=[resolved, unrecoverable],
         ), patch(
-            "mmd_tools.core.maya_utils.rebind_resolved_mmd_dx11_texture",
+            "mmd_tools.core.maya_material_utils.rebind_resolved_mmd_dx11_texture",
             return_value={
                 "status": "rebound",
                 "reason": "connected",
@@ -135,7 +137,7 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
             mock_cmds.ls.return_value = ["resolved_file", "failed_file"]
             mock_cmds.attributeQuery.return_value = True
 
-            results = maya_utils.resolve_scene_mmd_textures()
+            results = maya_material_utils.resolve_scene_mmd_textures()
 
         self.assertEqual(results, [resolved, unrecoverable])
         self.assertEqual(resolved.file_node, "resolved_file")
@@ -148,11 +150,11 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
 
     def test_rebind_summary_does_not_refresh_when_all_resolved_nodes_skip(self):
         result = SimpleNamespace(status="resolved", file_node="Face_shader_texture")
-        with patch("mmd_tools.core.maya_utils.cmds") as mock_cmds, patch(
-            "mmd_tools.core.maya_utils.rebind_resolved_mmd_dx11_texture",
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds, patch(
+            "mmd_tools.core.maya_material_utils.rebind_resolved_mmd_dx11_texture",
             return_value={"status": "skipped", "reason": "dx11_texture_slot_not_found"},
         ) as mock_rebind:
-            summary = maya_utils.rebind_resolved_scene_mmd_dx11_textures([result])
+            summary = maya_material_utils.rebind_resolved_scene_mmd_dx11_textures([result])
 
         mock_rebind.assert_called_once_with("Face_shader_texture")
         mock_cmds.refresh.assert_not_called()
@@ -160,6 +162,19 @@ class TestMayaUtilsDx11Rebind(unittest.TestCase):
         self.assertEqual(result.rebind_status, "skipped")
         self.assertEqual(result.rebind_reason, "dx11_texture_slot_not_found")
 
+    def test_resolve_scene_accepts_model_scoped_file_nodes(self):
+        classification = SimpleNamespace(status="ok")
+        with patch("mmd_tools.core.maya_material_utils.cmds") as mock_cmds, patch(
+            "mmd_tools.core.maya_material_utils.classify_mmd_texture_file_node",
+            return_value=classification,
+        ) as mock_classify:
+            mock_cmds.attributeQuery.return_value = True
+
+            results = maya_material_utils.resolve_scene_mmd_textures(file_nodes=["model_file"])
+
+        self.assertEqual(results, [classification])
+        mock_cmds.ls.assert_not_called()
+        mock_classify.assert_called_once_with("model_file")
 
 if __name__ == "__main__":
     unittest.main()

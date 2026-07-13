@@ -1,7 +1,11 @@
 import io
 import os
+import tempfile
+import unittest
+from unittest.mock import patch
 
 from mmd_tools.core import mmd_parser
+from mmd_tools.core import pmd_data as pmd_data_module
 from mmd_tools.core.pmd_data import PmdData
 from mmd_tools.core.pmd_data.display_frame import PmdDisplayFrame
 from mmd_tools.core.pmd_data.face import PmdFace
@@ -10,6 +14,11 @@ from mmd_tools.core.pmx_data import PmxData
 from mmd_tools.core.pmx_data.face import PmxFace
 from tests.common.test_base import TestBase
 from tests.common.pmd_mock import PmdMock
+
+
+def _msgs(mock_log):
+    # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+).
+    return [c[0][0] for c in mock_log.call_args_list if c[0]]
 
 
 class TestPmdParser(TestBase):
@@ -195,3 +204,80 @@ class TestPmdDisplayFrameEnglish(TestBase):
         reader.parse_english(buf)
 
         self.assertEqual(reader.bone_display_names_english[1], ["OnlyFrame"])
+
+
+class TestPmdExtendedDataLogging(unittest.TestCase):
+    """Extended-data parse detail is DEBUG; start/completion remain INFO where practical."""
+
+    def test_no_extended_data_detail_is_debug_not_info(self):
+        # create_minimal_pmd ends without full extended sections, so parse ends early.
+        path = None
+        try:
+            fd, path = tempfile.mkstemp(suffix=".pmd")
+            # PmdDisplayFrame consumes five of the mock's trailing bytes as its
+            # zero link count. Remove the remaining five bytes to stop exactly
+            # at the legacy extension boundary.
+            os.write(fd, PmdMock.create_minimal_pmd()[:-5])
+            os.close(fd)
+
+            with patch.object(pmd_data_module, "logger") as mock_logger:
+                result = PmdData().parse_file(path)
+
+            self.assertIsInstance(result, PmdData)
+            detail = "No PMD extended data"
+            self.assertIn(detail, _msgs(mock_logger.debug))
+            self.assertNotIn(detail, _msgs(mock_logger.info))
+
+            info_msgs = _msgs(mock_logger.info)
+            self.assertTrue(
+                any(
+                    isinstance(m, str) and m.startswith("Starting PMD file parsing:")
+                    for m in info_msgs
+                ),
+                "parse start must remain INFO: %r" % (info_msgs,),
+            )
+            self.assertIn("PMD file parsing completed", info_msgs)
+            mock_logger.warning.assert_not_called()
+        finally:
+            if path and os.path.exists(path):
+                os.remove(path)
+
+    def test_full_extended_data_completion_stays_info(self):
+        path = None
+        try:
+            fd, path = tempfile.mkstemp(suffix=".pmd")
+            os.write(fd, PmdMock.create_full_pmd())
+            os.close(fd)
+
+            with patch.object(pmd_data_module, "logger") as mock_logger:
+                result = PmdData().parse_file(path)
+
+            self.assertIsInstance(result, PmdData)
+            detail = "No PMD extended data"
+            self.assertNotIn(detail, _msgs(mock_logger.debug))
+            self.assertNotIn(detail, _msgs(mock_logger.info))
+            self.assertIn("PMD file parsing completed", _msgs(mock_logger.info))
+        finally:
+            if path and os.path.exists(path):
+                os.remove(path)
+
+    def test_truncated_extended_data_keeps_actionable_warning(self):
+        path = None
+        try:
+            fd, path = tempfile.mkstemp(suffix=".pmd")
+            os.write(fd, PmdMock.create_minimal_pmd()[:-5] + b"\x01")
+            os.close(fd)
+
+            with patch.object(pmd_data_module, "logger") as mock_logger:
+                result = PmdData().parse_file(path)
+
+            self.assertIsInstance(result, PmdData)
+            warning_msgs = _msgs(mock_logger.warning)
+            self.assertIn(
+                "PMD extended data parsing failed; imported base model data only: %s",
+                warning_msgs,
+            )
+            self.assertNotIn("No PMD extended data", _msgs(mock_logger.debug))
+        finally:
+            if path and os.path.exists(path):
+                os.remove(path)

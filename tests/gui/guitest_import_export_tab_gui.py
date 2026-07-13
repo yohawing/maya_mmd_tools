@@ -133,10 +133,11 @@ class TestImportExportTabGUI(GuiTestBase):
         self.assertNotIn("pmd", items)
         tab.deleteLater()
 
-    def test_vpd_group_disabled(self):
-        """未実装の VPD ポーズインポート UI が無効化されていることを確認する（B-3）。"""
+    def test_vpd_ui_is_not_in_import_export_tab(self):
+        """VPD は pose apply / D&D 導線で扱い、Import/Export タブには置かない（B-3）。"""
         tab = ImportExportTab()
-        self.assertFalse(tab.vpd_group.isEnabled())
+        self.assertFalse(hasattr(tab, "vpd_group"))
+        self.assertFalse(hasattr(tab, "vpd_not_implemented"))
         tab.deleteLater()
 
 

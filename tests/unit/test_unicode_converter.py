@@ -6,14 +6,31 @@ Unicode文字列変換機能のテスト
 import json
 import os
 import sys
+import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 
 # テスト対象モジュールのパスを追加
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from mmd_tools.core import utils
-from mmd_tools.core.unicode_converter import UnicodeToAsciiConverter, get_converter
+from mmd_tools.core.mmd_bone_names import (
+    convert_mmd_bone_name_to_ascii,
+    convert_semistandard_mmd_bone_name_to_ascii,
+    has_semistandard_mmd_bone_name,
+    normalize_mmd_bone_name,
+)
+from mmd_tools.core.unicode_converter import (
+    UnicodeToAsciiConverter,
+    _DictionaryLoader,
+    get_converter,
+)
+
+
+def _msgs(mock_log):
+    # call[0] is args tuple (Py3.7-safe; _Call.args is 3.8+).
+    return [c[0][0] for c in mock_log.call_args_list if c[0]]
 
 
 class TestUnicodeToAsciiConverter(unittest.TestCase):
@@ -259,6 +276,77 @@ class TestUtilsAPI(unittest.TestCase):
         self.assertIn("head", converted)
 
 
+class TestMmdBoneNameConversion(unittest.TestCase):
+    """PMX/MMDボーン名専用の正規化変換をテストする。"""
+
+    def test_semistandard_bone_names_use_hardcoded_rules(self):
+        test_cases = {
+            "左足IK親": "left_leg_ik_parent",
+            "左足ＩＫ親": "left_leg_ik_parent",
+            "右足IK親": "right_leg_ik_parent",
+            "右足ＩＫ先": "right_leg_ik_end",
+            "左足IK先": "left_leg_ik_end",
+            "左腕捩": "left_arm_twist",
+            "左腕捩先": "left_arm_twist_end",
+            "右手捩": "right_wrist_twist",
+            "右手捩先": "right_wrist_twist_end",
+            "腰": "waist",
+            "左親指0": "left_thumb_0",
+            "右足D": "right_leg_d",
+            "右ひざD": "right_knee_d",
+            "右足首D": "right_ankle_d",
+            "左腕D": "left_arm_d",
+            "右腕捩D": "right_arm_twist_d",
+            "右腕捻Ｄ": "right_arm_twist_d",
+            "左ひじD": "left_elbow_d",
+            "左肘Ｄ": "left_elbow_d",
+            "右足先EX": "right_toe_ex",
+            "右足先ＥＸ": "right_toe_ex",
+            "胸親": "breast_parent",
+            "左肩P": "left_shoulder_p",
+            "左肩C": "left_shoulder_c",
+            "左腕捩1": "left_arm_twist_1",
+        }
+        for original, expected in test_cases.items():
+            with self.subTest(original=original):
+                self.assertEqual(convert_mmd_bone_name_to_ascii(original), expected)
+
+    def test_semistandard_bone_names_are_detected_before_generic_tokenization(self):
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足IK親"), "right_leg_ik_parent")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足ＩＫ先"), "right_leg_ik_end")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("左手捩先"), "left_wrist_twist_end")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右肩P"), "right_shoulder_p")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("右足D"), "right_leg_d")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("左腕捩"), "left_arm_twist")
+        self.assertEqual(convert_semistandard_mmd_bone_name_to_ascii("左親指０"), "left_thumb_0")
+        self.assertTrue(has_semistandard_mmd_bone_name("右足先ＥＸ"))
+        self.assertFalse(has_semistandard_mmd_bone_name("髪D"))
+
+    def test_unknown_bone_name_tokens_are_hashed_without_dropping_known_tokens(self):
+        self.assertEqual(convert_mmd_bone_name_to_ascii("左未知捩1"), "left_HASH1622dc9b_twist_1")
+
+    def test_frequent_local_asset_tokens_avoid_hash_fallback(self):
+        test_cases = {
+            "右腕捩軸": "right_arm_twist_axis",
+            "左足IK調整": "left_leg_ik_adjust",
+            "右足IK向き": "right_leg_ik_direction",
+            "左腕捩元": "left_arm_twist_base",
+            "右ひざD補助": "right_knee_d_assist",
+            "左腕捩抽出": "left_arm_twist_extract",
+            "右太ももD": "right_thigh_d",
+            "左骨盤P": "left_pelvis_p",
+        }
+        for original, expected in test_cases.items():
+            with self.subTest(original=original):
+                converted = convert_mmd_bone_name_to_ascii(original)
+                self.assertEqual(converted, expected)
+                self.assertNotIn("HASH", converted)
+
+    def test_normalize_mmd_bone_name_folds_common_variants(self):
+        self.assertEqual(normalize_mmd_bone_name("右腕捻Ｄ"), "右腕捩D")
+        self.assertEqual(normalize_mmd_bone_name("左肘ＩＫ"), "左ひじIK")
+
+
 class TestSingletonPattern(unittest.TestCase):
     """シングルトンパターンのテスト"""
 
@@ -271,6 +359,49 @@ class TestSingletonPattern(unittest.TestCase):
         # 辞書エントリを追加して、シングルトンであることを確認
         converter1.add_dictionary_entry("シングルトンテスト", "singleton_test")
         self.assertEqual(converter2.convert("シングルトンテスト"), "singleton_test")
+
+
+class TestDictionaryLoaderDefaultFallbackLogging(unittest.TestCase):
+    """Default-dictionary fallback detail is DEBUG; WARNING/ERROR stay actionable."""
+
+    def test_missing_dictionary_file_uses_debug_for_default_fallback(self):
+        logger = MagicMock()
+        missing_path = os.path.join(tempfile.gettempdir(), "mmd_tools_missing_dict_xyz.json")
+        if os.path.exists(missing_path):
+            os.remove(missing_path)
+
+        state = _DictionaryLoader.load(missing_path, logger)
+
+        self.assertIsNotNone(state)
+        self.assertTrue(state.unicode_to_ascii)
+        warning_msgs = _msgs(logger.warning)
+        self.assertTrue(
+            any("Dictionary file not found" in str(m) for m in warning_msgs),
+            "missing-file WARNING must remain: %r" % (warning_msgs,),
+        )
+        self.assertIn("Using default dictionary", _msgs(logger.debug))
+        self.assertNotIn("Using default dictionary", _msgs(logger.info))
+
+    def test_corrupt_dictionary_file_uses_debug_for_default_fallback(self):
+        logger = MagicMock()
+        fd, path = tempfile.mkstemp(suffix=".json")
+        try:
+            os.write(fd, b"{not valid json")
+            os.close(fd)
+            state = _DictionaryLoader.load(path, logger)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+
+        self.assertIsNotNone(state)
+        self.assertTrue(state.unicode_to_ascii)
+        error_msgs = _msgs(logger.error)
+        self.assertTrue(
+            any("Failed to load dictionary file" in str(m) for m in error_msgs),
+            "load-failure ERROR must remain: %r" % (error_msgs,),
+        )
+        self.assertIn("Using default dictionary", _msgs(logger.debug))
+        self.assertNotIn("Using default dictionary", _msgs(logger.info))
 
 
 if __name__ == "__main__":

@@ -22,6 +22,7 @@ from mmd_tools.core.logger import (
     MayaScriptEditorHandler,
     get_logger,
     install_maya_script_editor_handler,
+    set_all_logger_levels,
 )
 
 
@@ -184,6 +185,36 @@ class TestInstallMayaScriptEditorHandler(unittest.TestCase):
         self.assertTrue(
             any(isinstance(h, MayaScriptEditorHandler) for h in mmd_root.handlers)
         )
+
+
+class TestSetAllLoggerLevels(unittest.TestCase):
+    """set_all_logger_levels がキャッシュ済みロガーすべてに適用されることを確認する。"""
+
+    def test_updates_every_existing_cached_logger(self):
+        """既にキャッシュされた複数ロガーのレベルが両方とも変わる。"""
+        from mmd_tools.core import logger as logger_mod
+
+        a = get_logger("test_set_all_levels_a")
+        b = get_logger("test_set_all_levels_b")
+        prev_levels = {
+            name: ml._logger.level for name, ml in list(logger_mod._loggers.items())
+        }
+        try:
+            a.set_level(logging.WARNING)
+            b.set_level(logging.ERROR)
+            self.assertEqual(a._logger.level, logging.WARNING)
+            self.assertEqual(b._logger.level, logging.ERROR)
+
+            set_all_logger_levels(logging.DEBUG)
+
+            self.assertEqual(a._logger.level, logging.DEBUG)
+            self.assertEqual(b._logger.level, logging.DEBUG)
+        finally:
+            for name, level in prev_levels.items():
+                cached = logger_mod._loggers.get(name)
+                if cached is not None:
+                    cached.set_level(level)
+
 
 
 if __name__ == "__main__":

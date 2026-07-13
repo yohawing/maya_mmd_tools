@@ -8,6 +8,7 @@ import 連鎖で maya.cmds と PySide6 が必要になるため、
 import unittest
 from unittest.mock import MagicMock, Mock, patch
 
+from tests.common.mock_ui import attach_mocks
 from tests.common.maya_stub import install_headless_ui_stubs
 
 install_headless_ui_stubs()
@@ -99,13 +100,11 @@ class _FakeSceneModelService:
 
 def _make_mock_view():
     view = Mock()
-    view.model_combo = Mock()
+    attach_mocks(view, ["model_combo", "refresh_button", "set_fields_enabled"])
     view.model_combo.currentTextChanged = MagicMock()
     view.model_combo.currentTextChanged.connect = Mock()
-    view.refresh_button = Mock()
     view.refresh_button.clicked = MagicMock()
     view.refresh_button.clicked.connect = Mock()
-    view.set_fields_enabled = Mock()
 
     for attr in ("model_name_jp_edit", "model_name_en_edit", "comment_jp_edit", "comment_en_edit"):
         widget = Mock()
@@ -152,12 +151,20 @@ class TestLoadModelInfo(unittest.TestCase):
 
     def test_sets_text_fields_from_scene_model_service_attrs(self):
         self.app_state.scene_model_service.attr_values = _ATTR_VALUES
-        self.presenter.load_model_info()
+        with patch(f"{_MOD}.logger") as mock_logger:
+            self.presenter.load_model_info()
 
         self.view.model_name_jp_edit.setText.assert_called_with("テストモデル")
         self.view.model_name_en_edit.setText.assert_called_with("Test Model")
         self.view.comment_jp_edit.setPlainText.assert_called_with("テストコメント")
         self.view.comment_en_edit.setPlainText.assert_called_with("Test Comment")
+
+        # モデル info ロード詳細は DEBUG のみ（INFO には出さない）
+        expected = f"Loaded model info for {TEST_MODEL}"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_clears_fields_when_no_model(self):
         self.app_state._current_model_root = None
@@ -294,9 +301,18 @@ class TestRefreshAndSelect(unittest.TestCase):
         self.view.model_combo.itemData.return_value = TEST_MODEL
 
         self.app_state.scene_model_service.exists = True
-        self.presenter.on_model_selected("Test Model (test_mmd_model)")
+        with patch(f"{_MOD}.logger") as mock_logger:
+            self.presenter.on_model_selected("Test Model (test_mmd_model)")
 
         self.assertEqual(self.app_state.current_model_root, TEST_MODEL)
+
+        # 選択ログは DEBUG のみ（INFO には出さない）
+        # Python 3.7 互換: call[0] で位置引数タプルを取る（_Call.args は使わない）
+        expected = f"Selected MMD model: {TEST_MODEL}"
+        debug_messages = [call[0][0] for call in mock_logger.debug.call_args_list if call[0]]
+        info_messages = [call[0][0] for call in mock_logger.info.call_args_list if call[0]]
+        self.assertIn(expected, debug_messages)
+        self.assertNotIn(expected, info_messages)
 
     def test_model_selected_invalid_sets_none(self):
         self.view.model_combo.currentIndex.return_value = 0

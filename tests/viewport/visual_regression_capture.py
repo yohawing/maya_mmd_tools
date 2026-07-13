@@ -1,7 +1,7 @@
-"""Manifest-driven Maya GUI / DX11 viewport visual regression harness.
+"""Manifest-driven Maya GUI viewport visual regression harness.
 
 This script launches a fresh Maya GUI process, opens a Python commandPort,
-imports selected GoldenOracle render-manifest fixtures with dx11Shader
+imports selected GoldenOracle render-manifest fixtures with hardware shaders
 materials, captures Viewport 2.0 PNGs, and writes report-only diagnostics.
 
 The harness intentionally copies MMDShader.fx to a unique path per run before
@@ -19,16 +19,26 @@ import json
 import logging
 import os
 import shutil
-import socket
 import subprocess
+import sys
 import time
 from pathlib import Path
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from tests.common import maya_commandport
 
 
 DEFAULT_MAYA_VERSION = "2024"
 DEFAULT_PORT = 7721
 DEFAULT_TIMEOUT = 420
 COMPLETION_MARKER = "//-- MAYA VISUAL REGRESSION FINISHED --//"
+BACKEND_CONFIG = {
+    "dx11": {"node_type": "dx11Shader", "plugin": "dx11Shader", "vp2_device": "VirtualDeviceDx11"},
+    "glsl": {"node_type": "GLSLShader", "plugin": "glslShader", "vp2_device": "VirtualDeviceGLCore"},
+}
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 LOGGER = logging.getLogger(__name__)
@@ -36,13 +46,6 @@ LOGGER = logging.getLogger(__name__)
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parents[2]
-
-
-def _maya_exe(version: str) -> Path:
-    env = os.environ.get(f"MAYA_LOCATION_{version}") or os.environ.get("MAYA_LOCATION")
-    if env:
-        return Path(env) / "bin" / "maya.exe"
-    return Path(f"C:/Program Files/Autodesk/Maya{version}/bin/maya.exe")
 
 
 def _parse_args() -> argparse.Namespace:
@@ -70,11 +73,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
+    parser.add_argument("--shader-backend", choices=sorted(BACKEND_CONFIG), default="dx11")
+    parser.add_argument(
+        "--vp2-device",
+        choices=["default", "gl", "glcore", "dx11"],
+        default="default",
+        help="VP2 device override. default selects the backend-compatible device.",
+    )
     parser.add_argument(
         "--launch-mode",
-        choices=["direct", "powershell"],
-        default="powershell" if os.name == "nt" else "direct",
-        help="How to launch Maya when not attaching. powershell uses Start-Process on Windows.",
+        choices=["direct", "powershell", "explorer"],
+        default="explorer" if os.name == "nt" else "direct",
+        help="How to launch Maya when not attaching. explorer is the stable detached Windows route.",
     )
     parser.add_argument(
         "--attach-existing",
@@ -172,80 +182,17 @@ def _prepare_shader(project_root: Path, output_dir: Path, shader_fx: str = "") -
     return dest
 
 
-def _launch_maya(
-    maya_path: Path,
-    project_root: Path,
-    output_dir: Path,
-    port: int,
-    launch_mode: str,
-) -> subprocess.Popen | None:
-    if not maya_path.exists():
-        raise FileNotFoundError(f"maya.exe not found: {maya_path}")
-
-    env = os.environ.copy()
-    env["MAYA_VP2_DEVICE_OVERRIDE"] = "VirtualDeviceDx11"
-    env["PYTHONPATH"] = f"{project_root};{env.get('PYTHONPATH', '')}"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    cmd = [str(maya_path), "-command", f'commandPort -name ":{port}" -sourceType "python";']
-    if launch_mode == "powershell":
-        args = "@(" + ", ".join("'" + c.replace("'", "''") + "'" for c in cmd[1:]) + ")"
-        ps = [
-            "powershell",
-            "-NoProfile",
-            "-Command",
-            f"Start-Process -FilePath '{str(maya_path).replace(chr(39), chr(39)+chr(39))}' -ArgumentList {args}",
-        ]
-        subprocess.run(ps, cwd=str(project_root), check=True)
-        LOGGER.info("Launched Maya via PowerShell Start-Process")
-        return None
-
-    stdout = open(output_dir / "maya_stdout.log", "w", encoding="utf-8", errors="replace")
-    stderr = open(output_dir / "maya_stderr.log", "w", encoding="utf-8", errors="replace")
-    proc = subprocess.Popen(cmd, env=env, stdout=stdout, stderr=stderr)
-    proc._stdout_handle = stdout  # type: ignore[attr-defined]
-    proc._stderr_handle = stderr  # type: ignore[attr-defined]
-    LOGGER.info("Launched Maya PID=%s with DX11 VP2 override", proc.pid)
-    return proc
+def _vp2_override(backend: str, device: str) -> str:
+    if device == "default":
+        return BACKEND_CONFIG[backend]["vp2_device"]
+    return {"gl": "VirtualDeviceGL", "glcore": "VirtualDeviceGLCore", "dx11": "VirtualDeviceDx11"}[device]
 
 
-def _close_process_logs(proc: subprocess.Popen) -> None:
-    for attr in ("_stdout_handle", "_stderr_handle"):
-        handle = getattr(proc, attr, None)
-        if handle:
-            try:
-                handle.close()
-            except Exception:
-                pass
-
-
-def _wait_for_port(port: int, timeout: int, proc: subprocess.Popen | None) -> None:
-    start = time.time()
-    while time.time() - start < timeout:
-        if proc is not None and proc.poll() is not None:
-            raise RuntimeError(f"Maya exited before commandPort opened: {proc.returncode}")
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=1):
-                return
-        except OSError:
-            time.sleep(1)
-    raise TimeoutError(f"Timed out waiting for commandPort :{port}")
-
-
-def _send_command(port: int, code: str) -> None:
-    command = "_vr_ns={}; exec(compile(" + repr(code) + ", '<maya-visual-regression>', 'exec'), _vr_ns, _vr_ns)\n"
-    with socket.create_connection(("127.0.0.1", port), timeout=10) as sock:
-        sock.sendall(command.encode("utf-8"))
-        sock.shutdown(socket.SHUT_WR)
-
-
-def _send_quit(port: int) -> None:
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-            sock.sendall(b"import maya.cmds as cmds; cmds.quit(force=True)\n")
-            sock.shutdown(socket.SHUT_WR)
-    except OSError:
-        pass
+def _device_matches_backend(backend: str, device_information: object) -> bool:
+    text = str(device_information).lower()
+    if backend == "dx11":
+        return "directx" in text or "dx11" in text
+    return "opengl" in text or "gl core" in text or "glcore" in text
 
 
 def _monitor_log(log_path: Path, timeout: int) -> None:
@@ -277,6 +224,7 @@ def _build_maya_code(
     compare: bool,
     debug_lambert_control: bool,
     hide_orig_shapes: bool,
+    shader_backend: str,
 ) -> str:
     payload = {
         "project_root": str(project_root),
@@ -289,6 +237,7 @@ def _build_maya_code(
         "compare": compare,
         "debug_lambert_control": debug_lambert_control,
         "hide_orig_shapes": hide_orig_shapes,
+        "shader_backend": shader_backend,
         "completion_marker": COMPLETION_MARKER,
     }
     encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
@@ -309,6 +258,8 @@ _height = int(_payload["height"])
 _compare = bool(_payload["compare"])
 _debug_lambert_control = bool(_payload["debug_lambert_control"])
 _hide_orig_shapes = bool(_payload["hide_orig_shapes"])
+_shader_backend = _payload["shader_backend"]
+_shader_node_type = "dx11Shader" if _shader_backend == "dx11" else "GLSLShader"
 _completion_marker = _payload["completion_marker"]
 
 _output_dir.mkdir(parents=True, exist_ok=True)
@@ -570,7 +521,7 @@ def _setup_color_management():
 
 def _shader_diag():
     items = []
-    for shader in cmds.ls(type="dx11Shader") or []:
+    for shader in cmds.ls(type=_shader_node_type) or []:
         shader_attrs = cmds.listAttr(shader) or []
         item = {{
             "name": shader,
@@ -582,14 +533,17 @@ def _shader_diag():
             "listTechniquesError": None,
             "hardware_attrs": [a for a in shader_attrs if "hardware" in a.lower() or "effect" in a.lower() or "error" in a.lower()],
         }}
-        try:
-            item["listTechniques"] = cmds.dx11Shader(shader, q=True, listTechniques=True) or []
-        except Exception as exc:
-            item["listTechniquesError"] = str(exc)
+        if _shader_backend == "dx11":
+            try:
+                item["listTechniques"] = cmds.dx11Shader(shader, q=True, listTechniques=True) or []
+            except Exception as exc:
+                item["listTechniquesError"] = str(exc)
         for attr in [
             "shader", "technique", "DiffuseColorRGB", "DiffuseColorA",
             "diagnostics", "EffectParameters",
             "AmbientColor", "SpecularColor", "Shininess", "Opacity",
+            "MMDLightDirection", "MMDLightColor",
+            "MmdControllerLightVector", "MmdControllerLightRgb",
             "SphereMode", "EdgeColorRGB", "EdgeSize",
             "HasMainTexture", "HasSphereTexture", "HasToonTexture",
             "mmd_texture_path", "mmd_sphere_path", "mmd_draw_flags",
@@ -599,7 +553,11 @@ def _shader_diag():
                     item["attrs"][attr] = cmds.getAttr(shader + "." + attr)
                 except Exception as exc:
                     item["attrs"][attr] = "ERR: " + str(exc)
-        for attr in ["MainTexture", "SphereTexture", "ToonTexture"]:
+        for attr in [
+            "MainTexture", "SphereTexture", "ToonTexture",
+            "MMDLightDirection", "MMDLightColor",
+            "MmdControllerLightVector", "MmdControllerLightRgb",
+        ]:
             if cmds.attributeQuery(attr, node=shader, exists=True):
                 try:
                     item["incoming"][attr] = cmds.listConnections(shader + "." + attr, s=True, d=False, plugs=True) or []
@@ -708,7 +666,10 @@ def _color_management_diag():
 
 def _apply_unique_shader_path():
     from mmd_tools.converters.mesh_converter import sync_dx11_generated_uniforms
-    shaders = cmds.ls(type="dx11Shader") or []
+    shaders = cmds.ls(type=_shader_node_type) or []
+    if _shader_backend != "dx11":
+        sync_dx11_generated_uniforms(shaders)
+        return shaders
     techniques = {{}}
     for shader in shaders:
         if cmds.attributeQuery("technique", node=shader, exists=True):
@@ -744,13 +705,11 @@ def _capture_case(case):
     import mmd_tools.core.mmd_parser as mmd_parser
     import mmd_tools.core.pmx_data as pmx_data
     import mmd_tools.core.pmx_data.vertex as pmx_vertex
-    import mmd_tools.core.maya_utils as maya_utils
     import mmd_tools.io.mmd_importer as mmd_importer
     import mmd_tools.io.pmx_importer as pmx_importer
     import mmd_tools.io.vmd_importer as vmd_importer
     from mmd_tools.core.settings import settings
 
-    maya_utils = importlib.reload(maya_utils)
     pmx_vertex = importlib.reload(pmx_vertex)
     pmx_data = importlib.reload(pmx_data)
     mmd_parser = importlib.reload(mmd_parser)
@@ -762,9 +721,9 @@ def _capture_case(case):
 
     cmds.file(new=True, force=True)
     settings.set("import.model.create_mmd_shaders", True)
-    settings.set("import.model.mmd_shader_backend", "dx11")
+    settings.set("import.model.mmd_shader_backend", _shader_backend)
     try:
-        cmds.loadPlugin("dx11Shader", quiet=True)
+        cmds.loadPlugin("dx11Shader" if _shader_backend == "dx11" else "glslShader", quiet=True)
     except Exception:
         pass
 
@@ -813,16 +772,18 @@ def _capture_case(case):
     oracle = case.get("oracle_png")
     diff = _png_diff(actual, oracle) if _compare and oracle else {{"available": False, "reason": "comparison disabled or no oracle"}}
     shader_diag = _shader_diag()
-    dx11_issues = []
+    shader_issues = []
+    if not shader_diag:
+        shader_issues.append({{"issue": "no " + _shader_node_type + " nodes found after import"}})
     for shader in shader_diag:
-        if not shader.get("listTechniques"):
-            dx11_issues.append({{"shader": shader.get("name"), "issue": "empty dx11Shader technique list"}})
+        if _shader_backend == "dx11" and not shader.get("listTechniques"):
+            shader_issues.append({{"shader": shader.get("name"), "issue": "empty dx11Shader technique list"}})
         diagnostics = shader.get("attrs", {{}}).get("diagnostics")
         if diagnostics:
-            dx11_issues.append({{"shader": shader.get("name"), "issue": "dx11Shader diagnostics not empty", "diagnostics": diagnostics}})
+            shader_issues.append({{"shader": shader.get("name"), "issue": _shader_node_type + " diagnostics not empty", "diagnostics": diagnostics}})
     if center_sample.get("vp2_unassigned_green_suspected"):
-        dx11_issues.append({{"issue": "center pixel resembles VP2 unassigned-material green", "center_sample": center_sample}})
-    ok = int(stats.get("max", 0)) > 10 and not dx11_issues
+        shader_issues.append({{"issue": "center pixel resembles VP2 unassigned-material green", "center_sample": center_sample}})
+    ok = int(stats.get("max", 0)) > 10 and not shader_issues
     diag = {{
         "case": case,
         "actual_png": str(actual),
@@ -830,7 +791,9 @@ def _capture_case(case):
         "actual_png_center_sample": center_sample,
         "oracle_png": oracle,
         "diff": diff,
-        "dx11_issues": dx11_issues,
+        "shader_backend": _shader_backend,
+        "shader_node_type": _shader_node_type,
+        "shader_issues": shader_issues,
         "debug_actions": debug_actions,
         "scene": _scene_diag(capture_panel),
         "shaders": shader_diag,
@@ -842,10 +805,12 @@ def _capture_case(case):
         "name": case["name"],
         "ok": ok,
         "actual_png": str(actual),
+        "oracle_png": oracle,
         "diagnostics": str(diag_path),
         "stats": stats,
         "center_sample": center_sample,
-        "dx11_issues": dx11_issues,
+        "shader_backend": _shader_backend,
+        "shader_issues": shader_issues,
         "diff": diff,
     }}
 
@@ -854,19 +819,22 @@ def _main():
         sys.path.insert(0, str(_project_root))
     _log("Visual regression cases: " + str(len(_cases)))
     report = {{
-        "schemaVersion": 1,
-        "kind": "maya-dx11-visual-regression-report",
+        "schemaVersion": 2,
+        "kind": "maya-visual-regression-report",
+        "shader_backend": _shader_backend,
+        "shader_node_type": _shader_node_type,
         "shader_fx": str(_shader_fx),
         "output_dir": str(_output_dir),
         "deviceInformation": None,
-        "dx11_device_valid": False,
+        "vp2_device_valid": False,
         "results": [],
         "errors": [],
     }}
     try:
         dev = cmds.ogs(deviceInformation=True)
         report["deviceInformation"] = dev
-        report["dx11_device_valid"] = "DirectX" in str(dev) or "DX11" in str(dev)
+        device_text = str(dev).lower()
+        report["vp2_device_valid"] = ("directx" in device_text or "dx11" in device_text) if _shader_backend == "dx11" else ("opengl" in device_text or "gl core" in device_text or "glcore" in device_text)
     except Exception as exc:
         report["deviceInformation"] = "ERR: " + str(exc)
 
@@ -912,6 +880,7 @@ def main() -> int:
 
     LOGGER.info("Manifest: %s", manifest_path)
     LOGGER.info("Cases: %d", len(cases))
+    LOGGER.info("Shader backend: %s", args.shader_backend)
     LOGGER.info("Unique shader: %s", shader_fx)
 
     proc: subprocess.Popen | None = None
@@ -919,8 +888,16 @@ def main() -> int:
         if args.attach_existing:
             LOGGER.info("Attaching to existing Maya commandPort :%d", args.port)
         else:
-            proc = _launch_maya(_maya_exe(args.maya), project_root, output_dir, args.port, args.launch_mode)
-        _wait_for_port(args.port, args.timeout, proc)
+            LOGGER.info("Maya executable: %s", maya_commandport.maya_exe(args.maya))
+            proc = maya_commandport.launch_maya(
+                version=args.maya,
+                project_root=project_root,
+                output_dir=output_dir,
+                port=args.port,
+                launch_mode=args.launch_mode,
+                env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": _vp2_override(args.shader_backend, args.vp2_device)},
+            )
+        maya_commandport.wait_for_port(args.port, args.timeout, proc)
         code = _build_maya_code(
             project_root=project_root,
             cases=cases,
@@ -932,12 +909,13 @@ def main() -> int:
             compare=not args.no_compare,
             debug_lambert_control=args.debug_lambert_control,
             hide_orig_shapes=args.hide_orig_shapes,
+            shader_backend=args.shader_backend,
         )
-        _send_command(args.port, code)
+        maya_commandport.send_python(args.port, code, label="<maya-visual-regression>")
         _monitor_log(log_path, args.timeout)
     finally:
         if proc is None and not args.attach_existing and not args.keep_maya:
-            _send_quit(args.port)
+            maya_commandport.quit_maya(args.port)
         if proc is not None and not args.keep_maya:
             proc.terminate()
             try:
@@ -945,7 +923,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=20)
-            _close_process_logs(proc)
+            maya_commandport.close_process_logs(proc)
 
     if not report_path.is_file():
         raise RuntimeError(f"Maya-side report was not written: {report_path}")
@@ -953,8 +931,8 @@ def main() -> int:
         report = json.load(f)
     if report.get("errors"):
         raise RuntimeError(f"Visual regression capture had {len(report['errors'])} error(s): {report['errors'][:2]}")
-    if not report.get("dx11_device_valid"):
-        raise RuntimeError("Viewport device did not report DirectX/DX11. See report diagnostics.")
+    if not report.get("vp2_device_valid"):
+        raise RuntimeError(f"Viewport device does not match {args.shader_backend}. See report diagnostics.")
     blank = [r for r in report.get("results", []) if not r.get("ok")]
     if blank:
         raise RuntimeError(f"Blank-like captures detected: {[r.get('name') for r in blank]}")

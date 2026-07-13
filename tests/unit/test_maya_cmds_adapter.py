@@ -58,6 +58,21 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.attributeQuery.assert_called_once_with("translateX", node="pCube1", exists=True)
         self.assertIs(result, True)
 
+    def test_attribute_range_queries_optional_min_and_max(self):
+        def attribute_query(_attr, node=None, **kwargs):
+            self.assertEqual(node, "pCube1")
+            if kwargs.get("minExists") or kwargs.get("maxExists"):
+                return True
+            if kwargs.get("minimum"):
+                return [0.0]
+            if kwargs.get("maximum"):
+                return [1.0]
+            return False
+
+        self.cmds.attributeQuery.side_effect = attribute_query
+
+        self.assertEqual(self.adapter.attribute_range("friction", "pCube1"), (0.0, 1.0))
+
     def test_get_attr_delegates_attr_path(self):
         self.cmds.getAttr.return_value = 3.0
 
@@ -66,6 +81,12 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         self.cmds.getAttr.assert_called_once_with("pCube1.translateX")
         self.assertEqual(result, 3.0)
 
+    def test_is_attr_settable_queries_get_attr(self):
+        self.cmds.getAttr.return_value = True
+
+        self.assertTrue(self.adapter.is_attr_settable("pCube1.translateX"))
+        self.cmds.getAttr.assert_called_once_with("pCube1.translateX", settable=True)
+
     def test_set_attr_delegates_args_and_kwargs(self):
         expected = None
         self.cmds.setAttr.return_value = expected
@@ -73,6 +94,24 @@ class TestMayaCmdsAdapter(unittest.TestCase):
         result = self.adapter.set_attr("pCube1.translateX", 3.0, lock=True)
 
         self.cmds.setAttr.assert_called_once_with("pCube1.translateX", 3.0, lock=True)
+        self.assertIs(result, expected)
+
+    def test_create_node_delegates_args_and_kwargs(self):
+        expected = "pCubeShape1"
+        self.cmds.createNode.return_value = expected
+
+        result = self.adapter.create_node("mesh", name="pCubeShape1", parent="pCube1")
+
+        self.cmds.createNode.assert_called_once_with("mesh", name="pCubeShape1", parent="pCube1")
+        self.assertIs(result, expected)
+
+    def test_all_node_types_delegates_args_and_kwargs(self):
+        expected = ["transform", "mesh"]
+        self.cmds.allNodeTypes.return_value = expected
+
+        result = self.adapter.all_node_types(includeAbstract=True)
+
+        self.cmds.allNodeTypes.assert_called_once_with(includeAbstract=True)
         self.assertIs(result, expected)
 
     def test_list_relatives_delegates_kwargs(self):
@@ -213,6 +252,13 @@ class TestMayaCmdsAdapter(unittest.TestCase):
 
         self.cmds.select.assert_called_once_with(["pCube1"], replace=False)
         self.assertIs(result, expected)
+
+    def test_undo_delegates(self):
+        expected = object()
+        self.cmds.undo.return_value = expected
+
+        self.assertIs(self.adapter.undo(), expected)
+        self.cmds.undo.assert_called_once_with()
 
 
 if __name__ == "__main__":

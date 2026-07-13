@@ -77,7 +77,7 @@ class TestVmdBoneFrame(unittest.TestCase):
         f.interpolation = b""
         data = f.write()
         self.assertEqual(len(data), VmdBoneFrame.size())
-        self.assertEqual(data[-64:], b"\x00" * 64)
+        self.assertEqual(data[-64:], b"\x14" * 64)
 
     def test_japanese_bone_name(self):
         original = self._make_frame(name="センター")
@@ -155,6 +155,13 @@ class TestVmdCameraFrame(unittest.TestCase):
         parsed = VmdCameraFrame()
         parsed.parse(data)
         self.assertEqual(parsed.perspective, 1)
+
+    def test_default_interpolation_padding(self):
+        f = VmdCameraFrame()
+        f.interpolation = b""
+        data = f.write()
+        self.assertEqual(len(data), VmdCameraFrame.size())
+        self.assertEqual(data[32:56], b"\x14" * 24)
 
 
 class TestVmdLightFrame(unittest.TestCase):

@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "archive_root": "maya_mmd_tools",
+  "required": [
+    "mmd_tools",
+    "plug-ins",
+    "docs/README_ja.md",
+    "README.md",
+    "LICENSE",
+    "drag_drop_install.py",
+    "maya_mmd_tools.mod",
+    "userSetup.py",
+    "pyproject.toml"
+  ],
+  "optional_directories": [
+    "config",
+    "resources",
+    "shaders",
+    "examples"
+  ],
+  "excluded": {
+    "directory_names": [
+      ".ai",
+      ".agents",
+      ".claude",
+      ".codex",
+      ".git",
+      ".mypy_cache",
+      ".nox",
+      ".pytest_cache",
+      ".ruff_cache",
+      ".venv",
+      "__pycache__",
+      "build",
+      "Debug",
+      "dist",
+      "logs",
+      "stubs",
+      "test",
+      "tests",
+      "venv"
+    ],
+    "patterns": [
+      "**/*.pyc",
+      "**/*.pyo",
+      "**/*.pyd",
+      "**/*.pdb",
+      "**/*.ilk",
+      "**/*.lib",
+      "**/*.exp",
+      "**/*.log",
+      "**/*.tmp",
+      "**/.DS_Store",
+      "**/Thumbs.db",
+      "**/*-local.*",
+      "**/local-*/**",
+      "plug-ins/**/.gitkeep"
+    ]
+  },
+  "maya_versions": [
+    "2024",
+    "2025",
+    "2026",
+    "2027"
+  ],
+  "platform_policy": [
+    "windows",
+    "macos"
+  ],
+  "platforms": {
+    "windows": {
+      "native_runtime": "mmd_tools/native/win64/mmd_runtime_ffi.dll",
+      "plugin": "plug-ins/{maya_version}/Release/mmd_tools_cpp.mll",
+      "runtime": "plug-ins/{maya_version}/Release/mmd_runtime_ffi.dll"
+    },
+    "macos": {
+      "native_runtime": "mmd_tools/native/macos/libmmd_runtime_ffi.dylib",
+      "plugin": "plug-ins/{maya_version}/Release/mmd_tools_cpp.bundle",
+      "runtime": "plug-ins/{maya_version}/Release/libmmd_runtime_ffi.dylib"
+    }
+  },
+  "version_markers": {
+    "pyproject": "pyproject.toml",
+    "python_package": "mmd_tools/__init__.py",
+    "maya_module": "maya_mmd_tools.mod",
+    "cpp_source": "cpp/src/pluginMain.cpp"
+  }
+}

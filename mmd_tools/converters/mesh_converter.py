@@ -1,22 +1,22 @@
 import os
 import time
-import json
 
 from maya import cmds
 from typing import Tuple, Union, List, Optional
 
 from mmd_tools.core.settings import settings
 from mmd_tools.core import settings_keys as setting_keys
-from mmd_tools.core import maya_utils
+from mmd_tools.core import maya_attribute_utils, maya_material_utils, maya_mesh_utils, maya_name_utils, maya_scene_utils, maya_viewport_utils
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.texture_path_cache import (
+    build_texture_path_diagnostics,
+    build_texture_source_candidates,
     classify_unreadable_file_texture_path,
     find_resolvable_source,
     is_unreadable_file_texture_path,
     resolve_texture_to_cache,
 )
 from mmd_tools.core.pmx_data import PmxData
-from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.core.constants import (
     ATTR_MMD_SHARED_TOON_FLAG,
     ATTR_MMD_SPHERE_TEXTURE_INDEX,
@@ -41,12 +41,16 @@ from mmd_tools.core.constants import (
     ATTR_MMD_SHADER_OUTLINE_ENABLED,
     ATTR_MMD_MATERIAL_INDEX,
     ATTR_MMD_SOURCE_VERTEX_INDICES,
-    ATTR_MMD_MORPH_GROUP_SPLIT_MESH,
-    ATTR_MMD_VERTEX_MORPH_NAMES_JSON,
 )
 from mmd_tools.converters.mesh_material_properties import (
     PMX_DOUBLE_SIDED_DRAW_FLAG as _PMX_DOUBLE_SIDED_DRAW_FLAG,
     material_is_double_sided as _material_is_double_sided,
+)
+from mmd_tools.converters.material_shader_parameters import (
+    ATTR_MMD_EDGE_ALPHA,
+    ATTR_MMD_DIFFUSE_ALPHA,
+    iter_hardware_shader_values,
+    material_base_parameter_values,
 )
 from mmd_tools.converters.mesh_texture_resolve import (
     resolve_pmx_toon_texture_path as _resolve_pmx_toon_texture_path,
@@ -132,13 +136,13 @@ def _delete_shader_node(shader) -> None:
 
 
 def _set_shader_attribute_checked(shader, attr_name, attr_value, attr_type) -> bool:
-    """Set a shader attr through maya_utils and verify the attr did not silently fail."""
+    """Set a shader attr through attribute utils and verify the attr did not silently fail."""
     if not cmds.attributeQuery(attr_name, node=shader, exists=True):
         LOGGER.debug("Shader '%s' has no '%s' attribute", shader, attr_name)
         return False
 
     try:
-        maya_utils.set_attribute(shader, attr_name, attr_value, attr_type)
+        maya_attribute_utils.set_attribute(shader, attr_name, attr_value, attr_type)
     except Exception:
         LOGGER.debug("Failed to set shader attribute '%s.%s'", shader, attr_name, exc_info=True)
         return False
@@ -159,7 +163,7 @@ def _set_mesh_double_sided(mesh_transform_or_shape, enabled: bool) -> None:
     """Set Maya mesh shape doubleSided from an MMD material draw flag."""
     mesh_shapes = cmds.listRelatives(mesh_transform_or_shape, shapes=True, type="mesh") or []
     for shape in mesh_shapes:
-        maya_utils.set_attribute(shape, "doubleSided", 1 if enabled else 0, "bool")
+        maya_attribute_utils.set_attribute(shape, "doubleSided", 1 if enabled else 0, "bool")
 
 
 def _classify_material_transparency(material, texture_path=None) -> str:
@@ -225,9 +229,9 @@ def _draw_flags_double_sided_from_node(node: str) -> Optional[bool]:
 def _store_shader_double_sided_attr(shader: str, enabled: bool) -> None:
     """Persist dx11Shader double-sided state for UI re-application."""
     if not cmds.attributeQuery(_ATTR_MMD_DOUBLE_SIDED, node=shader, exists=True):
-        maya_utils.set_custom_attributes(shader, {_ATTR_MMD_DOUBLE_SIDED: bool(enabled)})
+        maya_attribute_utils.set_custom_attributes(shader, {_ATTR_MMD_DOUBLE_SIDED: bool(enabled)})
     else:
-        maya_utils.set_attribute(shader, _ATTR_MMD_DOUBLE_SIDED, bool(enabled), "bool")
+        maya_attribute_utils.set_attribute(shader, _ATTR_MMD_DOUBLE_SIDED, bool(enabled), "bool")
 
 
 def _shader_is_double_sided(shader: str, technique: Optional[str] = None) -> bool:
@@ -299,9 +303,9 @@ def apply_shader_outline(shader: str, enabled: bool, edge_size: Optional[float] 
     if edge_size is not None and cmds.attributeQuery("EdgeSize", node=shader, exists=True):
         cmds.setAttr(f"{shader}.EdgeSize", max(0.0, min(2.0, float(edge_size))) if enabled else 0.0)
     if not cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=shader, exists=True):
-        maya_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
+        maya_attribute_utils.set_custom_attributes(shader, {ATTR_MMD_SHADER_OUTLINE_ENABLED: bool(enabled)})
     else:
-        maya_utils.set_attribute(shader, ATTR_MMD_SHADER_OUTLINE_ENABLED, bool(enabled), "bool")
+        maya_attribute_utils.set_attribute(shader, ATTR_MMD_SHADER_OUTLINE_ENABLED, bool(enabled), "bool")
     return new_technique
 
 
@@ -312,13 +316,13 @@ def _is_degenerate_face(indices):
 
 def bind_dx11_texture_file_node(shader, file_node, texture_attr, has_attr):
     """Compatibility wrapper for the shared dx11 texture slot binder."""
-    return maya_utils.bind_dx11_texture_file_node(
+    return maya_material_utils.bind_dx11_texture_file_node(
         shader,
         file_node,
         texture_attr,
         has_attr,
         cmds_module=cmds,
-        set_attribute_func=maya_utils.set_attribute,
+        set_attribute_func=maya_attribute_utils.set_attribute,
     )
 
 
@@ -331,10 +335,16 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
     import maya.api.OpenMaya as om
 
     uniforms = [
+        # Legacy compound kept for dx11 standalone/tests; HLSL/OGSFX RGB morph
+        # targets use DiffuseColorRGB + DiffuseColorA (alpha preserved separate).
         ("DiffuseColor", om.MFnNumericData.kDouble, 4, True, (0.8, 0.8, 0.8, 1.0)),
+        ("DiffuseColorRGB", om.MFnNumericData.kDouble, 3, True, (0.8, 0.8, 0.8)),
+        ("DiffuseColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("SpecularColor", om.MFnNumericData.kDouble, 3, True, (0.5, 0.5, 0.5)),
         ("AmbientColor", om.MFnNumericData.kDouble, 3, True, (0.3, 0.3, 0.3)),
         ("EdgeColor", om.MFnNumericData.kDouble, 4, True, (0.0, 0.0, 0.0, 1.0)),
+        ("EdgeColorRGB", om.MFnNumericData.kDouble, 3, True, (0.0, 0.0, 0.0)),
+        ("EdgeColorA", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("Shininess", om.MFnNumericData.kDouble, 1, False, 20.0),
         ("EdgeSize", om.MFnNumericData.kDouble, 1, False, 1.0),
         ("SphereMode", om.MFnNumericData.kLong, 1, False, 0),
@@ -347,6 +357,8 @@ def _ensure_mmd_shader_uniform_attributes(shader_node):
         # 後段のコントローラ結線が失敗しないようにする。
         ("MMDLightDirection", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
         ("MMDLightColor", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
+        ("MmdControllerLightVector", om.MFnNumericData.kDouble, 3, False, (0.5, -1.0, 0.5)),
+        ("MmdControllerLightRgb", om.MFnNumericData.kDouble, 3, True, (1.0, 1.0, 1.0)),
     ]
 
     try:
@@ -432,6 +444,149 @@ def _ensure_dx11_uniform_attributes(shader_node):
     _ensure_mmd_shader_uniform_attributes(shader_node)
 
 
+_GLSL_DIFFUSE_CONTRACT_MARKER = "mmdDiffuseRgbContractVersion"
+
+
+def _has_glsl_diffuse_contract_marker(shader_node):
+    try:
+        return cmds.attributeQuery(_GLSL_DIFFUSE_CONTRACT_MARKER, node=shader_node, exists=True) and bool(
+            cmds.getAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}")
+        )
+    except Exception:
+        return False
+
+
+def _mark_glsl_diffuse_contract(shader_node):
+    """Mark GLSL diffuse RGB/A data as authoritative and migration-complete."""
+    try:
+        if not cmds.attributeQuery(_GLSL_DIFFUSE_CONTRACT_MARKER, node=shader_node, exists=True):
+            cmds.addAttr(shader_node, longName=_GLSL_DIFFUSE_CONTRACT_MARKER, attributeType="long", defaultValue=0)
+        cmds.setAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}", 1)
+        return True
+    except Exception:
+        LOGGER.warning("Failed to mark GLSL diffuse contract for '%s'", shader_node, exc_info=True)
+        return False
+
+
+def _migrate_legacy_glsl_diffuse(shader_node, legacy):
+    """Transactionally write and verify the split GLSL diffuse contract."""
+    if len(legacy) < 4:
+        return False
+    rgb_plug = f"{shader_node}.DiffuseColorRGB"
+    alpha_plug = f"{shader_node}.DiffuseColorA"
+    if not _is_dx11_generated_uniform_writable(rgb_plug) or not _is_dx11_generated_uniform_writable(alpha_plug):
+        return False
+    try:
+        original_rgb = list(cmds.getAttr(rgb_plug)[0])
+        original_alpha = float(cmds.getAttr(alpha_plug))
+        marker_existed = cmds.attributeQuery(_GLSL_DIFFUSE_CONTRACT_MARKER, node=shader_node, exists=True)
+        original_marker_value = (
+            cmds.getAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}") if marker_existed else None
+        )
+    except Exception:
+        LOGGER.warning("Could not snapshot legacy GLSL diffuse for '%s'; migration skipped", shader_node)
+        return False
+
+    def rollback():
+        rollback_ok = True
+        try:
+            cmds.setAttr(rgb_plug, original_rgb[0], original_rgb[1], original_rgb[2], type="double3")
+        except Exception:
+            rollback_ok = False
+        try:
+            cmds.setAttr(alpha_plug, original_alpha)
+        except Exception:
+            rollback_ok = False
+        try:
+            marker_exists_now = cmds.attributeQuery(
+                _GLSL_DIFFUSE_CONTRACT_MARKER, node=shader_node, exists=True
+            )
+            if marker_existed:
+                if not marker_exists_now:
+                    raise RuntimeError("pre-existing marker attribute was removed")
+                cmds.setAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}", original_marker_value)
+            elif marker_exists_now:
+                cmds.deleteAttr(f"{shader_node}.{_GLSL_DIFFUSE_CONTRACT_MARKER}")
+        except Exception:
+            rollback_ok = False
+        if not rollback_ok:
+            LOGGER.error(
+                "Rollback failed after legacy GLSL diffuse migration error for '%s'; scene may contain partial changes",
+                shader_node,
+            )
+
+    try:
+        cmds.setAttr(rgb_plug, legacy[0], legacy[1], legacy[2], type="double3")
+        cmds.setAttr(alpha_plug, legacy[3])
+        rgb = list(cmds.getAttr(rgb_plug)[0])
+        alpha = float(cmds.getAttr(alpha_plug))
+        expected = [float(value) for value in legacy[:3]]
+        if len(rgb) != 3 or any(abs(float(actual) - wanted) > 1e-6 for actual, wanted in zip(rgb, expected)):
+            raise RuntimeError("RGB read-back mismatch")
+        if abs(alpha - float(legacy[3])) > 1e-6:
+            raise RuntimeError("alpha read-back mismatch")
+        if not _mark_glsl_diffuse_contract(shader_node):
+            raise RuntimeError("contract marker write failed")
+        return True
+    except Exception:
+        LOGGER.warning("Failed to migrate legacy GLSL diffuse for '%s'", shader_node, exc_info=True)
+        rollback()
+        return False
+
+
+def _legacy_glsl_diffuse_is_driven(shader_node):
+    """Return whether legacy diffuse data has inputs that cannot be frozen safely."""
+    attrs = ["DiffuseColor", "DiffuseColorR", "DiffuseColorG", "DiffuseColorB", "DiffuseColorA"]
+    for attr in attrs:
+        try:
+            if not cmds.attributeQuery(attr, node=shader_node, exists=True):
+                continue
+            if cmds.listConnections(
+                f"{shader_node}.{attr}", source=True, destination=False, plugs=True
+            ) or []:
+                return True
+        except Exception:
+            # Unknown connection state is not safe for destructive migration.
+            return True
+    return False
+
+
+def _glsl_split_diffuse_matches(shader_node, rgb_expected, alpha_expected):
+    """Verify writable, unconnected GLSL RGB/A plugs contain expected values."""
+    rgb_plug = f"{shader_node}.DiffuseColorRGB"
+    alpha_plug = f"{shader_node}.DiffuseColorA"
+    if not _is_dx11_generated_uniform_writable(rgb_plug) or not _is_dx11_generated_uniform_writable(alpha_plug):
+        return False
+    try:
+        rgb = list(cmds.getAttr(rgb_plug)[0])
+        alpha = float(cmds.getAttr(alpha_plug))
+        expected = [float(value) for value in rgb_expected]
+        return (
+            len(rgb) == 3
+            and all(abs(float(actual) - wanted) <= 1e-6 for actual, wanted in zip(rgb, expected))
+            and abs(alpha - float(alpha_expected)) <= 1e-6
+        )
+    except Exception:
+        return False
+
+
+def _is_dx11_generated_uniform_writable(plug):
+    """Return False for generated dx11Shader attrs driven by Maya/VP2 internals."""
+    try:
+        if cmds.getAttr(plug, lock=True):
+            LOGGER.debug("Skipping locked dx11Shader generated uniform '%s'", plug)
+            return False
+    except Exception:
+        pass
+    try:
+        if cmds.listConnections(plug, source=True, destination=False, plugs=True) or []:
+            LOGGER.debug("Skipping connected dx11Shader generated uniform '%s'", plug)
+            return False
+    except Exception:
+        pass
+    return True
+
+
 def _set_dx11_color_uniform(shader_node, attr_name, values):
     """Set dx11Shader color uniforms across Maya's generated child attrs.
 
@@ -448,24 +603,34 @@ def _set_dx11_color_uniform(shader_node, attr_name, values):
     attr_type = "double4" if alpha is not None else "double3"
 
     if cmds.attributeQuery(attr_name, node=shader_node, exists=True):
-        maya_utils.set_attribute(shader_node, attr_name, color, attr_type)
+        maya_attribute_utils.set_attribute(shader_node, attr_name, color, attr_type)
 
     rgb_attr = f"{attr_name}RGB"
     if cmds.attributeQuery(rgb_attr, node=shader_node, exists=True):
         rgb_plug = "{}.{}".format(shader_node, rgb_attr)
-        try:
-            cmds.setAttr(rgb_plug, rgb[0], rgb[1], rgb[2], type="double3")
-        except Exception:
-            LOGGER.warning(
-                "Failed to set dx11Shader RGB uniform '%s'",
-                rgb_plug,
-                exc_info=True,
-            )
+        rgb_child_plugs = [
+            "{}.{}{}".format(shader_node, attr_name, suffix)
+            for suffix in ("R", "G", "B")
+            if cmds.attributeQuery(f"{attr_name}{suffix}", node=shader_node, exists=True)
+        ]
+        if _is_dx11_generated_uniform_writable(rgb_plug) and all(
+            _is_dx11_generated_uniform_writable(child_plug) for child_plug in rgb_child_plugs
+        ):
+            try:
+                cmds.setAttr(rgb_plug, rgb[0], rgb[1], rgb[2], type="double3")
+            except Exception:
+                LOGGER.warning(
+                    "Failed to set dx11Shader RGB uniform '%s'",
+                    rgb_plug,
+                    exc_info=True,
+                )
 
     for suffix, value in zip(("R", "G", "B"), rgb):
         child_attr = f"{attr_name}{suffix}"
         if cmds.attributeQuery(child_attr, node=shader_node, exists=True):
             child_plug = "{}.{}".format(shader_node, child_attr)
+            if not _is_dx11_generated_uniform_writable(child_plug):
+                continue
             try:
                 cmds.setAttr(child_plug, value)
             except Exception:
@@ -474,10 +639,43 @@ def _set_dx11_color_uniform(shader_node, attr_name, values):
     alpha_attr = f"{attr_name}A"
     if alpha is not None and cmds.attributeQuery(alpha_attr, node=shader_node, exists=True):
         alpha_plug = "{}.{}".format(shader_node, alpha_attr)
+        if not _is_dx11_generated_uniform_writable(alpha_plug):
+            return
         try:
             cmds.setAttr(alpha_plug, alpha)
         except Exception:
             LOGGER.debug("Failed to set dx11Shader alpha uniform '%s'", alpha_plug, exc_info=True)
+
+
+def migrate_legacy_glsl_diffuse_contracts():
+    """Migrate only unambiguous legacy MMD GLSL nodes in the current scene."""
+    migrated = 0
+    for shader in cmds.ls(type="GLSLShader") or []:
+        if not shader or not cmds.objExists(shader) or cmds.nodeType(shader) != "GLSLShader":
+            continue
+        if not (
+            not _has_glsl_diffuse_contract_marker(shader)
+            and cmds.attributeQuery(ATTR_MMD_MATERIAL, node=shader, exists=True)
+            and not cmds.attributeQuery(ATTR_MMD_DIFFUSE_COLOR, node=shader, exists=True)
+            and not cmds.attributeQuery("Opacity", node=shader, exists=True)
+            and cmds.attributeQuery("DiffuseColor", node=shader, exists=True)
+            and cmds.attributeQuery("DiffuseColorRGB", node=shader, exists=True)
+            and cmds.attributeQuery("DiffuseColorA", node=shader, exists=True)
+        ):
+            continue
+        if _legacy_glsl_diffuse_is_driven(shader):
+            LOGGER.warning(
+                "Skipping automatic legacy GLSL diffuse migration for driven shader '%s'; manual migration required",
+                shader,
+            )
+            continue
+        try:
+            legacy = list(cmds.getAttr(f"{shader}.DiffuseColor")[0])
+            if _migrate_legacy_glsl_diffuse(shader, legacy):
+                migrated += 1
+        except Exception:
+            LOGGER.warning("Failed to migrate legacy GLSL DiffuseColor for '%s'", shader, exc_info=True)
+    return migrated
 
 
 def sync_dx11_generated_uniforms(shader_nodes=None):
@@ -489,9 +687,15 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
     attributes into the generated effect attrs once they are present.
     """
     synced = 0
-    shaders = list(shader_nodes) if shader_nodes is not None else (cmds.ls(type="dx11Shader") or [])
+    if shader_nodes is None:
+        synced += migrate_legacy_glsl_diffuse_contracts()
+    shaders = (
+        list(shader_nodes)
+        if shader_nodes is not None
+        else list(cmds.ls(type="dx11Shader") or []) + list(cmds.ls(type="GLSLShader") or [])
+    )
     for shader in shaders:
-        if not shader or not cmds.objExists(shader) or cmds.nodeType(shader) != "dx11Shader":
+        if not shader or not cmds.objExists(shader) or cmds.nodeType(shader) not in ("dx11Shader", "GLSLShader"):
             continue
         if cmds.attributeQuery(ATTR_MMD_DIFFUSE_COLOR, node=shader, exists=True):
             try:
@@ -500,6 +704,10 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
                 if cmds.attributeQuery("Opacity", node=shader, exists=True):
                     opacity = float(cmds.getAttr(f"{shader}.Opacity"))
                 _set_dx11_color_uniform(shader, "DiffuseColor", diffuse + [opacity])
+                if cmds.nodeType(shader) == "GLSLShader" and _glsl_split_diffuse_matches(
+                    shader, diffuse, opacity
+                ):
+                    _mark_glsl_diffuse_contract(shader)
                 synced += 1
             except Exception:
                 LOGGER.warning("Failed to sync dx11 DiffuseColor uniforms for '%s'", shader, exc_info=True)
@@ -508,7 +716,9 @@ def sync_dx11_generated_uniforms(shader_nodes=None):
             try:
                 edge_color = list(cmds.getAttr(f"{shader}.{ATTR_MMD_EDGE_COLOR}")[0])
                 edge_alpha = 1.0
-                if cmds.attributeQuery("EdgeColorA", node=shader, exists=True):
+                if cmds.attributeQuery(ATTR_MMD_EDGE_ALPHA, node=shader, exists=True):
+                    edge_alpha = float(cmds.getAttr(f"{shader}.{ATTR_MMD_EDGE_ALPHA}"))
+                elif cmds.attributeQuery("EdgeColorA", node=shader, exists=True):
                     edge_alpha = float(cmds.getAttr(f"{shader}.EdgeColorA"))
                 _set_dx11_color_uniform(shader, "EdgeColor", edge_color + [edge_alpha])
             except Exception:
@@ -547,7 +757,9 @@ class MeshConverter:
         """
         self.logger = get_logger(__name__)
         self.created_shaders = []
+        self.created_texture_file_nodes = []
         self.has_dx11_shaders = False
+        self.has_glsl_shaders = False
         self.unresolved_texture_count = 0
         self.unresolved_textures = []
         self.model_filepath = pmx_filepath
@@ -584,11 +796,15 @@ class MeshConverter:
         self.profile[key] = round(float(self.profile.get(key, 0.0)) + time.perf_counter() - start, 6)
 
     def _record_created_shader(self, shader: str) -> None:
-        """Record a created shader and whether it is a real dx11Shader node."""
+        """Record a created shader and its hardware backend."""
         self.created_shaders.append(shader)
         try:
-            if shader and cmds.objExists(shader) and cmds.nodeType(shader) == "dx11Shader":
-                self.has_dx11_shaders = True
+            if shader and cmds.objExists(shader):
+                shader_type = cmds.nodeType(shader)
+                if shader_type == "dx11Shader":
+                    self.has_dx11_shaders = True
+                elif shader_type == "GLSLShader":
+                    self.has_glsl_shaders = True
         except Exception as exc:
             self.logger.debug("Failed to record created shader %s: %s", shader, exc)
 
@@ -614,6 +830,12 @@ class MeshConverter:
             "reason": reason,
             "resolvable": source is not None,
             "source_path": str(source) if source is not None else "",
+            "search_candidates": build_texture_source_candidates(original_path, self.model_filepath),
+            "path_diagnostics": build_texture_path_diagnostics(
+                original_path=original_path,
+                file_texture_path=current_path,
+                model_path=self.model_filepath,
+            ),
         }
         if source is None and source_reason:
             issue["source_reason"] = source_reason
@@ -721,7 +943,6 @@ class MeshConverter:
 
         # 設定からマテリアルごとのメッシュ分割設定を取得
         separate_by_material = settings.get(setting_keys.IMPORT_MODEL_SEPARATE_MESHES_BY_MATERIAL, False)
-        split_by_morph_groups = settings.get(setting_keys.IMPORT_MODEL_SPLIT_MESHES_BY_MORPH_GROUPS, False)
 
         if separate_by_material:
             created_mesh = self._create_material_split_meshes(
@@ -733,16 +954,6 @@ class MeshConverter:
                 geo_group,
                 is_pmd=False,
             )
-        elif split_by_morph_groups:
-            created_mesh = self._create_morph_group_split_meshes(
-                model_name,
-                all_vertices,
-                all_faces,
-                all_materials,
-                all_textures,
-                pmx_data.morphs,
-                geo_group,
-            )
         else:
             created_mesh = self._create_unified_mesh(
                 model_name,
@@ -753,7 +964,7 @@ class MeshConverter:
                 geo_group,
             )
 
-        maya_utils.select_objects(geo_group)
+        maya_scene_utils.select_objects(geo_group)
         return geo_group, created_mesh
 
     def _created_world_mesh_uuid(self, mesh_transform: str) -> Optional[str]:
@@ -784,7 +995,7 @@ class MeshConverter:
     def _parent_mesh_to_group(self, mesh_transform: str, parent_group: str) -> str:
         """Parent a freshly-created mesh and return its long DAG path."""
         mesh_uuid = self._created_world_mesh_uuid(mesh_transform)
-        parented = maya_utils.parent_objects(mesh_transform, parent_group)
+        parented = maya_scene_utils.parent_objects(mesh_transform, parent_group)
         fallback = parented[0] if parented else mesh_transform
         return self._resolve_mesh_long_path(mesh_uuid, fallback) or mesh_transform
 
@@ -818,7 +1029,7 @@ class MeshConverter:
             return None
 
         # 統合メッシュの名前を設定
-        mesh_name = maya_utils.sanitize_text(model_name) + "_mesh"
+        mesh_name = maya_name_utils.sanitize_text(model_name) + "_mesh"
 
         # 全ての頂点と面を直接使用 z*= -1
         vertices = [self._mmd_vertex_to_maya(v.position) for v in all_vertices]
@@ -861,7 +1072,7 @@ class MeshConverter:
 
         # 統合メッシュを作成
         create_start = time.perf_counter()
-        created_mesh = maya_utils.create_mesh_with_uvs(
+        created_mesh = maya_mesh_utils.create_mesh_with_uvs(
             name=mesh_name,
             vertices=vertices,
             face_counts=face_counts,
@@ -882,7 +1093,7 @@ class MeshConverter:
                 continue
 
             # マテリアル名をサニタイズ
-            # material_name = maya_utils.sanitize_text(material.name)
+            # material_name = maya_name_utils.sanitize_text(material.name)
 
             # テクスチャパスを取得
             texture_path = None
@@ -890,7 +1101,7 @@ class MeshConverter:
             if all_textures:
                 if material.texture_index != -1:
                     raw_texture_path = all_textures[material.texture_index]
-                    texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
+                    texture_path = maya_material_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
 
             # マテリアルを作成
             material_start = time.perf_counter()
@@ -909,7 +1120,7 @@ class MeshConverter:
             # 面の範囲を選択してマテリアルを割り当て
             face_selection = f"{created_mesh}.f[{start_face}:{end_face - 1}]"
             assign_start = time.perf_counter()
-            maya_utils.assign_material_to_faces(created_mesh, shader, face_selection)
+            maya_material_utils.assign_material_to_faces(created_mesh, shader, face_selection)
             self._add_profile_time("material_assign_sec", assign_start)
 
         # A unified shape can contain multiple materials, so per-material
@@ -924,7 +1135,7 @@ class MeshConverter:
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
         disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
         if disable_backface_culling:
-            maya_utils.set_viewport_backface_culling(False)
+            maya_viewport_utils.set_viewport_backface_culling(False)
 
         return created_mesh
 
@@ -1017,10 +1228,10 @@ class MeshConverter:
 
             # マテリアル名からメッシュ名生成
             mat_name = material.get_name() if material.get_name() else f"material_{i}"
-            sub_mesh_name = maya_utils.sanitize_text(f"{model_name}_{mat_name}_mesh")
+            sub_mesh_name = maya_name_utils.sanitize_text(f"{model_name}_{mat_name}_mesh")
 
             create_start = time.perf_counter()
-            created_mesh = maya_utils.create_mesh_with_uvs(
+            created_mesh = maya_mesh_utils.create_mesh_with_uvs(
                 name=sub_mesh_name,
                 vertices=mesh_vertices,
                 face_counts=sub_face_counts,
@@ -1035,7 +1246,7 @@ class MeshConverter:
             self.profile["mesh_vertex_slots_estimated"] += len(mesh_vertices)
             self.profile["face_count"] += len(sub_face_counts)
             _set_mesh_double_sided(created_mesh, _material_is_double_sided(material))
-            maya_utils.set_custom_attributes(
+            maya_attribute_utils.set_custom_attributes(
                 created_mesh,
                 {
                     ATTR_MMD_MATERIAL_INDEX: i,
@@ -1043,8 +1254,8 @@ class MeshConverter:
                 },
             )
             if not is_pmd:
-                maya_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-                maya_utils.set_attribute(
+                maya_attribute_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
+                maya_attribute_utils.set_attribute(
                     created_mesh,
                     ATTR_MMD_SOURCE_VERTEX_INDICES,
                     source_vertex_indices,
@@ -1057,7 +1268,7 @@ class MeshConverter:
             if all_textures:
                 if material.texture_index != -1:
                     raw_texture_path = all_textures[material.texture_index]
-                    texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
+                    texture_path = maya_material_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
 
             # マテリアルを作成 (全体割当)
             material_start = time.perf_counter()
@@ -1075,7 +1286,7 @@ class MeshConverter:
 
             # 全 face にマテリアルを割り当て
             assign_start = time.perf_counter()
-            maya_utils.assign_material_to_faces(
+            maya_material_utils.assign_material_to_faces(
                 created_mesh, shader, f"{created_mesh}.f[0:{num_material_faces - 1}]"
             )
             self._add_profile_time("material_assign_sec", assign_start)
@@ -1091,248 +1302,9 @@ class MeshConverter:
         # MMDモデル表示用にバックフェイスカリングを無効化（設定に応じて）
         disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
         if disable_backface_culling:
-            maya_utils.set_viewport_backface_culling(False)
+            maya_viewport_utils.set_viewport_backface_culling(False)
 
         return mesh_names
-
-    def _create_morph_group_split_meshes(
-        self,
-        model_name,
-        all_vertices,
-        all_faces,
-        all_materials,
-        all_textures,
-        all_morphs,
-        geo_group,
-    ):
-        """Create compact PMX meshes grouped by identical vertex morph material sets."""
-        if not all_vertices or len(all_vertices) == 0:
-            self.logger.warning(f"Mesh has zero vertices; skipping mesh creation: {model_name}")
-            return []
-
-        material_vertex_sets = self._build_material_vertex_sets(all_faces, all_materials)
-
-        vertex_to_materials = {}
-        for material_index, vertex_indices in material_vertex_sets.items():
-            for vi in vertex_indices:
-                vertex_to_materials.setdefault(vi, set()).add(material_index)
-
-        morph_names_by_material_set = {}
-        touched_materials = set()
-
-        for morph in all_morphs or []:
-            if getattr(morph, "morph_type", None) != PmxMorphType.VertexMorph:
-                continue
-
-            morph_materials = set()
-            for offset in getattr(morph, "offsets", []) or []:
-                try:
-                    vertex_index = int(offset.get("vertex_index"))
-                except Exception:
-                    continue
-                morph_materials.update(vertex_to_materials.get(vertex_index, set()))
-
-            if not morph_materials:
-                continue
-
-            key = tuple(sorted(morph_materials))
-            morph_names_by_material_set.setdefault(key, []).append(morph.get_name())
-            touched_materials.update(morph_materials)
-
-        if not morph_names_by_material_set:
-            self.logger.info("No vertex morph material groups found; falling back to unified mesh import.")
-            return self._create_unified_mesh(
-                model_name,
-                all_vertices,
-                all_faces,
-                all_materials,
-                all_textures,
-                geo_group,
-            )
-
-        material_sets = [(key, morph_names) for key, morph_names in sorted(morph_names_by_material_set.items())]
-        static_materials = tuple(
-            i for i, material in enumerate(all_materials) if material.face_count > 0 and i not in touched_materials
-        )
-        if static_materials:
-            material_sets.append((static_materials, []))
-
-        mesh_names = []
-        for group_index, (material_indices, vertex_morph_names) in enumerate(material_sets):
-            suffix = f"morphGroup_{group_index}" if vertex_morph_names else "morphGroup_static"
-            mesh_name = maya_utils.sanitize_text(f"{model_name}_{suffix}_mesh")
-            created_mesh = self._create_compact_material_subset_mesh(
-                mesh_name,
-                all_vertices,
-                all_faces,
-                all_materials,
-                all_textures,
-                geo_group,
-                material_indices,
-                material_index_attr=None,
-                extra_attrs={
-                    ATTR_MMD_MORPH_GROUP_SPLIT_MESH: True,
-                    ATTR_MMD_VERTEX_MORPH_NAMES_JSON: json.dumps(
-                        vertex_morph_names,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                },
-            )
-            if created_mesh:
-                mesh_names.append(created_mesh)
-
-        disable_backface_culling = settings.get(setting_keys.IMPORT_MODEL_DISABLE_BACKFACE_CULLING, True)
-        if disable_backface_culling:
-            maya_utils.set_viewport_backface_culling(False)
-
-        return mesh_names
-
-    def _build_material_vertex_sets(self, all_faces, all_materials):
-        """Return source vertex indices referenced by each material face range."""
-        material_vertex_sets = {}
-        face_offset = 0
-        for i, material in enumerate(all_materials):
-            num_material_faces = material.face_count // 3
-            vertices = set()
-            for j in range(face_offset, face_offset + num_material_faces):
-                face = all_faces[j]
-                vertices.update(int(index) for index in face.indices)
-            material_vertex_sets[i] = vertices
-            face_offset += num_material_faces
-        return material_vertex_sets
-
-    def _create_compact_material_subset_mesh(
-        self,
-        mesh_name,
-        all_vertices,
-        all_faces,
-        all_materials,
-        all_textures,
-        geo_group,
-        material_indices,
-        material_index_attr=None,
-        extra_attrs=None,
-    ):
-        """Create a compact PMX mesh from one or more material face ranges."""
-        vertices = [self._mmd_vertex_to_maya(v.position) for v in all_vertices]
-        normals = [(v.normal[0], v.normal[1], -v.normal[2]) for v in all_vertices]
-        uvs = []
-        for vertex in all_vertices:
-            flipped_uv = (vertex.uv[0], 1.0 - vertex.uv[1])
-            uvs.extend(flipped_uv)
-
-        material_face_offsets = []
-        face_offset = 0
-        for material in all_materials:
-            num_material_faces = material.face_count // 3
-            material_face_offsets.append((face_offset, num_material_faces))
-            face_offset += num_material_faces
-
-        source_vertex_indices = []
-        source_to_local = {}
-        face_counts = []
-        face_connects = []
-        face_uv_connects = []
-        local_material_ranges = []
-
-        def get_local_vertex_index(source_index):
-            source_index = int(source_index)
-            if source_index not in source_to_local:
-                source_to_local[source_index] = len(source_vertex_indices)
-                source_vertex_indices.append(source_index)
-            return source_to_local[source_index]
-
-        for material_index in material_indices:
-            material = all_materials[material_index]
-            source_face_start, num_material_faces = material_face_offsets[material_index]
-            if num_material_faces == 0:
-                continue
-
-            local_face_start = len(face_counts)
-            for j in range(source_face_start, source_face_start + num_material_faces):
-                face = all_faces[j]
-                reversed_indices = face.indices[::-1]
-                if _is_degenerate_face(reversed_indices):
-                    continue
-                local_indices = [get_local_vertex_index(index) for index in reversed_indices]
-                face_connects.extend(local_indices)
-                face_counts.append(len(reversed_indices))
-                face_uv_connects.extend(local_indices)
-            local_face_end = len(face_counts)
-            if local_face_start != local_face_end:
-                local_material_ranges.append((material_index, material, local_face_start, local_face_end))
-
-        if not face_counts:
-            return None
-
-        mesh_vertices = [vertices[index] for index in source_vertex_indices]
-        mesh_normals = [normals[index] for index in source_vertex_indices]
-        mesh_uvs = []
-        for index in source_vertex_indices:
-            mesh_uvs.extend(uvs[index * 2 : index * 2 + 2])
-
-        create_start = time.perf_counter()
-        created_mesh = maya_utils.create_mesh_with_uvs(
-            name=mesh_name,
-            vertices=mesh_vertices,
-            face_counts=face_counts,
-            face_connects=face_connects,
-            uvs=mesh_uvs,
-            face_uv_connects=face_uv_connects,
-            normals=mesh_normals,
-        )
-        self._add_profile_time("mesh_create_sec", create_start)
-        self.profile["created_mesh_count"] += 1
-        self.profile["source_vertex_count"] = len(vertices)
-        self.profile["mesh_vertex_slots_estimated"] += len(mesh_vertices)
-        self.profile["face_count"] += len(face_counts)
-
-        attrs = dict(extra_attrs or {})
-        if material_index_attr is not None:
-            attrs[ATTR_MMD_MATERIAL_INDEX] = material_index_attr
-            attrs["mmd_material_split_mesh"] = True
-        if attrs:
-            maya_utils.set_custom_attributes(created_mesh, attrs)
-        maya_utils.add_typed_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, "longArray")
-        maya_utils.set_attribute(created_mesh, ATTR_MMD_SOURCE_VERTEX_INDICES, source_vertex_indices, "longArray")
-
-        if len(local_material_ranges) == 1:
-            _set_mesh_double_sided(created_mesh, _material_is_double_sided(local_material_ranges[0][1]))
-        else:
-            # A subset with multiple materials is still a combined shape:
-            # per-material culling cannot be represented by one doubleSided
-            # attribute, so leave it to the viewport backface override.
-            pass
-
-        for material_index, material, start_face, end_face in local_material_ranges:
-            texture_path = None
-            raw_texture_path = None
-            if all_textures and material.texture_index != -1:
-                raw_texture_path = all_textures[material.texture_index]
-                texture_path = maya_utils.sanitize_texture_path(raw_texture_path, self.texture_dir)
-
-            material_start = time.perf_counter()
-            shader = self._create_material(
-                material=material,
-                texture_path=texture_path,
-                all_textures=all_textures,
-                is_pmd=False,
-                material_index=material_index,
-                original_texture_path=raw_texture_path,
-            )
-            self._add_profile_time("material_create_sec", material_start)
-            self._record_created_shader(shader)
-            self.profile["material_count_processed"] += 1
-
-            assign_start = time.perf_counter()
-            maya_utils.assign_material_to_faces(created_mesh, shader, f"{created_mesh}.f[{start_face}:{end_face - 1}]")
-            self._add_profile_time("material_assign_sec", assign_start)
-
-        parent_start = time.perf_counter()
-        created_mesh = self._parent_mesh_to_group(created_mesh, geo_group)
-        self._add_profile_time("parent_sec", parent_start)
-        return created_mesh
 
     def _create_material(
         self,
@@ -1355,7 +1327,7 @@ class MeshConverter:
         Returns:
             str: 作成されたシェーダーノード名。
         """
-        sanitized_name = maya_utils.sanitize_text(material.get_name())
+        sanitized_name = maya_name_utils.sanitize_text(material.get_name())
         # 名前が空の場合はデフォルト名を使用
         if not sanitized_name:
             sanitized_name = f"material_{material_index if material_index is not None else 0}"
@@ -1510,6 +1482,9 @@ class MeshConverter:
             ATTR_MMD_MATERIAL_INDEX: material.material_index,
             ATTR_MMD_MATERIAL_NAME: material.name,
             ATTR_MMD_DIFFUSE_COLOR: material.diffuse[:3],
+            ATTR_MMD_DIFFUSE_ALPHA: (
+                float(material.diffuse[3]) if len(material.diffuse) > 3 else 1.0
+            ),
             ATTR_MMD_AMBIENT_COLOR: material.ambient[:3],
             ATTR_MMD_TOON_TEXTURE_INDEX: material.toon_texture_index,
         }
@@ -1545,13 +1520,16 @@ class MeshConverter:
             custom_attrs[ATTR_MMD_TEXTURE_INDEX] = material.texture_index
             custom_attrs[ATTR_MMD_DRAW_FLAGS] = int(material.draw_flag)
             custom_attrs[ATTR_MMD_EDGE_COLOR] = material.edge_color[:3]
+            custom_attrs[ATTR_MMD_EDGE_ALPHA] = (
+                float(material.edge_color[3]) if len(material.edge_color) > 3 else 1.0
+            )
             custom_attrs[ATTR_MMD_EDGE_SIZE] = material.edge_size
             custom_attrs[ATTR_MMD_SHADER_OUTLINE_ENABLED] = False
             custom_attrs[_ATTR_MMD_DOUBLE_SIDED] = _material_is_double_sided(material)
             custom_attrs[ATTR_MMD_MEMO] = material.memo
             custom_attrs[ATTR_MMD_SHARED_TOON_FLAG] = int(material.shared_toon_flag)
 
-        maya_utils.set_custom_attributes(
+        maya_attribute_utils.set_custom_attributes(
             shader,
             custom_attrs,
         )
@@ -1569,13 +1547,13 @@ class MeshConverter:
         """標準のstandardSurfaceシェーダーを設定"""
 
         # マテリアル名をサニタイズ（テクスチャノード名に使用）
-        sanitized_name = maya_utils.sanitize_text(material.name if material.name else "material")
+        sanitized_name = maya_name_utils.sanitize_text(material.name if material.name else "material")
 
         # 基本色設定（Diffuse）
-        maya_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")
+        maya_attribute_utils.set_attribute(shader, "baseColor", material.diffuse[:3], "double3")
 
         # AlphaをOpacityに変換（StandardSurfaceではopacityを使用）
-        maya_utils.set_attribute(
+        maya_attribute_utils.set_attribute(
             shader,
             "opacity",
             (material.diffuse[3], material.diffuse[3], material.diffuse[3]),
@@ -1585,7 +1563,7 @@ class MeshConverter:
         # スペキュラー設定（MMDのspecularをStandardSurfaceにマッピング）
         if hasattr(material, "specular"):
             # スペキュラー色
-            maya_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
+            maya_attribute_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
 
             # スペキュラー係数の取得（PMDとPMXで異なる）
             specular_coef = None
@@ -1595,18 +1573,18 @@ class MeshConverter:
                 specular_coef = material.specular_power
 
             if specular_coef is not None:
-                maya_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
+                maya_attribute_utils.set_attribute(shader, "specularColor", material.specular[:3], "double3")
 
         # アンビエント設定（StandardSurfaceでは間接光の強度として使用）
         if hasattr(material, "ambient"):
             # アンビエント色の平均値を間接光の強度として使用
             ambient_intensity = (material.ambient[0] + material.ambient[1] + material.ambient[2]) / 3.0
             # エミッションとして微弱に設定（アンビエント光の表現）
-            maya_utils.set_attribute(shader, "emission", ambient_intensity * 0.1, "float")
-            maya_utils.set_attribute(shader, "emissionColor", material.ambient[:3], "double3")
+            maya_attribute_utils.set_attribute(shader, "emission", ambient_intensity * 0.1, "float")
+            maya_attribute_utils.set_attribute(shader, "emissionColor", material.ambient[:3], "double3")
 
         # 非金属マテリアルとして設定（MMDは基本的に非金属）
-        maya_utils.set_attribute(shader, "metalness", 0.0, "float")
+        maya_attribute_utils.set_attribute(shader, "metalness", 0.0, "float")
 
         # カスタムアトリビュートを適用
         self._apply_custom_attributes(shader, material, all_textures, is_pmd, material_index, texture_path)
@@ -1633,6 +1611,7 @@ class MeshConverter:
                         unresolved = False
 
                 file_node = cmds.shadingNode("file", asTexture=True, name=sanitized_name + "_file")
+                self.created_texture_file_nodes.append(file_node)
                 place_uv_node = cmds.shadingNode(
                     "place2dTexture",
                     asUtility=True,
@@ -1642,15 +1621,15 @@ class MeshConverter:
                 cmds.connectAttr(place_uv_node + ".outUV", file_node + ".uvCoord")
                 cmds.connectAttr(file_node + ".outColor", shader + ".baseColor")
 
-                maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
-                maya_utils.mark_mmd_texture_file_node(
+                maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
+                maya_material_utils.mark_mmd_texture_file_node(
                     file_node,
                     raw_texture_path,
                     self.model_filepath,
                     unresolved=unresolved,
                 )
                 if cache_path:
-                    maya_utils.set_custom_attributes(
+                    maya_attribute_utils.set_custom_attributes(
                         file_node,
                         {
                             ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
@@ -1696,35 +1675,66 @@ class MeshConverter:
         setup_ok &= _set_shader_attribute_checked(shader, "technique", "Main", "string")
         _ensure_mmd_shader_uniform_attributes(shader)
 
-        setup_ok &= _set_shader_attribute_checked(shader, "DiffuseColor", material.diffuse, "double4")
+        # Both hardware backends use the same base-value contract. Diffuse alpha
+        # stays separate so a later material-morph evaluator can own final RGB.
+        for binding, value in iter_hardware_shader_values(
+            material_base_parameter_values(material), "GLSLShader"
+        ):
+            setup_ok &= _set_shader_attribute_checked(shader, binding.attribute, value, binding.attribute_type)
 
-        if hasattr(material, "specular"):
-            _set_shader_attribute_checked(shader, "SpecularColor", material.specular[:3], "double3")
+        for texture_flag in ("HasMainTexture", "HasSphereTexture", "HasToonTexture"):
+            if cmds.attributeQuery(texture_flag, node=shader, exists=True):
+                maya_attribute_utils.set_attribute(shader, texture_flag, 0, "long")
 
-        if hasattr(material, "ambient"):
-            _set_shader_attribute_checked(shader, "AmbientColor", material.ambient[:3], "double3")
+        # OGSFX exposes the same texture-slot contract as the DX11 effect.  The
+        # previous GLSL setup stopped after scalar uniforms, leaving every
+        # material untextured even when the PMX texture paths were valid.
+        self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
-        shininess = None
-        if hasattr(material, "specular_coefficient"):
-            shininess = material.specular_coefficient
-        elif hasattr(material, "specular_power"):
-            shininess = material.specular_power
-        if shininess is not None:
-            _set_shader_attribute_checked(shader, "Shininess", shininess, "float")
+        sphere_texture_path = None
+        if not is_pmd and getattr(material, "sphere_texture_index", -1) >= 0:
+            sphere_index = int(material.sphere_texture_index)
+            if all_textures and sphere_index < len(all_textures):
+                sphere_texture_path = all_textures[sphere_index]
+                full_sphere_path = _resolve_texture_path(self.texture_dir, sphere_texture_path)
+                self._connect_dx11_secondary_texture(
+                    shader,
+                    material,
+                    sphere_texture_path,
+                    full_sphere_path,
+                    "SphereTexture",
+                    "HasSphereTexture",
+                    "_sphere_texture",
+                    "Sphere",
+                )
 
-        edge_color = [0.0, 0.0, 0.0, 1.0]
-        if hasattr(material, "edge_color"):
-            edge_color = list(material.edge_color)
-            if len(edge_color) == 3:
-                edge_color.append(1.0)
-        setup_ok &= _set_shader_attribute_checked(shader, "EdgeColor", edge_color, "double4")
-        setup_ok &= _set_shader_attribute_checked(shader, "EdgeSize", 0.0, "float")
-
-        sphere_mode = getattr(material, "sphere_mode", 0)
-        setup_ok &= _set_shader_attribute_checked(shader, "SphereMode", int(sphere_mode), "long")
-
-        opacity = material.diffuse[3] if hasattr(material, "diffuse") and len(material.diffuse) > 3 else 1.0
-        setup_ok &= _set_shader_attribute_checked(shader, "Opacity", opacity, "float")
+        if not is_pmd:
+            full_toon_path = _resolve_pmx_toon_texture_path(self.texture_dir, material, all_textures)
+            if full_toon_path and os.path.exists(full_toon_path):
+                toon_original_path = ""
+                toon_source_kind = "shared_toon"
+                toon_shared_id = ""
+                if (
+                    getattr(material, "shared_toon_flag", 1) == 0
+                    and all_textures
+                    and 0 <= int(getattr(material, "toon_texture_index", -1)) < len(all_textures)
+                ):
+                    toon_original_path = all_textures[int(material.toon_texture_index)]
+                    toon_source_kind = "pmx_texture"
+                elif hasattr(material, "toon_texture_index"):
+                    toon_shared_id = f"shared_toon:{int(material.toon_texture_index) + 1}"
+                self._connect_dx11_secondary_texture(
+                    shader,
+                    material,
+                    toon_original_path,
+                    full_toon_path,
+                    "ToonTexture",
+                    "HasToonTexture",
+                    "_toon_texture",
+                    "Toon",
+                    source_kind=toon_source_kind,
+                    shared_toon_id=toon_shared_id,
+                )
 
         self._apply_custom_attributes(
             shader,
@@ -1733,7 +1743,7 @@ class MeshConverter:
             is_pmd,
             material_index,
             texture_path,
-            None,
+            sphere_texture_path,
         )
         return setup_ok
 
@@ -1776,19 +1786,20 @@ class MeshConverter:
                 unresolved = False
 
         file_node = cmds.shadingNode("file", asTexture=True, name=shader + node_suffix)
-        maya_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
+        self.created_texture_file_nodes.append(file_node)
+        maya_attribute_utils.set_attribute(file_node, "fileTextureName", file_texture_path, "string")
         mark_kwargs = {"unresolved": unresolved}
         if source_kind != "pmx_texture" or shared_toon_id:
             mark_kwargs["source_kind"] = source_kind
             mark_kwargs["shared_toon_id"] = shared_toon_id
-        maya_utils.mark_mmd_texture_file_node(
+        maya_material_utils.mark_mmd_texture_file_node(
             file_node,
             original_path,
             self.model_filepath,
             **mark_kwargs,
         )
         if cache_path:
-            maya_utils.set_custom_attributes(
+            maya_attribute_utils.set_custom_attributes(
                 file_node,
                 {
                     ATTR_MMD_TEXTURE_CACHE_PATH: cache_path,
@@ -1812,6 +1823,30 @@ class MeshConverter:
         if not bind_dx11_texture_file_node(shader, file_node, texture_attr, has_texture_attr):
             cmds.warning(f"Failed to connect {warning_label.lower()} texture to dx11Shader")
 
+    def _connect_dx11_main_texture(
+        self,
+        shader,
+        material,
+        texture_path,
+        original_texture_path=None,
+    ):
+        """Connect the main diffuse texture to a dx11Shader."""
+        raw_texture_path = original_texture_path or texture_path
+        if not raw_texture_path:
+            return
+
+        full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or raw_texture_path)
+        self._connect_dx11_secondary_texture(
+            shader,
+            material,
+            raw_texture_path,
+            full_texture_path,
+            "MainTexture",
+            "HasMainTexture",
+            "_texture",
+            "Main",
+        )
+
     def _setup_dx11_shader(
         self,
         shader,
@@ -1829,7 +1864,7 @@ class MeshConverter:
         shader_fx_path = os.path.normpath(shader_fx_path)
 
         # dx11Shaderにエフェクトファイルを設定
-        maya_utils.set_attribute(shader, "shader", shader_fx_path, "string")
+        maya_attribute_utils.set_attribute(shader, "shader", shader_fx_path, "string")
 
         # mayapy standalone では dx11Shader が .fx ファイルから uniform 属性を
         # 自動生成しないため、事前に動的アトリビュートとして作成しておく
@@ -1846,67 +1881,30 @@ class MeshConverter:
         _store_transparency_mode_attr(shader, mode)
         _store_shader_double_sided_attr(shader, double_sided)
 
-        # 基本色設定（Diffuse）
-        _set_dx11_color_uniform(shader, "DiffuseColor", material.diffuse)
-        opacity = material.diffuse[3] if hasattr(material, "diffuse") and len(material.diffuse) > 3 else 1.0
-        maya_utils.set_attribute(shader, "Opacity", opacity, "float")
-
-        # スペキュラー設定
-        if hasattr(material, "specular"):
-            maya_utils.set_attribute(
-                shader,
-                "SpecularColor",
-                material.specular[:3],
-                "double3",
-            )
-
-        # スペキュラー係数の設定（PMDとPMXで異なる）
-        specular_coef = None
-        if hasattr(material, "specular_coefficient"):
-            specular_coef = material.specular_coefficient
-        elif hasattr(material, "specular_power"):
-            specular_coef = material.specular_power
-
-        if specular_coef is not None:
-            maya_utils.set_attribute(shader, "Shininess", specular_coef, "float")
-
-        # アンビエント設定
-        if hasattr(material, "ambient"):
-            maya_utils.set_attribute(
-                shader,
-                "AmbientColor",
-                material.ambient[:3],
-                "double3",
-            )
+        base_values = material_base_parameter_values(material)
+        for semantic in ("diffuse_rgb", "diffuse_alpha", "opacity", "specular", "specular_power", "ambient"):
+            for binding, value in iter_hardware_shader_values(
+                {semantic: base_values.get(semantic)}, "dx11Shader"
+            ):
+                if value is not None:
+                    maya_attribute_utils.set_attribute(shader, binding.attribute, value, binding.attribute_type)
 
         # エッジ設定（PMXのみ）
         if not is_pmd:
             # エッジ色
             _set_dx11_color_uniform(shader, "EdgeColor", material.edge_color)
-        maya_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
+        maya_attribute_utils.set_attribute(shader, "EdgeSize", 0.0, "float")
 
         # スフィアモード設定
         sphere_mode = getattr(material, "sphere_mode", 0)
-        maya_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
+        maya_attribute_utils.set_attribute(shader, "SphereMode", int(sphere_mode), "long")
 
         for texture_flag in ("HasMainTexture", "HasSphereTexture", "HasToonTexture"):
             if cmds.attributeQuery(texture_flag, node=shader, exists=True):
-                maya_utils.set_attribute(shader, texture_flag, 0, "long")
+                maya_attribute_utils.set_attribute(shader, texture_flag, 0, "long")
 
         # テクスチャ設定
-        raw_texture_path = original_texture_path or texture_path
-        if raw_texture_path:
-            full_texture_path = _resolve_texture_path(self.texture_dir, texture_path or raw_texture_path)
-            self._connect_dx11_secondary_texture(
-                shader,
-                material,
-                raw_texture_path,
-                full_texture_path,
-                "MainTexture",
-                "HasMainTexture",
-                "_texture",
-                "Main",
-            )
+        self._connect_dx11_main_texture(shader, material, texture_path, original_texture_path)
 
         # スフィアテクスチャ設定（PMXのみ）
         sphere_texture_path = None

@@ -33,6 +33,7 @@ def import_vmd_file(
             - pmx_path: 対応する PMX ファイルのパス
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
+            - use_native_physics_bake: True かつ bake_mode のとき native physics bake を試行する（default False）
             - vmd_fps: VMDインポート時のMayaシーンFPS (30 or 60, default 30)。VMDフレーム番号はリスケールせず、シーンのタイムユニットのみ変更。
         progress_callback (Callable[[int], None]): フェーズ進捗通知コールバック。
 
@@ -64,19 +65,19 @@ def import_vmd_file(
         if target_model:
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
             if target_namespace:
-                logger.info(f"Target namespace: {target_namespace}")
+                logger.debug(f"Target namespace: {target_namespace}")
         else:
             selected = cmds.ls(selection=True)
             if selected:
                 for sel in selected:
                     target_namespace = NamespaceUtils.get_namespace_from_node(sel)
                     if target_namespace:
-                        logger.info(f"Target namespace: {target_namespace}")
+                        logger.debug(f"Target namespace: {target_namespace}")
                         target_model = sel
                         break
                 if not target_model:
                     target_model = selected[0]
-                    logger.info(f"Target model without namespace: {target_model}")
+                    logger.debug(f"Target model without namespace: {target_model}")
             else:
                 logger.warning("Target model is not specified.")
 
@@ -104,7 +105,7 @@ def import_vmd_file(
                     stored = cmds.getAttr(f"{target_model}.mmd_source_file")
                     if stored and os.path.exists(stored):
                         pmx_path = stored
-                        logger.info(f"Restored PMX source from model: {pmx_path}")
+                        logger.debug(f"Restored PMX source from model: {pmx_path}")
             except Exception:
                 logger.debug("Failed to restore PMX source from target model", exc_info=True)
 
@@ -137,6 +138,11 @@ def import_vmd_file(
         converter.motion_scale = float(options.get("motion_scale", 1.0))
         converter.import_camera_animation = bool(options.get("import_camera_animation", True))
         converter.import_light_animation = bool(options.get("import_light_animation", True))
+        profile = options.get("profile")
+        if not isinstance(profile, dict):
+            profile = {}
+            options["profile"] = profile
+        use_native_physics_bake = bool(options.get("use_native_physics_bake", False))
         try:
             with vmd_profile.scope("vmd_converter_convert"):
                 success = converter.convert(
@@ -147,13 +153,22 @@ def import_vmd_file(
                     vmd_bytes=vmd_bytes,
                     pmx_bytes=pmx_bytes,
                     pmx_path=pmx_path,
+                    profile=profile,
                     progress_callback=progress_callback,
+                    use_native_physics_bake=use_native_physics_bake,
                 )
         finally:
             vmd_profile.flush("import_vmd_file")
 
         if success:
             logger.info("VMD file import completed")
+            native_physics_used = bool(
+                (profile.get("vmd_converter") or {})
+                .get("native_physics_bake", {})
+                .get("used")
+            )
+            if native_physics_used:
+                profile["native_physics_bake_applied"] = True
             if is_mmd_runtime_available():
                 # Phase 2: ライブノードの自動作成オプション
                 if options.get("use_live_runtime", False) and target_model:
@@ -168,7 +183,7 @@ def import_vmd_file(
                                 create_runtime_node_for_model,
                             )
                             node = create_runtime_node_for_model(target_model, pmx_path, filepath)
-                            logger.info(f"Created live runtime node: {node}")
+                            logger.debug(f"Created live runtime node: {node}")
                             dg_result = connect_runtime_node_outputs_to_model(node, target_model, pmx_path=pmx_path)
                             logger.info(
                                 "Live runtime DG connection: bones=%d morphs=%d skipped=%d warnings=%d",

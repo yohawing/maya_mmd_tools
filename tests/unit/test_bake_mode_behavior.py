@@ -56,11 +56,13 @@ class TestBakeModeBehavior(unittest.TestCase):
         settings.set("ui.general.development_mode", True)
         settings.set("import.rig.bake_mode", True)
         options = SettingsService().build_pmx_import_options()
+        # Enable profile logging path so internal detail messages are emitted.
+        options["profile"] = {}
 
         mesh_converter = MagicMock()
         mesh_converter.convert_pmx_mesh.return_value = ("mesh_group", "mesh")
         mesh_converter.created_shaders = []
-        mesh_converter.profile = {}
+        mesh_converter.profile = {"mesh_sec": 0.1}
         mesh_converter.unresolved_textures = []
         mesh_converter.unresolved_texture_count = 0
 
@@ -72,9 +74,13 @@ class TestBakeModeBehavior(unittest.TestCase):
             "bone_morph_nodes": [],
             "material_morph_nodes": [],
         }
+        morph_converter.profile = {"morph_sec": 0.2}
 
         bone_converter = MagicMock()
         bone_converter.convert_pmx_bones.return_value = (["joint"], "skinCluster")
+        bone_converter.profile = {"bone_sec": 0.3}
+
+        logger_mock = MagicMock()
 
         with ExitStack() as stack:
             stack.enter_context(
@@ -83,19 +89,45 @@ class TestBakeModeBehavior(unittest.TestCase):
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.group", return_value="model_root"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.select"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.cmds.refresh"))
-            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_utils.set_custom_attributes"))
-            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_utils.setup_mmd_color_management"))
-            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_utils.setup_mmd_transparency"))
+            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_attribute_utils.set_custom_attributes"))
+            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_viewport_utils.setup_mmd_color_management"))
+            stack.enter_context(patch("mmd_tools.io.model_import_pipeline.maya_viewport_utils.setup_mmd_transparency"))
             stack.enter_context(patch("mmd_tools.io.model_import_pipeline.sync_dx11_generated_uniforms", return_value=0))
             stack.enter_context(patch("mmd_tools.io.pmx_importer.MeshConverter", return_value=mesh_converter))
             stack.enter_context(patch("mmd_tools.io.pmx_importer.MorphConverter", return_value=morph_converter))
             stack.enter_context(patch("mmd_tools.io.pmx_importer.BoneConverter", return_value=bone_converter))
+            stack.enter_context(patch("mmd_tools.io.pmx_importer.logger", logger_mock))
             root = import_pmx_file(_FakePmxParser(), "model.pmx", options=options)
 
         self.assertEqual(root, "model_root")
         kwargs = bone_converter.convert_pmx_bones.call_args.kwargs
         self.assertTrue(kwargs["setup_rig"])
         self.assertTrue(kwargs["setup_bone_orientation"])
+
+        # Internal profile detail stays on DEBUG; operation boundaries stay on INFO.
+        profile_debug_prefixes = (
+            "PMX import phase timings:",
+            "Mesh converter profile:",
+            "Morph converter profile:",
+            "Bone converter profile:",
+        )
+        debug_msgs = [call[0][0] for call in logger_mock.debug.call_args_list if call[0]]
+        info_msgs = [call[0][0] for call in logger_mock.info.call_args_list if call[0]]
+        for prefix in profile_debug_prefixes:
+            self.assertTrue(
+                any(isinstance(msg, str) and msg.startswith(prefix) for msg in debug_msgs),
+                "expected DEBUG log starting with %r, got %r" % (prefix, debug_msgs),
+            )
+            self.assertFalse(
+                any(isinstance(msg, str) and msg.startswith(prefix) for msg in info_msgs),
+                "profile detail %r must not be INFO" % (prefix,),
+            )
+        self.assertTrue(
+            any(isinstance(msg, str) and msg.startswith("Starting PMX file import:") for msg in info_msgs)
+        )
+        self.assertTrue(
+            any(isinstance(msg, str) and msg.startswith("PMX file import completed:") for msg in info_msgs)
+        )
 
     def test_animation_import_passes_bake_mode_false_for_rig_path(self):
         settings.set("import.rig.bake_mode", False)

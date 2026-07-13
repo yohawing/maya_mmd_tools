@@ -1,13 +1,14 @@
 """Camera-specific helpers for VMD animation conversion."""
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from ..core.constants import ATTR_MMD_CAMERA, DEFAULT_CAMERA_NAME
 from ..core.coordinate_transform import mmd_point_to_maya
+from .vmd_context import VmdCameraAnimationContext
 
 ATTR_MMD_CAMERA_RIG_TYPE = "mmd_camera_rig_type"
 ATTR_MMD_CAMERA_TARGET_NODE = "mmd_camera_target_node"
@@ -38,7 +39,7 @@ MMD_CAMERA_EXPR_SHAPE_ATTR = "mmd_camera_shape"
 MMD_CAMERA_EXPR_SCALE_ATTR = "mmd_camera_motion_scale"
 
 try:
-    from ..core.native.mmd_anim_runtime import sample_vmd_camera_frames
+    from ..core.native.mmd_anim_runtime_sampling import sample_vmd_camera_frames
 except Exception:
     sample_vmd_camera_frames = None  # type: ignore
 
@@ -263,18 +264,45 @@ def _frame_value(frame, attr_name: str, key_name: str, default):
     return default
 
 
-def _camera_samples_from_runtime(converter, camera_frames, vmd_bytes: Optional[bytes]) -> Optional[List[dict]]:
+def _resolve_camera_animation_context(
+    converter_or_context: Union[Any, VmdCameraAnimationContext],
+) -> VmdCameraAnimationContext:
+    if isinstance(converter_or_context, VmdCameraAnimationContext):
+        return converter_or_context
+    factory = getattr(converter_or_context, "_camera_animation_context", None)
+    if callable(factory):
+        return factory()
+    return VmdCameraAnimationContext(
+        motion_scale=converter_or_context.motion_scale,
+        anim_layer=converter_or_context.anim_layer,
+        use_animation_layers=converter_or_context.use_animation_layers,
+        get_or_create_camera=converter_or_context._get_or_create_camera,
+        vmd_frame_to_maya_time=converter_or_context.vmd_frame_to_maya_time,
+        maya_time_to_vmd_frame=converter_or_context.maya_time_to_vmd_frame,
+        add_attrs_to_anim_layer=converter_or_context._add_attrs_to_anim_layer,
+        samples_as_anim_layer_deltas=converter_or_context._samples_as_anim_layer_deltas,
+        batch_key_scalar_channels=converter_or_context._batch_key_scalar_channels,
+        apply_vmd_bezier_tangents=converter_or_context._apply_vmd_bezier_tangents,
+        get_frame_number=converter_or_context._get_frame_number,
+    )
+
+
+def _camera_samples_from_runtime(
+    context: VmdCameraAnimationContext,
+    camera_frames,
+    vmd_bytes: Optional[bytes],
+) -> Optional[List[dict]]:
     if sample_vmd_camera_frames is None or not vmd_bytes:
         return None
     if not camera_frames:
         return None
 
     min_frame, max_frame = _camera_frame_range(camera_frames)
-    start_maya_time = math.floor(converter.vmd_frame_to_maya_time(min_frame))
-    end_maya_time = math.ceil(converter.vmd_frame_to_maya_time(max_frame))
+    start_maya_time = math.floor(context.vmd_frame_to_maya_time(min_frame))
+    end_maya_time = math.ceil(context.vmd_frame_to_maya_time(max_frame))
     frame_count = max(1, int(end_maya_time - start_maya_time) + 1)
-    start_vmd_frame = converter.maya_time_to_vmd_frame(start_maya_time)
-    frame_step = converter.maya_time_to_vmd_frame(start_maya_time + 1.0) - start_vmd_frame
+    start_vmd_frame = context.maya_time_to_vmd_frame(start_maya_time)
+    frame_step = context.maya_time_to_vmd_frame(start_maya_time + 1.0) - start_vmd_frame
     samples = sample_vmd_camera_frames(vmd_bytes, start_vmd_frame, frame_step, frame_count)
     if not samples:
         return None
@@ -295,13 +323,13 @@ def _camera_samples_from_runtime(converter, camera_frames, vmd_bytes: Optional[b
     return dense
 
 
-def _sparse_camera_samples_from_frames(converter, camera_frames) -> List[dict]:
+def _sparse_camera_samples_from_frames(context: VmdCameraAnimationContext, camera_frames) -> List[dict]:
     samples = []
     for frame in camera_frames:
         frame_number = _frame_value(frame, "frame_number", "frame", 0)
         samples.append(
             {
-                "maya_time": converter.vmd_frame_to_maya_time(frame_number),
+                "maya_time": context.vmd_frame_to_maya_time(frame_number),
                 "position": tuple(_frame_value(frame, "position", "position", (0, 0, 0))),
                 "rotation": tuple(_frame_value(frame, "rotation", "rotation", (0, 0, 0))),
                 "distance": float(_frame_value(frame, "distance", "distance", 0.0)),
@@ -657,21 +685,35 @@ def _delete_camera_output_keys(camera_transform: str, camera_shape: Optional[str
                 _delete_camera_output_attr_keys(camera_shape, attr)
 
 
-def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes] = None) -> bool:
-    """Convert VMD camera frames using the converter's shared Maya helpers."""
+def convert_camera_animation(
+    converter_or_context,
+    camera_frames,
+    vmd_bytes: Optional[bytes] = None,
+) -> bool:
+    """Convert VMD camera frames using explicit camera-animation context."""
+    context = _resolve_camera_animation_context(converter_or_context)
+    return _convert_camera_animation(context, camera_frames, vmd_bytes=vmd_bytes)
+
+
+def _convert_camera_animation(
+    context: VmdCameraAnimationContext,
+    camera_frames,
+    vmd_bytes: Optional[bytes] = None,
+) -> bool:
+    """Convert VMD camera frames using explicit camera-animation context."""
     if not camera_frames:
         return False
 
-    camera_transform = converter._get_or_create_camera()
+    camera_transform = context.get_or_create_camera()
     camera_shapes = cmds.listRelatives(camera_transform, shapes=True, type="camera") or []
     camera_shape = camera_shapes[0] if camera_shapes else None
     if camera_shape:
         _prepare_mmd_camera_shape(camera_shape)
 
-    samples = _camera_samples_from_runtime(converter, camera_frames, vmd_bytes)
+    samples = _camera_samples_from_runtime(context, camera_frames, vmd_bytes)
     runtime_sampled = samples is not None
     if samples is None:
-        samples = _sparse_camera_samples_from_frames(converter, camera_frames)
+        samples = _sparse_camera_samples_from_frames(context, camera_frames)
 
     _ensure_mmd_camera_rig(camera_transform, orbit_hierarchy=not runtime_sampled)
     camera_target = _ensure_mmd_camera_target(camera_transform)
@@ -706,14 +748,14 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
         distance = sample["distance"]
         viewing_angle = sample["viewing_angle"]
         perspective = sample["perspective"]
-        target_x, target_y, target_z = mmd_point_to_maya(position, converter.motion_scale)
+        target_x, target_y, target_z = mmd_point_to_maya(position, context.motion_scale)
         if runtime_sampled:
             rotate_x, rotate_y, rotate_z = maya_camera_rotation_from_vmd_state(rotation)
             eye_x, eye_y, eye_z = maya_camera_eye_from_vmd_state(
                 position,
                 rotation,
                 distance,
-                converter.motion_scale,
+                context.motion_scale,
             )
             camera_samples["translateX"].append((maya_time, eye_x))
             camera_samples["translateY"].append((maya_time, eye_y))
@@ -725,7 +767,7 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
             target_samples["translateY"].append((maya_time, target_y))
             target_samples["translateZ"].append((maya_time, target_z))
         else:
-            camera_samples["translateZ"].append((maya_time, -float(distance) * converter.motion_scale))
+            camera_samples["translateZ"].append((maya_time, -float(distance) * context.motion_scale))
             target_samples["translateX"].append((maya_time, target_x))
             target_samples["translateY"].append((maya_time, target_y))
             target_samples["translateZ"].append((maya_time, target_z))
@@ -739,13 +781,13 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
             orthographic_width = viewing_angle_to_orthographic_width(
                 camera_shape,
                 float(viewing_angle),
-                float(distance) * converter.motion_scale,
+                float(distance) * context.motion_scale,
             )
             camera_shape_samples["orthographicWidth"].append((maya_time, orthographic_width))
             if cmds.attributeQuery("orthographic", node=camera_shape, exists=True):
                 orthographic_samples.append((maya_time, bool(perspective)))
 
-    animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
+    animation_layer = context.anim_layer if context.use_animation_layers and context.anim_layer else None
     key_animation_layer = animation_layer if runtime_sampled else None
     raw_camera_samples = {attr: attr_samples for attr, attr_samples in camera_samples.items() if attr_samples}
     target_samples = {attr: attr_samples for attr, attr_samples in target_samples.items() if attr_samples}
@@ -767,17 +809,17 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
         if cmds.attributeQuery("rotateZ", node=camera_target, exists=True):
             cmds.setAttr(f"{camera_target}.rotateZ", 0.0)
     if key_animation_layer:
-        converter._add_attrs_to_anim_layer(camera_transform, list(raw_camera_samples))
+        context.add_attrs_to_anim_layer(camera_transform, list(raw_camera_samples))
         if camera_shape and keyed_shape_samples:
-            converter._add_attrs_to_anim_layer(camera_shape, list(keyed_shape_samples) + ["orthographic"])
-        raw_camera_samples = converter._samples_as_anim_layer_deltas(camera_transform, raw_camera_samples)
+            context.add_attrs_to_anim_layer(camera_shape, list(keyed_shape_samples) + ["orthographic"])
+        raw_camera_samples = context.samples_as_anim_layer_deltas(camera_transform, raw_camera_samples)
         if camera_shape and keyed_shape_samples:
-            keyed_shape_samples = converter._samples_as_anim_layer_deltas(camera_shape, keyed_shape_samples)
+            keyed_shape_samples = context.samples_as_anim_layer_deltas(camera_shape, keyed_shape_samples)
 
-    converter._batch_key_scalar_channels(camera_transform, raw_camera_samples, animation_layer=key_animation_layer)
-    converter._batch_key_scalar_channels(camera_target, target_samples, animation_layer=key_animation_layer)
+    context.batch_key_scalar_channels(camera_transform, raw_camera_samples, animation_layer=key_animation_layer)
+    context.batch_key_scalar_channels(camera_target, target_samples, animation_layer=key_animation_layer)
     if camera_shape and keyed_shape_samples:
-        converter._batch_key_scalar_channels(camera_shape, keyed_shape_samples, animation_layer=key_animation_layer)
+        context.batch_key_scalar_channels(camera_shape, keyed_shape_samples, animation_layer=key_animation_layer)
 
     if camera_shape:
         for maya_time, orthographic in orthographic_samples:
@@ -817,9 +859,9 @@ def convert_camera_animation(converter, camera_frames, vmd_bytes: Optional[bytes
             "rollZ": "rotation",
         }
     if not runtime_sampled:
-        converter._apply_vmd_bezier_tangents(
+        context.apply_vmd_bezier_tangents(
             camera_transform,
-            sorted(camera_frames, key=converter._get_frame_number),
+            sorted(camera_frames, key=context.get_frame_number),
             camera_tangent_targets,
             camera_channel_map,
             interpolation_parser=parse_vmd_camera_interpolation,
