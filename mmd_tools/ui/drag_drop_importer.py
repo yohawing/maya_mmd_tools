@@ -259,12 +259,22 @@ class _MmdDropEventFilter:
         self._accept_drop_states = []
 
     def _drop_targets(self, window):
-        # Do not install a Python event filter on QApplication or every child
-        # widget. Maya 2027 replaces parts of its Qt hierarchy when leaving the
-        # Home screen; filtering those transient PySide wrappers can re-enter
-        # wrapper creation during destruction and crash the host. Drop events
-        # from viewport children propagate to the stable main window.
-        return [window]
+        # Maya 2027 replaces parts of its Qt hierarchy when leaving the Home
+        # screen. A global QApplication filter is stable on Maya 2024-2026 but
+        # can re-enter transient wrapper creation on Maya 2027+, so keep the
+        # conservative main-window-only path there.
+        if _maya_version() >= 2027:
+            return [window]
+        try:
+            from mmd_tools.ui.qt_compat import QApplication
+
+            app = QApplication.instance()
+        except Exception as exc:
+            logger.debug("Failed to resolve QApplication for drop filtering: %s", exc, exc_info=True)
+            app = None
+        if app is None or app is window:
+            return [window]
+        return [app, window]
 
     def _install_on_target(self, target) -> None:
         if hasattr(target, "setAcceptDrops"):
@@ -282,6 +292,15 @@ def _qt_core():
     from mmd_tools.ui.qt_compat import QtCore
 
     return QtCore
+
+
+def _maya_version() -> int:
+    """Return the numeric Maya version, or zero when the host query is unavailable."""
+    try:
+        value = str(cmds.about(version=True)).strip()
+        return int(value.split(".", 1)[0])
+    except Exception:
+        return 0
 
 
 def _maya_main_window():
