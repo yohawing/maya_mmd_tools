@@ -3,7 +3,11 @@
 PMX rigid body の全フィールドを保持するシェイプノード。実際の
 MmdRuntimeFfiPhysicsRigidbodyDesc 構築はソルバー/シーンビルダー側で行い、
 本ノードは入力属性群と、下流の dirty 検出用カウンタ (outDescriptorVersion)
-のみを提供する。VP2 描画はこのスライスでは実装しない。
+のみを提供する。VP2 描画は mmd_rigid_body_draw_override.py の
+MmdRigidBodyDrawOverride が担当する。
+
+authoringMatrix / simulatedWorldMatrix は VP2 描画のための補助入力で、
+descriptor 構築 (outDescriptorVersion) には影響しない。
 """
 
 from __future__ import annotations
@@ -55,6 +59,9 @@ class MmdRigidBodyShape(omui.MPxLocatorNode):
 
     aOutDescriptorVersion = None
 
+    aAuthoringMatrix = None
+    aSimulatedWorldMatrix = None
+
     def __init__(self):
         super().__init__()
         self._descriptor_version = 0
@@ -79,6 +86,7 @@ def initialize():
     tAttr = om.MFnTypedAttribute()
     mAttr = om.MFnMessageAttribute()
     cAttr = om.MFnCompoundAttribute()
+    xAttr = om.MFnMatrixAttribute()
 
     MmdRigidBodyShape.aPmxIndex = nAttr.create("pmxIndex", "pmi", om.MFnNumericData.kShort, -1)
     nAttr.storable = True
@@ -190,6 +198,18 @@ def initialize():
     nAttr.storable = False
     nAttr.writable = False
     MmdRigidBodyShape.addAttribute(MmdRigidBodyShape.aOutDescriptorVersion)
+
+    # --- Authoring world matrix (storable, reflects DAG transform in world space) ---
+    MmdRigidBodyShape.aAuthoringMatrix = xAttr.create("authoringMatrix", "aum", om.MFnMatrixAttribute.kDouble)
+    xAttr.storable = True
+    xAttr.keyable = False
+    MmdRigidBodyShape.addAttribute(MmdRigidBodyShape.aAuthoringMatrix)
+
+    # --- Simulated world matrix (fed by solver during playback, not storable) ---
+    MmdRigidBodyShape.aSimulatedWorldMatrix = xAttr.create("simulatedWorldMatrix", "swm", om.MFnMatrixAttribute.kDouble)
+    xAttr.storable = False
+    xAttr.keyable = False
+    MmdRigidBodyShape.addAttribute(MmdRigidBodyShape.aSimulatedWorldMatrix)
 
     input_attrs = (
         MmdRigidBodyShape.aPmxIndex,

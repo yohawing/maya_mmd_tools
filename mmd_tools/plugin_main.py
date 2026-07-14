@@ -15,9 +15,11 @@ from mmd_tools.nodes import mmd_bone_morph_accum_node
 from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
 from mmd_tools.nodes import mmd_rigid_body_shape
+from mmd_tools.nodes import mmd_rigid_body_draw_override
 from mmd_tools.nodes import mmd_physics_joint_shape
 from mmd_tools.nodes import mmd_physics_solver_node
 from mmd_tools.nodes import mmd_physics_bone_driver_node
+from mmd_tools.nodes import mmd_physics_world_shape
 
 _main_window = None
 _animator_toolset_window = None
@@ -27,6 +29,7 @@ _animator_toolset_window = None
 _python_rig_nodes_registered = False
 _shader_override_registered = False
 _physics_nodes_registered = False
+_python_physics_solver_registered = False
 _after_open_callback_id = None
 
 
@@ -336,11 +339,17 @@ def initializePlugin(mobject):
             mmd_ccd_ik_node.register(plugin_fn)
             _python_rig_nodes_registered = True
         global _physics_nodes_registered
-        mmd_rigid_body_shape.register(plugin_fn)
-        mmd_physics_joint_shape.register(plugin_fn)
-        mmd_physics_solver_node.register(plugin_fn)
-        mmd_physics_bone_driver_node.register(plugin_fn)
-        _physics_nodes_registered = True
+        global _python_physics_solver_registered
+        if os.environ.get("MMD_TOOLS_PHYSICS_NODES") == "1":
+            mmd_physics_world_shape.register(plugin_fn)
+            mmd_rigid_body_shape.register(plugin_fn)
+            mmd_rigid_body_draw_override.register()
+            mmd_physics_joint_shape.register(plugin_fn)
+            if not _cpp_plugin_loaded():
+                mmd_physics_solver_node.register(plugin_fn)
+                mmd_physics_bone_driver_node.register(plugin_fn)
+                _python_physics_solver_registered = True
+            _physics_nodes_registered = True
         _register_after_open_callback()
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")
@@ -366,11 +375,16 @@ def uninitializePlugin(mobject):
             finally:
                 _shader_override_registered = False
         global _physics_nodes_registered
+        global _python_physics_solver_registered
         if _physics_nodes_registered:
-            mmd_physics_bone_driver_node.deregister(plugin_fn)
-            mmd_physics_solver_node.deregister(plugin_fn)
+            if _python_physics_solver_registered:
+                mmd_physics_bone_driver_node.deregister(plugin_fn)
+                mmd_physics_solver_node.deregister(plugin_fn)
+                _python_physics_solver_registered = False
             mmd_physics_joint_shape.deregister(plugin_fn)
+            mmd_rigid_body_draw_override.deregister()
             mmd_rigid_body_shape.deregister(plugin_fn)
+            mmd_physics_world_shape.deregister(plugin_fn)
             _physics_nodes_registered = False
         # Only deregister rig nodes that Python actually registered
         global _python_rig_nodes_registered
