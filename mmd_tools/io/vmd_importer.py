@@ -14,6 +14,36 @@ from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
 
 
+def _try_recover_physics_drivers(target_model, logger, profile):
+    """Attempt to reconnect orphaned physics drivers after VMD import.
+
+    Only runs in development mode since the live physics graph is not
+    public-ready.  Fail-soft: never raises.
+    """
+    if not target_model or not cmds.objExists(target_model):
+        return
+    try:
+        from ..services.settings_service import SettingsService
+
+        if not SettingsService().is_development_mode():
+            return
+    except Exception:
+        return
+    try:
+        from ..converters.physics_scene_builder import recover_physics_driver_connections
+
+        result = recover_physics_driver_connections(target_model, logger=logger)
+        if result.get("recovered", 0) > 0:
+            logger.info(
+                "event=physics_driver_recovery recovered=%d skipped=%d",
+                result["recovered"],
+                result.get("skipped", 0),
+            )
+            profile["physics_driver_recovery"] = result
+    except Exception as exc:
+        logger.debug("Physics driver recovery failed: %s", exc, exc_info=True)
+
+
 def import_vmd_file(
     parser: Any,
     filepath: str,
@@ -162,6 +192,7 @@ def import_vmd_file(
 
         if success:
             logger.info("VMD file import completed")
+            _try_recover_physics_drivers(target_model, logger, profile)
             native_physics_used = bool(
                 (profile.get("vmd_converter") or {})
                 .get("native_physics_bake", {})

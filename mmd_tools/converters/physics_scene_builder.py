@@ -475,3 +475,80 @@ def build_physics_live_graph(
         "drivers": drivers,
         "driven_bone_count": len(drivers),
     }
+
+
+def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
+    """Re-attach orphaned mmdPhysicsBoneDriver nodes to their target joints.
+
+    After VMD import, the runtime bake path disconnects physics driver outputs
+    from joints.  This function finds all drivers that belong to *model_root*,
+    checks whether their ``outTranslate``/``outRotate`` outputs are still
+    connected to the target joint, and reconnects them if not.
+
+    This is an interim recovery mechanism for development mode only.  The
+    proper fix is PHS-POSE-SOURCE-1 (pre-physics proxy).
+
+    Returns a summary dict with ``recovered`` and ``skipped`` counts.
+    """
+    log = logger or _logger
+    recovered = 0
+    skipped = 0
+
+    try:
+        available_types = set(cmds.allNodeTypes() or [])
+    except Exception:
+        available_types = set()
+    if "mmdPhysicsBoneDriver" not in available_types:
+        log.debug("mmdPhysicsBoneDriver not registered, skipping recovery")
+        return {"recovered": 0, "skipped": 0, "reason": "node_type_unavailable"}
+
+    drivers = cmds.ls(type="mmdPhysicsBoneDriver") or []
+    for driver in drivers:
+        if not cmds.objExists(driver):
+            continue
+
+        root_connections = cmds.listConnections(
+            f"{driver}.mmd_model_root", source=True, destination=False
+        ) or []
+        if model_root not in root_connections:
+            continue
+
+        try:
+            target_joint = cmds.getAttr(f"{driver}.mmd_target_joint") or ""
+        except Exception:
+            target_joint = ""
+        if not target_joint or not cmds.objExists(target_joint):
+            skipped += 1
+            continue
+
+        reconnected = False
+        for out_attr, joint_attr in [("outTranslate", "translate"), ("outRotate", "rotate")]:
+            src_plug = f"{driver}.{out_attr}"
+            dst_plug = f"{target_joint}.{joint_attr}"
+            existing = cmds.listConnections(src_plug, source=False, destination=True, plugs=True) or []
+            if dst_plug in existing:
+                continue
+            try:
+                cmds.connectAttr(src_plug, dst_plug, force=True)
+                reconnected = True
+            except Exception as exc:
+                log.warning(
+                    "event=physics_driver_recovery_failed driver=%s joint=%s attr=%s error=%s",
+                    driver, target_joint, joint_attr, exc,
+                )
+
+        if reconnected:
+            recovered += 1
+            log.info(
+                "event=physics_driver_recovered driver=%s joint=%s",
+                driver, target_joint,
+            )
+        else:
+            skipped += 1
+
+    if recovered:
+        log.info(
+            "Physics driver recovery: %d reconnected, %d skipped for model %s",
+            recovered, skipped, model_root,
+        )
+    return {"recovered": recovered, "skipped": skipped}
