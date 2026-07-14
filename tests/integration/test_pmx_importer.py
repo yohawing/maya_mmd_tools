@@ -4,6 +4,7 @@ PMXインポーターの統合テスト
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -412,6 +413,51 @@ class TestPmxImporter(MayaTestBase):
                         delta=0.02,
                         msg=f"{driver} local reconstruction mismatch at {matrix_index}",
                     )
+
+    @unittest.skipUnless(is_native_physics_available(), "native physics DLL not available")
+    def test_mixed_mode_bone_omits_kinematic_world_matrix_connection(self):
+        """A mode-0/mode-1 mixed bone must not close a solver DG cycle."""
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            self.load_plugin(plugin_path)
+        except Exception:
+            pass
+
+        from mmd_tools.converters.physics_scene_builder import build_physics_live_graph
+
+        root = cmds.group(empty=True, name="mixed_mode_root")
+        cmds.select(clear=True)
+        joint = cmds.joint(name="mixed_mode_bone")
+        cmds.parent(joint, root)
+
+        graph = build_physics_live_graph(
+            rigid_bodies=[
+                SimpleNamespace(physics_mode=0, related_bone_index=0),
+                SimpleNamespace(physics_mode=1, related_bone_index=0),
+            ],
+            bones=[SimpleNamespace(parent_bone_index=-1)],
+            maya_joints=[joint],
+            root_group=root,
+        )
+
+        solver = graph["solver"]
+        self.assertIsNotNone(solver)
+        self.assertEqual(len(graph["drivers"]), 1)
+        self.assertFalse(
+            cmds.listConnections(
+                f"{solver}.inKinematicWorldMatrix[0]",
+                source=True,
+                destination=False,
+                plugs=True,
+            ) or [],
+            "mixed-mode bone worldMatrix must not feed the solver",
+        )
+        self.assertTrue(
+            cmds.isConnected(
+                f"{solver}.outBoneMatrices",
+                f"{graph['drivers'][0]}.inSolverBoneMatrices",
+            )
+        )
 
     def test_import_pmx_multiple_files(self):
         """全てのPMXモデルが基本的にロード可能かテスト"""

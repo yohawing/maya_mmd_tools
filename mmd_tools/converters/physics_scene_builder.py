@@ -268,14 +268,27 @@ def _connect_kinematic_joint_inputs(
     same frame dirties the solver's outputs and triggers re-evaluation.
     """
     log = logger or _logger
-    connected = set()
+    normalized_bodies: list[tuple[int, int]] = []
+    dynamic_bone_indices: set[int] = set()
     for rb in rigid_bodies or []:
         try:
             physics_mode = int(getattr(rb, "physics_mode", 0))
             bone_index = int(getattr(rb, "related_bone_index", -1))
         except (TypeError, ValueError):
             continue
+        normalized_bodies.append((physics_mode, bone_index))
+        if physics_mode in (1, 2) and bone_index >= 0:
+            dynamic_bone_indices.add(bone_index)
+
+    connected = set()
+    for physics_mode, bone_index in normalized_bodies:
         if physics_mode != 0 or bone_index < 0:
+            continue
+        if bone_index in dynamic_bone_indices:
+            log.debug(
+                "event=kinematic_input_skipped bone=%d reason=mixed_physics_mode",
+                bone_index,
+            )
             continue
         if bone_index in connected:
             continue
