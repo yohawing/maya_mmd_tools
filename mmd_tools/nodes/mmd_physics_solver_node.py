@@ -266,6 +266,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
         all_indices: set = set()
         kinematic_indices: set = set()
+        dynamic_indices: set = set()
         try:
             children = cmds.listRelatives(
                 model_root, children=True, fullPath=True, type="transform",
@@ -300,11 +301,14 @@ class MmdPhysicsSolverNode(om.MPxNode):
                     idx = cmds.getAttr(f"{shape}.relatedBoneIndex")
                     if idx >= 0:
                         all_indices.add(idx)
-                        if cmds.getAttr(f"{shape}.physicsMode") == 0:
+                        mode = cmds.getAttr(f"{shape}.physicsMode")
+                        if mode == 0:
                             kinematic_indices.add(idx)
+                        else:
+                            dynamic_indices.add(idx)
         except Exception:
             pass
-        return all_indices, kinematic_indices
+        return all_indices, kinematic_indices - dynamic_indices
 
     def _inject_kinematic_poses(self, data) -> None:
         """Read kinematic bone world matrices from DG inputs and inject into the instance."""

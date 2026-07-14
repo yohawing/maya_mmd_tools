@@ -361,6 +361,7 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
     if (sel.getDagPath(0, rbDagPath) != MS::kSuccess) return;
 
     std::unordered_set<int> physicsBoneIndices;
+    std::unordered_set<int> dynamicBoneIndices;
     unsigned childCount = rbDagPath.childCount();
     for (unsigned i = 0; i < childCount; ++i) {
         MObject child = rbDagPath.child(i);
@@ -380,10 +381,19 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
             physicsBoneIndices.insert(boneIndex);
 
             MPlug pmPlug = fnShape.findPlug("physicsMode", false, &st);
-            if (st == MS::kSuccess && pmPlug.asShort() == 0) {
-                kinematicOnlyBoneIndices_.insert(boneIndex);
+            if (st == MS::kSuccess) {
+                if (pmPlug.asShort() == 0) {
+                    kinematicOnlyBoneIndices_.insert(boneIndex);
+                } else {
+                    dynamicBoneIndices.insert(boneIndex);
+                }
             }
         }
+    }
+    // A bone with both mode-0 and mode-1/2 rigid bodies has a BoneDriver,
+    // so reading its worldMatrix would create a DG cycle.
+    for (int dynIdx : dynamicBoneIndices) {
+        kinematicOnlyBoneIndices_.erase(dynIdx);
     }
 
     if (physicsBoneIndices.empty()) return;
@@ -588,9 +598,10 @@ void MmdPhysicsSolverNode::writeOutputs(MDataBlock& data,
 
 void MmdPhysicsSolverNode::mmdMatrixToMaya(const float* src16, double* dst16) {
     // P·M·P conjugation where P = diag(1,1,-1,1): negate when exactly one index is 2
+    // Both mmd-anim and Maya use row-major layout — no transpose, only Z-flip.
     for (int r = 0; r < 4; ++r) {
         for (int c = 0; c < 4; ++c) {
-            double v = static_cast<double>(src16[c * 4 + r]); // col-major → row-major
+            double v = static_cast<double>(src16[r * 4 + c]);
             if ((r == 2) != (c == 2)) v = -v;
             dst16[r * 4 + c] = v;
         }
@@ -598,12 +609,12 @@ void MmdPhysicsSolverNode::mmdMatrixToMaya(const float* src16, double* dst16) {
 }
 
 void MmdPhysicsSolverNode::mayaMatrixToMmd(const double* src16, float* dst16) {
-    // Inverse: row-major Maya → column-major MMD, same P·M·P Z-flip
+    // Same P·M·P Z-flip, both layouts are row-major — no transpose.
     for (int r = 0; r < 4; ++r) {
         for (int c = 0; c < 4; ++c) {
             double v = src16[r * 4 + c];
             if ((r == 2) != (c == 2)) v = -v;
-            dst16[c * 4 + r] = static_cast<float>(v); // row-major → col-major
+            dst16[r * 4 + c] = static_cast<float>(v);
         }
     }
 }

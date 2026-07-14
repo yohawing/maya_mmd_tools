@@ -235,6 +235,15 @@ class TestSolverKinematicPoseInjection(unittest.TestCase):
         self.assertIn("relatedBoneIndex", find_src)
         self.assertIn("physicsMode", find_src)
 
+    def test_find_physics_bone_indices_excludes_mixed_mode_from_kinematic(self):
+        """A bone with both mode-0 and mode-1/2 rigid bodies must NOT appear
+        in kinematic-only set, because its BoneDriver would create a DG cycle."""
+        find_src = _get_function_source(
+            self.tree, self.source_lines, "_find_physics_bone_indices", "MmdPhysicsSolverNode"
+        )
+        self.assertIn("dynamic_indices", find_src)
+        self.assertIn("kinematic_indices - dynamic_indices", find_src)
+
 
 class TestMayaToMmdTransformInvolution(unittest.TestCase):
     """Pure-Python functional test: the maya<->mmd matrix conversion is its own inverse."""

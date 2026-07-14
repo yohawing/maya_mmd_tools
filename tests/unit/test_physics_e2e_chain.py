@@ -181,11 +181,14 @@ class TestE2ECycleSafety(unittest.TestCase):
         """Bone driver only drives joints connected by physics scene builder
         (physicsMode 1/2), never kinematic (physicsMode 0) joints."""
         src, tree, lines = _get_source(SCENE_BUILDER_PATH)
-        # _build_bone_drivers iterates all maya_joints, but only the ones
-        # that have rigid bodies drive their translate/rotate.
-        # The cycle safety comes from the solver reading physicsMode=0
-        # bones while drivers write physicsMode=1/2 bones.
         self.assertIn("mmdPhysicsBoneDriver", src)
+
+    def test_mixed_mode_bone_excluded_from_kinematic_fallback(self):
+        """A bone with both mode-0 and mode-1/2 rigid bodies must be excluded
+        from the kinematic-only set to prevent DG cycles."""
+        src, tree, lines = _get_source(SOLVER_NODE_PATH)
+        find = _func_source(tree, lines, "_find_physics_bone_indices", "MmdPhysicsSolverNode")
+        self.assertIn("dynamic_indices", find)
 
 
 if __name__ == "__main__":
