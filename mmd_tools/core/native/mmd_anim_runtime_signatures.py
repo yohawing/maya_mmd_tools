@@ -17,6 +17,8 @@ from mmd_tools.core.native.mmd_anim_runtime_types import (
     MmdRuntimeFfiByteBuffer,
     MmdRuntimeFfiIkSolveStats,
     MmdRuntimeFfiPhysicsJointDesc,
+    MmdRuntimeFfiHostPoseView,
+    MmdRuntimeFfiPhysicsRigidbodyBinding,
     MmdRuntimeFfiPhysicsRigidbodyDesc,
     MmdRuntimeFfiPhysicsStepStats,
     MmdRuntimeFfiPhysicsTickConfig,
@@ -205,6 +207,13 @@ def setup_physics_signatures(lib: CDLL) -> None:
             [c_void_p, c_void_p, c_float, c_float, c_uint32],
         )
         set_sig(lib, "mmd_runtime_instance_evaluate_current_pose_before_physics", c_uint32, [c_void_p])
+        set_sig(lib, "mmd_runtime_instance_apply_host_pose", c_uint32, [c_void_p, POINTER(MmdRuntimeFfiHostPoseView)])
+        set_sig(
+            lib,
+            "mmd_runtime_instance_apply_host_pose_and_evaluate_before_physics",
+            c_uint32,
+            [c_void_p, POINTER(MmdRuntimeFfiHostPoseView)],
+        )
         set_sig(lib, "mmd_runtime_instance_evaluate_current_pose_after_physics", c_uint32, [c_void_p])
         set_sig(
             lib,
@@ -233,11 +242,40 @@ def setup_physics_signatures(lib: CDLL) -> None:
             [c_void_p, c_void_p, c_float, POINTER(MmdRuntimeFfiPhysicsWorldStepReport)],
         )
         set_sig(lib, "mmd_runtime_physics_world_rigidbody_count", c_uint32, [c_void_p, POINTER(c_size_t)])
+        set_sig(lib, "mmd_runtime_physics_world_get_gravity", c_uint32, [c_void_p, POINTER(c_float)])
+        set_sig(lib, "mmd_runtime_physics_world_set_gravity", c_uint32, [c_void_p, POINTER(c_float)])
         set_sig(
             lib,
             "mmd_runtime_physics_world_copy_rigidbody_states",
             c_uint32,
             [c_void_p, POINTER(c_float), c_size_t],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_physics_world_copy_rigidbody_bindings",
+            c_uint32,
+            [c_void_p, POINTER(MmdRuntimeFfiPhysicsRigidbodyBinding), c_size_t, POINTER(c_size_t)],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_physics_world_physics_driven_bone_mask",
+            c_uint32,
+            [c_void_p, POINTER(c_uint8), c_size_t],
+        )
+        set_sig(
+            lib,
+            "mmd_runtime_evaluate_host_frame",
+            c_uint32,
+            [
+                c_void_p,
+                c_void_p,
+                POINTER(MmdRuntimeFfiHostPoseView),
+                c_uint32,
+                c_float,
+                c_float,
+                c_uint32,
+                POINTER(MmdRuntimeFfiPhysicsWorldStepReport),
+            ],
         )
         set_sig(
             lib,

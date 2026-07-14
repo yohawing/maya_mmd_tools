@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import math
+import threading
 from ctypes import CDLL, c_float, c_size_t, c_uint8, c_uint32, c_void_p
 from typing import Callable, List, Optional, Sequence, Tuple
 
@@ -11,11 +12,15 @@ from mmd_tools.core.logger import get_logger
 from mmd_tools.core.native import mmd_anim_runtime_loader as _runtime_loader
 from mmd_tools.core.native.mmd_anim_runtime_types import (
     MMD_RUNTIME_PHYSICS_MODE_LIVE,
+    MMD_RUNTIME_PHYSICS_FRAME_ACTION_SEED,
+    MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP,
     MMD_RUNTIME_REQUIRED_PHYSICS_FEATURE_FLAGS,
     MMD_RUNTIME_STATUS_OK,
     MMD_RUNTIME_STATUS_UNSUPPORTED,
     MmdRuntimeBatchEvaluation,
     MmdRuntimeFfiPhysicsJointDesc,
+    MmdRuntimeFfiHostPoseView,
+    MmdRuntimeFfiPhysicsRigidbodyBinding,
     MmdRuntimeFfiPhysicsRigidbodyDesc,
     MmdRuntimeFfiPhysicsTickConfig,
     MmdRuntimeFfiPhysicsWorldStepReport,
@@ -62,6 +67,28 @@ def _as_positive_integral_count(value) -> Optional[int]:
     return count if count > 0 else None
 
 
+def _finite_floats(values: Sequence[float], expected_len: int) -> Optional[List[float]]:
+    """Copy an exact-length finite float buffer, or reject it without native mutation."""
+    try:
+        copied = [float(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    if len(copied) != expected_len or not all(math.isfinite(value) for value in copied):
+        return None
+    return copied
+
+
+def _normalized_quaternions(values: Sequence[float], bone_count: int) -> Optional[List[float]]:
+    copied = _finite_floats(values, bone_count * 4)
+    if copied is None:
+        return None
+    for offset in range(0, len(copied), 4):
+        norm_sq = sum(value * value for value in copied[offset : offset + 4])
+        if abs(norm_sq - 1.0) > 2.0e-3:
+            return None
+    return copied
+
+
 class MmdRuntimeModel:
     """
     mmd-anim のランタイムモデル (PMX 由来) を表すクラス。
@@ -75,6 +102,7 @@ class MmdRuntimeModel:
     def __init__(self, lib: CDLL, handle: c_void_p):
         self._lib = lib
         self._handle = handle
+        self._call_lock = threading.RLock()
 
     @classmethod
     def from_pmx_bytes(cls, pmx_bytes: bytes) -> Optional["MmdRuntimeModel"]:
@@ -209,6 +237,7 @@ class MmdRuntimePhysicsWorld:
     def __init__(self, lib: CDLL, handle: c_void_p):
         self._lib = lib
         self._handle = handle
+        self._call_lock = threading.RLock()
 
     @classmethod
     def from_descriptors(
@@ -546,16 +575,183 @@ class MmdRuntimePhysicsWorld:
             logger.error("MmdRuntimePhysicsWorld.rigidbody_count failed: %s", exc, exc_info=True)
             return None
 
+    def get_gravity(self) -> Optional[Tuple[float, float, float]]:
+        """Return finite world gravity, failing closed for missing/malformed runtimes."""
+        if not self._handle or self._lib is None or not self._physics_features_enabled():
+            return None
+        func = getattr(self._lib, "mmd_runtime_physics_world_get_gravity", None)
+        if func is None:
+            return None
+        gravity = (c_float * 3)()
+        with self._call_lock:
+            try:
+                if int(func(self._handle, gravity)) != MMD_RUNTIME_STATUS_OK:
+                    return None
+            except Exception as exc:
+                logger.error("get_gravity failed: %s", exc, exc_info=True)
+                return None
+        result = tuple(float(value) for value in gravity)
+        return result if all(math.isfinite(value) for value in result) else None
+
+    def set_gravity(self, gravity_xyz: Sequence[float]) -> bool:
+        """Set finite XYZ gravity; invalid input never reaches the native ABI."""
+        if not self._handle or self._lib is None or not self._physics_features_enabled():
+            return False
+        values = _finite_floats(gravity_xyz, 3)
+        func = getattr(self._lib, "mmd_runtime_physics_world_set_gravity", None)
+        if values is None or func is None:
+            return False
+        buffer = (c_float * 3)(*values)
+        with self._call_lock:
+            try:
+                return int(func(self._handle, buffer)) == MMD_RUNTIME_STATUS_OK
+            except Exception as exc:
+                logger.error("set_gravity failed: %s", exc, exc_info=True)
+                return False
+
+    def copy_rigidbody_bindings(self) -> Optional[List[Tuple[int, int]]]:
+        """Copy all bindings and verify that the native count is self-consistent."""
+        count = self.rigidbody_count()
+        if count is None or not self._handle or self._lib is None:
+            return None
+        func = getattr(self._lib, "mmd_runtime_physics_world_copy_rigidbody_bindings", None)
+        if func is None:
+            return None
+        buffer = (MmdRuntimeFfiPhysicsRigidbodyBinding * count)()
+        out_count = c_size_t(0)
+        with self._call_lock:
+            try:
+                status = int(func(self._handle, buffer, c_size_t(count), ctypes.byref(out_count)))
+            except Exception as exc:
+                logger.error("copy_rigidbody_bindings failed: %s", exc, exc_info=True)
+                return None
+        if status != MMD_RUNTIME_STATUS_OK or int(out_count.value) != count:
+            return None
+        result = [(int(binding.bone_index), int(binding.mode)) for binding in buffer]
+        if any(bone_index < -1 for bone_index, _mode in result):
+            return None
+        return result
+
+    def physics_driven_bone_mask(self, bone_count: int) -> Optional[List[int]]:
+        """Return an exact-size driven-bone mask; short buffers fail closed natively."""
+        count = _as_positive_integral_count(bone_count)
+        if count is None or not self._handle or self._lib is None:
+            return None
+        func = getattr(self._lib, "mmd_runtime_physics_world_physics_driven_bone_mask", None)
+        if func is None or not self._physics_features_enabled():
+            return None
+        buffer = (c_uint8 * count)()
+        with self._call_lock:
+            try:
+                status = int(func(self._handle, buffer, c_size_t(count)))
+            except Exception as exc:
+                logger.error("physics_driven_bone_mask failed: %s", exc, exc_info=True)
+                return None
+        if status != MMD_RUNTIME_STATUS_OK or any(value not in (0, 1) for value in buffer):
+            return None
+        return [int(value) for value in buffer]
+
+    def evaluate_host_frame(
+        self,
+        instance: "MmdRuntimeInstance",
+        *,
+        local_position_offsets_xyz: Sequence[float],
+        local_rotation_xyzw: Sequence[float],
+        local_scales_xyz: Sequence[float],
+        morph_weights: Sequence[float],
+        ik_enabled: Sequence[int],
+        action: int,
+        dt_seconds: float = 0.0,
+        ik_tolerance: float = 1.0e-2,
+        ik_max_iterations_cap: int = 0,
+    ) -> Optional[MmdRuntimeFfiPhysicsWorldStepReport]:
+        """Atomically apply a validated host pose and SEED or STEP one frame.
+
+        The caller-owned buffers remain alive for the whole call. Exact counts,
+        finite values, normalized quaternions, advertised features, handle
+        ownership, and action/dt are checked before crossing the ABI boundary.
+        Per-handle locks reflect the upstream non-concurrent handle contract.
+        """
+        if not instance or instance._lib is not self._lib:
+            return None
+        func = getattr(self._lib, "mmd_runtime_evaluate_host_frame", None)
+        if func is None or action not in (MMD_RUNTIME_PHYSICS_FRAME_ACTION_SEED, MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP):
+            return None
+        dt = _as_finite_float(dt_seconds)
+        tolerance = _as_finite_float(ik_tolerance)
+        if dt is None or tolerance is None or tolerance < 0.0 or (action == MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP and dt < 0.0):
+            return None
+        with instance._call_lock, self._call_lock:
+            if (
+                not self._handle
+                or self._lib is None
+                or not instance.handle
+                or not self._physics_features_enabled()
+            ):
+                return None
+            counts = instance._host_pose_counts()
+            if counts is None:
+                return None
+            bone_count, morph_count, ik_count = counts
+            positions = _finite_floats(local_position_offsets_xyz, bone_count * 3)
+            rotations = _normalized_quaternions(local_rotation_xyzw, bone_count)
+            scales = _finite_floats(local_scales_xyz, bone_count * 3)
+            morphs = _finite_floats(morph_weights, morph_count)
+            try:
+                raw_ik_values = list(ik_enabled)
+                ik_values = [int(value) for value in raw_ik_values]
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if (
+                positions is None
+                or rotations is None
+                or scales is None
+                or morphs is None
+                or len(ik_values) != ik_count
+                or any(value not in (0, 1) for value in ik_values)
+                or any(raw != converted for raw, converted in zip(raw_ik_values, ik_values))
+            ):
+                return None
+            pos_buf = (c_float * len(positions))(*positions)
+            rot_buf = (c_float * len(rotations))(*rotations)
+            scale_buf = (c_float * len(scales))(*scales)
+            morph_buf = (c_float * len(morphs))(*morphs)
+            ik_buf = (c_uint8 * len(ik_values))(*ik_values)
+            view = MmdRuntimeFfiHostPoseView(
+                pos_buf, rot_buf, scale_buf, c_size_t(bone_count),
+                morph_buf, c_size_t(morph_count), ik_buf, c_size_t(ik_count),
+            )
+            report = MmdRuntimeFfiPhysicsWorldStepReport()
+            try:
+                status = int(func(
+                    instance.handle,
+                    self._handle,
+                    ctypes.byref(view),
+                    c_uint32(action),
+                    c_float(dt),
+                    c_float(tolerance),
+                    c_uint32(max(0, int(ik_max_iterations_cap))),
+                    ctypes.byref(report),
+                ))
+            except (TypeError, ValueError, OverflowError) as exc:
+                logger.error("evaluate_host_frame failed: %s", exc, exc_info=True)
+                return None
+        return report if status == MMD_RUNTIME_STATUS_OK else None
+
     def free(self) -> None:
         """Free the native physics world handle."""
-        if self._handle and self._lib:
-            try:
-                free_func = getattr(self._lib, "mmd_runtime_physics_world_free", None)
-                if free_func is not None:
-                    free_func(self._handle)
-            except Exception as exc:
-                logger.debug("mmd_runtime_physics_world_free failed: %s", exc)
-            self._handle = None
+        lock = getattr(self, "_call_lock", None)
+        if lock is None:
+            lock = self._call_lock = threading.RLock()
+        with lock:
+            if self._handle and self._lib:
+                try:
+                    free_func = getattr(self._lib, "mmd_runtime_physics_world_free", None)
+                    if free_func is not None:
+                        free_func(self._handle)
+                except Exception as exc:
+                    logger.debug("mmd_runtime_physics_world_free failed: %s", exc)
+                self._handle = None
 
     def __del__(self):
         self.free()
@@ -576,6 +772,22 @@ class MmdRuntimeInstance:
     def __init__(self, lib: CDLL, handle: c_void_p):
         self._lib = lib
         self._handle = handle
+        self._call_lock = threading.RLock()
+
+    def _host_pose_counts(self) -> Optional[Tuple[int, int, int]]:
+        """Return exact host-pose buffer counts from the live instance."""
+        if not self._handle or self._lib is None:
+            return None
+        try:
+            world_len = int(self._lib.mmd_runtime_instance_world_matrix_f32_len(self._handle))
+            morph_count = int(self._lib.mmd_runtime_instance_morph_weight_len(self._handle))
+            ik_count = int(self._lib.mmd_runtime_instance_ik_enabled_len(self._handle))
+        except Exception as exc:
+            logger.error("host pose count query failed: %s", exc, exc_info=True)
+            return None
+        if world_len < 0 or world_len % 16 != 0 or morph_count < 0 or ik_count < 0:
+            return None
+        return world_len // 16, morph_count, ik_count
 
     @classmethod
     def for_model(cls, model: MmdRuntimeModel) -> Optional["MmdRuntimeInstance"]:
@@ -1007,12 +1219,16 @@ class MmdRuntimeInstance:
             return None
 
     def free(self) -> None:
-        if self._handle and self._lib:
-            try:
-                self._lib.mmd_runtime_instance_free(self._handle)
-            except Exception as exc:
-                logger.debug("mmd_runtime_instance_free failed: %s", exc)
-            self._handle = None
+        lock = getattr(self, "_call_lock", None)
+        if lock is None:
+            lock = self._call_lock = threading.RLock()
+        with lock:
+            if self._handle and self._lib:
+                try:
+                    self._lib.mmd_runtime_instance_free(self._handle)
+                except Exception as exc:
+                    logger.debug("mmd_runtime_instance_free failed: %s", exc)
+                self._handle = None
 
     def __del__(self):
         self.free()

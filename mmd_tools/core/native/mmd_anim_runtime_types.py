@@ -29,6 +29,9 @@ MMD_RUNTIME_PHYSICS_MODE_OFF = 0
 MMD_RUNTIME_PHYSICS_MODE_TRACE = 1
 MMD_RUNTIME_PHYSICS_MODE_LIVE = 2
 
+MMD_RUNTIME_PHYSICS_FRAME_ACTION_SEED = 0
+MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP = 1
+
 
 class MmdRuntimeFfiByteBuffer(Structure):
     """
@@ -81,6 +84,30 @@ class MmdRuntimeFfiPhysicsWorldStepReport(Structure):
         ("tick", MmdRuntimeFfiPhysicsStepStats),
         ("kinematic_rigidbodies_fed", c_size_t),
         ("bones_written_back", c_size_t),
+    ]
+
+
+class MmdRuntimeFfiPhysicsRigidbodyBinding(Structure):
+    """Rigid body to bone binding returned by the host physics ABI."""
+
+    _fields_ = [
+        ("bone_index", c_int32),
+        ("mode", c_uint32),
+    ]
+
+
+class MmdRuntimeFfiHostPoseView(Structure):
+    """Borrowed caller-owned host pose buffers for one atomic evaluation."""
+
+    _fields_ = [
+        ("local_position_offsets_xyz", POINTER(c_float)),
+        ("local_rotation_xyzw", POINTER(c_float)),
+        ("local_scales_xyz", POINTER(c_float)),
+        ("bone_count", c_size_t),
+        ("morph_weights", POINTER(c_float)),
+        ("morph_count", c_size_t),
+        ("ik_enabled", POINTER(c_uint8)),
+        ("ik_count", c_size_t),
     ]
 
 

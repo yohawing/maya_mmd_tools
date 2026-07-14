@@ -1295,16 +1295,15 @@ class TestGetRuntimeLibraryCache(unittest.TestCase):
 
         runtime_loader._runtime_lib = None
         runtime_loader._runtime_lib_path = None
-        with mock.patch.dict("os.environ", {runtime_loader._ALLOW_ABI_MISMATCH_ENV: ""}, clear=False):
-            with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
-                runtime_loader.ctypes, "CDLL", return_value=FakeLib()
-            ), mock.patch.object(runtime_loader, "setup_function_signatures"):
-                self.assertIsNone(rt.get_mmd_runtime_library())
+        with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
+            runtime_loader.ctypes, "CDLL", return_value=FakeLib()
+        ), mock.patch.object(runtime_loader, "setup_function_signatures"):
+            self.assertIsNone(rt.get_mmd_runtime_library())
 
         self.assertIs(runtime_loader._runtime_lib, False)
         self.assertIsNone(runtime_loader._runtime_lib_path)
 
-    def test_accepts_mismatched_runtime_library_only_with_escape_hatch(self):
+    def test_distribution_abi_escape_hatch_is_disabled(self):
         from pathlib import Path
 
         path = Path("F:/runtime/mmd_runtime_ffi.dll")
@@ -1314,17 +1313,16 @@ class TestGetRuntimeLibraryCache(unittest.TestCase):
             def mmd_runtime_abi_version():
                 return runtime_loader.MMD_RUNTIME_ABI_VERSION + 1
 
-        fake = FakeLib()
         runtime_loader._runtime_lib = None
         runtime_loader._runtime_lib_path = None
-        with mock.patch.dict("os.environ", {runtime_loader._ALLOW_ABI_MISMATCH_ENV: "1"}, clear=False):
+        with mock.patch.dict("os.environ", {"MMD_ANIM_FFI_ALLOW_ABI_MISMATCH": "1"}, clear=False):
             with mock.patch.object(runtime_loader, "find_library", return_value=path), mock.patch.object(
-                runtime_loader.ctypes, "CDLL", return_value=fake
+                runtime_loader.ctypes, "CDLL", return_value=FakeLib()
             ), mock.patch.object(runtime_loader, "setup_function_signatures"):
-                self.assertIs(rt.get_mmd_runtime_library(), fake)
+                self.assertIsNone(rt.get_mmd_runtime_library())
 
-        self.assertIs(runtime_loader._runtime_lib, fake)
-        self.assertEqual(runtime_loader._runtime_lib_path, path)
+        self.assertIs(runtime_loader._runtime_lib, False)
+        self.assertIsNone(runtime_loader._runtime_lib_path)
 
     def test_logs_loaded_runtime_library_path_at_info_level(self):
         from pathlib import Path

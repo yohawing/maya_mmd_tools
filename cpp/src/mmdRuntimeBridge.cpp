@@ -7,13 +7,14 @@
 
 #include "mmdRuntimeBridge.h"
 
-#include <cstdlib>
-#include <cstring>
+#include <cmath>
 #include <iostream>
 #include <string>
 
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <dlfcn.h>
 #endif
 
 namespace mmd {
@@ -29,15 +30,41 @@ namespace {
     std::string g_ffiPath;
 #endif
 
-    bool isTruthyEnvValue(const char* value) {
-        if (!value) return false;
-        return std::strcmp(value, "1") == 0 ||
-               std::strcmp(value, "true") == 0 ||
-               std::strcmp(value, "TRUE") == 0 ||
-               std::strcmp(value, "yes") == 0 ||
-               std::strcmp(value, "YES") == 0 ||
-               std::strcmp(value, "on") == 0 ||
-               std::strcmp(value, "ON") == 0;
+    using EvaluateHostFrameFn = mmd_runtime_status_t (*)(
+        mmd_runtime_instance_t*, mmd_runtime_physics_world_t*,
+        const mmd_runtime_ffi_host_pose_view_t*, mmd_runtime_physics_frame_action_t,
+        float, float, uint32_t, mmd_runtime_ffi_physics_world_step_report_t*);
+    using GetGravityFn = mmd_runtime_status_t (*)(const mmd_runtime_physics_world_t*, float*);
+    using SetGravityFn = mmd_runtime_status_t (*)(mmd_runtime_physics_world_t*, const float*);
+    using CopyBindingsFn = mmd_runtime_status_t (*)(
+        const mmd_runtime_physics_world_t*, mmd_runtime_ffi_physics_rigidbody_binding_t*,
+        size_t, size_t*);
+    using DrivenBoneMaskFn = mmd_runtime_status_t (*)(
+        const mmd_runtime_physics_world_t*, uint8_t*, size_t);
+
+    EvaluateHostFrameFn g_evaluateHostFrame = nullptr;
+    GetGravityFn g_getGravity = nullptr;
+    SetGravityFn g_setGravity = nullptr;
+    CopyBindingsFn g_copyBindings = nullptr;
+    DrivenBoneMaskFn g_drivenBoneMask = nullptr;
+
+    template <typename Function>
+    Function resolveOptionalSymbol(const char* name) {
+#ifdef _WIN32
+        return g_ffiModule
+            ? reinterpret_cast<Function>(GetProcAddress(g_ffiModule, name))
+            : nullptr;
+#else
+        return reinterpret_cast<Function>(dlsym(RTLD_DEFAULT, name));
+#endif
+    }
+
+    void resolveHostPhysicsSymbols() {
+        g_evaluateHostFrame = resolveOptionalSymbol<EvaluateHostFrameFn>("mmd_runtime_evaluate_host_frame");
+        g_getGravity = resolveOptionalSymbol<GetGravityFn>("mmd_runtime_physics_world_get_gravity");
+        g_setGravity = resolveOptionalSymbol<SetGravityFn>("mmd_runtime_physics_world_set_gravity");
+        g_copyBindings = resolveOptionalSymbol<CopyBindingsFn>("mmd_runtime_physics_world_copy_rigidbody_bindings");
+        g_drivenBoneMask = resolveOptionalSymbol<DrivenBoneMaskFn>("mmd_runtime_physics_world_physics_driven_bone_mask");
     }
 
 #ifdef _WIN32
@@ -92,25 +119,20 @@ bool RuntimeBridge::loadFfiIfNeeded() {
 
     const uint32_t abi = runtimeAbiVersion();
     if (abi != MMD_RUNTIME_ABI_VERSION) {
-        if (!allowRuntimeAbiMismatch()) {
-            std::cerr << "[mmd] Rejected mmd-anim runtime ABI mismatch: got="
-                      << abi << ", expected=" << MMD_RUNTIME_ABI_VERSION;
+        std::cerr << "[mmd] Rejected mmd-anim runtime ABI mismatch: got="
+                  << abi << ", expected=" << MMD_RUNTIME_ABI_VERSION;
 #ifdef _WIN32
-            if (!g_ffiPath.empty()) {
-                std::cerr << ", path=" << g_ffiPath;
-            }
-#endif
-            std::cerr << "\n";
-#ifdef _WIN32
-            FreeLibrary(g_ffiModule);
-            g_ffiModule = nullptr;
-            g_ffiPath.clear();
-#endif
-            return false;
+        if (!g_ffiPath.empty()) {
+            std::cerr << ", path=" << g_ffiPath;
         }
-        std::cerr << "[mmd] Using mmd-anim runtime despite ABI mismatch because "
-                  << kAllowAbiMismatchEnv << " is set: got=" << abi
-                  << ", expected=" << MMD_RUNTIME_ABI_VERSION << "\n";
+#endif
+        std::cerr << "\n";
+#ifdef _WIN32
+        FreeLibrary(g_ffiModule);
+        g_ffiModule = nullptr;
+        g_ffiPath.clear();
+#endif
+        return false;
     } else {
         std::cerr << "[mmd] Loaded mmd-anim runtime ABI " << abi;
 #ifdef _WIN32
@@ -121,6 +143,7 @@ bool RuntimeBridge::loadFfiIfNeeded() {
         std::cerr << "\n";
     }
 
+    resolveHostPhysicsSymbols();
     g_ffiLoaded = true;
     return true;
 }
@@ -279,7 +302,7 @@ size_t RuntimeBridge::morphCount() const {
 
 bool RuntimeBridge::createPhysicsWorldFromPmx(const uint8_t* data, size_t len) {
     freePhysicsWorld();
-    if (!data || len == 0 || !loadFfiIfNeeded()) return false;
+    if (!data || len == 0 || !loadFfiIfNeeded() || !supportsHostPhysics()) return false;
 
     mmd_runtime_status_t st = mmd_runtime_physics_world_create_from_pmx_bytes(
         data, len, &physicsWorld_);
@@ -338,6 +361,92 @@ std::vector<float> RuntimeBridge::copyRigidbodyStates() const {
     return st == 0 ? out : std::vector<float>{};
 }
 
+bool RuntimeBridge::getPhysicsGravity(float outGravity[3]) const {
+    if (!physicsWorld_ || !outGravity || !supportsHostPhysics()) return false;
+    const auto status = g_getGravity(physicsWorld_, outGravity);
+    return status == MMD_RUNTIME_STATUS_OK && std::isfinite(outGravity[0]) &&
+           std::isfinite(outGravity[1]) && std::isfinite(outGravity[2]);
+}
+
+bool RuntimeBridge::setPhysicsGravity(const float gravity[3]) {
+    if (!physicsWorld_ || !gravity || !supportsHostPhysics() ||
+        !std::isfinite(gravity[0]) || !std::isfinite(gravity[1]) || !std::isfinite(gravity[2])) {
+        return false;
+    }
+    return g_setGravity(physicsWorld_, gravity) == MMD_RUNTIME_STATUS_OK;
+}
+
+std::vector<mmd_runtime_ffi_physics_rigidbody_binding_t> RuntimeBridge::copyRigidbodyBindings() const {
+    const size_t count = physicsWorldRigidbodyCount();
+    if (!physicsWorld_ || !supportsHostPhysics() || count == 0) return {};
+    std::vector<mmd_runtime_ffi_physics_rigidbody_binding_t> bindings(count);
+    size_t written = 0;
+    const auto status = g_copyBindings(
+        physicsWorld_, bindings.data(), bindings.size(), &written);
+    if (status != MMD_RUNTIME_STATUS_OK || written != count) return {};
+    for (const auto& binding : bindings) {
+        if (binding.bone_index < -1) return {};
+    }
+    return bindings;
+}
+
+std::vector<uint8_t> RuntimeBridge::physicsDrivenBoneMask(size_t boneCount) const {
+    if (!physicsWorld_ || !supportsHostPhysics() || boneCount == 0) return {};
+    std::vector<uint8_t> mask(boneCount, 0);
+    const auto status = g_drivenBoneMask(
+        physicsWorld_, mask.data(), mask.size());
+    if (status != MMD_RUNTIME_STATUS_OK) return {};
+    for (const auto value : mask) {
+        if (value > 1) return {};
+    }
+    return mask;
+}
+
+bool RuntimeBridge::evaluateHostFrame(
+    const mmd_runtime_ffi_host_pose_view_t& pose,
+    mmd_runtime_physics_frame_action_t action,
+    float dtSeconds,
+    float ikTolerance,
+    uint32_t maxIters,
+    mmd_runtime_ffi_physics_world_step_report_t* outReport)
+{
+    if (!instance_ || !physicsWorld_ || !supportsHostPhysics() ||
+        (action != MMD_RUNTIME_PHYSICS_FRAME_ACTION_SEED &&
+         action != MMD_RUNTIME_PHYSICS_FRAME_ACTION_STEP) ||
+        !std::isfinite(dtSeconds) || !std::isfinite(ikTolerance) || ikTolerance < 0.0f) {
+        return false;
+    }
+    if (pose.bone_count != boneCount() || pose.morph_count != morphCount() ||
+        pose.ik_count != mmd_runtime_instance_ik_enabled_len(instance_)) return false;
+    if (pose.bone_count > 0 && (!pose.local_position_offsets_xyz ||
+        !pose.local_rotation_xyzw || !pose.local_scales_xyz)) return false;
+    if (pose.morph_count > 0 && !pose.morph_weights) return false;
+    if (pose.ik_count > 0 && !pose.ik_enabled) return false;
+    for (size_t i = 0; i < pose.bone_count * 3; ++i) {
+        if (!std::isfinite(pose.local_position_offsets_xyz[i]) ||
+            !std::isfinite(pose.local_scales_xyz[i])) return false;
+    }
+    for (size_t bone = 0; bone < pose.bone_count; ++bone) {
+        float normSq = 0.0f;
+        for (size_t component = 0; component < 4; ++component) {
+            const float value = pose.local_rotation_xyzw[bone * 4 + component];
+            if (!std::isfinite(value)) return false;
+            normSq += value * value;
+        }
+        if (std::fabs(normSq - 1.0f) > 2.0e-3f) return false;
+    }
+    for (size_t i = 0; i < pose.morph_count; ++i) {
+        if (!std::isfinite(pose.morph_weights[i])) return false;
+    }
+    for (size_t i = 0; i < pose.ik_count; ++i) {
+        if (pose.ik_enabled[i] > 1) return false;
+    }
+    mmd_runtime_ffi_physics_world_step_report_t localReport{};
+    return g_evaluateHostFrame(
+        instance_, physicsWorld_, &pose, action, dtSeconds, ikTolerance, maxIters,
+        outReport ? outReport : &localReport) == MMD_RUNTIME_STATUS_OK;
+}
+
 bool RuntimeBridge::setPhysicsMode(mmd_runtime_physics_mode_t mode) {
     if (!instance_) return false;
     return mmd_runtime_instance_set_physics_mode(instance_, mode) == 0;
@@ -373,12 +482,24 @@ uint32_t RuntimeBridge::runtimeAbiVersion() {
     return mmd_runtime_abi_version();
 }
 
+uint32_t RuntimeBridge::runtimeFeatureFlags() {
+    return mmd_runtime_feature_flags();
+}
+
+bool RuntimeBridge::supportsHostPhysics() {
+    constexpr uint32_t required = MMD_RUNTIME_FEATURE_SPLIT_PHYSICS_EVALUATION |
+                                  MMD_RUNTIME_FEATURE_PHYSICS_BULLET_NATIVE;
+    return isRuntimeAbiCompatible() && (runtimeFeatureFlags() & required) == required &&
+           g_evaluateHostFrame && g_getGravity && g_setGravity && g_copyBindings &&
+           g_drivenBoneMask;
+}
+
 bool RuntimeBridge::isRuntimeAbiCompatible() {
-    return runtimeAbiVersion() == MMD_RUNTIME_ABI_VERSION || allowRuntimeAbiMismatch();
+    return runtimeAbiVersion() == MMD_RUNTIME_ABI_VERSION;
 }
 
 bool RuntimeBridge::allowRuntimeAbiMismatch() {
-    return isTruthyEnvValue(std::getenv(kAllowAbiMismatchEnv));
+    return false;
 }
 
 const char* RuntimeBridge::runtimeAbiMismatchEnvName() {
