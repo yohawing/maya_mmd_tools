@@ -473,6 +473,8 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._initialized = False
         self._bone_joints = []
         self._kinematic_corrections = {}
+        for path in self._rb_shape_paths.values():
+            _SIMULATED_RB_CACHE.pop(path, None)
         self._rb_shape_paths = {}
         self._rb_shape_mobjects = {}
         self._last_time = None

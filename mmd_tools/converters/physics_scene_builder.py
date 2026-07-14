@@ -694,6 +694,13 @@ def _reroute_anim_to_pre_physics(
         driver_attr = attr_map.get(joint_channel)
         if not driver_attr:
             continue
+        anim_node = anim_plug.split(".")[0]
+        if not cmds.objExists(anim_node):
+            log.debug(
+                "event=pre_physics_reroute_skipped driver=%s reason=animCurve_deleted node=%s",
+                driver, anim_node,
+            )
+            continue
         dst_plug = f"{driver}.{driver_attr}"
         try:
             cmds.connectAttr(anim_plug, dst_plug, force=True)
