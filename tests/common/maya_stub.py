@@ -45,6 +45,7 @@ _STUBBED_MODULE_NAMES = (
 )
 
 _CMDS_PROFILE_METHODS = (
+    "loadPlugin",
     "namespace",
     "namespaceInfo",
     "ls",
@@ -425,3 +426,284 @@ def install_om_double_array_stub() -> None:
         bound_om = getattr(vmd_mod, "om", None)
         if bound_om is not None and bound_om is not om:
             bound_om.MDoubleArray = _MDoubleArray
+
+
+class _MTime:
+    """Minimal scalar stand-in for ``om.MTime`` in pure-Python tests."""
+
+    def __init__(self, value=0.0, _unit=None):
+        self._value = float(value)
+
+    @classmethod
+    def uiUnit(cls):
+        return 0
+
+    def value(self):
+        return self._value
+
+    def __float__(self):
+        return self._value
+
+    def __repr__(self):
+        return f"_MTime({self._value!r})"
+
+
+class _MTimeArray:
+    """List-backed ``om.MTimeArray`` replacement for collection tests."""
+
+    def __init__(self, values=None):
+        self._data = list(values or [])
+
+    def append(self, value):
+        self._data.append(value)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __getitem__(self, index):
+        return self._data[index]
+
+    def __repr__(self):
+        return f"_MTimeArray({self._data!r})"
+
+
+def _install_openmaya_attrs(**attrs) -> None:
+    """Install pure-Python OpenMaya attributes on the shared stub object."""
+    if _is_real_maya_present():
+        return
+
+    om = sys.modules.get("maya.api.OpenMaya")
+    if om is not None:
+        for name, value in attrs.items():
+            setattr(om, name, value)
+
+    for module_name in (
+        "mmd_tools.converters.vmd_camera_animation",
+        "mmd_tools.converters.vmd_converter",
+        "mmd_tools.converters.vmd_runtime_cache_collect",
+        "mmd_tools.converters.vmd_runtime_scene_apply",
+    ):
+        module = sys.modules.get(module_name)
+        bound_om = getattr(module, "om", None) if module is not None else None
+        if bound_om is not None and bound_om is not om:
+            for name, value in attrs.items():
+                setattr(bound_om, name, value)
+
+
+def install_om_mtime_array_stub() -> None:
+    """Install list-backed ``MTime`` / ``MTimeArray`` test doubles."""
+    _install_openmaya_attrs(MTime=_MTime, MTimeArray=_MTimeArray)
+
+
+def _matrix3_multiply(left, right):
+    return [
+        [sum(left[row][k] * right[k][column] for k in range(3)) for column in range(3)]
+        for row in range(3)
+    ]
+
+
+def _matrix3_to_matrix4(matrix):
+    return [
+        matrix[0] + [0.0],
+        matrix[1] + [0.0],
+        matrix[2] + [0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def _rotation_x(angle):
+    import math
+
+    cosine, sine = math.cos(angle), math.sin(angle)
+    return [[1.0, 0.0, 0.0], [0.0, cosine, sine], [0.0, -sine, cosine]]
+
+
+def _rotation_y(angle):
+    import math
+
+    cosine, sine = math.cos(angle), math.sin(angle)
+    return [[cosine, 0.0, sine], [0.0, 1.0, 0.0], [-sine, 0.0, cosine]]
+
+
+def _rotation_z(angle):
+    import math
+
+    cosine, sine = math.cos(angle), math.sin(angle)
+    return [[cosine, sine, 0.0], [-sine, cosine, 0.0], [0.0, 0.0, 1.0]]
+
+
+class _MMatrix:
+    """Small row-vector 4x4 matrix implementation for camera math tests."""
+
+    def __init__(self, values=None):
+        if values is None:
+            self._rows = _matrix3_to_matrix4(
+                [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+            )
+        elif isinstance(values, _MMatrix):
+            self._rows = [row[:] for row in values._rows]
+        else:
+            flattened = list(values)
+            if flattened and isinstance(flattened[0], (list, tuple)):
+                nested = [list(row) for row in flattened]
+                if len(nested) == 4 and all(len(row) == 4 for row in nested):
+                    self._rows = [[float(value) for value in row] for row in nested]
+                elif len(nested) == 3 and all(len(row) == 3 for row in nested):
+                    self._rows = _matrix3_to_matrix4(
+                        [[float(value) for value in row] for row in nested]
+                    )
+                else:
+                    raise ValueError("MMatrix stub expects a 3x3 or 4x4 sequence")
+            elif len(flattened) == 16:
+                self._rows = [
+                    [float(value) for value in flattened[start : start + 4]]
+                    for start in range(0, 16, 4)
+                ]
+            elif len(flattened) == 9:
+                matrix = [
+                    [float(value) for value in flattened[start : start + 3]]
+                    for start in range(0, 9, 3)
+                ]
+                self._rows = _matrix3_to_matrix4(matrix)
+            else:
+                raise ValueError("MMatrix stub expects 9 or 16 values")
+
+    def __getitem__(self, index):
+        return self._rows[index]
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __mul__(self, other):
+        if not isinstance(other, _MMatrix):
+            return NotImplemented
+        return _MMatrix(
+            [
+                value
+                for row in [
+                    [
+                        sum(self._rows[row][k] * other._rows[k][column] for k in range(4))
+                        for column in range(4)
+                    ]
+                    for row in range(4)
+                ]
+                for value in row
+            ]
+        )
+
+
+class _MVector:
+    """Small vector implementation covering the operations used by camera math."""
+
+    def __init__(self, x=0.0, y=None, z=None):
+        if isinstance(x, _MVector) and y is None and z is None:
+            self.x, self.y, self.z = x.x, x.y, x.z
+        elif y is None and z is None:
+            values = list(x)
+            self.x, self.y, self.z = (float(values[0]), float(values[1]), float(values[2]))
+        else:
+            self.x, self.y, self.z = float(x), float(y), float(z)
+
+    def __add__(self, other):
+        return _MVector(self.x + other.x, self.y + other.y, self.z + other.z)
+
+    def __sub__(self, other):
+        return _MVector(self.x - other.x, self.y - other.y, self.z - other.z)
+
+    def __neg__(self):
+        return _MVector(-self.x, -self.y, -self.z)
+
+    def __mul__(self, other):
+        if isinstance(other, _MMatrix):
+            values = (self.x, self.y, self.z, 1.0)
+            return _MVector(
+                sum(values[row] * other._rows[row][0] for row in range(4)),
+                sum(values[row] * other._rows[row][1] for row in range(4)),
+                sum(values[row] * other._rows[row][2] for row in range(4)),
+            )
+        if isinstance(other, _MVector):
+            return self.x * other.x + self.y * other.y + self.z * other.z
+        return _MVector(self.x * other, self.y * other, self.z * other)
+
+    def __rmul__(self, other):
+        return self * other
+
+    def __truediv__(self, other):
+        return _MVector(self.x / other, self.y / other, self.z / other)
+
+    def __xor__(self, other):
+        return _MVector(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x,
+        )
+
+    def length(self):
+        import math
+
+        return math.sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+
+    def normalize(self):
+        length = self.length()
+        if length > 1e-12:
+            self.x /= length
+            self.y /= length
+            self.z /= length
+        return self
+
+    def __repr__(self):
+        return f"_MVector({self.x!r}, {self.y!r}, {self.z!r})"
+
+
+class _MEulerRotation:
+    """Minimal Euler rotation implementation for VMD camera tests."""
+
+    kXYZ = 0
+    kXZY = 1
+    kYXZ = 2
+    kYZX = 3
+    kZXY = 4
+    kZYX = 5
+
+    def __init__(self, x=0.0, y=0.0, z=0.0, order=kXYZ):
+        self.x, self.y, self.z = float(x), float(y), float(z)
+        self.order = order
+
+    def asMatrix(self):
+        if self.order == self.kZXY:
+            matrix = _matrix3_multiply(_rotation_z(-self.z), _rotation_x(self.x))
+            matrix = _matrix3_multiply(matrix, _rotation_y(-self.y))
+        else:
+            matrix = _matrix3_multiply(_rotation_x(self.x), _rotation_y(-self.y))
+            matrix = _matrix3_multiply(matrix, _rotation_z(self.z))
+        return _MMatrix(_matrix3_to_matrix4(matrix))
+
+    def reorderIt(self, order):
+        self.order = order
+        return self
+
+
+class _MTransformationMatrix:
+    def __init__(self, matrix=None):
+        self._matrix = _MMatrix(matrix)
+
+    def rotation(self):
+        import math
+
+        rows = self._matrix._rows
+        x = math.atan2(-rows[2][1], rows[1][1])
+        y = math.asin(max(-1.0, min(1.0, -rows[0][2])))
+        return _MEulerRotation(x, y, 0.0)
+
+
+def install_om_camera_math_stubs() -> None:
+    """Install the minimal vector/matrix API used by pure camera tests."""
+    _install_openmaya_attrs(
+        MMatrix=_MMatrix,
+        MVector=_MVector,
+        MEulerRotation=_MEulerRotation,
+        MTransformationMatrix=_MTransformationMatrix,
+    )

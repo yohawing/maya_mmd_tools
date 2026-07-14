@@ -13,7 +13,9 @@ from maya.api import OpenMaya as om
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
+from mmd_tools.core.exceptions import MMDImportException
 from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
+from mmd_tools.core.pmx_data.bone import PmxBoneFlag
 from mmd_tools.io import pmx_importer
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
@@ -124,6 +126,58 @@ class TestPmxImporter(MayaTestBase):
                 for msg in info_messages
             )
         )
+
+    def test_local_axis_scale_preserves_real_import_world_positions(self):
+        """Real PMX import keeps LOCAL_AXIS bone positions at each import scale."""
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        bone_index = 1
+        for scale in (0.1, 1.0, 10.0):
+            with self.subTest(scale=scale):
+                cmds.file(new=True, force=True)
+                parser = parse_pmx_file(pmx_file)
+                bone = parser.bones[bone_index]
+                bone.bone_flag |= PmxBoneFlag.LOCAL_AXIS
+                bone.x_axis_direction = (4.0, 0.0, 0.0)
+                bone.z_axis_direction = (0.0, 3.0, 0.0)
+
+                result = import_pmx_file(
+                    parser,
+                    pmx_file,
+                    scale=scale,
+                    options={"setup_rig": False, "import_physics": False},
+                )
+
+                self.assertTrue(result)
+                matches = [
+                    joint
+                    for joint in (cmds.ls(type="joint", long=True) or [])
+                    if cmds.attributeQuery("mmd_bone_index", node=joint, exists=True)
+                    and cmds.getAttr(f"{joint}.mmd_bone_index") == bone_index
+                ]
+                self.assertEqual(len(matches), 1)
+                world_pos = cmds.xform(matches[0], query=True, worldSpace=True, translation=True)
+                expected = (
+                    bone.position[0] * scale,
+                    bone.position[1] * scale,
+                    -bone.position[2] * scale,
+                )
+                for actual, expected_value in zip(world_pos, expected):
+                    self.assertAlmostEqual(actual, expected_value, places=5)
+
+    def test_invalid_local_axis_fails_before_real_import_scene_mutation(self):
+        """Importer rejects degenerate LOCAL_AXIS before root or mesh creation."""
+        pmx_file = self.fixture_provider.get_pmx_file("mmt_test_model")
+        parser = parse_pmx_file(pmx_file)
+        bone = parser.bones[1]
+        bone.bone_flag |= PmxBoneFlag.LOCAL_AXIS
+        bone.x_axis_direction = (0.0, 0.0, 0.0)
+        bone.z_axis_direction = (0.0, 0.0, 1.0)
+        nodes_before = set(cmds.ls(long=True) or [])
+
+        with self.assertRaisesRegex(MMDImportException, "Invalid LOCAL_AXIS"):
+            import_pmx_file(parser, pmx_file, options={"import_physics": False})
+
+        self.assertEqual(set(cmds.ls(long=True) or []), nodes_before)
 
     def test_import_continues_when_bone_morph_runtime_is_unavailable(self):
         """mmdBoneMorphAccum 不可時も PMX import は継続し profile に structured warning を残す。"""

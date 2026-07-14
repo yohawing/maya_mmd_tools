@@ -1,6 +1,6 @@
 """Morph name mapping helpers for VMD animation conversion."""
 
-from typing import List, Tuple
+from typing import List, Optional, Set, Tuple
 
 import maya.cmds as cmds
 
@@ -48,12 +48,74 @@ def register_morph_mapping(converter, morph_name: str, mapping: Tuple[str, str, 
     existing.append(mapping)
 
 
-def build_morph_mappings(converter) -> None:
+def _long_names(nodes) -> Set[str]:
+    """Resolve Maya nodes to stable full DAG paths where possible."""
+    result = set()
+    for node in nodes or []:
+        matches = cmds.ls(node, long=True) or []
+        result.update(matches)
+    return result
+
+
+def _root_owned_dag_nodes(target_model: str) -> Set[str]:
+    root_names = _long_names([target_model])
+    descendants = cmds.listRelatives(target_model, allDescendents=True, fullPath=True) or []
+    return root_names | _long_names(descendants)
+
+
+def _blendshape_is_owned_by_root(blend_shape: str, target_model: str, owned_dag_nodes: Set[str]) -> bool:
+    """Return True only when a blendShape has explicit or DAG-proven root ownership."""
+    if cmds.attributeQuery("mmd_model_root", node=blend_shape, exists=True):
+        connected_roots = cmds.listConnections(f"{blend_shape}.mmd_model_root") or []
+        connected_root_names = _long_names(connected_roots)
+        if connected_root_names and connected_root_names.issubset(_long_names([target_model])):
+            return True
+
+    geometry = cmds.blendShape(blend_shape, query=True, geometry=True) or []
+    geometry_names = _long_names(geometry)
+    # A deformer that resolves to geometry outside the target root has
+    # ambiguous/shared ownership.  Skip it instead of cross-keying a model.
+    return bool(geometry_names) and geometry_names.issubset(owned_dag_nodes)
+
+
+def _network_is_owned_by_root(node: str, target_model: str) -> bool:
+    """Network morph ownership is connection-based and intentionally fail-closed."""
+    if not cmds.attributeQuery("mmd_model_root", node=node, exists=True):
+        return False
+    connected_roots = cmds.listConnections(f"{node}.mmd_model_root") or []
+    connected_root_names = _long_names(connected_roots)
+    return bool(connected_root_names) and connected_root_names.issubset(_long_names([target_model]))
+
+
+def morph_node_is_owned_by_root(node: str, target_model: str) -> bool:
+    """Prove blendShape/network morph ownership for destructive operations."""
+    if not node or not target_model or not cmds.objExists(node) or not cmds.objExists(target_model):
+        return False
+    node_type = cmds.nodeType(node)
+    if node_type == "blendShape":
+        return _blendshape_is_owned_by_root(
+            node,
+            target_model,
+            _root_owned_dag_nodes(target_model),
+        )
+    if node_type == "network":
+        return _network_is_owned_by_root(node, target_model)
+    return False
+
+
+def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
     """Build morph name mappings from scene blendShapes and metadata networks."""
     converter.morph_name_mapping = {}
 
+    owned_dag_nodes = (
+        _root_owned_dag_nodes(target_model)
+        if target_model and cmds.objExists(target_model)
+        else set()
+    )
     blend_shapes = cmds.ls(type="blendShape") or []
     for bs_node in blend_shapes:
+        if target_model and not _blendshape_is_owned_by_root(bs_node, target_model, owned_dag_nodes):
+            continue
         stored_names = read_blendshape_morph_names(bs_node)
         weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
         for i in range(weight_count):
@@ -74,6 +136,8 @@ def build_morph_mappings(converter) -> None:
         required_attrs=("weight",),
     ):
         morph_node = metadata.node
+        if target_model and not _network_is_owned_by_root(morph_node, target_model):
+            continue
         original_name = metadata.name
         if not original_name:
             continue

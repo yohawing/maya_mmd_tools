@@ -52,6 +52,14 @@ jobs:
       - name: Unit gate
         run: uvx nox -s ci_unit
 
+      - name: Upload pure-Python unit log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-ci-unit-log
+          path: build/reports/ci_unit_tests.log
+          if-no-files-found: warn
+
       - name: GoldenOracle numeric gate
         run: uvx nox -s golden_oracle
 

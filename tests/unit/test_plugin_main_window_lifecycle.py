@@ -111,6 +111,19 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
         self.plugin_main.cmds.workspaceControl.return_value = False
         self.plugin_main.om.MFnPlugin = MagicMock(return_value=MagicMock())
 
+    def test_plugin_main_does_not_import_main_window_eagerly(self):
+        self.assertFalse(hasattr(self.plugin_main, "MainWindow"))
+
+    def test_open_main_window_soft_fails_when_qt_is_unavailable(self):
+        self.plugin_main._load_main_window_class = MagicMock(
+            side_effect=ImportError("No module named PySide2")
+        )
+
+        result = self.plugin_main.open_main_window()
+
+        self.assertIsNone(result)
+        self.plugin_main.cmds.window.assert_not_called()
+
     def _inject_module(self, name, module):
         if name not in self._saved_modules:
             self._saved_modules[name] = sys.modules.get(name)

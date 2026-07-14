@@ -1,6 +1,6 @@
 """VMD existing-motion clearing and layer selection tests."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import maya.cmds as cmds
 
@@ -137,6 +137,97 @@ class TestVmdMotionClear(MayaTestBase):
         self.assertEqual(cmds.keyframe(light, attribute="rotateX", query=True, timeChange=True), [2.0])
         self.assertEqual(cmds.keyframe(light_shape, attribute="colorR", query=True, timeChange=True), [2.0])
         self.assertFalse(cmds.objExists(layer))
+
+    def test_clear_existing_motion_scopes_namespace_less_append_and_ik_to_target_root(self):
+        """Replacing model B motion leaves same-kind append/IK keys on model A intact."""
+        root_a = cmds.group(empty=True, name="clear_model_a_root")
+        root_b = cmds.group(empty=True, name="clear_model_b_root")
+        cmds.select(clear=True)
+        joint_a = cmds.joint(name="clear_model_a_joint")
+        cmds.parent(joint_a, root_a)
+        cmds.select(clear=True)
+        joint_b = cmds.joint(name="clear_model_b_joint")
+        cmds.parent(joint_b, root_b)
+
+        append_a = cmds.createNode("transform", name="clear_model_a_append")
+        append_b = cmds.createNode("transform", name="clear_model_b_append")
+        for append_node, joint in ((append_a, joint_a), (append_b, joint_b)):
+            cmds.addAttr(append_node, longName="baseRotateX", attributeType="double", keyable=True)
+            cmds.addAttr(append_node, longName="mmd_owner_joint", attributeType="message")
+            cmds.connectAttr(f"{joint}.message", f"{append_node}.mmd_owner_joint")
+            cmds.setKeyframe(append_node, attribute="baseRotateX", time=4, value=10.0)
+
+        ik_a = cmds.createNode("network", name="clear_model_a_ik")
+        ik_b = cmds.createNode("network", name="clear_model_b_ik")
+        for ik_node, joint in ((ik_a, joint_a), (ik_b, joint_b)):
+            cmds.addAttr(ik_node, longName="enabled", attributeType="bool", keyable=True)
+            cmds.addAttr(ik_node, longName="inputRotate", attributeType="double", keyable=True)
+            cmds.addAttr(ik_node, longName="mmd_owner_joint", attributeType="message")
+            cmds.connectAttr(f"{joint}.message", f"{ik_node}.mmd_owner_joint")
+            cmds.setKeyframe(ik_node, attribute="enabled", time=6, value=1.0)
+
+        context = VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping={},
+            bone_bind_poses=self.converter._bone_bind_poses,
+            morph_name_mapping={},
+            collect_append_info=lambda: {
+                joint_a: {"node": append_a},
+                joint_b: {"node": append_b},
+            },
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+        layer = cmds.animLayer("VMD_Motion_root_scoped_clear", override=False, weight=1.0)
+        foreign_layer_node = cmds.createNode("transform", name="clear_model_a_layer_member")
+        cmds.animLayer(layer, edit=True, attribute=f"{foreign_layer_node}.translateX")
+        self.assertTrue(cmds.objExists(append_a))
+        self.assertTrue(cmds.objExists(append_b))
+
+        with patch(
+            "mmd_tools.converters.vmd_import_state._ls_mmd_ccd_ik_nodes",
+            return_value=[ik_a, ik_b],
+        ):
+            clear_existing_motion(context, layer, target_model=root_b)
+
+        self.assertEqual(cmds.keyframe(f"{append_a}.baseRotateX", query=True, timeChange=True), [4.0])
+        self.assertIsNone(cmds.keyframe(f"{append_b}.baseRotateX", query=True))
+        self.assertEqual(cmds.keyframe(f"{ik_a}.enabled", query=True, timeChange=True), [6.0])
+        self.assertIsNone(cmds.keyframe(f"{ik_b}.enabled", query=True))
+        self.assertTrue(cmds.objExists(layer))
+
+    def test_clear_existing_motion_preserves_append_shared_across_model_roots(self):
+        """A shared append node is fail-closed even when its reported target is model B."""
+        root_a = cmds.group(empty=True, name="shared_append_model_a_root")
+        root_b = cmds.group(empty=True, name="shared_append_model_b_root")
+        cmds.select(clear=True)
+        joint_a = cmds.joint(name="shared_append_model_a_joint")
+        cmds.parent(joint_a, root_a)
+        cmds.select(clear=True)
+        joint_b = cmds.joint(name="shared_append_model_b_joint")
+        cmds.parent(joint_b, root_b)
+        append_node = cmds.createNode("transform", name="shared_append_node")
+        cmds.addAttr(append_node, longName="baseRotateX", attributeType="double", keyable=True)
+        cmds.addAttr(append_node, longName="ownerA", attributeType="message")
+        cmds.addAttr(append_node, longName="ownerB", attributeType="message")
+        cmds.connectAttr(f"{joint_a}.message", f"{append_node}.ownerA")
+        cmds.connectAttr(f"{joint_b}.message", f"{append_node}.ownerB")
+        cmds.setKeyframe(append_node, attribute="baseRotateX", time=5, value=15.0)
+        context = VmdImportStateContext(
+            logger=self.converter.logger,
+            bone_name_mapping={},
+            bone_bind_poses={},
+            morph_name_mapping={},
+            collect_append_info=lambda: {
+                joint_b: {"node": append_node, "source_joint": joint_a}
+            },
+            iter_morph_mappings=self.converter._iter_morph_mappings,
+            set_refresh_suspended=self.converter._set_vmd_import_refresh_suspended,
+        )
+
+        clear_existing_motion(context, "missing_layer", target_model=root_b)
+
+        self.assertEqual(cmds.keyframe(f"{append_node}.baseRotateX", query=True, timeChange=True), [5.0])
 
     def test_convert_clear_existing_motion_replaces_previous_bone_keys(self):
         """clear ON の再 import は古いキーを残さず新しい VMD キーだけにする。"""

@@ -6,6 +6,7 @@ weight 変更がマテリアル外観に反映されることを検証する。
 
 from pathlib import Path
 import json
+import os
 import unittest
 from unittest import mock
 
@@ -32,6 +33,54 @@ from mmd_tools.core.constants import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MMD_SHADER_FX = _REPO_ROOT / "mmd_tools" / "shaders" / "MMDShader.fx"
+_MODULE_PLUGINS_LOADED = []
+_PREVIOUS_SKIP_SHADER_OVERRIDE = None
+
+
+def _restore_skip_shader_override(previous):
+    if previous is None:
+        os.environ.pop("MMD_TOOLS_SKIP_SHADER_OVERRIDE", None)
+    else:
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = previous
+
+
+def _load_repo_plugin_for_tests(owned_plugins):
+    previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+    os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "1"
+    plugin_path = _REPO_ROOT / "mmd_tools" / "plugin_main.py"
+    was_loaded = False
+    try:
+        was_loaded = bool(cmds.pluginInfo(str(plugin_path), query=True, loaded=True))
+        if not was_loaded:
+            owned_plugins.extend(cmds.loadPlugin(str(plugin_path), quiet=True) or [])
+        return previous
+    except Exception:
+        if not was_loaded:
+            try:
+                if cmds.pluginInfo(str(plugin_path), query=True, loaded=True):
+                    cmds.unloadPlugin(str(plugin_path))
+            except Exception:
+                pass
+        _restore_skip_shader_override(previous)
+        raise
+
+
+def setUpModule():
+    global _PREVIOUS_SKIP_SHADER_OVERRIDE
+    _MODULE_PLUGINS_LOADED.clear()
+    _PREVIOUS_SKIP_SHADER_OVERRIDE = _load_repo_plugin_for_tests(_MODULE_PLUGINS_LOADED)
+
+
+def tearDownModule():
+    for plugin in reversed(_MODULE_PLUGINS_LOADED):
+        try:
+            if cmds.pluginInfo(plugin, query=True, loaded=True):
+                cmds.unloadPlugin(plugin)
+        except Exception:
+            pass
+    _restore_skip_shader_override(_PREVIOUS_SKIP_SHADER_OVERRIDE)
+
+
 from mmd_tools.core.pmx_data.morph import PmxMorphType
 from mmd_tools.nodes.mmd_material_morph_eval_node import MmdMaterialMorphEvalNode
 
@@ -49,6 +98,23 @@ class TestMaterialMorphNumericComposition(unittest.TestCase):
             "edgeColor": (0.5, 0.5, 0.5, 0.5),
             "edgeSize": (0.5,),
         }
+
+    def test_plugin_load_failure_restores_environment_and_unloads_partial_load(self):
+        previous = os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE")
+        os.environ["MMD_TOOLS_SKIP_SHADER_OVERRIDE"] = "preserved"
+        owned_plugins = []
+        fake_cmds = mock.Mock()
+        fake_cmds.pluginInfo.side_effect = [False, True]
+        fake_cmds.loadPlugin.side_effect = RuntimeError("simulated plugin load failure")
+        try:
+            with mock.patch.dict(globals(), {"cmds": fake_cmds}):
+                with self.assertRaisesRegex(RuntimeError, "simulated plugin load failure"):
+                    _load_repo_plugin_for_tests(owned_plugins)
+            self.assertEqual(os.environ.get("MMD_TOOLS_SKIP_SHADER_OVERRIDE"), "preserved")
+            self.assertEqual(owned_plugins, [])
+            fake_cmds.unloadPlugin.assert_called_once()
+        finally:
+            _restore_skip_shader_override(previous)
 
     @staticmethod
     def _contribution(op, value, order=0, slot=0):

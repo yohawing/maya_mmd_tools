@@ -8,6 +8,10 @@ integration-style test class.
 import math
 import unittest
 
+from tests.common.maya_stub import install_om_camera_math_stubs
+
+install_om_camera_math_stubs()
+
 import maya.api.OpenMaya as om
 
 from mmd_tools.converters.vmd_camera_animation import (

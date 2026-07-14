@@ -8,6 +8,7 @@ from pathlib import Path
 from maya import cmds
 
 from mmd_tools.core.exceptions import MMDImportException
+from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME, SCENE_ROOT_SUFFIX
 from mmd_tools.io.vmd_importer import import_vmd_file
 from tests.common.maya_test_base import MayaTestBase
 
@@ -52,6 +53,7 @@ class TestVmdImporter(MayaTestBase):
         self.assertEqual(kwargs["pmx_path"], pmx_path)
         self.assertEqual(kwargs["vmd_bytes"], b"Vocaloid Motion Data 0002\x00")
         self.assertTrue(kwargs["clear_existing_motion"])
+        self.assertEqual(kwargs["target_model"], target_model)
 
     def test_route_detail_logs_are_debug_while_start_completion_remain_info(self):
         """Internal route/detail messages are DEBUG; start/completion stay INFO.
@@ -177,8 +179,8 @@ class TestVmdImporter(MayaTestBase):
         )
         self.assertIn("VMD file import completed", info_msgs)
 
-    def test_target_model_without_namespace_route_detail_is_debug_not_info(self):
-        """Selection fallback 'Target model without namespace' is DEBUG only."""
+    def test_unowned_selection_uses_legacy_fallback_without_treating_leaf_as_root(self):
+        """An unmarked selected leaf is never promoted to authoritative target_model."""
         target_model = cmds.group(empty=True, name="mmd_selection_root")
         cmds.select(target_model, replace=True)
 
@@ -202,21 +204,35 @@ class TestVmdImporter(MayaTestBase):
         self.assertTrue(result)
         info_msgs = _logger_message_args(mock_logger.info)
         debug_msgs = _logger_message_args(mock_logger.debug)
-        # Maya may return short or long name; match by prefix.
-        without_ns = [
-            msg
-            for msg in debug_msgs
-            if isinstance(msg, str) and msg.startswith("Target model without namespace:")
-        ]
-        self.assertTrue(without_ns, "expected DEBUG without-namespace log, got %r" % (debug_msgs,))
+        fallback_message = "Selected node has no provable MMD model root; using legacy namespace fallback"
+        self.assertIn(fallback_message, debug_msgs)
         self.assertFalse(
-            any(
-                isinstance(msg, str) and msg.startswith("Target model without namespace:")
-                for msg in info_msgs
-            ),
-            "without-namespace route must not be INFO",
+            fallback_message in info_msgs,
+            "selection fallback route must not be INFO",
         )
         self.assertIn("VMD file import completed", info_msgs)
+        self.assertIsNone(converter.convert.call_args.kwargs["target_model"])
+
+    def test_descendant_selection_resolves_authoritative_mmd_model_root(self):
+        """Selecting a bone/mesh descendant forwards its marked MMD model root."""
+        root = cmds.group(empty=True, name=f"selection_model{SCENE_ROOT_SUFFIX}")
+        cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME, dataType="string")
+        cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "SelectionModel", type="string")
+        child = cmds.createNode("transform", name="selection_model_child", parent=root)
+        cmds.select(child, replace=True)
+
+        temp_root = Path(tempfile.mkdtemp())
+        vmd_path = str(temp_root / "motion.vmd")
+        Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
+        self.files_created.append(vmd_path)
+
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+            converter = converter_class.return_value
+            converter.convert.return_value = True
+            self.assertTrue(import_vmd_file(object(), vmd_path, {}))
+
+        resolved = converter.convert.call_args.kwargs["target_model"]
+        self.assertEqual(cmds.ls(resolved, long=True), cmds.ls(root, long=True))
 
     def test_motion_scale_option_is_applied_to_converter(self):
         temp_root = Path(tempfile.mkdtemp())

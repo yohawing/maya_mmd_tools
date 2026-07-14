@@ -92,6 +92,12 @@ def import_pmx_file(
 
     model_name = maya_name_utils.sanitize_text(parser.header.get_name())
     namespace = pipeline.resolve_namespace(model_name, custom_namespace=options.get("custom_namespace"))
+    bone_converter = BoneConverter()
+    try:
+        bone_converter.validate_pmx_local_axes(parser.bones)
+    except Exception as e:
+        logger.error("Invalid PMX LOCAL_AXIS data: %s - %s", filepath, str(e))
+        raise MMDImportException(f"Failed to import PMX file {filepath}: {e}") from e
 
     try:
         # namespace context内でモデルを構築
@@ -145,7 +151,6 @@ def import_pmx_file(
 
             # ボーンを変換
             logger.debug("Converting bones...")
-            bone_converter = BoneConverter()
             phase_start = time.perf_counter()
             maya_joints, skin_cluster = bone_converter.convert_pmx_bones(
                 parser,

@@ -489,3 +489,27 @@ class TestVmdRuntimeMatrix(MayaTestBase):
             self.assertAlmostEqual(bind_child_after[i], bind_child_before[i], places=6)
 
         cmds.delete(root)
+
+    def test_bone_hierarchy_map_matches_long_dag_paths_under_duplicate_roots(self):
+        """target-root scoped long paths preserve runtime bake parent indices."""
+        root_a = cmds.group(empty=True, name="runtime_scope_a")
+        root_b = cmds.group(empty=True, name="runtime_scope_b")
+        parent_a = cmds.createNode("joint", name="shared_parent", parent=root_a)
+        child_a = cmds.createNode("joint", name="shared_child", parent=parent_a)
+        parent_b = cmds.createNode("joint", name="shared_parent", parent=root_b)
+        cmds.createNode("joint", name="shared_child", parent=parent_b)
+
+        parent_a_long = cmds.ls(parent_a, long=True)[0]
+        child_a_long = cmds.ls(child_a, long=True)[0]
+        self.converter.bone_index_to_joint = {0: parent_a_long, 1: child_a_long}
+
+        with patch("mmd_tools.converters.vmd_runtime_local_decompose.cmds.ls") as ls_mock, patch(
+            "mmd_tools.converters.vmd_runtime_local_decompose.cmds.listRelatives"
+        ) as relatives_mock:
+            self.converter._build_bone_hierarchy_and_order_maps()
+
+        self.assertEqual(self.converter._bone_parent_map, {0: None, 1: 0})
+        ls_mock.assert_not_called()
+        relatives_mock.assert_not_called()
+
+        cmds.delete(root_a, root_b)

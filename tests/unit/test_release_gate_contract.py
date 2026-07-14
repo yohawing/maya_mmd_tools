@@ -40,6 +40,18 @@ import noxfile
 
 
 class ReleaseGateContractTest(unittest.TestCase):
+    def test_callable_failure_error_is_used_by_aggregate_summary(self):
+        result = {
+            "name": "tier0:version-markers",
+            "status": "fail",
+            "error": "pluginMain.cpp version does not match",
+        }
+
+        self.assertEqual(
+            noxfile._release_gate_failure_label(result),
+            "pluginMain.cpp version does not match",
+        )
+
     def test_version_check_rejects_cpp_plugin_mismatch(self):
         real_read_text = Path.read_text
 
@@ -55,24 +67,56 @@ class ReleaseGateContractTest(unittest.TestCase):
     def test_child_skip_is_not_treated_as_pass(self):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "child.json"
+            log = Path(directory) / "child.log"
+            log.write_text("child output\n", encoding="utf-8")
             report.write_text('{"status":"skip"}', encoding="utf-8")
             results = []
-            with mock.patch("noxfile.subprocess.run", return_value=mock.Mock(returncode=0)):
+            with mock.patch("noxfile._run_logged_subprocess", return_value=(0, log, (0, 0))):
                 with mock.patch.object(Path, "unlink"):
-                    noxfile._run_release_gate_command("local", ["child"], results, result_report=report)
+                    with mock.patch("builtins.print"):
+                        noxfile._run_release_gate_command("local", ["child"], results, result_report=report)
             self.assertEqual(results[0]["status"], "skip")
+
+    def test_command_output_is_logged_and_repeated_warnings_are_summarized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log_path = root / "child.log"
+            log_path.write_text(
+                "Warning: repeated\nWarning: repeated\nUNKNOWN_DIAGNOSTIC payload\n",
+                encoding="utf-8",
+            )
+            results = []
+            with mock.patch.object(noxfile, "ROOT", root):
+                with mock.patch(
+                    "noxfile._run_logged_subprocess",
+                    return_value=(0, log_path, (2, 1)),
+                ):
+                    with mock.patch("builtins.print") as print_mock:
+                        noxfile._run_release_gate_command("tier:test", ["child"], results)
+
+            transcript = log_path.read_text(encoding="utf-8")
+
+        self.assertEqual(results[0]["repeated_warnings_suppressed"], 1)
+        self.assertEqual(transcript.count("Warning: repeated"), 2)
+        self.assertIn("UNKNOWN_DIAGNOSTIC payload", transcript)
+        terminal = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
+        self.assertIn("tests=1 pass=1 skip=0 fail=0", terminal)
+        self.assertIn("repeated warnings suppressed from terminal: 1", terminal)
 
     def test_strict_local_promotes_required_skip(self):
         with tempfile.TemporaryDirectory() as directory:
             report = Path(directory) / "child.json"
+            log = Path(directory) / "child.log"
+            log.write_text("child output\n", encoding="utf-8")
             report.write_text('{"status":"skipped"}', encoding="utf-8")
             results = []
-            with mock.patch("noxfile.subprocess.run", return_value=mock.Mock(returncode=0)):
+            with mock.patch("noxfile._run_logged_subprocess", return_value=(0, log, (0, 0))):
                 with mock.patch.object(Path, "unlink"):
-                    noxfile._run_release_gate_command(
-                        "local", ["child"], results, result_report=report,
-                        required_local=True, strict_local=True,
-                    )
+                    with mock.patch("builtins.print"):
+                        noxfile._run_release_gate_command(
+                            "local", ["child"], results, result_report=report,
+                            required_local=True, strict_local=True,
+                        )
             self.assertEqual(results[0]["status"], "fail")
 
     def test_report_summary_keeps_optional_skip_and_passes_aggregate(self):

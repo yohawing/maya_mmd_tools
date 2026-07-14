@@ -50,6 +50,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
         context = self.converter._import_context(
             vmd_data,
             target_namespace="model_ns",
+            target_model="|model_root",
             layer_name="Layer_A",
             bake_mode=True,
             clear_existing_motion=True,
@@ -63,6 +64,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
         self.assertIsInstance(context, VmdImportContext)
         self.assertIs(context.vmd_data, vmd_data)
         self.assertEqual(context.target_namespace, "model_ns")
+        self.assertEqual(context.target_model, "|model_root")
         self.assertEqual(context.layer_name, "Layer_A")
         self.assertTrue(context.bake_mode)
         self.assertTrue(context.clear_existing_motion)

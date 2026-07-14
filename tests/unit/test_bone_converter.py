@@ -621,6 +621,146 @@ class TestBoneConverterMaya(unittest.TestCase):
         jo_magnitude = sum(v * v for v in joint_orient) ** 0.5
         self.assertAlmostEqual(jo_magnitude, 0.0, places=6)
 
+    def test_local_axis_matrix_normalizes_equivalent_axes(self):
+        """Finite non-unit LOCAL_AXIS vectors produce the same rotation basis."""
+        unit = self._create_mock_pmx_bone(
+            0,
+            "unit_axes",
+            bone_flag=PmxBoneFlag.LOCAL_AXIS,
+        )
+        scaled = self._create_mock_pmx_bone(
+            0,
+            "scaled_axes",
+            bone_flag=PmxBoneFlag.LOCAL_AXIS,
+        )
+        unit.x_axis_direction = (1.0, 0.0, 0.0)
+        unit.z_axis_direction = (0.0, 0.0, 1.0)
+        scaled.x_axis_direction = (7.0, 0.0, 0.0)
+        scaled.z_axis_direction = (0.0, 0.0, 3.0)
+
+        unit_matrix = self.converter._compute_pmx_world_rotation_matrix(unit)
+        scaled_matrix = self.converter._compute_pmx_world_rotation_matrix(scaled)
+
+        for row in range(4):
+            for column in range(4):
+                index = row * 4 + column
+                self.assertAlmostEqual(unit_matrix[index], scaled_matrix[index], places=7)
+
+    def test_local_axis_validation_rejects_degenerate_and_non_finite_axes(self):
+        """Zero, parallel, and non-finite LOCAL_AXIS descriptors fail closed."""
+        invalid_axes = {
+            "zero": ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+            "parallel": ((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            "non_finite": ((float("nan"), 0.0, 0.0), (0.0, 0.0, 1.0)),
+        }
+        for label, (x_axis, z_axis) in invalid_axes.items():
+            with self.subTest(label=label):
+                bone = self._create_mock_pmx_bone(
+                    0,
+                    f"invalid_{label}",
+                    bone_flag=PmxBoneFlag.LOCAL_AXIS,
+                )
+                bone.x_axis_direction = x_axis
+                bone.z_axis_direction = z_axis
+                with self.assertRaisesRegex(ValueError, "Invalid LOCAL_AXIS"):
+                    self.converter.validate_pmx_local_axes([bone])
+
+    def test_local_axis_invalid_input_fails_before_public_scene_mutation(self):
+        """Invalid LOCAL_AXIS data is rejected before Skeleton or joint creation."""
+        invalid_axes = {
+            "zero": ((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+            "parallel": ((1.0, 0.0, 0.0), (2.0, 0.0, 0.0)),
+            "non_finite": ((1.0, 0.0, 0.0), (0.0, float("inf"), 1.0)),
+        }
+        for label, (x_axis, z_axis) in invalid_axes.items():
+            with self.subTest(label=label):
+                bone = self._create_mock_pmx_bone(
+                    0,
+                    f"public_invalid_{label}",
+                    bone_flag=PmxBoneFlag.LOCAL_AXIS,
+                )
+                bone.x_axis_direction = x_axis
+                bone.z_axis_direction = z_axis
+                pmx_data = Mock()
+                pmx_data.bones = [bone]
+                nodes_before = set(cmds.ls(long=True) or [])
+
+                with self.assertRaisesRegex(ValueError, "Invalid LOCAL_AXIS"):
+                    self.converter.convert_pmx_bones(
+                        pmx_data,
+                        self.test_mesh,
+                        self.root_group,
+                        setup_rig=False,
+                    )
+
+                self.assertEqual(set(cmds.ls(long=True) or []), nodes_before)
+
+    def test_invalid_local_axis_is_rejected_when_orientation_is_disabled(self):
+        """Disabling JO application does not allow unsafe LOCAL_AXIS metadata."""
+        bone = self._create_mock_pmx_bone(
+            0,
+            "disabled_orientation_invalid_axis",
+            bone_flag=PmxBoneFlag.LOCAL_AXIS,
+        )
+        bone.x_axis_direction = (1.0, 0.0, 0.0)
+        bone.z_axis_direction = (2.0, 0.0, 0.0)
+        pmx_data = Mock()
+        pmx_data.bones = [bone]
+        nodes_before = set(cmds.ls(long=True) or [])
+
+        with self.assertRaisesRegex(ValueError, "Invalid LOCAL_AXIS"):
+            self.converter.convert_pmx_bones(
+                pmx_data,
+                self.test_mesh,
+                self.root_group,
+                setup_rig=False,
+                setup_bone_orientation=False,
+            )
+
+        self.assertEqual(set(cmds.ls(long=True) or []), nodes_before)
+
+    def test_create_maya_joints_local_axis_preserves_scaled_world_positions(self):
+        """JO translate recomputation keeps import scale for normalized and non-unit axes."""
+        for scale in (0.1, 1.0, 10.0):
+            with self.subTest(scale=scale):
+                suffix = str(scale).replace(".", "_")
+                parent = self._create_mock_pmx_bone(
+                    0,
+                    f"scaled_parent_{suffix}",
+                    position=(1.0, 2.0, 3.0),
+                    bone_flag=PmxBoneFlag.LOCAL_AXIS,
+                )
+                parent.x_axis_direction = (0.0, 4.0, 0.0)
+                parent.z_axis_direction = (2.0, 0.0, 0.0)
+                child = self._create_mock_pmx_bone(
+                    1,
+                    f"scaled_child_{suffix}",
+                    parent_index=0,
+                    position=(4.0, 6.0, 8.0),
+                    bone_flag=PmxBoneFlag.LOCAL_AXIS,
+                )
+                child.x_axis_direction = (5.0, 0.0, 0.0)
+                child.z_axis_direction = (0.0, 3.0, 0.0)
+                skeleton_group = cmds.group(empty=True, name=f"scaled_skeleton_{suffix}")
+
+                maya_joints = self.converter._create_maya_joints(
+                    [parent, child],
+                    {0: parent.name, 1: child.name},
+                    "pmx",
+                    skeleton_group,
+                    scale=scale,
+                )
+
+                for joint, bone in zip(maya_joints, (parent, child)):
+                    world_pos = cmds.xform(joint, query=True, worldSpace=True, translation=True)
+                    expected = (
+                        bone.position[0] * scale,
+                        bone.position[1] * scale,
+                        -bone.position[2] * scale,
+                    )
+                    for actual, expected_value in zip(world_pos, expected):
+                        self.assertAlmostEqual(actual, expected_value, places=5)
+
     def test_create_maya_joints_local_axis_matches_world_axes_under_rotated_parent(self):
         """親が回転済みでも子のLOCAL_AXIS world X/Z軸と位置を維持する"""
         parent = self._create_mock_pmx_bone(

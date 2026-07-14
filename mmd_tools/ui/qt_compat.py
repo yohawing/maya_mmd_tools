@@ -6,6 +6,7 @@ PySide6とPySide2の差異を吸収し、透過的に扱えるようにします
 QT_BINDING = ""
 
 try:
+    from PySide6 import QtCore  # noqa: F401
     from PySide6.QtCore import QObject, Signal, Qt, QSettings, QTimer  # noqa: F401
     from PySide6.QtGui import QAction, QDoubleValidator, QColor, QTextCursor, QTextCharFormat  # noqa: F401
     from PySide6.QtWidgets import (  # noqa: F401
@@ -54,6 +55,7 @@ try:
     QT_BINDING = "PySide6"
 
 except ImportError:
+    from PySide2 import QtCore  # noqa: F401
     from PySide2.QtCore import QObject, Signal, Qt, QSettings, QTimer  # noqa: F401
     from PySide2.QtGui import QDoubleValidator, QColor, QTextCursor, QTextCharFormat  # noqa: F401
     from PySide2.QtWidgets import (  # noqa: F401

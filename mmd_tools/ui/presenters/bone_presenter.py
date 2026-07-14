@@ -172,7 +172,7 @@ class BonePresenter:
 
     def _get_bone_type(self, joint):
         """ボーンのタイプを判定"""
-        flags = get_attribute(joint, ATTR_MMD_BONE_FLAGS)
+        flags = self._get_bone_flags(joint)
 
         if flags & PmxBoneFlag.IK:
             return "IK"
@@ -182,6 +182,22 @@ class BonePresenter:
             return "物理後"
         else:
             return "通常"
+
+    def _get_bone_flags(self, joint):
+        """Return a safe PMX flag value for a joint.
+
+        Imported or user-created joints can exist briefly without the custom
+        ``mmd_bone_flags`` attribute.  The UI should treat that state as a
+        normal, unflagged bone instead of raising while a row is selected.
+        """
+        raw_flags = get_attribute(joint, ATTR_MMD_BONE_FLAGS)
+        if raw_flags is None:
+            return PmxBoneFlag(0)
+        try:
+            return PmxBoneFlag(int(raw_flags))
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid bone flags on {joint!r}: {raw_flags!r}; using 0")
+            return PmxBoneFlag(0)
 
     def filter_bones(self, text):
         """ボーンを検索フィルタリング"""
@@ -255,7 +271,7 @@ class BonePresenter:
             self.view.deform_layer_spin.setValue(get_attribute(self.current_bone, ATTR_MMD_DEFORM_LAYER))
 
             # ボーンフラグ
-            flags = get_attribute(self.current_bone, ATTR_MMD_BONE_FLAGS)
+            flags = self._get_bone_flags(self.current_bone)
 
             # 基本フラグ
             self.view.rotatable_check.setChecked(bool(flags & PmxBoneFlag.ROTATABLE))
@@ -420,7 +436,7 @@ class BonePresenter:
         self.view.grant_rate_spin.setValue(grant_rate)
 
         # ローカル付与
-        flags = get_attribute(self.current_bone, ATTR_MMD_BONE_FLAGS)
+        flags = self._get_bone_flags(self.current_bone)
         self.view.local_grant_check.setChecked(bool(flags & 0x0080))
 
     def _load_axis_settings(self):
