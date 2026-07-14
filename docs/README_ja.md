@@ -2,6 +2,10 @@
 
 [English](../README.md)
 
+![feature](./assets/feature.png)
+> クレジット — モデル: [Sour](https://bowlroll.net/file/146103) ／ モーション: [mobiusP](https://www.nicovideo.jp/watch/sm42576784) 
+
+
 Maya MMD Toolsは、Autodesk MayaでMikuMikuDance (MMD) のPMD/PMXモデルとVMDモーションを読み込むためのツールです。
 
 MMDのリグの再現及び、アニメーションのインポート・編集・書き出しの一連の流れを実現することを目的としています。
