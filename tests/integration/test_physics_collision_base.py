@@ -8,7 +8,6 @@ reflects raw Bullet simulation results rather than bone-driven readback.
 
 from __future__ import annotations
 
-import os
 import unittest
 from pathlib import Path
 
@@ -92,7 +91,6 @@ class TestPhysicsCollisionBase(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             cmds.loadPlugin(plugin_path)
@@ -102,7 +100,6 @@ class TestPhysicsCollisionBase(MayaTestBase):
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
         super().tearDownClass()
 
     def _build_instance(self):
