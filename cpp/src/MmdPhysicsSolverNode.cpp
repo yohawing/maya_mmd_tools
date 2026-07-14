@@ -293,7 +293,20 @@ void MmdPhysicsSolverNode::injectKinematicPoses(MDataBlock& data) {
         if (st == MS::kSuccess) {
             mayaMat = arrayHandle.inputValue().asMatrix();
         } else {
-            continue;
+            // Fallback: read worldMatrix directly from joint DAG node
+            if (boneIdx >= 0 && boneIdx < static_cast<int>(boneJoints_.size()) &&
+                !boneJoints_[boneIdx].empty()) {
+                MSelectionList jSel;
+                MDagPath jDag;
+                if (jSel.add(boneJoints_[boneIdx].c_str()) == MS::kSuccess &&
+                    jSel.getDagPath(0, jDag) == MS::kSuccess) {
+                    mayaMat = jDag.inclusiveMatrix();
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
         }
 
         MMatrix corrected = correction * mayaMat;
@@ -327,8 +340,10 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
     if (conns.length() == 0) return;
 
     MObject rootNode = conns[0].node();
+    if (!rootNode.hasFn(MFn::kDagNode)) return;
+    MFnDagNode fnRootDag(rootNode);
+    MString rootName = fnRootDag.fullPathName();
     MFnDependencyNode fnRoot(rootNode);
-    MString rootName = fnRoot.name();
 
     // Collect bone joints from model root
     MStatus st;
