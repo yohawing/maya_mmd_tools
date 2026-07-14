@@ -68,3 +68,7 @@ def mmd_matrix_to_maya(mmd_matrix: Sequence[float]) -> list[float]:
         maya_matrix[12 + col] = float(mmd_matrix[12 + col]) * signs[col]
 
     return maya_matrix
+
+
+# Z-reflection is its own inverse, so the same algorithm converts both ways.
+maya_matrix_to_mmd = mmd_matrix_to_maya

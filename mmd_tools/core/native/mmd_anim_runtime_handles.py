@@ -786,6 +786,62 @@ class MmdRuntimeInstance:
             logger.error("evaluate_current_pose_after_physics failed: %s", exc, exc_info=True)
             return False
 
+    def evaluate_current_pose_before_physics(self) -> bool:
+        """Evaluate pre-physics pose chain (IK, append) using current bone state."""
+        if not self._handle or self._lib is None:
+            return False
+        func = getattr(self._lib, "mmd_runtime_instance_evaluate_current_pose_before_physics", None)
+        if func is None:
+            return False
+        try:
+            status = int(func(self._handle))
+            return status == MMD_RUNTIME_STATUS_OK
+        except Exception as exc:
+            logger.error("evaluate_current_pose_before_physics failed: %s", exc, exc_info=True)
+            return False
+
+    def apply_physics_world_matrices(
+        self,
+        matrices_flat: Sequence[float],
+        mask: Optional[Sequence[int]] = None,
+    ) -> Optional[int]:
+        """Inject external world matrices (mmd-anim space) into the instance.
+
+        Args:
+            matrices_flat: bone_count * 16 floats in mmd-anim column-major layout.
+            mask: Optional per-bone uint8 mask (1=apply, 0=skip). Length = bone_count.
+        Returns:
+            Number of updated bones, or None on failure.
+        """
+        if not self._handle or self._lib is None:
+            return None
+        func = getattr(self._lib, "mmd_runtime_instance_apply_physics_world_matrices", None)
+        if func is None:
+            return None
+        try:
+            mat_len = len(matrices_flat)
+            mat_buf = (c_float * mat_len)(*matrices_flat)
+            if mask is not None:
+                mask_len = len(mask)
+                mask_buf = (c_uint8 * mask_len)(*mask)
+            else:
+                mask_buf = None
+                mask_len = 0
+            out_count = c_size_t(0)
+            status = int(func(
+                self._handle,
+                mat_buf, c_size_t(mat_len),
+                mask_buf, c_size_t(mask_len),
+                ctypes.byref(out_count),
+            ))
+            if status != MMD_RUNTIME_STATUS_OK:
+                logger.error("apply_physics_world_matrices failed: status=%s", status)
+                return None
+            return int(out_count.value)
+        except Exception as exc:
+            logger.error("apply_physics_world_matrices failed: %s", exc, exc_info=True)
+            return None
+
     def set_physics_mode(self, mode: int) -> bool:
         """Set the instance physics mode (OFF/TRACE/LIVE). Fail-closed when ABI missing."""
         if not self._handle or self._lib is None:

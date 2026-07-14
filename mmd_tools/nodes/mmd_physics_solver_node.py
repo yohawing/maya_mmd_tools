@@ -50,6 +50,8 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._model = None
         self._instance = None
         self._bone_count = 0
+        self._bone_joints = []
+        self._kinematic_corrections = {}
         self._last_time = None
         self._cached_flat = None
         self._initialized = False
@@ -112,6 +114,9 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
     def _forward_step(self, dt: float) -> None:
         self._instance.evaluate_rest_pose()
+        if self._kinematic_corrections:
+            self._inject_kinematic_poses()
+            self._instance.evaluate_current_pose_before_physics()
         self._world.step_runtime(self._instance, dt)
         self._instance.evaluate_current_pose_after_physics()
 
@@ -120,6 +125,9 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
         self._instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
         self._instance.evaluate_rest_pose()
+        if self._kinematic_corrections:
+            self._inject_kinematic_poses()
+            self._instance.evaluate_current_pose_before_physics()
         self._world.reset(self._instance)
 
     def _update_cached_matrices(self) -> None:
@@ -154,6 +162,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
 
         bone_joints = _collect_bone_joints(model_root)
         self._bone_count = len(bone_joints)
+        self._bone_joints = bone_joints
 
         world = MmdRuntimePhysicsWorld.from_pmx_bytes(pmx_bytes)
         if world is None:
@@ -177,6 +186,123 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._model = model
         self._instance = instance
         self._initialized = True
+
+        self._build_kinematic_pose_data(model_root)
+
+    def _build_kinematic_pose_data(self, model_root: str) -> None:
+        """Identify kinematic bones and precompute bind corrections.
+
+        Bind correction maps Maya joint world space to the mmd-anim solver's
+        internal bone world space.  Only bones attached to physics_mode=0
+        (follows-bone / kinematic) rigid bodies are read — these joints are
+        never written by mmdPhysicsBoneDriver, so reading them is cycle-safe.
+
+        correction = mmd_matrix_to_maya(mmd_rest) * maya_bind^(-1)
+        At runtime:  mmd_world = maya_matrix_to_mmd(correction * maya_animated)
+        """
+        from maya import cmds
+        from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
+
+        kinematic_bone_indices = self._find_kinematic_bone_indices(model_root)
+        if not kinematic_bone_indices:
+            return
+
+        self._instance.evaluate_rest_pose()
+        mmd_rest_matrices = self._instance.get_world_matrices()
+        if not mmd_rest_matrices:
+            return
+
+        for bone_idx in kinematic_bone_indices:
+            if bone_idx >= len(mmd_rest_matrices) or bone_idx >= len(self._bone_joints):
+                continue
+            joint = self._bone_joints[bone_idx]
+            if not joint or not cmds.objExists(joint):
+                continue
+            try:
+                mmd_rest_maya = mmd_matrix_to_maya(mmd_rest_matrices[bone_idx])
+                mmd_rest_maya_mat = om.MMatrix(mmd_rest_maya)
+
+                maya_bind = [float(v) for v in cmds.getAttr(f"{joint}.worldMatrix[0]")]
+                bind_mat = om.MMatrix(maya_bind)
+
+                self._kinematic_corrections[bone_idx] = mmd_rest_maya_mat * bind_mat.inverse()
+            except Exception:
+                continue
+
+    @staticmethod
+    def _find_kinematic_bone_indices(model_root: str) -> set:
+        from maya import cmds
+
+        result = set()
+        try:
+            children = cmds.listRelatives(
+                model_root, children=True, fullPath=True, type="transform",
+            ) or []
+            physics_group = None
+            for c in children:
+                if c.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "Physics":
+                    physics_group = c
+                    break
+            if not physics_group:
+                return result
+
+            children = cmds.listRelatives(
+                physics_group, children=True, fullPath=True, type="transform",
+            ) or []
+            rb_group = None
+            for c in children:
+                if c.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "RigidBodies":
+                    rb_group = c
+                    break
+            if not rb_group:
+                return result
+
+            rb_transforms = cmds.listRelatives(
+                rb_group, children=True, fullPath=True, type="transform",
+            ) or []
+            for xform in rb_transforms:
+                shapes = cmds.listRelatives(
+                    xform, shapes=True, fullPath=True, type="mmdRigidBodyShape",
+                ) or []
+                for shape in shapes:
+                    if cmds.getAttr(f"{shape}.physicsMode") == 0:
+                        idx = cmds.getAttr(f"{shape}.relatedBoneIndex")
+                        if idx >= 0:
+                            result.add(idx)
+        except Exception:
+            pass
+        return result
+
+    def _inject_kinematic_poses(self) -> None:
+        """Read kinematic bone world matrices from Maya and inject into the instance."""
+        from maya import cmds
+        from mmd_tools.core.coordinate_transform import maya_matrix_to_mmd
+
+        bone_count = self._bone_count
+        if bone_count <= 0:
+            return
+
+        flat = [0.0] * (bone_count * 16)
+        mask = [0] * bone_count
+
+        for bone_idx, correction_inv in self._kinematic_corrections.items():
+            joint = self._bone_joints[bone_idx]
+            if not joint:
+                continue
+            try:
+                maya_world = [float(v) for v in cmds.getAttr(f"{joint}.worldMatrix[0]")]
+                corrected = correction_inv * om.MMatrix(maya_world)
+                corrected_flat = [
+                    corrected.getElement(r, c) for r in range(4) for c in range(4)
+                ]
+                offset = bone_idx * 16
+                flat[offset : offset + 16] = maya_matrix_to_mmd(corrected_flat)
+                mask[bone_idx] = 1
+            except Exception:
+                continue
+
+        if any(mask):
+            self._instance.apply_physics_world_matrices(flat, mask)
 
     def _read_world_settings(self):
         """Read enable and resetGeneration from connected world node."""
@@ -234,6 +360,8 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._model.free()
             self._model = None
         self._initialized = False
+        self._bone_joints = []
+        self._kinematic_corrections = {}
         self._last_time = None
         self._cached_flat = None
 
