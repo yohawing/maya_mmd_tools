@@ -92,7 +92,7 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
     kRegistrantId = "mmdRigidBodyDrawOverride"
 
     def __init__(self, obj):
-        super().__init__(obj, None, False)
+        super().__init__(obj, None, True)
 
     @staticmethod
     def creator(obj):
@@ -116,8 +116,19 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
         except Exception:
             sx = sy = sz = 1.0
         extent = max(sx, sy, sz, 0.001)
-        corner = om.MPoint(extent, extent, extent)
-        return om.MBoundingBox(-corner, corner)
+        center = om.MPoint(0.0, 0.0, 0.0)
+        try:
+            from mmd_tools.nodes.mmd_physics_solver_node import _SIMULATED_RB_CACHE
+
+            sim_matrix = _SIMULATED_RB_CACHE.get(objPath.fullPathName())
+            if sim_matrix is not None:
+                dag_inclusive = objPath.inclusiveMatrix()
+                offset = sim_matrix * dag_inclusive.inverse()
+                center = om.MPoint(0.0, 0.0, 0.0) * offset
+        except Exception:
+            pass
+        corner = om.MVector(extent, extent, extent)
+        return om.MBoundingBox(center - corner, center + corner)
 
     def prepareForDraw(self, objPath, cameraPath, frameContext, oldData):
         data = oldData if isinstance(oldData, ColliderDrawData) else ColliderDrawData()

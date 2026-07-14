@@ -53,6 +53,16 @@ public:
     static MObject aInSolved;
     static MObject aEnable;
 
+    // Pre-physics VMD inputs
+    static MObject aInPreTranslate;
+    static MObject aInPreTranslateX;
+    static MObject aInPreTranslateY;
+    static MObject aInPreTranslateZ;
+    static MObject aInPreRotate;
+    static MObject aInPreRotateX;
+    static MObject aInPreRotateY;
+    static MObject aInPreRotateZ;
+
     // Outputs
     static MObject aOutTranslate;
     static MObject aOutTranslateX;
@@ -63,6 +73,8 @@ public:
     static MObject aOutRotateX;
     static MObject aOutRotateY;
     static MObject aOutRotateZ;
+
+    static MObject aOutPrePhysicsWorldMatrix;
 
 private:
     bool isOutputPlug(const MPlug& plug) const;

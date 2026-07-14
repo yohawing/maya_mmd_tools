@@ -57,6 +57,14 @@ MObject MmdPhysicsBoneDriverNode::aInRotateAxisZ;
 MObject MmdPhysicsBoneDriverNode::aInRotateOrder;
 MObject MmdPhysicsBoneDriverNode::aInSolved;
 MObject MmdPhysicsBoneDriverNode::aEnable;
+MObject MmdPhysicsBoneDriverNode::aInPreTranslate;
+MObject MmdPhysicsBoneDriverNode::aInPreTranslateX;
+MObject MmdPhysicsBoneDriverNode::aInPreTranslateY;
+MObject MmdPhysicsBoneDriverNode::aInPreTranslateZ;
+MObject MmdPhysicsBoneDriverNode::aInPreRotate;
+MObject MmdPhysicsBoneDriverNode::aInPreRotateX;
+MObject MmdPhysicsBoneDriverNode::aInPreRotateY;
+MObject MmdPhysicsBoneDriverNode::aInPreRotateZ;
 MObject MmdPhysicsBoneDriverNode::aOutTranslate;
 MObject MmdPhysicsBoneDriverNode::aOutTranslateX;
 MObject MmdPhysicsBoneDriverNode::aOutTranslateY;
@@ -65,6 +73,7 @@ MObject MmdPhysicsBoneDriverNode::aOutRotate;
 MObject MmdPhysicsBoneDriverNode::aOutRotateX;
 MObject MmdPhysicsBoneDriverNode::aOutRotateY;
 MObject MmdPhysicsBoneDriverNode::aOutRotateZ;
+MObject MmdPhysicsBoneDriverNode::aOutPrePhysicsWorldMatrix;
 
 MmdPhysicsBoneDriverNode::MmdPhysicsBoneDriverNode() = default;
 MmdPhysicsBoneDriverNode::~MmdPhysicsBoneDriverNode() = default;
@@ -182,6 +191,24 @@ MStatus MmdPhysicsBoneDriverNode::initialize() {
     nAttr.setKeyable(true);
     addAttribute(aEnable);
 
+    // --- Pre-physics VMD inputs ---
+
+    aInPreTranslate = createDouble3(
+        "inPreTranslate", "ipt",
+        aInPreTranslateX, aInPreTranslateY, aInPreTranslateZ);
+    addAttribute(aInPreTranslate);
+
+    aInPreRotate = createAngle3(
+        "inPreRotate", "ipr",
+        aInPreRotateX, aInPreRotateY, aInPreRotateZ);
+    addAttribute(aInPreRotate);
+
+    aOutPrePhysicsWorldMatrix = mAttr.create(
+        "outPrePhysicsWorldMatrix", "oppwm");
+    mAttr.setWritable(false);
+    mAttr.setStorable(false);
+    addAttribute(aOutPrePhysicsWorldMatrix);
+
     // --- Outputs ---
 
     aOutTranslate = createDouble3(
@@ -240,13 +267,23 @@ MStatus MmdPhysicsBoneDriverNode::initialize() {
         }
     }
 
+    MObject preInputs[] = {
+        aInPreTranslate, aInPreRotate,
+        aInJointOrient, aInRotateAxis, aInRotateOrder,
+        aInParentInverseMatrix,
+    };
+    for (auto& in : preInputs) {
+        attributeAffects(in, aOutPrePhysicsWorldMatrix);
+    }
+
     return MS::kSuccess;
 }
 
 bool MmdPhysicsBoneDriverNode::isOutputPlug(const MPlug& plug) const {
     MObject attr = plug.attribute();
     if (attr == aOutTranslate || attr == aOutTranslateX || attr == aOutTranslateY || attr == aOutTranslateZ ||
-        attr == aOutRotate || attr == aOutRotateX || attr == aOutRotateY || attr == aOutRotateZ) {
+        attr == aOutRotate || attr == aOutRotateX || attr == aOutRotateY || attr == aOutRotateZ ||
+        attr == aOutPrePhysicsWorldMatrix) {
         return true;
     }
     if (plug.isChild()) {
@@ -276,6 +313,43 @@ MMatrix MmdPhysicsBoneDriverNode::extractMatrix(const MDoubleArray& arr, int bon
 MStatus MmdPhysicsBoneDriverNode::compute(const MPlug& plug, MDataBlock& data) {
     if (!isOutputPlug(plug))
         return MS::kUnknownParameter;
+
+    if (plug.attribute() == aOutPrePhysicsWorldMatrix) {
+        double tx = data.inputValue(aInPreTranslateX).asDouble();
+        double ty = data.inputValue(aInPreTranslateY).asDouble();
+        double tz = data.inputValue(aInPreTranslateZ).asDouble();
+
+        double rx = data.inputValue(aInPreRotateX).asAngle().asRadians();
+        double ry = data.inputValue(aInPreRotateY).asAngle().asRadians();
+        double rz = data.inputValue(aInPreRotateZ).asAngle().asRadians();
+
+        double joX = data.inputValue(aInJointOrientX).asAngle().asRadians();
+        double joY = data.inputValue(aInJointOrientY).asAngle().asRadians();
+        double joZ = data.inputValue(aInJointOrientZ).asAngle().asRadians();
+
+        double raX = data.inputValue(aInRotateAxisX).asAngle().asRadians();
+        double raY = data.inputValue(aInRotateAxisY).asAngle().asRadians();
+        double raZ = data.inputValue(aInRotateAxisZ).asAngle().asRadians();
+
+        short roIdx = data.inputValue(aInRotateOrder).asShort();
+        MEulerRotation::RotationOrder ro =
+            (roIdx >= 0 && roIdx < 6) ? kRotateOrders[roIdx] : MEulerRotation::kXYZ;
+
+        MQuaternion qJo = MEulerRotation(joX, joY, joZ).asQuaternion();
+        MQuaternion qR = MEulerRotation(rx, ry, rz, ro).asQuaternion();
+        MQuaternion qRa = MEulerRotation(raX, raY, raZ).asQuaternion();
+
+        MTransformationMatrix tfm;
+        tfm.setTranslation(MVector(tx, ty, tz), MSpace::kTransform);
+        tfm.setRotation(qJo * qR * qRa);
+
+        MMatrix parentInv = data.inputValue(aInParentInverseMatrix).asMatrix();
+        MMatrix preWorld = tfm.asMatrix() * parentInv.inverse();
+
+        data.outputValue(aOutPrePhysicsWorldMatrix).setMMatrix(preWorld);
+        data.setClean(aOutPrePhysicsWorldMatrix);
+        return MS::kSuccess;
+    }
 
     bool enable = data.inputValue(aEnable).asBool();
     bool solved = data.inputValue(aInSolved).asBool();

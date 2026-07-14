@@ -306,6 +306,50 @@ def _restore_input_connections(connections: list[tuple[str, str]], logger) -> No
             )
 
 
+def _connect_kinematic_joint_inputs(
+    *,
+    solver: str,
+    rigid_bodies,
+    maya_joints,
+    root_group: str,
+    logger=None,
+) -> None:
+    """Connect kinematic (physicsMode=0) joint worldMatrices to the solver.
+
+    This creates proper DG dependencies so that moving a controller at the
+    same frame dirties the solver's outputs and triggers re-evaluation.
+    """
+    log = logger or _logger
+    connected = set()
+    for rb in rigid_bodies or []:
+        try:
+            physics_mode = int(getattr(rb, "physics_mode", 0))
+            bone_index = int(getattr(rb, "related_bone_index", -1))
+        except (TypeError, ValueError):
+            continue
+        if physics_mode != 0 or bone_index < 0:
+            continue
+        if bone_index in connected:
+            continue
+        if bone_index >= len(maya_joints or []):
+            continue
+        joint = maya_joints[bone_index]
+        if not joint or not cmds.objExists(joint):
+            continue
+        try:
+            cmds.connectAttr(
+                f"{joint}.worldMatrix[0]",
+                f"{solver}.inKinematicWorldMatrix[{bone_index}]",
+                force=True,
+            )
+            connected.add(bone_index)
+        except Exception as exc:
+            log.debug(
+                "event=kinematic_input_connect_failed bone=%d joint=%s error=%s",
+                bone_index, joint, exc,
+            )
+
+
 def build_physics_live_graph(
     *,
     rigid_bodies,
@@ -347,6 +391,14 @@ def build_physics_live_graph(
         if solver and cmds.objExists(solver):
             cmds.delete(solver)
         return {"solver": None, "drivers": [], "reason": "solver_node_unavailable"}
+
+    _connect_kinematic_joint_inputs(
+        solver=solver,
+        rigid_bodies=rigid_bodies,
+        maya_joints=maya_joints,
+        root_group=root_group,
+        logger=log,
+    )
 
     driven_bones: set[int] = set()
     for rb_index, rb in enumerate(rigid_bodies or []):
@@ -486,14 +538,18 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
     checks whether their ``outTranslate``/``outRotate`` outputs are still
     connected to the target joint, and reconnects them if not.
 
-    This is an interim recovery mechanism for development mode only.  The
-    proper fix is PHS-POSE-SOURCE-1 (pre-physics proxy).
+    When animCurves are found driving the joint (from VMD import), they are
+    rerouted to the driver's ``inPreTranslate``/``inPreRotate`` inputs and
+    the driver's ``outPrePhysicsWorldMatrix`` is connected to the solver's
+    ``inKinematicWorldMatrix`` array.  This preserves the VMD animation as
+    the pre-physics pose source without creating a DG cycle.
 
     Returns a summary dict with ``recovered`` and ``skipped`` counts.
     """
     log = logger or _logger
     recovered = 0
     skipped = 0
+    pre_physics_routed = 0
 
     try:
         available_types = set(cmds.allNodeTypes() or [])
@@ -502,6 +558,8 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
     if "mmdPhysicsBoneDriver" not in available_types:
         log.debug("mmdPhysicsBoneDriver not registered, skipping recovery")
         return {"recovered": 0, "skipped": 0, "reason": "node_type_unavailable"}
+
+    solver_node = _find_solver_for_model(model_root)
 
     drivers = cmds.ls(type="mmdPhysicsBoneDriver") or []
     for driver in drivers:
@@ -522,6 +580,8 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
             skipped += 1
             continue
 
+        anim_curves = _capture_anim_curve_connections(target_joint)
+
         reconnected = False
         for out_attr, joint_attr in [("outTranslate", "translate"), ("outRotate", "rotate")]:
             src_plug = f"{driver}.{out_attr}"
@@ -538,6 +598,16 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
                     driver, target_joint, joint_attr, exc,
                 )
 
+        if anim_curves and solver_node:
+            routed = _reroute_anim_to_pre_physics(
+                driver=driver,
+                anim_curves=anim_curves,
+                solver=solver_node,
+                logger=log,
+            )
+            if routed:
+                pre_physics_routed += 1
+
         if reconnected:
             recovered += 1
             log.info(
@@ -547,9 +617,116 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
         else:
             skipped += 1
 
-    if recovered:
+    if recovered or pre_physics_routed:
         log.info(
-            "Physics driver recovery: %d reconnected, %d skipped for model %s",
-            recovered, skipped, model_root,
+            "Physics driver recovery: %d reconnected, %d pre-physics routed, "
+            "%d skipped for model %s",
+            recovered, pre_physics_routed, skipped, model_root,
         )
-    return {"recovered": recovered, "skipped": skipped}
+    return {
+        "recovered": recovered,
+        "skipped": skipped,
+        "pre_physics_routed": pre_physics_routed,
+    }
+
+
+def _find_solver_for_model(model_root: str):
+    """Find the mmdPhysicsSolver connected to *model_root*."""
+    try:
+        available = set(cmds.allNodeTypes() or [])
+    except Exception:
+        available = set()
+    if "mmdPhysicsSolver" not in available:
+        return None
+    solvers = cmds.ls(type="mmdPhysicsSolver") or []
+    for solver in solvers:
+        conns = cmds.listConnections(
+            f"{solver}.modelRoot", source=True, destination=False
+        ) or []
+        if model_root in conns:
+            return solver
+    return None
+
+
+def _capture_anim_curve_connections(joint: str) -> dict:
+    """Capture animCurve source connections on joint translate/rotate channels.
+
+    Returns a dict like ``{"translateX": "animCurve1.output", ...}``.
+    """
+    result = {}
+    for compound, channels in [
+        ("translate", ("X", "Y", "Z")),
+        ("rotate", ("X", "Y", "Z")),
+    ]:
+        for ch in channels:
+            plug = f"{joint}.{compound}{ch}"
+            sources = cmds.listConnections(plug, source=True, destination=False,
+                                           plugs=True, type="animCurve") or []
+            if sources:
+                result[f"{compound}{ch}"] = sources[0]
+    return result
+
+
+def _reroute_anim_to_pre_physics(
+    *,
+    driver: str,
+    anim_curves: dict,
+    solver: str,
+    logger=None,
+) -> bool:
+    """Connect captured animCurve outputs to driver pre-physics inputs.
+
+    Also wires ``driver.outPrePhysicsWorldMatrix`` →
+    ``solver.inKinematicWorldMatrix[boneIndex]``.
+    """
+    log = logger or _logger
+    attr_map = {
+        "translateX": "inPreTranslateX",
+        "translateY": "inPreTranslateY",
+        "translateZ": "inPreTranslateZ",
+        "rotateX": "inPreRotateX",
+        "rotateY": "inPreRotateY",
+        "rotateZ": "inPreRotateZ",
+    }
+
+    any_connected = False
+    for joint_channel, anim_plug in anim_curves.items():
+        driver_attr = attr_map.get(joint_channel)
+        if not driver_attr:
+            continue
+        dst_plug = f"{driver}.{driver_attr}"
+        try:
+            cmds.connectAttr(anim_plug, dst_plug, force=True)
+            any_connected = True
+        except Exception as exc:
+            log.debug(
+                "event=pre_physics_reroute_failed driver=%s attr=%s error=%s",
+                driver, driver_attr, exc,
+            )
+
+    if not any_connected:
+        return False
+
+    try:
+        bone_index = cmds.getAttr(f"{driver}.inBoneIndex")
+    except Exception:
+        bone_index = -1
+    if bone_index < 0:
+        return False
+
+    src = f"{driver}.outPrePhysicsWorldMatrix"
+    dst = f"{solver}.inKinematicWorldMatrix[{bone_index}]"
+    try:
+        cmds.connectAttr(src, dst, force=True)
+    except Exception as exc:
+        log.debug(
+            "event=pre_physics_solver_connect_failed driver=%s bone=%d error=%s",
+            driver, bone_index, exc,
+        )
+        return False
+
+    log.info(
+        "event=pre_physics_input_routed driver=%s bone_index=%d",
+        driver, bone_index,
+    )
+    return True

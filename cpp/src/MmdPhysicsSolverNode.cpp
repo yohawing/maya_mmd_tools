@@ -10,16 +10,24 @@
 #include <maya/MFnNumericAttribute.h>
 #include <maya/MFnTypedAttribute.h>
 #include <maya/MFnUnitAttribute.h>
+#include <maya/MFnEnumAttribute.h>
 #include <maya/MFnMessageAttribute.h>
+#include <maya/MFnMatrixAttribute.h>
 #include <maya/MFnDoubleArrayData.h>
 #include <maya/MFnDependencyNode.h>
 #include <maya/MFnStringData.h>
+#include <maya/MFnDagNode.h>
 #include <maya/MDataBlock.h>
 #include <maya/MDataHandle.h>
+#include <maya/MArrayDataHandle.h>
 #include <maya/MPlug.h>
+#include <maya/MPlugArray.h>
 #include <maya/MTime.h>
 #include <maya/MGlobal.h>
 #include <maya/MDoubleArray.h>
+#include <maya/MMatrix.h>
+#include <maya/MSelectionList.h>
+#include <maya/MItDag.h>
 
 #include <cmath>
 #include <cstring>
@@ -66,13 +74,26 @@ namespace {
         }
         return out;
     }
+
+    MString getNodeLeafName(const MString& fullPath) {
+        int idx = fullPath.rindexW('|');
+        if (idx >= 0)
+            return fullPath.substring(idx + 1, fullPath.length() - 1);
+        idx = fullPath.rindexW(':');
+        if (idx >= 0)
+            return fullPath.substring(idx + 1, fullPath.length() - 1);
+        return fullPath;
+    }
 }
 
 const MTypeId MmdPhysicsSolverNode::id(0x00128008);
 
 MObject MmdPhysicsSolverNode::aEnable;
+MObject MmdPhysicsSolverNode::aInputMode;
 MObject MmdPhysicsSolverNode::aInTime;
 MObject MmdPhysicsSolverNode::aModelRoot;
+MObject MmdPhysicsSolverNode::aInWorldSettings;
+MObject MmdPhysicsSolverNode::aInKinematicWorldMatrix;
 MObject MmdPhysicsSolverNode::aOutBoneMatrices;
 MObject MmdPhysicsSolverNode::aOutBoneCount;
 MObject MmdPhysicsSolverNode::aOutStatus;
@@ -92,12 +113,21 @@ MStatus MmdPhysicsSolverNode::initialize() {
     MFnNumericAttribute nAttr;
     MFnTypedAttribute   tAttr;
     MFnUnitAttribute    uAttr;
+    MFnEnumAttribute    eAttr;
     MFnMessageAttribute msgAttr;
+    MFnMatrixAttribute  mAttr;
 
     aEnable = nAttr.create("enable", "en", MFnNumericData::kBoolean, true);
     nAttr.setStorable(true);
     nAttr.setKeyable(true);
     addAttribute(aEnable);
+
+    aInputMode = eAttr.create("inputMode", "im", kInputModeMayaPose);
+    eAttr.addField("rest-only", kInputModeRest);
+    eAttr.addField("maya-pose", kInputModeMayaPose);
+    eAttr.setStorable(true);
+    eAttr.setKeyable(false);
+    addAttribute(aInputMode);
 
     aInTime = uAttr.create("inTime", "it", MFnUnitAttribute::kTime, 0.0);
     uAttr.setStorable(false);
@@ -105,6 +135,17 @@ MStatus MmdPhysicsSolverNode::initialize() {
 
     aModelRoot = msgAttr.create("modelRoot", "mr");
     addAttribute(aModelRoot);
+
+    aInWorldSettings = msgAttr.create("inWorldSettings", "iws");
+    addAttribute(aInWorldSettings);
+
+    aInKinematicWorldMatrix = mAttr.create(
+        "inKinematicWorldMatrix", "ikwm", MFnMatrixAttribute::kDouble);
+    mAttr.setStorable(false);
+    mAttr.setArray(true);
+    mAttr.setUsesArrayDataBuilder(true);
+    mAttr.setDisconnectBehavior(MFnAttribute::kDelete);
+    addAttribute(aInKinematicWorldMatrix);
 
     aOutBoneMatrices = tAttr.create("outBoneMatrices", "obm", MFnData::kDoubleArray);
     tAttr.setWritable(false);
@@ -126,7 +167,7 @@ MStatus MmdPhysicsSolverNode::initialize() {
     nAttr.setStorable(false);
     addAttribute(aOutSolved);
 
-    MObject inputs[] = { aEnable, aInTime };
+    MObject inputs[] = { aEnable, aInTime, aInputMode, aInKinematicWorldMatrix };
     MObject outputs[] = { aOutBoneMatrices, aOutBoneCount, aOutStatus, aOutSolved };
     for (auto& in : inputs) {
         for (auto& out : outputs) {
@@ -153,6 +194,7 @@ MStatus MmdPhysicsSolverNode::compute(const MPlug& plug, MDataBlock& data) {
         return MS::kSuccess;
     }
 
+    short inputMode = data.inputValue(aInputMode).asShort();
     double currentTime = data.inputValue(aInTime).asTime().as(MTime::kSeconds);
 
     if (!initialized_) {
@@ -164,27 +206,42 @@ MStatus MmdPhysicsSolverNode::compute(const MPlug& plug, MDataBlock& data) {
         return MS::kSuccess;
     }
 
-    // Same-time idempotence
-    if (std::abs(currentTime - lastTime_) < kTimeEpsilon) {
+    // World settings (enable / reset generation)
+    bool worldEnable = true;
+    int resetGen = lastResetGeneration_;
+    readWorldSettings(worldEnable, resetGen);
+    if (!worldEnable) {
+        writeDisabledOutputs(data);
+        return MS::kSuccess;
+    }
+
+    bool forceReset = false;
+    if (resetGen != lastResetGeneration_) {
+        lastResetGeneration_ = resetGen;
+        forceReset = true;
+    }
+
+    bool sameTime = !forceReset && lastTime_ > -1e20 &&
+                    std::abs(currentTime - lastTime_) < kTimeEpsilon;
+
+    if (sameTime && inputMode != kInputModeMayaPose) {
         writeOutputs(data, "cached", true);
         return MS::kSuccess;
     }
 
-    double dt = currentTime - lastTime_;
     std::string status;
-
-    if (lastTime_ > -1e20 && dt > 0.0 && dt < kMaxForwardDt) {
-        // Forward step
-        bridge_.evaluateCurrentPoseBeforePhysics();
-        bridge_.stepPhysicsWorldRuntime(static_cast<float>(dt));
-        bridge_.evaluateCurrentPoseAfterPhysics();
-        status = "stepped";
+    if (sameTime) {
+        resetWorld(inputMode, data);
+        status = "pose-updated";
     } else {
-        // Jump / backward / first eval → reset
-        bridge_.setPhysicsMode(MMD_RUNTIME_PHYSICS_MODE_LIVE);
-        bridge_.evaluateCurrentPoseBeforePhysics();
-        bridge_.resetPhysicsWorld();
-        status = "reset";
+        double dt = currentTime - lastTime_;
+        if (!forceReset && lastTime_ > -1e20 && dt > 0.0 && dt < kMaxForwardDt) {
+            forwardStep(static_cast<float>(dt), inputMode, data);
+            status = "stepped";
+        } else {
+            resetWorld(inputMode, data);
+            status = "reset";
+        }
     }
 
     lastTime_ = currentTime;
@@ -199,6 +256,190 @@ MStatus MmdPhysicsSolverNode::compute(const MPlug& plug, MDataBlock& data) {
 
     writeOutputs(data, status, true);
     return MS::kSuccess;
+}
+
+void MmdPhysicsSolverNode::forwardStep(float dt, short inputMode, MDataBlock& data) {
+    bridge_.evaluateRestPose();
+    if (inputMode == kInputModeMayaPose && !kinematicCorrections_.empty()) {
+        injectKinematicPoses(data);
+        bridge_.evaluateCurrentPoseBeforePhysics();
+    }
+    bridge_.stepPhysicsWorldRuntime(dt);
+    bridge_.evaluateCurrentPoseAfterPhysics();
+}
+
+void MmdPhysicsSolverNode::resetWorld(short inputMode, MDataBlock& data) {
+    bridge_.setPhysicsMode(MMD_RUNTIME_PHYSICS_MODE_LIVE);
+    bridge_.evaluateRestPose();
+    if (inputMode == kInputModeMayaPose && !kinematicCorrections_.empty()) {
+        injectKinematicPoses(data);
+        bridge_.evaluateCurrentPoseBeforePhysics();
+    }
+    bridge_.resetPhysicsWorld();
+}
+
+void MmdPhysicsSolverNode::injectKinematicPoses(MDataBlock& data) {
+    if (boneCount_ == 0) return;
+
+    std::vector<float> flat(boneCount_ * 16, 0.0f);
+    std::vector<uint8_t> mask(boneCount_, 0);
+
+    MArrayDataHandle arrayHandle = data.inputArrayValue(aInKinematicWorldMatrix);
+
+    for (auto& [boneIdx, correction] : kinematicCorrections_) {
+        MMatrix mayaMat;
+        MStatus st;
+        st = arrayHandle.jumpToElement(static_cast<unsigned>(boneIdx));
+        if (st == MS::kSuccess) {
+            mayaMat = arrayHandle.inputValue().asMatrix();
+        } else {
+            continue;
+        }
+
+        MMatrix corrected = correction * mayaMat;
+        float mmdFlat[16];
+        double mayaFlat[16];
+        for (int r = 0; r < 4; ++r)
+            for (int c = 0; c < 4; ++c)
+                mayaFlat[r * 4 + c] = corrected[r][c];
+
+        mayaMatrixToMmd(mayaFlat, mmdFlat);
+        size_t offset = static_cast<size_t>(boneIdx) * 16;
+        std::memcpy(&flat[offset], mmdFlat, 16 * sizeof(float));
+        mask[static_cast<size_t>(boneIdx)] = 1;
+    }
+
+    bool anySet = false;
+    for (auto m : mask) { if (m) { anySet = true; break; } }
+    if (anySet) {
+        bridge_.applyPhysicsWorldMatrices(flat.data(), flat.size(),
+                                           mask.data(), mask.size());
+    }
+}
+
+void MmdPhysicsSolverNode::buildKinematicPoseData() {
+    kinematicCorrections_.clear();
+
+    MFnDependencyNode fnThis(thisMObject());
+    MPlug rootPlug = fnThis.findPlug("modelRoot", false);
+    MPlugArray conns;
+    rootPlug.connectedTo(conns, true, false);
+    if (conns.length() == 0) return;
+
+    MObject rootNode = conns[0].node();
+    MFnDependencyNode fnRoot(rootNode);
+    MString rootName = fnRoot.name();
+
+    // Collect bone joints from model root
+    MStatus st;
+    MPlug boneCountPlug = fnRoot.findPlug("mmd_bone_count", false, &st);
+    if (st != MS::kSuccess) return;
+
+    // Walk Physics/RigidBodies to find kinematic bones
+    MString physicsPath = rootName + "|Physics";
+    MString rbPath = physicsPath + "|RigidBodies";
+
+    MSelectionList sel;
+    if (sel.add(rbPath) != MS::kSuccess) return;
+
+    MDagPath rbDagPath;
+    if (sel.getDagPath(0, rbDagPath) != MS::kSuccess) return;
+
+    std::unordered_set<int> kinematicBoneIndices;
+    unsigned childCount = rbDagPath.childCount();
+    for (unsigned i = 0; i < childCount; ++i) {
+        MObject child = rbDagPath.child(i);
+        if (!child.hasFn(MFn::kTransform)) continue;
+        MFnDagNode fnXform(child);
+        for (unsigned s = 0; s < fnXform.childCount(); ++s) {
+            MObject shapeObj = fnXform.child(s);
+            if (!shapeObj.hasFn(MFn::kPluginShape)) continue;
+            MFnDependencyNode fnShape(shapeObj);
+            if (fnShape.typeName() != "mmdRigidBodyShape") continue;
+
+            MPlug pmPlug = fnShape.findPlug("physicsMode", false, &st);
+            if (st != MS::kSuccess) continue;
+            if (pmPlug.asShort() != 0) continue;
+
+            MPlug biPlug = fnShape.findPlug("relatedBoneIndex", false, &st);
+            if (st != MS::kSuccess) continue;
+            int boneIndex = biPlug.asInt();
+            if (boneIndex >= 0) kinematicBoneIndices.insert(boneIndex);
+        }
+    }
+
+    if (kinematicBoneIndices.empty()) return;
+
+    // Get rest pose matrices
+    bridge_.evaluateRestPose();
+    std::vector<float> restMats = bridge_.getWorldMatrices();
+    if (restMats.empty()) return;
+    size_t matCount = restMats.size() / 16;
+
+    // Collect bone joints
+    boneJoints_.clear();
+    boneJoints_.resize(boneCount_);
+    // Walk Armature group for joints with mmd_bone_index
+    MString armPath = rootName + "|Armature";
+    MSelectionList armSel;
+    if (armSel.add(armPath) != MS::kSuccess) return;
+    MDagPath armDag;
+    if (armSel.getDagPath(0, armDag) != MS::kSuccess) return;
+
+    MItDag dagIt(MItDag::kDepthFirst, MFn::kJoint);
+    dagIt.reset(armDag, MItDag::kDepthFirst, MFn::kJoint);
+    for (; !dagIt.isDone(); dagIt.next()) {
+        MObject jobj = dagIt.currentItem();
+        MFnDependencyNode fnJ(jobj);
+        MPlug idxPlug = fnJ.findPlug("mmd_bone_index", false, &st);
+        if (st != MS::kSuccess) continue;
+        int idx = idxPlug.asInt();
+        if (idx >= 0 && idx < static_cast<int>(boneCount_)) {
+            MDagPath jPath;
+            dagIt.getPath(jPath);
+            boneJoints_[idx] = jPath.fullPathName().asChar();
+        }
+    }
+
+    // Compute corrections
+    for (int boneIdx : kinematicBoneIndices) {
+        if (boneIdx >= static_cast<int>(matCount) ||
+            boneIdx >= static_cast<int>(boneJoints_.size()))
+            continue;
+        const std::string& jointPath = boneJoints_[boneIdx];
+        if (jointPath.empty()) continue;
+
+        double restMaya[16];
+        mmdMatrixToMaya(&restMats[boneIdx * 16], restMaya);
+        MMatrix mmdRestMayaMat(restMaya);
+
+        // Read Maya bind world matrix
+        MSelectionList jSel;
+        if (jSel.add(jointPath.c_str()) != MS::kSuccess) continue;
+        MDagPath jDag;
+        if (jSel.getDagPath(0, jDag) != MS::kSuccess) continue;
+        MMatrix bindMat = jDag.inclusiveMatrix();
+
+        kinematicCorrections_[boneIdx] = mmdRestMayaMat * bindMat.inverse();
+    }
+}
+
+bool MmdPhysicsSolverNode::readWorldSettings(bool& outEnable, int& outResetGen) {
+    MFnDependencyNode fnThis(thisMObject());
+    MStatus st;
+    MPlug wsPlug = fnThis.findPlug("inWorldSettings", false, &st);
+    if (st != MS::kSuccess || wsPlug.isNull()) return false;
+
+    MPlugArray wsConns;
+    wsPlug.connectedTo(wsConns, true, false);
+    if (wsConns.length() == 0) return false;
+
+    MFnDependencyNode fnWorld(wsConns[0].node());
+    MPlug enPlug = fnWorld.findPlug("enable", false, &st);
+    if (st == MS::kSuccess) outEnable = enPlug.asBool();
+    MPlug rgPlug = fnWorld.findPlug("resetGeneration", false, &st);
+    if (st == MS::kSuccess) outResetGen = rgPlug.asInt();
+    return true;
 }
 
 bool MmdPhysicsSolverNode::tryInitialize(MDataBlock& /* data */) {
@@ -249,6 +490,9 @@ bool MmdPhysicsSolverNode::tryInitialize(MDataBlock& /* data */) {
 
     boneCount_ = bridge_.boneCount();
     hasPhysicsData_ = true;
+
+    buildKinematicPoseData();
+
     return true;
 }
 
@@ -260,7 +504,10 @@ void MmdPhysicsSolverNode::freeHandles() {
     initialized_ = false;
     hasPhysicsData_ = false;
     lastTime_ = -1e30;
+    lastResetGeneration_ = -1;
     cachedFlat_.clear();
+    boneJoints_.clear();
+    kinematicCorrections_.clear();
 }
 
 void MmdPhysicsSolverNode::writeDisabledOutputs(MDataBlock& data) {
@@ -321,14 +568,23 @@ void MmdPhysicsSolverNode::writeOutputs(MDataBlock& data,
 }
 
 void MmdPhysicsSolverNode::mmdMatrixToMaya(const float* src16, double* dst16) {
-    // mmd-anim output: column-major, right-handed (Z+ forward)
-    // Maya: row-major, right-handed (Z- forward for imported MMD)
-    // Flip Z row and Z column for handedness conversion
+    // P·M·P conjugation where P = diag(1,1,-1,1): negate when exactly one index is 2
     for (int r = 0; r < 4; ++r) {
         for (int c = 0; c < 4; ++c) {
             double v = static_cast<double>(src16[c * 4 + r]); // col-major → row-major
-            if (r == 2 || c == 2) v = -v; // Z-flip
+            if ((r == 2) != (c == 2)) v = -v;
             dst16[r * 4 + c] = v;
+        }
+    }
+}
+
+void MmdPhysicsSolverNode::mayaMatrixToMmd(const double* src16, float* dst16) {
+    // Inverse: row-major Maya → column-major MMD, same P·M·P Z-flip
+    for (int r = 0; r < 4; ++r) {
+        for (int c = 0; c < 4; ++c) {
+            double v = src16[r * 4 + c];
+            if ((r == 2) != (c == 2)) v = -v;
+            dst16[c * 4 + r] = static_cast<float>(v); // row-major → col-major
         }
     }
 }

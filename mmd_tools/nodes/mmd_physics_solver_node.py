@@ -49,6 +49,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
     aModelRoot = None
 
     aInWorldSettings = None
+    aInKinematicWorldMatrix = None
 
     aOutBoneMatrices = None
     aOutBoneCount = None
@@ -64,6 +65,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._bone_joints = []
         self._kinematic_corrections = {}
         self._rb_shape_paths = {}
+        self._rb_shape_mobjects = {}
         self._last_time = None
         self._cached_flat = None
         self._initialized = False
@@ -104,43 +106,48 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._last_reset_generation = reset_gen
             force_reset = True
 
-        if (
+        same_time = (
             not force_reset
             and self._last_time is not None
             and abs(current_time - self._last_time) < _TIME_EPSILON
-        ):
+        )
+
+        if same_time and input_mode != INPUT_MODE_MAYA_POSE:
             self._write_outputs(data, solved=True, status="cached")
             return
 
-        dt = current_time - self._last_time if self._last_time is not None else None
-
-        if not force_reset and dt is not None and 0 < dt < _MAX_FORWARD_DT:
-            self._forward_step(dt, input_mode)
-            status = "stepped"
+        if same_time:
+            self._reset_world(input_mode, data)
+            status = "pose-updated"
         else:
-            self._reset_world(input_mode)
-            status = "reset"
+            dt = current_time - self._last_time if self._last_time is not None else None
+            if not force_reset and dt is not None and 0 < dt < _MAX_FORWARD_DT:
+                self._forward_step(dt, input_mode, data)
+                status = "stepped"
+            else:
+                self._reset_world(input_mode, data)
+                status = "reset"
 
         self._last_time = current_time
         self._update_cached_matrices()
         self._update_rigid_body_visual_cache()
         self._write_outputs(data, solved=True, status=status)
 
-    def _forward_step(self, dt: float, input_mode: int) -> None:
+    def _forward_step(self, dt: float, input_mode: int, data) -> None:
         self._instance.evaluate_rest_pose()
         if input_mode == INPUT_MODE_MAYA_POSE and self._kinematic_corrections:
-            self._inject_kinematic_poses()
+            self._inject_kinematic_poses(data)
             self._instance.evaluate_current_pose_before_physics()
         self._world.step_runtime(self._instance, dt)
         self._instance.evaluate_current_pose_after_physics()
 
-    def _reset_world(self, input_mode: int) -> None:
+    def _reset_world(self, input_mode: int, data=None) -> None:
         from mmd_tools.core.native.mmd_anim_runtime_types import MMD_RUNTIME_PHYSICS_MODE_LIVE
 
         self._instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
         self._instance.evaluate_rest_pose()
         if input_mode == INPUT_MODE_MAYA_POSE and self._kinematic_corrections:
-            self._inject_kinematic_poses()
+            self._inject_kinematic_poses(data)
             self._instance.evaluate_current_pose_before_physics()
         self._world.reset(self._instance)
 
@@ -288,9 +295,8 @@ class MmdPhysicsSolverNode(om.MPxNode):
             pass
         return result
 
-    def _inject_kinematic_poses(self) -> None:
-        """Read kinematic bone world matrices from Maya and inject into the instance."""
-        from maya import cmds
+    def _inject_kinematic_poses(self, data) -> None:
+        """Read kinematic bone world matrices from DG inputs and inject into the instance."""
         from mmd_tools.core.coordinate_transform import maya_matrix_to_mmd
 
         bone_count = self._bone_count
@@ -300,13 +306,29 @@ class MmdPhysicsSolverNode(om.MPxNode):
         flat = [0.0] * (bone_count * 16)
         mask = [0] * bone_count
 
+        try:
+            array_handle = data.inputArrayValue(self.aInKinematicWorldMatrix)
+        except Exception:
+            array_handle = None
+
         for bone_idx, correction_inv in self._kinematic_corrections.items():
-            joint = self._bone_joints[bone_idx]
-            if not joint:
-                continue
             try:
-                maya_world = [float(v) for v in cmds.getAttr(f"{joint}.worldMatrix[0]")]
-                corrected = correction_inv * om.MMatrix(maya_world)
+                maya_mat = None
+                if array_handle is not None:
+                    try:
+                        array_handle.jumpToElement(bone_idx)
+                        maya_mat = array_handle.inputValue().asMatrix()
+                    except Exception:
+                        pass
+                if maya_mat is None:
+                    from maya import cmds
+                    joint = self._bone_joints[bone_idx] if bone_idx < len(self._bone_joints) else None
+                    if not joint:
+                        continue
+                    maya_world = [float(v) for v in cmds.getAttr(f"{joint}.worldMatrix[0]")]
+                    maya_mat = om.MMatrix(maya_world)
+
+                corrected = correction_inv * maya_mat
                 corrected_flat = [
                     corrected.getElement(r, c) for r in range(4) for c in range(4)
                 ]
@@ -357,6 +379,12 @@ class MmdPhysicsSolverNode(om.MPxNode):
                     idx = cmds.getAttr(f"{shape}.pmxIndex")
                     if idx >= 0:
                         self._rb_shape_paths[idx] = shape
+                        try:
+                            sel = om.MSelectionList()
+                            sel.add(shape)
+                            self._rb_shape_mobjects[idx] = sel.getDependNode(0)
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -368,6 +396,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if states is None:
             return
         from mmd_tools.core.coordinate_transform import mmd_point_to_maya
+        import maya.api.OpenMayaRender as omr
 
         for pmx_idx, shape_path in self._rb_shape_paths.items():
             if pmx_idx >= len(states):
@@ -379,6 +408,12 @@ class MmdPhysicsSolverNode(om.MPxNode):
             tmat.setTranslation(om.MVector(*pos_maya), om.MSpace.kWorld)
             tmat.setRotation(om.MQuaternion(-qx, -qy, qz, qw))
             _SIMULATED_RB_CACHE[shape_path] = tmat.asMatrix()
+            mob = self._rb_shape_mobjects.get(pmx_idx)
+            if mob is not None and not mob.isNull():
+                try:
+                    omr.MRenderer.setGeometryDrawDirty(mob)
+                except Exception:
+                    pass
 
     def _read_world_settings(self):
         """Read enable and resetGeneration from connected world node."""
@@ -439,6 +474,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._bone_joints = []
         self._kinematic_corrections = {}
         self._rb_shape_paths = {}
+        self._rb_shape_mobjects = {}
         self._last_time = None
         self._cached_flat = None
 
@@ -483,6 +519,16 @@ def initialize():
 
     MmdPhysicsSolverNode.aInWorldSettings = msgAttr.create("inWorldSettings", "iws")
     MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aInWorldSettings)
+
+    mAttr = om.MFnMatrixAttribute()
+    MmdPhysicsSolverNode.aInKinematicWorldMatrix = mAttr.create(
+        "inKinematicWorldMatrix", "ikwm", om.MFnMatrixAttribute.kDouble,
+    )
+    mAttr.storable = False
+    mAttr.array = True
+    mAttr.usesArrayDataBuilder = True
+    mAttr.disconnectBehavior = om.MFnAttribute.kDelete
+    MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aInKinematicWorldMatrix)
 
     MmdPhysicsSolverNode.aOutBoneMatrices = tAttr.create(
         "outBoneMatrices", "obm", om.MFnData.kDoubleArray
@@ -547,6 +593,18 @@ def initialize():
     )
     MmdPhysicsSolverNode.attributeAffects(
         MmdPhysicsSolverNode.aInputMode, MmdPhysicsSolverNode.aOutSolved
+    )
+    MmdPhysicsSolverNode.attributeAffects(
+        MmdPhysicsSolverNode.aInKinematicWorldMatrix, MmdPhysicsSolverNode.aOutBoneMatrices
+    )
+    MmdPhysicsSolverNode.attributeAffects(
+        MmdPhysicsSolverNode.aInKinematicWorldMatrix, MmdPhysicsSolverNode.aOutBoneCount
+    )
+    MmdPhysicsSolverNode.attributeAffects(
+        MmdPhysicsSolverNode.aInKinematicWorldMatrix, MmdPhysicsSolverNode.aOutStatus
+    )
+    MmdPhysicsSolverNode.attributeAffects(
+        MmdPhysicsSolverNode.aInKinematicWorldMatrix, MmdPhysicsSolverNode.aOutSolved
     )
 
 

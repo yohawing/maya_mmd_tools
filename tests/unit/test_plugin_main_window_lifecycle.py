@@ -98,6 +98,8 @@ class TestPluginMainWindowLifecycle(unittest.TestCase):
             "mmd_tools.nodes.mmd_physics_joint_shape",
             "mmd_tools.nodes.mmd_physics_solver_node",
             "mmd_tools.nodes.mmd_physics_bone_driver_node",
+            "mmd_tools.nodes.mmd_physics_world_shape",
+            "mmd_tools.nodes.mmd_rigid_body_draw_override",
         ):
             mod = types.ModuleType(name)
             mod.register = MagicMock()

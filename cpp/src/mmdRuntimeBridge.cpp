@@ -343,9 +343,25 @@ bool RuntimeBridge::setPhysicsMode(mmd_runtime_physics_mode_t mode) {
     return mmd_runtime_instance_set_physics_mode(instance_, mode) == 0;
 }
 
+bool RuntimeBridge::evaluateRestPose() {
+    if (!instance_) return false;
+    return mmd_runtime_instance_evaluate_rest_pose(instance_);
+}
+
 bool RuntimeBridge::evaluateCurrentPoseBeforePhysics() {
     if (!instance_) return false;
     return mmd_runtime_instance_evaluate_current_pose_before_physics(instance_) == 0;
+}
+
+bool RuntimeBridge::applyPhysicsWorldMatrices(const float* matrices, size_t matricesLen,
+                                               const uint8_t* mask, size_t maskLen,
+                                               size_t* outUpdatedCount) {
+    if (!instance_) return false;
+    size_t updated = 0;
+    mmd_runtime_status_t st = mmd_runtime_instance_apply_physics_world_matrices(
+        instance_, matrices, matricesLen, mask, maskLen, &updated);
+    if (outUpdatedCount) *outUpdatedCount = updated;
+    return st == 0;
 }
 
 bool RuntimeBridge::evaluateCurrentPoseAfterPhysics() {

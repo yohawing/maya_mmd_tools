@@ -77,8 +77,12 @@ public:
 
     // Instance physics helpers
     bool setPhysicsMode(mmd_runtime_physics_mode_t mode);
+    bool evaluateRestPose();
     bool evaluateCurrentPoseBeforePhysics();
     bool evaluateCurrentPoseAfterPhysics();
+    bool applyPhysicsWorldMatrices(const float* matrices, size_t matricesLen,
+                                   const uint8_t* mask, size_t maskLen,
+                                   size_t* outUpdatedCount = nullptr);
 
     static uint32_t runtimeAbiVersion();
     static bool isRuntimeAbiCompatible();

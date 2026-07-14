@@ -72,6 +72,17 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
     aOutRotateY = None
     aOutRotateZ = None
 
+    # Pre-physics VMD input (populated by recovery after VMD import)
+    aInPreTranslate = None
+    aInPreTranslateX = None
+    aInPreTranslateY = None
+    aInPreTranslateZ = None
+    aInPreRotate = None
+    aInPreRotateX = None
+    aInPreRotateY = None
+    aInPreRotateZ = None
+    aOutPrePhysicsWorldMatrix = None
+
     def __init__(self):
         super().__init__()
 
@@ -86,6 +97,7 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
             self.aOutRotateX,
             self.aOutRotateY,
             self.aOutRotateZ,
+            self.aOutPrePhysicsWorldMatrix,
         ):
             return True
         if plug.isChild:
@@ -95,6 +107,10 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
     def compute(self, plug, data):
         if not self._is_output_plug(plug):
             return None
+
+        if plug.attribute() == self.aOutPrePhysicsWorldMatrix:
+            self._compute_pre_physics_world_matrix(data)
+            return
 
         enable = data.inputValue(self.aEnable).asBool()
         solved = data.inputValue(self.aInSolved).asBool()
@@ -189,6 +205,46 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
     ) -> om.MMatrix:
         """Map runtime PMX world space into the Maya bind-oriented world space."""
         return bind_world * no_orient_bind_world.inverse() * bone_world
+
+    def _compute_pre_physics_world_matrix(self, data) -> None:
+        """Compose pre-physics world matrix from VMD animCurve-driven local T/R."""
+        tx = data.inputValue(self.aInPreTranslateX).asDouble()
+        ty = data.inputValue(self.aInPreTranslateY).asDouble()
+        tz = data.inputValue(self.aInPreTranslateZ).asDouble()
+
+        rx = data.inputValue(self.aInPreRotateX).asAngle().asRadians()
+        ry = data.inputValue(self.aInPreRotateY).asAngle().asRadians()
+        rz = data.inputValue(self.aInPreRotateZ).asAngle().asRadians()
+
+        jo_x = data.inputValue(self.aInJointOrientX).asAngle().asRadians()
+        jo_y = data.inputValue(self.aInJointOrientY).asAngle().asRadians()
+        jo_z = data.inputValue(self.aInJointOrientZ).asAngle().asRadians()
+
+        ra_x = data.inputValue(self.aInRotateAxisX).asAngle().asRadians()
+        ra_y = data.inputValue(self.aInRotateAxisY).asAngle().asRadians()
+        ra_z = data.inputValue(self.aInRotateAxisZ).asAngle().asRadians()
+
+        ro_index = data.inputValue(self.aInRotateOrder).asShort()
+        ro = _ROTATE_ORDERS[ro_index] if 0 <= ro_index < len(_ROTATE_ORDERS) else om.MEulerRotation.kXYZ
+
+        # Joint local: T(translate) * R(jointOrient) * R(rotate, order) * R(rotateAxis)
+        tfm = om.MTransformationMatrix()
+        tfm.setTranslation(om.MVector(tx, ty, tz), om.MSpace.kTransform)
+
+        q_jo = om.MEulerRotation(jo_x, jo_y, jo_z).asQuaternion()
+        q_r = om.MEulerRotation(rx, ry, rz, ro).asQuaternion()
+        q_ra = om.MEulerRotation(ra_x, ra_y, ra_z).asQuaternion()
+        tfm.setRotation(q_jo * q_r * q_ra)
+
+        local_mat = tfm.asMatrix()
+
+        parent_inv = data.inputValue(self.aInParentInverseMatrix).asMatrix()
+        parent_world = parent_inv.inverse()
+
+        pre_world = local_mat * parent_world
+        out_handle = data.outputValue(self.aOutPrePhysicsWorldMatrix)
+        out_handle.setMMatrix(pre_world)
+        data.setClean(self.aOutPrePhysicsWorldMatrix)
 
     def _write_identity(self, data) -> None:
         data.outputValue(self.aOutTranslate).set3Double(0.0, 0.0, 0.0)
@@ -329,6 +385,47 @@ def initialize():
     nAttr.keyable = True
     MmdPhysicsBoneDriverNode.addAttribute(MmdPhysicsBoneDriverNode.aEnable)
 
+    # --- Pre-physics VMD inputs ---
+
+    MmdPhysicsBoneDriverNode.aInPreTranslateX = nAttr.create(
+        "inPreTranslateX", "iptx", om.MFnNumericData.kDouble, 0.0
+    )
+    MmdPhysicsBoneDriverNode.aInPreTranslateY = nAttr.create(
+        "inPreTranslateY", "ipty", om.MFnNumericData.kDouble, 0.0
+    )
+    MmdPhysicsBoneDriverNode.aInPreTranslateZ = nAttr.create(
+        "inPreTranslateZ", "iptz", om.MFnNumericData.kDouble, 0.0
+    )
+    MmdPhysicsBoneDriverNode.aInPreTranslate = cAttr.create("inPreTranslate", "ipt")
+    cAttr.addChild(MmdPhysicsBoneDriverNode.aInPreTranslateX)
+    cAttr.addChild(MmdPhysicsBoneDriverNode.aInPreTranslateY)
+    cAttr.addChild(MmdPhysicsBoneDriverNode.aInPreTranslateZ)
+    MmdPhysicsBoneDriverNode.addAttribute(MmdPhysicsBoneDriverNode.aInPreTranslate)
+
+    MmdPhysicsBoneDriverNode.aInPreRotateX = uAttr.create(
+        "inPreRotateX", "iprx", om.MFnUnitAttribute.kAngle, 0.0
+    )
+    MmdPhysicsBoneDriverNode.aInPreRotateY = uAttr.create(
+        "inPreRotateY", "ipry", om.MFnUnitAttribute.kAngle, 0.0
+    )
+    MmdPhysicsBoneDriverNode.aInPreRotateZ = uAttr.create(
+        "inPreRotateZ", "iprz", om.MFnUnitAttribute.kAngle, 0.0
+    )
+    MmdPhysicsBoneDriverNode.aInPreRotate = cAttr.create("inPreRotate", "ipr")
+    cAttr.addChild(MmdPhysicsBoneDriverNode.aInPreRotateX)
+    cAttr.addChild(MmdPhysicsBoneDriverNode.aInPreRotateY)
+    cAttr.addChild(MmdPhysicsBoneDriverNode.aInPreRotateZ)
+    MmdPhysicsBoneDriverNode.addAttribute(MmdPhysicsBoneDriverNode.aInPreRotate)
+
+    MmdPhysicsBoneDriverNode.aOutPrePhysicsWorldMatrix = mAttr.create(
+        "outPrePhysicsWorldMatrix", "oppwm"
+    )
+    mAttr.writable = False
+    mAttr.storable = False
+    MmdPhysicsBoneDriverNode.addAttribute(
+        MmdPhysicsBoneDriverNode.aOutPrePhysicsWorldMatrix
+    )
+
     # --- Outputs ---
 
     MmdPhysicsBoneDriverNode.aOutTranslateX = nAttr.create(
@@ -401,6 +498,19 @@ def initialize():
     for inp in inputs:
         for out in outputs:
             MmdPhysicsBoneDriverNode.attributeAffects(inp, out)
+
+    pre_inputs = [
+        MmdPhysicsBoneDriverNode.aInPreTranslate,
+        MmdPhysicsBoneDriverNode.aInPreRotate,
+        MmdPhysicsBoneDriverNode.aInJointOrient,
+        MmdPhysicsBoneDriverNode.aInRotateAxis,
+        MmdPhysicsBoneDriverNode.aInRotateOrder,
+        MmdPhysicsBoneDriverNode.aInParentInverseMatrix,
+    ]
+    for inp in pre_inputs:
+        MmdPhysicsBoneDriverNode.attributeAffects(
+            inp, MmdPhysicsBoneDriverNode.aOutPrePhysicsWorldMatrix
+        )
 
 
 def register(plugin_fn):
