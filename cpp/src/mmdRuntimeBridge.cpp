@@ -57,6 +57,7 @@ RuntimeBridge::RuntimeBridge() {
 }
 
 RuntimeBridge::~RuntimeBridge() {
+    freePhysicsWorld();
     freeInstance();
     freeClip();
     freeModel();
@@ -274,6 +275,82 @@ size_t RuntimeBridge::boneCount() const {
 size_t RuntimeBridge::morphCount() const {
     if (!model_) return 0;
     return mmd_runtime_model_morph_count(model_);
+}
+
+bool RuntimeBridge::createPhysicsWorldFromPmx(const uint8_t* data, size_t len) {
+    freePhysicsWorld();
+    if (!data || len == 0 || !loadFfiIfNeeded()) return false;
+
+    mmd_runtime_status_t st = mmd_runtime_physics_world_create_from_pmx_bytes(
+        data, len, &physicsWorld_);
+    return st == 0 && physicsWorld_ != nullptr;
+}
+
+void RuntimeBridge::freePhysicsWorld() {
+    if (physicsWorld_) {
+        mmd_runtime_physics_world_free(physicsWorld_);
+        physicsWorld_ = nullptr;
+    }
+}
+
+bool RuntimeBridge::resetPhysicsWorld() {
+    if (!physicsWorld_ || !instance_) return false;
+
+    size_t seeded = 0;
+    mmd_runtime_status_t st = mmd_runtime_physics_world_reset(
+        physicsWorld_, instance_, &seeded);
+    return st == 0;
+}
+
+bool RuntimeBridge::stepPhysicsWorldRuntime(
+    float dtSeconds,
+    mmd_runtime_ffi_physics_world_step_report_t* outReport)
+{
+    if (!physicsWorld_ || !instance_) return false;
+
+    mmd_runtime_ffi_physics_world_step_report_t localReport{};
+    mmd_runtime_status_t st = mmd_runtime_physics_world_step_runtime(
+        physicsWorld_, instance_, dtSeconds,
+        outReport ? outReport : &localReport);
+    return st == 0;
+}
+
+size_t RuntimeBridge::physicsWorldRigidbodyCount() const {
+    if (!physicsWorld_) return 0;
+
+    size_t count = 0;
+    mmd_runtime_status_t st = mmd_runtime_physics_world_rigidbody_count(
+        physicsWorld_, &count);
+    return st == 0 ? count : 0;
+}
+
+std::vector<float> RuntimeBridge::copyRigidbodyStates() const {
+    if (!physicsWorld_) return {};
+
+    size_t rbCount = physicsWorldRigidbodyCount();
+    if (rbCount == 0) return {};
+
+    // 7 floats per rigidbody: pos(3) + rot_quat(4)
+    const size_t len = rbCount * 7;
+    std::vector<float> out(len);
+    mmd_runtime_status_t st = mmd_runtime_physics_world_copy_rigidbody_states(
+        physicsWorld_, out.data(), len);
+    return st == 0 ? out : std::vector<float>{};
+}
+
+bool RuntimeBridge::setPhysicsMode(mmd_runtime_physics_mode_t mode) {
+    if (!instance_) return false;
+    return mmd_runtime_instance_set_physics_mode(instance_, mode) == 0;
+}
+
+bool RuntimeBridge::evaluateCurrentPoseBeforePhysics() {
+    if (!instance_) return false;
+    return mmd_runtime_instance_evaluate_current_pose_before_physics(instance_) == 0;
+}
+
+bool RuntimeBridge::evaluateCurrentPoseAfterPhysics() {
+    if (!instance_) return false;
+    return mmd_runtime_instance_evaluate_current_pose_after_physics(instance_) == 0;
 }
 
 uint32_t RuntimeBridge::runtimeAbiVersion() {

@@ -24,6 +24,8 @@
 #include "mmdFastLoad.h"
 #include "MmdAppendNode.h"
 #include "MmdCcdIkNode.h"
+#include "MmdPhysicsSolverNode.h"
+#include "MmdPhysicsBoneDriverNode.h"
 
 // 将来のノード登録例 (コメントアウト)
 // #include "MmdAnimSkinDeformer.h"
@@ -32,6 +34,8 @@
 // skipped when the Python plugin already registered them with the same typeId).
 static bool sCppRegisteredAppend = false;
 static bool sCppRegisteredCcdIk = false;
+static bool sCppRegisteredPhysicsSolver = false;
+static bool sCppRegisteredPhysicsBoneDriver = false;
 
 static bool isNodeTypeRegistered(const MTypeId& expectedId)
 {
@@ -109,6 +113,36 @@ MStatus initializePlugin(MObject obj)
         MGlobal::displayInfo("mmdCcdIk node registered.");
     }
 
+    // mmdPhysicsSolver 登録 (Python prototype と mutual-exclusion)
+    if (isNodeTypeRegistered(MmdPhysicsSolverNode::id)) {
+        MGlobal::displayInfo("mmdPhysicsSolver already registered by Python plugin; skipping C++ registration.");
+        sCppRegisteredPhysicsSolver = false;
+    } else {
+        status = plugin.registerNode(
+            "mmdPhysicsSolver",
+            MmdPhysicsSolverNode::id,
+            MmdPhysicsSolverNode::creator,
+            MmdPhysicsSolverNode::initialize);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredPhysicsSolver = true;
+        MGlobal::displayInfo("mmdPhysicsSolver node registered (C++).");
+    }
+
+    // mmdPhysicsBoneDriver 登録
+    if (isNodeTypeRegistered(MmdPhysicsBoneDriverNode::id)) {
+        MGlobal::displayInfo("mmdPhysicsBoneDriver already registered by Python plugin; skipping C++ registration.");
+        sCppRegisteredPhysicsBoneDriver = false;
+    } else {
+        status = plugin.registerNode(
+            "mmdPhysicsBoneDriver",
+            MmdPhysicsBoneDriverNode::id,
+            MmdPhysicsBoneDriverNode::creator,
+            MmdPhysicsBoneDriverNode::initialize);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredPhysicsBoneDriver = true;
+        MGlobal::displayInfo("mmdPhysicsBoneDriver node registered (C++).");
+    }
+
     return MS::kSuccess;
 }
 
@@ -135,6 +169,18 @@ MStatus uninitializePlugin(MObject obj)
         status = plugin.deregisterNode(MmdCcdIkNode::id);
         CHECK_MSTATUS_AND_RETURN_IT(status);
         sCppRegisteredCcdIk = false;
+    }
+
+    if (sCppRegisteredPhysicsBoneDriver) {
+        status = plugin.deregisterNode(MmdPhysicsBoneDriverNode::id);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredPhysicsBoneDriver = false;
+    }
+
+    if (sCppRegisteredPhysicsSolver) {
+        status = plugin.deregisterNode(MmdPhysicsSolverNode::id);
+        CHECK_MSTATUS_AND_RETURN_IT(status);
+        sCppRegisteredPhysicsSolver = false;
     }
 
     MGlobal::displayInfo("maya_mmd_tools_cpp plugin unloaded.");
