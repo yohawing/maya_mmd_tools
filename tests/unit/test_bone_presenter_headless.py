@@ -13,9 +13,15 @@ from mmd_tools.core.constants import (  # noqa: E402
     ATTR_MMD_BONE_NAME,
     ATTR_MMD_BONE_NAME_EN,
     ATTR_MMD_BONE_OFFSET,
+    ATTR_MMD_CONNECTION_BONE,
     ATTR_MMD_DEFORM_LAYER,
+    ATTR_MMD_EXTERNAL_PARENT_KEY,
     ATTR_MMD_GRANT_PARENT,
     ATTR_MMD_GRANT_RATE,
+    ATTR_MMD_IK_LINKS,
+    ATTR_MMD_IK_LIMIT_ANGLE,
+    ATTR_MMD_IK_LOOP,
+    ATTR_MMD_IK_TARGET_INDEX,
 )
 from mmd_tools.core.pmx_data.bone import PmxBoneFlag  # noqa: E402
 from mmd_tools.ui.presenters import bone_presenter as bone_presenter_module  # noqa: E402
@@ -436,6 +442,32 @@ class TestBonePresenterHeadless(unittest.TestCase):
         self.assertFalse(view.offset_y_spin.enabled)
         self.assertFalse(view.offset_z_spin.enabled)
         self.assertTrue(view.connection_bone_edit.enabled)
+
+    def test_load_bone_properties_treats_missing_flags_as_unflagged(self):
+        presenter, view, _, adapter = _make_presenter()
+        presenter.current_bone = TEST_BONE
+        attrs = {
+            (TEST_BONE, ATTR_MMD_BONE_NAME): "センター",
+            (TEST_BONE, ATTR_MMD_BONE_NAME_EN): "Center",
+            (TEST_BONE, ATTR_MMD_DEFORM_LAYER): 0,
+            (TEST_BONE, ATTR_MMD_BONE_FLAGS): None,
+            (TEST_BONE, ATTR_MMD_BONE_OFFSET): [0.0, -1.0, 0.0],
+            (TEST_BONE, ATTR_MMD_CONNECTION_BONE): "",
+            (TEST_BONE, ATTR_MMD_IK_TARGET_INDEX): -1,
+            (TEST_BONE, ATTR_MMD_IK_LOOP): 10,
+            (TEST_BONE, ATTR_MMD_IK_LIMIT_ANGLE): 0.0,
+            (TEST_BONE, ATTR_MMD_IK_LINKS): [],
+            (TEST_BONE, ATTR_MMD_EXTERNAL_PARENT_KEY): -1,
+        }
+
+        with patch.object(bone_presenter_module, "get_attribute", side_effect=_attr_getter(attrs)):
+            with patch.object(bone_presenter_module, "object_exists", return_value=True):
+                presenter.load_bone_properties()
+
+        self.assertFalse(view.rotatable_check.isChecked())
+        self.assertFalse(view.movable_check.isChecked())
+        self.assertFalse(view.ik_enabled_check.isChecked())
+        self.assertEqual(adapter.calls[0], ("list_relatives", TEST_BONE, {"parent": True, "type": "joint"}))
 
     def test_calculate_bone_flags_combines_enabled_ui_state(self):
         presenter, view, _, _ = _make_presenter()

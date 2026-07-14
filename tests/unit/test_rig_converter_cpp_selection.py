@@ -80,6 +80,56 @@ class TestRigConverterUnifiedNodeTypes(unittest.TestCase):
 
         self.assertEqual([item["targetBoneIndex"] for item in ordered], [1, 2])
 
+    def test_rotation_grant_edges_expand_ik_exclusions_transitively(self):
+        converter = RigConverter()
+
+        excluded = converter._grant_dependency_closure(
+            {3},
+            [(3, 1), (1, 6), (1, 7), (6, 8)],
+        )
+
+        self.assertEqual(excluded, {1, 3, 6, 7, 8})
+
+    def test_ik_exclusions_include_downstream_links_and_grant_dependents(self):
+        converter = RigConverter()
+
+        excluded = converter._excluded_ik_input_bones(
+            [{"boneIndex": 3}],
+            [(5, {3}), (9, {14})],
+            5,
+            [(3, 1), (1, 6)],
+        )
+
+        self.assertEqual(excluded, {1, 3, 6, 14})
+
+    def test_only_rotation_grants_enter_ik_rotation_exclusion_edges(self):
+        grants = [
+            {"sourceBoneIndex": 3, "targetBoneIndex": 1, "affectRotation": True},
+            {"sourceBoneIndex": 3, "targetBoneIndex": 2, "affectRotation": False},
+        ]
+
+        self.assertEqual(
+            RigConverter._accepted_rotation_grant_edges(grants),
+            [(3, 1)],
+        )
+
+    def test_ik_goal_guard_checks_controller_and_dag_ancestors(self):
+        converter = RigConverter()
+
+        def parents(node, **_kwargs):
+            return {"controller": ["parent"], "parent": []}.get(node, [])
+
+        with patch.object(rig_converter.cmds, "listRelatives", side_effect=parents):
+            self.assertFalse(
+                converter._can_connect_live_ik_goal_world_matrix("controller", ["controller"])
+            )
+            self.assertFalse(
+                converter._can_connect_live_ik_goal_world_matrix("controller", ["parent"])
+            )
+            self.assertTrue(
+                converter._can_connect_live_ik_goal_world_matrix("controller", ["unrelated"])
+            )
+
     def test_cpp_v2_lookup_is_scoped_to_legacy_symbol_owner_module(self):
         source = (
             Path(__file__).resolve().parents[2] / "cpp" / "src" / "MmdCcdIkNode.cpp"
