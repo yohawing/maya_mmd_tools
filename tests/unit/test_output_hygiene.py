@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import sys
 import tempfile
@@ -12,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from tests.common.custom_test_runner import CustomTestRunner
 from tests.common.output_hygiene import (
     compact_failure_details_from_log,
     format_summary,
@@ -24,6 +26,64 @@ from tests.common.output_hygiene import (
 
 
 class OutputHygieneTest(unittest.TestCase):
+    @staticmethod
+    def _failing_suite():
+        class FailingCase(unittest.TestCase):
+            def test_expected_diagnostic(self):
+                raise RuntimeError("expected diagnostic noise")
+
+        return unittest.defaultTestLoader.loadTestsFromTestCase(FailingCase)
+
+    @staticmethod
+    def _unexpected_success_suite():
+        class UnexpectedSuccessCase(unittest.TestCase):
+            @unittest.expectedFailure
+            def test_unexpected_success(self):
+                return None
+
+        return unittest.defaultTestLoader.loadTestsFromTestCase(UnexpectedSuccessCase)
+
+    def test_custom_runner_compact_mode_keeps_failure_name_without_traceback(self):
+        stream = io.StringIO()
+        result = CustomTestRunner(
+            stream=stream,
+            verbosity=1,
+            show_error_details=False,
+        ).run(self._failing_suite())
+
+        output = stream.getvalue()
+        self.assertFalse(result.wasSuccessful())
+        self.assertIn("ERROR: ", output)
+        self.assertIn("エラー詳細は省略しました", output)
+        self.assertNotIn("Traceback (most recent call last)", output)
+        self.assertNotIn("expected diagnostic noise", output)
+
+    def test_custom_runner_diagnostic_mode_preserves_traceback(self):
+        stream = io.StringIO()
+        result = CustomTestRunner(
+            stream=stream,
+            verbosity=1,
+            show_error_details=True,
+        ).run(self._failing_suite())
+
+        output = stream.getvalue()
+        self.assertFalse(result.wasSuccessful())
+        self.assertIn("Traceback (most recent call last)", output)
+        self.assertIn("expected diagnostic noise", output)
+
+    def test_custom_runner_compact_mode_lists_unexpected_success(self):
+        stream = io.StringIO()
+        result = CustomTestRunner(
+            stream=stream,
+            verbosity=1,
+            show_error_details=False,
+        ).run(self._unexpected_success_suite())
+
+        output = stream.getvalue()
+        self.assertFalse(result.wasSuccessful())
+        self.assertIn("UNEXPECTED SUCCESS: ", output)
+        self.assertIn("test_unexpected_success", output)
+
     def test_repeated_warnings_are_counted_without_losing_unique_warnings(self):
         output = "\n".join(
             [

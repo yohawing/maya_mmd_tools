@@ -1062,13 +1062,17 @@ def ci_unit(session: nox.Session) -> None:
         session.error("No importable pure-python unit tests found in tests/unit/")
 
     session.log(f"Running {len(importable)} pure-python unit test module(s)")
-    session.run(
-        sys.executable,
-        "-m",
-        "unittest",
-        *importable,
-        external=True,
+    command = [sys.executable, "-m", "unittest", *importable]
+    returncode, log_path, (_, repeated_warnings) = _run_logged_subprocess(
+        command,
+        log_path=ROOT / "build" / "reports" / "ci_unit_tests.log",
+        cwd=ROOT,
+        verbose=False,
     )
+    if returncode != 0:
+        session.error(f"ci_unit failed with exit code {returncode}; full log: {log_path}")
+    detail = f"; repeated warnings suppressed: {repeated_warnings}" if repeated_warnings else ""
+    session.log(f"ci_unit passed; full log: {log_path}{detail}")
 
 
 @nox.session(venv_backend="none")

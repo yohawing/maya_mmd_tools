@@ -129,7 +129,14 @@ def _result_payload(test_type, result, duration_sec):
     }
 
 
-def run_tests(test_type, test_filter=None, *, verbose=False, report_path=None):
+def run_tests(
+    test_type,
+    test_filter=None,
+    *,
+    verbose=False,
+    capture_details=False,
+    report_path=None,
+):
     """テストを実行します。
 
     Args:
@@ -148,7 +155,10 @@ def run_tests(test_type, test_filter=None, *, verbose=False, report_path=None):
     enable_windows_ansi_support()
 
     # カラー対応のテストランナーを使用
-    runner = CustomTestRunner(verbosity=2 if verbose else 1)
+    runner = CustomTestRunner(
+        verbosity=2 if verbose else 1,
+        show_error_details=verbose or capture_details,
+    )
     runner.failfast = False
     # The outer runner owns terminal suppression. Keep successful-test stdout
     # and warnings in its complete transcript instead of discarding them here.
@@ -193,6 +203,11 @@ def main():
         action="store_true",
         help="Show each test and its full diagnostic output.",
     )
+    parser.add_argument(
+        "--capture-details",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
 
     # Maya環境を初期化
@@ -204,6 +219,7 @@ def main():
             args.type,
             args.test,
             verbose=args.verbose,
+            capture_details=args.capture_details,
             report_path=args.report,
         )
     finally:

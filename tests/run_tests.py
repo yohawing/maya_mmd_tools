@@ -249,6 +249,9 @@ def main():
         "--report",
         wsl_to_windows_path(report_path) if str(mayapy_path).startswith("/mnt/") else str(report_path),
     ]
+    # Keep detailed child diagnostics in the complete transcript while the
+    # outer runner decides whether they should reach the terminal.
+    command.append("--capture-details")
     if args.test:
         command.extend(["--test", args.test])
     if args.verbose:
