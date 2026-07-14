@@ -204,6 +204,7 @@ def _build_solver(root_group: str, world_node: str, maya_joints: list, logger) -
     """Create one mmdPhysicsSolver per model and connect to world + model root."""
     try:
         solver = cmds.createNode("mmdPhysicsSolver", name="mmdPhysicsSolver")
+        cmds.setAttr(f"{solver}.inputMode", 1)
         cmds.connectAttr("time1.outTime", f"{solver}.inTime")
         cmds.connectAttr(f"{root_group}.message", f"{solver}.modelRoot")
         world_shapes = cmds.listRelatives(world_node, shapes=True, type="mmdPhysicsWorldShape") or []

@@ -9,6 +9,11 @@ Time state machine:
 - forward step → step_runtime(dt)
 - jump / backward / first eval → reset + single step
 
+inputMode attribute:
+- 0 (rest-only): solver uses mmd-anim rest pose only, no Maya joint reading
+- 1 (maya-pose): solver reads kinematic bone world matrices from Maya joints
+  and injects them via apply_physics_world_matrices before each step
+
 This is the Python prototype; a C++ version with the same TypeId will replace
 it when the C++ plugin is loaded (mutual-exclusion pattern).
 """
@@ -27,6 +32,11 @@ def maya_useNewAPI():
 _TIME_EPSILON = 1e-6
 _MAX_FORWARD_DT = 0.2
 
+INPUT_MODE_REST = 0
+INPUT_MODE_MAYA_POSE = 1
+
+_SIMULATED_RB_CACHE: dict[str, om.MMatrix] = {}
+
 
 class MmdPhysicsSolverNode(om.MPxNode):
     kTypeName = "mmdPhysicsSolver"
@@ -34,6 +44,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
     kClassify = "utility/general"
 
     aEnable = None
+    aInputMode = None
     aInTime = None
     aModelRoot = None
 
@@ -52,6 +63,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._bone_count = 0
         self._bone_joints = []
         self._kinematic_corrections = {}
+        self._rb_shape_paths = {}
         self._last_time = None
         self._cached_flat = None
         self._initialized = False
@@ -72,6 +84,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="disabled")
             return
 
+        input_mode = data.inputValue(self.aInputMode).asShort()
         current_time = data.inputValue(self.aInTime).asTime().asUnits(om.MTime.kSeconds)
 
         if not self._initialized:
@@ -102,30 +115,31 @@ class MmdPhysicsSolverNode(om.MPxNode):
         dt = current_time - self._last_time if self._last_time is not None else None
 
         if not force_reset and dt is not None and 0 < dt < _MAX_FORWARD_DT:
-            self._forward_step(dt)
+            self._forward_step(dt, input_mode)
             status = "stepped"
         else:
-            self._reset_world()
+            self._reset_world(input_mode)
             status = "reset"
 
         self._last_time = current_time
         self._update_cached_matrices()
+        self._update_rigid_body_visual_cache()
         self._write_outputs(data, solved=True, status=status)
 
-    def _forward_step(self, dt: float) -> None:
+    def _forward_step(self, dt: float, input_mode: int) -> None:
         self._instance.evaluate_rest_pose()
-        if self._kinematic_corrections:
+        if input_mode == INPUT_MODE_MAYA_POSE and self._kinematic_corrections:
             self._inject_kinematic_poses()
             self._instance.evaluate_current_pose_before_physics()
         self._world.step_runtime(self._instance, dt)
         self._instance.evaluate_current_pose_after_physics()
 
-    def _reset_world(self) -> None:
+    def _reset_world(self, input_mode: int) -> None:
         from mmd_tools.core.native.mmd_anim_runtime_types import MMD_RUNTIME_PHYSICS_MODE_LIVE
 
         self._instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
         self._instance.evaluate_rest_pose()
-        if self._kinematic_corrections:
+        if input_mode == INPUT_MODE_MAYA_POSE and self._kinematic_corrections:
             self._inject_kinematic_poses()
             self._instance.evaluate_current_pose_before_physics()
         self._world.reset(self._instance)
@@ -188,6 +202,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._initialized = True
 
         self._build_kinematic_pose_data(model_root)
+        self._build_rigid_body_shape_mapping(model_root)
 
     def _build_kinematic_pose_data(self, model_root: str) -> None:
         """Identify kinematic bones and precompute bind corrections.
@@ -304,6 +319,67 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if any(mask):
             self._instance.apply_physics_world_matrices(flat, mask)
 
+    def _build_rigid_body_shape_mapping(self, model_root: str) -> None:
+        """Build pmxIndex → shape DAG path mapping for visual cache updates."""
+        from maya import cmds
+
+        try:
+            children = cmds.listRelatives(
+                model_root, children=True, fullPath=True, type="transform",
+            ) or []
+            physics_group = None
+            for c in children:
+                if c.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "Physics":
+                    physics_group = c
+                    break
+            if not physics_group:
+                return
+
+            children = cmds.listRelatives(
+                physics_group, children=True, fullPath=True, type="transform",
+            ) or []
+            rb_group = None
+            for c in children:
+                if c.rsplit("|", 1)[-1].rsplit(":", 1)[-1] == "RigidBodies":
+                    rb_group = c
+                    break
+            if not rb_group:
+                return
+
+            rb_transforms = cmds.listRelatives(
+                rb_group, children=True, fullPath=True, type="transform",
+            ) or []
+            for xform in rb_transforms:
+                shapes = cmds.listRelatives(
+                    xform, shapes=True, fullPath=True, type="mmdRigidBodyShape",
+                ) or []
+                for shape in shapes:
+                    idx = cmds.getAttr(f"{shape}.pmxIndex")
+                    if idx >= 0:
+                        self._rb_shape_paths[idx] = shape
+        except Exception:
+            pass
+
+    def _update_rigid_body_visual_cache(self) -> None:
+        """Populate the module-level cache with simulated rigid body world matrices."""
+        if not self._rb_shape_paths or self._world is None:
+            return
+        states = self._world.copy_rigidbody_states()
+        if states is None:
+            return
+        from mmd_tools.core.coordinate_transform import mmd_point_to_maya
+
+        for pmx_idx, shape_path in self._rb_shape_paths.items():
+            if pmx_idx >= len(states):
+                continue
+            pos_mmd, quat_xyzw_mmd = states[pmx_idx]
+            pos_maya = mmd_point_to_maya(pos_mmd)
+            qx, qy, qz, qw = quat_xyzw_mmd
+            tmat = om.MTransformationMatrix()
+            tmat.setTranslation(om.MVector(*pos_maya), om.MSpace.kWorld)
+            tmat.setRotation(om.MQuaternion(-qx, -qy, qz, qw))
+            _SIMULATED_RB_CACHE[shape_path] = tmat.asMatrix()
+
     def _read_world_settings(self):
         """Read enable and resetGeneration from connected world node."""
         try:
@@ -362,6 +438,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._initialized = False
         self._bone_joints = []
         self._kinematic_corrections = {}
+        self._rb_shape_paths = {}
         self._last_time = None
         self._cached_flat = None
 
@@ -388,6 +465,14 @@ def initialize():
     nAttr.storable = True
     nAttr.keyable = True
     MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aEnable)
+
+    eAttr = om.MFnEnumAttribute()
+    MmdPhysicsSolverNode.aInputMode = eAttr.create("inputMode", "im", INPUT_MODE_MAYA_POSE)
+    eAttr.addField("rest-only", INPUT_MODE_REST)
+    eAttr.addField("maya-pose", INPUT_MODE_MAYA_POSE)
+    eAttr.storable = True
+    eAttr.keyable = False
+    MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aInputMode)
 
     MmdPhysicsSolverNode.aInTime = uAttr.create("inTime", "it", om.MFnUnitAttribute.kTime, 0.0)
     uAttr.storable = False
@@ -450,6 +535,18 @@ def initialize():
     )
     MmdPhysicsSolverNode.attributeAffects(
         MmdPhysicsSolverNode.aInTime, MmdPhysicsSolverNode.aOutSolved
+    )
+    MmdPhysicsSolverNode.attributeAffects(
+        MmdPhysicsSolverNode.aInputMode, MmdPhysicsSolverNode.aOutBoneMatrices
+    )
+    MmdPhysicsSolverNode.attributeAffects(
+        MmdPhysicsSolverNode.aInputMode, MmdPhysicsSolverNode.aOutBoneCount
+    )
+    MmdPhysicsSolverNode.attributeAffects(
+        MmdPhysicsSolverNode.aInputMode, MmdPhysicsSolverNode.aOutStatus
+    )
+    MmdPhysicsSolverNode.attributeAffects(
+        MmdPhysicsSolverNode.aInputMode, MmdPhysicsSolverNode.aOutSolved
     )
 
 

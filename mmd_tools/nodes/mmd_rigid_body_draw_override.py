@@ -1,10 +1,16 @@
 """VP2 DrawOverride for mmdRigidBodyShape.
 
 Draws each rigid body collider as a wireframe primitive (sphere/box/capsule)
-colored by physicsMode. Positioning relies on Maya's default per-instance
-transform for MPxDrawOverride (objPath.inclusiveMatrix()); only the shape's
-own rotation attribute is applied locally since the authoring transform
-already carries the bind-pose translate (see physics_scene_builder.py).
+colored by physicsMode.
+
+During authoring (no simulation): positioning relies on the DAG transform's
+inclusiveMatrix for position and the shape's rotation attribute for local
+orientation (see physics_scene_builder.py).
+
+During simulation: the solver populates a module-level cache
+(_SIMULATED_RB_CACHE in mmd_physics_solver_node) with per-shape world
+matrices.  When a cached matrix is available, the draw override offsets from
+the DAG's authoring position to the simulated position.
 """
 
 from __future__ import annotations
@@ -33,6 +39,7 @@ class ColliderDrawData(om.MUserData):
         self.physics_mode = 0
         self.enabled = True
         self.rotation = (0.0, 0.0, 0.0)
+        self.simulated_offset = None
 
 
 def _color_for(data: ColliderDrawData) -> om.MColor:
@@ -133,6 +140,18 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
         except Exception:
             data.enabled = False
 
+        data.simulated_offset = None
+        try:
+            from mmd_tools.nodes.mmd_physics_solver_node import _SIMULATED_RB_CACHE
+
+            shape_path = objPath.fullPathName()
+            sim_matrix = _SIMULATED_RB_CACHE.get(shape_path)
+            if sim_matrix is not None:
+                dag_inclusive = objPath.inclusiveMatrix()
+                data.simulated_offset = sim_matrix * dag_inclusive.inverse()
+        except Exception:
+            pass
+
         return data
 
     def addUIDrawables(self, objPath, drawManager, frameContext, data):
@@ -141,8 +160,17 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
         if not data.enabled:
             return  # enable=False: skip drawing entirely
 
-        center = om.MPoint(0.0, 0.0, 0.0)
-        x_axis, y_axis, _z_axis = _local_axes(data.rotation)
+        if data.simulated_offset is not None:
+            offset = data.simulated_offset
+            center = om.MPoint(0.0, 0.0, 0.0) * offset
+            tmat = om.MTransformationMatrix(offset)
+            rot_quat = tmat.rotation(asQuaternion=True)
+            x_axis = om.MVector(1.0, 0.0, 0.0).rotateBy(rot_quat)
+            y_axis = om.MVector(0.0, 1.0, 0.0).rotateBy(rot_quat)
+        else:
+            center = om.MPoint(0.0, 0.0, 0.0)
+            x_axis, y_axis, _z_axis = _local_axes(data.rotation)
+
         color = _color_for(data)
 
         drawManager.beginDrawable()
