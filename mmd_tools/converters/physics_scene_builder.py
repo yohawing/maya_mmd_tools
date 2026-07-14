@@ -8,7 +8,12 @@ from typing import Optional
 
 from maya import cmds
 
-from mmd_tools.core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
+from mmd_tools.core.constants import (
+    CONSTRAINTS_GROUP,
+    PHYSICS_GROUP,
+    PHYSICS_WORLD_NODE,
+    RIGID_BODIES_GROUP,
+)
 from mmd_tools.core.logger import get_logger
 
 _logger = get_logger(__name__)
@@ -178,7 +183,71 @@ def build_physics_scene(
         _build_joint(index, jt, rigid_body_transforms, constraints_group, log) for index, jt in enumerate(joints)
     ]
 
+    world_node = _find_or_create_world_node()
+    _build_solver(root_group, world_node, maya_joints, log)
+
     return rigid_body_transforms, joint_transforms
+
+
+def _find_or_create_world_node() -> str:
+    """Return the existing scene world node, or create one at the scene root."""
+    existing = cmds.ls(type="mmdPhysicsWorldShape")
+    if existing:
+        parents = cmds.listRelatives(existing[0], parent=True, fullPath=True) or []
+        return parents[0] if parents else existing[0]
+    transform = cmds.createNode("transform", name=PHYSICS_WORLD_NODE)
+    cmds.createNode("mmdPhysicsWorldShape", name=f"{PHYSICS_WORLD_NODE}Shape", parent=transform)
+    return transform
+
+
+def _build_solver(root_group: str, world_node: str, maya_joints: list, logger) -> Optional[str]:
+    """Create one mmdPhysicsSolver per model and connect to world + model root."""
+    try:
+        solver = cmds.createNode("mmdPhysicsSolver", name="mmdPhysicsSolver")
+        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        cmds.connectAttr(f"{root_group}.message", f"{solver}.modelRoot")
+        world_shapes = cmds.listRelatives(world_node, shapes=True, type="mmdPhysicsWorldShape") or []
+        if world_shapes:
+            cmds.connectAttr(f"{world_shapes[0]}.message", f"{solver}.inWorldSettings")
+        _build_bone_drivers(solver, maya_joints, logger)
+        return solver
+    except Exception as exc:
+        logger.warning(f"event=solver_build_failed error={exc}")
+        return None
+
+
+def _build_bone_drivers(solver: str, maya_joints: list, logger) -> None:
+    """Create one mmdPhysicsBoneDriver per bone and connect to solver outputs."""
+    for i, joint in enumerate(maya_joints):
+        if not joint or not cmds.objExists(joint):
+            continue
+        try:
+            driver = cmds.createNode("mmdPhysicsBoneDriver", name=f"physDriver_{i}")
+            cmds.connectAttr(f"{solver}.outBoneMatrices", f"{driver}.inSolverBoneMatrices")
+            cmds.connectAttr(f"{solver}.outBoneCount", f"{driver}.inSolverBoneCount")
+            cmds.connectAttr(f"{solver}.outSolved", f"{driver}.inSolved")
+            cmds.setAttr(f"{driver}.inBoneIndex", i)
+
+            parent_joints = cmds.listRelatives(joint, parent=True, type="joint") or []
+            if parent_joints:
+                parent_idx = maya_joints.index(parent_joints[0]) if parent_joints[0] in maya_joints else -1
+                cmds.setAttr(f"{driver}.inParentBoneIndex", parent_idx)
+                cmds.connectAttr(f"{parent_joints[0]}.worldInverseMatrix[0]", f"{driver}.inParentInverseMatrix")
+
+            jo = cmds.getAttr(f"{joint}.jointOrient")[0]
+            cmds.setAttr(f"{driver}.inJointOrientX", jo[0])
+            cmds.setAttr(f"{driver}.inJointOrientY", jo[1])
+            cmds.setAttr(f"{driver}.inJointOrientZ", jo[2])
+
+            ra = cmds.getAttr(f"{joint}.rotateAxis")[0]
+            cmds.setAttr(f"{driver}.inRotateAxisX", ra[0])
+            cmds.setAttr(f"{driver}.inRotateAxisY", ra[1])
+            cmds.setAttr(f"{driver}.inRotateAxisZ", ra[2])
+
+            ro = cmds.getAttr(f"{joint}.rotateOrder")
+            cmds.setAttr(f"{driver}.inRotateOrder", ro)
+        except Exception as exc:
+            logger.debug(f"event=bone_driver_skip bone={i} error={exc}")
 
 
 def _node_leaf_name(node: str) -> str:

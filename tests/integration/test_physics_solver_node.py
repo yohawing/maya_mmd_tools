@@ -799,6 +799,49 @@ class TestSolverLifecycle(MayaTestBase):
         solved = cmds.getAttr("testSolver.outSolved")
         self.assertTrue(solved)
 
+    def test_reference_scene_no_crash(self):
+        """Referencing a scene containing a solver node doesn't crash."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+
+        scene_path = self.get_temp_filename("solver_ref.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+
+        cmds.file(new=True, force=True)
+
+        try:
+            cmds.file(scene_path, reference=True, namespace="refSolver")
+            referenced_solvers = cmds.ls(type="mmdPhysicsSolver")
+            self.assertTrue(referenced_solvers, "Referenced scene should expose a solver node")
+        finally:
+            if cmds.file(scene_path, query=True, reference=True):
+                cmds.file(scene_path, removeReference=True)
+
+    def test_unload_plugin_no_crash(self):
+        """Unloading and reloading the plugin doesn't crash."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+
+        cmds.file(new=True, force=True)
+
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            cmds.unloadPlugin(plugin_path, force=True)
+            self.assertFalse(cmds.pluginInfo(plugin_path, query=True, loaded=True))
+        finally:
+            cmds.loadPlugin(plugin_path)
+
+        self.assertTrue(cmds.pluginInfo(plugin_path, query=True, loaded=True))
+
     def test_no_model_root_graceful(self):
         """Solver with no model root connection outputs not-solved."""
         solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")

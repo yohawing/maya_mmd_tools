@@ -10,6 +10,7 @@ MORPHS_GROUP = "Morphs"  # モーフ関連ノードを格納するグループ�
 PHYSICS_GROUP = "Physics"  # 物理演算関連ノードを格納するグループ名
 RIGID_BODIES_GROUP = "RigidBodies"  # 剛体（nCloth、nHair、nRigid）を格納するグループ名
 CONSTRAINTS_GROUP = "Constraints"  # 物理コンストレイントを格納するグループ名
+PHYSICS_WORLD_NODE = "MMD_PhysicsWorld"  # scene 単位の physics world ノード名
 
 # ファイルタイプ
 FILE_TYPE_PMX = "PMX"  # PMXファイル形式（MikuMikuDance 7.30以降の標準形式）

@@ -37,6 +37,8 @@ class MmdPhysicsSolverNode(om.MPxNode):
     aInTime = None
     aModelRoot = None
 
+    aInWorldSettings = None
+
     aOutBoneMatrices = None
     aOutBoneCount = None
     aOutStatus = None
@@ -51,6 +53,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._last_time = None
         self._cached_flat = None
         self._initialized = False
+        self._last_reset_generation = -1
 
     def compute(self, plug, data):
         attr = plug.attribute()
@@ -76,13 +79,27 @@ class MmdPhysicsSolverNode(om.MPxNode):
             self._write_outputs(data, solved=False, status="no physics data")
             return
 
-        if self._last_time is not None and abs(current_time - self._last_time) < _TIME_EPSILON:
+        world_enable, reset_gen = self._read_world_settings()
+        if not world_enable:
+            self._write_outputs(data, solved=False, status="disabled")
+            return
+
+        force_reset = False
+        if reset_gen != self._last_reset_generation:
+            self._last_reset_generation = reset_gen
+            force_reset = True
+
+        if (
+            not force_reset
+            and self._last_time is not None
+            and abs(current_time - self._last_time) < _TIME_EPSILON
+        ):
             self._write_outputs(data, solved=True, status="cached")
             return
 
         dt = current_time - self._last_time if self._last_time is not None else None
 
-        if dt is not None and 0 < dt < _MAX_FORWARD_DT:
+        if not force_reset and dt is not None and 0 < dt < _MAX_FORWARD_DT:
             self._forward_step(dt)
             status = "stepped"
         else:
@@ -161,6 +178,21 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._instance = instance
         self._initialized = True
 
+    def _read_world_settings(self):
+        """Read enable and resetGeneration from connected world node."""
+        try:
+            fn = om.MFnDependencyNode(self.thisMObject())
+            plug = fn.findPlug("inWorldSettings", False)
+            connections = plug.connectedTo(True, False)
+            if not connections:
+                return True, self._last_reset_generation
+            world_fn = om.MFnDependencyNode(connections[0].node())
+            enable = world_fn.findPlug("enable", False).asBool()
+            reset_gen = world_fn.findPlug("resetGeneration", False).asInt()
+            return enable, reset_gen
+        except Exception:
+            return True, self._last_reset_generation
+
     def _get_connected_model_root(self):
         try:
             fn = om.MFnDependencyNode(self.thisMObject())
@@ -235,6 +267,9 @@ def initialize():
 
     MmdPhysicsSolverNode.aModelRoot = msgAttr.create("modelRoot", "mr")
     MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aModelRoot)
+
+    MmdPhysicsSolverNode.aInWorldSettings = msgAttr.create("inWorldSettings", "iws")
+    MmdPhysicsSolverNode.addAttribute(MmdPhysicsSolverNode.aInWorldSettings)
 
     MmdPhysicsSolverNode.aOutBoneMatrices = tAttr.create(
         "outBoneMatrices", "obm", om.MFnData.kDoubleArray
