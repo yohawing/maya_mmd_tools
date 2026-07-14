@@ -380,5 +380,27 @@ class TestImportExportViewState(unittest.TestCase):
         self.assertEqual(store.values["b"], "[]")
 
 
+class TestPhysicsGateSourceInspection(unittest.TestCase):
+    """Verify that the physics import UI is dev-mode-gated (PHS-GATE-1)."""
+
+    def setUp(self):
+        self.source = Path(import_export_tab.__file__).read_text(encoding="utf-8")
+
+    def test_physics_group_in_dev_only_widgets(self):
+        self.assertIn("self.physics_group", self.source)
+        lines = self.source.splitlines()
+        in_dev_only = False
+        found = False
+        for line in lines:
+            if "_dev_only_widgets" in line and "[" in line:
+                in_dev_only = True
+            if in_dev_only and "self.physics_group" in line:
+                found = True
+                break
+            if in_dev_only and "]" in line:
+                in_dev_only = False
+        self.assertTrue(found, "self.physics_group must be in _dev_only_widgets list")
+
+
 if __name__ == "__main__":
     unittest.main()
