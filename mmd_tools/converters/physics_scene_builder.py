@@ -566,6 +566,10 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
         if not cmds.objExists(driver):
             continue
 
+        if not cmds.attributeQuery("mmd_model_root", node=driver, exists=True):
+            skipped += 1
+            continue
+
         root_connections = cmds.listConnections(
             f"{driver}.mmd_model_root", source=True, destination=False
         ) or []
@@ -631,7 +635,12 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
 
 
 def _find_solver_for_model(model_root: str):
-    """Find the mmdPhysicsSolver connected to *model_root*."""
+    """Find the live mmdPhysicsSolver connected to *model_root*.
+
+    In real scenes both an inert solver (from _build_solver) and a live
+    solver (from build_physics_live_graph) may be connected to the same
+    model root.  Prefer the one with active bone-driver connections.
+    """
     try:
         available = set(cmds.allNodeTypes() or [])
     except Exception:
@@ -639,13 +648,22 @@ def _find_solver_for_model(model_root: str):
     if "mmdPhysicsSolver" not in available:
         return None
     solvers = cmds.ls(type="mmdPhysicsSolver") or []
+    candidates = []
     for solver in solvers:
         conns = cmds.listConnections(
             f"{solver}.modelRoot", source=True, destination=False
         ) or []
         if model_root in conns:
+            candidates.append(solver)
+    if not candidates:
+        return None
+    for solver in candidates:
+        driver_conns = cmds.listConnections(
+            f"{solver}.outBoneMatrices", source=False, destination=True
+        ) or []
+        if driver_conns:
             return solver
-    return None
+    return candidates[-1]
 
 
 def _capture_anim_curve_connections(joint: str) -> dict:

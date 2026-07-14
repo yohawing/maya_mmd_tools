@@ -234,7 +234,9 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
         q_jo = om.MEulerRotation(jo_x, jo_y, jo_z).asQuaternion()
         q_r = om.MEulerRotation(rx, ry, rz, ro).asQuaternion()
         q_ra = om.MEulerRotation(ra_x, ra_y, ra_z).asQuaternion()
-        tfm.setRotation(q_jo * q_r * q_ra)
+        # Match output decomposition contract:
+        # decompose: rotate = qRa^-1 * total * qJo^-1  =>  total = qRa * rotate * qJo
+        tfm.setRotation(q_ra * q_r * q_jo)
 
         local_mat = tfm.asMatrix()
 

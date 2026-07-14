@@ -185,18 +185,15 @@ class TestSolverKinematicPoseInjection(unittest.TestCase):
         )
         self.assertIn("_inject_kinematic_poses", reset_world_src)
 
-    def test_build_kinematic_pose_data_references_physics_mode(self):
+    def test_build_kinematic_pose_data_delegates_discovery(self):
         build_src = _get_function_source(
             self.tree, self.source_lines, "_build_kinematic_pose_data", "MmdPhysicsSolverNode"
         )
-        self.assertIn("physicsMode", self.source)
-        # _build_kinematic_pose_data delegates discovery to _find_kinematic_bone_indices,
-        # which is the function that actually reads physicsMode off the rigid body shape.
         self.assertIn("_find_kinematic_bone_indices", build_src)
         find_src = _get_function_source(
             self.tree, self.source_lines, "_find_kinematic_bone_indices", "MmdPhysicsSolverNode"
         )
-        self.assertIn("physicsMode", find_src)
+        self.assertIn("relatedBoneIndex", find_src)
 
     def test_inject_kinematic_poses_calls_apply_physics_world_matrices(self):
         inject_src = _get_function_source(
@@ -230,12 +227,11 @@ class TestSolverKinematicPoseInjection(unittest.TestCase):
                         return
         self.fail("_find_kinematic_bone_indices function definition not found")
 
-    def test_find_kinematic_bone_indices_queries_physics_mode_zero(self):
+    def test_find_kinematic_bone_indices_queries_rigid_body_shapes(self):
         find_src = _get_function_source(
             self.tree, self.source_lines, "_find_kinematic_bone_indices", "MmdPhysicsSolverNode"
         )
         self.assertIn("mmdRigidBodyShape", find_src)
-        self.assertIn("physicsMode", find_src)
         self.assertIn("relatedBoneIndex", find_src)
 
 

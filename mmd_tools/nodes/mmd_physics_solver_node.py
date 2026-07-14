@@ -212,12 +212,12 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._build_rigid_body_shape_mapping(model_root)
 
     def _build_kinematic_pose_data(self, model_root: str) -> None:
-        """Identify kinematic bones and precompute bind corrections.
+        """Identify physics-driven bones and precompute bind corrections.
 
         Bind correction maps Maya joint world space to the mmd-anim solver's
-        internal bone world space.  Only bones attached to physics_mode=0
-        (follows-bone / kinematic) rigid bodies are read — these joints are
-        never written by mmdPhysicsBoneDriver, so reading them is cycle-safe.
+        internal bone world space.  All bones with rigid body references are
+        included (kinematic mode 0 reads joint worldMatrix directly; dynamic
+        modes 1/2 read pre-physics inputs connected by VMD recovery).
 
         correction = mmd_matrix_to_maya(mmd_rest) * maya_bind^(-1)
         At runtime:  mmd_world = maya_matrix_to_mmd(correction * maya_animated)
@@ -287,10 +287,9 @@ class MmdPhysicsSolverNode(om.MPxNode):
                     xform, shapes=True, fullPath=True, type="mmdRigidBodyShape",
                 ) or []
                 for shape in shapes:
-                    if cmds.getAttr(f"{shape}.physicsMode") == 0:
-                        idx = cmds.getAttr(f"{shape}.relatedBoneIndex")
-                        if idx >= 0:
-                            result.add(idx)
+                    idx = cmds.getAttr(f"{shape}.relatedBoneIndex")
+                    if idx >= 0:
+                        result.add(idx)
         except Exception:
             pass
         return result

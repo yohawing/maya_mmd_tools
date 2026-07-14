@@ -163,12 +163,12 @@ class TestE2ECoordinateConsistency(unittest.TestCase):
 class TestE2ECycleSafety(unittest.TestCase):
     """Verify the chain design is cycle-safe."""
 
-    def test_solver_only_reads_kinematic_bones(self):
-        """_find_kinematic_bone_indices filters physicsMode==0 only."""
+    def test_solver_collects_all_physics_bone_indices(self):
+        """_find_kinematic_bone_indices collects relatedBoneIndex from all rigid bodies."""
         src, tree, lines = _get_source(SOLVER_NODE_PATH)
         find = _func_source(tree, lines, "_find_kinematic_bone_indices", "MmdPhysicsSolverNode")
-        self.assertIn("physicsMode", find)
-        self.assertIn("== 0", find)
+        self.assertIn("relatedBoneIndex", find)
+        self.assertIn("result.add", find)
 
     def test_solver_uses_cmds_getattr_not_dg_connection(self):
         """Solver reads joints via cmds.getAttr (imperative), not DG plug connection."""

@@ -339,12 +339,15 @@ MStatus MmdPhysicsBoneDriverNode::compute(const MPlug& plug, MDataBlock& data) {
         MQuaternion qR = MEulerRotation(rx, ry, rz, ro).asQuaternion();
         MQuaternion qRa = MEulerRotation(raX, raY, raZ).asQuaternion();
 
-        MTransformationMatrix tfm;
-        tfm.setTranslation(MVector(tx, ty, tz), MSpace::kTransform);
-        tfm.setRotation(qJo * qR * qRa);
+        // Rotation order must match output decomposition contract:
+        // decompose: rotate = qRa^-1 * total * qJo^-1  ⇒  total = qRa * rotate * qJo
+        MMatrix localMat = (qRa * qR * qJo).asMatrix();
+        localMat[3][0] = tx;
+        localMat[3][1] = ty;
+        localMat[3][2] = tz;
 
         MMatrix parentInv = data.inputValue(aInParentInverseMatrix).asMatrix();
-        MMatrix preWorld = tfm.asMatrix() * parentInv.inverse();
+        MMatrix preWorld = localMat * parentInv.inverse();
 
         data.outputValue(aOutPrePhysicsWorldMatrix).setMMatrix(preWorld);
         data.setClean(aOutPrePhysicsWorldMatrix);

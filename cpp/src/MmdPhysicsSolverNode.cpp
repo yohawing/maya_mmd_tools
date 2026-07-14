@@ -27,6 +27,7 @@
 #include <maya/MDoubleArray.h>
 #include <maya/MMatrix.h>
 #include <maya/MSelectionList.h>
+#include <maya/MDagPath.h>
 #include <maya/MItDag.h>
 
 #include <cmath>
@@ -344,13 +345,9 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
     MFnDagNode fnRootDag(rootNode);
     MString rootName = fnRootDag.fullPathName();
     MFnDependencyNode fnRoot(rootNode);
-
-    // Collect bone joints from model root
     MStatus st;
-    MPlug boneCountPlug = fnRoot.findPlug("mmd_bone_count", false, &st);
-    if (st != MS::kSuccess) return;
 
-    // Walk Physics/RigidBodies to find kinematic bones
+    // Walk Physics/RigidBodies to find physics-driven bones
     MString physicsPath = rootName + "|Physics";
     MString rbPath = physicsPath + "|RigidBodies";
 
@@ -360,7 +357,7 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
     MDagPath rbDagPath;
     if (sel.getDagPath(0, rbDagPath) != MS::kSuccess) return;
 
-    std::unordered_set<int> kinematicBoneIndices;
+    std::unordered_set<int> physicsBoneIndices;
     unsigned childCount = rbDagPath.childCount();
     for (unsigned i = 0; i < childCount; ++i) {
         MObject child = rbDagPath.child(i);
@@ -372,18 +369,14 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
             MFnDependencyNode fnShape(shapeObj);
             if (fnShape.typeName() != "mmdRigidBodyShape") continue;
 
-            MPlug pmPlug = fnShape.findPlug("physicsMode", false, &st);
-            if (st != MS::kSuccess) continue;
-            if (pmPlug.asShort() != 0) continue;
-
             MPlug biPlug = fnShape.findPlug("relatedBoneIndex", false, &st);
             if (st != MS::kSuccess) continue;
             int boneIndex = biPlug.asInt();
-            if (boneIndex >= 0) kinematicBoneIndices.insert(boneIndex);
+            if (boneIndex >= 0) physicsBoneIndices.insert(boneIndex);
         }
     }
 
-    if (kinematicBoneIndices.empty()) return;
+    if (physicsBoneIndices.empty()) return;
 
     // Get rest pose matrices
     bridge_.evaluateRestPose();
@@ -417,15 +410,15 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
     }
 
     // Compute corrections
-    for (int boneIdx : kinematicBoneIndices) {
+    for (int boneIdx : physicsBoneIndices) {
         if (boneIdx >= static_cast<int>(matCount) ||
             boneIdx >= static_cast<int>(boneJoints_.size()))
             continue;
         const std::string& jointPath = boneJoints_[boneIdx];
         if (jointPath.empty()) continue;
 
-        double restMaya[16];
-        mmdMatrixToMaya(&restMats[boneIdx * 16], restMaya);
+        double restMaya[4][4];
+        mmdMatrixToMaya(&restMats[boneIdx * 16], &restMaya[0][0]);
         MMatrix mmdRestMayaMat(restMaya);
 
         // Read Maya bind world matrix
