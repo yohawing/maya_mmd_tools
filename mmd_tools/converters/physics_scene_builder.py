@@ -183,8 +183,7 @@ def build_physics_scene(
         _build_joint(index, jt, rigid_body_transforms, constraints_group, log) for index, jt in enumerate(joints)
     ]
 
-    world_node = _find_or_create_world_node()
-    _build_solver(root_group, world_node, maya_joints, log)
+    _find_or_create_world_node()
 
     return rigid_body_transforms, joint_transforms
 
@@ -198,57 +197,6 @@ def _find_or_create_world_node() -> str:
     transform = cmds.createNode("transform", name=PHYSICS_WORLD_NODE)
     cmds.createNode("mmdPhysicsWorldShape", name=f"{PHYSICS_WORLD_NODE}Shape", parent=transform)
     return transform
-
-
-def _build_solver(root_group: str, world_node: str, maya_joints: list, logger) -> Optional[str]:
-    """Create one mmdPhysicsSolver per model and connect to world + model root."""
-    try:
-        solver = cmds.createNode("mmdPhysicsSolver", name="mmdPhysicsSolver")
-        cmds.setAttr(f"{solver}.inputMode", 1)
-        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
-        cmds.connectAttr(f"{root_group}.message", f"{solver}.modelRoot")
-        world_shapes = cmds.listRelatives(world_node, shapes=True, type="mmdPhysicsWorldShape") or []
-        if world_shapes:
-            cmds.connectAttr(f"{world_shapes[0]}.message", f"{solver}.inWorldSettings")
-        _build_bone_drivers(solver, maya_joints, logger)
-        return solver
-    except Exception as exc:
-        logger.warning(f"event=solver_build_failed error={exc}")
-        return None
-
-
-def _build_bone_drivers(solver: str, maya_joints: list, logger) -> None:
-    """Create one mmdPhysicsBoneDriver per bone and connect to solver outputs."""
-    for i, joint in enumerate(maya_joints):
-        if not joint or not cmds.objExists(joint):
-            continue
-        try:
-            driver = cmds.createNode("mmdPhysicsBoneDriver", name=f"physDriver_{i}")
-            cmds.connectAttr(f"{solver}.outBoneMatrices", f"{driver}.inSolverBoneMatrices")
-            cmds.connectAttr(f"{solver}.outBoneCount", f"{driver}.inSolverBoneCount")
-            cmds.connectAttr(f"{solver}.outSolved", f"{driver}.inSolved")
-            cmds.setAttr(f"{driver}.inBoneIndex", i)
-
-            parent_joints = cmds.listRelatives(joint, parent=True, type="joint") or []
-            if parent_joints:
-                parent_idx = maya_joints.index(parent_joints[0]) if parent_joints[0] in maya_joints else -1
-                cmds.setAttr(f"{driver}.inParentBoneIndex", parent_idx)
-                cmds.connectAttr(f"{parent_joints[0]}.worldInverseMatrix[0]", f"{driver}.inParentInverseMatrix")
-
-            jo = cmds.getAttr(f"{joint}.jointOrient")[0]
-            cmds.setAttr(f"{driver}.inJointOrientX", jo[0])
-            cmds.setAttr(f"{driver}.inJointOrientY", jo[1])
-            cmds.setAttr(f"{driver}.inJointOrientZ", jo[2])
-
-            ra = cmds.getAttr(f"{joint}.rotateAxis")[0]
-            cmds.setAttr(f"{driver}.inRotateAxisX", ra[0])
-            cmds.setAttr(f"{driver}.inRotateAxisY", ra[1])
-            cmds.setAttr(f"{driver}.inRotateAxisZ", ra[2])
-
-            ro = cmds.getAttr(f"{joint}.rotateOrder")
-            cmds.setAttr(f"{driver}.inRotateOrder", ro)
-        except Exception as exc:
-            logger.debug(f"event=bone_driver_skip bone={i} error={exc}")
 
 
 def _node_leaf_name(node: str) -> str:
@@ -379,6 +327,7 @@ def build_physics_live_graph(
         root_token = _sanitize_node_name(_node_leaf_name(root_group))
         solver = cmds.createNode("mmdPhysicsSolver", name=f"{root_token}_mmdPhysicsSolver")
         cmds.setAttr(f"{solver}.enable", True)
+        cmds.setAttr(f"{solver}.inputMode", 1)
         cmds.connectAttr(f"{root_group}.message", f"{solver}.modelRoot", force=True)
 
         time_nodes = cmds.ls(type="time") or []
@@ -386,6 +335,15 @@ def build_physics_live_graph(
             cmds.connectAttr(f"{time_nodes[0]}.outTime", f"{solver}.inTime", force=True)
         else:
             log.warning("Physics solver created without a Maya time node: %s", solver)
+
+        world_node = _find_or_create_world_node()
+        world_shapes = cmds.listRelatives(
+            world_node, shapes=True, type="mmdPhysicsWorldShape",
+        ) or []
+        if world_shapes:
+            cmds.connectAttr(
+                f"{world_shapes[0]}.message", f"{solver}.inWorldSettings", force=True,
+            )
     except Exception as exc:
         log.warning("event=physics_solver_graph_failed root=%s error=%s", root_group, exc)
         if solver and cmds.objExists(solver):
@@ -635,11 +593,10 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
 
 
 def _find_solver_for_model(model_root: str):
-    """Find the live mmdPhysicsSolver connected to *model_root*.
+    """Find the mmdPhysicsSolver connected to *model_root*.
 
-    In real scenes both an inert solver (from _build_solver) and a live
-    solver (from build_physics_live_graph) may be connected to the same
-    model root.  Prefer the one with active bone-driver connections.
+    Prefers the solver with active bone-driver connections in case
+    multiple solvers exist (e.g. from older scenes).
     """
     try:
         available = set(cmds.allNodeTypes() or [])

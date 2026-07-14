@@ -81,7 +81,8 @@ private:
     int lastResetGeneration_ = -1;
     std::vector<double> cachedFlat_;
 
-    // Kinematic bone data
+    // Physics bone data
     std::vector<std::string> boneJoints_;
     std::unordered_map<int, MMatrix> kinematicCorrections_;
+    std::unordered_set<int> kinematicOnlyBoneIndices_;
 };

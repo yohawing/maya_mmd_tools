@@ -64,6 +64,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._bone_count = 0
         self._bone_joints = []
         self._kinematic_corrections = {}
+        self._kinematic_bone_indices: set = set()
         self._rb_shape_paths = {}
         self._rb_shape_mobjects = {}
         self._last_time = None
@@ -225,8 +226,9 @@ class MmdPhysicsSolverNode(om.MPxNode):
         from maya import cmds
         from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
 
-        kinematic_bone_indices = self._find_kinematic_bone_indices(model_root)
-        if not kinematic_bone_indices:
+        all_bone_indices, kinematic_bone_indices = self._find_physics_bone_indices(model_root)
+        self._kinematic_bone_indices = kinematic_bone_indices
+        if not all_bone_indices:
             return
 
         self._instance.evaluate_rest_pose()
@@ -234,7 +236,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         if not mmd_rest_matrices:
             return
 
-        for bone_idx in kinematic_bone_indices:
+        for bone_idx in all_bone_indices:
             if bone_idx >= len(mmd_rest_matrices) or bone_idx >= len(self._bone_joints):
                 continue
             joint = self._bone_joints[bone_idx]
@@ -252,10 +254,18 @@ class MmdPhysicsSolverNode(om.MPxNode):
                 continue
 
     @staticmethod
-    def _find_kinematic_bone_indices(model_root: str) -> set:
+    def _find_physics_bone_indices(model_root: str) -> tuple[set, set]:
+        """Return (all_physics_bone_indices, kinematic_only_bone_indices).
+
+        All bones with rigid body references get bind corrections.
+        The kinematic-only set (physicsMode==0) is used to guard the
+        cmds.getAttr fallback — dynamic bones must only be injected
+        when they have an explicit DG pre-physics input to avoid cycles.
+        """
         from maya import cmds
 
-        result = set()
+        all_indices: set = set()
+        kinematic_indices: set = set()
         try:
             children = cmds.listRelatives(
                 model_root, children=True, fullPath=True, type="transform",
@@ -266,7 +276,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
                     physics_group = c
                     break
             if not physics_group:
-                return result
+                return all_indices, kinematic_indices
 
             children = cmds.listRelatives(
                 physics_group, children=True, fullPath=True, type="transform",
@@ -277,7 +287,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
                     rb_group = c
                     break
             if not rb_group:
-                return result
+                return all_indices, kinematic_indices
 
             rb_transforms = cmds.listRelatives(
                 rb_group, children=True, fullPath=True, type="transform",
@@ -289,10 +299,12 @@ class MmdPhysicsSolverNode(om.MPxNode):
                 for shape in shapes:
                     idx = cmds.getAttr(f"{shape}.relatedBoneIndex")
                     if idx >= 0:
-                        result.add(idx)
+                        all_indices.add(idx)
+                        if cmds.getAttr(f"{shape}.physicsMode") == 0:
+                            kinematic_indices.add(idx)
         except Exception:
             pass
-        return result
+        return all_indices, kinematic_indices
 
     def _inject_kinematic_poses(self, data) -> None:
         """Read kinematic bone world matrices from DG inputs and inject into the instance."""
@@ -320,6 +332,8 @@ class MmdPhysicsSolverNode(om.MPxNode):
                     except Exception:
                         pass
                 if maya_mat is None:
+                    if bone_idx not in self._kinematic_bone_indices:
+                        continue
                     from maya import cmds
                     joint = self._bone_joints[bone_idx] if bone_idx < len(self._bone_joints) else None
                     if not joint:
@@ -472,6 +486,7 @@ class MmdPhysicsSolverNode(om.MPxNode):
         self._initialized = False
         self._bone_joints = []
         self._kinematic_corrections = {}
+        self._kinematic_bone_indices = set()
         for path in self._rb_shape_paths.values():
             _SIMULATED_RB_CACHE.pop(path, None)
         self._rb_shape_paths = {}

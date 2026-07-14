@@ -155,8 +155,8 @@ class TestSolverKinematicPoseInjection(unittest.TestCase):
     def test_build_kinematic_pose_data_method_exists(self):
         self.assertIn("_build_kinematic_pose_data", self.solver_methods)
 
-    def test_find_kinematic_bone_indices_method_exists(self):
-        self.assertIn("_find_kinematic_bone_indices", self.solver_methods)
+    def test_find_physics_bone_indices_method_exists(self):
+        self.assertIn("_find_physics_bone_indices", self.solver_methods)
 
     def test_inject_kinematic_poses_method_exists(self):
         self.assertIn("_inject_kinematic_poses", self.solver_methods)
@@ -189,9 +189,9 @@ class TestSolverKinematicPoseInjection(unittest.TestCase):
         build_src = _get_function_source(
             self.tree, self.source_lines, "_build_kinematic_pose_data", "MmdPhysicsSolverNode"
         )
-        self.assertIn("_find_kinematic_bone_indices", build_src)
+        self.assertIn("_find_physics_bone_indices", build_src)
         find_src = _get_function_source(
-            self.tree, self.source_lines, "_find_kinematic_bone_indices", "MmdPhysicsSolverNode"
+            self.tree, self.source_lines, "_find_physics_bone_indices", "MmdPhysicsSolverNode"
         )
         self.assertIn("relatedBoneIndex", find_src)
 
@@ -215,24 +215,25 @@ class TestSolverKinematicPoseInjection(unittest.TestCase):
         self.assertIn("_bone_joints", init_src)
         self.assertIn("_kinematic_corrections", init_src)
 
-    def test_find_kinematic_bone_indices_is_static_method(self):
+    def test_find_physics_bone_indices_is_static_method(self):
         for node in ast.walk(self.tree):
             if isinstance(node, ast.ClassDef) and node.name == "MmdPhysicsSolverNode":
                 for item in node.body:
-                    if isinstance(item, ast.FunctionDef) and item.name == "_find_kinematic_bone_indices":
+                    if isinstance(item, ast.FunctionDef) and item.name == "_find_physics_bone_indices":
                         decorator_names = [
                             d.id for d in item.decorator_list if isinstance(d, ast.Name)
                         ]
                         self.assertIn("staticmethod", decorator_names)
                         return
-        self.fail("_find_kinematic_bone_indices function definition not found")
+        self.fail("_find_physics_bone_indices function definition not found")
 
-    def test_find_kinematic_bone_indices_queries_rigid_body_shapes(self):
+    def test_find_physics_bone_indices_queries_rigid_body_shapes(self):
         find_src = _get_function_source(
-            self.tree, self.source_lines, "_find_kinematic_bone_indices", "MmdPhysicsSolverNode"
+            self.tree, self.source_lines, "_find_physics_bone_indices", "MmdPhysicsSolverNode"
         )
         self.assertIn("mmdRigidBodyShape", find_src)
         self.assertIn("relatedBoneIndex", find_src)
+        self.assertIn("physicsMode", find_src)
 
 
 class TestMayaToMmdTransformInvolution(unittest.TestCase):

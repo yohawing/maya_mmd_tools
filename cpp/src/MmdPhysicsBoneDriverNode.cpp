@@ -46,6 +46,10 @@ MObject MmdPhysicsBoneDriverNode::aInSolverBoneCount;
 MObject MmdPhysicsBoneDriverNode::aInBoneIndex;
 MObject MmdPhysicsBoneDriverNode::aInParentBoneIndex;
 MObject MmdPhysicsBoneDriverNode::aInParentInverseMatrix;
+MObject MmdPhysicsBoneDriverNode::aInBindWorldMatrix;
+MObject MmdPhysicsBoneDriverNode::aInNoOrientBindWorldMatrix;
+MObject MmdPhysicsBoneDriverNode::aInParentBindWorldMatrix;
+MObject MmdPhysicsBoneDriverNode::aInParentNoOrientBindWorldMatrix;
 MObject MmdPhysicsBoneDriverNode::aInJointOrient;
 MObject MmdPhysicsBoneDriverNode::aInJointOrientX;
 MObject MmdPhysicsBoneDriverNode::aInJointOrientY;
@@ -165,6 +169,22 @@ MStatus MmdPhysicsBoneDriverNode::initialize() {
     mAttr.setStorable(false);
     addAttribute(aInParentInverseMatrix);
 
+    aInBindWorldMatrix = mAttr.create("inBindWorldMatrix", "ibwm");
+    mAttr.setStorable(true);
+    addAttribute(aInBindWorldMatrix);
+
+    aInNoOrientBindWorldMatrix = mAttr.create("inNoOrientBindWorldMatrix", "inobwm");
+    mAttr.setStorable(true);
+    addAttribute(aInNoOrientBindWorldMatrix);
+
+    aInParentBindWorldMatrix = mAttr.create("inParentBindWorldMatrix", "ipbwm");
+    mAttr.setStorable(true);
+    addAttribute(aInParentBindWorldMatrix);
+
+    aInParentNoOrientBindWorldMatrix = mAttr.create("inParentNoOrientBindWorldMatrix", "ipnobwm");
+    mAttr.setStorable(true);
+    addAttribute(aInParentNoOrientBindWorldMatrix);
+
     aInJointOrient = createAngle3(
         "inJointOrient", "ijo", aInJointOrientX, aInJointOrientY, aInJointOrientZ);
     addAttribute(aInJointOrient);
@@ -254,6 +274,10 @@ MStatus MmdPhysicsBoneDriverNode::initialize() {
         aInBoneIndex,
         aInParentBoneIndex,
         aInParentInverseMatrix,
+        aInBindWorldMatrix,
+        aInNoOrientBindWorldMatrix,
+        aInParentBindWorldMatrix,
+        aInParentNoOrientBindWorldMatrix,
         aInJointOrient,
         aInRotateAxis,
         aInRotateOrder,
@@ -384,11 +408,16 @@ MStatus MmdPhysicsBoneDriverNode::compute(const MPlug& plug, MDataBlock& data) {
         return MS::kSuccess;
     }
 
-    MMatrix boneWorld = extractMatrix(arr, boneIndex);
+    // Apply bind correction: bindWorld * noOrientBindWorld^-1 * runtimeWorld
+    MMatrix bindWorld = data.inputValue(aInBindWorldMatrix).asMatrix();
+    MMatrix noOrientBindWorld = data.inputValue(aInNoOrientBindWorldMatrix).asMatrix();
+    MMatrix boneWorld = bindWorld * noOrientBindWorld.inverse() * extractMatrix(arr, boneIndex);
 
     MMatrix localMat;
     if (parentBoneIndex >= 0 && parentBoneIndex < boneCount) {
-        MMatrix parentWorld = extractMatrix(arr, parentBoneIndex);
+        MMatrix parentBindWorld = data.inputValue(aInParentBindWorldMatrix).asMatrix();
+        MMatrix parentNoOrientBindWorld = data.inputValue(aInParentNoOrientBindWorldMatrix).asMatrix();
+        MMatrix parentWorld = parentBindWorld * parentNoOrientBindWorld.inverse() * extractMatrix(arr, parentBoneIndex);
         localMat = boneWorld * parentWorld.inverse();
     } else {
         MMatrix parentInvMat = data.inputValue(aInParentInverseMatrix).asMatrix();

@@ -267,9 +267,9 @@ class TestSceneBuilderInputMode(unittest.TestCase):
         self.tree = ast.parse(self.source)
         self.source_lines = self.source.splitlines()
 
-    def test_build_solver_sets_input_mode(self):
+    def test_live_graph_sets_input_mode(self):
         src = _get_function_source(
-            self.tree, self.source_lines, "_build_solver"
+            self.tree, self.source_lines, "build_physics_live_graph"
         )
         self.assertIn("inputMode", src)
 

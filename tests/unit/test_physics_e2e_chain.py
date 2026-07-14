@@ -98,13 +98,13 @@ class TestE2EChainStructure(unittest.TestCase):
         self.assertIn("outTranslateX", src)
         self.assertIn("outRotateX", src)
 
-    def test_scene_builder_connects_solver_to_bone_drivers(self):
-        """Scene builder creates solver → bone driver connections."""
+    def test_live_graph_connects_solver_to_bone_drivers(self):
+        """Live graph creates solver → bone driver connections."""
         src, tree, lines = _get_source(SCENE_BUILDER_PATH)
-        build_drivers = _func_source(tree, lines, "_build_bone_drivers")
-        self.assertIn("outBoneMatrices", build_drivers)
-        self.assertIn("outBoneCount", build_drivers)
-        self.assertIn("outSolved", build_drivers)
+        live_graph = _func_source(tree, lines, "build_physics_live_graph")
+        self.assertIn("outBoneMatrices", live_graph)
+        self.assertIn("outBoneCount", live_graph)
+        self.assertIn("outSolved", live_graph)
 
     def test_draw_override_reads_from_solver_cache(self):
         """Draw override imports and reads _SIMULATED_RB_CACHE."""
@@ -164,11 +164,11 @@ class TestE2ECycleSafety(unittest.TestCase):
     """Verify the chain design is cycle-safe."""
 
     def test_solver_collects_all_physics_bone_indices(self):
-        """_find_kinematic_bone_indices collects relatedBoneIndex from all rigid bodies."""
+        """_find_physics_bone_indices collects relatedBoneIndex from all rigid bodies."""
         src, tree, lines = _get_source(SOLVER_NODE_PATH)
-        find = _func_source(tree, lines, "_find_kinematic_bone_indices", "MmdPhysicsSolverNode")
+        find = _func_source(tree, lines, "_find_physics_bone_indices", "MmdPhysicsSolverNode")
         self.assertIn("relatedBoneIndex", find)
-        self.assertIn("result.add", find)
+        self.assertIn("all_indices", find)
 
     def test_solver_uses_cmds_getattr_not_dg_connection(self):
         """Solver reads joints via cmds.getAttr (imperative), not DG plug connection."""

@@ -294,8 +294,10 @@ void MmdPhysicsSolverNode::injectKinematicPoses(MDataBlock& data) {
         if (st == MS::kSuccess) {
             mayaMat = arrayHandle.inputValue().asMatrix();
         } else {
-            // Fallback: read worldMatrix directly from joint DAG node
-            if (boneIdx >= 0 && boneIdx < static_cast<int>(boneJoints_.size()) &&
+            // Fallback: only safe for kinematic (physicsMode=0) bones;
+            // dynamic bones would read solver output → cycle.
+            if (kinematicOnlyBoneIndices_.count(boneIdx) &&
+                boneIdx >= 0 && boneIdx < static_cast<int>(boneJoints_.size()) &&
                 !boneJoints_[boneIdx].empty()) {
                 MSelectionList jSel;
                 MDagPath jDag;
@@ -333,6 +335,7 @@ void MmdPhysicsSolverNode::injectKinematicPoses(MDataBlock& data) {
 
 void MmdPhysicsSolverNode::buildKinematicPoseData() {
     kinematicCorrections_.clear();
+    kinematicOnlyBoneIndices_.clear();
 
     MFnDependencyNode fnThis(thisMObject());
     MPlug rootPlug = fnThis.findPlug("modelRoot", false);
@@ -347,7 +350,7 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
     MFnDependencyNode fnRoot(rootNode);
     MStatus st;
 
-    // Walk Physics/RigidBodies to find physics-driven bones
+    // Walk Physics/RigidBodies to find all physics-driven bones
     MString physicsPath = rootName + "|Physics";
     MString rbPath = physicsPath + "|RigidBodies";
 
@@ -372,7 +375,14 @@ void MmdPhysicsSolverNode::buildKinematicPoseData() {
             MPlug biPlug = fnShape.findPlug("relatedBoneIndex", false, &st);
             if (st != MS::kSuccess) continue;
             int boneIndex = biPlug.asInt();
-            if (boneIndex >= 0) physicsBoneIndices.insert(boneIndex);
+            if (boneIndex < 0) continue;
+
+            physicsBoneIndices.insert(boneIndex);
+
+            MPlug pmPlug = fnShape.findPlug("physicsMode", false, &st);
+            if (st == MS::kSuccess && pmPlug.asShort() == 0) {
+                kinematicOnlyBoneIndices_.insert(boneIndex);
+            }
         }
     }
 
@@ -516,6 +526,7 @@ void MmdPhysicsSolverNode::freeHandles() {
     cachedFlat_.clear();
     boneJoints_.clear();
     kinematicCorrections_.clear();
+    kinematicOnlyBoneIndices_.clear();
 }
 
 void MmdPhysicsSolverNode::writeDisabledOutputs(MDataBlock& data) {

@@ -38,6 +38,10 @@ public:
     static MObject aInBoneIndex;
     static MObject aInParentBoneIndex;
     static MObject aInParentInverseMatrix;
+    static MObject aInBindWorldMatrix;
+    static MObject aInNoOrientBindWorldMatrix;
+    static MObject aInParentBindWorldMatrix;
+    static MObject aInParentNoOrientBindWorldMatrix;
 
     static MObject aInJointOrient;
     static MObject aInJointOrientX;
