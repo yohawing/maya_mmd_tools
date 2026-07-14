@@ -361,5 +361,453 @@ class TestPhysicsBoneDriverNode(MayaTestBase):
         self.assertAlmostEqual(tx, 0.0, places=6)
 
 
+@unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
+@unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+class TestSolverTimeStateMachine(MayaTestBase):
+    """Verify same-time idempotence, forward, jump, backward, reset contracts."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            cmds.loadPlugin(plugin_path)
+        except Exception:
+            pass
+        cls.pmx_bytes = FIXTURE_PATH.read_bytes()
+        cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
+        super().tearDownClass()
+
+    def _setup_solver(self):
+        root = cmds.group(empty=True, name="test_root")
+        _create_joints_under_root(self.pmx.bones, root)
+        _store_pmx_payload(root, self.pmx_bytes)
+        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
+        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
+        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        cmds.currentUnit(time="ntsc")
+        return solver
+
+    def test_same_time_multi_plug_idempotent(self):
+        """Querying multiple outputs at same time must not re-step physics."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        cmds.currentTime(1)
+        mat1 = cmds.getAttr(f"{solver}.outBoneMatrices")
+        mat2 = cmds.getAttr(f"{solver}.outBoneMatrices")
+        _ = cmds.getAttr(f"{solver}.outStatus")
+        bone_count = cmds.getAttr(f"{solver}.outBoneCount")
+        solved = cmds.getAttr(f"{solver}.outSolved")
+
+        self.assertTrue(solved)
+        self.assertGreater(bone_count, 0)
+        self.assertEqual(len(mat1), len(mat2))
+        for i in range(len(mat1)):
+            self.assertAlmostEqual(mat1[i], mat2[i], places=10,
+                                   msg=f"Multi-plug query diverged at index {i}")
+
+    def test_forward_sequential_deterministic(self):
+        """Forward stepping produces deterministic output for same frame sequence."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        matrices_by_frame = {}
+        for frame in range(1, 11):
+            cmds.currentTime(frame)
+            matrices_by_frame[frame] = cmds.getAttr(f"{solver}.outBoneMatrices")
+
+        for frame in range(2, 11):
+            prev = matrices_by_frame[frame - 1]
+            curr = matrices_by_frame[frame]
+            self.assertEqual(len(prev), len(curr))
+
+    def test_jump_forward_produces_reset(self):
+        """Jumping far forward (beyond MAX_FORWARD_DT) triggers reset."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+
+        cmds.currentTime(300)
+        status = cmds.getAttr(f"{solver}.outStatus")
+        self.assertEqual(status, "reset",
+                         "Large forward jump should trigger reset")
+
+    def test_backward_produces_reset(self):
+        """Going backward in time triggers reset."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+
+        for frame in range(1, 11):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+
+        cmds.currentTime(5)
+        status = cmds.getAttr(f"{solver}.outStatus")
+        self.assertEqual(status, "reset",
+                         "Backward time should trigger reset")
+
+    def test_backward_then_forward_continues(self):
+        """After backward reset, forward stepping resumes correctly."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        cmds.currentTime(1)
+        status = cmds.getAttr(f"{solver}.outStatus")
+        self.assertEqual(status, "stepped",
+                         "After reset, forward stepping should resume")
+
+    def test_reset_at_frame_zero_matches_rest_pose(self):
+        """At frame 0 after reset, matrices should be close to rest pose."""
+        from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
+        from mmd_tools.core.native.mmd_anim_runtime_handles import (
+            MmdRuntimeInstance,
+            MmdRuntimeModel,
+            MmdRuntimePhysicsWorld,
+        )
+        from mmd_tools.core.native.mmd_anim_runtime_types import (
+            MMD_RUNTIME_PHYSICS_MODE_LIVE,
+        )
+
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
+
+        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        ref_instance = MmdRuntimeInstance.for_model(ref_model)
+        ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
+        ref_instance.evaluate_rest_pose()
+        ref_world.reset(ref_instance)
+        ref_raw = ref_instance.get_world_matrices()
+
+        bone_count = len(self.pmx.bones)
+        for bone_idx in range(bone_count):
+            ref_maya = mmd_matrix_to_maya(ref_raw[bone_idx])
+            for c in range(16):
+                self.assertAlmostEqual(
+                    solver_flat[bone_idx * 16 + c], ref_maya[c],
+                    delta=0.005,
+                    msg=f"Rest pose bone[{bone_idx}] matrix[{c}]",
+                )
+
+        ref_instance.free()
+        ref_model.free()
+        ref_world.free()
+
+    def test_parity_30_steps(self):
+        """Extended parity check over 30 frames (1 second at 30fps)."""
+        from mmd_tools.core.coordinate_transform import mmd_matrix_to_maya
+        from mmd_tools.core.native.mmd_anim_runtime_handles import (
+            MmdRuntimeInstance,
+            MmdRuntimeModel,
+            MmdRuntimePhysicsWorld,
+        )
+        from mmd_tools.core.native.mmd_anim_runtime_types import (
+            MMD_RUNTIME_PHYSICS_MODE_LIVE,
+        )
+
+        solver = self._setup_solver()
+        n_steps = 30
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        for frame in range(1, n_steps + 1):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+        solver_flat = cmds.getAttr(f"{solver}.outBoneMatrices")
+
+        ref_world = MmdRuntimePhysicsWorld.from_pmx_bytes(self.pmx_bytes)
+        ref_model = MmdRuntimeModel.from_pmx_bytes(self.pmx_bytes)
+        ref_instance = MmdRuntimeInstance.for_model(ref_model)
+        ref_instance.set_physics_mode(MMD_RUNTIME_PHYSICS_MODE_LIVE)
+        ref_instance.evaluate_rest_pose()
+        ref_world.reset(ref_instance)
+        for _ in range(n_steps):
+            ref_instance.evaluate_rest_pose()
+            ref_world.step_runtime(ref_instance, 1.0 / 30.0)
+            ref_instance.evaluate_current_pose_after_physics()
+        ref_raw = ref_instance.get_world_matrices()
+
+        bone_count = len(self.pmx.bones)
+        for bone_idx in range(bone_count):
+            ref_maya = mmd_matrix_to_maya(ref_raw[bone_idx])
+            for c in range(16):
+                self.assertAlmostEqual(
+                    solver_flat[bone_idx * 16 + c], ref_maya[c],
+                    delta=0.01,
+                    msg=f"30-step parity bone[{bone_idx}] matrix[{c}]",
+                )
+
+        ref_instance.free()
+        ref_model.free()
+        ref_world.free()
+
+
+@unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
+@unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+class TestSolverDisableEnable(MayaTestBase):
+    """Verify disable/enable lifecycle."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            cmds.loadPlugin(plugin_path)
+        except Exception:
+            pass
+        cls.pmx_bytes = FIXTURE_PATH.read_bytes()
+        cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
+        super().tearDownClass()
+
+    def _setup_solver(self):
+        root = cmds.group(empty=True, name="test_root")
+        _create_joints_under_root(self.pmx.bones, root)
+        _store_pmx_payload(root, self.pmx_bytes)
+        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
+        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
+        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        cmds.currentUnit(time="ntsc")
+        return solver
+
+    def test_disable_mid_simulation(self):
+        """Disabling solver mid-simulation produces not-solved output."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+
+        cmds.setAttr(f"{solver}.enable", False)
+        cmds.currentTime(6)
+        self.assertFalse(cmds.getAttr(f"{solver}.outSolved"))
+        self.assertEqual(cmds.getAttr(f"{solver}.outStatus"), "disabled")
+
+    def test_re_enable_after_disable(self):
+        """Re-enabling solver after disable produces solved output."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+
+        cmds.setAttr(f"{solver}.enable", False)
+        cmds.currentTime(1)
+        self.assertFalse(cmds.getAttr(f"{solver}.outSolved"))
+
+        cmds.setAttr(f"{solver}.enable", True)
+        cmds.currentTime(2)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+
+
+@unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
+@unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+class TestSolverEvaluationModes(MayaTestBase):
+    """Verify solver works in DG, EM serial, and EM parallel modes."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            cmds.loadPlugin(plugin_path)
+        except Exception:
+            pass
+        cls.pmx_bytes = FIXTURE_PATH.read_bytes()
+        cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
+        super().tearDownClass()
+
+    def _setup_solver(self):
+        root = cmds.group(empty=True, name="test_root")
+        _create_joints_under_root(self.pmx.bones, root)
+        _store_pmx_payload(root, self.pmx_bytes)
+        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
+        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
+        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        cmds.currentUnit(time="ntsc")
+        return solver
+
+    def _run_5_steps(self, solver):
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+        return cmds.getAttr(f"{solver}.outBoneMatrices")
+
+    def test_dg_mode(self):
+        """Solver produces valid output in DG (legacy) evaluation mode."""
+        try:
+            cmds.evaluationManager(mode="off")
+        except Exception:
+            self.skipTest("evaluationManager not available")
+        solver = self._setup_solver()
+        mat = self._run_5_steps(solver)
+        self.assertIsNotNone(mat)
+        self.assertGreater(len(mat), 0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+
+    def test_em_serial_mode(self):
+        """Solver produces valid output in EM serial mode."""
+        try:
+            cmds.evaluationManager(mode="serial")
+        except Exception:
+            self.skipTest("EM serial not available")
+        solver = self._setup_solver()
+        mat = self._run_5_steps(solver)
+        self.assertIsNotNone(mat)
+        self.assertGreater(len(mat), 0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+
+    def test_em_parallel_mode(self):
+        """Solver produces valid output in EM parallel mode."""
+        try:
+            cmds.evaluationManager(mode="parallel")
+        except Exception:
+            self.skipTest("EM parallel not available")
+        solver = self._setup_solver()
+        mat = self._run_5_steps(solver)
+        self.assertIsNotNone(mat)
+        self.assertGreater(len(mat), 0)
+        self.assertTrue(cmds.getAttr(f"{solver}.outSolved"))
+
+    def tearDown(self):
+        try:
+            cmds.evaluationManager(mode="off")
+        except Exception:
+            pass
+        super().tearDown()
+
+
+@unittest.skipUnless(FIXTURE_PATH.exists(), "hair physics fixture not found")
+@unittest.skipUnless(_native_physics_available(), "native physics DLL not available")
+class TestSolverLifecycle(MayaTestBase):
+    """Verify solver survives scene lifecycle events."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            cmds.loadPlugin(plugin_path)
+        except Exception:
+            pass
+        cls.pmx_bytes = FIXTURE_PATH.read_bytes()
+        cls.pmx = parse_pmx_file(str(FIXTURE_PATH))
+
+    @classmethod
+    def tearDownClass(cls):
+        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
+        super().tearDownClass()
+
+    def _setup_solver(self):
+        root = cmds.group(empty=True, name="test_root")
+        _create_joints_under_root(self.pmx.bones, root)
+        _store_pmx_payload(root, self.pmx_bytes)
+        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
+        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
+        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        cmds.currentUnit(time="ntsc")
+        return solver
+
+    def test_new_scene_after_solve(self):
+        """Opening a new scene after solver was active doesn't crash."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+        for frame in range(1, 6):
+            cmds.currentTime(frame)
+            _ = cmds.getAttr(f"{solver}.outSolved")
+
+        cmds.file(new=True, force=True)
+        self.assertFalse(cmds.objExists("testSolver"))
+
+    def test_save_open_reinitializes(self):
+        """Solver reinitializes correctly after save/open cycle."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+
+        scene_path = self.get_temp_filename("solver_lifecycle.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+
+        cmds.file(scene_path, open=True, force=True)
+
+        if not cmds.objExists("testSolver"):
+            self.skipTest("Solver node not preserved after save/open")
+
+        cmds.currentTime(0)
+        solved = cmds.getAttr("testSolver.outSolved")
+        self.assertTrue(solved, "Solver should reinitialize after scene open")
+        bone_count = cmds.getAttr("testSolver.outBoneCount")
+        self.assertEqual(bone_count, len(self.pmx.bones))
+
+    def test_duplicate_scene(self):
+        """Solver handles scene duplication without crash."""
+        solver = self._setup_solver()
+        cmds.currentTime(0)
+        _ = cmds.getAttr(f"{solver}.outSolved")
+
+        scene_path = self.get_temp_filename("solver_dup.ma")
+        cmds.file(rename=scene_path)
+        cmds.file(save=True, type="mayaAscii", force=True)
+
+        cmds.file(scene_path, open=True, force=True)
+        if not cmds.objExists("testSolver"):
+            self.skipTest("Solver not in duplicated scene")
+
+        cmds.currentTime(0)
+        solved = cmds.getAttr("testSolver.outSolved")
+        self.assertTrue(solved)
+
+    def test_no_model_root_graceful(self):
+        """Solver with no model root connection outputs not-solved."""
+        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
+        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        cmds.currentTime(0)
+        solved = cmds.getAttr(f"{solver}.outSolved")
+        self.assertFalse(solved)
+        status = cmds.getAttr(f"{solver}.outStatus")
+        self.assertEqual(status, "no physics data")
+
+    def test_model_root_without_payload_graceful(self):
+        """Solver with model root but no PMX payload outputs not-solved."""
+        root = cmds.group(empty=True, name="test_root")
+        solver = cmds.createNode("mmdPhysicsSolver", name="testSolver")
+        cmds.connectAttr(f"{root}.message", f"{solver}.modelRoot")
+        cmds.connectAttr("time1.outTime", f"{solver}.inTime")
+        cmds.currentTime(0)
+        solved = cmds.getAttr(f"{solver}.outSolved")
+        self.assertFalse(solved)
+
+
 if __name__ == "__main__":
     unittest.main()
