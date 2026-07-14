@@ -184,10 +184,11 @@ class TestPluginRegistration(unittest.TestCase):
     def test_imports_driver_node(self):
         self.assertIn("mmd_physics_bone_driver_node", self.source)
 
-    def test_registers_solver_under_physics_gate(self):
+    def test_registers_solver_without_environment_gate(self):
         self.assertIn("mmd_physics_solver_node.register", self.source)
+        self.assertNotIn("MMD_TOOLS_PHYSICS_NODES", self.source)
 
-    def test_registers_driver_under_physics_gate(self):
+    def test_registers_driver_without_environment_gate(self):
         self.assertIn("mmd_physics_bone_driver_node.register", self.source)
 
     def test_deregisters_solver(self):

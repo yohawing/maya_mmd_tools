@@ -179,3 +179,230 @@ def build_physics_scene(
     ]
 
     return rigid_body_transforms, joint_transforms
+
+
+def _node_leaf_name(node: str) -> str:
+    """Return the leaf name from a Maya DAG path or plain node name."""
+    return str(node or "").rsplit("|", 1)[-1]
+
+
+def _set_driver_angle(driver: str, attr: str, values) -> None:
+    """Copy a Maya angle compound into the driver's angle children."""
+    for axis, value in zip(("X", "Y", "Z"), values or (0.0, 0.0, 0.0)):
+        cmds.setAttr(f"{driver}.{attr}{axis}", float(value))
+
+
+def _no_orient_matrix(bind_world) -> list[float]:
+    """Return a translation-only matrix matching the existing IK correction."""
+    matrix = [0.0] * 16
+    matrix[0] = matrix[5] = matrix[10] = matrix[15] = 1.0
+    if bind_world and len(bind_world) >= 15:
+        matrix[12:15] = [float(bind_world[12]), float(bind_world[13]), float(bind_world[14])]
+    return matrix
+
+
+def _connect_physics_output(source: str, destination: str) -> None:
+    """Replace the existing channel input with the live physics output."""
+    cmds.connectAttr(source, destination, force=True)
+
+
+def _capture_input_connections(node: str, attr: str) -> list[tuple[str, str]]:
+    """Capture compound and child input connections before replacing them."""
+    destinations = [f"{node}.{attr}"] + [f"{node}.{attr}{axis}" for axis in "XYZ"]
+    captured: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for destination in destinations:
+        for source in cmds.listConnections(
+            destination, source=True, destination=False, plugs=True
+        ) or []:
+            connection = (source, destination)
+            if connection not in seen:
+                captured.append(connection)
+                seen.add(connection)
+    return captured
+
+
+def _restore_input_connections(connections: list[tuple[str, str]], logger) -> None:
+    """Restore inputs removed by a failed live-driver connection attempt."""
+    for source, destination in connections:
+        try:
+            cmds.connectAttr(source, destination, force=True)
+        except Exception as exc:
+            logger.warning(
+                "Unable to restore physics target input %s from %s: %s",
+                destination,
+                source,
+                exc,
+            )
+
+
+def build_physics_live_graph(
+    *,
+    rigid_bodies,
+    bones,
+    maya_joints,
+    root_group: str,
+    logger=None,
+) -> dict:
+    """Create the Maya DG graph that drives dynamic PMX bones from physics.
+
+    This is intentionally a bounded live-preview path.  The solver currently
+    evaluates the PMX/rest pose directly; it does not yet consume a separate
+    pre-physics controller/IK pose.  Dynamic rigid bodies (physics mode 1/2)
+    are therefore wired to their related Maya joints and replace existing
+    ``translate``/``rotate`` inputs so that timeline playback is immediately
+    visible.
+
+    Returns a summary with ``solver`` and ``drivers``.  Node creation failures
+    are reported and returned as an empty graph so importing a model without
+    the native physics node remains non-fatal.
+    """
+    log = logger or _logger
+    solver = None
+    drivers: list[str] = []
+
+    try:
+        root_token = _sanitize_node_name(_node_leaf_name(root_group))
+        solver = cmds.createNode("mmdPhysicsSolver", name=f"{root_token}_mmdPhysicsSolver")
+        cmds.setAttr(f"{solver}.enable", True)
+        cmds.connectAttr(f"{root_group}.message", f"{solver}.modelRoot", force=True)
+
+        time_nodes = cmds.ls(type="time") or []
+        if time_nodes:
+            cmds.connectAttr(f"{time_nodes[0]}.outTime", f"{solver}.inTime", force=True)
+        else:
+            log.warning("Physics solver created without a Maya time node: %s", solver)
+    except Exception as exc:
+        log.warning("event=physics_solver_graph_failed root=%s error=%s", root_group, exc)
+        if solver and cmds.objExists(solver):
+            cmds.delete(solver)
+        return {"solver": None, "drivers": [], "reason": "solver_node_unavailable"}
+
+    driven_bones: set[int] = set()
+    for rb_index, rb in enumerate(rigid_bodies or []):
+        try:
+            physics_mode = int(getattr(rb, "physics_mode", 0))
+            bone_index = int(getattr(rb, "related_bone_index", -1))
+        except (TypeError, ValueError):
+            continue
+
+        if physics_mode not in (1, 2) or bone_index in driven_bones:
+            continue
+        if bone_index < 0 or bone_index >= len(maya_joints or []):
+            log.warning(
+                "Skipping physics driver for rigid body %d: invalid related bone index %d",
+                rb_index,
+                bone_index,
+            )
+            continue
+
+        joint = maya_joints[bone_index]
+        if not joint or not cmds.objExists(joint):
+            log.warning(
+                "Skipping physics driver for rigid body %d: related Maya joint is missing",
+                rb_index,
+            )
+            continue
+
+        parent_bone_index = -1
+        if bone_index < len(bones or []):
+            try:
+                parent_bone_index = int(getattr(bones[bone_index], "parent_bone_index", -1))
+            except (TypeError, ValueError):
+                parent_bone_index = -1
+
+        driver = None
+        previous_translate_inputs = _capture_input_connections(joint, "translate")
+        previous_rotate_inputs = _capture_input_connections(joint, "rotate")
+        try:
+            driver_name = f"{_sanitize_node_name(_node_leaf_name(joint))}_mmdPhysicsBoneDriver"
+            driver = cmds.createNode("mmdPhysicsBoneDriver", name=driver_name)
+            cmds.setAttr(f"{driver}.enable", True)
+            cmds.setAttr(f"{driver}.inBoneIndex", bone_index)
+            cmds.setAttr(f"{driver}.inParentBoneIndex", parent_bone_index)
+            cmds.setAttr(f"{driver}.inSolved", False)
+
+            joint_orient = cmds.getAttr(f"{joint}.jointOrient")[0]
+            rotate_axis = cmds.getAttr(f"{joint}.rotateAxis")[0]
+            _set_driver_angle(driver, "inJointOrient", joint_orient)
+            _set_driver_angle(driver, "inRotateAxis", rotate_axis)
+            cmds.setAttr(f"{driver}.inRotateOrder", int(cmds.getAttr(f"{joint}.rotateOrder")))
+
+            bind_world = [
+                float(value) for value in cmds.getAttr(f"{joint}.worldMatrix[0]")
+            ]
+            cmds.setAttr(f"{driver}.inBindWorldMatrix", bind_world, type="matrix")
+            cmds.setAttr(
+                f"{driver}.inNoOrientBindWorldMatrix",
+                _no_orient_matrix(bind_world),
+                type="matrix",
+            )
+
+            parent_bind_world = [1.0, 0.0, 0.0, 0.0,
+                                 0.0, 1.0, 0.0, 0.0,
+                                 0.0, 0.0, 1.0, 0.0,
+                                 0.0, 0.0, 0.0, 1.0]
+            if 0 <= parent_bone_index < len(maya_joints or []):
+                parent_joint = maya_joints[parent_bone_index]
+                if parent_joint and cmds.objExists(parent_joint):
+                    parent_bind_world = [
+                        float(value) for value in cmds.getAttr(
+                            f"{parent_joint}.worldMatrix[0]"
+                        )
+                    ]
+            cmds.setAttr(f"{driver}.inParentBindWorldMatrix", parent_bind_world, type="matrix")
+            cmds.setAttr(
+                f"{driver}.inParentNoOrientBindWorldMatrix",
+                _no_orient_matrix(parent_bind_world),
+                type="matrix",
+            )
+
+            cmds.connectAttr(
+                f"{solver}.outBoneMatrices",
+                f"{driver}.inSolverBoneMatrices",
+                force=True,
+            )
+            cmds.connectAttr(f"{solver}.outBoneCount", f"{driver}.inSolverBoneCount", force=True)
+            cmds.connectAttr(f"{solver}.outSolved", f"{driver}.inSolved", force=True)
+
+            # Root PMX bones use solver world space directly.  Child bones use
+            # the PMX parent index above and do not need this fallback input.
+            if not (0 <= parent_bone_index < len(bones or [])):
+                parents = cmds.listRelatives(joint, parent=True, fullPath=True) or []
+                if parents and cmds.nodeType(parents[0]) == "joint":
+                    cmds.connectAttr(
+                        f"{parents[0]}.worldInverseMatrix[0]",
+                        f"{driver}.inParentInverseMatrix",
+                        force=True,
+                    )
+
+            if not cmds.attributeQuery("mmd_model_root", node=driver, exists=True):
+                cmds.addAttr(driver, longName="mmd_model_root", attributeType="message")
+            cmds.connectAttr(f"{root_group}.message", f"{driver}.mmd_model_root", force=True)
+
+            if not cmds.attributeQuery("mmd_target_joint", node=driver, exists=True):
+                cmds.addAttr(driver, longName="mmd_target_joint", dataType="string")
+            cmds.setAttr(f"{driver}.mmd_target_joint", joint, type="string")
+
+            _connect_physics_output(f"{driver}.outTranslate", f"{joint}.translate")
+            _connect_physics_output(f"{driver}.outRotate", f"{joint}.rotate")
+            drivers.append(driver)
+            driven_bones.add(bone_index)
+        except Exception as exc:
+            log.warning(
+                "event=physics_bone_driver_failed rigid_body=%d bone=%d joint=%s error=%s",
+                rb_index,
+                bone_index,
+                joint,
+                exc,
+            )
+            if driver and cmds.objExists(driver):
+                cmds.delete(driver)
+            _restore_input_connections(previous_translate_inputs, log)
+            _restore_input_connections(previous_rotate_inputs, log)
+
+    return {
+        "solver": solver,
+        "drivers": drivers,
+        "driven_bone_count": len(drivers),
+    }

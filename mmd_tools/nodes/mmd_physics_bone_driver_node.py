@@ -1,6 +1,7 @@
 """mmdPhysicsBoneDriver — Solver-space world matrix to Maya local channels.
 
 Reads one bone's world matrix from the mmdPhysicsSolver's flat output array,
+applies the Maya bind-pose correction used by the existing IK path, then
 decomposes to Maya local translate/rotate respecting parent inverse matrix,
 joint orient, rotate axis, and rotate order.
 
@@ -46,6 +47,10 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
     aInBoneIndex = None
     aInParentBoneIndex = None
     aInParentInverseMatrix = None
+    aInBindWorldMatrix = None
+    aInNoOrientBindWorldMatrix = None
+    aInParentBindWorldMatrix = None
+    aInParentNoOrientBindWorldMatrix = None
     aInJointOrient = None
     aInJointOrientX = None
     aInJointOrientY = None
@@ -117,10 +122,20 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
             self._write_identity(data)
             return
 
-        bone_world = self._extract_matrix(arr, bone_index)
+        bone_world = self._apply_bind_correction(
+            bone_world=self._extract_matrix(arr, bone_index),
+            bind_world=data.inputValue(self.aInBindWorldMatrix).asMatrix(),
+            no_orient_bind_world=data.inputValue(self.aInNoOrientBindWorldMatrix).asMatrix(),
+        )
 
         if 0 <= parent_bone_index < bone_count:
-            parent_world = self._extract_matrix(arr, parent_bone_index)
+            parent_world = self._apply_bind_correction(
+                bone_world=self._extract_matrix(arr, parent_bone_index),
+                bind_world=data.inputValue(self.aInParentBindWorldMatrix).asMatrix(),
+                no_orient_bind_world=data.inputValue(
+                    self.aInParentNoOrientBindWorldMatrix
+                ).asMatrix(),
+            )
             local_mat = bone_world * parent_world.inverse()
         else:
             parent_inv_mat = data.inputValue(self.aInParentInverseMatrix).asMatrix()
@@ -164,6 +179,16 @@ class MmdPhysicsBoneDriverNode(om.MPxNode):
         offset = bone_index * 16
         values = [arr[offset + i] for i in range(16)]
         return om.MMatrix(values)
+
+    @staticmethod
+    def _apply_bind_correction(
+        *,
+        bone_world: om.MMatrix,
+        bind_world: om.MMatrix,
+        no_orient_bind_world: om.MMatrix,
+    ) -> om.MMatrix:
+        """Map runtime PMX world space into the Maya bind-oriented world space."""
+        return bind_world * no_orient_bind_world.inverse() * bone_world
 
     def _write_identity(self, data) -> None:
         data.outputValue(self.aOutTranslate).set3Double(0.0, 0.0, 0.0)
@@ -215,6 +240,40 @@ def initialize():
     )
     mAttr.storable = False
     MmdPhysicsBoneDriverNode.addAttribute(MmdPhysicsBoneDriverNode.aInParentInverseMatrix)
+
+    # Runtime world matrices have PMX/rest-bone orientation.  These bind
+    # matrices match the correction used by mmdCcdIk:
+    # bindWorld * noOrientBindWorld.inverse() * runtimeWorld.
+    MmdPhysicsBoneDriverNode.aInBindWorldMatrix = mAttr.create(
+        "inBindWorldMatrix", "ibwm"
+    )
+    # These are imported bind-pose constants and must survive save/reopen.
+    mAttr.storable = True
+    MmdPhysicsBoneDriverNode.addAttribute(MmdPhysicsBoneDriverNode.aInBindWorldMatrix)
+
+    MmdPhysicsBoneDriverNode.aInNoOrientBindWorldMatrix = mAttr.create(
+        "inNoOrientBindWorldMatrix", "inobwm"
+    )
+    mAttr.storable = True
+    MmdPhysicsBoneDriverNode.addAttribute(
+        MmdPhysicsBoneDriverNode.aInNoOrientBindWorldMatrix
+    )
+
+    MmdPhysicsBoneDriverNode.aInParentBindWorldMatrix = mAttr.create(
+        "inParentBindWorldMatrix", "ipbwm"
+    )
+    mAttr.storable = True
+    MmdPhysicsBoneDriverNode.addAttribute(
+        MmdPhysicsBoneDriverNode.aInParentBindWorldMatrix
+    )
+
+    MmdPhysicsBoneDriverNode.aInParentNoOrientBindWorldMatrix = mAttr.create(
+        "inParentNoOrientBindWorldMatrix", "ipnobwm"
+    )
+    mAttr.storable = True
+    MmdPhysicsBoneDriverNode.addAttribute(
+        MmdPhysicsBoneDriverNode.aInParentNoOrientBindWorldMatrix
+    )
 
     # Joint orient (angle compound)
     MmdPhysicsBoneDriverNode.aInJointOrientX = uAttr.create(
@@ -325,6 +384,10 @@ def initialize():
         MmdPhysicsBoneDriverNode.aInBoneIndex,
         MmdPhysicsBoneDriverNode.aInParentBoneIndex,
         MmdPhysicsBoneDriverNode.aInParentInverseMatrix,
+        MmdPhysicsBoneDriverNode.aInBindWorldMatrix,
+        MmdPhysicsBoneDriverNode.aInNoOrientBindWorldMatrix,
+        MmdPhysicsBoneDriverNode.aInParentBindWorldMatrix,
+        MmdPhysicsBoneDriverNode.aInParentNoOrientBindWorldMatrix,
         MmdPhysicsBoneDriverNode.aInJointOrient,
         MmdPhysicsBoneDriverNode.aInRotateAxis,
         MmdPhysicsBoneDriverNode.aInRotateOrder,

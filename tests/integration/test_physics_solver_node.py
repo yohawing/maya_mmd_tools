@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import base64
 import math
-import os
 import unittest
 from pathlib import Path
 
@@ -60,7 +59,6 @@ class TestPhysicsSolverNode(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             cmds.loadPlugin(plugin_path)
@@ -71,7 +69,6 @@ class TestPhysicsSolverNode(MayaTestBase):
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
         super().tearDownClass()
 
     def _build_scene(self):
@@ -246,7 +243,6 @@ class TestPhysicsBoneDriverNode(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             cmds.loadPlugin(plugin_path)
@@ -255,7 +251,6 @@ class TestPhysicsBoneDriverNode(MayaTestBase):
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
         super().tearDownClass()
 
     def test_driver_node_creates(self):
@@ -316,6 +311,30 @@ class TestPhysicsBoneDriverNode(MayaTestBase):
         self.assertAlmostEqual(ry, 0.0, places=4)
         self.assertAlmostEqual(rz, 0.0, places=4)
 
+    def test_driver_applies_maya_bind_world_correction(self):
+        """Runtime world orientation must be mapped through the Maya bind pose."""
+        driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
+        c = math.cos(math.pi / 2)
+        s = math.sin(math.pi / 2)
+        identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        bind_rot90z = [c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+
+        cmds.setAttr(f"{driver}.inSolverBoneMatrices", identity, type="doubleArray")
+        cmds.setAttr(f"{driver}.inSolverBoneCount", 1)
+        cmds.setAttr(f"{driver}.inBoneIndex", 0)
+        cmds.setAttr(f"{driver}.inParentBoneIndex", -1)
+        cmds.setAttr(f"{driver}.inBindWorldMatrix", bind_rot90z, type="matrix")
+        cmds.setAttr(f"{driver}.inNoOrientBindWorldMatrix", identity, type="matrix")
+        cmds.setAttr(f"{driver}.inSolved", True)
+
+        self.assertAlmostEqual(cmds.getAttr(f"{driver}.outRotateX"), 0.0, places=4)
+        self.assertAlmostEqual(cmds.getAttr(f"{driver}.outRotateY"), 0.0, places=4)
+        self.assertAlmostEqual(
+            cmds.getAttr(f"{driver}.outRotateZ"),
+            90.0,
+            places=4,
+        )
+
     def test_driver_disabled_outputs_zero(self):
         driver = cmds.createNode("mmdPhysicsBoneDriver", name="testDriver")
         mat = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5.0, 10.0, -3.0, 1]
@@ -369,7 +388,6 @@ class TestSolverTimeStateMachine(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             cmds.loadPlugin(plugin_path)
@@ -380,7 +398,6 @@ class TestSolverTimeStateMachine(MayaTestBase):
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
         super().tearDownClass()
 
     def _setup_solver(self):
@@ -568,7 +585,6 @@ class TestSolverDisableEnable(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             cmds.loadPlugin(plugin_path)
@@ -579,7 +595,6 @@ class TestSolverDisableEnable(MayaTestBase):
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
         super().tearDownClass()
 
     def _setup_solver(self):
@@ -629,7 +644,6 @@ class TestSolverEvaluationModes(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             cmds.loadPlugin(plugin_path)
@@ -640,7 +654,6 @@ class TestSolverEvaluationModes(MayaTestBase):
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
         super().tearDownClass()
 
     def _setup_solver(self):
@@ -713,7 +726,6 @@ class TestSolverLifecycle(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             cmds.loadPlugin(plugin_path)
@@ -724,7 +736,6 @@ class TestSolverLifecycle(MayaTestBase):
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
         super().tearDownClass()
 
     def _setup_solver(self):

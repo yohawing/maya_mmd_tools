@@ -11,7 +11,7 @@ from .. import settings
 from ..converters.light_converter import create_mmd_light_controller, wire_mmd_shaders_to_mmd_light
 from ..converters.mesh_converter import sync_dx11_generated_uniforms
 from ..core import maya_attribute_utils, maya_viewport_utils, settings_keys as setting_keys
-from ..core.constants import SCENE_ROOT_SUFFIX
+from ..core.constants import DEFAULT_IMPORT_PHYSICS, SCENE_ROOT_SUFFIX
 from ..core.namespace_utils import NamespaceUtils
 from ..core.visibility_state import sync_visibility_connections
 from ..adapters.maya_cmds_adapter import MayaCmdsAdapter
@@ -99,24 +99,36 @@ class ModelImportPipeline:
         maya_joints: Any,
         root_group: str,
     ) -> Tuple[list, list]:
-        """Build physics DAG nodes when the development gate is enabled."""
-        import os
-        if os.environ.get("MMD_TOOLS_PHYSICS_NODES") != "1":
-            self.logger.debug("Skipping physics scene build (MMD_TOOLS_PHYSICS_NODES not set)")
+        """Build physics DAG nodes when the import option is enabled."""
+        if not bool(self.options.get("import_physics", DEFAULT_IMPORT_PHYSICS)):
+            self.logger.debug("Skipping physics scene build (import_physics disabled)")
             if self.profile is not None:
                 self.profile["physics_converter"] = {
                     "skipped": True,
-                    "reason": "physics_nodes_gate_off",
+                    "reason": "import_physics_disabled",
                 }
             return [], []
 
-        from ..converters.physics_scene_builder import build_physics_scene
+        rigid_bodies = getattr(parser, "rigid_bodies", None) or []
+        if not rigid_bodies:
+            self.logger.debug("Skipping physics scene build (no physics data found)")
+            if self.profile is not None:
+                self.profile["physics_converter"] = {
+                    "skipped": True,
+                    "reason": "no_physics_data",
+                }
+            return [], []
+
+        from ..converters.physics_scene_builder import (
+            build_physics_live_graph,
+            build_physics_scene,
+        )
 
         t0 = time.time()
         rb_transforms, jt_transforms = build_physics_scene(
-            rigid_bodies=parser.rigid_bodies,
-            joints=parser.joints,
-            bones=parser.bones,
+            rigid_bodies=rigid_bodies,
+            joints=getattr(parser, "joints", None) or [],
+            bones=getattr(parser, "bones", None) or [],
             maya_joints=maya_joints,
             root_group=root_group,
             logger=self.logger,
@@ -128,13 +140,37 @@ class ModelImportPipeline:
             len([t for t in jt_transforms if t]),
             elapsed,
         )
+        # The live graph can evaluate immediately while its connections are
+        # being created, so persist the source payload before creating the
+        # solver node.  Otherwise the solver may cache a "no physics data"
+        # initialization result during import.
+        self._store_source_pmx_payload(root_group)
+        live_graph = build_physics_live_graph(
+            rigid_bodies=rigid_bodies,
+            bones=getattr(parser, "bones", None) or [],
+            maya_joints=maya_joints,
+            root_group=root_group,
+            logger=self.logger,
+        )
+        if live_graph.get("solver"):
+            self.logger.info(
+                "Physics live graph built: solver=%s, bone drivers=%d",
+                live_graph["solver"],
+                len(live_graph.get("drivers") or []),
+            )
+        else:
+            self.logger.warning(
+                "Physics DAG was imported, but live playback graph is unavailable: %s",
+                live_graph.get("reason", "unknown"),
+            )
         if self.profile is not None:
             self.profile["physics_converter"] = {
                 "rigid_bodies": len(rb_transforms),
                 "joints": len(jt_transforms),
+                "solver": live_graph.get("solver"),
+                "bone_drivers": len(live_graph.get("drivers") or []),
                 "elapsed_seconds": elapsed,
             }
-        self._store_source_pmx_payload(root_group)
         return rb_transforms, jt_transforms
 
     def _store_source_pmx_payload(self, root_group: str) -> None:

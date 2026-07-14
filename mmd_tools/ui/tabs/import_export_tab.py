@@ -231,6 +231,19 @@ class ImportExportTab(BaseTab):
         self.morph_group.setLayout(morph_layout)
         model_settings_layout.addWidget(self.morph_group)
 
+        # Physics Group
+        self.physics_group = QGroupBox(self.tr("physics_settings", "groups"))
+        physics_layout = QVBoxLayout()
+        self.import_physics_check = self._bind_checkbox(
+            "import_physics",
+            setting_keys.IMPORT_PHYSICS_IMPORT_PHYSICS,
+            False,
+            physics_layout,
+            tooltip_key="import_physics",
+        )
+        self.physics_group.setLayout(physics_layout)
+        model_settings_layout.addWidget(self.physics_group)
+
         # Other Settings Group (dev-only advanced toggles)
         self.other_group = QGroupBox(self.tr("other", "groups"))
         other_layout = QVBoxLayout()
@@ -637,6 +650,8 @@ class ImportExportTab(BaseTab):
             self.model_group.setTitle(self.tr("model", "groups"))
         if hasattr(self, "morph_group"):
             self.morph_group.setTitle(self.tr("morph", "groups"))
+        if hasattr(self, "physics_group"):
+            self.physics_group.setTitle(self.tr("physics_settings", "groups"))
         if hasattr(self, "other_group"):
             self.other_group.setTitle(self.tr("other", "groups"))
         if hasattr(self, "model_import_group"):
@@ -663,6 +678,7 @@ class ImportExportTab(BaseTab):
             self.auto_resolve_textures_check.setText(self.tr("auto_resolve_textures", "checkboxes"))
         self.disable_backface_culling_check.setText(self.tr("disable_backface_culling", "checkboxes"))
         self.import_morphs_check.setText(self.tr("import_morphs", "checkboxes"))
+        self.import_physics_check.setText(self.tr("import_physics", "checkboxes"))
         self.bake_mode_check.setText(self.tr("bake_mode", "checkboxes"))
         self.native_physics_bake_check.setText(self.tr("native_physics_bake", "checkboxes"))
         self.clear_existing_motion_check.setText(self.tr("clear_existing_motion", "checkboxes"))
@@ -678,6 +694,7 @@ class ImportExportTab(BaseTab):
         self.auto_classify_transparency_check.setToolTip(self.tr("auto_classify_transparency", "tooltips"))
         self.auto_resolve_textures_check.setToolTip(self.tr("auto_resolve_textures", "tooltips"))
         self.disable_backface_culling_check.setToolTip(self.tr("disable_backface_culling", "tooltips"))
+        self.import_physics_check.setToolTip(self.tr("import_physics", "tooltips"))
         self.bake_mode_check.setToolTip(self.tr("bake_mode", "tooltips"))
         self.native_physics_bake_check.setToolTip(self.tr("native_physics_bake", "tooltips"))
         self.clear_existing_motion_check.setToolTip(self.tr("clear_existing_motion", "tooltips"))

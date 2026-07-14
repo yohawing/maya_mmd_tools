@@ -3,13 +3,17 @@ PMXインポーターの統合テスト
 """
 
 import os
+from pathlib import Path
+import unittest
 from unittest.mock import patch
 
 from maya import cmds
+from maya.api import OpenMaya as om
 
 from tests.common.maya_test_base import MayaTestBase
 from tests.common.test_fixture_provider import TestFixtureProvider
 from mmd_tools.core.constants import ATTR_MMD_DISPLAY_FRAMES_JSON
+from mmd_tools.core.native.mmd_anim_runtime import is_native_physics_available
 from mmd_tools.io import pmx_importer
 from mmd_tools.io.pmx_importer import import_pmx_file
 from mmd_tools.core.mmd_parser import MMDParseException, parse_pmx_file
@@ -235,6 +239,125 @@ class TestPmxImporter(MayaTestBase):
             for child in (cmds.listRelatives(result, children=True, fullPath=True) or [])
         }
         self.assertNotIn("Physics", child_names)
+
+    @unittest.skipUnless(is_native_physics_available(), "native physics DLL not available")
+    def test_import_pmx_with_physics_builds_live_playback_graph(self):
+        """Physics import must wire solver/drivers and produce changing channels."""
+        plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        try:
+            self.load_plugin(plugin_path)
+        except Exception:
+            # The plugin may already be loaded by another integration class.
+            pass
+
+        pmx_file = str(Path(__file__).resolve().parents[1] / "data" / "physics" / "test_hair_physics.pmx")
+        parser = parse_pmx_file(pmx_file)
+        dynamic_bones = {
+            int(rb.related_bone_index)
+            for rb in parser.rigid_bodies
+            if int(rb.physics_mode) in (1, 2) and int(rb.related_bone_index) >= 0
+        }
+        self.assertGreater(len(dynamic_bones), 0, "fixture has no dynamic rigid bodies")
+
+        root = import_pmx_file(
+            parser,
+            pmx_file,
+            options={"import_physics": True, "create_mmd_shaders": False},
+        )
+
+        solvers = cmds.ls(type="mmdPhysicsSolver") or []
+        drivers = cmds.ls(type="mmdPhysicsBoneDriver") or []
+        self.assertEqual(len(solvers), 1)
+        self.assertGreater(len(drivers), 0)
+        self.assertTrue(
+            root in (cmds.listConnections(f"{solvers[0]}.modelRoot", source=True, destination=False) or [])
+        )
+        self.assertTrue(cmds.listConnections(f"{solvers[0]}.inTime", source=True, destination=False))
+
+        snapshots = []
+        cmds.currentTime(0, update=True)
+        for frame in range(1, 31):
+            cmds.currentTime(frame, update=True)
+            frame_values = []
+            for driver in drivers:
+                translate = cmds.getAttr(f"{driver}.outTranslate") or ((0.0, 0.0, 0.0),)
+                rotate = cmds.getAttr(f"{driver}.outRotate") or ((0.0, 0.0, 0.0),)
+                frame_values.extend(translate[0])
+                frame_values.extend(rotate[0])
+            snapshots.append(tuple(round(float(value), 6) for value in frame_values))
+
+        self.assertGreater(
+            len(set(snapshots)),
+            1,
+            "live physics driver output did not change during timeline playback: "
+            f"drivers={len(drivers)} first={snapshots[0][:12]} last={snapshots[-1][:12]} "
+            f"solver_status={cmds.getAttr(f'{solvers[0]}.outStatus')} "
+            f"solver_solved={cmds.getAttr(f'{solvers[0]}.outSolved')} "
+            f"driver_solved={cmds.getAttr(f'{drivers[0]}.inSolved')}",
+        )
+
+        # Final-pose parity: the world matrix of every driven Maya joint must
+        # equal the solver world matrix after the same bind correction used by
+        # the BoneDriver.  Solver/native parity alone does not cover this step.
+        solver_flat = cmds.getAttr(f"{solvers[0]}.outBoneMatrices")
+        for driver in drivers:
+            bone_index = int(cmds.getAttr(f"{driver}.inBoneIndex"))
+            parent_index = int(cmds.getAttr(f"{driver}.inParentBoneIndex"))
+            runtime_world = om.MMatrix(solver_flat[bone_index * 16:(bone_index + 1) * 16])
+            bind_world = om.MMatrix(cmds.getAttr(f"{driver}.inBindWorldMatrix"))
+            no_orient_bind_world = om.MMatrix(
+                cmds.getAttr(f"{driver}.inNoOrientBindWorldMatrix")
+            )
+            expected_world = bind_world * no_orient_bind_world.inverse() * runtime_world
+
+            if 0 <= parent_index < len(solver_flat) // 16:
+                parent_runtime_world = om.MMatrix(
+                    solver_flat[parent_index * 16:(parent_index + 1) * 16]
+                )
+                parent_bind_world = om.MMatrix(
+                    cmds.getAttr(f"{driver}.inParentBindWorldMatrix")
+                )
+                parent_no_orient_bind_world = om.MMatrix(
+                    cmds.getAttr(f"{driver}.inParentNoOrientBindWorldMatrix")
+                )
+                expected_parent_world = (
+                    parent_bind_world
+                    * parent_no_orient_bind_world.inverse()
+                    * parent_runtime_world
+                )
+                expected_local = expected_world * expected_parent_world.inverse()
+            else:
+                parent_inverse = om.MMatrix(
+                    cmds.getAttr(f"{driver}.inParentInverseMatrix")
+                )
+                expected_local = expected_world * parent_inverse
+
+            target_joint = cmds.getAttr(f"{driver}.mmd_target_joint")
+            actual_world = om.MMatrix(cmds.getAttr(f"{target_joint}.worldMatrix[0]"))
+            for matrix_index in range(16):
+                self.assertAlmostEqual(
+                    actual_world[matrix_index],
+                    expected_world[matrix_index],
+                    delta=0.02,
+                    msg=f"{driver} final world matrix mismatch at {matrix_index}",
+                )
+
+            # Decomposed local output must reconstruct the same corrected world
+            # through the actual Maya parent hierarchy.
+            parent_joint = cmds.listRelatives(
+                target_joint, parent=True, fullPath=True, type="joint"
+            ) or []
+            if parent_joint:
+                reconstructed_world = expected_local * om.MMatrix(
+                    cmds.getAttr(f"{parent_joint[0]}.worldMatrix[0]")
+                )
+                for matrix_index in range(16):
+                    self.assertAlmostEqual(
+                        reconstructed_world[matrix_index],
+                        actual_world[matrix_index],
+                        delta=0.02,
+                        msg=f"{driver} local reconstruction mismatch at {matrix_index}",
+                    )
 
     def test_import_pmx_multiple_files(self):
         """全てのPMXモデルが基本的にロード可能かテスト"""

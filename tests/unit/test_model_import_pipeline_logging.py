@@ -135,6 +135,45 @@ class TestModelImportPipelineLogging(unittest.TestCase):
         self.assertIn("Cleaning up namespace: %s", debug_messages)
         self.assertNotIn("Cleaning up namespace: %s", info_messages)
 
+    def test_physics_import_is_disabled_without_explicit_option(self):
+        logger = MagicMock()
+        profile = {}
+        pipeline = self._make_pipeline(logger, options={"profile": profile})
+        parser = SimpleNamespace(rigid_bodies=[object()], joints=[object()], bones=[object()])
+
+        with patch("mmd_tools.converters.physics_scene_builder.build_physics_scene") as build_scene:
+            result = pipeline.convert_physics(
+                file_kind="pmx",
+                parser=parser,
+                maya_joints=[],
+                root_group="root",
+            )
+
+        self.assertEqual(result, ([], []))
+        build_scene.assert_not_called()
+        self.assertEqual(profile["physics_converter"]["reason"], "import_physics_disabled")
+
+    def test_physics_import_uses_explicit_option_without_environment_gate(self):
+        logger = MagicMock()
+        profile = {}
+        pipeline = self._make_pipeline(logger, options={"profile": profile, "import_physics": True})
+        parser = SimpleNamespace(rigid_bodies=[object()], joints=[object()], bones=[object()])
+
+        with patch(
+            "mmd_tools.converters.physics_scene_builder.build_physics_scene",
+            return_value=(["rb"], ["joint"]),
+        ) as build_scene, patch.object(pipeline, "_store_source_pmx_payload") as store_payload:
+            result = pipeline.convert_physics(
+                file_kind="pmx",
+                parser=parser,
+                maya_joints=[],
+                root_group="root",
+            )
+
+        self.assertEqual(result, (["rb"], ["joint"]))
+        build_scene.assert_called_once()
+        store_payload.assert_called_once_with("root")
+
 
 if __name__ == "__main__":
     unittest.main()

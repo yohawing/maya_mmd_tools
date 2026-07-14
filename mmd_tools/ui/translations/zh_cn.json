@@ -110,6 +110,7 @@
     "vmd_fps": "VMD文件的帧率。MMD标准为30fps",
     "separate_meshes": "按材质分割网格",
     "auto_classify_transparency": "通过UV Alpha扫描自动分类透明材质",
+    "import_physics": "从 PMX 物理数据创建刚体和关节",
     "disable_backface_culling": "禁用背面剔除以实现双面渲染"
   },
   "messages": {
@@ -240,6 +241,7 @@
     "joint_name_conversion": "将关节名称转换为英文",
     "disable_backface_culling": "禁用背面剔除",
     "import_morphs": "导入表情",
+    "import_physics": "导入物理",
     "bake_mode": "烘焙动作",
     "native_physics_bake": "烘焙物理",
     "apply_scale": "应用缩放",

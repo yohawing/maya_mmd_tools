@@ -336,12 +336,11 @@ def initializePlugin(mobject):
             mmd_ccd_ik_node.register(plugin_fn)
             _python_rig_nodes_registered = True
         global _physics_nodes_registered
-        if os.environ.get("MMD_TOOLS_PHYSICS_NODES") == "1":
-            mmd_rigid_body_shape.register(plugin_fn)
-            mmd_physics_joint_shape.register(plugin_fn)
-            mmd_physics_solver_node.register(plugin_fn)
-            mmd_physics_bone_driver_node.register(plugin_fn)
-            _physics_nodes_registered = True
+        mmd_rigid_body_shape.register(plugin_fn)
+        mmd_physics_joint_shape.register(plugin_fn)
+        mmd_physics_solver_node.register(plugin_fn)
+        mmd_physics_bone_driver_node.register(plugin_fn)
+        _physics_nodes_registered = True
         _register_after_open_callback()
     except Exception as e:
         om.MGlobal.displayError(f"Plugin initialization failed: {str(e)}")

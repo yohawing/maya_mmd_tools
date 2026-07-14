@@ -113,6 +113,7 @@
     "separate_meshes": "Split mesh per material",
     "auto_classify_transparency": "Auto-classify transparent materials via UV alpha scan",
     "disable_backface_culling": "Disable backface culling for double-sided rendering",
+    "import_physics": "Create rigid bodies and joints from PMX physics data",
     "use_cpp_rig_nodes": "Use experimental C++ rig nodes for IK/append constraints. Falls back to Python nodes when unavailable"
   },
   "messages": {
@@ -300,6 +301,7 @@
     "joint_name_conversion": "Convert Joint Names to English",
     "disable_backface_culling": "Disable Backface Culling",
     "import_morphs": "Import Morphs",
+    "import_physics": "Import Physics",
     "bake_mode": "Bake Motion",
     "native_physics_bake": "Bake Physics",
     "clear_existing_motion": "Clear Existing Motion",

@@ -7,7 +7,6 @@ world matrices back to Maya joints with observable position changes.
 
 from __future__ import annotations
 
-import os
 import unittest
 from pathlib import Path
 
@@ -47,7 +46,6 @@ class TestPhysicsSolverSession(MayaTestBase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        os.environ["MMD_TOOLS_PHYSICS_NODES"] = "1"
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
         try:
             cmds.loadPlugin(plugin_path)
@@ -58,7 +56,6 @@ class TestPhysicsSolverSession(MayaTestBase):
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MMD_TOOLS_PHYSICS_NODES", None)
         super().tearDownClass()
 
     def _build_scene(self):

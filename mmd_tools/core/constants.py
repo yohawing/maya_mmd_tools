@@ -110,7 +110,7 @@ ATTR_MMD_TAIL_POS_INDEX = "mmd_tail_pos_index"  # テール位置ボーンイン
 
 # デフォルト値
 DEFAULT_SCALE_FACTOR = 1.0  # インポート時のデフォルトスケール係数
-DEFAULT_IMPORT_PHYSICS = True  # 物理演算をインポートするかのデフォルト設定
+DEFAULT_IMPORT_PHYSICS = False  # 物理演算をインポートするかのデフォルト設定
 DEFAULT_IMPORT_MORPHS = True  # モーフをインポートするかのデフォルト設定
 
 # 物理タイプ

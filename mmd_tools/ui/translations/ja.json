@@ -113,6 +113,7 @@
     "separate_meshes": "マテリアルごとにメッシュを分割します",
     "auto_classify_transparency": "UVアルファスキャンで透過マテリアルを自動分類します",
     "disable_backface_culling": "バックフェースカリングを無効にして両面描画にします",
+    "import_physics": "PMXの物理データから剛体とジョイントを作成します",
     "use_cpp_rig_nodes": "IK/付与制約に実験的なC++リグノードを使います。利用できない場合はPythonノードにフォールバックします"
   },
   "messages": {
@@ -300,6 +301,7 @@
     "joint_name_conversion": "ジョイント名を英語に変換",
     "disable_backface_culling": "バックフェースカリングを無効化",
     "import_morphs": "モーフをインポート",
+    "import_physics": "物理をインポート",
     "bake_mode": "モーションをベイク",
     "native_physics_bake": "物理をベイク",
     "clear_existing_motion": "既存モーションをクリア",
