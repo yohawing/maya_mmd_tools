@@ -459,7 +459,20 @@ class MorphConverter:
         node_name = f"{safe_name}_{morph_kind}Morph"
 
         if cmds.objExists(node_name):
-            morph_node = node_name
+            owned = False
+            if cmds.attributeQuery("mmd_model_root", node=node_name, exists=True):
+                owned = bool(
+                    cmds.listConnections(
+                        f"{node_name}.mmd_model_root",
+                        source=True,
+                        destination=False,
+                    )
+                    or []
+                )
+            # A non-namespaced second model must receive its own metadata node.
+            # Maya will add a numeric suffix while preserving the morph name
+            # stored in the node attributes below.
+            morph_node = cmds.createNode("network", name=node_name) if owned else node_name
         else:
             morph_node = cmds.createNode("network", name=node_name)
 

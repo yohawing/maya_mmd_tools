@@ -102,6 +102,10 @@ class TestModelImportPipelineLogging(unittest.TestCase):
             return_value=False,
         ), patch.object(model_import_pipeline.cmds, "addAttr") as add_attr, patch.object(
             model_import_pipeline.cmds,
+            "listConnections",
+            return_value=[],
+        ), patch.object(
+            model_import_pipeline.cmds,
             "connectAttr",
         ) as connect_attr:
             pipeline.connect_morph_nodes_to_root("ModelRoot", morph_result)
@@ -115,7 +119,7 @@ class TestModelImportPipelineLogging(unittest.TestCase):
                 ("ModelRoot.message", "material_morph.mmd_model_root"),
             },
         )
-        self.assertTrue(all(call.kwargs == {"force": True} for call in connect_attr.call_args_list))
+        self.assertTrue(all(call.kwargs == {} for call in connect_attr.call_args_list))
 
     def test_mesh_converter_records_glsl_hardware_backend(self):
         converter = MeshConverter()

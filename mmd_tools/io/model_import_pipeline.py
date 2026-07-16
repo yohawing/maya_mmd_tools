@@ -83,7 +83,21 @@ class ModelImportPipeline:
         ):
             if not cmds.attributeQuery("mmd_model_root", node=morph_node, exists=True):
                 cmds.addAttr(morph_node, longName="mmd_model_root", attributeType="message")
-            cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root", force=True)
+            existing_roots = cmds.listConnections(
+                f"{morph_node}.mmd_model_root", source=True, destination=False
+            ) or []
+            if existing_roots:
+                requested = cmds.ls(root_group, long=True) or []
+                existing = cmds.ls(existing_roots[0], long=True) or []
+                if requested != existing:
+                    self.logger.warning(
+                        "Refusing to reassign morph node %s from %s to %s",
+                        morph_node,
+                        existing_roots[0],
+                        root_group,
+                    )
+                continue
+            cmds.connectAttr(f"{root_group}.message", f"{morph_node}.mmd_model_root")
 
     def connect_texture_nodes_to_root(self, root_group: str, texture_nodes) -> None:
         """Attach instance ownership to imported texture nodes."""

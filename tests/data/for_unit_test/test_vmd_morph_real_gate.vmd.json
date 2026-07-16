@@ -1,0 +1,19 @@
+{
+  "kind": "vmd",
+  "metadata": {
+    "format": "vmd", "modelName": "vmd_morph_real_gate", "modelNameBytes": [118, 109, 100, 95, 109, 111, 114, 112, 104, 95, 114, 101, 97, 108, 95, 103, 97, 116, 101],
+    "counts": {"bones": 0, "morphs": 8, "cameras": 0, "lights": 0, "selfShadows": 0, "properties": 0}, "maxFrame": 10
+  },
+  "boneFrames": [],
+  "morphFrames": [
+    {"frame": 0, "morphName": "vertex_leaf", "morphNameBytes": [118, 101, 114, 116, 101, 120, 95, 108, 101, 97, 102], "weight": 0.25},
+    {"frame": 10, "morphName": "vertex_leaf", "morphNameBytes": [118, 101, 114, 116, 101, 120, 95, 108, 101, 97, 102], "weight": 0.75},
+    {"frame": 0, "morphName": "bone_leaf", "morphNameBytes": [98, 111, 110, 101, 95, 108, 101, 97, 102], "weight": 0.25},
+    {"frame": 10, "morphName": "bone_leaf", "morphNameBytes": [98, 111, 110, 101, 95, 108, 101, 97, 102], "weight": 0.75},
+    {"frame": 0, "morphName": "material_leaf", "morphNameBytes": [109, 97, 116, 101, 114, 105, 97, 108, 95, 108, 101, 97, 102], "weight": 0.25},
+    {"frame": 10, "morphName": "material_leaf", "morphNameBytes": [109, 97, 116, 101, 114, 105, 97, 108, 95, 108, 101, 97, 102], "weight": 0.75},
+    {"frame": 0, "morphName": "outer_group", "morphNameBytes": [111, 117, 116, 101, 114, 95, 103, 114, 111, 117, 112], "weight": 0.25},
+    {"frame": 10, "morphName": "outer_group", "morphNameBytes": [111, 117, 116, 101, 114, 95, 103, 114, 111, 117, 112], "weight": 0.75}
+  ],
+  "cameraFrames": [], "lightFrames": [], "selfShadowFrames": [], "propertyFrames": []
+}
