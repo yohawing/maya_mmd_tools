@@ -71,6 +71,7 @@ class MorphPresenter:
         self._morph_capability_cache = {}
         self._morphs_by_index = {}
         self._loaded_model_root = None
+        self._morph_controller = None
         self.group_morphs = {}  # グループごとのモーフリスト
         self.is_updating = False
 
@@ -136,7 +137,15 @@ class MorphPresenter:
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
             self._loaded_model_root = None
+            self._morph_controller = None
             return
+
+        controllers = []
+        if self.maya_adapter.attribute_exists("mmd_morph_controller", current_model_root):
+            controllers = self.maya_adapter.list_connections(
+                f"{current_model_root}.mmd_morph_controller", source=True, destination=False
+            ) or []
+        self._morph_controller = controllers[0] if len(controllers) == 1 else None
 
         # MMDモーフデータを収集
         self._load_mmd_morphs(current_model_root)
@@ -229,7 +238,9 @@ class MorphPresenter:
                             "name_en": "",
                             "panel": panel,
                             "type": 0,  # 頂点モーフ
-                            "index": weight_index if weight_index is not None else -1,
+                            "index": global_index if global_index is not None else (
+                                weight_index if weight_index is not None else -1
+                            ),
                         }
                     else:
                         # Multi-mesh / multi-alias merge: keep first panel/type/index.
@@ -438,6 +449,27 @@ class MorphPresenter:
         if raw_type != 0:
             return _DIRECT_RUNTIME_MORPH_CAPABILITIES.get(raw_type, False)
 
+        if self._morph_controller:
+            try:
+                source_index = int(data.get("index", -1))
+                topology = json.loads(self.maya_adapter.get_attr(
+                    f"{self._morph_controller}.groupTopology"
+                ) or "{}")
+            except (RuntimeError, TypeError, ValueError):
+                return False
+            if not isinstance(topology, dict):
+                return False
+            for target, sources in topology.items():
+                if not any(int(group) == source_index for group, _rate in sources):
+                    continue
+                if self.maya_adapter.list_connections(
+                    f"{self._morph_controller}.outputWeight[{int(target)}]",
+                    source=False,
+                    destination=True,
+                ):
+                    return True
+            return False
+
         by_index = self._morphs_by_index
         if not by_index:
             by_index = {
@@ -632,6 +664,14 @@ class MorphPresenter:
         Canonical blendShape ``weight[n]`` plugs come first, then the scoped
         network ``morph_node.weight`` used by bone/material/group morphs.
         """
+        try:
+            morph_index = int(data.get("index", -1))
+        except (TypeError, ValueError):
+            morph_index = -1
+        if self._morph_controller and morph_index >= 0:
+            yield f"{self._morph_controller}.inputWeight[{morph_index}]"
+            return
+
         seen = set()
         for plug in self._iter_blend_shape_weight_plugs(data, morph_name):
             if plug in seen:

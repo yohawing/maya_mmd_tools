@@ -204,30 +204,34 @@ class TestBoneMorphRuntime(MayaTestBase):
         self.assertEqual(len(cmds.ls(type="mmdBoneMorphAccum") or []), 1)
 
     def test_group_morph_weight_drives_referenced_bone_morph_offset(self):
-        """Group morph references to bone morphs are weighted by group rate."""
+        """Cross-index controller dirtying drives the referenced bone leaf."""
         self._require_accumulator_node()
         root, joint = self._create_indexed_joint()
 
-        self._create_bone_morph_node(
+        bone_morph = self._create_bone_morph_node(
             "move_target_boneMorph",
             3,
             [{"bone_index": 0, "translation": [4.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0, 1.0]}],
         )
-        group_morph = self._create_group_morph_node(
+        self._create_group_morph_node(
             "move_group_groupMorph",
             4,
             [{"morph_index": 3, "morph_rate": 0.25}],
         )
+        controller = cmds.createNode("mmdMorphController")
+        cmds.setAttr(f"{controller}.topologyVersion", 1)
+        cmds.setAttr(f"{controller}.groupTopology", '{"3":[[4,0.25]]}', type="string")
+        cmds.connectAttr(f"{controller}.outputWeight[3]", f"{bone_morph}.weight")
 
         result = build_bone_morph_graph(root)
         self.assertTrue(result["success"])
-        self.assertEqual(result["contributions"], 2)
+        self.assertEqual(result["contributions"], 1)
 
-        cmds.setAttr(f"{group_morph}.weight", 0.5)
+        cmds.setAttr(f"{controller}.inputWeight[4]", 0.5)
         self.assertListAlmostEqual(cmds.getAttr(f"{joint}.translate")[0], (0.5, 0.0, 0.0), places=5)
 
     def test_root_scoped_discovery_isolates_same_index_and_skips_legacy_network(self):
-        """Building model B includes only B-owned bone/group morph contributions."""
+        """Building model B isolates its Controller-driven bone leaf and warns for legacy data."""
         self._require_accumulator_node()
         root_a, joint_a = self._create_indexed_joint(name="shared_bone", bone_index=7)
         root_b, joint_b = self._create_indexed_joint(name="shared_bone", bone_index=7)
@@ -240,18 +244,18 @@ class TestBoneMorphRuntime(MayaTestBase):
         ]
         bone_a = self._create_bone_morph_node("model_a_boneMorph", 5, offset, root_a)
         bone_b = self._create_bone_morph_node("model_b_boneMorph", 5, offset, root_b)
-        group_a = self._create_group_morph_node(
-            "model_a_groupMorph",
-            6,
-            [{"morph_index": 5, "morph_rate": 0.5}],
-            root_a,
-        )
-        group_b = self._create_group_morph_node(
-            "model_b_groupMorph",
-            6,
-            [{"morph_index": 5, "morph_rate": 0.5}],
-            root_b,
-        )
+        controller_a = cmds.createNode("mmdMorphController")
+        cmds.addAttr(root_a, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller_a}.message", f"{root_a}.mmd_morph_controller")
+        cmds.setAttr(f"{controller_a}.topologyVersion", 1)
+        cmds.setAttr(f"{controller_a}.groupTopology", '{"5":[[6,0.5]]}', type="string")
+        cmds.connectAttr(f"{controller_a}.outputWeight[5]", f"{bone_a}.weight")
+        controller_b = cmds.createNode("mmdMorphController")
+        cmds.addAttr(root_b, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller_b}.message", f"{root_b}.mmd_morph_controller")
+        cmds.setAttr(f"{controller_b}.topologyVersion", 1)
+        cmds.setAttr(f"{controller_b}.groupTopology", '{"5":[[6,0.5]]}', type="string")
+        cmds.connectAttr(f"{controller_b}.outputWeight[5]", f"{bone_b}.weight")
         legacy = self._create_bone_morph_node("legacy_unowned_boneMorph", 5, offset, root_b)
         cmds.deleteAttr(f"{legacy}.mmd_model_root")
 
@@ -262,7 +266,7 @@ class TestBoneMorphRuntime(MayaTestBase):
             result = build_bone_morph_graph(root_b)
 
         self.assertTrue(result["success"])
-        self.assertEqual(result["contributions"], 2)
+        self.assertEqual(result["contributions"], 1)
         migration_warnings = [
             message for message in captured.output if "migration required" in message
         ]
@@ -270,13 +274,14 @@ class TestBoneMorphRuntime(MayaTestBase):
         self.assertIn(legacy, migration_warnings[0])
         self.assertIn(root_b, migration_warnings[0])
 
-        for morph in (bone_a, group_a, legacy):
-            cmds.setAttr(f"{morph}.weight", 1.0)
+        cmds.setAttr(f"{controller_a}.inputWeight[5]", 1.0)
+        cmds.setAttr(f"{controller_a}.inputWeight[6]", 1.0)
+        cmds.setAttr(f"{legacy}.weight", 1.0)
         self.assertListAlmostEqual(cmds.getAttr(f"{joint_a}.translate")[0], (0.0, 0.0, 0.0))
         self.assertListAlmostEqual(cmds.getAttr(f"{joint_b}.translate")[0], (0.0, 0.0, 0.0))
 
-        cmds.setAttr(f"{bone_b}.weight", 1.0)
-        cmds.setAttr(f"{group_b}.weight", 1.0)
+        cmds.setAttr(f"{controller_b}.inputWeight[5]", 1.0)
+        cmds.setAttr(f"{controller_b}.inputWeight[6]", 1.0)
         self.assertListAlmostEqual(cmds.getAttr(f"{joint_b}.translate")[0], (3.0, 0.0, 0.0))
         self.assertListAlmostEqual(cmds.getAttr(f"{joint_a}.translate")[0], (0.0, 0.0, 0.0))
 

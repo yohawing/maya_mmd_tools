@@ -148,6 +148,7 @@ def import_pmx_file(
 
             # network morph ノードをモデルルートに message 接続で紐付ける
             pipeline.connect_morph_nodes_to_root(root_group, morph_result)
+            morph_converter.build_morph_controller(parser, root_group, morph_result)
 
             # ボーンを変換
             logger.debug("Converting bones...")

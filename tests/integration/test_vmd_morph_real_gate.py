@@ -126,6 +126,35 @@ class TestVmdMorphRealGate(MayaTestBase):
         self.assertTrue(root_b)
         self.assertNotEqual(root_a, root_b)
 
+        controllers = {}
+        for root in (root_a, root_b):
+            connected = set(cmds.listConnections(
+                f"{root}.mmd_morph_controller",
+                source=True,
+                destination=False,
+                type="mmdMorphController",
+            ) or [])
+            self.assertEqual(len(connected), 1)
+            controllers[root] = connected.pop()
+        self.assertNotEqual(controllers[root_a], controllers[root_b])
+        expected_topology = {
+            "0": [[4, 0.25]],
+            "1": [[3, 0.5], [4, 0.4]],
+            "2": [[3, 0.5], [4, 0.4]],
+            "3": [[4, 0.8]],
+        }
+        for controller in controllers.values():
+            actual_topology = json.loads(cmds.getAttr(f"{controller}.groupTopology"))
+            self.assertEqual(actual_topology.keys(), expected_topology.keys())
+            for target_index, expected_sources in expected_topology.items():
+                actual_sources = actual_topology[target_index]
+                self.assertEqual(
+                    [source_index for source_index, _rate in actual_sources],
+                    [source_index for source_index, _rate in expected_sources],
+                )
+                for actual_source, expected_source in zip(actual_sources, expected_sources):
+                    self.assertAlmostEqual(actual_source[1], expected_source[1], places=6)
+
         nodes_a = self._morph_nodes(root_a)
         nodes_b = self._morph_nodes(root_b)
         for key in (("bone", "bone_leaf"), ("material", "material_leaf"),
@@ -148,6 +177,19 @@ class TestVmdMorphRealGate(MayaTestBase):
         self.assertTrue(base.convert(motion, target_model=root_a, pmx_path=str(PMX)))
         base_sec = time.perf_counter() - started
         plugs_a = self._weight_plugs(base)
+
+        expected_effective_weights = {
+            0: [0.3125, 0.35, 0.35, 0.2, 0.25],
+            5.5: [0.65625, 0.735, 0.735, 0.42, 0.525],
+            10: [0.9375, 1.05, 1.05, 0.6, 0.75],
+        }
+        for frame, expected in expected_effective_weights.items():
+            cmds.currentTime(frame, edit=True)
+            actual = [
+                cmds.getAttr(f"{controllers[root_a]}.outputWeight[{index}]")
+                for index in range(5)
+            ]
+            self.assertListAlmostEqual(actual, expected, places=6)
 
         for plug in plugs_a.values():
             self.assertEqual(cmds.keyframe(plug, query=True, timeChange=True), [0.0, 10.0])

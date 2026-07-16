@@ -148,6 +148,65 @@ class MorphConverter:
             "results": results,
         }
 
+    def build_morph_controller(self, pmx_data, root_group: str, morph_result: Dict[str, Any]) -> Optional[str]:
+        """Create one fixed-topology controller and connect all supported morph leaves."""
+        if not morph_result.get("total_morphs"):
+            return None
+        controller = cmds.createNode("mmdMorphController", name=f"{root_group.split('|')[-1]}_morphController")
+        cmds.addAttr(root_group, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller}.message", f"{root_group}.mmd_morph_controller")
+
+        groups = {
+            index: morph
+            for index, morph in enumerate(pmx_data.morphs)
+            if morph.morph_type == PmxMorphType.GroupMorph
+        }
+        group_rates: Dict[int, Dict[int, float]] = {}
+
+        def expand(source: int, current: int, rate: float, path: Set[int]) -> None:
+            for offset in getattr(groups[current], "offsets", []):
+                try:
+                    target = int(offset["morph_index"])
+                    next_rate = rate * float(offset.get("morph_rate", 0.0))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if target in path:
+                    continue
+                sources = group_rates.setdefault(target, {})
+                sources[source] = sources.get(source, 0.0) + next_rate
+                if target in groups:
+                    expand(source, target, next_rate, path | {target})
+
+        for group_index in groups:
+            expand(group_index, group_index, 1.0, {group_index})
+        topology = {
+            str(target): [[source, rate] for source, rate in sorted(sources.items())]
+            for target, sources in sorted(group_rates.items())
+        }
+        cmds.setAttr(f"{controller}.topologyVersion", 1, lock=True)
+        cmds.setAttr(
+            f"{controller}.groupTopology",
+            json.dumps(topology, separators=(",", ":")),
+            type="string",
+            lock=True,
+        )
+
+        destinations: Dict[int, Set[str]] = {}
+        for blend_shape in morph_result.get("blend_shape_nodes", []):
+            for weight_index, entry in read_blendshape_morph_entry_strings(blend_shape).items():
+                if "index" in entry:
+                    destinations.setdefault(int(entry["index"]), set()).add(
+                        f"{blend_shape}.weight[{int(weight_index)}]"
+                    )
+        for morph_node in morph_result.get("bone_morph_nodes", []) + morph_result.get("material_morph_nodes", []):
+            index = int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
+            destinations.setdefault(index, set()).add(f"{morph_node}.weight")
+        for leaf_index, leaf_destinations in sorted(destinations.items()):
+            for destination in sorted(leaf_destinations):
+                cmds.connectAttr(f"{controller}.outputWeight[{leaf_index}]", destination, force=True)
+        morph_result["morph_controller"] = controller
+        return controller
+
     def _convert_group_morph_pmx(self, morph, morph_index: int = 0) -> Dict[str, Any]:
         """PMXグループモーフをMayaのnetwork nodeとしてインポートする。"""
         morph_name = morph.get_name()

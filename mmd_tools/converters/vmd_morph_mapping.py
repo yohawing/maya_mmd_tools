@@ -1,11 +1,16 @@
 """Morph name mapping helpers for VMD animation conversion."""
 
+import json
 from collections import defaultdict
 from typing import List, Optional, Set, Tuple
 
 import maya.cmds as cmds
 
-from .morph_scene_metadata import iter_morph_network_metadata, read_blendshape_morph_names
+from .morph_scene_metadata import (
+    iter_morph_network_metadata,
+    read_blendshape_morph_entries,
+    read_blendshape_morph_names,
+)
 
 
 def iter_morph_mappings(mapping_entry) -> List[Tuple[str, str, str]]:
@@ -104,11 +109,30 @@ def morph_node_is_owned_by_root(node: str, target_model: str) -> bool:
     return False
 
 
+def _morph_controller_for_root(target_model: Optional[str]) -> Optional[str]:
+    if not target_model or not cmds.attributeQuery("mmd_morph_controller", node=target_model, exists=True):
+        return None
+    controllers = cmds.listConnections(
+        f"{target_model}.mmd_morph_controller", source=True, destination=False
+    ) or []
+    return controllers[0] if len(controllers) == 1 else None
+
+
 def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
     """Build morph name mappings from scene blendShapes and metadata networks."""
     converter.morph_name_mapping = {}
     converter.morph_bindings = {}
     converter.morph_binding_diagnostics = []
+    controller = _morph_controller_for_root(target_model)
+    controller_topology = {}
+    if controller:
+        try:
+            controller_topology = {
+                int(target): [(int(source), float(rate)) for source, rate in sources]
+                for target, sources in json.loads(cmds.getAttr(f"{controller}.groupTopology") or "{}").items()
+            }
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            controller_topology = {}
 
     owned_dag_nodes = (
         _root_owned_dag_nodes(target_model)
@@ -120,10 +144,16 @@ def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
         if target_model and not _blendshape_is_owned_by_root(bs_node, target_model, owned_dag_nodes):
             continue
         stored_names = read_blendshape_morph_names(bs_node)
+        stored_entries = read_blendshape_morph_entries(bs_node) if controller else {}
         weight_count = cmds.blendShape(bs_node, query=True, weightCount=True) or 0
         for i in range(weight_count):
             alias = cmds.aliasAttr(f"{bs_node}.weight[{i}]", query=True)
-            mapping = (bs_node, f"weight[{i}]", alias or f"weight[{i}]")
+            global_index = stored_entries.get(i, {}).get("index")
+            mapping = (
+                (controller, f"inputWeight[{int(global_index)}]", alias or f"weight[{i}]")
+                if global_index is not None
+                else (bs_node, f"weight[{i}]", alias or f"weight[{i}]")
+            )
             if alias:
                 register_morph_mapping(converter, alias, mapping)
 
@@ -170,16 +200,33 @@ def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
         if not original_name:
             continue
 
-        final_plugs = sorted(set(cmds.listConnections(
-            f"{morph_node}.weight",
-            source=False,
-            destination=True,
-            plugs=True,
-        ) or []))
+        uses_controller = controller is not None and metadata.index is not None
+        source_plug = (
+            f"{controller}.inputWeight[{metadata.index}]"
+            if uses_controller
+            else f"{morph_node}.weight"
+        )
+        output_indices = [metadata.index]
+        if uses_controller and metadata.morph_type == "group":
+            output_indices = [
+                target
+                for target, sources in controller_topology.items()
+                if any(source == metadata.index for source, _rate in sources)
+            ]
+        final_plugs = sorted({
+            plug
+            for output_index in output_indices
+            for plug in (cmds.listConnections(
+                f"{controller}.outputWeight[{output_index}]" if uses_controller else source_plug,
+                source=False,
+                destination=True,
+                plugs=True,
+            ) or [])
+        })
         if target_model and not final_plugs:
             converter.morph_binding_diagnostics.append(f"disconnected_morph_provider:{morph_node}")
 
-        mapping = (morph_node, "weight", original_name)
+        mapping = tuple(source_plug.split(".", 1)) + (original_name,)
         register_morph_mapping(converter, original_name, mapping)
         safe_name = morph_node
         for suffix in ("_boneMorph", "_groupMorph", "_materialMorph"):
@@ -190,7 +237,7 @@ def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
         if metadata.name_english:
             register_morph_mapping(converter, metadata.name_english, mapping)
         converter.morph_bindings.setdefault(original_name, []).append({
-            "source_plug": f"{morph_node}.weight",
+            "source_plug": source_plug,
             "morph_type": metadata.morph_type,
             "morph_index": metadata.index,
             "final_input_plugs": tuple(final_plugs),

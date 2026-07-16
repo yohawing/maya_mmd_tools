@@ -13,6 +13,7 @@ from mmd_tools.nodes import mmd_append_node
 from mmd_tools.nodes import mmd_bone_morph_accum_node
 from mmd_tools.nodes import mmd_ccd_ik_node
 from mmd_tools.nodes import mmd_material_morph_eval_node
+from mmd_tools.nodes import mmd_morph_controller_node
 from mmd_tools.nodes import mmd_rigid_body_shape
 from mmd_tools.nodes import mmd_rigid_body_draw_override
 from mmd_tools.nodes import mmd_physics_joint_shape
@@ -351,6 +352,7 @@ def initializePlugin(mobject):
         mmd_bone_morph_accum_node.register(plugin_fn)
         _soft_check_bone_morph_accum_availability()
         mmd_material_morph_eval_node.register(plugin_fn)
+        mmd_morph_controller_node.register(plugin_fn)
         if not _scene_file_is_being_read():
             _soft_sync_existing_glsl_diffuse_contracts()
         # Skip Python rig-node registration when C++ plugin already provides them
@@ -412,6 +414,7 @@ def uninitializePlugin(mobject):
             mmd_ccd_ik_node.deregister(plugin_fn)
             mmd_append_node.deregister(plugin_fn)
             _python_rig_nodes_registered = False
+        mmd_morph_controller_node.deregister(plugin_fn)
         mmd_material_morph_eval_node.deregister(plugin_fn)
         mmd_bone_morph_accum_node.deregister(plugin_fn)
     except Exception as e:

@@ -1118,6 +1118,15 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         set_calls = [call for call in adapter.calls if call[0] == "set_attr"]
         self.assertEqual(set_calls, [("set_attr", "faceBlendShape.weight[0]", 0.55)])
 
+        adapter.calls.clear()
+        presenter._morph_controller = "model_morphController"
+        data["index"] = 7
+        presenter._set_morph_weight(data, 0.25, "smile")
+        self.assertEqual(
+            [call for call in adapter.calls if call[0] == "set_attr"],
+            [("set_attr", "model_morphController.inputWeight[7]", 0.25)],
+        )
+
     def test_organize_morphs_by_panel_not_stale_group(self):
         presenter, view, _, _ = _make_presenter()
         presenter.morph_data = {

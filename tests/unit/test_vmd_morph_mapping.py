@@ -61,7 +61,9 @@ class TestVmdMorphMapping(MayaTestBase):
 
     def test_build_morph_mappings_uses_stored_raw_names_without_contamination(self):
         """Stored raw morph names avoid lossy alias reverse-lookup contamination."""
+        root = cmds.group(empty=True, name="target_model")
         cube = cmds.polyCube(name="test_mesh_stored_morph")[0]
+        cmds.parent(cube, root)
         blend_shape = cmds.blendShape(cube, name="test_blendShape_stored_morph")[0]
 
         for i, alias in enumerate(["grin", "grin_1"]):
@@ -74,20 +76,29 @@ class TestVmdMorphMapping(MayaTestBase):
         cmds.addAttr(blend_shape, longName=ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON, dataType="string")
         cmds.setAttr(
             f"{blend_shape}.{ATTR_MMD_BLENDSHAPE_MORPH_NAMES_JSON}",
-            json.dumps({"0": "にっこり", "1": "にやり"}, ensure_ascii=False),
+            json.dumps(
+                {"0": {"name": "にっこり", "index": 7}, "1": {"name": "にやり", "index": 8}},
+                ensure_ascii=False,
+            ),
             type="string",
         )
+        controller = cmds.createNode("network", name="target_morphController")
+        cmds.addAttr(controller, longName="inputWeight", attributeType="double", multi=True, keyable=True)
+        cmds.addAttr(controller, longName="groupTopology", dataType="string")
+        cmds.setAttr(f"{controller}.groupTopology", "{}", type="string")
+        cmds.addAttr(root, longName="mmd_morph_controller", attributeType="message")
+        cmds.connectAttr(f"{controller}.message", f"{root}.mmd_morph_controller")
 
-        self.converter._build_morph_mappings()
+        self.converter._build_morph_mappings(root)
 
         nikkori = self.converter._iter_morph_mappings(self.converter.morph_name_mapping.get("にっこり"))
         niyari = self.converter._iter_morph_mappings(self.converter.morph_name_mapping.get("にやり"))
 
         self.assertEqual(len(nikkori), 1)
-        self.assertEqual(nikkori[0][1], "weight[0]")
+        self.assertEqual(nikkori[0][1], "inputWeight[7]")
         self.assertEqual(len(niyari), 1)
-        self.assertEqual(niyari[0][1], "weight[1]")
+        self.assertEqual(niyari[0][1], "inputWeight[8]")
         self.assertNotEqual(nikkori[0][1], niyari[0][1])
         self.assertNotIn("blink", self.converter.morph_name_mapping)
 
-        cmds.delete(cube)
+        cmds.delete(root)
