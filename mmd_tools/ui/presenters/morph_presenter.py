@@ -94,6 +94,8 @@ class MorphPresenter:
         self.view.morph_slider.valueChanged.connect(self.on_morph_slider_changed)
         self.view.reset_slider_btn.clicked.connect(self.reset_current_morph)
         self.view.reset_all_btn.clicked.connect(self.reset_all_morphs)
+        self.view.set_morph_key_btn.clicked.connect(self.set_current_morph_key)
+        self.view.delete_morph_key_btn.clicked.connect(self.delete_current_morph_key)
 
         # 基本情報タブ
         self.view.morph_type_combo.currentIndexChanged.connect(self.on_morph_type_changed)
@@ -133,6 +135,7 @@ class MorphPresenter:
         self.group_morphs.clear()
         self.current_morph = None
         self.view.set_morph_details_enabled(False)
+        self.view.set_morph_keying_enabled(False)
 
         current_model_root = self.app_state.current_model_root
         if not current_model_root or not self.maya_adapter.object_exists(current_model_root):
@@ -724,6 +727,58 @@ class MorphPresenter:
                     e,
                 )
 
+    def _current_controller_input_plug(self):
+        """Return the selected controller input plug without legacy fallback."""
+        if not self._morph_controller or not self.current_morph:
+            return None
+        data = self.morph_data.get(self.current_morph)
+        if not data:
+            return None
+        try:
+            morph_index = int(data.get("index", -1))
+        except (TypeError, ValueError):
+            return None
+        if morph_index < 0:
+            return None
+        plug = f"{self._morph_controller}.inputWeight[{morph_index}]"
+        return plug if self.maya_adapter.object_exists(plug) else None
+
+    def _update_morph_keying_status(self):
+        plug = self._current_controller_input_plug()
+        self.view.set_morph_keying_enabled(bool(plug))
+        if not plug:
+            self.view.morph_key_status_label.setText(
+                self.view.tr("not_animated", "morph_keying_status")
+            )
+            return
+
+        status = (
+            "animated"
+            if self.maya_adapter.keyframe(plug, query=True, keyframeCount=True) or 0
+            else "not_animated"
+        )
+        self.view.morph_key_status_label.setText(self.view.tr(status, "morph_keying_status"))
+
+    def set_current_morph_key(self):
+        """Key the selected controller input through Maya's layer-aware keying."""
+        plug = self._current_controller_input_plug()
+        if not plug:
+            return
+        current_time = self.maya_adapter.current_time()
+        self.maya_adapter.set_keyframe(plug, time=current_time)
+        self._update_morph_keying_status()
+
+    def delete_current_morph_key(self):
+        """Remove only the selected input's key at the current time."""
+        plug = self._current_controller_input_plug()
+        if not plug:
+            return
+        current_time = self.maya_adapter.current_time()
+        removed = self.maya_adapter.remove_keyframe(plug, current_time)
+        if not removed:
+            self.app_state.emit_status(tr_message("morph_key_not_removed"), "warning")
+        self._update_morph_keying_status()
+
     def _organize_morphs_by_group(self):
         """PMX panel 1-4 でモーフを整理する。
 
@@ -837,6 +892,7 @@ class MorphPresenter:
         supported = self._morph_controls_supported(data)
         tooltip = "" if supported else self.view.tr("morph_runtime_unsupported", "tooltips")
         self.view.set_morph_controls_enabled(supported, tooltip)
+        self._update_morph_keying_status()
 
         self.is_updating = False
 

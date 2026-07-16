@@ -156,6 +156,20 @@ class MorphConverter:
         cmds.addAttr(root_group, longName="mmd_morph_controller", attributeType="message")
         cmds.connectAttr(f"{controller}.message", f"{root_group}.mmd_morph_controller")
 
+        existing_aliases: Set[str] = set(cmds.listAttr(controller) or [])
+        existing_aliases.update(cmds.listAttr(controller, shortNames=True) or [])
+        for morph_index, morph in enumerate(pmx_data.morphs):
+            input_plug = f"{controller}.inputWeight[{morph_index}]"
+            cmds.setAttr(input_plug, 0.0)
+            cmds.setAttr(input_plug, keyable=True)
+
+            raw_name = self._raw_morph_name(morph)
+            display_name = raw_name or str(getattr(morph, "name_english", "") or "")
+            base_alias = maya_name_utils.sanitize_text(display_name) or f"morph_{morph_index}"
+            alias = self._unique_blendshape_alias_from_existing(base_alias, existing_aliases)
+            cmds.aliasAttr(alias, input_plug)
+            existing_aliases.add(alias)
+
         groups = {
             index: morph
             for index, morph in enumerate(pmx_data.morphs)

@@ -53,6 +53,78 @@ class MayaCmdsAdapter:
         """Pass through to maya.cmds.setAttr."""
         return self._cmds.setAttr(*args, **kwargs)
 
+    def current_time(self):
+        """Return the current Maya time in the active UI time unit."""
+        return self._cmds.currentTime(query=True)
+
+    def _keying_layer(self, attr_path):
+        best_layer = self._cmds.animLayer(attr_path, query=True, bestLayer=True)
+        if best_layer == "":
+            best_layer = self._cmds.animLayer(query=True, root=True)
+        return best_layer if isinstance(best_layer, str) and best_layer else None
+
+    def set_keyframe(self, *args, **kwargs):
+        """Key only the best animation layer for the selected plug."""
+        if args and "animLayer" not in kwargs:
+            best_layer = self._keying_layer(args[0])
+            if best_layer is None:
+                raise RuntimeError(f"Could not resolve one keying layer for {args[0]}")
+            kwargs["animLayer"] = best_layer
+        return self._cmds.setKeyframe(*args, **kwargs)
+
+    def keyframe(self, *args, **kwargs):
+        """Pass through to maya.cmds.keyframe."""
+        return self._cmds.keyframe(*args, **kwargs)
+
+    def remove_keyframe(self, attr_path, time):
+        """Remove keys at one time without cutting the connected DG object.
+
+        ``cutKey`` can remove a custom DG node when its final key is cut from a
+        multi element.  MFnAnimCurve removes only the identified key and keeps
+        the controller element, alias, and connection intact.
+        """
+        from maya.api import OpenMaya as om
+        from maya.api import OpenMayaAnim as oma
+
+        best_layer = self._keying_layer(attr_path)
+        if best_layer is None:
+            return 0
+
+        plug_curves = set(self._cmds.keyframe(attr_path, query=True, name=True) or [])
+        resolved_curve = self._cmds.animLayer(
+            best_layer,
+            query=True,
+            findCurveForPlug=attr_path,
+        )
+        if isinstance(resolved_curve, (list, tuple)):
+            if len(resolved_curve) > 1:
+                return 0
+            resolved_curve = resolved_curve[0] if resolved_curve else None
+        base_layer = self._cmds.animLayer(query=True, root=True)
+        if not resolved_curve and best_layer == base_layer and len(plug_curves) == 1:
+            resolved_curve = next(iter(plug_curves))
+        if not isinstance(resolved_curve, str) or resolved_curve not in plug_curves:
+            return 0
+
+        curve_name = resolved_curve
+        indices = self._cmds.keyframe(
+            curve_name,
+            query=True,
+            time=(time, time),
+            indexValue=True,
+        ) or []
+        if not indices:
+            return 0
+
+        selection = om.MSelectionList()
+        selection.add(curve_name)
+        curve = oma.MFnAnimCurve(selection.getDependNode(0))
+        removed = 0
+        for index in sorted({int(value) for value in indices}, reverse=True):
+            curve.remove(index)
+            removed += 1
+        return removed
+
     def add_attr(self, *args, **kwargs):
         """Pass through to maya.cmds.addAttr."""
         return self._cmds.addAttr(*args, **kwargs)

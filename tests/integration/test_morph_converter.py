@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 from unittest.mock import MagicMock
 
 from maya import cmds
@@ -23,6 +24,12 @@ class TestMorphConverter(MayaTestBase):
     MorphConverterクラスの統合テスト。
     Mayaのシーンに実際にモーフを作成し、正しく変換されるかを確認する。
     """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        plugin_path = Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py"
+        cls.load_plugin(str(plugin_path))
 
     def setUp(self):
         """
@@ -512,7 +519,8 @@ class TestMorphConverter(MayaTestBase):
             },
         )()
 
-        result = MorphConverter().convert_pmx_morphs(fake_data, mesh)
+        converter = MorphConverter()
+        result = converter.convert_pmx_morphs(fake_data, mesh)
 
         self.assertTrue(result.get("success", False))
         self.assertEqual(result.get("morphs_converted"), 2)
@@ -524,6 +532,38 @@ class TestMorphConverter(MayaTestBase):
         self.assertEqual(len(alias_names), 2)
         self.assertIn("grin", alias_names)
         self.assertIn("grin_1", alias_names)
+
+        reserved_names = [
+            "inputWeight",
+            "outputWeight",
+            "message",
+            "groupTopology",
+            "topologyVersion",
+        ]
+        controller_data = type(
+            "ControllerPmxData",
+            (),
+            {
+                "morphs": fake_data.morphs
+                + [FakeVertexMorph(name, 1) for name in reserved_names]
+                + [FakeVertexMorph("inputWeight", 2)]
+            },
+        )()
+        controller_result = dict(result)
+        controller_result["total_morphs"] = len(controller_data.morphs)
+        root = cmds.group(empty=True, name="controller_alias_root")
+        controller = converter.build_morph_controller(controller_data, root, controller_result)
+        expected_indices = list(range(len(controller_data.morphs)))
+        self.assertEqual(
+            cmds.getAttr(f"{controller}.inputWeight", multiIndices=True),
+            expected_indices,
+        )
+        self.assertTrue(cmds.getAttr(f"{controller}.inputWeight[0]", keyable=True))
+        self.assertTrue(cmds.getAttr(f"{controller}.inputWeight[1]", keyable=True))
+        controller_aliases = set((cmds.aliasAttr(controller, query=True) or [])[0::2])
+        self.assertEqual(len(controller_aliases), len(controller_data.morphs))
+        self.assertTrue({"grin", "grin_1"}.issubset(controller_aliases))
+        self.assertTrue(controller_aliases.isdisjoint(reserved_names))
 
         # 生のモーフ名が weight index 対応で保存されている（権威キー）
         self.assertTrue(

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import maya.cmds as cmds
 
+from mmd_tools.adapters.maya_cmds_adapter import MayaCmdsAdapter
 from mmd_tools.converters.vmd_converter import VmdConverter
 from mmd_tools.converters.morph_scene_metadata import iter_morph_network_metadata
 from mmd_tools.core.mmd_parser import parse_pmx_file
@@ -127,6 +128,7 @@ class TestVmdMorphRealGate(MayaTestBase):
         self.assertNotEqual(root_a, root_b)
 
         controllers = {}
+        controller_aliases = {}
         for root in (root_a, root_b):
             connected = set(cmds.listConnections(
                 f"{root}.mmd_morph_controller",
@@ -136,6 +138,23 @@ class TestVmdMorphRealGate(MayaTestBase):
             ) or [])
             self.assertEqual(len(connected), 1)
             controllers[root] = connected.pop()
+            controller = controllers[root]
+            self.assertEqual(
+                cmds.getAttr(f"{controller}.inputWeight", multiIndices=True),
+                list(range(len(pmx.morphs))),
+            )
+            for morph_index in range(len(pmx.morphs)):
+                self.assertTrue(cmds.getAttr(
+                    f"{controller}.inputWeight[{morph_index}]",
+                    keyable=True,
+                ))
+            alias_pairs = cmds.aliasAttr(controller, query=True) or []
+            controller_aliases[root] = alias_pairs
+            self.assertEqual(len(alias_pairs), len(pmx.morphs) * 2)
+            self.assertEqual(
+                set(alias_pairs[1::2]),
+                {f"inputWeight[{index}]" for index in range(len(pmx.morphs))},
+            )
         self.assertNotEqual(controllers[root_a], controllers[root_b])
         expected_topology = {
             "0": [[4, 0.25]],
@@ -177,6 +196,10 @@ class TestVmdMorphRealGate(MayaTestBase):
         self.assertTrue(base.convert(motion, target_model=root_a, pmx_path=str(PMX)))
         base_sec = time.perf_counter() - started
         plugs_a = self._weight_plugs(base)
+        self.assertTrue(all(
+            plug.startswith(f"{controllers[root_a]}.inputWeight[")
+            for plug in plugs_a.values()
+        ))
 
         expected_effective_weights = {
             0: [0.3125, 0.35, 0.35, 0.2, 0.25],
@@ -194,6 +217,20 @@ class TestVmdMorphRealGate(MayaTestBase):
         for plug in plugs_a.values():
             self.assertEqual(cmds.keyframe(plug, query=True, timeChange=True), [0.0, 10.0])
             self.assertEqual(cmds.keyframe(plug, query=True, valueChange=True), [0.25, 0.75])
+        for index in range(len(pmx.morphs)):
+            output_plug = f"{controllers[root_a]}.outputWeight[{index}]"
+            for leaf_plug in cmds.listConnections(
+                output_plug,
+                source=False,
+                destination=True,
+                plugs=True,
+            ) or []:
+                self.assertFalse(cmds.listConnections(
+                    leaf_plug,
+                    source=True,
+                    destination=False,
+                    type="animCurve",
+                ) or [])
 
         untouched_b = {
             key: cmds.getAttr(f"{node}.weight")
@@ -255,5 +292,142 @@ class TestVmdMorphRealGate(MayaTestBase):
         for plug in list(plugs_a.values()) + list(plugs_b.values()):
             self.assertTrue(cmds.objExists(plug))
             self.assertEqual(cmds.keyframe(plug, query=True, timeChange=True), [0.0, 10.0])
+        for root, controller in controllers.items():
+            alias_pairs = cmds.aliasAttr(controller, query=True) or []
+            self.assertEqual(alias_pairs, controller_aliases[root])
+            aliases_by_attribute = dict(zip(alias_pairs[1::2], alias_pairs[0::2]))
+            for morph_index in range(len(pmx.morphs)):
+                attribute = f"inputWeight[{morph_index}]"
+                canonical_plug = f"{controller}.{attribute}"
+                alias = aliases_by_attribute[attribute]
+                alias_plug = f"{controller}.{alias}"
+                self.assertTrue(cmds.objExists(canonical_plug))
+                self.assertTrue(cmds.objExists(alias_plug))
+                self.assertEqual(cmds.getAttr(canonical_plug), cmds.getAttr(alias_plug))
+                self.assertTrue(cmds.getAttr(canonical_plug, keyable=True))
+                if not cmds.keyframe(canonical_plug, query=True, keyframeCount=True):
+                    self.assertEqual(cmds.getAttr(canonical_plug), 0.0)
+
+        unkeyed_plug = f"{controllers[root_a]}.inputWeight[3]"
+        key_adapter = MayaCmdsAdapter()
+        key_time = 5
+        base_layer = cmds.animLayer(query=True, root=True)
+        cmds.setKeyframe(
+            unkeyed_plug,
+            time=key_time,
+            value=0.1,
+            animLayer=base_layer,
+        )
+        base_curve = (cmds.keyframe(unkeyed_plug, query=True, name=True) or [])[0]
+        layer_a = cmds.animLayer("MorphKeyingLayerA", override=False)
+        layer_b = cmds.animLayer("MorphKeyingLayerB", override=False)
+        for layer, value in ((layer_a, 0.2), (layer_b, 0.3)):
+            cmds.animLayer(layer, edit=True, attribute=unkeyed_plug)
+            cmds.setKeyframe(
+                unkeyed_plug,
+                time=key_time,
+                value=value,
+                animLayer=layer,
+            )
+        layer_a_curve = (cmds.animLayer(layer_a, query=True, animCurves=True) or [])[0]
+        layer_b_curve = (cmds.animLayer(layer_b, query=True, animCurves=True) or [])[0]
+        for layer in (base_layer, layer_a, layer_b):
+            cmds.animLayer(layer, edit=True, selected=False, preferred=False)
+        cmds.animLayer(layer_b, edit=True, selected=True, preferred=True)
+        self.assertEqual(
+            cmds.animLayer(unkeyed_plug, query=True, bestLayer=True),
+            layer_b,
+        )
+        set_time = key_time + 1
+        cmds.currentTime(set_time)
+        evaluated_value_before = cmds.getAttr(unkeyed_plug)
+        curve_counts_before = {
+            curve: cmds.keyframe(curve, query=True, keyframeCount=True)
+            for curve in (base_curve, layer_a_curve, layer_b_curve)
+        }
+
+        key_adapter.set_keyframe(unkeyed_plug, time=set_time)
+        self.assertAlmostEqual(cmds.getAttr(unkeyed_plug), evaluated_value_before, places=6)
+        self.assertEqual(
+            cmds.keyframe(base_curve, query=True, keyframeCount=True),
+            curve_counts_before[base_curve],
+        )
+        self.assertEqual(
+            cmds.keyframe(layer_a_curve, query=True, keyframeCount=True),
+            curve_counts_before[layer_a_curve],
+        )
+        self.assertEqual(
+            cmds.keyframe(layer_b_curve, query=True, keyframeCount=True),
+            curve_counts_before[layer_b_curve] + 1,
+        )
+        self.assertTrue(cmds.keyframe(
+            layer_b_curve,
+            query=True,
+            time=(set_time, set_time),
+            keyframeCount=True,
+        ))
+        self.assertEqual(key_adapter.remove_keyframe(unkeyed_plug, set_time), 1)
+        self.assertEqual(
+            cmds.keyframe(base_curve, query=True, keyframeCount=True),
+            curve_counts_before[base_curve],
+        )
+        self.assertEqual(
+            cmds.keyframe(layer_a_curve, query=True, keyframeCount=True),
+            curve_counts_before[layer_a_curve],
+        )
+        self.assertEqual(
+            cmds.keyframe(layer_b_curve, query=True, keyframeCount=True),
+            curve_counts_before[layer_b_curve],
+        )
+
+        layer_a_value_before = cmds.keyframe(
+            layer_a_curve,
+            query=True,
+            time=(key_time, key_time),
+            valueChange=True,
+        )
+        layer_b_value_before = cmds.keyframe(
+            layer_b_curve,
+            query=True,
+            time=(key_time, key_time),
+            valueChange=True,
+        )
+        for layer in (base_layer, layer_a, layer_b):
+            cmds.animLayer(layer, edit=True, selected=False, preferred=False)
+        cmds.animLayer(base_layer, edit=True, selected=True, preferred=True)
+        self.assertEqual(
+            cmds.animLayer(unkeyed_plug, query=True, bestLayer=True),
+            base_layer,
+        )
+        self.assertEqual(key_adapter.remove_keyframe(unkeyed_plug, key_time), 1)
+        self.assertFalse(cmds.keyframe(
+            base_curve,
+            query=True,
+            time=(key_time, key_time),
+            keyframeCount=True,
+        ))
+        self.assertEqual(
+            cmds.keyframe(layer_a_curve, query=True, time=(key_time, key_time), valueChange=True),
+            layer_a_value_before,
+        )
+        self.assertEqual(
+            cmds.keyframe(layer_b_curve, query=True, time=(key_time, key_time), valueChange=True),
+            layer_b_value_before,
+        )
+        self.assertTrue(cmds.objExists(controllers[root_a]))
+
+        keyed_plug = plugs_a["vertex_leaf"]
+        for layer in (layer_a, layer_b):
+            cmds.animLayer(layer, edit=True, selected=False, preferred=False)
+        cmds.animLayer(base_layer, edit=True, selected=True, preferred=True)
+        self.assertEqual(key_adapter.remove_keyframe(keyed_plug, 0), 1)
+        self.assertEqual(key_adapter.remove_keyframe(keyed_plug, 10), 1)
+        self.assertEqual(cmds.keyframe(keyed_plug, query=True, keyframeCount=True), 0)
+        self.assertTrue(cmds.objExists(controllers[root_a]))
+        self.assertTrue(cmds.objExists(keyed_plug))
+        self.assertEqual(
+            cmds.aliasAttr(controllers[root_a], query=True) or [],
+            controller_aliases[root_a],
+        )
         self.assertGreaterEqual(len(cmds.ls(type="mmdBoneMorphAccum") or []), 2)
         self.assertGreaterEqual(len(cmds.ls(type="mmdMaterialMorphEval") or []), 2)

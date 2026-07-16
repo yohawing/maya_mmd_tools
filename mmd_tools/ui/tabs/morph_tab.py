@@ -29,6 +29,8 @@ class MorphTab(BaseTab):
         ("advanced_group", "setTitle", "advanced_settings", "groups"),
         ("refresh_morphs_btn", "setText", "refresh", "buttons"),
         ("reset_slider_btn", "setText", "reset", "buttons"),
+        ("set_morph_key_btn", "setText", "set_key", "buttons"),
+        ("delete_morph_key_btn", "setText", "delete_key", "buttons"),
         ("reset_all_btn", "setText", "reset_all", "actions"),
         ("save_preset_btn", "setText", "save", "buttons"),
         ("load_preset_btn", "setText", "load", "buttons"),
@@ -163,6 +165,16 @@ class MorphTab(BaseTab):
         reset_layout.addWidget(self.reset_slider_btn)
         reset_layout.addWidget(self.reset_all_btn)
         preview_layout.addLayout(reset_layout)
+
+        key_layout = QHBoxLayout()
+        self.set_morph_key_btn = QPushButton(self.tr("set_key", "buttons"))
+        self.delete_morph_key_btn = QPushButton(self.tr("delete_key", "buttons"))
+        self.morph_key_status_label = QLabel(self.tr("not_animated", "morph_keying_status"))
+        key_layout.addWidget(self.set_morph_key_btn)
+        key_layout.addWidget(self.delete_morph_key_btn)
+        key_layout.addWidget(self.morph_key_status_label)
+        key_layout.addStretch()
+        preview_layout.addLayout(key_layout)
 
         # プリセット機能
         preset_layout = QHBoxLayout()
@@ -359,6 +371,8 @@ class MorphTab(BaseTab):
         self.detail_tabs.setEnabled(enabled)
         self.morph_slider.setEnabled(enabled)
         self.reset_slider_btn.setEnabled(enabled)
+        self.set_morph_key_btn.setEnabled(enabled)
+        self.delete_morph_key_btn.setEnabled(enabled)
         self.apply_btn.setEnabled(enabled)
         self.reset_btn.setEnabled(enabled)
 
@@ -367,6 +381,11 @@ class MorphTab(BaseTab):
         for widget in (self.morph_slider, self.reset_slider_btn):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
+
+    def set_morph_keying_enabled(self, enabled):
+        """Enable key operations only when a controller input is selected."""
+        self.set_morph_key_btn.setEnabled(enabled)
+        self.delete_morph_key_btn.setEnabled(enabled)
 
     def retranslateUi(self):
         """言語切り替え時にUIを再翻訳"""

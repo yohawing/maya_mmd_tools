@@ -220,6 +220,8 @@ class _FakeView:
         self.refresh_morphs_btn = _FakeButton()
         self.reset_slider_btn = _FakeButton()
         self.reset_all_btn = _FakeButton()
+        self.set_morph_key_btn = _FakeButton()
+        self.delete_morph_key_btn = _FakeButton()
         self.connect_btn = _FakeButton()
         self.disconnect_btn = _FakeButton()
         self.auto_connect_btn = _FakeButton()
@@ -242,6 +244,7 @@ class _FakeView:
         self.morph_slider = _FakeSlider()
         self.morph_value_label = _FakeLabel()
         self.connection_status_label = _FakeLabel()
+        self.morph_key_status_label = _FakeLabel()
         self.offset_count_label = _FakeLabel()
 
         self.invert_check = _FakeCheckBox()
@@ -250,6 +253,7 @@ class _FakeView:
 
         self.details_enabled_calls = []
         self.controls_enabled_calls = []
+        self.keying_enabled_calls = []
         self.tr_calls = []
 
     def set_morph_details_enabled(self, enabled):
@@ -260,6 +264,11 @@ class _FakeView:
         for widget in (self.morph_slider, self.reset_slider_btn):
             widget.setEnabled(enabled)
             widget.setToolTip(tooltip)
+
+    def set_morph_keying_enabled(self, enabled):
+        self.keying_enabled_calls.append(enabled)
+        self.set_morph_key_btn.setEnabled(enabled)
+        self.delete_morph_key_btn.setEnabled(enabled)
 
     def tr(self, key, context):
         self.tr_calls.append((key, context))
@@ -288,6 +297,8 @@ class _FakeMayaAdapter:
         self.aliases = {}
         self.node_types = {}
         self.connections = {}
+        self.time = 0.0
+        self.key_counts = {}
 
     def object_exists(self, node):
         self.calls.append(("object_exists", node))
@@ -304,6 +315,32 @@ class _FakeMayaAdapter:
     def set_attr(self, attr_path, value):
         self.calls.append(("set_attr", attr_path, value))
         self.attr_values[attr_path] = value
+
+    def current_time(self):
+        self.calls.append(("current_time",))
+        return self.time
+
+    def set_keyframe(self, attr_path, **kwargs):
+        self.calls.append(("set_keyframe", attr_path, kwargs))
+        time = kwargs["time"]
+        self.key_counts[(attr_path, time)] = 1
+        self.key_counts[(attr_path, None)] = max(1, self.key_counts.get((attr_path, None), 0))
+
+    def keyframe(self, attr_path, **kwargs):
+        self.calls.append(("keyframe", attr_path, kwargs))
+        time_range = kwargs.get("time")
+        time = time_range[0] if time_range else None
+        return self.key_counts.get((attr_path, time), 0)
+
+    def remove_keyframe(self, attr_path, time):
+        self.calls.append(("remove_keyframe", attr_path, time))
+        removed = self.key_counts.pop((attr_path, time), 0)
+        if removed:
+            self.key_counts[(attr_path, None)] = max(
+                0,
+                self.key_counts.get((attr_path, None), 0) - removed,
+            )
+        return removed
 
     def list_relatives(self, node, *args, **kwargs):
         self.calls.append(("list_relatives", node, args, kwargs))
@@ -377,10 +414,62 @@ class TestMorphPresenterHeadless(unittest.TestCase):
         self.assertEqual(view.morph_list.currentItemChanged._callbacks, [presenter.on_morph_selected])
         self.assertEqual(view.refresh_morphs_btn.clicked._callbacks, [presenter.load_morphs])
         self.assertEqual(view.save_preset_btn.clicked._callbacks, [presenter.save_preset])
+        self.assertEqual(view.set_morph_key_btn.clicked._callbacks, [presenter.set_current_morph_key])
+        self.assertEqual(
+            view.delete_morph_key_btn.clicked._callbacks,
+            [presenter.delete_current_morph_key],
+        )
         self.assertIsNone(presenter.blend_shape_node)
         self.assertIsNone(presenter.current_morph)
         self.assertEqual(presenter.morph_data, {})
         self.assertEqual(adapter.calls, [])
+
+    def test_controller_keying_routes_selected_index_and_reports_status(self):
+        adapter = _FakeMayaAdapter()
+        adapter.time = 12.0
+        plug = "model_morphController.inputWeight[7]"
+        adapter.existing.add(plug)
+        adapter.attr_values[plug] = 0.42
+        presenter, view, app_state, _ = _make_presenter(adapter=adapter)
+        presenter._morph_controller = "model_morphController"
+        presenter.current_morph = "smile"
+        presenter.morph_data = {
+            "smile": {
+                "index": 7,
+                "blend_shape_node": "faceBlendShape",
+                "blend_shape_weight_attr": "weight[2]",
+            }
+        }
+
+        presenter._update_morph_keying_status()
+        self.assertEqual(view.morph_key_status_label.text, "morph_keying_status:not_animated")
+
+        presenter.set_current_morph_key()
+        self.assertIn(
+            ("set_keyframe", plug, {"time": 12.0}),
+            adapter.calls,
+        )
+        self.assertEqual(
+            view.morph_key_status_label.text,
+            "morph_keying_status:animated",
+        )
+
+        presenter.delete_current_morph_key()
+        self.assertIn(("remove_keyframe", plug, 12.0), adapter.calls)
+        self.assertEqual(view.morph_key_status_label.text, "morph_keying_status:not_animated")
+        key_targets = [call[1] for call in adapter.calls if call[0] in {"set_keyframe", "remove_keyframe"}]
+        self.assertEqual(key_targets, [plug, plug])
+
+        presenter.delete_current_morph_key()
+        self.assertEqual(
+            app_state.statuses,
+            [
+                (
+                    "No key was removed. Select one animation layer and ensure the current time is keyed",
+                    "warning",
+                )
+            ],
+        )
 
     def test_load_morphs_no_model_clears_state_and_returns_before_adapter(self):
         presenter, view, _, adapter = _make_presenter(model=None)
