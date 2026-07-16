@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Optional, Set, Union
 
+import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from ..core.namespace_utils import NamespaceUtils
@@ -19,7 +20,19 @@ def node_namespace(node: str) -> str:
 def _long_names(nodes) -> Set[str]:
     result = set()
     for node in nodes or []:
-        result.update(cmds.ls(node, long=True) or [])
+        try:
+            selection = om.MGlobal.getSelectionListByName(node)
+        except RuntimeError:
+            try:
+                selection = om.MGlobal.getSelectionListByName(f"*|{node}")
+            except RuntimeError:
+                continue
+
+        for index in range(selection.length()):
+            try:
+                result.add(selection.getDagPath(index).fullPathName())
+            except TypeError:
+                continue
     return result
 
 

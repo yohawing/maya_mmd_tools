@@ -15,9 +15,13 @@ def stable_long_dag_path(node: Optional[str]) -> Optional[str]:
     """Return a long DAG path when node resolves unambiguously; otherwise preserve it."""
     if not node:
         return node
-    matches = cmds.ls(node, long=True) or []
-    if len(matches) == 1 and matches[0].startswith("|"):
-        return matches[0]
+    selection = om.MSelectionList()
+    try:
+        selection.add(node)
+        if selection.length() == 1:
+            return selection.getDagPath(0).fullPathName()
+    except (RuntimeError, TypeError):
+        pass
     return node
 
 
