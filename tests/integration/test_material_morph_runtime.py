@@ -5,7 +5,6 @@ weight 変更がマテリアル外観に反映されることを検証する。
 """
 
 from pathlib import Path
-import json
 import os
 import unittest
 from unittest import mock

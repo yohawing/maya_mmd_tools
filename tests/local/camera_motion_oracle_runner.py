@@ -189,7 +189,12 @@ def _import_camera(vmd_path: Path, *, bake_mode: bool) -> str:
     vmd_bytes = vmd_path.read_bytes()
     converter = VmdConverter()
     converter.use_animation_layers = False
-    if not converter.convert(vmd_data, bake_mode=bake_mode, vmd_bytes=vmd_bytes):
+    if not converter.convert(
+        vmd_data,
+        bake_mode=bake_mode,
+        vmd_bytes=vmd_bytes,
+        scene_animation_only=True,
+    ):
         raise RuntimeError(f"VMD camera import failed: {vmd_path}")
     camera = converter._get_or_create_camera()
     if not cmds.objExists(camera):

@@ -834,13 +834,16 @@ class TestSolverLifecycle(MayaTestBase):
         cmds.file(new=True, force=True)
 
         plugin_path = str(Path(__file__).resolve().parents[2] / "mmd_tools" / "plugin_main.py")
+        plugin_name = cmds.pluginInfo(plugin_path, query=True, name=True)
         try:
-            cmds.unloadPlugin(plugin_path, force=True)
-            self.assertFalse(cmds.pluginInfo(plugin_path, query=True, loaded=True))
+            cmds.unloadPlugin(plugin_name, force=True)
+            self.assertNotIn(plugin_name, cmds.pluginInfo(query=True, listPlugins=True) or [])
         finally:
             cmds.loadPlugin(plugin_path)
 
-        self.assertTrue(cmds.pluginInfo(plugin_path, query=True, loaded=True))
+        self.assertIn(plugin_name, cmds.pluginInfo(query=True, listPlugins=True) or [])
+        registered_types = set(cmds.allNodeTypes() or [])
+        self.assertTrue({"mmdMorphController", "mmdAppend", "mmdCcdIk"}.issubset(registered_types))
 
     def test_no_model_root_graceful(self):
         """Solver with no model root connection outputs not-solved."""

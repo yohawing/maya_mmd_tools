@@ -8,7 +8,6 @@ from pathlib import Path
 from maya import cmds
 
 from mmd_tools.core.exceptions import MMDImportException
-from mmd_tools.core.constants import ATTR_MMD_MODEL_NAME, SCENE_ROOT_SUFFIX
 from mmd_tools.io.vmd_importer import import_vmd_file
 from tests.common.maya_test_base import MayaTestBase
 

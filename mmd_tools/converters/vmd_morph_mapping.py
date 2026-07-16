@@ -110,7 +110,11 @@ def morph_node_is_owned_by_root(node: str, target_model: str) -> bool:
 
 
 def _morph_controller_for_root(target_model: Optional[str]) -> Optional[str]:
-    if not target_model or not cmds.attributeQuery("mmd_morph_controller", node=target_model, exists=True):
+    if (
+        not target_model
+        or not cmds.objExists(target_model)
+        or not cmds.attributeQuery("mmd_morph_controller", node=target_model, exists=True)
+    ):
         return None
     controllers = cmds.listConnections(
         f"{target_model}.mmd_morph_controller", source=True, destination=False

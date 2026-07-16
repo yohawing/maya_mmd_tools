@@ -702,6 +702,7 @@ def _capture_case(case):
     import importlib
     import mmd_tools.converters as converters
     import mmd_tools.converters.mesh_converter as mesh_converter
+    import mmd_tools.converters.morph_converter as morph_converter
     import mmd_tools.core.mmd_parser as mmd_parser
     import mmd_tools.core.pmx_data as pmx_data
     import mmd_tools.core.pmx_data.vertex as pmx_vertex
@@ -714,6 +715,7 @@ def _capture_case(case):
     pmx_data = importlib.reload(pmx_data)
     mmd_parser = importlib.reload(mmd_parser)
     mesh_converter = importlib.reload(mesh_converter)
+    morph_converter = importlib.reload(morph_converter)
     converters = importlib.reload(converters)
     pmx_importer = importlib.reload(pmx_importer)
     vmd_importer = importlib.reload(vmd_importer)

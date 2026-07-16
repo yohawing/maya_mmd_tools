@@ -2,7 +2,6 @@
 
 import os
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -317,22 +316,22 @@ class TestDragDropImporter(unittest.TestCase):
         event_filter = drag_drop_importer._MmdDropEventFilter()
         window = object()
         app = object()
-        fake_qt_compat = types.SimpleNamespace(QApplication=MagicMock())
-        fake_qt_compat.QApplication.instance.return_value = app
 
-        with patch.object(drag_drop_importer, "_maya_version", return_value=2026):
-            with patch.dict("sys.modules", {"mmd_tools.ui.qt_compat": fake_qt_compat}):
-                self.assertEqual(event_filter._drop_targets(window), [app, window])
+        with patch.object(drag_drop_importer, "_maya_version", return_value=2026), patch(
+            "mmd_tools.ui.qt_compat.QApplication"
+        ) as application:
+            application.instance.return_value = app
+            self.assertEqual(event_filter._drop_targets(window), [app, window])
 
     def test_drop_filter_avoids_global_qt_filter_on_maya_2027(self):
         event_filter = drag_drop_importer._MmdDropEventFilter()
         window = object()
-        fake_qt_compat = types.SimpleNamespace(QApplication=MagicMock())
 
-        with patch.object(drag_drop_importer, "_maya_version", return_value=2027):
-            with patch.dict("sys.modules", {"mmd_tools.ui.qt_compat": fake_qt_compat}):
-                self.assertEqual(event_filter._drop_targets(window), [window])
-        fake_qt_compat.QApplication.instance.assert_not_called()
+        with patch.object(drag_drop_importer, "_maya_version", return_value=2027), patch(
+            "mmd_tools.ui.qt_compat.QApplication"
+        ) as application:
+            self.assertEqual(event_filter._drop_targets(window), [window])
+            application.instance.assert_not_called()
 
 
 if __name__ == "__main__":

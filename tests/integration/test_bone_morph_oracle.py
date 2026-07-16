@@ -108,7 +108,7 @@ class TestBoneMorphOracle(MayaTestBase):
         vmd_data = VmdData()
         vmd_data.parse_file(VMD_FILE)
         converter = VmdConverter()
-        kwargs = {"pmx_path": PMX_FILE, "bake_mode": bake_mode}
+        kwargs = {"pmx_path": PMX_FILE, "bake_mode": bake_mode, "target_model": root}
         if bake_mode:
             with open(VMD_FILE, "rb") as file:
                 kwargs["vmd_bytes"] = file.read()

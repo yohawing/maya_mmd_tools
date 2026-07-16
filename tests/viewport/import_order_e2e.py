@@ -326,7 +326,13 @@ def _import_model(path: Path, *, use_namespace: bool) -> str:
     return str(root)
 
 
-def _import_vmd(path: Path, *, target_model: str | None = None, clear_existing_motion: bool = False) -> None:
+def _import_vmd(
+    path: Path,
+    *,
+    target_model: str | None = None,
+    camera_motion: bool = False,
+    clear_existing_motion: bool = False,
+) -> None:
     from mmd_tools.io.mmd_importer import import_mmd_file
 
     options: dict[str, Any] = {
@@ -334,8 +340,12 @@ def _import_vmd(path: Path, *, target_model: str | None = None, clear_existing_m
         "use_native_pmx_parse": False,
         "require_native_pmx_parse": False,
     }
-    if target_model:
+    if camera_motion:
+        options["scene_animation_only"] = True
+    elif target_model:
         options["target_model"] = target_model
+    else:
+        raise AssertionError(f"Model VMD requires an explicit target: {path}")
     if not import_mmd_file(str(path), options=options):
         raise AssertionError(f"VMD import failed: {path}")
 
@@ -552,7 +562,12 @@ def _run_order(
 
             clear_existing = bool(asset.get("clearExistingMotion", asset.get("clear_existing_motion", False)))
             before_character = _character_state(cmds, roots, centers) if clear_existing else None
-            _import_vmd(path, target_model=target_root, clear_existing_motion=clear_existing)
+            _import_vmd(
+                path,
+                target_model=target_root,
+                camera_motion=asset.get("kind") in {"camera", "light"},
+                clear_existing_motion=clear_existing,
+            )
 
             if asset.get("kind") == "camera":
                 camera = _camera_transform(cmds)
@@ -730,6 +745,12 @@ def main() -> int:
     initialized = False
     try:
         initialized = _initialize_maya()
+        _repo_imports()
+        import maya.cmds as cmds
+
+        plugin_path = str(ROOT / "mmd_tools" / "plugin_main.py")
+        if not cmds.pluginInfo(plugin_path, query=True, loaded=True):
+            cmds.loadPlugin(plugin_path, quiet=True)
         result = run_manifest(
             Path(args.manifest).resolve() if args.manifest else None,
             Path(args.out_dir).resolve(),

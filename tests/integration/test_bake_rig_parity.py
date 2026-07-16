@@ -345,6 +345,7 @@ class TestBakeRigBoneParity(MayaTestBase):
             vmd_data,
             bake_mode=True,
             pmx_path=PMX_FILE,
+            target_model=root,
         ))
 
         actual = _capture_bone_world_transforms_by_index(FRAMES)

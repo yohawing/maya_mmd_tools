@@ -65,7 +65,7 @@ class TestVmdConverter(MayaTestBase):
         vmd_data = vmd_parser.parse_file(self.fixture_provider.get_vmd_file(vmd_name))
 
         # アニメーション変換
-        result = self.converter.convert(vmd_data)
+        result = self.converter.convert(vmd_data, target_model=root_group)
 
         return root_group, mesh_name, root_joint, skin_cluster, vmd_data, result
 
