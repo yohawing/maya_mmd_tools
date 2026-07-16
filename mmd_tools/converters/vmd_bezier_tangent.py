@@ -9,6 +9,7 @@ import maya.cmds as cmds
 
 from . import vmd_profile
 from .vmd_bone_interpolation import get_frame_interpolation, get_frame_number, is_linear_vmd_interp
+from .vmd_scene_keying import _anim_layer_curve_for_plug
 
 
 def query_key_value(logger, plug: str, frame_number: float) -> Optional[float]:
@@ -48,46 +49,17 @@ def _unlock_anim_curve_tangent(logger, plug: str, frame_time: float) -> None:
 def _anim_curve_for_plug(converter, plug: str) -> Optional[oma.MFnAnimCurve]:
     """Resolve the animCurve that should receive tangent edits for *plug*."""
     try:
+        animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
+        if animation_layer:
+            curve = _anim_layer_curve_for_plug(plug, animation_layer)
+            if curve is not None:
+                return curve
+
         curves = cmds.listConnections(plug, source=True, destination=False, type="animCurve") or []
         if curves:
             selection = om.MSelectionList()
             selection.add(curves[0])
             return oma.MFnAnimCurve(selection.getDependNode(0))
-
-        animation_layer = converter.anim_layer if converter.use_animation_layers and converter.anim_layer else None
-        if not animation_layer or not cmds.animLayer(animation_layer, query=True, exists=True):
-            return None
-
-        layer_curves = set(cmds.animLayer(animation_layer, query=True, animCurves=True) or [])
-        attr = plug.rsplit(".", 1)[-1]
-        axis = attr[-1] if attr and attr[-1] in "XYZ" else ""
-        blend_nodes = cmds.listConnections(plug, source=True, destination=False) or []
-        for blend_node in blend_nodes:
-            candidate_inputs = []
-            if axis:
-                candidate_inputs.extend((f"{blend_node}.inputB{axis}", f"{blend_node}.inputB.inputB{axis}"))
-            candidate_inputs.append(f"{blend_node}.inputB")
-            for input_plug in candidate_inputs:
-                if not cmds.objExists(input_plug):
-                    continue
-                input_curves = cmds.listConnections(input_plug, source=True, type="animCurve") or []
-                for curve_name in input_curves:
-                    if curve_name not in layer_curves:
-                        continue
-                    selection = om.MSelectionList()
-                    selection.add(curve_name)
-                    return oma.MFnAnimCurve(selection.getDependNode(0))
-
-            if axis and cmds.nodeType(blend_node) == "animBlendNodeAdditiveRotation":
-                continue
-
-            input_curves = cmds.listConnections(blend_node, source=True, type="animCurve") or []
-            for curve_name in input_curves:
-                if curve_name not in layer_curves:
-                    continue
-                selection = om.MSelectionList()
-                selection.add(curve_name)
-                return oma.MFnAnimCurve(selection.getDependNode(0))
     except Exception as exc:
         converter.logger.debug(f"Failed to resolve animCurve for {plug}: {exc}")
     return None

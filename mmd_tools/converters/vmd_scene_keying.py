@@ -88,10 +88,6 @@ def _create_anim_curve_for_plug(plug_path: str) -> oma.MFnAnimCurve:
     return curve
 
 
-def _axis_suffix(attr: str) -> str:
-    return attr[-1] if attr and attr[-1] in {"X", "Y", "Z"} else ""
-
-
 def _curve_candidates_for_attr(
     node_name: str,
     attr: str,
@@ -168,63 +164,26 @@ def _ensure_fallback_allowed(
         raise _keying_error(node_name, attr, animation_layer, reason)
 
 
-def _layer_curve_from_input_plugs(
-    input_plugs: List[str],
-    layer_curves: set,
-) -> Optional[oma.MFnAnimCurve]:
-    for input_plug in input_plugs:
-        if not cmds.objExists(input_plug):
-            continue
-        input_curves = cmds.listConnections(
-            input_plug,
-            source=True,
-            destination=False,
-            type="animCurve",
-        ) or []
-        for curve_name in input_curves:
-            if curve_name in layer_curves:
-                return _anim_curve_fn(curve_name)
-    return None
+def _anim_layer_curve_for_plug(plug: str, animation_layer: str) -> Optional[oma.MFnAnimCurve]:
+    """Resolve one generated animLayer curve through Maya's official API."""
+    with vmd_profile.scope("curve_resolve", count=1):
+        resolved = cmds.animLayer(
+            animation_layer,
+            query=True,
+            findCurveForPlug=plug,
+        )
+    if isinstance(resolved, (list, tuple)):
+        if len(resolved) != 1:
+            return None
+        resolved = resolved[0]
+    if not isinstance(resolved, str) or not resolved:
+        return None
+    return _anim_curve_fn(resolved)
 
 
 def _find_layer_anim_curve(node_name: str, attr: str, animation_layer: str) -> Optional[oma.MFnAnimCurve]:
     """Find Maya's generated animLayer curve for a target plug."""
-    layer_curves = set(cmds.animLayer(animation_layer, query=True, animCurves=True) or [])
-    if not layer_curves:
-        return None
-
-    plug = f"{node_name}.{attr}"
-    axis = _axis_suffix(attr)
-    source_plugs = cmds.listConnections(plug, source=True, destination=False, plugs=True) or []
-    for source_plug in source_plugs:
-        if "." not in source_plug:
-            continue
-        blend_node, _output_attr = source_plug.rsplit(".", 1)
-        if not cmds.objExists(blend_node):
-            continue
-
-        if cmds.nodeType(blend_node) == "animBlendNodeAdditiveRotation" and axis:
-            curve = _layer_curve_from_input_plugs(
-                [f"{blend_node}.inputB{axis}", f"{blend_node}.inputB.inputB{axis}"],
-                layer_curves,
-            )
-            if curve is not None:
-                return curve
-            continue
-
-        curve = _layer_curve_from_input_plugs([f"{blend_node}.inputB"], layer_curves)
-        if curve is not None:
-            return curve
-
-    blend_nodes = cmds.listConnections(plug, source=True, destination=False) or []
-    for blend_node in blend_nodes:
-        if cmds.nodeType(blend_node) == "animBlendNodeAdditiveRotation" and axis:
-            continue
-        input_curves = cmds.listConnections(blend_node, source=True, destination=False, type="animCurve") or []
-        layer_input_curves = [curve_name for curve_name in input_curves if curve_name in layer_curves]
-        if len(layer_input_curves) == 1:
-            return _anim_curve_fn(layer_input_curves[0])
-    return None
+    return _anim_layer_curve_for_plug(f"{node_name}.{attr}", animation_layer)
 
 
 def _ensure_layer_anim_curve(
