@@ -36,13 +36,12 @@ else:
 _THIS_FILE = Path(__file__).resolve()
 _PACKAGE_ROOT = _THIS_FILE.parents[2]
 
-_CANDIDATE_PATHS: List[Optional[Path]] = [
-    Path(os.environ.get("MMD_ANIM_FFI_PATH", "")) if os.environ.get("MMD_ANIM_FFI_PATH") else None,
-    _PACKAGE_ROOT.parent / "external" / "mmd-anim" / "target" / "release",
-    _PACKAGE_ROOT / "native" / ("win64" if platform.system() == "Windows" else "macos" if platform.system() == "Darwin" else "linux"),
-    Path.cwd(),
-    Path("plug-ins"),
-]
+_BUNDLED_LIBRARY_DIR = (
+    _PACKAGE_ROOT
+    / "native"
+    / ("win64" if platform.system() == "Windows" else "macos" if platform.system() == "Darwin" else "linux")
+).resolve()
+_CANDIDATE_PATHS: List[Path] = [_BUNDLED_LIBRARY_DIR]
 
 _runtime_lib: Union[Optional[CDLL], bool] = None
 _runtime_lib_path: Optional[Path] = None
@@ -50,9 +49,16 @@ _runtime_lib_path: Optional[Path] = None
 
 def find_library() -> Optional[Path]:
     """Find the mmd-anim FFI shared library from configured candidate paths."""
-    for raw_base in _CANDIDATE_PATHS:
-        if raw_base is None:
-            continue
+    candidate_paths = list(_CANDIDATE_PATHS)
+    configured_path = os.environ.get("MMD_ANIM_FFI_PATH")
+    if configured_path:
+        override = Path(configured_path).expanduser()
+        if override.is_absolute():
+            candidate_paths.insert(0, override.resolve())
+        else:
+            logger.warning("Ignoring relative MMD_ANIM_FFI_PATH: %s", configured_path)
+
+    for raw_base in candidate_paths:
         base = Path(raw_base)
         if not base.exists():
             continue

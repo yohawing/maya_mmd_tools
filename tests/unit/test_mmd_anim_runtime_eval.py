@@ -22,6 +22,7 @@ ctypes CDLL を模した *フェイクライブラリ* を直接 wrapper クラ�
 """
 
 import ctypes
+import os
 import unittest
 from ctypes import c_float, c_uint8
 from unittest import mock
@@ -1213,6 +1214,17 @@ class TestSetSig(unittest.TestCase):
 
 
 class TestFindLibrary(unittest.TestCase):
+    def setUp(self):
+        self._environment = mock.patch.dict(os.environ, {"MMD_ANIM_FFI_PATH": ""}, clear=False)
+        self._environment.start()
+
+    def tearDown(self):
+        self._environment.stop()
+
+    def test_default_candidates_only_include_absolute_bundled_directory(self):
+        self.assertEqual(runtime_loader._CANDIDATE_PATHS, [runtime_loader._BUNDLED_LIBRARY_DIR])
+        self.assertTrue(runtime_loader._BUNDLED_LIBRARY_DIR.is_absolute())
+
     def test_returns_none_when_no_candidate_exists(self):
         # すべての候補パスを存在しないものに差し替える
         from pathlib import Path
@@ -1253,6 +1265,49 @@ class TestFindLibrary(unittest.TestCase):
         finally:
             import shutil
             shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_finds_absolute_environment_override(self):
+        import tempfile
+        from pathlib import Path
+
+        lib_name = runtime_loader._LIB_NAMES[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            lib_path = Path(temporary) / lib_name
+            lib_path.write_bytes(b"\x00")
+            with mock.patch.dict("os.environ", {"MMD_ANIM_FFI_PATH": str(lib_path)}, clear=False):
+                with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS", []):
+                    self.assertEqual(runtime_loader.find_library(), lib_path.resolve())
+
+    def test_ignores_cwd_and_relative_plugin_runtime_candidates(self):
+        import tempfile
+        from pathlib import Path
+
+        lib_name = runtime_loader._LIB_NAMES[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary)
+            (model_dir / lib_name).write_bytes(b"cwd")
+            plugin_dir = model_dir / "plug-ins"
+            plugin_dir.mkdir()
+            (plugin_dir / lib_name).write_bytes(b"plugin")
+
+            with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS", []), mock.patch(
+                "os.getcwd", return_value=str(model_dir)
+            ):
+                self.assertIsNone(runtime_loader.find_library())
+
+    def test_rejects_relative_environment_override(self):
+        import tempfile
+        from pathlib import Path
+
+        lib_name = runtime_loader._LIB_NAMES[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            model_dir = Path(temporary)
+            (model_dir / lib_name).write_bytes(b"relative")
+            with mock.patch.dict("os.environ", {"MMD_ANIM_FFI_PATH": lib_name}, clear=False):
+                with mock.patch.object(runtime_loader, "_CANDIDATE_PATHS", []), mock.patch(
+                    "os.getcwd", return_value=str(model_dir)
+                ):
+                    self.assertIsNone(runtime_loader.find_library())
 
 
 class TestGetRuntimeLibraryCache(unittest.TestCase):
