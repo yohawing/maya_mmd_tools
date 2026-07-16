@@ -54,7 +54,7 @@ class TestVmdConverterBasics(MayaTestBase):
         vmd_data = create_test_vmd_data()
         self.converter.set_bone_name_mapping({"センター": "center", "上半身": "upper_body", "頭": "head"})
 
-        self.converter.convert(vmd_data)
+        self.converter.convert(vmd_data, target_model="model_root")
 
         self.assertEqual(cmds.playbackOptions(q=True, max=True), 30)
 

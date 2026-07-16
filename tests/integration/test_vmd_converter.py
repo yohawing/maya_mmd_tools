@@ -172,7 +172,7 @@ class TestVmdConverter(MayaTestBase):
         vmd_path = self.fixture_provider.create_temp_file(VmdMock.create_camera_vmd(), ".vmd")
         vmd_data = VmdData().parse_file(vmd_path)
 
-        result = self.converter.convert(vmd_data)
+        result = self.converter.convert(vmd_data, scene_animation_only=True)
 
         self.assertTrue(result)
         cameras = cmds.ls("*.mmd_camera", objectsOnly=True) or []

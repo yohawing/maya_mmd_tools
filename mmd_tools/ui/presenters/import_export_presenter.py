@@ -2,7 +2,12 @@ from ..qt_compat import QObject, QFileDialog
 from ...actions.export_model_action import ExportModelAction, ExportModelRequest
 from ...actions.export_vmd_action import ExportVmdAction, ExportVmdRequest
 from ...actions.import_model_action import ImportModelAction, ImportModelRequest
-from ...actions.import_vmd_action import ImportVmdAction, ImportVmdRequest
+from ...actions.import_vmd_action import (
+    ImportVmdAction,
+    ImportVmdRequest,
+    VMD_TARGET_AUTO,
+    VMD_TARGET_CAMERA,
+)
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core import maya_attribute_utils, maya_material_utils, settings_keys as setting_keys
 from ...core.constants import (
@@ -38,6 +43,7 @@ class ImportExportPresenter(QObject):
         self.export_vmd_action = export_vmd_action or ExportVmdAction()
         self.settings_service = settings_service or SettingsService()
         self.maya_adapter = maya_adapter or MayaCmdsAdapter()
+        self._vmd_model_roots = []
         self.view.presenter = self
         self.connect_signals()
         self.refresh_model_list(restore_selection=True)
@@ -81,19 +87,31 @@ class ImportExportPresenter(QObject):
     def _get_vmd_target_model(self):
         """VMD import用の対象モデルをUI選択または現在モデルから取得する。"""
         current_index = self.view.target_model_combo.currentIndex()
-        if current_index > 0:  # "<Auto Detect>"以外が選択されている場合
-            return self.view.target_model_combo.itemData(current_index)
-        if getattr(self.app_state, "current_model_root", None):
+        choice = self.view.target_model_combo.itemData(current_index)
+        if choice == VMD_TARGET_CAMERA:
+            return VMD_TARGET_CAMERA
+        if choice not in (None, VMD_TARGET_AUTO):
+            return choice if choice in self._vmd_model_roots else None
+        current_model = getattr(self.app_state, "current_model_root", None)
+        if current_model in self._vmd_model_roots:
             target_model = self.app_state.current_model_root
             logger.debug(f"Auto-selected current model root for VMD import: {target_model}")
             return target_model
+        if len(self._vmd_model_roots) == 1:
+            target_model = self._vmd_model_roots[0]
+            logger.debug(f"Auto-selected sole model root for VMD import: {target_model}")
+            return target_model
         return None
 
-    def _build_vmd_import_options(self, target_model=None):
+    def _build_vmd_import_options(self, target_model):
         """VMD import用のオプションをUI設定から組み立てる。"""
-        if target_model is None:
-            target_model = self._get_vmd_target_model()
-        return self.settings_service.build_vmd_import_options(target_model)
+        options = self.settings_service.build_vmd_import_options(
+            None if target_model == VMD_TARGET_CAMERA else target_model
+        )
+        if target_model == VMD_TARGET_CAMERA:
+            options.pop("target_model", None)
+            options["scene_animation_only"] = True
+        return options
 
     def refresh_model_list(self, restore_selection=False):
         """VMD import target model candidates を Presenter 経由で更新する。"""
@@ -112,6 +130,7 @@ class ImportExportPresenter(QObject):
         except Exception:
             logger.debug("Failed to refresh VMD target model list", exc_info=True)
             model_items = []
+        self._vmd_model_roots = [model_root for model_root, _display_name in model_items]
         self.view.set_target_model_items(model_items, restore_selection=restore_selection)
 
     def _build_pmx_import_options(self):
@@ -369,6 +388,10 @@ class ImportExportPresenter(QObject):
 
         create_new_scene = hasattr(self.view, "new_file_check") and self.view.new_file_check.isChecked()
         is_vmd = file_path.lower().endswith(".vmd")
+        vmd_target = self._get_vmd_target_model() if is_vmd else None
+        if is_vmd and vmd_target is None:
+            self.app_state.emit_status(tr_message("select_vmd_target_model"))
+            return
 
         logger.info(f"Importing file: {file_path}")
 
@@ -379,7 +402,7 @@ class ImportExportPresenter(QObject):
         import_options = self._build_pmx_import_options()
         import_profile = {}
         if is_vmd:
-            import_options.update(self._build_vmd_import_options())
+            import_options.update(self._build_vmd_import_options(vmd_target))
         else:
             import_options["profile"] = import_profile
 
@@ -417,11 +440,13 @@ class ImportExportPresenter(QObject):
                 return
 
             root_node = result.root_node
-            # success and partial both retain the imported root.
-            self.app_state.refresh_model_list()
-            self.app_state.current_model_root = root_node
+            # VMD never creates a model root; only model imports update selection.
+            if not is_vmd:
+                self.app_state.refresh_model_list()
+                self.app_state.current_model_root = root_node
             self.app_state.emit_progress(100)
-            self.refresh_model_list()
+            if not is_vmd:
+                self.refresh_model_list()
             self.view.add_import_path_to_history(file_path)
 
             if outcome == "partial":
@@ -496,6 +521,9 @@ class ImportExportPresenter(QObject):
 
         # ターゲットモデルを取得
         target_model = self._get_vmd_target_model()
+        if target_model is None:
+            self.app_state.emit_status(tr_message("select_vmd_target_model"))
+            return
 
         logger.info(f"Importing VMD file: {file_path}")
         if target_model:

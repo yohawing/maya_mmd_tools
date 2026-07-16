@@ -144,7 +144,9 @@ class TestVmdConvertDispatch(unittest.TestCase):
                 patch.object(self.converter, "_convert_camera_animation", return_value=True)
             )
             convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
-            result = self.converter.convert(vmd_data, vmd_bytes=b"vmd", pmx_bytes=b"pmx")
+            result = self.converter.convert(
+                vmd_data, vmd_bytes=b"vmd", pmx_bytes=b"pmx", target_model="model_root"
+            )
 
         self.assertTrue(result)
         apply_ik.assert_not_called()
@@ -168,6 +170,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
                 vmd_bytes=b"vmd",
                 pmx_bytes=b"pmx",
                 profile=profile,
+                target_model="model_root",
             )
 
         self.assertTrue(result)
@@ -198,7 +201,13 @@ class TestVmdConvertDispatch(unittest.TestCase):
                 patch.object(self.converter, "_convert_camera_animation", return_value=True)
             )
             convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
-            result = self.converter.convert(vmd_data, bake_mode=True, vmd_bytes=b"vmd", pmx_bytes=b"pmx")
+            result = self.converter.convert(
+                vmd_data,
+                bake_mode=True,
+                vmd_bytes=b"vmd",
+                pmx_bytes=b"pmx",
+                target_model="model_root",
+            )
 
         self.assertTrue(result)
         convert_camera.assert_called_once_with(vmd_data.camera_frames, vmd_bytes=b"vmd")
@@ -232,7 +241,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
                     side_effect=lambda *_args, **_kwargs: order.append("convert_light") or True,
                 )
             )
-            result = self.converter.convert(vmd_data)
+            result = self.converter.convert(vmd_data, scene_animation_only=True)
 
         self.assertTrue(result)
         self.assertEqual(order, ["clear_camera", "convert_camera", "clear_light", "convert_light"])
@@ -247,11 +256,31 @@ class TestVmdConvertDispatch(unittest.TestCase):
             model_clear = stack.enter_context(patch.object(self.converter, "_clear_existing_motion"))
             camera_clear = stack.enter_context(patch.object(self.converter, "_clear_existing_camera_motion"))
             stack.enter_context(patch.object(self.converter, "_convert_camera_animation", return_value=True))
-            result = self.converter.convert(vmd_data, clear_existing_motion=True)
+            name_mapping = stack.enter_context(patch.object(self.converter, "_build_name_mappings"))
+            live_rig = stack.enter_context(patch.object(self.converter, "_has_live_mmd_rig_for_runtime_target"))
+            runtime_sources = stack.enter_context(patch.object(self.converter, "_resolve_runtime_bake_sources"))
+            apply_ik = stack.enter_context(patch.object(self.converter, "_apply_ik_enabled_animation"))
+            ls_query = stack.enter_context(patch("mmd_tools.converters.vmd_converter.cmds.ls"))
+            result = self.converter.convert(
+                vmd_data,
+                clear_existing_motion=True,
+                scene_animation_only=True,
+            )
 
         self.assertTrue(result)
         model_clear.assert_not_called()
         camera_clear.assert_called_once()
+        name_mapping.assert_not_called()
+        live_rig.assert_not_called()
+        runtime_sources.assert_not_called()
+        apply_ik.assert_not_called()
+        self.assertTrue(ls_query.call_args_list)
+        for query in ls_query.call_args_list:
+            self.assertEqual(query[0], ())
+            self.assertEqual(query[1], {"type": "animLayer"})
+
+        rejected = _fake_vmd_data(camera_frames=[frame], ik_show_hide_frames=[object()])
+        self.assertFalse(self.converter.convert(rejected, scene_animation_only=True))
 
     def test_convert_does_not_clear_missing_camera_or_light_channels(self):
         """Missing camera/light frames do not trigger channel clear or conversion."""
@@ -264,7 +293,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
             )
             clear_light = stack.enter_context(patch.object(self.converter, "_clear_existing_light_motion"))
             convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
-            result = self.converter.convert(vmd_data)
+            result = self.converter.convert(vmd_data, scene_animation_only=True)
 
         self.assertTrue(result)
         clear_camera.assert_not_called()
@@ -291,7 +320,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
             "mmd_tools.converters.vmd_converter.cmds.refresh",
             side_effect=fake_refresh,
         ):
-            self.assertTrue(self.converter.convert(vmd_data))
+            self.assertTrue(self.converter.convert(vmd_data, scene_animation_only=True))
 
         self.assertEqual(refresh_calls, [True, False])
         self.assertIn({"stateWithoutFlush": False}, undo_calls)
@@ -311,7 +340,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
             )
             clear_light = stack.enter_context(patch.object(self.converter, "_clear_existing_light_motion"))
             convert_light = stack.enter_context(patch.object(self.converter, "_convert_light_animation", return_value=True))
-            result = self.converter.convert(vmd_data)
+            result = self.converter.convert(vmd_data, scene_animation_only=True)
 
         self.assertTrue(result)
         clear_camera.assert_not_called()
@@ -330,7 +359,7 @@ class TestVmdConvertDispatch(unittest.TestCase):
             convert_morph = stack.enter_context(patch.object(self.converter, "_convert_morph_animation"))
             info_mock = stack.enter_context(patch.object(logger, "info"))
             debug_mock = stack.enter_context(patch.object(logger, "debug"))
-            result = self.converter.convert(vmd_data)
+            result = self.converter.convert(vmd_data, target_model="model_root")
 
         self.assertTrue(result)
         convert_morph.assert_called_once_with(vmd_data.morph_frames)

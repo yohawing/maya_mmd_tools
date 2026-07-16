@@ -29,6 +29,13 @@ from tests.common.custom_test_runner import (  # noqa: E402
 from tests.common.output_hygiene import summarize_unittest_result  # noqa: E402
 
 
+def _load_global_unit_test_plugin() -> None:
+    """Keep repo custom nodes registered for the lifetime of the unit process."""
+    plugin_path = str(ROOT_DIR / "mmd_tools" / "plugin_main.py")
+    if not cmds.pluginInfo(plugin_path, query=True, loaded=True):
+        cmds.loadPlugin(plugin_path, quiet=True)
+
+
 def initialize_maya():
     """Maya環境を初期化します。"""
     maya.standalone.initialize()
@@ -143,6 +150,9 @@ def run_tests(
         test_type: 'unit' または 'integration'
         test_filter: テストをフィルタリングする文字列（オプション）
     """
+    if test_type == "unit":
+        _load_global_unit_test_plugin()
+
     # テストを探索
     suite = discover_tests(test_type, test_filter)
 

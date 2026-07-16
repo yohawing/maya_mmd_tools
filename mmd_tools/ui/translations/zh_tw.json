@@ -115,6 +115,7 @@
   },
   "messages": {
     "import_success": "匯入完成",
+    "select_vmd_target_model": "請選擇目標模型，或選擇 Camera Motion。",
     "export_success": "匯出完成",
     "error_file_not_found": "找不到檔案",
     "error_invalid_file": "無效的檔案格式",
@@ -353,6 +354,7 @@
     "import_animation": "匯入動畫",
     "export": "匯出",
     "auto_detect": "<自動偵測>",
+    "camera_motion": "Camera Motion",
     "reset_all": "全部重設",
     "clear_all": "全部清除",
     "connect": "連接",

@@ -232,6 +232,8 @@ class TestVmdMotionClear(MayaTestBase):
     def test_convert_clear_existing_motion_replaces_previous_bone_keys(self):
         """clear ON の再 import は古いキーを残さず新しい VMD キーだけにする。"""
         joint = cmds.joint(name="clear_existing_convert_center")
+        target_model = cmds.group(empty=True, name="clear_existing_model_root")
+        cmds.parent(joint, target_model)
         cmds.addAttr(joint, longName=ATTR_MMD_BONE_NAME, dataType="string")
         cmds.setAttr(f"{joint}.{ATTR_MMD_BONE_NAME}", "センター", type="string")
         cmds.setKeyframe(joint, attribute="translateX", time=1, value=10.0)
@@ -243,7 +245,13 @@ class TestVmdMotionClear(MayaTestBase):
         vmd_data.light_frames = []
 
         self.converter.use_animation_layers = False
-        self.assertTrue(self.converter.convert(vmd_data, clear_existing_motion=True))
+        self.assertTrue(
+            self.converter.convert(
+                vmd_data,
+                clear_existing_motion=True,
+                target_model=target_model,
+            )
+        )
 
         self.assertNotIn(1.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])
         self.assertIn(8.0, cmds.keyframe(joint, attribute="translateX", query=True, timeChange=True) or [])

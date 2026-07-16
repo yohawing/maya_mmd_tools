@@ -12,7 +12,6 @@ from ..core.exceptions import MMDImportException
 from ..core.logger import get_logger
 from ..core.namespace_utils import NamespaceUtils
 from ..core.native.mmd_anim_runtime import is_mmd_runtime_available
-from ..services.scene_model_service import SceneModelService
 
 
 def _try_recover_physics_drivers(target_model, logger, profile):
@@ -61,6 +60,7 @@ def import_vmd_file(
         filepath (str): インポートするVMDファイルのパス
         options (dict): インポートオプション
             - target_model: 対象モデル
+            - scene_animation_only: Camera Motion（camera/lightのみ）をモデル処理なしで読み込む
             - pmx_path: 対応する PMX ファイルのパス
             - pmx_bytes: 生 PMX バイト
             - bake_mode: True の場合はリグ経由ではなく runtime bake を優先
@@ -89,34 +89,20 @@ def import_vmd_file(
 
     try:
         _emit_progress(15)
-        # オプションからターゲットモデルを取得
+        # Camera Motion はモデル解決を一切行わない独立経路。
+        scene_animation_only = bool(options.get("scene_animation_only", False))
         target_namespace = None
-        target_model = options.get("target_model")
+        target_model = None if scene_animation_only else options.get("target_model")
 
-        if target_model:
+        if scene_animation_only:
+            if "target_model" in options:
+                raise MMDImportException("Camera Motion must not specify target_model")
+        elif target_model:
             target_namespace = NamespaceUtils.get_namespace_from_node(target_model)
             if target_namespace:
                 logger.debug(f"Target namespace: {target_namespace}")
         else:
-            selected = cmds.ls(selection=True)
-            if selected:
-                scene_model_service = SceneModelService()
-                for sel in selected:
-                    resolved_root = scene_model_service.get_parent_mmd_root(sel)
-                    if resolved_root:
-                        target_model = resolved_root
-                        target_namespace = NamespaceUtils.get_namespace_from_node(resolved_root)
-                        logger.debug(f"Resolved target model root from selection: {target_model}")
-                        break
-                if not target_model:
-                    for sel in selected:
-                        target_namespace = NamespaceUtils.get_namespace_from_node(sel)
-                        if target_namespace:
-                            logger.debug(f"Target namespace fallback: {target_namespace}")
-                            break
-                    logger.debug("Selected node has no provable MMD model root; using legacy namespace fallback")
-            else:
-                logger.warning("Target model is not specified.")
+            raise MMDImportException("VMD model motion requires an explicit target model")
 
         # Bake mode needs raw VMD bytes for mmd-anim final-pose evaluation.
         # Rig mode still receives these bytes, but VmdConverter rejects runtime
@@ -146,7 +132,7 @@ def import_vmd_file(
             except Exception:
                 logger.debug("Failed to restore PMX source from target model", exc_info=True)
 
-        if not pmx_bytes and not pmx_path:
+        if not scene_animation_only and not pmx_bytes and not pmx_path:
             # 同じディレクトリに .pmx/.pmd があるか簡易推定
             try:
                 vmd_dir = os.path.dirname(os.path.abspath(filepath))
@@ -180,6 +166,7 @@ def import_vmd_file(
             profile = {}
             options["profile"] = profile
         use_native_physics_bake = bool(options.get("use_native_physics_bake", False))
+        model_target_kwargs = {} if scene_animation_only else {"target_model": target_model}
         try:
             with vmd_profile.scope("vmd_converter_convert"):
                 success = converter.convert(
@@ -193,14 +180,16 @@ def import_vmd_file(
                     profile=profile,
                     progress_callback=progress_callback,
                     use_native_physics_bake=use_native_physics_bake,
-                    target_model=target_model,
+                    scene_animation_only=scene_animation_only,
+                    **model_target_kwargs,
                 )
         finally:
             vmd_profile.flush("import_vmd_file")
 
         if success:
             logger.info("VMD file import completed")
-            _try_recover_physics_drivers(target_model, logger, profile)
+            if not scene_animation_only:
+                _try_recover_physics_drivers(target_model, logger, profile)
             native_physics_used = bool(
                 (profile.get("vmd_converter") or {})
                 .get("native_physics_bake", {})
@@ -208,7 +197,7 @@ def import_vmd_file(
             )
             if native_physics_used:
                 profile["native_physics_bake_applied"] = True
-            if is_mmd_runtime_available():
+            if not scene_animation_only and is_mmd_runtime_available():
                 # Phase 2: ライブノードの自動作成オプション
                 if options.get("use_live_runtime", False) and target_model:
                     if not pmx_path or not os.path.exists(pmx_path):

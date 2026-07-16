@@ -115,6 +115,7 @@
   },
   "messages": {
     "import_success": "导入完成",
+    "select_vmd_target_model": "请选择目标模型，或选择 Camera Motion。",
     "export_success": "导出完成",
     "error_file_not_found": "找不到文件",
     "error_invalid_file": "无效的文件格式",
@@ -353,6 +354,7 @@
     "import_animation": "导入动画",
     "export": "导出",
     "auto_detect": "<自动检测>",
+    "camera_motion": "Camera Motion",
     "reset_all": "全部重置",
     "clear_all": "全部清除",
     "connect": "连接",

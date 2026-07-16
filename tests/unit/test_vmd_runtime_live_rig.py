@@ -244,6 +244,6 @@ class TestVmdRuntimeLiveRig(MayaTestBase):
             stack.enter_context(patch.object(self.converter, "_apply_ik_enabled_animation"))
             stack.enter_context(patch.object(self.converter, "_convert_bone_animation", side_effect=assert_live_flag))
 
-            self.assertTrue(self.converter.convert(vmd_data))
+            self.assertTrue(self.converter.convert(vmd_data, target_model="model_root"))
 
         self.assertFalse(self.converter._current_import_live_rig_target)

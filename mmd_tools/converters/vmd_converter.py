@@ -454,6 +454,7 @@ class VmdConverter:
         progress_callback: Optional[Callable[[int], None]] = None,
         use_native_physics_bake: bool = False,
         target_model: str = None,
+        scene_animation_only: bool = False,
     ) -> bool:
         """VMDデータをMayaアニメーションに変換
 
@@ -465,6 +466,7 @@ class VmdConverter:
             vmd_data: パース済みのVMDデータ
             target_namespace: 対象となるネームスペース（省略可）
             target_model: 対象モデルのroot node（指定時はbone/morph mappingをroot配下へ限定）
+            scene_animation_only: camera/lightだけをモデル処理なしで読み込む
             layer_name: アニメーションレイヤー名
             bake_mode: True の場合は live rig ではなく runtime final-pose bake を優先する
             clear_existing_motion: True の場合は既存の VMD motion keys/layer を削除してから読み込む
@@ -479,6 +481,11 @@ class VmdConverter:
         Returns:
             変換が成功した場合True、失敗した場合False
         """
+        if scene_animation_only:
+            return self._convert_scene_animation_only(vmd_data, layer_name, bake_mode, vmd_bytes)
+        if not target_model:
+            self.logger.error("VMD model motion requires an explicit target model")
+            return False
         import_start_time = None
         anim_layer_selection = None
         undo_was_enabled = True
@@ -673,6 +680,55 @@ class VmdConverter:
     def _suspend_import_scene_updates(self) -> Tuple[bool, bool]:
         """Suppress Maya undo recording and viewport refresh during VMD import."""
         return suspend_import_scene_updates(self._import_state_context())
+
+    def _convert_scene_animation_only(self, vmd_data, layer_name, bake_mode, vmd_bytes) -> bool:
+        """Convert camera/light channels without entering any model or IK path."""
+        if any(
+            getattr(vmd_data, attr, None)
+            for attr in ("bone_frames", "morph_frames", "ik_show_hide_frames")
+        ):
+            self.logger.error("Camera Motion accepts camera/light channels only; model or IK channels were found")
+            return False
+
+        current_time = None
+        selection = None
+        undo_was_enabled = True
+        refresh_suspended = False
+        try:
+            self.logger.info("Starting VMD Camera Motion conversion")
+            undo_was_enabled, refresh_suspended = self._suspend_import_scene_updates()
+            try:
+                current_time = cmds.currentTime(query=True)
+                cmds.play(state=False)
+            except Exception:
+                pass
+            if self.use_animation_layers:
+                selection = self._capture_anim_layer_selection()
+                self.anim_layer = cmds.animLayer(layer_name, override=False, weight=1.0)
+            else:
+                self.anim_layer = None
+            self._setup_timeline(vmd_data)
+            if self.import_camera_animation and getattr(vmd_data, "camera_frames", None):
+                self._clear_existing_camera_motion()
+                self._convert_camera_animation(
+                    vmd_data.camera_frames,
+                    vmd_bytes=vmd_bytes if bake_mode else None,
+                )
+            if self.import_light_animation and getattr(vmd_data, "light_frames", None):
+                self._clear_existing_light_motion()
+                self._convert_light_animation(
+                    vmd_data.light_frames,
+                    vmd_bytes=vmd_bytes if bake_mode else None,
+                )
+            self._restore_import_timeline_state(current_time)
+            return True
+        except Exception as exc:
+            self._restore_import_timeline_state(current_time)
+            self.logger.error("Camera Motion conversion failed: %s", exc, exc_info=True)
+            return False
+        finally:
+            self._restore_anim_layer_selection(selection)
+            self._restore_import_scene_updates(undo_was_enabled, refresh_suspended)
 
     def _restore_import_scene_updates(self, undo_was_enabled: bool, refresh_suspended: bool) -> None:
         """Restore viewport refresh and undo state after VMD import."""

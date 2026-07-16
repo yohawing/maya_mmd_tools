@@ -206,7 +206,7 @@ class TestVmdLightAnimation(MayaTestBase):
         vmd_data.ik_show_hide_frames = []
         vmd_data.header.model_name = "TestLight"
 
-        result = self.converter.convert(vmd_data)
+        result = self.converter.convert(vmd_data, scene_animation_only=True)
         self.assertTrue(result)
         self.assertTrue(cmds.objExists(DEFAULT_LIGHT_NAME))
 

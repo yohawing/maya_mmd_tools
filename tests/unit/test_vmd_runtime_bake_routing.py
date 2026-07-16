@@ -45,7 +45,13 @@ class TestVmdRuntimeBakeRouting(MayaTestBase):
         vmd_data = create_test_vmd_data()
         self.converter.set_bone_name_mapping({"センター": "center"})
 
-        res = self.converter.convert(vmd_data, vmd_bytes=b"dummy", pmx_bytes=None, pmx_path=None)
+        res = self.converter.convert(
+            vmd_data,
+            vmd_bytes=b"dummy",
+            pmx_bytes=None,
+            pmx_path=None,
+            target_model="model_root",
+        )
         self.assertIsInstance(res, bool)
 
         self.assertFalse(self.converter._should_use_mmd_runtime_bake(b"vmd", None, "/nonexistent.pmx"))

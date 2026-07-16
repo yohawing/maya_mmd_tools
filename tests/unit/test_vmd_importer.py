@@ -179,60 +179,45 @@ class TestVmdImporter(MayaTestBase):
         )
         self.assertIn("VMD file import completed", info_msgs)
 
-    def test_unowned_selection_uses_legacy_fallback_without_treating_leaf_as_root(self):
-        """An unmarked selected leaf is never promoted to authoritative target_model."""
-        target_model = cmds.group(empty=True, name="mmd_selection_root")
-        cmds.select(target_model, replace=True)
-
+    def test_scene_only_skips_model_resolution_physics_and_runtime_queries(self):
         temp_root = Path(tempfile.mkdtemp())
         vmd_path = str(temp_root / "motion.vmd")
         Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
         self.files_created.append(vmd_path)
 
-        mock_logger = MagicMock()
-        with patch(
-            "mmd_tools.io.vmd_importer.get_logger", return_value=mock_logger
-        ), patch(
-            "mmd_tools.io.vmd_importer.NamespaceUtils.get_namespace_from_node",
-            return_value=None,
-        ), patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
+        with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class, patch(
+            "mmd_tools.io.vmd_importer.NamespaceUtils.get_namespace_from_node"
+        ) as namespace_query, patch(
+            "mmd_tools.io.vmd_importer._try_recover_physics_drivers"
+        ) as recover_physics, patch(
+            "mmd_tools.io.vmd_importer.is_mmd_runtime_available"
+        ) as runtime_available, patch(
+            "mmd_tools.io.vmd_importer.cmds.ls"
+        ) as ls_query:
             converter = converter_class.return_value
             converter.convert.return_value = True
-            # No target_model option → selection path.
-            result = import_vmd_file(object(), vmd_path, {})
+            result = import_vmd_file(object(), vmd_path, {"scene_animation_only": True})
 
         self.assertTrue(result)
-        info_msgs = _logger_message_args(mock_logger.info)
-        debug_msgs = _logger_message_args(mock_logger.debug)
-        fallback_message = "Selected node has no provable MMD model root; using legacy namespace fallback"
-        self.assertIn(fallback_message, debug_msgs)
-        self.assertFalse(
-            fallback_message in info_msgs,
-            "selection fallback route must not be INFO",
-        )
-        self.assertIn("VMD file import completed", info_msgs)
-        self.assertIsNone(converter.convert.call_args.kwargs["target_model"])
+        kwargs = converter.convert.call_args.kwargs
+        self.assertTrue(kwargs["scene_animation_only"])
+        self.assertNotIn("target_model", kwargs)
+        namespace_query.assert_not_called()
+        recover_physics.assert_not_called()
+        runtime_available.assert_not_called()
+        ls_query.assert_not_called()
 
-    def test_descendant_selection_resolves_authoritative_mmd_model_root(self):
-        """Selecting a bone/mesh descendant forwards its marked MMD model root."""
-        root = cmds.group(empty=True, name=f"selection_model{SCENE_ROOT_SUFFIX}")
-        cmds.addAttr(root, longName=ATTR_MMD_MODEL_NAME, dataType="string")
-        cmds.setAttr(f"{root}.{ATTR_MMD_MODEL_NAME}", "SelectionModel", type="string")
-        child = cmds.createNode("transform", name="selection_model_child", parent=root)
-        cmds.select(child, replace=True)
-
+    def test_model_motion_without_explicit_target_is_rejected_before_conversion(self):
         temp_root = Path(tempfile.mkdtemp())
         vmd_path = str(temp_root / "motion.vmd")
         Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
         self.files_created.append(vmd_path)
 
         with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
-            converter = converter_class.return_value
-            converter.convert.return_value = True
-            self.assertTrue(import_vmd_file(object(), vmd_path, {}))
+            with self.assertRaisesRegex(MMDImportException, "explicit target model"):
+                import_vmd_file(object(), vmd_path, {})
 
-        resolved = converter.convert.call_args.kwargs["target_model"]
-        self.assertEqual(cmds.ls(resolved, long=True), cmds.ls(root, long=True))
+        converter_class.assert_not_called()
 
     def test_motion_scale_option_is_applied_to_converter(self):
         temp_root = Path(tempfile.mkdtemp())
@@ -243,7 +228,9 @@ class TestVmdImporter(MayaTestBase):
         with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
             converter = converter_class.return_value
             converter.convert.return_value = True
-            result = import_vmd_file(object(), vmd_path, {"motion_scale": 2.5})
+            result = import_vmd_file(
+                object(), vmd_path, {"motion_scale": 2.5, "scene_animation_only": True}
+            )
 
         self.assertTrue(result)
         self.assertEqual(converter.motion_scale, 2.5)
@@ -253,7 +240,7 @@ class TestVmdImporter(MayaTestBase):
         vmd_path = str(temp_root / "motion.vmd")
         Path(vmd_path).write_bytes(b"Vocaloid Motion Data 0002\x00")
         self.files_created.append(vmd_path)
-        options = {}
+        options = {"scene_animation_only": True}
 
         with patch("mmd_tools.io.vmd_importer.VmdConverter") as converter_class:
             converter = converter_class.return_value
@@ -279,6 +266,7 @@ class TestVmdImporter(MayaTestBase):
                 {
                     "import_camera_animation": False,
                     "import_light_animation": False,
+                    "scene_animation_only": True,
                 },
             )
 
@@ -300,7 +288,7 @@ class TestVmdImporter(MayaTestBase):
             result = import_vmd_file(
                 object(),
                 vmd_path,
-                {},
+                {"scene_animation_only": True},
                 progress_callback=progress_callback,
             )
 
@@ -321,7 +309,7 @@ class TestVmdImporter(MayaTestBase):
             converter.convert.return_value = False
 
             with self.assertRaises(MMDImportException):
-                import_vmd_file(object(), vmd_path, {})
+                import_vmd_file(object(), vmd_path, {"scene_animation_only": True})
 
 
 if __name__ == "__main__":
