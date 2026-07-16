@@ -69,7 +69,17 @@ def _anim_curve_fn(curve_name: str) -> oma.MFnAnimCurve:
 
 
 def _create_anim_curve_for_plug(plug_path: str) -> oma.MFnAnimCurve:
-    """Create an anim curve directly for plugs not handled by attr-name helpers."""
+    """Reuse or create an anim curve for plugs not handled by attr-name helpers."""
+    existing = cmds.listConnections(
+        plug_path,
+        source=True,
+        destination=False,
+        type="animCurve",
+    ) or []
+    if len(existing) == 1:
+        return _anim_curve_fn(existing[0])
+    if len(existing) > 1:
+        raise VmdKeyingError(f"Multiple direct anim curves drive {plug_path}: {existing!r}")
     selection = om.MSelectionList()
     selection.add(plug_path)
     plug = selection.getPlug(0)
