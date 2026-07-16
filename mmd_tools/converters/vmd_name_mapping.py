@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 from typing import Any, Optional, Union
 
+import maya.api.OpenMaya as om
 import maya.cmds as cmds
 
 from ..core import maya_scene_utils
@@ -61,20 +62,27 @@ def build_name_mappings(
         joints = maya_scene_utils.list_objects(type="joint")
 
     for joint in joints:
-        if cmds.attributeQuery(ATTR_MMD_BONE_NAME, node=joint, exists=True):
-            original_name = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_NAME}")
-            if original_name:
-                context.bone_name_mapping[original_name] = joint
+        try:
+            selection = om.MSelectionList()
+            selection.add(joint)
+            node_fn = om.MFnDependencyNode(selection.getDependNode(0))
+            original_name = node_fn.findPlug(ATTR_MMD_BONE_NAME, False).asString()
+        except (IndexError, RuntimeError):
+            continue
 
-                if cmds.attributeQuery(ATTR_MMD_BONE_INDEX, node=joint, exists=True):
-                    try:
-                        idx = cmds.getAttr(f"{joint}.{ATTR_MMD_BONE_INDEX}")
-                        if idx is not None:
-                            idx = int(idx)
-                            context.bone_name_to_index[original_name] = idx
-                            context.bone_index_to_joint[idx] = joint
-                    except Exception:
-                        pass
+        if not original_name:
+            continue
+        context.bone_name_mapping[original_name] = joint
+
+        try:
+            index_plug = node_fn.findPlug(ATTR_MMD_BONE_INDEX, False)
+            if not index_plug.attribute().hasFn(om.MFn.kNumericAttribute):
+                continue
+            idx = index_plug.asInt()
+        except RuntimeError:
+            continue
+        context.bone_name_to_index[original_name] = idx
+        context.bone_index_to_joint[idx] = joint
 
     context.logger.debug(
         f"Built {len(context.bone_name_mapping)} bone mappings "
