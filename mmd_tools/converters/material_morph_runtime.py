@@ -342,57 +342,79 @@ def _append_group_weight_sources(
     group_morph_nodes: Iterable[str],
     skipped: List[str],
 ) -> None:
-    """Add one-level group morph weights to referenced material contributions.
-
-    PMX group offsets use global morph indices.  Material contribution records
-    retain their direct weight and receive zero or more additional
-    ``group.weight * morph_rate`` sources.  References to groups (including
-    self/nested/cyclic networks) are deliberately ignored so this builder can
-    never introduce a dependency cycle.
-    """
+    """Resolve group chains into material contribution weight sources."""
     contributions_by_index: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+    material_nodes_by_index: Dict[int, set[str]] = defaultdict(set)
     for contributions in contributions_by_shader.values():
         for contribution in contributions:
             morph_index = contribution.get("morph_index")
             if morph_index is not None:
                 contributions_by_index[int(morph_index)].append(contribution)
+                material_nodes_by_index[int(morph_index)].add(str(contribution["morph_node"]))
 
     group_nodes = list(group_morph_nodes)
-    group_indices = set()
+    groups_by_index: Dict[int, List[str]] = defaultdict(list)
     for node in group_nodes:
         index = _get_explicit_morph_index(node)
         if index is not None:
-            group_indices.add(index)
+            groups_by_index[index].append(node)
+
+    ambiguous_indices = {
+        index
+        for index, nodes in groups_by_index.items()
+        if len(nodes) != 1 or material_nodes_by_index.get(index)
+    }
+    ambiguous_indices.update(
+        index for index, nodes in material_nodes_by_index.items() if len(nodes) != 1
+    )
+    for index in sorted(ambiguous_indices):
+        providers = sorted(set(groups_by_index.get(index, ())) | material_nodes_by_index.get(index, set()))
+        skipped.append(f"duplicate_morph_provider:{index}:{','.join(providers)}")
+
+    offsets_by_group: Dict[str, Optional[List[Dict[str, Any]]]] = {}
     for group_node in group_nodes:
         group_index = _get_explicit_morph_index(group_node)
         if group_index is None:
             skipped.append(f"missing_group_morph_index:{group_node}")
             continue
-        offsets = parse_morph_offsets_json(group_node, "mmd_group_morph_offsets_json")
-        if offsets is None:
+        offsets_by_group[group_node] = parse_morph_offsets_json(
+            group_node, "mmd_group_morph_offsets_json"
+        )
+        if offsets_by_group[group_node] is None:
             skipped.append(f"invalid_group_offsets:{group_node}")
-            continue
-        for offset in offsets:
+
+    def resolve(source_index: int, source_node: str, current_node: str, coefficient: float, path: tuple[int, ...]):
+        current_index = _get_explicit_morph_index(current_node)
+        if current_index is None or offsets_by_group.get(current_node) is None:
+            return
+        for offset in offsets_by_group[current_node] or []:
             try:
                 target_index = int(offset["morph_index"])
                 rate = float(offset.get("morph_rate", 0.0))
             except (KeyError, TypeError, ValueError):
-                skipped.append(f"invalid_group_offset:{group_node}")
+                skipped.append(f"invalid_group_offset:{current_node}")
                 continue
-            if target_index in group_indices:
-                skipped.append(f"nested_group_reference_unsupported:{group_node}:{target_index}")
-                logger.warning(
-                    "Ignoring nested/cyclic group morph reference %s -> morph index %s",
-                    group_node,
-                    target_index,
-                )
+            if target_index in ambiguous_indices:
+                continue
+            if target_index in path:
+                skipped.append(f"group_morph_cycle:{source_node}:{target_index}")
+                continue
+            nested = groups_by_index.get(target_index, [])
+            if nested:
+                resolve(source_index, source_node, nested[0], coefficient * rate, (*path, target_index))
                 continue
             targets = contributions_by_index.get(target_index)
             if not targets:
+                skipped.append(f"disconnected_group_reference:{current_node}:{target_index}")
                 continue
-            source = (group_index, group_node, rate)
+            source = (source_index, source_node, coefficient * rate)
             for contribution in targets:
                 contribution.setdefault("group_weight_sources", []).append(source)
+
+    for group_index, nodes in sorted(groups_by_index.items()):
+        if group_index in ambiguous_indices:
+            continue
+        resolve(group_index, nodes[0], nodes[0], 1.0, (group_index,))
 
     for contributions in contributions_by_shader.values():
         for contribution in contributions:

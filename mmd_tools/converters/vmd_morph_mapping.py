@@ -1,5 +1,6 @@
 """Morph name mapping helpers for VMD animation conversion."""
 
+from collections import defaultdict
 from typing import List, Optional, Set, Tuple
 
 import maya.cmds as cmds
@@ -106,6 +107,8 @@ def morph_node_is_owned_by_root(node: str, target_model: str) -> bool:
 def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
     """Build morph name mappings from scene blendShapes and metadata networks."""
     converter.morph_name_mapping = {}
+    converter.morph_bindings = {}
+    converter.morph_binding_diagnostics = []
 
     owned_dag_nodes = (
         _root_owned_dag_nodes(target_model)
@@ -131,16 +134,50 @@ def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
                 for candidate in get_original_morph_name_candidates(alias):
                     register_morph_mapping(converter, candidate, mapping)
 
-    for metadata in iter_morph_network_metadata(
+    network_metadata = list(iter_morph_network_metadata(
+        root_group=target_model if target_model else None,
         morph_types={"bone", "group", "material"},
         required_attrs=("weight",),
-    ):
+    ))
+    providers_by_index = defaultdict(list)
+    providers_by_name = defaultdict(list)
+    for metadata in network_metadata:
+        if metadata.index is not None:
+            providers_by_index[metadata.index].append(metadata.node)
+        if metadata.name:
+            providers_by_name[metadata.name].append(metadata.node)
+    ambiguous_nodes = set()
+    for index, nodes in providers_by_index.items():
+        if len(nodes) > 1:
+            ambiguous_nodes.update(nodes)
+            converter.morph_binding_diagnostics.append(
+                f"duplicate_morph_provider:{index}:{','.join(sorted(nodes))}"
+            )
+    for name, nodes in providers_by_name.items():
+        if len(nodes) > 1:
+            ambiguous_nodes.update(nodes)
+            converter.morph_binding_diagnostics.append(
+                f"duplicate_named_provider:{name}:{','.join(sorted(nodes))}"
+            )
+
+    for metadata in network_metadata:
         morph_node = metadata.node
         if target_model and not _network_is_owned_by_root(morph_node, target_model):
+            continue
+        if morph_node in ambiguous_nodes:
             continue
         original_name = metadata.name
         if not original_name:
             continue
+
+        final_plugs = sorted(set(cmds.listConnections(
+            f"{morph_node}.weight",
+            source=False,
+            destination=True,
+            plugs=True,
+        ) or []))
+        if target_model and not final_plugs:
+            converter.morph_binding_diagnostics.append(f"disconnected_morph_provider:{morph_node}")
 
         mapping = (morph_node, "weight", original_name)
         register_morph_mapping(converter, original_name, mapping)
@@ -152,6 +189,12 @@ def build_morph_mappings(converter, target_model: Optional[str] = None) -> None:
         register_morph_mapping(converter, safe_name, mapping)
         if metadata.name_english:
             register_morph_mapping(converter, metadata.name_english, mapping)
+        converter.morph_bindings.setdefault(original_name, []).append({
+            "source_plug": f"{morph_node}.weight",
+            "morph_type": metadata.morph_type,
+            "morph_index": metadata.index,
+            "final_input_plugs": tuple(final_plugs),
+        })
 
 
 def get_original_morph_name_candidates(alias: str) -> List[str]:

@@ -352,35 +352,76 @@ def _append_group_morph_contributions(
     joints_by_index: Dict[int, str],
     skipped: List[str],
 ) -> None:
-    bone_nodes_by_morph_index = _collect_morph_nodes_by_index(bone_morph_nodes)
-    for group_node in group_morph_nodes:
-        group_offsets = _parse_group_offsets_json(group_node)
-        if group_offsets is None:
-            skipped.append(f"invalid_group_offsets:{group_node}")
-            continue
+    bone_nodes = list(bone_morph_nodes)
+    group_nodes = list(group_morph_nodes)
+    bone_providers: Dict[int, List[str]] = defaultdict(list)
+    group_providers: Dict[int, List[str]] = defaultdict(list)
+    for node in bone_nodes:
+        index = _get_explicit_morph_index(node)
+        if index is not None:
+            bone_providers[index].append(node)
+    for node in group_nodes:
+        index = _get_explicit_morph_index(node)
+        if index is not None:
+            group_providers[index].append(node)
+        else:
+            skipped.append(f"missing_group_morph_index:{node}")
 
-        group_order = _get_morph_order(group_node)
-        for group_offset in group_offsets:
+    ambiguous = {
+        index
+        for index in set(bone_providers) | set(group_providers)
+        if len(bone_providers.get(index, ())) + len(group_providers.get(index, ())) != 1
+    }
+    for index in sorted(ambiguous):
+        providers = sorted(set(bone_providers.get(index, ())) | set(group_providers.get(index, ())))
+        skipped.append(f"duplicate_morph_provider:{index}:{','.join(providers)}")
+
+    group_offsets = {node: _parse_group_offsets_json(node) for node in group_nodes}
+    for node, offsets in group_offsets.items():
+        if offsets is None:
+            skipped.append(f"invalid_group_offsets:{node}")
+
+    def resolve(source_index: int, source_node: str, current_node: str, coefficient: float, path: tuple[int, ...]):
+        offsets = group_offsets.get(current_node)
+        if offsets is None:
+            return
+        group_order = _get_morph_order(source_node)
+        for group_offset in offsets:
             if not isinstance(group_offset, dict) or "morph_index" not in group_offset:
-                skipped.append(f"invalid_group_offset:{group_node}")
+                skipped.append(f"invalid_group_offset:{current_node}")
                 continue
             try:
                 target_morph_index = int(group_offset["morph_index"])
                 group_rate = float(group_offset.get("morph_rate", 0.0))
             except Exception:
-                skipped.append(f"invalid_group_offset:{group_node}")
+                skipped.append(f"invalid_group_offset:{current_node}")
                 continue
-
-            target_node = bone_nodes_by_morph_index.get(target_morph_index)
-            if target_node is None:
-                skipped.append(f"group_reference_not_bone:{group_node}:{target_morph_index}")
+            if target_morph_index in ambiguous:
                 continue
+            if target_morph_index in path:
+                skipped.append(f"group_morph_cycle:{source_node}:{target_morph_index}")
+                continue
+            nested = group_providers.get(target_morph_index, [])
+            if nested:
+                resolve(
+                    source_index,
+                    source_node,
+                    nested[0],
+                    coefficient * group_rate,
+                    (*path, target_morph_index),
+                )
+                continue
+            target_nodes = bone_providers.get(target_morph_index, [])
+            if not target_nodes:
+                skipped.append(f"disconnected_group_reference:{current_node}:{target_morph_index}")
+                continue
+            target_node = target_nodes[0]
 
-            offsets = _parse_offsets_json(target_node)
-            if offsets is None:
+            bone_offsets = _parse_offsets_json(target_node)
+            if bone_offsets is None:
                 skipped.append(f"invalid_offsets:{target_node}")
                 continue
-            for offset in offsets:
+            for offset in bone_offsets:
                 contribution = _offset_to_contribution(target_node, group_order, offset)
                 if contribution is None:
                     skipped.append(f"invalid_offset:{target_node}")
@@ -389,9 +430,23 @@ def _append_group_morph_contributions(
                 if joint is None:
                     skipped.append(f"missing_joint:{target_node}:{contribution['bone_index']}")
                     continue
-                contribution["group_morph_node"] = group_node
-                contribution["group_morph_rate"] = group_rate
+                contribution["group_morph_node"] = source_node
+                contribution["group_morph_rate"] = coefficient * group_rate
                 contributions_by_joint.setdefault(joint, []).append(contribution)
+
+    for group_index, nodes in sorted(group_providers.items()):
+        if group_index in ambiguous:
+            continue
+        resolve(group_index, nodes[0], nodes[0], 1.0, (group_index,))
+
+
+def _get_explicit_morph_index(morph_node: str) -> Optional[int]:
+    try:
+        if not cmds.attributeQuery("mmd_morph_index", node=morph_node, exists=True):
+            return None
+        return int(cmds.getAttr(f"{morph_node}.mmd_morph_index"))
+    except Exception:
+        return None
 
 
 def _collect_morph_nodes_by_index(morph_nodes: Iterable[str]) -> Dict[int, str]:

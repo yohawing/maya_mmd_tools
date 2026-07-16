@@ -1548,6 +1548,18 @@ class VmdConverter:
         Returns:
             変換が成功した場合True
         """
+        requested_names = {
+            frame.morph_name if hasattr(frame, "morph_name") else frame.get("morph_name", "")
+            for frame in morph_frames
+        }
+        self.unmapped_vmd_morph_names = sorted(
+            name for name in requested_names if name and name not in self.morph_name_mapping
+        )
+        if self.unmapped_vmd_morph_names:
+            self.logger.warning(
+                "Skipping unmapped VMD morph names: %s",
+                ", ".join(self.unmapped_vmd_morph_names),
+            )
         return convert_morph_animation(self._morph_animation_context(), morph_frames)
 
     @staticmethod

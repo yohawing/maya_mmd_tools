@@ -202,7 +202,7 @@ class TestMaterialMorphRuntimeGuard(unittest.TestCase):
                 [(8, "groupA", 0.25)],
             )
 
-    def test_nested_group_reference_is_fail_soft(self):
+    def test_nested_group_reference_resolves_cumulative_coefficients(self):
         contributions = {
             "shader1": [{"morph_node": "material1", "morph_order": 4, "morph_index": 4}]
         }
@@ -210,16 +210,53 @@ class TestMaterialMorphRuntimeGuard(unittest.TestCase):
         with mock.patch.object(
             material_morph_runtime,
             "parse_morph_offsets_json",
-            return_value=[{"morph_index": 9, "morph_rate": 1.0}],
-        ), mock.patch.object(material_morph_runtime, "_get_explicit_morph_index", return_value=9):
+            side_effect=lambda node, _attr: {
+                "groupOuter": [{"morph_index": 9, "morph_rate": 0.5}],
+                "groupInner": [{"morph_index": 4, "morph_rate": 0.25}],
+            }[node],
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_get_explicit_morph_index",
+            side_effect=lambda node: {"groupOuter": 10, "groupInner": 9}[node],
+        ):
             material_morph_runtime._append_group_weight_sources(
                 contributions,
-                ["groupSelf"],
+                ["groupOuter", "groupInner"],
                 skipped,
             )
 
+        self.assertEqual(
+            contributions["shader1"][0]["group_weight_sources"],
+            [(9, "groupInner", 0.25), (10, "groupOuter", 0.125)],
+        )
+        self.assertEqual(skipped, [])
+
+    def test_group_cycle_is_diagnosed_without_route(self):
+        contributions = {
+            "shader1": [{"morph_node": "material1", "morph_order": 4, "morph_index": 4}]
+        }
+        skipped = []
+        with mock.patch.object(
+            material_morph_runtime,
+            "parse_morph_offsets_json",
+            side_effect=lambda node, _attr: {
+                "groupA": [{"morph_index": 2, "morph_rate": 1.0}],
+                "groupB": [{"morph_index": 1, "morph_rate": 1.0}],
+            }[node],
+        ), mock.patch.object(
+            material_morph_runtime,
+            "_get_explicit_morph_index",
+            side_effect=lambda node: {"groupA": 1, "groupB": 2}[node],
+        ):
+            material_morph_runtime._append_group_weight_sources(
+                contributions, ["groupA", "groupB"], skipped
+            )
+
         self.assertNotIn("group_weight_sources", contributions["shader1"][0])
-        self.assertEqual(skipped, ["nested_group_reference_unsupported:groupSelf:9"])
+        self.assertEqual(
+            skipped,
+            ["group_morph_cycle:groupA:1", "group_morph_cycle:groupB:2"],
+        )
 
     def test_create_evaluator_rejects_node_without_required_attrs(self):
         cmds = mock.Mock()
