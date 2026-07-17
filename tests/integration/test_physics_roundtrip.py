@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import tempfile
 import unittest
 from pathlib import Path
@@ -108,6 +109,17 @@ class TestPhysicsRoundTrip(MayaTestBase):
         source_pmx = parse_pmx_file(str(FIXTURE_PATH), use_native_pmx_parse=False)
         root = self._import_fixture()
         presenter = self._presenter(root)
+        collector = ExportSceneCollector()
+        initial_collect = collector.collect_from_model_root(root)
+        self.assertEqual(len(initial_collect["rigid_bodies"]), len(source_pmx.rigid_bodies))
+        self.assertEqual(len(initial_collect["joints"]), len(source_pmx.joints))
+        self.assertEqual(_binding_names(initial_collect), _binding_names(source_pmx))
+        for index, (source, collected) in enumerate(zip(source_pmx.rigid_bodies, initial_collect["rigid_bodies"])):
+            _assert_pmx_fields(self, source, collected, RIGID_EXACT_FIELDS, RIGID_FLOAT_FIELDS,
+                               RIGID_VECTOR_FIELDS, f"initial.rigid_bodies[{index}]")
+        for index, (source, collected) in enumerate(zip(source_pmx.joints, initial_collect["joints"])):
+            _assert_pmx_fields(self, source, collected, JOINT_EXACT_FIELDS, (),
+                               JOINT_VECTOR_FIELDS, f"initial.joints[{index}]")
 
         physics_group = presenter._find_child(root, PHYSICS_GROUP)
         rb_group = presenter._find_child(physics_group, RIGID_BODIES_GROUP)
@@ -209,7 +221,6 @@ class TestPhysicsRoundTrip(MayaTestBase):
             cmds.connectAttr(f"{rigid_transform}.message", f"{duplicated_joint_shape}.{message_attr}", force=True)
             cmds.setAttr(f"{duplicated_joint_shape}.{fallback_attr}", deleted_rigid_index)
         cmds.setAttr(f"{created_joint_shape}.nameJp", "新規ジョイント", type="string")
-        collector = ExportSceneCollector()
         before_export = collector.collect_from_model_root(root)
         rigid_source_indices = [cmds.getAttr(f"{shape}.pmxIndex") for _transform, shape in rigid_pairs]
         joint_source_indices = [cmds.getAttr(f"{shape}.pmxIndex") for _transform, shape in joint_pairs]
@@ -228,6 +239,40 @@ class TestPhysicsRoundTrip(MayaTestBase):
             self.assertEqual([body.name for body in exported.rigid_bodies], expected_rigid_order)
             self.assertEqual([joint.name for joint in exported.joints], expected_joint_order)
             self.assertEqual(_binding_names(exported), expected_bindings)
+            edited_rigid = next(body for body in exported.rigid_bodies if body.name == "往復剛体")
+            explicit_rigid = {
+                "name": "往復剛体", "name_english": "roundtrip_rigid",
+                "related_bone_index": edited_rigid.related_bone_index,
+                "group": 7, "collision_mask": 0x5A5A, "shape_type": 2,
+                "physics_mode": 1, "mass": 3.25, "velocity_attenuation": 0.17,
+                "rotation_attenuation": 0.29, "elasticity": 0.41, "friction": 0.53,
+                "size": (0.75, 1.25, 0.5), "position": (1.5, 2.5, -3.5),
+                "rotation": tuple(math.radians(value) for value in (11.0, -22.0, 33.0)),
+            }
+            _assert_pmx_fields(self, edited_rigid, explicit_rigid, RIGID_EXACT_FIELDS, RIGID_FLOAT_FIELDS,
+                               RIGID_VECTOR_FIELDS, "edited.rigid_body")
+            source_bone_index = source_pmx.rigid_bodies[0].related_bone_index
+            self.assertEqual(exported.bones[edited_rigid.related_bone_index].name,
+                             source_pmx.bones[source_bone_index].name)
+
+            edited_joint = next(joint for joint in exported.joints if joint.name == "往復ジョイント")
+            explicit_joint = {
+                "name": "往復ジョイント", "name_english": "roundtrip_joint", "joint_type": 0,
+                "rigid_body_a_index": edited_joint.rigid_body_a_index,
+                "rigid_body_b_index": edited_joint.rigid_body_b_index,
+                "position": (4.0, -5.0, 6.0),
+                "rotation": tuple(math.radians(value) for value in (14.0, -25.0, 36.0)),
+                "translation_limit_min": (-0.4, -0.5, -0.6),
+                "translation_limit_max": (0.7, 0.8, 0.9),
+                "rotation_limit_min": tuple(math.radians(value) for value in (-17.0, -28.0, -39.0)),
+                "rotation_limit_max": tuple(math.radians(value) for value in (41.0, 52.0, 63.0)),
+                "spring_translation": (1.1, 2.2, 3.3), "spring_rotation": (4.4, 5.5, 6.6),
+            }
+            _assert_pmx_fields(self, edited_joint, explicit_joint, JOINT_EXACT_FIELDS, (),
+                               JOINT_VECTOR_FIELDS, "edited.joint")
+            self.assertEqual(exported.rigid_bodies[edited_joint.rigid_body_a_index].name,
+                             source_pmx.rigid_bodies[0].name)
+            self.assertEqual(exported.rigid_bodies[edited_joint.rigid_body_b_index].name, "往復剛体")
             for index, (actual, expected) in enumerate(zip(exported.rigid_bodies, before_export["rigid_bodies"])):
                 _assert_pmx_fields(self, actual, expected, RIGID_EXACT_FIELDS, RIGID_FLOAT_FIELDS,
                                    RIGID_VECTOR_FIELDS, f"exported.rigid_bodies[{index}]")
