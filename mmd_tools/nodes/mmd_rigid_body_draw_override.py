@@ -1,16 +1,9 @@
 """VP2 DrawOverride for mmdRigidBodyShape.
 
 Draws each rigid body collider as a wireframe primitive (sphere/box/capsule)
-colored by physicsMode.
-
-During authoring (no simulation): positioning relies on the DAG transform's
-inclusiveMatrix for position and the shape's rotation attribute for local
-orientation (see physics_scene_builder.py).
-
-During simulation: the solver populates a module-level cache
-(_SIMULATED_RB_CACHE in mmd_physics_solver_node) with per-shape world
-matrices.  When a cached matrix is available, the draw override offsets from
-the DAG's authoring position to the simulated position.
+colored by physicsMode.  The primitive is always drawn in object-local space;
+the parent transform's inclusive matrix is the canonical authoring/rest-pose
+draw matrix and is mirrored by the shape's connected ``authoringMatrix``.
 """
 
 from __future__ import annotations
@@ -38,8 +31,7 @@ class ColliderDrawData(om.MUserData):
         self.size = (1.0, 1.0, 1.0)
         self.physics_mode = 0
         self.enabled = True
-        self.rotation = (0.0, 0.0, 0.0)
-        self.simulated_offset = None
+        self.legacy_rotation = None
 
 
 def _color_for(data: ColliderDrawData) -> om.MColor:
@@ -52,17 +44,16 @@ def _color_for(data: ColliderDrawData) -> om.MColor:
     return om.MColor(_COLOR_STATIC)
 
 
-def _local_axes(rotation) -> tuple[om.MVector, om.MVector, om.MVector]:
-    euler = om.MEulerRotation(rotation[0], rotation[1], rotation[2], om.MEulerRotation.kXYZ)
-    mat = euler.asMatrix()
-    x_axis = om.MVector(1.0, 0.0, 0.0) * mat
-    y_axis = om.MVector(0.0, 1.0, 0.0) * mat
-    z_axis = om.MVector(0.0, 0.0, 1.0) * mat
-    return x_axis, y_axis, z_axis
-
-
 def _draw_sphere(drawManager, center, radius) -> None:
     drawManager.sphere(center, radius, _SPHERE_SUBDIV_AXIS, _SPHERE_SUBDIV_HEIGHT, False)
+
+
+def _local_axes(rotation) -> tuple[om.MVector, om.MVector]:
+    matrix = om.MEulerRotation(*rotation, om.MEulerRotation.kXYZ).asMatrix()
+    return (
+        om.MVector(1.0, 0.0, 0.0) * matrix,
+        om.MVector(0.0, 1.0, 0.0) * matrix,
+    )
 
 
 def _draw_box(drawManager, center, x_axis, y_axis, size) -> None:
@@ -117,16 +108,6 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
             sx = sy = sz = 1.0
         extent = max(sx, sy, sz, 0.001)
         center = om.MPoint(0.0, 0.0, 0.0)
-        try:
-            from mmd_tools.nodes.mmd_physics_solver_node import _SIMULATED_RB_CACHE
-
-            sim_matrix = _SIMULATED_RB_CACHE.get(objPath.fullPathName())
-            if sim_matrix is not None:
-                dag_inclusive = objPath.inclusiveMatrix()
-                offset = sim_matrix * dag_inclusive.inverse()
-                center = om.MPoint(0.0, 0.0, 0.0) * offset
-        except Exception:
-            pass
         corner = om.MVector(extent, extent, extent)
         return om.MBoundingBox(center - corner, center + corner)
 
@@ -143,25 +124,14 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
                 fn.findPlug("shapeSizeY", False).asDouble(),
                 fn.findPlug("shapeSizeZ", False).asDouble(),
             )
-            data.rotation = (
+            authoring_plug = fn.findPlug("authoringMatrix", False)
+            data.legacy_rotation = None if authoring_plug.isDestination else (
                 fn.findPlug("rotationX", False).asMAngle().asRadians(),
                 fn.findPlug("rotationY", False).asMAngle().asRadians(),
                 fn.findPlug("rotationZ", False).asMAngle().asRadians(),
             )
         except Exception:
             data.enabled = False
-
-        data.simulated_offset = None
-        try:
-            from mmd_tools.nodes.mmd_physics_solver_node import _SIMULATED_RB_CACHE
-
-            shape_path = objPath.fullPathName()
-            sim_matrix = _SIMULATED_RB_CACHE.get(shape_path)
-            if sim_matrix is not None:
-                dag_inclusive = objPath.inclusiveMatrix()
-                data.simulated_offset = sim_matrix * dag_inclusive.inverse()
-        except Exception:
-            pass
 
         return data
 
@@ -171,16 +141,12 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
         if not data.enabled:
             return  # enable=False: skip drawing entirely
 
-        if data.simulated_offset is not None:
-            offset = data.simulated_offset
-            center = om.MPoint(0.0, 0.0, 0.0) * offset
-            tmat = om.MTransformationMatrix(offset)
-            rot_quat = tmat.rotation(asQuaternion=True)
-            x_axis = om.MVector(1.0, 0.0, 0.0).rotateBy(rot_quat)
-            y_axis = om.MVector(0.0, 1.0, 0.0).rotateBy(rot_quat)
+        center = om.MPoint(0.0, 0.0, 0.0)
+        if data.legacy_rotation is None:
+            x_axis = om.MVector(1.0, 0.0, 0.0)
+            y_axis = om.MVector(0.0, 1.0, 0.0)
         else:
-            center = om.MPoint(0.0, 0.0, 0.0)
-            x_axis, y_axis, _z_axis = _local_axes(data.rotation)
+            x_axis, y_axis = _local_axes(data.legacy_rotation)
 
         color = _color_for(data)
 

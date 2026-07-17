@@ -106,12 +106,12 @@ class TestE2EChainStructure(unittest.TestCase):
         self.assertIn("outBoneCount", live_graph)
         self.assertIn("outSolved", live_graph)
 
-    def test_draw_override_reads_from_solver_cache(self):
-        """Draw override imports and reads _SIMULATED_RB_CACHE."""
+    def test_draw_override_is_authoring_only(self):
+        """Public collider display does not substitute live solver matrices."""
         src, tree, lines = _get_source(DRAW_OVERRIDE_PATH)
         prep = _func_source(tree, lines, "prepareForDraw", "MmdRigidBodyDrawOverride")
-        self.assertIn("_SIMULATED_RB_CACHE", prep)
-        self.assertIn("fullPathName", prep)
+        self.assertNotIn("_SIMULATED_RB_CACHE", prep)
+        self.assertNotIn("simulatedWorldMatrix", prep)
 
 
 class TestE2EInputModeContract(unittest.TestCase):

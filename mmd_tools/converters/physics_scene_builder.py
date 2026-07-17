@@ -16,6 +16,7 @@ from mmd_tools.core.constants import (
 )
 from mmd_tools.core.logger import get_logger
 from mmd_tools.core.namespace_utils import NamespaceUtils
+from mmd_tools.core.collider_authoring import set_collider_authoring_pose
 
 _logger = get_logger(__name__)
 
@@ -81,8 +82,7 @@ def _build_rigid_body(index: int, rb, maya_joints: list, parent_group: str, logg
         cmds.setAttr(f"{shape}.shapeType", rb.shape_type)
 
         _set_vector_attr(shape, "shapeSize", rb.size)
-        _set_vector_attr(shape, "position", rb.position)
-        _set_angle_vector_attr(shape, "rotation", rb.rotation)
+        set_collider_authoring_pose(transform, shape, rb.position, rb.rotation)
 
         cmds.setAttr(f"{shape}.physicsMode", rb.physics_mode)
         cmds.setAttr(f"{shape}.mass", rb.mass)
@@ -98,8 +98,6 @@ def _build_rigid_body(index: int, rb, maya_joints: list, parent_group: str, logg
             maya_joint = maya_joints[rb.related_bone_index]
             if maya_joint and cmds.objExists(maya_joint):
                 cmds.connectAttr(f"{maya_joint}.message", f"{shape}.relatedBone")
-
-        _set_position_attr(transform, "translate", rb.position)
 
         return transform
     except Exception as exc:

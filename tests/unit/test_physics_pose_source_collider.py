@@ -9,9 +9,8 @@ Verifies (via AST/source inspection, no Maya dependency):
 2. Solver module-level ``_SIMULATED_RB_CACHE`` and ``_update_rigid_body_visual_cache``
    populate per-shape simulated world matrices from ``copy_rigidbody_states``.
 
-3. Draw override reads ``_SIMULATED_RB_CACHE`` in ``prepareForDraw`` and
-   applies ``simulated_offset`` in ``addUIDrawables`` for animated collider
-   positioning.
+3. The public draw override remains authoring/rest-pose only even though the
+   unsupported internal solver cache still exists.
 
 4. Scene builder sets ``inputMode`` to 1 (maya-pose) when creating the solver.
 
@@ -214,45 +213,45 @@ class TestSolverRigidBodyVisualCache(unittest.TestCase):
 # PHS-COLLISION-ANIM-1: Draw override reads simulated matrix
 # ---------------------------------------------------------------------------
 
-class TestDrawOverrideSimulatedMatrix(unittest.TestCase):
-    """Verify draw override reads _SIMULATED_RB_CACHE and uses simulated offset."""
+class TestDrawOverrideAuthoringMatrix(unittest.TestCase):
+    """Verify public collider drawing does not consume live solver state."""
 
     def setUp(self):
         self.source = DRAW_OVERRIDE_PATH.read_text(encoding="utf-8")
         self.tree = ast.parse(self.source)
         self.source_lines = self.source.splitlines()
 
-    def test_collider_draw_data_has_simulated_offset(self):
+    def test_collider_draw_data_has_no_simulated_offset(self):
         init_src = _get_function_source(
             self.tree, self.source_lines, "__init__", "ColliderDrawData"
         )
-        self.assertIn("simulated_offset", init_src)
+        self.assertNotIn("simulated_offset", init_src)
 
-    def test_prepare_for_draw_imports_cache(self):
+    def test_prepare_for_draw_does_not_import_cache(self):
         src = _get_function_source(
             self.tree, self.source_lines, "prepareForDraw", "MmdRigidBodyDrawOverride"
         )
-        self.assertIn("_SIMULATED_RB_CACHE", src)
+        self.assertNotIn("_SIMULATED_RB_CACHE", src)
 
-    def test_prepare_for_draw_computes_offset(self):
+    def test_prepare_for_draw_does_not_compute_live_offset(self):
         src = _get_function_source(
             self.tree, self.source_lines, "prepareForDraw", "MmdRigidBodyDrawOverride"
         )
-        self.assertIn("inclusiveMatrix", src)
-        self.assertIn("simulated_offset", src)
+        self.assertNotIn("simulated_offset", src)
 
-    def test_add_ui_drawables_uses_simulated_offset(self):
+    def test_add_ui_drawables_uses_object_local_origin(self):
         src = _get_function_source(
             self.tree, self.source_lines, "addUIDrawables", "MmdRigidBodyDrawOverride"
         )
-        self.assertIn("simulated_offset", src)
+        self.assertIn("MPoint(0.0, 0.0, 0.0)", src)
+        self.assertNotIn("simulated_offset", src)
 
-    def test_add_ui_drawables_extracts_rotation_from_offset(self):
+    def test_add_ui_drawables_does_not_extract_live_rotation(self):
         src = _get_function_source(
             self.tree, self.source_lines, "addUIDrawables", "MmdRigidBodyDrawOverride"
         )
-        self.assertIn("MTransformationMatrix", src)
-        self.assertIn("rotateBy", src)
+        self.assertNotIn("MTransformationMatrix", src)
+        self.assertNotIn("rotateBy", src)
 
 
 # ---------------------------------------------------------------------------

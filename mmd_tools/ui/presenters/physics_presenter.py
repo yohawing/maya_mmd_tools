@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import math
 
 from maya import cmds
+
+from mmd_tools.core.collider_authoring import (
+    connect_collider_authoring_transform,
+    set_collider_authoring_pose,
+)
 
 from ...adapters.maya_cmds_adapter import MayaCmdsAdapter
 from ...core.constants import CONSTRAINTS_GROUP, PHYSICS_GROUP, RIGID_BODIES_GROUP
@@ -599,6 +605,7 @@ class PhysicsPresenter:
         cmds.setAttr(f"{shape}.mass", 1.0)
         cmds.setAttr(f"{shape}.collisionGroup", 0)
         cmds.setAttr(f"{shape}.collisionMask", 0xFFFF)
+        connect_collider_authoring_transform(transform, shape)
         logger.info("Created rigid body '%s'", transform)
 
     def _create_joint(self, root):
@@ -642,10 +649,18 @@ class PhysicsPresenter:
                     cmds.setAttr(f"{shape}.{attr}", val, type="string")
                 else:
                     cmds.setAttr(f"{shape}.{attr}", val)
-        for vec_attr in ("shapeSize", "position", "rotation"):
+        for vec_attr in ("shapeSize",):
             for axis in ("X", "Y", "Z"):
                 val = _get_attr(source_shape, f"{vec_attr}{axis}", 0.0)
                 cmds.setAttr(f"{shape}.{vec_attr}{axis}", val)
+        position = tuple(_get_attr(source_shape, f"position{axis}", 0.0) for axis in "XYZ")
+        rotation_degrees = tuple(_get_attr(source_shape, f"rotation{axis}", 0.0) for axis in "XYZ")
+        set_collider_authoring_pose(
+            transform,
+            shape,
+            position,
+            tuple(math.radians(value) for value in rotation_degrees),
+        )
         bone_conn = cmds.listConnections(f"{source_shape}.relatedBone", source=True, destination=False) or []
         if bone_conn:
             cmds.connectAttr(f"{bone_conn[0]}.message", f"{shape}.relatedBone", force=True)
