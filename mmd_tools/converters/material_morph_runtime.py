@@ -172,6 +172,25 @@ def _classify_vp2_draw_api_text(text: str) -> str:
     return VP2_API_UNKNOWN
 
 
+def resolve_mmd_shader_backend(configured_backend: str, vp2_api: str) -> str:
+    """Resolve the MMD hardware shader backend from the effective VP2 API.
+
+    ``standard`` remains an explicit opt-out from hardware MMD shaders.  For
+    hardware rendering, the live VP2 device is authoritative: DirectX 11 must
+    use ``dx11Shader`` and either OpenGL family must use ``GLSLShader``.  An
+    unknown device fails closed to ``standard`` so an effect is never handed to
+    the wrong compiler.
+    """
+    configured = str(configured_backend or "auto").strip().lower()
+    if configured == BACKEND_STANDARD:
+        return BACKEND_STANDARD
+    if vp2_api == VP2_API_DIRECTX11:
+        return BACKEND_DX11
+    if vp2_api in _GL_VP2_APIS:
+        return BACKEND_GLSL
+    return BACKEND_STANDARD
+
+
 def build_material_morph_graph(root_group: str) -> Dict[str, Any]:
     """Build the complete PMX material morph runtime under *root_group*.
 

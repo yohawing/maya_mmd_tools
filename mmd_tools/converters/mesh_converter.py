@@ -56,11 +56,16 @@ from mmd_tools.converters.mesh_texture_resolve import (
     resolve_pmx_toon_texture_path as _resolve_pmx_toon_texture_path,
     resolve_texture_path as _resolve_texture_path,
 )
+from mmd_tools.converters.material_morph_runtime import (
+    BACKEND_DX11,
+    BACKEND_STANDARD,
+    detect_effective_vp2_draw_api,
+    resolve_mmd_shader_backend,
+)
 
 LOGGER = get_logger(__name__)
 
 _ALPHA_CAPABLE_TEXTURE_EXTENSIONS = {".png", ".tga", ".tif", ".tiff", ".dds"}
-_SHADER_PLUGIN_LOAD_CACHE = {}
 _SHADER_BACKEND_WARNED = set()
 
 
@@ -88,18 +93,12 @@ _DX11_RENDERING_BY_TECHNIQUE = {name: key for key, name in _DX11_TECHNIQUE_BY_RE
 
 
 def _ensure_shader_plugin(plugin_name) -> bool:
-    """Load a Maya shader plugin once and cache whether it is available."""
-    if plugin_name in _SHADER_PLUGIN_LOAD_CACHE:
-        return _SHADER_PLUGIN_LOAD_CACHE[plugin_name]
-
+    """Return whether a shader plugin is already loaded without changing Maya state."""
     try:
-        cmds.loadPlugin(plugin_name, quiet=True)
+        return bool(cmds.pluginInfo(plugin_name, query=True, loaded=True))
     except Exception:
-        LOGGER.debug("Shader plugin '%s' is unavailable", plugin_name, exc_info=True)
-        _SHADER_PLUGIN_LOAD_CACHE[plugin_name] = False
-    else:
-        _SHADER_PLUGIN_LOAD_CACHE[plugin_name] = True
-    return _SHADER_PLUGIN_LOAD_CACHE[plugin_name]
+        LOGGER.debug("Shader plugin '%s' is unavailable or not loaded", plugin_name, exc_info=True)
+        return False
 
 
 def _warn_shader_backend_once(key, message) -> None:
@@ -108,6 +107,227 @@ def _warn_shader_backend_once(key, message) -> None:
         return
     _SHADER_BACKEND_WARNED.add(key)
     cmds.warning(message)
+
+
+def effective_mmd_shader_backend() -> str:
+    """Return the backend compatible with the live VP2 device.
+
+    The persistent preference is never mutated here.  A stale explicit hardware
+    preference is corrected only for this operation and warned once.
+    """
+    configured = str(
+        settings.get(setting_keys.IMPORT_MODEL_MMD_SHADER_BACKEND, "auto") or "auto"
+    ).strip().lower()
+    vp2_api = detect_effective_vp2_draw_api()
+    resolved = resolve_mmd_shader_backend(configured, vp2_api)
+    if configured not in {"auto", resolved}:
+        _warn_shader_backend_once(
+            f"backend-corrected:{configured}:{vp2_api}:{resolved}",
+            "MMD shader backend '%s' is incompatible with the active VP2 API "
+            "'%s'; using '%s' for this operation without changing the saved preference."
+            % (configured, vp2_api, resolved),
+        )
+    return resolved
+
+
+_MIGRATED_HARDWARE_ATTRS = (
+    "DiffuseColorRGB",
+    "DiffuseColorA",
+    "SpecularColor",
+    "Shininess",
+    "AmbientColor",
+    "EdgeSize",
+    "Opacity",
+    "SphereMode",
+    "MainTexture",
+    "SphereTexture",
+    "ToonTexture",
+    "HasMainTexture",
+    "HasSphereTexture",
+    "HasToonTexture",
+    "MainTextureMultiply",
+    "MainTextureAdd",
+    "SphereTextureMultiply",
+    "SphereTextureAdd",
+    "ToonTextureMultiply",
+    "ToonTextureAdd",
+    "MMDLightDirection",
+    "MMDLightColor",
+)
+_MIGRATED_MMD_ATTRS = (
+    ATTR_MMD_MATERIAL,
+    ATTR_MMD_MATERIAL_INDEX,
+    ATTR_MMD_MATERIAL_NAME,
+    ATTR_MMD_MATERIAL_NAME_EN,
+    ATTR_MMD_DIFFUSE_COLOR,
+    ATTR_MMD_DIFFUSE_ALPHA,
+    ATTR_MMD_AMBIENT_COLOR,
+    ATTR_MMD_SPECULAR_COLOR,
+    ATTR_MMD_SHININESS,
+    ATTR_MMD_TOON_TEXTURE_INDEX,
+    ATTR_MMD_EDGE_FLAG,
+    ATTR_MMD_SPHERE_MODE,
+    ATTR_MMD_SPHERE_TEXTURE_INDEX,
+    ATTR_MMD_TEXTURE_INDEX,
+    ATTR_MMD_DRAW_FLAGS,
+    ATTR_MMD_EDGE_COLOR,
+    ATTR_MMD_EDGE_ALPHA,
+    ATTR_MMD_EDGE_SIZE,
+    ATTR_MMD_SHADER_OUTLINE_ENABLED,
+    ATTR_MMD_MEMO,
+    ATTR_MMD_SHARED_TOON_FLAG,
+    "mmd_texture_path",
+    "mmd_sphere_path",
+    "mmdTransparencyMode",
+    _ATTR_MMD_DOUBLE_SIDED,
+)
+
+
+def _copy_shader_attr_value(source, target, attr_name) -> None:
+    """Copy one compatible value or incoming connection during backend replacement."""
+    if not (
+        cmds.attributeQuery(attr_name, node=source, exists=True)
+        and cmds.attributeQuery(attr_name, node=target, exists=True)
+    ):
+        return
+    source_plug = f"{source}.{attr_name}"
+    target_plug = f"{target}.{attr_name}"
+    incoming = cmds.listConnections(source_plug, source=True, destination=False, plugs=True) or []
+    if incoming:
+        cmds.connectAttr(incoming[0], target_plug, force=True)
+        return
+    value = cmds.getAttr(source_plug)
+    attr_type = cmds.getAttr(source_plug, type=True)
+    if value is None:
+        return
+    if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    if attr_type == "string":
+        cmds.setAttr(target_plug, value, type="string")
+    elif isinstance(value, (list, tuple)):
+        cmds.setAttr(target_plug, *value, type=attr_type)
+    else:
+        cmds.setAttr(target_plug, value)
+
+
+def _copy_shader_backend_state(source, target) -> None:
+    """Copy the small authored/connection contract shared by both MMD effects."""
+    for attr_name in _MIGRATED_MMD_ATTRS:
+        try:
+            if not cmds.attributeQuery(attr_name, node=source, exists=True):
+                continue
+            if not cmds.attributeQuery(attr_name, node=target, exists=True):
+                value = cmds.getAttr(f"{source}.{attr_name}")
+                if isinstance(value, (list, tuple)) and len(value) == 1 and isinstance(value[0], (list, tuple)):
+                    value = value[0]
+                maya_attribute_utils.set_custom_attributes(target, {attr_name: value})
+            _copy_shader_attr_value(source, target, attr_name)
+        except Exception:
+            LOGGER.debug("Could not migrate custom shader attr '%s'", attr_name, exc_info=True)
+    for attr_name in _MIGRATED_HARDWARE_ATTRS:
+        try:
+            _copy_shader_attr_value(source, target, attr_name)
+        except Exception:
+            LOGGER.debug("Could not migrate hardware shader attr '%s'", attr_name, exc_info=True)
+
+
+def _create_backend_replacement(source, backend):
+    if backend == BACKEND_STANDARD:
+        return cmds.shadingNode("standardSurface", asShader=True, name=f"{source}__standard")
+    node_type = "dx11Shader" if backend == BACKEND_DX11 else "GLSLShader"
+    plugin_name = "dx11Shader" if backend == BACKEND_DX11 else "glslShader"
+    if not _ensure_shader_plugin(plugin_name):
+        raise RuntimeError(f"Required Maya shader plugin '{plugin_name}' is unavailable")
+    replacement = None
+    try:
+        replacement = cmds.shadingNode(node_type, asShader=True, name=f"{source}__{backend}")
+        shader_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "shaders")
+        shader_name = "MMDShader.fx" if backend == BACKEND_DX11 else "MMDShader.ogsfx"
+        shader_path = os.path.normpath(os.path.join(shader_dir, shader_name))
+        if not _set_shader_attribute_checked(replacement, "shader", shader_path, "string"):
+            raise RuntimeError(f"Could not assign {shader_name} to {node_type}")
+        if backend == BACKEND_DX11:
+            _ensure_dx11_uniform_attributes(replacement)
+            mode = get_transparency_mode(source)
+            edge_enabled = False
+            if cmds.attributeQuery(ATTR_MMD_SHADER_OUTLINE_ENABLED, node=source, exists=True):
+                edge_enabled = bool(cmds.getAttr(f"{source}.{ATTR_MMD_SHADER_OUTLINE_ENABLED}"))
+            technique = _technique_for_transparency(mode, edge_enabled, _shader_is_double_sided(source))
+        else:
+            _ensure_mmd_shader_uniform_attributes(replacement)
+            technique = "Main"
+        if not _set_shader_attribute_checked(replacement, "technique", technique, "string"):
+            raise RuntimeError(f"Could not select {node_type} technique '{technique}'")
+        return replacement
+    except Exception:
+        _delete_shader_node(replacement)
+        raise
+
+
+def ensure_material_shader_backend(shader: str) -> str:
+    """Replace a mismatched MMD hardware shader for a presenter Apply operation.
+
+    This is deliberately local to the material being edited; it is not a scene
+    migration.  The replacement keeps the original node name, shading-engine
+    assignment, common uniforms, texture inputs, and MMD custom attributes.
+    """
+    current_type = cmds.nodeType(shader)
+    if current_type not in {"dx11Shader", "GLSLShader"}:
+        return shader
+    backend = effective_mmd_shader_backend()
+    expected_type = "dx11Shader" if backend == BACKEND_DX11 else "GLSLShader"
+    if backend == BACKEND_STANDARD:
+        expected_type = "standardSurface"
+    plugin_name = "dx11Shader" if backend == BACKEND_DX11 else "glslShader"
+    if backend != BACKEND_STANDARD and not _ensure_shader_plugin(plugin_name):
+        _warn_shader_backend_once(
+            f"{backend}-plugin-not-loaded-update",
+            f"{expected_type} plugin '{plugin_name}' is not loaded; replacing the edited hardware material with standardSurface for visibility.",
+        )
+        backend = BACKEND_STANDARD
+        expected_type = "standardSurface"
+    if current_type == expected_type:
+        return shader
+
+    replacement = None
+    legacy = None
+    destinations = []
+    try:
+        try:
+            replacement = _create_backend_replacement(shader, backend)
+        except Exception as exc:
+            _warn_shader_backend_once(
+                f"{backend}-replacement-failed",
+                f"Could not create the active {expected_type} material ({exc}); using standardSurface for visibility.",
+            )
+            backend = BACKEND_STANDARD
+            expected_type = "standardSurface"
+            replacement = _create_backend_replacement(shader, backend)
+        _copy_shader_backend_state(shader, replacement)
+        destinations = cmds.listConnections(
+            f"{shader}.outColor", source=False, destination=True, plugs=True
+        ) or []
+        legacy = cmds.rename(shader, f"{shader}__legacy_{current_type}")
+        replacement = cmds.rename(replacement, shader)
+        for destination in destinations:
+            if destination.endswith(".surfaceShader"):
+                cmds.connectAttr(f"{replacement}.outColor", destination, force=True)
+    except Exception:
+        if replacement and cmds.objExists(replacement):
+            _delete_shader_node(replacement)
+        if legacy and cmds.objExists(legacy) and not cmds.objExists(shader):
+            cmds.rename(legacy, shader)
+        if cmds.objExists(shader):
+            for destination in destinations:
+                if destination.endswith(".surfaceShader"):
+                    cmds.connectAttr(f"{shader}.outColor", destination, force=True)
+        raise
+    _delete_shader_node(legacy)
+    _warn_shader_backend_once(
+        f"material-replaced:{current_type}:{expected_type}",
+        f"Replaced incompatible {current_type} material with {expected_type} for the active VP2 API.",
+    )
+    return replacement
 
 
 def _validate_shader_node(shader, expected_node_type):
@@ -1336,13 +1556,10 @@ class MeshConverter:
         create_mmd_shaders = settings.get(setting_keys.IMPORT_MODEL_CREATE_MMD_SHADERS)
 
         if create_mmd_shaders:
-            backend = str(settings.get(setting_keys.IMPORT_MODEL_MMD_SHADER_BACKEND, "auto")).lower()
-            if backend not in {"auto", "dx11", "glsl", "standard"}:
-                cmds.warning(f"Unknown mmd_shader_backend '{backend}', fallback to auto.")
-                backend = "auto"
+            backend = effective_mmd_shader_backend()
 
             if backend != "standard":
-                backend_order = ["dx11", "glsl"] if backend == "auto" else [backend]
+                backend_order = [backend]
 
                 for target in backend_order:
                     shader = None

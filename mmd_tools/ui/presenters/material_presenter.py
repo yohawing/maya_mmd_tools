@@ -6,6 +6,7 @@ from mmd_tools.converters.material_shader_parameters import (
     hardware_morph_route_for_uniform,
     iter_hardware_shader_values,
 )
+from mmd_tools.converters.mesh_converter import ensure_material_shader_backend
 from mmd_tools.core.constants import (
     ATTR_MMD_DRAW_FLAGS,
     ATTR_MMD_DIFFUSE_COLOR,
@@ -713,6 +714,7 @@ class MaterialPresenter:
             return
 
         try:
+            self.current_material = ensure_material_shader_backend(self.current_material)
             # Apply names
             jp_name = self.view.material_jp_name_edit.text()
             en_name = self.view.material_en_name_edit.text()

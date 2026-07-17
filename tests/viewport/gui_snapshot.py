@@ -86,6 +86,7 @@ def run_snapshot(
     _logging.getLogger().addHandler(_cap)
     _logging.getLogger().setLevel(_logging.DEBUG)
 
+    saved_backend = None
     try:
         _log("=== snapshot begin ===")
         cmds.file(new=True, force=True)
@@ -103,7 +104,12 @@ def run_snapshot(
         from mmd_tools.io.mmd_importer import import_mmd_file
 
         settings.set("import.model.create_mmd_shaders", True)
-        settings.set("import.model.mmd_shader_backend", "dx11")
+        saved_backend = settings.get("import.model.mmd_shader_backend", "auto")
+        # Deliberately reproduce the stale preference reported by users.  The
+        # runtime resolver must select DX11 without rewriting this preference.
+        settings.set("import.model.mmd_shader_backend", "glsl")
+        _log(f"vp2 device: {cmds.ogs(deviceInformation=True)}")
+        _log(f"configured backend before import: {settings.get('import.model.mmd_shader_backend')}")
 
         _log(f"importing {model_path}")
         import contextlib
@@ -123,6 +129,70 @@ def run_snapshot(
             _log("ERROR: import returned None")
             _log(COMPLETION_MARKER)
             return
+
+        hardware = (cmds.ls(type="dx11Shader") or []) + (cmds.ls(type="GLSLShader") or [])
+        inventory = []
+        for shader in hardware:
+            shader_type = cmds.nodeType(shader)
+            effect = cmds.getAttr(f"{shader}.shader") if cmds.attributeQuery("shader", node=shader, exists=True) else ""
+            technique = cmds.getAttr(f"{shader}.technique") if cmds.attributeQuery("technique", node=shader, exists=True) else ""
+            inventory.append((shader, shader_type, effect, technique))
+        _log(f"shader inventory after import: {inventory}")
+        _log(f"configured backend after import: {settings.get('import.model.mmd_shader_backend')}")
+        if not hardware or any(cmds.nodeType(shader) != "dx11Shader" for shader in hardware):
+            raise RuntimeError(f"DirectX11 import created a non-dx11 hardware shader: {inventory}")
+        if any(str(effect).lower().endswith(".ogsfx") for _, _, effect, _ in inventory):
+            raise RuntimeError(f"DirectX11 import assigned an OGSFX effect: {inventory}")
+
+        # Reproduce an existing-scene mismatch without ever assigning OGSFX to
+        # D3DCompiler: swap one imported material to an unconfigured GLSL node,
+        # then let the real Presenter Apply path replace it safely.
+        from mmd_tools.converters.mesh_converter import _copy_shader_backend_state
+
+        cmds.loadPlugin("glslShader", quiet=True)
+        source_shader = hardware[0]
+        mismatch = cmds.shadingNode("GLSLShader", asShader=True, name=f"{source_shader}__mismatch")
+        _copy_shader_backend_state(source_shader, mismatch)
+        destinations = cmds.listConnections(
+            f"{source_shader}.outColor", source=False, destination=True, plugs=True
+        ) or []
+        for destination in destinations:
+            if destination.endswith(".surfaceShader"):
+                cmds.connectAttr(f"{mismatch}.outColor", destination, force=True)
+        old_dx = cmds.rename(source_shader, f"{source_shader}__old_dx11")
+        mismatch = cmds.rename(mismatch, source_shader)
+        cmds.delete(old_dx)
+        _log(f"existing-scene mismatch before Apply: material={mismatch} type={cmds.nodeType(mismatch)} effect=<unset>")
+
+        # Exercise the real Material Presenter path: select one imported MMD
+        # material, edit a visible numeric value, then invoke Apply.
+        from mmd_tools.ui.application_state import ApplicationState
+        from mmd_tools.ui.presenters.material_presenter import MaterialPresenter
+        from mmd_tools.ui.tabs.material_tab import MaterialTab
+
+        material_view = MaterialTab()
+        material_state = ApplicationState()
+        presenter = MaterialPresenter(material_view, material_state)
+        material_state.current_model_root = root_node
+        presenter.load_materials()
+        if material_view.material_list.count() < 1:
+            raise RuntimeError("Material Presenter found no imported MMD materials")
+        material_view.material_list.setCurrentRow(0)
+        before_value = material_view.specular_coefficient_spin.value()
+        delta = -0.01 if before_value >= material_view.specular_coefficient_spin.maximum() else 0.01
+        material_view.specular_coefficient_spin.setValue(before_value + delta)
+        if material_view.specular_coefficient_spin.value() == before_value:
+            raise RuntimeError("Material Presenter test edit was clamped and did not change the value")
+        presenter.apply_changes()
+        applied = presenter.current_material
+        applied_type = cmds.nodeType(applied)
+        applied_effect = cmds.getAttr(f"{applied}.shader") if cmds.attributeQuery("shader", node=applied, exists=True) else ""
+        _log(
+            f"Material Presenter Apply: material={applied} type={applied_type} "
+            f"effect={applied_effect} value={before_value}->{material_view.specular_coefficient_spin.value()}"
+        )
+        if applied_type != "dx11Shader" or str(applied_effect).lower().endswith(".ogsfx"):
+            raise RuntimeError("Material Presenter Apply violated the DirectX11 shader contract")
 
         # Copy MMD custom attrs into the VP2-generated effect attrs (GUI dx11Shader
         # only creates DiffuseColorRGB etc. after the .fx is evaluated).
@@ -265,6 +335,12 @@ def run_snapshot(
     except Exception:
         _log("EXCEPTION:\n" + traceback.format_exc())
         _log(COMPLETION_MARKER)
+    finally:
+        if saved_backend is not None:
+            try:
+                settings.set("import.model.mmd_shader_backend", saved_backend)
+            except Exception:
+                _log("WARN: could not restore saved shader backend preference")
 
 
 # ===================================================================
@@ -284,6 +360,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=COMMAND_PORT)
     ap.add_argument("--width", type=int, default=800)
     ap.add_argument("--height", type=int, default=1066)
+    ap.add_argument("--launch-mode", choices=("direct", "powershell", "explorer"), default="explorer")
     ap.add_argument(
         "--view-transforms",
         default="ACES 1.0 SDR-video (sRGB),Un-tone-mapped (sRGB)",
@@ -313,7 +390,7 @@ def main() -> int:
         project_root=project_root,
         output_dir=out_path.parent,
         port=args.port,
-        launch_mode="direct",
+        launch_mode=args.launch_mode,
         env_overrides={"MAYA_VP2_DEVICE_OVERRIDE": "VirtualDeviceDx11"},
     )
     maya_out_path = out_path.parent / "maya_stdout.log"
@@ -356,6 +433,11 @@ def main() -> int:
                     time.sleep(LOG_POLL_INTERVAL)
         if not done:
             raise TimeoutError(f"snapshot did not finish within {CAPTURE_TIMEOUT}s")
+        gate_log = log_path.read_text(encoding="utf-8", errors="replace")
+        forbidden = ("EXCEPTION:", "error X3000", "unrecognized identifier 'mat4'", "effect compile error")
+        found = [token for token in forbidden if token.lower() in gate_log.lower()]
+        if found:
+            raise RuntimeError(f"snapshot semantic gate failed; found {found} in {log_path}")
         logger.info("snapshot finished; PNG at %s", out_path)
         return 0
     finally:
