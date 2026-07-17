@@ -14,7 +14,7 @@ def collider_half_extents(shape_type: int, size) -> tuple[float, float, float]:
     if shape_type == SHAPE_SPHERE:
         return sx, sx, sx
     if shape_type == SHAPE_BOX:
-        return sx * 0.5, sy * 0.5, sz * 0.5
+        return sx, sy, sz
     radius = sx
     return radius, sy * 0.5 + radius, radius
 
@@ -24,3 +24,8 @@ def capsule_dimensions(size) -> tuple[float, float, float]:
     radius = max(float(size[0]), 0.0)
     cylinder_height = max(float(size[1]), 0.0)
     return radius, cylinder_height, cylinder_height + 2.0 * radius
+
+
+def box_draw_size(size) -> tuple[float, float, float]:
+    """Convert PMX/Bullet box half extents to MUIDrawManager full dimensions."""
+    return tuple(2.0 * max(float(value), 0.0) for value in size)

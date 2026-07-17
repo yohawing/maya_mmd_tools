@@ -11,7 +11,7 @@ from __future__ import annotations
 import maya.api.OpenMaya as om
 import maya.api.OpenMayaRender as omr
 
-from mmd_tools.core.collider_geometry import capsule_dimensions, collider_half_extents
+from mmd_tools.core.collider_geometry import box_draw_size, capsule_dimensions, collider_half_extents
 from mmd_tools.core.collider_display import collision_group_color, physics_mode_line_style
 
 def maya_useNewAPI():
@@ -30,7 +30,6 @@ class ColliderDrawData(om.MUserData):
         self.physics_mode = 0
         self.collision_group = 0
         self.enabled = True
-        self.legacy_rotation = None
         self.selected = False
         self.selection_color = None
 
@@ -45,16 +44,9 @@ def _draw_sphere(drawManager, center, radius) -> None:
     drawManager.sphere(center, radius, _SPHERE_SUBDIV_AXIS, _SPHERE_SUBDIV_HEIGHT, False)
 
 
-def _local_axes(rotation) -> tuple[om.MVector, om.MVector]:
-    matrix = om.MEulerRotation(*rotation, om.MEulerRotation.kXYZ).asMatrix()
-    return (
-        om.MVector(1.0, 0.0, 0.0) * matrix,
-        om.MVector(0.0, 1.0, 0.0) * matrix,
-    )
-
-
 def _draw_box(drawManager, center, x_axis, y_axis, size) -> None:
-    drawManager.box(center, x_axis, y_axis, size[0], size[1], size[2], False)
+    full_size = box_draw_size(size)
+    drawManager.box(center, x_axis, y_axis, *full_size, False)
 
 
 def _draw_capsule(drawManager, center, y_axis, size) -> None:
@@ -121,12 +113,6 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
                 fn.findPlug("shapeSizeY", False).asDouble(),
                 fn.findPlug("shapeSizeZ", False).asDouble(),
             )
-            authoring_plug = fn.findPlug("authoringMatrix", False)
-            data.legacy_rotation = None if authoring_plug.isDestination else (
-                fn.findPlug("rotationX", False).asMAngle().asRadians(),
-                fn.findPlug("rotationY", False).asMAngle().asRadians(),
-                fn.findPlug("rotationZ", False).asMAngle().asRadians(),
-            )
             status = omr.MGeometryUtilities.displayStatus(objPath)
             data.selected = status in (
                 omr.MGeometryUtilities.kActive,
@@ -149,11 +135,8 @@ class MmdRigidBodyDrawOverride(omr.MPxDrawOverride):
             return  # enable=False: skip drawing entirely
 
         center = om.MPoint(0.0, 0.0, 0.0)
-        if data.legacy_rotation is None:
-            x_axis = om.MVector(1.0, 0.0, 0.0)
-            y_axis = om.MVector(0.0, 1.0, 0.0)
-        else:
-            x_axis, y_axis = _local_axes(data.legacy_rotation)
+        x_axis = om.MVector(1.0, 0.0, 0.0)
+        y_axis = om.MVector(0.0, 1.0, 0.0)
 
         color = _color_for(data)
 

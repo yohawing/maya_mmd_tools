@@ -88,6 +88,10 @@ class TestDrawOverrideStructure(unittest.TestCase):
         self.assertIn("physics_mode_line_style", self.source)
         self.assertIn("setLineStyle", self.source)
 
+    def test_box_draw_uses_full_size_and_has_no_legacy_rotation_fallback(self):
+        self.assertIn("box_draw_size", self.source)
+        self.assertNotIn("legacy_rotation", self.source)
+
     def test_reads_shape_attributes(self):
         for attr in ["shapeType", "shapeSizeX", "shapeSizeY", "shapeSizeZ", "physicsMode", "collisionGroup", "enable"]:
             self.assertIn(attr, self.source, f"Missing attribute read: {attr}")

@@ -56,7 +56,7 @@ class TestColliderAuthoringTransform(MayaTestBase):
     def test_locator_world_bbox_matches_each_primitive(self):
         expected = {
             0: (-2.0, -2.0, -2.0, 2.0, 2.0, 2.0),
-            1: (-1.0, -2.0, -3.0, 1.0, 2.0, 3.0),
+            1: (-2.0, -4.0, -6.0, 2.0, 4.0, 6.0),
             2: (-2.0, -4.0, -2.0, 2.0, 4.0, 2.0),
         }
         for shape_type in (0, 1, 2):
@@ -69,6 +69,19 @@ class TestColliderAuthoringTransform(MayaTestBase):
             actual = cmds.exactWorldBoundingBox(transform)
             for actual_value, expected_value in zip(actual, expected[shape_type]):
                 self.assertAlmostEqual(actual_value, expected_value, places=6)
+
+    def test_rotated_box_draw_and_bbox_share_canonical_parent_transform(self):
+        transform = cmds.createNode("transform", name="rotatedBox")
+        shape = cmds.createNode("mmdRigidBodyShape", name="rotatedBoxShape", parent=transform)
+        cmds.setAttr(f"{shape}.shapeType", 1)
+        cmds.setAttr(f"{shape}.shapeSize", 2.0, 4.0, 6.0, type="double3")
+        set_collider_authoring_pose(transform, shape, (0.0, 0.0, 0.0), (0.0, 0.0, math.pi / 2.0))
+
+        self.assertTrue(cmds.isConnected(f"{transform}.worldMatrix[0]", f"{shape}.authoringMatrix"))
+        actual = cmds.exactWorldBoundingBox(transform)
+        expected = (-4.0, -2.0, -6.0, 4.0, 2.0, 6.0)
+        for actual_value, expected_value in zip(actual, expected):
+            self.assertAlmostEqual(actual_value, expected_value, places=6)
 
 
 if __name__ == "__main__":
