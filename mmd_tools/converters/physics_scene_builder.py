@@ -469,13 +469,20 @@ def build_physics_live_graph(
                         force=True,
                     )
 
-            if not cmds.attributeQuery("mmd_model_root", node=driver, exists=True):
-                cmds.addAttr(driver, longName="mmd_model_root", attributeType="message")
-            cmds.connectAttr(f"{root_group}.message", f"{driver}.mmd_model_root", force=True)
-
             if not cmds.attributeQuery("mmd_target_joint", node=driver, exists=True):
                 cmds.addAttr(driver, longName="mmd_target_joint", dataType="string")
             cmds.setAttr(f"{driver}.mmd_target_joint", joint, type="string")
+            if not cmds.attributeQuery("mmd_target_joint_message", node=driver, exists=True):
+                cmds.addAttr(
+                    driver,
+                    longName="mmd_target_joint_message",
+                    attributeType="message",
+                )
+            cmds.connectAttr(
+                f"{joint}.message",
+                f"{driver}.mmd_target_joint_message",
+                force=True,
+            )
 
             _connect_physics_output(f"{driver}.outTranslate", f"{joint}.translate")
             _connect_physics_output(f"{driver}.outRotate", f"{joint}.rotate")
@@ -532,25 +539,12 @@ def recover_physics_driver_connections(model_root: str, *, logger=None) -> dict:
 
     solver_node = _find_solver_for_model(model_root)
 
-    drivers = cmds.ls(type="mmdPhysicsBoneDriver") or []
+    drivers = _find_drivers_for_solver(solver_node) if solver_node else []
     for driver in drivers:
         if not cmds.objExists(driver):
             continue
 
-        if not cmds.attributeQuery("mmd_model_root", node=driver, exists=True):
-            skipped += 1
-            continue
-
-        root_connections = cmds.listConnections(
-            f"{driver}.mmd_model_root", source=True, destination=False
-        ) or []
-        if model_root not in root_connections:
-            continue
-
-        try:
-            target_joint = cmds.getAttr(f"{driver}.mmd_target_joint") or ""
-        except Exception:
-            target_joint = ""
+        target_joint = _find_target_joint_for_driver(driver)
         if not target_joint or not cmds.objExists(target_joint):
             skipped += 1
             continue
@@ -634,6 +628,41 @@ def _find_solver_for_model(model_root: str):
         if driver_conns:
             return solver
     return candidates[-1]
+
+
+def _find_drivers_for_solver(solver: str) -> list[str]:
+    """Return the bone drivers reachable from one model's solver."""
+    drivers = []
+    seen = set()
+    for output_attr in ("outBoneMatrices", "outBoneCount", "outSolved"):
+        connected = cmds.listConnections(
+            f"{solver}.{output_attr}",
+            source=False,
+            destination=True,
+            type="mmdPhysicsBoneDriver",
+        ) or []
+        for driver in connected:
+            if driver not in seen:
+                seen.add(driver)
+                drivers.append(driver)
+    return drivers
+
+
+def _find_target_joint_for_driver(driver: str):
+    """Resolve the target joint, preferring the rename-safe message binding."""
+    if cmds.attributeQuery("mmd_target_joint_message", node=driver, exists=True):
+        targets = cmds.listConnections(
+            f"{driver}.mmd_target_joint_message",
+            source=True,
+            destination=False,
+            type="joint",
+        ) or []
+        if targets:
+            return targets[0]
+    try:
+        return cmds.getAttr(f"{driver}.mmd_target_joint") or ""
+    except Exception:
+        return ""
 
 
 def _capture_anim_curve_connections(joint: str) -> dict:

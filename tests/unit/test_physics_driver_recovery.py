@@ -31,8 +31,20 @@ class TestRecoverPhysicsDriverConnectionsExists(unittest.TestCase):
     def test_reads_target_joint_attribute(self):
         self.assertIn("mmd_target_joint", self.source)
 
-    def test_reads_model_root_connection(self):
-        self.assertIn("mmd_model_root", self.source)
+    def test_traverses_drivers_from_model_solver(self):
+        self.assertIn("_find_solver_for_model", self.source)
+        self.assertIn("_find_drivers_for_solver", self.source)
+
+    def test_does_not_fan_out_model_root_to_drivers(self):
+        build_func = next(
+            node for node in ast.walk(self.tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "build_physics_live_graph"
+        )
+        build_source = ast.get_source_segment(self.source, build_func)
+        self.assertNotIn("mmd_model_root", build_source)
+
+    def test_prefers_target_joint_message_binding(self):
+        self.assertIn("mmd_target_joint_message", self.source)
 
     def test_reconnects_translate_and_rotate(self):
         self.assertIn("outTranslate", self.source)
